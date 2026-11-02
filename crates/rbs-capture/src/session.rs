@@ -15,7 +15,9 @@ use crate::target::{CaptureTarget, Permission, TargetId, TargetKind};
 #[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum GpuDeviceId {
-    /// A Windows adapter LUID (DXGI, D3D11, D3D12, Vulkan `deviceLUID`).
+    /// A Windows adapter LUID (DXGI, D3D11, D3D12, Vulkan `deviceLUID`): the bytes of the
+    /// `LUID` struct in memory order (`LowPart` then `HighPart`, little-endian). Read as a
+    /// little-endian `u64` it is the `adapter_luid` of a `NativeSurface`.
     Luid([u8; 8]),
     /// A Vulkan or CUDA device UUID.
     Uuid([u8; 16]),
