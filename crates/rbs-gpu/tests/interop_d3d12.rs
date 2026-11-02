@@ -196,13 +196,24 @@ impl D3d11 {
     }
 }
 
+/// The render adapter's LUID, or `None` (skip) when the device is not D3D12.
+/// CI sets `RBS_REQUIRE_D3D12` on Windows so the import test cannot silently skip.
+fn d3d12_luid(ctx: &rbs_gpu::GpuContext) -> Option<u64> {
+    let luid = ctx.adapter_luid();
+    if luid.is_none() {
+        assert!(
+            std::env::var_os("RBS_REQUIRE_D3D12").is_none_or(|v| v.is_empty()),
+            "RBS_REQUIRE_D3D12 is set but the render device is not D3D12"
+        );
+        eprintln!("SKIPPED: render device is not D3D12");
+    }
+    luid
+}
+
 #[test]
 fn shared_texture_is_aliased_rendered_and_handed_back() {
     let Some(ctx) = common::gpu() else { return };
-    let Some(luid) = ctx.adapter_luid() else {
-        eprintln!("SKIPPED: render device is not D3D12");
-        return;
-    };
+    let Some(luid) = d3d12_luid(ctx) else { return };
     let d3d11 = producer(luid);
     let owner = Arc::new(Producer::default());
 
@@ -261,10 +272,7 @@ fn shared_texture_is_aliased_rendered_and_handed_back() {
 #[test]
 fn wrong_adapter_and_keyed_mutex_are_rejected() {
     let Some(ctx) = common::gpu() else { return };
-    let Some(luid) = ctx.adapter_luid() else {
-        eprintln!("SKIPPED: render device is not D3D12");
-        return;
-    };
+    let Some(luid) = d3d12_luid(ctx) else { return };
     let d3d11 = producer(luid);
     let owner = Arc::new(Producer::default());
     let mut pool = TexturePool::new();

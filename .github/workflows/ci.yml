@@ -46,6 +46,10 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y mesa-vulkan-drivers
       - run: cargo clippy --workspace --all-targets -- -D warnings
       - run: cargo test --workspace
+        env:
+          # Every runner has a GPU adapter (lavapipe, WARP, Metal); GPU tests must not skip.
+          RBS_REQUIRE_GPU: "1"
+          RBS_REQUIRE_D3D12: ${{ runner.os == 'Windows' && '1' || '' }}
       - run: cargo doc --workspace --no-deps
         env:
           RUSTDOCFLAGS: -D warnings
