@@ -271,6 +271,15 @@ Records written from the reviewer's own output (ADR-0014). The spec stays Draft.
 - Verdict: approve (round-3 concerns 1 and 2 resolved, no regressions)
 - Open minor items, for the owner to accept or schedule: the `<=` accounting does not catch an adapter that counts drops twice; a retired ring keeps its buffers through Standby until `start` or drop; a frame that outlives its dropped session frees the ring on the thread that drops it; the suite's own thread count works on Linux only; P15 asks for a human maintainer's approval of `latest_frame` (the owner's early-phase rule lets PRs merge on green CI; his later review covers it).
 
+### WGC adapter and native surface rules (rounds 1-3)
+
+- Reviewer: a fresh independent AI session, given the diff, specs and code only
+- Date: 2026-11-02
+- Round 1 verdict: request changes. Blocking: NT handle and fence values reused after stop/start could hit stale importer cache entries (stale texture, fence waits satisfied too early). Should-fix: resize retirement too short and early close, `Ring` made `LeaseOwner` promises it could not keep, last lease freed surfaces on the render thread, importer cap too small, `RoInitialize` on caller threads, unchecked agility, timestamp fallback, sticky errors, unstable window ids.
+- Round 2 verdict: approve with changes (fence leak on failed start, freeze after window drags from the grave budget, uncounted ring graves, merge order with the importer, tick-based importer eviction).
+- Round 3 verdict: approve with changes. The adapter is ready; merge with or after the importer's wall-time eviction (8 s), its larger surface cap and the matching gpu-compositor.md wording (rbs-gpu PR #18).
+- Open for the owner: hot-path approval of the WGC hand-off (P15), approval of the native surface rules (P14), an end-to-end WGC-to-importer hardware test, hardware test hooks.
+
 ## Open questions
 
 - Per-application capture (all windows of a process, as ScreenCaptureKit offers): a new `TargetKind` in a minor version.
