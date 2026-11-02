@@ -66,7 +66,7 @@ Contract decided in [ADR-0020](../adr/0020-node-contract-and-schedule-swap.md).
 | `Node<X>` | `descriptor`, `prepare`, `warm`, `process`, `cool`, `release`; threads and rules in the table below |
 | `Tick` | Index and master-clock time; `Tick::of(cadence, index)` computes the time from the index |
 | `ProcessCtx` | Tick, node id, `shared`, `local`, `inputs()` (`Inputs`, `Copy`), `outputs()` (`Outputs`), `parts()` for all at once |
-| `Inputs` | `video(pin, link)`, `videos(pin)`, `packets(pin)`, `bytes(pin)`, `link_count(pin)`; links into a many-input in connection order |
+| `Inputs` | `video(pin, link)`, `videos(pin)`, `packets(pin)`, `bytes(pin)`, `link_count(pin)`; links into a many-input in connection order. `source(pin, link)` names the producing node and `find(pin, node)` finds its link, so parameters can refer to producers by id ([ADR-0023](../adr/0023-node-parameter-channels.md)) |
 | `Outputs` | `set_video(pin, frame)` returns the previous frame; `push_packet` / `push_bytes` return the value in `Rejected` when the pin is full (`PER_TICK_EVENTS` per tick) or of another kind |
 | `Controller` | Control thread. `adopt` (hand over an idle instance), `take` (idle only), `apply(description)` returns an `ApplyReport` (plan sent, nodes that could not join with a `JoinError`), `collect` / `collect_timeout` return `Collected` (nodes that left, now released, and the counters of every node at the swap), `drain` (empty schedule, before shutdown) |
 | `Executor` | Real-time thread. `run_tick(tick)`, `health(id)`, `scheduled()`, `set_failure_limit` |
@@ -99,17 +99,17 @@ Parameters of running nodes ([ADR-0023](../adr/0023-node-parameter-channels.md))
 
 | Call | Side | Contract |
 | --- | --- | --- |
-| `send(value)` | control | Makes `value` the newest; an unread older value is dropped here |
-| `recycle()` | control | Returns a value the receiver replaced, to refill without allocating |
+| `send(value)` | control | Makes `value` the newest; returns an unread older value it displaced, for reuse. Values from one sender arrive in order; `send` takes `&mut self` |
+| `recycle()` | control | Returns the value the receiver last replaced, to refill without allocating. Call it before `send`, which otherwise drops that value on the control thread |
 | `pending()` / `is_closed()` | control | A sent value is not taken yet / the node (and its receiver) was dropped |
-| `update()` | node, in `process` | Takes the newest value, returns true if the current value changed. No allocation, no freeing, never waits: if the sender holds the exchange, the value is taken on a later call. With nothing new it is one atomic load |
+| `update()` | node, in `process` | Takes the newest value, returns true if the current value changed. No allocation, no freeing, never waits: it uses `try_lock`, and if the sender holds the exchange the value is taken on the first call after the sender lets go (normally the next tick; later if the control thread is preempted inside `send`). With nothing new it is one atomic load |
 | `get()` / `get_mut()` | node | The current value |
 
-Latest-value semantics: values sent from one thread are seen in order, intermediate ones may be skipped. A value and a structural change (a new link) are not applied atomically together; consumers tolerate a parameter that refers to a link that is not there yet.
+Latest-value semantics: values are seen in send order, intermediate ones may be skipped. A value and a schedule swap are not applied together, so a value may meet an older or newer schedule. Parameters that refer to inputs therefore name producers by `NodeId` and treat a link index only as a hint (`Inputs::source` / `find`); a producer that is not scheduled is skipped for that tick, so a mismatch can hide a layer for a tick but never draws the wrong source. Fades, transitions and gain changes are sent as targets with timing that the node evaluates against tick time, not as a value per frame. Keep `T` small or heap-backed. Values are dropped on the control thread, except the receiver's own value, which drops with the node.
 
-Invariants, each covered by a test in `crates/rbs-graph/tests/runtime.rs` and `no_alloc.rs`: `prepare` runs before `warm`, which runs before the first `process`; staying nodes are not prepared or warmed again and keep their state and last frame across a swap; skipped nodes are never prepared; leaving nodes are cooled on the executor and released on the controller; a failed `prepare` or `warm` affects only that node and its dependants; steady-state ticks and the swapping tick allocate nothing; `ParamReceiver::update` neither allocates nor frees and never drops a value on the receiving thread (`tests/param.rs`); a node whose `warm` failed is not cooled again; `drain` cools and releases every node.
+Invariants, each covered by a test in `crates/rbs-graph/tests/runtime.rs` and `no_alloc.rs`: `prepare` runs before `warm`, which runs before the first `process`; staying nodes are not prepared or warmed again and keep their state and last frame across a swap; skipped nodes are never prepared; leaving nodes are cooled on the executor and released on the controller; a failed `prepare` or `warm` affects only that node and its dependants; steady-state ticks and the swapping tick allocate nothing; `ParamReceiver::update` neither allocates nor frees, never waits on a held exchange and never drops a value on the receiving thread, and `Inputs::find` follows a producer when link positions shift (`tests/param.rs`); a node whose `warm` failed is not cooled again; `drain` cools and releases every node.
 
-Cost (reference VM, Xeon 2.1 GHz, `cargo bench -p rbs-graph --bench executor`): a tick with near-empty nodes costs 120 ns for 6 nodes, 0.53 µs for 20 and 1.66 µs for 68, about 25 ns per node. `apply` plus the swapping tick for a 32-source canvas (68 nodes) costs about 56 µs on the control thread. `ParamReceiver::update` costs about 3 ns with nothing new and under 50 ns when it takes a 64-element `Vec` (bench `param_update`).
+Cost (reference VM, Xeon 2.1 GHz, `cargo bench -p rbs-graph --bench executor`): a tick with near-empty nodes costs 120 ns for 6 nodes, 0.53 µs for 20 and 1.66 µs for 68, about 25 ns per node. `apply` plus the swapping tick for a 32-source canvas (68 nodes) costs about 56 µs on the control thread. `ParamReceiver::update` costs about 2 to 3 ns with nothing new and about 20 ns of work when it takes a 64-element `Vec` (bench `param_update`: about 50 ns including the timer's 31 ns).
 
 ## Graph description (implemented in `rbs-graph`)
 

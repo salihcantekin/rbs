@@ -76,6 +76,18 @@ fn param_update(c: &mut Criterion) {
             total
         })
     });
+    // The timer's own cost inside `iter_custom`, to read "changed" against.
+    group.bench_function("timer_only", |b| {
+        b.iter_custom(|iters| {
+            let mut total = std::time::Duration::ZERO;
+            for _ in 0..iters {
+                let start = std::time::Instant::now();
+                std::hint::black_box(());
+                total += start.elapsed();
+            }
+            total
+        })
+    });
     group.finish();
 }
 
