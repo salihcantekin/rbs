@@ -6,7 +6,7 @@
 
 use crate::context::GpuContext;
 use crate::error::GpuError;
-use crate::pool::TexturePool;
+use crate::pool::{TextureDesc, TexturePool};
 use rbs_core::media::TextureId;
 
 /// Writes tightly packed texel rows into the whole texture `id` (needs `COPY_DST`).
@@ -56,15 +56,48 @@ pub fn read_bytes(
     pool: &TexturePool,
     id: TextureId,
 ) -> Result<Vec<u8>, GpuError> {
+    read(ctx, pool, id, wgpu::TextureAspect::All)
+}
+
+/// Copies one plane of a multi-planar texture (for example NV12: plane 0 is `R8` luma,
+/// plane 1 is `Rg8` chroma at half size) as tightly packed rows (needs `COPY_SRC`).
+///
+/// Blocks until the GPU finished. Counted in `frames_cpu_copied`.
+pub fn read_plane(
+    ctx: &GpuContext,
+    pool: &TexturePool,
+    id: TextureId,
+    plane: u32,
+) -> Result<Vec<u8>, GpuError> {
+    let aspect = wgpu::TextureAspect::from_plane(plane).ok_or(GpuError::TargetMismatch(id))?;
+    read(ctx, pool, id, aspect)
+}
+
+fn read(
+    ctx: &GpuContext,
+    pool: &TexturePool,
+    id: TextureId,
+    aspect: wgpu::TextureAspect,
+) -> Result<Vec<u8>, GpuError> {
     let tex = pool.get(id).ok_or(GpuError::StaleTexture(id))?;
     let d = *tex.desc();
-    let texel = d
+    let format = d
         .format
+        .aspect_specific_format(aspect)
+        .ok_or(GpuError::TargetMismatch(id))?;
+    let texel = format
         .block_copy_size(None)
         .ok_or(GpuError::TargetMismatch(id))?;
     if !d.usage.contains(wgpu::TextureUsages::COPY_SRC) {
         return Err(GpuError::TargetMismatch(id));
     }
+    // Planes after the first are subsampled (NV12 chroma: half width and height).
+    let (width, height) = if matches!(aspect, wgpu::TextureAspect::Plane1) {
+        (d.width / 2, d.height / 2)
+    } else {
+        (d.width, d.height)
+    };
+    let d = TextureDesc { width, height, ..d };
     let row = d.width * texel;
     let padded =
         row.div_ceil(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT) * wgpu::COPY_BYTES_PER_ROW_ALIGNMENT;
@@ -84,7 +117,7 @@ pub fn read_bytes(
             texture: tex.texture(),
             mip_level: 0,
             origin: wgpu::Origin3d::ZERO,
-            aspect: wgpu::TextureAspect::All,
+            aspect,
         },
         wgpu::TexelCopyBufferInfo {
             buffer: &buffer,

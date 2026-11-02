@@ -848,6 +848,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "rbs-scene"
+version = "0.0.1"
+dependencies = [
+ "rbs-core",
+ "rbs-graph",
+]
+
+[[package]]
 name = "rbs-transport"
 version = "0.0.1"
 dependencies = [

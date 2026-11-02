@@ -255,9 +255,9 @@ fn shared_texture_is_aliased_rendered_and_handed_back() {
             "lease held while a frame references the surface"
         );
         drop(frame);
-        importer.retire(ctx, &mut pool); // schedules the hand-back
+        importer.retire(ctx, &mut pool, Timestamp::ZERO); // schedules the hand-back
         ctx.wait_idle().unwrap();
-        importer.retire(ctx, &mut pool); // sees it complete
+        importer.retire(ctx, &mut pool, Timestamp::ZERO); // sees it complete
         assert_eq!(owner.held(), 0, "lease returned after the GPU finished");
         assert_eq!(importer.held_leases(), 0);
     }
@@ -268,7 +268,24 @@ fn shared_texture_is_aliased_rendered_and_handed_back() {
     );
     assert_eq!(importer.open_surfaces(), 1);
 
-    // The source stops: its handle values may be reused, so they leave the cache.
+    // Unseen surfaces are closed by engine time, whatever the tick rate.
+    let idle = rbs_gpu::interop::SURFACE_IDLE;
+    importer.retire(ctx, &mut pool, Timestamp::ZERO + idle);
+    assert_eq!(importer.open_surfaces(), 1, "kept up to the idle time");
+    importer.retire(ctx, &mut pool, Timestamp::ZERO + idle * 2);
+    assert_eq!(importer.open_surfaces(), 0, "closed after the idle time");
+
+    // A source that stops leaves the cache at once.
+    d3d11.signal(3);
+    drop(
+        importer
+            .import(ctx, &mut pool, d3d11.frame(luid, 3, owner.lease()))
+            .unwrap(),
+    );
+    importer.retire(ctx, &mut pool, Timestamp::ZERO);
+    ctx.wait_idle().unwrap();
+    importer.retire(ctx, &mut pool, Timestamp::ZERO);
+    assert_eq!(importer.open_surfaces(), 1);
     importer.close_unused(&mut pool);
     assert_eq!(importer.open_surfaces(), 0);
 }

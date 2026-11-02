@@ -3,12 +3,12 @@
 //! - [`context`]: device creation and adapter selection by capability.
 //! - [`pool`]: reusable textures addressed by small, generation-checked ids.
 //! - [`compositor`]: draws a flat list of layers into a linear `Rgba16Float` canvas.
-//! - [`nv12`]: converts a canvas to NV12 planes for encoders.
+//! - [`nv12`]: converts a canvas to NV12 (two planes, or one NV12 texture) for encoders.
 //! - [`interop`]: imports native producer surfaces zero-copy as pool textures.
 //! - [`readback`]: explicit, counted CPU readback (fallback and tests only).
 //!
-//! `Compositor::render`, `Nv12Converter::convert` and the pool are hot paths
-//! (`docs/architecture/hot-paths.md`): RBS code in them does not allocate.
+//! `Compositor::render`, `Nv12Converter::convert` / `convert_to_surface` and the pool
+//! are hot paths (`docs/architecture/hot-paths.md`): RBS code in them does not allocate.
 //! `unsafe` appears only in [`pool`] (the lease contract of `rbs_core::media`) and
 //! [`interop`] (native surface import), both marked low-level modules (P11).
 
