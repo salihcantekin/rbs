@@ -186,7 +186,7 @@ impl<'a> AudioBlock<'a> {
         samples: &'a [f32],
     ) -> Result<Self, MediaError> {
         let channels = format.channels.channels();
-        if channels == 0 || samples.len() % channels != 0 {
+        if channels == 0 || !samples.len().is_multiple_of(channels) {
             return Err(MediaError::ChannelLength {
                 channel: 0,
                 expected: samples.len().next_multiple_of(channels.max(1)),

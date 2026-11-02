@@ -5,9 +5,9 @@ members = ["crates/*"]
 [workspace.package]
 version = "0.0.1"
 edition = "2024"
-rust-version = "1.85"
+rust-version = "1.87"
 repository = "https://github.com/salihcantekin/rbs"
-# License not decided yet, see docs/adr/0010-project-license.md
+license = "GPL-3.0-or-later"
 publish = false
 
 [workspace.lints.rust]

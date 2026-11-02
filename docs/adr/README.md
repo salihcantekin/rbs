@@ -22,7 +22,7 @@ An ADR records one decision that is hard to reverse or affects more than one cra
 | [0007](0007-ffmpeg-as-optional-adapter.md) | FFmpeg only as an optional codec adapter | Accepted |
 | [0008](0008-ui-as-api-client.md) | User interfaces are clients of the control API | Accepted |
 | [0009](0009-performance-budgets-in-ci.md) | Performance budgets enforced in CI | Accepted |
-| [0010](0010-project-license.md) | Project license | Proposed |
+| [0010](0010-project-license.md) | Project license | Accepted |
 | [0011](0011-english-only-repository.md) | English for all repository content | Accepted |
 | [0012](0012-ai-assisted-development.md) | Spec-first, AI-assisted development workflow | Accepted |
 | [0013](0013-zero-cost-when-unused.md) | Zero cost when unused | Accepted |
