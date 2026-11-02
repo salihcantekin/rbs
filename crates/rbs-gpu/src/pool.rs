@@ -1,33 +1,28 @@
-//! Reusable GPU textures addressed by small, generation-checked ids.
+//! Reusable GPU textures addressed by small, generation-checked ids, with leases.
 //!
-//! Hot path (`docs/architecture/hot-paths.md`): `acquire` of a free texture, `release`
-//! and `get` do not allocate. Creating a new texture allocates and happens only when
-//! no free texture of the same description exists.
+//! Hot path (`docs/architecture/hot-paths.md`): `acquire` of a free texture, `release`,
+//! `get` and `lease` do not allocate. Creating a new texture allocates and happens only
+//! when no free texture of the same description exists.
+//!
+//! Ids are [`rbs_core::media::TextureId`]. Consumers on other threads (for example
+//! encoders) keep a slot alive with a [`Lease`]: the pool does not reuse a slot while
+//! any lease on it exists, even after the owner released its own handle.
+//! Spec: `docs/specs/gpu-compositor.md#texture-pool`.
+//!
+//! This is a marked low-level module (principle P11): it implements the `unsafe`
+//! `LeaseOwner` contract of `rbs_core::media`.
+
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU32, Ordering};
+
+use rbs_core::media::{Lease, LeaseOwner, TextureId, VideoFormat, VideoFrame};
+use rbs_core::time::Timestamp;
 
 use crate::context::GpuContext;
 use crate::error::GpuError;
 
-/// An opaque handle to a pooled texture: slot index plus generation.
-///
-/// Releasing a texture bumps its slot generation, so every copy of the old id
-/// becomes stale and is detected in O(1).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct TextureId {
-    index: u32,
-    generation: u32,
-}
-
-impl TextureId {
-    /// The slot index.
-    pub fn index(self) -> u32 {
-        self.index
-    }
-
-    /// The slot generation this id was handed out with.
-    pub fn generation(self) -> u32 {
-        self.generation
-    }
-}
+/// Slots a pool holds when created with [`TexturePool::new`].
+pub const DEFAULT_POOL_SLOTS: u32 = 256;
 
 /// What a pooled texture looks like. Textures are reused only for an equal description.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -97,9 +92,19 @@ impl PooledTexture {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum State {
+    /// No owner handle and no leases; on a free list (or empty after `trim`).
+    Free,
+    /// Handed out by `acquire`; the owner has not released it.
+    InUse,
+    /// The owner released it but leases are still open; reused once they are dropped.
+    Retired,
+}
+
 struct Slot {
     generation: u32,
-    in_use: bool,
+    state: State,
     texture: Option<PooledTexture>,
 }
 
@@ -107,31 +112,85 @@ struct Slot {
 struct FreeList {
     desc: TextureDesc,
     slots: Vec<u32>,
-    /// Textures of this description that hold GPU memory (free or in use).
+    /// Textures of this description that hold GPU memory (free, in use or retired).
     total: usize,
 }
 
-/// A pool of textures owned by one render thread (`Send`, not shared).
+/// Lease counts, shared with consumers on other threads.
 ///
-/// A new pool owns no GPU memory (P13).
-#[derive(Default)]
+/// Tokens are the slot index. A slot is reused only when its count is zero and its owner
+/// handle was released, so no lease from an earlier use of the slot can exist and the
+/// token needs no generation.
+struct Leases {
+    counts: Box<[AtomicU32]>,
+}
+
+// SAFETY: a slot's texture is dropped or reused only by the owning `TexturePool`, and
+// only when the slot's count is zero (checked with `Acquire` in `collect`/`release`,
+// paired with the `Release` decrement here). `retain` is only reachable through a
+// `Lease` clone, which already holds a reference, so a count never rises from zero
+// behind the pool's back.
+unsafe impl LeaseOwner for Leases {
+    fn retain(&self, token: u64) {
+        if let Some(count) = self.counts.get(token as usize) {
+            // Relaxed: the caller already holds a reference, so nothing is published.
+            count.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+
+    fn release(&self, token: u64) {
+        if let Some(count) = self.counts.get(token as usize) {
+            // Release: the consumer's use of the slot happens before the pool reuses it.
+            count.fetch_sub(1, Ordering::Release);
+        }
+    }
+}
+
+/// A pool of textures owned and mutated by one render thread.
+///
+/// A new pool owns no GPU memory (P13); it holds one counter per slot of its capacity.
 pub struct TexturePool {
     slots: Vec<Slot>,
+    capacity: u32,
     free: Vec<FreeList>,
     /// Slots whose texture was trimmed and can hold a new one.
     empty: Vec<u32>,
+    /// Slots released by their owner while leases were open.
+    retired: Vec<u32>,
+    leases: Arc<Leases>,
+}
+
+impl Default for TexturePool {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl TexturePool {
-    /// An empty pool.
+    /// An empty pool with [`DEFAULT_POOL_SLOTS`] slots.
     pub fn new() -> Self {
-        Self::default()
+        Self::with_capacity(DEFAULT_POOL_SLOTS)
+    }
+
+    /// An empty pool that can hold at most `capacity` textures.
+    pub fn with_capacity(capacity: u32) -> Self {
+        Self {
+            slots: Vec::with_capacity(capacity as usize),
+            capacity,
+            free: Vec::new(),
+            empty: Vec::with_capacity(capacity as usize),
+            retired: Vec::with_capacity(capacity as usize),
+            leases: Arc::new(Leases {
+                counts: (0..capacity).map(|_| AtomicU32::new(0)).collect(),
+            }),
+        }
     }
 
     /// Returns a texture matching `desc`, reusing a free one when possible.
     ///
-    /// Reuse is O(number of distinct descriptions) and does not allocate.
+    /// Reuse is O(distinct descriptions + retired slots) and does not allocate.
     pub fn acquire(&mut self, ctx: &GpuContext, desc: &TextureDesc) -> Result<TextureId, GpuError> {
+        self.collect();
         if let Some(index) = self
             .free
             .iter_mut()
@@ -139,13 +198,38 @@ impl TexturePool {
             .and_then(|f| f.slots.pop())
         {
             let slot = &mut self.slots[index as usize];
-            slot.in_use = true;
-            return Ok(TextureId {
-                index,
-                generation: slot.generation,
-            });
+            slot.state = State::InUse;
+            return Ok(TextureId::new(index, slot.generation));
         }
         self.create(ctx, desc)
+    }
+
+    /// Moves retired slots whose leases are all gone to their free lists.
+    fn collect(&mut self) {
+        let mut i = 0;
+        while i < self.retired.len() {
+            let index = self.retired[i];
+            // Acquire: pairs with the `Release` decrement of the last lease.
+            if self.leases.counts[index as usize].load(Ordering::Acquire) == 0 {
+                self.retired.swap_remove(i);
+                self.free_slot(index);
+            } else {
+                i += 1;
+            }
+        }
+    }
+
+    fn free_slot(&mut self, index: u32) {
+        let slot = &mut self.slots[index as usize];
+        slot.state = State::Free;
+        slot.generation = slot.generation.wrapping_add(1);
+        let Some(desc) = slot.texture.as_ref().map(|t| t.desc) else {
+            return;
+        };
+        if let Some(list) = self.free.iter_mut().find(|f| f.desc == desc) {
+            // Capacity was reserved in `create`, so this push does not allocate.
+            list.slots.push(index);
+        }
     }
 
     fn create(&mut self, ctx: &GpuContext, desc: &TextureDesc) -> Result<TextureId, GpuError> {
@@ -154,6 +238,11 @@ impl TexturePool {
             return Err(GpuError::InvalidSize {
                 width: desc.width,
                 height: desc.height,
+            });
+        }
+        if self.empty.is_empty() && self.slots.len() >= self.capacity as usize {
+            return Err(GpuError::PoolFull {
+                capacity: self.capacity,
             });
         }
         let texture = ctx.device().create_texture(&wgpu::TextureDescriptor {
@@ -200,24 +289,22 @@ impl TexturePool {
         let index = match self.empty.pop() {
             Some(index) => {
                 let slot = &mut self.slots[index as usize];
-                slot.in_use = true;
+                slot.state = State::InUse;
                 slot.texture = Some(pooled);
                 index
             }
             None => {
-                let index = u32::try_from(self.slots.len()).map_err(|_| GpuError::InvalidSize {
-                    width: desc.width,
-                    height: desc.height,
-                })?;
+                // Bounded by `capacity`, which is a `u32`.
+                let index = self.slots.len() as u32;
                 self.slots.push(Slot {
                     generation: 0,
-                    in_use: true,
+                    state: State::InUse,
                     texture: Some(pooled),
                 });
                 index
             }
         };
-        // Reserve room in the free list now so `release` never grows it on the hot path.
+        // Reserve room in the free list now so releasing never grows it on the hot path.
         let list = match self.free.iter_mut().position(|f| f.desc == *desc) {
             Some(i) => &mut self.free[i],
             None => {
@@ -233,37 +320,56 @@ impl TexturePool {
         list.total += 1;
         let missing = list.total - list.slots.len();
         list.slots.reserve(missing);
-        Ok(TextureId {
-            index,
-            generation: self.slots[index as usize].generation,
-        })
+        Ok(TextureId::new(index, self.slots[index as usize].generation))
     }
 
-    /// Returns the texture to the pool. Every copy of `id` becomes stale.
+    /// Gives up the owner's handle. The slot is reused once every lease on it is dropped;
+    /// until then `id` stays valid for lease holders. A second release is an error.
     pub fn release(&mut self, id: TextureId) -> Result<(), GpuError> {
         let slot = self
             .slots
-            .get_mut(id.index as usize)
+            .get(id.slot() as usize)
             .ok_or(GpuError::UnknownTexture(id))?;
-        if !slot.in_use || slot.generation != id.generation {
+        if slot.state != State::InUse || slot.generation != id.generation() {
             return Err(GpuError::StaleTexture(id));
         }
-        let Some(desc) = slot.texture.as_ref().map(|t| t.desc) else {
-            return Err(GpuError::StaleTexture(id));
-        };
-        slot.in_use = false;
-        slot.generation = slot.generation.wrapping_add(1);
-        if let Some(list) = self.free.iter_mut().find(|f| f.desc == desc) {
-            // Capacity was reserved in `create`, so this push does not allocate.
-            list.slots.push(id.index);
+        // Acquire: pairs with the `Release` decrement of the last lease.
+        if self.leases.counts[id.slot() as usize].load(Ordering::Acquire) == 0 {
+            self.free_slot(id.slot());
+        } else {
+            self.slots[id.slot() as usize].state = State::Retired;
+            // Capacity is the pool capacity, so this push does not allocate.
+            self.retired.push(id.slot());
         }
         Ok(())
     }
 
+    /// A lease that keeps the slot of `id` from being reused. Does not allocate.
+    pub fn lease(&self, id: TextureId) -> Result<Lease, GpuError> {
+        if self.get(id).is_none() {
+            return Err(GpuError::StaleTexture(id));
+        }
+        self.leases.retain(u64::from(id.slot()));
+        let owner: Arc<dyn LeaseOwner> = self.leases.clone();
+        // SAFETY: one reference to this slot was counted just above and is handed over.
+        Ok(unsafe { Lease::adopt(owner, u64::from(id.slot())) })
+    }
+
+    /// A video frame for `id` that holds a lease on its slot.
+    pub fn frame(
+        &self,
+        id: TextureId,
+        format: VideoFormat,
+        timestamp: Timestamp,
+    ) -> Result<VideoFrame, GpuError> {
+        let lease = self.lease(id)?;
+        Ok(VideoFrame::texture(format, timestamp, id, Some(lease)))
+    }
+
     /// The texture behind `id`, or `None` when the id is stale or unknown.
     pub fn get(&self, id: TextureId) -> Option<&PooledTexture> {
-        let slot = self.slots.get(id.index as usize)?;
-        if slot.in_use && slot.generation == id.generation {
+        let slot = self.slots.get(id.slot() as usize)?;
+        if slot.state != State::Free && slot.generation == id.generation() {
             slot.texture.as_ref()
         } else {
             None
@@ -272,6 +378,7 @@ impl TexturePool {
 
     /// Drops every free texture, releasing its GPU memory. Not for real-time threads.
     pub fn trim(&mut self) {
+        self.collect();
         for list in &mut self.free {
             list.total -= list.slots.len();
             for index in list.slots.drain(..) {
@@ -283,13 +390,13 @@ impl TexturePool {
         }
     }
 
-    /// Number of textures that hold GPU memory (in use or free).
+    /// Number of textures that hold GPU memory (free, in use or retired).
     pub fn allocated(&self) -> usize {
         self.slots.iter().filter(|s| s.texture.is_some()).count()
     }
 
-    /// Number of textures handed out and not yet released.
+    /// Number of textures not free: handed out, or released with leases still open.
     pub fn in_use(&self) -> usize {
-        self.slots.iter().filter(|s| s.in_use).count()
+        self.slots.iter().filter(|s| s.state != State::Free).count()
     }
 }

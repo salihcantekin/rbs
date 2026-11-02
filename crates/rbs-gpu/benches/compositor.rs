@@ -122,6 +122,21 @@ fn bench(c: &mut Criterion) {
         });
     });
     ctx.wait_idle().expect("wait");
+
+    // Pool hot path: reuse a free texture, and share a frame's lease.
+    let desc = TextureDesc::canvas(64, 64);
+    let warm = pool.acquire(&ctx, &desc).expect("warm");
+    pool.release(warm).expect("release");
+    c.bench_function("pool_acquire_release_reuse", |b| {
+        b.iter(|| {
+            let id = pool.acquire(&ctx, &desc).expect("acquire");
+            pool.release(id).expect("release");
+        });
+    });
+    let lease = pool.lease(canvas).expect("lease");
+    c.bench_function("lease_clone_drop", |b| {
+        b.iter(|| drop(std::hint::black_box(lease.clone())));
+    });
 }
 
 criterion_group!(benches, bench);

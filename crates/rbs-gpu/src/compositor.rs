@@ -9,7 +9,8 @@ use bytemuck::{Pod, Zeroable};
 use crate::context::GpuContext;
 use crate::error::GpuError;
 use crate::math::{Affine2, UvRect};
-use crate::pool::{TextureId, TexturePool};
+use crate::pool::TexturePool;
+use rbs_core::media::TextureId;
 
 /// How a source texture encodes colour.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
