@@ -8,7 +8,7 @@ Specs are the current contracts of RBS. Code must match them; a PR that changes 
 | Spec | Status | Implemented in |
 | --- | --- | --- |
 | [backend-ports.md](backend-ports.md) | Draft | `rbs-core` (capabilities, registry), port crates |
-| [media-graph.md](media-graph.md) | Draft | `rbs-graph` (planned) |
+| [media-graph.md](media-graph.md) | Draft | `rbs-graph` (graph description and plan; scheduler planned) |
 | [media-types.md](media-types.md) | Draft | `rbs-core` (`media`, `timing`) |
 | [gpu-compositor.md](gpu-compositor.md) | Draft | `rbs-gpu` |
 | [plugin-sdk.md](plugin-sdk.md) | Draft | `rbs-plugin-sdk`, `rbs-plugin-host` (planned) |

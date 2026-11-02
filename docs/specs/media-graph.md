@@ -52,6 +52,29 @@ Every node follows the Installed / Standby / Active states of [ADR-0013](../adr/
 - Nodes that are added are warmed up (opened, first frame ready) before the swap, so scene switches do not stutter.
 - Removed nodes are torn down on a background thread.
 
+## Graph description (implemented in `rbs-graph`)
+
+The control thread edits a `GraphDescription`; allocation is allowed there. Implemented types:
+
+| Type | Contract |
+| --- | --- |
+| `NodeKind` | The kinds in the table above (non-exhaustive) |
+| `LinkKind` | `Video`, `Audio`, `Packets`, `Data` |
+| `Pin` | Name, `LinkKind`, and for inputs whether many links may connect (`many`) |
+| `NodeDescriptor` | `type_id` (reverse-DNS `NodeTypeId`), kind, input and output pins. `validate()` checks unique pin names and that the media pins fit the kind (for example a `Source` has no media inputs; a `Compositor` has a `many` video input and one video output; an `Encoder` has one video or audio input and one packet output). `Data` pins are allowed on any kind |
+| `Lifecycle` | `Installed`, `Standby`, `Active`; `transition` allows one step at a time; only `Active` is scheduled |
+| `GraphDescription` | `add_node` (validates the descriptor, starts Installed), `remove_node` (removes its links), `set_state`, `connect` by pin name, `disconnect` |
+| `SchedulePlan` | Output of `GraphDescription::plan()`: Active nodes in dependency order and the links between Active nodes |
+
+Invariants, each covered by a test:
+
+- Node ids are never reused within a description.
+- `connect` refuses unknown nodes or pins, kind mismatches, a second link into a single-link input, duplicate links, self links and cycles. The graph is therefore always a DAG.
+- `plan()` contains only Active nodes; every producer precedes its consumers; ties keep insertion order, so the same description always gives the same plan.
+- Links from or to a non-Active node are left out of the plan; the consumer sees no input on that pin (a hidden layer, a source in Standby). No per-tick "is it enabled" check is needed (ADR-0013).
+
+Format negotiation on links and converter insertion come with the scheduler.
+
 ## Node contract (sketch)
 
 ```rust
