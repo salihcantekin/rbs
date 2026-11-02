@@ -52,4 +52,18 @@ Contract details: [output ports spec](../specs/output-ports.md).
 
 ## Review
 
-Independent review per ADR-0014. Record: reviewer (human handle, or "independent AI session"), date, verdict (approve / changes requested), main concerns and how each was resolved.
+- Reviewer: independent AI sessions (fresh context; given only this ADR, the principles, related ADRs, specs and code), three rounds
+- Date: 2026-11-02
+- Verdict: approve (round 3), after changes requested in rounds 1 and 2
+- Concerns and resolutions:
+  1. Drop policy dropped single P-frames, had no audio rule and implied a contended lock -> GOP-tail drops with refusal until the next keyframe, audio rule, producer-side staging queue plus SPSC hand-off; the suite checks refusals and `KeyframeRequested`.
+  2. File transports could block or fail on a disk stall -> recoverable `QueueFull`, worker-side buffering, file I/O off the calling thread.
+  3. Bitstream conversion contradicted zero-copy and had no home -> counted per-output copy, `rbs-media-format` helper layer; this ADR amends ADR-0003.
+  4. Allocation rule contradicted media types -> at most one payload allocation per produced packet or chunk; media types spec qualified.
+  5. Mid-stream stream changes undefined -> the stream descriptor is fixed per session; changes need a new output chain.
+  6. Contracts could not evolve -> `#[non_exhaustive]` with constructors and a versioning section (fields of struct-like variants are fixed).
+  7. No WebRTC/SRT feedback -> `KeyframeRequested` and `BitrateHint` events with routing rules.
+  8. Ambiguous outcomes and chunk keyframes -> `Queued` / `QueuedAfterDrops` / `Dropped`; `keyframe` means an entry point for every stream; chunk-input drop and reconnect rules.
+  9. Weak or flaky conformance checks, test support in runtime builds -> tighter interleaving bound, entry-point checks, structural TS/Matroska readers, more negative cases, `assert_ran`, generous timing ceilings, `conformance` cargo features, docs CI with `--all-features`.
+  10. Open, accepted as follow-ups: encoder delay signalling, a space-available signal for `QueueFull`, zeroizing `Secret`, allocation guard in the suites, whole-GOP dropping checked only through adapter tests.
+- Owner approval: pending (status stays Proposed; early-phase merge policy allows merging while Proposed)
