@@ -13,3 +13,13 @@ bytes = "1"
 
 [lints]
 workspace = true
+
+[dev-dependencies]
+# Micro-benchmarks for hot-path code (measure-performance skill, ADR-0009).
+criterion = { version = "0.8", default-features = false, features = ["cargo_bench_support"] }
+# Allocation guard for real-time functions (performance budgets: no allocation on hot paths).
+allocation-counter = "0.8"
+
+[[bench]]
+name = "timing"
+harness = false

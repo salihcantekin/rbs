@@ -64,7 +64,7 @@ pub trait VideoEncoder: Send {
 }
 ```
 
-These signatures are the starting point; the exact types are fixed when each port crate is created, and this spec is updated in the same PR.
+These signatures are the starting point; the exact types are fixed when each port crate is created, and this spec is updated in the same PR. Frame, block and packet types (`VideoFrame`, `AudioBlock`, `EncodedPacket`, `StreamDescriptor`, formats) come from the [media types spec](media-types.md); in the sketch above, `VideoFrameRef<'_>` is `&VideoFrame`.
 
 ## Capability model
 
@@ -108,6 +108,7 @@ Each port crate exports a conformance suite as a library function, for example `
 - `probe` returns quickly and never panics without hardware.
 - Declared capabilities are true: every advertised format, resolution and rate-control mode is actually created and exercised.
 - Timestamps are preserved and monotonic; clock conversion is correct (capture, audio).
+- Every `Lease` an adapter hands out is released, and frame `sequence` numbers increase.
 - `reconfigure` either works or returns `Unsupported`.
 - No allocation on calls documented as real-time.
 - Clean shutdown: no thread or handle leaks after `Drop`.
@@ -116,5 +117,5 @@ Hardware-dependent cases are skipped (not failed) when probe reports no hardware
 
 ## Open questions
 
-- Exact representation of GPU memory handles in `VideoFrameRef` across adapters (owned by `rbs-gpu` spec).
+- How `rbs-gpu` imports each `NativeSurface` kind and which kinds each platform supports (owned by the `rbs-gpu` spec; the representation is fixed in [media types](media-types.md)).
 - Whether transports and muxers are one port or two for protocols with built-in framing (RTMP/FLV).
