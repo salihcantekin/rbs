@@ -36,4 +36,6 @@ The minimum supported Rust version is pinned in [`rust-toolchain.toml`](rust-too
 
 ## License
 
-Not decided yet. See [ADR-0010](docs/adr/0010-project-license.md). Until a license is chosen, all rights are reserved by the author.
+RBS is free software under the [GNU General Public License v3.0 or later](LICENSE). See [ADR-0010](docs/adr/0010-project-license.md) for the reasoning.
+
+Copyright (C) 2026 Salih Cantekin and contributors.
