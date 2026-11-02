@@ -99,6 +99,7 @@ impl Engine {
     }
 
     /// The texture rendered most recently, without rendering a new frame.
+    #[allow(dead_code)]
     pub fn render_last(&self) -> &wgpu::Texture {
         let n = self.pool.len();
         &self.pool[(self.next + n - 1) % n]
