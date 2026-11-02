@@ -426,7 +426,8 @@ impl CaptureFactory for WgcCaptureFactory {
 /// The D3D objects frames refer to. Owned by [`Shared`], so they live as long as any
 /// lease; only the producer (callback thread, or `stop`) locks the mutex.
 struct Surfaces {
-    textures: Vec<ID3D11Texture2D>,
+    /// `None` once released early at `stop` (never handed out).
+    textures: Vec<Option<ID3D11Texture2D>>,
     handles: Vec<u64>,
     sizes: Vec<(u32, u32)>,
 }
@@ -514,6 +515,7 @@ enum Grave {
     Ring {
         shared: Arc<Shared>,
         idle_since: Option<Instant>,
+        bytes: u64,
     },
     /// A texture replaced after a resize. It was not referenced when replaced (its slot
     /// was claimed by the producer).
@@ -527,9 +529,14 @@ enum Grave {
 
 impl Drop for Grave {
     fn drop(&mut self) {
-        if let Grave::Texture { handle, bytes, .. } = self {
-            close_handle(*handle);
-            GRAVE_BYTES.fetch_sub(*bytes, Ordering::AcqRel);
+        match self {
+            Grave::Texture { handle, bytes, .. } => {
+                close_handle(*handle);
+                GRAVE_BYTES.fetch_sub(*bytes, Ordering::AcqRel);
+            }
+            Grave::Ring { bytes, .. } => {
+                GRAVE_BYTES.fetch_sub(*bytes, Ordering::AcqRel);
+            }
         }
     }
 }
@@ -544,7 +551,10 @@ fn reap() -> bool {
     let expired: Vec<Grave> = {
         let mut graves = lock(&GRAVEYARD);
         for grave in graves.iter_mut() {
-            if let Grave::Ring { shared, idle_since } = grave {
+            if let Grave::Ring {
+                shared, idle_since, ..
+            } = grave
+            {
                 if shared.ring.is_idle() {
                     idle_since.get_or_insert(now);
                 } else {
@@ -608,12 +618,40 @@ struct PooledFence {
 /// Active at once on each adapter.
 static FENCES: Mutex<Vec<PooledFence>> = Mutex::new(Vec::new());
 
+/// A pooled fence lent to one session. Dropping the loan returns it to the pool with the
+/// last value the session signalled, on every path (including a failed `start`).
+struct FenceLoan(Option<PooledFence>);
+
+impl FenceLoan {
+    fn handle(&self) -> u64 {
+        self.0.as_ref().map_or(0, |f| f.handle)
+    }
+
+    fn next(&self) -> u64 {
+        self.0.as_ref().map_or(0, |f| f.next)
+    }
+
+    fn set_next(&mut self, value: u64) {
+        if let Some(f) = self.0.as_mut() {
+            f.next = value;
+        }
+    }
+}
+
+impl Drop for FenceLoan {
+    fn drop(&mut self) {
+        if let Some(f) = self.0.take() {
+            lock(&FENCES).push(f);
+        }
+    }
+}
+
 /// A shared fence for a new session on `device` (adapter `luid`): one from the pool, or
-/// a new one. Returns the fence, its handle and the last value signalled on it.
+/// a new one.
 fn checkout_fence(
     device: &ID3D11Device5,
     luid: [u8; 8],
-) -> windows::core::Result<(ID3D11Fence, u64, u64)> {
+) -> windows::core::Result<(ID3D11Fence, FenceLoan)> {
     let pooled = {
         let mut fences = lock(&FENCES);
         fences
@@ -628,7 +666,7 @@ fn checkout_fence(
         let opened =
             unsafe { device.OpenSharedFence(HANDLE(f.handle as usize as *mut _), &mut fence) };
         match (opened, fence) {
-            (Ok(()), Some(fence)) => return Ok((fence, f.handle, f.next)),
+            (Ok(()), Some(fence)) => return Ok((fence, FenceLoan(Some(f)))),
             // Keep the handle (never close it, see above) and make a new fence.
             _ => lock(&FENCES).push(f),
         }
@@ -639,7 +677,12 @@ fn checkout_fence(
     let fence = fence.ok_or_else(missing)?;
     // SAFETY: plain call on a live fence; no name or security attributes.
     let handle = unsafe { fence.CreateSharedHandle(None, GENERIC_ALL, PCWSTR::null())? };
-    Ok((fence, handle.0 as usize as u64, 0))
+    let loan = FenceLoan(Some(PooledFence {
+        luid,
+        handle: handle.0 as usize as u64,
+        next: 0,
+    }));
+    Ok((fence, loan))
 }
 
 fn missing() -> windows::core::Error {
@@ -661,8 +704,9 @@ struct Producer {
     device: ID3D11Device,
     context: ID3D11DeviceContext4,
     fence: ID3D11Fence,
-    fence_handle: u64,
-    luid: [u8; 8],
+    /// The pooled fence; returned to the pool with the last value when the producer is
+    /// dropped (after the handler is gone).
+    loan: FenceLoan,
     winrt_device: WinrtDevice,
     pool_size: SizeInt32,
     fence_value: u64,
@@ -682,6 +726,13 @@ fn qpc_nanos(frequency: u64) -> u64 {
     let _ = unsafe { QueryPerformanceCounter(&mut counter) };
     let counter = u128::from(counter.unsigned_abs());
     u64::try_from(counter * 1_000_000_000 / u128::from(frequency.max(1))).unwrap_or(u64::MAX)
+}
+
+impl Drop for Producer {
+    fn drop(&mut self) {
+        // Nothing signals this fence any more: the next session continues from here.
+        self.loan.set_next(self.fence_value);
+    }
 }
 
 impl Producer {
@@ -797,27 +848,40 @@ impl Producer {
                 return Ok(false);
             };
             let bytes = u64::from(old_w) * u64::from(old_h) * 4;
-            if GRAVE_BYTES.load(Ordering::Acquire) + bytes > GRAVE_BYTES_MAX {
-                // Too many replaced textures are waiting out their grace (a long window
-                // drag): drop this frame rather than allocate more.
+            // Only a handle value a consumer has seen needs the grace; during a window
+            // drag most frames are replaced before anyone takes them.
+            let seen = self.shared.ring.handed_out(slot);
+            if seen && GRAVE_BYTES.load(Ordering::Acquire) + bytes > GRAVE_BYTES_MAX {
+                // Too many replaced textures are waiting out their grace: drop this
+                // frame rather than allocate more.
                 return Ok(false);
             }
             let (texture, handle) = create_shared_texture(&self.device, size)?;
-            let old_texture = std::mem::replace(&mut surfaces.textures[slot], texture);
+            let old_texture = surfaces.textures[slot].replace(texture);
             let old_handle = std::mem::replace(&mut surfaces.handles[slot], handle);
             surfaces.sizes[slot] = size;
-            GRAVE_BYTES.fetch_add(bytes, Ordering::AcqRel);
-            // The old handle stays open for the grace, so its value is not reused
-            // while an importer may still cache it.
-            bury(Grave::Texture {
-                _texture: old_texture,
-                handle: old_handle,
-                bytes,
-                since: Instant::now(),
-            });
+            if seen {
+                if let Some(old_texture) = old_texture {
+                    GRAVE_BYTES.fetch_add(bytes, Ordering::AcqRel);
+                    // The old handle stays open for the grace, so its value is not
+                    // reused while an importer may still cache it.
+                    bury(Grave::Texture {
+                        _texture: old_texture,
+                        handle: old_handle,
+                        bytes,
+                        since: Instant::now(),
+                    });
+                }
+            } else {
+                drop(old_texture);
+                close_handle(old_handle);
+            }
             // The slot is claimed, so no consumer can observe the handle change.
             self.shared.ring.set_handle(slot, handle);
         }
+        let Some(target) = surfaces.textures.get(slot).and_then(Option::as_ref) else {
+            return Ok(false);
+        };
         let access: IDirect3DDxgiInterfaceAccess = frame.Surface()?.cast()?;
         // SAFETY: the WGC surface is a D3D11 texture on our device.
         let source: ID3D11Texture2D = unsafe { access.GetInterface()? };
@@ -835,16 +899,8 @@ impl Producer {
         // content size and the slot texture was sized for it). The context is used only
         // by this handler, serialized by the producer mutex.
         unsafe {
-            self.context.CopySubresourceRegion(
-                &surfaces.textures[slot],
-                0,
-                0,
-                0,
-                0,
-                &source,
-                0,
-                Some(&region),
-            );
+            self.context
+                .CopySubresourceRegion(target, 0, 0, 0, 0, &source, 0, Some(&region));
             self.context.Signal(&self.fence, self.fence_value)?;
             self.context.Flush();
         }
@@ -945,7 +1001,7 @@ impl WgcSession {
             let _ = unsafe { multithread.SetMultithreadProtected(true) };
             let context4: ID3D11DeviceContext4 = context.cast()?;
             let device5: ID3D11Device5 = device.cast()?;
-            let (fence, fence_handle, fence_value) = checkout_fence(&device5, luid)?;
+            let (fence, loan) = checkout_fence(&device5, luid)?;
 
             let dims = (
                 u32::try_from(size.Width).unwrap_or(1).max(1),
@@ -958,7 +1014,7 @@ impl WgcSession {
             };
             for _ in 0..RING_SLOTS {
                 let (texture, handle) = create_shared_texture(&device, dims)?;
-                surfaces.textures.push(texture);
+                surfaces.textures.push(Some(texture));
                 surfaces.handles.push(handle);
                 surfaces.sizes.push(dims);
             }
@@ -981,19 +1037,11 @@ impl WgcSession {
                 size,
             )?;
             let session = pool.CreateCaptureSession(&item)?;
-            Ok((
-                shared,
-                fence,
-                fence_handle,
-                fence_value,
-                winrt_device,
-                pool,
-                session,
-                context4,
-            ))
+            Ok((shared, fence, loan, winrt_device, pool, session, context4))
         })();
-        let (shared, fence, fence_handle, fence_value, winrt_device, pool, session, context4) =
+        let (shared, fence, loan, winrt_device, pool, session, context4) =
             start.map_err(|e| backend(&e))?;
+        let fence_handle = loan.handle();
 
         let mut frequency = 0i64;
         // SAFETY: valid out pointer.
@@ -1005,11 +1053,10 @@ impl WgcSession {
             device,
             context: context4,
             fence,
-            fence_handle,
-            luid,
+            fence_value: loan.next(),
+            loan,
             winrt_device: WinrtDevice(winrt_device),
             pool_size: size,
-            fence_value,
             sequence: self.next_sequence,
             clock: Arc::clone(&self.clock),
             drift: DriftEstimator::new(Duration::from_millis(100)),
@@ -1108,13 +1155,6 @@ impl CaptureSession for WgcSession {
             producer.stopped = true;
             self.next_sequence = producer.sequence;
             self.last_timestamp = producer.last_timestamp;
-            // No more signals on this fence from this session: later sessions continue
-            // from its last value.
-            lock(&FENCES).push(PooledFence {
-                luid: producer.luid,
-                handle: producer.fence_handle,
-                next: producer.fence_value,
-            });
         }
         let ring = &active.shared.ring;
         let waiting = ring.clear();
@@ -1124,9 +1164,26 @@ impl CaptureSession for WgcSession {
         // The graveyard keeps the surfaces while frames still reference them, so the last
         // lease never frees them on the render thread, and keeps their handles open for
         // the grace after that.
+        // Surfaces nobody took a frame of never left the adapter: release them now.
+        let bytes = {
+            let mut surfaces = lock(&active.shared.surfaces);
+            let mut bytes = 0u64;
+            for slot in 0..surfaces.textures.len() {
+                let (w, h) = surfaces.sizes.get(slot).copied().unwrap_or((0, 0));
+                if ring.is_free(slot) && !ring.handed_out(slot) {
+                    surfaces.textures[slot] = None;
+                    close_handle(std::mem::replace(&mut surfaces.handles[slot], 0));
+                } else if surfaces.textures[slot].is_some() {
+                    bytes += u64::from(w) * u64::from(h) * 4;
+                }
+            }
+            bytes
+        };
+        GRAVE_BYTES.fetch_add(bytes, Ordering::AcqRel);
         bury(Grave::Ring {
             shared: Arc::clone(&active.shared),
             idle_since: None,
+            bytes,
         });
     }
 

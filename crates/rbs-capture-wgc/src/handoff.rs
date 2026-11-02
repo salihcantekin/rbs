@@ -16,7 +16,7 @@
 //! Taking the latest slot moves its reference to the consumer. No call allocates,
 //! frees, locks or blocks.
 
-use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 
 /// Metadata of one published frame, written by the producer before publishing.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -39,6 +39,9 @@ pub struct FrameMeta {
 struct Slot {
     refs: AtomicU32,
     handle: AtomicU64,
+    /// Whether a consumer took a frame of the current handle (it may be cached by
+    /// value somewhere).
+    handed_out: AtomicBool,
     timestamp: AtomicU64,
     sequence: AtomicU64,
     source_time: AtomicU64,
@@ -89,6 +92,7 @@ impl Ring {
     /// Producer: replaces the surface of a slot it has claimed (after a resize).
     pub fn set_handle(&self, slot: usize, handle: u64) {
         if let Some(s) = self.slots.get(slot) {
+            s.handed_out.store(false, Ordering::Relaxed);
             s.handle.store(handle, Ordering::Release);
         }
     }
@@ -149,6 +153,9 @@ impl Ring {
         }
         let slot = (taken - 1) as usize;
         let s = self.slots.get(slot)?;
+        // Ordered before the producer's next claim of this slot by the lease's Release
+        // decrement and the claim's Acquire.
+        s.handed_out.store(true, Ordering::Relaxed);
         let size = s.size.load(Ordering::Relaxed);
         Some((
             slot,
@@ -191,6 +198,22 @@ impl Ring {
             let previous = s.refs.fetch_sub(1, Ordering::Release);
             debug_assert!(previous > 0, "released slot {slot} with no reference");
         }
+    }
+
+    /// Whether a frame of the slot's current handle was ever taken by a consumer. A
+    /// surface never handed out can be closed at once; its handle value never left the
+    /// adapter.
+    pub fn handed_out(&self, slot: usize) -> bool {
+        self.slots
+            .get(slot)
+            .is_some_and(|s| s.handed_out.load(Ordering::Relaxed))
+    }
+
+    /// Whether nobody references `slot`.
+    pub fn is_free(&self, slot: usize) -> bool {
+        self.slots
+            .get(slot)
+            .is_some_and(|s| s.refs.load(Ordering::Acquire) == 0)
     }
 
     /// True when no slot is referenced by anyone.
@@ -237,8 +260,14 @@ mod tests {
         assert_eq!(m, meta(2));
         assert!(ring.handle(slot).is_some());
         assert!(ring.take().is_none());
+        assert!(ring.handed_out(slot));
         ring.release(slot as u64);
         assert!(ring.is_idle());
+        assert!(ring.is_free(slot));
+        // Replaced frames were never handed out.
+        assert_eq!((0..3).filter(|s| ring.handed_out(*s)).count(), 1);
+        ring.set_handle(slot, 99);
+        assert!(!ring.handed_out(slot));
     }
 
     #[test]
