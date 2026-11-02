@@ -30,4 +30,4 @@ An ADR records one decision that is hard to reverse or affects more than one cra
 | [0015](0015-ui-design-rules.md) | Binding UI design rules and a single design system | Accepted |
 | [0016](0016-native-desktop-ui.md) | Native desktop UI, no web technology | Accepted |
 | [0017](0017-flexible-panels-and-workspaces.md) | Flexible panels and saved workspaces | Accepted |
-| [0018](0018-media-frame-representation.md) | Media frames as small values with leased memory | Proposed |
+| [0018](0018-media-frame-representation.md) | Media frames as small values with leased memory | Accepted |

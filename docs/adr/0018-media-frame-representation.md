@@ -1,6 +1,6 @@
 # ADR-0018: Media frames as small values with leased memory
 
-- Status: Proposed
+- Status: Accepted
 - Date: 2026-11-02
 - Deciders: Salih (owner)
 
@@ -65,4 +65,4 @@ Forces:
   12. (second pass) Single-importer rule only in one spec -> stated in media-graph and backend-ports; the import API takes `VideoFrame` by value, and any parts-based import is `unsafe`.
   13. (second pass) `EncodedPacket::new` silently clamped `dts` -> returns `MediaError::DtsAfterPts`; fields are private with accessors.
   14. (second pass) Review record written by the author -> this record now states the reviewer's verdicts per pass.
-- Owner approval: pending
+- Owner approval: Salih, 2026-11-02 (project thread, approved merging this change under the early-phase merge policy)
