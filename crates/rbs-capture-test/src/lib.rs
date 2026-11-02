@@ -6,29 +6,33 @@
 //! (`docs/specs/capture-port.md`) and lets the engine, CI and other crates' tests use
 //! capture without an OS capture API.
 //!
-//! Frames are delivered in system memory from a fixed ring of
-//! [`FRAMES_IN_FLIGHT`] buffers allocated in `start`. Delivering a frame does not
-//! allocate.
+//! Like a real adapter, it has its own source clock (offset and drifting from the
+//! master clock, see [`to_source`]) and converts to master time at the edge with a
+//! [`DriftEstimator`] (ADR-0004).
 //!
-//! Tests can make targets disappear with [`TestCaptureFactory::remove_target`] to
-//! exercise target-loss handling.
+//! Frames are delivered in system memory from a fixed ring of [`FRAMES_IN_FLIGHT`]
+//! buffers allocated in `start`. Delivering a frame neither allocates nor frees.
+//!
+//! The factory also implements [`TestHooks`], so tests can resize windows, remove
+//! targets and count the resources the adapter holds.
 
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicUsize, Ordering};
 use std::time::Duration;
 
+use rbs_capture::conformance::TestHooks;
 use rbs_capture::{
     CameraMode, CaptureError, CaptureFactory, CaptureRequest, CaptureSession, CaptureStats,
-    CaptureTarget, TargetId, TargetKind, TargetSelector, caps,
+    CaptureTarget, ErrorDomain, TargetId, TargetKind, caps,
 };
 use rbs_core::capability::{CapabilitySet, CapabilityValue};
 use rbs_core::media::{
-    Bytes, ColorSpace, FramePayload, Lease, LeaseOwner, MemoryKind, PixelFormat, PlaneLayout, Size,
-    SystemFrame, VideoFormat, VideoFrame,
+    Bytes, ColorSpace, Lease, LeaseOwner, MemoryKind, PixelFormat, PlaneLayout, Size, SystemFrame,
+    VideoFormat, VideoFrame,
 };
 use rbs_core::registry::{AdapterFactory, AdapterId, HARDWARE, ProbeError};
-use rbs_core::time::Clock;
-use rbs_core::timing::{Cadence, FrameRate};
+use rbs_core::time::{Clock, Timestamp};
+use rbs_core::timing::{Cadence, DriftEstimator, FrameRate};
 
 /// Adapter id.
 pub const ADAPTER_ID: &str = "org.rbs.capture.test";
@@ -36,19 +40,51 @@ pub const ADAPTER_ID: &str = "org.rbs.capture.test";
 /// Frames a consumer may hold at once.
 pub const FRAMES_IN_FLIGHT: usize = 3;
 
+/// Offset of the adapter's source clock from the master clock.
+pub const SOURCE_OFFSET: Duration = Duration::from_secs(7);
+
+/// Drift of the source clock in parts per million (it runs fast by this much).
+pub const SOURCE_DRIFT_PPM: u64 = 100;
+
 /// Highest frame rate delivered, for displays and windows.
 const MAX_RATE: FrameRate = FrameRate::FPS_60;
 
 const SCREEN_FORMATS: [PixelFormat; 2] = [PixelFormat::Bgra8, PixelFormat::Nv12];
 
+/// Largest size a window can be resized to; ring buffers are allocated for it so a
+/// resize never allocates on the render thread.
+const WINDOW_MAX: (u32, u32) = (1280, 720);
+
+/// The adapter's own source clock, as a function of master time: offset by
+/// [`SOURCE_OFFSET`] and running fast by [`SOURCE_DRIFT_PPM`].
+pub fn to_source(master: Timestamp) -> u64 {
+    let m = u128::from(master.as_nanos());
+    let scaled = m * (1_000_000 + u128::from(SOURCE_DRIFT_PPM)) / 1_000_000;
+    let source = scaled + SOURCE_OFFSET.as_nanos();
+    u64::try_from(source).unwrap_or(u64::MAX)
+}
+
 struct Target {
     info: CaptureTarget,
     present: Arc<AtomicBool>,
+    /// Current size as `width << 32 | height`.
+    size: Arc<AtomicU64>,
+    max: (u32, u32),
+}
+
+const fn pack(w: u32, h: u32) -> u64 {
+    ((w as u64) << 32) | h as u64
+}
+
+const fn unpack(v: u64) -> (u32, u32) {
+    ((v >> 32) as u32, v as u32)
 }
 
 /// Factory of the synthetic adapter.
 pub struct TestCaptureFactory {
     targets: Vec<Target>,
+    /// Ring buffers currently alive, across all sessions of this factory.
+    live: Arc<AtomicUsize>,
 }
 
 impl Default for TestCaptureFactory {
@@ -59,62 +95,57 @@ impl Default for TestCaptureFactory {
 
 impl TestCaptureFactory {
     /// A factory with one display (`test-display-0`, 1280x720), one window
-    /// (`test-window-0`, 640x360) and one camera (`test-camera-0`).
+    /// (`test-window-0`, 640x360, resizable up to 1280x720) and one camera
+    /// (`test-camera-0`).
     pub fn new() -> Self {
         let camera_modes = vec![
-            CameraMode {
-                width: 640,
-                height: 480,
-                pixel_format: PixelFormat::Yuy2,
-                frame_rate: FrameRate::FPS_30,
-            },
-            CameraMode {
-                width: 640,
-                height: 480,
-                pixel_format: PixelFormat::Nv12,
-                frame_rate: FrameRate::FPS_30,
-            },
-            CameraMode {
-                width: 1280,
-                height: 720,
-                pixel_format: PixelFormat::Nv12,
-                frame_rate: FrameRate::FPS_30,
-            },
+            CameraMode::fixed(640, 480, PixelFormat::Yuy2, FrameRate::FPS_30),
+            CameraMode::ranged(
+                640,
+                480,
+                PixelFormat::Nv12,
+                FrameRate::FPS_24,
+                FrameRate::FPS_30,
+            ),
+            CameraMode::fixed(1280, 720, PixelFormat::Nv12, FrameRate::FPS_30),
         ];
-        let target = |id: &str, kind, name: &str, size, modes| Target {
-            info: CaptureTarget {
-                id: TargetId::new(id),
-                kind,
-                name: name.to_owned(),
-                size,
-                modes,
-            },
+        let target = |info: CaptureTarget, max: (u32, u32)| Target {
+            size: Arc::new(AtomicU64::new(info.size.map_or(0, |(w, h)| pack(w, h)))),
+            info,
             present: Arc::new(AtomicBool::new(true)),
+            max,
         };
         Self {
             targets: vec![
                 target(
-                    "test-display-0",
-                    TargetKind::Display,
-                    "Test display",
-                    Some((1280, 720)),
-                    Vec::new(),
+                    CaptureTarget::new(
+                        TargetId::new("test-display-0"),
+                        TargetKind::Display,
+                        "Test display",
+                    )
+                    .with_size(1280, 720),
+                    (1280, 720),
                 ),
                 target(
-                    "test-window-0",
-                    TargetKind::Window,
-                    "Test window",
-                    Some((640, 360)),
-                    Vec::new(),
+                    CaptureTarget::new(
+                        TargetId::new("test-window-0"),
+                        TargetKind::Window,
+                        "Test window",
+                    )
+                    .with_size(640, 360),
+                    WINDOW_MAX,
                 ),
                 target(
-                    "test-camera-0",
-                    TargetKind::Camera,
-                    "Test camera",
-                    None,
-                    camera_modes,
+                    CaptureTarget::new(
+                        TargetId::new("test-camera-0"),
+                        TargetKind::Camera,
+                        "Test camera",
+                    )
+                    .with_modes(camera_modes),
+                    (0, 0),
                 ),
             ],
+            live: Arc::new(AtomicUsize::new(0)),
         }
     }
 
@@ -131,10 +162,47 @@ impl TestCaptureFactory {
         }
     }
 
+    /// Resizes a display or window target. Returns `false` for cameras, unknown ids,
+    /// zero sizes and sizes above the target's maximum.
+    pub fn resize_target(&self, id: &TargetId, width: u32, height: u32) -> bool {
+        match self.targets.iter().find(|t| &t.info.id == id) {
+            Some(t)
+                if t.info.kind != TargetKind::Camera
+                    && width > 0
+                    && height > 0
+                    && width <= t.max.0
+                    && height <= t.max.1 =>
+            {
+                t.size.store(pack(width, height), Ordering::Release);
+                true
+            }
+            _ => false,
+        }
+    }
+
+    /// Ring buffers currently allocated by this factory's sessions.
+    pub fn live_buffers(&self) -> usize {
+        self.live.load(Ordering::Acquire)
+    }
+
     fn find(&self, id: &TargetId) -> Option<&Target> {
         self.targets
             .iter()
             .find(|t| &t.info.id == id && t.present.load(Ordering::Acquire))
+    }
+}
+
+impl TestHooks for TestCaptureFactory {
+    fn resize(&self, target: &TargetId, width: u32, height: u32) -> bool {
+        self.resize_target(target, width, height)
+    }
+
+    fn remove(&self, target: &TargetId) -> bool {
+        self.remove_target(target)
+    }
+
+    fn resources(&self) -> Option<u64> {
+        Some(self.live_buffers() as u64)
     }
 }
 
@@ -181,35 +249,49 @@ impl CaptureFactory for TestCaptureFactory {
             .targets
             .iter()
             .filter(|t| t.info.kind == kind && t.present.load(Ordering::Acquire))
-            .map(|t| t.info.clone())
+            .map(|t| {
+                let info = t.info.clone();
+                if info.kind == TargetKind::Camera {
+                    info
+                } else {
+                    let (w, h) = unpack(t.size.load(Ordering::Acquire));
+                    info.with_size(w, h)
+                }
+            })
             .collect())
     }
 
     fn open(&self, request: &CaptureRequest) -> Result<Box<dyn CaptureSession>, CaptureError> {
-        let id = match &request.target {
-            TargetSelector::Id(id) => id,
-            TargetSelector::Picker(_) => {
-                return Err(CaptureError::Unsupported("the test adapter has no picker"));
-            }
-        };
-        let target = self.find(id).ok_or(CaptureError::TargetNotFound)?;
+        let target = self
+            .find(&request.target)
+            .ok_or(CaptureError::TargetNotFound)?;
         if !request.memory.contains(&MemoryKind::System) {
             return Err(CaptureError::FormatUnsupported);
         }
-        let (size, pixel_format, rate) = negotiate(&target.info, request)?;
+        let current = unpack(target.size.load(Ordering::Acquire));
+        let (size, pixel_format, rate) = negotiate(&target.info, current, request)?;
         let color = if pixel_format.is_yuv() {
             ColorSpace::BT709_LIMITED
         } else {
             ColorSpace::SRGB
         };
+        let capacity = match target.info.kind {
+            TargetKind::Camera => size,
+            _ => Size::new(target.max.0, target.max.1),
+        };
         Ok(Box::new(TestSession {
             format: VideoFormat::new(size, pixel_format, color),
+            capacity,
             rate,
             clock: Arc::clone(&request.clock),
             present: Arc::clone(&target.present),
+            size: Arc::clone(&target.size),
+            resizable: target.info.kind != TargetKind::Camera,
+            live: Arc::clone(&self.live),
             active: None,
             next_sequence: 0,
             last_timestamp: None,
+            drift: DriftEstimator::new(Duration::from_millis(100)),
             stats: CaptureStats::default(),
         }))
     }
@@ -218,23 +300,10 @@ impl CaptureFactory for TestCaptureFactory {
 /// Picks size, pixel format and rate for a request, following the request order.
 fn negotiate(
     target: &CaptureTarget,
+    current: (u32, u32),
     request: &CaptureRequest,
 ) -> Result<(Size, PixelFormat, FrameRate), CaptureError> {
     match target.kind {
-        TargetKind::Display | TargetKind::Window => {
-            let pf = request
-                .pixel_formats
-                .iter()
-                .copied()
-                .find(|pf| SCREEN_FORMATS.contains(pf))
-                .ok_or(CaptureError::FormatUnsupported)?;
-            let (w, h) = target.size.unwrap_or((1280, 720));
-            let rate = match request.frame_rate {
-                Some(r) if r.per_second().as_f64() < MAX_RATE.per_second().as_f64() => r,
-                _ => MAX_RATE,
-            };
-            Ok((Size::new(w, h), pf, rate))
-        }
         TargetKind::Camera => {
             let pf = request
                 .pixel_formats
@@ -252,47 +321,80 @@ fn negotiate(
                 .filter(|m| m.pixel_format == pf)
                 .min_by_key(|m| distance(m))
                 .ok_or(CaptureError::FormatUnsupported)?;
-            Ok((Size::new(mode.width, mode.height), pf, mode.frame_rate))
+            let rate = match request.frame_rate {
+                Some(r) if rate_lt(r, mode.min_frame_rate) => mode.min_frame_rate,
+                Some(r) if rate_lt(mode.max_frame_rate, r) => mode.max_frame_rate,
+                Some(r) => r,
+                None => mode.max_frame_rate,
+            };
+            Ok((Size::new(mode.width, mode.height), pf, rate))
+        }
+        _ => {
+            let pf = request
+                .pixel_formats
+                .iter()
+                .copied()
+                .find(|pf| SCREEN_FORMATS.contains(pf))
+                .ok_or(CaptureError::FormatUnsupported)?;
+            let rate = match request.frame_rate {
+                Some(r) if rate_lt(r, MAX_RATE) => r,
+                _ => MAX_RATE,
+            };
+            Ok((Size::new(current.0, current.1), pf, rate))
         }
     }
+}
+
+/// Exact `a < b` for frame rates.
+fn rate_lt(a: FrameRate, b: FrameRate) -> bool {
+    let (a, b) = (a.per_second(), b.per_second());
+    u64::from(a.num()) * u64::from(b.den()) < u64::from(b.num()) * u64::from(a.den())
+}
+
+/// Plane layouts of a tightly packed frame of `format`, the plane count and the bytes
+/// it needs.
+fn layout(format: &VideoFormat) -> ([PlaneLayout; 3], usize, usize) {
+    let pf = format.pixel_format;
+    let mut planes = [PlaneLayout::default(); 3];
+    let mut offset = 0usize;
+    let count = pf.plane_count().min(planes.len());
+    for (index, plane) in planes.iter_mut().enumerate().take(count) {
+        let row = pf.min_row_bytes(index, format.size.width).unwrap_or(0) as usize;
+        let rows = pf.plane_rows(index, format.size.height).unwrap_or(0) as usize;
+        *plane = PlaneLayout {
+            offset,
+            stride: row,
+        };
+        offset += row * rows;
+    }
+    (planes, count, offset)
 }
 
 /// The ring of frame buffers of an Active session. Also the lease owner: a slot's count
 /// is the number of frames referencing it.
 struct Ring {
     buffers: [Bytes; FRAMES_IN_FLIGHT],
-    planes: [PlaneLayout; 3],
-    plane_count: usize,
     refs: [AtomicU32; FRAMES_IN_FLIGHT],
+    live: Arc<AtomicUsize>,
 }
 
 impl Ring {
-    fn new(format: &VideoFormat) -> Self {
-        let pf = format.pixel_format;
-        let mut planes = [PlaneLayout::default(); 3];
-        let mut offset = 0usize;
-        let plane_count = pf.plane_count().min(planes.len());
-        for (index, plane) in planes.iter_mut().enumerate().take(plane_count) {
-            let row = pf.min_row_bytes(index, format.size.width).unwrap_or(0) as usize;
-            let rows = pf.plane_rows(index, format.size.height).unwrap_or(0) as usize;
-            *plane = PlaneLayout {
-                offset,
-                stride: row,
-            };
-            offset += row * rows;
-        }
+    /// Allocates buffers big enough for `capacity` in `pixel_format`.
+    fn new(pixel_format: PixelFormat, capacity: Size, live: Arc<AtomicUsize>) -> Self {
+        let format = VideoFormat::new(capacity, pixel_format, ColorSpace::SRGB);
+        let (_, _, len) = layout(&format);
         let buffers = std::array::from_fn(|slot| {
-            let bytes = Bytes::from(pattern(pf, offset, slot));
+            let bytes = Bytes::from(pattern(pixel_format, len, slot));
             // Promote the buffer to shared storage now, so that later clones on the
             // render thread only bump a reference count and never allocate.
             drop(bytes.clone());
             bytes
         });
+        live.fetch_add(1, Ordering::AcqRel);
         Self {
             buffers,
-            planes,
-            plane_count,
             refs: std::array::from_fn(|_| AtomicU32::new(0)),
+            live,
         }
     }
 
@@ -305,7 +407,19 @@ impl Ring {
     }
 }
 
-impl LeaseOwner for Ring {
+impl Drop for Ring {
+    fn drop(&mut self) {
+        self.live.fetch_sub(1, Ordering::AcqRel);
+    }
+}
+
+// SAFETY: a slot's buffer is an immutable `Bytes` owned by the ring, which lives as
+// long as any lease (each lease holds an `Arc` to it), so the memory stays valid while
+// the count is above zero. Counts are exact: `claim` takes the first reference with a
+// 0 -> 1 compare-exchange (the one `Lease::adopt` adopts), `retain` adds one per clone
+// and `release` removes one per drop. Neither method allocates, blocks or panics;
+// unknown tokens are ignored.
+unsafe impl LeaseOwner for Ring {
     fn retain(&self, token: u64) {
         if let Some(r) = self.refs.get(token as usize) {
             r.fetch_add(1, Ordering::Relaxed);
@@ -336,6 +450,8 @@ fn pattern(pf: PixelFormat, len: usize, slot: usize) -> Vec<u8> {
 }
 
 struct Active {
+    /// Capture instants, in master time. The adapter only reports them converted to
+    /// its own source clock, like a real OS API.
     cadence: Cadence,
     /// Index of the last frame delivered or skipped, `None` before the first.
     last_index: Option<u64>,
@@ -347,13 +463,37 @@ struct Active {
 
 struct TestSession {
     format: VideoFormat,
+    capacity: Size,
     rate: FrameRate,
     clock: Arc<dyn Clock>,
     present: Arc<AtomicBool>,
+    size: Arc<AtomicU64>,
+    resizable: bool,
+    live: Arc<AtomicUsize>,
     active: Option<Active>,
     next_sequence: u64,
-    last_timestamp: Option<rbs_core::time::Timestamp>,
+    last_timestamp: Option<Timestamp>,
+    drift: DriftEstimator,
     stats: CaptureStats,
+}
+
+impl TestSession {
+    /// Picks up a resize of the target. No allocation: the ring was sized for the
+    /// target's maximum.
+    fn follow_size(&mut self) {
+        if !self.resizable {
+            return;
+        }
+        let (w, h) = unpack(self.size.load(Ordering::Acquire));
+        let size = self.format.size;
+        if (size.width, size.height) != (w, h)
+            && w <= self.capacity.width
+            && h <= self.capacity.height
+        {
+            self.format =
+                VideoFormat::new(Size::new(w, h), self.format.pixel_format, self.format.color);
+        }
+    }
 }
 
 impl CaptureSession for TestSession {
@@ -375,7 +515,11 @@ impl CaptureSession for TestSession {
             Some(t) if t >= now => t + Duration::from_nanos(1),
             _ => now,
         };
-        let ring = Arc::new(Ring::new(&self.format));
+        let ring = Arc::new(Ring::new(
+            self.format.pixel_format,
+            self.capacity,
+            Arc::clone(&self.live),
+        ));
         self.active = Some(Active {
             cadence: Cadence::frames(origin, self.rate),
             last_index: None,
@@ -392,13 +536,24 @@ impl CaptureSession for TestSession {
     }
 
     fn latest_frame(&mut self) -> Result<Option<VideoFrame>, CaptureError> {
-        let Some(active) = self.active.as_mut() else {
+        if self.active.is_none() {
             return Ok(None);
-        };
+        }
         if !self.present.load(Ordering::Acquire) {
             return Err(CaptureError::TargetLost);
         }
-        let Some(index) = active.cadence.index_at_or_before(self.clock.now()) else {
+        self.follow_size();
+        let now = self.clock.now();
+        // Clock edge (ADR-0004): pair the source clock with the master clock now, as an
+        // OS adapter does when a frame arrives.
+        // A restart (source clock went backwards) needs no action here: the floor below
+        // keeps emitted timestamps monotonic.
+        let _ = self.drift.observe(to_source(now), now);
+        let Some(active) = self.active.as_mut() else {
+            return Ok(None);
+        };
+
+        let Some(index) = active.cadence.index_at_or_before(now) else {
             return Ok(None);
         };
         let first_new = active.last_index.map_or(0, |last| last + 1);
@@ -407,8 +562,8 @@ impl CaptureSession for TestSession {
         }
         active.last_index = Some(index);
         self.next_sequence = active.sequence_base + index + 1;
-        // Frames between the previous delivery and this one were "produced" and
-        // replaced before anyone asked for them.
+        // Frames between the previous delivery and this one were received and replaced
+        // before anyone asked for them.
         self.stats.dropped += index - first_new;
 
         let Some(slot) = active.ring.claim() else {
@@ -416,30 +571,40 @@ impl CaptureSession for TestSession {
             self.stats.dropped += 1;
             return Ok(None);
         };
-        let ring = &active.ring;
-        let system = match SystemFrame::new(
-            &self.format,
-            ring.buffers[slot].clone(),
-            &ring.planes[..ring.plane_count],
-        ) {
-            Ok(frame) => frame,
-            Err(_) => {
-                ring.release(slot as u64);
-                return Err(CaptureError::Backend {
-                    code: 0,
-                    recoverable: false,
-                });
-            }
+        // SAFETY: `claim` counted exactly one reference for `slot`; this lease adopts
+        // it, so the count drops back when the frame and its clones are gone.
+        let lease = unsafe { Lease::adopt(Arc::clone(&active.owner), slot as u64) };
+
+        let (planes, count, _) = layout(&self.format);
+        let Ok(system) = SystemFrame::new(
+            self.format,
+            active.ring.buffers[slot].clone(),
+            &planes[..count],
+        ) else {
+            return Err(CaptureError::Backend {
+                domain: ErrorDomain::Library,
+                code: 1,
+                recoverable: false,
+            });
         };
-        let timestamp = active.cadence.time_of(index);
+
+        // The capture instant as the OS would report it, in source time, converted to
+        // master time, kept monotonic and never ahead of the clock.
+        let source_time = to_source(active.cadence.time_of(index));
+        let mapped = self
+            .drift
+            .mapping()
+            .map_or(now, |m| m.to_master(source_time));
+        let floor = self
+            .last_timestamp
+            .map_or(Timestamp::ZERO, |t| t + Duration::from_nanos(1));
+        let timestamp = mapped.min(now).max(floor);
         self.last_timestamp = Some(timestamp);
         self.stats.delivered += 1;
-        let lease = Lease::adopt(Arc::clone(&active.owner), slot as u64);
         Ok(Some(
-            VideoFrame::new(self.format, timestamp, FramePayload::System(system))
+            VideoFrame::system(timestamp, system, Some(lease))
                 .with_sequence(active.sequence_base + index)
-                .with_source_time(timestamp.as_nanos())
-                .with_lease(lease),
+                .with_source_time(source_time),
         ))
     }
 
@@ -454,12 +619,9 @@ mod tests {
     use rbs_core::time::TestClock;
 
     fn open(factory: &TestCaptureFactory, id: &str, clock: &TestClock) -> Box<dyn CaptureSession> {
-        let request = CaptureRequest::new(
-            TargetSelector::Id(TargetId::new(id)),
-            Arc::new(clock.clone()),
-        )
-        .with_pixel_formats(&[PixelFormat::Bgra8, PixelFormat::Nv12])
-        .with_memory(&[MemoryKind::System]);
+        let request = CaptureRequest::new(TargetId::new(id), Arc::new(clock.clone()))
+            .with_pixel_formats(&[PixelFormat::Bgra8, PixelFormat::Nv12])
+            .with_memory(&[MemoryKind::System]);
         match factory.open(&request) {
             Ok(session) => session,
             Err(e) => panic!("open {id}: {e}"),
@@ -471,6 +633,12 @@ mod tests {
             Ok(f) => f,
             Err(e) => panic!("latest_frame: {e}"),
         }
+    }
+
+    /// Inverse of [`to_source`].
+    fn to_master(source: u64) -> u64 {
+        let s = u128::from(source) - SOURCE_OFFSET.as_nanos();
+        (s * 1_000_000 / (1_000_000 + u128::from(SOURCE_DRIFT_PPM))) as u64
     }
 
     #[test]
@@ -499,6 +667,56 @@ mod tests {
     }
 
     #[test]
+    fn timestamps_are_converted_from_the_source_clock() {
+        let factory = TestCaptureFactory::new();
+        let clock = TestClock::new();
+        clock.advance(Duration::from_secs(3));
+        let mut session = open(&factory, "test-display-0", &clock);
+        assert!(session.start().is_ok());
+        // Poll between frames, as a render tick would, for two seconds.
+        let step = MAX_RATE.frame_duration() / 3;
+        let mut worst_after_warmup = 0;
+        for i in 0..360 {
+            clock.advance(step);
+            if let Some(f) = frame(session.as_mut()) {
+                let source = f.source_time().unwrap_or(0);
+                assert!(source > clock.now().as_nanos(), "source clock is offset");
+                let truth = to_master(source);
+                let error = truth.abs_diff(f.timestamp().as_nanos());
+                if i > 60 {
+                    worst_after_warmup = worst_after_warmup.max(error);
+                }
+            }
+        }
+        assert!(
+            worst_after_warmup < 1_000,
+            "worst conversion error {worst_after_warmup} ns"
+        );
+    }
+
+    #[test]
+    fn resized_window_delivers_new_size_without_allocating_a_new_ring() {
+        let factory = TestCaptureFactory::new();
+        let clock = TestClock::new();
+        let mut session = open(&factory, "test-window-0", &clock);
+        assert!(session.start().is_ok());
+        clock.advance(Duration::from_millis(20));
+        assert_eq!(
+            frame(session.as_mut()).map(|f| f.format().size),
+            Some(Size::new(640, 360))
+        );
+        assert!(factory.resize_target(&TargetId::new("test-window-0"), 1000, 600));
+        assert!(!factory.resize_target(&TargetId::new("test-window-0"), 4000, 600));
+        clock.advance(Duration::from_millis(20));
+        assert_eq!(
+            frame(session.as_mut()).map(|f| f.format().size),
+            Some(Size::new(1000, 600))
+        );
+        assert_eq!(session.format().size, Size::new(1000, 600));
+        assert_eq!(factory.live_buffers(), 1);
+    }
+
+    #[test]
     fn removed_target_is_lost_and_not_listed() {
         let factory = TestCaptureFactory::new();
         let clock = TestClock::new();
@@ -511,12 +729,9 @@ mod tests {
             factory.enumerate(TargetKind::Window).map(|t| t.len()),
             Ok(0)
         );
-        let request = CaptureRequest::new(
-            TargetSelector::Id(TargetId::new("test-window-0")),
-            Arc::new(clock.clone()),
-        )
-        .with_pixel_formats(&[PixelFormat::Bgra8])
-        .with_memory(&[MemoryKind::System]);
+        let request = CaptureRequest::new(TargetId::new("test-window-0"), Arc::new(clock.clone()))
+            .with_pixel_formats(&[PixelFormat::Bgra8])
+            .with_memory(&[MemoryKind::System]);
         assert_eq!(
             factory.open(&request).err(),
             Some(CaptureError::TargetNotFound)
@@ -524,14 +739,13 @@ mod tests {
     }
 
     #[test]
-    fn camera_picks_mode_by_format_order_and_size() {
+    fn camera_picks_mode_by_format_order_size_and_rate() {
         let factory = TestCaptureFactory::new();
         let clock = Arc::new(TestClock::new());
-        let request =
-            CaptureRequest::new(TargetSelector::Id(TargetId::new("test-camera-0")), clock)
-                .with_pixel_formats(&[PixelFormat::Bgra8, PixelFormat::Nv12, PixelFormat::Yuy2])
-                .with_memory(&[MemoryKind::System])
-                .with_size(Size::new(1200, 700));
+        let request = CaptureRequest::new(TargetId::new("test-camera-0"), clock)
+            .with_pixel_formats(&[PixelFormat::Bgra8, PixelFormat::Nv12, PixelFormat::Yuy2])
+            .with_memory(&[MemoryKind::System])
+            .with_size(Size::new(1200, 700));
         let format = factory.open(&request).map(|s| s.format());
         assert_eq!(
             format.map(|f| (f.pixel_format, f.size)),
@@ -542,5 +756,21 @@ mod tests {
             factory.open(&gpu_only).err(),
             Some(CaptureError::FormatUnsupported)
         );
+    }
+
+    #[test]
+    fn opening_allocates_nothing_until_start() {
+        let factory = TestCaptureFactory::new();
+        let clock = TestClock::new();
+        let mut session = open(&factory, "test-display-0", &clock);
+        assert_eq!(factory.live_buffers(), 0);
+        assert!(session.start().is_ok());
+        assert_eq!(factory.live_buffers(), 1);
+        clock.advance(Duration::from_millis(20));
+        let held = frame(session.as_mut());
+        session.stop();
+        assert_eq!(factory.live_buffers(), 1, "a held frame keeps its buffer");
+        drop(held);
+        assert_eq!(factory.live_buffers(), 0);
     }
 }

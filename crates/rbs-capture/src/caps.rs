@@ -10,7 +10,7 @@ use rbs_core::capability::CapabilityKey;
 pub const TARGET_KINDS: CapabilityKey = CapabilityKey::new_static("capture.target.kinds");
 /// Set of target kinds `enumerate` can list.
 pub const TARGET_ENUMERATE: CapabilityKey = CapabilityKey::new_static("capture.target.enumerate");
-/// Set of target kinds selectable through the OS picker.
+/// Set of target kinds `CaptureFactory::pick` supports (OS picker).
 pub const TARGET_PICKER: CapabilityKey = CapabilityKey::new_static("capture.target.picker");
 /// Set of pixel formats the adapter can deliver natively.
 pub const PIXEL_FORMATS: CapabilityKey = CapabilityKey::new_static("capture.pixel_formats");

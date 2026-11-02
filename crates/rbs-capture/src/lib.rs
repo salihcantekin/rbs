@@ -13,6 +13,9 @@ mod error;
 mod session;
 mod target;
 
-pub use error::CaptureError;
-pub use session::{CaptureFactory, CaptureRequest, CaptureSession, CaptureStats};
-pub use target::{CameraMode, CaptureTarget, TargetId, TargetKind, TargetSelector};
+pub use error::{CaptureError, ErrorDomain};
+pub use session::{
+    CaptureChange, CaptureFactory, CaptureRequest, CaptureSession, CaptureStats, GpuDeviceId,
+    GpuImportTarget, SyncKind,
+};
+pub use target::{CameraMode, CaptureTarget, Permission, TargetId, TargetKind};

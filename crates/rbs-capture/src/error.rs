@@ -2,13 +2,28 @@
 
 use std::fmt;
 
+/// Which error space a [`CaptureError::Backend`] code comes from.
+#[non_exhaustive]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ErrorDomain {
+    /// A Windows `HRESULT`.
+    HResult,
+    /// A POSIX `errno` value.
+    Errno,
+    /// An Apple `OSStatus`.
+    OsStatus,
+    /// A library-specific code; the adapter documents its meaning.
+    Library,
+}
+
 /// Why a capture call failed.
 ///
 /// No variant carries heap data, so errors can be built on the render thread without
-/// allocating.
+/// allocating. Non-exhaustive: variants may be added in a minor version.
+#[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CaptureError {
-    /// The target kind, selector or feature is not offered by this adapter.
+    /// The target kind, call or feature is not offered by this adapter.
     Unsupported(&'static str),
     /// The target id does not exist (any more).
     TargetNotFound,
@@ -18,13 +33,18 @@ pub enum CaptureError {
     /// The user or the OS refused access (macOS privacy settings, portal dialog
     /// cancelled).
     PermissionDenied,
-    /// None of the requested pixel formats or memory kinds can be delivered.
+    /// Access was never granted or denied; call `request_permission` first.
+    PermissionNotDetermined,
+    /// None of the requested pixel formats or memory kinds can be delivered, or the
+    /// frames cannot be shared with the requested GPU device.
     FormatUnsupported,
     /// The device is opened exclusively by another application.
     DeviceBusy,
     /// An OS or library error.
     Backend {
-        /// The OS or library error code (for example an `HRESULT`).
+        /// Which error space `code` belongs to.
+        domain: ErrorDomain,
+        /// The OS or library error code.
         code: i64,
         /// Whether retrying the same operation may succeed.
         recoverable: bool,
@@ -41,6 +61,7 @@ impl CaptureError {
             CaptureError::Unsupported(_)
             | CaptureError::TargetNotFound
             | CaptureError::PermissionDenied
+            | CaptureError::PermissionNotDetermined
             | CaptureError::FormatUnsupported => false,
         }
     }
@@ -53,13 +74,20 @@ impl fmt::Display for CaptureError {
             CaptureError::TargetNotFound => f.write_str("capture target not found"),
             CaptureError::TargetLost => f.write_str("capture target lost"),
             CaptureError::PermissionDenied => f.write_str("capture permission denied"),
+            CaptureError::PermissionNotDetermined => {
+                f.write_str("capture permission not requested yet")
+            }
             CaptureError::FormatUnsupported => {
                 f.write_str("none of the requested formats can be delivered")
             }
             CaptureError::DeviceBusy => f.write_str("capture device is busy"),
-            CaptureError::Backend { code, recoverable } => write!(
+            CaptureError::Backend {
+                domain,
+                code,
+                recoverable,
+            } => write!(
                 f,
-                "capture backend error {code:#x} ({})",
+                "capture backend error {domain:?} {code:#x} ({})",
                 if *recoverable { "recoverable" } else { "fatal" }
             ),
         }
@@ -77,13 +105,14 @@ mod tests {
         assert!(CaptureError::TargetLost.is_recoverable());
         assert!(CaptureError::DeviceBusy.is_recoverable());
         assert!(!CaptureError::PermissionDenied.is_recoverable());
+        assert!(!CaptureError::PermissionNotDetermined.is_recoverable());
         assert!(!CaptureError::FormatUnsupported.is_recoverable());
-        assert!(
-            CaptureError::Backend {
-                code: 1,
-                recoverable: true
-            }
-            .is_recoverable()
-        );
+        let backend = CaptureError::Backend {
+            domain: ErrorDomain::HResult,
+            code: 0x887A_0026,
+            recoverable: true,
+        };
+        assert!(backend.is_recoverable());
+        assert!(backend.to_string().contains("HResult"));
     }
 }

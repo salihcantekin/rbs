@@ -45,6 +45,7 @@ Measured on reference machines that will be listed here. Each target is compared
 | Same | Frames dropped by RBS (render or encode lag) over 4 h | 0 |
 | Audio path, 8 sources, 4 buses | Audio thread load per 10 ms block | < 10 % of block time |
 | Glass-to-encoder latency, display capture | Latency | < 2 frame intervals |
+| Glass-to-delivery latency, display capture (OS capture to `latest_frame`) | Latency | <= 1 frame interval |
 | Cold start to first preview frame | Time | < 1.5 s |
 
 ## Regression policy

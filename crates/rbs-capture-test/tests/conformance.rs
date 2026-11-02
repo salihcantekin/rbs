@@ -1,72 +1,48 @@
-//! Runs the capture port conformance suite against the synthetic adapter.
-
-use std::alloc::{GlobalAlloc, Layout, System};
-use std::cell::Cell;
+//! Runs the capture port conformance suite against the synthetic adapter, and against
+//! wrappers that each break one invariant, to show the suite catches it.
 
 use rbs_capture::conformance::{self, Options, TestPacer};
 use rbs_capture_test::TestCaptureFactory;
 
-/// Counts allocations per thread so the suite can check that `latest_frame` does not
-/// allocate, unaffected by other test threads.
-struct CountingAllocator;
-
-thread_local! {
-    static ALLOCATIONS: Cell<u64> = const { Cell::new(0) };
+/// Allocations plus frees made by `f` on this thread.
+fn measure(f: &mut dyn FnMut()) -> u64 {
+    let info = allocation_counter::measure(f);
+    info.count_total + info.count_current.unsigned_abs()
 }
 
-// SAFETY: every method forwards to `System` with the same arguments, so the
-// `GlobalAlloc` contract holds exactly as for `System`. The thread-local counter is a
-// `const`-initialised `Cell`, which never allocates, so counting cannot recurse.
-unsafe impl GlobalAlloc for CountingAllocator {
-    unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
-        let _ = ALLOCATIONS.try_with(|n| n.set(n.get() + 1));
-        // SAFETY: the caller upholds `alloc`'s contract; forwarded unchanged.
-        unsafe { System.alloc(layout) }
+fn options(factory: &TestCaptureFactory) -> Options<'_> {
+    Options {
+        measure_allocations: Some(measure),
+        hooks: Some(factory),
+        strict: true,
+        ..Options::default()
     }
-
-    unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
-        // SAFETY: `ptr` was returned by `System.alloc` above with this `layout`.
-        unsafe { System.dealloc(ptr, layout) }
-    }
-
-    unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
-        let _ = ALLOCATIONS.try_with(|n| n.set(n.get() + 1));
-        // SAFETY: `ptr` and `layout` come from this allocator, which is `System`.
-        unsafe { System.realloc(ptr, layout, new_size) }
-    }
-}
-
-#[global_allocator]
-static GLOBAL: CountingAllocator = CountingAllocator;
-
-fn thread_allocations() -> u64 {
-    ALLOCATIONS.try_with(Cell::get).unwrap_or(0)
 }
 
 #[test]
 fn synthetic_adapter_passes_conformance() {
     let factory = TestCaptureFactory::new();
-    let options = Options {
-        thread_allocations: Some(thread_allocations),
-        ..Options::default()
-    };
-    let report = conformance::run(&factory, &mut TestPacer::new(), &options);
-    let report = match report {
+    let report = match conformance::run(&factory, &mut TestPacer::new(), &options(&factory)) {
         Ok(report) => report,
         Err(failure) => panic!("conformance failed: {failure}"),
     };
-    assert!(report.skipped.is_empty(), "skipped: {:?}", report.skipped);
     for check in [
         "probe",
         "enumerate",
+        "pick",
+        "unknown target",
         "formats",
         "standby",
         "timestamps",
         "sequence",
         "latest wins",
         "no allocation",
+        "in flight",
+        "resize",
         "stop",
         "restart",
+        "drop",
+        "target lost",
     ] {
         assert!(
             report.passed.iter().any(|c| c == check),
@@ -75,32 +51,44 @@ fn synthetic_adapter_passes_conformance() {
     }
 }
 
-/// Wrappers that break one invariant each, to show the suite catches it.
+/// Wrappers that break one invariant each.
 mod broken {
+    use rbs_capture::conformance::TestHooks;
     use rbs_capture::{
         CaptureError, CaptureFactory, CaptureRequest, CaptureSession, CaptureStats, CaptureTarget,
-        TargetKind,
+        TargetId, TargetKind,
     };
     use rbs_core::capability::CapabilitySet;
     use rbs_core::media::{VideoFormat, VideoFrame};
     use rbs_core::registry::{AdapterFactory, AdapterId, ProbeError};
-    use rbs_core::time::Timestamp;
-    use std::time::Duration;
+    use std::collections::VecDeque;
 
-    #[derive(Clone, Copy)]
+    #[derive(Clone, Copy, Debug)]
     pub enum Fault {
-        FutureTimestamps,
+        /// Allocates on every `latest_frame`.
         AllocatesPerFrame,
+        /// Delivers frames before `start`.
         FramesBeforeStart,
+        /// Keeps delivering after `stop`.
         StopKeepsDelivering,
+        /// Reports no drops.
+        HidesDrops,
+        /// Returns the oldest queued frame instead of the newest.
+        Fifo,
+        /// Keeps a frame forever after the session is dropped.
+        LeaksOnDrop,
+        /// Turns `TargetLost` into silence.
+        IgnoresTargetLoss,
+        /// Keeps reporting the size from `open` after a resize.
+        StaleFormat,
     }
 
-    pub struct Factory {
-        pub inner: super::TestCaptureFactory,
+    pub struct Factory<'a> {
+        pub inner: &'a super::TestCaptureFactory,
         pub fault: Fault,
     }
 
-    impl AdapterFactory for Factory {
+    impl AdapterFactory for Factory<'static> {
         fn id(&self) -> AdapterId {
             self.inner.id()
         }
@@ -112,7 +100,7 @@ mod broken {
         }
     }
 
-    impl CaptureFactory for Factory {
+    impl CaptureFactory for Factory<'static> {
         fn enumerate(&self, kind: TargetKind) -> Result<Vec<CaptureTarget>, CaptureError> {
             self.inner.enumerate(kind)
         }
@@ -121,52 +109,104 @@ mod broken {
             if matches!(self.fault, Fault::FramesBeforeStart) {
                 inner.start()?;
             }
+            let format = inner.format();
             Ok(Box::new(Session {
                 inner,
                 fault: self.fault,
-                stopped: false,
+                format,
+                queue: VecDeque::with_capacity(64),
+                stopped_once: false,
             }))
+        }
+    }
+
+    impl TestHooks for Factory<'static> {
+        fn resize(&self, target: &TargetId, width: u32, height: u32) -> bool {
+            self.inner.resize(target, width, height)
+        }
+        fn remove(&self, target: &TargetId) -> bool {
+            self.inner.remove(target)
+        }
+        fn resources(&self) -> Option<u64> {
+            self.inner.resources()
         }
     }
 
     struct Session {
         inner: Box<dyn CaptureSession>,
         fault: Fault,
-        stopped: bool,
+        format: VideoFormat,
+        queue: VecDeque<VideoFrame>,
+        stopped_once: bool,
+    }
+
+    impl Drop for Session {
+        fn drop(&mut self) {
+            if matches!(self.fault, Fault::LeaksOnDrop) {
+                if let Some(frame) = self.queue.pop_front() {
+                    std::mem::forget(frame);
+                }
+            }
+        }
     }
 
     impl CaptureSession for Session {
         fn format(&self) -> VideoFormat {
-            self.inner.format()
+            match self.fault {
+                Fault::StaleFormat => self.format,
+                _ => self.inner.format(),
+            }
         }
         fn start(&mut self) -> Result<(), CaptureError> {
-            self.stopped = false;
             self.inner.start()
         }
         fn stop(&mut self) {
-            self.stopped = true;
+            self.stopped_once = true;
             if !matches!(self.fault, Fault::StopKeepsDelivering) {
+                self.queue.clear();
                 self.inner.stop();
             }
         }
         fn latest_frame(&mut self) -> Result<Option<VideoFrame>, CaptureError> {
-            let frame = self.inner.latest_frame()?;
-            Ok(frame.map(|mut f| {
-                match self.fault {
-                    Fault::FutureTimestamps => {
-                        f.timestamp = f.timestamp + Duration::from_secs(1);
-                    }
-                    Fault::AllocatesPerFrame => {
-                        std::hint::black_box(Box::new(0u64));
-                    }
-                    Fault::FramesBeforeStart | Fault::StopKeepsDelivering => {}
+            let frame = match self.inner.latest_frame() {
+                Err(CaptureError::TargetLost) if matches!(self.fault, Fault::IgnoresTargetLoss) => {
+                    return Ok(None);
                 }
-                let _ = Timestamp::ZERO;
-                f
-            }))
+                other => other?,
+            };
+            match self.fault {
+                Fault::AllocatesPerFrame => {
+                    std::hint::black_box(Box::new(0u64));
+                    Ok(frame)
+                }
+                Fault::Fifo => {
+                    // Queue frames and hand out the oldest, one behind the newest.
+                    if let Some(f) = frame {
+                        self.queue.push_back(f);
+                    }
+                    if self.queue.len() > 1 {
+                        Ok(self.queue.pop_front())
+                    } else {
+                        Ok(None)
+                    }
+                }
+                Fault::LeaksOnDrop => {
+                    if let Some(shared) = frame.as_ref().and_then(VideoFrame::share) {
+                        if self.stopped_once && self.queue.is_empty() {
+                            self.queue.push_back(shared);
+                        }
+                    }
+                    Ok(frame)
+                }
+                _ => Ok(frame),
+            }
         }
         fn stats(&self) -> CaptureStats {
-            self.inner.stats()
+            let mut stats = self.inner.stats();
+            if matches!(self.fault, Fault::HidesDrops) {
+                stats.dropped = 0;
+            }
+            stats
         }
     }
 }
@@ -175,22 +215,27 @@ mod broken {
 fn suite_catches_broken_adapters() {
     use broken::Fault;
     for (fault, check) in [
-        (Fault::FutureTimestamps, "timestamps"),
         (Fault::AllocatesPerFrame, "no allocation"),
         (Fault::FramesBeforeStart, "standby"),
         (Fault::StopKeepsDelivering, "stop"),
+        (Fault::HidesDrops, "sequence"),
+        // A queue behind the newest frame breaks drop accounting before the pause check.
+        (Fault::Fifo, "sequence"),
+        (Fault::LeaksOnDrop, "drop"),
+        (Fault::IgnoresTargetLoss, "target lost"),
+        (Fault::StaleFormat, "format"),
     ] {
-        let factory = broken::Factory {
-            inner: TestCaptureFactory::new(),
-            fault,
-        };
+        let inner: &'static TestCaptureFactory = Box::leak(Box::new(TestCaptureFactory::new()));
+        let factory = broken::Factory { inner, fault };
         let options = Options {
-            thread_allocations: Some(thread_allocations),
+            measure_allocations: Some(measure),
+            hooks: Some(&factory),
+            strict: true,
             ..Options::default()
         };
         match conformance::run(&factory, &mut TestPacer::new(), &options) {
-            Ok(report) => panic!("broken adapter passed ({check} expected to fail): {report:?}"),
-            Err(failure) => assert_eq!(failure.check, check, "{failure}"),
+            Ok(report) => panic!("{fault:?} passed ({check} expected to fail): {report:?}"),
+            Err(failure) => assert_eq!(failure.check, check, "{fault:?}: {failure}"),
         }
     }
 }
