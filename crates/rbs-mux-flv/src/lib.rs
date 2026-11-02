@@ -7,18 +7,24 @@
 //! Behaviour:
 //! - `begin` emits the FLV header, an `onMetaData` script tag (size, frame rate,
 //!   codecs, sample rate) and the AVC and AAC sequence headers, as one `Header` chunk.
-//! - Each packet becomes three `Media` chunks at once: the tag header with the body
-//!   prefix, the payload, and `PreviousTagSize`. The payload is passed through as a
-//!   `Bytes` slice when the packets are length-prefixed with the avcC length size (and
-//!   for AAC); Annex B input is converted into one exactly sized buffer. Tag headers
-//!   come from a shared arena, so they allocate once per 16 KiB.
+//! - Each packet becomes one `Media` chunk at once holding the whole tag (header,
+//!   body, `PreviousTagSize`), so a transport that drops or refuses chunks always
+//!   drops whole tags. The chunk is sized exactly and is the only allocation per
+//!   packet; the payload is copied into it once, re-framed with the avcC length size
+//!   (4 bytes for Annex B input). Access unit delimiters are left out.
 //! - Nothing is held back and there is no trailer, so the output is live and
 //!   crash-safe (`mux.live`). Duration and file size stay 0 in the metadata.
-//! - FLV timestamps are milliseconds from the first dts written; the composition time
-//!   offset carries `pts - dts`.
+//! - FLV time is milliseconds from one interleaving bound (`MuxerConfig::max_buffered`)
+//!   before the first dts written, so streams that arrive slightly out of order keep
+//!   their timestamps; a dts earlier than that is refused. The composition time is
+//!   derived from the same rounded clock. Time wraps after 49.7 days, as RTMP allows.
+//! - Annex B input needs SPS and PPS in the extradata (avcC or Annex B), because the
+//!   AVC sequence header is written in `begin`; the output builder supplies them or
+//!   picks a length-prefixed encoder. A parameter set change mid-stream gets no new
+//!   sequence header.
 //!
 //! Limitations: one video and one audio stream; H.264 and AAC only (no enhanced-RTMP
-//! HEVC/AV1 yet); sessions longer than 49 days overflow the 32-bit timestamp.
+//! HEVC/AV1 yet).
 
 mod amf0;
 mod muxer;

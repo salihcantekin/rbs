@@ -841,7 +841,6 @@ dependencies = [
 name = "rbs-mux-flv"
 version = "0.0.1"
 dependencies = [
- "bytes",
  "criterion 0.8.2",
  "rbs-core",
  "rbs-media-format",

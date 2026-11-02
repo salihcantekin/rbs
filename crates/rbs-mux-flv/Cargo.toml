@@ -9,8 +9,6 @@ license.workspace = true
 publish.workspace = true
 
 [dependencies]
-# Shared arena for small tag headers (`BytesMut::split`), the same crate as `rbs_core::media::Bytes`.
-bytes = "1.9"
 rbs-core = { path = "../rbs-core" }
 rbs-media-format = { path = "../rbs-media-format" }
 rbs-mux = { path = "../rbs-mux" }

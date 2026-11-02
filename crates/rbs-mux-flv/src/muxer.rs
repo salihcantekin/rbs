@@ -1,6 +1,5 @@
 //! The FLV muxer session.
 
-use bytes::BytesMut;
 use rbs_core::media::{
     BitstreamFormat, Bytes, ChunkKind, CodecId, EncodedPacket, MuxChunk, StreamDescriptor,
     StreamIndex, StreamParams,
@@ -8,7 +7,7 @@ use rbs_core::media::{
 use rbs_core::time::Timestamp;
 use rbs_media_format::aac::AudioSpecificConfig;
 use rbs_media_format::avc::AvcConfig;
-use rbs_media_format::nal;
+use rbs_media_format::nal::{self, h264};
 use rbs_mux::{CreateError, MuxError, Muxer, MuxerConfig};
 
 use crate::amf0::{self, Value};
@@ -25,8 +24,6 @@ const CODEC_AVC: u8 = 7;
 /// AAC, 44 kHz (always signalled for AAC), 16-bit, stereo.
 const AUDIO_AAC: u8 = 0xaf;
 const MAX_DATA_SIZE: usize = 0x00ff_ffff;
-/// Arena block for tag headers and trailers; one allocation per block.
-const ARENA_BLOCK: usize = 16 * 1024;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Kind {
@@ -52,9 +49,9 @@ pub(crate) struct FlvMuxer {
     /// Master time of FLV timestamp 0: the first dts written.
     origin: Option<Timestamp>,
     last_chunk: Option<Timestamp>,
-    /// Small chunks (tag headers, PreviousTagSize) are carved from this arena, so they
-    /// cost an allocation only once per block.
-    arena: BytesMut,
+    /// How far before the first dts the FLV time origin lies, so streams that arrive
+    /// slightly out of order across streams keep their timestamps.
+    origin_lead: std::time::Duration,
     began: bool,
     finished: bool,
 }
@@ -170,6 +167,17 @@ impl FlvMuxer {
                 }
             }
         }
+        let too_big = video
+            .as_ref()
+            .is_some_and(|v| VIDEO_PREFIX + v.avcc.len() > MAX_DATA_SIZE)
+            || audio
+                .as_ref()
+                .is_some_and(|a| AUDIO_PREFIX + a.len() > MAX_DATA_SIZE);
+        if too_big {
+            return Err(CreateError::InvalidConfig(
+                "extradata larger than an FLV tag".into(),
+            ));
+        }
         Ok(Self {
             last_dts: vec![None; kinds.len()],
             kinds,
@@ -178,19 +186,10 @@ impl FlvMuxer {
             metadata,
             origin: None,
             last_chunk: None,
-            arena: BytesMut::new(),
+            origin_lead: config.max_buffered(),
             began: false,
             finished: false,
         })
-    }
-
-    /// Takes `len` bytes written by `fill` out of the arena as a `Bytes`.
-    fn carve(&mut self, len: usize, fill: impl FnOnce(&mut BytesMut)) -> Bytes {
-        if self.arena.capacity() - self.arena.len() < len {
-            self.arena.reserve(ARENA_BLOCK.max(len));
-        }
-        fill(&mut self.arena);
-        self.arena.split().freeze()
     }
 }
 
@@ -209,9 +208,15 @@ fn whole_tag(out: &mut Vec<u8>, kind: u8, ms: u32, body: &[u8]) {
     out.extend_from_slice(&((TAG_HEADER + body.len()) as u32).to_be_bytes());
 }
 
-/// Exact size of `data` (Annex B) after conversion to 4-byte lengths.
-fn length_prefixed_size(data: &[u8]) -> usize {
-    nal::annexb_units(data).map(|u| 4 + u.len()).sum()
+/// Milliseconds from `origin` to `t`, which may be earlier (negative).
+fn millis_since(t: Timestamp, origin: Timestamp) -> i64 {
+    ((i128::from(t.as_nanos()) - i128::from(origin.as_nanos())).div_euclid(1_000_000)) as i64
+}
+
+/// Whether a NAL unit goes into an FLV video tag: access unit delimiters are dropped,
+/// as other FLV writers do; empty units carry nothing.
+fn keep_unit(unit: &[u8]) -> bool {
+    !unit.is_empty() && nal::h264_type(unit) != Some(h264::AUD)
 }
 
 impl Muxer for FlvMuxer {
@@ -273,38 +278,54 @@ impl Muxer for FlvMuxer {
             return Err(MuxError::NonMonotonic { stream: stream.0 });
         }
 
-        // The payload as FLV carries it: passed through as a `Bytes` slice when the
-        // framing already matches, else converted into one exactly sized buffer.
-        let payload = match (kind, &self.video) {
-            (Kind::Video, Some(video)) => match (video.length_size, packet.bitstream()) {
-                (Some(size), BitstreamFormat::LengthPrefixed { length_size })
-                    if size == length_size =>
-                {
-                    packet.data().clone()
-                }
-                (None, BitstreamFormat::AnnexB) => {
-                    let data = packet.data().as_ref();
-                    if nal::annexb_first_header(data).is_none() {
-                        return Err(MuxError::InvalidPacket(
-                            "Annex B packet without start code".into(),
-                        ));
+        let data = packet.data().as_ref();
+        // Payload size in the tag and how to write it. Video units are re-framed with
+        // the avcC length size (4 for Annex B input), without AUDs.
+        let (payload_len, video_framing) = match (kind, &self.video) {
+            (Kind::Video, Some(video)) => {
+                let (input, out_size) = match (video.length_size, packet.bitstream()) {
+                    (Some(size), BitstreamFormat::LengthPrefixed { length_size })
+                        if size == length_size =>
+                    {
+                        (Some(size), usize::from(size))
                     }
-                    let mut converted = Vec::with_capacity(length_prefixed_size(data));
-                    nal::annexb_to_length_prefixed(data, &mut converted)
-                        .map_err(|e| MuxError::InvalidPacket(format!("H.264 packet: {e}")))?;
-                    Bytes::from(converted)
+                    (None, BitstreamFormat::AnnexB) => (None, 4),
+                    (_, other) => {
+                        return Err(MuxError::InvalidPacket(format!(
+                            "{other:?} packet on this H.264 stream"
+                        )));
+                    }
+                };
+                let mut total = 0;
+                match input {
+                    Some(size) => {
+                        for unit in nal::length_prefixed_units(data, size) {
+                            let unit = unit.map_err(|_| {
+                                MuxError::InvalidPacket("truncated length-prefixed NAL unit".into())
+                            })?;
+                            if keep_unit(unit) {
+                                total += out_size + unit.len();
+                            }
+                        }
+                    }
+                    None => {
+                        for unit in nal::annexb_units(data).filter(|u| keep_unit(u)) {
+                            total += out_size + unit.len();
+                        }
+                    }
                 }
-                (_, other) => {
-                    return Err(MuxError::InvalidPacket(format!(
-                        "{other:?} packet on this H.264 stream"
-                    )));
+                if total == 0 {
+                    return Err(MuxError::InvalidPacket(
+                        "H.264 packet without slices".into(),
+                    ));
                 }
-            },
+                (total, Some((input, out_size)))
+            }
             _ => {
                 if packet.bitstream() != BitstreamFormat::Raw {
                     return Err(MuxError::InvalidPacket("AAC packets must be raw".into()));
                 }
-                packet.data().clone()
+                (data.len(), None)
             }
         };
         let prefix = if kind == Kind::Video {
@@ -312,48 +333,77 @@ impl Muxer for FlvMuxer {
         } else {
             AUDIO_PREFIX
         };
-        let data_size = prefix + payload.len();
+        let data_size = prefix + payload_len;
         if data_size > MAX_DATA_SIZE {
             return Err(MuxError::InvalidPacket(
                 "packet larger than an FLV tag".into(),
             ));
         }
-        let origin = *self.origin.get_or_insert(dts);
-        let ms = u32::try_from(dts.saturating_since(origin).as_millis())
-            .map_err(|_| MuxError::Overflow("FLV 32-bit millisecond timestamp"))?;
-        // Composition time offset, signed 24-bit milliseconds.
-        let cts = (packet.pts().as_nanos() as i128 - dts.as_nanos() as i128) / 1_000_000;
-        let cts = cts.clamp(-0x80_0000, 0x7f_ffff) as i32;
+        let lead = self.origin_lead;
+        let origin = *self.origin.get_or_insert(dts - lead);
+        if dts < origin {
+            return Err(MuxError::InvalidPacket(
+                "dts more than the interleaving bound before the first packet".into(),
+            ));
+        }
+        let dts_ms = millis_since(dts, origin);
+        // FLV time is 32-bit milliseconds; it wraps after 49.7 days, which RTMP
+        // servers and players handle.
+        let ms = dts_ms as u32;
+        // Composition time from the same rounded clock as the dts, signed 24-bit.
+        let cts = (millis_since(packet.pts(), origin) - dts_ms).clamp(-0x80_0000, 0x7f_ffff) as i32;
         self.last_dts[index] = Some(dts);
 
         let keyframe = match kind {
             Kind::Video => packet.keyframe(),
             Kind::Audio => self.video.is_none(),
         };
-        let head = self.carve(TAG_HEADER + prefix, |buf| match kind {
+        // One chunk per tag, sized exactly: a transport may drop or refuse whole tags
+        // only, and the chunk is the only allocation for this packet.
+        let mut tag = Vec::with_capacity(TAG_HEADER + data_size + 4);
+        match kind {
             Kind::Video => {
-                buf.extend_from_slice(&tag_header(TAG_VIDEO, data_size, ms));
+                tag.extend_from_slice(&tag_header(TAG_VIDEO, data_size, ms));
                 let frame = if packet.keyframe() { 0x10 } else { 0x20 };
                 let [_, c2, c1, c0] = cts.to_be_bytes();
-                buf.extend_from_slice(&[frame | CODEC_AVC, 1, c2, c1, c0]);
+                tag.extend_from_slice(&[frame | CODEC_AVC, 1, c2, c1, c0]);
             }
             Kind::Audio => {
-                buf.extend_from_slice(&tag_header(TAG_AUDIO, data_size, ms));
-                buf.extend_from_slice(&[AUDIO_AAC, 1]);
+                tag.extend_from_slice(&tag_header(TAG_AUDIO, data_size, ms));
+                tag.extend_from_slice(&[AUDIO_AAC, 1]);
             }
-        });
-        let tail = self.carve(4, |buf| {
-            buf.extend_from_slice(&((TAG_HEADER + data_size) as u32).to_be_bytes());
-        });
+        }
+        match video_framing {
+            Some((input, out_size)) => {
+                let mut put = |unit: &[u8]| {
+                    let len = (unit.len() as u32).to_be_bytes();
+                    tag.extend_from_slice(&len[4 - out_size..]);
+                    tag.extend_from_slice(unit);
+                };
+                match input {
+                    Some(size) => nal::length_prefixed_units(data, size)
+                        .filter_map(Result::ok)
+                        .filter(|u| keep_unit(u))
+                        .for_each(&mut put),
+                    None => nal::annexb_units(data)
+                        .filter(|u| keep_unit(u))
+                        .for_each(&mut put),
+                }
+            }
+            None => tag.extend_from_slice(data),
+        }
+        tag.extend_from_slice(&((TAG_HEADER + data_size) as u32).to_be_bytes());
+        debug_assert_eq!(tag.len(), tag.capacity());
+
         let timestamp = self.last_chunk.map_or(dts, |last| last.max(dts));
         self.last_chunk = Some(timestamp);
-        let media = |keyframe| ChunkKind::Media {
-            keyframe,
-            timestamp,
-        };
-        out.push(MuxChunk::new(media(keyframe), head));
-        out.push(MuxChunk::new(media(false), payload));
-        out.push(MuxChunk::new(media(false), tail));
+        out.push(MuxChunk::new(
+            ChunkKind::Media {
+                keyframe,
+                timestamp,
+            },
+            Bytes::from(tag),
+        ));
         Ok(())
     }
 

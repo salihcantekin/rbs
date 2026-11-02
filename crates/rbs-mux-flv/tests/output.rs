@@ -110,7 +110,7 @@ fn header_has_metadata_and_sequence_headers() {
 }
 
 #[test]
-fn media_tags_carry_times_composition_offsets_and_passed_through_payloads() {
+fn one_chunk_per_tag_with_times_and_composition_offsets() {
     let config = MuxerConfig::new(ContainerId::Flv, vec![h264_stream(), aac_stream()]);
     let mut muxer = FlvMuxerFactory.create(&config).unwrap();
     let mut chunks = Vec::new();
@@ -123,27 +123,24 @@ fn media_tags_carry_times_composition_offsets_and_passed_through_payloads() {
     let p = video(33, 33, false, vec![0, 0, 0, 2, 0x41, 8], LP4);
     muxer.write(StreamIndex(0), &p, &mut chunks).unwrap();
     muxer.finish(&mut chunks).unwrap();
-    assert_eq!(
-        chunks.len(),
-        1 + 3 * 3,
-        "three chunks per packet, no trailer"
-    );
-
-    // Zero copy: the payload chunk is the packet's own buffer.
-    assert_eq!(chunks[2].data.as_ptr(), key.data().as_ptr());
+    assert_eq!(chunks.len(), 1 + 3, "one chunk per packet, no trailer");
     let flags: Vec<bool> = chunks[1..]
         .iter()
         .map(|c| matches!(c.kind, ChunkKind::Media { keyframe: true, .. }))
         .collect();
-    assert_eq!(
-        flags,
-        [true, false, false, false, false, false, false, false, false]
-    );
+    assert_eq!(flags, [true, false, false]);
+    // Every chunk is whole tags, so a transport can drop any of them.
+    for c in &chunks[1..] {
+        let mut bytes = b"FLV\x01\x05\x00\x00\x00\x09\x00\x00\x00\x00".to_vec();
+        bytes.extend_from_slice(&c.data);
+        assert_eq!(tags(&bytes).len(), 1);
+    }
 
+    // FLV time starts one interleaving bound (1 s) before the first dts.
     let tags = tags(&concat(&chunks));
     let media = &tags[3..];
     assert_eq!(media[0].kind, 9);
-    assert_eq!(media[0].ms, 0);
+    assert_eq!(media[0].ms, 1000);
     assert_eq!(
         &media[0].body[..5],
         &[0x17, 1, 0, 0, 100],
@@ -151,10 +148,86 @@ fn media_tags_carry_times_composition_offsets_and_passed_through_payloads() {
     );
     assert_eq!(&media[0].body[5..], &[0, 0, 0, 2, 0x65, 9]);
     assert_eq!(media[1].kind, 8);
-    assert_eq!(media[1].ms, 21);
+    assert_eq!(media[1].ms, 1021);
     assert_eq!(media[1].body, [0xaf, 1, 1, 2, 3]);
-    assert_eq!(media[2].ms, 33);
+    assert_eq!(media[2].ms, 1033);
     assert_eq!(&media[2].body[..2], &[0x27, 1]);
+}
+
+#[test]
+fn streams_arriving_out_of_order_keep_their_timestamps() {
+    let config = MuxerConfig::new(ContainerId::Flv, vec![h264_stream(), aac_stream()]);
+    let mut muxer = FlvMuxerFactory.create(&config).unwrap();
+    let mut chunks = Vec::new();
+    muxer.begin(&mut chunks).unwrap();
+    // Audio first; then video whose dts is 66 ms earlier (B-frame reorder delay).
+    muxer
+        .write(StreamIndex(1), &audio(100), &mut chunks)
+        .unwrap();
+    for (pts, dts) in [(100, 34), (200, 67), (133, 100)] {
+        let p = video(pts, dts, dts == 34, vec![0, 0, 0, 2, 0x41, 1], LP4);
+        muxer.write(StreamIndex(0), &p, &mut chunks).unwrap();
+    }
+    let tags = tags(&concat(&chunks));
+    let times: Vec<(u32, i32)> = tags[3..]
+        .iter()
+        .filter(|t| t.kind == 9)
+        .map(|t| {
+            let c = i32::from_be_bytes([0, t.body[2], t.body[3], t.body[4]]);
+            (t.ms, c)
+        })
+        .collect();
+    // Times relative to the origin (first dts, audio at 100 ms, minus 1 s).
+    assert_eq!(times, [(934, 66), (967, 133), (1000, 33)]);
+    // Earlier than the origin is refused, not clamped.
+    let way_early = video(0, 0, false, vec![0, 0, 0, 2, 0x41, 1], LP4);
+    let mut fresh = FlvMuxerFactory.create(&config).unwrap();
+    fresh.begin(&mut Vec::new()).unwrap();
+    fresh
+        .write(StreamIndex(1), &audio(2000), &mut Vec::new())
+        .unwrap();
+    assert!(matches!(
+        fresh.write(StreamIndex(0), &way_early, &mut Vec::new()),
+        Err(MuxError::InvalidPacket(_))
+    ));
+}
+
+#[test]
+fn composition_time_uses_the_same_rounding_as_the_dts() {
+    let config = MuxerConfig::new(ContainerId::Flv, vec![h264_stream()]);
+    let mut muxer = FlvMuxerFactory.create(&config).unwrap();
+    let mut chunks = Vec::new();
+    muxer.begin(&mut chunks).unwrap();
+    // 29.97 fps: dts 33.366 ms, pts 100.1 ms; pts must come back as floor(100.1).
+    let t = |us: u64| Timestamp::from_nanos(7_000_000_000 + us * 1000);
+    let first = EncodedPacket::new(
+        CodecId::H264,
+        LP4,
+        t(0),
+        t(0),
+        true,
+        Bytes::from_static(&[0, 0, 0, 1, 0x65]),
+    )
+    .unwrap();
+    let b = EncodedPacket::new(
+        CodecId::H264,
+        LP4,
+        t(100_100),
+        t(33_366),
+        false,
+        Bytes::from_static(&[0, 0, 0, 1, 0x41]),
+    )
+    .unwrap();
+    muxer.write(StreamIndex(0), &first, &mut chunks).unwrap();
+    muxer.write(StreamIndex(0), &b, &mut chunks).unwrap();
+    let tags = tags(&concat(&chunks));
+    let last = tags.last().unwrap();
+    let cts = i32::from_be_bytes([0, last.body[2], last.body[3], last.body[4]]);
+    assert_eq!(
+        last.ms as i64 + i64::from(cts),
+        1100,
+        "pts rebuilt as dts + cts"
+    );
 }
 
 #[test]
@@ -174,10 +247,7 @@ fn annexb_input_is_converted_to_length_prefixed() {
         )
         .unwrap();
     let tags = tags(&concat(&chunks));
-    assert_eq!(
-        &tags[2].body[5..],
-        &[0, 0, 0, 2, 0x09, 0xf0, 0, 0, 0, 3, 0x65, 1, 2]
-    );
+    assert_eq!(&tags[2].body[5..], &[0, 0, 0, 3, 0x65, 1, 2], "AUD dropped");
 }
 
 #[test]
