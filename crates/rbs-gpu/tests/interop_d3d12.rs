@@ -267,6 +267,10 @@ fn shared_texture_is_aliased_rendered_and_handed_back() {
         "the second frame on the same surface opens nothing"
     );
     assert_eq!(importer.open_surfaces(), 1);
+
+    // The source stops: its handle values may be reused, so they leave the cache.
+    importer.close_unused(&mut pool);
+    assert_eq!(importer.open_surfaces(), 0);
 }
 
 #[test]
