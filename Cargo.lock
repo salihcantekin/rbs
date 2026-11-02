@@ -763,6 +763,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "rbs-capture"
+version = "0.0.1"
+dependencies = [
+ "rbs-core",
+]
+
+[[package]]
+name = "rbs-capture-test"
+version = "0.0.1"
+dependencies = [
+ "allocation-counter",
+ "criterion 0.8.2",
+ "rbs-capture",
+ "rbs-core",
+]
+
+[[package]]
 name = "rbs-core"
 version = "0.0.1"
 dependencies = [

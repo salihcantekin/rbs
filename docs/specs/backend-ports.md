@@ -20,7 +20,7 @@ Define how RBS talks to any external technology (OS capture, audio devices, enco
 
 | Port crate | Trait(s) | Examples of adapters |
 | --- | --- | --- |
-| `rbs-capture` | `CaptureBackend`, `CaptureSession` | Windows Graphics Capture, DXGI duplication, ScreenCaptureKit, PipeWire portal, X11, V4L2, Media Foundation, AVFoundation |
+| `rbs-capture` ([spec](capture-port.md)) | `CaptureFactory`, `CaptureSession` | Windows Graphics Capture, DXGI duplication, ScreenCaptureKit, PipeWire portal, X11, V4L2, Media Foundation, AVFoundation |
 | `rbs-audio-io` | `AudioBackend`, `AudioStream` | WASAPI, process loopback, CoreAudio, PipeWire, ALSA, `cpal` |
 | `rbs-codec` | `VideoEncoderFactory`, `VideoEncoder`, `VideoDecoder`, `AudioEncoder` | NVENC, AMF, QSV/oneVPL, VideoToolbox, VA-API, Vulkan Video, x264, SVT-AV1, rav1e, Opus, FFmpeg |
 | `rbs-mux` | `Muxer` | fragmented MP4, MKV, MPEG-TS, FLV, HLS/DASH segmenter |
