@@ -67,7 +67,6 @@ impl GpuMetrics {
         self.surfaces_opened.load(Ordering::Relaxed)
     }
 
-    #[cfg_attr(not(windows), allow(dead_code))] // Only importers on Windows open surfaces so far.
     pub(crate) fn count_surface_opened(&self) {
         // Relaxed: a statistic.
         self.surfaces_opened.fetch_add(1, Ordering::Relaxed);
