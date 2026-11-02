@@ -152,7 +152,7 @@ Every command is in the command palette (Ctrl/Cmd+K) with its shortcut. Defaults
 
 ## Requirements on the UI toolkit
 
-The native toolkit chosen under ADR-0016 (Slint, iced or Qt through `cxx-qt`; ADR-0019 proposes Slint) must satisfy:
+The native toolkit chosen under ADR-0016 (Slint, iced or Qt through `cxx-qt`; ADR-0020 proposes Slint) must satisfy:
 
 1. Renders the engine's shared GPU surface for preview and program without CPU copies.
 2. Supports the tokens and components above, including custom drawing for meters and the preview canvas at display refresh rate.
@@ -161,9 +161,9 @@ The native toolkit chosen under ADR-0016 (Slint, iced or Qt through `cxx-qt`; AD
 5. Idle CPU near zero when nothing changes on screen.
 6. A docking system with tabs, splits and floating windows across monitors (U21), or the ability to build one.
 7. A licence compatible with ADR-0010.
-8. Rich visualisations (meters, equalizer curves, spectrum, histogram, scopes): light graphics with the toolkit's vector primitives; dense or per-pixel graphics drawn on the GPU and shown as textures. Provisional until ADR-0019 is accepted.
+8. Rich visualisations (meters, equalizer curves, spectrum, histogram, scopes): light graphics with the toolkit's vector primitives; dense or per-pixel graphics drawn on the GPU and shown as textures. Provisional until ADR-0020 is accepted.
 
-The comparison prototype and its measurements are in [`prototypes/ui-toolkit`](../../prototypes/ui-toolkit/README.md); the choice is recorded in [ADR-0019](../adr/0019-native-ui-toolkit.md).
+The comparison prototype and its measurements are in [`prototypes/ui-toolkit`](../../prototypes/ui-toolkit/README.md); the choice is recorded in [ADR-0020](../adr/0020-native-ui-toolkit.md).
 
 ## Open questions
 

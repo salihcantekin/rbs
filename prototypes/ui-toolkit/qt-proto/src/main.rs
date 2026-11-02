@@ -1,4 +1,4 @@
-//! Qt (cxx-qt) prototype for the UI toolkit comparison (ADR-0019).
+//! Qt (cxx-qt) prototype for the UI toolkit comparison (ADR-0020).
 #![allow(missing_docs)]
 
 pub mod backend;

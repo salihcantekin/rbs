@@ -1,4 +1,4 @@
-//! Slint prototype for the UI toolkit comparison (ADR-0019).
+//! Slint prototype for the UI toolkit comparison (ADR-0020).
 #![allow(missing_docs)]
 
 use std::cell::RefCell;

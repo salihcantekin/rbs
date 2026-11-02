@@ -1,4 +1,4 @@
-# ADR-0019: Slint as the desktop UI toolkit
+# ADR-0020: Slint as the desktop UI toolkit
 
 - Status: Proposed
 - Date: 2026-11-02
