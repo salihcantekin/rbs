@@ -1,0 +1,16 @@
+[package]
+name = "rbs-scene"
+description = "RBS scene collection: canvases, sources, scenes and items, validated edits with undo, and flattening into compositor layers."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+rbs-core = { path = "../rbs-core" }
+rbs-graph = { path = "../rbs-graph" }
+
+[lints]
+workspace = true

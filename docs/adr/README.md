@@ -33,3 +33,4 @@ An ADR records one decision that is hard to reverse or affects more than one cra
 | [0018](0018-media-frame-representation.md) | Media frames as small values with leased memory | Accepted |
 | [0019](0019-encode-mux-transport-ports.md) | Separate encode, mux and transport ports for outputs | Proposed |
 | [0020](0020-node-contract-and-schedule-swap.md) | Node contract and lock-free schedule swap | Accepted |
+| [0021](0021-scene-collection-model.md) | Scene collection as a validated model with scoped scenes and inverse-edit undo | Accepted |
