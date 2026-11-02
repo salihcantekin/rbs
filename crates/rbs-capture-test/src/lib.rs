@@ -289,6 +289,7 @@ impl CaptureFactory for TestCaptureFactory {
             resizable: target.info.kind != TargetKind::Camera,
             live: Arc::clone(&self.live),
             active: None,
+            retired: None,
             next_sequence: 0,
             last_timestamp: None,
             drift: DriftEstimator::new(Duration::from_millis(100)),
@@ -471,6 +472,8 @@ struct TestSession {
     resizable: bool,
     live: Arc<AtomicUsize>,
     active: Option<Active>,
+    /// A ring stopped while frames were still held; freed on drop or the next start.
+    retired: Option<Arc<Ring>>,
     next_sequence: u64,
     last_timestamp: Option<Timestamp>,
     drift: DriftEstimator,
@@ -515,6 +518,7 @@ impl CaptureSession for TestSession {
             Some(t) if t >= now => t + Duration::from_nanos(1),
             _ => now,
         };
+        self.retired = None;
         let ring = Arc::new(Ring::new(
             self.format.pixel_format,
             self.capacity,
@@ -531,8 +535,15 @@ impl CaptureSession for TestSession {
     }
 
     fn stop(&mut self) {
-        // Frames still held keep the ring alive through their leases.
-        self.active = None;
+        if let Some(active) = self.active.take() {
+            // The session's two references are `ring` and `owner`; any more are leases
+            // of frames still held. Keep such a ring until the session is dropped or
+            // started again, so the last lease, dropped on the render thread, never
+            // frees the buffers there.
+            if Arc::strong_count(&active.ring) > 2 {
+                self.retired = Some(active.ring);
+            }
+        }
     }
 
     fn latest_frame(&mut self) -> Result<Option<VideoFrame>, CaptureError> {
@@ -771,6 +782,12 @@ mod tests {
         session.stop();
         assert_eq!(factory.live_buffers(), 1, "a held frame keeps its buffer");
         drop(held);
+        assert_eq!(
+            factory.live_buffers(),
+            1,
+            "the buffer is retired, not freed on the dropping thread"
+        );
+        drop(session);
         assert_eq!(factory.live_buffers(), 0);
     }
 }

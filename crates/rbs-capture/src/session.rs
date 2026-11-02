@@ -262,7 +262,7 @@ pub trait CaptureFactory: AdapterFactory {
     /// Shows the operating system's picker for `kind` and returns the chosen target.
     ///
     /// Blocks until the user chooses or cancels (cancel returns
-    /// [`CaptureError::PermissionDenied`]); call it from a control thread, never from
+    /// [`CaptureError::Cancelled`]); call it from a control thread, never from
     /// the render loop. The returned id carries any OS restore token, so it can be
     /// stored in a scene and passed to `open` later without a new prompt.
     fn pick(&self, kind: TargetKind) -> Result<CaptureTarget, CaptureError> {

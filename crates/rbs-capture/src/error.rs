@@ -35,6 +35,9 @@ pub enum CaptureError {
     PermissionDenied,
     /// Access was never granted or denied; call `request_permission` first.
     PermissionNotDetermined,
+    /// The user closed the OS picker without choosing. Not a permission denial; the UI
+    /// must not present it as one.
+    Cancelled,
     /// None of the requested pixel formats or memory kinds can be delivered, or the
     /// frames cannot be shared with the requested GPU device.
     FormatUnsupported,
@@ -62,6 +65,7 @@ impl CaptureError {
             | CaptureError::TargetNotFound
             | CaptureError::PermissionDenied
             | CaptureError::PermissionNotDetermined
+            | CaptureError::Cancelled
             | CaptureError::FormatUnsupported => false,
         }
     }
@@ -77,6 +81,7 @@ impl fmt::Display for CaptureError {
             CaptureError::PermissionNotDetermined => {
                 f.write_str("capture permission not requested yet")
             }
+            CaptureError::Cancelled => f.write_str("capture target selection cancelled"),
             CaptureError::FormatUnsupported => {
                 f.write_str("none of the requested formats can be delivered")
             }

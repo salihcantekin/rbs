@@ -68,7 +68,7 @@ pub trait CaptureFactory: AdapterFactory {
     fn open(&self, request: &CaptureRequest) -> Result<Box<dyn CaptureSession>, CaptureError>;
 
     /// Shows the OS picker and blocks until the user chooses (control thread only).
-    /// Cancel returns PermissionDenied. Default: Unsupported.
+    /// Cancel returns Cancelled (not a permission denial). Default: Unsupported.
     fn pick(&self, kind: TargetKind) -> Result<CaptureTarget, CaptureError>;
 
     /// Current permission state; fast, never prompts. Default: Granted.
@@ -120,7 +120,7 @@ Dropping a session releases everything it holds, including what `start` acquired
 
 - No allocation, no freeing, no blocking, no I/O, no logging, no locks of any kind. The hand-off from the adapter's capture thread or OS callback is lock-free, for example an atomic latest-slot swap over a pre-allocated slot ring.
 - It returns the newest frame received since the previous call. Frames it replaced are counted in `dropped`; their OS objects (WGC `Direct3D11CaptureFrame`, `CVPixelBuffer`, PipeWire buffers) are released by the producer's own thread, never inside this call.
-- `LeaseOwner::release` on a capture surface does not free either; it marks the slot free. The engine keeps its own reference to the adapter's lease owner until the session has been dropped on a background thread, so the last reference is never dropped on a real-time thread (media types spec, lifetime).
+- `LeaseOwner::release` on a capture surface does not free either; it marks the slot free. When `stop` finds frames still held, the session keeps their slot ring alive (retired) until it is started again or dropped, so dropping the last held frame on the render thread never frees the ring there. The engine drops sessions on a background thread (media graph spec, live editing).
 - Native frames have exactly one consumer, the `rbs-gpu` importer, which releases the lease only after its GPU work on the surface has completed.
 
 ### Invariants
@@ -129,12 +129,12 @@ Each is checked by the conformance suite, with the hook it needs in brackets. Wi
 
 1. **Zero cost before start.** A factory and an opened but not started session own no threads, OS capture streams, device handles or GPU resources (P13). [`resources`]
 2. **Master time, at capture.** Every frame's timestamp is the capture instant in master time, converted at the edge from the OS timestamp (QPC / `SystemRelativeTime`, `mach_absolute_time` / host time, `CLOCK_MONOTONIC`, V4L2 buffer time) with a `DriftEstimator` fed by `(OS time, clock.now())` pairs taken back to back, and its `ClockMapping`. Timestamps are kept monotonic (`max(previous + 1 ns, mapped)`) and are never ahead of `clock.now()` at delivery (`min(mapped, now)`). Stamping at delivery time instead of capture time is a bug even though the suite cannot always tell; the reference adapter has its own offset and drifting clock domain and a unit test that bounds the conversion error.
-3. **Monotonic and accounted.** Timestamps and sequence numbers of delivered frames strictly increase within a session, across `stop` and `start`. `sequence` counts frames received from the OS; every skipped sequence number is either counted in `dropped` or was delivered to another call. Frames the OS drops internally (for example inside a WGC frame pool) are invisible to the adapter and not counted.
+3. **Monotonic and accounted.** Timestamps and sequence numbers of delivered frames strictly increase within a session, across `stop` and `start`. `sequence` counts frames received from the OS; every skipped sequence number is either counted in `dropped` or was delivered to another call. The suite checks `gap <= dropped + delivered in between`, not equality, because on real adapters the OS thread can count another drop between `latest_frame` and `stats`. Frames the OS drops internally (for example inside a WGC frame pool) are invisible to the adapter and not counted.
 4. **Format honoured.** Every delivered frame matches `format()` (size, pixel format, colour) and its memory kind is in the request. The pixel format and memory kind are the first entries of the request lists the adapter supports for that target.
-5. **Latest wins.** After a pause, the frame returned is the newest one: its age (`now - timestamp`) is at most `max_latency` (default 100 ms).
+5. **Latest wins.** After a pause, the frame returned is the newest one: its age at the call is at most one frame interval (the largest gap the suite observed between consecutive frames) plus `max_latency` (default 100 ms), and a second call right away returns nothing or a frame captured after the first call, never an older queued one.
 6. **Size changes are visible in the frame.** A resized window or display produces frames with the new `format.size`; `format()` returns the new format from the first such frame on. Consumers detect the change by comparing formats. Pixel format and memory kind never change mid-session. [`resize`]
 7. **Target loss is an error, not silence.** A closed window or unplugged display or camera makes `latest_frame` return `Err(TargetLost)` within `frame_timeout`. [`remove`]
-8. **Stop and drop release.** After `stop`, and after dropping the session, resources return to the level before `open` (ADR-0013 rule 5). `start` after `stop` delivers frames again. [`resources`]
+8. **Stop and drop release.** After `stop` (with no frames held), and after dropping the session, resources return to the level before `open` (ADR-0013 rule 5). `start` after `stop` delivers frames again. Dropping a frame held across `stop` neither allocates nor frees. [`resources`, `process_threads`]
 9. **Frame lifetime.** The consumer can hold up to `capture.frames.in_flight` frames. Holding fewer never stops delivery; holding all of them makes the adapter drop new frames (counted) and `latest_frame` still returns promptly.
 10. **Declared means real.** Every declared pixel format and memory kind is delivered by at least one enumerable target.
 
@@ -167,6 +167,7 @@ pub enum CaptureError {
     TargetLost,                    // target went away while Active
     PermissionDenied,              // user or OS refused (macOS privacy, portal cancel)
     PermissionNotDetermined,       // call request_permission first
+    Cancelled,                     // user closed the picker; the UI must not show it as a denial
     FormatUnsupported,             // no requested format / memory kind / shareable device
     DeviceBusy,                    // camera opened exclusively elsewhere
     Backend { domain: ErrorDomain, code: i64, recoverable: bool }, // HResult | Errno | OsStatus | Library
@@ -208,9 +209,11 @@ The render tick pulls with `latest_frame`; adapters do not push frames into the 
 - `pacer`: `TestPacer` for software adapters (a `TestClock` that advances on each wait, so runs are deterministic), `RealTimePacer` for hardware adapters, bounded by `options.frame_timeout`.
 - `options.measure_allocations`: runs a closure and returns the allocations plus frees it made on the calling thread (adapter tests use `allocation-counter`). Without it the allocation check is skipped.
 - `options.hooks: Option<&dyn TestHooks>`: `stimulate(id)` (change content, for APIs that only deliver frames on change; called before every poll), `resize(id, w, h)`, `remove(id)` and `resources()` (threads, handles and GPU allocations the adapter owns). Hardware tests implement them with a helper window the test owns.
+- `options.gpu: Option<&GpuImportTarget>`: the device the test imports into, used for every GPU memory kind. For each declared GPU memory kind the suite also checks that opening it without an import target, and for a foreign device, returns `FormatUnsupported`. Without `options.gpu`, delivery of GPU memory kinds is skipped (a failure in strict mode).
+- `options.process_threads`: a process-wide thread count measured by the suite itself rather than reported by the adapter (`conformance::process_thread_count` reads `/proc/self/task` on Linux). Only meaningful when the test binary runs one test at a time; the reference adapter's conformance test is alone in its binary for that reason.
 - `options.strict`: every skip is a failure. Self-hosted hardware runners use it.
 
-Checks: probe within 50 ms and never panics; `enumerate` agrees with `capture.target.enumerate` and returns only the asked kind; `pick` returns `Unsupported` when not declared (declared pickers need a user and are skipped); unknown id returns `TargetNotFound`; every declared pixel format and memory kind is delivered, and request order decides both; then for each enumerable target: no frames and no resources in Standby, timestamps and sequence numbers per invariants 2 and 3, latest wins after a pause, no allocation or free in `latest_frame` plus drop, frames in flight, resize, stop, restart, resources back to baseline after stop and after drop, and finally target loss.
+Checks: probe within 50 ms and never panics; `enumerate` agrees with `capture.target.enumerate` and returns only the asked kind; `pick` returns `Unsupported` when not declared (declared pickers need a user and are skipped); unknown id returns `TargetNotFound`; GPU memory kinds are refused without a matching import target; every declared pixel format and memory kind is delivered, and request order decides both; then for each enumerable target: no frames and no resources in Standby, timestamps and sequence numbers per invariants 2 and 3, latest wins after a pause, no allocation or free in `latest_frame` plus drop, frames in flight, resize, stop, restart, resources back to baseline after stop and after drop, and finally target loss.
 
 `rbs-capture-test` runs the suite strictly against the reference adapter and against wrappers that each break one invariant (allocates per frame, frames before start, delivers after stop, hides drops, queues behind the newest frame, leaks a frame on drop, ignores target loss, stale format after resize) to prove each check fails.
 
@@ -229,10 +232,23 @@ Checks: probe within 50 ms and never panics; `enumerate` agrees with `capture.ta
 
 ## Review
 
+Records written from the reviewer's own output (ADR-0014). The spec stays Draft.
+
+### Round 1
+
 - Reviewer: independent AI session (fresh context; given only the diff, principles, related ADRs, specs and code)
 - Date: 2026-11-02
-- Verdict: changes requested, then addressed in the same PR
-- Concerns: (1) zero-copy could not be negotiated without the importing device -> `GpuImportTarget` with device id, DMA-BUF modifiers and sync kinds; a device mismatch is `FormatUnsupported`; (2) picker and permission flows did not fit `open` -> `pick`, `permission`, `request_permission`, restore tokens in ids, `open` and `enumerate` never prompt; (3) clock conversion untested -> rules in invariant 2, reference adapter has its own drifting clock domain with a conversion-error test, pull rationale for the missing tick time; (4) real-time rules weaker than P6 -> no locks at all, no freeing, OS objects released on the producer thread, frees counted; (5) suite did not check what the spec claimed -> resource, resize and remove hooks, in-flight, latest-wins age, exact drop accounting, memory order, leak check after drop, strict mode, eight negative wrappers; (6) WGC delivers only on change -> `stimulate` hook, `sequence` defined as frames received from the OS; (7) semver unstated -> non-exhaustive types with builders, default trait methods, `reconfigure`, `ErrorDomain`, semver section; (8) camera model -> frame-rate ranges, `open` must not activate the device, compressed modes out of scope with the cost stated; (9) doc gaps -> budget row added, media types spec exists (PR #7), `latest_frame` benchmark, pull vs push section.
+- Verdict: changes requested
+- Concerns: (1) zero-copy cannot be negotiated without the importing device; (2) picker and permission flows do not fit `open` / `format()` / Standby; (3) clock conversion unspecified and untested, `latest_frame` takes no tick time; (4) real-time rules weaker than P6 (locks, frees and OS releases on the render thread, frees not counted); (5) the suite does not check what the spec claims (resources, in-flight, resize, target loss, latest wins, memory order, exact accounting, probe failure, leaks); (6) WGC delivers frames only on content change; (7) semver and evolution not stated; (8) camera model does not match real devices; (9) documentation and measurement gaps.
+
+### Round 2 (re-review of the changes)
+
+- Reviewer: the same independent AI session, given the updated diff
+- Date: 2026-11-02
+- Verdict: changes requested
+- Resolved by the reviewer's check: round-1 concerns 2, 3, 6, 7, 8 and 9.
+- Concerns: (1) no GPU adapter could pass the suite, which never set `gpu`; no device-mismatch test; (2) exact drop accounting races on real adapters; (3) latest wins missed a correctly counted queue, and a fixed 100 ms limit fails slow cameras; (4) the last lease of a frame held across `stop` freed the ring on the render thread; (5) the resource check relied only on the adapter's own report; (6) the review record in the spec was written by the author; (7) a cancelled picker was reported as a permission denial.
+- Author's changes for round 2, awaiting the reviewer's round 3: `Options.gpu` and the `gpu import` check; `<=` accounting; interval-based age limit plus a second-call check and a lag-by-one wrapper; retired rings and a held-frame drop measurement after `stop`; `Options.process_threads` measured by the suite; this record; `CaptureError::Cancelled`.
 
 ## Open questions
 

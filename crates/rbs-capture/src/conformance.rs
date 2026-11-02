@@ -21,8 +21,8 @@ use rbs_core::time::{Clock, MonotonicClock, TestClock, Timestamp};
 
 use crate::caps;
 use crate::{
-    CaptureError, CaptureFactory, CaptureRequest, CaptureSession, CaptureStats, Permission,
-    TargetId, TargetKind,
+    CaptureError, CaptureFactory, CaptureRequest, CaptureSession, CaptureStats, GpuDeviceId,
+    GpuImportTarget, Permission, SyncKind, TargetId, TargetKind,
 };
 
 /// Lets time pass between polls.
@@ -154,6 +154,26 @@ pub struct Options<'a> {
     pub hooks: Option<&'a dyn TestHooks>,
     /// Treat every skipped check as a failure (hardware runners).
     pub strict: bool,
+    /// The import target to request GPU memory kinds with: the device the test
+    /// harness will import frames into. Without it, declared GPU memory kinds are
+    /// skipped (a failure in strict mode).
+    pub gpu: Option<&'a GpuImportTarget>,
+    /// Counts the threads of the whole process, independently of what the adapter
+    /// reports (see [`process_thread_count`]). Only meaningful when the test binary
+    /// runs one test at a time (`--test-threads=1`).
+    pub process_threads: Option<fn() -> Option<u64>>,
+}
+
+/// The number of threads of this process, where the platform makes that cheap to read
+/// without extra dependencies (Linux: `/proc/self/task`). `None` elsewhere.
+pub fn process_thread_count() -> Option<u64> {
+    if cfg!(target_os = "linux") {
+        std::fs::read_dir("/proc/self/task")
+            .ok()
+            .map(|entries| entries.count() as u64)
+    } else {
+        None
+    }
 }
 
 impl Default for Options<'_> {
@@ -167,6 +187,8 @@ impl Default for Options<'_> {
             measure_allocations: None,
             hooks: None,
             strict: false,
+            gpu: None,
+            process_threads: None,
         }
     }
 }
@@ -182,6 +204,8 @@ impl fmt::Debug for Options<'_> {
             .field("measure_allocations", &self.measure_allocations.is_some())
             .field("hooks", &self.hooks.is_some())
             .field("strict", &self.strict)
+            .field("gpu", &self.gpu)
+            .field("process_threads", &self.process_threads.is_some())
             .finish()
     }
 }
@@ -350,8 +374,11 @@ impl Suite<'_> {
         Ok(self.report)
     }
 
-    fn resources(&self) -> Option<u64> {
-        self.options.hooks.and_then(|h| h.resources())
+    fn resources(&self) -> (Option<u64>, Option<u64>) {
+        (
+            self.options.hooks.and_then(|h| h.resources()),
+            self.options.process_threads.and_then(|count| count()),
+        )
     }
 
     fn request(
@@ -370,9 +397,13 @@ impl Suite<'_> {
         } else {
             memory
         };
-        CaptureRequest::new(target.clone(), self.pacer.clock())
+        let request = CaptureRequest::new(target.clone(), self.pacer.clock())
             .with_pixel_formats(pf)
-            .with_memory(mem)
+            .with_memory(mem);
+        match self.options.gpu {
+            Some(gpu) => request.with_gpu(gpu.clone()),
+            None => request,
+        }
     }
 
     fn open(
@@ -548,6 +579,13 @@ impl Suite<'_> {
         }
 
         for mem in self.memory.clone() {
+            if mem != MemoryKind::System {
+                self.check_gpu_import(testable, mem)?;
+                if self.options.gpu.is_none() {
+                    self.skip(CHECK, &format!("{mem}: no GPU import target given"));
+                    continue;
+                }
+            }
             let mut delivered = false;
             for (_, id) in testable {
                 match self.open(id, &[], &[mem]) {
@@ -621,6 +659,40 @@ impl Suite<'_> {
         Ok(())
     }
 
+    /// Zero-copy negotiation: a GPU memory kind is refused without an import target and
+    /// for a device the adapter cannot share with.
+    fn check_gpu_import(
+        &mut self,
+        testable: &[(TargetKind, TargetId)],
+        mem: MemoryKind,
+    ) -> Result<(), Failure> {
+        const CHECK: &str = "gpu import";
+        let foreign = GpuImportTarget::new(GpuDeviceId::Uuid([0xA5; 16]), &[SyncKind::Ready]);
+        for (_, id) in testable {
+            let bare = CaptureRequest::new(id.clone(), self.pacer.clock())
+                .with_pixel_formats(&self.pixel_formats)
+                .with_memory(&[mem]);
+            for (what, request) in [
+                ("without an import target", bare.clone()),
+                ("for a foreign device", bare.with_gpu(foreign.clone())),
+            ] {
+                let result = self.factory.open(&request);
+                ensure(
+                    CHECK,
+                    matches!(result, Err(CaptureError::FormatUnsupported)),
+                    || {
+                        format!(
+                            "{id}: {mem} {what} must be FormatUnsupported, got {:?}",
+                            result.err()
+                        )
+                    },
+                )?;
+            }
+        }
+        self.pass(CHECK);
+        Ok(())
+    }
+
     /// Invariants 1, 2, 3, 5, 6, 8 and 9 on one target, plus the allocation check.
     fn check_session(&mut self, kind: TargetKind, id: &TargetId) -> Result<(), Failure> {
         let baseline = self.resources();
@@ -656,8 +728,14 @@ impl Suite<'_> {
 
         let clock = self.pacer.clock();
         let mut last: Option<Last> = None;
+        // Largest gap between consecutive frames: the target's frame interval as seen
+        // by the consumer, used to judge frame age below.
+        let mut interval = Duration::ZERO;
         for _ in 0..self.options.frames_to_check {
             let frame = self.next_frame("timestamps", id, session.as_mut())?;
+            if let Some(prev) = last {
+                interval = interval.max(frame.timestamp().saturating_since(prev.timestamp));
+            }
             self.check_frame(session.as_ref(), &frame, clock.as_ref(), &mut last)?;
         }
         self.pass("timestamps");
@@ -668,16 +746,37 @@ impl Suite<'_> {
         if let Some(hooks) = self.options.hooks {
             hooks.stimulate(id);
         }
+        let called_at = clock.now();
         match session.latest_frame() {
             Ok(Some(frame)) => {
                 self.check_frame(session.as_ref(), &frame, clock.as_ref(), &mut last)?;
-                let age = clock.now().saturating_since(frame.timestamp());
-                ensure("latest wins", age <= self.options.max_latency, || {
+                let age = called_at.saturating_since(frame.timestamp());
+                let limit = interval + self.options.max_latency;
+                ensure("latest wins", age <= limit, || {
                     format!(
-                        "{id}: after a {:?} pause the frame returned is {age:?} old",
+                        "{id}: after a {:?} pause the frame returned is {age:?} old (limit {limit:?})",
                         self.options.pause
                     )
                 })?;
+                // A second call right away may only return a frame captured after the
+                // first call, never an older queued one.
+                match session.latest_frame() {
+                    Ok(Some(next)) => {
+                        ensure(
+                            "latest wins",
+                            next.timestamp() + interval >= called_at,
+                            || {
+                                format!(
+                                    "{id}: a second call returned a frame {:?} older than the first call",
+                                    called_at.saturating_since(next.timestamp())
+                                )
+                            },
+                        )?;
+                        self.check_frame(session.as_ref(), &next, clock.as_ref(), &mut last)?;
+                    }
+                    Ok(None) => {}
+                    Err(e) => return fail("latest wins", format!("{id}: {e}")),
+                }
                 self.pass("latest wins");
             }
             Ok(None) => self.skip("latest wins", &format!("{id}: no frame after the pause")),
@@ -709,8 +808,23 @@ impl Suite<'_> {
         })?;
         let frame = self.next_frame("restart", id, session.as_mut())?;
         self.check_frame(session.as_ref(), &frame, clock.as_ref(), &mut last)?;
-        drop(frame);
         self.pass("restart");
+
+        // The last frame held across `stop` is dropped by the render thread too, so
+        // that drop must not free (reclaiming happens on the session's own drop).
+        session.stop();
+        match self.options.measure_allocations {
+            Some(measure) => {
+                let mut held = Some(frame);
+                let used = measure(&mut || drop(held.take()));
+                ensure("no allocation", used == 0, || {
+                    format!(
+                        "{id}: dropping a frame held across stop allocated or freed {used} times"
+                    )
+                })?;
+            }
+            None => drop(frame),
+        }
 
         drop(session);
         self.check_resources("drop", baseline, "after drop")?;
@@ -721,18 +835,25 @@ impl Suite<'_> {
     fn check_resources(
         &mut self,
         check: &'static str,
-        baseline: Option<u64>,
+        baseline: (Option<u64>, Option<u64>),
         when: &str,
     ) -> Result<(), Failure> {
-        match (baseline, self.resources()) {
+        let now = self.resources();
+        match (baseline.0, now.0) {
             (Some(before), Some(now)) => ensure(check, now == before, || {
-                format!("adapter owns {now} resources {when}, {before} before open")
-            }),
-            _ => {
-                self.skip(check, "adapter does not report resources");
-                Ok(())
+                format!("adapter reports {now} resources {when}, {before} before open")
+            })?,
+            _ => self.skip(check, "adapter does not report resources"),
+        }
+        if self.options.process_threads.is_some() {
+            match (baseline.1, now.1) {
+                (Some(before), Some(now)) => ensure(check, now == before, || {
+                    format!("process has {now} threads {when}, {before} before open")
+                })?,
+                _ => self.skip(check, "process thread count unavailable"),
             }
         }
+        Ok(())
     }
 
     fn check_allocations(
@@ -928,11 +1049,13 @@ impl Suite<'_> {
                 )
             })?;
             // Frames between the two were either delivered (to calls the suite did not
-            // inspect) or counted as dropped.
+            // inspect) or counted as dropped; a hidden drop shows up as a gap.
             let gap = frame.sequence() - prev.sequence - 1;
             let dropped = stats.dropped.saturating_sub(prev.dropped);
             let unseen = stats.delivered.saturating_sub(prev.delivered + 1);
-            ensure("sequence", gap == dropped + unseen, || {
+            // `<=` rather than `==`: on real adapters the OS thread can count another
+            // drop between `latest_frame` and `stats`.
+            ensure("sequence", gap <= dropped + unseen, || {
                 format!(
                     "sequence jumped from {} to {} but {dropped} frames were counted as dropped and {unseen} delivered in between",
                     prev.sequence,
