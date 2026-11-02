@@ -165,9 +165,9 @@ fn io_surface_is_aliased_rendered_and_handed_back() {
 
         assert_eq!(owner.held(), 1, "lease held while a frame references it");
         drop(imported);
-        importer.retire(ctx, &mut pool); // schedules the hand-back
+        importer.retire(ctx, &mut pool, Timestamp::ZERO); // schedules the hand-back
         ctx.wait_idle().unwrap();
-        importer.retire(ctx, &mut pool); // sees it complete
+        importer.retire(ctx, &mut pool, Timestamp::ZERO); // sees it complete
         assert_eq!(owner.held(), 0, "lease returned after the GPU finished");
     }
     assert_eq!(
@@ -177,7 +177,27 @@ fn io_surface_is_aliased_rendered_and_handed_back() {
     );
     assert_eq!(importer.open_surfaces(), 1);
 
-    // The source stops: its surfaces leave the cache.
+    // Unseen surfaces are closed by engine time, whatever the tick rate.
+    let idle = rbs_gpu::interop::SURFACE_IDLE;
+    importer.retire(ctx, &mut pool, Timestamp::ZERO + idle);
+    assert_eq!(importer.open_surfaces(), 1, "kept up to the idle time");
+    importer.retire(ctx, &mut pool, Timestamp::ZERO + idle * 2);
+    assert_eq!(importer.open_surfaces(), 0, "closed after the idle time");
+
+    // A source that stops leaves the cache at once.
+    drop(
+        importer
+            .import(
+                ctx,
+                &mut pool,
+                frame(&surface, SurfaceSync::Ready, owner.lease()),
+            )
+            .unwrap(),
+    );
+    importer.retire(ctx, &mut pool, Timestamp::ZERO);
+    ctx.wait_idle().unwrap();
+    importer.retire(ctx, &mut pool, Timestamp::ZERO);
+    assert_eq!(importer.open_surfaces(), 1);
     importer.close_unused(&mut pool);
     assert_eq!(importer.open_surfaces(), 0);
 }
@@ -214,9 +234,9 @@ fn frame_of_another_size_reopens_the_cached_surface() {
     for size in [Size::new(W, H), Size::new(W, H), Size::new(W / 2, H / 2)] {
         let f = sized_frame(&surface, size, SurfaceSync::Ready, owner.lease());
         drop(importer.import(ctx, &mut pool, f).unwrap());
-        importer.retire(ctx, &mut pool);
+        importer.retire(ctx, &mut pool, Timestamp::ZERO);
         ctx.wait_idle().unwrap();
-        importer.retire(ctx, &mut pool);
+        importer.retire(ctx, &mut pool, Timestamp::ZERO);
     }
     assert_eq!(
         ctx.metrics().surfaces_opened() - opened_before,
