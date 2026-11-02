@@ -30,7 +30,7 @@ There was no GPU in the test machine, so the rendering-load numbers came from a 
 
 ## Decision
 
-1. The RBS desktop UI uses **Slint**, under its GPL-3.0-only licence option, with the `femtovg-wgpu` renderer. Slint is chosen because it is the only candidate that has all three of the following:
+1. The RBS desktop UI uses **Slint**, under its GPL-3.0-only licence option, with its **Skia** renderer on the `wgpu` path (`renderer-skia`, `unstable-wgpu-30`). The `femtovg-wgpu` renderer was measured and rejected for now: it rebuilds render pipelines during steady redraw (see Review). Slint is chosen because it is the only candidate that has all three of the following:
    - working accessibility (iced has none),
    - direct display of `wgpu` textures on the same `wgpu` major as `rbs-gpu` today, so `rbs_gpu::interop` code can be reused,
    - a Rust-only build (Qt brings a C++ toolchain, its own RHI interop and more than 80 shared libraries).
@@ -42,11 +42,8 @@ There was no GPU in the test machine, so the rendering-load numbers came from a 
 5. The UI crate pins `slint` and `slint-build` to an exact version. While Slint supports the `wgpu` major used by `rbs-gpu`, the UI reuses `rbs_gpu::interop` for importing surfaces. `rbs-gpu` is never held back for the UI. If Slint lags behind a `wgpu` upgrade, the UI keeps importing surfaces with a fork of the import code built against Slint's `wgpu` major until Slint catches up. That is possible because the handles cross a process boundary, but it means duplicated platform code during the lag. This is the same drawback that counts against iced today, so the reuse advantage holds only while Slint keeps pace.
 6. The UI crate sets its own `rust-version` (1.92 for Slint 1.18). Engine and port crates keep the workspace minimum.
 7. **Acceptance gate.** This ADR becomes Accepted only when all of the following are true:
-   - The load scenarios have been run on the reference platform with a real GPU, for Slint and for Qt (the fallback). The scenarios are program preview at 1920x1080, a 64-band spectrum, and a dense-path stress case of at least 1,024 points redrawn every frame. Before the run, the measurement script must be extended: GPU adapter, 1080p output, and presented-frame timestamps instead of timer ticks. These are provisional limits:
-     - the window keeps the display refresh rate (60 Hz) with at most 1 % late frames over 60 s;
-     - the UI process uses at most 10 % of one CPU core.
-
-     The limits move into the [performance budgets](../specs/performance-budgets.md) when the UI crate is created.
+   - Frame pacing on a real GPU: met. On Apple M4 Pro the Slint prototype kept 60 Hz with 0 late frames in every scenario (1080p preview, 64-band spectrum, dense paths of 1,024 and 4,096 points) with both renderers. By owner decision (2026-11-02) Qt is not measured.
+   - CPU: by owner decision (2026-11-02) the limit of at most 10 % of one CPU core while preview and meters animate is not a gate for this ADR. It becomes a budget of the UI crate, to be reached by redrawing less (only changed regions, the preview as its own layer or window, lower update rates for meters and text), and moves into the [performance budgets](../specs/performance-budgets.md) when the UI crate is created. The prototype with Skia used 20 to 27 % for 1080p preview and up to 40 % for a 4,096-point path.
    - Zero-copy display of an engine surface imported from another process has been shown on at least one platform.
    - Tabs, splitters and dock actions can be operated by keyboard alone. A smoke test with Narrator on Windows and VoiceOver on macOS reads the prototype's controls with correct roles and names.
    - The independent review in this file approves, and the owner approves (CLAUDE.md rule 11).
@@ -58,6 +55,7 @@ There was no GPU in the test machine, so the rendering-load numbers came from a 
 - Slint's release cadence and its `unstable-wgpu-*` API, which may change in minor releases, affect only the UI crate. The exact version pin and an integration test catch breakage.
 - Requirement 4 is open for every candidate except Qt. We build Fluent string binding and right-to-left layout mirroring ourselves. Mirroring means mirrored layouts, icons and docking directions in the component library, estimated at a few weeks of component work. It is easier if it is designed into components from the start.
 - We also build the docking system ourselves: tab drag and drop, drop indicators and keyboard docking. None of the candidates provides docking for our model.
+- The Skia renderer adds a prebuilt Skia library (downloaded by `skia-bindings` at build time, BSD-3-Clause), about 5 MiB of binary size and about 20 MiB of memory compared with femtovg. If femtovg fixes its pipeline caching, switching back is a feature flag.
 - Slint globals are per window, so shared UI state is pushed to every window from one place in the UI crate.
 - The dependency tree and binary are larger than with iced, so build caching in CI matters.
 - Reversal cost: the component library and panels written in `.slint` would be rewritten. The panel, docking and workspace model, the control API client, the visualisation textures and the interop code are toolkit-neutral and stay. Reversing a year after UI work starts is estimated at one to two months of UI work, most of it in components.
@@ -98,4 +96,5 @@ There was no GPU in the test machine, so the rendering-load numbers came from a 
 - Owner: Salih approved the choice of Slint on 2026-11-02 (project thread: "slint kullanıyoruz") and offered a MacBook for the GPU measurements.
 - Gate run, 2026-11-02, MacBook Pro M4 Pro (Metal), Slint only (Qt not installed): 60 Hz with 0 late frames in every scenario, including a 4,096-point path; idle CPU 0.0 %. Process CPU while animating was 33 to 45 % of one core, above the provisional 10 % limit; the cause is not profiled yet. Details in the prototype README. Frame pacing passes; the CPU limit does not.
 - Profile and renderer comparison, 2026-11-02, same Mac: femtovg's wgpu renderer rebuilds render pipelines during steady redraw (most of its CPU). The Skia renderer, which also imports wgpu textures, removes that and lowers 1080p-preview CPU from about 35 % to 20-27 %, with 0 late frames and about 20 MiB more memory; dense paths cost the same in both. Both stay above the provisional 10 % limit because the whole window is redrawn at 60 Hz. Details in the prototype README.
+- Owner decision, 2026-11-02: use the Skia renderer; the 10 % CPU limit becomes a UI crate budget instead of a gate item; Qt is not measured.
 - Status: the review is still open. The ADR stays Proposed until the acceptance gate in decision 7 is met, including a final independent approval and the owner's approval.
