@@ -95,4 +95,5 @@ There was no GPU in the test machine, so the rendering-load numbers came from a 
   - A. Decision 5 claimed interop reuse even while Slint lags a `wgpu` major. Response: decision 5 now says the import code is forked during a lag and that the reuse advantage holds only while Slint keeps pace.
   - B. The first review's resolutions were recorded as the reviewer's verdict, and owner approval was missing from the gate. Response: they are now recorded as author responses, this re-review is a separate entry, and owner approval is part of the gate.
   - C. The README framed iced's `wgpu` problem as device sharing. Response: the README wording now matches the interop-reuse framing.
+- Owner: Salih approved the choice of Slint on 2026-11-02 (project thread: "slint kullanıyoruz") and offered a MacBook for the GPU measurements.
 - Status: the review is still open. The ADR stays Proposed until the acceptance gate in decision 7 is met, including a final independent approval and the owner's approval.

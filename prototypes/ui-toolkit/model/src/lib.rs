@@ -706,3 +706,159 @@ impl FpsLog {
         }
     }
 }
+
+/// Prototype settings read from the environment, shared by all prototypes.
+pub mod env {
+    /// Engine output size from `RBS_PROTO_SIZE` (for example `1920x1080`), default 1280x720.
+    pub fn engine_size() -> (u32, u32) {
+        std::env::var("RBS_PROTO_SIZE")
+            .ok()
+            .and_then(|s| {
+                let (w, h) = s.split_once('x')?;
+                Some((w.parse().ok()?, h.parse().ok()?))
+            })
+            .unwrap_or((1280, 720))
+    }
+
+    /// Spectrum band count from `RBS_PROTO_BANDS`, default 64. Large values are the dense-path stress case.
+    pub fn bands() -> usize {
+        std::env::var("RBS_PROTO_BANDS")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(64)
+            .max(2)
+    }
+}
+
+/// Self-measurement of presented frames and process CPU, enabled with
+/// `RBS_PROTO_MEASURE=<seconds>`. After a 3 s warm-up it records the time of
+/// every presented frame for the given seconds, prints one summary line and
+/// exits the process. Works on Linux, macOS and Windows (CPU on Unix only).
+pub struct Measure {
+    secs: f64,
+    start: std::time::Instant,
+    frames: Vec<std::time::Instant>,
+    cpu0: Option<f64>,
+    label: String,
+}
+
+fn cpu_seconds() -> Option<f64> {
+    #[cfg(unix)]
+    {
+        // SAFETY: getrusage writes into the zeroed struct we own.
+        let mut ru: libc::rusage = unsafe { std::mem::zeroed() };
+        let r = unsafe { libc::getrusage(libc::RUSAGE_SELF, &mut ru) };
+        if r != 0 {
+            return None;
+        }
+        let tv = |t: libc::timeval| t.tv_sec as f64 + t.tv_usec as f64 / 1e6;
+        Some(tv(ru.ru_utime) + tv(ru.ru_stime))
+    }
+    #[cfg(not(unix))]
+    {
+        None
+    }
+}
+
+fn max_rss_mib() -> Option<f64> {
+    #[cfg(unix)]
+    {
+        // SAFETY: as above.
+        let mut ru: libc::rusage = unsafe { std::mem::zeroed() };
+        if unsafe { libc::getrusage(libc::RUSAGE_SELF, &mut ru) } != 0 {
+            return None;
+        }
+        // ru_maxrss is bytes on macOS and KiB on Linux.
+        let div = if cfg!(target_os = "macos") {
+            1024.0 * 1024.0
+        } else {
+            1024.0
+        };
+        Some(ru.ru_maxrss as f64 / div)
+    }
+    #[cfg(not(unix))]
+    {
+        None
+    }
+}
+
+impl Measure {
+    /// Create from the environment; `None` when measuring is off.
+    pub fn from_env(label: &str) -> Option<Self> {
+        let secs: f64 = std::env::var("RBS_PROTO_MEASURE").ok()?.parse().ok()?;
+        Some(Measure {
+            secs,
+            start: std::time::Instant::now(),
+            frames: Vec::new(),
+            cpu0: None,
+            label: label.into(),
+        })
+    }
+
+    /// Record one presented frame; exits the process when the window is over.
+    pub fn presented(&mut self) {
+        let now = std::time::Instant::now();
+        let t = now.duration_since(self.start).as_secs_f64();
+        if t < 3.0 {
+            return;
+        }
+        if self.cpu0.is_none() {
+            self.cpu0 = cpu_seconds();
+            self.frames.clear();
+        }
+        self.frames.push(now);
+        if t >= 3.0 + self.secs {
+            self.finish();
+        }
+    }
+
+    fn finish(&self) {
+        let n = self.frames.len();
+        let span = match (self.frames.first(), self.frames.last()) {
+            (Some(a), Some(b)) => b.duration_since(*a).as_secs_f64(),
+            _ => 0.0,
+        };
+        let mut iv: Vec<f64> = self
+            .frames
+            .windows(2)
+            .map(|w| w[1].duration_since(w[0]).as_secs_f64() * 1000.0)
+            .collect();
+        iv.sort_by(|a, b| a.total_cmp(b));
+        let pct = |p: f64| {
+            iv.get(((iv.len() as f64 - 1.0) * p).round() as usize)
+                .copied()
+                .unwrap_or(0.0)
+        };
+        // Late: an interval longer than 1.5 refresh periods at 60 Hz.
+        let late = iv.iter().filter(|v| **v > 25.0).count();
+        let cpu = match (self.cpu0, cpu_seconds()) {
+            (Some(a), Some(b)) if span > 0.0 => format!("{:.1}", 100.0 * (b - a) / span),
+            _ => "n/a".into(),
+        };
+        let rss = max_rss_mib()
+            .map(|r| format!("{r:.0}"))
+            .unwrap_or_else(|| "n/a".into());
+        println!(
+            "MEASURE {} frames={} fps={:.1} late={} late_pct={:.2} p50_ms={:.1} p99_ms={:.1} max_ms={:.1} cpu_pct={} max_rss_mib={}",
+            self.label,
+            n,
+            if span > 0.0 {
+                (n.saturating_sub(1)) as f64 / span
+            } else {
+                0.0
+            },
+            late,
+            if iv.is_empty() {
+                0.0
+            } else {
+                100.0 * late as f64 / iv.len() as f64
+            },
+            pct(0.5),
+            pct(0.99),
+            pct(1.0),
+            cpu,
+            rss
+        );
+        std::process::exit(0);
+    }
+}

@@ -57,6 +57,8 @@ pub mod qobject {
         fn drag(self: Pin<&mut Backend>, handle: i32, delta: f64);
         #[qinvokable]
         fn tick(self: Pin<&mut Backend>);
+        #[qinvokable]
+        fn presented(self: Pin<&mut Backend>);
     }
 
     impl cxx_qt::Constructor<()> for Backend {}
@@ -89,6 +91,7 @@ pub struct BackendRust {
     bands: Vec<f32>,
     path: String,
     fps: dock_model::FpsLog,
+    measure: Option<dock_model::Measure>,
 }
 
 impl Default for BackendRust {
@@ -120,9 +123,10 @@ impl Default for BackendRust {
             flat_handles: Vec::new(),
             gpu: None,
             start: Instant::now(),
-            bands: vec![0.0; 64],
+            bands: vec![0.0; dock_model::env::bands()],
             path: String::new(),
             fps: Default::default(),
+            measure: dock_model::Measure::from_env("qt"),
         }
     }
 }
@@ -295,6 +299,13 @@ impl qobject::Backend {
         self.sync();
     }
 
+    /// Called on every swapped frame of the main window (measurement only).
+    fn presented(mut self: Pin<&mut Self>) {
+        if let Some(m) = self.as_mut().rust_mut().get_mut().measure.as_mut() {
+            m.presented();
+        }
+    }
+
     /// One animation frame; called by a QML timer only while animated panels are visible.
     fn tick(mut self: Pin<&mut Self>) {
         let r = self.as_mut().rust_mut().get_mut();
@@ -345,10 +356,11 @@ impl Gpu {
             .expect("prototype: no wgpu adapter");
         let (device, queue) = pollster::block_on(adapter.request_device(&Default::default()))
             .expect("prototype: no wgpu device");
-        let engine = Engine::new(&device, &queue, (1280, 720), wgpu::TextureUsages::COPY_SRC);
+        let size = dock_model::env::engine_size();
+        let engine = Engine::new(&device, &queue, size, wgpu::TextureUsages::COPY_SRC);
         let readback = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("readback"),
-            size: 1280 * 720 * 4,
+            size: u64::from(size.0) * u64::from(size.1) * 4,
             usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
             mapped_at_creation: false,
         });

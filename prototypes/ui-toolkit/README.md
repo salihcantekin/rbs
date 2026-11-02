@@ -12,6 +12,7 @@ Throwaway prototypes behind [ADR-0020](../../docs/adr/0020-native-ui-toolkit.md)
 | `iced-proto/` | iced 0.14 (wgpu 27 renderer, `shader` and `canvas` widgets, multi-window `daemon`). |
 | `qt-proto/` | Qt 6.4 Qt Quick through `cxx-qt` 0.10. |
 | `measure-build.sh`, `measure-runtime.sh`, `a11y-check.sh`, `a11y-dump.py` | Measurement scripts used for the tables below. |
+| `measure-gate.sh` | ADR-0020 gate run for a machine with a GPU (macOS or Linux desktop): 1080p preview, spectrum and dense-path cases, measured from presented frames (`RBS_PROTO_MEASURE`). |
 
 ## Same feature set in every prototype
 
@@ -26,7 +27,7 @@ Throwaway prototypes behind [ADR-0020](../../docs/adr/0020-native-ui-toolkit.md)
 9. Live indicator in the window frame, always visible.
 10. Animation timers run only while an animated panel is visible; hidden panels are not instantiated (ADR-0013).
 
-Environment variables: `RBS_PROTO_WORKSPACE=minimal`, `RBS_PROTO_CLOSE=<panel ids, comma separated>`, `RBS_PROTO_DIR=<workspace directory>`, `RBS_PROTO_FPS=1` (print tick rate). On a machine without a GPU Slint needs `SLINT_WGPU_CPU=1`.
+Environment variables: `RBS_PROTO_SIZE=1920x1080` (engine output size), `RBS_PROTO_BANDS=<n>` (spectrum points), `RBS_PROTO_MEASURE=<seconds>` (measure presented frames after 3 s warm-up, print one `MEASURE` line, exit), `RBS_PROTO_WORKSPACE=minimal`, `RBS_PROTO_CLOSE=<panel ids, comma separated>`, `RBS_PROTO_DIR=<workspace directory>`, `RBS_PROTO_FPS=1` (print tick rate). On a machine without a GPU Slint needs `SLINT_WGPU_CPU=1`.
 
 ## Build
 

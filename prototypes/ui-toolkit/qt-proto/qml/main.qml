@@ -12,6 +12,8 @@ ApplicationWindow {
     color: "#16181d"
 
     Backend { id: backend }
+    // Presented-frame timestamps for the measurement mode (RBS_PROTO_MEASURE).
+    onFrameSwapped: backend.presented()
     readonly property var stacks: JSON.parse(backend.stacks || "[]")
     readonly property var handles: JSON.parse(backend.handles || "[]")
     readonly property var panels: JSON.parse(backend.panels || "[]")

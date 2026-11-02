@@ -69,7 +69,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let adapter = pollster::block_on(instance.request_adapter(&Default::default()))?;
     let (device, queue) = pollster::block_on(adapter.request_device(&Default::default()))?;
     eprintln!("adapter: {:?}", adapter.get_info().name);
-    let engine = engine::Engine::new(&device, &queue, (1280, 720), wgpu::TextureUsages::empty());
+    let engine = engine::Engine::new(
+        &device,
+        &queue,
+        dock_model::env::engine_size(),
+        wgpu::TextureUsages::empty(),
+    );
     slint::BackendSelector::new()
         .require_wgpu_30(slint::wgpu_30::WGPUConfiguration::Manual {
             instance,
@@ -98,7 +103,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         floats: Vec::new(),
         engine,
         start: Instant::now(),
-        bands: vec![0.0; 64],
+        bands: vec![0.0; dock_model::env::bands()],
         path: String::new(),
         fps: Default::default(),
     }));
@@ -333,9 +338,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     });
 
     let first = Rc::new(std::cell::Cell::new(true));
+    let mut measure = dock_model::Measure::from_env("slint");
     ui.window().set_rendering_notifier(move |s, _| {
-        if matches!(s, slint::RenderingState::AfterRendering) && first.replace(false) {
-            eprintln!("first frame after {} ms", t0.elapsed().as_millis());
+        if matches!(s, slint::RenderingState::AfterRendering) {
+            if first.replace(false) {
+                eprintln!("first frame after {} ms", t0.elapsed().as_millis());
+            }
+            if let Some(m) = measure.as_mut() {
+                m.presented();
+            }
         }
     })?;
     sync();
