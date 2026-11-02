@@ -7,9 +7,12 @@
 //! - [`flatten`]: a scene on a canvas as the flat, bottom-first layer list the
 //!   compositor draws, and the set of sources that must be Active.
 //!
-//! Turning a collection into a media graph description and the on-disk document format
-//! come in later changes. Spec: `docs/specs/scene-model.md`.
+//! - [`binder`]: keeps a media graph description in step with a collection, with
+//!   stable node ids, compositor layer lists and wanted lifecycle states.
+//!
+//! The on-disk document format comes in a later change. Spec: `docs/specs/scene-model.md`.
 
+pub mod binder;
 mod collection;
 pub mod flatten;
 pub mod model;
