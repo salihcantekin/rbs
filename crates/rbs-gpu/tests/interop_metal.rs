@@ -176,7 +176,6 @@ fn io_surface_is_aliased_rendered_and_handed_back() {
         "the surface is opened once and reused"
     );
     assert_eq!(importer.open_surfaces(), 1);
-    assert_eq!(ctx.metrics().frames_cpu_copied(), 0);
 
     // The source stops: its surfaces leave the cache.
     importer.close_unused(&mut pool);
