@@ -179,6 +179,42 @@ Rules:
 
 Conformance (per backend, on CI where the platform allows; WARP on Windows, the runner's Metal device on macOS; DMA-BUF only on Linux machines with a hardware Vulkan driver and `/dev/udmabuf`, since lavapipe has no DMA-BUF import, with `RBS_REQUIRE_DMABUF` to make it mandatory): a producer-side test creates a shared texture (and fence where the backend uses one), fills it, signals; the importer aliases it; the compositor renders it; readback matches; the native lease is released only after `retire` follows GPU completion; a second frame on the same surface opens nothing new (`surfaces_opened` unchanged).
 
+### Graph runtime and compositor node
+
+`rbs_gpu::node` connects the GPU crate to the graph runtime of [media-graph.md, "Runtime"](media-graph.md) (ADR-0020). Following that ADR, `rbs-gpu` depends on `rbs-graph`; `rbs-graph` never names `wgpu`.
+
+```rust
+pub struct GpuRuntime;                       // Runtime { Shared = GpuContext, Local = RenderLocal }
+pub struct RenderLocal { pub pool: TexturePool, pub importer: Importer }  // owned by the render executor
+
+pub const COMPOSITOR_NODE_TYPE: &str = "org.rbs.compositor";
+pub fn compositor_descriptor() -> NodeDescriptor;   // kind Compositor; input "layers" (many-link Video), output "canvas" (Video)
+
+pub struct PixelCrop { pub left: u32, pub top: u32, pub right: u32, pub bottom: u32 }
+pub struct NodeLayer {
+    pub link: usize,          // index of the link on the "layers" pin (connection order)
+    pub transform: Affine2,   // unit square of the cropped source to canvas pixels
+    pub crop: PixelCrop,      // in source pixels; turned into texture coordinates with the real source size
+    pub opacity: f32,
+    pub opaque: bool,         // ignore source alpha (XRGB sources)
+}
+
+impl CompositorNode {
+    pub fn new(canvas: CanvasDesc, layers: Vec<NodeLayer>) -> CompositorNode;
+    pub fn set_layers(&mut self, layers: Vec<NodeLayer>);   // while the node is idle (control thread)
+}
+```
+
+- `GpuRuntime::end_tick` retires imported surfaces with the tick's time (`Importer::retire(ctx, pool, tick.time)`) and polls the device (`GpuContext::poll`). `begin_tick` does nothing.
+- `prepare` (control thread) builds the `Compositor` for the canvas and reserves room for the layer list. `release` drops it.
+- `warm` (render thread) acquires and releases three canvas textures, so the pool's free list holds a ring and `process` reuses them without allocating. `cool` does nothing: the textures stay in the pool's free list for the next user or a trim.
+- `process` does the following each tick:
+  1. Builds the layer list in a reserved buffer. Each `NodeLayer` takes the current frame on its link. A link without a frame, or with a frame that is not a pool texture, is skipped; native frames are imported by the source wrapper before they reach a link.
+  2. Converts the crop with the texture's size. The source transfer is `Srgb` when the frame's colour space says sRGB and the texture format does not decode it in the sampler.
+  3. Acquires a canvas texture, renders, and publishes it on "canvas": `Rgba16Float`, `ColorSpace::LINEAR_BT709`, the tick's time, and sequence = tick index. The pool slot is released at once, so the frame's lease keeps it alive.
+  4. RBS code allocates nothing here (hot path). A ring larger than three only grows when consumers hold more frames than that.
+- Layer lists reach a running node through the graph runtime's parameter channel (latest value, no allocation on the executor), which is being added to `rbs-graph`. Until it lands, the application sets layers while the node is idle.
+
 ### Readback (fallback only)
 
 `readback::read_bytes(ctx, pool, id) -> Result<Vec<u8>, GpuError>` (tightly packed rows) and `readback::read_rgba16f(ctx, pool, id) -> Result<Vec<[f32; 4]>, GpuError>` copy a texture to the CPU. They block, allocate and increment `GpuMetrics::frames_cpu_copied`. They are not on the default path; scenario tests assert the counter stays 0 (performance budgets, hard rules).

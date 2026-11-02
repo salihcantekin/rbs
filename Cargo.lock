@@ -821,6 +821,7 @@ dependencies = [
  "objc2-metal",
  "pollster",
  "rbs-core",
+ "rbs-graph",
  "wgpu",
  "windows",
 ]

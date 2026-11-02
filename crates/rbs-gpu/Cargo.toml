@@ -10,6 +10,9 @@ publish.workspace = true
 
 [dependencies]
 rbs-core = { path = "../rbs-core" }
+# Engine to engine: compositor nodes and the render runtime implement the graph's node
+# contract (ADR-0020); rbs-graph never names wgpu.
+rbs-graph = { path = "../rbs-graph" }
 # Engine layer may depend on wgpu (docs/architecture/overview.md#layers). Web backends are not needed.
 wgpu = { version = "30.0.1", default-features = false, features = ["std", "parking_lot", "dx12", "metal", "vulkan", "wgsl"] }
 bytemuck = { version = "1.25", features = ["derive"] }
