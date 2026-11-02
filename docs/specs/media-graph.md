@@ -1,7 +1,7 @@
 # Spec: Media graph
 
 - Status: Draft
-- Owner crate(s): `rbs-graph` (planned), `rbs-core`
+- Owner crate(s): `rbs-graph`, `rbs-core`
 - Related ADRs: [0002](../adr/0002-headless-engine-and-media-graph.md), [0004](../adr/0004-single-master-clock.md), [0005](../adr/0005-gpu-compositing-with-wgpu.md)
 
 ## Purpose
@@ -12,19 +12,19 @@ The runtime model of the engine: nodes, typed links, scheduling and live editing
 
 | Kind | Inputs | Outputs | Examples |
 | --- | --- | --- | --- |
-| Source | none | video and/or audio | screen, window, camera, media file, browser, remote guest |
+| Source | no media (data allowed) | at least one output | screen, window, camera, media file, browser, remote guest; data-only producers (timers, chat events) |
 | VideoFilter | video | video | colour correction, chroma key, LUT, blur |
 | AudioFilter | audio | audio | gain, noise suppression, compressor, CLAP plugin |
-| Compositor | many video | video | one per canvas, renders a scene tree |
-| Transition | two video | video | cut, fade, stinger, shader transition |
+| Compositor | many video | video | one per canvas, plus one per nested scene in use (its output feeds the parent compositor like a source) |
+| Transition | two or more video (stinger: third), optional audio | video, optional audio | cut, fade, stinger, shader transition |
 | AudioMixer | many audio | audio | buses and mixes |
 | Encoder | video or audio | packets | via codec port |
 | Muxer | packets | packets or bytes | via mux port |
-| Output | packets or bytes | none | via transport port |
+| Output | any media | no media | stream and recording (packets or bytes, via transport port); virtual camera, NDI or SDI out, monitoring device, preview (video or audio) |
 
 ## Links
 
-Links are typed: `Video`, `Audio`, `Packets`, `Data`. A link carries a format descriptor (for video: size, pixel format, colour space, memory kind). The value types and formats are defined in the [media types spec](media-types.md). Video links carry only pool-texture or system-memory frames: native capture surfaces are imported by `rbs-gpu` in the source node wrapper and never travel on a link. Format negotiation happens when the link is created; a converter node is inserted automatically when needed and is visible in the graph.
+Links are typed: `Video`, `Audio`, `Packets`, `Bytes` (muxed container output), `Data`. The graph is a DAG for every link type: feedback such as congestion events driving an encoder's bitrate goes through the control plane, not a graph link. A link carries a format descriptor (for video: size, pixel format, colour space, memory kind). The value types and formats are defined in the [media types spec](media-types.md). Video links carry only pool-texture or system-memory frames: native capture surfaces are imported by `rbs-gpu` in the source node wrapper and never travel on a link. Format negotiation happens when the link is created; a converter node is inserted automatically when needed and is visible in the graph.
 
 ## Lifecycle
 
@@ -58,20 +58,27 @@ The control thread edits a `GraphDescription`; allocation is allowed there. Impl
 
 | Type | Contract |
 | --- | --- |
-| `NodeKind` | The kinds in the table above (non-exhaustive) |
-| `LinkKind` | `Video`, `Audio`, `Packets`, `Data` |
-| `Pin` | Name, `LinkKind`, and for inputs whether many links may connect (`many`) |
-| `NodeDescriptor` | `type_id` (reverse-DNS `NodeTypeId`), kind, input and output pins. `validate()` checks unique pin names and that the media pins fit the kind (for example a `Source` has no media inputs; a `Compositor` has a `many` video input and one video output; an `Encoder` has one video or audio input and one packet output). `Data` pins are allowed on any kind |
-| `Lifecycle` | `Installed`, `Standby`, `Active`; `transition` allows one step at a time; only `Active` is scheduled |
-| `GraphDescription` | `add_node` (validates the descriptor, starts Installed), `remove_node` (removes its links), `set_state`, `connect` by pin name, `disconnect` |
-| `SchedulePlan` | Output of `GraphDescription::plan()`: Active nodes in dependency order and the links between Active nodes |
+| `NodeKind` | The kinds in the table above |
+| `LinkKind` | `Video`, `Audio`, `Packets`, `Bytes`, `Data` |
+| `Pin` | Name, `LinkKind`, and for inputs whether many links may connect (`many`). The name is the pin's stable identity |
+| `NodeDescriptor` | `type_id` (reverse-DNS `NodeTypeId`, validated), kind, input and output pins. `validate()` checks the id, unique pin names, and that the media pins fit the kind as in the table above. `Data` pins are allowed on every kind |
+| `Lifecycle` | `rbs_core::lifecycle`, shared with adapters and plugins: `Installed`, `Standby`, `Active`; `transition` allows one step at a time; only `Active` is scheduled |
+| `GraphDescription` | `add_node` (validates, starts Installed), `remove_node` (Standby or Installed only; returns the node and its links), `restore` (puts them back under the same id), `set_state`, `connect` by pin name, `disconnect`, `link_pin_names` |
+| `SchedulePlan` | Output of `plan()`: scheduled nodes in dependency order, links between them, and skipped Active nodes with a `SkipReason` |
 
 Invariants, each covered by a test:
 
-- Node ids are never reused within a description.
-- `connect` refuses unknown nodes or pins, kind mismatches, a second link into a single-link input, duplicate links, self links and cycles. The graph is therefore always a DAG.
-- `plan()` contains only Active nodes; every producer precedes its consumers; ties keep insertion order, so the same description always gives the same plan.
-- Links from or to a non-Active node are left out of the plan; the consumer sees no input on that pin (a hidden layer, a source in Standby). No per-tick "is it enabled" check is needed (ADR-0013).
+- Node ids are issued in increasing order and never reused; `restore` brings back a removed node under its old id, all or nothing. Ids exhausted is a typed error.
+- `connect` refuses unknown nodes or pins, kind mismatches, a second link into a single-link input, duplicate links, self links and cycles. The graph is always a DAG (property-tested on random graphs).
+- `plan()` starts from Active nodes and the links between them, then repeatedly drops nodes that are **starved** (a non-source with media inputs but no media link from a scheduled node) or have **no sink** (no path to a node without media outputs). Inactive producers therefore never leave consumers scheduled for nothing, and work that reaches no output costs nothing (ADR-0013).
+- Every producer precedes its consumers in `plan().order`; ties are broken by node id, so the same description always gives the same plan.
+- A scheduled node can still see no input on some pins (a hidden layer, one input of a muxer). That is part of its normal `process`, not a feature check.
+
+Control API and command log: commands name nodes by scene-level ids and pins by name, never by pin index (indices may change when a node type is updated). Undo of a removal uses `restore`; whole-graph snapshots are also cheap because descriptors are shared.
+
+Versioning: the public enums and structs are `#[non_exhaustive]` with constructors, so a settings schema on descriptors, format descriptors on links, new link kinds and new errors are minor changes. `SchedulePlan` is expected to be partitioned per canvas, audio graph and encoder worker when the scheduler lands; that is also additive.
+
+Cost: `connect` and each pruning round of `plan()` are O(nodes + links), on the control thread only.
 
 Format negotiation on links and converter insertion come with the scheduler.
 

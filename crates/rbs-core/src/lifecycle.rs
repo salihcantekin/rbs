@@ -1,8 +1,10 @@
-//! Installed / Standby / Active lifecycle (ADR-0013, media graph spec "Lifecycle").
+//! Installed / Standby / Active lifecycle of nodes, adapters and plugins (ADR-0013,
+//! media graph spec "Lifecycle").
 
 use std::fmt;
 
 /// The lifecycle state of a node, adapter or plugin.
+#[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Lifecycle {
     /// Known from metadata only; no resources.

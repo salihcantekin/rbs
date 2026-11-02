@@ -7,27 +7,29 @@ use std::fmt;
 #[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum NodeKind {
-    /// Produces video and/or audio; no inputs.
+    /// Produces media or data; no media inputs.
     Source,
     /// Video in, video out.
     VideoFilter,
     /// Audio in, audio out.
     AudioFilter,
-    /// Many video inputs, one video output; one per canvas.
+    /// Many video inputs, one video output: a canvas, or a nested scene's render target.
     Compositor,
-    /// Two video inputs, one video output.
+    /// Two or more video inputs (stinger: a third), one video output; audio optional.
     Transition,
-    /// Many audio inputs, audio outputs (buses, mixes).
+    /// Audio inputs, audio outputs (buses, mixes).
     AudioMixer,
-    /// Video or audio in, packets out.
+    /// One video or audio input, packets out.
     Encoder,
-    /// Packets in, packets out.
+    /// Packets in, packets or bytes out.
     Muxer,
-    /// Packets in; no outputs.
+    /// A sink: packets, bytes, video or audio in; no media outputs (stream, recording,
+    /// virtual camera, NDI or SDI out, monitoring device, preview).
     Output,
 }
 
 /// The type of data a link carries.
+#[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum LinkKind {
     /// `rbs_core::media::VideoFrame`s.
@@ -36,8 +38,17 @@ pub enum LinkKind {
     Audio,
     /// `rbs_core::media::EncodedPacket`s.
     Packets,
+    /// Muxed byte stream (container output).
+    Bytes,
     /// Events and metadata.
     Data,
+}
+
+impl LinkKind {
+    /// True for every kind except `Data`.
+    pub const fn is_media(self) -> bool {
+        !matches!(self, LinkKind::Data)
+    }
 }
 
 impl fmt::Display for LinkKind {
@@ -46,12 +57,15 @@ impl fmt::Display for LinkKind {
             LinkKind::Video => "video",
             LinkKind::Audio => "audio",
             LinkKind::Packets => "packets",
+            LinkKind::Bytes => "bytes",
             LinkKind::Data => "data",
         })
     }
 }
 
-/// One input or output of a node.
+/// One input or output of a node. Pin names are the stable identity of a pin; indices
+/// may change between versions of a node type.
+#[non_exhaustive]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Pin {
     /// Name, unique among the node's inputs (or outputs), for example `"in"` or `"layer"`.
@@ -81,6 +95,15 @@ impl Pin {
             many: true,
         }
     }
+
+    /// A pin with an owned name (for example from a plugin manifest).
+    pub fn named(name: impl Into<String>, kind: LinkKind, many: bool) -> Self {
+        Self {
+            name: Cow::Owned(name.into()),
+            kind,
+            many,
+        }
+    }
 }
 
 /// A stable, reverse-DNS style id of a node type, for example `org.rbs.filter.chroma-key`.
@@ -102,6 +125,23 @@ impl NodeTypeId {
     pub fn as_str(&self) -> &str {
         &self.0
     }
+
+    /// True for at least two non-empty dot-separated segments of lowercase ASCII
+    /// letters, digits and `-`.
+    pub fn is_well_formed(&self) -> bool {
+        let mut segments = 0;
+        for segment in self.0.split('.') {
+            if segment.is_empty()
+                || !segment
+                    .bytes()
+                    .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
+            {
+                return false;
+            }
+            segments += 1;
+        }
+        segments >= 2
+    }
 }
 
 impl fmt::Display for NodeTypeId {
@@ -111,7 +151,8 @@ impl fmt::Display for NodeTypeId {
 }
 
 /// Static description of a node type: its kind and pins. Settings schemas are added
-/// with the plugin SDK.
+/// with the plugin SDK; build with [`NodeDescriptor::new`].
+#[non_exhaustive]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NodeDescriptor {
     /// Node type id.
@@ -124,9 +165,12 @@ pub struct NodeDescriptor {
     pub outputs: Vec<Pin>,
 }
 
-/// Why a descriptor's pins do not fit its kind.
+/// Why a descriptor is invalid.
+#[non_exhaustive]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DescriptorError {
+    /// The type id is not reverse-DNS style.
+    BadTypeId(NodeTypeId),
     /// Two inputs or two outputs share a name.
     DuplicatePin(Cow<'static, str>),
     /// The pins do not match the shape required by the kind.
@@ -141,6 +185,7 @@ pub enum DescriptorError {
 impl fmt::Display for DescriptorError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            DescriptorError::BadTypeId(id) => write!(f, "node type id {id:?} is not reverse-DNS"),
             DescriptorError::DuplicatePin(name) => write!(f, "duplicate pin name {name:?}"),
             DescriptorError::ShapeMismatch { kind, requires } => {
                 write!(f, "{kind:?} requires {requires}")
@@ -152,8 +197,23 @@ impl fmt::Display for DescriptorError {
 impl std::error::Error for DescriptorError {}
 
 impl NodeDescriptor {
-    /// Checks pin names are unique and the pins fit the kind (media graph spec table).
+    /// Creates a descriptor. Call [`NodeDescriptor::validate`] (or add it to a graph,
+    /// which validates) before use.
+    pub fn new(type_id: NodeTypeId, kind: NodeKind, inputs: Vec<Pin>, outputs: Vec<Pin>) -> Self {
+        Self {
+            type_id,
+            kind,
+            inputs,
+            outputs,
+        }
+    }
+
+    /// Checks the type id, that pin names are unique, and that the media pins fit the
+    /// kind (media graph spec, "Node kinds"). `Data` pins are allowed on every kind.
     pub fn validate(&self) -> Result<(), DescriptorError> {
+        if !self.type_id.is_well_formed() {
+            return Err(DescriptorError::BadTypeId(self.type_id.clone()));
+        }
         for pins in [&self.inputs, &self.outputs] {
             for (i, pin) in pins.iter().enumerate() {
                 if pins[..i].iter().any(|p| p.name == pin.name) {
@@ -161,70 +221,62 @@ impl NodeDescriptor {
                 }
             }
         }
-        let ins = |k: LinkKind| self.inputs.iter().filter(|p| p.kind == k).count();
-        let outs = |k: LinkKind| self.outputs.iter().filter(|p| p.kind == k).count();
-        let media_in = ins(LinkKind::Video) + ins(LinkKind::Audio) + ins(LinkKind::Packets);
-        let media_out = outs(LinkKind::Video) + outs(LinkKind::Audio) + outs(LinkKind::Packets);
+        let count = |pins: &[Pin], k: LinkKind| pins.iter().filter(|p| p.kind == k).count();
+        let media = |pins: &[Pin]| pins.iter().filter(|p| p.kind.is_media()).count();
+        let ins = |k| count(&self.inputs, k);
+        let outs = |k| count(&self.outputs, k);
+        let (media_in, media_out) = (media(&self.inputs), media(&self.outputs));
+        use LinkKind::{Audio, Bytes, Packets, Video};
+
         let (ok, requires) = match self.kind {
             NodeKind::Source => (
-                media_in == 0 && outs(LinkKind::Video) + outs(LinkKind::Audio) > 0,
-                "no media inputs and at least one video or audio output",
+                media_in == 0 && !self.outputs.is_empty(),
+                "no media inputs and at least one output",
             ),
             NodeKind::VideoFilter => (
-                media_in == 1
-                    && ins(LinkKind::Video) == 1
-                    && media_out == 1
-                    && outs(LinkKind::Video) == 1,
+                media_in == 1 && ins(Video) == 1 && media_out == 1 && outs(Video) == 1,
                 "one video input and one video output",
             ),
             NodeKind::AudioFilter => (
-                media_in == 1
-                    && ins(LinkKind::Audio) == 1
-                    && media_out == 1
-                    && outs(LinkKind::Audio) == 1,
+                media_in == 1 && ins(Audio) == 1 && media_out == 1 && outs(Audio) == 1,
                 "one audio input and one audio output",
             ),
             NodeKind::Compositor => (
-                media_in == ins(LinkKind::Video)
-                    && self
-                        .inputs
-                        .iter()
-                        .any(|p| p.kind == LinkKind::Video && p.many)
+                media_in == ins(Video)
+                    && self.inputs.iter().any(|p| p.kind == Video && p.many)
                     && media_out == 1
-                    && outs(LinkKind::Video) == 1,
+                    && outs(Video) == 1,
                 "a many-link video input and one video output",
             ),
             NodeKind::Transition => (
-                media_in == 2
-                    && ins(LinkKind::Video) == 2
-                    && media_out == 1
-                    && outs(LinkKind::Video) == 1,
-                "two video inputs and one video output",
+                ins(Video) >= 2
+                    && media_in == ins(Video) + ins(Audio)
+                    && outs(Video) == 1
+                    && media_out == 1 + outs(Audio)
+                    && outs(Audio) <= 1,
+                "two or more video inputs, one video output, optional audio",
             ),
             NodeKind::AudioMixer => (
-                media_in == ins(LinkKind::Audio)
-                    && media_in > 0
-                    && media_out == outs(LinkKind::Audio)
-                    && media_out > 0,
+                media_in == ins(Audio) && media_in > 0 && media_out == outs(Audio) && media_out > 0,
                 "audio inputs and audio outputs only",
             ),
             NodeKind::Encoder => (
                 media_in == 1
-                    && ins(LinkKind::Packets) == 0
+                    && ins(Video) + ins(Audio) == 1
                     && media_out == 1
-                    && outs(LinkKind::Packets) == 1,
+                    && outs(Packets) == 1,
                 "one video or audio input and one packet output",
             ),
             NodeKind::Muxer => (
-                media_in == ins(LinkKind::Packets)
+                media_in == ins(Packets)
                     && media_in > 0
                     && media_out == 1
-                    && outs(LinkKind::Packets) == 1,
-                "packet inputs and one packet output",
+                    && outs(Packets) + outs(Bytes) == 1,
+                "packet inputs and one packet or byte output",
             ),
             NodeKind::Output => (
-                media_in == ins(LinkKind::Packets) && media_in > 0 && media_out == 0,
-                "packet inputs and no media outputs",
+                media_in > 0 && media_out == 0,
+                "media inputs and no media outputs",
             ),
         };
         if ok {
@@ -241,24 +293,24 @@ impl NodeDescriptor {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use LinkKind::*;
 
     fn desc(kind: NodeKind, inputs: Vec<Pin>, outputs: Vec<Pin>) -> NodeDescriptor {
-        NodeDescriptor {
-            type_id: NodeTypeId::new_static("test.node"),
-            kind,
-            inputs,
-            outputs,
-        }
+        NodeDescriptor::new(NodeTypeId::new_static("test.node"), kind, inputs, outputs)
     }
 
     #[test]
     fn valid_shapes() {
-        use LinkKind::*;
         let cases = [
             desc(
                 NodeKind::Source,
                 vec![],
                 vec![Pin::one("video", Video), Pin::one("audio", Audio)],
+            ),
+            desc(
+                NodeKind::Source,
+                vec![Pin::one("cmd", Data)],
+                vec![Pin::one("events", Data)],
             ),
             desc(
                 NodeKind::VideoFilter,
@@ -277,8 +329,13 @@ mod tests {
             ),
             desc(
                 NodeKind::Transition,
-                vec![Pin::one("a", Video), Pin::one("b", Video)],
-                vec![Pin::one("out", Video)],
+                vec![
+                    Pin::one("a", Video),
+                    Pin::one("b", Video),
+                    Pin::one("stinger", Video),
+                    Pin::one("a-audio", Audio),
+                ],
+                vec![Pin::one("out", Video), Pin::one("audio", Audio)],
             ),
             desc(
                 NodeKind::AudioMixer,
@@ -287,18 +344,23 @@ mod tests {
             ),
             desc(
                 NodeKind::Encoder,
-                vec![Pin::one("in", Video)],
+                vec![Pin::one("in", Audio)],
                 vec![Pin::one("out", Packets)],
             ),
             desc(
                 NodeKind::Muxer,
                 vec![Pin::one("video", Packets), Pin::one("audio", Packets)],
-                vec![Pin::one("out", Packets)],
+                vec![Pin::one("out", Bytes)],
             ),
             desc(
                 NodeKind::Output,
                 vec![Pin::many("in", Packets)],
                 vec![Pin::one("events", Data)],
+            ),
+            desc(
+                NodeKind::Output,
+                vec![Pin::one("video", Video), Pin::one("audio", Audio)],
+                vec![],
             ),
         ];
         for d in cases {
@@ -308,28 +370,52 @@ mod tests {
 
     #[test]
     fn invalid_shapes() {
-        use LinkKind::*;
-        let source_with_input = desc(
-            NodeKind::Source,
-            vec![Pin::one("in", Video)],
-            vec![Pin::one("out", Video)],
-        );
-        assert!(matches!(
-            source_with_input.validate(),
-            Err(DescriptorError::ShapeMismatch { .. })
-        ));
-        let compositor_single = desc(
-            NodeKind::Compositor,
-            vec![Pin::one("in", Video)],
-            vec![Pin::one("out", Video)],
-        );
-        assert!(compositor_single.validate().is_err());
-        let encoder_from_packets = desc(
-            NodeKind::Encoder,
-            vec![Pin::one("in", Packets)],
-            vec![Pin::one("out", Packets)],
-        );
-        assert!(encoder_from_packets.validate().is_err());
+        let invalid = [
+            desc(
+                NodeKind::Source,
+                vec![Pin::one("in", Video)],
+                vec![Pin::one("out", Video)],
+            ),
+            desc(
+                NodeKind::Compositor,
+                vec![Pin::one("in", Video)],
+                vec![Pin::one("out", Video)],
+            ),
+            desc(
+                NodeKind::Encoder,
+                vec![Pin::one("in", Packets)],
+                vec![Pin::one("out", Packets)],
+            ),
+            desc(
+                NodeKind::Transition,
+                vec![Pin::one("a", Video)],
+                vec![Pin::one("out", Video)],
+            ),
+            desc(
+                NodeKind::Muxer,
+                vec![Pin::one("in", Video)],
+                vec![Pin::one("out", Packets)],
+            ),
+            desc(
+                NodeKind::Muxer,
+                vec![Pin::one("in", Packets)],
+                vec![Pin::one("a", Packets), Pin::one("b", Bytes)],
+            ),
+            desc(
+                NodeKind::Output,
+                vec![Pin::one("in", Packets)],
+                vec![Pin::one("out", Packets)],
+            ),
+            desc(NodeKind::Output, vec![Pin::one("in", Data)], vec![]),
+        ];
+        for d in invalid {
+            assert!(
+                matches!(d.validate(), Err(DescriptorError::ShapeMismatch { .. })),
+                "{:?} {:?}",
+                d.kind,
+                d.inputs
+            );
+        }
         let duplicate = desc(
             NodeKind::Source,
             vec![],
@@ -339,5 +425,22 @@ mod tests {
             duplicate.validate(),
             Err(DescriptorError::DuplicatePin("out".into()))
         );
+    }
+
+    #[test]
+    fn type_ids_must_be_reverse_dns() {
+        for good in ["org.rbs.filter.chroma-key", "com.example.x2"] {
+            assert!(NodeTypeId::new(good).is_well_formed(), "{good}");
+        }
+        for bad in ["", "single", "org..rbs", "Org.rbs", "org.rbs.", "org.r bs"] {
+            assert!(!NodeTypeId::new(bad).is_well_formed(), "{bad}");
+        }
+        let d = NodeDescriptor::new(
+            NodeTypeId::new("nope"),
+            NodeKind::Source,
+            vec![],
+            vec![Pin::one("v", Video)],
+        );
+        assert!(matches!(d.validate(), Err(DescriptorError::BadTypeId(_))));
     }
 }
