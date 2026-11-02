@@ -3,7 +3,7 @@
 use std::fs::File;
 use std::io::{BufWriter, Seek, SeekFrom, Write};
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering, fence};
 use std::sync::{Arc, OnceLock, mpsc};
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
@@ -18,13 +18,15 @@ use rbs_transport::{
 const RING_SLOTS: usize = 1024;
 /// Write buffer of the I/O thread.
 const WRITE_BUFFER: usize = 256 * 1024;
-/// The I/O thread wakes at least this often while idle, so a missed wake-up costs at
-/// most this much latency.
-const IDLE_WAIT: Duration = Duration::from_millis(50);
+/// Safety net for the park/unpark handshake (which is fenced and does not lose
+/// wake-ups): the idle I/O thread still looks at the ring this often.
+const IDLE_WAIT: Duration = Duration::from_millis(500);
 const NO_TIMESTAMP: u64 = u64::MAX;
-/// After a timed-out `finish` or a `Drop`, how long to wait for the thread to notice
-/// the abort before detaching it.
-const ABORT_GRACE: Duration = Duration::from_secs(1);
+/// Share of the `finish` timeout spent waiting for a clean end; the rest is the grace
+/// period after the abort, so `finish` never blocks longer than its timeout.
+const CLEAN_SHARE: u32 = 4; // of 5
+/// How long `Drop` waits for the aborted thread before detaching it.
+const DROP_GRACE: Duration = Duration::from_millis(200);
 
 struct Item {
     data: Bytes,
@@ -34,15 +36,24 @@ struct Item {
     timestamp: u64,
 }
 
-/// State shared with the I/O thread: atomics and set-once cells only (P6).
+/// Written by the I/O thread only, on its own cache line so the producer's stores do
+/// not invalidate it.
 #[derive(Default)]
-struct Shared {
-    queued_bytes: AtomicU64,
+#[repr(align(128))]
+struct Progress {
     bytes_sent: AtomicU64,
     /// Timestamp of the last `Media` chunk written, or `NO_TIMESTAMP`.
     written_timestamp: AtomicU64,
     opened: AtomicBool,
     sleeping: AtomicBool,
+}
+
+/// State shared with the I/O thread: atomics and set-once cells only (P6).
+#[derive(Default)]
+struct Shared {
+    /// Added by the producer before a push, subtracted by the I/O thread after a pop.
+    queued_bytes: AtomicU64,
+    progress: Progress,
     /// Finish: write what is queued, then exit.
     stop: AtomicBool,
     /// Give up: discard what is queued and exit after the current write.
@@ -60,16 +71,22 @@ struct Running {
 enum State {
     Created,
     Running(Running),
-    Finished,
+    /// The counters as they were when the thread ended.
+    Finished(TransportStats),
 }
 
 pub(crate) struct FileTransport {
     path: PathBuf,
     limits: QueueLimits,
     state: State,
-    newest_timestamp: Option<u64>,
+    /// Timestamp of the first `Media` chunk queued; the duration limit counts from it
+    /// until a chunk has been written.
+    first_timestamp: Option<u64>,
     reported_connected: bool,
     reported_error: bool,
+    /// The write error was returned by `send` once; later calls return `Closed`
+    /// without building another message.
+    returned_error: bool,
 }
 
 impl FileTransport {
@@ -78,9 +95,10 @@ impl FileTransport {
             path,
             limits,
             state: State::Created,
-            newest_timestamp: None,
+            first_timestamp: None,
             reported_connected: false,
             reported_error: false,
+            returned_error: false,
         }
     }
 }
@@ -90,7 +108,9 @@ fn io_error(shared: &Shared, what: &str, e: &std::io::Error) {
     let _ = shared.error.set(format!("{what}: {e}"));
 }
 
-/// The I/O thread: opens the file, writes items in order, applies patches.
+/// The I/O thread: opens the file, writes items in order, applies patches. It signals
+/// `done` only after the file is closed, so a caller that saw `done` can join without
+/// waiting on the OS.
 fn run_io(
     path: PathBuf,
     mut consumer: rtrb::Consumer<Item>,
@@ -106,7 +126,10 @@ fn run_io(
             return;
         }
     };
-    shared.opened.store(true, Ordering::Release);
+    // Pipes and devices cannot be synced (and some cannot seek); only regular files
+    // are synced at the end.
+    let regular = file.metadata().is_ok_and(|m| m.is_file());
+    shared.progress.opened.store(true, Ordering::Release);
     let mut out = BufWriter::with_capacity(WRITE_BUFFER, file);
     let mut failed = false;
     loop {
@@ -122,9 +145,10 @@ fn run_io(
                         io_error(&shared, "write", &e);
                         failed = true;
                     } else {
-                        shared.bytes_sent.fetch_add(len, Ordering::Relaxed);
+                        shared.progress.bytes_sent.fetch_add(len, Ordering::Relaxed);
                         if item.timestamp != NO_TIMESTAMP {
                             shared
+                                .progress
                                 .written_timestamp
                                 .store(item.timestamp, Ordering::Release);
                         }
@@ -136,25 +160,35 @@ fn run_io(
                 if shared.stop.load(Ordering::Acquire) {
                     break;
                 }
-                // Announce the nap, then look again, so a producer that pushed in
-                // between either sees `sleeping` and unparks us, or we see its item.
-                shared.sleeping.store(true, Ordering::SeqCst);
+                // Announce the nap, then look again. The fence pairs with the one in
+                // `Running::wake`: either the producer sees `sleeping` and unparks us,
+                // or we see its item.
+                shared.progress.sleeping.store(true, Ordering::SeqCst);
+                fence(Ordering::SeqCst);
                 if consumer.is_empty() && !shared.stop.load(Ordering::SeqCst) {
                     thread::park_timeout(IDLE_WAIT);
                 }
-                shared.sleeping.store(false, Ordering::SeqCst);
+                shared.progress.sleeping.store(false, Ordering::SeqCst);
             }
         }
     }
-    if !failed && !shared.abort.load(Ordering::Acquire) {
-        let flushed = out.flush().and_then(|()| match out.get_ref().sync_data() {
-            // Pipes and some special files cannot be synced; nothing is lost.
-            Err(e) if e.kind() == std::io::ErrorKind::InvalidInput => Ok(()),
-            other => other,
+    if failed || shared.abort.load(Ordering::Acquire) {
+        // Discard the buffer: flushing it could block on a stalled target again.
+        let (file, _unwritten) = out.into_parts();
+        drop(file);
+    } else {
+        let flushed = out.flush().and_then(|()| {
+            if regular {
+                out.get_ref().sync_data()
+            } else {
+                Ok(())
+            }
         });
         if let Err(e) = flushed {
             io_error(&shared, "flush", &e);
         }
+        let (file, _unwritten) = out.into_parts();
+        drop(file);
     }
     let _ = done.send(());
 }
@@ -166,6 +200,14 @@ fn write_item(out: &mut BufWriter<File>, item: &Item) -> std::io::Result<()> {
             out.flush()?;
             let file = out.get_mut();
             let end = file.stream_position()?;
+            // A patch only rewrites bytes already written; one past the end would leave
+            // a hole and later chunks would land inside it.
+            if offset.saturating_add(item.data.len() as u64) > end {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidInput,
+                    "patch beyond the end of the file",
+                ));
+            }
             file.seek(SeekFrom::Start(offset))?;
             file.write_all(&item.data)?;
             file.seek(SeekFrom::Start(end))?;
@@ -184,42 +226,54 @@ fn discard(consumer: &mut rtrb::Consumer<Item>, shared: &Shared) {
 
 impl Running {
     fn wake(&self) {
-        if self.shared.sleeping.load(Ordering::SeqCst) {
+        // Pairs with the fence in `run_io`: orders the push before the load of
+        // `sleeping` (a release store and a later load may otherwise be reordered).
+        fence(Ordering::SeqCst);
+        if self.shared.progress.sleeping.load(Ordering::SeqCst) {
             self.thread.thread().unpark();
         }
     }
 
-    /// Stops the thread: `abort` discards what is queued. Waits at most `timeout`
-    /// for a clean end; after that it aborts and joins.
-    fn stop(self, timeout: Duration, abort: bool) -> Result<(), TransportError> {
-        if abort {
+    /// Stops the thread and returns the final counters with the result. With `abort`
+    /// the queue is discarded at once and `budget` is the grace period; otherwise four
+    /// fifths of `budget` are spent waiting for a clean end, then the thread is aborted
+    /// and gets the rest. A thread still blocked in the OS after that (a hung network
+    /// drive or a stalled pipe) is detached; it exits when that call returns.
+    fn stop(self, budget: Duration, abort: bool) -> (Result<(), TransportError>, TransportStats) {
+        let grace = if abort {
             self.shared.abort.store(true, Ordering::Release);
-        }
+            budget
+        } else {
+            budget - budget * CLEAN_SHARE / 5
+        };
         self.shared.stop.store(true, Ordering::SeqCst);
         self.thread.thread().unpark();
         let mut timed_out = false;
-        if self.done.recv_timeout(timeout).is_err() {
-            timed_out = true;
+        if abort || self.done.recv_timeout(budget - grace).is_err() {
+            timed_out = !abort;
             self.shared.abort.store(true, Ordering::Release);
             self.thread.thread().unpark();
-            // The thread exits after its current write. If the OS keeps it blocked (a
-            // hung network drive), it is detached rather than blocking the caller; it
-            // exits once that call returns.
-            if self.done.recv_timeout(ABORT_GRACE).is_err() {
-                return Err(TransportError::Timeout);
+            if self.done.recv_timeout(grace).is_err() {
+                return (Err(TransportError::Timeout), self.stats());
             }
         }
-        let panicked = self.thread.join().is_err();
-        if panicked {
-            return Err(TransportError::Io("I/O thread panicked".into()));
+        let stats = self.stats();
+        if self.thread.join().is_err() {
+            return (Err(TransportError::Io("I/O thread panicked".into())), stats);
         }
-        if timed_out {
-            return Err(TransportError::Timeout);
-        }
-        match self.shared.error.get() {
+        let result = match self.shared.error.get() {
+            _ if timed_out => Err(TransportError::Timeout),
             Some(e) if !abort => Err(TransportError::Io(e.clone())),
             _ => Ok(()),
-        }
+        };
+        (result, stats)
+    }
+
+    fn stats(&self) -> TransportStats {
+        let mut stats = TransportStats::default();
+        stats.bytes_sent = self.shared.progress.bytes_sent.load(Ordering::Relaxed);
+        stats.queued_bytes = self.shared.queued_bytes.load(Ordering::Relaxed);
+        stats
     }
 }
 
@@ -228,11 +282,14 @@ impl Transport for FileTransport {
         match self.state {
             State::Created => {}
             State::Running(_) => return Err(TransportError::Rejected("already started".into())),
-            State::Finished => return Err(TransportError::Closed),
+            State::Finished(_) => return Err(TransportError::Closed),
         }
         let (producer, consumer) = rtrb::RingBuffer::new(RING_SLOTS);
         let shared = Arc::new(Shared {
-            written_timestamp: AtomicU64::new(NO_TIMESTAMP),
+            progress: Progress {
+                written_timestamp: AtomicU64::new(NO_TIMESTAMP),
+                ..Progress::default()
+            },
             ..Shared::default()
         });
         let (done_tx, done) = mpsc::channel();
@@ -254,7 +311,7 @@ impl Transport for FileTransport {
     fn send(&mut self, item: TransportItem<'_>) -> Result<SendOutcome, TransportError> {
         let running = match &mut self.state {
             State::Created => return Err(TransportError::NotStarted),
-            State::Finished => return Err(TransportError::Closed),
+            State::Finished(_) => return Err(TransportError::Closed),
             State::Running(running) => running,
         };
         let TransportItem::Chunk(chunk) = item else {
@@ -263,6 +320,10 @@ impl Transport for FileTransport {
             ));
         };
         if let Some(e) = running.shared.error.get() {
+            if self.returned_error {
+                return Err(TransportError::Closed);
+            }
+            self.returned_error = true;
             return Err(TransportError::Io(e.clone()));
         }
         let (patch, timestamp) = match chunk.kind {
@@ -275,10 +336,17 @@ impl Transport for FileTransport {
         if queued > 0 && queued + len > self.limits.max_bytes as u64 {
             return Err(TransportError::QueueFull);
         }
+        // Duration held: from the last chunk written (or the first queued, before any
+        // write) to this one. That is one chunk interval stricter than counting from
+        // the oldest queued chunk, and needs no per-item bookkeeping.
         if timestamp != NO_TIMESTAMP && queued > 0 {
-            let written = running.shared.written_timestamp.load(Ordering::Acquire);
+            let written = running
+                .shared
+                .progress
+                .written_timestamp
+                .load(Ordering::Acquire);
             let oldest = if written == NO_TIMESTAMP {
-                self.newest_timestamp.unwrap_or(timestamp)
+                self.first_timestamp.unwrap_or(timestamp)
             } else {
                 written
             };
@@ -298,8 +366,8 @@ impl Transport for FileTransport {
             running.shared.queued_bytes.fetch_sub(len, Ordering::AcqRel);
             return Err(TransportError::QueueFull);
         }
-        if timestamp != NO_TIMESTAMP && self.newest_timestamp.is_none() {
-            self.newest_timestamp = Some(timestamp);
+        if timestamp != NO_TIMESTAMP && self.first_timestamp.is_none() {
+            self.first_timestamp = Some(timestamp);
         }
         running.wake();
         Ok(SendOutcome::Queued)
@@ -309,7 +377,7 @@ impl Transport for FileTransport {
         let State::Running(running) = &self.state else {
             return;
         };
-        if !self.reported_connected && running.shared.opened.load(Ordering::Acquire) {
+        if !self.reported_connected && running.shared.progress.opened.load(Ordering::Acquire) {
             self.reported_connected = true;
             out.push(TransportEvent::Connected);
         }
@@ -324,28 +392,36 @@ impl Transport for FileTransport {
     }
 
     fn stats(&self) -> TransportStats {
-        let mut stats = TransportStats::default();
-        if let State::Running(running) = &self.state {
-            stats.bytes_sent = running.shared.bytes_sent.load(Ordering::Relaxed);
-            stats.queued_bytes = running.shared.queued_bytes.load(Ordering::Relaxed);
+        match &self.state {
+            State::Created => TransportStats::default(),
+            State::Running(running) => running.stats(),
+            State::Finished(stats) => *stats,
         }
-        stats
     }
 
     fn finish(&mut self, timeout: Duration) -> Result<(), TransportError> {
-        match std::mem::replace(&mut self.state, State::Finished) {
-            State::Running(running) => running.stop(timeout, false),
+        let state = std::mem::replace(&mut self.state, State::Finished(TransportStats::default()));
+        match state {
+            State::Running(running) => {
+                let (result, stats) = running.stop(timeout, false);
+                self.state = State::Finished(stats);
+                result
+            }
             State::Created => Ok(()),
-            State::Finished => Err(TransportError::Closed),
+            State::Finished(stats) => {
+                self.state = State::Finished(stats);
+                Err(TransportError::Closed)
+            }
         }
     }
 }
 
 impl Drop for FileTransport {
     fn drop(&mut self) {
-        if let State::Running(running) = std::mem::replace(&mut self.state, State::Finished) {
+        let state = std::mem::replace(&mut self.state, State::Finished(TransportStats::default()));
+        if let State::Running(running) = state {
             // Dropped without `finish`: keep what was written, stop promptly.
-            let _ = running.stop(Duration::ZERO, true);
+            let _ = running.stop(DROP_GRACE, true);
         }
     }
 }

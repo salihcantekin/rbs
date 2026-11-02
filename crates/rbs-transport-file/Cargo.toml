@@ -17,6 +17,12 @@ rtrb = "0.4"
 
 [dev-dependencies]
 rbs-transport = { path = "../rbs-transport", features = ["conformance"] }
+# Micro-benchmarks for the send path (measure-performance skill, ADR-0009).
+criterion = { version = "0.8", default-features = false, features = ["cargo_bench_support"] }
+
+[[bench]]
+name = "send"
+harness = false
 
 [lints]
 workspace = true
