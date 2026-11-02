@@ -100,7 +100,15 @@ The plugin SDK spec owns these mirrors; this spec only requires that every field
 - `StreamDescriptor { codec, bitstream, extradata: Bytes, params }`: produced by an encoder, consumed by muxers and transports. `params` is `StreamParams::Video { format, frame_rate }` or `StreamParams::Audio { format, frame_size }`.
 - `EncodedPacket { codec, bitstream, pts, dts, duration, keyframe, data: Bytes }`, built with `EncodedPacket::new`, which returns `MediaError::DtsAfterPts` when `dts > pts`, and `with_duration`. Fields are read-only through accessors. `pts` and `dts` are master-clock times with `dts <= pts`.
 - Payloads are `bytes::Bytes` (re-exported as `rbs_core::media::Bytes`): O(1) clone and zero-copy `slice`, so one encode fans out to many outputs without copying.
-- Creating a payload costs one allocation per packet at the producer (encoder drain): either the `Vec` it is built from, or the shared header of `Bytes::from_owner` when the buffer comes from a pool (requires `bytes` 1.9 or later). The first clone of a `Bytes` built from a `Vec` also allocates its shared header once, so producers share a payload when they create it. After that, fan-out to muxers and transports never allocates.
+- Creating a payload costs one allocation per packet at the producer (encoder drain): either the `Vec` it is built from, or the shared header of `Bytes::from_owner` when the buffer comes from a pool (requires `bytes` 1.9 or later). The first clone of a `Bytes` built from a `Vec` also allocates its shared header once, so producers share a payload when they create it. After that, handing the same packet to several muxers and transports never allocates; what those consumers produce (muxer chunks, a converted bitstream for a container that needs another framing) costs its own payload allocation per chunk or packet, see [output ports](output-ports.md#common-rules).
+
+### Containers (`rbs_core::media::container`)
+
+Shared by the mux and transport ports ([output ports](output-ports.md), ADR-0019), which may depend only on `rbs-core`.
+
+- `ContainerId` (non-exhaustive): `Mp4Fragmented`, `Matroska`, `MpegTs`, `Flv`; `as_str()` gives `mux.container` values (`mp4.fragmented`, `matroska`, `mpegts`, `flv`) and `transport_input()` gives `transport.input` values (`container.<name>`).
+- `StreamIndex(u16)`: position of a stream in the descriptor list of one output.
+- `MuxChunk { kind: ChunkKind, data: Bytes }` with `ChunkKind::Header`, `Media { keyframe, timestamp }`, `Trailer` or `Patch { offset }`. `keyframe` means an entry point for every stream of the output: a reader starting at this chunk can decode all of them (video from a keyframe; in an audio-only output every chunk can be one). Patches overwrite earlier bytes and are applied only by seekable transports; `is_sequential()` is false for them.
 
 ## Versioning
 

@@ -12,6 +12,11 @@ publish.workspace = true
 # Shared, sliceable packet payloads (docs/architecture/overview.md#memory-model, ADR-0018).
 bytes = "1.9"
 
+[features]
+# Test support shared by port conformance suites (`rbs_core::conformance`). Enabled by
+# port crates' `conformance` features; never needed at runtime.
+conformance = []
+
 [lints]
 workspace = true
 

@@ -6,11 +6,15 @@
 //! - [`capability`]: the capability and requirement model used to pick backends (ADR-0003).
 //! - [`lifecycle`]: Installed / Standby / Active states (ADR-0013).
 //! - [`registry`]: adapter factories and runtime selection by capability.
+//! - `conformance` (feature `conformance`): report and probe checks shared by port
+//!   conformance suites. Test support only.
 //!
 //! This crate must stay free of vendor, OS media, GPU and UI dependencies
 //! (architecture principle P1).
 
 pub mod capability;
+#[cfg(feature = "conformance")]
+pub mod conformance;
 pub mod lifecycle;
 pub mod media;
 pub mod registry;

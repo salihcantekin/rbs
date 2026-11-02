@@ -780,6 +780,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "rbs-codec"
+version = "0.0.1"
+dependencies = [
+ "rbs-codec",
+ "rbs-core",
+]
+
+[[package]]
 name = "rbs-core"
 version = "0.0.1"
 dependencies = [
@@ -805,6 +813,22 @@ name = "rbs-graph"
 version = "0.0.1"
 dependencies = [
  "rbs-core",
+]
+
+[[package]]
+name = "rbs-mux"
+version = "0.0.1"
+dependencies = [
+ "rbs-core",
+ "rbs-mux",
+]
+
+[[package]]
+name = "rbs-transport"
+version = "0.0.1"
+dependencies = [
+ "rbs-core",
+ "rbs-transport",
 ]
 
 [[package]]

@@ -64,7 +64,7 @@ pub trait VideoEncoder: Send {
 }
 ```
 
-These signatures are the starting point; the exact types are fixed when each port crate is created, and this spec is updated in the same PR. Frame, block and packet types (`VideoFrame`, `AudioBlock`, `EncodedPacket`, `StreamDescriptor`, formats) come from the [media types spec](media-types.md); in the sketch above, `VideoFrameRef<'_>` is `&VideoFrame`.
+These signatures are the starting point; the exact types are fixed when each port crate is created, and this spec is updated in the same PR. Frame, block and packet types (`VideoFrame`, `AudioBlock`, `EncodedPacket`, `StreamDescriptor`, formats) come from the [media types spec](media-types.md); in the sketch above, `VideoFrameRef<'_>` is `&VideoFrame`. The encode, mux and transport contracts are fixed in [output ports](output-ports.md).
 
 ## Capability model
 
@@ -119,4 +119,4 @@ Hardware-dependent cases are skipped (not failed) when probe reports no hardware
 ## Open questions
 
 - How `rbs-gpu` imports each `NativeSurface` kind and which kinds each platform supports (owned by the `rbs-gpu` spec; the representation is fixed in [media types](media-types.md)).
-- Whether transports and muxers are one port or two for protocols with built-in framing (RTMP/FLV).
+- ~~Whether transports and muxers are one port or two for protocols with built-in framing (RTMP/FLV).~~ Two ports; a transport declares whether it takes packets or a container ([ADR-0019](../adr/0019-encode-mux-transport-ports.md), [output ports](output-ports.md)).
