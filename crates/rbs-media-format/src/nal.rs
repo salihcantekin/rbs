@@ -40,11 +40,29 @@ pub struct AnnexBUnits<'a> {
 }
 
 /// Finds the next start code at or after `from`; returns (start of the code, first
-/// byte after it). Looks at every third byte while no `00` or `01` is in sight, the
-/// usual skip-ahead search, so payload bytes are mostly skipped.
+/// byte after it).
+///
+/// Two skips keep this fast on slice data, where zero bytes are rare: eight bytes at a
+/// time while a word holds no zero byte (no start code can begin there), and the usual
+/// skip-ahead step of three bytes while no `00` or `01` is in sight.
 fn find_start(data: &[u8], from: usize) -> Option<(usize, usize)> {
+    const LOW: u64 = 0x0101_0101_0101_0101;
+    const HIGH: u64 = 0x8080_8080_8080_8080;
     let mut i = from;
-    while i + 3 <= data.len() {
+    loop {
+        while let Some(word) = data.get(i..i + 8) {
+            let mut bytes = [0u8; 8];
+            bytes.copy_from_slice(word);
+            let x = u64::from_le_bytes(bytes);
+            // Classic "has a zero byte" test.
+            if x.wrapping_sub(LOW) & !x & HIGH != 0 {
+                break;
+            }
+            i += 8;
+        }
+        if i + 3 > data.len() {
+            return None;
+        }
         match data[i + 2] {
             0 => i += 1,
             1 if data[i] == 0 && data[i + 1] == 0 => {
@@ -59,7 +77,6 @@ fn find_start(data: &[u8], from: usize) -> Option<(usize, usize)> {
             _ => i += 3,
         }
     }
-    None
 }
 
 impl<'a> Iterator for AnnexBUnits<'a> {
@@ -323,6 +340,35 @@ mod tests {
         length_prefixed_to_annexb(&[0, 0, 0, 0, 0, 0, 0, 1, 0x41], 4, &[], &mut empty_unit)
             .unwrap();
         assert_eq!(empty_unit, [0, 0, 0, 1, 0x41], "zero-length unit skipped");
+    }
+
+    #[test]
+    fn word_skip_matches_naive_search_on_sparse_zeros() {
+        let mut state = 0x1234_5677_u32;
+        let mut data: Vec<u8> = (0..20_000)
+            .map(|_| {
+                state ^= state << 13;
+                state ^= state >> 17;
+                state ^= state << 5;
+                (state >> 24) as u8
+            })
+            .collect();
+        // Plant start codes at every alignment.
+        for (n, at) in (100..19_000).step_by(997).enumerate() {
+            let code: &[u8] = if n % 2 == 0 {
+                &[0, 0, 1]
+            } else {
+                &[0, 0, 0, 1]
+            };
+            data[at..at + code.len()].copy_from_slice(code);
+        }
+        for from in (0..data.len()).step_by(7) {
+            assert_eq!(
+                find_start(&data, from),
+                naive_find_start(&data, from),
+                "from {from}"
+            );
+        }
     }
 
     #[test]
