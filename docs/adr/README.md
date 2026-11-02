@@ -32,3 +32,4 @@ An ADR records one decision that is hard to reverse or affects more than one cra
 | [0017](0017-flexible-panels-and-workspaces.md) | Flexible panels and saved workspaces | Accepted |
 | [0018](0018-media-frame-representation.md) | Media frames as small values with leased memory | Accepted |
 | [0019](0019-encode-mux-transport-ports.md) | Separate encode, mux and transport ports for outputs | Proposed |
+| [0020](0020-node-contract-and-schedule-swap.md) | Node contract and lock-free schedule swap | Accepted |

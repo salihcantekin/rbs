@@ -9,7 +9,7 @@ Keep this list current. When a new crate or module lands on one of these paths, 
 | Path | Runs | Location (current or planned) |
 | --- | --- | --- |
 | Audio thread: device callbacks, audio graph, audio filters | Every block (10 ms) | `crates/rbs-audio`, audio adapters in `crates/rbs-audio-io-*` |
-| Render loop: compositor, GPU filters, transitions | Every frame per canvas | `crates/rbs-graph` scheduler, `crates/rbs-gpu` |
+| Render loop: compositor, GPU filters, transitions | Every frame per canvas | `crates/rbs-graph/src/runtime` (executor tick and swap), `crates/rbs-gpu` |
 | `Node::process` of every node type | Every frame or block | Wherever nodes are implemented |
 | Capture frame hand-off: `CaptureSession::latest_frame` and the adapter code it calls | Every frame per Active capture source | `crates/rbs-capture`, adapters in `crates/rbs-capture-*` |
 | Frame, texture and audio buffer pools | Every frame or block | `crates/rbs-gpu`, `crates/rbs-audio` |

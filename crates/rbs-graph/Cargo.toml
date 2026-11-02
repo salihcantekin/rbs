@@ -13,3 +13,13 @@ rbs-core = { path = "../rbs-core" }
 
 [lints]
 workspace = true
+
+[dev-dependencies]
+# Allocation guard for the executor's tick and swap (performance budgets: no allocation on hot paths).
+allocation-counter = "0.8"
+# Micro-benchmarks for the tick loop (measure-performance skill, ADR-0009).
+criterion = { version = "0.8", default-features = false, features = ["cargo_bench_support"] }
+
+[[bench]]
+name = "executor"
+harness = false
