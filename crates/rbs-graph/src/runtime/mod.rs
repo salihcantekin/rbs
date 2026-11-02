@@ -25,7 +25,9 @@ use std::fmt;
 use rbs_core::time::Timestamp;
 use rbs_core::timing::Cadence;
 
-pub use controller::{ApplyError, ApplyReport, ControlError, Controller, Retired, channel};
+pub use controller::{
+    ApplyError, ApplyReport, Collected, ControlError, Controller, JoinError, channel,
+};
 pub use executor::{DEFAULT_FAILURE_LIMIT, Executor, NodeHealth};
 pub use schedule::{Inputs, OutputError, Outputs, PER_TICK_EVENTS, Rejected};
 
@@ -103,12 +105,6 @@ pub enum NodeError {
     NotReady,
     /// A failure with a message; only for `prepare` and `release`, which may allocate.
     Failed(String),
-    /// The node panicked; the executor caught it.
-    Panicked,
-    /// The controller has no instance for a node the description wants Active.
-    NoInstance,
-    /// The instance's descriptor does not match the node's descriptor in the graph.
-    DescriptorMismatch,
 }
 
 impl fmt::Display for NodeError {
@@ -119,9 +115,6 @@ impl fmt::Display for NodeError {
             NodeError::Output(e) => write!(f, "output error: {e}"),
             NodeError::NotReady => f.write_str("node not ready"),
             NodeError::Failed(m) => f.write_str(m),
-            NodeError::Panicked => f.write_str("node panicked"),
-            NodeError::NoInstance => f.write_str("no node instance"),
-            NodeError::DescriptorMismatch => f.write_str("instance descriptor does not match"),
         }
     }
 }

@@ -7,8 +7,9 @@ use std::sync::mpsc::{Receiver, SyncSender, TryRecvError, TrySendError};
 use crate::description::NodeId;
 
 use super::controller::Retired;
+use super::schedule::Entry;
 use super::schedule::{Inputs, Outputs, Schedule, Slot};
-use super::{NodeError, ProcessCtx, Runtime, Tick, WarmCtx};
+use super::{ProcessCtx, Runtime, Tick, WarmCtx};
 
 /// Consecutive failed ticks after which a node is bypassed, unless changed with
 /// [`Executor::set_failure_limit`].
@@ -100,9 +101,12 @@ impl<X: Runtime> Executor<X> {
     /// that leave, `warm` for nodes that join. Warm-up therefore happens in the slack
     /// after a tick, never before the nodes of the current tick ran.
     pub fn run_tick(&mut self, tick: Tick) {
-        X::begin_tick(&self.shared, &mut self.local, tick);
+        // A panicking hook must not take the executor (and every node) down.
+        let (shared, local) = (&*self.shared, &mut self.local);
+        let _ = catch_unwind(AssertUnwindSafe(|| X::begin_tick(shared, local, tick)));
         self.process_all(tick);
-        X::end_tick(&self.shared, &mut self.local, tick);
+        let (shared, local) = (&*self.shared, &mut self.local);
+        let _ = catch_unwind(AssertUnwindSafe(|| X::end_tick(shared, local, tick)));
         self.maintain();
     }
 
@@ -184,6 +188,7 @@ impl<X: Runtime> Executor<X> {
             let (from, to) = (from as usize, to as usize);
             next.nodes[to].node = old.nodes[from].node.take();
             next.nodes[to].health = old.nodes[from].health;
+            next.nodes[to].warmed = old.nodes[from].warmed;
         }
         for &(from, to) in &next.carry_slots {
             if let (Some(Slot::Video(a)), Some(Slot::Video(b))) = (
@@ -194,16 +199,7 @@ impl<X: Runtime> Executor<X> {
             }
         }
         // Nodes still in the old schedule are leaving.
-        for entry in old.nodes.iter_mut() {
-            if let Some(node) = entry.node.as_mut() {
-                let mut ctx = WarmCtx::<X> {
-                    node: entry.id,
-                    shared: &self.shared,
-                    local: &mut self.local,
-                };
-                let _ = catch_unwind(AssertUnwindSafe(|| node.cool(&mut ctx)));
-            }
-        }
+        cool_all(&mut old.nodes, &self.shared, &mut self.local);
         for &index in &next.fresh {
             let entry = &mut next.nodes[index as usize];
             let Some(node) = entry.node.as_mut() else {
@@ -217,7 +213,7 @@ impl<X: Runtime> Executor<X> {
             let result = catch_unwind(AssertUnwindSafe(|| node.warm(&mut ctx)));
             let failed = match result {
                 Ok(Ok(())) => false,
-                Ok(Err(NodeError::Panicked)) | Err(_) => {
+                Err(_) => {
                     entry.health.panicked = true;
                     true
                 }
@@ -226,7 +222,11 @@ impl<X: Runtime> Executor<X> {
             if failed {
                 entry.health.warm_failed = true;
                 entry.health.bypassed = true;
+                // Return what a partial warm-up took; `warmed` stays false, so the node
+                // is not cooled a second time when it leaves.
                 let _ = catch_unwind(AssertUnwindSafe(|| node.cool(&mut ctx)));
+            } else {
+                entry.warmed = true;
             }
         }
         let old = std::mem::replace(&mut self.current, next);
@@ -236,5 +236,33 @@ impl<X: Runtime> Executor<X> {
             Err(TrySendError::Full(r)) => self.pending = Some(r),
             Err(TrySendError::Disconnected(_)) => {}
         }
+    }
+}
+
+/// Calls `cool` on every warmed node still present in `nodes`.
+fn cool_all<X: Runtime>(nodes: &mut [Entry<X>], shared: &X::Shared, local: &mut X::Local) {
+    for entry in nodes.iter_mut() {
+        if !entry.warmed {
+            continue;
+        }
+        if let Some(node) = entry.node.as_mut() {
+            let mut ctx = WarmCtx::<X> {
+                node: entry.id,
+                shared,
+                local,
+            };
+            let _ = catch_unwind(AssertUnwindSafe(|| node.cool(&mut ctx)));
+            entry.warmed = false;
+        }
+    }
+}
+
+impl<X: Runtime> Drop for Executor<X> {
+    /// Last resort when the executor is dropped without being drained (see
+    /// [`Controller::drain`](super::Controller::drain)): executor-thread resources are
+    /// still returned with `cool`, but `release` never runs and the nodes are dropped
+    /// here. Draining first is the contract.
+    fn drop(&mut self) {
+        cool_all(&mut self.current.nodes, &self.shared, &mut self.local);
     }
 }

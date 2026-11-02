@@ -83,6 +83,8 @@ pub(crate) struct Entry<X: Runtime> {
     /// Into `Schedule::pins`: one span of `Schedule::links` per input pin.
     pub(crate) pins: Span,
     pub(crate) health: NodeHealth,
+    /// `warm` succeeded and `cool` has not run since; only such nodes are cooled.
+    pub(crate) warmed: bool,
 }
 
 /// A compiled plan, sent from the controller to the executor and back.

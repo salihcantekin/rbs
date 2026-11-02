@@ -37,7 +37,7 @@ pub fn channel<X: Runtime>(
 }
 
 /// A schedule the executor swapped out, on its way back to the controller.
-pub struct Retired<X: Runtime> {
+pub(crate) struct Retired<X: Runtime> {
     schedule: Schedule<X>,
 }
 
@@ -55,7 +55,45 @@ pub struct ApplyReport {
     /// recomputed without them, so this can differ from `description.plan()`.
     pub plan: SchedulePlan,
     /// Nodes the description wants Active that could not join, and why.
-    pub failed: Vec<(NodeId, NodeError)>,
+    pub failed: Vec<(NodeId, JoinError)>,
+}
+
+/// Why a node the description wants Active could not join the schedule.
+#[non_exhaustive]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum JoinError {
+    /// The controller has no instance for the node.
+    NoInstance,
+    /// The instance's descriptor does not match the node's descriptor in the graph.
+    DescriptorMismatch,
+    /// `prepare` returned an error (`release` was called).
+    Prepare(NodeError),
+    /// `prepare` panicked (`release` was called).
+    Panicked,
+}
+
+impl fmt::Display for JoinError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            JoinError::NoInstance => f.write_str("no node instance"),
+            JoinError::DescriptorMismatch => f.write_str("instance descriptor does not match"),
+            JoinError::Prepare(e) => write!(f, "prepare failed: {e}"),
+            JoinError::Panicked => f.write_str("prepare panicked"),
+        }
+    }
+}
+
+impl std::error::Error for JoinError {}
+
+/// What [`Controller::collect`] took back from the executor.
+#[non_exhaustive]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Collected {
+    /// Nodes that left the schedule (now idle and released), with their last counters.
+    pub left: Vec<(NodeId, NodeHealth)>,
+    /// Counters of every node of the swapped-out schedule as of the swap, including
+    /// nodes that stayed; this is how the control side sees bypassed nodes.
+    pub health: Vec<(NodeId, NodeHealth)>,
 }
 
 /// Why a description could not be applied.
@@ -179,7 +217,7 @@ impl<X: Runtime> Controller<X> {
             return Err(ApplyError::Busy);
         }
         let mut working: Option<GraphDescription> = None;
-        let mut failed: Vec<(NodeId, NodeError)> = Vec::new();
+        let mut failed: Vec<(NodeId, JoinError)> = Vec::new();
         let mut prepared: HashMap<NodeId, Box<dyn Node<X>>> = HashMap::new();
         let plan = loop {
             let plan = working.as_ref().unwrap_or(description).plan();
@@ -195,12 +233,12 @@ impl<X: Runtime> Controller<X> {
                 }
                 let graph = working.as_ref().unwrap_or(description);
                 match self.idle.remove(&id) {
-                    None => newly_failed.push((id, NodeError::NoInstance)),
+                    None => newly_failed.push((id, JoinError::NoInstance)),
                     Some(mut node) => {
                         let wanted = graph.node(id).map(|e| &*e.descriptor);
                         if wanted != Some(node.descriptor()) {
                             self.idle.insert(id, node);
-                            newly_failed.push((id, NodeError::DescriptorMismatch));
+                            newly_failed.push((id, JoinError::DescriptorMismatch));
                             continue;
                         }
                         let mut ctx = PrepareCtx::<X> {
@@ -212,14 +250,16 @@ impl<X: Runtime> Controller<X> {
                             Ok(Ok(())) => {
                                 prepared.insert(id, node);
                             }
-                            Ok(Err(e)) => {
+                            Ok(Err(_)) | Err(_) => {
+                                // Same handling for an error and a panic: return what
+                                // a partial prepare took, keep the instance idle.
                                 let _ = catch_unwind(AssertUnwindSafe(|| node.release(&mut ctx)));
                                 self.idle.insert(id, node);
-                                newly_failed.push((id, e));
-                            }
-                            Err(_) => {
-                                self.idle.insert(id, node);
-                                newly_failed.push((id, NodeError::Panicked));
+                                let error = match result {
+                                    Ok(Err(e)) => JoinError::Prepare(e),
+                                    _ => JoinError::Panicked,
+                                };
+                                newly_failed.push((id, error));
                             }
                         }
                     }
@@ -282,9 +322,9 @@ impl<X: Runtime> Controller<X> {
     }
 
     /// Takes back the schedule the executor swapped out, if it has; calls `release` on
-    /// nodes that left the schedule and keeps them idle. Returns the ids that left,
-    /// with their last counters. `Ok(None)` means the executor has not swapped yet.
-    pub fn collect(&mut self) -> Result<Option<Vec<(NodeId, NodeHealth)>>, ControlError> {
+    /// nodes that left the schedule and keeps them idle. `Ok(None)` means the executor
+    /// has not swapped yet.
+    pub fn collect(&mut self) -> Result<Option<Collected>, ControlError> {
         match self.inbox.try_recv() {
             Ok(retired) => Ok(Some(self.absorb(retired))),
             Err(TryRecvError::Empty) => Ok(None),
@@ -296,7 +336,7 @@ impl<X: Runtime> Controller<X> {
     pub fn collect_timeout(
         &mut self,
         timeout: Duration,
-    ) -> Result<Option<Vec<(NodeId, NodeHealth)>>, ControlError> {
+    ) -> Result<Option<Collected>, ControlError> {
         match self.inbox.recv_timeout(timeout) {
             Ok(retired) => Ok(Some(self.absorb(retired))),
             Err(RecvTimeoutError::Timeout) => Ok(None),
@@ -304,18 +344,27 @@ impl<X: Runtime> Controller<X> {
         }
     }
 
-    fn absorb(&mut self, retired: Retired<X>) -> Vec<(NodeId, NodeHealth)> {
+    fn absorb(&mut self, retired: Retired<X>) -> Collected {
         self.in_flight = false;
-        let mut left = Vec::new();
+        let mut collected = Collected::default();
         for entry in retired.schedule.nodes {
+            collected.health.push((entry.id, entry.health));
             if let Some(node) = entry.node {
-                left.push((entry.id, entry.health));
+                collected.left.push((entry.id, entry.health));
                 self.release_one(entry.id, node);
             }
         }
         // The old slots (and any frames still in them) are dropped here, off the
         // real-time thread.
-        left
+        collected
+    }
+
+    /// Sends an empty schedule, so that after the executor's next tick every node is
+    /// cooled and handed back; [`Controller::collect`] then releases them. Call this
+    /// (and collect) before dropping the executor: dropping a running executor cools
+    /// its nodes but never releases them.
+    pub fn drain(&mut self) -> Result<ApplyReport, ApplyError> {
+        self.apply(&GraphDescription::new())
     }
 
     fn release_one(&mut self, id: NodeId, mut node: Box<dyn Node<X>>) {
@@ -349,6 +398,13 @@ impl<X: Runtime> Controller<X> {
     ) -> Schedule<X> {
         let mut schedule = Schedule::empty();
         let mut first_output: HashMap<NodeId, u32> = HashMap::with_capacity(plan.order.len());
+        // Media links per input pin, in description order; O(links) once.
+        let mut into: HashMap<(NodeId, usize), Vec<&Link>> = HashMap::new();
+        for link in plan.links.iter().filter(|l| l.kind.is_media()) {
+            into.entry((link.to.node, link.to.pin))
+                .or_default()
+                .push(link);
+        }
         for (index, &id) in plan.order.iter().enumerate() {
             let Some(entry) = graph.node(id) else {
                 continue;
@@ -367,11 +423,7 @@ impl<X: Runtime> Controller<X> {
             let pins_start = schedule.pins.len() as u32;
             for pin in 0..descriptor.inputs.len() {
                 let links_start = schedule.links.len() as u32;
-                for link in plan
-                    .links
-                    .iter()
-                    .filter(|l| l.to.node == id && l.to.pin == pin && l.kind.is_media())
-                {
+                for link in into.get(&(id, pin)).into_iter().flatten() {
                     // Producers precede consumers in `plan.order`, so the producer's
                     // slots are already laid out and have lower indices.
                     if let Some(&producer) = first_output.get(&link.from.node) {
@@ -407,6 +459,7 @@ impl<X: Runtime> Controller<X> {
                 outputs,
                 pins,
                 health: NodeHealth::default(),
+                warmed: false,
             });
         }
         schedule

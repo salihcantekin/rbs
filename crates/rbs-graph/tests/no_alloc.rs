@@ -42,7 +42,7 @@ fn tick_and_swap_do_not_allocate() {
     });
     assert_eq!(swap.count_total, 0, "the swapping tick allocated");
     let left = ctl.collect().expect("executor").expect("swapped");
-    assert!(left.is_empty());
+    assert!(left.left.is_empty());
     let after = allocation_counter::measure(|| {
         exec.run_tick(Tick::of(&cadence, 1_003));
     });

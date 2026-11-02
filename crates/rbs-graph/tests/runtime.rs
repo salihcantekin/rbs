@@ -16,8 +16,8 @@ use rbs_core::timing::{Cadence, FrameRate};
 use rbs_graph::description::{GraphDescription, NodeId};
 use rbs_graph::node::{LinkKind, NodeDescriptor, NodeKind, NodeTypeId, Pin};
 use rbs_graph::runtime::{
-    ApplyError, Controller, Executor, Node, NodeError, OutputError, PER_TICK_EVENTS, PrepareCtx,
-    ProcessCtx, Tick, WarmCtx, channel,
+    ApplyError, Controller, Executor, JoinError, Node, NodeError, OutputError, PER_TICK_EVENTS,
+    PrepareCtx, ProcessCtx, Tick, WarmCtx, channel,
 };
 
 /// What happened to the probes, in order.
@@ -367,7 +367,7 @@ fn nodes_and_their_last_frame_survive_a_swap() {
     assert_eq!(rig.log.take(), ["prepare second"]);
     rig.tick(); // tick 2 on the old schedule, then swap
     assert_eq!(rig.log.take(), ["out saw [2]", "warm second"]);
-    assert_eq!(rig.ctl.collect().unwrap().unwrap(), []);
+    assert!(rig.ctl.collect().unwrap().unwrap().left.is_empty());
     rig.tick();
     assert_eq!(rig.log.take(), ["out saw [3]", "second saw [3]"]);
     // The same instance kept running: it counted every tick.
@@ -490,7 +490,7 @@ fn demoted_nodes_are_cooled_released_and_come_back_with_warm_up() {
     rig.graph.set_state(out, Lifecycle::Standby).unwrap();
     rig.ctl.apply(&rig.graph).unwrap();
     rig.tick();
-    let left = rig.ctl.collect().unwrap().unwrap();
+    let left = rig.ctl.collect().unwrap().unwrap().left;
     let ids: Vec<NodeId> = left.iter().map(|(id, _)| *id).collect();
     assert_eq!(ids, [src, out]);
     assert_eq!(
@@ -570,8 +570,8 @@ fn missing_instance_and_wrong_descriptor_are_reported() {
     assert_eq!(
         report.failed,
         [
-            (ghost, NodeError::NoInstance),
-            (wrong, NodeError::DescriptorMismatch)
+            (ghost, JoinError::NoInstance),
+            (wrong, JoinError::DescriptorMismatch)
         ]
     );
     rig.tick();
@@ -653,4 +653,71 @@ fn audio_links_are_refused_without_preparing_anything() {
     ));
     assert!(!rig.ctl.in_flight());
     assert!(rig.log.take().is_empty());
+}
+
+#[test]
+fn a_node_that_failed_warm_is_not_cooled_again_when_it_leaves() {
+    let mut rig = Rig::new();
+    let mut probe = Probe::new("src", Role::Source, &rig.log);
+    probe.fail_warm = true;
+    let src = rig.add(probe);
+    let out = rig.node("out", Role::Sink);
+    rig.link(src, out);
+    rig.activate(&[src, out]);
+    rig.apply();
+    rig.log.take();
+    rig.graph.set_state(src, Lifecycle::Standby).unwrap();
+    rig.apply();
+    let log = rig.log.take();
+    assert_eq!(log.iter().filter(|l| *l == "cool src").count(), 0);
+    assert!(log.contains(&"release src".to_string()));
+}
+
+#[test]
+fn drain_cools_and_releases_every_node_before_shutdown() {
+    let mut rig = Rig::new();
+    let src = rig.node("src", Role::Source);
+    let out = rig.node("out", Role::Sink);
+    rig.link(src, out);
+    rig.activate(&[src, out]);
+    rig.apply();
+    rig.log.take();
+    rig.ctl.drain().unwrap();
+    rig.tick();
+    let collected = rig.ctl.collect().unwrap().unwrap();
+    assert_eq!(collected.left.len(), 2);
+    assert_eq!(collected.health.len(), 2);
+    assert_eq!(
+        rig.log.take(),
+        [
+            "out saw [1]",
+            "cool src",
+            "cool out",
+            "release src",
+            "release out"
+        ]
+    );
+    assert_eq!(rig.exec.scheduled().count(), 0);
+    assert!(rig.ctl.is_idle(src) && rig.ctl.is_idle(out));
+}
+
+#[test]
+fn collect_reports_health_of_nodes_that_stay() {
+    let mut rig = Rig::new();
+    let mut probe = Probe::new("bad", Role::Source, &rig.log);
+    probe.fail_warm = true;
+    let bad = rig.add(probe);
+    let out = rig.node("out", Role::Sink);
+    rig.link(bad, out);
+    rig.activate(&[bad, out]);
+    rig.apply();
+    // Any later swap reports the bypassed node to the control side.
+    let extra = rig.node("extra", Role::Sink);
+    rig.link(bad, extra);
+    rig.activate(&[extra]);
+    rig.ctl.apply(&rig.graph).unwrap();
+    rig.tick();
+    let collected = rig.ctl.collect().unwrap().unwrap();
+    let (_, health) = collected.health.iter().find(|(id, _)| *id == bad).unwrap();
+    assert!(health.bypassed && health.warm_failed);
 }

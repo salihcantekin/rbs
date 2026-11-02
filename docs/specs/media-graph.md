@@ -53,7 +53,7 @@ The state stored in the graph description is what the scene **wants**; the engin
 ## Live editing
 
 - The control thread edits the graph description and applies it. The render and audio threads swap to the new schedule at the next tick/block boundary.
-- Nodes that are added are warmed up (opened, first frame ready) before the swap, so scene switches do not stutter.
+- Nodes that are added are prepared and warmed before they run, so scene switches do not stutter. A joining node has no output on its first tick; a "first frame ready" signal before the swap is not implemented yet.
 - Removed nodes are torn down on a background thread.
 
 ## Runtime (implemented in `rbs_graph::runtime`)
@@ -68,9 +68,9 @@ Contract decided in [ADR-0020](../adr/0020-node-contract-and-schedule-swap.md).
 | `ProcessCtx` | Tick, node id, `shared`, `local`, `inputs()` (`Inputs`, `Copy`), `outputs()` (`Outputs`), `parts()` for all at once |
 | `Inputs` | `video(pin, link)`, `videos(pin)`, `packets(pin)`, `bytes(pin)`, `link_count(pin)`; links into a many-input in connection order |
 | `Outputs` | `set_video(pin, frame)` returns the previous frame; `push_packet` / `push_bytes` return the value in `Rejected` when the pin is full (`PER_TICK_EVENTS` per tick) or of another kind |
-| `Controller` | Control thread. `adopt` (hand over an idle instance), `take` (idle only), `apply(description)` returns an `ApplyReport` (plan sent, nodes that could not join and why), `collect` / `collect_timeout` (take back the swapped-out schedule, `release` the nodes that left) |
+| `Controller` | Control thread. `adopt` (hand over an idle instance), `take` (idle only), `apply(description)` returns an `ApplyReport` (plan sent, nodes that could not join with a `JoinError`), `collect` / `collect_timeout` return `Collected` (nodes that left, now released, and the counters of every node at the swap), `drain` (empty schedule, before shutdown) |
 | `Executor` | Real-time thread. `run_tick(tick)`, `health(id)`, `scheduled()`, `set_failure_limit` |
-| `NodeError` | Typed; variants without heap data can be built on the real-time thread |
+| `NodeError` | Returned by node calls; variants without heap data can be built on the real-time thread. `JoinError` (no instance, descriptor mismatch, prepare error or panic) is the controller's own |
 
 | Call | Thread | Rules |
 | --- | --- | --- |
@@ -85,14 +85,17 @@ Swap protocol:
 1. `apply` plans the description. If a planned link is `Audio`, it returns `UnsupportedLink` before preparing anything (audio runs on the audio executor).
 2. It calls `prepare` on nodes that join. A node with no instance, a different descriptor, or a failed `prepare` is treated as Standby, and the plan is recomputed; nodes prepared in an earlier round that are no longer scheduled are released again.
 3. It lays out one value slot per output pin, in schedule order, and sends the schedule. Only one schedule is in flight; `apply` returns `Busy` until `collect` has taken back the previous one.
-4. After its next tick the executor moves staying nodes, their counters and their video slot contents into the new schedule, calls `cool` on leaving nodes and `warm` on joining ones, and swaps. The swapping tick does not allocate.
+4. After its next tick the executor moves staying nodes, their counters and their video slot contents into the new schedule, calls `cool` on leaving nodes that were warmed and `warm` on joining ones, and swaps. The executor's own swap work does not allocate; `warm` and `cool` run in the slack after the tick and are the node's cost.
 5. `collect` receives the old schedule, calls `release` on the nodes that left and keeps them idle. Frames still in old slots are dropped there.
+6. Shutdown: `drain`, one tick, `collect`. Dropping an executor that still runs nodes cools them but never releases them.
 
 Values: a video slot keeps its frame until the producer replaces or clears it, so a source slower than the canvas, or a failing one, shows its last frame. Packet and byte slots are per-tick events, emptied before the producer runs. Data links are not carried by the tick.
 
-Failures: `process` runs inside `catch_unwind` (builds use `panic = "unwind"`). A returned error counts as a failed tick and partial event output of that tick is discarded. After `failure_limit` consecutive failed ticks (default 8), on any panic, or when `warm` fails, the node is bypassed: no longer called, video outputs keep the last frame, event outputs stay empty. `Executor::health` exposes the counters. Restart with back-off and reporting through the event stream are not implemented yet.
+Thread affinity: `prepare` and `release` run on the control thread, `warm`, `process` and `cool` on the executor thread. Thread-bound handles are created in `warm` (which must not block) or on the node's own worker. Until partitions exist, encoders and outputs run in the render tick and may only hand work to their workers through queues that never block.
 
-Invariants, each covered by a test in `crates/rbs-graph/tests/runtime.rs` and `no_alloc.rs`: `prepare` runs before `warm`, which runs before the first `process`; staying nodes are not prepared or warmed again and keep their state and last frame across a swap; skipped nodes are never prepared; leaving nodes are cooled on the executor and released on the controller; a failed `prepare` or `warm` affects only that node and its dependants; steady-state ticks and the swapping tick allocate nothing.
+Failures: `process`, `warm`, `cool`, `begin_tick` and `end_tick` run inside `catch_unwind` (builds use `panic = "unwind"`; the panic path itself is not real-time). A returned error counts as a failed tick and partial event output of that tick is discarded; a video frame it wrote is kept. After `failure_limit` consecutive failed ticks (default 8), on any panic, or when `warm` fails, the node is bypassed: no longer called, video outputs keep the last frame, event outputs stay empty. `Executor::health` and `Collected::health` expose the counters. A bypassed node keeps its `prepare` resources until it leaves the plan. A failed `prepare` (error or panic) calls `release`; the node stays idle and is tried again on the next `apply`. Restart with back-off (which must also stop retrying a blocking `prepare` on every edit) and reporting through the event stream are not implemented yet.
+
+Invariants, each covered by a test in `crates/rbs-graph/tests/runtime.rs` and `no_alloc.rs`: `prepare` runs before `warm`, which runs before the first `process`; staying nodes are not prepared or warmed again and keep their state and last frame across a swap; skipped nodes are never prepared; leaving nodes are cooled on the executor and released on the controller; a failed `prepare` or `warm` affects only that node and its dependants; steady-state ticks and the swapping tick allocate nothing; a node whose `warm` failed is not cooled again; `drain` cools and releases every node.
 
 Cost (reference VM, Xeon 2.1 GHz, `cargo bench -p rbs-graph --bench executor`): a tick with near-empty nodes costs 120 ns for 6 nodes, 0.53 µs for 20 and 1.66 µs for 68, about 25 ns per node. `apply` plus the swapping tick for a 32-source canvas (68 nodes) costs about 56 µs on the control thread.
 
