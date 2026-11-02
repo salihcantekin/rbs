@@ -106,6 +106,8 @@ Processing time (p50, p99, max), queue depth, frames in/out, drops by reason, re
 
 ## Open questions
 
+- Scheduler: where the set of nodes the scene wants Active lives (separately from the stored lifecycle state, so a node demoted to Standby by `plan()` can be found schedulable again), and that a node coming back goes through `prepare` (warm-up) before the swap.
+
 - Scene document contract for UI rule U15: scenes owned by one canvas or shared, and per-canvas independent layout of the same source. To be specified with the scene format spec.
 
 - Pull vs push for video sources with their own frame rate higher than the canvas.
