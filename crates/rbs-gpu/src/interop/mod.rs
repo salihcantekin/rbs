@@ -12,6 +12,7 @@
 use std::time::Duration;
 
 use rbs_core::media::{FramePayload, Lease, NativeSurface, TextureId, VideoFrame};
+use rbs_core::time::Timestamp;
 
 use crate::context::GpuContext;
 use crate::error::GpuError;
@@ -27,8 +28,11 @@ mod metal;
 /// Sized for several capture sessions at once: a WGC session keeps a ring of 5 surfaces
 /// plus replaced ones during a resize (capture-port spec, "Native surface rules").
 pub const MAX_SURFACES: usize = 64;
-/// Ticks after which a cached surface that was not seen again is closed.
-pub const SURFACE_IDLE_TICKS: u64 = 120;
+/// Time after which a cached surface that was not seen again is closed, whatever the
+/// tick rate. Producers keep a handed-out handle open for at least 10 s after its last
+/// reference (capture-port spec, "Native surface rules"), so a cached handle value is
+/// forgotten before the producer may close it and the OS may reuse it.
+pub const SURFACE_IDLE: Duration = Duration::from_secs(8);
 
 /// Usage of aliased surfaces: sampled by the compositor, copyable for readback and tests.
 #[cfg_attr(not(any(windows, target_vendor = "apple")), allow(dead_code))]
@@ -48,7 +52,10 @@ struct Entry {
     /// Frame size the surface was first delivered with. A frame of another size on the same
     /// key means the producer's handle value now names another object.
     frame_size: (u32, u32),
+    /// Tick of the last import (least recently used eviction).
     last_seen: u64,
+    /// Engine time of the `retire` that followed the last import (idle closing).
+    seen_at: Timestamp,
     /// The producer's lease while the surface may still be read.
     native: Option<Lease>,
     /// Submission after which the lease goes back (also returns D3D12 surfaces to COMMON).
@@ -179,6 +186,8 @@ impl Importer {
             id,
             frame_size,
             last_seen: self.tick,
+            // Set by the next `retire`, which sees `last_seen == tick`.
+            seen_at: Timestamp::ZERO,
             native: None,
             handback: None,
         });
@@ -224,11 +233,18 @@ impl Importer {
     }
 
     /// Hands producer leases back when their surfaces are no longer read, and closes
-    /// surfaces not seen for [`SURFACE_IDLE_TICKS`]. Call once per render tick.
-    pub fn retire(&mut self, ctx: &GpuContext, pool: &mut TexturePool) {
+    /// surfaces not seen for [`SURFACE_IDLE`]. Call once per render tick with the engine's
+    /// monotonic time (the tick's master-clock time).
+    pub fn retire(&mut self, ctx: &GpuContext, pool: &mut TexturePool, now: Timestamp) {
+        let tick = self.tick;
         self.tick += 1;
         if self.entries.is_empty() {
             return;
+        }
+        for e in &mut self.entries {
+            if e.last_seen == tick {
+                e.seen_at = now;
+            }
         }
 
         // 1. Leases whose hand-back submission has completed go back to the producer.
@@ -284,12 +300,11 @@ impl Importer {
         }
 
         // 3. Close surfaces the producer stopped sending.
-        let tick = self.tick;
         let mut i = 0;
         while i < self.entries.len() {
             let e = &self.entries[i];
             if e.native.is_none()
-                && tick.saturating_sub(e.last_seen) > SURFACE_IDLE_TICKS
+                && now.saturating_since(e.seen_at) > SURFACE_IDLE
                 && pool.lease_count(e.id) == 0
             {
                 self.close(i, pool);
