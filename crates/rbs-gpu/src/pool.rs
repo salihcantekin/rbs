@@ -68,6 +68,8 @@ pub struct PooledTexture {
     desc: TextureDesc,
     texture: wgpu::Texture,
     view: wgpu::TextureView,
+    /// Second plane of a multi-planar texture (NV12 chroma); `view` is then plane 0.
+    plane1: Option<wgpu::TextureView>,
     sampled: Option<wgpu::BindGroup>,
 }
 
@@ -82,9 +84,19 @@ impl PooledTexture {
         &self.texture
     }
 
-    /// The default view of the whole texture.
+    /// The default view of the whole texture, or of plane 0 for a multi-planar format.
     pub fn view(&self) -> &wgpu::TextureView {
         &self.view
+    }
+
+    /// The view of one plane: plane 0 is [`Self::view`]; plane 1 exists only for
+    /// multi-planar formats such as NV12.
+    pub fn plane_view(&self, plane: u32) -> Option<&wgpu::TextureView> {
+        match plane {
+            0 => Some(&self.view),
+            1 => self.plane1.as_ref(),
+            _ => None,
+        }
     }
 
     pub(crate) fn sampled_bind_group(&self) -> Option<&wgpu::BindGroup> {
@@ -421,8 +433,25 @@ impl TexturePool {
     }
 }
 
-/// Builds the pooled wrapper: default view and, when sampleable, the sampled bind group.
+/// Builds the pooled wrapper: default view (or one view per plane) and, when sampleable,
+/// the sampled bind group.
 fn wrap(ctx: &GpuContext, texture: wgpu::Texture, desc: TextureDesc) -> PooledTexture {
+    if desc.format.is_multi_planar_format() {
+        let plane = |aspect| {
+            texture.create_view(&wgpu::TextureViewDescriptor {
+                aspect,
+                format: desc.format.aspect_specific_format(aspect),
+                ..Default::default()
+            })
+        };
+        return PooledTexture {
+            desc,
+            view: plane(wgpu::TextureAspect::Plane0),
+            plane1: Some(plane(wgpu::TextureAspect::Plane1)),
+            texture,
+            sampled: None,
+        };
+    }
     let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
     let filterable = desc.format.sample_type(None, Some(ctx.device().features()))
         == Some(wgpu::TextureSampleType::Float { filterable: true });
@@ -447,6 +476,7 @@ fn wrap(ctx: &GpuContext, texture: wgpu::Texture, desc: TextureDesc) -> PooledTe
         desc,
         texture,
         view,
+        plane1: None,
         sampled,
     }
 }
