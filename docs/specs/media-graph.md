@@ -95,9 +95,21 @@ Thread affinity: `prepare` and `release` run on the control thread, `warm`, `pro
 
 Failures: `process`, `warm`, `cool`, `begin_tick` and `end_tick` run inside `catch_unwind` (builds use `panic = "unwind"`; the panic path itself is not real-time). A returned error counts as a failed tick and partial event output of that tick is discarded; a video frame it wrote is kept. After `failure_limit` consecutive failed ticks (default 8), on any panic, or when `warm` fails, the node is bypassed: no longer called, video outputs keep the last frame, event outputs stay empty. `Executor::health` and `Collected::health` expose the counters. A bypassed node keeps its `prepare` resources until it leaves the plan. A failed `prepare` (error or panic) calls `release`; the node stays idle and is tried again on the next `apply`. Restart with back-off (which must also stop retrying a blocking `prepare` on every edit) and reporting through the event stream are not implemented yet.
 
-Invariants, each covered by a test in `crates/rbs-graph/tests/runtime.rs` and `no_alloc.rs`: `prepare` runs before `warm`, which runs before the first `process`; staying nodes are not prepared or warmed again and keep their state and last frame across a swap; skipped nodes are never prepared; leaving nodes are cooled on the executor and released on the controller; a failed `prepare` or `warm` affects only that node and its dependants; steady-state ticks and the swapping tick allocate nothing; a node whose `warm` failed is not cooled again; `drain` cools and releases every node.
+Parameters of running nodes ([ADR-0023](../adr/0023-node-parameter-channels.md)): values that change while a node keeps running (the compositor's layer list, mixer gains, transition progress) do not go through `apply`. `runtime::param::channel(initial)` returns a `ParamSender<T>` for the control thread and a `ParamReceiver<T>` that the node owns.
 
-Cost (reference VM, Xeon 2.1 GHz, `cargo bench -p rbs-graph --bench executor`): a tick with near-empty nodes costs 120 ns for 6 nodes, 0.53 µs for 20 and 1.66 µs for 68, about 25 ns per node. `apply` plus the swapping tick for a 32-source canvas (68 nodes) costs about 56 µs on the control thread.
+| Call | Side | Contract |
+| --- | --- | --- |
+| `send(value)` | control | Makes `value` the newest; an unread older value is dropped here |
+| `recycle()` | control | Returns a value the receiver replaced, to refill without allocating |
+| `pending()` / `is_closed()` | control | A sent value is not taken yet / the node (and its receiver) was dropped |
+| `update()` | node, in `process` | Takes the newest value, returns true if the current value changed. No allocation, no freeing, never waits: if the sender holds the exchange, the value is taken on a later call. With nothing new it is one atomic load |
+| `get()` / `get_mut()` | node | The current value |
+
+Latest-value semantics: values sent from one thread are seen in order, intermediate ones may be skipped. A value and a structural change (a new link) are not applied atomically together; consumers tolerate a parameter that refers to a link that is not there yet.
+
+Invariants, each covered by a test in `crates/rbs-graph/tests/runtime.rs` and `no_alloc.rs`: `prepare` runs before `warm`, which runs before the first `process`; staying nodes are not prepared or warmed again and keep their state and last frame across a swap; skipped nodes are never prepared; leaving nodes are cooled on the executor and released on the controller; a failed `prepare` or `warm` affects only that node and its dependants; steady-state ticks and the swapping tick allocate nothing; `ParamReceiver::update` neither allocates nor frees and never drops a value on the receiving thread (`tests/param.rs`); a node whose `warm` failed is not cooled again; `drain` cools and releases every node.
+
+Cost (reference VM, Xeon 2.1 GHz, `cargo bench -p rbs-graph --bench executor`): a tick with near-empty nodes costs 120 ns for 6 nodes, 0.53 µs for 20 and 1.66 µs for 68, about 25 ns per node. `apply` plus the swapping tick for a 32-source canvas (68 nodes) costs about 56 µs on the control thread. `ParamReceiver::update` costs about 3 ns with nothing new and under 50 ns when it takes a 64-element `Vec` (bench `param_update`).
 
 ## Graph description (implemented in `rbs-graph`)
 

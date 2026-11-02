@@ -11,7 +11,7 @@ use std::sync::Arc;
 use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
 use rbs_core::time::Timestamp;
 use rbs_core::timing::{Cadence, FrameRate};
-use rbs_graph::runtime::{Tick, channel};
+use rbs_graph::runtime::{Tick, channel, param};
 
 fn tick(c: &mut Criterion) {
     let mut group = c.benchmark_group("executor_tick");
@@ -51,5 +51,33 @@ fn swap(c: &mut Criterion) {
     });
 }
 
-criterion_group!(benches, tick, swap);
+fn param_update(c: &mut Criterion) {
+    // What a node pays per tick to read its parameters (ADR-0023): the common case
+    // (nothing new), and taking a new value of a 64-layer list.
+    let mut group = c.benchmark_group("param_update");
+    let (_tx, mut rx) = param::channel(vec![0_u64; 64]);
+    group.bench_function("unchanged", |b| {
+        b.iter(|| std::hint::black_box(rx.update()))
+    });
+    let (mut tx, mut rx) = param::channel(vec![0_u64; 64]);
+    group.bench_function("changed", |b| {
+        // Only `update` is timed; the sender's refill runs between the timed calls.
+        b.iter_custom(|iters| {
+            let mut total = std::time::Duration::ZERO;
+            for _ in 0..iters {
+                let mut next = tx.recycle().unwrap_or_default();
+                next.clear();
+                next.resize(64, 1);
+                tx.send(next);
+                let start = std::time::Instant::now();
+                std::hint::black_box(rx.update());
+                total += start.elapsed();
+            }
+            total
+        })
+    });
+    group.finish();
+}
+
+criterion_group!(benches, tick, swap, param_update);
 criterion_main!(benches);

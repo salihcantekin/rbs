@@ -20,6 +20,8 @@ mod controller;
 mod executor;
 mod schedule;
 
+pub mod param;
+
 use std::fmt;
 
 use rbs_core::time::Timestamp;
