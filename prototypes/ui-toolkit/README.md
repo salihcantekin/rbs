@@ -93,3 +93,18 @@ From `./measure-runtime.sh 10` (after 4 s warm-up, 10 s sample; CPU as % of one 
 - Accessibility was checked on Linux only (AT-SPI). Windows (UIA) and macOS (NSAccessibility) are not tested.
 - Engine and UI ran in one process. The default two-process topology (ADR-0008) needs native surface export and import, which was not prototyped.
 - Docking was implemented with buttons for move and float; drag-and-drop docking with drop indicators was not built in any prototype.
+
+## Gate run on a GPU (2026-11-02)
+
+`./measure-gate.sh 20` on a MacBook Pro (Mac16,8), Apple M4 Pro (16-core GPU, Metal), 24 GB, macOS 26.7.1, built-in ProMotion display (refresh rate during the run not verified), on AC power. Qt was not installed, so it was skipped; iced has no presented-frame hook and was measured idle only. CPU is the whole process (all threads) as % of one core, from `getrusage` over the measured window; it includes the engine stand-in, which renders a 1080p frame every tick in the same process.
+
+| Prototype | Scenario | fps | Late frames | p50 / p99 / max interval ms | CPU % | Peak RSS MiB |
+| --- | --- | --- | --- | --- | --- | --- |
+| Slint | idle, no animated panel | - | - | - | 0.0 | 108 |
+| Slint | 1080p preview + 64-band spectrum | 61.5 | 0 | 16.7 / 17.3 / 18.2 | 35.3 | 110 |
+| Slint | 1080p preview only | 61.4 | 0 | 16.7 / 17.3 / 21.0 | 35.0 | 110 |
+| Slint | dense path, 1024 points | 60.5 | 0 | 16.7 / 17.4 / 18.3 | 33.4 | 111 |
+| Slint | dense path, 4096 points | 64.5 | 0 | 16.6 / 17.4 / 17.8 | 44.7 | 115 |
+| iced | idle, no animated panel | - | - | - | 0.1 | 101 |
+
+Reading: Slint keeps a steady 60 Hz with no late frames, and the 6 to 7 fps seen on the software rasteriser was a property of software rendering. Dense paths cost little extra up to 1,024 points. CPU use while animating (33 to 45 % of one core) is above the provisional 10 % limit. Where it goes (full-window redraw at Retina resolution, CPU-side path tessellation, or the in-process engine stand-in) is not yet known and needs a profile.

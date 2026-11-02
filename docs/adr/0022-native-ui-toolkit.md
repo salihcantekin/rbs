@@ -96,4 +96,5 @@ There was no GPU in the test machine, so the rendering-load numbers came from a 
   - B. The first review's resolutions were recorded as the reviewer's verdict, and owner approval was missing from the gate. Response: they are now recorded as author responses, this re-review is a separate entry, and owner approval is part of the gate.
   - C. The README framed iced's `wgpu` problem as device sharing. Response: the README wording now matches the interop-reuse framing.
 - Owner: Salih approved the choice of Slint on 2026-11-02 (project thread: "slint kullanıyoruz") and offered a MacBook for the GPU measurements.
+- Gate run, 2026-11-02, MacBook Pro M4 Pro (Metal), Slint only (Qt not installed): 60 Hz with 0 late frames in every scenario, including a 4,096-point path; idle CPU 0.0 %. Process CPU while animating was 33 to 45 % of one core, above the provisional 10 % limit; the cause is not profiled yet. Details in the prototype README. Frame pacing passes; the CPU limit does not.
 - Status: the review is still open. The ADR stays Proposed until the acceptance gate in decision 7 is met, including a final independent approval and the owner's approval.
