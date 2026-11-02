@@ -99,7 +99,12 @@ pub struct GpuImportTarget {
 }
 ```
 
-Zero-copy negotiation: a GPU memory kind is only delivered when the adapter can produce surfaces the device in `gpu` can open directly (same adapter LUID, same DRM device, an accepted modifier, an accepted sync primitive). Otherwise that memory kind is skipped in the request order, and if nothing is left `open` returns `FormatUnsupported`. On Windows Graphics Capture this means creating the frame pool on a D3D11 device of the same adapter and handing out shared NT handles with a keyed mutex or fence; on PipeWire it means offering exactly the importer's modifiers in the stream negotiation.
+Zero-copy negotiation: a GPU memory kind is only delivered when the adapter can produce surfaces the device in `gpu` can open directly (same adapter LUID, same DRM device, an accepted modifier, an accepted sync primitive). Otherwise that memory kind is skipped in the request order, and if nothing is left `open` returns `FormatUnsupported`. On Windows Graphics Capture this means creating the frame pool on a D3D11 device of the same adapter and handing out NT shared handles with a shared timeline fence (D3D12 importers cannot acquire keyed mutexes, see gpu-compositor.md, Native import); on PipeWire it means offering exactly the importer's modifiers in the stream negotiation.
+
+Native surface rules for producers:
+
+- **LUID encoding.** `GpuDeviceId::Luid` holds the eight bytes of the Windows `LUID` struct in memory order (`LowPart` then `HighPart`, both little-endian). The `adapter_luid: u64` of a `NativeSurface` is the same bytes read as a little-endian integer, that is `(HighPart as u32 as u64) << 32 | LowPart as u64`, the value `rbs_gpu::GpuContext::adapter_luid` reports.
+- **Handle values.** Importers cache opened surfaces by handle value. While a session is Active, a handle value names one surface. A surface replaced during the session (for example after a resize) keeps its handle open for at least 240 more published frames before the value may be reused. After `stop` the values may be reused, so the importer drops the cached handles of a source when it stops, and treats a cached entry whose size or format differs from the frame's `VideoFormat` as stale.
 
 ### Session
 
@@ -209,7 +214,7 @@ The render tick pulls with `latest_frame`; adapters do not push frames into the 
 - `pacer`: `TestPacer` for software adapters (a `TestClock` that advances on each wait, so runs are deterministic), `RealTimePacer` for hardware adapters, bounded by `options.frame_timeout`.
 - `options.measure_allocations`: runs a closure and returns the allocations plus frees it made on the calling thread (adapter tests use `allocation-counter`). Without it the allocation check is skipped.
 - `options.hooks: Option<&dyn TestHooks>`: `stimulate(id)` (change content, for APIs that only deliver frames on change; called before every poll), `resize(id, w, h)`, `remove(id)` and `resources()` (threads, handles and GPU allocations the adapter owns). Hardware tests implement them with a helper window the test owns.
-- `options.gpu: Option<&GpuImportTarget>`: the device the test imports into, used for every GPU memory kind. For each declared GPU memory kind the suite also checks that opening it without an import target, and for a foreign device, returns `FormatUnsupported`. Without `options.gpu`, delivery of GPU memory kinds is skipped (a failure in strict mode).
+- `options.gpu: Option<&GpuImportTarget>`: the device the test imports into, used for every GPU memory kind. For each declared GPU memory kind the suite also checks that opening it without an import target, and for a foreign device, returns `FormatUnsupported`. Without `options.gpu`, delivery of GPU memory kinds is skipped (a failure in strict mode). An adapter that declares only GPU memory kinds cannot open a session without an import target, so without `options.gpu` all session checks are skipped for it; the refusal checks still run.
 - `options.process_threads`: a process-wide thread count measured by the suite itself rather than reported by the adapter (`conformance::process_thread_count` reads `/proc/self/task` on Linux). Only meaningful when the test binary runs one test at a time; the reference adapter's conformance test is alone in its binary for that reason.
 - `options.strict`: every skip is a failure. Self-hosted hardware runners use it.
 
@@ -222,7 +227,7 @@ Checks: probe within 50 ms and never panics; `enumerate` agrees with `capture.ta
 | Adapter crate | Platform | Targets | Memory | Phase |
 | --- | --- | --- | --- | --- |
 | `rbs-capture-test` | all | synthetic display, window, camera | system | 0 (CI and conformance reference) |
-| `rbs-capture-wgc` | Windows 10 1903+ | display, window | d3d11 | 0 |
+| `rbs-capture-wgc` | Windows 10 1903+ | display, window | d3d11 (NT shared texture + shared fence) | 0 (implemented) |
 | `rbs-capture-dxgi` | Windows | display | d3d11 | 1 (fallback) |
 | `rbs-capture-mf` | Windows | camera | system, d3d11 | 2 |
 | `rbs-capture-sck` | macOS 12.3+ | display, window (picker on 14+) | metal (IOSurface) | 0 prototype |

@@ -782,6 +782,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "rbs-capture-wgc"
+version = "0.0.1"
+dependencies = [
+ "allocation-counter",
+ "criterion 0.8.2",
+ "rbs-capture",
+ "rbs-core",
+ "windows",
+]
+
+[[package]]
 name = "rbs-codec"
 version = "0.0.1"
 dependencies = [
