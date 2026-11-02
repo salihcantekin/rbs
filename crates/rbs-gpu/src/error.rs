@@ -5,7 +5,7 @@
 
 use std::fmt;
 
-use crate::pool::TextureId;
+use rbs_core::media::TextureId;
 
 /// Every error `rbs-gpu` reports.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -26,6 +26,11 @@ pub enum GpuError {
         requested: u32,
         /// Layers reserved.
         reserved: u32,
+    },
+    /// The pool has no free slot for a new texture.
+    PoolFull {
+        /// Slots the pool was created with.
+        capacity: u32,
     },
     /// A size is zero, odd where it must be even, or above the device limit.
     InvalidSize {
@@ -52,6 +57,7 @@ impl fmt::Display for GpuError {
                 requested,
                 reserved,
             } => write!(f, "{requested} layers requested, {reserved} reserved"),
+            Self::PoolFull { capacity } => write!(f, "texture pool full ({capacity} slots)"),
             Self::InvalidSize { width, height } => write!(f, "invalid size {width}x{height}"),
             Self::Readback(msg) => write!(f, "readback failed: {msg}"),
         }

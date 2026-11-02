@@ -14,7 +14,7 @@
 In scope:
 
 - Device creation and adapter selection by capability (headless, no window).
-- Texture pool with O(1) acquire and release and stale-id detection.
+- Texture pool with allocation-free reuse, stale-id detection and leases for consumers on other threads.
 - Compositor: one per canvas; draws layers with a 2D affine transform, source crop, opacity and premultiplied alpha blending, in linear light on `Rgba16Float`.
 - Conversion of a canvas to NV12 (two planes, BT.709) on the GPU.
 - Explicit, counted CPU readback (fallback and tests only).
@@ -52,28 +52,30 @@ impl GpuContext {
 ### Texture pool
 
 ```rust
-#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
-pub struct TextureId { index: u32, generation: u32 }
-
+// Ids are the core media type: rbs_core::media::TextureId { slot, generation }.
 pub struct TextureDesc { pub width: u32, pub height: u32, pub format: TextureFormat, pub usage: TextureUsage }
 
 impl TexturePool {
+    pub fn new() -> TexturePool;                          // DEFAULT_POOL_SLOTS (256) slots
+    pub fn with_capacity(slots: u32) -> TexturePool;
     pub fn acquire(&mut self, ctx: &GpuContext, desc: &TextureDesc) -> Result<TextureId, GpuError>;
     pub fn release(&mut self, id: TextureId) -> Result<(), GpuError>;
+    pub fn lease(&self, id: TextureId) -> Result<Lease, GpuError>;
+    pub fn frame(&self, id: TextureId, format: VideoFormat, t: Timestamp) -> Result<VideoFrame, GpuError>;
     pub fn get(&self, id: TextureId) -> Option<&PooledTexture>;
-    pub fn trim(&mut self);            // drop every free texture
+    pub fn trim(&mut self);                                // drop every free texture
 }
 ```
 
-Invariants (each has a test):
+A slot is **Free**, **InUse** (handed out by `acquire`, owner holds it) or **Retired** (the owner released it while leases were open). Invariants (each has a test):
 
-1. `acquire` reuses a free texture with an equal `TextureDesc` before creating a new one. Reuse costs O(number of distinct descriptions), which is small, and performs no heap allocation; `release` never allocates either (free-list capacity is reserved when a texture is created).
-2. `release` increments the slot generation, so every copy of the old id becomes stale: `get` returns `None`, a second `release` returns `GpuError::StaleTexture`.
-3. A new pool owns no GPU memory. `trim` drops every free texture (P13); textures in use are kept.
-4. The pool is owned and mutated by one render thread (`acquire`/`release` take `&mut self`). Cross-thread sharing with encoders uses the interop hand-off and leases, not the pool directly.
-5. Every sampleable texture carries a bind group for the shared sampled-texture layout, created with the texture, so passes never create bind groups per frame.
-
-`TextureId` will be replaced by the opaque `TextureId { slot, generation }` of the core media types (`rbs_core::media`) once they land on `main`; the layout is the same. Leases on pooled textures (per-slot reference counts released by consumers such as encoders) come with that change.
+1. `acquire` reuses a free texture with an equal `TextureDesc` before creating a new one. Reuse costs O(distinct descriptions + retired slots), both small, and performs no heap allocation; `release` and `lease` never allocate either (free-list and retired-list capacity is reserved up front).
+2. When a slot becomes Free its generation increments, so every copy of the old id becomes stale: `get` returns `None`, `lease` and a second `release` return `GpuError::StaleTexture`.
+3. Leases implement `rbs_core::media::LeaseOwner` with one atomic counter per slot (token = slot index). A slot whose owner called `release` stays Retired, and its id stays valid, until the last lease is dropped; only then is it reused. Leases may be cloned and dropped on any thread. Because a slot is never reused while a lease exists, the token needs no generation. `frame` builds a `VideoFrame::texture` carrying such a lease; `VideoFrame::share` adds a reference.
+4. The pool holds at most its capacity of textures; past that `acquire` returns `GpuError::PoolFull`. A new pool owns no GPU memory, only one counter per slot. `trim` drops every free texture (P13); textures in use or retired are kept.
+5. The pool is owned and mutated by one render thread (`acquire`/`release` take `&mut self`). Other threads see pooled textures only through frames and leases. The engine drops a pool only after every consumer holding its leases has shut down, so the last reference to the lease counters is never dropped on a real-time thread (media-types spec, Lifetime).
+6. Every sampleable texture carries a bind group for the shared sampled-texture layout, created with the texture, so passes never create bind groups per frame.
+7. A consumer that reads a leased texture with its own GPU work (an encoder on another queue or device) drops the lease only after that work has completed. Work on the engine's queue is ordered, so the compositor and converter need no extra fence.
 
 ### Compositor
 
@@ -131,7 +133,7 @@ pub fn chroma_desc(width: u32, height: u32) -> TextureDesc;  // Rg8Unorm, w/2 x 
 
 ## Errors and failure behaviour
 
-All fallible calls return `GpuError` (no panics, no `unwrap` in library code). Variants: `NoAdapter`, `DeviceRequest`, `StaleTexture`, `UnknownTexture`, `TargetMismatch`, `TooManyLayers`, `InvalidSize`, `Readback`. Errors on the render path carry only `Copy` data so building them does not allocate.
+All fallible calls return `GpuError` (no panics, no `unwrap` in library code). Variants: `NoAdapter`, `DeviceRequest`, `StaleTexture`, `UnknownTexture`, `TargetMismatch`, `TooManyLayers`, `PoolFull`, `InvalidSize`, `Readback`. Errors on the render path carry only `Copy` data so building them does not allocate.
 
 Device loss is reported by wgpu through the device-lost callback and surfaced as a metric; recovery (recreate context, re-warm sources) is a graph-level concern for a later spec.
 
@@ -146,7 +148,7 @@ Device loss is reported by wgpu through the device-lost callback and surfaced as
 
 Run on any adapter, including software adapters in CI (lavapipe on Linux, WARP on Windows). Tests skip with a clear message when `GpuError::NoAdapter` is returned.
 
-- Pool: reuse, generation and stale-id handling, trim.
+- Pool: reuse, generation and stale-id handling, trim, capacity, leases (a leased slot survives the owner's release, is reused after the last lease drops on another thread, frames share the lease).
 - Golden images (sampled pixels with tolerance): single opaque layer placement, crop, opacity blend over a background layer, sRGB source decode, layer order, stale layer skipped.
 - NV12: known colours (black, white, mid grey, pure red) produce BT.709 limited-range values within ±1.
 - Allocations per frame do not grow over time and grow by at most a small constant per layer.
@@ -154,6 +156,5 @@ Run on any adapter, including software adapters in CI (lavapipe on Linux, WARP o
 
 ## Open questions
 
-- Texture sharing between canvases and encoders on other threads: reference counts in the pool or interop-level fences. Decided with the interop module.
 - Whether the canvas working format should be configurable (`Rgba16Float` vs `Rgba8UnormSrgb` for low-end GPUs).
 - Rotation and non-affine transforms (perspective, corner pin) as filters vs layer properties.

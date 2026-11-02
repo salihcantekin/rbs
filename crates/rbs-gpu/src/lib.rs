@@ -8,8 +8,9 @@
 //!
 //! `Compositor::render`, `Nv12Converter::convert` and the pool are hot paths
 //! (`docs/architecture/hot-paths.md`): RBS code in them does not allocate.
-//! This crate contains no `unsafe` code; native texture interop will live in a
-//! separate, marked module.
+//! `unsafe` appears only in [`pool`], a marked low-level module that implements the
+//! lease contract of `rbs_core::media`. Native texture interop will live in its own
+//! marked module.
 
 pub mod compositor;
 pub mod context;
@@ -24,7 +25,8 @@ pub use context::{GpuContext, GpuMetrics, GpuRequest, PowerPreference};
 pub use error::GpuError;
 pub use math::{Affine2, UvRect};
 pub use nv12::Nv12Converter;
-pub use pool::{PooledTexture, TextureDesc, TextureId, TexturePool};
+pub use pool::{DEFAULT_POOL_SLOTS, PooledTexture, TextureDesc, TexturePool};
+pub use rbs_core::media::TextureId;
 
 /// The canvas working format: linear light, 16-bit float per channel, premultiplied alpha.
 pub const CANVAS_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba16Float;

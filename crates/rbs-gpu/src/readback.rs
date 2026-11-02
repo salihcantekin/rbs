@@ -6,7 +6,8 @@
 
 use crate::context::GpuContext;
 use crate::error::GpuError;
-use crate::pool::{TextureId, TexturePool};
+use crate::pool::TexturePool;
+use rbs_core::media::TextureId;
 
 /// Writes tightly packed texel rows into the whole texture `id` (needs `COPY_DST`).
 pub fn upload(
