@@ -52,7 +52,7 @@ fn allocs_per_frame(layer_count: usize) -> Option<(f64, f64)> {
     let ctx = common::gpu()?;
     let mut pool = TexturePool::new();
     let mut comp = Compositor::new(
-        &ctx,
+        ctx,
         CanvasDesc {
             width: W,
             height: H,
@@ -60,18 +60,18 @@ fn allocs_per_frame(layer_count: usize) -> Option<(f64, f64)> {
         64,
     )
     .unwrap();
-    let mut conv = Nv12Converter::new(&ctx, W, H).unwrap();
-    let canvas = pool.acquire(&ctx, &TextureDesc::canvas(W, H)).unwrap();
-    let luma = pool.acquire(&ctx, &nv12::luma_desc(W, H)).unwrap();
-    let chroma = pool.acquire(&ctx, &nv12::chroma_desc(W, H)).unwrap();
-    let src = solid(&ctx, &mut pool, 16, 16, [0.2, 0.4, 0.6, 1.0]);
+    let mut conv = Nv12Converter::new(ctx, W, H).unwrap();
+    let canvas = pool.acquire(ctx, &TextureDesc::canvas(W, H)).unwrap();
+    let luma = pool.acquire(ctx, &nv12::luma_desc(W, H)).unwrap();
+    let chroma = pool.acquire(ctx, &nv12::chroma_desc(W, H)).unwrap();
+    let src = solid(ctx, &mut pool, 16, 16, [0.2, 0.4, 0.6, 1.0]);
     let layers: Vec<Layer> = (0..layer_count)
         .map(|i| Layer::new(src, i as f32, i as f32, 64.0, 36.0))
         .collect();
 
     let mut frame = || {
-        comp.render(&ctx, &pool, &layers, canvas).unwrap();
-        conv.convert(&ctx, &pool, canvas, luma, chroma).unwrap();
+        comp.render(ctx, &pool, &layers, canvas).unwrap();
+        conv.convert(ctx, &pool, canvas, luma, chroma).unwrap();
         ctx.poll();
     };
     for _ in 0..50 {

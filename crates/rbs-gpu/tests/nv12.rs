@@ -40,7 +40,7 @@ fn convert(rgb: [f32; 3]) -> Option<([u8; 3], [u8; 3])> {
     let ctx = common::gpu()?;
     let mut pool = TexturePool::new();
     let mut comp = Compositor::new(
-        &ctx,
+        ctx,
         CanvasDesc {
             width: W,
             height: H,
@@ -48,23 +48,23 @@ fn convert(rgb: [f32; 3]) -> Option<([u8; 3], [u8; 3])> {
         1,
     )
     .unwrap();
-    let canvas = pool.acquire(&ctx, &TextureDesc::canvas(W, H)).unwrap();
-    let src = solid(&ctx, &mut pool, 2, 2, [rgb[0], rgb[1], rgb[2], 1.0]);
+    let canvas = pool.acquire(ctx, &TextureDesc::canvas(W, H)).unwrap();
+    let src = solid(ctx, &mut pool, 2, 2, [rgb[0], rgb[1], rgb[2], 1.0]);
     comp.render(
-        &ctx,
+        ctx,
         &pool,
         &[Layer::new(src, 0.0, 0.0, W as f32, H as f32)],
         canvas,
     )
     .unwrap();
 
-    let luma = pool.acquire(&ctx, &nv12::luma_desc(W, H)).unwrap();
-    let chroma = pool.acquire(&ctx, &nv12::chroma_desc(W, H)).unwrap();
-    let mut conv = Nv12Converter::new(&ctx, W, H).unwrap();
-    conv.convert(&ctx, &pool, canvas, luma, chroma).unwrap();
+    let luma = pool.acquire(ctx, &nv12::luma_desc(W, H)).unwrap();
+    let chroma = pool.acquire(ctx, &nv12::chroma_desc(W, H)).unwrap();
+    let mut conv = Nv12Converter::new(ctx, W, H).unwrap();
+    conv.convert(ctx, &pool, canvas, luma, chroma).unwrap();
 
-    let y = readback::read_bytes(&ctx, &pool, luma).unwrap();
-    let uv = readback::read_bytes(&ctx, &pool, chroma).unwrap();
+    let y = readback::read_bytes(ctx, &pool, luma).unwrap();
+    let uv = readback::read_bytes(ctx, &pool, chroma).unwrap();
     assert_eq!(y.len(), (W * H) as usize);
     assert_eq!(uv.len(), (W / 2 * H / 2 * 2) as usize);
     assert!(y.iter().all(|v| *v == y[0]), "uniform luma");
@@ -115,7 +115,7 @@ fn reference_values_match_bt709_tables() {
 fn odd_sizes_are_rejected() {
     let Some(ctx) = common::gpu() else { return };
     assert!(matches!(
-        Nv12Converter::new(&ctx, 15, 8),
+        Nv12Converter::new(ctx, 15, 8),
         Err(GpuError::InvalidSize { .. })
     ));
 }
@@ -124,12 +124,12 @@ fn odd_sizes_are_rejected() {
 fn mismatched_planes_are_rejected() {
     let Some(ctx) = common::gpu() else { return };
     let mut pool = TexturePool::new();
-    let canvas = pool.acquire(&ctx, &TextureDesc::canvas(W, H)).unwrap();
-    let luma = pool.acquire(&ctx, &nv12::luma_desc(W, H)).unwrap();
-    let wrong = pool.acquire(&ctx, &nv12::luma_desc(W / 2, H / 2)).unwrap();
-    let mut conv = Nv12Converter::new(&ctx, W, H).unwrap();
+    let canvas = pool.acquire(ctx, &TextureDesc::canvas(W, H)).unwrap();
+    let luma = pool.acquire(ctx, &nv12::luma_desc(W, H)).unwrap();
+    let wrong = pool.acquire(ctx, &nv12::luma_desc(W / 2, H / 2)).unwrap();
+    let mut conv = Nv12Converter::new(ctx, W, H).unwrap();
     assert_eq!(
-        conv.convert(&ctx, &pool, canvas, luma, wrong),
+        conv.convert(ctx, &pool, canvas, luma, wrong),
         Err(GpuError::TargetMismatch(wrong))
     );
 }

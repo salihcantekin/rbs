@@ -2,22 +2,32 @@
 
 #![allow(dead_code, clippy::expect_used)] // Not every test binary uses every helper; tests fail by panicking.
 
+use std::sync::OnceLock;
+
 use rbs_gpu::{GpuContext, GpuError, GpuRequest, TextureDesc, TextureId, TexturePool, readback};
 
-/// A context on any adapter, software included. `None` (with a message) when no
-/// adapter exists, so tests skip instead of failing on machines without a GPU.
-pub fn gpu() -> Option<GpuContext> {
-    match GpuContext::new(&GpuRequest {
-        allow_software: true,
-        ..GpuRequest::default()
-    }) {
-        Ok(ctx) => Some(ctx),
-        Err(GpuError::NoAdapter) => {
-            eprintln!("SKIPPED: no GPU adapter (install lavapipe or WARP to run GPU tests)");
-            None
+/// One shared context per test binary, on any adapter (software included).
+///
+/// Shared because an engine has one device, and because creating and destroying
+/// many Vulkan devices concurrently is not what we test (and crashes some software
+/// drivers). `None` (with a message) when no adapter exists, so tests skip instead
+/// of failing on machines without a GPU.
+pub fn gpu() -> Option<&'static GpuContext> {
+    static CTX: OnceLock<Option<GpuContext>> = OnceLock::new();
+    let ctx = CTX.get_or_init(|| {
+        match GpuContext::new(&GpuRequest {
+            allow_software: true,
+            ..GpuRequest::default()
+        }) {
+            Ok(ctx) => Some(ctx),
+            Err(GpuError::NoAdapter) => None,
+            Err(e) => panic!("GPU context failed: {e}"),
         }
-        Err(e) => panic!("GPU context failed: {e}"),
+    });
+    if ctx.is_none() {
+        eprintln!("SKIPPED: no GPU adapter (install lavapipe or WARP to run GPU tests)");
     }
+    ctx.as_ref()
 }
 
 /// Encodes an `f32` as IEEE half (exact for the simple values tests use).
