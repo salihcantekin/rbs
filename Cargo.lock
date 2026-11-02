@@ -800,6 +800,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "rbs-graph"
+version = "0.0.1"
+dependencies = [
+ "rbs-core",
+]
+
+[[package]]
 name = "redox_syscall"
 version = "0.5.18"
 source = "registry+https://github.com/rust-lang/crates.io-index"

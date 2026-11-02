@@ -7,7 +7,8 @@
 
 use crate::context::GpuContext;
 use crate::error::GpuError;
-use crate::pool::{TextureDesc, TextureId, TexturePool};
+use crate::pool::{TextureDesc, TexturePool};
+use rbs_core::media::TextureId;
 
 /// Description of the NV12 luma plane: `R8Unorm`, `width x height`.
 pub fn luma_desc(width: u32, height: u32) -> TextureDesc {
