@@ -102,6 +102,14 @@ The plugin SDK spec owns these mirrors; this spec only requires that every field
 - Payloads are `bytes::Bytes` (re-exported as `rbs_core::media::Bytes`): O(1) clone and zero-copy `slice`, so one encode fans out to many outputs without copying.
 - Creating a payload costs one allocation per packet at the producer (encoder drain): either the `Vec` it is built from, or the shared header of `Bytes::from_owner` when the buffer comes from a pool (requires `bytes` 1.9 or later). The first clone of a `Bytes` built from a `Vec` also allocates its shared header once, so producers share a payload when they create it. After that, fan-out to muxers and transports never allocates.
 
+### Containers (`rbs_core::media::container`)
+
+Shared by the mux and transport ports ([output ports](output-ports.md), ADR-0019), which may depend only on `rbs-core`.
+
+- `ContainerId` (non-exhaustive): `Mp4Fragmented`, `Matroska`, `MpegTs`, `Flv`; `as_str()` gives `mux.container` values (`mp4.fragmented`, `matroska`, `mpegts`, `flv`) and `transport_input()` gives `transport.input` values (`container.<name>`).
+- `StreamIndex(u16)`: position of a stream in the descriptor list of one output.
+- `MuxChunk { kind: ChunkKind, data: Bytes }` with `ChunkKind::Header`, `Media { keyframe, timestamp }`, `Trailer` or `Patch { offset }`. Patches overwrite earlier bytes and are applied only by seekable transports; `is_sequential()` is false for them.
+
 ## Versioning
 
 `rbs-core` is pre-1.0; these types are Draft. Adding variants or fields to the non-exhaustive types above is a minor change. `bytes::Bytes` is part of the public API, so a `bytes` 2.0 would be a breaking change for `rbs-core`.

@@ -14,5 +14,6 @@
 /crates/rbs-graph/           @salihcantekin
 /crates/rbs-codec*/          @salihcantekin
 /crates/rbs-mux*/            @salihcantekin
+/crates/rbs-media-format/   @salihcantekin
 /crates/rbs-transport*/      @salihcantekin
 /crates/rbs-plugin-host/     @salihcantekin
