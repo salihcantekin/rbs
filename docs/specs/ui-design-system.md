@@ -2,7 +2,7 @@
 
 - Status: Draft
 - Owner crate(s): `rbs-ui-tokens`, `rbs-app` (planned)
-- Related ADRs: [0008](../adr/0008-ui-as-api-client.md), [0013](../adr/0013-zero-cost-when-unused.md), [0015](../adr/0015-ui-design-rules.md)
+- Related ADRs: [0008](../adr/0008-ui-as-api-client.md), [0013](../adr/0013-zero-cost-when-unused.md), [0015](../adr/0015-ui-design-rules.md), [0016](../adr/0016-native-desktop-ui.md)
 - Rules: [UI principles](../ui/principles.md)
 
 ## Purpose
@@ -13,7 +13,7 @@ Binding now (once ADR-0015 is accepted): token names, the component list and con
 
 ## Tokens
 
-Tokens are defined once in a data file (`ui/tokens.toml`, planned) and generated into the desktop toolkit's format and into CSS variables for web panels and plugins. UI code references tokens by name only (rule U6).
+Tokens are defined once in a data file (`ui/tokens.toml`, planned) and generated into the native toolkit's format (ADR-0016), and exported as CSS variables only for remote clients outside the desktop app. UI code references tokens by name only (rule U6).
 
 ### Colour (semantic names, per theme)
 
@@ -98,7 +98,7 @@ Every command is in the command palette (Ctrl/Cmd+K) with its shortcut. Defaults
 
 ## Requirements on the UI toolkit
 
-The desktop toolkit decision (Slint vs Tauri, ADR pending) must satisfy:
+The native toolkit chosen under ADR-0016 (Slint, iced or Qt through `cxx-qt`) must satisfy:
 
 1. Renders the engine's shared GPU surface for preview and program without CPU copies.
 2. Supports the tokens and components above, including custom drawing for meters and the preview canvas at display refresh rate.
@@ -110,4 +110,4 @@ The desktop toolkit decision (Slint vs Tauri, ADR pending) must satisfy:
 ## Open questions
 
 - Final font choice and licence.
-- Whether web panels and the desktop app share one component implementation (only possible with a web-based toolkit).
+- Expressiveness of the declarative plugin panel format (forms, lists, charts, live previews).

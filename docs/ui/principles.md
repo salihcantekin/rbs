@@ -1,6 +1,6 @@
 # UI principles
 
-These are binding rules for every user interface of RBS: the desktop app, web panels and plugin-provided UI. They are decided in [ADR-0015](../adr/0015-ui-design-rules.md). A UI change that breaks a rule is not merged unless a new ADR changes the rule.
+These are binding rules for the RBS desktop app and the plugin panels shown in it (native UI, [ADR-0016](../adr/0016-native-desktop-ui.md)). Remote control clients are separate products outside rule U6; they are encouraged to use the exported tokens. They are decided in [ADR-0015](../adr/0015-ui-design-rules.md). A UI change that breaks a rule is not merged unless a new ADR changes the rule.
 
 Rules use **must** and **must not**. Each rule has an ID (U1, U2, ...) so reviews and issues can cite it.
 
@@ -63,8 +63,8 @@ Rules:
 - No operation runs on the UI thread for more than 8 ms. Long work runs in the engine or in the background with progress shown.
 - The UI renders at the display refresh rate during interaction and animation. Input-to-visual-feedback latency must be under 50 ms.
 - When nothing changes on screen, the UI does not redraw. Meters animate only while visible and while their audio is active; the preview redraws at the canvas frame rate only while visible.
-- Panels that are hidden or collapsed do no rendering and no polling. Hidden plugin web views go to Standby (P13, ADR-0013).
-- The desktop preview and program use the engine's shared GPU surface, not frames copied over IPC (ADR-0008). Remote web panels receive a reduced-rate encoded preview instead.
+- Panels that are hidden or collapsed do no rendering and no polling. Hidden plugin panels go to Standby (P13, ADR-0013).
+- The desktop preview and program use the engine's shared GPU surface, not frames copied over IPC (ADR-0008). Remote clients receive a reduced-rate encoded preview instead.
 
 ## U6. One design system, no exceptions
 
@@ -124,10 +124,10 @@ Rules:
 ## U14. Plugins look native
 
 - Plugin settings are generated from their schema with library components (ADR-0008); plugins do not draw their own settings UI.
-- Plugin panels that use a web view receive the design tokens as CSS variables and the component styles, and must use them. Panels that break U6, U7 or U12 are flagged in the plugin registry.
+- Plugin panels are declarative trees of design-system components rendered natively by the host (ADR-0016). Plugins cannot ship HTML, CSS or JavaScript UI.
 - Plugin dock panels run isolated from the main UI in the sandbox or process tier. Native-tier plugins may not provide panels directly; they declare settings schemas, or ship a separate sandbox or process panel. A crashing or hung panel is replaced by an error card with a reload button; the rest of the UI keeps working (P7).
 - Plugins cannot place UI in the status bar, title bar or live controls.
-- Plugin registry submissions run an automated lint on panel styles; panels with hard-coded colours or failing contrast are marked non-compliant.
+- Plugin registry submissions validate panel descriptions against the panel schema; panels that misuse components (for example colour tokens outside their meaning) are marked non-compliant.
 
 ## U15. Multiple canvases are easy
 
@@ -170,7 +170,7 @@ Rules:
 | U7 | Automated contrast check on tokens; keyboard-only and screen reader walkthrough per release |
 | U1, U2, U10 | Usability tests with target times and success rate |
 | U2 | Declared setting levels reviewed against the personas |
-| U14 | Plugin registry style lint |
+| U14 | Plugin registry panel schema validation |
 | U15-U19 | `ui-review` checklist; usability tests for canvas switching and the mixer |
 | U18 | Automated test: no modal dialog opens automatically while live |
 | U20 | Test that every UI command maps to a control API command |

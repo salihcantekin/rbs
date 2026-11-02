@@ -6,7 +6,7 @@
 
 ## Purpose
 
-The single way to control and observe the engine, used by the desktop UI, web panels, CLI, Stream Deck integrations, scripts and tests.
+The single way to control and observe the engine, used by the desktop UI, remote clients, CLI, Stream Deck integrations, scripts and tests.
 
 ## Shape
 

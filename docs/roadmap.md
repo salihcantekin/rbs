@@ -15,5 +15,5 @@ Durations are rough estimates for a small experienced team assisted by AI agents
 
 - License ([ADR-0010](adr/0010-project-license.md)).
 - Tier-1 platforms and reference machines.
-- Desktop UI toolkit (Slint vs Tauri) after a small comparison prototype.
+- Native desktop UI toolkit (Slint, iced or Qt) after a small comparison prototype (ADR-0016).
 - Control API schema technology.
