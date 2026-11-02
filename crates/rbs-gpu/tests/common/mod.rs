@@ -25,6 +25,11 @@ pub fn gpu() -> Option<&'static GpuContext> {
         }
     });
     if ctx.is_none() {
+        // CI sets this where an adapter is known to exist, so a skip cannot hide a failure.
+        assert!(
+            std::env::var_os("RBS_REQUIRE_GPU").is_none_or(|v| v.is_empty()),
+            "RBS_REQUIRE_GPU is set but no GPU adapter was found"
+        );
         eprintln!("SKIPPED: no GPU adapter (install lavapipe or WARP to run GPU tests)");
     }
     ctx.as_ref()

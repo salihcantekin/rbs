@@ -1,6 +1,6 @@
 # UI toolkit comparison prototypes
 
-Throwaway prototypes behind [ADR-0020](../../docs/adr/0020-native-ui-toolkit.md). They compare Slint, iced and Qt (through `cxx-qt`) against the [toolkit requirements](../../docs/specs/ui-design-system.md#requirements-on-the-ui-toolkit). This directory is excluded from the product workspace and from CI; nothing here is product code.
+Throwaway prototypes behind [ADR-0022](../../docs/adr/0022-native-ui-toolkit.md). They compare Slint, iced and Qt (through `cxx-qt`) against the [toolkit requirements](../../docs/specs/ui-design-system.md#requirements-on-the-ui-toolkit). This directory is excluded from the product workspace and from CI; nothing here is product code.
 
 ## Layout
 
@@ -12,7 +12,7 @@ Throwaway prototypes behind [ADR-0020](../../docs/adr/0020-native-ui-toolkit.md)
 | `iced-proto/` | iced 0.14 (wgpu 27 renderer, `shader` and `canvas` widgets, multi-window `daemon`). |
 | `qt-proto/` | Qt 6.4 Qt Quick through `cxx-qt` 0.10. |
 | `measure-build.sh`, `measure-runtime.sh`, `a11y-check.sh`, `a11y-dump.py` | Measurement scripts used for the tables below. |
-| `measure-gate.sh` | ADR-0020 gate run for a machine with a GPU (macOS or Linux desktop): 1080p preview, spectrum and dense-path cases, measured from presented frames (`RBS_PROTO_MEASURE`). |
+| `measure-gate.sh` | ADR-0022 gate run for a machine with a GPU (macOS or Linux desktop): 1080p preview, spectrum and dense-path cases, measured from presented frames (`RBS_PROTO_MEASURE`). |
 
 ## Same feature set in every prototype
 
@@ -88,7 +88,7 @@ From `./measure-runtime.sh 10` (after 4 s warm-up, 10 s sample; CPU as % of one 
 
 ### What these numbers do not show
 
-- **Load numbers are not GPU numbers, and the script is not yet the acceptance gate.** It counts timer ticks, renders 1280x720 and forces CPU adapters; ADR-0020 requires extending it (GPU, 1080p, presented-frame timestamps) before the gate run. With llvmpipe every GPU draw runs on the CPU. Slint's `femtovg-wgpu` renderer managed only 6-7 frames per second here and Qt's OpenGL scene graph about 62; this says how each renderer behaves on a CPU rasteriser, not on a GPU, but Slint's result stays an open risk until measured on a GPU. iced's frame subscription is not vsync limited on Xvfb (130 ticks/s), so its CPU is not comparable per frame either. **The load scenarios must be re-run on real GPU hardware (reference platform) before ADR-0020 is accepted.**
+- **Load numbers are not GPU numbers, and the script is not yet the acceptance gate.** It counts timer ticks, renders 1280x720 and forces CPU adapters; ADR-0022 requires extending it (GPU, 1080p, presented-frame timestamps) before the gate run. With llvmpipe every GPU draw runs on the CPU. Slint's `femtovg-wgpu` renderer managed only 6-7 frames per second here and Qt's OpenGL scene graph about 62; this says how each renderer behaves on a CPU rasteriser, not on a GPU, but Slint's result stays an open risk until measured on a GPU. iced's frame subscription is not vsync limited on Xvfb (130 ticks/s), so its CPU is not comparable per frame either. **The load scenarios must be re-run on real GPU hardware (reference platform) before ADR-0022 is accepted.**
 - RSS is dominated by Mesa's software drivers; compare differences, not absolutes.
 - Accessibility was checked on Linux only (AT-SPI). Windows (UIA) and macOS (NSAccessibility) are not tested.
 - Engine and UI ran in one process. The default two-process topology (ADR-0008) needs native surface export and import, which was not prototyped.

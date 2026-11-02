@@ -1,0 +1,24 @@
+[package]
+name = "rbs-codec"
+description = "Encoder port for RBS: video and audio encoder traits, capabilities and conformance suite."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+rbs-core = { path = "../rbs-core" }
+
+[features]
+# The conformance suite (`rbs_codec::conformance`). Adapter crates enable it in their
+# dev-dependencies; it is test support and is never needed at runtime.
+conformance = ["rbs-core/conformance"]
+
+[dev-dependencies]
+# Lets this crate's own tests use the suite without enabling it for normal builds.
+rbs-codec = { path = ".", features = ["conformance"] }
+
+[lints]
+workspace = true

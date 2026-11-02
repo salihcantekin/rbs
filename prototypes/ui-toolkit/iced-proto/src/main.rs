@@ -1,4 +1,4 @@
-//! iced prototype for the UI toolkit comparison (ADR-0020).
+//! iced prototype for the UI toolkit comparison (ADR-0022).
 #![allow(missing_docs)]
 
 use std::collections::BTreeMap;

@@ -597,6 +597,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "180788110936d59bab6bd83b6060ffdfffb3b922ba1396b312ae795e1de9d81d"
 dependencies = [
  "bitflags",
+ "libc",
  "objc2",
  "objc2-core-foundation",
 ]
@@ -611,6 +612,7 @@ dependencies = [
  "block2",
  "objc2",
  "objc2-foundation",
+ "objc2-io-surface",
 ]
 
 [[package]]
@@ -780,6 +782,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "rbs-codec"
+version = "0.0.1"
+dependencies = [
+ "rbs-codec",
+ "rbs-core",
+]
+
+[[package]]
 name = "rbs-core"
 version = "0.0.1"
 dependencies = [
@@ -794,16 +804,55 @@ version = "0.0.1"
 dependencies = [
  "bytemuck",
  "criterion 0.7.0",
+ "objc2-core-foundation",
+ "objc2-io-surface",
+ "objc2-metal",
  "pollster",
  "rbs-core",
  "wgpu",
+ "windows",
 ]
 
 [[package]]
 name = "rbs-graph"
 version = "0.0.1"
 dependencies = [
+ "allocation-counter",
+ "criterion 0.8.2",
  "rbs-core",
+]
+
+[[package]]
+name = "rbs-media-format"
+version = "0.0.1"
+dependencies = [
+ "rbs-core",
+]
+
+[[package]]
+name = "rbs-mux"
+version = "0.0.1"
+dependencies = [
+ "rbs-core",
+ "rbs-mux",
+]
+
+[[package]]
+name = "rbs-mux-mpegts"
+version = "0.0.1"
+dependencies = [
+ "criterion 0.8.2",
+ "rbs-core",
+ "rbs-media-format",
+ "rbs-mux",
+]
+
+[[package]]
+name = "rbs-transport"
+version = "0.0.1"
+dependencies = [
+ "rbs-core",
+ "rbs-transport",
 ]
 
 [[package]]

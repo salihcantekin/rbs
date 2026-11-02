@@ -131,37 +131,40 @@ Implements the importer side of [media-types.md, Native surfaces](media-types.md
 
 ```rust
 impl Importer {
-    pub fn new(ctx: &GpuContext) -> Importer;   // holds no GPU objects until the first import
+    pub fn new() -> Importer;   // holds no GPU objects until the first import
     /// Takes a native frame by value and returns a `Texture` frame of the same format and time.
     pub fn import(&mut self, ctx: &GpuContext, pool: &mut TexturePool, frame: VideoFrame)
         -> Result<VideoFrame, GpuError>;
     /// Releases native leases whose reading GPU work has completed. Once per render tick.
     pub fn retire(&mut self, ctx: &GpuContext, pool: &mut TexturePool);
+    /// Closes cached surfaces that no frame and no producer lease use. Call when a source stops.
+    pub fn close_unused(&mut self, pool: &mut TexturePool);
 }
 ```
 
-Backend matrix (first implementation in bold):
+Backend matrix (implemented rows in bold):
 
 | Surface | Render backend | Sync accepted | Notes |
 | --- | --- | --- | --- |
 | **`D3dSharedHandle` (NT)** | **D3D12** | **`Ready`, `TimelineFence` (shared D3D11/D3D12 fence)** | `OpenSharedHandle`; the adapter LUID must match the render device |
 | `D3d12Resource` | D3D12 | `Ready`, `TimelineFence` | same-process resource |
 | `D3d11Texture` | none | none | not importable: the producer must share it with an NT handle |
-| `IoSurface`, `MetalTexture` | Metal | `Ready` | `device_registry_id` must match |
+| **`IoSurface`** | **Metal** | **`Ready`** | `newTextureWithDescriptor:iosurface:plane:`; IOSurfaces are not tied to a device, so there is no identity check. Single-plane `'BGRA'`, `'RGBA'` and `'RGhA'` (RGBA half float) surfaces |
+| `MetalTexture` | Metal | `Ready` | `device_registry_id` must match |
 | `DmaBuf` | Vulkan | `Ready`, `SyncFile` | needs `VK_EXT_external_memory_dma_buf` and image DRM format modifiers; device identity is an open question |
 
-`GpuContext` reports what the importer accepts, for capture requests (`GpuImportTarget { device, sync }` of the capture port spec): the render adapter's identity (D3D LUID, Metal registry id) and the sync kinds in the table below. Producers create surfaces on that adapter.
+`GpuContext` reports what the importer accepts, for capture requests (`GpuImportTarget { device, sync }` of the capture port spec): the render adapter's identity (D3D LUID as `u64` = `HighPart << 32 | LowPart`, from `GpuContext::adapter_luid`; Metal registry id for `MetalTexture`) and the sync kinds in the table below. Producers create surfaces on that adapter.
 
 Rules:
 
 1. **Alias, do not copy.** A supported surface is wrapped zero-copy as a pool texture (`create_texture_from_hal`). A surface that cannot be aliased (unsupported format or backend) is an error (`GpuError::Unsupported`), not a silent CPU path; the source falls back to its `System` payload if it offers one.
-2. **Open once.** Producers reuse a small ring of surfaces. The importer caches opened surfaces and fences by handle value (at most 16 entries per importer) and reuses the pool slot of a cached surface, so steady-state import does not open handles or allocate. First sight of a surface opens it (allocates, counted in `GpuMetrics::surfaces_opened`). Entries unseen for 120 frames, and all entries when the producer stops, are dropped off the render thread.
-3. **Keyed mutexes are not supported on D3D12** (D3D12 cannot acquire them). D3D producers use a shared timeline fence. The importer makes its queue wait for the fence value before the first submission that reads the surface.
-4. **Lease hand-off.** The native lease moves into the importer's record for the pool slot. `import` returns a `Texture` frame whose own pool lease keeps the slot alive for downstream consumers. The native lease is dropped by `retire` once the last queue submission that read the slot has completed (checked with the submission index, non-blocking) and no pool lease on the slot remains, so the producer never reuses a surface the GPU may still read.
+2. **Open once.** Producers reuse a small ring of surfaces. The importer caches opened surfaces and fences by handle value or object address (at most 16 entries per importer) and reuses the pool slot of a cached surface, so steady-state import does not open handles or allocate. First sight of a surface opens it (allocates, counted in `GpuMetrics::surfaces_opened`). Entries unseen for 120 ticks are closed by `retire`; when every entry is in use and a new surface arrives, the importer returns `GpuError::Unsupported` rather than stall. Handle values are unique only while the producer's session is Active ([capture-port.md](capture-port.md), "Native surface rules"), so the owner calls `close_unused` when a source stops, and a cached entry that arrives with a frame size other than the one it was first seen with is treated as a different object and reopened.
+3. **Keyed mutexes are not supported on D3D12** (D3D12 cannot acquire them). D3D producers use a shared timeline fence. The importer makes its queue wait for the fence value before the first submission that reads the surface. The sync kind is checked before a surface is opened.
+4. **Lease hand-off.** The native lease moves into the importer's record for the pool slot. `import` returns a `Texture` frame whose own pool lease keeps the slot alive for downstream consumers. The native lease is dropped by `retire` once the last queue submission that read the slot has completed (checked with the submission index, non-blocking) and no pool lease on the slot remains, so the producer never reuses a surface the GPU may still read. On D3D12 that hand-back submission also returns the texture to the `COMMON` state (wgpu `TextureUses::PRESENT`), which other APIs expect for shared resources.
 5. **Formats.** BGRA8/RGBA8 (UNORM or sRGB) surfaces are aliased as the matching wgpu format; the colour space of the native frame's `VideoFormat` decides `Transfer` for the compositor. NV12/P010 surfaces need a YUV-to-RGB pass and are a follow-up.
 6. **Same adapter only.** A surface from another adapter (LUID or registry id mismatch) is `GpuError::WrongAdapter`; cross-adapter copies are out of scope.
 
-Conformance (per backend, on CI where the platform allows; WARP on Windows): a producer-side test creates a shared texture and fence, fills it, signals; the importer aliases it; the compositor renders it; readback matches; the native lease is released only after `retire` follows GPU completion; a second frame on the same surface opens nothing new (`surfaces_opened` unchanged).
+Conformance (per backend, on CI where the platform allows; WARP on Windows, the runner's Metal device on macOS): a producer-side test creates a shared texture (and fence where the backend uses one), fills it, signals; the importer aliases it; the compositor renders it; readback matches; the native lease is released only after `retire` follows GPU completion; a second frame on the same surface opens nothing new (`surfaces_opened` unchanged).
 
 ### Readback (fallback only)
 
@@ -196,5 +199,6 @@ Run on any adapter, including software adapters in CI (lavapipe on Linux, WARP o
 
 - Whether the canvas working format should be configurable (`Rgba16Float` vs `Rgba8UnormSrgb` for low-end GPUs).
 - DMA-BUF device identity on multi-GPU Linux (DRM render node or device UUID in `DmaBufSurface`).
-- Waiting on an imported fence on Vulkan and Metal through wgpu's HAL (D3D12 uses `ID3D12CommandQueue::Wait`).
+- Waiting on an imported fence on Vulkan and Metal through wgpu's HAL (D3D12 uses `ID3D12CommandQueue::Wait`). Metal producers deliver `Ready` surfaces until then.
+- D3D cache key: an NT handle value can be reused by the OS after the producer closes the handle, so a cached entry could alias a different texture. Producers keep ring handles open for the session today; validating entries (for example `CompareObjectHandles` on a duplicated handle) is a follow-up. IOSurface addresses cannot be reused while cached, because the Metal texture retains the surface.
 - Rotation and non-affine transforms (perspective, corner pin) as filters vs layer properties.

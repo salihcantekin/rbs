@@ -106,6 +106,9 @@ struct Slot {
     generation: u32,
     state: State,
     texture: Option<PooledTexture>,
+    /// Wraps a texture the pool did not create (native import). Dropped instead of
+    /// reused when it becomes free.
+    external: bool,
 }
 
 /// Free slot indices for one texture description.
@@ -223,6 +226,14 @@ impl TexturePool {
         let slot = &mut self.slots[index as usize];
         slot.state = State::Free;
         slot.generation = slot.generation.wrapping_add(1);
+        if slot.external {
+            // Not reusable: drop the wrapper and recycle the slot. Capacity of `empty`
+            // is the pool capacity, so this push does not allocate.
+            slot.texture = None;
+            slot.external = false;
+            self.empty.push(index);
+            return;
+        }
         let Some(desc) = slot.texture.as_ref().map(|t| t.desc) else {
             return;
         };
@@ -259,51 +270,7 @@ impl TexturePool {
             usage: desc.usage,
             view_formats: &[],
         });
-        let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
-        let filterable = desc.format.sample_type(None, Some(ctx.device().features()))
-            == Some(wgpu::TextureSampleType::Float { filterable: true });
-        let sampled = (desc.usage.contains(wgpu::TextureUsages::TEXTURE_BINDING) && filterable)
-            .then(|| {
-                ctx.device().create_bind_group(&wgpu::BindGroupDescriptor {
-                    label: Some("rbs-gpu sampled"),
-                    layout: &ctx.sampled_layout,
-                    entries: &[
-                        wgpu::BindGroupEntry {
-                            binding: 0,
-                            resource: wgpu::BindingResource::TextureView(&view),
-                        },
-                        wgpu::BindGroupEntry {
-                            binding: 1,
-                            resource: wgpu::BindingResource::Sampler(&ctx.linear_sampler),
-                        },
-                    ],
-                })
-            });
-        let pooled = PooledTexture {
-            desc: *desc,
-            texture,
-            view,
-            sampled,
-        };
-
-        let index = match self.empty.pop() {
-            Some(index) => {
-                let slot = &mut self.slots[index as usize];
-                slot.state = State::InUse;
-                slot.texture = Some(pooled);
-                index
-            }
-            None => {
-                // Bounded by `capacity`, which is a `u32`.
-                let index = self.slots.len() as u32;
-                self.slots.push(Slot {
-                    generation: 0,
-                    state: State::InUse,
-                    texture: Some(pooled),
-                });
-                index
-            }
-        };
+        let index = self.place(wrap(ctx, texture, *desc), false);
         // Reserve room in the free list now so releasing never grows it on the hot path.
         let list = match self.free.iter_mut().position(|f| f.desc == *desc) {
             Some(i) => &mut self.free[i],
@@ -321,6 +288,59 @@ impl TexturePool {
         let missing = list.total - list.slots.len();
         list.slots.reserve(missing);
         Ok(TextureId::new(index, self.slots[index as usize].generation))
+    }
+
+    /// Puts a texture into an empty or new slot, marked InUse. Capacity was checked.
+    fn place(&mut self, pooled: PooledTexture, external: bool) -> u32 {
+        match self.empty.pop() {
+            Some(index) => {
+                let slot = &mut self.slots[index as usize];
+                slot.state = State::InUse;
+                slot.texture = Some(pooled);
+                slot.external = external;
+                index
+            }
+            None => {
+                // Bounded by `capacity`, which is a `u32`.
+                let index = self.slots.len() as u32;
+                self.slots.push(Slot {
+                    generation: 0,
+                    state: State::InUse,
+                    texture: Some(pooled),
+                    external,
+                });
+                index
+            }
+        }
+    }
+
+    /// Adds a texture the pool did not create (an imported native surface) as an InUse
+    /// slot. When released and unleased, the slot drops the texture instead of reusing it.
+    /// Allocates; call when a surface is first seen, not per frame.
+    pub fn insert_external(
+        &mut self,
+        ctx: &GpuContext,
+        texture: wgpu::Texture,
+        desc: TextureDesc,
+    ) -> Result<TextureId, GpuError> {
+        self.collect();
+        if self.empty.is_empty() && self.slots.len() >= self.capacity as usize {
+            return Err(GpuError::PoolFull {
+                capacity: self.capacity,
+            });
+        }
+        let index = self.place(wrap(ctx, texture, desc), true);
+        Ok(TextureId::new(index, self.slots[index as usize].generation))
+    }
+
+    /// Open leases on the slot of `id` (0 for stale ids). For importers deciding when a
+    /// producer's surface is no longer read.
+    pub fn lease_count(&self, id: TextureId) -> u32 {
+        if self.get(id).is_none() {
+            return 0;
+        }
+        // Acquire: pairs with the `Release` decrement of the last lease.
+        self.leases.counts[id.slot() as usize].load(Ordering::Acquire)
     }
 
     /// Gives up the owner's handle. The slot is reused once every lease on it is dropped;
@@ -398,5 +418,35 @@ impl TexturePool {
     /// Number of textures not free: handed out, or released with leases still open.
     pub fn in_use(&self) -> usize {
         self.slots.iter().filter(|s| s.state != State::Free).count()
+    }
+}
+
+/// Builds the pooled wrapper: default view and, when sampleable, the sampled bind group.
+fn wrap(ctx: &GpuContext, texture: wgpu::Texture, desc: TextureDesc) -> PooledTexture {
+    let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+    let filterable = desc.format.sample_type(None, Some(ctx.device().features()))
+        == Some(wgpu::TextureSampleType::Float { filterable: true });
+    let sampled =
+        (desc.usage.contains(wgpu::TextureUsages::TEXTURE_BINDING) && filterable).then(|| {
+            ctx.device().create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("rbs-gpu sampled"),
+                layout: &ctx.sampled_layout,
+                entries: &[
+                    wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: wgpu::BindingResource::TextureView(&view),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 1,
+                        resource: wgpu::BindingResource::Sampler(&ctx.linear_sampler),
+                    },
+                ],
+            })
+        });
+    PooledTexture {
+        desc,
+        texture,
+        view,
+        sampled,
     }
 }

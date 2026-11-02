@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# ADR-0020 acceptance-gate measurements on a machine with a real GPU (macOS or Linux desktop).
+# ADR-0022 acceptance-gate measurements on a machine with a real GPU (macOS or Linux desktop).
 # Builds the prototypes that can be built here, runs each scenario with the
 # built-in self-measurement (presented frames, process CPU, peak RSS) and
 # prints one Markdown table. Qt is skipped when qmake6/qmake is not installed.
@@ -41,4 +41,4 @@ for p in $PROTOS; do
   scenario $p "dense path, 4096 points" RBS_PROTO_BANDS=4096 RBS_PROTO_CLOSE=rbs.program
 done
 echo
-echo "Late = frame interval over 25 ms (1.5 periods at 60 Hz). Gate (ADR-0020): late_pct <= 1 and cpu_pct <= 10."
+echo "Late = frame interval over 25 ms (1.5 periods at 60 Hz). Gate (ADR-0022): late_pct <= 1 and cpu_pct <= 10."

@@ -27,6 +27,12 @@ pub enum GpuError {
         /// Layers reserved.
         reserved: u32,
     },
+    /// The surface kind, sync kind or format cannot be imported on this backend.
+    Unsupported(&'static str),
+    /// The native surface lives on another adapter than the render device.
+    WrongAdapter,
+    /// Opening a native surface or fence failed (first sight only, not per frame).
+    Import(String),
     /// The pool has no free slot for a new texture.
     PoolFull {
         /// Slots the pool was created with.
@@ -57,6 +63,9 @@ impl fmt::Display for GpuError {
                 requested,
                 reserved,
             } => write!(f, "{requested} layers requested, {reserved} reserved"),
+            Self::Unsupported(what) => write!(f, "unsupported for native import: {what}"),
+            Self::WrongAdapter => f.write_str("native surface is on another adapter"),
+            Self::Import(msg) => write!(f, "native import failed: {msg}"),
             Self::PoolFull { capacity } => write!(f, "texture pool full ({capacity} slots)"),
             Self::InvalidSize { width, height } => write!(f, "invalid size {width}x{height}"),
             Self::Readback(msg) => write!(f, "readback failed: {msg}"),
