@@ -22,6 +22,8 @@ use crate::pool::{TextureDesc, TexturePool};
 mod d3d12;
 #[cfg(target_vendor = "apple")]
 mod metal;
+#[cfg(target_os = "linux")]
+mod vulkan;
 
 /// Most producer surfaces one importer keeps open at a time.
 ///
@@ -35,7 +37,6 @@ pub const MAX_SURFACES: usize = 64;
 pub const SURFACE_IDLE: Duration = Duration::from_secs(8);
 
 /// Usage of aliased surfaces: sampled by the compositor, copyable for readback and tests.
-#[cfg_attr(not(any(windows, target_vendor = "apple")), allow(dead_code))]
 const USAGE: wgpu::TextureUsages =
     wgpu::TextureUsages::TEXTURE_BINDING.union(wgpu::TextureUsages::COPY_SRC);
 
@@ -155,6 +156,8 @@ impl Importer {
                 metal::validate(sync)?;
                 Ok(surface as u64)
             }
+            #[cfg(target_os = "linux")]
+            NativeSurface::DmaBuf(ref dmabuf) => vulkan::validate(ctx, dmabuf, sync),
             NativeSurface::D3d11Texture { .. } => Err(GpuError::Unsupported(
                 "D3D11 texture pointers; share the texture with an NT handle",
             )),
@@ -178,7 +181,7 @@ impl Importer {
         if self.entries.len() >= MAX_SURFACES {
             self.evict_one(pool)?;
         }
-        let opened = open_backend(ctx, surface)?;
+        let opened = open_backend(ctx, surface, frame_size)?;
         let id = pool.insert_external(ctx, opened.texture, opened.desc)?;
         ctx.metrics().count_surface_opened();
         self.entries.push(Entry {
@@ -325,12 +328,19 @@ impl Importer {
     }
 }
 
-fn open_backend(ctx: &GpuContext, surface: &NativeSurface) -> Result<Opened, GpuError> {
+fn open_backend(
+    ctx: &GpuContext,
+    surface: &NativeSurface,
+    frame_size: (u32, u32),
+) -> Result<Opened, GpuError> {
+    let _ = frame_size; // Only DMA-BUFs take their size from the frame.
     match *surface {
         #[cfg(windows)]
         NativeSurface::D3dSharedHandle { handle, .. } => d3d12::open(ctx, handle),
         #[cfg(target_vendor = "apple")]
         NativeSurface::IoSurface { surface, .. } => metal::open(ctx, surface),
+        #[cfg(target_os = "linux")]
+        NativeSurface::DmaBuf(ref dmabuf) => vulkan::open(ctx, dmabuf, frame_size),
         _ => {
             let _ = ctx;
             Err(GpuError::Unsupported("surface kind"))

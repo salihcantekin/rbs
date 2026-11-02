@@ -133,3 +133,78 @@ fn mismatched_planes_are_rejected() {
         Err(GpuError::TargetMismatch(wrong))
     );
 }
+
+/// Whether the device can create a single NV12 texture. `RBS_REQUIRE_NV12_SURFACE` turns a
+/// missing capability into a failure on runners known to have it.
+fn has_nv12_surface(ctx: &rbs_gpu::GpuContext) -> bool {
+    let has = ctx.capabilities().get(&rbs_gpu::context::CAP_NV12_SURFACE)
+        == Some(&rbs_core::capability::CapabilityValue::Flag(true));
+    if !has {
+        assert!(
+            std::env::var_os("RBS_REQUIRE_NV12_SURFACE").is_none_or(|v| v.is_empty()),
+            "RBS_REQUIRE_NV12_SURFACE is set but the device has no NV12 textures"
+        );
+        eprintln!("SKIPPED: device has no NV12 textures");
+    }
+    has
+}
+
+#[test]
+fn single_surface_matches_the_two_plane_output() {
+    let Some(ctx) = common::gpu() else { return };
+    if !has_nv12_surface(ctx) {
+        return;
+    }
+    let mut pool = TexturePool::new();
+    let mut comp = Compositor::new(
+        ctx,
+        CanvasDesc {
+            width: W,
+            height: H,
+        },
+        2,
+    )
+    .unwrap();
+    let canvas = pool.acquire(ctx, &TextureDesc::canvas(W, H)).unwrap();
+    // Two colours side by side, so the planes are not uniform and the layout is checked.
+    let red = solid(ctx, &mut pool, 2, 2, [1.0, 0.0, 0.0, 1.0]);
+    let blue = solid(ctx, &mut pool, 2, 2, [0.0, 0.2, 1.0, 1.0]);
+    let half = W as f32 / 2.0;
+    comp.render(
+        ctx,
+        &pool,
+        &[
+            Layer::new(red, 0.0, 0.0, half, H as f32),
+            Layer::new(blue, half, 0.0, half, H as f32),
+        ],
+        canvas,
+    )
+    .unwrap();
+
+    let mut conv = Nv12Converter::new(ctx, W, H).unwrap();
+    let luma = pool.acquire(ctx, &nv12::luma_desc(W, H)).unwrap();
+    let chroma = pool.acquire(ctx, &nv12::chroma_desc(W, H)).unwrap();
+    conv.convert(ctx, &pool, canvas, luma, chroma).unwrap();
+    let surface = pool.acquire(ctx, &nv12::surface_desc(W, H)).unwrap();
+    conv.convert_to_surface(ctx, &pool, canvas, surface)
+        .unwrap();
+
+    let y = readback::read_bytes(ctx, &pool, luma).unwrap();
+    let uv = readback::read_bytes(ctx, &pool, chroma).unwrap();
+    assert_ne!(y[0], y[(W - 1) as usize], "the canvas has two colours");
+    assert_eq!(readback::read_plane(ctx, &pool, surface, 0).unwrap(), y);
+    assert_eq!(readback::read_plane(ctx, &pool, surface, 1).unwrap(), uv);
+}
+
+#[test]
+fn wrong_surface_is_rejected() {
+    let Some(ctx) = common::gpu() else { return };
+    let mut pool = TexturePool::new();
+    let canvas = pool.acquire(ctx, &TextureDesc::canvas(W, H)).unwrap();
+    let luma = pool.acquire(ctx, &nv12::luma_desc(W, H)).unwrap();
+    let mut conv = Nv12Converter::new(ctx, W, H).unwrap();
+    assert_eq!(
+        conv.convert_to_surface(ctx, &pool, canvas, luma),
+        Err(GpuError::TargetMismatch(luma))
+    );
+}

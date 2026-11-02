@@ -50,6 +50,7 @@ jobs:
           # Every runner has a GPU adapter (lavapipe, WARP, Metal); GPU tests must not skip.
           RBS_REQUIRE_GPU: "1"
           RBS_REQUIRE_D3D12: ${{ runner.os == 'Windows' && '1' || '' }}
+          RBS_REQUIRE_NV12_SURFACE: ${{ runner.os == 'Linux' && '1' || '' }}
       - run: cargo doc --workspace --no-deps
         env:
           RUSTDOCFLAGS: -D warnings

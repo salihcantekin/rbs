@@ -782,6 +782,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "rbs-capture-wgc"
+version = "0.0.1"
+dependencies = [
+ "allocation-counter",
+ "criterion 0.8.2",
+ "rbs-capture",
+ "rbs-core",
+ "windows",
+]
+
+[[package]]
 name = "rbs-codec"
 version = "0.0.1"
 dependencies = [
@@ -804,6 +815,7 @@ version = "0.0.1"
 dependencies = [
  "bytemuck",
  "criterion 0.7.0",
+ "libc",
  "objc2-core-foundation",
  "objc2-io-surface",
  "objc2-metal",

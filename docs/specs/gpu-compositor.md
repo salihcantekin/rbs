@@ -45,7 +45,7 @@ impl GpuContext {
 ```
 
 - Adapter choice uses capabilities only. Vendor or device names are reported for diagnostics and never branched on (P3).
-- Reported capability keys: `gpu.software` (bool), `gpu.max_texture_dimension` (int), `gpu.timestamp_query` (bool).
+- Reported capability keys: `gpu.software` (bool), `gpu.max_texture_dimension` (int), `gpu.timestamp_query` (bool), `gpu.import.dmabuf` (bool: the importer accepts Linux DMA-BUFs), `gpu.nv12_surface` (bool: the device creates multi-planar NV12 textures; the feature is enabled on the device only when the adapter has it).
 - Only the primary backends are used (Vulkan, Metal, D3D12); the adapter must support storage buffers in the vertex stage.
 - `GpuError::NoAdapter` is returned when no adapter satisfies the request. Callers and tests treat it as "hardware absent", not as a crash.
 
@@ -112,16 +112,27 @@ impl Nv12Converter {
     pub fn new(ctx: &GpuContext, width: u32, height: u32) -> Result<Nv12Converter, GpuError>;
     pub fn convert(&mut self, ctx: &GpuContext, pool: &TexturePool, canvas: TextureId, luma: TextureId, chroma: TextureId)
         -> Result<(), GpuError>;
+    /// Needs `gpu.nv12_surface`.
+    pub fn convert_to_surface(&mut self, ctx: &GpuContext, pool: &TexturePool, canvas: TextureId, surface: TextureId)
+        -> Result<(), GpuError>;
 }
 pub fn luma_desc(width: u32, height: u32) -> TextureDesc;    // R8Unorm, w x h
 pub fn chroma_desc(width: u32, height: u32) -> TextureDesc;  // Rg8Unorm, w/2 x h/2
+pub fn surface_desc(width: u32, height: u32) -> TextureDesc; // NV12, both planes
+// PooledTexture::plane_view(plane) gives the plane views of a multi-planar pool texture;
+// readback::read_plane(ctx, pool, id, plane) reads one plane (fallback and tests).
 ```
 
 - Input: a linear `Rgba16Float` canvas, composited over black (alpha is ignored). Output: Y plane `R8Unorm` (w x h) and CbCr plane `Rg8Unorm` (w/2 x h/2), both render targets. Width and height must be even.
 - Colour: linear light is encoded with the BT.709 OETF, then converted with BT.709 coefficients to limited range (Y 16-235, CbCr 16-240). Chroma is the average of each 2x2 block (centre siting).
 - Two render passes per frame (luma at full size, chroma at half size), one full-screen triangle each. Render passes are used instead of compute because `R8Unorm`/`Rg8Unorm` are render targets on every backend, while storage writes to them need optional features.
 - The frame's colour fields (primaries, transfer, matrix, range) travel with the converted frame so encoders can write VUI information.
-- Hand-off target: hardware encoders (NVENC, AMF, QSV, VideoToolbox, VA-API, Vulkan Video) consume one multi-planar NV12 or P010 surface. The interop module therefore exports a single NV12/P010 texture, written through per-plane views where the backend allows it, and falls back to the two plane textures plus one GPU copy into a shared NV12 surface where it does not. The first implementation writes the two plane textures only; the single-surface export lands with the interop module.
+- Hand-off target: hardware encoders (NVENC, AMF, QSV, VideoToolbox, VA-API, Vulkan Video) consume one multi-planar NV12 or P010 surface. Where the device has `gpu.nv12_surface` (D3D12 and Vulkan), `convert_to_surface` writes a single pool texture of `surface_desc`.
+  - Hardware adapters render straight into its two plane views.
+  - Software adapters (`gpu.software`) render into converter-owned plane textures, then copy them into the NV12 texture through one GPU buffer. Rendering into plane views is not reliable there: lavapipe writes plane 1 over plane 0. wgpu has no texture-to-texture copy into planes. The staged path costs about 7% more than the plain planes on lavapipe at 1080p (24.3 ms against 22.7 ms, `frame_1080p/nv12_surface` against `nv12_planes`). It never reaches the CPU.
+  - Without `gpu.nv12_surface` (Metal), encoders take the two plane textures from `convert`. A CVPixelBuffer export for VideoToolbox is a follow-up.
+  - P010 (10-bit) uses the same shape and is a follow-up.
+  - Sharing the surface with an encoder API (an NT handle on D3D12, an exportable memory fd on Vulkan) is the encoder adapter's job, through the HAL.
 - Lease: an exported frame holds a pool lease. The encoder releases it after it has finished reading (fence or semaphore signal, or an explicit release), and the pool never reuses a texture while a lease on it is open.
 - CPU fallback for software encoders: on request per output, the converted planes are copied into a mapped staging buffer (NV12 or I420 with per-plane strides). It is opt-in, counted in `frames_cpu_copied`, and never on the default path. Encoders advertise what they accept with the `input.memory` and `input.pixel_format` capabilities of `rbs-codec`.
 
@@ -152,7 +163,7 @@ Backend matrix (implemented rows in bold):
 | `D3d11Texture` | none | none | not importable: the producer must share it with an NT handle |
 | **`IoSurface`** | **Metal** | **`Ready`** | `newTextureWithDescriptor:iosurface:plane:`; IOSurfaces are not tied to a device, so there is no identity check. Single-plane `'BGRA'`, `'RGBA'` and `'RGhA'` (RGBA half float) surfaces |
 | `MetalTexture` | Metal | `Ready` | `device_registry_id` must match |
-| `DmaBuf` | Vulkan | `Ready`, `SyncFile` | needs `VK_EXT_external_memory_dma_buf` and image DRM format modifiers; device identity is an open question |
+| **`DmaBuf`** | **Vulkan** | **`Ready`** (`SyncFile` is a follow-up) | wgpu-hal `texture_from_dmabuf_fd` (`VK_EXT_external_memory_dma_buf` with `VK_EXT_image_drm_format_modifier`), capability `gpu.import.dmabuf`. Single plane, `AR24` (ARGB8888) and `AB24` (ABGR8888); `XR24` needs an opaque layer flag first. The importer duplicates the producer's fd; the cache key is the buffer's inode, not the fd number. The size comes from the frame's `VideoFormat`. Device identity is not checked: an incompatible modifier fails the import |
 
 `GpuContext` reports what the importer accepts, for capture requests (`GpuImportTarget { device, sync }` of the capture port spec): the render adapter's identity (D3D LUID as `u64` = `HighPart << 32 | LowPart`, from `GpuContext::adapter_luid`; Metal registry id for `MetalTexture`) and the sync kinds in the table below. Producers create surfaces on that adapter.
 
@@ -165,7 +176,7 @@ Rules:
 5. **Formats.** BGRA8/RGBA8 (UNORM or sRGB) surfaces are aliased as the matching wgpu format; the colour space of the native frame's `VideoFormat` decides `Transfer` for the compositor. NV12/P010 surfaces need a YUV-to-RGB pass and are a follow-up.
 6. **Same adapter only.** A surface from another adapter (LUID or registry id mismatch) is `GpuError::WrongAdapter`; cross-adapter copies are out of scope.
 
-Conformance (per backend, on CI where the platform allows; WARP on Windows, the runner's Metal device on macOS): a producer-side test creates a shared texture (and fence where the backend uses one), fills it, signals; the importer aliases it; the compositor renders it; readback matches; the native lease is released only after `retire` follows GPU completion; a second frame on the same surface opens nothing new (`surfaces_opened` unchanged).
+Conformance (per backend, on CI where the platform allows; WARP on Windows, the runner's Metal device on macOS; DMA-BUF only on Linux machines with a hardware Vulkan driver and `/dev/udmabuf`, since lavapipe has no DMA-BUF import, with `RBS_REQUIRE_DMABUF` to make it mandatory): a producer-side test creates a shared texture (and fence where the backend uses one), fills it, signals; the importer aliases it; the compositor renders it; readback matches; the native lease is released only after `retire` follows GPU completion; a second frame on the same surface opens nothing new (`surfaces_opened` unchanged).
 
 ### Readback (fallback only)
 
@@ -181,7 +192,7 @@ Device loss is reported by wgpu through the device-lost callback and surfaced as
 
 ## Performance requirements
 
-- `Compositor::render`, `Nv12Converter::convert` and the pool's `acquire` (reuse), `release` and `get` are hot paths ([hot-paths.md](../architecture/hot-paths.md)). RBS code inside them does not allocate. wgpu allocates internally while recording and submitting command buffers (about 130 allocations per frame for render + NV12 in the first measurement); the `alloc_per_frame` test asserts this does not grow over time and adds at most a small constant per layer. Reducing it (for example re-recorded render bundles) is follow-up work with its own measurements.
+- `Compositor::render`, `Nv12Converter::convert`, `Nv12Converter::convert_to_surface` and the pool's `acquire` (reuse), `release` and `get` are hot paths ([hot-paths.md](../architecture/hot-paths.md)). RBS code inside them does not allocate. wgpu allocates internally while recording and submitting command buffers (about 130 allocations per frame for render + NV12 in the first measurement); the `alloc_per_frame` test asserts this does not grow over time and adds at most a small constant per layer. Reducing it (for example re-recorded render bundles) is follow-up work with its own measurements.
 - No CPU readback on the default path (P4).
 - Installed but unused: a `GpuContext` is created only when the first canvas becomes Active. A compositor or converter that is not Active is dropped, releasing its GPU objects (P13).
 - Benchmarks: `benches/compositor.rs` measures 1080p frame time (render, render + NV12, waiting for the GPU) with 1, 8 and 32 layers, and the CPU cost of recording and submitting 32 layers.
@@ -193,6 +204,7 @@ Run on any adapter, including software adapters in CI (lavapipe on Linux, WARP o
 - Pool: reuse, generation and stale-id handling, trim, capacity, leases (a leased slot survives the owner's release, is reused after the last lease drops on another thread, frames share the lease).
 - Golden images (sampled pixels with tolerance): single opaque layer placement, crop, opacity blend over a background layer, sRGB source decode, layer order, stale layer skipped.
 - NV12: known colours (black, white, mid grey, pure red) produce BT.709 limited-range values within ±1.
+- NV12 surface (where `gpu.nv12_surface`; required on Linux CI): both planes of `convert_to_surface` equal the two-plane output byte for byte on a two-colour canvas; a texture of another format is rejected.
 - Allocations per frame do not grow over time and grow by at most a small constant per layer.
 - Readback increments `frames_cpu_copied`.
 
