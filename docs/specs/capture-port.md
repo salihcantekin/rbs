@@ -258,6 +258,12 @@ Records written from the reviewer's own output (ADR-0014). The spec stays Draft.
 - Concerns: (1) per-pair drop accounting still races (a drop counted early is charged to the previous pair); (2) a shallow queue still passed latest wins because the second-call check had one interval of slack.
 - Open minor items listed by the reviewer, for the owner to accept: a retired ring keeps its buffers through Standby until `start` or drop (small exception to P13); a frame that outlives its dropped session frees the ring on the thread that drops it; the suite's own thread count works on Linux only. Fixed: `PermissionDenied` docs no longer mention a cancelled portal.
 - Author's changes for round 3: accounting checked once over the run after `stop`; second call must return a frame captured after the first call, no slack; a three-frame-queue wrapper.
+### Round 4
+
+- Reviewer: the same independent AI session
+- Date: 2026-11-02
+- Verdict: approve (round-3 concerns 1 and 2 resolved, no regressions)
+- Open minor items, for the owner to accept or schedule: the `<=` accounting does not catch an adapter that counts drops twice; a retired ring keeps its buffers through Standby until `start` or drop; a frame that outlives its dropped session frees the ring on the thread that drops it; the suite's own thread count works on Linux only; P15 asks for a human maintainer's approval of `latest_frame` (the owner's early-phase rule lets PRs merge on green CI; his later review covers it).
 
 ## Open questions
 
