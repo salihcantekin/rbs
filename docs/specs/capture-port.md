@@ -204,37 +204,48 @@ The port follows semver like the plugin SDK (ADR-0003).
 
 `rbs_capture::handoff` holds two platform-independent building blocks that hardware adapters share, so the rules above are implemented and tested once:
 
+`rbs_capture::handoff` is an adapter-support module: it is versioned with the port crate but outside the port contract above, and may change in a minor version (third-party adapters that use it pin `rbs-capture` to a minor version). Its structs are still `#[non_exhaustive]` with constructors.
+
 ```rust
 pub struct Ring;                 // fixed slots, each naming one surface by a u64 value
 impl Ring {
-    pub fn new(values: &[u64]) -> Ring;
+    pub fn new(handles: &[u64]) -> Ring;               // allocates: at start, not per frame
+    pub fn len(&self) -> usize;  pub fn is_empty(&self) -> bool;
+    pub fn handle(&self, slot: usize) -> Option<u64>;
     pub fn claim(&self) -> Option<usize>;              // producer: a free slot
-    pub fn set_handle(&self, slot: usize, value: u64); // producer, claimed slot only
+    pub fn set_handle(&self, slot: usize, handle: u64);// producer, claimed slot only
     pub fn publish(&self, slot: usize, meta: FrameMeta);// producer: newest wins, replaced = dropped
     pub fn abandon(&self, slot: usize);
     pub fn count_drop(&self);
     pub fn take(&self) -> Option<(usize, FrameMeta)>;  // consumer: newest, moves one reference
     pub fn retain(&self, slot: u64);  pub fn release(&self, slot: u64);
+    pub fn misuses(&self) -> u64;                      // refused unmatched releases
     pub fn clear(&self) -> bool;      pub fn is_idle(&self) -> bool;
     pub fn handed_out(&self, slot: usize) -> bool;     // a consumer took the current value
     pub fn is_free(&self, slot: usize) -> bool;  pub fn dropped(&self) -> u64;
 }
+#[non_exhaustive]
 pub struct FrameMeta { pub timestamp: u64, pub sequence: u64, pub source_time: u64,
                        pub sync_value: u64, pub width: u32, pub height: u32 }
+impl FrameMeta {
+    pub const fn new(timestamp: u64, sequence: u64, source_time: u64, width: u32, height: u32) -> FrameMeta;
+    pub const fn with_sync_value(self, sync_value: u64) -> FrameMeta;
+}
 
-pub trait Grave: Send { fn is_idle(&self) -> bool { true } fn bytes(&self) -> u64 { 0 } }
+pub trait Grave: Send { fn is_idle(&self) -> bool; fn bytes(&self) -> u64; } // both required
 pub struct Graveyard;            // usually a `static` of the adapter
 impl Graveyard {
-    pub const fn new(grace: Duration, period: Duration) -> Graveyard;
-    pub fn bury(&'static self, grave: Box<dyn Grave>); // starts the janitor thread if needed
-    pub fn push(&self, grave: Box<dyn Grave>, now: Instant); // without janitor (tests)
-    pub fn reap(&self, now: Instant) -> bool;          // releases graves idle for `grace`
+    pub const fn new(name: &'static str, grace: Duration, period: Duration) -> Graveyard;
+    pub fn bury(&'static self, grave: Box<dyn Grave>); // starts the janitor thread `name` if needed
+    pub fn grace(&self) -> Duration;
     pub fn bytes(&self) -> u64;  pub fn len(&self) -> usize;  pub fn is_empty(&self) -> bool;
 }
 ```
 
-- `Ring` only counts; it owns no surfaces and does not implement `LeaseOwner`. The adapter wraps it with the surfaces it names and makes the `LeaseOwner` promises there. Every `Ring` method is lock-free and allocation-free.
-- `Graveyard` keeps a grave while it is referenced and for `grace` after it became idle, then drops it on its janitor thread, which exists only while the graveyard holds something (P13). Adapters bury stopped surface sets and replaced surfaces in it, which implements the native surface rules and keeps frees off the render thread.
+- `Ring` only counts; it owns no surfaces and does not implement `LeaseOwner`. The adapter wraps it with the surfaces it names and makes the `LeaseOwner` promises there. Every method except `new` is lock-free and allocation-free.
+- Calling protocol, which an adapter's `LeaseOwner` relies on: `set_handle`, `publish` and `abandon` only on a slot returned by `claim` and not yet published or abandoned; `release` exactly once per reference from `take` or `retain`. Breaking it is not undefined behaviour in `Ring` but voids the adapter's promises. An unmatched `release` is refused (the count never goes below zero), never panics, and is counted in `misuses`, which tests check is 0.
+- `Graveyard` keeps a grave while it is referenced and for `grace` after it became idle, then drops it on its janitor thread, which exists only while the graveyard holds something (P13). `is_idle` is sampled once per period, so the grace starts at the first idle sample; it must stay true once true. `bytes` is read once at `bury`. A panic in a grave ends the janitor without losing the byte count, and the next `bury` starts a new one. Adapters bury stopped surface sets and replaced surfaces in it, which implements the native surface rules and keeps frees off the render thread.
+- Benchmark: `cargo bench -p rbs-capture --bench handoff`. Release build, cloud container, 2026-11-02: about 29 ns per publish, take and release; about 8 ns for a take with no new frame (unchanged from the WGC-local ring it replaced: 29 ns and 8 ns).
 
 ## Pull, not push
 
@@ -316,8 +327,17 @@ Records written from the reviewer's own output (ADR-0014). The spec stays Draft.
 - Round 3 verdict: approve with changes. The adapter is ready; merge with or after the importer's wall-time eviction (8 s), its larger surface cap and the matching gpu-compositor.md wording (rbs-gpu PR #18).
 - Open for the owner: hot-path approval of the WGC hand-off (P15), approval of the native surface rules (P14), an end-to-end WGC-to-importer hardware test, hardware test hooks.
 
+### Shared hand-off helpers
+
+- Reviewer: a fresh independent AI session, given the diff, specs and code only
+- Date: 2026-11-02
+- Verdict: approve with changes. No soundness bug when the protocol is followed (ring ordering and janitor start/exit race checked).
+- Resolved before merge: the module is marked adapter support outside the port contract, `FrameMeta` is `#[non_exhaustive]` with a constructor, `push` and `reap` are crate-private; the calling protocol is documented and `release` refuses underflow instead of wrapping or panicking; the janitor clears its flag and keeps the byte count on a panic; `Grave` methods are required; the janitor test waits on channels and joins the thread, covering exit and restart; janitor threads are named per adapter; spec listing matches the code; benchmark numbers recorded.
+- Open: the WGC resize budget check-then-add is not atomic across sessions (overshoot by one texture each, predates this change); tokens carry no generation bits.
+- Owner approval: Salih, 2026-11-02 (early-phase merge policy).
+
 ## Open questions
 
 - Per-application capture (all windows of a process, as ScreenCaptureKit offers): a new `TargetKind` in a minor version.
 - How the registry's device watcher tells consumers that the target list changed (event type lives in the registry spec).
-- Whether `rbs_capture::handoff` should move to `rbs-core` once another port (camera-less video inputs, NDI) needs it.
+- Whether `rbs_capture::handoff` should move to `rbs-core` (and under a semver guarantee) once another port (camera-less video inputs, NDI) needs it.

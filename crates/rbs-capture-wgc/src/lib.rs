@@ -205,14 +205,8 @@ mod tests {
     use rbs_core::media::{ColorSpace, MemoryKind, PixelFormat};
 
     fn meta(sequence: u64, width: u32) -> FrameMeta {
-        FrameMeta {
-            timestamp: 1_000 + sequence,
-            sequence,
-            source_time: 7_000 + sequence,
-            sync_value: sequence + 1,
-            width,
-            height: 720,
-        }
+        FrameMeta::new(1_000 + sequence, sequence, 7_000 + sequence, width, 720)
+            .with_sync_value(sequence + 1)
     }
 
     /// A lease owner over a bare ring, for tests whose handles are never opened.

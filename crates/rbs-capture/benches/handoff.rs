@@ -10,14 +10,7 @@ use rbs_capture::handoff::{FrameMeta, Ring};
 
 fn handoff(c: &mut Criterion) {
     let ring = Ring::new(&[1, 2, 3, 4, 5]);
-    let meta = FrameMeta {
-        timestamp: 1,
-        sequence: 1,
-        source_time: 1,
-        sync_value: 1,
-        width: 1920,
-        height: 1080,
-    };
+    let meta = FrameMeta::new(1, 1, 1, 1920, 1080).with_sync_value(1);
     c.bench_function("handoff/publish+take+release", |b| {
         b.iter(|| {
             if let Some(slot) = ring.claim() {

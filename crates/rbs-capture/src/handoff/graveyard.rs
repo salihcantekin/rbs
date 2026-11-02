@@ -12,21 +12,23 @@
 
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Mutex, MutexGuard};
+use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 /// Something buried in a [`Graveyard`]. Its `Drop` releases the OS objects.
+///
+/// Both methods are required: a wrong default would either free surfaces still held by
+/// frames or hide memory from the surface budget.
 pub trait Grave: Send {
-    /// Whether nothing references the buried objects any more. Checked by the janitor;
-    /// must not block.
-    fn is_idle(&self) -> bool {
-        true
-    }
+    /// Whether nothing references the buried objects any more. Sampled by the janitor
+    /// once per period, so the grace starts at the first idle sample. Must not block,
+    /// and must stay true once true (a stopped session's ring is never referenced
+    /// again); return true for objects no frame can reference.
+    fn is_idle(&self) -> bool;
 
-    /// Bytes of memory the grave holds, counted in [`Graveyard::bytes`] until it is
-    /// released.
-    fn bytes(&self) -> u64 {
-        0
-    }
+    /// Bytes of memory the grave holds. Read once when it is buried and counted in
+    /// [`Graveyard::bytes`] until it is released.
+    fn bytes(&self) -> u64;
 }
 
 struct Entry {
@@ -37,11 +39,13 @@ struct Entry {
 
 /// Graves waiting out their grace period. Usually a `static` of the adapter crate.
 pub struct Graveyard {
+    name: &'static str,
     grace: Duration,
     period: Duration,
     entries: Mutex<Vec<Entry>>,
     bytes: AtomicU64,
     janitor: AtomicBool,
+    thread: Mutex<Option<JoinHandle<()>>>,
 }
 
 fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -51,16 +55,37 @@ fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
     }
 }
 
+/// Clears the janitor flag when the janitor thread ends, also by a panic in a grave,
+/// so the next `bury` starts a new one.
+struct JanitorExit<'a>(&'a AtomicBool);
+
+impl Drop for JanitorExit<'_> {
+    fn drop(&mut self) {
+        self.0.store(false, Ordering::Release);
+    }
+}
+
+/// Subtracts a released grave's bytes even if its `Drop` panics.
+struct Uncount<'a>(&'a AtomicU64, u64);
+
+impl Drop for Uncount<'_> {
+    fn drop(&mut self) {
+        self.0.fetch_sub(self.1, Ordering::AcqRel);
+    }
+}
+
 impl Graveyard {
     /// A graveyard that keeps graves for `grace` after they become idle; its janitor
-    /// checks every `period`.
-    pub const fn new(grace: Duration, period: Duration) -> Self {
+    /// thread, named `name`, checks every `period`.
+    pub const fn new(name: &'static str, grace: Duration, period: Duration) -> Self {
         Self {
+            name,
             grace,
             period,
             entries: Mutex::new(Vec::new()),
             bytes: AtomicU64::new(0),
             janitor: AtomicBool::new(false),
+            thread: Mutex::new(None),
         }
     }
 
@@ -84,9 +109,9 @@ impl Graveyard {
         lock(&self.entries).is_empty()
     }
 
-    /// Adds a grave without starting the janitor; the caller calls [`Graveyard::reap`].
-    /// `now` starts the grace if the grave is already idle.
-    pub fn push(&self, grave: Box<dyn Grave>, now: Instant) {
+    /// Adds a grave without starting the janitor. `now` starts the grace if the grave
+    /// is already idle.
+    pub(crate) fn push(&self, grave: Box<dyn Grave>, now: Instant) {
         let bytes = grave.bytes();
         let idle_since = grave.is_idle().then_some(now);
         self.bytes.fetch_add(bytes, Ordering::AcqRel);
@@ -98,8 +123,9 @@ impl Graveyard {
     }
 
     /// Releases graves whose grace has passed at `now`, outside the lock. Returns
-    /// whether the graveyard is empty afterwards.
-    pub fn reap(&self, now: Instant) -> bool {
+    /// whether the graveyard is empty afterwards. Crate-private: a caller passing a
+    /// future `now` would release surfaces early.
+    pub(crate) fn reap(&self, now: Instant) -> bool {
         let expired: Vec<Entry> = {
             let mut entries = lock(&self.entries);
             for entry in entries.iter_mut() {
@@ -119,9 +145,8 @@ impl Graveyard {
             expired
         };
         for entry in expired {
-            let bytes = entry.bytes;
+            let _uncount = Uncount(&self.bytes, entry.bytes);
             drop(entry);
-            self.bytes.fetch_sub(bytes, Ordering::AcqRel);
         }
         self.is_empty()
     }
@@ -134,22 +159,28 @@ impl Graveyard {
             return;
         }
         let spawned = std::thread::Builder::new()
-            .name("rbs-capture-janitor".into())
-            .spawn(move || {
-                loop {
-                    std::thread::sleep(self.period);
-                    if self.reap(Instant::now()) {
-                        self.janitor.store(false, Ordering::Release);
-                        // A grave added after the check would otherwise wait for the
-                        // next `bury`: take the job back if so.
-                        if self.is_empty() || self.janitor.swap(true, Ordering::AcqRel) {
-                            return;
-                        }
-                    }
+            .name(self.name.into())
+            .spawn(move || self.janitor_loop());
+        match spawned {
+            // Replacing the handle of a finished janitor detaches it; it has exited.
+            Ok(handle) => *lock(&self.thread) = Some(handle),
+            Err(_) => self.janitor.store(false, Ordering::Release),
+        }
+    }
+
+    fn janitor_loop(&'static self) {
+        let mut exit = JanitorExit(&self.janitor);
+        loop {
+            std::thread::sleep(self.period);
+            if self.reap(Instant::now()) {
+                drop(exit);
+                // A grave added after the check would otherwise wait for the next
+                // `bury`: take the job back if so.
+                if self.is_empty() || self.janitor.swap(true, Ordering::AcqRel) {
+                    return;
                 }
-            });
-        if spawned.is_err() {
-            self.janitor.store(false, Ordering::Release);
+                exit = JanitorExit(&self.janitor);
+            }
         }
     }
 }
@@ -195,7 +226,7 @@ mod tests {
 
     #[test]
     fn idle_grave_is_released_after_the_grace() {
-        let yard = Graveyard::new(GRACE, Duration::from_secs(1));
+        let yard = Graveyard::new("test", GRACE, Duration::from_secs(1));
         let t0 = Instant::now();
         let (grave, _, dropped) = probe(true, 100);
         yard.push(grave, t0);
@@ -209,7 +240,7 @@ mod tests {
 
     #[test]
     fn grace_starts_when_the_grave_becomes_idle() {
-        let yard = Graveyard::new(GRACE, Duration::from_secs(1));
+        let yard = Graveyard::new("test", GRACE, Duration::from_secs(1));
         let t0 = Instant::now();
         let (grave, idle, dropped) = probe(false, 0);
         yard.push(grave, t0);
@@ -226,7 +257,7 @@ mod tests {
 
     #[test]
     fn a_grave_referenced_again_restarts_its_grace() {
-        let yard = Graveyard::new(GRACE, Duration::from_secs(1));
+        let yard = Graveyard::new("test", GRACE, Duration::from_secs(1));
         let t0 = Instant::now();
         let (grave, idle, dropped) = probe(true, 0);
         yard.push(grave, t0);
@@ -241,19 +272,79 @@ mod tests {
     }
 
     #[test]
-    fn janitor_releases_and_exits() {
-        static YARD: Graveyard = Graveyard::new(Duration::ZERO, Duration::from_millis(1));
-        let (grave, _, dropped) = probe(true, 7);
-        YARD.bury(grave);
-        // The janitor runs on its own thread; wait for it without a fixed sleep.
-        let deadline = Instant::now() + Duration::from_secs(10);
-        while !dropped.load(Ordering::Acquire) || YARD.bytes() != 0 {
+    fn janitor_releases_exits_and_restarts() {
+        static YARD: Graveyard =
+            Graveyard::new("test-janitor", Duration::ZERO, Duration::from_millis(1));
+        for round in 0..2 {
+            let (tx, rx) = std::sync::mpsc::channel();
+            YARD.bury(Box::new(Signal { tx, bytes: 7 }));
             assert!(
-                Instant::now() < deadline,
-                "janitor did not release the grave"
+                rx.recv_timeout(Duration::from_secs(10)).is_ok(),
+                "round {round}: janitor did not release the grave"
             );
-            std::thread::yield_now();
+            let Some(janitor) = lock(&YARD.thread).take() else {
+                panic!("round {round}: no janitor was started")
+            };
+            assert!(janitor.join().is_ok(), "round {round}: janitor panicked");
+            assert!(!YARD.janitor.load(Ordering::Acquire));
+            assert!(YARD.is_empty());
+            assert_eq!(YARD.bytes(), 0);
         }
-        assert!(YARD.is_empty());
+    }
+
+    #[test]
+    fn a_panicking_grave_keeps_the_count_and_the_janitor_restartable() {
+        static YARD: Graveyard = Graveyard::new(
+            "test-janitor-panic",
+            Duration::ZERO,
+            Duration::from_millis(1),
+        );
+        YARD.bury(Box::new(Panics));
+        let Some(janitor) = lock(&YARD.thread).take() else {
+            panic!("no janitor was started")
+        };
+        assert!(janitor.join().is_err(), "the grave's drop panicked");
+        assert!(!YARD.janitor.load(Ordering::Acquire));
+        assert_eq!(YARD.bytes(), 0);
+        let (tx, rx) = std::sync::mpsc::channel();
+        YARD.bury(Box::new(Signal { tx, bytes: 1 }));
+        assert!(rx.recv_timeout(Duration::from_secs(10)).is_ok());
+    }
+
+    struct Signal {
+        tx: std::sync::mpsc::Sender<()>,
+        bytes: u64,
+    }
+
+    impl Grave for Signal {
+        fn is_idle(&self) -> bool {
+            true
+        }
+        fn bytes(&self) -> u64 {
+            self.bytes
+        }
+    }
+
+    impl Drop for Signal {
+        fn drop(&mut self) {
+            let _ = self.tx.send(());
+        }
+    }
+
+    struct Panics;
+
+    impl Grave for Panics {
+        fn is_idle(&self) -> bool {
+            true
+        }
+        fn bytes(&self) -> u64 {
+            3
+        }
+    }
+
+    impl Drop for Panics {
+        fn drop(&mut self) {
+            panic!("grave drop panics (expected in this test)");
+        }
     }
 }

@@ -482,9 +482,12 @@ impl AsRef<Ring> for Shared {
     }
 }
 
-// SAFETY: delegates to `Ring`, whose counting is exact (see its impl). The textures and
-// handles a slot names are owned by `surfaces` in the same allocation, so they stay
-// valid while any lease (which holds an `Arc<Shared>`) exists. Neither method locks.
+// SAFETY: delegates to `Ring`, whose counting is exact when its calling protocol is
+// followed (`rbs_capture::handoff::Ring`): the producer publishes, abandons and replaces
+// only slots it claimed, and every lease releases exactly the reference it adopted or
+// retained. The textures and handles a slot names are owned by `surfaces` in the same
+// allocation, so they stay valid while any lease (which holds an `Arc<Shared>`)
+// exists. Neither method locks.
 unsafe impl LeaseOwner for Shared {
     fn retain(&self, token: u64) {
         self.ring.retain(token);
@@ -556,6 +559,9 @@ struct TextureGrave {
 }
 
 impl Grave for TextureGrave {
+    fn is_idle(&self) -> bool {
+        true
+    }
     fn bytes(&self) -> u64 {
         self.bytes
     }
@@ -567,7 +573,7 @@ impl Drop for TextureGrave {
     }
 }
 
-static GRAVEYARD: Graveyard = Graveyard::new(HANDLE_GRACE, JANITOR_PERIOD);
+static GRAVEYARD: Graveyard = Graveyard::new("rbs-wgc-janitor", HANDLE_GRACE, JANITOR_PERIOD);
 
 /// A shared fence between sessions, with the next value to signal.
 struct PooledFence {
@@ -782,14 +788,14 @@ impl Producer {
 
         ring.publish(
             slot,
-            FrameMeta {
-                timestamp: timestamp.as_nanos(),
-                sequence: self.sequence,
-                source_time: source.unwrap_or(0),
-                sync_value: self.fence_value,
+            FrameMeta::new(
+                timestamp.as_nanos(),
+                self.sequence,
+                source.unwrap_or(0),
                 width,
                 height,
-            },
+            )
+            .with_sync_value(self.fence_value),
         );
         self.sequence += 1;
         Ok(())
