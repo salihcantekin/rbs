@@ -21,8 +21,8 @@ use rbs_core::time::{Clock, MonotonicClock, TestClock, Timestamp};
 
 use crate::caps;
 use crate::{
-    CaptureError, CaptureFactory, CaptureRequest, CaptureSession, CaptureStats, GpuDeviceId,
-    GpuImportTarget, Permission, SyncKind, TargetId, TargetKind,
+    CaptureError, CaptureFactory, CaptureRequest, CaptureSession, GpuDeviceId, GpuImportTarget,
+    Permission, SyncKind, TargetId, TargetKind,
 };
 
 /// Lets time pass between polls.
@@ -284,8 +284,6 @@ const ALL_MEMORY_KINDS: [MemoryKind; 7] = [
 struct Last {
     timestamp: Timestamp,
     sequence: u64,
-    dropped: u64,
-    delivered: u64,
 }
 
 struct Suite<'a> {
@@ -727,12 +725,15 @@ impl Suite<'_> {
         self.pass("start");
 
         let clock = self.pacer.clock();
+        let stats_at_start = session.stats();
         let mut last: Option<Last> = None;
         // Largest gap between consecutive frames: the target's frame interval as seen
         // by the consumer, used to judge frame age below.
         let mut interval = Duration::ZERO;
+        let mut first_sequence: Option<u64> = None;
         for _ in 0..self.options.frames_to_check {
             let frame = self.next_frame("timestamps", id, session.as_mut())?;
+            first_sequence.get_or_insert(frame.sequence());
             if let Some(prev) = last {
                 interval = interval.max(frame.timestamp().saturating_since(prev.timestamp));
             }
@@ -759,19 +760,15 @@ impl Suite<'_> {
                     )
                 })?;
                 // A second call right away may only return a frame captured after the
-                // first call, never an older queued one.
+                // first call, never an older queued one (no slack).
                 match session.latest_frame() {
                     Ok(Some(next)) => {
-                        ensure(
-                            "latest wins",
-                            next.timestamp() + interval >= called_at,
-                            || {
-                                format!(
-                                    "{id}: a second call returned a frame {:?} older than the first call",
-                                    called_at.saturating_since(next.timestamp())
-                                )
-                            },
-                        )?;
+                        ensure("latest wins", next.timestamp() > called_at, || {
+                            format!(
+                                "{id}: a second call returned a frame {:?} older than the first call",
+                                called_at.saturating_since(next.timestamp())
+                            )
+                        })?;
                         self.check_frame(session.as_ref(), &next, clock.as_ref(), &mut last)?;
                     }
                     Ok(None) => {}
@@ -802,6 +799,23 @@ impl Suite<'_> {
         }
         self.check_resources("stop", baseline, "after stop")?;
         self.pass("stop");
+
+        // Invariant 3, accounted once over the whole run while the adapter is quiet:
+        // every sequence number from the first to the last frame was delivered or
+        // counted as dropped. Checking per pair of frames would race with the OS
+        // thread counting drops between `latest_frame` and `stats`.
+        if let (Some(first), Some(prev)) = (first_sequence, last) {
+            let stats = session.stats();
+            let span = prev.sequence - first + 1;
+            let delivered = stats.delivered - stats_at_start.delivered;
+            let dropped = stats.dropped - stats_at_start.dropped;
+            ensure("sequence", span <= delivered + dropped, || {
+                format!(
+                    "{id}: sequence numbers {first}..={} span {span} frames but only {delivered} were delivered and {dropped} counted as dropped",
+                    prev.sequence
+                )
+            })?;
+        }
         session.start().map_err(|e| Failure {
             check: "restart",
             detail: format!("{id}: {e}"),
@@ -1025,7 +1039,6 @@ impl Suite<'_> {
         last: &mut Option<Last>,
     ) -> Result<(), Failure> {
         let now = clock.now();
-        let stats: CaptureStats = session.stats();
         ensure("timestamps", frame.timestamp() <= now, || {
             format!(
                 "frame at {} ns is ahead of the clock ({} ns)",
@@ -1048,26 +1061,10 @@ impl Suite<'_> {
                     prev.sequence
                 )
             })?;
-            // Frames between the two were either delivered (to calls the suite did not
-            // inspect) or counted as dropped; a hidden drop shows up as a gap.
-            let gap = frame.sequence() - prev.sequence - 1;
-            let dropped = stats.dropped.saturating_sub(prev.dropped);
-            let unseen = stats.delivered.saturating_sub(prev.delivered + 1);
-            // `<=` rather than `==`: on real adapters the OS thread can count another
-            // drop between `latest_frame` and `stats`.
-            ensure("sequence", gap <= dropped + unseen, || {
-                format!(
-                    "sequence jumped from {} to {} but {dropped} frames were counted as dropped and {unseen} delivered in between",
-                    prev.sequence,
-                    frame.sequence()
-                )
-            })?;
         }
         *last = Some(Last {
             timestamp: frame.timestamp(),
             sequence: frame.sequence(),
-            dropped: stats.dropped,
-            delivered: stats.delivered,
         });
 
         let format = session.format();

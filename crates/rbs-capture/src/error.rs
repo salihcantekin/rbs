@@ -30,8 +30,8 @@ pub enum CaptureError {
     /// The target went away while the session was active (window closed, display or
     /// camera unplugged).
     TargetLost,
-    /// The user or the OS refused access (macOS privacy settings, portal dialog
-    /// cancelled).
+    /// The user or the OS refused access (macOS privacy settings, a portal policy).
+    /// A closed picker is [`CaptureError::Cancelled`] instead.
     PermissionDenied,
     /// Access was never granted or denied; call `request_permission` first.
     PermissionNotDetermined,

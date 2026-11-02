@@ -34,6 +34,8 @@ mod broken {
         HidesDrops,
         /// Returns the oldest queued frame instead of the newest.
         Fifo,
+        /// Keeps the three most recent frames and returns the oldest of them.
+        ShallowQueue,
         /// Keeps a frame forever after the session is dropped.
         LeaksOnDrop,
         /// Turns `TargetLost` into silence.
@@ -155,6 +157,16 @@ mod broken {
                         Ok(None)
                     }
                 }
+                Fault::ShallowQueue => {
+                    if let Some(f) = frame {
+                        self.queue.push_back(f);
+                    }
+                    if self.queue.len() >= 3 {
+                        Ok(self.queue.pop_front())
+                    } else {
+                        Ok(None)
+                    }
+                }
                 Fault::LeaksOnDrop => {
                     if let Some(shared) = frame.as_ref().and_then(VideoFrame::share) {
                         if self.stopped_once && self.queue.is_empty() {
@@ -185,6 +197,7 @@ fn suite_catches_broken_adapters() {
         (Fault::StopKeepsDelivering, "stop"),
         (Fault::HidesDrops, "sequence"),
         (Fault::Fifo, "latest wins"),
+        (Fault::ShallowQueue, "latest wins"),
         (Fault::LeaksOnDrop, "drop"),
         (Fault::IgnoresTargetLoss, "target lost"),
         (Fault::StaleFormat, "format"),
