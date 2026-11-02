@@ -31,3 +31,4 @@ An ADR records one decision that is hard to reverse or affects more than one cra
 | [0016](0016-native-desktop-ui.md) | Native desktop UI, no web technology | Accepted |
 | [0017](0017-flexible-panels-and-workspaces.md) | Flexible panels and saved workspaces | Accepted |
 | [0018](0018-media-frame-representation.md) | Media frames as small values with leased memory | Accepted |
+| [0020](0020-node-contract-and-schedule-swap.md) | Node contract and lock-free schedule swap | Proposed |

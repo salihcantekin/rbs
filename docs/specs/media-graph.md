@@ -2,7 +2,7 @@
 
 - Status: Draft
 - Owner crate(s): `rbs-graph`, `rbs-core`
-- Related ADRs: [0002](../adr/0002-headless-engine-and-media-graph.md), [0004](../adr/0004-single-master-clock.md), [0005](../adr/0005-gpu-compositing-with-wgpu.md)
+- Related ADRs: [0002](../adr/0002-headless-engine-and-media-graph.md), [0004](../adr/0004-single-master-clock.md), [0005](../adr/0005-gpu-compositing-with-wgpu.md), [0013](../adr/0013-zero-cost-when-unused.md), [0020](../adr/0020-node-contract-and-schedule-swap.md)
 
 ## Purpose
 
@@ -36,7 +36,7 @@ Every node follows the Installed / Standby / Active states of [ADR-0013](../adr/
 | Standby | No | Released, or kept warm when the scene or user policy says "keep warm" (shown in diagnostics) |
 | Active | Yes, unless `plan()` skips it (below) | Allocated in `prepare` |
 
-When the engine applies a description, it computes `plan()` from the nodes the scene wants Active, then moves every skipped node to Standby (releasing its resources per ADR-0013 rule 5) and moves it back when a later edit makes it schedulable again. So after each swap, Active nodes are exactly the scheduled ones.
+The state stored in the graph description is what the scene **wants**; the engine never rewrites it. A node is **effectively** Active exactly when it is in the applied plan. A wanted-Active node that `plan()` skips, or whose `prepare` failed, is kept idle with its resources released (ADR-0013 rule 5) and joins again, through `prepare` and `warm`, as soon as a later edit makes it schedulable (ADR-0020).
 
 - A source becomes Active when it is visible in a scene that is on air, in preview, or feeding any output (including audio-only use). A source that is only in a scene that is not on air and not in preview is Standby.
 - Transitions: Installed -> Standby (create, configure, no resources unless keep-warm), Standby -> Active (`prepare`, then included in the next graph swap), Active -> Standby (removed at the next swap; resources released on a background thread unless keep-warm), Standby -> Installed (destroyed).
@@ -48,11 +48,53 @@ When the engine applies a description, it computes `plan()` from the nodes the s
 - The audio graph runs on the audio thread at a fixed block size; sources push blocks into lock-free ring buffers.
 - Encoders and outputs run on their own workers and consume through bounded queues. A full queue drops according to a per-output policy (drop oldest non-keyframe data, never block the render tick) and records the drop with a reason.
 
+- One executor runs one partition: the render executor per canvas, the audio executor, and one per encoder and output worker. Splitting a plan into partitions and the bounded queues between them are not implemented yet; the node contract does not change for them.
+
 ## Live editing
 
-- The control thread builds a new graph description and submits it. The render and audio threads swap to it at the next tick/block boundary.
+- The control thread edits the graph description and applies it. The render and audio threads swap to the new schedule at the next tick/block boundary.
 - Nodes that are added are warmed up (opened, first frame ready) before the swap, so scene switches do not stutter.
 - Removed nodes are torn down on a background thread.
+
+## Runtime (implemented in `rbs_graph::runtime`)
+
+Contract decided in [ADR-0020](../adr/0020-node-contract-and-schedule-swap.md).
+
+| Type | Contract |
+| --- | --- |
+| `Runtime` | Supplies `Shared: Send + Sync` (read by every thread; GPU context for the render executor) and `Local: Send` (owned by the executor thread; texture pool and importer), plus `begin_tick` / `end_tick` hooks run once per tick (GPU polling, surface retirement). `()` is a runtime with no resources |
+| `Node<X>` | `descriptor`, `prepare`, `warm`, `process`, `cool`, `release`; threads and rules in the table below |
+| `Tick` | Index and master-clock time; `Tick::of(cadence, index)` computes the time from the index |
+| `ProcessCtx` | Tick, node id, `shared`, `local`, `inputs()` (`Inputs`, `Copy`), `outputs()` (`Outputs`), `parts()` for all at once |
+| `Inputs` | `video(pin, link)`, `videos(pin)`, `packets(pin)`, `bytes(pin)`, `link_count(pin)`; links into a many-input in connection order |
+| `Outputs` | `set_video(pin, frame)` returns the previous frame; `push_packet` / `push_bytes` return the value in `Rejected` when the pin is full (`PER_TICK_EVENTS` per tick) or of another kind |
+| `Controller` | Control thread. `adopt` (hand over an idle instance), `take` (idle only), `apply(description)` returns an `ApplyReport` (plan sent, nodes that could not join and why), `collect` / `collect_timeout` (take back the swapped-out schedule, `release` the nodes that left) |
+| `Executor` | Real-time thread. `run_tick(tick)`, `health(id)`, `scheduled()`, `set_failure_limit` |
+| `NodeError` | Typed; variants without heap data can be built on the real-time thread |
+
+| Call | Thread | Rules |
+| --- | --- | --- |
+| `prepare` | control | May allocate, block and do I/O. Called when the node joins, before the schedule is sent |
+| `warm` | executor, between ticks | May allocate (pool textures of a new size, more compositor layers); must not block. Once before the first `process` |
+| `process` | executor, every tick | Real time: no allocation, blocking, I/O or contended locks |
+| `cool` | executor, between ticks | Returns what `warm` took. When the node leaves, and after a failed `warm` |
+| `release` | control | Returns what `prepare` took; the instance can be prepared again |
+
+Swap protocol:
+
+1. `apply` plans the description. If a planned link is `Audio`, it returns `UnsupportedLink` before preparing anything (audio runs on the audio executor).
+2. It calls `prepare` on nodes that join. A node with no instance, a different descriptor, or a failed `prepare` is treated as Standby, and the plan is recomputed; nodes prepared in an earlier round that are no longer scheduled are released again.
+3. It lays out one value slot per output pin, in schedule order, and sends the schedule. Only one schedule is in flight; `apply` returns `Busy` until `collect` has taken back the previous one.
+4. After its next tick the executor moves staying nodes, their counters and their video slot contents into the new schedule, calls `cool` on leaving nodes and `warm` on joining ones, and swaps. The swapping tick does not allocate.
+5. `collect` receives the old schedule, calls `release` on the nodes that left and keeps them idle. Frames still in old slots are dropped there.
+
+Values: a video slot keeps its frame until the producer replaces or clears it, so a source slower than the canvas, or a failing one, shows its last frame. Packet and byte slots are per-tick events, emptied before the producer runs. Data links are not carried by the tick.
+
+Failures: `process` runs inside `catch_unwind` (builds use `panic = "unwind"`). A returned error counts as a failed tick and partial event output of that tick is discarded. After `failure_limit` consecutive failed ticks (default 8), on any panic, or when `warm` fails, the node is bypassed: no longer called, video outputs keep the last frame, event outputs stay empty. `Executor::health` exposes the counters. Restart with back-off and reporting through the event stream are not implemented yet.
+
+Invariants, each covered by a test in `crates/rbs-graph/tests/runtime.rs` and `no_alloc.rs`: `prepare` runs before `warm`, which runs before the first `process`; staying nodes are not prepared or warmed again and keep their state and last frame across a swap; skipped nodes are never prepared; leaving nodes are cooled on the executor and released on the controller; a failed `prepare` or `warm` affects only that node and its dependants; steady-state ticks and the swapping tick allocate nothing.
+
+Cost (reference VM, Xeon 2.1 GHz, `cargo bench -p rbs-graph --bench executor`): a tick with near-empty nodes costs 120 ns for 6 nodes, 0.53 µs for 20 and 1.66 µs for 68, about 25 ns per node. `apply` plus the swapping tick for a 32-source canvas (68 nodes) costs about 56 µs on the control thread.
 
 ## Graph description (implemented in `rbs-graph`)
 
@@ -73,7 +115,7 @@ Invariants, each covered by a test:
 - Node ids are issued in increasing order and never reused; `restore` brings back a removed node under its old id, all or nothing. Ids exhausted is a typed error.
 - `connect` refuses unknown nodes or pins, kind mismatches, a second link into a single-link input, duplicate links, self links and cycles. The graph is always a DAG (property-tested on random graphs).
 - `plan()` starts from Active nodes and the links between them, then repeatedly drops nodes that are **starved** (a filter, encoder, muxer or output with no media link from a scheduled node) or have **no sink** (no path along media links to a scheduled `Output`). Compositors, transitions and mixers are never starved: with no input they still produce a background, black or silence, so an on-air canvas with an empty scene or muted microphones keeps streaming. Work that reaches no output costs nothing (ADR-0013).
-- Data-only nodes (timers, chat events) are event-driven and never in the tick schedule; `plan()` lists them as skipped with `NoSink`. Their runtime comes with the scheduler.
+- Data-only nodes (timers, chat events) are event-driven and never in the tick schedule; `plan()` lists them as skipped with `NoSink`. Their runtime is not specified yet.
 - Every producer precedes its consumers in `plan().order`; ties are broken by node id, so the same description always gives the same plan.
 - A scheduled node can still see no input on some pins (a hidden layer, one input of a muxer). That is part of its normal `process`, not a feature check.
 
@@ -83,30 +125,18 @@ Versioning: the public enums and structs are `#[non_exhaustive]` with constructo
 
 Cost: `connect` and each pruning round of `plan()` are O(nodes + links), on the control thread only.
 
-Format negotiation on links and converter insertion come with the scheduler.
+Format negotiation on links and converter insertion are not implemented yet.
 
-## Node contract (sketch)
-
-```rust
-pub trait Node: Send {
-    fn descriptor(&self) -> &NodeDescriptor;   // kind, ports, settings schema
-    fn prepare(&mut self, ctx: &mut PrepareCtx) -> Result<(), NodeError>; // may allocate
-    fn process(&mut self, ctx: &mut ProcessCtx) -> Result<(), NodeError>; // real-time: no alloc, no blocking
-    fn reset(&mut self);
-}
-```
 
 ## Failure handling
 
-A node that returns an error, panics or exceeds its time budget for N consecutive ticks is bypassed (last good frame or silence), restarted with exponential back-off, and reported through the event stream.
+A node that returns an error, panics or exceeds its time budget for N consecutive ticks is bypassed (last good frame or silence), restarted with exponential back-off, and reported through the event stream. Implemented so far: bypass on errors, panics and failed warm-up (see Runtime); time budgets, restarts and the event stream are not.
 
 ## Metrics per node
 
 Processing time (p50, p99, max), queue depth, frames in/out, drops by reason, restarts. Exported with `tracing` and readable through the control API.
 
 ## Open questions
-
-- Scheduler: where the set of nodes the scene wants Active lives (separately from the stored lifecycle state, so a node demoted to Standby by `plan()` can be found schedulable again), and that a node coming back goes through `prepare` (warm-up) before the swap.
 
 - Scene document contract for UI rule U15: scenes owned by one canvas or shared, and per-canvas independent layout of the same source. To be specified with the scene format spec.
 
