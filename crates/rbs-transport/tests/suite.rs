@@ -27,6 +27,7 @@ enum Fault {
     NeverDrops,
     AcceptsBeforeStart,
     DropsSingleFrames,
+    NoKeyframeRequest,
 }
 
 struct FileFactory(Fault);
@@ -143,6 +144,7 @@ impl TransportFactory for NetFactory {
             queue: VecDeque::new(),
             gop: 0,
             cut: false,
+            keyframe_wanted: false,
             queued_bytes: 0,
             stats: TransportStats::default(),
             pending_drop: 0,
@@ -166,6 +168,7 @@ struct Net {
     queue: VecDeque<(u64, bool, usize)>,
     gop: u64,
     cut: bool,
+    keyframe_wanted: bool,
     queued_bytes: usize,
     stats: TransportStats,
     pending_drop: u32,
@@ -216,10 +219,19 @@ impl Transport for Net {
                 // The broken policy: drop single oldest non-keyframes.
                 self.queue.iter().position(|(_, k, _)| !k).unwrap_or(0)
             } else if oldest_gop < self.gop {
-                // A later keyframe is queued: drop the oldest GOP, keyframe first.
-                0
+                // A later keyframe is queued: drop the whole oldest GOP.
+                while self.queue.front().is_some_and(|(g, _, _)| *g == oldest_gop) {
+                    if let Some((_, _, size)) = self.queue.pop_front() {
+                        self.queued_bytes -= size;
+                        dropped += 1;
+                    }
+                }
+                continue;
             } else {
                 // Only the current GOP is queued: cut its newest non-keyframe tail.
+                if !self.cut {
+                    self.keyframe_wanted = true;
+                }
                 self.cut = true;
                 match self.queue.iter().rposition(|(_, k, _)| !k) {
                     Some(i) => i,
@@ -256,6 +268,10 @@ impl Transport for Net {
                 reason: DropReason::QueueFull,
             });
             self.pending_drop = 0;
+        }
+        if self.keyframe_wanted && self.fault != Fault::NoKeyframeRequest {
+            out.push(TransportEvent::KeyframeRequested);
+            self.keyframe_wanted = false;
         }
     }
     fn stats(&self) -> TransportStats {
@@ -337,6 +353,7 @@ fn network_faults_are_caught() {
         (Fault::NeverDrops, "packets/never-blocks"),
         (Fault::AcceptsBeforeStart, "packets/send-before-start"),
         (Fault::DropsSingleFrames, "packets/never-blocks"),
+        (Fault::NoKeyframeRequest, "packets/never-blocks"),
     ];
     for (fault, case) in expectations {
         let report = conformance::transport(&NetFactory(fault), &mut NetDestination);

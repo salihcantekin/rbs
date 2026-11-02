@@ -38,7 +38,7 @@ These extend the [backend ports](backend-ports.md) rules.
 - No method may panic across the port boundary. Errors are typed and carry `is_recoverable()`.
 - Unsupported runtime changes return an `Unsupported` error; they never silently do nothing.
 - Calls marked **hot** in the trait docs run per frame, block, packet or chunk ([hot paths](../architecture/hot-paths.md)): no blocking I/O, no unbounded work, no contended locks. Allocation: at most one payload allocation per produced packet or chunk (the `Bytes` header, see [media types](media-types.md#packets-rbs_coremediapacket); pooled buffers via `Bytes::from_owner`), and none otherwise once the caller's output `Vec` and the adapter's working buffers have reached their steady-state size.
-- Who drives sessions: an encoder worker owns each encoder session (one encoder may feed several outputs); an output worker owns the muxer and transport sessions of one Active output. Both call the hot methods as data arrives; the output worker and calls `poll_events` after each batch of sends and at least once per second while the output is Active. Installed and Standby outputs have no sessions, so nothing polls them (P13).
+- Who drives sessions: an encoder worker owns each encoder session (one encoder may feed several outputs); an output worker owns the muxer and transport sessions of one Active output. Both call the hot methods as data arrives. The output worker calls `poll_events` after each batch of sends and at least once per second while the output is Active. Installed and Standby outputs have no sessions, so nothing polls them (P13).
 - Installed adapters (registered, not used by any output) cost only their probe at start-up (P13).
 
 ## `rbs-codec`
@@ -270,7 +270,7 @@ Invariants:
 2. `send` returns in bounded time regardless of network or disk state (checked by the suite against a destination that accepts nothing).
 3. Byte-exact delivery for container input: a loopback destination receives exactly the `Header` and `Media` bytes in order (and applies `Patch` chunks when seekable).
 4. After `finish` or `Drop`, no thread, socket or file handle owned by the session is left.
-5. Reconnect: with a policy set, a lost connection produces `Reconnecting` and, after recovery, resumes at the next keyframe with headers resent.
+5. Reconnect: with a policy set, a lost connection produces `Reconnecting` and, after recovery, resumes at the next keyframe with headers resent. Packet transports rebuild their headers from the stream descriptors given to `start`; container transports keep the `Header` chunks they received, resend them first, and resume at the next `Media` chunk marked `keyframe`, discarding staged chunks before it.
 6. The secret never appears in `Debug` output, events or errors, including in failure and stall paths.
 7. After a drop, delivered video resumes at a keyframe and headers are intact (checked by adapter tests that can read the destination; see Conformance tests).
 

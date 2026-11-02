@@ -438,6 +438,12 @@ fn stalled_case(
         {
             return Err("drops were not reported as an event".into());
         }
+        if !events
+            .iter()
+            .any(|e| matches!(e, TransportEvent::KeyframeRequested))
+        {
+            return Err("a GOP was cut but no KeyframeRequested event was emitted".into());
+        }
         let started = Instant::now();
         if let Err(e) = t.finish(Duration::from_millis(200)) {
             shown.push_str(&e.to_string());
