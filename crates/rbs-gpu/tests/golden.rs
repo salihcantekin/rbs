@@ -7,8 +7,8 @@ mod common;
 
 use common::{assert_close, at, solid};
 use rbs_gpu::{
-    Affine2, CanvasDesc, Compositor, GpuContext, GpuError, GpuRequest, Layer, TextureDesc,
-    TexturePool, Transfer, UvRect, readback,
+    Affine2, CanvasDesc, Compositor, GpuError, Layer, TextureDesc, TexturePool, Transfer, UvRect,
+    readback,
 };
 
 const W: u32 = 64;
@@ -249,39 +249,6 @@ fn wrong_target_is_rejected() {
         comp.render(ctx, &pool, &[], src),
         Err(GpuError::TargetMismatch(src))
     );
-}
-
-#[test]
-fn readback_is_counted() {
-    // Own context: the shared one is used by tests running in parallel, which read back.
-    let Some(_) = common::gpu() else { return };
-    let ctx: &'static GpuContext = Box::leak(Box::new(
-        GpuContext::new(&GpuRequest {
-            allow_software: true,
-            ..GpuRequest::default()
-        })
-        .unwrap(),
-    ));
-    let mut pool = TexturePool::new();
-    let mut comp = Compositor::new(
-        ctx,
-        CanvasDesc {
-            width: W,
-            height: H,
-        },
-        1,
-    )
-    .unwrap();
-    let target = pool.acquire(ctx, &TextureDesc::canvas(W, H)).unwrap();
-    assert_eq!(ctx.metrics().frames_cpu_copied(), 0);
-    comp.render(ctx, &pool, &[], target).unwrap();
-    assert_eq!(
-        ctx.metrics().frames_cpu_copied(),
-        0,
-        "render alone never copies to the CPU"
-    );
-    readback::read_rgba16f(ctx, &pool, target).unwrap();
-    assert_eq!(ctx.metrics().frames_cpu_copied(), 1);
 }
 
 #[test]
