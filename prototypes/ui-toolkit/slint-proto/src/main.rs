@@ -75,14 +75,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         dock_model::env::engine_size(),
         wgpu::TextureUsages::empty(),
     );
-    slint::BackendSelector::new()
-        .require_wgpu_30(slint::wgpu_30::WGPUConfiguration::Manual {
+    let mut selector = slint::BackendSelector::new().require_wgpu_30(
+        slint::wgpu_30::WGPUConfiguration::Manual {
             instance,
             adapter,
             device,
             queue,
-        })
-        .select()?;
+        },
+    );
+    // RBS_PROTO_RENDERER=skia (needs the `skia` feature) or femtovg (default).
+    if let Ok(name) = std::env::var("RBS_PROTO_RENDERER") {
+        selector = selector.renderer_name(name);
+    }
+    selector.select()?;
 
     let ui = MainWindow::new()?;
     let mut ws = Workspace::edit();
