@@ -44,6 +44,9 @@ pub struct Layer {
     pub opacity: f32,
     /// How the source encodes colour.
     pub source_transfer: Transfer,
+    /// The source's alpha channel carries no coverage (XRGB/BGRX layouts, whose fourth
+    /// byte is undefined): every texel is drawn as fully opaque.
+    pub opaque: bool,
 }
 
 impl Layer {
@@ -55,6 +58,7 @@ impl Layer {
             crop: UvRect::FULL,
             opacity: 1.0,
             source_transfer: Transfer::Linear,
+            opaque: false,
         }
     }
 }
@@ -234,7 +238,7 @@ impl Compositor {
                     } else {
                         0.0
                     },
-                    0.0,
+                    if layer.opaque { 1.0 } else { 0.0 },
                     0.0,
                 ],
             });

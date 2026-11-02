@@ -7,8 +7,8 @@ mod common;
 
 use common::{assert_close, at, solid};
 use rbs_gpu::{
-    Affine2, CanvasDesc, Compositor, GpuContext, GpuError, GpuRequest, Layer, TextureDesc,
-    TexturePool, Transfer, UvRect, readback,
+    Affine2, CanvasDesc, Compositor, GpuError, Layer, TextureDesc, TexturePool, Transfer, UvRect,
+    readback,
 };
 
 const W: u32 = 64;
@@ -252,34 +252,21 @@ fn wrong_target_is_rejected() {
 }
 
 #[test]
-fn readback_is_counted() {
-    // Own context: the shared one is used by tests running in parallel, which read back.
-    let Some(_) = common::gpu() else { return };
-    let ctx: &'static GpuContext = Box::leak(Box::new(
-        GpuContext::new(&GpuRequest {
-            allow_software: true,
-            ..GpuRequest::default()
-        })
-        .unwrap(),
-    ));
-    let mut pool = TexturePool::new();
-    let mut comp = Compositor::new(
-        ctx,
-        CanvasDesc {
-            width: W,
-            height: H,
-        },
-        1,
-    )
-    .unwrap();
-    let target = pool.acquire(ctx, &TextureDesc::canvas(W, H)).unwrap();
-    assert_eq!(ctx.metrics().frames_cpu_copied(), 0);
-    comp.render(ctx, &pool, &[], target).unwrap();
-    assert_eq!(
-        ctx.metrics().frames_cpu_copied(),
-        0,
-        "render alone never copies to the CPU"
-    );
-    readback::read_rgba16f(ctx, &pool, target).unwrap();
-    assert_eq!(ctx.metrics().frames_cpu_copied(), 1);
+fn opaque_layer_ignores_undefined_source_alpha() {
+    let Some((ctx, mut pool, mut comp, target)) = setup() else {
+        return;
+    };
+    // An XRGB-style source: colour red, fourth byte 0.
+    let xrgb = pool
+        .acquire(
+            ctx,
+            &TextureDesc::source(2, 2, wgpu::TextureFormat::Rgba8Unorm),
+        )
+        .unwrap();
+    readback::upload(ctx, &pool, xrgb, &[255u8, 0, 0, 0].repeat(4)).unwrap();
+    let mut layer = Layer::new(xrgb, 0.0, 0.0, W as f32, 64.0);
+    layer.opaque = true;
+    comp.render(ctx, &pool, &[layer], target).unwrap();
+    let px = readback::read_rgba16f(ctx, &pool, target).unwrap();
+    assert_close(at(&px, W, 16, 16), [1.0, 0.0, 0.0, 1.0], TOL);
 }

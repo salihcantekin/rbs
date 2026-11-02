@@ -9,7 +9,7 @@ struct LayerGpu {
     t: vec4<f32>,
     // Crop: u0, v0, u1, v1.
     crop: vec4<f32>,
-    // opacity, source is sRGB (1.0) or linear (0.0), unused, unused.
+    // opacity, source is sRGB (1.0) or linear (0.0), source alpha is ignored (1.0), unused.
     params: vec4<f32>,
 };
 
@@ -51,6 +51,10 @@ fn srgb_to_linear(c: vec3<f32>) -> vec3<f32> {
 fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     let l = layers[in.layer];
     var c = textureSample(source, source_sampler, in.uv);
+    if (l.params.z > 0.5) {
+        // XRGB sources: the fourth channel is undefined, the colour is not premultiplied.
+        c = vec4<f32>(c.rgb, 1.0);
+    }
     if (l.params.y > 0.5) {
         // Sources are premultiplied; decode the colour, not the coverage.
         let a = max(c.a, 1e-6);
