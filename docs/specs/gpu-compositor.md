@@ -21,7 +21,7 @@ In scope:
 
 Out of scope (later specs or PRs):
 
-- Native texture import/export (D3D11/12 shared handles, IOSurface, DMA-BUF). This is the interop module of ADR-0005 and gets its own section here when it lands.
+- Native texture export to encoders (single NV12/P010 surface); import is specified below.
 - Scene tree evaluation (groups, nesting, animation): `rbs-scene` flattens a scene into the layer list below.
 - Filters, masks, blend modes other than "normal", transitions, P010 and HDR output.
 
@@ -125,6 +125,44 @@ pub fn chroma_desc(width: u32, height: u32) -> TextureDesc;  // Rg8Unorm, w/2 x 
 - Lease: an exported frame holds a pool lease. The encoder releases it after it has finished reading (fence or semaphore signal, or an explicit release), and the pool never reuses a texture while a lease on it is open.
 - CPU fallback for software encoders: on request per output, the converted planes are copied into a mapped staging buffer (NV12 or I420 with per-plane strides). It is opt-in, counted in `frames_cpu_copied`, and never on the default path. Encoders advertise what they accept with the `input.memory` and `input.pixel_format` capabilities of `rbs-codec`.
 
+### Native import (interop)
+
+Implements the importer side of [media-types.md, Native surfaces](media-types.md#native-surfaces). Lives in `rbs_gpu::interop`, a marked low-level module (P11) with one submodule per backend, compiled only on its platform.
+
+```rust
+impl Importer {
+    pub fn new(ctx: &GpuContext) -> Importer;   // holds no GPU objects until the first import
+    /// Takes a native frame by value and returns a `Texture` frame of the same format and time.
+    pub fn import(&mut self, ctx: &GpuContext, pool: &mut TexturePool, frame: VideoFrame)
+        -> Result<VideoFrame, GpuError>;
+    /// Releases native leases whose reading GPU work has completed. Once per render tick.
+    pub fn retire(&mut self, ctx: &GpuContext, pool: &mut TexturePool);
+}
+```
+
+Backend matrix (first implementation in bold):
+
+| Surface | Render backend | Sync accepted | Notes |
+| --- | --- | --- | --- |
+| **`D3dSharedHandle` (NT)** | **D3D12** | **`Ready`, `TimelineFence` (shared D3D11/D3D12 fence)** | `OpenSharedHandle`; the adapter LUID must match the render device |
+| `D3d12Resource` | D3D12 | `Ready`, `TimelineFence` | same-process resource |
+| `D3d11Texture` | none | none | not importable: the producer must share it with an NT handle |
+| `IoSurface`, `MetalTexture` | Metal | `Ready` | `device_registry_id` must match |
+| `DmaBuf` | Vulkan | `Ready`, `SyncFile` | needs `VK_EXT_external_memory_dma_buf` and image DRM format modifiers; device identity is an open question |
+
+`GpuContext` reports what the importer accepts, for capture requests (`GpuImportTarget { device, sync }` of the capture port spec): the render adapter's identity (D3D LUID as `u64` = `HighPart << 32 | LowPart`, from `GpuContext::adapter_luid`; Metal registry id) and the sync kinds in the table below. Producers create surfaces on that adapter.
+
+Rules:
+
+1. **Alias, do not copy.** A supported surface is wrapped zero-copy as a pool texture (`create_texture_from_hal`). A surface that cannot be aliased (unsupported format or backend) is an error (`GpuError::Unsupported`), not a silent CPU path; the source falls back to its `System` payload if it offers one.
+2. **Open once.** Producers reuse a small ring of surfaces. The importer caches opened surfaces and fences by handle value (at most 16 entries per importer) and reuses the pool slot of a cached surface, so steady-state import does not open handles or allocate. First sight of a surface opens it (allocates, counted in `GpuMetrics::surfaces_opened`). Entries unseen for 120 ticks are closed by `retire`; when every entry is in use and a new surface arrives, the importer returns `GpuError::Unsupported` rather than stall.
+3. **Keyed mutexes are not supported on D3D12** (D3D12 cannot acquire them). D3D producers use a shared timeline fence. The importer makes its queue wait for the fence value before the first submission that reads the surface. The sync kind is checked before a surface is opened.
+4. **Lease hand-off.** The native lease moves into the importer's record for the pool slot. `import` returns a `Texture` frame whose own pool lease keeps the slot alive for downstream consumers. The native lease is dropped by `retire` once the last queue submission that read the slot has completed (checked with the submission index, non-blocking) and no pool lease on the slot remains, so the producer never reuses a surface the GPU may still read. On D3D12 that hand-back submission also returns the texture to the `COMMON` state (wgpu `TextureUses::PRESENT`), which other APIs expect for shared resources.
+5. **Formats.** BGRA8/RGBA8 (UNORM or sRGB) surfaces are aliased as the matching wgpu format; the colour space of the native frame's `VideoFormat` decides `Transfer` for the compositor. NV12/P010 surfaces need a YUV-to-RGB pass and are a follow-up.
+6. **Same adapter only.** A surface from another adapter (LUID or registry id mismatch) is `GpuError::WrongAdapter`; cross-adapter copies are out of scope.
+
+Conformance (per backend, on CI where the platform allows; WARP on Windows): a producer-side test creates a shared texture and fence, fills it, signals; the importer aliases it; the compositor renders it; readback matches; the native lease is released only after `retire` follows GPU completion; a second frame on the same surface opens nothing new (`surfaces_opened` unchanged).
+
 ### Readback (fallback only)
 
 `readback::read_bytes(ctx, pool, id) -> Result<Vec<u8>, GpuError>` (tightly packed rows) and `readback::read_rgba16f(ctx, pool, id) -> Result<Vec<[f32; 4]>, GpuError>` copy a texture to the CPU. They block, allocate and increment `GpuMetrics::frames_cpu_copied`. They are not on the default path; scenario tests assert the counter stays 0 (performance budgets, hard rules).
@@ -157,4 +195,6 @@ Run on any adapter, including software adapters in CI (lavapipe on Linux, WARP o
 ## Open questions
 
 - Whether the canvas working format should be configurable (`Rgba16Float` vs `Rgba8UnormSrgb` for low-end GPUs).
+- DMA-BUF device identity on multi-GPU Linux (DRM render node or device UUID in `DmaBufSurface`).
+- Waiting on an imported fence on Vulkan and Metal through wgpu's HAL (D3D12 uses `ID3D12CommandQueue::Wait`).
 - Rotation and non-affine transforms (perspective, corner pin) as filters vs layer properties.

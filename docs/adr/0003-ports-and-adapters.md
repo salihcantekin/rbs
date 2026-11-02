@@ -1,6 +1,6 @@
 # ADR-0003: Every external technology behind a port with swappable adapters
 
-- Status: Accepted
+- Status: Accepted (amendment proposed in ADR-0019: adapters may also depend on the format-helper layer)
 - Date: 2026-11-02
 
 ## Context
