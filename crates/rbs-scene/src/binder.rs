@@ -612,6 +612,11 @@ impl State {
 /// Pass the plan the runtime actually runs, `ApplyReport::plan` from
 /// `rbs_graph::runtime::Controller::apply`: it can leave out nodes whose `prepare`
 /// failed, so it can differ from `GraphDescription::plan`.
+///
+/// The index is a hint for the plan given. Parameters sent to a running compositor can
+/// meet an older or newer schedule (ADR-0023), so the node checks
+/// `Inputs::source(pin, index) == Some(layer.producer)` and otherwise looks the
+/// producer up with `Inputs::find`.
 pub fn resolve<'a>(
     compositor: &'a BoundCompositor,
     plan: &SchedulePlan,

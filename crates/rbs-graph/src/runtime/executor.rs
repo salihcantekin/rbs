@@ -135,6 +135,7 @@ impl<X: Runtime> Executor<X> {
                     slots: before,
                     pins: &schedule.pins[entry.pins.range()],
                     links: &schedule.links,
+                    sources: &schedule.link_sources,
                 },
                 outputs: Outputs { slots: own },
             };

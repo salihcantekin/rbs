@@ -95,6 +95,8 @@ pub(crate) struct Schedule<X: Runtime> {
     pub(crate) pins: Vec<Span>,
     /// Producer slot index per incoming link, grouped by input pin.
     pub(crate) links: Vec<u32>,
+    /// Producer node per incoming link, parallel to `links`.
+    pub(crate) link_sources: Vec<NodeId>,
     /// `(old node index, new node index)` for nodes that stay across the swap.
     pub(crate) carry_nodes: Vec<(u32, u32)>,
     /// `(old slot, new slot)` for video slots of nodes that stay, so their last frame
@@ -111,6 +113,7 @@ impl<X: Runtime> Schedule<X> {
             slots: Vec::new(),
             pins: Vec::new(),
             links: Vec::new(),
+            link_sources: Vec::new(),
             carry_nodes: Vec::new(),
             carry_slots: Vec::new(),
             fresh: Vec::new(),
@@ -168,6 +171,7 @@ pub struct Inputs<'a> {
     pub(crate) slots: &'a [Slot],
     pub(crate) pins: &'a [Span],
     pub(crate) links: &'a [u32],
+    pub(crate) sources: &'a [NodeId],
 }
 
 impl<'a> Inputs<'a> {
@@ -185,6 +189,20 @@ impl<'a> Inputs<'a> {
     /// Number of input pins.
     pub fn pin_count(&self) -> usize {
         self.pins.len()
+    }
+
+    /// The node that produces link `link` of input `pin`.
+    pub fn source(&self, pin: usize, link: usize) -> Option<NodeId> {
+        let span = self.pins.get(pin)?;
+        self.sources[span.range()].get(link).copied()
+    }
+
+    /// The index of the link into `pin` whose producer is `node`, if it is scheduled.
+    /// Linear in the number of links; nodes that look a layer up every tick check
+    /// [`Inputs::source`] at a remembered index first.
+    pub fn find(&self, pin: usize, node: NodeId) -> Option<usize> {
+        let span = self.pins.get(pin)?;
+        self.sources[span.range()].iter().position(|&n| n == node)
     }
 
     /// Number of scheduled links into `pin` (0 for unknown pins).
