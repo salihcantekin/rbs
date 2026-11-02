@@ -1,6 +1,6 @@
 # ADR-0014: Independent review for architecture, extra review for hot paths
 
-- Status: Proposed
+- Status: Accepted
 - Date: 2026-11-02
 - Amends: ADR-0001 (allows appending a review record to accepted ADRs)
 
@@ -25,4 +25,4 @@ New or superseding ADRs; new ports or changes to port traits; changes to the plu
 - Date: 2026-11-02
 - Verdict: approve after changes
 - Concerns: (1) unworkable with one maintainer -> `Owner approval:` path, manual enforcement stated; (2) hot-path scope covered nearly everything -> limited to code edited inside or called directly from listed paths, CODEOWNERS coarseness accepted; (3) human vs AI reviewer contradiction -> AI review never replaces the human for hot paths; (4) silent change to ADR-0001 -> amendment stated, ADR-0001 status points here; (5) scope lists differed between documents -> aligned; (6) merge vs acceptance unclear -> Accepted requires review plus owner approval.
-- Owner approval: pending
+- Owner approval: Salih, 2026-11-02 (project thread)

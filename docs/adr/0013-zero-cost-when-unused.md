@@ -1,6 +1,6 @@
 # ADR-0013: Zero cost when unused
 
-- Status: Proposed
+- Status: Accepted
 - Date: 2026-11-02
 
 ## Context
@@ -46,4 +46,4 @@ Every feature, adapter, plugin and node is in exactly one state:
 - Date: 2026-11-02
 - Verdict: approve after changes
 - Concerns: (1) specs lacked the lifecycle -> media graph and plugin SDK specs updated; (2) "active" undefined -> Installed / Standby / Active states; (3) idle-cost test not measurable -> same binary, deterministic checks with tolerances, runner per check; (4) device watcher contradicted "no threads" -> one shared registry watcher, lazy plugin loading; (5) "no branches" too absolute -> only per-iteration enable checks banned.
-- Owner approval: pending
+- Owner approval: Salih, 2026-11-02 (project thread)
