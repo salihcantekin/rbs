@@ -1,0 +1,14 @@
+[package]
+name = "iced-proto"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+dock-model = { path = "../model" }
+iced = { version = "=0.14.0", default-features = false, features = ["wgpu", "advanced", "canvas", "x11", "wayland", "thread-pool", "crisp"] }
+
+[features]
+default = ["wgpu27"]
+# The toolkit's wgpu major version, for API differences in shared/engine.rs.
+wgpu27 = []

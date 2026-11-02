@@ -1,0 +1,186 @@
+// Slint prototype UI. Layout geometry comes from the toolkit-neutral dock-model
+// crate: Slint does not allow recursive components, so the layout tree is
+// flattened in Rust into absolute tab stacks and splitter handles.
+import { Button } from "std-widgets.slint";
+
+export struct Tab { id: string, title: string }
+export struct Stack { stack: int, x: length, y: length, w: length, h: length, tabs: [Tab], active: int }
+export struct Handle { index: int, x: length, y: length, w: length, h: length, horizontal: bool }
+export struct PanelToggle { id: string, title: string, open: bool }
+
+export global Theme {
+    out property <color> bg: #16181d;
+    out property <color> surface: #20232a;
+    out property <color> surface-2: #2a2e37;
+    out property <color> text: #e6e8ee;
+    out property <color> muted: #9aa1ad;
+    out property <color> accent: #4c8dff;
+    out property <color> live: #e5484d;
+}
+
+export global Shared {
+    in property <image> program;
+    in property <string> spectrum-path;
+    in property <[float]> bands;
+    in property <string> live-text: "LIVE 00:12:34 · 2 outputs";
+}
+
+component PanelContent inherits Rectangle {
+    in property <string> panel;
+    background: Theme.bg;
+    if panel == "rbs.program": Image {
+        width: parent.width; height: parent.height;
+        source: Shared.program;
+        image-fit: contain;
+        accessible-role: image;
+        accessible-label: "Program output";
+    }
+    if panel == "rbs.mixer": Rectangle {
+        width: parent.width; height: parent.height;
+        for v[i] in Shared.bands: Rectangle {
+            x: i * parent.width / Shared.bands.length;
+            width: parent.width / Shared.bands.length - 1px;
+            height: v * parent.height;
+            y: parent.height - self.height;
+            background: v > 0.85 ? Theme.live : Theme.accent.with-alpha(0.6);
+        }
+        Path {
+            width: parent.width; height: parent.height;
+            viewbox-width: 1000; viewbox-height: 1000;
+            commands: Shared.spectrum-path;
+            stroke: #ffffff; stroke-width: 1.5px;
+        }
+    }
+    if panel != "rbs.program" && panel != "rbs.mixer": Text {
+        text: panel == "rbs.live-controls" ? "Go live: ابدأ البث الآن (3 outputs) · שידור חי 12:30" : panel; color: Theme.muted; horizontal-alignment: center; vertical-alignment: center;
+        width: parent.width; height: parent.height;
+    }
+}
+
+component StackView inherits Rectangle {
+    in property <Stack> data;
+    in property <bool> floating;
+    callback activate(int);
+    callback close(string);
+    callback move-next(string);
+    callback float(string);
+    background: Theme.surface;
+    border-color: Theme.surface-2; border-width: 1px;
+    property <length> bar: 28px;
+    HorizontalLayout {
+        y: 0; height: bar; spacing: 2px; padding-left: 4px; alignment: start;
+        for t[i] in data.tabs: Rectangle {
+            width: label.preferred-width + 70px;
+            background: i == data.active ? Theme.surface-2 : transparent;
+            accessible-role: tab;
+            accessible-label: t.title;
+            accessible-item-selected: i == data.active;
+            ta := TouchArea { clicked => { activate(i); } }
+            label := Text { x: 8px; text: t.title; color: i == data.active ? Theme.text : Theme.muted; vertical-alignment: center; height: parent.height; }
+            HorizontalLayout {
+                x: parent.width - 60px; width: 58px; spacing: 2px;
+                if !floating: Text { text: "→"; color: Theme.muted; vertical-alignment: center; accessible-role: button; accessible-label: "Move " + t.title + " to next stack"; TouchArea { clicked => { move-next(t.id); } } }
+                if !floating: Text { text: "⧉"; color: Theme.muted; vertical-alignment: center; accessible-role: button; accessible-label: "Float " + t.title; TouchArea { clicked => { float(t.id); } } }
+                Text { text: "×"; color: Theme.muted; vertical-alignment: center; accessible-role: button; accessible-label: "Close " + t.title; TouchArea { clicked => { close(t.id); } } }
+            }
+        }
+    }
+    if data.tabs.length > 0: PanelContent {
+        x: 1px; y: bar; width: parent.width - 2px; height: parent.height - bar - 1px;
+        panel: data.tabs[data.active].id;
+    }
+}
+
+component FrameBar inherits Rectangle {
+    in property <string> workspace;
+    in property <[PanelToggle]> panels;
+    callback switch(string);
+    callback save();
+    callback load();
+    callback toggle(string);
+    height: 36px;
+    background: Theme.surface-2;
+    HorizontalLayout {
+        padding: 4px; spacing: 6px;
+        Rectangle {
+            width: live.preferred-width + 16px; background: Theme.live; border-radius: 4px;
+            accessible-role: text; accessible-label: Shared.live-text;
+            live := Text { text: Shared.live-text; color: white; font-weight: 700; vertical-alignment: center; height: parent.height; }
+        }
+        Text { text: "Workspace: " + workspace; color: Theme.text; vertical-alignment: center; }
+        Button { text: "Edit"; clicked => { switch("Edit"); } }
+        Button { text: "Minimal"; clicked => { switch("Minimal"); } }
+        Button { text: "Save"; clicked => { save(); } }
+        Button { text: "Load"; clicked => { load(); } }
+        Text { text: "Panels:"; color: Theme.muted; vertical-alignment: center; }
+        for p in panels: Button {
+            text: (p.open ? "✓ " : "") + p.title;
+            checkable: true; checked: p.open;
+            clicked => { toggle(p.id); }
+        }
+        Rectangle { }
+    }
+}
+
+export component FloatWindow inherits Window {
+    title: "RBS prototype (Slint) – floating";
+    preferred-width: 640px; preferred-height: 400px;
+    background: Theme.bg;
+    in property <Stack> data;
+    callback dock();
+    callback close-tab(string);
+    callback resized(length, length);
+    changed width => { resized(self.width, self.height - 32px); }
+    changed height => { resized(self.width, self.height - 32px); }
+    VerticalLayout {
+        HorizontalLayout { height: 32px; padding: 2px; Button { text: "Dock back"; clicked => { dock(); } } Rectangle {} }
+        StackView { data: data; floating: true; close(id) => { close-tab(id); } }
+    }
+}
+
+export component MainWindow inherits Window {
+    title: "RBS prototype (Slint)";
+    preferred-width: 1280px; preferred-height: 800px;
+    background: Theme.bg;
+    in property <[Stack]> stacks;
+    in property <[Handle]> handles;
+    in property <[PanelToggle]> panels;
+    in property <string> workspace;
+    callback relayout(length, length);
+    callback activate(int, int);
+    callback close-tab(string);
+    callback move-next(string);
+    callback float(string);
+    callback drag(int, length);
+    callback switch(string);
+    callback save();
+    callback load();
+    callback toggle(string);
+    changed width => { relayout(self.width, self.height - 36px); }
+    changed height => { relayout(self.width, self.height - 36px); }
+    init => { relayout(self.width, self.height - 36px); }
+    FrameBar {
+        y: 0; width: parent.width;
+        workspace: workspace; panels: panels;
+        switch(n) => { switch(n); } save => { save(); } load => { load(); } toggle(id) => { toggle(id); }
+    }
+    Rectangle {
+        y: 36px; width: parent.width; height: parent.height - 36px;
+        for s in stacks: StackView {
+            x: s.x; y: s.y; width: s.w; height: s.h; data: s;
+            activate(i) => { activate(s.stack, i); }
+            close(id) => { close-tab(id); }
+            move-next(id) => { move-next(id); }
+            float(id) => { float(id); }
+        }
+        for h in handles: Rectangle {
+            x: h.x; y: h.y; width: h.w; height: h.h;
+            background: hta.has-hover || hta.pressed ? Theme.accent : Theme.bg;
+            accessible-role: slider; accessible-label: "Resize split";
+            hta := TouchArea {
+                mouse-cursor: h.horizontal ? ew-resize : ns-resize;
+                moved => { drag(h.index, h.horizontal ? self.mouse-x - self.pressed-x : self.mouse-y - self.pressed-y); }
+            }
+        }
+    }
+}

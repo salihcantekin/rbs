@@ -1,0 +1,10 @@
+[package]
+name = "dock-model"
+version = "0.0.0"
+edition = "2024"
+publish = false
+description = "Toolkit-neutral panel/workspace model shared by the UI toolkit prototypes"
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+toml = "0.9"
