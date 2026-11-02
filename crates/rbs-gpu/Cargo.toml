@@ -26,3 +26,11 @@ harness = false
 
 [lints]
 workspace = true
+
+# Native surface import on Windows goes through wgpu's D3D12 HAL; same `windows` version as wgpu-hal.
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.62", features = ["Win32_Foundation", "Win32_Graphics_Direct3D12", "Win32_Graphics_Dxgi_Common"] }
+
+[target.'cfg(windows)'.dev-dependencies]
+# Test-only D3D11 producer for the import conformance test.
+windows = { version = "0.62", features = ["Win32_Foundation", "Win32_Security", "Win32_Graphics_Direct3D", "Win32_Graphics_Direct3D11", "Win32_Graphics_Direct3D12", "Win32_Graphics_Dxgi", "Win32_Graphics_Dxgi_Common"] }

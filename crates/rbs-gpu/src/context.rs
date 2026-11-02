@@ -47,6 +47,7 @@ impl Default for GpuRequest {
 #[derive(Debug, Default)]
 pub struct GpuMetrics {
     frames_cpu_copied: AtomicU64,
+    surfaces_opened: AtomicU64,
     device_lost: AtomicBool,
 }
 
@@ -59,6 +60,17 @@ impl GpuMetrics {
     /// Whether the device reported itself lost.
     pub fn device_lost(&self) -> bool {
         self.device_lost.load(Ordering::Relaxed)
+    }
+
+    /// Native surfaces opened by importers (first sight of a producer surface).
+    pub fn surfaces_opened(&self) -> u64 {
+        self.surfaces_opened.load(Ordering::Relaxed)
+    }
+
+    #[cfg_attr(not(windows), allow(dead_code))] // Only importers on Windows open surfaces so far.
+    pub(crate) fn count_surface_opened(&self) {
+        // Relaxed: a statistic.
+        self.surfaces_opened.fetch_add(1, Ordering::Relaxed);
     }
 
     pub(crate) fn count_cpu_copy(&self) {
@@ -76,6 +88,7 @@ pub struct GpuContext {
     queue: wgpu::Queue,
     capabilities: CapabilitySet,
     adapter_name: String,
+    adapter_luid: Option<u64>,
     metrics: Arc<GpuMetrics>,
     pub(crate) sampled_layout: wgpu::BindGroupLayout,
     pub(crate) linear_sampler: wgpu::Sampler,
@@ -160,11 +173,13 @@ impl GpuContext {
             ..Default::default()
         });
 
+        let adapter_luid = crate::interop::adapter_luid(&device);
         Ok(Self {
             device,
             queue,
             capabilities,
             adapter_name: info.name,
+            adapter_luid,
             metrics,
             sampled_layout,
             linear_sampler,
@@ -179,6 +194,12 @@ impl GpuContext {
     /// The adapter's name, for diagnostics only. Never branch on it (P3).
     pub fn adapter_name(&self) -> &str {
         &self.adapter_name
+    }
+
+    /// The Direct3D adapter LUID (`HighPart << 32 | LowPart`) when the device runs on
+    /// D3D12. Producers create shared surfaces on this adapter.
+    pub fn adapter_luid(&self) -> Option<u64> {
+        self.adapter_luid
     }
 
     /// Shared counters.

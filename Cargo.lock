@@ -780,6 +780,7 @@ dependencies = [
  "pollster",
  "rbs-core",
  "wgpu",
+ "windows",
 ]
 
 [[package]]
