@@ -1,0 +1,28 @@
+[package]
+name = "rbs-gpu"
+description = "GPU context, texture pool, compositor and encoder colour conversion for RBS (wgpu, ADR-0005)."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+rbs-core = { path = "../rbs-core" }
+# Engine layer may depend on wgpu (docs/architecture/overview.md#layers). Web backends are not needed.
+wgpu = { version = "30.0.1", default-features = false, features = ["std", "parking_lot", "dx12", "metal", "vulkan", "wgsl"] }
+bytemuck = { version = "1.25", features = ["derive"] }
+pollster = "0.4"
+
+[dev-dependencies]
+# Same version as the dependency; listed again so benches can name wgpu types directly.
+wgpu = { version = "30.0.1", default-features = false, features = ["std", "parking_lot", "dx12", "metal", "vulkan", "wgsl"] }
+criterion = { version = "0.7", default-features = false }
+
+[[bench]]
+name = "compositor"
+harness = false
+
+[lints]
+workspace = true
