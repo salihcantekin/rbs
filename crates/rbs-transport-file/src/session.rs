@@ -6,7 +6,7 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering, fence};
 use std::sync::{Arc, OnceLock, mpsc};
 use std::thread::{self, JoinHandle};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use rbs_core::media::{Bytes, ChunkKind, StreamDescriptor};
 use rbs_transport::{
@@ -240,19 +240,24 @@ impl Running {
     /// and gets the rest. A thread still blocked in the OS after that (a hung network
     /// drive or a stalled pipe) is detached; it exits when that call returns.
     fn stop(self, budget: Duration, abort: bool) -> (Result<(), TransportError>, TransportStats) {
-        let grace = if abort {
+        // Both waits count against one deadline, so they cannot add up to more.
+        let start = Instant::now();
+        let deadline = start + budget;
+        let clean = if abort {
             self.shared.abort.store(true, Ordering::Release);
-            budget
+            start
         } else {
-            budget - budget * CLEAN_SHARE / 5
+            start + budget * CLEAN_SHARE / 5
         };
         self.shared.stop.store(true, Ordering::SeqCst);
         self.thread.thread().unpark();
         let mut timed_out = false;
-        if abort || self.done.recv_timeout(budget - grace).is_err() {
+        let clean_wait = clean.saturating_duration_since(Instant::now());
+        if abort || self.done.recv_timeout(clean_wait).is_err() {
             timed_out = !abort;
             self.shared.abort.store(true, Ordering::Release);
             self.thread.thread().unpark();
+            let grace = deadline.saturating_duration_since(Instant::now());
             if self.done.recv_timeout(grace).is_err() {
                 return (Err(TransportError::Timeout), self.stats());
             }

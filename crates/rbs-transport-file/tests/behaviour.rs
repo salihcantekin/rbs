@@ -297,9 +297,11 @@ fn finish_and_drop_return_within_their_budget_on_a_stalled_file() {
         t.finish(Duration::from_millis(100)),
         Err(TransportError::Timeout)
     ));
+    // The session waits at most 100 ms; the margin is for OS timer slack and
+    // scheduling on loaded CI machines (the suite's own `send` margin).
     let took = start.elapsed();
     assert!(
-        took < Duration::from_millis(100) + Duration::from_millis(50),
+        took < Duration::from_millis(100) + rbs_transport::conformance::SEND_BUDGET,
         "{took:?}"
     );
     // Release the detached thread, which is blocked opening the FIFO.
