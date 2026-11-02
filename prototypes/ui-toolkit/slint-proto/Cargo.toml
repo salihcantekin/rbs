@@ -14,3 +14,5 @@ slint-build = "=1.18.1"
 
 [features]
 wgpu27 = []
+# Adds Slint's Skia renderer; select it at run time with RBS_PROTO_RENDERER=skia.
+skia = ["slint/renderer-skia"]

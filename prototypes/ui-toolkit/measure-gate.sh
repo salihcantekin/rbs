@@ -10,6 +10,10 @@ cd "$(dirname "$0")"
 PROTOS="slint-proto iced-proto"
 if command -v qmake6 >/dev/null || command -v qmake >/dev/null; then PROTOS="$PROTOS qt-proto"; fi
 for p in $PROTOS; do cargo build -q --release -p "$p" || exit 1; done
+# Second Slint binary with the Skia renderer (downloads prebuilt Skia binaries on first build).
+if [ "${RBS_GATE_SKIA:-1}" = 1 ]; then
+  cargo build -q --release -p slint-proto --features skia --target-dir target/skia && cp target/skia/release/slint-proto target/release/slint-proto-skia && PROTOS="$PROTOS slint-proto-skia"
+fi
 
 idle_cpu() { # prototype -> CPU % over SECS with no animated panel visible
   RBS_PROTO_CLOSE=rbs.program,rbs.mixer "target/release/$1" >/dev/null 2>&1 &
@@ -33,11 +37,12 @@ echo
 echo "| prototype | scenario | result |"
 echo "| --- | --- | --- |"
 for p in $PROTOS; do
+  case $p in slint-proto-skia) export RBS_PROTO_RENDERER=skia ;; *) unset RBS_PROTO_RENDERER ;; esac
   echo "| $p | idle, no animated panel | $(idle_cpu $p) |"
   [ "$p" = iced-proto ] && continue
   scenario $p "1080p preview + 64-band spectrum" RBS_PROTO_SIZE=1920x1080
   scenario $p "1080p preview only" RBS_PROTO_SIZE=1920x1080 RBS_PROTO_CLOSE=rbs.mixer
-  [ "$p" = slint-proto ] && scenario $p "1080p preview only, engine idle (static frame)" RBS_PROTO_SIZE=1920x1080 RBS_PROTO_CLOSE=rbs.mixer RBS_PROTO_STATIC=1
+  case $p in slint-proto*) true ;; *) false ;; esac && scenario $p "1080p preview only, engine idle (static frame)" RBS_PROTO_SIZE=1920x1080 RBS_PROTO_CLOSE=rbs.mixer RBS_PROTO_STATIC=1
   scenario $p "dense path, 1024 points" RBS_PROTO_BANDS=1024 RBS_PROTO_CLOSE=rbs.program
   scenario $p "dense path, 4096 points" RBS_PROTO_BANDS=4096 RBS_PROTO_CLOSE=rbs.program
 done

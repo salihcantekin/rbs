@@ -108,3 +108,21 @@ From `./measure-runtime.sh 10` (after 4 s warm-up, 10 s sample; CPU as % of one 
 | iced | idle, no animated panel | - | - | - | 0.1 | 101 |
 
 Reading: Slint keeps a steady 60 Hz with no late frames, and the 6 to 7 fps seen on the software rasteriser was a property of software rendering. Dense paths cost little extra up to 1,024 points. CPU use while animating (33 to 45 % of one core) is above the provisional 10 % limit. Where it goes (full-window redraw at Retina resolution, CPU-side path tessellation, or the in-process engine stand-in) is not yet known and needs a profile.
+
+### Profile and renderer comparison (2026-11-02, same Mac)
+
+A `sample` profile of the femtovg build (1080p preview, 10 s at 1 ms, steady state) showed about 29 % of the main thread busy, and about 82 % of the drawing time inside `wgpu_core::Global::device_create_render_pipeline` (naga validation and MSL translation, Metal `newLibraryWithSource`) called from femtovg's `CommandToPipelineAndBindGroupMapper::update_renderpass`. femtovg 0.27's wgpu renderer keeps a pipeline cache but drops every entry not used in the current flush (`pipeline_cache.retain(.. accessed ..)` after each command buffer), so pipelines appear to be rebuilt during steady redraw. Turning the engine stand-in off saved only about 2 percentage points.
+
+`measure-gate.sh` now also builds the Slint prototype with the Skia renderer (`--features skia`, `RBS_PROTO_RENDERER=skia`), which also supports wgpu texture import:
+
+| Scenario | femtovg-wgpu CPU % | Skia CPU % | Late frames (both) |
+| --- | --- | --- | --- |
+| idle | 0.1 | 0.1 | - |
+| 1080p preview + 64-band spectrum | 35.6 | 26.9 | 0 |
+| 1080p preview only | 34.9 | 22.9 | 0 |
+| 1080p preview only, engine idle | 33.7 | 19.9 | 0 |
+| dense path, 1024 points | 33.6 | 31.4 | 0 |
+| dense path, 4096 points | 41.1 | 40.3 | 0 |
+| Peak RSS MiB | 109-115 | 130-137 | |
+
+With Skia the pipeline rebuilding is gone; about 13 % of the main thread is busy, spread over walking the item tree, text layout and drawing, the Skia flush and the timer tick, with no single hot spot. The remaining cost is redrawing the whole window at 60 Hz. Getting under the provisional 10 % would need redrawing less: only the animated regions, the preview as its own layer or window, or lower update rates for meters and text. None of these was measured.
