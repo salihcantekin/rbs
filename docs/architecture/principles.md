@@ -57,3 +57,17 @@ Performance claims require numbers. Hot-path changes come with a before/after be
 ## P12. Decisions are written down
 
 Any decision that is hard to reverse or affects more than one crate is an ADR in [docs/adr](../adr/). Specs describe the current contract; ADRs describe why.
+
+## P13. Zero cost when unused
+
+Every feature, adapter, plugin and node is Installed, Standby or Active. Installed items cost nothing at runtime: no threads, polling, GPU resources, device handles or per-frame work, and plugin binaries are not loaded. Standby items are not scheduled and keep resources warm only when the user or scene asks for it, visibly. Only Active nodes are in the scheduled graph, so hot loops contain no per-iteration checks whose purpose is to test whether an inactive feature is enabled. See [ADR-0013](../adr/0013-zero-cost-when-unused.md).
+
+Test: the idle-cost checks in [performance budgets](../specs/performance-budgets.md#idle-cost).
+
+## P14. Architecture decisions get an independent review
+
+New or superseding ADRs, new ports or port trait changes, changes to the plugin SDK, control API, scene format or crate layering, and new dependencies in core or port crates are reviewed by someone who did not write them: a human maintainer, or a fresh AI reviewer session that receives the proposal, specs and code but not the author's reasoning or conversation. The review is recorded in the ADR or the PR. See [ADR-0014](../adr/0014-review-policy.md).
+
+## P15. Hot paths get extra scrutiny
+
+Code edited inside, or called directly from, the functions and modules listed in [hot paths](hot-paths.md) needs, in addition to normal review: before/after measurements, the `hot-path-review` checklist, and approval from a human maintainer. An AI review can be added but never replaces the human approval.

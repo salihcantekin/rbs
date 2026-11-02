@@ -45,7 +45,8 @@ permissions = ["gpu-shader"]   # network, filesystem:read, camera, microphone, .
 3. Frames and audio buffers are lent to the plugin for the duration of a call. Plugins cannot change timestamps.
 4. Each call has a time budget (default 2 ms per video frame for filters). Over-budget plugins are reported, then bypassed.
 5. Plugins request permissions in the manifest; the user approves them at install time.
-6. A plugin registry with signature checks and a `cargo generate` template is part of the 1.0 scope.
+6. Plugins follow the Installed / Standby / Active lifecycle ([ADR-0013](../adr/0013-zero-cost-when-unused.md)). Before first use only the manifest is read: native libraries are not loaded, WASM modules are not compiled, processes are not started. Plugins must release everything on deactivation and must not start background threads or timers while not Active, except through host-provided lazy services.
+7. A plugin registry with signature checks and a `cargo generate` template is part of the 1.0 scope.
 
 ## Open questions
 

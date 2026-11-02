@@ -21,8 +21,10 @@ Thank you for helping. RBS is designed so that contributions can be checked by m
    cargo doc --workspace --no-deps
    ```
 
-4. If you touched a hot path, include before/after numbers (see [performance budgets](docs/specs/performance-budgets.md)).
-5. Open a pull request using the template.
+4. If you touched a [hot path](docs/architecture/hot-paths.md), include before/after numbers (see [performance budgets](docs/specs/performance-budgets.md)) and the `hot-path-review` checklist. A maintainer must approve.
+5. If you added a feature, make sure it costs nothing while inactive (principle P13).
+6. ADRs, port changes and public contract changes need an independent review before they are accepted ([ADR-0014](docs/adr/0014-review-policy.md)).
+7. Open a pull request using the template.
 
 ## Adding a backend (adapter)
 

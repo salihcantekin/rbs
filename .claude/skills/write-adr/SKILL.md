@@ -15,4 +15,5 @@ description: Write an Architecture Decision Record for RBS when a decision is ha
 4. Status `Proposed`; date today (YYYY-MM-DD).
 5. Add the row to the index in `docs/adr/README.md`.
 6. Update affected specs in the same PR, or list them as follow-ups in Consequences.
-7. Keep it short: one to two pages. English only.
+7. Leave the `## Review` section for the reviewer. Request an independent review (`architecture-review` skill, ADR-0014): a human maintainer or a fresh AI session that gets only the ADR, specs, principles and code, not this conversation. Never review your own ADR.
+8. Keep it short: one to two pages. English only.
