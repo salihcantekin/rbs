@@ -1,6 +1,6 @@
 # ADR-0015: Binding UI design rules and a single design system
 
-- Status: Proposed
+- Status: Accepted
 - Date: 2026-11-02
 - Amends: ADR-0014 (adds core UI flows, new UI components and token names to the architecture review scope)
 
@@ -35,4 +35,4 @@ A modern, clear and easy UI is one of RBS's main promises, and a common weak poi
 - Date: 2026-11-02
 - Verdict: approve after changes
 - Concerns: (1) core-flow limits contradicted the spec -> "interaction" defined, per-flow maximums in the spec; (2) red reserved but used for errors -> only `color.state.live` reserved, distinct error/destructive tokens; (3) target size contradiction -> 24 px floor, 28 px default; (4) "everything undoable" contradiction -> edits undoable, non-undoable list in spec; (5) silent widening of ADR-0014 -> declared as amendment; (6) missing areas -> U15-U20 (canvases, mixer, settings, notifications, projectors, control surfaces), OBS import; (7) idle redraw and remote preview -> U5 updated; (8) impractical release gate -> median time, success rate, owner waiver; (9) Space as cut key -> Ctrl/Cmd+Enter; (10)-(17) glossary, setting levels, font, binding scope, naming, plugin lint, theming, caption size fixed. Second round: spec contracts for setting levels, dock panels, canvases and remote preview added or recorded as open items.
-- Owner approval: pending
+- Owner approval: Salih, 2026-11-02 (project thread)
