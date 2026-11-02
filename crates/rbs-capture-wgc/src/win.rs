@@ -26,6 +26,7 @@ use windows::Graphics::Capture::{
 use windows::Graphics::DirectX::Direct3D11::IDirect3DDevice;
 use windows::Graphics::DirectX::DirectXPixelFormat;
 use windows::Graphics::SizeInt32;
+use windows::Wdk::System::SystemServices::RtlGetVersion;
 use windows::Win32::Foundation::{CloseHandle, HANDLE, HMODULE, HWND, LPARAM, LUID, RECT};
 use windows::Win32::Graphics::Direct3D::D3D_DRIVER_TYPE_UNKNOWN;
 use windows::Win32::Graphics::Direct3D11::{
@@ -49,6 +50,7 @@ use windows::Win32::Graphics::Gdi::{
 };
 use windows::Win32::System::Com::{CoIncrementMTAUsage, IAgileObject};
 use windows::Win32::System::Performance::{QueryPerformanceCounter, QueryPerformanceFrequency};
+use windows::Win32::System::SystemInformation::OSVERSIONINFOW;
 use windows::Win32::System::WinRT::Direct3D11::{
     CreateDirect3D11DeviceFromDXGIDevice, IDirect3DDxgiInterfaceAccess,
 };
@@ -106,6 +108,25 @@ fn ensure_winrt() {
         // for the process lifetime, which is the intent.
         let _ = unsafe { CoIncrementMTAUsage() };
     });
+}
+
+/// Windows 10 1903, the first build with free-threaded frame pools and
+/// `IGraphicsCaptureItemInterop`.
+const MIN_BUILD: u32 = 18362;
+
+/// The OS build number, without WinRT and without compatibility shims.
+fn os_build() -> u32 {
+    let mut info = OSVERSIONINFOW {
+        dwOSVersionInfoSize: std::mem::size_of::<OSVERSIONINFOW>() as u32,
+        ..Default::default()
+    };
+    // SAFETY: `info` is an OSVERSIONINFOW with its size set, as the call requires.
+    let status = unsafe { RtlGetVersion(&mut info) };
+    if status.is_ok() {
+        info.dwBuildNumber
+    } else {
+        0
+    }
 }
 
 /// A capture target resolved to its OS handle.
@@ -346,11 +367,14 @@ impl AdapterFactory for WgcCaptureFactory {
     }
 
     fn probe(&self) -> Result<CapabilitySet, ProbeError> {
-        ensure_winrt();
-        match GraphicsCaptureSession::IsSupported() {
-            Ok(true) => {}
-            Ok(false) => return Err(ProbeError::new("Windows Graphics Capture is not supported")),
-            Err(e) => return Err(ProbeError::new(format!("Windows Graphics Capture: {e}"))),
+        // Probing must stay cheap (capture-port.md: within 50 ms), and the first WinRT
+        // call of a process loads the runtime, which can take longer. So the probe only
+        // checks the OS build; `start` asks WGC itself (`IsSupported`).
+        let build = os_build();
+        if build < MIN_BUILD {
+            return Err(ProbeError::new(format!(
+                "Windows Graphics Capture needs Windows 10 1903 (build {MIN_BUILD}), found build {build}"
+            )));
         }
         let set =
             |items: &[&str]| CapabilityValue::Set(items.iter().map(|s| (*s).to_owned()).collect());
@@ -989,6 +1013,11 @@ fn create_device(luid: [u8; 8]) -> windows::core::Result<(ID3D11Device, ID3D11De
 impl WgcSession {
     fn activate(&mut self) -> Result<Active, CaptureError> {
         ensure_winrt();
+        if !GraphicsCaptureSession::IsSupported().unwrap_or(false) {
+            return Err(CaptureError::Unsupported(
+                "Windows Graphics Capture is not available on this system",
+            ));
+        }
         let (resolved, _) = resolve(&self.target).ok_or(CaptureError::TargetLost)?;
         let item = create_item(resolved).map_err(|e| backend(&e))?;
         let size = item.Size().map_err(|e| backend(&e))?;
