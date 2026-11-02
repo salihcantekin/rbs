@@ -24,7 +24,7 @@ The runtime model of the engine: nodes, typed links, scheduling and live editing
 
 ## Links
 
-Links are typed: `Video`, `Audio`, `Packets`, `Data`. A link carries a format descriptor (for video: size, pixel format, colour space, memory kind). The value types and formats are defined in the [media types spec](media-types.md). Format negotiation happens when the link is created; a converter node is inserted automatically when needed and is visible in the graph.
+Links are typed: `Video`, `Audio`, `Packets`, `Data`. A link carries a format descriptor (for video: size, pixel format, colour space, memory kind). The value types and formats are defined in the [media types spec](media-types.md). Video links carry only pool-texture or system-memory frames: native capture surfaces are imported by `rbs-gpu` in the source node wrapper and never travel on a link. Format negotiation happens when the link is created; a converter node is inserted automatically when needed and is visible in the graph.
 
 ## Lifecycle
 

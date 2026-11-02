@@ -43,7 +43,7 @@ fn timing_does_not_allocate() {
         let _ = Timebase::MILLIS.duration_of(1_234);
         let _ = ClockMapping::anchored(0, t).to_master(99);
         for i in 0..500_u64 {
-            est.observe(i * 10_000_000, Timestamp::from_nanos(i * 10_000_250));
+            let _ = est.observe(i * 10_000_000, Timestamp::from_nanos(i * 10_000_250));
         }
         let _ = est.mapping();
         let _ = SampleRate::HZ_48000.duration_of(480);
@@ -100,7 +100,10 @@ fn media_values_do_not_allocate() {
             true,
             payload.clone(),
         );
-        let fan_out = (packet.clone(), packet.clone(), packet.data.slice(4..));
+        let Ok(packet) = packet else {
+            panic!("valid packet");
+        };
+        let fan_out = (packet.clone(), packet.clone(), packet.data().slice(4..));
         drop(fan_out);
     });
 }

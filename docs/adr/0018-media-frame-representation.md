@@ -49,16 +49,20 @@ Forces:
 
 - Reviewer: independent AI session (fresh context; given only this ADR, the media types spec, the principles, related ADRs and specs, and the code)
 - Date: 2026-11-02
-- Verdict: changes requested, then changes made (listed below)
+- Verdict: first pass "changes requested" (4 blocking, 6 non-blocking concerns); second pass "changes requested" with one blocking item (11), which the reviewer said it would approve once fixed; fixed below.
 - Concerns:
-  1. Lease contract not enforced by types, so `unsafe` importers could not rely on it -> `LeaseOwner` is an `unsafe trait`, `Lease::adopt` and `VideoFrame::native` are `unsafe fn`s, frame fields are private.
-  2. No consumer-to-producer GPU completion signal; keyed mutex breaks under fan-out -> single-importer rule: native frames are not shareable, the importer drops the lease after its own GPU fence (decision 4, spec "Native surfaces").
-  3. Types cannot cross plugin boundaries -> decision 6 and spec "Plugin boundaries": the plugin SDK defines `repr(C)` / WIT mirrors and maps leases.
-  4. Evolution overstated, semver impact not stated -> `#[non_exhaustive]` plus constructors on growing types, `PlanarChannels` hides `MAX_CHANNELS`, spec "Versioning" section.
-  5. `bytes` pooling claim needs `from_owner` (1.9) and still allocates per packet -> `bytes = "1.9"`, spec documents one allocation per packet at the producer.
-  6. CUDA and Vulkan variants under-specified, no adapter identity -> both removed until a producer needs them; Direct3D variants carry `adapter_luid`, Metal carries `device_registry_id`.
-  7. Format not tied to payload -> `SystemFrame` keeps its validated format; `VideoFrame::system` takes it from there; fields are private.
-  8. Lease edge cases (owner teardown on a real-time thread, panicking release, stale tokens, atomic cost) -> spec "Lifetime" requires the engine to hold owners until background shutdown, forbids panics, recommends generation bits in tokens, states two atomics.
-  9. Drift mapping can step backwards; backwards source time not detected; counter overflow -> sources keep output monotonic and swap at most once per bucket (documented); backwards source time restarts and returns `Observation::Restarted`; counter is `u64`.
-  10. Cadence domain near `u64::MAX` and above 1e9 per second; packet durations -> domain stated in code and spec; muxers derive durations from rounded positions.
+  1. Lease contract not enforced by types -> `LeaseOwner` is an `unsafe trait`, `Lease::adopt` and `VideoFrame::native` are `unsafe fn`s, frame fields are private. Reviewer: resolved.
+  2. No consumer-to-producer GPU completion signal; keyed mutex breaks under fan-out -> single-importer rule; native frames are not shareable. Reviewer: mostly resolved, see 11 and 12.
+  3. Types cannot cross plugin boundaries -> decision 6 and spec "Plugin boundaries". Reviewer: resolved; `plugin-sdk.md` to link the mirrors with the plugin SDK work (open, non-blocking).
+  4. Evolution and semver -> `#[non_exhaustive]` plus constructors, `PlanarChannels`, spec "Versioning". Reviewer: resolved.
+  5. `bytes` pooling claim -> `bytes = "1.9"`, one allocation per packet at the producer documented. Reviewer: resolved.
+  6. CUDA / Vulkan variants under-specified, no adapter identity -> removed; adapter LUID and Metal registry id added. Reviewer: resolved; spec leftover fixed. Open, non-blocking: device identity for DMA-BUF on multi-GPU Linux.
+  7. Format not tied to payload -> `SystemFrame` keeps its format, private fields. Reviewer: resolved.
+  8. Lease edge cases -> spec obligations; backend-ports conformance now checks that the engine holds each owner's `Arc`. Reviewer: resolved.
+  9. Drift estimator monotonicity and restart -> `Observation::Restarted` (now `#[must_use]`, `#[non_exhaustive]`), `u64` counter, documented source rule. Reviewer: resolved.
+  10. Cadence domain and packet durations -> documented. Reviewer: resolved.
+  11. (second pass, blocking) Import copy vs alias unclear -> spec: a copying import drops the lease after its copy completes; an aliasing import moves the lease into the pool slot so the surface lives as long as the slot is referenced.
+  12. (second pass) Single-importer rule only in one spec -> stated in media-graph and backend-ports; the import API takes `VideoFrame` by value, and any parts-based import is `unsafe`.
+  13. (second pass) `EncodedPacket::new` silently clamped `dts` -> returns `MediaError::DtsAfterPts`; fields are private with accessors.
+  14. (second pass) Review record written by the author -> this record now states the reviewer's verdicts per pass.
 - Owner approval: pending

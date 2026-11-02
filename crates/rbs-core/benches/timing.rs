@@ -65,13 +65,13 @@ fn timing(c: &mut Criterion) {
         let mut s = 0_u64;
         b.iter(|| {
             s += 10_000_000;
-            est.observe(black_box(s), Timestamp::from_nanos(s + 77));
+            let _ = est.observe(black_box(s), Timestamp::from_nanos(s + 77));
         })
     });
     c.bench_function("drift_mapping_full_window", |b| {
         let mut est = DriftEstimator::new(Duration::from_millis(10));
         for i in 0..200_u64 {
-            est.observe(i * 10_000_000, Timestamp::from_nanos(i * 10_000_100));
+            let _ = est.observe(i * 10_000_000, Timestamp::from_nanos(i * 10_000_100));
         }
         b.iter(|| black_box(est.mapping()))
     });

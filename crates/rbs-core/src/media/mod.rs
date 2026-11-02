@@ -66,6 +66,8 @@ pub enum MediaError {
         /// Channels given.
         actual: usize,
     },
+    /// A packet's decode time is after its presentation time.
+    DtsAfterPts,
     /// An audio channel or interleaved buffer has the wrong length.
     ChannelLength {
         /// Channel index (0 for interleaved).
@@ -95,6 +97,7 @@ impl fmt::Display for MediaError {
                 f,
                 "plane {plane}: needs {needed} bytes, buffer has {actual}"
             ),
+            MediaError::DtsAfterPts => f.write_str("decode time is after presentation time"),
             MediaError::ChannelCount { max, actual } => {
                 write!(f, "expected {max} channels, got {actual}")
             }

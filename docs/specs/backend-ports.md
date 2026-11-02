@@ -109,6 +109,7 @@ Each port crate exports a conformance suite as a library function, for example `
 - Declared capabilities are true: every advertised format, resolution and rate-control mode is actually created and exercised.
 - Timestamps are preserved and monotonic; clock conversion is correct (capture, audio).
 - Every `Lease` an adapter hands out is released, and frame `sequence` numbers increase.
+- Capture adapters hand native frames only to the `rbs-gpu` importer (one consumer); the engine holds an `Arc` to every `LeaseOwner` until the adapter has shut down.
 - `reconfigure` either works or returns `Unsupported`.
 - No allocation on calls documented as real-time.
 - Clean shutdown: no thread or handle leaks after `Drop`.

@@ -9,6 +9,7 @@ use std::time::Duration;
 
 use bytes::Bytes;
 
+use super::MediaError;
 use super::audio::AudioFormat;
 use super::video::VideoFormat;
 use crate::time::Timestamp;
@@ -163,25 +164,18 @@ impl StreamDescriptor {
 #[non_exhaustive]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EncodedPacket {
-    /// The codec.
-    pub codec: CodecId,
-    /// Framing of `data`.
-    pub bitstream: BitstreamFormat,
-    /// Presentation time in master-clock time.
-    pub pts: Timestamp,
-    /// Decode time in master-clock time; equal to `pts` without frame reordering.
-    /// Always `dts <= pts`.
-    pub dts: Timestamp,
-    /// Duration, when known.
-    pub duration: Option<Duration>,
-    /// True if decoding can start at this packet (IDR / key frame).
-    pub keyframe: bool,
-    /// The payload.
-    pub data: Bytes,
+    codec: CodecId,
+    bitstream: BitstreamFormat,
+    pts: Timestamp,
+    dts: Timestamp,
+    duration: Option<Duration>,
+    keyframe: bool,
+    data: Bytes,
 }
 
 impl EncodedPacket {
-    /// Creates a packet with no duration. `dts` is clamped to `pts` if it is later.
+    /// Creates a packet with no duration. Fails with [`MediaError::DtsAfterPts`] if
+    /// `dts > pts`, which points to a timestamp bug in the encoder adapter.
     pub fn new(
         codec: CodecId,
         bitstream: BitstreamFormat,
@@ -189,22 +183,61 @@ impl EncodedPacket {
         dts: Timestamp,
         keyframe: bool,
         data: Bytes,
-    ) -> Self {
-        Self {
+    ) -> Result<Self, MediaError> {
+        if dts > pts {
+            return Err(MediaError::DtsAfterPts);
+        }
+        Ok(Self {
             codec,
             bitstream,
             pts,
-            dts: dts.min(pts),
+            dts,
             duration: None,
             keyframe,
             data,
-        }
+        })
     }
 
     /// Sets the duration.
     pub fn with_duration(mut self, duration: Duration) -> Self {
         self.duration = Some(duration);
         self
+    }
+
+    /// The codec.
+    pub fn codec(&self) -> CodecId {
+        self.codec
+    }
+
+    /// Framing of the payload.
+    pub fn bitstream(&self) -> BitstreamFormat {
+        self.bitstream
+    }
+
+    /// Presentation time in master-clock time.
+    pub fn pts(&self) -> Timestamp {
+        self.pts
+    }
+
+    /// Decode time in master-clock time; equal to `pts` without frame reordering.
+    /// Always `dts <= pts`.
+    pub fn dts(&self) -> Timestamp {
+        self.dts
+    }
+
+    /// Duration, when known.
+    pub fn duration(&self) -> Option<Duration> {
+        self.duration
+    }
+
+    /// True if decoding can start at this packet (IDR / key frame).
+    pub fn keyframe(&self) -> bool {
+        self.keyframe
+    }
+
+    /// The payload. Clone it (O(1)) or `slice` it to keep parts without copying.
+    pub fn data(&self) -> &Bytes {
+        &self.data
     }
 }
 
@@ -231,7 +264,10 @@ mod tests {
             true,
             payload.clone(),
         )
-        .with_duration(Duration::from_millis(16));
+        .map(|p| p.with_duration(Duration::from_millis(16)));
+        let Ok(packet) = packet else {
+            panic!("dts <= pts is valid");
+        };
         let reordered = EncodedPacket::new(
             CodecId::H264,
             BitstreamFormat::AnnexB,
@@ -240,12 +276,14 @@ mod tests {
             false,
             Bytes::new(),
         );
-        assert_eq!(reordered.dts, reordered.pts);
+        assert_eq!(reordered.err(), Some(MediaError::DtsAfterPts));
         let fan_out = [packet.clone(), packet.clone()];
         for p in &fan_out {
-            assert_eq!(p.data.as_ptr(), payload.as_ptr());
+            assert_eq!(p.data().as_ptr(), payload.as_ptr());
         }
-        let nal = packet.data.slice(4..);
+        let nal = packet.data().slice(4..);
+        assert_eq!(packet.duration(), Some(Duration::from_millis(16)));
+        assert!(packet.keyframe() && packet.dts() <= packet.pts());
         assert_eq!(nal.as_ptr(), payload[4..].as_ptr());
 
         let descriptor = StreamDescriptor::new(

@@ -38,7 +38,7 @@ Encoders and muxers convert master time to container ticks with `Timebase::ticks
 - `VideoFormat { size, pixel_format, color }`: the picture format of a frame.
 - `PixelFormat` (non-exhaustive): `Bgra8`, `Bgra8Srgb`, `Rgba8`, `Rgba8Srgb`, `Rgb10a2`, `Rgba16Float` (canvas working format), `Nv12`, `P010` (encoder hand-off), `I420`, `I444`, `Yuy2`, `Uyvy`. Each format reports plane count, bit depth, minimum row bytes and rows per plane; chroma sizes round up for odd dimensions.
 - `ColorSpace { primaries, transfer, matrix, range }`, with constants `SRGB`, `LINEAR_BT709` (SDR working space), `LINEAR_BT2020` (HDR working space), `BT709_LIMITED`, `BT709_FULL`, `BT2100_PQ`, `BT2100_HLG`.
-- `MemoryKind` (non-exhaustive): `System`, `Gpu` (engine device texture), `D3d11`, `D3d12`, `Vulkan`, `Metal`, `DmaBuf`, `Cuda`. `as_str()` gives the values used for the `input.memory` style capabilities.
+- `MemoryKind` (non-exhaustive): `System`, `Gpu` (engine device texture), `D3d11`, `D3d12`, `Vulkan`, `Metal`, `DmaBuf`. `as_str()` gives the values used for the `input.memory` style capabilities.
 - `VideoFrame` has private fields and accessors (`format`, `timestamp`, `sequence`, `source_time`, `payload`, `lease`), so the format always matches the payload and a native surface is never separated from its lease:
 
 | Accessor | Meaning |
@@ -61,7 +61,10 @@ Encoders and muxers convert master time to container ticks with `Timebase::ticks
 
 - `VideoFrame::native` is `unsafe`: its caller guarantees every handle refers to a live object of the described kind and format, on the adapter it names (`adapter_luid` for Direct3D, `device_registry_id` for Metal), valid and not written by the producer until the lease is released.
 - A native frame has exactly one consumer: the `rbs-gpu` importer in the source node wrapper. It is not shareable (`share()` returns `None`); the importer takes it apart with `into_native()`.
-- The importer waits on `SurfaceSync` (`Ready`, `KeyedMutex`, `TimelineFence`, `SyncFile`) before its GPU work, and drops the lease only after that GPU work has completed (its own fence), so the producer never reuses a surface the GPU is still reading. A keyed mutex is therefore acquired and released by one consumer only.
+- The importer waits on `SurfaceSync` (`Ready`, `KeyedMutex`, `TimelineFence`, `SyncFile`) before its GPU work. A keyed mutex is therefore acquired and released by one consumer only.
+- An import either **copies** the surface into a pool texture, and drops the native lease only after that copy has completed on the GPU (its own fence); or **aliases** it (wraps the surface zero-copy as a pool texture), and then moves the native lease into the resulting `Texture` frame's pool slot, so the producer's surface lives as long as that slot is referenced by any frame or queued GPU work. Either way the producer never reuses a surface the GPU may still read.
+- The `rbs-gpu` import API takes the `VideoFrame` by value. Any function that takes the separate `(NativeSurface, SurfaceSync, Lease)` parts is `unsafe`, because a `Copy` surface could otherwise be paired with an unrelated lease.
+- Native payloads never travel on graph links: the source node wrapper imports them before the frame enters the graph.
 - Downstream nodes, encoders and outputs only ever see `Texture` or `System` payloads. An encoder that needs a native texture gets it from `rbs-gpu` export, not from a capture surface.
 - Surface kinds without a producer yet (Vulkan images, CUDA memory) are not defined; they are added as new non-exhaustive variants with full import information when a producer needs them.
 
@@ -95,7 +98,7 @@ The plugin SDK spec owns these mirrors; this spec only requires that every field
 - `CodecId` (non-exhaustive): `H264`, `Hevc`, `Av1`, `Vp9`, `Aac`, `Opus`; `as_str()` gives capability values.
 - `BitstreamFormat` (non-exhaustive): `AnnexB`, `LengthPrefixed { length_size }`, `Obu`, `Raw`, `Adts`.
 - `StreamDescriptor { codec, bitstream, extradata: Bytes, params }`: produced by an encoder, consumed by muxers and transports. `params` is `StreamParams::Video { format, frame_rate }` or `StreamParams::Audio { format, frame_size }`.
-- `EncodedPacket { codec, bitstream, pts, dts, duration, keyframe, data: Bytes }`, built with `EncodedPacket::new` (which clamps `dts` to `pts`) and `with_duration`. `pts` and `dts` are master-clock times with `dts <= pts`.
+- `EncodedPacket { codec, bitstream, pts, dts, duration, keyframe, data: Bytes }`, built with `EncodedPacket::new`, which returns `MediaError::DtsAfterPts` when `dts > pts`, and `with_duration`. Fields are read-only through accessors. `pts` and `dts` are master-clock times with `dts <= pts`.
 - Payloads are `bytes::Bytes` (re-exported as `rbs_core::media::Bytes`): O(1) clone and zero-copy `slice`, so one encode fans out to many outputs without copying.
 - Creating a payload costs one allocation per packet at the producer (encoder drain): either the `Vec` it is built from, or the shared header of `Bytes::from_owner` when the buffer comes from a pool (requires `bytes` 1.9 or later). The first clone of a `Bytes` built from a `Vec` also allocates its shared header once, so producers share a payload when they create it. After that, fan-out to muxers and transports never allocates.
 

@@ -311,6 +311,8 @@ impl Timebase {
 pub const DRIFT_WINDOW: usize = 64;
 
 /// The result of [`DriftEstimator::observe`].
+#[must_use]
+#[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Observation {
     /// The observation was added.
@@ -624,7 +626,7 @@ mod tests {
         let mut est = DriftEstimator::default();
         assert!(est.mapping().is_none());
         assert!(est.is_empty());
-        est.observe(1_000, Timestamp::from_nanos(50_000));
+        let _ = est.observe(1_000, Timestamp::from_nanos(50_000));
         let Some(m) = est.mapping() else {
             panic!("one observation gives a mapping");
         };
@@ -643,7 +645,7 @@ mod tests {
         for i in 0..2_000_u64 {
             let source = 7_000 + i * 10_000_000;
             let jitter = rng.next() % 500_000;
-            est.observe(source, Timestamp::from_nanos(truth(source) + jitter));
+            let _ = est.observe(source, Timestamp::from_nanos(truth(source) + jitter));
         }
         assert_eq!(est.buckets(), 19);
         let Some(m) = est.mapping() else {
