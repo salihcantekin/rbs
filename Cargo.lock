@@ -804,6 +804,7 @@ version = "0.0.1"
 dependencies = [
  "bytemuck",
  "criterion 0.7.0",
+ "libc",
  "objc2-core-foundation",
  "objc2-io-surface",
  "objc2-metal",
