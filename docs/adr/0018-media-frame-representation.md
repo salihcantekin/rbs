@@ -49,7 +49,7 @@ Forces:
 
 - Reviewer: independent AI session (fresh context; given only this ADR, the media types spec, the principles, related ADRs and specs, and the code)
 - Date: 2026-11-02
-- Verdict: first pass "changes requested" (4 blocking, 6 non-blocking concerns); second pass "changes requested" with one blocking item (11), which the reviewer said it would approve once fixed; fixed below.
+- Verdict: approve (third pass, after "changes requested" on the first pass with 4 blocking and 6 non-blocking concerns, and on the second pass with one blocking item, 11). Non-blocking items left for the `rbs-gpu` spec: with an aliased keyed-mutex surface, release the key only when the slot's last reference is gone; DMA-BUF device identity on multi-GPU Linux; plugin SDK to link its type mirrors.
 - Concerns:
   1. Lease contract not enforced by types -> `LeaseOwner` is an `unsafe trait`, `Lease::adopt` and `VideoFrame::native` are `unsafe fn`s, frame fields are private. Reviewer: resolved.
   2. No consumer-to-producer GPU completion signal; keyed mutex breaks under fan-out -> single-importer rule; native frames are not shareable. Reviewer: mostly resolved, see 11 and 12.
