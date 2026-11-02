@@ -18,6 +18,10 @@ pub const CAP_TIMESTAMP_QUERY: CapabilityKey = CapabilityKey::new_static("gpu.ti
 /// `gpu.nv12_surface`: the converter can write one multi-planar NV12 texture for encoders.
 pub const CAP_NV12_SURFACE: CapabilityKey = CapabilityKey::new_static("gpu.nv12_surface");
 
+/// `gpu.import.dmabuf`: the importer can alias Linux DMA-BUFs (Vulkan external memory with
+/// DRM format modifiers).
+pub const CAP_IMPORT_DMABUF: CapabilityKey = CapabilityKey::new_static("gpu.import.dmabuf");
+
 /// Which kind of adapter to prefer when several satisfy the request.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum PowerPreference {
@@ -120,7 +124,9 @@ impl GpuContext {
 
         let info = adapter.get_info();
         // Optional features that cost nothing until used.
-        let features = adapter.features() & wgpu::Features::TEXTURE_FORMAT_NV12;
+        let features = adapter.features()
+            & (wgpu::Features::TEXTURE_FORMAT_NV12
+                | wgpu::Features::VULKAN_EXTERNAL_MEMORY_DMA_BUF);
         let limits = adapter.limits();
         let capabilities = CapabilitySet::new()
             .with(CAP_SOFTWARE, CapabilityValue::Flag(is_software(&info)))
@@ -131,6 +137,12 @@ impl GpuContext {
             .with(
                 CAP_TIMESTAMP_QUERY,
                 CapabilityValue::Flag(adapter.features().contains(wgpu::Features::TIMESTAMP_QUERY)),
+            )
+            .with(
+                CAP_IMPORT_DMABUF,
+                CapabilityValue::Flag(
+                    features.contains(wgpu::Features::VULKAN_EXTERNAL_MEMORY_DMA_BUF),
+                ),
             )
             .with(
                 CAP_NV12_SURFACE,

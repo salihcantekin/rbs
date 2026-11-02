@@ -45,7 +45,7 @@ impl GpuContext {
 ```
 
 - Adapter choice uses capabilities only. Vendor or device names are reported for diagnostics and never branched on (P3).
-- Reported capability keys: `gpu.software` (bool), `gpu.max_texture_dimension` (int), `gpu.timestamp_query` (bool), `gpu.nv12_surface` (bool: the device creates multi-planar NV12 textures; the feature is enabled on the device only when the adapter has it).
+- Reported capability keys: `gpu.software` (bool), `gpu.max_texture_dimension` (int), `gpu.timestamp_query` (bool), `gpu.import.dmabuf` (bool: the importer accepts Linux DMA-BUFs), `gpu.nv12_surface` (bool: the device creates multi-planar NV12 textures; the feature is enabled on the device only when the adapter has it).
 - Only the primary backends are used (Vulkan, Metal, D3D12); the adapter must support storage buffers in the vertex stage.
 - `GpuError::NoAdapter` is returned when no adapter satisfies the request. Callers and tests treat it as "hardware absent", not as a crash.
 
@@ -163,7 +163,7 @@ Backend matrix (implemented rows in bold):
 | `D3d11Texture` | none | none | not importable: the producer must share it with an NT handle |
 | **`IoSurface`** | **Metal** | **`Ready`** | `newTextureWithDescriptor:iosurface:plane:`; IOSurfaces are not tied to a device, so there is no identity check. Single-plane `'BGRA'`, `'RGBA'` and `'RGhA'` (RGBA half float) surfaces |
 | `MetalTexture` | Metal | `Ready` | `device_registry_id` must match |
-| `DmaBuf` | Vulkan | `Ready`, `SyncFile` | needs `VK_EXT_external_memory_dma_buf` and image DRM format modifiers; device identity is an open question |
+| **`DmaBuf`** | **Vulkan** | **`Ready`** (`SyncFile` is a follow-up) | wgpu-hal `texture_from_dmabuf_fd` (`VK_EXT_external_memory_dma_buf` with `VK_EXT_image_drm_format_modifier`), capability `gpu.import.dmabuf`. Single plane, `AR24` (ARGB8888) and `AB24` (ABGR8888); `XR24` needs an opaque layer flag first. The importer duplicates the producer's fd; the cache key is the buffer's inode, not the fd number. The size comes from the frame's `VideoFormat`. Device identity is not checked: an incompatible modifier fails the import |
 
 `GpuContext` reports what the importer accepts, for capture requests (`GpuImportTarget { device, sync }` of the capture port spec): the render adapter's identity (D3D LUID as `u64` = `HighPart << 32 | LowPart`, from `GpuContext::adapter_luid`; Metal registry id for `MetalTexture`) and the sync kinds in the table below. Producers create surfaces on that adapter.
 
@@ -176,7 +176,7 @@ Rules:
 5. **Formats.** BGRA8/RGBA8 (UNORM or sRGB) surfaces are aliased as the matching wgpu format; the colour space of the native frame's `VideoFormat` decides `Transfer` for the compositor. NV12/P010 surfaces need a YUV-to-RGB pass and are a follow-up.
 6. **Same adapter only.** A surface from another adapter (LUID or registry id mismatch) is `GpuError::WrongAdapter`; cross-adapter copies are out of scope.
 
-Conformance (per backend, on CI where the platform allows; WARP on Windows, the runner's Metal device on macOS): a producer-side test creates a shared texture (and fence where the backend uses one), fills it, signals; the importer aliases it; the compositor renders it; readback matches; the native lease is released only after `retire` follows GPU completion; a second frame on the same surface opens nothing new (`surfaces_opened` unchanged).
+Conformance (per backend, on CI where the platform allows; WARP on Windows, the runner's Metal device on macOS; DMA-BUF only on Linux machines with a hardware Vulkan driver and `/dev/udmabuf`, since lavapipe has no DMA-BUF import, with `RBS_REQUIRE_DMABUF` to make it mandatory): a producer-side test creates a shared texture (and fence where the backend uses one), fills it, signals; the importer aliases it; the compositor renders it; readback matches; the native lease is released only after `retire` follows GPU completion; a second frame on the same surface opens nothing new (`surfaces_opened` unchanged).
 
 ### Readback (fallback only)
 

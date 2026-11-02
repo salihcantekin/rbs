@@ -44,3 +44,7 @@ objc2-io-surface = { version = "0.3.2", default-features = false, features = ["s
 # Test-only IOSurface producer for the import conformance test.
 objc2-io-surface = { version = "0.3.2", default-features = false, features = ["std", "IOSurfaceRef", "IOSurfaceTypes", "libc", "objc2-core-foundation"] }
 objc2-core-foundation = { version = "0.3.2", default-features = false, features = ["std", "CFDictionary", "CFNumber", "CFString"] }
+
+[target.'cfg(target_os = "linux")'.dev-dependencies]
+# Test-only udmabuf producer for the DMA-BUF import test (memfd + ioctl).
+libc = "0.2.180"
