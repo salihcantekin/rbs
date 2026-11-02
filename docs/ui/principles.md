@@ -103,7 +103,7 @@ Rules:
 ## U11. Layout
 
 - Default layout: scenes and sources on the left, preview (and program in studio mode) in the centre, audio mixer and controls at the bottom, properties of the selected item on the right.
-- Panels are dockable; users can save and switch workspaces. "Reset layout" is always available.
+- The default layout is only a starting point; everything about panels and workspaces is defined in U21. "Reset layout" is always available.
 - The main window must work from 1280 x 720 upwards. Below that, panels collapse into tabs; nothing is cut off.
 - Interactive targets are at least 24 x 24 px at 100 % scale with spacing that meets WCAG 2.5.8; 28 px is the default and 24 px is only used in dense Advanced and Expert views.
 
@@ -161,6 +161,23 @@ Rules:
 - Every UI command is a control API command (ADR-0008), so Stream Deck, MIDI, touch panels and hotkeys can trigger anything the UI can.
 - A touch-friendly layout of live controls (scenes, transition, go live, record, mute) is available for tablets and secondary screens.
 
+## U21. Flexible panels and workspaces
+
+The user decides what is on screen. RBS ships good defaults, never a fixed layout.
+
+- **Every panel can be closed, reopened, moved, resized, docked to any edge, stacked as tabs, or floated** as its own window, including onto another monitor. This applies to the preview and program too (a user may watch them on a projector instead). Every move is also possible with the keyboard alone: a panel's menu offers move to an edge, move to a tab stack, float and dock back (U7).
+- **Always reachable, never in the way:** the only element that cannot be hidden is the live indicator (rule U4). It always shows, in text and not colour alone, whether RBS is live and recording, the duration and the names of the active outputs. When the status bar is hidden it collapses into the window frame but keeps all of that information, and it stays in the same place in every workspace. The workspace menu and the Panels menu also live in the window frame, so they stay reachable when every panel is closed. Closed panels are reopened from the Panels menu, the command palette or their shortcut, in one interaction.
+- **Safe while live:** closing the program, live controls or mixer while live shows an undo toast ("Program closed. Undo"). Turning on studio mode reopens the preview if it is closed.
+- **Workspaces:** a workspace is a saved arrangement of panels and projectors across all windows and monitors. It holds layout only, never scenes, sources or output settings (see the [glossary](glossary.md)). Users create, rename, duplicate, delete (with a confirmation), export and import them, and switch with one interaction. Switching is instant (under 100 ms) and never touches sources or outputs. Each workspace can get a shortcut; none is bound by default, because Ctrl+Alt combinations clash with AltGr on many keyboard layouts and with some Linux desktops.
+- **Layout undo:** layout changes (close, move, resize, switch) have their own undo history in the UI, separate from the engine command log (U4), so undoing a layout change never undoes an edit to a scene and the other way around.
+- **Built-in workspaces:** Edit (full layout), Live (preview, program, live controls, chat-sized space, mixer), Minimal (program, live controls and the live indicator only), Audio (mixer and audio routing large). Built-ins can be modified and restored to default.
+- **Automatic switching (opt-in):** the user can choose a workspace that is applied when going live and another when the stream ends. The switch shows a toast with a one-click way back, and the switch itself is in the layout undo history.
+- **Per-display memory:** a workspace remembers which monitor each floating window and projector was on. If that monitor is missing, the window docks back into the main window instead of opening off-screen. Floating windows follow the same minimum size rules as the main window (U11) and are reachable by focus cycling (F6 moves between the main window and floating windows; every window has an accessible name).
+- **Per-canvas panels:** with several canvases (U15), the preview and program panels can be opened once per canvas, for example a horizontal and a vertical program side by side.
+- **Hidden means idle:** closed and hidden panels do no rendering and no polling, and plugin panels go to Standby (U5, ADR-0013). A lean live workspace really is cheaper to run.
+- **Locked layout:** a workspace can be locked so panels cannot be moved, resized or closed by accident with the mouse; unlocking is one interaction. Commands (palette, shortcut, control API) still work.
+- Plugin panels follow the same rules; a plugin cannot force its panel to stay open or float on top.
+
 ## How rules are checked
 
 | Rule | Check |
@@ -174,4 +191,5 @@ Rules:
 | U15-U19 | `ui-review` checklist; usability tests for canvas switching and the mixer |
 | U18 | Automated test: no modal dialog opens automatically while live |
 | U20 | Test that every UI command maps to a control API command |
+| U21 | Automated tests: every panel can be closed and reopened with the keyboard alone; workspace round-trip (save, switch, export, import); missing-monitor fallback; switch time under 100 ms; a hidden panel performs zero redraws and zero polls (counted frames and polls); automatic switching on go live sends no command to sources or outputs; the live indicator shows state, duration and outputs in every built-in workspace. Usability test for building a custom live workspace |
 | All | `ui-review` skill checklist on every UI pull request, with light and dark screenshots |

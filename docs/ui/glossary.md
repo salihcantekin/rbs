@@ -14,8 +14,8 @@ UI text uses these terms and no synonyms (rule U13). Code may use different inte
 | Record | Save the program to a file. "Capture" is used only in source type names (Screen capture, Window capture) | Save, Capture (as a verb for recording) | Recording output |
 | Preview / Program | What you are preparing / what viewers see (studio mode) | - | - |
 | Mixer | The audio panel with levels and controls | Audio panel | Audio graph UI |
-| Workspace | A saved panel layout | Profile | - |
-| Scene collection | A set of scenes saved together | Project | Scene document |
+| Workspace | A saved arrangement of panels, floating windows and projectors. It never holds scenes, sources or output settings | Profile, layout, scene collection | UI workspace file |
+| Scene collection | A set of scenes and sources saved together. It holds no panel layout and no output settings | Project, workspace | Scene document |
 | Remove from scene / Delete source | Remove the source from this scene only / remove it from every scene | Delete (for removing from one scene) | Scene item removal / source removal |
 | Studio mode | Separate preview and program, with transitions between them | Two-pane mode | - |
 | Projector | A full-screen or window view of a canvas, scene or source on any display | External view | - |
@@ -23,4 +23,4 @@ UI text uses these terms and no synonyms (rule U13). Code may use different inte
 | Monitor | Listening to a source locally without sending it to outputs | Cue | Monitoring send |
 | Shortcut | A key combination for a command; "global shortcut" when it works outside RBS | Hotkey | - |
 | Stinger | A transition that plays a video over the change | Video transition | Stinger transition node |
-| Output profile | A saved set of output settings (service, encoder, bitrate, recording format) | Profile | Output configuration |
+| Output profile | A saved set of output settings (service, encoder, bitrate, recording format). It holds no scenes and no panel layout | Profile, workspace | Output configuration |

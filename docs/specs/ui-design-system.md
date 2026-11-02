@@ -76,6 +76,59 @@ Initial set: Button (primary, secondary, ghost, danger), IconButton, Toggle, Che
 +--------------------------------------------------------------------------+
 ```
 
+## Panels and workspaces (contract for U21)
+
+Workspaces are client-side UI state. The desktop UI crate owns the panel model and the workspace format; the engine and `rbs-core` know nothing about them (P1).
+
+### Panel model
+
+- Every panel has a stable id (`rbs.scenes`, `rbs.sources`, `rbs.preview`, `rbs.program`, `rbs.properties`, `rbs.mixer`, `rbs.live-controls`, `rbs.transition`, `rbs.outputs`, `rbs.stats`, `rbs.status-bar`, plugin panels as `<plugin-id>.<panel>`), a title, an icon, a default dock position and an optional shortcut.
+- Panels that can exist more than once take parameters in the id: `rbs.preview?canvas=vertical`, `rbs.program?canvas=horizontal`. Without a parameter they show the canvas being edited.
+- A layout is a tree per window: splits (horizontal or vertical, with ratios) whose leaves are tab stacks of panels. Floating windows and projectors have their own tree or content plus their position.
+- The live indicator is not a panel and cannot be removed (U4, U21). The workspace menu and Panels menu are part of the window frame, not panels.
+
+### Workspace file
+
+Workspaces are stored as versioned TOML in the user's config directory, one file per workspace, so they can be shared and kept in version control. A JSON Schema for the format is published with the UI crate and checked in CI.
+
+```toml
+format = 1
+name = "Minimal live"
+locked = true
+
+[[windows]]
+kind = "main"
+layout = { split = "vertical", ratios = [0.78, 0.22], children = [
+  { tabs = ["rbs.program"] },
+  { tabs = ["rbs.live-controls", "rbs.mixer"] },
+] }
+
+[[windows]]
+kind = "floating"
+layout = { tabs = ["rbs.stats"] }
+placement = { display = "edid:DEL-41A3-7H2K9", connector = "DP-2", size = [2560, 1440], scale = 1.5, rect = [0, 0, 1280, 720] }
+
+[[windows]]
+kind = "projector"
+content = "program?canvas=vertical"
+placement = { display = "edid:SAM-7012-HX55", connector = "HDMI-1", size = [1920, 1080], scale = 1.0, fullscreen = true }
+```
+
+- `placement.display` is a stable fingerprint derived from the display's EDID (manufacturer, product code, serial). `connector`, `size` (physical pixels) and `scale` help when the fingerprint is ambiguous. `rect` is in logical pixels relative to that display.
+- Matching order when a workspace is applied: (1) same fingerprint, (2) same connector with the same size, (3) any display with the same size and scale, (4) no match: the window docks into the main window and a projector is not opened. A rect that would fall outside the matched display is clamped to it.
+- Export removes `placement` display details (fingerprint, connector) and keeps only size, scale and relative rect, so exported workspaces are portable and contain no hardware identifiers. Import then matches by step (3) or docks.
+- `locked` blocks pointer moves, resizes and close buttons. Commands from the palette, shortcuts and the control API still apply.
+- Unknown panel ids (for example from an uninstalled plugin) are kept in the file and shown as a placeholder that offers to install or remove them.
+- The format is versioned; RBS reads older versions and migrates them.
+
+### Switching
+
+- Client-scoped control API commands `ui.workspace.list` and `ui.workspace.switch(name)` ([control API](control-api.md#client-scoped-ui-commands)), available in the command palette and the workspace menu. Shortcuts are user-assigned; none is bound by default (U21).
+- Optional `on_go_live` and `on_stream_end` workspace settings, stored in the UI settings, not in the scene collection or output profile.
+- Switching only changes UI state; it never reconfigures sources or outputs.
+- Layout changes and switches go into the UI's own layout undo history, not the engine command log.
+- Deleting a workspace asks for confirmation; deleting a built-in workspace is not possible, only restoring its default.
+
 ## Core flows (contract for U1)
 
 Interactions are counted as defined in the UI principles. "Max" is the limit for the whole flow with default choices.
@@ -86,6 +139,7 @@ Interactions are counted as defined in the UI principles. "Max" is the limit for
 | Add and adjust a filter | Select the source on the preview or list -> "+" in the Filters section of Properties -> pick from a searchable list with previews -> adjust in place; before/after toggle | 3 + adjustments |
 | Choose a transition | Transition control next to Go live shows the current one -> pick another (duration inline) | 2 |
 | Create a scene | "+" on Scenes -> type a name (optional template) and confirm | 3 |
+| Switch workspace | Workspace menu in the window frame, or a user-assigned shortcut | 2 (1 with a shortcut) |
 | Go live | Go live button (first time only: pick service, sign in or paste key, automatic checks for bandwidth and encoder) | 1 after setup |
 
 ## Actions that cannot be undone
@@ -105,7 +159,8 @@ The native toolkit chosen under ADR-0016 (Slint, iced or Qt through `cxx-qt`) mu
 3. Accessibility APIs on Windows, macOS and Linux (screen readers, keyboard focus).
 4. Fluent-based i18n and right-to-left layout.
 5. Idle CPU near zero when nothing changes on screen.
-6. A licence compatible with ADR-0010.
+6. A docking system with tabs, splits and floating windows across monitors (U21), or the ability to build one.
+7. A licence compatible with ADR-0010.
 
 ## Open questions
 

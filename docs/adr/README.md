@@ -29,3 +29,4 @@ An ADR records one decision that is hard to reverse or affects more than one cra
 | [0014](0014-review-policy.md) | Independent review for architecture, extra review for hot paths | Accepted |
 | [0015](0015-ui-design-rules.md) | Binding UI design rules and a single design system | Accepted |
 | [0016](0016-native-desktop-ui.md) | Native desktop UI, no web technology | Accepted |
+| [0017](0017-flexible-panels-and-workspaces.md) | Flexible panels and saved workspaces | Accepted |
