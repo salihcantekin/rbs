@@ -1,0 +1,17 @@
+# Specifications
+
+Specs are the current contracts of RBS. Code must match them; a PR that changes a contract updates the spec in the same PR. Each spec has a status:
+
+- **Draft**: under design, may change freely.
+- **Stable**: implemented; changes follow semver of the crate that implements it.
+
+| Spec | Status | Implemented in |
+| --- | --- | --- |
+| [backend-ports.md](backend-ports.md) | Draft | `rbs-core` (capabilities, registry), port crates |
+| [media-graph.md](media-graph.md) | Draft | `rbs-graph` (planned) |
+| [plugin-sdk.md](plugin-sdk.md) | Draft | `rbs-plugin-sdk`, `rbs-plugin-host` (planned) |
+| [performance-budgets.md](performance-budgets.md) | Draft | `benches/`, CI |
+| [control-api.md](control-api.md) | Draft | `rbs-api` (planned) |
+| [testing-strategy.md](testing-strategy.md) | Draft | CI, conformance suites |
+
+New specs start from [template.md](template.md).

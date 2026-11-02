@@ -1,0 +1,26 @@
+# Architecture Decision Records
+
+An ADR records one decision that is hard to reverse or affects more than one crate: the context, the decision, and its consequences. Specs in [../specs](../specs/) describe the current contract; ADRs explain why it looks that way.
+
+## Process
+
+1. Copy [template.md](template.md) to `NNNN-short-title.md` with the next free number.
+2. Open a pull request with status `Proposed`.
+3. When merged, the status becomes `Accepted`. To change a decision, write a new ADR that supersedes the old one and update the old one's status to `Superseded by ADR-NNNN`. Do not rewrite accepted ADRs.
+
+## Index
+
+| ADR | Title | Status |
+| --- | --- | --- |
+| [0001](0001-record-architecture-decisions.md) | Record architecture decisions | Accepted |
+| [0002](0002-headless-engine-and-media-graph.md) | Headless engine built on a media graph | Accepted |
+| [0003](0003-ports-and-adapters.md) | Every external technology behind a port with swappable adapters | Accepted |
+| [0004](0004-single-master-clock.md) | Single master clock for all media | Accepted |
+| [0005](0005-gpu-compositing-with-wgpu.md) | GPU compositing with wgpu and zero-copy frames | Accepted |
+| [0006](0006-three-tier-plugin-model.md) | Three-tier plugin model | Accepted |
+| [0007](0007-ffmpeg-as-optional-adapter.md) | FFmpeg only as an optional codec adapter | Accepted |
+| [0008](0008-ui-as-api-client.md) | User interfaces are clients of the control API | Accepted |
+| [0009](0009-performance-budgets-in-ci.md) | Performance budgets enforced in CI | Accepted |
+| [0010](0010-project-license.md) | Project license | Proposed |
+| [0011](0011-english-only-repository.md) | English for all repository content | Accepted |
+| [0012](0012-ai-assisted-development.md) | Spec-first, AI-assisted development workflow | Accepted |
