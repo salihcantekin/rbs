@@ -20,13 +20,13 @@ jobs:
       - run: cargo fmt --all -- --check
 
   deny:
-    name: dependency bans
+    name: dependency bans and licenses
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: EmbarkStudios/cargo-deny-action@v2
         with:
-          command: check bans
+          command: check bans licenses
 
   check:
     name: clippy, test, doc (${{ matrix.os }})
