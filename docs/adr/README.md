@@ -25,6 +25,6 @@ An ADR records one decision that is hard to reverse or affects more than one cra
 | [0010](0010-project-license.md) | Project license | Proposed |
 | [0011](0011-english-only-repository.md) | English for all repository content | Accepted |
 | [0012](0012-ai-assisted-development.md) | Spec-first, AI-assisted development workflow | Accepted |
-| [0013](0013-zero-cost-when-unused.md) | Zero cost when unused | Proposed |
-| [0014](0014-review-policy.md) | Independent review for architecture, extra review for hot paths | Proposed |
+| [0013](0013-zero-cost-when-unused.md) | Zero cost when unused | Accepted |
+| [0014](0014-review-policy.md) | Independent review for architecture, extra review for hot paths | Accepted |
 | [0015](0015-ui-design-rules.md) | Binding UI design rules and a single design system | Proposed |
