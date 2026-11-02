@@ -98,6 +98,12 @@ impl Engine {
         Engine { device: device.clone(), queue: queue.clone(), pipeline, uniform, bind_group, pool, next: 0, size, frames: 0 }
     }
 
+    /// The texture rendered most recently, without rendering a new frame.
+    pub fn render_last(&self) -> &wgpu::Texture {
+        let n = self.pool.len();
+        &self.pool[(self.next + n - 1) % n]
+    }
+
     /// Render one program frame at time `t` seconds and return its texture.
     pub fn render(&mut self, t: f32) -> &wgpu::Texture {
         let data: [f32; 4] = [t, self.size.0 as f32, self.size.1 as f32, 0.0];

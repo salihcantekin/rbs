@@ -238,7 +238,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         st.fps.tick();
                         let visible = st.ws.visible_panels();
                         if visible.iter().any(|p| p == "rbs.program") {
-                            let tex = st.engine.render(t).clone();
+                            // RBS_PROTO_STATIC=1 renders the program once and then only re-sets the same
+                        // texture, which separates the UI's per-frame cost from the engine stand-in.
+                        let tex = if std::env::var_os("RBS_PROTO_STATIC").is_some() && st.engine.frames > 0 {
+                            st.engine.render_last().clone()
+                        } else {
+                            st.engine.render(t).clone()
+                        };
                             if let Ok(img) = slint::Image::try_from(tex) {
                                 // Globals are per window in Slint, so every window gets the handle.
                                 for fw in &st.floats {

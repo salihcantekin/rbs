@@ -37,6 +37,7 @@ for p in $PROTOS; do
   [ "$p" = iced-proto ] && continue
   scenario $p "1080p preview + 64-band spectrum" RBS_PROTO_SIZE=1920x1080
   scenario $p "1080p preview only" RBS_PROTO_SIZE=1920x1080 RBS_PROTO_CLOSE=rbs.mixer
+  [ "$p" = slint-proto ] && scenario $p "1080p preview only, engine idle (static frame)" RBS_PROTO_SIZE=1920x1080 RBS_PROTO_CLOSE=rbs.mixer RBS_PROTO_STATIC=1
   scenario $p "dense path, 1024 points" RBS_PROTO_BANDS=1024 RBS_PROTO_CLOSE=rbs.program
   scenario $p "dense path, 4096 points" RBS_PROTO_BANDS=4096 RBS_PROTO_CLOSE=rbs.program
 done
