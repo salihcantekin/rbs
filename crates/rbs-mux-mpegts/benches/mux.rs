@@ -12,13 +12,33 @@ use rbs_mux::conformance::{aac_stream, h264_stream};
 use rbs_mux::{Muxer, MuxerConfig, MuxerFactory};
 use rbs_mux_mpegts::MpegTsMuxerFactory;
 
+/// Bytes that look like entropy-coded slice data: pseudo-random, with emulation
+/// prevention (no `00 00 0x` for x <= 3), so start-code searches see realistic zeros.
+fn slice_bytes(len: usize) -> Vec<u8> {
+    let mut state = 0x9e37_79b9_u32;
+    let mut out: Vec<u8> = (0..len)
+        .map(|_| {
+            state ^= state << 13;
+            state ^= state >> 17;
+            state ^= state << 5;
+            (state >> 24) as u8
+        })
+        .collect();
+    for i in 2..out.len() {
+        if out[i - 2] == 0 && out[i - 1] == 0 && out[i] <= 3 {
+            out[i] = 3;
+        }
+    }
+    out
+}
+
 fn video(size: usize, keyframe: bool, format: BitstreamFormat, index: u64) -> EncodedPacket {
     let mut data = match format {
         BitstreamFormat::AnnexB => vec![0, 0, 0, 1],
         _ => (size as u32 - 4).to_be_bytes().to_vec(),
     };
     data.push(if keyframe { 0x65 } else { 0x41 });
-    data.resize(size, 0xab);
+    data.extend(slice_bytes(size - data.len()));
     let t = Timestamp::from_nanos(1_000_000_000 + index * 33_333_333);
     EncodedPacket::new(CodecId::H264, format, t, t, keyframe, Bytes::from(data)).unwrap()
 }

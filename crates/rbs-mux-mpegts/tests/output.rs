@@ -366,3 +366,175 @@ fn rejects_bad_configs_and_packets() {
     muxer.finish(&mut out).unwrap();
     assert!(muxer.write(StreamIndex(0), &packet, &mut out).is_err());
 }
+
+fn nal_types(es: &[u8]) -> Vec<u8> {
+    rbs_media_format::nal::annexb_units(es)
+        .filter_map(rbs_media_format::nal::h264_type)
+        .collect()
+}
+
+#[test]
+fn parameter_sets_follow_an_input_aud() {
+    for format in [LP4, BitstreamFormat::AnnexB] {
+        let mut stream = h264_stream();
+        stream.bitstream = format;
+        let config = MuxerConfig::new(ContainerId::MpegTs, vec![stream]);
+        let mut muxer = MpegTsMuxerFactory.create(&config).unwrap();
+        let mut chunks = Vec::new();
+        muxer.begin(&mut chunks).unwrap();
+        let au = match format {
+            BitstreamFormat::AnnexB => vec![0, 0, 0, 1, 0x09, 0xf0, 0, 0, 1, 0x65, 7],
+            _ => length_prefixed(&[&[0x09, 0xf0], &[0x65, 7]]),
+        };
+        muxer
+            .write(StreamIndex(0), &h264(0, 0, true, au, format), &mut chunks)
+            .unwrap();
+        let demuxed = demux(&concat(&chunks));
+        let (_, _, es) = parse_pes(&demuxed.units[&0x100][0]);
+        assert_eq!(nal_types(es), [9, 7, 8, 5], "{format:?}");
+    }
+}
+
+#[test]
+fn annexb_without_known_parameter_sets_learns_them_or_is_no_entry_point() {
+    let mut stream = h264_stream();
+    stream.bitstream = BitstreamFormat::AnnexB;
+    stream.extradata = Bytes::new();
+    let config = MuxerConfig::new(ContainerId::MpegTs, vec![stream]);
+    let mut muxer = MpegTsMuxerFactory.create(&config).unwrap();
+    let mut chunks = Vec::new();
+    muxer.begin(&mut chunks).unwrap();
+    let bare_idr = vec![0, 0, 0, 1, 0x65, 1];
+    muxer
+        .write(
+            StreamIndex(0),
+            &h264(0, 0, true, bare_idr.clone(), BitstreamFormat::AnnexB),
+            &mut chunks,
+        )
+        .unwrap();
+    assert!(
+        matches!(
+            chunks[1].kind,
+            ChunkKind::Media {
+                keyframe: false,
+                ..
+            }
+        ),
+        "no SPS/PPS known yet"
+    );
+    let mut with_sets = vec![0, 0, 0, 1];
+    with_sets.extend_from_slice(&SPS);
+    with_sets.extend_from_slice(&[0, 0, 0, 1]);
+    with_sets.extend_from_slice(&PPS);
+    with_sets.extend_from_slice(&bare_idr);
+    muxer
+        .write(
+            StreamIndex(0),
+            &h264(33, 33, true, with_sets, BitstreamFormat::AnnexB),
+            &mut chunks,
+        )
+        .unwrap();
+    muxer
+        .write(
+            StreamIndex(0),
+            &h264(66, 66, true, bare_idr, BitstreamFormat::AnnexB),
+            &mut chunks,
+        )
+        .unwrap();
+    assert!(
+        chunks[2..]
+            .iter()
+            .all(|c| matches!(c.kind, ChunkKind::Media { keyframe: true, .. }))
+    );
+    let demuxed = demux(&concat(&chunks));
+    let (_, _, es) = parse_pes(&demuxed.units[&0x100][2]);
+    assert_eq!(
+        nal_types(es),
+        [9, 7, 8, 5],
+        "learned parameter sets inserted"
+    );
+}
+
+#[test]
+fn pcr_keeps_flowing_while_video_is_quiet() {
+    let config = MuxerConfig::new(ContainerId::MpegTs, vec![h264_stream(), aac_stream()]);
+    let mut muxer = MpegTsMuxerFactory.create(&config).unwrap();
+    let mut chunks = Vec::new();
+    muxer.begin(&mut chunks).unwrap();
+    for i in 0..20u64 {
+        let p = EncodedPacket::new(
+            CodecId::Aac,
+            BitstreamFormat::Raw,
+            at(i * 21),
+            at(i * 21),
+            true,
+            Bytes::from_static(&[1]),
+        )
+        .unwrap();
+        muxer.write(StreamIndex(1), &p, &mut chunks).unwrap();
+    }
+    let demuxed = demux(&concat(&chunks));
+    // 0..399 ms of audio only: a PCR at 0 and then at least every 100 ms.
+    assert_eq!(demuxed.pcrs.len(), 4);
+    assert!(
+        demuxed
+            .pcrs
+            .windows(2)
+            .all(|w| w[1] > w[0] && w[1] - w[0] <= 9_000 + 21 * 90)
+    );
+    rbs_mux::conformance::read_structure(ContainerId::MpegTs, &concat(&chunks)).unwrap();
+}
+
+#[test]
+fn refuses_empty_and_unframed_packets_and_unsignallable_configs() {
+    let mut annexb = h264_stream();
+    annexb.bitstream = BitstreamFormat::AnnexB;
+    let config = MuxerConfig::new(ContainerId::MpegTs, vec![annexb, aac_stream()]);
+    let mut muxer = MpegTsMuxerFactory.create(&config).unwrap();
+    let mut out = Vec::new();
+    muxer.begin(&mut out).unwrap();
+    for packet in [
+        h264(0, 0, true, vec![], BitstreamFormat::AnnexB),
+        h264(0, 0, true, vec![1, 2, 3, 4], BitstreamFormat::AnnexB),
+    ] {
+        assert!(matches!(
+            muxer.write(StreamIndex(0), &packet, &mut out),
+            Err(MuxError::InvalidPacket(_))
+        ));
+    }
+    let empty_audio = EncodedPacket::new(
+        CodecId::Aac,
+        BitstreamFormat::Raw,
+        at(0),
+        at(0),
+        true,
+        Bytes::new(),
+    )
+    .unwrap();
+    assert!(matches!(
+        muxer.write(StreamIndex(1), &empty_audio, &mut out),
+        Err(MuxError::InvalidPacket(_))
+    ));
+    assert_eq!(out.len(), 1, "nothing written for refused packets");
+
+    let mut he_aac = aac_stream();
+    he_aac.extradata = Bytes::from_static(&[0x2b, 0x12, 0x08, 0x00]);
+    let mut bad_length = h264_stream();
+    bad_length.bitstream = BitstreamFormat::LengthPrefixed { length_size: 3 };
+    let mut mismatched = h264_stream();
+    mismatched.bitstream = BitstreamFormat::LengthPrefixed { length_size: 2 };
+    let f = MpegTsMuxerFactory;
+    let cfg = |s| MuxerConfig::new(ContainerId::MpegTs, vec![s]);
+    assert!(matches!(
+        f.create(&cfg(he_aac)),
+        Err(CreateError::Unsupported { .. })
+    ));
+    assert!(matches!(
+        f.create(&cfg(bad_length)),
+        Err(CreateError::InvalidConfig(_))
+    ));
+    assert!(matches!(
+        f.create(&cfg(mismatched)),
+        Err(CreateError::InvalidConfig(_))
+    ));
+}

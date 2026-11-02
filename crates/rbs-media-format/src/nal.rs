@@ -20,6 +20,18 @@ pub fn annexb_first_header(data: &[u8]) -> Option<u8> {
     data.get(after).copied()
 }
 
+/// The header bytes (first byte) of the units of an Annex B buffer, in order. Each step
+/// searches only for the next start code, so stopping early (for example at the first
+/// slice) never reads the rest of the buffer.
+pub fn annexb_unit_headers(data: &[u8]) -> impl Iterator<Item = u8> + '_ {
+    let mut pos = 0;
+    std::iter::from_fn(move || {
+        let (_, after) = find_start(data, pos)?;
+        pos = after;
+        data.get(after).copied()
+    })
+}
+
 /// Iterator returned by [`annexb_units`].
 #[derive(Debug, Clone)]
 pub struct AnnexBUnits<'a> {
@@ -111,7 +123,11 @@ impl<'a> Iterator for LengthPrefixedUnits<'a> {
             .iter()
             .fold(0_usize, |acc, b| (acc << 8) | usize::from(*b));
         let start = self.pos + self.length_size;
-        let Some(unit) = self.data.get(start..start + len) else {
+        // `checked_add`: on 32-bit targets a 4-byte length can overflow `usize`.
+        let Some(unit) = start
+            .checked_add(len)
+            .and_then(|end| self.data.get(start..end))
+        else {
             self.pos = self.data.len();
             return Some(Err(FormatError::Truncated("NAL unit")));
         };
@@ -121,10 +137,15 @@ impl<'a> Iterator for LengthPrefixedUnits<'a> {
 }
 
 /// Appends `data` (Annex B) to `out` as length-prefixed NAL units with 4-byte lengths.
-/// Does not allocate when `out` has capacity for `data.len() + 4` bytes per unit.
+/// Does not allocate when `out` has capacity for `data.len() + 4` bytes per unit. On
+/// error `out` is left as it was.
 pub fn annexb_to_length_prefixed(data: &[u8], out: &mut Vec<u8>) -> Result<(), FormatError> {
+    let start = out.len();
     for unit in annexb_units(data) {
-        let len = u32::try_from(unit.len()).map_err(|_| FormatError::Invalid("NAL size"))?;
+        let Ok(len) = u32::try_from(unit.len()) else {
+            out.truncate(start);
+            return Err(FormatError::Invalid("NAL size"));
+        };
         out.extend_from_slice(&len.to_be_bytes());
         out.extend_from_slice(unit);
     }
@@ -133,22 +154,39 @@ pub fn annexb_to_length_prefixed(data: &[u8], out: &mut Vec<u8>) -> Result<(), F
 
 /// Appends length-prefixed `data` to `out` as Annex B with 4-byte start codes. When
 /// `prefix_units` is given (typically SPS and PPS before an IDR for MPEG-TS), those
-/// units are written first.
+/// units are written first. Zero-length units are skipped. On error `out` is left as
+/// it was.
 pub fn length_prefixed_to_annexb(
     data: &[u8],
     length_size: u8,
     prefix_units: &[&[u8]],
     out: &mut Vec<u8>,
 ) -> Result<(), FormatError> {
+    let start = out.len();
     for unit in prefix_units {
         out.extend_from_slice(&[0, 0, 0, 1]);
         out.extend_from_slice(unit);
     }
     for unit in length_prefixed_units(data, length_size) {
-        out.extend_from_slice(&[0, 0, 0, 1]);
-        out.extend_from_slice(unit?);
+        match unit {
+            Ok([]) => {}
+            Ok(unit) => {
+                out.extend_from_slice(&[0, 0, 0, 1]);
+                out.extend_from_slice(unit);
+            }
+            Err(e) => {
+                out.truncate(start);
+                return Err(e);
+            }
+        }
     }
     Ok(())
+}
+
+/// True for H.264 VCL NAL unit types (coded slices, 1..=5). Parameter sets and other
+/// non-VCL units of an access unit come before its first VCL unit.
+pub fn h264_is_vcl(kind: u8) -> bool {
+    (1..=5).contains(&kind)
 }
 
 /// H.264 NAL unit type (low five bits of the first byte).
@@ -272,6 +310,26 @@ mod tests {
         );
         assert_eq!(annexb_first_header(&[0, 0, 1]), None);
         assert_eq!(annexb_first_header(&[7, 7]), None);
+    }
+
+    #[test]
+    fn failed_conversions_leave_the_output_unchanged() {
+        let mut out = vec![9];
+        assert!(
+            length_prefixed_to_annexb(&[0, 0, 0, 1, 0x65, 0, 0, 0, 9], 4, &[], &mut out).is_err()
+        );
+        assert_eq!(out, [9]);
+        let mut empty_unit = Vec::new();
+        length_prefixed_to_annexb(&[0, 0, 0, 0, 0, 0, 0, 1, 0x41], 4, &[], &mut empty_unit)
+            .unwrap();
+        assert_eq!(empty_unit, [0, 0, 0, 1, 0x41], "zero-length unit skipped");
+    }
+
+    #[test]
+    fn unit_headers_match_units() {
+        let headers: Vec<u8> = annexb_unit_headers(ANNEXB).collect();
+        let units: Vec<u8> = annexb_units(ANNEXB).map(|u| u[0]).collect();
+        assert_eq!(headers, units);
     }
 
     #[test]

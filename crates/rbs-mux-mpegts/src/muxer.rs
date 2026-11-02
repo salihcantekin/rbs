@@ -12,23 +12,27 @@ use rbs_media_format::avc::AvcConfig;
 use rbs_media_format::nal::{self, h264};
 use rbs_mux::{CreateError, MuxError, Muxer, MuxerConfig};
 
-use crate::packetizer::{self, Continuity, UnitStart, unit_size};
+use crate::packetizer::{self, Continuity, TS_PACKET, UnitStart, UnitWriter, unit_size};
 use crate::psi;
 
-/// PAT and PMT are repeated at least this often, and before every video keyframe.
+/// PAT and PMT are repeated at least this often, and before every video keyframe; the
+/// PCR is sent at least this often too.
 const PSI_INTERVAL: Duration = Duration::from_millis(100);
+const PCR_INTERVAL: Duration = Duration::from_millis(100);
+/// Most streams per session: the PMT (12 + 5 per stream + 4 bytes) must fit in the 183
+/// bytes after the pointer field of one TS packet; 32 streams take 176.
+pub(crate) const MAX_STREAMS: usize = 32;
 /// PTS and DTS run this far ahead of the PCR, the decoder buffering delay.
 const MUX_DELAY_90K: u64 = 63_000; // 0.7 s
-/// Most streams per session: the PMT must fit in one TS packet.
-pub(crate) const MAX_STREAMS: usize = 32;
 const TS_WRAP: u64 = 1 << 33;
 const START_CODE: [u8; 4] = [0, 0, 0, 1];
-const AUD: [u8; 2] = [0x09, 0xf0];
+const AUD: [u8; 6] = [0, 0, 0, 1, 0x09, 0xf0];
+const ADTS_HEADER: usize = 7;
 
 enum Codec {
-    /// H.264. `length_size` is `None` for Annex B input. `parameter_sets` holds the
-    /// SPS and PPS from the extradata in Annex B form, inserted before keyframes that
-    /// do not carry their own.
+    /// H.264. `length_size` is `None` for Annex B input. `parameter_sets` holds SPS and
+    /// PPS in Annex B form (from the extradata, or learned from the first keyframe
+    /// that carries them), inserted before keyframes that do not carry their own.
     H264 {
         length_size: Option<u8>,
         parameter_sets: Vec<u8>,
@@ -55,9 +59,9 @@ pub(crate) struct TsMuxer {
     pat_cc: Continuity,
     pmt_cc: Continuity,
     last_psi: Option<Timestamp>,
+    /// Master time of the newest PCR; PCRs never go backwards.
+    last_pcr: Option<Timestamp>,
     last_chunk: Option<Timestamp>,
-    /// PES packet under construction; grows to the largest access unit, then reused.
-    pes: Vec<u8>,
     began: bool,
     finished: bool,
 }
@@ -67,36 +71,73 @@ fn clock_90k(t: Timestamp) -> u64 {
     ((u128::from(t.as_nanos()) * 9 / 100_000) % u128::from(TS_WRAP)) as u64
 }
 
-fn write_timestamp(out: &mut Vec<u8>, prefix: u8, ts: u64) {
-    out.extend_from_slice(&[
+fn timestamp_bytes(prefix: u8, ts: u64) -> [u8; 5] {
+    [
         (prefix << 4) | (((ts >> 29) as u8) & 0x0e) | 1,
         (ts >> 22) as u8,
         (((ts >> 14) as u8) & 0xfe) | 1,
         (ts >> 7) as u8,
         (((ts << 1) as u8) & 0xfe) | 1,
-    ]);
+    ]
 }
 
-fn parameter_sets(stream: &StreamDescriptor) -> Result<Vec<u8>, CreateError> {
+/// Whether units with these header bytes carry both an SPS and a PPS before their first
+/// slice. Never allocates; stops at the first slice.
+fn has_parameter_sets(headers: impl Iterator<Item = u8>) -> bool {
+    let (mut sps, mut pps) = (false, false);
+    for header in headers {
+        match Some(header & 0x1f) {
+            Some(h264::SPS) => sps = true,
+            Some(h264::PPS) => pps = true,
+            Some(kind) if nal::h264_is_vcl(kind) => break,
+            _ => {}
+        }
+    }
+    sps && pps
+}
+
+/// SPS and PPS of `units` up to the first slice, in Annex B form; empty unless both
+/// are present.
+fn collect_parameter_sets<'a>(units: impl Iterator<Item = &'a [u8]>) -> Vec<u8> {
     let mut out = Vec::new();
+    let (mut sps, mut pps) = (false, false);
+    for unit in units {
+        match nal::h264_type(unit) {
+            Some(h264::SPS) => sps = true,
+            Some(h264::PPS) => pps = true,
+            Some(kind) if nal::h264_is_vcl(kind) => break,
+            _ => continue,
+        }
+        out.extend_from_slice(&START_CODE);
+        out.extend_from_slice(unit);
+    }
+    if !(sps && pps) {
+        out.clear();
+    }
+    out
+}
+
+fn extradata_parameter_sets(stream: &StreamDescriptor) -> Result<Vec<u8>, CreateError> {
     let extradata = stream.extradata.as_ref();
-    if extradata.is_empty() {
-        return Ok(out);
-    }
-    if extradata[0] == 1 {
-        let avcc = AvcConfig::parse(extradata)
-            .map_err(|e| CreateError::InvalidConfig(format!("H.264 extradata: {e}")))?;
-        for set in avcc.sps.iter().chain(&avcc.pps) {
-            out.extend_from_slice(&START_CODE);
-            out.extend_from_slice(set);
+    match extradata.first() {
+        None => Ok(Vec::new()),
+        Some(1) => {
+            let avcc = AvcConfig::parse(extradata)
+                .map_err(|e| CreateError::InvalidConfig(format!("H.264 extradata: {e}")))?;
+            if let BitstreamFormat::LengthPrefixed { length_size } = stream.bitstream {
+                if length_size != avcc.length_size {
+                    return Err(CreateError::InvalidConfig(format!(
+                        "packets use {length_size}-byte NAL lengths, avcC says {}",
+                        avcc.length_size
+                    )));
+                }
+            }
+            Ok(collect_parameter_sets(
+                avcc.sps.iter().chain(&avcc.pps).copied(),
+            ))
         }
-    } else {
-        for unit in nal::annexb_units(extradata) {
-            out.extend_from_slice(&START_CODE);
-            out.extend_from_slice(unit);
-        }
+        Some(_) => Ok(collect_parameter_sets(nal::annexb_units(extradata))),
     }
-    Ok(out)
 }
 
 fn stream_setup(index: usize, stream: &StreamDescriptor) -> Result<(Stream, u8), CreateError> {
@@ -105,16 +146,26 @@ fn stream_setup(index: usize, stream: &StreamDescriptor) -> Result<(Stream, u8),
         (CodecId::H264, BitstreamFormat::AnnexB) => (
             Codec::H264 {
                 length_size: None,
-                parameter_sets: parameter_sets(stream)?,
+                parameter_sets: extradata_parameter_sets(stream)?,
             },
             psi::STREAM_TYPE_H264,
             0xe0,
         ),
         (CodecId::H264, BitstreamFormat::LengthPrefixed { length_size }) => {
-            let parameter_sets = parameter_sets(stream)?;
-            if parameter_sets.is_empty() {
+            if !matches!(length_size, 1 | 2 | 4) {
+                return Err(CreateError::InvalidConfig(format!(
+                    "NAL length size {length_size}"
+                )));
+            }
+            if stream.extradata.first() != Some(&1) {
                 return Err(CreateError::InvalidConfig(
                     "length-prefixed H.264 needs avcC extradata".into(),
+                ));
+            }
+            let parameter_sets = extradata_parameter_sets(stream)?;
+            if parameter_sets.is_empty() {
+                return Err(CreateError::InvalidConfig(
+                    "avcC extradata without SPS and PPS".into(),
                 ));
             }
             (
@@ -129,6 +180,12 @@ fn stream_setup(index: usize, stream: &StreamDescriptor) -> Result<(Stream, u8),
         (CodecId::Aac, BitstreamFormat::Raw) => {
             let config = AudioSpecificConfig::parse(&stream.extradata)
                 .map_err(|e| CreateError::InvalidConfig(format!("AAC extradata: {e}")))?;
+            // ADTS signals only some configurations (no explicit HE-AAC, no PCE).
+            config
+                .adts_header(0)
+                .map_err(|e| CreateError::Unsupported {
+                    what: format!("AAC configuration in ADTS: {e}"),
+                })?;
             (Codec::Aac { config }, psi::STREAM_TYPE_AAC_ADTS, 0xc0)
         }
         (CodecId::H264 | CodecId::Aac, other) => {
@@ -156,12 +213,25 @@ fn stream_setup(index: usize, stream: &StreamDescriptor) -> Result<(Stream, u8),
     ))
 }
 
+/// How a video access unit is laid out in its PES packet.
+struct VideoLayout {
+    /// Bytes of the leading access unit delimiter to write (an inserted AUD, or the
+    /// input's own first unit), then optionally the parameter sets, then the rest.
+    insert_aud: bool,
+    /// Input bytes (Annex B) or units (length-prefixed) that form the leading AUD.
+    lead: usize,
+    with_parameter_sets: bool,
+    /// The keyframe can be decoded from this packet alone (parameter sets known).
+    decodable: bool,
+    /// Elementary stream bytes in total.
+    size: usize,
+}
+
 impl TsMuxer {
     pub(crate) fn new(config: &MuxerConfig) -> Result<Self, CreateError> {
         if config.streams.is_empty() {
             return Err(CreateError::InvalidConfig("no streams".into()));
         }
-        // The PMT must fit in one TS packet.
         if config.streams.len() > MAX_STREAMS {
             return Err(CreateError::InvalidConfig("too many streams".into()));
         }
@@ -186,8 +256,8 @@ impl TsMuxer {
             pat_cc: Continuity::default(),
             pmt_cc: Continuity::default(),
             last_psi: None,
+            last_pcr: None,
             last_chunk: None,
-            pes: Vec::new(),
             began: false,
             finished: false,
         })
@@ -199,96 +269,151 @@ impl TsMuxer {
             (psi::PMT_PID, &self.pmt, &mut self.pmt_cc),
         ] {
             // One packet: header, pointer field 0, the section, then 0xff filler.
-            let mut packet = [0xff; packetizer::TS_PACKET];
+            // Sections fit: the PAT is 16 bytes, the PMT at most 176 (MAX_STREAMS).
+            let mut packet = [0xff; TS_PACKET];
             packet[0] = 0x47;
             packet[1] = 0x40 | ((pid >> 8) as u8 & 0x1f);
             packet[2] = pid as u8;
             packet[3] = 0x10 | cc.next();
             packet[4] = 0;
-            packet[5..5 + section.len()].copy_from_slice(section);
+            if let Some(body) = packet.get_mut(5..5 + section.len()) {
+                body.copy_from_slice(section);
+            }
             out.extend_from_slice(&packet);
         }
     }
 
-    /// Builds the PES packet for `packet` into `self.pes`.
-    fn build_pes(&mut self, index: usize, packet: &EncodedPacket) -> Result<(), MuxError> {
-        let stream = &self.streams[index];
-        let pts = (clock_90k(packet.pts()) + MUX_DELAY_90K) % TS_WRAP;
-        let dts = (clock_90k(packet.dts()) + MUX_DELAY_90K) % TS_WRAP;
+    /// Validates a video packet and decides its layout. Reads only the first unit of
+    /// non-keyframes; keyframes are read up to their first slice.
+    fn video_layout(
+        &mut self,
+        index: usize,
+        packet: &EncodedPacket,
+    ) -> Result<VideoLayout, MuxError> {
         let data = packet.data().as_ref();
-        let pes = &mut self.pes;
-        pes.clear();
-        pes.extend_from_slice(&[0, 0, 1, stream.stream_id, 0, 0, 0x84]);
-        if pts == dts {
-            pes.extend_from_slice(&[0x80, 5]);
-            write_timestamp(pes, 0x2, pts);
-        } else {
-            pes.extend_from_slice(&[0xc0, 10]);
-            write_timestamp(pes, 0x3, pts);
-            write_timestamp(pes, 0x1, dts);
+        if data.is_empty() {
+            return Err(MuxError::InvalidPacket("empty H.264 packet".into()));
         }
-        match &stream.codec {
-            Codec::H264 {
-                length_size,
-                parameter_sets,
-            } => {
-                let invalid = |e| MuxError::InvalidPacket(format!("H.264 packet: {e}"));
-                let first_type = match length_size {
-                    Some(size) => match nal::length_prefixed_units(data, *size).next() {
-                        Some(unit) => nal::h264_type(unit.map_err(invalid)?),
-                        None => None,
-                    },
-                    None => nal::annexb_first_header(data).map(|b| b & 0x1f),
-                };
-                // Only keyframes are scanned for in-band parameter sets.
-                let has_sps = packet.keyframe()
-                    && match length_size {
-                        Some(size) => contains_sps(
-                            nal::length_prefixed_units(data, *size).map(|u| u.map_err(invalid)),
-                        )?,
-                        None => contains_sps(nal::annexb_units(data).map(Ok))?,
-                    };
-                if first_type != Some(h264::AUD) {
-                    pes.extend_from_slice(&START_CODE);
-                    pes.extend_from_slice(&AUD);
-                }
-                if packet.keyframe() && !has_sps {
-                    pes.extend_from_slice(parameter_sets);
-                }
-                match length_size {
-                    Some(size) => {
-                        nal::length_prefixed_to_annexb(data, *size, &[], pes).map_err(invalid)?
+        let invalid = |_| MuxError::InvalidPacket("truncated length-prefixed NAL unit".into());
+        let Codec::H264 {
+            length_size,
+            parameter_sets,
+        } = &mut self.streams[index].codec
+        else {
+            return Err(MuxError::InvalidPacket("not a video stream".into()));
+        };
+        let (first_type, lead, body_size) = match *length_size {
+            Some(size) => {
+                // One pass over the lengths: validates every unit and sums the Annex B
+                // size, so nothing is written for a malformed packet.
+                let mut total = 0;
+                let mut first = None;
+                for unit in nal::length_prefixed_units(data, size) {
+                    let unit = unit.map_err(invalid)?;
+                    if !unit.is_empty() {
+                        first.get_or_insert(unit);
+                        total += START_CODE.len() + unit.len();
                     }
-                    None => pes.extend_from_slice(data),
                 }
-                // Video PES packets may leave PES_packet_length at 0 (unbounded).
-                let len = pes.len() - 6;
-                if len <= usize::from(u16::MAX) {
-                    pes[4..6].copy_from_slice(&(len as u16).to_be_bytes());
-                }
+                let first = first.and_then(nal::h264_type);
+                (first, usize::from(first == Some(h264::AUD)), total)
             }
-            Codec::Aac { config } => {
-                let header = config
-                    .adts_header(data.len())
-                    .map_err(|e| MuxError::InvalidPacket(format!("AAC frame: {e}")))?;
-                pes.extend_from_slice(&header);
-                pes.extend_from_slice(data);
-                let len = u16::try_from(pes.len() - 6)
-                    .map_err(|_| MuxError::InvalidPacket("AAC frame too large".into()))?;
-                pes[4..6].copy_from_slice(&len.to_be_bytes());
+            None => {
+                let Some(header) = nal::annexb_first_header(data) else {
+                    return Err(MuxError::InvalidPacket(
+                        "Annex B packet without start code".into(),
+                    ));
+                };
+                let first = Some(header & 0x1f);
+                let lead = if first == Some(h264::AUD) {
+                    // Input bytes up to the end of the AUD unit.
+                    nal::annexb_units(data).next().map_or(0, |unit| {
+                        unit.as_ptr() as usize - data.as_ptr() as usize + unit.len()
+                    })
+                } else {
+                    0
+                };
+                (first, lead, data.len())
+            }
+        };
+        let insert_aud = first_type != Some(h264::AUD);
+        let mut with_parameter_sets = false;
+        let mut decodable = true;
+        if packet.keyframe() {
+            let lengths = |size| nal::length_prefixed_units(data, size).filter_map(Result::ok);
+            let in_band = match *length_size {
+                Some(size) => has_parameter_sets(lengths(size).filter_map(|u| u.first().copied())),
+                None => has_parameter_sets(nal::annexb_unit_headers(data)),
+            };
+            if in_band {
+                if parameter_sets.is_empty() {
+                    // Learned once; later keyframes without their own reuse them.
+                    *parameter_sets = match *length_size {
+                        Some(size) => collect_parameter_sets(lengths(size)),
+                        None => collect_parameter_sets(nal::annexb_units(data)),
+                    };
+                }
+            } else if parameter_sets.is_empty() {
+                decodable = false;
+            } else {
+                with_parameter_sets = true;
             }
         }
-        Ok(())
+        let size = if insert_aud { AUD.len() } else { 0 }
+            + if with_parameter_sets {
+                parameter_sets.len()
+            } else {
+                0
+            }
+            + body_size;
+        Ok(VideoLayout {
+            insert_aud,
+            lead,
+            with_parameter_sets,
+            decodable,
+            size,
+        })
     }
 }
 
-/// Whether any unit is an SPS.
-fn contains_sps<'a>(
-    mut units: impl Iterator<Item = Result<&'a [u8], MuxError>>,
-) -> Result<bool, MuxError> {
-    units.try_fold(false, |found, unit| {
-        Ok(found || nal::h264_type(unit?) == Some(h264::SPS))
-    })
+/// Writes the elementary stream bytes of a video access unit, in layout order.
+fn write_video(w: &mut UnitWriter<'_>, codec: &Codec, layout: &VideoLayout, data: &[u8]) {
+    let Codec::H264 {
+        length_size,
+        parameter_sets,
+    } = codec
+    else {
+        return;
+    };
+    if layout.insert_aud {
+        w.push(&AUD);
+    }
+    match *length_size {
+        Some(size) => {
+            let mut units = nal::length_prefixed_units(data, size)
+                .filter_map(Result::ok)
+                .filter(|u| !u.is_empty());
+            for unit in units.by_ref().take(layout.lead) {
+                w.push(&START_CODE);
+                w.push(unit);
+            }
+            if layout.with_parameter_sets {
+                w.push(parameter_sets);
+            }
+            for unit in units {
+                w.push(&START_CODE);
+                w.push(unit);
+            }
+        }
+        None => {
+            let (lead, rest) = data.split_at(layout.lead.min(data.len()));
+            w.push(lead);
+            if layout.with_parameter_sets {
+                w.push(parameter_sets);
+            }
+            w.push(rest);
+        }
+    }
 }
 
 impl Muxer for TsMuxer {
@@ -297,7 +422,7 @@ impl Muxer for TsMuxer {
             return Err(MuxError::InvalidState("begin called twice"));
         }
         self.began = true;
-        let mut header = Vec::with_capacity(2 * packetizer::TS_PACKET);
+        let mut header = Vec::with_capacity(2 * TS_PACKET);
         self.write_psi(&mut header);
         out.push(MuxChunk::new(ChunkKind::Header, Bytes::from(header)));
         Ok(())
@@ -335,13 +460,60 @@ impl Muxer for TsMuxer {
         if state.last_dts.is_some_and(|last| dts < last) {
             return Err(MuxError::NonMonotonic { stream: stream.0 });
         }
-        self.build_pes(index, packet)?;
+        let data = packet.data().as_ref();
+
+        // Elementary stream size and, for video, the layout; nothing is written for a
+        // packet that is refused.
+        let layout = if video {
+            Some(self.video_layout(index, packet)?)
+        } else {
+            if data.is_empty() {
+                return Err(MuxError::InvalidPacket("empty AAC packet".into()));
+            }
+            None
+        };
+        let es_size = layout.as_ref().map_or(ADTS_HEADER + data.len(), |l| l.size);
+        let adts = match &self.streams[index].codec {
+            Codec::Aac { config } => Some(
+                config
+                    .adts_header(data.len())
+                    .map_err(|e| MuxError::InvalidPacket(format!("AAC frame: {e}")))?,
+            ),
+            Codec::H264 { .. } => None,
+        };
+
+        // PES header.
+        let pts = (clock_90k(packet.pts()) + MUX_DELAY_90K) % TS_WRAP;
+        let dts90 = (clock_90k(dts) + MUX_DELAY_90K) % TS_WRAP;
+        let mut header = [0u8; 19];
+        header[..4].copy_from_slice(&[0, 0, 1, self.streams[index].stream_id]);
+        header[6] = 0x84; // marker bits, data_alignment_indicator
+        let header_len = if pts == dts90 {
+            header[7..9].copy_from_slice(&[0x80, 5]);
+            header[9..14].copy_from_slice(&timestamp_bytes(0x2, pts));
+            14
+        } else {
+            header[7..9].copy_from_slice(&[0xc0, 10]);
+            header[9..14].copy_from_slice(&timestamp_bytes(0x3, pts));
+            header[14..19].copy_from_slice(&timestamp_bytes(0x1, dts90));
+            19
+        };
+        let pes_size = header_len + es_size;
+        // Video may leave PES_packet_length at 0 (unbounded); audio must fit.
+        let length = match u16::try_from(pes_size - 6) {
+            Ok(length) => length,
+            Err(_) if video => 0,
+            Err(_) => return Err(MuxError::InvalidPacket("AAC frame too large".into())),
+        };
+        header[4..6].copy_from_slice(&length.to_be_bytes());
         self.streams[index].last_dts = Some(dts);
 
-        // In an output with video, only video keyframes are entry points; in an
-        // audio-only output every frame is.
+        // In an output with video, only decodable video keyframes are entry points; in
+        // an audio-only output every frame is.
         let keyframe = if self.has_video {
-            video && packet.keyframe()
+            layout
+                .as_ref()
+                .is_some_and(|l| packet.keyframe() && l.decodable)
         } else {
             true
         };
@@ -349,26 +521,53 @@ impl Muxer for TsMuxer {
             || self
                 .last_psi
                 .is_none_or(|last| dts.saturating_since(last) >= PSI_INTERVAL);
+        let pcr_time = self.last_pcr.map_or(dts, |last| last.max(dts));
+        let on_pcr_stream = index == self.pcr_stream;
+        // Keeps the PCR flowing while the PCR stream (video) is quiet.
+        let pcr_only = !on_pcr_stream
+            && self
+                .last_pcr
+                .is_none_or(|last| dts.saturating_since(last) >= PCR_INTERVAL);
         let start = UnitStart {
-            pcr: (index == self.pcr_stream).then(|| clock_90k(dts)),
+            pcr: on_pcr_stream.then(|| clock_90k(pcr_time)),
             random_access: keyframe,
         };
         // Sized exactly, so the chunk is the session's only allocation for this packet
         // (`Bytes::from` keeps a full vector without copying or reallocating).
-        let psi_len = if psi { 2 * packetizer::TS_PACKET } else { 0 };
-        let mut data = Vec::with_capacity(psi_len + unit_size(self.pes.len(), start));
+        let size = if psi { 2 * TS_PACKET } else { 0 }
+            + if pcr_only { TS_PACKET } else { 0 }
+            + unit_size(pes_size, start);
+        let mut chunk = Vec::with_capacity(size);
         if psi {
-            self.write_psi(&mut data);
+            self.write_psi(&mut chunk);
             self.last_psi = Some(dts);
         }
+        if pcr_only {
+            let pcr = &self.streams[self.pcr_stream];
+            packetizer::write_pcr_only(&mut chunk, pcr.pid, pcr.continuity, clock_90k(pcr_time));
+        }
+        if on_pcr_stream || pcr_only {
+            self.last_pcr = Some(pcr_time);
+        }
         let state = &mut self.streams[index];
-        packetizer::write_unit(
-            &mut data,
+        let mut writer = UnitWriter::new(
+            &mut chunk,
             state.pid,
             &mut state.continuity,
             start,
-            &self.pes,
+            pes_size,
         );
+        writer.push(&header[..header_len]);
+        match (&layout, adts) {
+            (Some(layout), _) => write_video(&mut writer, &state.codec, layout, data),
+            (None, Some(adts)) => {
+                writer.push(&adts);
+                writer.push(data);
+            }
+            (None, None) => {}
+        }
+        writer.finish();
+        debug_assert_eq!(chunk.len(), chunk.capacity());
 
         // Chunk timestamps never go backwards, even if streams arrive slightly out of
         // dts order.
@@ -379,7 +578,7 @@ impl Muxer for TsMuxer {
                 keyframe,
                 timestamp,
             },
-            Bytes::from(data),
+            Bytes::from(chunk),
         ));
         Ok(())
     }

@@ -72,7 +72,17 @@ impl AudioSpecificConfig {
     }
 
     /// The 7-byte ADTS header (no CRC) for a raw frame of `payload_len` bytes.
+    ///
+    /// ADTS can only signal object types 1 to 4 (Main, LC, SSR, LTP) and channel
+    /// configurations 1 to 7; others, including explicitly signalled HE-AAC (5, 29) and
+    /// configuration 0 (PCE), are `Unsupported`.
     pub fn adts_header(self, payload_len: usize) -> Result<[u8; 7], FormatError> {
+        if !(1..=4).contains(&self.object_type) {
+            return Err(FormatError::Unsupported("audio object type in ADTS"));
+        }
+        if !(1..=7).contains(&self.channels) {
+            return Err(FormatError::Unsupported("channel configuration in ADTS"));
+        }
         let len = payload_len + 7;
         if len > 0x1fff {
             return Err(FormatError::Invalid("ADTS frame length"));
@@ -117,6 +127,15 @@ mod tests {
         assert_eq!(len, 107);
         assert_eq!((h[2] >> 2) & 0xf, 3); // 48 kHz
         assert!(asc.adts_header(9000).is_err());
+        // Explicit HE-AAC (object type 5) and channel configurations 0 and 8.
+        let he = AudioSpecificConfig::parse(&[0x2b, 0x12]).unwrap();
+        assert_eq!(he.object_type, 5);
+        assert!(he.adts_header(10).is_err());
+        let mut bad = asc;
+        bad.channels = 8;
+        assert!(bad.adts_header(10).is_err());
+        bad.channels = 0;
+        assert!(bad.adts_header(10).is_err());
     }
 
     #[test]
