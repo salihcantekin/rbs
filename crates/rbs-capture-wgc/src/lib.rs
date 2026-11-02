@@ -6,8 +6,13 @@
 //!
 //! - `open` checks the request and the target and creates nothing (Standby, P13).
 //! - `start` creates a D3D11 device on the adapter named by the request's
-//!   [`GpuImportTarget`](rbs_capture::GpuImportTarget) LUID, a shared fence, a ring of
-//!   [`RING_SLOTS`] shareable BGRA8 textures and a free-threaded WGC frame pool.
+//!   [`GpuImportTarget`](rbs_capture::GpuImportTarget) LUID, takes a shared fence from a
+//!   process-wide pool (fences are never closed, so their handle values are never
+//!   reused), and creates a ring of [`RING_SLOTS`] shareable BGRA8 textures and a
+//!   free-threaded WGC frame pool.
+//! - `stop` hands the textures to a graveyard drained by a short-lived janitor thread:
+//!   they stay alive while frames reference them and for a grace period after that, so
+//!   the render thread never frees them and importers never see a reused handle value.
 //! - On each `FrameArrived` callback (an OS thread) the adapter copies the new frame into
 //!   a free ring texture, signals the shared fence and publishes the slot through the
 //!   lock-free [`handoff::Ring`].
@@ -196,12 +201,6 @@ impl<O: AsRef<Ring> + LeaseOwner + 'static> Consumer<O> {
     }
 }
 
-impl AsRef<Ring> for Ring {
-    fn as_ref(&self) -> &Ring {
-        self
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -219,7 +218,34 @@ mod tests {
         }
     }
 
-    fn consumer(ring: &Arc<Ring>) -> Consumer<Ring> {
+    /// A lease owner over a bare ring, for tests whose handles are never opened.
+    struct Owner(Ring);
+
+    impl std::ops::Deref for Owner {
+        type Target = Ring;
+        fn deref(&self) -> &Ring {
+            &self.0
+        }
+    }
+
+    impl AsRef<Ring> for Owner {
+        fn as_ref(&self) -> &Ring {
+            &self.0
+        }
+    }
+
+    // SAFETY: delegates to the ring's exact counting; the made-up handle values are
+    // never opened, so there is no surface whose validity the counts would protect.
+    unsafe impl LeaseOwner for Owner {
+        fn retain(&self, token: u64) {
+            self.0.retain(token);
+        }
+        fn release(&self, token: u64) {
+            self.0.release(token);
+        }
+    }
+
+    fn consumer(ring: &Arc<Owner>) -> Consumer<Owner> {
         let format = VideoFormat::new(Size::new(1280, 720), PixelFormat::Bgra8, ColorSpace::SRGB);
         // SAFETY: the test never dereferences the made-up handle values.
         unsafe { Consumer::new(Arc::clone(ring), format, 0x1234, 0x99) }
@@ -234,7 +260,7 @@ mod tests {
 
     #[test]
     fn frames_carry_handle_fence_and_metadata() {
-        let ring = Arc::new(Ring::new(&[0x10, 0x20, 0x30]));
+        let ring = Arc::new(Owner(Ring::new(&[0x10, 0x20, 0x30])));
         let mut consumer = consumer(&ring);
         assert!(consumer.next().is_none());
         let Some(slot) = ring.claim() else {
@@ -269,7 +295,7 @@ mod tests {
 
     #[test]
     fn size_follows_published_frames() {
-        let ring = Arc::new(Ring::new(&[1, 2, 3]));
+        let ring = Arc::new(Owner(Ring::new(&[1, 2, 3])));
         let mut consumer = consumer(&ring);
         let Some(slot) = ring.claim() else {
             panic!("free slot")
@@ -284,7 +310,7 @@ mod tests {
 
     #[test]
     fn next_does_not_allocate() {
-        let ring = Arc::new(Ring::new(&[1, 2, 3]));
+        let ring = Arc::new(Owner(Ring::new(&[1, 2, 3])));
         let mut consumer = consumer(&ring);
         // Warm up once.
         if let Some(slot) = ring.claim() {

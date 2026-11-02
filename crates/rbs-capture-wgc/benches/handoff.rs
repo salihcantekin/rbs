@@ -7,7 +7,6 @@ use std::hint::black_box;
 
 use criterion::{Criterion, criterion_group, criterion_main};
 use rbs_capture_wgc::handoff::{FrameMeta, Ring};
-use rbs_core::media::LeaseOwner;
 
 fn handoff(c: &mut Criterion) {
     let ring = Ring::new(&[1, 2, 3, 4, 5]);

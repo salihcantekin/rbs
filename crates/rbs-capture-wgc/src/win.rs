@@ -5,10 +5,9 @@
 //! threads owned by WGC. The render thread only touches the lock-free ring. The
 //! producer state is behind a mutex that only the OS callback thread and `stop` take.
 
-use std::collections::VecDeque;
-use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use rbs_capture::{
     CaptureChange, CaptureError, CaptureFactory, CaptureRequest, CaptureSession, CaptureStats,
@@ -41,21 +40,22 @@ use windows::Win32::Graphics::Dwm::{
 };
 use windows::Win32::Graphics::Dxgi::Common::{DXGI_FORMAT_B8G8R8A8_UNORM, DXGI_SAMPLE_DESC};
 use windows::Win32::Graphics::Dxgi::{
-    CreateDXGIFactory1, DXGI_SHARED_RESOURCE_READ, DXGI_SHARED_RESOURCE_WRITE, IDXGIAdapter,
-    IDXGIDevice, IDXGIFactory4, IDXGIResource1,
+    CreateDXGIFactory1, DXGI_ERROR_DEVICE_REMOVED, DXGI_ERROR_DEVICE_RESET,
+    DXGI_SHARED_RESOURCE_READ, DXGI_SHARED_RESOURCE_WRITE, IDXGIAdapter, IDXGIDevice,
+    IDXGIFactory4, IDXGIResource1,
 };
 use windows::Win32::Graphics::Gdi::{
     EnumDisplayMonitors, GetMonitorInfoW, HDC, HMONITOR, MONITORINFO, MONITORINFOEXW,
 };
+use windows::Win32::System::Com::{CoIncrementMTAUsage, IAgileObject};
 use windows::Win32::System::Performance::{QueryPerformanceCounter, QueryPerformanceFrequency};
 use windows::Win32::System::WinRT::Direct3D11::{
     CreateDirect3D11DeviceFromDXGIDevice, IDirect3DDxgiInterfaceAccess,
 };
 use windows::Win32::System::WinRT::Graphics::Capture::IGraphicsCaptureItemInterop;
-use windows::Win32::System::WinRT::{RO_INIT_MULTITHREADED, RoInitialize};
 use windows::Win32::UI::WindowsAndMessaging::{
-    EnumWindows, GWL_EXSTYLE, GetWindowLongW, GetWindowTextW, IsWindow, IsWindowVisible,
-    WS_EX_TOOLWINDOW,
+    EnumWindows, GWL_EXSTYLE, GetWindowLongW, GetWindowTextW, GetWindowThreadProcessId, IsWindow,
+    IsWindowVisible, WS_EX_TOOLWINDOW,
 };
 use windows::core::{BOOL, IInspectable, Interface, PCWSTR};
 
@@ -68,13 +68,20 @@ const POOL_BUFFERS: i32 = 2;
 /// Highest rate declared: WGC delivers at most once per display refresh.
 const MAX_RATE: i64 = 240;
 
-/// Frames published after a texture was replaced (resize) before its handle is closed,
-/// so an importer that caches opened handles by value (gpu-compositor.md, Native import,
-/// rule 2: entries unseen for 120 frames are dropped) sees no reused handle value.
-const RETIRE_AFTER_FRAMES: u64 = 240;
+/// How long a surface no session uses any more keeps its NT handle open, measured from
+/// the moment no frame references it. Importers cache opened surfaces by handle value
+/// and drop idle entries after 120 render ticks (gpu-compositor.md, Native import), which
+/// is under 10 s at 12 fps or more, so a reused handle value never hits a stale entry.
+const HANDLE_GRACE: Duration = Duration::from_secs(10);
 
-/// Most replaced textures kept at once. Beyond this the oldest is closed early.
-const RETIRED_MAX: usize = 64;
+/// Most bytes of replaced (resized) textures waiting out [`HANDLE_GRACE`] per process.
+/// While a resize would exceed it, frames are dropped instead of allocating, so a long
+/// window drag cannot fill video memory.
+const GRAVE_BYTES_MAX: u64 = 512 * 1024 * 1024;
+
+/// How often the janitor thread checks the graveyard. It runs only while the graveyard
+/// holds something (P13).
+const JANITOR_PERIOD: Duration = Duration::from_secs(1);
 
 /// `GENERIC_ALL`, the access requested for the shared fence handle.
 const GENERIC_ALL: u32 = 0x1000_0000;
@@ -90,19 +97,14 @@ fn backend(e: &windows::core::Error) -> CaptureError {
     }
 }
 
-/// Initialises the Windows Runtime (multithreaded apartment) on the calling thread once.
-/// An existing initialisation of either kind is fine: WinRT calls below only need one.
+/// Keeps the process's implicit multithreaded apartment alive, so WinRT calls work on
+/// any thread without changing the apartment of the caller's thread.
 fn ensure_winrt() {
-    thread_local! {
-        static DONE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
-    }
-    DONE.with(|done| {
-        if !done.get() {
-            // SAFETY: plain FFI call with no pointers. It fails harmlessly
-            // (RPC_E_CHANGED_MODE) when the thread already joined an STA.
-            let _ = unsafe { RoInitialize(RO_INIT_MULTITHREADED) };
-            done.set(true);
-        }
+    static DONE: std::sync::Once = std::sync::Once::new();
+    DONE.call_once(|| {
+        // SAFETY: plain FFI call. The cookie is never released: the MTA stays alive
+        // for the process lifetime, which is the intent.
+        let _ = unsafe { CoIncrementMTAUsage() };
     });
 }
 
@@ -238,8 +240,22 @@ fn windows_list() -> Vec<HWND> {
     list
 }
 
+/// The id of the process that owns `hwnd` (0 if unknown).
+fn window_process(hwnd: HWND) -> u32 {
+    let mut pid = 0u32;
+    // SAFETY: `pid` is a valid out pointer; invalid handles leave it 0.
+    unsafe { GetWindowThreadProcessId(hwnd, Some(&mut pid)) };
+    pid
+}
+
+/// `window:<process id>:<window handle>`, both hex. The process id guards against a
+/// window handle value reused by another process after the window closed.
 fn window_id(hwnd: HWND) -> TargetId {
-    TargetId::new(format!("{WINDOW_PREFIX}{:x}", hwnd.0 as usize))
+    TargetId::new(format!(
+        "{WINDOW_PREFIX}{:x}:{:x}",
+        window_process(hwnd),
+        hwnd.0 as usize
+    ))
 }
 
 /// Resolves a target id to its OS handle and current size, if it still exists.
@@ -251,10 +267,12 @@ fn resolve(id: &TargetId) -> Option<(Resolved, (u32, u32))> {
             .find(|m| m.device == device)
             .map(|m| (Resolved::Display(m.handle), rect_size(&m.rect)));
     }
-    let value = usize::from_str_radix(id.strip_prefix(WINDOW_PREFIX)?, 16).ok()?;
+    let (pid, value) = id.strip_prefix(WINDOW_PREFIX)?.split_once(':')?;
+    let pid = u32::from_str_radix(pid, 16).ok()?;
+    let value = usize::from_str_radix(value, 16).ok()?;
     let hwnd = HWND(value as *mut _);
     // SAFETY: `IsWindow` accepts any value and reports whether it names a window.
-    if !unsafe { IsWindow(Some(hwnd)) }.as_bool() {
+    if !unsafe { IsWindow(Some(hwnd)) }.as_bool() || window_process(hwnd) != pid {
         return None;
     }
     Some((Resolved::Window(hwnd), window_size(hwnd)?))
@@ -398,19 +416,11 @@ impl CaptureFactory for WgcCaptureFactory {
             clock: Arc::clone(&request.clock),
             format: VideoFormat::new(Size::new(w, h), PixelFormat::Bgra8, ColorSpace::SRGB),
             active: None,
-            retired: None,
             next_sequence: 0,
             last_timestamp: None,
             base: CaptureStats::default(),
         }))
     }
-}
-
-/// A texture that was replaced after a resize, kept until importers forgot its handle.
-struct RetiredTexture {
-    _texture: ID3D11Texture2D,
-    handle: u64,
-    at: u64,
 }
 
 /// The D3D objects frames refer to. Owned by [`Shared`], so they live as long as any
@@ -419,9 +429,6 @@ struct Surfaces {
     textures: Vec<ID3D11Texture2D>,
     handles: Vec<u64>,
     sizes: Vec<(u32, u32)>,
-    retired: VecDeque<RetiredTexture>,
-    _fence: ID3D11Fence,
-    fence_handle: u64,
 }
 
 fn close_handle(value: u64) {
@@ -436,10 +443,6 @@ impl Drop for Surfaces {
         for handle in self.handles.drain(..) {
             close_handle(handle);
         }
-        for retired in self.retired.drain(..) {
-            close_handle(retired.handle);
-        }
-        close_handle(self.fence_handle);
     }
 }
 
@@ -504,6 +507,145 @@ fn create_shared_texture(
     Ok((texture, handle.0 as usize as u64))
 }
 
+/// A surface set or a replaced texture waiting out [`HANDLE_GRACE`].
+enum Grave {
+    /// The surfaces of a stopped capture. Kept while frames reference them (so the last
+    /// lease never frees anything on the render thread) and for the grace after that.
+    Ring {
+        shared: Arc<Shared>,
+        idle_since: Option<Instant>,
+    },
+    /// A texture replaced after a resize. It was not referenced when replaced (its slot
+    /// was claimed by the producer).
+    Texture {
+        _texture: ID3D11Texture2D,
+        handle: u64,
+        bytes: u64,
+        since: Instant,
+    },
+}
+
+impl Drop for Grave {
+    fn drop(&mut self) {
+        if let Grave::Texture { handle, bytes, .. } = self {
+            close_handle(*handle);
+            GRAVE_BYTES.fetch_sub(*bytes, Ordering::AcqRel);
+        }
+    }
+}
+
+static GRAVEYARD: Mutex<Vec<Grave>> = Mutex::new(Vec::new());
+static GRAVE_BYTES: AtomicU64 = AtomicU64::new(0);
+static JANITOR: AtomicBool = AtomicBool::new(false);
+
+/// Drops graves whose grace has passed. Returns whether the graveyard is now empty.
+fn reap() -> bool {
+    let now = Instant::now();
+    let expired: Vec<Grave> = {
+        let mut graves = lock(&GRAVEYARD);
+        for grave in graves.iter_mut() {
+            if let Grave::Ring { shared, idle_since } = grave {
+                if shared.ring.is_idle() {
+                    idle_since.get_or_insert(now);
+                } else {
+                    *idle_since = None;
+                }
+            }
+        }
+        let (expired, kept) = std::mem::take(&mut *graves)
+            .into_iter()
+            .partition(|g| match g {
+                Grave::Ring { idle_since, .. } => {
+                    idle_since.is_some_and(|t| now.duration_since(t) >= HANDLE_GRACE)
+                }
+                Grave::Texture { since, .. } => now.duration_since(*since) >= HANDLE_GRACE,
+            });
+        *graves = kept;
+        expired
+    };
+    // Release outside the lock: closing handles and freeing textures may take a while.
+    drop(expired);
+    lock(&GRAVEYARD).is_empty()
+}
+
+/// Hands surfaces to the graveyard and makes sure the janitor thread runs.
+fn bury(grave: Grave) {
+    lock(&GRAVEYARD).push(grave);
+    if JANITOR.swap(true, Ordering::AcqRel) {
+        return;
+    }
+    let spawned = std::thread::Builder::new()
+        .name("rbs-wgc-janitor".into())
+        .spawn(|| {
+            loop {
+                std::thread::sleep(JANITOR_PERIOD);
+                if reap() {
+                    JANITOR.store(false, Ordering::Release);
+                    // A grave added after the check would otherwise wait for the next
+                    // `bury`: take the job back if so.
+                    if lock(&GRAVEYARD).is_empty() || JANITOR.swap(true, Ordering::AcqRel) {
+                        return;
+                    }
+                }
+            }
+        });
+    if spawned.is_err() {
+        // Retried on the next `bury`; the graves stay valid meanwhile.
+        JANITOR.store(false, Ordering::Release);
+    }
+}
+
+/// A shared fence between sessions, with the next value to signal.
+struct PooledFence {
+    luid: [u8; 8],
+    handle: u64,
+    next: u64,
+}
+
+/// Shared fences of stopped sessions. A fence's NT handle is never closed, so its value
+/// is never reused, and each fence's values only grow, so an importer's cached fence
+/// stays correct when a later session reuses it. Bounded by the most sessions that were
+/// Active at once on each adapter.
+static FENCES: Mutex<Vec<PooledFence>> = Mutex::new(Vec::new());
+
+/// A shared fence for a new session on `device` (adapter `luid`): one from the pool, or
+/// a new one. Returns the fence, its handle and the last value signalled on it.
+fn checkout_fence(
+    device: &ID3D11Device5,
+    luid: [u8; 8],
+) -> windows::core::Result<(ID3D11Fence, u64, u64)> {
+    let pooled = {
+        let mut fences = lock(&FENCES);
+        fences
+            .iter()
+            .position(|f| f.luid == luid)
+            .map(|i| fences.swap_remove(i))
+    };
+    if let Some(f) = pooled {
+        let mut fence: Option<ID3D11Fence> = None;
+        // SAFETY: `f.handle` is an open NT handle of a shared D3D11 fence on this
+        // adapter, never closed; `fence` is a valid out pointer.
+        let opened =
+            unsafe { device.OpenSharedFence(HANDLE(f.handle as usize as *mut _), &mut fence) };
+        match (opened, fence) {
+            (Ok(()), Some(fence)) => return Ok((fence, f.handle, f.next)),
+            // Keep the handle (never close it, see above) and make a new fence.
+            _ => lock(&FENCES).push(f),
+        }
+    }
+    let mut fence: Option<ID3D11Fence> = None;
+    // SAFETY: valid out pointer.
+    unsafe { device.CreateFence(0, D3D11_FENCE_FLAG_SHARED, &mut fence)? };
+    let fence = fence.ok_or_else(missing)?;
+    // SAFETY: plain call on a live fence; no name or security attributes.
+    let handle = unsafe { fence.CreateSharedHandle(None, GENERIC_ALL, PCWSTR::null())? };
+    Ok((fence, handle.0 as usize as u64, 0))
+}
+
+fn missing() -> windows::core::Error {
+    windows::core::Error::from_hresult(windows::Win32::Foundation::E_POINTER)
+}
+
 /// The WinRT wrapper of the capture device, needed to resize the frame pool.
 struct WinrtDevice(IDirect3DDevice);
 
@@ -519,11 +661,12 @@ struct Producer {
     device: ID3D11Device,
     context: ID3D11DeviceContext4,
     fence: ID3D11Fence,
+    fence_handle: u64,
+    luid: [u8; 8],
     winrt_device: WinrtDevice,
     pool_size: SizeInt32,
     fence_value: u64,
     sequence: u64,
-    published: u64,
     clock: Arc<dyn Clock>,
     drift: DriftEstimator,
     last_timestamp: Option<Timestamp>,
@@ -587,22 +730,35 @@ impl Producer {
             self.sequence += 1;
             return Ok(());
         };
-        let source = u64::try_from(frame_time(&frame)).unwrap_or(0);
+        let source = frame_time(&frame);
         let result = self.write_slot(slot, &frame, (width, height));
         // Return the OS buffer to the pool now rather than when the handler returns.
         let _ = frame.Close();
-        if let Err(e) = result {
-            ring.abandon(slot);
-            return Err(e);
+        match result {
+            Ok(true) => {}
+            Ok(false) => {
+                ring.abandon(slot);
+                ring.count_drop();
+                self.sequence += 1;
+                return Ok(());
+            }
+            Err(e) => {
+                ring.abandon(slot);
+                return Err(e);
+            }
         }
 
         // Clock edge (ADR-0004): pair QPC with the master clock now, then convert the
-        // frame's QPC-based capture time.
-        let _ = self.drift.observe(qpc, arrived);
-        let mapped = self
-            .drift
-            .mapping()
-            .map_or(arrived, |m| m.to_master(source));
+        // frame's QPC-based capture time. Without one, the arrival time is used.
+        let mapped = match source {
+            Some(source) => {
+                let _ = self.drift.observe(qpc, arrived);
+                self.drift
+                    .mapping()
+                    .map_or(arrived, |m| m.to_master(source))
+            }
+            None => arrived,
+        };
         let floor = self
             .last_timestamp
             .map_or(Timestamp::ZERO, |t| t + Duration::from_nanos(1));
@@ -614,44 +770,50 @@ impl Producer {
             FrameMeta {
                 timestamp: timestamp.as_nanos(),
                 sequence: self.sequence,
-                source_time: source,
+                source_time: source.unwrap_or(0),
                 fence_value: self.fence_value,
                 width,
                 height,
             },
         );
         self.sequence += 1;
-        self.published += 1;
-        self.close_retired();
         Ok(())
     }
 
     /// Copies the frame into the slot's texture (replacing it first if the size
-    /// changed) and signals the fence.
+    /// changed) and signals the fence. Returns `false` when the frame was dropped.
     fn write_slot(
         &mut self,
         slot: usize,
         frame: &windows::Graphics::Capture::Direct3D11CaptureFrame,
         size: (u32, u32),
-    ) -> windows::core::Result<()> {
+    ) -> windows::core::Result<bool> {
         let mut surfaces = match self.shared.surfaces.lock() {
             Ok(guard) => guard,
             Err(poisoned) => poisoned.into_inner(),
         };
         if surfaces.sizes.get(slot) != Some(&size) {
+            let Some(&(old_w, old_h)) = surfaces.sizes.get(slot) else {
+                return Ok(false);
+            };
+            let bytes = u64::from(old_w) * u64::from(old_h) * 4;
+            if GRAVE_BYTES.load(Ordering::Acquire) + bytes > GRAVE_BYTES_MAX {
+                // Too many replaced textures are waiting out their grace (a long window
+                // drag): drop this frame rather than allocate more.
+                return Ok(false);
+            }
             let (texture, handle) = create_shared_texture(&self.device, size)?;
             let old_texture = std::mem::replace(&mut surfaces.textures[slot], texture);
             let old_handle = std::mem::replace(&mut surfaces.handles[slot], handle);
             surfaces.sizes[slot] = size;
-            if surfaces.retired.len() >= RETIRED_MAX {
-                if let Some(oldest) = surfaces.retired.pop_front() {
-                    close_handle(oldest.handle);
-                }
-            }
-            surfaces.retired.push_back(RetiredTexture {
+            GRAVE_BYTES.fetch_add(bytes, Ordering::AcqRel);
+            // The old handle stays open for the grace, so its value is not reused
+            // while an importer may still cache it.
+            bury(Grave::Texture {
                 _texture: old_texture,
                 handle: old_handle,
-                at: self.published,
+                bytes,
+                since: Instant::now(),
             });
             // The slot is claimed, so no consumer can observe the handle change.
             self.shared.ring.set_handle(slot, handle);
@@ -686,31 +848,14 @@ impl Producer {
             self.context.Signal(&self.fence, self.fence_value)?;
             self.context.Flush();
         }
-        Ok(())
-    }
-
-    fn close_retired(&mut self) {
-        let mut surfaces = match self.shared.surfaces.lock() {
-            Ok(guard) => guard,
-            Err(poisoned) => poisoned.into_inner(),
-        };
-        while surfaces
-            .retired
-            .front()
-            .is_some_and(|r| self.published - r.at > RETIRE_AFTER_FRAMES)
-        {
-            if let Some(old) = surfaces.retired.pop_front() {
-                close_handle(old.handle);
-            }
-        }
+        Ok(true)
     }
 }
 
 /// The frame's capture time in nanoseconds of QPC time.
-fn frame_time(frame: &windows::Graphics::Capture::Direct3D11CaptureFrame) -> i64 {
-    frame
-        .SystemRelativeTime()
-        .map_or(0, |t| t.Duration.saturating_mul(100))
+fn frame_time(frame: &windows::Graphics::Capture::Direct3D11CaptureFrame) -> Option<u64> {
+    let t = frame.SystemRelativeTime().ok()?;
+    u64::try_from(t.Duration).ok()?.checked_mul(100)
 }
 
 fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
@@ -739,9 +884,6 @@ struct WgcSession {
     clock: Arc<dyn Clock>,
     format: VideoFormat,
     active: Option<Active>,
-    /// Surfaces of a stopped capture whose frames were still held; freed on drop or the
-    /// next start, so the last lease never frees them on the render thread.
-    retired: Option<Arc<Shared>>,
     next_sequence: u64,
     last_timestamp: Option<Timestamp>,
     /// Counters of earlier Active periods.
@@ -795,6 +937,7 @@ impl WgcSession {
         let item = create_item(resolved).map_err(|e| backend(&e))?;
         let size = item.Size().map_err(|e| backend(&e))?;
         let (device, context) = create_device(self.accepted.luid).map_err(|e| backend(&e))?;
+        let luid = self.accepted.luid;
         let start = (|| -> windows::core::Result<_> {
             // WGC uses the device from its own threads.
             let multithread: ID3D11Multithread = context.cast()?;
@@ -802,16 +945,7 @@ impl WgcSession {
             let _ = unsafe { multithread.SetMultithreadProtected(true) };
             let context4: ID3D11DeviceContext4 = context.cast()?;
             let device5: ID3D11Device5 = device.cast()?;
-            let mut fence: Option<ID3D11Fence> = None;
-            // SAFETY: valid out pointer.
-            unsafe { device5.CreateFence(0, D3D11_FENCE_FLAG_SHARED, &mut fence)? };
-            let fence = fence.ok_or_else(|| {
-                windows::core::Error::from_hresult(windows::Win32::Foundation::E_POINTER)
-            })?;
-            // SAFETY: plain call on a live fence; no name or security attributes.
-            let fence_handle =
-                unsafe { fence.CreateSharedHandle(None, GENERIC_ALL, PCWSTR::null())? };
-            let fence_handle = fence_handle.0 as usize as u64;
+            let (fence, fence_handle, fence_value) = checkout_fence(&device5, luid)?;
 
             let dims = (
                 u32::try_from(size.Width).unwrap_or(1).max(1),
@@ -821,9 +955,6 @@ impl WgcSession {
                 textures: Vec::with_capacity(RING_SLOTS),
                 handles: Vec::with_capacity(RING_SLOTS),
                 sizes: Vec::with_capacity(RING_SLOTS),
-                retired: VecDeque::with_capacity(RETIRED_MAX),
-                _fence: fence.clone(),
-                fence_handle,
             };
             for _ in 0..RING_SLOTS {
                 let (texture, handle) = create_shared_texture(&device, dims)?;
@@ -839,6 +970,9 @@ impl WgcSession {
             let dxgi: IDXGIDevice = device.cast()?;
             // SAFETY: plain call on a live DXGI device.
             let winrt: IInspectable = unsafe { CreateDirect3D11DeviceFromDXGIDevice(&dxgi)? };
+            // The handler uses this object from WGC threads (see `WinrtDevice`): check
+            // that it is agile rather than assume it.
+            let _: IAgileObject = winrt.cast()?;
             let winrt_device: IDirect3DDevice = winrt.cast()?;
             let pool = Direct3D11CaptureFramePool::CreateFreeThreaded(
                 &winrt_device,
@@ -851,13 +985,14 @@ impl WgcSession {
                 shared,
                 fence,
                 fence_handle,
+                fence_value,
                 winrt_device,
                 pool,
                 session,
                 context4,
             ))
         })();
-        let (shared, fence, fence_handle, winrt_device, pool, session, context4) =
+        let (shared, fence, fence_handle, fence_value, winrt_device, pool, session, context4) =
             start.map_err(|e| backend(&e))?;
 
         let mut frequency = 0i64;
@@ -870,11 +1005,12 @@ impl WgcSession {
             device,
             context: context4,
             fence,
+            fence_handle,
+            luid,
             winrt_device: WinrtDevice(winrt_device),
             pool_size: size,
-            fence_value: 0,
+            fence_value,
             sequence: self.next_sequence,
-            published: 0,
             clock: Arc::clone(&self.clock),
             drift: DriftEstimator::new(Duration::from_millis(100)),
             last_timestamp: self.last_timestamp,
@@ -953,7 +1089,6 @@ impl CaptureSession for WgcSession {
         if self.active.is_some() {
             return Ok(());
         }
-        self.retired = None;
         let active = self.activate()?;
         self.active = Some(active);
         Ok(())
@@ -973,15 +1108,26 @@ impl CaptureSession for WgcSession {
             producer.stopped = true;
             self.next_sequence = producer.sequence;
             self.last_timestamp = producer.last_timestamp;
+            // No more signals on this fence from this session: later sessions continue
+            // from its last value.
+            lock(&FENCES).push(PooledFence {
+                luid: producer.luid,
+                handle: producer.fence_handle,
+                next: producer.fence_value,
+            });
         }
         let ring = &active.shared.ring;
         let waiting = ring.clear();
         self.base.delivered += active.consumer.delivered();
         self.base.dropped += ring.dropped() + u64::from(waiting);
         self.format = active.consumer.format();
-        if !ring.is_idle() {
-            self.retired = Some(Arc::clone(&active.shared));
-        }
+        // The graveyard keeps the surfaces while frames still reference them, so the last
+        // lease never frees them on the render thread, and keeps their handles open for
+        // the grace after that.
+        bury(Grave::Ring {
+            shared: Arc::clone(&active.shared),
+            idle_since: None,
+        });
     }
 
     fn latest_frame(&mut self) -> Result<Option<rbs_core::media::VideoFrame>, CaptureError> {
@@ -996,7 +1142,9 @@ impl CaptureSession for WgcSession {
             return Err(CaptureError::Backend {
                 domain: ErrorDomain::HResult,
                 code,
-                recoverable: false,
+                // A lost device needs a new one: stop and start again.
+                recoverable: code == i64::from(DXGI_ERROR_DEVICE_REMOVED.0)
+                    || code == i64::from(DXGI_ERROR_DEVICE_RESET.0),
             });
         }
         Ok(active.consumer.next())

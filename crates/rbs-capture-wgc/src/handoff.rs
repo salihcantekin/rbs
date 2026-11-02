@@ -18,8 +18,6 @@
 
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 
-use rbs_core::media::LeaseOwner;
-
 /// Metadata of one published frame, written by the producer before publishing.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct FrameMeta {
@@ -175,34 +173,31 @@ impl Ring {
         previous != 0
     }
 
+    /// Adds a reference to `slot` (a lease was cloned). Unknown slots are ignored.
+    pub fn retain(&self, slot: u64) {
+        if let Some(s) = self.slots.get(slot as usize) {
+            s.refs.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+
+    /// Removes a reference from `slot`. Unknown slots are ignored.
+    ///
+    /// The ring only counts; it owns no surfaces. The adapter's lease owner wraps it
+    /// together with the surfaces and is the one that makes the `LeaseOwner` promises.
+    pub fn release(&self, slot: u64) {
+        if let Some(s) = self.slots.get(slot as usize) {
+            // Release pairs with the Acquire in `claim`: the consumer's GPU-side reads
+            // are ordered by the importer before it drops the lease.
+            let previous = s.refs.fetch_sub(1, Ordering::Release);
+            debug_assert!(previous > 0, "released slot {slot} with no reference");
+        }
+    }
+
     /// True when no slot is referenced by anyone.
     pub fn is_idle(&self) -> bool {
         self.slots
             .iter()
             .all(|s| s.refs.load(Ordering::Acquire) == 0)
-    }
-}
-
-// SAFETY: a slot's surface is owned by the producer state, which keeps every surface of
-// a ring alive until the ring is idle (no references) or dropped after it, so a surface
-// stays valid while its count is above zero. Counts are exact: `claim` takes the first
-// reference with a 0 -> 1 compare-exchange, `publish` moves it to `latest`, `take`
-// moves it to the consumer (adopted by one lease), `retain` adds one per clone and
-// `release` removes one. Neither method allocates, blocks or panics; unknown tokens
-// are ignored.
-unsafe impl LeaseOwner for Ring {
-    fn retain(&self, token: u64) {
-        if let Some(s) = self.slots.get(token as usize) {
-            s.refs.fetch_add(1, Ordering::Relaxed);
-        }
-    }
-
-    fn release(&self, token: u64) {
-        if let Some(s) = self.slots.get(token as usize) {
-            // Release pairs with the Acquire in `claim`: the consumer's GPU-side reads
-            // are ordered by the importer before it drops the lease.
-            s.refs.fetch_sub(1, Ordering::Release);
-        }
     }
 }
 

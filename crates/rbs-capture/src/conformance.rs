@@ -535,6 +535,7 @@ impl Suite<'_> {
                 "sessions",
                 "only GPU memory kinds are declared and no GPU import target was given",
             );
+            self.skip("target lost", "no session can be opened");
             return Ok(());
         }
         self.check_formats(&testable)?;
