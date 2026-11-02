@@ -1,0 +1,15 @@
+[package]
+name = "rbs-capture-test"
+description = "Synthetic capture adapter for RBS: deterministic test-pattern displays, windows and cameras for CI and conformance."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[dependencies]
+rbs-capture = { path = "../rbs-capture" }
+rbs-core = { path = "../rbs-core" }
+
+[lints]
+workspace = true
