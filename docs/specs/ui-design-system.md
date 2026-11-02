@@ -161,7 +161,7 @@ The native toolkit chosen under ADR-0016 (Slint, iced or Qt through `cxx-qt`; AD
 5. Idle CPU near zero when nothing changes on screen.
 6. A docking system with tabs, splits and floating windows across monitors (U21), or the ability to build one.
 7. A licence compatible with ADR-0010.
-8. Rich visualisations (meters, equalizer curves, spectrum, histogram, scopes): light graphics with the toolkit's vector primitives; dense or per-pixel graphics drawn on the GPU and shown as textures (ADR-0019).
+8. Rich visualisations (meters, equalizer curves, spectrum, histogram, scopes): light graphics with the toolkit's vector primitives; dense or per-pixel graphics drawn on the GPU and shown as textures. Provisional until ADR-0019 is accepted.
 
 The comparison prototype and its measurements are in [`prototypes/ui-toolkit`](../../prototypes/ui-toolkit/README.md); the choice is recorded in [ADR-0019](../adr/0019-native-ui-toolkit.md).
 
