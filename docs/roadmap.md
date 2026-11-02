@@ -15,5 +15,5 @@ Durations are rough estimates for a small experienced team assisted by AI agents
 
 - ~~License~~: decided, GPL-3.0-or-later ([ADR-0010](adr/0010-project-license.md)). Plugin SDK and WIT licensing is still open.
 - Tier-1 platforms and reference machines.
-- Native desktop UI toolkit (Slint, iced or Qt) after a small comparison prototype (ADR-0016).
+- Native desktop UI toolkit (Slint, iced or Qt) after a small comparison prototype (ADR-0016). Prototype done; ADR-0022 proposes Slint, pending a GPU run of the load scenarios and review.
 - Control API schema technology.

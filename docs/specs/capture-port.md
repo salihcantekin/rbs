@@ -99,7 +99,13 @@ pub struct GpuImportTarget {
 }
 ```
 
-Zero-copy negotiation: a GPU memory kind is only delivered when the adapter can produce surfaces the device in `gpu` can open directly (same adapter LUID, same DRM device, an accepted modifier, an accepted sync primitive). Otherwise that memory kind is skipped in the request order, and if nothing is left `open` returns `FormatUnsupported`. On Windows Graphics Capture this means creating the frame pool on a D3D11 device of the same adapter and handing out shared NT handles with a keyed mutex or fence; on PipeWire it means offering exactly the importer's modifiers in the stream negotiation.
+Zero-copy negotiation: a GPU memory kind is only delivered when the adapter can produce surfaces the device in `gpu` can open directly (same adapter LUID, same DRM device, an accepted modifier, an accepted sync primitive). Otherwise that memory kind is skipped in the request order, and if nothing is left `open` returns `FormatUnsupported`. On Windows Graphics Capture this means creating the frame pool on a D3D11 device of the same adapter and handing out NT shared handles with a shared timeline fence (D3D12 importers cannot acquire keyed mutexes, see gpu-compositor.md, Native import); on PipeWire it means offering exactly the importer's modifiers in the stream negotiation.
+
+Native surface rules for producers:
+
+- **LUID encoding.** `GpuDeviceId::Luid` holds the eight bytes of the Windows `LUID` struct in memory order (`LowPart` then `HighPart`, both little-endian). The `adapter_luid: u64` of a `NativeSurface` is the same bytes read as a little-endian integer, that is `(HighPart as u32 as u64) << 32 | LowPart as u64`, the value `rbs_gpu::GpuContext::adapter_luid` reports.
+- **Handle values.** Importers cache opened surfaces and fences by handle value, so a producer must not let a value it handed out name another object while an importer may still cache it. A surface whose handle was handed out in a frame stays open while any frame references it and for at least 10 s after the last reference ends (importers forget an idle cached handle within 8 s, whatever their tick rate), including after `stop` and after the session is dropped; the release happens off the render thread. A fence is never closed while the process runs; sessions reuse pooled fences and keep signalling increasing values, so a cached fence stays correct. Surfaces never handed out may be released at once. The importer also reopens a cached surface delivered with a different frame size and closes unused cached surfaces when a source stops (`Importer::close_unused`).
+- **Surface budget.** Each session hands out at most `capture.frames.in_flight + 2` surfaces at a time (Windows Graphics Capture: 5), plus replaced surfaces during a resize. A resize that would keep more than 512 MiB of replaced surfaces waiting drops frames instead of allocating.
 
 ### Session
 
@@ -120,7 +126,7 @@ Dropping a session releases everything it holds, including what `start` acquired
 
 - No allocation, no freeing, no blocking, no I/O, no logging, no locks of any kind. The hand-off from the adapter's capture thread or OS callback is lock-free, for example an atomic latest-slot swap over a pre-allocated slot ring.
 - It returns the newest frame received since the previous call. Frames it replaced are counted in `dropped`; their OS objects (WGC `Direct3D11CaptureFrame`, `CVPixelBuffer`, PipeWire buffers) are released by the producer's own thread, never inside this call.
-- `LeaseOwner::release` on a capture surface does not free either; it marks the slot free. When `stop` finds frames still held, the session keeps their slot ring alive (retired) until it is started again or dropped, so dropping the last held frame on the render thread never frees the ring there. The engine drops sessions on a background thread (media graph spec, live editing).
+- `LeaseOwner::release` on a capture surface does not free either; it marks the slot free. When `stop` finds frames still held, the adapter keeps their slot ring alive until it is started again or dropped (the reference adapter) or until a thread of its own releases it once no frame references it (hardware adapters, see the native surface rules), so dropping the last held frame on the render thread never frees the ring there. A ring still referenced when the session is dropped must not be freed by the last lease on the render thread: hardware adapters hand it to their own thread; the reference adapter accepts that cost because it only runs in tests. The engine drops sessions on a background thread (media graph spec, live editing).
 - Native frames have exactly one consumer, the `rbs-gpu` importer, which releases the lease only after its GPU work on the surface has completed.
 
 ### Invariants
@@ -134,7 +140,7 @@ Each is checked by the conformance suite, with the hook it needs in brackets. Wi
 5. **Latest wins.** After a pause, the frame returned is the newest one: its age at the call is at most one frame interval (the largest gap the suite observed between consecutive frames) plus `max_latency` (default 100 ms), and a second call right away returns nothing or a frame captured after the first call (`timestamp > time of the first call`, no slack), never an older queued one.
 6. **Size changes are visible in the frame.** A resized window or display produces frames with the new `format.size`; `format()` returns the new format from the first such frame on. Consumers detect the change by comparing formats. Pixel format and memory kind never change mid-session. [`resize`]
 7. **Target loss is an error, not silence.** A closed window or unplugged display or camera makes `latest_frame` return `Err(TargetLost)` within `frame_timeout`. [`remove`]
-8. **Stop and drop release.** After `stop` (with no frames held), and after dropping the session, resources return to the level before `open` (ADR-0013 rule 5). `start` after `stop` delivers frames again. Dropping a frame held across `stop` neither allocates nor frees. [`resources`, `process_threads`]
+8. **Stop and drop release.** After `stop` (with no frames held), and after dropping the session, resources return to the level before `open` (ADR-0013 rule 5). Exception: native surfaces kept for the handle-value grace of the native surface rules are released by the adapter's own thread within that grace, and pooled shared fences (one per session that was Active at the same time) live for the process. `start` after `stop` delivers frames again. Dropping a frame held across `stop` neither allocates nor frees. [`resources`, `process_threads`]
 9. **Frame lifetime.** The consumer can hold up to `capture.frames.in_flight` frames. Holding fewer never stops delivery; holding all of them makes the adapter drop new frames (counted) and `latest_frame` still returns promptly.
 10. **Declared means real.** Every declared pixel format and memory kind is delivered by at least one enumerable target.
 
@@ -209,7 +215,7 @@ The render tick pulls with `latest_frame`; adapters do not push frames into the 
 - `pacer`: `TestPacer` for software adapters (a `TestClock` that advances on each wait, so runs are deterministic), `RealTimePacer` for hardware adapters, bounded by `options.frame_timeout`.
 - `options.measure_allocations`: runs a closure and returns the allocations plus frees it made on the calling thread (adapter tests use `allocation-counter`). Without it the allocation check is skipped.
 - `options.hooks: Option<&dyn TestHooks>`: `stimulate(id)` (change content, for APIs that only deliver frames on change; called before every poll), `resize(id, w, h)`, `remove(id)` and `resources()` (threads, handles and GPU allocations the adapter owns). Hardware tests implement them with a helper window the test owns.
-- `options.gpu: Option<&GpuImportTarget>`: the device the test imports into, used for every GPU memory kind. For each declared GPU memory kind the suite also checks that opening it without an import target, and for a foreign device, returns `FormatUnsupported`. Without `options.gpu`, delivery of GPU memory kinds is skipped (a failure in strict mode).
+- `options.gpu: Option<&GpuImportTarget>`: the device the test imports into, used for every GPU memory kind. For each declared GPU memory kind the suite also checks that opening it without an import target, and for a foreign device, returns `FormatUnsupported`. Without `options.gpu`, delivery of GPU memory kinds is skipped (a failure in strict mode). An adapter that declares only GPU memory kinds cannot open a session without an import target, so without `options.gpu` all session checks are skipped for it; the refusal checks still run.
 - `options.process_threads`: a process-wide thread count measured by the suite itself rather than reported by the adapter (`conformance::process_thread_count` reads `/proc/self/task` on Linux). Only meaningful when the test binary runs one test at a time; the reference adapter's conformance test is alone in its binary for that reason.
 - `options.strict`: every skip is a failure. Self-hosted hardware runners use it.
 
@@ -222,7 +228,7 @@ Checks: probe within 50 ms and never panics; `enumerate` agrees with `capture.ta
 | Adapter crate | Platform | Targets | Memory | Phase |
 | --- | --- | --- | --- | --- |
 | `rbs-capture-test` | all | synthetic display, window, camera | system | 0 (CI and conformance reference) |
-| `rbs-capture-wgc` | Windows 10 1903+ | display, window | d3d11 | 0 |
+| `rbs-capture-wgc` | Windows 10 1903+ | display, window | d3d11 (NT shared texture + shared fence) | 0 (implemented) |
 | `rbs-capture-dxgi` | Windows | display | d3d11 | 1 (fallback) |
 | `rbs-capture-mf` | Windows | camera | system, d3d11 | 2 |
 | `rbs-capture-sck` | macOS 12.3+ | display, window (picker on 14+) | metal (IOSurface) | 0 prototype |
@@ -264,6 +270,15 @@ Records written from the reviewer's own output (ADR-0014). The spec stays Draft.
 - Date: 2026-11-02
 - Verdict: approve (round-3 concerns 1 and 2 resolved, no regressions)
 - Open minor items, for the owner to accept or schedule: the `<=` accounting does not catch an adapter that counts drops twice; a retired ring keeps its buffers through Standby until `start` or drop; a frame that outlives its dropped session frees the ring on the thread that drops it; the suite's own thread count works on Linux only; P15 asks for a human maintainer's approval of `latest_frame` (the owner's early-phase rule lets PRs merge on green CI; his later review covers it).
+
+### WGC adapter and native surface rules (rounds 1-3)
+
+- Reviewer: a fresh independent AI session, given the diff, specs and code only
+- Date: 2026-11-02
+- Round 1 verdict: request changes. Blocking: NT handle and fence values reused after stop/start could hit stale importer cache entries (stale texture, fence waits satisfied too early). Should-fix: resize retirement too short and early close, `Ring` made `LeaseOwner` promises it could not keep, last lease freed surfaces on the render thread, importer cap too small, `RoInitialize` on caller threads, unchecked agility, timestamp fallback, sticky errors, unstable window ids.
+- Round 2 verdict: approve with changes (fence leak on failed start, freeze after window drags from the grave budget, uncounted ring graves, merge order with the importer, tick-based importer eviction).
+- Round 3 verdict: approve with changes. The adapter is ready; merge with or after the importer's wall-time eviction (8 s), its larger surface cap and the matching gpu-compositor.md wording (rbs-gpu PR #18).
+- Open for the owner: hot-path approval of the WGC hand-off (P15), approval of the native surface rules (P14), an end-to-end WGC-to-importer hardware test, hardware test hooks.
 
 ## Open questions
 

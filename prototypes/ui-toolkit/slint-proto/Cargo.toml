@@ -1,0 +1,16 @@
+[package]
+name = "slint-proto"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+dock-model = { path = "../model" }
+pollster = "0.4"
+slint = { version = "=1.18.1", default-features = false, features = ["std", "backend-winit", "renderer-femtovg-wgpu", "unstable-wgpu-30", "accessibility", "compat-1-2"] }
+
+[build-dependencies]
+slint-build = "=1.18.1"
+
+[features]
+wgpu27 = []

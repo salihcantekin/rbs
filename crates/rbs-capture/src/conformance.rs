@@ -525,6 +525,19 @@ impl Suite<'_> {
             return Ok(());
         }
 
+        if self.options.gpu.is_none() && !self.memory.contains(&MemoryKind::System) {
+            // A GPU-only adapter cannot open a session without an import target. The
+            // refusal itself is still checked.
+            for mem in self.memory.clone() {
+                self.check_gpu_import(&testable, mem)?;
+            }
+            self.skip(
+                "sessions",
+                "only GPU memory kinds are declared and no GPU import target was given",
+            );
+            self.skip("target lost", "no session can be opened");
+            return Ok(());
+        }
         self.check_formats(&testable)?;
         for (kind, id) in &testable {
             self.check_session(*kind, id)?;

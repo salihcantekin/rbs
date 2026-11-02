@@ -1,0 +1,8 @@
+# Throwaway UI toolkit comparison prototypes (ADR-0022). Not part of the RBS product workspace.
+[workspace]
+resolver = "2"
+members = ["model", "slint-proto", "iced-proto", "qt-proto"]
+
+[profile.release]
+debug = false
+strip = true
