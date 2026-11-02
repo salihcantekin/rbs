@@ -1,6 +1,6 @@
 [package]
 name = "rbs-core"
-description = "Foundation types for RBS: master clock and timestamps, capability model, adapter registry."
+description = "Foundation types for RBS: master clock and timing, media frame types, capability model, adapter registry."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -8,6 +8,8 @@ repository.workspace = true
 publish.workspace = true
 
 [dependencies]
+# Shared, sliceable packet payloads (docs/architecture/overview.md#memory-model, ADR-0018).
+bytes = "1"
 
 [lints]
 workspace = true
