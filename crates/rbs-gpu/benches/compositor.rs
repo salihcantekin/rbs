@@ -97,6 +97,24 @@ fn bench(c: &mut Criterion) {
             },
         );
     }
+    // NV12 conversion alone: two plane textures vs one NV12 texture (when supported; on
+    // software adapters the single surface uses the staged copy path).
+    group.bench_function("nv12_planes", |b| {
+        b.iter(|| {
+            conv.convert(&ctx, &pool, canvas, luma, chroma)
+                .expect("convert");
+            ctx.wait_idle().expect("wait");
+        });
+    });
+    if let Ok(surface) = pool.acquire(&ctx, &nv12::surface_desc(W, H)) {
+        group.bench_function("nv12_surface", |b| {
+            b.iter(|| {
+                conv.convert_to_surface(&ctx, &pool, canvas, surface)
+                    .expect("convert");
+                ctx.wait_idle().expect("wait");
+            });
+        });
+    }
     group.finish();
 
     // CPU cost of recording and submitting only (no wait): what the render thread pays.
