@@ -10,11 +10,11 @@ The scene collection is the document the user edits: canvases, sources, scenes a
 
 ## Scope
 
-In scope: the in-memory model, validated edits with undo, scene scopes and per-canvas layout (UI rule U15), nested scenes, flattening, and which sources must be Active.
+In scope: the in-memory model, validated edits with undo, scene scopes and per-canvas layout (UI rule U15), nested scenes, flattening, which sources must be Active, and binding a collection to a media graph description.
 
 Out of scope, later changes:
 
-- Turning a collection into a `GraphDescription` (source, filter and compositor nodes, layer lists for compositor nodes) and applying it through `rbs_graph::runtime::Controller`.
+- Applying the bound description through `rbs_graph::runtime::Controller` and delivering layer lists to running compositor nodes (engine wiring in `rbs-app`).
 - The on-disk document format and its versioning, and the control API command schema. Both map one-to-one onto the model and operations here.
 - Audio items and mixer routing, transitions, groups, animation, keep-warm policy.
 
@@ -75,6 +75,21 @@ A property test applies random sequences of every edit kind, checks that refused
 
 `visible_sources(canvas, scene)` is the set of sources of visible items (not inside a hidden nested scene), whatever their opacity: a fade from 0, or a source used for its audio, still needs it running. `wanted_sources()` is the union over every canvas of its program and preview scenes: the sources the scenes want Active for video (media graph spec, Lifecycle). Projectors, outputs and audio-only use add to it in the graph binder; a source wanted by none of them is Standby.
 
+### Graph binding (`rbs_scene::binder`)
+
+`SceneBinder::new(types)` takes a `NodeTypes` lookup (`NodeTypeId` to `Arc<NodeDescriptor>`, from the adapter registry or plugin manifests). `sync(collection, graph)` updates a `GraphDescription` to match the collection and returns a `BindReport`.
+
+- **Ownership.** The binder owns the nodes it creates and the links it makes (filter chains, links into each compositor's layers pin), and never touches anything else. The application attaches outputs (stream, recording, preview panels, projectors) to `compositor(canvas, role)` and may link other inputs of a compositor; those links survive every sync. If someone else removes a bound node, the next sync binds that object again from scratch (and removes filter nodes that would be orphaned).
+- **Nodes.** One node per source, however many scenes and canvases place it. One node per filter. One compositor node (type `org.rbs.compositor`, kind `Compositor`) per canvas and `Role`: `Program`, and `Preview` while studio mode is on. Node ids stay the same while their object exists, so the runtime carries running nodes across swaps (ADR-0020). Nodes of removed sources, filters and compositors are moved to Standby and removed with their links, including links the application attached to a removed compositor; `BindReport` lists `retired_compositors`, and a newly created compositor has `created: true`, so the application can re-attach outputs.
+- **Wiring.** A source node must be kind `Source` with a video output; a filter node kind `VideoFilter` with video input and output; nodes are wired through their first video pins. The compositor's layers pin is its first many-input video pin (`BoundCompositor::layers_pin`). A source's enabled, bound filters are chained in order; the chain's last node is the source's *producer*. Each compositor's layers pin gets one link per distinct producer of the sources visible in its scene (`visible_sources`, so a source faded to opacity 0 stays linked and scheduled, and a fade does not change the graph); links it no longer needs are removed.
+- **States.** Sources in `wanted_sources()` and their enabled, bound filters are set Active; other sources and disabled filters are Standby. Bound compositors are Active, and are scheduled only when an output is attached. These are wanted states; the runtime decides what runs (ADR-0020).
+- **Layers.** `BindReport::compositors[(canvas, role)]` is a `BoundCompositor`: its node, `layers_pin`, and `BoundLayer`s bottom first (the flattened layer plus its `producer` node). `resolve(compositor, plan)` gives each layer the index of its link among the compositor's scheduled links on the layers pin, which is the order `rbs_graph::runtime::Inputs` presents them in. Callers pass the plan the runtime runs, `ApplyReport::plan`, which leaves out nodes whose `prepare` failed. Layers whose producer is not scheduled are left out, so the remaining indices stay correct.
+- **Problems.** A source or filter whose type is not installed, or has the wrong kind or no usable video pins, is left out and reported as a `BindProblem`; the rest is bound. Audio sources are reported as `NoVideoOutput` until audio routing comes with the mixer.
+- **Errors.** `BindError::NoCompositor` if the compositor type is missing or unusable; graph refusals are `BindError::Graph`. On error neither the graph nor the binder changes (sync works on copies).
+- `sync` is idempotent: a second call with the same collection changes nothing.
+
+Tests in `crates/rbs-scene/tests/binder.rs` cover node reuse across canvases, stable ids, hidden sources going Standby and losing their link, a source at opacity 0 staying linked and scheduled, filter chains following enable and removal, links the binder did not make surviving, rebinding after external removal, created and retired compositors, the plan scheduling exactly what the program needs, `resolve` with an unscheduled producer and with a second video input, unknown types, idempotence, and random edit sequences. After each random edit the graph is checked against expectations computed from the collection, not from the binder: source and filter states, exact chain links, compositor links, and no unaccounted nodes.
+
 ## Errors and failure behaviour
 
 `SceneError` (non-exhaustive): unknown ids, `DuplicateName`, `EmptyName`, `BadTypeId`, `EmptyCanvas`, `InvalidLayout`, `InvalidSetting`, `CropOnScene`, `NestingCycle`, `NestingTooDeep`, `TooManyLayers`, `DuplicateFilter`, `ScopeViolation`, `IndexOutOfRange`, `CanvasHasScenes`, `UndoConflict`, `IdsExhausted`. Edits never panic.
@@ -87,6 +102,7 @@ Control thread only, user-paced. An edit clones the collection, applies the chan
 
 - Document format and schema technology (with the control API schema ADR). Loading needs a validating constructor from parts, including the id counters.
 - Per-canvas visibility of an item in a shared scene (U15): the override could become `{layout, visible}`.
-- How the graph binder represents per-compositor layer lists (node settings vs. a control message) and keeps node ids stable across edits.
+- How layer lists reach running compositor nodes (a control message at the swap, or node settings), and when compositor `reserve_layers` runs for a larger list.
+- Descriptors are looked up once per bound node; replacing an installed node type needs a rebind policy (for example remove and re-add the affected nodes).
 - Audio: items that carry audio, per-source monitoring and mixer routing.
 - Transitions between program scenes and "keep warm" for preview scenes.
