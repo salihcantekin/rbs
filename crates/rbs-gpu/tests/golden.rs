@@ -283,3 +283,23 @@ fn readback_is_counted() {
     readback::read_rgba16f(ctx, &pool, target).unwrap();
     assert_eq!(ctx.metrics().frames_cpu_copied(), 1);
 }
+
+#[test]
+fn opaque_layer_ignores_undefined_source_alpha() {
+    let Some((ctx, mut pool, mut comp, target)) = setup() else {
+        return;
+    };
+    // An XRGB-style source: colour red, fourth byte 0.
+    let xrgb = pool
+        .acquire(
+            ctx,
+            &TextureDesc::source(2, 2, wgpu::TextureFormat::Rgba8Unorm),
+        )
+        .unwrap();
+    readback::upload(ctx, &pool, xrgb, &[255u8, 0, 0, 0].repeat(4)).unwrap();
+    let mut layer = Layer::new(xrgb, 0.0, 0.0, W as f32, 64.0);
+    layer.opaque = true;
+    comp.render(ctx, &pool, &[layer], target).unwrap();
+    let px = readback::read_rgba16f(ctx, &pool, target).unwrap();
+    assert_close(at(&px, W, 16, 16), [1.0, 0.0, 0.0, 1.0], TOL);
+}

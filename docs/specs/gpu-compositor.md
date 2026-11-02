@@ -88,6 +88,7 @@ pub struct Layer {
     pub crop: UvRect,            // source sub-rectangle in normalised texture coordinates
     pub opacity: f32,            // 0.0..=1.0, clamped
     pub source_transfer: Transfer, // Linear | Srgb: how the source texture encodes colour
+    pub opaque: bool,            // ignore source alpha (XRGB layouts with an undefined 4th byte)
 }
 
 impl Compositor {
@@ -163,7 +164,7 @@ Backend matrix (implemented rows in bold):
 | `D3d11Texture` | none | none | not importable: the producer must share it with an NT handle |
 | **`IoSurface`** | **Metal** | **`Ready`** | `newTextureWithDescriptor:iosurface:plane:`; IOSurfaces are not tied to a device, so there is no identity check. Single-plane `'BGRA'`, `'RGBA'` and `'RGhA'` (RGBA half float) surfaces |
 | `MetalTexture` | Metal | `Ready` | `device_registry_id` must match |
-| **`DmaBuf`** | **Vulkan** | **`Ready`** (`SyncFile` is a follow-up) | wgpu-hal `texture_from_dmabuf_fd` (`VK_EXT_external_memory_dma_buf` with `VK_EXT_image_drm_format_modifier`), capability `gpu.import.dmabuf`. Single plane, `AR24` (ARGB8888) and `AB24` (ABGR8888); `XR24` needs an opaque layer flag first. The importer duplicates the producer's fd; the cache key is the buffer's inode, not the fd number. The size comes from the frame's `VideoFormat`. Device identity is not checked: an incompatible modifier fails the import |
+| **`DmaBuf`** | **Vulkan** | **`Ready`** (`SyncFile` is a follow-up) | wgpu-hal `texture_from_dmabuf_fd` (`VK_EXT_external_memory_dma_buf` with `VK_EXT_image_drm_format_modifier`), capability `gpu.import.dmabuf`. Single plane, `AR24`/`XR24` (ARGB8888/XRGB8888) and `AB24`/`XB24` (ABGR8888/XBGR8888). For the X formats the source sets `Layer::opaque`, because their fourth byte is undefined. The importer duplicates the producer's fd; the cache key is the buffer's inode, not the fd number. The size comes from the frame's `VideoFormat`. Device identity is not checked: an incompatible modifier fails the import |
 
 `GpuContext` reports what the importer accepts, for capture requests (`GpuImportTarget { device, sync }` of the capture port spec): the render adapter's identity (D3D LUID as `u64` = `HighPart << 32 | LowPart`, from `GpuContext::adapter_luid`; Metal registry id for `MetalTexture`) and the sync kinds in the table below. Producers create surfaces on that adapter.
 
@@ -202,7 +203,7 @@ Device loss is reported by wgpu through the device-lost callback and surfaced as
 Run on any adapter, including software adapters in CI (lavapipe on Linux, WARP on Windows). Tests skip with a clear message when `GpuError::NoAdapter` is returned.
 
 - Pool: reuse, generation and stale-id handling, trim, capacity, leases (a leased slot survives the owner's release, is reused after the last lease drops on another thread, frames share the lease).
-- Golden images (sampled pixels with tolerance): single opaque layer placement, crop, opacity blend over a background layer, sRGB source decode, layer order, stale layer skipped.
+- Golden images (sampled pixels with tolerance): single opaque layer placement, crop, opacity blend over a background layer, sRGB source decode, layer order, stale layer skipped, an `opaque` layer drawn opaque over a source whose alpha is 0.
 - NV12: known colours (black, white, mid grey, pure red) produce BT.709 limited-range values within ±1.
 - NV12 surface (where `gpu.nv12_surface`; required on Linux CI): both planes of `convert_to_surface` equal the two-plane output byte for byte on a two-colour canvas; a texture of another format is rejected.
 - Allocations per frame do not grow over time and grow by at most a small constant per layer.

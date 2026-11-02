@@ -25,6 +25,10 @@ type Vulkan = wgpu::hal::api::Vulkan;
 const DRM_ARGB8888: u32 = u32::from_le_bytes(*b"AR24");
 /// DRM fourcc `AB24` (`DRM_FORMAT_ABGR8888`): bytes R, G, B, A in memory.
 const DRM_ABGR8888: u32 = u32::from_le_bytes(*b"AB24");
+/// DRM fourcc `XR24` (`DRM_FORMAT_XRGB8888`): as `AR24` with an undefined fourth byte.
+const DRM_XRGB8888: u32 = u32::from_le_bytes(*b"XR24");
+/// DRM fourcc `XB24` (`DRM_FORMAT_XBGR8888`): as `AB24` with an undefined fourth byte.
+const DRM_XBGR8888: u32 = u32::from_le_bytes(*b"XB24");
 
 /// Checks the surface and sync kind, and returns the cache key (the buffer's inode).
 pub(super) fn validate(
@@ -144,10 +148,11 @@ pub(super) fn open(
 
 fn map_format(fourcc: u32) -> Result<wgpu::TextureFormat, GpuError> {
     match fourcc {
-        DRM_ARGB8888 => Ok(wgpu::TextureFormat::Bgra8Unorm),
-        DRM_ABGR8888 => Ok(wgpu::TextureFormat::Rgba8Unorm),
+        // X formats alias the same layout; the source draws them with `Layer::opaque`.
+        DRM_ARGB8888 | DRM_XRGB8888 => Ok(wgpu::TextureFormat::Bgra8Unorm),
+        DRM_ABGR8888 | DRM_XBGR8888 => Ok(wgpu::TextureFormat::Rgba8Unorm),
         _ => Err(GpuError::Unsupported(
-            "DMA-BUF format (ARGB8888 and ABGR8888 so far; XRGB needs an opaque layer flag)",
+            "DMA-BUF format (ARGB8888, XRGB8888, ABGR8888, XBGR8888)",
         )),
     }
 }
