@@ -24,7 +24,7 @@ RBS is a headless engine built around a **media graph**: a set of nodes (sources
 
 | Layer | Crates (planned) | May depend on |
 | --- | --- | --- |
-| Foundation | `rbs-core` (time, clock, capabilities, registry, errors, metrics) | std, small utility crates |
+| Foundation | `rbs-core` (time, clock, timing, media types, capabilities, registry, errors, metrics) | std, small utility crates (`bytes`) |
 | Engine | `rbs-graph`, `rbs-scene`, `rbs-gpu`, `rbs-audio` | Foundation, ports, `wgpu` |
 | Ports | `rbs-capture`, `rbs-audio-io`, `rbs-codec`, `rbs-mux`, `rbs-transport` | Foundation only |
 | Adapters | `rbs-capture-wgc`, `rbs-capture-sck`, `rbs-capture-pipewire`, `rbs-codec-ffmpeg`, `rbs-codec-nvenc`, `rbs-codec-videotoolbox`, `rbs-mux-fmp4`, `rbs-transport-rtmp`, `rbs-transport-srt`, `rbs-transport-whip`, ... | Their port, Foundation, vendor crates |
@@ -54,6 +54,8 @@ Arrows only point down or sideways into ports. Adapters never depend on each oth
 | Control | Command handling, source warm-up, file I/O | Normal |
 
 ## Memory model
+
+The shared frame, block and packet types are defined in the [media types spec](../specs/media-types.md) (ADR-0018).
 
 - GPU textures come from reference-counted pools per format and size; nodes borrow handles.
 - Audio uses a fixed block size for the whole graph (default 480 samples at 48 kHz = 10 ms), in pre-allocated ring buffers.

@@ -6,6 +6,8 @@
 
 # Hot paths (keep in sync with docs/architecture/hot-paths.md)
 /crates/rbs-core/src/time.rs @salihcantekin
+/crates/rbs-core/src/timing.rs @salihcantekin
+/crates/rbs-core/src/media/ @salihcantekin
 /crates/rbs-audio*/          @salihcantekin
 /crates/rbs-gpu/             @salihcantekin
 /crates/rbs-graph/           @salihcantekin

@@ -15,7 +15,8 @@ Keep this list current. When a new crate or module lands on one of these paths, 
 | Colour conversion to encoder formats (NV12, P010) | Every frame per encoder | `crates/rbs-gpu` |
 | Encoder submit/drain and packet fan-out | Every frame per encoder | `crates/rbs-codec*`, `crates/rbs-graph` |
 | Muxers and transport send loops | Every packet | `crates/rbs-mux*`, `crates/rbs-transport*` |
-| Clock reads and timestamp mapping | Everywhere above | `crates/rbs-core/src/time.rs` |
+| Clock reads, timestamp mapping, rates, cadences, timebases, drift estimation | Everywhere above | `crates/rbs-core/src/time.rs`, `crates/rbs-core/src/timing.rs` |
+| Media value types: frame and block construction, lease retain/release | Every frame, block or packet | `crates/rbs-core/src/media/` |
 | Plugin call boundaries (native vtable, WASM, IPC) | Every frame or block for active plugins | `crates/rbs-plugin-host` |
 
 Not hot: start-up, probing, configuration, the control API, UI, scene editing (these must still not block hot paths).
