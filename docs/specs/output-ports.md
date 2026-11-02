@@ -24,7 +24,7 @@ Out of scope: the shared media types (packets, stream descriptors, frames, audio
 ```
 
 - One encoder feeds any number of outputs. Packets are cloned by reference count, never by copying payload bytes, as long as the consumer takes the encoder's bitstream format.
-- Bitstream conversion: containers and protocols disagree on framing (FLV, fMP4 and Matroska carry length-prefixed H.264/HEVC with parameter sets in extradata; MPEG-TS carries Annex B with parameter sets repeated before each IDR). The muxer or packet transport that needs a different framing converts it; this is one counted copy per packet for that output only, measured like any other hot-path work. Conversion code is shared through the `rbs-media-format` helper crate (planned; depends only on `rbs-core`, see the layer table in the [overview](../architecture/overview.md#layers)). The output builder prefers the encoder bitstream format that most of its consumers take.
+- Bitstream conversion: containers and protocols disagree on framing (FLV, fMP4 and Matroska carry length-prefixed H.264/HEVC with parameter sets in extradata; MPEG-TS carries Annex B with parameter sets repeated before each IDR). The muxer or packet transport that needs a different framing converts it; this is one counted copy per packet for that output only, measured like any other hot-path work. Conversion code is shared through the `rbs-media-format` helper crate (depends only on `rbs-core`, see [below](#rbs-media-format-format-helpers); see the layer table in the [overview](../architecture/overview.md#layers)). The output builder prefers the encoder bitstream format that most of its consumers take.
 - A transport declares its input in `transport.input`. The output builder inserts a muxer for the requested container only when the transport asks for one.
 - Streams of one output are numbered `0..n` in the order of the `streams` slice given to the muxer or transport (`StreamIndex`).
 
@@ -275,6 +275,17 @@ Invariants:
 7. After a drop, delivered video resumes at a keyframe and headers are intact (checked by adapter tests that can read the destination; see Conformance tests).
 
 Capability keys: `transport.schemes` (Set: `rtmp`, `rtmps`, `srt`, `file`, ...), `transport.input` (Set: `packets`, `container.mpegts`, ...), `transport.codecs` (Set, for `packets` input), `transport.reconnect` (Flag), `transport.bandwidth_estimate` (Flag), `transport.seekable` (Flag: applies patch chunks).
+
+## `rbs-media-format` (format helpers)
+
+Pure functions shared by muxer and transport adapters (ADR-0019, decision 7). No traits, no state, no I/O, no threads; errors are `FormatError::{Truncated, Invalid, Unsupported}`.
+
+- `nal`: `annexb_units` and `length_prefixed_units` iterators (borrowing, never allocate), `annexb_first_header` (reads only up to the first start code), `annexb_to_length_prefixed` and `length_prefixed_to_annexb` (append to a caller-owned `Vec`, so a reused buffer stops allocating once it reaches the working size), `h264_type` and the `h264` NAL type constants.
+- `avc`: `AvcConfig` parses and builds `AVCDecoderConfigurationRecord` (avcC), and builds one from the SPS and PPS of an Annex B access unit. Session set-up only; not for hot paths.
+- `aac`: `AudioSpecificConfig` (parse, encode, AAC-LC constructor, sample rate) and the 7-byte ADTS header.
+- Planned: HEVC (hvcC), FLV tag bodies, Opus headers, as adapters need them.
+
+Hot functions (iterators and conversions) are linear in the payload and benchmarked through the adapters that call them.
 
 ## Errors and failure behaviour
 
