@@ -5,9 +5,9 @@
 //! threads owned by WGC. The render thread only touches the lock-free ring. The
 //! producer state is behind a mutex that only the OS callback thread and `stop` take.
 
-use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use rbs_capture::{
     CaptureChange, CaptureError, CaptureFactory, CaptureRequest, CaptureSession, CaptureStats,
@@ -61,8 +61,8 @@ use windows::Win32::UI::WindowsAndMessaging::{
 };
 use windows::core::{BOOL, IInspectable, Interface, PCWSTR};
 
-use crate::handoff::{FrameMeta, Ring};
 use crate::{ADAPTER_ID, Consumer, FRAMES_IN_FLIGHT, RING_SLOTS, luid_to_u64};
+use rbs_capture::handoff::{FrameMeta, Grave, Graveyard, Ring};
 
 /// Buffers of the WGC frame pool (the OS-side queue, separate from our ring).
 const POOL_BUFFERS: i32 = 2;
@@ -71,9 +71,8 @@ const POOL_BUFFERS: i32 = 2;
 const MAX_RATE: i64 = 240;
 
 /// How long a surface no session uses any more keeps its NT handle open, measured from
-/// the moment no frame references it. Importers cache opened surfaces by handle value
-/// and drop idle entries after 120 render ticks (gpu-compositor.md, Native import), which
-/// is under 10 s at 12 fps or more, so a reused handle value never hits a stale entry.
+/// the moment no frame references it. Importers forget idle cached handles within 8 s
+/// (capture-port.md, Native surface rules), so a reused value never hits a stale entry.
 const HANDLE_GRACE: Duration = Duration::from_secs(10);
 
 /// Most bytes of replaced (resized) textures waiting out [`HANDLE_GRACE`] per process.
@@ -532,102 +531,43 @@ fn create_shared_texture(
     Ok((texture, handle.0 as usize as u64))
 }
 
-/// A surface set or a replaced texture waiting out [`HANDLE_GRACE`].
-enum Grave {
-    /// The surfaces of a stopped capture. Kept while frames reference them (so the last
-    /// lease never frees anything on the render thread) and for the grace after that.
-    Ring {
-        shared: Arc<Shared>,
-        idle_since: Option<Instant>,
-        bytes: u64,
-    },
-    /// A texture replaced after a resize. It was not referenced when replaced (its slot
-    /// was claimed by the producer).
-    Texture {
-        _texture: ID3D11Texture2D,
-        handle: u64,
-        bytes: u64,
-        since: Instant,
-    },
+/// The surfaces of a stopped capture. Kept while frames reference them (so the last
+/// lease never frees anything on the render thread) and for the grace after that.
+struct RingGrave {
+    shared: Arc<Shared>,
+    bytes: u64,
 }
 
-impl Drop for Grave {
+impl Grave for RingGrave {
+    fn is_idle(&self) -> bool {
+        self.shared.ring.is_idle()
+    }
+    fn bytes(&self) -> u64 {
+        self.bytes
+    }
+}
+
+/// A texture replaced after a resize. It was not referenced when replaced (its slot was
+/// claimed by the producer).
+struct TextureGrave {
+    _texture: ID3D11Texture2D,
+    handle: u64,
+    bytes: u64,
+}
+
+impl Grave for TextureGrave {
+    fn bytes(&self) -> u64 {
+        self.bytes
+    }
+}
+
+impl Drop for TextureGrave {
     fn drop(&mut self) {
-        match self {
-            Grave::Texture { handle, bytes, .. } => {
-                close_handle(*handle);
-                GRAVE_BYTES.fetch_sub(*bytes, Ordering::AcqRel);
-            }
-            Grave::Ring { bytes, .. } => {
-                GRAVE_BYTES.fetch_sub(*bytes, Ordering::AcqRel);
-            }
-        }
+        close_handle(self.handle);
     }
 }
 
-static GRAVEYARD: Mutex<Vec<Grave>> = Mutex::new(Vec::new());
-static GRAVE_BYTES: AtomicU64 = AtomicU64::new(0);
-static JANITOR: AtomicBool = AtomicBool::new(false);
-
-/// Drops graves whose grace has passed. Returns whether the graveyard is now empty.
-fn reap() -> bool {
-    let now = Instant::now();
-    let expired: Vec<Grave> = {
-        let mut graves = lock(&GRAVEYARD);
-        for grave in graves.iter_mut() {
-            if let Grave::Ring {
-                shared, idle_since, ..
-            } = grave
-            {
-                if shared.ring.is_idle() {
-                    idle_since.get_or_insert(now);
-                } else {
-                    *idle_since = None;
-                }
-            }
-        }
-        let (expired, kept) = std::mem::take(&mut *graves)
-            .into_iter()
-            .partition(|g| match g {
-                Grave::Ring { idle_since, .. } => {
-                    idle_since.is_some_and(|t| now.duration_since(t) >= HANDLE_GRACE)
-                }
-                Grave::Texture { since, .. } => now.duration_since(*since) >= HANDLE_GRACE,
-            });
-        *graves = kept;
-        expired
-    };
-    // Release outside the lock: closing handles and freeing textures may take a while.
-    drop(expired);
-    lock(&GRAVEYARD).is_empty()
-}
-
-/// Hands surfaces to the graveyard and makes sure the janitor thread runs.
-fn bury(grave: Grave) {
-    lock(&GRAVEYARD).push(grave);
-    if JANITOR.swap(true, Ordering::AcqRel) {
-        return;
-    }
-    let spawned = std::thread::Builder::new()
-        .name("rbs-wgc-janitor".into())
-        .spawn(|| {
-            loop {
-                std::thread::sleep(JANITOR_PERIOD);
-                if reap() {
-                    JANITOR.store(false, Ordering::Release);
-                    // A grave added after the check would otherwise wait for the next
-                    // `bury`: take the job back if so.
-                    if lock(&GRAVEYARD).is_empty() || JANITOR.swap(true, Ordering::AcqRel) {
-                        return;
-                    }
-                }
-            }
-        });
-    if spawned.is_err() {
-        // Retried on the next `bury`; the graves stay valid meanwhile.
-        JANITOR.store(false, Ordering::Release);
-    }
-}
+static GRAVEYARD: Graveyard = Graveyard::new(HANDLE_GRACE, JANITOR_PERIOD);
 
 /// A shared fence between sessions, with the next value to signal.
 struct PooledFence {
@@ -846,7 +786,7 @@ impl Producer {
                 timestamp: timestamp.as_nanos(),
                 sequence: self.sequence,
                 source_time: source.unwrap_or(0),
-                fence_value: self.fence_value,
+                sync_value: self.fence_value,
                 width,
                 height,
             },
@@ -875,7 +815,7 @@ impl Producer {
             // Only a handle value a consumer has seen needs the grace; during a window
             // drag most frames are replaced before anyone takes them.
             let seen = self.shared.ring.handed_out(slot);
-            if seen && GRAVE_BYTES.load(Ordering::Acquire) + bytes > GRAVE_BYTES_MAX {
+            if seen && GRAVEYARD.bytes() + bytes > GRAVE_BYTES_MAX {
                 // Too many replaced textures are waiting out their grace: drop this
                 // frame rather than allocate more.
                 return Ok(false);
@@ -886,15 +826,13 @@ impl Producer {
             surfaces.sizes[slot] = size;
             if seen {
                 if let Some(old_texture) = old_texture {
-                    GRAVE_BYTES.fetch_add(bytes, Ordering::AcqRel);
                     // The old handle stays open for the grace, so its value is not
                     // reused while an importer may still cache it.
-                    bury(Grave::Texture {
+                    GRAVEYARD.bury(Box::new(TextureGrave {
                         _texture: old_texture,
                         handle: old_handle,
                         bytes,
-                        since: Instant::now(),
-                    });
+                    }));
                 }
             } else {
                 drop(old_texture);
@@ -1208,12 +1146,10 @@ impl CaptureSession for WgcSession {
             }
             bytes
         };
-        GRAVE_BYTES.fetch_add(bytes, Ordering::AcqRel);
-        bury(Grave::Ring {
+        GRAVEYARD.bury(Box::new(RingGrave {
             shared: Arc::clone(&active.shared),
-            idle_since: None,
             bytes,
-        });
+        }));
     }
 
     fn latest_frame(&mut self) -> Result<Option<rbs_core::media::VideoFrame>, CaptureError> {

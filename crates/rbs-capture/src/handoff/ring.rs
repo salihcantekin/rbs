@@ -1,10 +1,9 @@
-//! Lock-free hand-off of captured surfaces from the capture callback thread to the
-//! render thread.
+//! The lock-free latest-frame ring.
 //!
-//! Platform independent so it is tested and benchmarked on every CI runner. The ring
-//! holds a fixed number of slots; each slot names one shared surface by its handle
-//! value. The producer may replace a slot's surface (after a resize) only while it has
-//! the slot claimed, so consumers never see a handle change under them. A slot's reference count says who uses it:
+//! The ring holds a fixed number of slots; each slot names one surface by a `u64`
+//! value (an NT handle, an `IOSurfaceRef`, a DMA-BUF index). The producer may replace a
+//! slot's surface (after a resize) only while it has the slot claimed, so consumers
+//! never see a value change under them. A slot's reference count says who uses it:
 //!
 //! - `0`: free; the producer may claim it and write into its surface.
 //! - `1` while claimed by the producer, then owned by `latest` once published.
@@ -27,8 +26,9 @@ pub struct FrameMeta {
     pub sequence: u64,
     /// The OS timestamp in nanoseconds, for diagnostics.
     pub source_time: u64,
-    /// Fence value signalled after the copy into the slot's surface.
-    pub fence_value: u64,
+    /// Value of the producer's timeline fence to wait for before reading, or 0 when the
+    /// surface is ready on delivery.
+    pub sync_value: u64,
     /// Picture width in pixels.
     pub width: u32,
     /// Picture height in pixels.
@@ -45,7 +45,7 @@ struct Slot {
     timestamp: AtomicU64,
     sequence: AtomicU64,
     source_time: AtomicU64,
-    fence_value: AtomicU64,
+    sync_value: AtomicU64,
     size: AtomicU64,
 }
 
@@ -131,7 +131,7 @@ impl Ring {
         s.timestamp.store(meta.timestamp, Ordering::Relaxed);
         s.sequence.store(meta.sequence, Ordering::Relaxed);
         s.source_time.store(meta.source_time, Ordering::Relaxed);
-        s.fence_value.store(meta.fence_value, Ordering::Relaxed);
+        s.sync_value.store(meta.sync_value, Ordering::Relaxed);
         s.size.store(
             (u64::from(meta.width) << 32) | u64::from(meta.height),
             Ordering::Relaxed,
@@ -163,7 +163,7 @@ impl Ring {
                 timestamp: s.timestamp.load(Ordering::Relaxed),
                 sequence: s.sequence.load(Ordering::Relaxed),
                 source_time: s.source_time.load(Ordering::Relaxed),
-                fence_value: s.fence_value.load(Ordering::Relaxed),
+                sync_value: s.sync_value.load(Ordering::Relaxed),
                 width: (size >> 32) as u32,
                 height: size as u32,
             },
@@ -242,7 +242,7 @@ mod tests {
             timestamp: sequence * 10,
             sequence,
             source_time: sequence * 7,
-            fence_value: sequence + 1,
+            sync_value: sequence + 1,
             width: 1920,
             height: 1080,
         }

@@ -200,6 +200,42 @@ The port follows semver like the plugin SDK (ADR-0003).
 - Glass-to-delivery latency for display capture: at most one frame interval on the reference machines ([performance-budgets.md](performance-budgets.md)).
 - Idle cost: Installed adapters cost nothing; opened sessions in Standby own nothing (invariant 1), checked by the suite and by the idle-cost checks of the performance budgets.
 
+## Hand-off helpers
+
+`rbs_capture::handoff` holds two platform-independent building blocks that hardware adapters share, so the rules above are implemented and tested once:
+
+```rust
+pub struct Ring;                 // fixed slots, each naming one surface by a u64 value
+impl Ring {
+    pub fn new(values: &[u64]) -> Ring;
+    pub fn claim(&self) -> Option<usize>;              // producer: a free slot
+    pub fn set_handle(&self, slot: usize, value: u64); // producer, claimed slot only
+    pub fn publish(&self, slot: usize, meta: FrameMeta);// producer: newest wins, replaced = dropped
+    pub fn abandon(&self, slot: usize);
+    pub fn count_drop(&self);
+    pub fn take(&self) -> Option<(usize, FrameMeta)>;  // consumer: newest, moves one reference
+    pub fn retain(&self, slot: u64);  pub fn release(&self, slot: u64);
+    pub fn clear(&self) -> bool;      pub fn is_idle(&self) -> bool;
+    pub fn handed_out(&self, slot: usize) -> bool;     // a consumer took the current value
+    pub fn is_free(&self, slot: usize) -> bool;  pub fn dropped(&self) -> u64;
+}
+pub struct FrameMeta { pub timestamp: u64, pub sequence: u64, pub source_time: u64,
+                       pub sync_value: u64, pub width: u32, pub height: u32 }
+
+pub trait Grave: Send { fn is_idle(&self) -> bool { true } fn bytes(&self) -> u64 { 0 } }
+pub struct Graveyard;            // usually a `static` of the adapter
+impl Graveyard {
+    pub const fn new(grace: Duration, period: Duration) -> Graveyard;
+    pub fn bury(&'static self, grave: Box<dyn Grave>); // starts the janitor thread if needed
+    pub fn push(&self, grave: Box<dyn Grave>, now: Instant); // without janitor (tests)
+    pub fn reap(&self, now: Instant) -> bool;          // releases graves idle for `grace`
+    pub fn bytes(&self) -> u64;  pub fn len(&self) -> usize;  pub fn is_empty(&self) -> bool;
+}
+```
+
+- `Ring` only counts; it owns no surfaces and does not implement `LeaseOwner`. The adapter wraps it with the surfaces it names and makes the `LeaseOwner` promises there. Every `Ring` method is lock-free and allocation-free.
+- `Graveyard` keeps a grave while it is referenced and for `grace` after it became idle, then drops it on its janitor thread, which exists only while the graveyard holds something (P13). Adapters bury stopped surface sets and replaced surfaces in it, which implements the native surface rules and keeps frees off the render thread.
+
 ## Pull, not push
 
 The render tick pulls with `latest_frame`; adapters do not push frames into the graph.
@@ -284,4 +320,4 @@ Records written from the reviewer's own output (ADR-0014). The spec stays Draft.
 
 - Per-application capture (all windows of a process, as ScreenCaptureKit offers): a new `TargetKind` in a minor version.
 - How the registry's device watcher tells consumers that the target list changed (event type lives in the registry spec).
-- Whether the latest-slot hand-off primitive should move to `rbs-core` once a second hardware adapter needs it.
+- Whether `rbs_capture::handoff` should move to `rbs-core` once another port (camera-less video inputs, NDI) needs it.
