@@ -41,7 +41,8 @@ permissions = ["gpu-shader"]   # network, filesystem:read, camera, microphone, .
 ## Rules
 
 1. The SDK is semver-versioned. The host supports the current and previous major version.
-2. Settings are declared as a schema; the UI generates forms. Plugins never depend on a UI toolkit.
+2. Settings are declared as a schema; the UI generates forms. Each setting declares a disclosure `level` (`simple`, `advanced`, `expert`; UI rule U2). Plugins never depend on a UI toolkit.
+2a. Dock panels are provided only by sandbox- or process-tier plugins, run isolated from the main UI, receive the design tokens as CSS variables, and are replaced by an error card if they crash or hang (UI rule U14).
 3. Frames and audio buffers are lent to the plugin for the duration of a call. Plugins cannot change timestamps.
 4. Each call has a time budget (default 2 ms per video frame for filters). Over-budget plugins are reported, then bypassed.
 5. Plugins request permissions in the manifest; the user approves them at install time.

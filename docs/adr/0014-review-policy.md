@@ -14,7 +14,7 @@ The project currently has one human maintainer, the owner. The policy must work 
 
 ### Scope of architecture review (principle P14)
 
-New or superseding ADRs; new ports or changes to port traits; changes to the plugin SDK, control API or scene document format; changes to crate layering; new dependencies in core or port crates.
+New or superseding ADRs; new ports or changes to port traits; changes to the plugin SDK, control API or scene document format; changes to crate layering; new dependencies in core or port crates; changes to a core UI flow, new UI components and token name changes (added by ADR-0015).
 
 ### Architecture review
 

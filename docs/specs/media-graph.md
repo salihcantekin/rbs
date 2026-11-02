@@ -73,5 +73,7 @@ Processing time (p50, p99, max), queue depth, frames in/out, drops by reason, re
 
 ## Open questions
 
+- Scene document contract for UI rule U15: scenes owned by one canvas or shared, and per-canvas independent layout of the same source. To be specified with the scene format spec.
+
 - Pull vs push for video sources with their own frame rate higher than the canvas.
 - How much of the scene tree is evaluated on GPU vs CPU (transform animation).

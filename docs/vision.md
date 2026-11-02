@@ -26,7 +26,8 @@ These are features OBS either lacks or provides only through fragile plugins. RB
 7. **Declarative scenes**: scene state is a document; UI, API, scripts and remote panels all issue the same commands, with undo and redo everywhere.
 8. **Observability**: per-node latency, queue depth and drop reasons, exportable through `tracing` / OpenTelemetry.
 9. **Colour-correct by design**: linear-light compositing, SDR and HDR (PQ/HLG) outputs.
-10. **Remote guests** (post-1.0 plugin): browser guests over WebRTC, operator roles and moderation.
+10. **A modern, easy UI by rule**: binding UI rules with timed core tasks, one design system, accessibility and localisation from day one ([UI principles](ui/principles.md)).
+11. **Remote guests** (post-1.0 plugin): browser guests over WebRTC, operator roles and moderation.
 
 ## Non-goals
 

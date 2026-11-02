@@ -20,12 +20,13 @@ A headless live production engine in Rust (capture, compose, encode, stream, rec
 10. **Zero cost when unused.** Design every feature with the Installed / Standby / Active lifecycle (P13, [ADR-0013](docs/adr/0013-zero-cost-when-unused.md)). Installed items add no threads, polling, GPU resources, device handles or per-frame work. Never add per-iteration checks in hot loops that test whether a feature is enabled; keep inactive nodes out of the scheduled graph instead.
 11. **Never review your own architecture.** ADRs, port changes, public contract changes (plugin SDK, control API, scene format), crate layering changes and new core/port dependencies need an independent review: a human, or a fresh AI session that gets only the proposal, specs and code (P14, [ADR-0014](docs/adr/0014-review-policy.md), `architecture-review` skill). An ADR stays `Proposed` until that review is recorded and the owner approves.
 12. **Hot paths need numbers and a human.** Code edited inside, or called directly from, the [hot paths](docs/architecture/hot-paths.md) needs before/after measurements, the `hot-path-review` checklist and a human maintainer's approval (P15). Your own checklist is never the only review.
+13. **UI follows binding rules.** Any UI work follows [UI principles](docs/ui/principles.md) (U1-U20), uses only design tokens and library components from the [design system](docs/specs/ui-design-system.md), and uses [glossary](docs/ui/glossary.md) terms ([ADR-0015](docs/adr/0015-ui-design-rules.md)). Run the `ui-review` skill.
 
 ## Workspace layout
 
 - `crates/rbs-core`: time and clocks, capability model, adapter registry. Foundation for everything.
 - Planned crates and layers: see the table in [overview.md](docs/architecture/overview.md#layers).
-- `docs/adr`: decisions. `docs/specs`: contracts. `docs/roadmap.md`: phases.
+- `docs/adr`: decisions. `docs/specs`: contracts. `docs/ui`: binding UI rules and glossary. `docs/roadmap.md`: phases.
 - `.claude/skills`: repeatable procedures. Use them.
 
 ## Commands
@@ -50,6 +51,7 @@ A task is done when all four pass, the acceptance criteria are met, and specs ar
 | `risky-review` | Before finishing any change with `unsafe`, FFI, GPU interop, threads or public API changes |
 | `hot-path-review` | Any change in or called from a hot path |
 | `architecture-review` | Reviewing someone else's ADR, port or contract change (never your own) |
+| `ui-review` | Any change to UI code, tokens, components, UI text or plugin UI |
 
 ## How to work
 

@@ -19,6 +19,7 @@ RBS aims to be a long-lived alternative to OBS Studio, built on a foundation tha
 | [docs/architecture/overview.md](docs/architecture/overview.md) | How the system fits together |
 | [docs/architecture/principles.md](docs/architecture/principles.md) | The rules every change must respect |
 | [docs/adr/](docs/adr/) | Why each major decision was made |
+| [docs/ui/principles.md](docs/ui/principles.md) | Binding UI rules |
 | [docs/specs/](docs/specs/) | Contracts: backend ports, media graph, plugins, performance budgets |
 | [docs/roadmap.md](docs/roadmap.md) | Phases and exit gates |
 | [CONTRIBUTING.md](CONTRIBUTING.md) | How to contribute |
