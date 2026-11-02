@@ -1,0 +1,28 @@
+[package]
+name = "rbs-mux-flv"
+description = "FLV muxer adapter for RBS (pure Rust): H.264 and AAC, for RTMP and live recordings."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+# Shared arena for small tag headers (`BytesMut::split`), the same crate as `rbs_core::media::Bytes`.
+bytes = "1.9"
+rbs-core = { path = "../rbs-core" }
+rbs-media-format = { path = "../rbs-media-format" }
+rbs-mux = { path = "../rbs-mux" }
+
+[dev-dependencies]
+rbs-mux = { path = "../rbs-mux", features = ["conformance"] }
+# Micro-benchmarks for the mux path (measure-performance skill, ADR-0009).
+criterion = { version = "0.8", default-features = false, features = ["cargo_bench_support"] }
+
+[[bench]]
+name = "mux"
+harness = false
+
+[lints]
+workspace = true
