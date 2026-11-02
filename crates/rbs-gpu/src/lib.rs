@@ -5,6 +5,7 @@
 //! - [`compositor`]: draws a flat list of layers into a linear `Rgba16Float` canvas.
 //! - [`nv12`]: converts a canvas to NV12 (two planes, or one NV12 texture) for encoders.
 //! - [`interop`]: imports native producer surfaces zero-copy as pool textures.
+//! - [`node`]: the render executor's graph runtime and the compositor node.
 //! - [`readback`]: explicit, counted CPU readback (fallback and tests only).
 //!
 //! `Compositor::render`, `Nv12Converter::convert` / `convert_to_surface` and the pool
@@ -17,6 +18,7 @@ pub mod context;
 pub mod error;
 pub mod interop;
 pub mod math;
+pub mod node;
 pub mod nv12;
 pub mod pool;
 pub mod readback;
