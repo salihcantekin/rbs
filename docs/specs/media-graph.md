@@ -34,7 +34,9 @@ Every node follows the Installed / Standby / Active states of [ADR-0013](../adr/
 | --- | --- | --- |
 | Installed | No | None; node type known from metadata only |
 | Standby | No | Released, or kept warm when the scene or user policy says "keep warm" (shown in diagnostics) |
-| Active | Yes | Allocated in `prepare` |
+| Active | Yes, unless `plan()` skips it (below) | Allocated in `prepare` |
+
+When the engine applies a description, it computes `plan()` from the nodes the scene wants Active, then moves every skipped node to Standby (releasing its resources per ADR-0013 rule 5) and moves it back when a later edit makes it schedulable again. So after each swap, Active nodes are exactly the scheduled ones.
 
 - A source becomes Active when it is visible in a scene that is on air, in preview, or feeding any output (including audio-only use). A source that is only in a scene that is not on air and not in preview is Standby.
 - Transitions: Installed -> Standby (create, configure, no resources unless keep-warm), Standby -> Active (`prepare`, then included in the next graph swap), Active -> Standby (removed at the next swap; resources released on a background thread unless keep-warm), Standby -> Installed (destroyed).
@@ -70,7 +72,8 @@ Invariants, each covered by a test:
 
 - Node ids are issued in increasing order and never reused; `restore` brings back a removed node under its old id, all or nothing. Ids exhausted is a typed error.
 - `connect` refuses unknown nodes or pins, kind mismatches, a second link into a single-link input, duplicate links, self links and cycles. The graph is always a DAG (property-tested on random graphs).
-- `plan()` starts from Active nodes and the links between them, then repeatedly drops nodes that are **starved** (a non-source with media inputs but no media link from a scheduled node) or have **no sink** (no path to a node without media outputs). Inactive producers therefore never leave consumers scheduled for nothing, and work that reaches no output costs nothing (ADR-0013).
+- `plan()` starts from Active nodes and the links between them, then repeatedly drops nodes that are **starved** (a filter, encoder, muxer or output with no media link from a scheduled node) or have **no sink** (no path along media links to a scheduled `Output`). Compositors, transitions and mixers are never starved: with no input they still produce a background, black or silence, so an on-air canvas with an empty scene or muted microphones keeps streaming. Work that reaches no output costs nothing (ADR-0013).
+- Data-only nodes (timers, chat events) are event-driven and never in the tick schedule; `plan()` lists them as skipped with `NoSink`. Their runtime comes with the scheduler.
 - Every producer precedes its consumers in `plan().order`; ties are broken by node id, so the same description always gives the same plan.
 - A scheduled node can still see no input on some pins (a hidden layer, one input of a muxer). That is part of its normal `process`, not a feature check.
 

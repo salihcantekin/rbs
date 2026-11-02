@@ -16,6 +16,7 @@ pub enum Lifecycle {
 }
 
 /// A transition the lifecycle does not allow (states move one step at a time).
+#[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct InvalidTransition {
     /// Current state.

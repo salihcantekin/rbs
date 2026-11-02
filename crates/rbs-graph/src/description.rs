@@ -144,13 +144,29 @@ impl fmt::Display for GraphError {
 
 impl std::error::Error for GraphError {}
 
+/// Kinds that produce nothing without media input. Compositors, transitions and mixers
+/// still produce output (background colour, black, silence) with no input, so an
+/// on-air canvas with an empty scene keeps streaming.
+fn needs_input(kind: NodeKind) -> bool {
+    matches!(
+        kind,
+        NodeKind::VideoFilter
+            | NodeKind::AudioFilter
+            | NodeKind::Encoder
+            | NodeKind::Muxer
+            | NodeKind::Output
+    )
+}
+
 /// Why an Active node was left out of a plan.
 #[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum SkipReason {
-    /// It has media inputs but no Active producer feeds any of them.
+    /// It produces nothing without input (filter, encoder, muxer, output) and no
+    /// scheduled node feeds any of its media inputs.
     Starved,
-    /// Nothing it produces reaches an Active sink (a node without media outputs).
+    /// None of its media outputs reaches a scheduled `Output` node. Data-only nodes
+    /// always end up here: they are event-driven, not run by the tick schedule.
     NoSink,
 }
 
@@ -227,6 +243,11 @@ impl GraphDescription {
         if removed.entry.state.is_scheduled() {
             return Err(GraphError::NodeIsActive(id));
         }
+        removed
+            .entry
+            .descriptor
+            .validate()
+            .map_err(GraphError::Descriptor)?;
         let mut next = self.clone();
         next.nodes.push(removed.entry);
         next.nodes.sort_by_key(|n| n.id);
@@ -392,10 +413,10 @@ impl GraphDescription {
     ///
     /// 1. Start from the Active nodes and the links between them. Links from or to a
     ///    non-Active node are left out.
-    /// 2. Repeatedly drop nodes that are [`SkipReason::Starved`] (a non-source with
-    ///    media inputs but no remaining media link into any of them) or
-    ///    [`SkipReason::NoSink`] (no path along remaining links to a node without media
-    ///    outputs), until nothing changes.
+    /// 2. Repeatedly drop nodes that are [`SkipReason::Starved`] (a filter, encoder,
+    ///    muxer or output with no remaining media link into it) or
+    ///    [`SkipReason::NoSink`] (no path along remaining media links to an `Output`),
+    ///    until nothing changes. The engine moves skipped nodes to Standby.
     /// 3. Order the rest so every producer precedes its consumers, ties by node id, so
     ///    the same description always gives the same plan.
     ///
@@ -420,35 +441,22 @@ impl GraphDescription {
                 .collect();
             let mut fed: HashSet<NodeId> = HashSet::new();
             let mut prev: HashMap<NodeId, Vec<NodeId>> = HashMap::new();
-            for l in &links {
-                if l.kind.is_media() {
-                    fed.insert(l.to.node);
-                }
+            for l in links.iter().filter(|l| l.kind.is_media()) {
+                fed.insert(l.to.node);
                 prev.entry(l.to.node).or_default().push(l.from.node);
             }
             let starved: Vec<NodeId> = alive
                 .iter()
                 .copied()
-                .filter(|id| {
-                    let d = &kinds[id].descriptor;
-                    d.kind != NodeKind::Source
-                        && d.inputs.iter().any(|p| p.kind.is_media())
-                        && !fed.contains(id)
-                })
+                .filter(|id| needs_input(kinds[id].descriptor.kind) && !fed.contains(id))
                 .collect();
 
-            // Reverse reachability from sinks.
+            // Reverse reachability from sinks (Output nodes) along media links.
             let mut reaches_sink: HashSet<NodeId> = HashSet::new();
             let mut stack: Vec<NodeId> = alive
                 .iter()
                 .copied()
-                .filter(|id| {
-                    !kinds[id]
-                        .descriptor
-                        .outputs
-                        .iter()
-                        .any(|p| p.kind.is_media())
-                })
+                .filter(|id| kinds[id].descriptor.kind == NodeKind::Output)
                 .collect();
             while let Some(id) = stack.pop() {
                 if reaches_sink.insert(id) {
@@ -645,6 +653,47 @@ mod tests {
     }
 
     #[test]
+    fn empty_scene_and_muted_mixer_keep_streaming() -> Result<(), GraphError> {
+        let mut g = GraphDescription::new();
+        let comp = g.add_node(compositor())?;
+        let hidden = g.add_node(source())?;
+        let enc = g.add_node(encoder())?;
+        let mixer = g.add_node(d(
+            NodeKind::AudioMixer,
+            vec![Pin::many("in", LinkKind::Audio)],
+            vec![Pin::one("out", LinkKind::Audio)],
+        ))?;
+        let mic = g.add_node(d(
+            NodeKind::Source,
+            vec![],
+            vec![Pin::one("audio", LinkKind::Audio)],
+        ))?;
+        let aenc = g.add_node(d(
+            NodeKind::Encoder,
+            vec![Pin::one("in", LinkKind::Audio)],
+            vec![Pin::one("out", LinkKind::Packets)],
+        ))?;
+        let out = g.add_node(output())?;
+        let timer = g.add_node(d(
+            NodeKind::Source,
+            vec![],
+            vec![Pin::one("tick", LinkKind::Data)],
+        ))?;
+        g.connect(hidden, "video", comp, "layers")?;
+        g.connect(comp, "out", enc, "in")?;
+        g.connect(enc, "out", out, "in")?;
+        g.connect(mic, "audio", mixer, "in")?;
+        g.connect(mixer, "out", aenc, "in")?;
+        g.connect(aenc, "out", out, "in")?;
+        activate(&mut g, &[comp, enc, mixer, aenc, out, timer]);
+
+        let plan = g.plan();
+        assert_eq!(plan.order, [comp, enc, mixer, aenc, out]);
+        assert_eq!(plan.skipped, [(timer, SkipReason::NoSink)]);
+        Ok(())
+    }
+
+    #[test]
     fn edits_are_validated() -> Result<(), GraphError> {
         let mut g = GraphDescription::new();
         let a = g.add_node(filter())?;
@@ -725,9 +774,22 @@ mod tests {
             [s, f, p, added]
         );
         assert_eq!(
-            g.restore(removed).err(),
+            g.restore(removed.clone()).err(),
             Some(GraphError::IdNotRestorable(f))
         );
+
+        // A tampered entry is validated again.
+        let mut tampered = g.remove_node(f)?;
+        tampered.entry.descriptor = d(
+            NodeKind::Source,
+            vec![Pin::one("in", LinkKind::Video)],
+            vec![],
+        );
+        assert!(matches!(
+            g.restore(tampered),
+            Err(GraphError::Descriptor(_))
+        ));
+        g.restore(removed)?;
 
         // A restore whose links no longer fit changes nothing.
         let removed_f = g.remove_node(f)?;
