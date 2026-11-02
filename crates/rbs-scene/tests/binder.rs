@@ -129,7 +129,7 @@ fn one_node_per_source_and_compositors_per_shown_scene() {
     assert!(s.binder.compositor(s.tall, Role::Program).is_none());
     assert_eq!(state(&s, cam), Lifecycle::Active);
     assert_eq!(state(&s, comp), Lifecycle::Active);
-    let layers = &report.layers[&(s.wide, Role::Program)];
+    let layers = &report.compositors[&(s.wide, Role::Program)].layers;
     let producers: Vec<NodeId> = layers.iter().map(|l| l.producer).collect();
     assert_eq!(producers, [screen, cam]);
 
@@ -166,7 +166,7 @@ fn hidden_and_unused_sources_are_standby_and_ids_stay_stable() {
             .iter()
             .any(|l| l.from.node == cam && l.to.node == comp)
     );
-    assert_eq!(report.layers[&(s.wide, Role::Program)].len(), 1);
+    assert_eq!(report.compositors[&(s.wide, Role::Program)].layers.len(), 1);
 
     s.col.set_item_visible(item, true).unwrap();
     s.binder.sync(&s.col, &mut s.graph).unwrap();
@@ -195,7 +195,7 @@ fn filters_chain_in_order_and_follow_enable_and_removal() {
             .any(|l| l.from.node == a && l.to.node == b)
     };
     assert!(linked(&s, cam, lut_n) && linked(&s, lut_n, key_n));
-    let layer = &report.layers[&(s.wide, Role::Program)][1];
+    let layer = &report.compositors[&(s.wide, Role::Program)].layers[1];
     assert_eq!(layer.producer, key_n);
 
     s.col.set_filter_enabled(s.cam, lut, false).unwrap();
@@ -203,12 +203,18 @@ fn filters_chain_in_order_and_follow_enable_and_removal() {
     assert!(linked(&s, cam, key_n) && !linked(&s, cam, lut_n));
     assert_eq!(state(&s, lut_n), Lifecycle::Standby);
     assert_eq!(state(&s, key_n), Lifecycle::Active);
-    assert_eq!(report.layers[&(s.wide, Role::Program)][1].producer, key_n);
+    assert_eq!(
+        report.compositors[&(s.wide, Role::Program)].layers[1].producer,
+        key_n
+    );
 
     s.col.remove_filter(s.cam, key).unwrap();
     let report = s.binder.sync(&s.col, &mut s.graph).unwrap();
     assert!(s.graph.node(key_n).is_none());
-    assert_eq!(report.layers[&(s.wide, Role::Program)][1].producer, cam);
+    assert_eq!(
+        report.compositors[&(s.wide, Role::Program)].layers[1].producer,
+        cam
+    );
     let comp = s.binder.compositor(s.wide, Role::Program).unwrap();
     assert!(linked(&s, cam, comp));
 }
@@ -255,24 +261,136 @@ fn resolve_maps_layers_to_scheduled_link_indices() {
     let report = s.binder.sync(&s.col, &mut s.graph).unwrap();
     let comp = s.binder.compositor(s.wide, Role::Program).unwrap();
     attach_output(&mut s.graph, comp);
-    let layers = &report.layers[&(s.wide, Role::Program)];
+    let bound = &report.compositors[&(s.wide, Role::Program)];
     let plan = s.graph.plan();
-    let resolved: Vec<usize> = resolve(comp, layers, &plan)
-        .iter()
-        .map(|(i, _)| *i)
-        .collect();
+    let resolved: Vec<usize> = resolve(bound, &plan).iter().map(|(i, _)| *i).collect();
     assert_eq!(resolved, [0, 1]);
 
-    // If a producer is not scheduled (say its prepare failed), its layer drops out and
-    // the others keep correct indices.
+    // If a producer is not scheduled (say its prepare failed, so the controller's plan
+    // leaves it out), its layer drops out and the others keep correct indices.
     let screen = s.binder.source_node(s.screen).unwrap();
     s.graph.set_state(screen, Lifecycle::Standby).unwrap();
     let plan = s.graph.plan();
-    let resolved: Vec<(usize, SourceId)> = resolve(comp, layers, &plan)
+    let resolved: Vec<(usize, SourceId)> = resolve(bound, &plan)
         .iter()
         .map(|(i, l)| (*i, l.source))
         .collect();
     assert_eq!(resolved, [(0, s.cam)]);
+}
+
+#[test]
+fn links_the_binder_did_not_make_are_left_alone() {
+    let mut s = setup();
+    s.binder = SceneBinder::new(types_with_background);
+    let report = s.binder.sync(&s.col, &mut s.graph).unwrap();
+    let comp = s.binder.compositor(s.wide, Role::Program).unwrap();
+    attach_output(&mut s.graph, comp);
+    // The application links a background into the compositor's other video pin.
+    let bg = s
+        .graph
+        .add_node(Arc::new(NodeDescriptor::new(
+            ty("org.rbs.source.camera"),
+            NodeKind::Source,
+            vec![],
+            vec![Pin::one("video", LinkKind::Video)],
+        )))
+        .unwrap();
+    s.graph.set_state(bg, Lifecycle::Standby).unwrap();
+    s.graph.set_state(bg, Lifecycle::Active).unwrap();
+    s.graph.connect(bg, "video", comp, "background").unwrap();
+    s.binder.sync(&s.col, &mut s.graph).unwrap();
+    assert!(
+        s.graph
+            .links()
+            .iter()
+            .any(|l| l.from.node == bg && l.to.node == comp)
+    );
+    // resolve only counts the layers pin.
+    let plan = s.graph.plan();
+    let bound = &report.compositors[&(s.wide, Role::Program)];
+    assert_eq!(bound.layers_pin, 1);
+    let resolved: Vec<usize> = resolve(bound, &plan).iter().map(|(i, _)| *i).collect();
+    assert_eq!(resolved, [0, 1]);
+}
+
+fn types_with_background(id: &NodeTypeId) -> Option<Arc<NodeDescriptor>> {
+    if id.as_str() == "org.rbs.compositor" {
+        return Some(Arc::new(NodeDescriptor::new(
+            id.clone(),
+            NodeKind::Compositor,
+            vec![
+                Pin::one("background", LinkKind::Video),
+                Pin::many("layers", LinkKind::Video),
+            ],
+            vec![Pin::one("video", LinkKind::Video)],
+        )));
+    }
+    types(id)
+}
+
+#[test]
+fn a_source_faded_to_zero_stays_linked_and_scheduled() {
+    let mut s = setup();
+    let item = s.col.scene(s.live).unwrap().items[1].id;
+    s.col
+        .set_item_layout(item, None, full().with_opacity(0.0))
+        .unwrap();
+    let report = s.binder.sync(&s.col, &mut s.graph).unwrap();
+    let comp = s.binder.compositor(s.wide, Role::Program).unwrap();
+    attach_output(&mut s.graph, comp);
+    let cam = s.binder.source_node(s.cam).unwrap();
+    assert_eq!(report.compositors[&(s.wide, Role::Program)].layers.len(), 1);
+    assert!(s.graph.plan().order.contains(&cam));
+    // Fading in does not change the graph's links.
+    let links = s.graph.links().to_vec();
+    s.col.set_item_layout(item, None, full()).unwrap();
+    s.binder.sync(&s.col, &mut s.graph).unwrap();
+    assert_eq!(s.graph.links(), links.as_slice());
+}
+
+#[test]
+fn nodes_removed_by_someone_else_are_bound_again() {
+    let mut s = setup();
+    let (lut, _) = s
+        .col
+        .add_filter(s.cam, ty("org.rbs.filter.lut"), Settings::new())
+        .unwrap();
+    s.binder.sync(&s.col, &mut s.graph).unwrap();
+    let cam = s.binder.source_node(s.cam).unwrap();
+    s.graph.set_state(cam, Lifecycle::Standby).unwrap();
+    s.graph.remove_node(cam).unwrap();
+    s.binder.sync(&s.col, &mut s.graph).unwrap();
+    let again = s.binder.source_node(s.cam).unwrap();
+    assert_ne!(again, cam);
+    let f = s.binder.filter_node(s.cam, lut).unwrap();
+    assert!(
+        s.graph
+            .links()
+            .iter()
+            .any(|l| l.from.node == again && l.to.node == f)
+    );
+    // No orphan filter nodes left behind.
+    let filters = s
+        .graph
+        .nodes()
+        .iter()
+        .filter(|n| n.descriptor.kind == NodeKind::VideoFilter)
+        .count();
+    assert_eq!(filters, 1);
+}
+
+#[test]
+fn created_and_retired_compositors_are_reported() {
+    let mut s = setup();
+    s.col.set_preview(s.wide, Some(s.live)).unwrap();
+    let report = s.binder.sync(&s.col, &mut s.graph).unwrap();
+    assert!(report.compositors[&(s.wide, Role::Preview)].created);
+    let preview = report.compositors[&(s.wide, Role::Preview)].node;
+    let report = s.binder.sync(&s.col, &mut s.graph).unwrap();
+    assert!(!report.compositors[&(s.wide, Role::Preview)].created);
+    s.col.set_preview(s.wide, None).unwrap();
+    let report = s.binder.sync(&s.col, &mut s.graph).unwrap();
+    assert_eq!(report.retired_compositors, [preview]);
 }
 
 #[test]
@@ -304,7 +422,7 @@ fn unknown_types_are_reported_and_left_out() {
             .problems
             .contains(&BindProblem::UnknownFilterType(f, ty("org.example.fx")))
     );
-    assert_eq!(report.layers[&(s.wide, Role::Program)].len(), 2);
+    assert_eq!(report.compositors[&(s.wide, Role::Program)].layers.len(), 2);
     assert!(s.binder.source_node(ghost).is_none());
 }
 
@@ -363,7 +481,37 @@ fn random_edits_keep_the_graph_in_step() {
             let pick_src = sources.get(rng.below(sources.len())).copied();
             let pick_scene = scenes.get(rng.below(scenes.len())).copied();
             let pick_item = items.get(rng.below(items.len())).copied();
-            let _ = match rng.below(9) {
+            let _ = match rng.below(13) {
+                9 => {
+                    let f = pick_src.and_then(|x| {
+                        s.col
+                            .source(x)
+                            .and_then(|src| src.filters.last().map(|f| (x, f.id)))
+                    });
+                    f.map_or(Ok(()), |(x, f)| s.col.remove_filter(x, f).map(|_| ()))
+                }
+                10 => {
+                    let f = pick_src.and_then(|x| {
+                        s.col
+                            .source(x)
+                            .and_then(|src| src.filters.last().map(|f| (x, f.id)))
+                    });
+                    f.map_or(Ok(()), |(x, f)| s.col.move_filter(x, f, 0).map(|_| ()))
+                }
+                11 => pick_item.map_or(Ok(()), |i| {
+                    let o = if rng.below(2) == 0 { 0.0 } else { 1.0 };
+                    s.col
+                        .set_item_layout(i, None, full().with_opacity(o))
+                        .map(|_| ())
+                }),
+                12 => s
+                    .col
+                    .add_filter(
+                        pick_src.unwrap_or(s.cam),
+                        ty(["org.rbs.filter.key", "org.example.fx"][rng.below(2)]),
+                        Settings::new(),
+                    )
+                    .map(|_| ()),
                 0 => s
                     .col
                     .add_source(
@@ -406,45 +554,118 @@ fn random_edits_keep_the_graph_in_step() {
                 _ => s.col.set_preview(s.wide, pick_scene).map(|_| ()),
             };
             let report = s.binder.sync(&s.col, &mut s.graph).unwrap();
-            let wanted = s.col.wanted_sources();
-            for src in s.col.sources() {
-                let Some(node) = s.binder.source_node(src.id) else {
-                    continue;
-                };
-                let expect = if wanted.contains(&src.id) {
-                    Lifecycle::Active
+            check_consistent(&s, &report, seed, step);
+        }
+    }
+}
+
+/// Checks the graph against the collection without using the binder's own report for
+/// the expectations.
+fn check_consistent(s: &Setup, report: &rbs_scene::binder::BindReport, seed: u64, step: usize) {
+    let wanted = s.col.wanted_sources();
+    let mut accounted = std::collections::BTreeSet::new();
+    let tail_of = |src: SourceId| -> Option<NodeId> {
+        let source = s.col.source(src)?;
+        let node = s.binder.source_node(src)?;
+        Some(
+            source
+                .filters
+                .iter()
+                .rev()
+                .filter(|f| f.enabled)
+                .find_map(|f| s.binder.filter_node(src, f.id))
+                .unwrap_or(node),
+        )
+    };
+    for src in s.col.sources() {
+        let Some(node) = s.binder.source_node(src.id) else {
+            continue;
+        };
+        accounted.insert(node);
+        let expect = if wanted.contains(&src.id) {
+            Lifecycle::Active
+        } else {
+            Lifecycle::Standby
+        };
+        assert_eq!(
+            state(s, node),
+            expect,
+            "seed {seed} step {step}: source state"
+        );
+        // The chain is exactly source -> f1 -> ... -> fn over enabled, bound filters.
+        let mut chain = vec![node];
+        for f in &src.filters {
+            if let Some(fnode) = s.binder.filter_node(src.id, f.id) {
+                accounted.insert(fnode);
+                let fs = if f.enabled {
+                    expect
                 } else {
                     Lifecycle::Standby
                 };
-                assert_eq!(state(&s, node), expect, "seed {seed} step {step}");
+                assert_eq!(state(s, fnode), fs, "seed {seed} step {step}: filter state");
+                if f.enabled {
+                    chain.push(fnode);
+                }
             }
-            for ((canvas, role), layers) in &report.layers {
-                let comp = s.binder.compositor(*canvas, *role).unwrap();
-                let mut linked: Vec<NodeId> = s
-                    .graph
-                    .links()
-                    .iter()
-                    .filter(|l| l.to.node == comp)
-                    .map(|l| l.from.node)
-                    .collect();
-                let mut producers: Vec<NodeId> = layers.iter().map(|l| l.producer).collect();
-                producers.sort();
-                producers.dedup();
-                linked.sort();
-                assert_eq!(linked, producers, "seed {seed} step {step}");
+        }
+        let mut expected_links: Vec<(NodeId, NodeId)> =
+            chain.windows(2).map(|w| (w[0], w[1])).collect();
+        let mut actual: Vec<(NodeId, NodeId)> = s
+            .graph
+            .links()
+            .iter()
+            .filter(|l| chain.contains(&l.to.node) && l.to.node != node)
+            .map(|l| (l.from.node, l.to.node))
+            .collect();
+        expected_links.sort();
+        actual.sort();
+        assert_eq!(
+            actual, expected_links,
+            "seed {seed} step {step}: chain links"
+        );
+        // Disabled filters have no links into them.
+        for f in src.filters.iter().filter(|f| !f.enabled) {
+            if let Some(fnode) = s.binder.filter_node(src.id, f.id) {
+                assert!(!s.graph.links().iter().any(|l| l.to.node == fnode));
             }
-            let bound_sources = s
-                .graph
-                .nodes()
-                .iter()
-                .filter(|n| n.descriptor.kind == NodeKind::Source)
-                .count();
-            let expected = s
-                .col
-                .sources()
-                .filter(|x| s.binder.source_node(x.id).is_some())
-                .count();
-            assert_eq!(bound_sources, expected, "seed {seed} step {step}");
         }
     }
+    for canvas in s.col.canvases() {
+        for (role, scene) in [
+            (Role::Program, canvas.program),
+            (Role::Preview, canvas.preview),
+        ] {
+            let comp = s.binder.compositor(canvas.id, role);
+            let Some(scene) = scene else {
+                assert!(comp.is_none());
+                continue;
+            };
+            let comp = comp.unwrap();
+            accounted.insert(comp);
+            assert!(report.compositors.contains_key(&(canvas.id, role)));
+            let mut expected: Vec<NodeId> = s
+                .col
+                .visible_sources(canvas.id, scene)
+                .unwrap()
+                .into_iter()
+                .filter_map(tail_of)
+                .collect();
+            expected.sort();
+            expected.dedup();
+            let mut linked: Vec<NodeId> = s
+                .graph
+                .links()
+                .iter()
+                .filter(|l| l.to.node == comp)
+                .map(|l| l.from.node)
+                .collect();
+            linked.sort();
+            assert_eq!(
+                linked, expected,
+                "seed {seed} step {step}: compositor links"
+            );
+        }
+    }
+    let all: std::collections::BTreeSet<NodeId> = s.graph.nodes().iter().map(|n| n.id).collect();
+    assert_eq!(all, accounted, "seed {seed} step {step}: unaccounted nodes");
 }

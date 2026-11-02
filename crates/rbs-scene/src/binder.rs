@@ -7,9 +7,9 @@
 //! edits, so the runtime keeps running nodes across a swap (ADR-0020). The wanted
 //! lifecycle state of every node comes from [`SceneCollection::wanted_sources`].
 //!
-//! The graph gets no output nodes from here: outputs (stream, recording, preview
-//! panels, projectors) are attached by the application to
-//! [`SceneBinder::compositor`], and a compositor without one is not scheduled.
+//! The binder owns the nodes and links it creates and touches nothing else. Outputs
+//! (stream, recording, preview panels, projectors) are attached by the application to
+//! [`SceneBinder::compositor`]; a compositor without one is not scheduled.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
@@ -17,11 +17,11 @@ use std::sync::Arc;
 
 use rbs_core::lifecycle::Lifecycle;
 use rbs_graph::description::{GraphDescription, GraphError, Link, NodeId, SchedulePlan};
-use rbs_graph::node::{LinkKind, NodeDescriptor, NodeTypeId};
+use rbs_graph::node::{LinkKind, NodeDescriptor, NodeKind, NodeTypeId};
 
 use crate::collection::{SceneCollection, SceneError};
-use crate::flatten::{Affine2, FlatLayer};
-use crate::model::{CanvasId, Crop, FilterId, ItemId, SourceId};
+use crate::flatten::Affine2;
+use crate::model::{CanvasId, Crop, FilterId, ItemId, SceneId, SourceId};
 
 /// Node type id of the canvas compositor.
 pub const COMPOSITOR_TYPE: &str = "org.rbs.compositor";
@@ -61,7 +61,7 @@ pub struct BoundLayer {
     pub producer: NodeId,
     /// The source.
     pub source: SourceId,
-    /// Item path, as in [`FlatLayer::path`].
+    /// Item path, as in [`FlatLayer::path`](crate::FlatLayer::path).
     pub path: Vec<ItemId>,
     /// Maps the unit square of the cropped source to canvas pixels.
     pub transform: Affine2,
@@ -69,6 +69,21 @@ pub struct BoundLayer {
     pub crop: Crop,
     /// 0.0..=1.0.
     pub opacity: f32,
+}
+
+/// A bound compositor and what it draws.
+#[non_exhaustive]
+#[derive(Debug, Clone, PartialEq)]
+pub struct BoundCompositor {
+    /// Its node.
+    pub node: NodeId,
+    /// Index of the input pin that carries the layers (the compositor type's first
+    /// many-input video pin); pass it to [`resolve`].
+    pub layers_pin: usize,
+    /// Layers, bottom first.
+    pub layers: Vec<BoundLayer>,
+    /// True if this sync created the node (attach outputs to it).
+    pub created: bool,
 }
 
 /// Something the binder could not represent; the rest of the graph is still bound.
@@ -79,9 +94,11 @@ pub enum BindProblem {
     UnknownSourceType(SourceId, NodeTypeId),
     /// No node type with this id is installed; the filter is skipped.
     UnknownFilterType(FilterId, NodeTypeId),
-    /// The source's node type has no video output; it is left out.
+    /// The source's node type is not a `Source` with a video output; it is left out.
+    /// (Audio sources are bound with the mixer, later.)
     NoVideoOutput(SourceId),
-    /// The filter's node type lacks a video input or output; it is skipped.
+    /// The filter's node type is not a `VideoFilter` with video input and output; it
+    /// is skipped.
     NoVideoPins(FilterId),
 }
 
@@ -89,8 +106,11 @@ pub enum BindProblem {
 #[non_exhaustive]
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct BindReport {
-    /// Layers of every bound compositor, bottom first.
-    pub layers: BTreeMap<(CanvasId, Role), Vec<BoundLayer>>,
+    /// Every bound compositor.
+    pub compositors: BTreeMap<(CanvasId, Role), BoundCompositor>,
+    /// Compositor nodes this sync removed (with every link into and out of them,
+    /// including outputs the application attached).
+    pub retired_compositors: Vec<NodeId>,
     /// Parts of the collection that could not be bound.
     pub problems: Vec<BindProblem>,
 }
@@ -99,11 +119,10 @@ pub struct BindReport {
 #[non_exhaustive]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum BindError {
-    /// The compositor node type is not installed or has no many-input and output for
-    /// video.
+    /// The compositor node type is not installed, is not a `Compositor`, or lacks a
+    /// many-input video pin or a video output.
     NoCompositor,
-    /// A graph edit was refused (for example the description was changed by someone
-    /// else in a way that conflicts with the binding).
+    /// A graph edit was refused.
     Graph(GraphError),
     /// The collection could not be flattened (cannot happen for a validated
     /// collection; reported instead of panicking).
@@ -128,10 +147,10 @@ impl From<GraphError> for BindError {
     }
 }
 
-/// Pin names used to wire a node.
+/// Pin names (and the input's index) used to wire a node.
 #[derive(Debug, Clone)]
 struct Pins {
-    input: Option<String>,
+    input: Option<(usize, String)>,
     output: Option<String>,
 }
 
@@ -140,8 +159,9 @@ fn video_pins(descriptor: &NodeDescriptor, many_input: bool) -> Pins {
         input: descriptor
             .inputs
             .iter()
-            .find(|p| p.kind == LinkKind::Video && (p.many || !many_input))
-            .map(|p| p.name.to_string()),
+            .enumerate()
+            .find(|(_, p)| p.kind == LinkKind::Video && (p.many || !many_input))
+            .map(|(i, p)| (i, p.name.to_string())),
         output: descriptor
             .outputs
             .iter()
@@ -162,6 +182,8 @@ struct BoundSource {
     filters: BTreeMap<FilterId, BoundNode>,
     /// Enabled, bound filters in chain order.
     chain: Vec<FilterId>,
+    /// Links this binder made for the chain.
+    chain_links: Vec<Link>,
 }
 
 impl BoundSource {
@@ -171,21 +193,36 @@ impl BoundSource {
             .and_then(|f| self.filters.get(f))
             .unwrap_or(&self.source)
     }
+
+    fn nodes(&self) -> impl Iterator<Item = NodeId> + '_ {
+        std::iter::once(self.source.node).chain(self.filters.values().map(|b| b.node))
+    }
+}
+
+#[derive(Debug, Clone)]
+struct BoundComp {
+    node: BoundNode,
+    /// Links this binder made into the layers pin.
+    links: Vec<Link>,
 }
 
 /// Keeps a graph description in step with a scene collection (scene model spec,
 /// "Graph binding").
 pub struct SceneBinder {
     types: Box<dyn NodeTypes + Send>,
+    state: State,
+}
+
+#[derive(Debug, Clone, Default)]
+struct State {
     sources: BTreeMap<SourceId, BoundSource>,
-    compositors: BTreeMap<(CanvasId, Role), BoundNode>,
+    compositors: BTreeMap<(CanvasId, Role), BoundComp>,
 }
 
 impl fmt::Debug for SceneBinder {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("SceneBinder")
-            .field("sources", &self.sources)
-            .field("compositors", &self.compositors)
+            .field("state", &self.state)
             .finish_non_exhaustive()
     }
 }
@@ -219,19 +256,15 @@ fn add_node(
     Ok(id)
 }
 
+/// Moves a node to Standby and removes it with its links; a node someone else already
+/// removed is fine.
 fn retire(graph: &mut GraphDescription, id: NodeId) -> Result<(), GraphError> {
+    if graph.node(id).is_none() {
+        return Ok(());
+    }
     set_state(graph, id, Lifecycle::Standby)?;
     graph.remove_node(id)?;
     Ok(())
-}
-
-fn links_into(graph: &GraphDescription, node: NodeId) -> Vec<Link> {
-    graph
-        .links()
-        .iter()
-        .copied()
-        .filter(|l| l.to.node == node)
-        .collect()
 }
 
 impl SceneBinder {
@@ -240,19 +273,19 @@ impl SceneBinder {
     pub fn new(types: impl NodeTypes + Send + 'static) -> Self {
         Self {
             types: Box::new(types),
-            sources: BTreeMap::new(),
-            compositors: BTreeMap::new(),
+            state: State::default(),
         }
     }
 
     /// The node of a bound source.
     pub fn source_node(&self, id: SourceId) -> Option<NodeId> {
-        self.sources.get(&id).map(|b| b.source.node)
+        self.state.sources.get(&id).map(|b| b.source.node)
     }
 
     /// The node of a bound filter.
     pub fn filter_node(&self, source: SourceId, id: FilterId) -> Option<NodeId> {
-        self.sources
+        self.state
+            .sources
             .get(&source)
             .and_then(|b| b.filters.get(&id))
             .map(|b| b.node)
@@ -261,60 +294,89 @@ impl SceneBinder {
     /// The compositor node drawing `role` of `canvas`, if that canvas has a scene in
     /// that role. Outputs connect to its video output.
     pub fn compositor(&self, canvas: CanvasId, role: Role) -> Option<NodeId> {
-        self.compositors.get(&(canvas, role)).map(|b| b.node)
+        self.state
+            .compositors
+            .get(&(canvas, role))
+            .map(|b| b.node.node)
     }
 
     /// Updates `graph` so it matches `collection`, keeping node ids of everything that
-    /// still exists. On error neither `graph` nor the binder changes.
-    ///
-    /// Nodes are created Standby; sources the scenes want (`wanted_sources`) and their
-    /// enabled filters, and every bound compositor, are set Active; the rest Standby.
-    /// Nodes for removed sources, filters and compositors are moved to Standby and
-    /// removed. Links: each source's enabled filters are chained in order; each
-    /// compositor gets one link per distinct producer in its scene, in order of first
-    /// appearance, and links it no longer needs are removed.
+    /// still exists. On error neither `graph` nor the binder changes. See the scene
+    /// model spec, "Graph binding", for the rules.
     pub fn sync(
         &mut self,
         collection: &SceneCollection,
         graph: &mut GraphDescription,
     ) -> Result<BindReport, BindError> {
         let mut draft_graph = graph.clone();
-        let mut draft = SceneBinderState {
-            sources: self.sources.clone(),
-            compositors: self.compositors.clone(),
-        };
+        let mut draft = self.state.clone();
         let report = draft.sync(&*self.types, collection, &mut draft_graph)?;
         *graph = draft_graph;
-        self.sources = draft.sources;
-        self.compositors = draft.compositors;
+        self.state = draft;
         Ok(report)
     }
 }
 
-/// The mutable part of a binder, so `sync` can work on a copy.
-struct SceneBinderState {
-    sources: BTreeMap<SourceId, BoundSource>,
-    compositors: BTreeMap<(CanvasId, Role), BoundNode>,
-}
+impl State {
+    /// Forgets bindings whose nodes were removed from the graph by someone else, so
+    /// they are bound again instead of failing forever.
+    fn heal(&mut self, graph: &mut GraphDescription) -> Result<(), GraphError> {
+        let lost: Vec<SourceId> = self
+            .sources
+            .iter()
+            .filter(|(_, b)| graph.node(b.source.node).is_none())
+            .map(|(id, _)| *id)
+            .collect();
+        for id in lost {
+            if let Some(b) = self.sources.remove(&id) {
+                // Its filters would be orphans; remove them so the source is bound
+                // again from scratch.
+                for f in b.filters.values() {
+                    retire(graph, f.node)?;
+                }
+            }
+        }
+        for b in self.sources.values_mut() {
+            let before = b.filters.len();
+            b.filters.retain(|_, f| graph.node(f.node).is_some());
+            b.chain_links.retain(|l| graph.links().contains(l));
+            if b.filters.len() != before {
+                // Rebuild the chain on this sync.
+                for link in b.chain_links.drain(..) {
+                    graph.disconnect(link);
+                }
+                b.chain.clear();
+            }
+        }
+        self.compositors
+            .retain(|_, c| graph.node(c.node.node).is_some());
+        for c in self.compositors.values_mut() {
+            c.links.retain(|l| graph.links().contains(l));
+        }
+        Ok(())
+    }
 
-impl SceneBinderState {
     fn sync(
         &mut self,
         types: &dyn NodeTypes,
         collection: &SceneCollection,
         graph: &mut GraphDescription,
     ) -> Result<BindReport, BindError> {
+        self.heal(graph)?;
         let mut report = BindReport::default();
-        let compositor_type = NodeTypeId::new(COMPOSITOR_TYPE);
         let compositor_desc = types
-            .descriptor(&compositor_type)
+            .descriptor(&NodeTypeId::new(COMPOSITOR_TYPE))
+            .filter(|d| d.kind == NodeKind::Compositor)
             .ok_or(BindError::NoCompositor)?;
         let compositor_pins = video_pins(&compositor_desc, true);
-        if compositor_pins.input.is_none() || compositor_pins.output.is_none() {
+        let Some((layers_pin, _)) = compositor_pins.input.clone() else {
+            return Err(BindError::NoCompositor);
+        };
+        if compositor_pins.output.is_none() {
             return Err(BindError::NoCompositor);
         }
 
-        // Sources and filters that are gone.
+        // Sources that are gone.
         let gone: Vec<SourceId> = self
             .sources
             .keys()
@@ -323,10 +385,9 @@ impl SceneBinderState {
             .collect();
         for id in gone {
             if let Some(bound) = self.sources.remove(&id) {
-                for f in bound.filters.values() {
-                    retire(graph, f.node)?;
+                for node in bound.nodes().collect::<Vec<_>>() {
+                    retire(graph, node)?;
                 }
-                retire(graph, bound.source.node)?;
             }
         }
 
@@ -342,7 +403,7 @@ impl SceneBinderState {
                     continue;
                 };
                 let pins = video_pins(&descriptor, false);
-                if pins.output.is_none() {
+                if descriptor.kind != NodeKind::Source || pins.output.is_none() {
                     report.problems.push(BindProblem::NoVideoOutput(source.id));
                     continue;
                 }
@@ -351,6 +412,7 @@ impl SceneBinderState {
                     source: BoundNode { node, pins },
                     filters: BTreeMap::new(),
                     chain: Vec::new(),
+                    chain_links: Vec::new(),
                 });
             }
             let Some(bound) = self.sources.get_mut(&source.id) else {
@@ -380,7 +442,10 @@ impl SceneBinderState {
                     continue;
                 };
                 let pins = video_pins(&descriptor, false);
-                if pins.input.is_none() || pins.output.is_none() {
+                if descriptor.kind != NodeKind::VideoFilter
+                    || pins.input.is_none()
+                    || pins.output.is_none()
+                {
                     report.problems.push(BindProblem::NoVideoPins(filter.id));
                     continue;
                 }
@@ -394,17 +459,18 @@ impl SceneBinderState {
                 .map(|f| f.id)
                 .collect();
             if chain != bound.chain {
-                // Unhook the old chain: every link into one of this source's filters.
-                for b in bound.filters.values() {
-                    for link in links_into(graph, b.node) {
-                        graph.disconnect(link);
-                    }
+                // Only the links this binder made; links into removed filters went
+                // with their node.
+                for link in bound.chain_links.drain(..) {
+                    graph.disconnect(link);
                 }
                 let mut prev = bound.source.clone();
                 for f in &chain {
                     if let Some(next) = bound.filters.get(f) {
-                        if let (Some(out), Some(input)) = (&prev.pins.output, &next.pins.input) {
-                            graph.connect(prev.node, out, next.node, input)?;
+                        if let (Some(out), Some((_, input))) = (&prev.pins.output, &next.pins.input)
+                        {
+                            let link = graph.connect(prev.node, out, next.node, input)?;
+                            bound.chain_links.push(link);
                         }
                         prev = next.clone();
                     }
@@ -414,7 +480,7 @@ impl SceneBinderState {
         }
 
         // Compositors and their layers.
-        let mut needed: BTreeMap<(CanvasId, Role), crate::model::SceneId> = BTreeMap::new();
+        let mut needed: BTreeMap<(CanvasId, Role), SceneId> = BTreeMap::new();
         for canvas in collection.canvases() {
             if let Some(scene) = canvas.program {
                 needed.insert((canvas.id, Role::Program), scene);
@@ -431,62 +497,86 @@ impl SceneBinderState {
             .collect();
         for key in unneeded {
             if let Some(b) = self.compositors.remove(&key) {
-                retire(graph, b.node)?;
+                retire(graph, b.node.node)?;
+                report.retired_compositors.push(b.node.node);
             }
         }
         for (&(canvas, role), &scene) in &needed {
+            let mut created = false;
             let comp = match self.compositors.entry((canvas, role)) {
-                std::collections::btree_map::Entry::Occupied(e) => e.get().clone(),
+                std::collections::btree_map::Entry::Occupied(e) => e.into_mut(),
                 std::collections::btree_map::Entry::Vacant(e) => {
+                    created = true;
                     let node = add_node(graph, Arc::clone(&compositor_desc))?;
-                    e.insert(BoundNode {
-                        node,
-                        pins: compositor_pins.clone(),
+                    e.insert(BoundComp {
+                        node: BoundNode {
+                            node,
+                            pins: compositor_pins.clone(),
+                        },
+                        links: Vec::new(),
                     })
-                    .clone()
                 }
             };
-            let flat: Vec<FlatLayer> = collection
+            let flat = collection
                 .flatten(canvas, scene)
                 .map_err(BindError::Scene)?;
             let mut layers = Vec::with_capacity(flat.len());
-            let mut producers: Vec<BoundNode> = Vec::new();
             for layer in flat {
-                let Some(bound) = self.sources.get(&layer.source) else {
-                    continue;
-                };
-                let tail = bound.tail().clone();
-                if !producers.iter().any(|p| p.node == tail.node) {
-                    producers.push(tail.clone());
-                }
-                layers.push(BoundLayer {
-                    producer: tail.node,
-                    source: layer.source,
-                    path: layer.path,
-                    transform: layer.transform,
-                    crop: layer.crop,
-                    opacity: layer.opacity,
-                });
-            }
-            let wanted: BTreeSet<NodeId> = producers.iter().map(|p| p.node).collect();
-            let current = links_into(graph, comp.node);
-            for link in &current {
-                if !wanted.contains(&link.from.node) {
-                    graph.disconnect(*link);
+                if let Some(bound) = self.sources.get(&layer.source) {
+                    layers.push(BoundLayer {
+                        producer: bound.tail().node,
+                        source: layer.source,
+                        path: layer.path,
+                        transform: layer.transform,
+                        crop: layer.crop,
+                        opacity: layer.opacity,
+                    });
                 }
             }
-            let linked: BTreeSet<NodeId> = links_into(graph, comp.node)
+            // Producers come from visibility, not from the drawn layers, so a source
+            // faded to opacity 0 stays linked and scheduled.
+            let mut producers: Vec<BoundNode> = Vec::new();
+            let visible = collection
+                .visible_sources(canvas, scene)
+                .map_err(BindError::Scene)?;
+            let ordered = layers
                 .iter()
-                .map(|l| l.from.node)
-                .collect();
-            if let Some(input) = &comp.pins.input {
-                for p in producers.iter().filter(|p| !linked.contains(&p.node)) {
-                    if let Some(out) = &p.pins.output {
-                        graph.connect(p.node, out, comp.node, input)?;
+                .map(|l| l.source)
+                .chain(visible.iter().copied());
+            for source in ordered {
+                if let Some(bound) = self.sources.get(&source) {
+                    let tail = bound.tail();
+                    if !producers.iter().any(|p| p.node == tail.node) {
+                        producers.push(tail.clone());
                     }
                 }
             }
-            report.layers.insert((canvas, role), layers);
+            let wanted: BTreeSet<NodeId> = producers.iter().map(|p| p.node).collect();
+            comp.links.retain(|link| {
+                let keep = wanted.contains(&link.from.node);
+                if !keep {
+                    graph.disconnect(*link);
+                }
+                keep
+            });
+            let linked: BTreeSet<NodeId> = comp.links.iter().map(|l| l.from.node).collect();
+            if let Some((_, input)) = &comp.node.pins.input {
+                for p in producers.iter().filter(|p| !linked.contains(&p.node)) {
+                    if let Some(out) = &p.pins.output {
+                        let link = graph.connect(p.node, out, comp.node.node, input)?;
+                        comp.links.push(link);
+                    }
+                }
+            }
+            report.compositors.insert(
+                (canvas, role),
+                BoundCompositor {
+                    node: comp.node.node,
+                    layers_pin,
+                    layers,
+                    created,
+                },
+            );
         }
 
         // Wanted states.
@@ -508,28 +598,32 @@ impl SceneBinderState {
             }
         }
         for b in self.compositors.values() {
-            set_state(graph, b.node, Lifecycle::Active)?;
+            set_state(graph, b.node.node, Lifecycle::Active)?;
         }
         Ok(report)
     }
 }
 
-/// The layers of `compositor` as the running compositor node sees them: each with the
-/// index of its link among the node's scheduled input links (the order
+/// The layers of a compositor as the running node sees them: each with the index of
+/// its link among the node's scheduled links on `layers_pin` (the order
 /// `rbs_graph::runtime::Inputs` presents them in). Layers whose producer is not
-/// scheduled (for example its `prepare` failed) are left out.
+/// scheduled are left out.
+///
+/// Pass the plan the runtime actually runs, `ApplyReport::plan` from
+/// `rbs_graph::runtime::Controller::apply`: it can leave out nodes whose `prepare`
+/// failed, so it can differ from `GraphDescription::plan`.
 pub fn resolve<'a>(
-    compositor: NodeId,
-    layers: &'a [BoundLayer],
+    compositor: &'a BoundCompositor,
     plan: &SchedulePlan,
 ) -> Vec<(usize, &'a BoundLayer)> {
     let inputs: Vec<NodeId> = plan
         .links
         .iter()
-        .filter(|l| l.to.node == compositor && l.kind == LinkKind::Video)
+        .filter(|l| l.to.node == compositor.node && l.to.pin == compositor.layers_pin)
         .map(|l| l.from.node)
         .collect();
-    layers
+    compositor
+        .layers
         .iter()
         .filter_map(|layer| {
             inputs
