@@ -14,6 +14,7 @@ use std::fmt;
 
 pub use audio::{
     AudioBlock, AudioFormat, AudioSamples, ChannelLayout, DEFAULT_BLOCK_FRAMES, MAX_CHANNELS,
+    PlanarChannels,
 };
 /// Reference-counted, sliceable byte buffer used for packet payloads and CPU frames.
 pub use bytes::Bytes;

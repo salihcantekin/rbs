@@ -24,12 +24,14 @@ Out of scope: how `rbs-gpu` stores and imports textures (its own spec), port tra
 | `Rational` | Positive exact ratio `num/den` (`u32`) | Both parts non-zero |
 | `FrameRate` | Video frames per second, exact (`60000/1001`) | Non-zero |
 | `SampleRate` | Audio sample frames per second | Non-zero |
-| `Cadence` | Timestamps of a regular series: canvas ticks, audio blocks, samples | Item `n` is at `origin + floor(n * den * 1e9 / num)` ns, computed from `n`, so rounding never accumulates; `time_of(index_at_or_before(t)) <= t < time_of(index_at_or_before(t) + 1)` for rates up to 1e9 per second |
+| `Cadence` | Timestamps of a regular series: canvas ticks, audio blocks, samples | Item `n` is at `origin + floor(n * den * 1e9 / num)` ns, computed from `n`, so rounding never accumulates; `time_of(index_at_or_before(t)) <= t < time_of(index_at_or_before(t) + 1)` for rates up to 1e9 per second and times below the saturation point near `u64::MAX` ns (about 584 years) |
 | `Timebase` | Container or protocol tick (`1/90000`, `1/1000`) | `ticks_in` and `duration_of` round to nearest; a round trip is within half a tick |
 | `ClockMapping` | Source-clock ns to master time: `master = anchor + (source - anchor_source) * rate` | Rate clamped to `0.9..=1.1` |
-| `DriftEstimator` | Least-squares fit of `(source, master)` observations into a `ClockMapping` | Observations are averaged into buckets (default 1 s of source time), window of 64 buckets; fixed size, no allocation |
+| `DriftEstimator` | Least-squares fit of `(source, master)` observations into a `ClockMapping` | Observations are averaged into buckets (default 1 s of source time), window of 64 buckets; fixed size, no allocation; a source time that goes backwards restarts the estimate and returns `Observation::Restarted` |
 
-Sources convert their own clock to master time at the edge with `ClockMapping`, fed by a `DriftEstimator` (ADR-0004). Encoders and muxers convert master time to container ticks with `Timebase::ticks_since(stream_origin, t)`.
+Sources convert their own clock to master time at the edge with `ClockMapping`, fed by a `DriftEstimator` (ADR-0004). A new mapping is re-anchored at the newest fitted point, so a source swaps mappings at most once per bucket and keeps its output timestamps monotonic itself (`max(previous + 1 ns, mapped)`).
+
+Encoders and muxers convert master time to container ticks with `Timebase::ticks_since(stream_origin, t)`. Packet durations in ticks are differences of rounded positions, not `ticks_in(duration)`, so they add up exactly.
 
 ### Video (`rbs_core::media::video`)
 
@@ -37,34 +39,55 @@ Sources convert their own clock to master time at the edge with `ClockMapping`, 
 - `PixelFormat` (non-exhaustive): `Bgra8`, `Bgra8Srgb`, `Rgba8`, `Rgba8Srgb`, `Rgb10a2`, `Rgba16Float` (canvas working format), `Nv12`, `P010` (encoder hand-off), `I420`, `I444`, `Yuy2`, `Uyvy`. Each format reports plane count, bit depth, minimum row bytes and rows per plane; chroma sizes round up for odd dimensions.
 - `ColorSpace { primaries, transfer, matrix, range }`, with constants `SRGB`, `LINEAR_BT709` (SDR working space), `LINEAR_BT2020` (HDR working space), `BT709_LIMITED`, `BT709_FULL`, `BT2100_PQ`, `BT2100_HLG`.
 - `MemoryKind` (non-exhaustive): `System`, `Gpu` (engine device texture), `D3d11`, `D3d12`, `Vulkan`, `Metal`, `DmaBuf`, `Cuda`. `as_str()` gives the values used for the `input.memory` style capabilities.
-- `VideoFrame` (non-exhaustive struct with public fields, built with `VideoFrame::new` and `with_*`):
+- `VideoFrame` has private fields and accessors (`format`, `timestamp`, `sequence`, `source_time`, `payload`, `lease`), so the format always matches the payload and a native surface is never separated from its lease:
 
-| Field | Meaning |
+| Accessor | Meaning |
 | --- | --- |
-| `format` | `VideoFormat` |
-| `timestamp` | Presentation time in master-clock time |
-| `sequence` | Per-producer counter, +1 per emitted frame; gaps are drops |
-| `source_time` | Producer-domain ns, diagnostics only, never used for timing |
-| `payload` | Where the pixels are (below) |
-| `lease` | `Option<Lease>` keeping the memory alive (below) |
+| `format()` | `VideoFormat` |
+| `timestamp()` | Presentation time in master-clock time |
+| `sequence()` | Per-producer counter, +1 per emitted frame; gaps are drops |
+| `source_time()` | Producer-domain ns, diagnostics only, never used for timing |
+| `payload()` | Where the pixels are (below) |
+| `lease()` | The `Lease` keeping the memory alive, if any |
 
-- `FramePayload` (non-exhaustive):
-  - `Texture(TextureId)`: a texture in an `rbs-gpu` pool. `TextureId { slot: u32, generation: u32 }` is `Copy`; `rbs-gpu` resolves it in O(1) and rejects stale generations. The default path.
-  - `Native { surface: NativeSurface, sync: SurfaceSync }`: a producer-owned platform surface (D3D11 texture pointer, D3D shared handle, D3D12 resource, IOSurface, Metal texture, Vulkan image, DMA-BUF planes with fourcc and modifier, CUDA memory), stored as raw integer values. Core never dereferences them. `SurfaceSync` says how to wait for the producer: `Ready`, `KeyedMutex`, `TimelineFence`, `SyncFile`.
-  - `System(SystemFrame)`: CPU memory, one `Bytes` buffer plus `PlaneLayout { offset, stride }` per plane. `SystemFrame::new` checks plane count, stride and that every row fits in the buffer.
+- `FramePayload` (non-exhaustive), each built by its own constructor:
+  - `VideoFrame::texture(format, t, TextureId, Option<Lease>)`: a texture in an `rbs-gpu` pool. `TextureId::new(slot, generation)` is `Copy`; `rbs-gpu` resolves it in O(1) and rejects stale generations. The default path.
+  - `unsafe VideoFrame::native(format, t, NativeSurface, SurfaceSync, Lease)`: a producer-owned platform surface (D3D11 texture, D3D shared handle, D3D12 resource, IOSurface, Metal texture, DMA-BUF planes with fourcc and modifier) stored as raw integer values. The lease is mandatory. See [Native surfaces](#native-surfaces).
+  - `VideoFrame::system(t, SystemFrame, Option<Lease>)`: CPU memory, one `Bytes` buffer plus `PlaneLayout { offset, stride }` per plane. `SystemFrame::new(format, data, planes)` checks plane count, stride and that every row fits, and keeps the format it checked; the frame takes its format from it.
+- `VideoFrame::share()` returns a second reference with its own lease reference for texture and system payloads, and `None` for native payloads.
+- `VideoFormat`, `ColorSpace`, `NativeSurface` variants, `SurfaceSync` variants, `StreamDescriptor`, `StreamParams` variants, `EncodedPacket` and `AudioFormat` are `#[non_exhaustive]` and have constructors, so fields such as HDR metadata, a visible rectangle, a discontinuity flag or side data can be added in a minor version.
+
+### Native surfaces
+
+- `VideoFrame::native` is `unsafe`: its caller guarantees every handle refers to a live object of the described kind and format, on the adapter it names (`adapter_luid` for Direct3D, `device_registry_id` for Metal), valid and not written by the producer until the lease is released.
+- A native frame has exactly one consumer: the `rbs-gpu` importer in the source node wrapper. It is not shareable (`share()` returns `None`); the importer takes it apart with `into_native()`.
+- The importer waits on `SurfaceSync` (`Ready`, `KeyedMutex`, `TimelineFence`, `SyncFile`) before its GPU work, and drops the lease only after that GPU work has completed (its own fence), so the producer never reuses a surface the GPU is still reading. A keyed mutex is therefore acquired and released by one consumer only.
+- Downstream nodes, encoders and outputs only ever see `Texture` or `System` payloads. An encoder that needs a native texture gets it from `rbs-gpu` export, not from a capture surface.
+- Surface kinds without a producer yet (Vulkan images, CUDA memory) are not defined; they are added as new non-exhaustive variants with full import information when a producer needs them.
 
 ### Lifetime
 
 - A frame or block passed by reference to a call is lent for that call only (plugin SDK rule 3).
-- To keep a frame (for example in an encoder queue), clone it. A `Lease` is `Arc<dyn LeaseOwner>` plus a `u64` token: `clone` calls `owner.retain(token)`, `drop` calls `owner.release(token)`. The memory returns to its owner when the last clone is dropped.
-- `LeaseOwner::retain` and `release` run on real-time threads: no allocation, blocking, contended locks, logging or panics. Creating a lease (`Lease::adopt`) does not allocate when the owner clones an `Arc` it already holds.
-- Raw handles in `NativeSurface` are valid exactly as long as the frame's lease lives.
+- A `Lease` is `Arc<dyn LeaseOwner>` plus a `u64` token: `clone` calls `owner.retain(token)`, `drop` calls `owner.release(token)`. The memory returns to its owner when the last reference is dropped. Sharing a frame costs two atomic operations (the `Arc` count and the owner's slot count) and one virtual call.
+- `LeaseOwner` is an `unsafe trait`: implementers guarantee that a slot stays valid while its count is above zero and that counts are exact. `Lease::adopt` is `unsafe`: the caller hands over exactly one counted reference.
+- `retain` and `release` run on real-time threads: no allocation, blocking, contended locks, logging or panics (a panic while unwinding aborts the process). Tokens should carry a generation in their upper bits so a stale release can be detected and ignored.
+- The engine keeps its own `Arc` to every owner until the producer has been shut down on a background thread, so the last `Arc` (and the owner's destructor) is never dropped on a real-time thread.
+
+### Plugin boundaries
+
+These Rust types are the in-process contract between engine crates and adapters. They do not cross the plugin boundaries of ADR-0006 as they are: they have no fixed layout, and leases, `Bytes` and raw handles are process-local. The plugin SDK defines mirrors:
+
+- **Native tier:** `#[repr(C)]` mirrors of the format types and a frame descriptor; leases become a C vtable with `retain` / `release` and a token.
+- **Sandbox (WASM) tier:** WIT records for formats; frames and blocks are lent for the duration of a call and pinned by the host, so no lease crosses the boundary; GPU work is host-run WGSL.
+- **Process tier:** the host duplicates NT handles or file descriptors into the plugin process and pins the frame host-side until the plugin acknowledges it.
+
+The plugin SDK spec owns these mirrors; this spec only requires that every field here has a mirror or a documented reason not to.
 
 ### Audio (`rbs_core::media::audio`)
 
 - Inside the engine, samples are `f32`. Device formats are converted at the edge by audio adapters.
 - `AudioFormat { sample_rate, channels: ChannelLayout }`; at most `MAX_CHANNELS = 8` channels; default graph block `DEFAULT_BLOCK_FRAMES = 480` at 48 kHz (10 ms).
-- `AudioBlock<'a>`: a borrowed view with `format`, `timestamp` (master time of the first sample frame), `frames`, and `AudioSamples::Planar` (one slice per channel, the graph's layout) or `AudioSamples::Interleaved`. Constructors check channel count and lengths and never allocate.
+- `AudioBlock<'a>`: a borrowed view with `format`, `timestamp` (master time of the first sample frame), `frames`, and `AudioSamples::Planar(PlanarChannels)` (one slice per channel, the graph's layout) or `AudioSamples::Interleaved`. `PlanarChannels` hides its fixed array, so `MAX_CHANNELS` can grow without breaking users. Constructors check channel count and lengths and never allocate.
 - Owned, queued audio storage (ring buffers, pools) belongs to `rbs-audio`.
 
 ### Packets (`rbs_core::media::packet`)
@@ -72,9 +95,13 @@ Sources convert their own clock to master time at the edge with `ClockMapping`, 
 - `CodecId` (non-exhaustive): `H264`, `Hevc`, `Av1`, `Vp9`, `Aac`, `Opus`; `as_str()` gives capability values.
 - `BitstreamFormat` (non-exhaustive): `AnnexB`, `LengthPrefixed { length_size }`, `Obu`, `Raw`, `Adts`.
 - `StreamDescriptor { codec, bitstream, extradata: Bytes, params }`: produced by an encoder, consumed by muxers and transports. `params` is `StreamParams::Video { format, frame_rate }` or `StreamParams::Audio { format, frame_size }`.
-- `EncodedPacket { codec, bitstream, pts, dts, duration, keyframe, data: Bytes }`. `pts` and `dts` are master-clock times with `dts <= pts`.
+- `EncodedPacket { codec, bitstream, pts, dts, duration, keyframe, data: Bytes }`, built with `EncodedPacket::new` (which clamps `dts` to `pts`) and `with_duration`. `pts` and `dts` are master-clock times with `dts <= pts`.
 - Payloads are `bytes::Bytes` (re-exported as `rbs_core::media::Bytes`): O(1) clone and zero-copy `slice`, so one encode fans out to many outputs without copying.
-- The first clone of a `Bytes` built from a `Vec` allocates its shared header once (later clones do not). Producers therefore share a payload when they create it (clone once, or hand out buffers from a pool that are already shared), so the fan-out path itself never allocates.
+- Creating a payload costs one allocation per packet at the producer (encoder drain): either the `Vec` it is built from, or the shared header of `Bytes::from_owner` when the buffer comes from a pool (requires `bytes` 1.9 or later). The first clone of a `Bytes` built from a `Vec` also allocates its shared header once, so producers share a payload when they create it. After that, fan-out to muxers and transports never allocates.
+
+## Versioning
+
+`rbs-core` is pre-1.0; these types are Draft. Adding variants or fields to the non-exhaustive types above is a minor change. `bytes::Bytes` is part of the public API, so a `bytes` 2.0 would be a breaking change for `rbs-core`.
 
 ## Errors and failure behaviour
 
@@ -84,7 +111,7 @@ Constructors that validate return `MediaError` (non-exhaustive, `Copy`, no alloc
 
 Everything in `rbs_core::timing` and `rbs_core::media` may be called per frame, per block or per packet and is listed in [hot paths](../architecture/hot-paths.md):
 
-- No heap allocation in any method, except `SystemFrame` and `StreamDescriptor` construction where the caller supplies the buffer.
+- No heap allocation in any method. Payload creation at the producer is the one documented exception (see Packets).
 - `VideoFrame` stays at most 192 bytes so moving it through queues stays cheap (tested).
 - Benchmarks: `cargo bench -p rbs-core --bench timing`.
 - Allocation guard: `crates/rbs-core/tests/no_alloc.rs` (dev-dependency `allocation-counter`, test builds only) asserts zero allocations for timing, frame clone/drop with a lease, audio block construction, `SystemFrame` validation and packet fan-out.
@@ -97,4 +124,5 @@ Unit tests in `rbs-core` check: cadence consistency over random times and rates 
 
 - Whether HDR metadata (mastering display, content light level) belongs in `VideoFormat` or in `StreamDescriptor` only.
 - Whether audio needs an owned, pooled block type in core for cross-thread hand-off, or whether `rbs-audio` ring buffers are enough.
-- Vulkan external memory (fd / Win32 handle) as an extra `NativeSurface` variant once a producer needs it.
+- Vulkan and CUDA surface variants, with the full import information (memory handle, layout, queue family, context, plane offsets), once a producer needs them.
+- Whether `bytes` stays in the public API or is wrapped in a newtype before the plugin SDK 1.0 freeze.

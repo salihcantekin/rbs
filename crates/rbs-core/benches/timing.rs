@@ -10,15 +10,16 @@ use std::time::Duration;
 
 use criterion::{Criterion, criterion_group, criterion_main};
 use rbs_core::media::{
-    AudioBlock, AudioFormat, ColorSpace, FramePayload, Lease, LeaseOwner, PixelFormat, Size,
-    TextureId, VideoFormat, VideoFrame,
+    AudioBlock, AudioFormat, ColorSpace, Lease, LeaseOwner, PixelFormat, Size, TextureId,
+    VideoFormat, VideoFrame,
 };
 use rbs_core::time::{ClockMapping, Timestamp};
 use rbs_core::timing::{Cadence, DriftEstimator, FrameRate, Timebase};
 
 struct Pool(AtomicU64);
 
-impl LeaseOwner for Pool {
+// SAFETY: the pool owns no memory; counts are exact atomics.
+unsafe impl LeaseOwner for Pool {
     fn retain(&self, _token: u64) {
         self.0.fetch_add(1, Ordering::Relaxed);
     }
@@ -78,21 +79,20 @@ fn timing(c: &mut Criterion) {
 
 fn media(c: &mut Criterion) {
     let pool = Arc::new(Pool(AtomicU64::new(1)));
-    let frame = VideoFrame::new(
+    // SAFETY: the pool starts with one counted reference for token 1.
+    let lease = unsafe { Lease::adopt(pool.clone(), 1) };
+    let frame = VideoFrame::texture(
         VideoFormat::new(
             Size::new(1920, 1080),
             PixelFormat::Nv12,
             ColorSpace::BT709_LIMITED,
         ),
         Timestamp::from_nanos(1),
-        FramePayload::Texture(TextureId {
-            slot: 1,
-            generation: 1,
-        }),
-    )
-    .with_lease(Lease::adopt(pool.clone(), 1));
+        TextureId::new(1, 1),
+        Some(lease),
+    );
     c.bench_function("video_frame_clone_drop", |b| {
-        b.iter(|| drop(black_box(frame.clone())))
+        b.iter(|| drop(black_box(frame.share())))
     });
     let left = [0.0_f32; 480];
     let right = [0.0_f32; 480];

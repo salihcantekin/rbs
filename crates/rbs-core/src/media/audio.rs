@@ -51,6 +51,7 @@ impl ChannelLayout {
 }
 
 /// The format of an audio stream or link: rate and channels. Samples are `f32`.
+#[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct AudioFormat {
     /// Sample frames per second.
@@ -82,27 +83,49 @@ impl AudioFormat {
     }
 }
 
-/// The samples of a block, borrowed for the duration of a call.
+/// Borrowed per-channel slices of a planar block, all the same length.
 #[derive(Clone, Copy)]
-pub enum AudioSamples<'a> {
-    /// One slice per channel, each `frames` long. The graph's native layout.
-    Planar {
-        /// Channel slices; only the first `count` entries are used.
-        channels: [&'a [f32]; MAX_CHANNELS],
-        /// Number of channels in use.
-        count: usize,
-    },
-    /// Frames of interleaved channels, `frames * channels` long.
-    Interleaved(&'a [f32]),
+pub struct PlanarChannels<'a> {
+    channels: [&'a [f32]; MAX_CHANNELS],
+    count: usize,
 }
 
-impl fmt::Debug for AudioSamples<'_> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            AudioSamples::Planar { count, .. } => write!(f, "Planar({count} channels)"),
-            AudioSamples::Interleaved(s) => write!(f, "Interleaved({} samples)", s.len()),
-        }
+impl<'a> PlanarChannels<'a> {
+    /// Number of channels.
+    pub fn len(&self) -> usize {
+        self.count
     }
+
+    /// True if there are no channels (never the case for a valid block).
+    pub fn is_empty(&self) -> bool {
+        self.count == 0
+    }
+
+    /// Channel `index`, or `None` if out of range.
+    pub fn get(&self, index: usize) -> Option<&'a [f32]> {
+        self.channels[..self.count].get(index).copied()
+    }
+
+    /// The channels in order.
+    pub fn iter(&self) -> impl Iterator<Item = &'a [f32]> + '_ {
+        self.channels[..self.count].iter().copied()
+    }
+}
+
+impl fmt::Debug for PlanarChannels<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{} channels", self.count)
+    }
+}
+
+/// The samples of a block, borrowed for the duration of a call.
+#[non_exhaustive]
+#[derive(Debug, Clone, Copy)]
+pub enum AudioSamples<'a> {
+    /// One slice per channel, each `frames` long. The graph's native layout.
+    Planar(PlanarChannels<'a>),
+    /// Frames of interleaved channels, `frames * channels` long.
+    Interleaved(&'a [f32]),
 }
 
 /// A block of audio lent to a call: format, master-clock time of its first sample,
@@ -149,10 +172,10 @@ impl<'a> AudioBlock<'a> {
             format,
             timestamp,
             frames,
-            samples: AudioSamples::Planar {
+            samples: AudioSamples::Planar(PlanarChannels {
                 channels: stored,
                 count: expected,
-            },
+            }),
         })
     }
 
@@ -202,8 +225,8 @@ impl<'a> AudioBlock<'a> {
     /// out-of-range channels.
     pub fn channel(&self, index: usize) -> Option<&'a [f32]> {
         match self.samples {
-            AudioSamples::Planar { channels, count } if index < count => Some(channels[index]),
-            _ => None,
+            AudioSamples::Planar(channels) => channels.get(index),
+            AudioSamples::Interleaved(_) => None,
         }
     }
 }

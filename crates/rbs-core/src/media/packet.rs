@@ -15,6 +15,7 @@ use crate::time::Timestamp;
 use crate::timing::FrameRate;
 
 /// Video or audio.
+#[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum MediaKind {
     /// Pictures.
@@ -89,10 +90,13 @@ pub enum BitstreamFormat {
     Adts,
 }
 
-/// Codec-specific parameters of a stream.
+/// Codec-specific parameters of a stream. Build with [`StreamParams::video`] or
+/// [`StreamParams::audio`]; variants may gain fields.
+#[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum StreamParams {
     /// A video stream.
+    #[non_exhaustive]
     Video {
         /// Coded picture format: size, encoder input pixel format (bit depth and
         /// chroma subsampling), colour description to signal in the bitstream.
@@ -101,6 +105,7 @@ pub enum StreamParams {
         frame_rate: FrameRate,
     },
     /// An audio stream.
+    #[non_exhaustive]
     Audio {
         /// Sample rate and channels.
         format: AudioFormat,
@@ -109,8 +114,21 @@ pub enum StreamParams {
     },
 }
 
+impl StreamParams {
+    /// Video parameters.
+    pub const fn video(format: VideoFormat, frame_rate: FrameRate) -> Self {
+        Self::Video { format, frame_rate }
+    }
+
+    /// Audio parameters.
+    pub const fn audio(format: AudioFormat, frame_size: u32) -> Self {
+        Self::Audio { format, frame_size }
+    }
+}
+
 /// Describes one encoded stream: produced by an encoder, consumed by muxers and
 /// transports.
+#[non_exhaustive]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StreamDescriptor {
     /// The codec.
@@ -124,7 +142,25 @@ pub struct StreamDescriptor {
     pub params: StreamParams,
 }
 
+impl StreamDescriptor {
+    /// Creates a descriptor.
+    pub fn new(
+        codec: CodecId,
+        bitstream: BitstreamFormat,
+        extradata: Bytes,
+        params: StreamParams,
+    ) -> Self {
+        Self {
+            codec,
+            bitstream,
+            extradata,
+            params,
+        }
+    }
+}
+
 /// One encoded packet (an access unit for video, one or more frames for audio).
+#[non_exhaustive]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EncodedPacket {
     /// The codec.
@@ -144,6 +180,34 @@ pub struct EncodedPacket {
     pub data: Bytes,
 }
 
+impl EncodedPacket {
+    /// Creates a packet with no duration. `dts` is clamped to `pts` if it is later.
+    pub fn new(
+        codec: CodecId,
+        bitstream: BitstreamFormat,
+        pts: Timestamp,
+        dts: Timestamp,
+        keyframe: bool,
+        data: Bytes,
+    ) -> Self {
+        Self {
+            codec,
+            bitstream,
+            pts,
+            dts: dts.min(pts),
+            duration: None,
+            keyframe,
+            data,
+        }
+    }
+
+    /// Sets the duration.
+    pub fn with_duration(mut self, duration: Duration) -> Self {
+        self.duration = Some(duration);
+        self
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -159,15 +223,24 @@ mod tests {
     #[test]
     fn packets_share_payloads_without_copying() {
         let payload = Bytes::from(vec![0_u8, 0, 0, 1, 0x65, 1, 2, 3]);
-        let packet = EncodedPacket {
-            codec: CodecId::H264,
-            bitstream: BitstreamFormat::AnnexB,
-            pts: Timestamp::from_nanos(33),
-            dts: Timestamp::from_nanos(0),
-            duration: Some(Duration::from_millis(16)),
-            keyframe: true,
-            data: payload.clone(),
-        };
+        let packet = EncodedPacket::new(
+            CodecId::H264,
+            BitstreamFormat::AnnexB,
+            Timestamp::from_nanos(33),
+            Timestamp::from_nanos(0),
+            true,
+            payload.clone(),
+        )
+        .with_duration(Duration::from_millis(16));
+        let reordered = EncodedPacket::new(
+            CodecId::H264,
+            BitstreamFormat::AnnexB,
+            Timestamp::from_nanos(10),
+            Timestamp::from_nanos(20),
+            false,
+            Bytes::new(),
+        );
+        assert_eq!(reordered.dts, reordered.pts);
         let fan_out = [packet.clone(), packet.clone()];
         for p in &fan_out {
             assert_eq!(p.data.as_ptr(), payload.as_ptr());
@@ -175,19 +248,19 @@ mod tests {
         let nal = packet.data.slice(4..);
         assert_eq!(nal.as_ptr(), payload[4..].as_ptr());
 
-        let descriptor = StreamDescriptor {
-            codec: CodecId::H264,
-            bitstream: BitstreamFormat::AnnexB,
-            extradata: Bytes::new(),
-            params: StreamParams::Video {
-                format: VideoFormat::new(
+        let descriptor = StreamDescriptor::new(
+            CodecId::H264,
+            BitstreamFormat::AnnexB,
+            Bytes::new(),
+            StreamParams::video(
+                VideoFormat::new(
                     Size::new(1920, 1080),
                     PixelFormat::Nv12,
                     ColorSpace::BT709_LIMITED,
                 ),
-                frame_rate: FrameRate::FPS_60,
-            },
-        };
+                FrameRate::FPS_60,
+            ),
+        );
         assert_eq!(descriptor.codec.media_kind(), MediaKind::Video);
     }
 }

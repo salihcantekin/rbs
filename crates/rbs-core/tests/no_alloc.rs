@@ -6,8 +6,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 use rbs_core::media::{
-    AudioBlock, AudioFormat, Bytes, ColorSpace, EncodedPacket, FramePayload, Lease, LeaseOwner,
-    PixelFormat, PlaneLayout, Size, SystemFrame, TextureId, VideoFormat, VideoFrame,
+    AudioBlock, AudioFormat, Bytes, ColorSpace, EncodedPacket, Lease, LeaseOwner, PixelFormat,
+    PlaneLayout, Size, SystemFrame, TextureId, VideoFormat, VideoFrame,
 };
 use rbs_core::media::{BitstreamFormat, CodecId};
 use rbs_core::time::{ClockMapping, Timestamp};
@@ -15,7 +15,8 @@ use rbs_core::timing::{Cadence, DriftEstimator, FrameRate, SampleRate, Timebase}
 
 struct Pool(AtomicU64);
 
-impl LeaseOwner for Pool {
+// SAFETY: the pool owns no memory; counts are exact atomics.
+unsafe impl LeaseOwner for Pool {
     fn retain(&self, _token: u64) {
         self.0.fetch_add(1, Ordering::Relaxed);
     }
@@ -64,17 +65,17 @@ fn media_values_do_not_allocate() {
     let payload = Bytes::from(vec![0_u8; 1_000]);
     drop((buffer.clone(), payload.clone()));
     assert_no_alloc("media", || {
-        let frame = VideoFrame::new(
+        pool.retain(0);
+        // SAFETY: one reference was counted for token 0 just above.
+        let lease = unsafe { Lease::adopt(Arc::clone(&pool), 0) };
+        let frame = VideoFrame::texture(
             format,
             Timestamp::from_nanos(1),
-            FramePayload::Texture(TextureId {
-                slot: 0,
-                generation: 0,
-            }),
+            TextureId::new(0, 0),
+            Some(lease),
         )
-        .with_sequence(1)
-        .with_lease(Lease::adopt(Arc::clone(&pool), 0));
-        let queued = frame.clone();
+        .with_sequence(1);
+        let queued = frame.share();
         drop(frame);
         drop(queued);
 
@@ -82,7 +83,7 @@ fn media_values_do_not_allocate() {
         let _ = AudioBlock::interleaved(AudioFormat::STEREO_48K, Timestamp::ZERO, &interleaved);
 
         let cpu = SystemFrame::new(
-            &format,
+            format,
             buffer.clone(),
             &[PlaneLayout {
                 offset: 0,
@@ -91,15 +92,14 @@ fn media_values_do_not_allocate() {
         );
         drop(cpu);
 
-        let packet = EncodedPacket {
-            codec: CodecId::H264,
-            bitstream: BitstreamFormat::AnnexB,
-            pts: Timestamp::ZERO,
-            dts: Timestamp::ZERO,
-            duration: None,
-            keyframe: true,
-            data: payload.clone(),
-        };
+        let packet = EncodedPacket::new(
+            CodecId::H264,
+            BitstreamFormat::AnnexB,
+            Timestamp::ZERO,
+            Timestamp::ZERO,
+            true,
+            payload.clone(),
+        );
         let fan_out = (packet.clone(), packet.clone(), packet.data.slice(4..));
         drop(fan_out);
     });

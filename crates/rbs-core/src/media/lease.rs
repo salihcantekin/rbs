@@ -1,5 +1,8 @@
 //! Lifetime of pooled or producer-owned media memory.
 //!
+//! This is a marked low-level module (principle P11): it declares the `unsafe` lease
+//! contract that raw native handles rely on.
+//!
 //! A [`Lease`] tells the owner of a buffer (a texture pool, a capture adapter's
 //! surface ring, an audio buffer pool) when every consumer is done with it. The owner
 //! keeps a reference count per slot; cloning a lease adds a reference, dropping one
@@ -11,9 +14,21 @@ use std::sync::Arc;
 /// The owner side of a lease, implemented by pools and adapters.
 ///
 /// Both methods are called from real-time threads (render loop, encoder workers,
-/// audio thread). They must not allocate, block, take contended locks, log or panic.
-/// A typical implementation is an atomic counter per slot plus a lock-free free list.
-pub trait LeaseOwner: Send + Sync + 'static {
+/// audio thread). They must not allocate, block, take contended locks, log or panic
+/// (a panic during unwinding aborts the process). A typical implementation is an
+/// atomic counter per slot plus a lock-free free list. Tokens should carry a
+/// generation in their upper bits so a stale release can be detected and ignored.
+///
+/// # Safety
+///
+/// Implementers guarantee that the memory or surface identified by a token stays valid
+/// and is not written by the producer while its count of references is above zero,
+/// and that `retain` and `release` keep that count exact. Frames built with
+/// `VideoFrame::native` rely on this for the validity of raw handles.
+///
+/// The engine keeps its own `Arc` to every owner until the producer has been shut down
+/// on a background thread, so the last `Arc` is never dropped on a real-time thread.
+pub unsafe trait LeaseOwner: Send + Sync + 'static {
     /// Adds one reference to the slot identified by `token`.
     fn retain(&self, token: u64);
 
@@ -33,7 +48,12 @@ impl Lease {
     ///
     /// The owner creates leases; `owner` is typically an `Arc` the pool keeps and
     /// clones, so creating a lease does not allocate.
-    pub fn adopt(owner: Arc<dyn LeaseOwner>, token: u64) -> Self {
+    ///
+    /// # Safety
+    ///
+    /// The caller must hold exactly one counted reference to `token` in `owner` and
+    /// hand it over to the lease, which releases it on drop.
+    pub unsafe fn adopt(owner: Arc<dyn LeaseOwner>, token: u64) -> Self {
         Self { owner, token }
     }
 
@@ -76,7 +96,8 @@ pub(crate) mod tests {
         pub(crate) counts: [AtomicI64; 4],
     }
 
-    impl LeaseOwner for CountingOwner {
+    // SAFETY: counts are exact atomics; test slots own no memory.
+    unsafe impl LeaseOwner for CountingOwner {
         fn retain(&self, token: u64) {
             self.counts[token as usize].fetch_add(1, Ordering::Relaxed);
         }
@@ -88,7 +109,8 @@ pub(crate) mod tests {
     impl CountingOwner {
         pub(crate) fn lease(self: &Arc<Self>, token: u64) -> Lease {
             self.retain(token);
-            Lease::adopt(Arc::clone(self) as Arc<dyn LeaseOwner>, token)
+            // SAFETY: the reference counted just above is handed to the lease.
+            unsafe { Lease::adopt(Arc::clone(self) as Arc<dyn LeaseOwner>, token) }
         }
 
         pub(crate) fn count(&self, token: u64) -> i64 {

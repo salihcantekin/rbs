@@ -9,7 +9,7 @@ publish.workspace = true
 
 [dependencies]
 # Shared, sliceable packet payloads (docs/architecture/overview.md#memory-model, ADR-0018).
-bytes = "1"
+bytes = "1.9"
 
 [lints]
 workspace = true

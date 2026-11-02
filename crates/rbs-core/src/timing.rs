@@ -158,6 +158,11 @@ impl fmt::Display for SampleRate {
 ///
 /// Item `n` is at `origin + floor(n * den * 1e9 / num)` nanoseconds. Each position is
 /// computed from its index, so rounding never accumulates over long sessions.
+///
+/// Domain: the ordering guarantees (`time_of(index_at_or_before(t)) <= t <
+/// time_of(index_at_or_before(t) + 1)`) hold for rates up to 1e9 items per second and
+/// for times below the saturation point near `u64::MAX` ns (about 584 years). Above
+/// 1e9 items per second several items share one nanosecond.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Cadence {
     origin: Timestamp,
@@ -285,6 +290,10 @@ impl Timebase {
     }
 
     /// The duration of `ticks` ticks, rounded to the nearest nanosecond (ties up).
+    ///
+    /// Muxers derive packet durations as differences of rounded tick positions
+    /// (`ticks_since(origin, next) - ticks_since(origin, this)`), not as
+    /// `ticks_in(duration)`, so durations add up to positions exactly.
     pub fn duration_of(self, ticks: u64) -> Duration {
         let num = u128::from(ticks) * u128::from(self.0.num) * NANOS_PER_SEC;
         let den = u128::from(self.0.den);
@@ -300,6 +309,15 @@ impl Timebase {
 
 /// Number of averaged points [`DriftEstimator`] keeps.
 pub const DRIFT_WINDOW: usize = 64;
+
+/// The result of [`DriftEstimator::observe`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Observation {
+    /// The observation was added.
+    Accepted,
+    /// The source time went backwards; the estimator restarted from this observation.
+    Restarted,
+}
 
 /// Estimates the mapping from a source clock (an audio device, a capture API) to the
 /// master clock, from observed pairs `(source time, master time)` of the same instant.
@@ -323,7 +341,7 @@ pub struct DriftEstimator {
     /// The bucket being filled: start in source time, sums and count.
     open_start: u64,
     open_sum: (f64, f64),
-    open_count: u32,
+    open_count: u64,
     latest_source: u64,
 }
 
@@ -366,8 +384,17 @@ impl DriftEstimator {
     }
 
     /// Records that `source_nanos` on the source clock and `master` on the master clock
-    /// describe the same instant. Source times are expected to increase.
-    pub fn observe(&mut self, source_nanos: u64, master: Timestamp) {
+    /// describe the same instant.
+    ///
+    /// Source times must not go backwards. If one does (device restart, clock jump),
+    /// the estimator restarts from this observation and returns
+    /// [`Observation::Restarted`] so the caller can log it and re-anchor.
+    pub fn observe(&mut self, source_nanos: u64, master: Timestamp) -> Observation {
+        let mut outcome = Observation::Accepted;
+        if self.base.is_some() && source_nanos < self.latest_source {
+            self.reset();
+            outcome = Observation::Restarted;
+        }
         let (base_source, base_master) = *self.base.get_or_insert((source_nanos, master));
         if self.open_count > 0 && source_nanos.saturating_sub(self.open_start) >= self.bucket_nanos
         {
@@ -381,10 +408,11 @@ impl DriftEstimator {
         self.open_sum = (self.open_sum.0 + x, self.open_sum.1 + y);
         self.open_count += 1;
         self.latest_source = source_nanos;
+        outcome
     }
 
     fn close_bucket(&mut self) {
-        let n = f64::from(self.open_count);
+        let n = self.open_count as f64;
         self.points[self.next] = (self.open_sum.0 / n, self.open_sum.1 / n);
         self.next = (self.next + 1) % DRIFT_WINDOW;
         self.len = (self.len + 1).min(DRIFT_WINDOW);
@@ -394,12 +422,17 @@ impl DriftEstimator {
 
     /// The current mapping estimate, or `None` before the first observation.
     ///
+    /// Each call re-anchors at the newest fitted point, so switching to a new mapping
+    /// can move mapped times slightly backwards. Sources keep their output timestamps
+    /// monotonic themselves (for example `max(previous + 1 ns, mapped)`), and swap
+    /// mappings at most once per bucket.
+    ///
     /// Until two buckets exist the rate is 1.0. Rates are clamped by
     /// [`ClockMapping::with_rate`].
     pub fn mapping(&self) -> Option<ClockMapping> {
         let (base_source, base_master) = self.base?;
         let open = (self.open_count > 0).then(|| {
-            let n = f64::from(self.open_count);
+            let n = self.open_count as f64;
             (self.open_sum.0 / n, self.open_sum.1 / n)
         });
         let points = || self.points[..self.len].iter().copied().chain(open);
@@ -626,6 +659,11 @@ mod tests {
             "{predicted} vs {expected}"
         );
 
+        assert_eq!(
+            est.observe(5, Timestamp::from_nanos(9)),
+            Observation::Restarted
+        );
+        assert_eq!(est.buckets(), 0);
         est.reset();
         assert!(est.mapping().is_none());
     }

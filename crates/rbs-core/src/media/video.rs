@@ -238,6 +238,7 @@ pub enum MatrixCoefficients {
 }
 
 /// Quantisation range of stored values.
+#[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ColorRange {
     /// Full range (0-255 for 8 bits).
@@ -247,6 +248,7 @@ pub enum ColorRange {
 }
 
 /// The complete colour description of a frame or link.
+#[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct ColorSpace {
     /// Gamut.
@@ -260,54 +262,77 @@ pub struct ColorSpace {
 }
 
 impl ColorSpace {
+    /// Creates a colour description.
+    pub const fn new(
+        primaries: ColorPrimaries,
+        transfer: TransferFunction,
+        matrix: MatrixCoefficients,
+        range: ColorRange,
+    ) -> Self {
+        Self {
+            primaries,
+            transfer,
+            matrix,
+            range,
+        }
+    }
+
     /// sRGB, as produced by desktop capture and images.
-    pub const SRGB: Self = Self {
-        primaries: ColorPrimaries::Bt709,
-        transfer: TransferFunction::Srgb,
-        matrix: MatrixCoefficients::Rgb,
-        range: ColorRange::Full,
-    };
+    pub const SRGB: Self = Self::new(
+        ColorPrimaries::Bt709,
+        TransferFunction::Srgb,
+        MatrixCoefficients::Rgb,
+        ColorRange::Full,
+    );
     /// Linear light with BT.709 primaries: the SDR canvas working space.
-    pub const LINEAR_BT709: Self = Self {
-        primaries: ColorPrimaries::Bt709,
-        transfer: TransferFunction::Linear,
-        matrix: MatrixCoefficients::Rgb,
-        range: ColorRange::Full,
-    };
+    pub const LINEAR_BT709: Self = Self::new(
+        ColorPrimaries::Bt709,
+        TransferFunction::Linear,
+        MatrixCoefficients::Rgb,
+        ColorRange::Full,
+    );
     /// Linear light with BT.2020 primaries: the HDR canvas working space.
-    pub const LINEAR_BT2020: Self = Self {
-        primaries: ColorPrimaries::Bt2020,
-        transfer: TransferFunction::Linear,
-        matrix: MatrixCoefficients::Rgb,
-        range: ColorRange::Full,
-    };
+    pub const LINEAR_BT2020: Self = Self::new(
+        ColorPrimaries::Bt2020,
+        TransferFunction::Linear,
+        MatrixCoefficients::Rgb,
+        ColorRange::Full,
+    );
     /// BT.709 limited range Y'CbCr, the usual SDR encoder output.
-    pub const BT709_LIMITED: Self = Self {
-        primaries: ColorPrimaries::Bt709,
-        transfer: TransferFunction::Bt709,
-        matrix: MatrixCoefficients::Bt709,
-        range: ColorRange::Limited,
-    };
+    pub const BT709_LIMITED: Self = Self::new(
+        ColorPrimaries::Bt709,
+        TransferFunction::Bt709,
+        MatrixCoefficients::Bt709,
+        ColorRange::Limited,
+    );
     /// BT.709 full range Y'CbCr.
-    pub const BT709_FULL: Self = Self {
-        range: ColorRange::Full,
-        ..Self::BT709_LIMITED
-    };
+    pub const BT709_FULL: Self = Self::new(
+        ColorPrimaries::Bt709,
+        TransferFunction::Bt709,
+        MatrixCoefficients::Bt709,
+        ColorRange::Full,
+    );
     /// BT.2100 PQ limited range Y'CbCr (HDR10).
-    pub const BT2100_PQ: Self = Self {
-        primaries: ColorPrimaries::Bt2020,
-        transfer: TransferFunction::Pq,
-        matrix: MatrixCoefficients::Bt2020Ncl,
-        range: ColorRange::Limited,
-    };
+    pub const BT2100_PQ: Self = Self::new(
+        ColorPrimaries::Bt2020,
+        TransferFunction::Pq,
+        MatrixCoefficients::Bt2020Ncl,
+        ColorRange::Limited,
+    );
     /// BT.2100 HLG limited range Y'CbCr.
-    pub const BT2100_HLG: Self = Self {
-        transfer: TransferFunction::Hlg,
-        ..Self::BT2100_PQ
-    };
+    pub const BT2100_HLG: Self = Self::new(
+        ColorPrimaries::Bt2020,
+        TransferFunction::Hlg,
+        MatrixCoefficients::Bt2020Ncl,
+        ColorRange::Limited,
+    );
 }
 
 /// The picture format of a frame: size, pixel layout and colour.
+///
+/// Non-exhaustive so that later fields (for example HDR metadata or a visible
+/// rectangle) can be added without breaking users; build it with [`VideoFormat::new`].
+#[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct VideoFormat {
     /// Size in pixels.
@@ -348,8 +373,6 @@ pub enum MemoryKind {
     Metal,
     /// Linux DMA-BUF file descriptors.
     DmaBuf,
-    /// CUDA device memory.
-    Cuda,
 }
 
 impl MemoryKind {
@@ -363,7 +386,6 @@ impl MemoryKind {
             MemoryKind::Vulkan => "vulkan",
             MemoryKind::Metal => "metal",
             MemoryKind::DmaBuf => "dmabuf",
-            MemoryKind::Cuda => "cuda",
         }
     }
 }
@@ -375,13 +397,29 @@ impl fmt::Display for MemoryKind {
 }
 
 /// Opaque id of a texture in an `rbs-gpu` pool: a slab slot plus a generation that
-/// detects use of a slot after it was recycled. Only `rbs-gpu` gives these meaning.
+/// detects use of a slot after it was recycled. Only `rbs-gpu` gives these meaning,
+/// and it rejects ids whose generation does not match the slot.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct TextureId {
+    slot: u32,
+    generation: u32,
+}
+
+impl TextureId {
+    /// Creates an id. Called by `rbs-gpu` pools.
+    pub const fn new(slot: u32, generation: u32) -> Self {
+        Self { slot, generation }
+    }
+
     /// Slab slot index.
-    pub slot: u32,
+    pub const fn slot(self) -> u32 {
+        self.slot
+    }
+
     /// Incremented each time the slot is reused.
-    pub generation: u32,
+    pub const fn generation(self) -> u32 {
+        self.generation
+    }
 }
 
 /// Which Direct3D API a shared handle was created for.
@@ -410,10 +448,8 @@ pub const MAX_DMABUF_PLANES: usize = 4;
 /// A Linux DMA-BUF surface as delivered by PipeWire, V4L2 or a Wayland compositor.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct DmaBufSurface {
-    /// DRM fourcc code of the native layout.
-    pub fourcc: u32,
-    /// DRM format modifier (tiling / compression).
-    pub modifier: u64,
+    fourcc: u32,
+    modifier: u64,
     planes: [DmaBufPlane; MAX_DMABUF_PLANES],
     plane_count: u8,
 }
@@ -437,6 +473,16 @@ impl DmaBufSurface {
         })
     }
 
+    /// DRM fourcc code of the native layout.
+    pub fn fourcc(&self) -> u32 {
+        self.fourcc
+    }
+
+    /// DRM format modifier (tiling / compression).
+    pub fn modifier(&self) -> u64 {
+        self.modifier
+    }
+
     /// The planes in use.
     pub fn planes(&self) -> &[DmaBufPlane] {
         &self.planes[..usize::from(self.plane_count)]
@@ -446,20 +492,28 @@ impl DmaBufSurface {
 /// A producer-owned native GPU surface, described as plain data.
 ///
 /// Values are raw handle and pointer values exactly as the platform API returns them.
-/// Core never dereferences them; `rbs-gpu` imports them (in its `unsafe` interop
-/// module), and the producer keeps them valid until the frame's [`Lease`] is released.
+/// Core never dereferences them. A frame carrying one can only be built with the
+/// `unsafe` [`VideoFrame::native`], whose caller guarantees validity for the life of
+/// the frame's [`Lease`]; `rbs-gpu` imports it exactly once (see
+/// `docs/specs/media-types.md#native-surfaces`).
+///
+/// Variants are non-exhaustive: build them with the constructor functions so fields can
+/// be added later (for example a Vulkan memory handle) without breaking producers.
 #[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum NativeSurface {
-    /// Windows: an `ID3D11Texture2D*` and its array slice, on a device that shares
-    /// the engine adapter.
+    /// Windows: an `ID3D11Texture2D*` and its array slice.
+    #[non_exhaustive]
     D3d11Texture {
         /// The interface pointer value.
         texture: usize,
         /// Array slice to read.
         array_index: u32,
+        /// LUID of the adapter the texture lives on; must match the engine adapter.
+        adapter_luid: u64,
     },
     /// Windows: a shareable Direct3D resource handle.
+    #[non_exhaustive]
     D3dSharedHandle {
         /// The handle value.
         handle: u64,
@@ -467,39 +521,76 @@ pub enum NativeSurface {
         nt: bool,
         /// The API the resource was created with.
         api: D3dApi,
+        /// LUID of the adapter the resource lives on.
+        adapter_luid: u64,
     },
     /// Windows: an `ID3D12Resource*`.
+    #[non_exhaustive]
     D3d12Resource {
         /// The interface pointer value.
         resource: usize,
+        /// LUID of the adapter the resource lives on; must match the engine adapter.
+        adapter_luid: u64,
     },
     /// macOS: an `IOSurfaceRef`.
+    #[non_exhaustive]
     IoSurface {
         /// The reference value.
         surface: usize,
     },
     /// macOS: an `MTLTexture` object pointer.
+    #[non_exhaustive]
     MetalTexture {
         /// The object pointer value.
         texture: usize,
-    },
-    /// A `VkImage` handle on a device that shares the engine adapter.
-    VulkanImage {
-        /// The handle value.
-        image: u64,
+        /// Registry id of the `MTLDevice` it was created on.
+        device_registry_id: u64,
     },
     /// Linux: DMA-BUF planes.
     DmaBuf(DmaBufSurface),
-    /// CUDA device memory.
-    Cuda {
-        /// Device pointer value.
-        device_ptr: u64,
-        /// Bytes per row.
-        pitch: u32,
-    },
 }
 
 impl NativeSurface {
+    /// A Direct3D 11 texture.
+    pub const fn d3d11_texture(texture: usize, array_index: u32, adapter_luid: u64) -> Self {
+        Self::D3d11Texture {
+            texture,
+            array_index,
+            adapter_luid,
+        }
+    }
+
+    /// A shareable Direct3D resource handle.
+    pub const fn d3d_shared_handle(handle: u64, nt: bool, api: D3dApi, adapter_luid: u64) -> Self {
+        Self::D3dSharedHandle {
+            handle,
+            nt,
+            api,
+            adapter_luid,
+        }
+    }
+
+    /// A Direct3D 12 resource.
+    pub const fn d3d12_resource(resource: usize, adapter_luid: u64) -> Self {
+        Self::D3d12Resource {
+            resource,
+            adapter_luid,
+        }
+    }
+
+    /// An IOSurface.
+    pub const fn io_surface(surface: usize) -> Self {
+        Self::IoSurface { surface }
+    }
+
+    /// A Metal texture.
+    pub const fn metal_texture(texture: usize, device_registry_id: u64) -> Self {
+        Self::MetalTexture {
+            texture,
+            device_registry_id,
+        }
+    }
+
     /// The memory kind of this surface.
     pub const fn memory_kind(&self) -> MemoryKind {
         match self {
@@ -512,20 +603,21 @@ impl NativeSurface {
             NativeSurface::IoSurface { .. } | NativeSurface::MetalTexture { .. } => {
                 MemoryKind::Metal
             }
-            NativeSurface::VulkanImage { .. } => MemoryKind::Vulkan,
             NativeSurface::DmaBuf(_) => MemoryKind::DmaBuf,
-            NativeSurface::Cuda { .. } => MemoryKind::Cuda,
         }
     }
 }
 
-/// How a consumer must synchronise with the producer before reading a surface.
+/// How the single importer of a native surface (`rbs-gpu`) waits for the producer
+/// before reading it. Release back to the producer is signalled by dropping the lease
+/// after the importer's own GPU work on the surface has completed.
 #[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum SurfaceSync {
     /// The surface is ready when the frame is delivered.
     Ready,
     /// DXGI keyed mutex: acquire with `acquire_key`, release with `release_key`.
+    #[non_exhaustive]
     KeyedMutex {
         /// Key to acquire before reading.
         acquire_key: u64,
@@ -534,6 +626,7 @@ pub enum SurfaceSync {
     },
     /// A shared timeline fence (D3D12 or Vulkan timeline semaphore): wait until it
     /// reaches `value`.
+    #[non_exhaustive]
     TimelineFence {
         /// Shared handle value of the fence.
         handle: u64,
@@ -541,10 +634,31 @@ pub enum SurfaceSync {
         value: u64,
     },
     /// A Linux sync file descriptor to wait on.
+    #[non_exhaustive]
     SyncFile {
         /// The file descriptor; owned by the producer.
         fd: i32,
     },
+}
+
+impl SurfaceSync {
+    /// A keyed mutex.
+    pub const fn keyed_mutex(acquire_key: u64, release_key: u64) -> Self {
+        Self::KeyedMutex {
+            acquire_key,
+            release_key,
+        }
+    }
+
+    /// A shared timeline fence.
+    pub const fn timeline_fence(handle: u64, value: u64) -> Self {
+        Self::TimelineFence { handle, value }
+    }
+
+    /// A sync file.
+    pub const fn sync_file(fd: i32) -> Self {
+        Self::SyncFile { fd }
+    }
 }
 
 /// Byte layout of one plane inside a [`SystemFrame`] buffer.
@@ -559,12 +673,14 @@ pub struct PlaneLayout {
 /// Maximum planes of a pixel format.
 pub const MAX_PLANES: usize = 3;
 
-/// Pixels in system memory: one shared buffer and the layout of each plane in it.
+/// Pixels in system memory: one shared buffer, the layout of each plane in it, and the
+/// format the layout was checked against.
 ///
 /// This is the fallback path (software encoders, webcams that deliver CPU buffers,
 /// readback). Its use is counted in metrics (principle P4).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SystemFrame {
+    format: VideoFormat,
     data: Bytes,
     planes: [PlaneLayout; MAX_PLANES],
     plane_count: u8,
@@ -574,7 +690,7 @@ impl SystemFrame {
     /// Creates a system-memory frame after checking that `planes` matches `format`
     /// and that every row fits in `data`.
     pub fn new(
-        format: &VideoFormat,
+        format: VideoFormat,
         data: Bytes,
         planes: &[PlaneLayout],
     ) -> Result<Self, MediaError> {
@@ -613,10 +729,16 @@ impl SystemFrame {
             stored[index] = *layout;
         }
         Ok(Self {
+            format,
             data,
             planes: stored,
             plane_count: planes.len() as u8,
         })
+    }
+
+    /// The format the layout was validated against.
+    pub fn format(&self) -> &VideoFormat {
+        &self.format
     }
 
     /// The whole buffer.
@@ -639,11 +761,12 @@ impl SystemFrame {
 
 /// Where the pixels of a [`VideoFrame`] are.
 #[non_exhaustive]
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq)]
 pub enum FramePayload {
     /// A texture of the engine GPU device, from an `rbs-gpu` pool. The default path.
     Texture(TextureId),
-    /// A producer-owned native surface that `rbs-gpu` imports.
+    /// A producer-owned native surface that `rbs-gpu` imports exactly once.
+    #[non_exhaustive]
     Native {
         /// The surface.
         surface: NativeSurface,
@@ -667,39 +790,77 @@ impl FramePayload {
 
 /// One video frame: format, master-clock time and where its pixels are.
 ///
-/// A frame passed to a call (`&VideoFrame`) is lent for that call only. To keep it
-/// longer (for example in an encoder queue), clone it: the clone holds its own
-/// [`Lease`], so the producer cannot reuse the memory until it is dropped.
-#[non_exhaustive]
-#[derive(Debug, Clone)]
+/// Fields are private so the format always matches the payload and a native surface is
+/// never separated from the lease that keeps it valid.
+///
+/// A frame passed to a call (`&VideoFrame`) is lent for that call only. To keep a GPU
+/// or system-memory frame longer (for example in an encoder queue), use
+/// [`VideoFrame::share`]: the copy holds its own [`Lease`] reference. Frames with a
+/// native payload cannot be shared; `rbs-gpu` imports them once and shares the result.
+#[derive(Debug)]
 pub struct VideoFrame {
-    /// Picture format.
-    pub format: VideoFormat,
-    /// Presentation time in master-clock time (ADR-0004).
-    pub timestamp: Timestamp,
-    /// Per-producer counter, incremented for every frame the producer emits, so gaps
-    /// show dropped frames.
-    pub sequence: u64,
-    /// The producer's own timestamp in its clock domain, in nanoseconds, for
-    /// diagnostics only. Never used for timing.
-    pub source_time: Option<u64>,
-    /// Where the pixels are.
-    pub payload: FramePayload,
-    /// Keeps the pixel memory alive and returns it to its owner when the last clone
-    /// is dropped. `None` when the payload needs no lifetime tracking.
-    pub lease: Option<Lease>,
+    format: VideoFormat,
+    timestamp: Timestamp,
+    sequence: u64,
+    source_time: Option<u64>,
+    payload: FramePayload,
+    lease: Option<Lease>,
 }
 
 impl VideoFrame {
-    /// Creates a frame with sequence 0, no source time and no lease.
-    pub fn new(format: VideoFormat, timestamp: Timestamp, payload: FramePayload) -> Self {
+    /// A frame in an `rbs-gpu` pool texture. `lease` keeps the slot from being reused;
+    /// a stale id is still detected by its generation.
+    pub fn texture(
+        format: VideoFormat,
+        timestamp: Timestamp,
+        texture: TextureId,
+        lease: Option<Lease>,
+    ) -> Self {
         Self {
             format,
             timestamp,
             sequence: 0,
             source_time: None,
-            payload,
-            lease: None,
+            payload: FramePayload::Texture(texture),
+            lease,
+        }
+    }
+
+    /// A frame in system memory. The format is the one the layout was validated
+    /// against.
+    pub fn system(timestamp: Timestamp, frame: SystemFrame, lease: Option<Lease>) -> Self {
+        Self {
+            format: frame.format,
+            timestamp,
+            sequence: 0,
+            source_time: None,
+            payload: FramePayload::System(frame),
+            lease,
+        }
+    }
+
+    /// A frame in a producer-owned native surface.
+    ///
+    /// # Safety
+    ///
+    /// The caller guarantees that every handle and pointer value in `surface` (and in
+    /// `sync`) refers to a live object of the described kind and `format`, on the
+    /// adapter it names, and stays valid until `lease` and every reference it hands
+    /// out are released. The producer must not write to the surface during that time.
+    pub unsafe fn native(
+        format: VideoFormat,
+        timestamp: Timestamp,
+        surface: NativeSurface,
+        sync: SurfaceSync,
+        lease: Lease,
+    ) -> Self {
+        Self {
+            format,
+            timestamp,
+            sequence: 0,
+            source_time: None,
+            payload: FramePayload::Native { surface, sync },
+            lease: Some(lease),
         }
     }
 
@@ -709,21 +870,75 @@ impl VideoFrame {
         self
     }
 
-    /// Sets the producer-domain timestamp.
+    /// Sets the producer-domain timestamp (diagnostics only).
     pub fn with_source_time(mut self, source_nanos: u64) -> Self {
         self.source_time = Some(source_nanos);
         self
     }
 
-    /// Attaches the lease that keeps the pixel memory alive.
-    pub fn with_lease(mut self, lease: Lease) -> Self {
-        self.lease = Some(lease);
-        self
+    /// Picture format.
+    pub fn format(&self) -> &VideoFormat {
+        &self.format
+    }
+
+    /// Presentation time in master-clock time (ADR-0004).
+    pub fn timestamp(&self) -> Timestamp {
+        self.timestamp
+    }
+
+    /// Per-producer counter, incremented for every frame the producer emits, so gaps
+    /// show dropped frames.
+    pub fn sequence(&self) -> u64 {
+        self.sequence
+    }
+
+    /// The producer's own timestamp in its clock domain, in nanoseconds, for
+    /// diagnostics only. Never used for timing.
+    pub fn source_time(&self) -> Option<u64> {
+        self.source_time
+    }
+
+    /// Where the pixels are.
+    pub fn payload(&self) -> &FramePayload {
+        &self.payload
+    }
+
+    /// The lease keeping the pixel memory alive, if any.
+    pub fn lease(&self) -> Option<&Lease> {
+        self.lease.as_ref()
     }
 
     /// Where the pixels live.
     pub const fn memory_kind(&self) -> MemoryKind {
         self.payload.memory_kind()
+    }
+
+    /// A second reference to the same pixels, holding its own lease reference.
+    /// `None` for native payloads, which have exactly one consumer (`rbs-gpu`).
+    pub fn share(&self) -> Option<Self> {
+        let payload = match &self.payload {
+            FramePayload::Texture(id) => FramePayload::Texture(*id),
+            FramePayload::System(frame) => FramePayload::System(frame.clone()),
+            FramePayload::Native { .. } => return None,
+        };
+        Some(Self {
+            format: self.format,
+            timestamp: self.timestamp,
+            sequence: self.sequence,
+            source_time: self.source_time,
+            payload,
+            lease: self.lease.clone(),
+        })
+    }
+
+    /// Splits a native frame into its surface, sync and lease, for the importer
+    /// (`rbs-gpu`). Returns `None` (dropping the frame) if the payload is not native;
+    /// check [`VideoFrame::payload`] first.
+    pub fn into_native(self) -> Option<(NativeSurface, SurfaceSync, Lease)> {
+        match (self.payload, self.lease) {
+            (FramePayload::Native { surface, sync }, Some(lease)) => Some((surface, sync, lease)),
+            _ => None,
+        }
     }
 }
 
@@ -783,7 +998,7 @@ mod tests {
                 stride: 2048,
             },
         ];
-        let Ok(frame) = SystemFrame::new(&format, data.clone(), &planes) else {
+        let Ok(frame) = SystemFrame::new(format, data.clone(), &planes) else {
             panic!("valid layout");
         };
         assert_eq!(frame.planes().len(), 2);
@@ -793,8 +1008,12 @@ mod tests {
         );
         assert!(frame.plane(2).is_none());
 
+        let video = VideoFrame::system(Timestamp::from_nanos(4), frame, None);
+        assert_eq!(video.format(), &format);
+        assert_eq!(video.memory_kind(), MemoryKind::System);
+
         assert_eq!(
-            SystemFrame::new(&format, data.clone(), &planes[..1]),
+            SystemFrame::new(format, data.clone(), &planes[..1]),
             Err(MediaError::PlaneCount {
                 expected: 2,
                 actual: 1
@@ -808,17 +1027,17 @@ mod tests {
             },
         ];
         assert!(matches!(
-            SystemFrame::new(&format, data.clone(), &narrow),
+            SystemFrame::new(format, data.clone(), &narrow),
             Err(MediaError::StrideTooSmall { plane: 1, .. })
         ));
         let short = data.slice(..y + 539 * 2048 + 1919);
         assert!(matches!(
-            SystemFrame::new(&format, short, &planes),
+            SystemFrame::new(format, short, &planes),
             Err(MediaError::BufferTooSmall { plane: 1, .. })
         ));
         let empty = VideoFormat::new(Size::new(0, 1080), PixelFormat::Nv12, ColorSpace::SRGB);
         assert_eq!(
-            SystemFrame::new(&empty, data, &planes),
+            SystemFrame::new(empty, data, &planes),
             Err(MediaError::EmptySize)
         );
     }
@@ -834,6 +1053,7 @@ mod tests {
             panic!("two planes are valid");
         };
         assert_eq!(surface.planes().len(), 2);
+        assert_eq!(surface.fourcc(), 0x3432_5241);
         assert!(DmaBufSurface::new(0, 0, &[]).is_err());
         assert!(DmaBufSurface::new(0, 0, &[plane; 5]).is_err());
         assert_eq!(
@@ -843,41 +1063,58 @@ mod tests {
     }
 
     #[test]
-    fn frames_report_memory_kind_and_hold_leases() {
+    fn shared_frames_hold_their_own_lease() {
         let owner = Arc::new(CountingOwner::default());
-        let gpu = VideoFrame::new(
+        let gpu = VideoFrame::texture(
             nv12_1080p(),
             Timestamp::from_nanos(1),
-            FramePayload::Texture(TextureId {
-                slot: 3,
-                generation: 1,
-            }),
+            TextureId::new(3, 1),
+            Some(owner.lease(2)),
         )
         .with_sequence(9)
-        .with_source_time(77)
-        .with_lease(owner.lease(2));
+        .with_source_time(77);
         assert_eq!(gpu.memory_kind(), MemoryKind::Gpu);
-        assert_eq!((gpu.sequence, gpu.source_time), (9, Some(77)));
+        assert_eq!((gpu.sequence(), gpu.source_time()), (9, Some(77)));
 
-        let queued = gpu.clone();
+        let Some(queued) = gpu.share() else {
+            panic!("texture frames can be shared");
+        };
+        assert_eq!(queued.payload(), gpu.payload());
         assert_eq!(owner.count(2), 2);
         drop(gpu);
         assert_eq!(owner.count(2), 1);
         drop(queued);
         assert_eq!(owner.count(2), 0);
+    }
 
-        let native = FramePayload::Native {
-            surface: NativeSurface::D3dSharedHandle {
-                handle: 0x44,
-                nt: true,
-                api: D3dApi::D3d12,
-            },
-            sync: SurfaceSync::KeyedMutex {
-                acquire_key: 1,
-                release_key: 0,
-            },
+    #[test]
+    fn native_frames_have_one_consumer() {
+        let owner = Arc::new(CountingOwner::default());
+        let surface = NativeSurface::d3d_shared_handle(0x44, true, D3dApi::D3d12, 7);
+        // SAFETY: test only; the handle is never dereferenced.
+        let frame = unsafe {
+            VideoFrame::native(
+                nv12_1080p(),
+                Timestamp::from_nanos(1),
+                surface,
+                SurfaceSync::keyed_mutex(1, 0),
+                owner.lease(1),
+            )
         };
-        assert_eq!(native.memory_kind(), MemoryKind::D3d12);
+        assert_eq!(frame.memory_kind(), MemoryKind::D3d12);
+        assert!(frame.share().is_none());
+        let Some((s, sync, lease)) = frame.into_native() else {
+            panic!("frame is native");
+        };
+        assert_eq!(s, surface);
+        assert_eq!(sync, SurfaceSync::keyed_mutex(1, 0));
+        assert_eq!(owner.count(1), 1);
+        drop(lease);
+        assert_eq!(owner.count(1), 0);
+
+        let texture =
+            VideoFrame::texture(nv12_1080p(), Timestamp::ZERO, TextureId::new(0, 0), None);
+        assert!(texture.into_native().is_none());
     }
 
     #[test]
