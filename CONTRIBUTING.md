@@ -30,6 +30,10 @@ Thank you for helping. RBS is designed so that contributions can be checked by m
 
 Follow [backend ports](docs/specs/backend-ports.md): a new crate depending only on its port and `rbs-core`, capabilities declared in `probe`, the port's conformance suite passing. No changes to the engine should be needed; if they are, the port is missing something and that is a spec discussion.
 
+## License and sign-off
+
+RBS is licensed under GPL-3.0-or-later ([ADR-0010](docs/adr/0010-project-license.md)). By contributing you agree that your contribution is licensed the same way. Sign off every commit (`git commit -s`) to certify the [Developer Certificate of Origin](https://developercertificate.org/). New dependencies must use a license on the allow list in `deny.toml`.
+
 ## Language
 
 All code, comments, docs, commits and PRs are in English ([ADR-0011](docs/adr/0011-english-only-repository.md)).

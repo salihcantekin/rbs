@@ -13,7 +13,7 @@ Durations are rough estimates for a small experienced team assisted by AI agents
 
 ## Decisions needed before Phase 0 ends
 
-- License ([ADR-0010](adr/0010-project-license.md)).
+- ~~License~~: decided, GPL-3.0-or-later ([ADR-0010](adr/0010-project-license.md)). Plugin SDK and WIT licensing is still open.
 - Tier-1 platforms and reference machines.
 - Native desktop UI toolkit (Slint, iced or Qt) after a small comparison prototype (ADR-0016).
 - Control API schema technology.
