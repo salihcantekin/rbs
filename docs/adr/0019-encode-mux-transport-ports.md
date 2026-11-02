@@ -2,6 +2,7 @@
 
 - Status: Proposed
 - Date: 2026-11-02
+- Amends: ADR-0003 (adapters may also depend on the format-helper crate `rbs-media-format`, which depends only on `rbs-core`)
 - Deciders: Salih (owner)
 
 ## Context
@@ -40,7 +41,7 @@ Contract details: [output ports spec](../specs/output-ports.md).
 - Recordings never silently lose data: a slow disk leads to backpressure and, past a bound, a stopped and reported recording, never a file with holes.
 - The engine needs a small output builder that matches transport input to muxers; it is part of the graph work, not of the ports.
 - A transport sees per-packet or per-chunk calls, so per-call overhead in adapters matters; muxers and transport send loops are on the [hot paths](../architecture/hot-paths.md) list already.
-- Follow-up: the helper crate for shared framing, the conformance suites, and adapters (`rbs-mux-mpegts`, `rbs-mux-fmp4`, `rbs-mux-matroska`, `rbs-transport-file`, `rbs-transport-rtmp`, `rbs-transport-srt`, `rbs-codec-ffmpeg`, native hardware encoders).
+- Follow-up: the helper crate for shared framing and the adapters (`rbs-mux-mpegts`, `rbs-mux-fmp4`, `rbs-mux-matroska`, `rbs-transport-file`, `rbs-transport-rtmp`, `rbs-transport-srt`, `rbs-codec-ffmpeg`, native hardware encoders).
 
 ## Alternatives considered
 

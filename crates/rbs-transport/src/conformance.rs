@@ -383,20 +383,41 @@ fn stalled_case(
         t.send(item_for(input, &header, &packet))
             .map_err(|e| format!("header: {e}"))?;
         let mut dropped = 0_u64;
+        let mut refused = 0_u64;
+        // After a non-keyframe is refused, the rest of its GOP must be refused too.
+        let mut gop_cut = false;
         let mut slowest = Duration::ZERO;
         for i in 0..200 {
             let chunk = media_chunk(i, 64 * 1024);
             let packet = video_packet(i, 64 * 1024);
+            let keyframe = packet.keyframe();
+            if keyframe {
+                gop_cut = false;
+            }
             let started = Instant::now();
             let outcome = t.send(item_for(input, &chunk, &packet));
             slowest = slowest.max(started.elapsed());
             match outcome {
+                Ok(SendOutcome::Dropped { .. }) => {
+                    refused += 1;
+                    dropped += 1;
+                    gop_cut |= !keyframe;
+                }
+                Ok(other) if gop_cut => {
+                    return Err(format!(
+                        "item {i} continues a GOP that lost frames ({other:?}); it must be refused until the next keyframe"
+                    ));
+                }
                 Ok(SendOutcome::QueuedAfterDrops { dropped: n, .. }) => dropped += u64::from(n),
-                Ok(SendOutcome::Dropped { .. }) => dropped += 1,
                 Ok(_) => {}
                 Err(e) if e.is_recoverable() => shown.push_str(&e.to_string()),
                 Err(e) => return Err(format!("send {i}: {e}")),
             }
+        }
+        if refused == 0 {
+            return Err(
+                "GOPs of 1.9 MiB into a 1 MiB queue: the current GOP must be cut and its remaining non-keyframes refused, but nothing was refused".into(),
+            );
         }
         if slowest > SEND_BUDGET {
             return Err(format!(

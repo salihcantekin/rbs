@@ -17,6 +17,7 @@ use crate::registry::AdapterFactory;
 pub const PROBE_BUDGET: Duration = Duration::from_millis(50);
 
 /// The result of one case.
+#[non_exhaustive]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Outcome {
     /// All checks held.
@@ -28,6 +29,7 @@ pub enum Outcome {
 }
 
 /// One named case of a suite.
+#[non_exhaustive]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Case {
     /// Case name, for example `h264/cbr/stream`.
@@ -36,7 +38,8 @@ pub struct Case {
     pub outcome: Outcome,
 }
 
-/// Everything a suite run found.
+/// Everything a suite run found. Start with `Report::default()`.
+#[non_exhaustive]
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Report {
     /// Cases in the order they ran.

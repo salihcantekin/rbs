@@ -26,6 +26,7 @@ enum Fault {
     Blocks,
     NeverDrops,
     AcceptsBeforeStart,
+    DropsSingleFrames,
 }
 
 struct FileFactory(Fault);
@@ -140,6 +141,8 @@ impl TransportFactory for NetFactory {
             max_bytes: config.queue.max_bytes,
             started: false,
             queue: VecDeque::new(),
+            gop: 0,
+            cut: false,
             queued_bytes: 0,
             stats: TransportStats::default(),
             pending_drop: 0,
@@ -148,12 +151,21 @@ impl TransportFactory for NetFactory {
     }
 }
 
+impl Net {
+    fn count_drop(&mut self, n: u32) {
+        self.stats.items_dropped += u64::from(n);
+        self.pending_drop += n;
+    }
+}
+
 struct Net {
     fault: Fault,
     stalled: bool,
     max_bytes: usize,
     started: bool,
-    queue: VecDeque<(bool, usize)>,
+    queue: VecDeque<(u64, bool, usize)>,
+    gop: u64,
+    cut: bool,
     queued_bytes: usize,
     stats: TransportStats,
     pending_drop: u32,
@@ -182,22 +194,54 @@ impl Transport for Net {
             // under test, not a wait for timing: the suite must flag it.
             std::thread::sleep(conformance::SEND_BUDGET * 2);
         }
-        self.queue
-            .push_back((packet.keyframe(), packet.data().len()));
-        self.queued_bytes += packet.data().len();
+        let keyframe = packet.keyframe();
+        let size = packet.data().len();
+        if keyframe {
+            self.gop += 1;
+            self.cut = false;
+        } else if self.cut && self.fault != Fault::DropsSingleFrames {
+            // The current GOP lost frames: refuse the rest of it.
+            self.count_drop(1);
+            return Ok(SendOutcome::Dropped {
+                reason: DropReason::QueueFull,
+            });
+        }
+        self.queue.push_back((self.gop, keyframe, size));
+        self.queued_bytes += size;
         let mut dropped = 0;
+        let mut refused_current = false;
         while self.queued_bytes > self.max_bytes && self.fault != Fault::NeverDrops {
-            // Drop the oldest non-keyframe item, or the oldest item.
-            let index = self.queue.iter().position(|(k, _)| !k).unwrap_or(0);
-            if let Some((_, size)) = self.queue.remove(index) {
+            let oldest_gop = self.queue.front().map_or(self.gop, |(g, _, _)| *g);
+            let index = if self.fault == Fault::DropsSingleFrames {
+                // The broken policy: drop single oldest non-keyframes.
+                self.queue.iter().position(|(_, k, _)| !k).unwrap_or(0)
+            } else if oldest_gop < self.gop {
+                // A later keyframe is queued: drop the oldest GOP, keyframe first.
+                0
+            } else {
+                // Only the current GOP is queued: cut its newest non-keyframe tail.
+                self.cut = true;
+                match self.queue.iter().rposition(|(_, k, _)| !k) {
+                    Some(i) => i,
+                    None => break,
+                }
+            };
+            if index + 1 == self.queue.len() && self.cut {
+                refused_current = true;
+            }
+            if let Some((_, _, size)) = self.queue.remove(index) {
                 self.queued_bytes -= size;
                 dropped += 1;
             }
         }
         self.stats.queued_bytes = self.queued_bytes as u64;
         if dropped > 0 {
-            self.stats.items_dropped += u64::from(dropped);
-            self.pending_drop += dropped;
+            self.count_drop(dropped);
+            if refused_current {
+                return Ok(SendOutcome::Dropped {
+                    reason: DropReason::QueueFull,
+                });
+            }
             return Ok(SendOutcome::QueuedAfterDrops {
                 dropped,
                 reason: DropReason::QueueFull,
@@ -292,6 +336,7 @@ fn network_faults_are_caught() {
         (Fault::Blocks, "packets/never-blocks"),
         (Fault::NeverDrops, "packets/never-blocks"),
         (Fault::AcceptsBeforeStart, "packets/send-before-start"),
+        (Fault::DropsSingleFrames, "packets/never-blocks"),
     ];
     for (fault, case) in expectations {
         let report = conformance::transport(&NetFactory(fault), &mut NetDestination);

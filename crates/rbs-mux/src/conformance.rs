@@ -306,9 +306,9 @@ fn check_entry_points(container: ContainerId, chunks: &[MuxChunk]) -> Result<(),
             checked += 1;
         }
     }
-    if checked < 2 {
+    if checked < SECONDS as usize {
         return Err(format!(
-            "{checked} keyframe chunks for a 3 s sequence with a keyframe every second"
+            "{checked} keyframe chunks for a {SECONDS} s sequence with a keyframe every second"
         ));
     }
     Ok(())
@@ -470,7 +470,8 @@ fn read_mpegts(bytes: &[u8]) -> Result<(), String> {
         }
         if control & 0x1 != 0 && pid != 0x1fff {
             if let Some(prev) = continuity[pid] {
-                if cc != (prev + 1) % 16 {
+                // One duplicate packet (same counter) is legal.
+                if cc != (prev + 1) % 16 && cc != prev {
                     return Err(format!(
                         "TS packet {i}: continuity counter of PID {pid} jumps {prev} -> {cc}"
                     ));

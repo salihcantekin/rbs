@@ -38,7 +38,7 @@ These extend the [backend ports](backend-ports.md) rules.
 - No method may panic across the port boundary. Errors are typed and carry `is_recoverable()`.
 - Unsupported runtime changes return an `Unsupported` error; they never silently do nothing.
 - Calls marked **hot** in the trait docs run per frame, block, packet or chunk ([hot paths](../architecture/hot-paths.md)): no blocking I/O, no unbounded work, no contended locks. Allocation: at most one payload allocation per produced packet or chunk (the `Bytes` header, see [media types](media-types.md#packets-rbs_coremediapacket); pooled buffers via `Bytes::from_owner`), and none otherwise once the caller's output `Vec` and the adapter's working buffers have reached their steady-state size.
-- Who drives sessions: an output worker owns the encoder or muxer/transport sessions of one Active output, calls the hot methods as data arrives, and calls `poll_events` after each batch of sends and at least once per second while the output is Active. Installed and Standby outputs have no sessions, so nothing polls them (P13).
+- Who drives sessions: an encoder worker owns each encoder session (one encoder may feed several outputs); an output worker owns the muxer and transport sessions of one Active output. Both call the hot methods as data arrives; the output worker and calls `poll_events` after each batch of sends and at least once per second while the output is Active. Installed and Standby outputs have no sessions, so nothing polls them (P13).
 - Installed adapters (registered, not used by any output) cost only their probe at start-up (P13).
 
 ## `rbs-codec`
@@ -184,7 +184,7 @@ Invariants:
 
 1. `begin` emits one or more `Header` chunks and nothing else; no `Header` follows a `Media` chunk; `finish` emits held-back `Media`, then `Trailer` and `Patch` chunks only.
 2. Interleaving: a muxer may buffer to interleave streams, but media with dts `t` is emitted by the time a packet with dts `t + max_buffered` is written (`max_buffered` is `fragment_duration`, or 1 s when unset). The suite checks the observable consequence: the newest `Media` chunk never starts more than `2 x max_buffered` plus one packet interval before the packet being written.
-3. A `Media` chunk with `keyframe = true` starts at a point where a reader can begin decoding (fMP4 fragment start, TS packet with random access indicator, FLV video keyframe tag).
+3. A `Media` chunk with `keyframe = true` starts at a point where a reader can begin decoding every stream of the output (fMP4 fragment start, TS packet with random access indicator, FLV video keyframe tag; in an audio-only output, any chunk boundary).
 4. The byte stream of `Header` + `Media` chunks alone is a valid, playable file when the muxer declares `mux.live`. Muxers for fragmented MP4, Matroska, MPEG-TS and FLV must declare it (ADR-0019), so recordings survive a crash.
 5. Packets of codecs the container does not support are refused at `create` with `CreateError::Unsupported`.
 6. A non-monotonic `dts` within a stream returns `MuxError::NonMonotonic` (recoverable: the packet is dropped).
@@ -218,7 +218,7 @@ pub trait Transport: Send {
     fn send(&mut self, item: TransportItem<'_>) -> Result<SendOutcome, TransportError>;
     /// Move pending events (connected, reconnecting, stats, errors) to `out`.
     fn poll_events(&mut self, out: &mut Vec<TransportEvent>);
-    /// Current counters; cheap, no locking beyond atomics.
+    /// Current counters; a cheap snapshot that never waits on the I/O side.
     fn stats(&self) -> TransportStats;
     /// Deliver what is queued, close cleanly, and stop owned threads.
     /// May block up to `timeout`; never called from a hot path.
@@ -246,14 +246,19 @@ pub enum TransportEvent {
 }
 ```
 
-Threading: `send` runs on the output worker; delivery runs on a thread or runtime the session owns (started in `start`, stopped in `finish` or `Drop`). The two sides share only a single-producer queue and atomics. All drop decisions are made on the producer side, inside `send`, by tracking what the queue holds (bytes, oldest and newest timestamps, keyframe positions); the I/O side never takes a lock the producer waits on (P6).
+Threading: `send` runs on the output worker; delivery runs on a thread or runtime the session owns (started in `start`, stopped in `finish` or `Drop`). The recommended shape, which every adapter must match in behaviour:
+
+- A **staging queue** owned by the producer side (the session object, touched only in `send`, `poll_events` and `finish`) holds queued items as shared `Bytes` plus metadata (size, timestamp, keyframe, GOP number). All drop decisions are made here, so dropping "the oldest" items needs no synchronisation.
+- A short bounded **single-producer single-consumer hand-off** (a few items, at most about 100 ms of media) carries items from staging to the I/O side. Items in the hand-off are committed and are no longer dropped.
+- `send` and `poll_events` move items from staging into the hand-off while it has room. The byte and duration limits apply to staging plus hand-off, so `QueueLimits` bounds memory even when the I/O side is stalled. The I/O side reports progress (bytes sent, connection state) through atomics only (P6).
 
 Drop policy for network transports, when a queue limit is reached:
 
-1. Video: drop from the oldest queued non-keyframe video item up to, not including, the next queued keyframe, and refuse new non-keyframe video (`SendOutcome::Dropped`) until the next keyframe arrives. The stream therefore never continues from a missing reference picture. If no keyframe is queued, everything after the last delivered keyframe is dropped and the transport emits `KeyframeRequested`.
-2. Audio: dropped oldest first, only when dropping video did not free enough.
-3. Headers (`ChunkKind::Header`, codec configuration) are never dropped.
-4. Each drop is counted in `TransportStats::items_dropped` and reported once per burst as `TransportEvent::Dropped`.
+1. Video, packet input: drop whole GOPs from the oldest, keyframe included, while a later keyframe is staged. When only the current GOP is staged, drop its non-keyframes and refuse the rest of that GOP (`SendOutcome::Dropped`) until the next keyframe arrives. The stream therefore never continues from a missing reference picture. When a GOP is cut the transport also emits `KeyframeRequested`, so the encoder can shorten the gap.
+2. Audio, packet input: dropped oldest first, only when dropping video did not free enough.
+3. Container input (chunks): a transport never parses the container. It applies rule 1 at chunk granularity, using the `keyframe` flag of `Media` chunks as the GOP boundary (`keyframe` means an entry point for every stream of the output, [media types](media-types.md#containers-rbs_coremediacontainer)). Audio interleaved in the dropped chunks goes with them.
+4. Headers (`ChunkKind::Header`, codec configuration) are never dropped.
+5. Each drop is counted in `TransportStats::items_dropped` and reported once per burst as `TransportEvent::Dropped`.
 
 Transports that must not drop (files) return the recoverable `TransportError::QueueFull` when their queue is full; nothing was queued, and the output worker keeps the item in its own bounded buffer and retries. If that buffer also overflows, the recording is stopped with a reported error rather than written with holes. File I/O never runs on the calling thread.
 
@@ -273,7 +278,7 @@ Capability keys: `transport.schemes` (Set: `rtmp`, `rtmps`, `srt`, `file`, ...),
 
 ## Errors and failure behaviour
 
-`CreateError` (shared shape in each port): `Unsupported { what }`, `ResourceExhausted` (for example no free hardware session; recoverable, the engine tries the next candidate), `Device(String)`, `InvalidConfig(String)`.
+Each port has its own `CreateError`. All have `Unsupported { what }` and `InvalidConfig(String)`; the encoder's also has `ResourceExhausted` (for example no free hardware session; recoverable, the engine tries the next candidate) and `Device(String)`. Muxer and transport creation never touches devices or the network, so their creation errors are never recoverable.
 
 `EncodeError`, `MuxError`, `TransportError` each implement `is_recoverable()`. Recoverable: retry, reconfigure or reconnect. Unrecoverable: the output is stopped and the engine falls back to the next candidate adapter (encoders) or reports the output as failed (muxers, transports). A failing output never stops other outputs fed by the same encoder (P7).
 
@@ -289,17 +294,20 @@ Each port crate exports suites as library functions, run by adapter crates in `t
 
 - `rbs_codec::conformance::video_encoder(&factory, &mut frames)` and `audio_encoder(&factory)`: probe time and no panic; for every declared codec and rate-control mode, create, encode 45 frames at 30 fps with a 15-frame keyframe interval, a keyframe request and a bitrate change, and check invariants 1-7 (invariant 7 for a wrong size and a wrong pixel format; a wrong memory kind is checked by adapters that have a second frame source); audio checks 1 s of 48 kHz stereo against invariant 8 (pts within 1 us). The caller provides a `FrameSource` for its declared input memory (`SystemFrameSource` covers system memory); undeclared or unavailable memory kinds are skipped and listed.
 - `rbs_mux::conformance::muxer(&factory)`: for every declared container, mux 3 s of synthetic H.264 and AAC packets (those the adapter declares) and check invariants 1-6, including that every keyframe chunk is an entry point (`is_entry_point`: FLV video keyframe tag, `moof`/`styp`, Matroska Cluster, TS packet with random access indicator). When `mux.live` is declared, the header and media bytes alone must pass the suite's minimal reader for the container (`read_structure`: TS sync, PAT first, PMT present and continuity counters; FLV tag walk; fMP4 box walk with `ftyp`, `moov`, `moof` + `mdat`; Matroska element walk with unknown-size Segment and Cluster).
-- `rbs_transport::conformance::transport(&factory, &mut destination)`: the caller supplies a `Destination` (`TempFileDestination` for files; a local SRT or RTMP listener for network adapters). For every declared input it checks invariants 1, 2 (each `send` under a generous 250 ms ceiling against a stalled destination with a 1 MiB queue, so a blocking `send` is caught without flaking; drops counted and reported), 3 (byte-exact for container input, patches applied when `transport.seekable`) and 6 (healthy and stalled sessions). File destinations cannot stall, so file adapters prove invariant 2 in their own tests with a slow writer. Packet framing (RTMP, WHIP), drop recovery (7), reconnect (5) and handle leaks (4) are checked by adapter tests until the suite has protocol readers and a portable leak probe.
+- `rbs_transport::conformance::transport(&factory, &mut destination)`: the caller supplies a `Destination` (`TempFileDestination` for files; a local SRT or RTMP listener for network adapters). For every declared input it checks invariants 1, 2 (each `send` under a generous 250 ms ceiling against a stalled destination with a 1 MiB queue and 1.9 MiB GOPs, so a blocking `send` is caught without flaking; drops counted and reported; the current GOP must be cut, and once a non-keyframe is refused every later non-keyframe of that GOP must be refused too), 3 (byte-exact for container input, patches applied when `transport.seekable`) and 6 (healthy and stalled sessions). File destinations cannot stall, so file adapters prove invariant 2 in their own tests with a slow writer. Packet framing (RTMP, WHIP), drop recovery (7), reconnect (5) and handle leaks (4) are checked by adapter tests until the suite has protocol readers and a portable leak probe.
 
 Each suite returns a report listing passed, failed and skipped cases. `Report::assert_passed` fails on any failed case; adapters that must work on CI machines (software encoders, muxers, file transports) use `Report::assert_ran(&[..])` with their core case names, so they cannot pass by skipping everything.
 
 ## Versioning
 
-The three port crates and the container types in `rbs-core` are Draft and pre-1.0. Traits are object-safe and are the hardest part to change: adding a trait method is a breaking change for adapters and follows semver of the port crate (ADR-0003). Configuration, outcome, event and error types are `#[non_exhaustive]` with constructors, so adding a field, variant, capability key or chunk kind (for example HLS segment boundaries or caption data) is a minor change. Removing or renaming any of them, or changing a capability value's meaning, is a major change.
+The three port crates and the container types in `rbs-core` are Draft and pre-1.0. Traits are object-safe and are the hardest part to change: adding a trait method is a breaking change for adapters and follows semver of the port crate (ADR-0003). Configuration, outcome, event and error types are `#[non_exhaustive]` with constructors, so adding a struct field, an enum variant, a capability key or a chunk kind (for example HLS segment boundaries or caption data) is a minor change. Fields of struct-like enum variants (`ChunkKind::Media`, `RateControl::Cbr`, `SendOutcome::QueuedAfterDrops`, ...) are fixed: adding one is a major change, so new data goes into a new variant instead. The suite support types `rbs_core::conformance::{Report, Case, Outcome}` are `#[non_exhaustive]` too; suite case names may change in minor versions, and adapters that use `assert_ran` update them when they upgrade. Removing or renaming anything, or changing a capability value's meaning, is a major change.
 
 ## Open questions
 
 - Allocation checks for hot calls: `rbs-core` has an allocation guard for tests; wiring it into the suites (it needs a counting global allocator in the adapter's test binary) is a follow-up, then the suites check the per-packet allocation rule.
+- Encoder delay: AAC and Opus encoders prime with silence. Adapters hide it in packet timestamps today, which shifts audio by the delay (about 21 ms for AAC-LC at 48 kHz) unless muxers can signal it (MP4 edit list, Matroska `CodecDelay`, Opus pre-skip). A `StreamDescriptor` field for the delay is proposed for the first audio encoder adapter.
+- `TransportError::QueueFull` retry: there is no "space available" signal yet; the output worker retries on its next packet or `poll_events` tick. An event may be added if measurements show it matters.
+- `Secret` is not zeroized on drop; a zeroizing type can replace it when a dependency for that is justified.
 - WHIP/WebRTC: codec and profile are negotiated in SDP, possibly after the encoder exists. The first WHIP adapter decides whether the transport offers only what `start` received, or the output builder negotiates before creating the encoder.
 - Hardware encoders that take native surfaces (D3D11, Vulkan, IOSurface, DMA-BUF) receive `FramePayload::Texture` ids today and need the `rbs-gpu` export path to get native handles; whether encoder adapters may depend on `rbs-gpu` or receive exported handles through a port-level type is decided with the GPU interop work.
 - Multi-pass or look-ahead tuning beyond `EncoderTuning` is left to `adapter_options` until a second adapter needs it.

@@ -55,6 +55,10 @@ impl MuxerFactory for FlvFactory {
             origin: None,
             last_dts: vec![None; config.streams.len()],
             held: Vec::new(),
+            has_video: config
+                .streams
+                .iter()
+                .any(|s| s.codec.media_kind() == rbs_core::media::MediaKind::Video),
         }))
     }
 }
@@ -65,6 +69,7 @@ struct Flv {
     origin: Option<Timestamp>,
     last_dts: Vec<Option<Timestamp>>,
     held: Vec<MuxChunk>,
+    has_video: bool,
 }
 
 fn tag(kind: u8, ms: u32, body: &[u8], fault: Fault) -> Vec<u8> {
@@ -138,7 +143,8 @@ impl Muxer for Flv {
         body.extend_from_slice(packet.data());
         let chunk = MuxChunk::new(
             ChunkKind::Media {
-                keyframe: packet.keyframe() && (kind == 9 || self.fault == Fault::KeyframeOnAudio),
+                keyframe: packet.keyframe()
+                    && (kind == 9 || !self.has_video || self.fault == Fault::KeyframeOnAudio),
                 timestamp: packet.dts(),
             },
             Bytes::from(tag(kind, ms, &body, self.fault)),
