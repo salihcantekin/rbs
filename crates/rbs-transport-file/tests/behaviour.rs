@@ -188,7 +188,13 @@ fn write_errors_fail_the_recording() {
 fn refuses_bad_urls_and_adapter_options() {
     let f = FileTransportFactory;
     let input = TransportInput::Container(ContainerId::MpegTs);
-    for url in ["file://", "file://relative/x", "file:///a%2"] {
+    // `file://relative/x` names host `relative`: a UNC path on Windows, refused elsewhere.
+    let remote_host = if cfg!(windows) {
+        "file://"
+    } else {
+        "file://relative/x"
+    };
+    for url in ["file://", remote_host, "file:///a%2"] {
         assert!(
             f.create(&TransportConfig::new(url, input)).is_err(),
             "{url}"
