@@ -1,0 +1,13 @@
+# cargo-deny configuration. CI runs `cargo deny check bans`.
+# ADR-0016: the desktop app is native; no web view or web UI runtime anywhere in the workspace.
+
+[bans]
+multiple-versions = "allow"
+deny = [
+    { name = "wry", reason = "ADR-0016: no web view UI" },
+    { name = "tauri", reason = "ADR-0016: no web view UI" },
+    { name = "webview2-com", reason = "ADR-0016: no web view UI" },
+    { name = "webkit2gtk", reason = "ADR-0016: no web view UI" },
+    # CEF renders the browser source as video in a separate process (ADR-0006); only that adapter may use it.
+    { name = "cef", wrappers = ["rbs-source-browser"], reason = "ADR-0016: CEF only for the browser source" },
+]

@@ -1,6 +1,6 @@
 # ADR-0008: User interfaces are clients of the control API
 
-- Status: Accepted
+- Status: Accepted; toolkit candidates clause superseded by [ADR-0016](0016-native-desktop-ui.md)
 - Date: 2026-11-02
 
 ## Context

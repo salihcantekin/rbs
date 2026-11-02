@@ -19,6 +19,15 @@ jobs:
           components: rustfmt
       - run: cargo fmt --all -- --check
 
+  deny:
+    name: dependency bans
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          command: check bans
+
   check:
     name: clippy, test, doc (${{ matrix.os }})
     strategy:

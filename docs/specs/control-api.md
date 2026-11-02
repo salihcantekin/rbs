@@ -6,7 +6,7 @@
 
 ## Purpose
 
-The single way to control and observe the engine, used by the desktop UI, web panels, CLI, Stream Deck integrations, scripts and tests.
+The single way to control and observe the engine, used by the desktop UI, remote clients, CLI, Stream Deck integrations, scripts and tests.
 
 ## Shape
 
@@ -23,4 +23,5 @@ An OBS WebSocket compatibility layer (subset) is a plugin, so existing Stream De
 ## Open questions
 
 - Schema technology choice (needs an ADR).
-- Preview transport for remote clients (WebRTC from the engine is a candidate).
+- Preview transport for remote clients: UI rule U5 requires a reduced-rate encoded preview for remote panels; WebRTC from the engine is the candidate.
+- Every UI command must exist as a control API command (UI rule U20).
