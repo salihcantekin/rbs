@@ -1,6 +1,6 @@
 # ADR-0001: Record architecture decisions
 
-- Status: Accepted
+- Status: Accepted, amended by [ADR-0014](0014-review-policy.md)
 - Date: 2026-11-02
 
 ## Context

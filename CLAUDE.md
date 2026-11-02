@@ -16,7 +16,10 @@ A headless live production engine in Rust (capture, compose, encode, stream, rec
 6. **Zero-copy by default.** Pass GPU texture handles; never read frames back to the CPU on the default path (P4).
 7. **`unsafe` discipline.** Only in adapter crates or marked low-level modules, every block with a `// SAFETY:` comment explaining the invariant. Run the `risky-review` skill.
 8. **No panics across boundaries.** Port and plugin calls return typed errors. No `unwrap()`/`expect()` in library code except for proven invariants with a comment.
-9. **Do not change accepted ADRs.** Write a new ADR that supersedes it.
+9. **Do not change accepted ADRs.** Write a new ADR that supersedes it (appending a `## Review` record is allowed).
+10. **Zero cost when unused.** Design every feature with the Installed / Standby / Active lifecycle (P13, [ADR-0013](docs/adr/0013-zero-cost-when-unused.md)). Installed items add no threads, polling, GPU resources, device handles or per-frame work. Never add per-iteration checks in hot loops that test whether a feature is enabled; keep inactive nodes out of the scheduled graph instead.
+11. **Never review your own architecture.** ADRs, port changes, public contract changes (plugin SDK, control API, scene format), crate layering changes and new core/port dependencies need an independent review: a human, or a fresh AI session that gets only the proposal, specs and code (P14, [ADR-0014](docs/adr/0014-review-policy.md), `architecture-review` skill). An ADR stays `Proposed` until that review is recorded and the owner approves.
+12. **Hot paths need numbers and a human.** Code edited inside, or called directly from, the [hot paths](docs/architecture/hot-paths.md) needs before/after measurements, the `hot-path-review` checklist and a human maintainer's approval (P15). Your own checklist is never the only review.
 
 ## Workspace layout
 
@@ -45,6 +48,8 @@ A task is done when all four pass, the acceptance criteria are met, and specs ar
 | `write-adr` | A decision is hard to reverse or crosses crates |
 | `measure-performance` | Touching a hot path or claiming a performance change |
 | `risky-review` | Before finishing any change with `unsafe`, FFI, GPU interop, threads or public API changes |
+| `hot-path-review` | Any change in or called from a hot path |
+| `architecture-review` | Reviewing someone else's ADR, port or contract change (never your own) |
 
 ## How to work
 

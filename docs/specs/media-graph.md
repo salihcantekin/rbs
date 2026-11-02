@@ -26,9 +26,23 @@ The runtime model of the engine: nodes, typed links, scheduling and live editing
 
 Links are typed: `Video`, `Audio`, `Packets`, `Data`. A link carries a format descriptor (for video: size, pixel format, colour space, memory kind). Format negotiation happens when the link is created; a converter node is inserted automatically when needed and is visible in the graph.
 
+## Lifecycle
+
+Every node follows the Installed / Standby / Active states of [ADR-0013](../adr/0013-zero-cost-when-unused.md):
+
+| State | In scheduled graph | Resources |
+| --- | --- | --- |
+| Installed | No | None; node type known from metadata only |
+| Standby | No | Released, or kept warm when the scene or user policy says "keep warm" (shown in diagnostics) |
+| Active | Yes | Allocated in `prepare` |
+
+- A source becomes Active when it is visible in a scene that is on air, in preview, or feeding any output (including audio-only use). A source that is only in a scene that is not on air and not in preview is Standby.
+- Transitions: Installed -> Standby (create, configure, no resources unless keep-warm), Standby -> Active (`prepare`, then included in the next graph swap), Active -> Standby (removed at the next swap; resources released on a background thread unless keep-warm), Standby -> Installed (destroyed).
+- Hidden layers inside an Active scene are not pulled by the compositor; their sources are Standby unless another active scene or output uses them. Showing such a layer moves its source to Active, so it appears after warm-up; sources that must appear instantly use keep-warm.
+
 ## Scheduling
 
-- Each canvas has a render tick on the master clock at its frame rate. On each tick the compositor pulls the latest frame from each visible source at or before the tick time.
+- Each canvas has a render tick on the master clock at its frame rate. On each tick the compositor pulls the latest frame from each Active source at or before the tick time.
 - The audio graph runs on the audio thread at a fixed block size; sources push blocks into lock-free ring buffers.
 - Encoders and outputs run on their own workers and consume through bounded queues. A full queue drops according to a per-output policy (drop oldest non-keyframe data, never block the render tick) and records the drop with a reason.
 

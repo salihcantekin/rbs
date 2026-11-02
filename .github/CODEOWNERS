@@ -1,0 +1,15 @@
+# Reviews requested automatically. See docs/adr/0014-review-policy.md.
+# Architecture decisions and contracts
+/docs/adr/                  @salihcantekin
+/docs/specs/                @salihcantekin
+/docs/architecture/         @salihcantekin
+
+# Hot paths (keep in sync with docs/architecture/hot-paths.md)
+/crates/rbs-core/src/time.rs @salihcantekin
+/crates/rbs-audio*/          @salihcantekin
+/crates/rbs-gpu/             @salihcantekin
+/crates/rbs-graph/           @salihcantekin
+/crates/rbs-codec*/          @salihcantekin
+/crates/rbs-mux*/            @salihcantekin
+/crates/rbs-transport*/      @salihcantekin
+/crates/rbs-plugin-host/     @salihcantekin

@@ -17,6 +17,22 @@ Turn "use memory, CPU and GPU efficiently" into numbers that CI can check.
 | No blocking I/O or contended locks on real-time threads | Review checklist; lock contention metrics |
 | Encoded packets fan out to many outputs without copying payloads | Micro-benchmark asserts zero payload copies |
 
+## Idle cost
+
+Principle P13 and [ADR-0013](../adr/0013-zero-cost-when-unused.md). All checks use the same full release binary, run twice on the same machine: once with a registry allowlist that registers only the adapters the reference scene uses and no plugins (baseline), once with every built-in adapter registered and 20 test plugins installed but not used (loaded). Rows marked *scene* run the reference scene; rows marked *idle* run the engine with no scene active.
+
+| Check | Pass condition | Runs on |
+| --- | --- | --- |
+| Thread count (*scene* and *idle*) | Loaded equals baseline | Hosted CI |
+| Wake-ups (*idle*): over 60 s, count thread wake-ups and syscalls | Loaded at most baseline + 5 of each over the 60 s | Hosted CI (Linux, `perf`/`strace` based) |
+| Resident memory (*idle*) | Loaded minus baseline at most 64 KiB per registered or installed item | Hosted CI |
+| Plugin binaries (*scene*) | No native library loaded and no WASM module compiled in the loaded run | Hosted CI |
+| Engine CPU time over 5 min (*scene*) | Loaded at most 1 % above baseline | Self-hosted runner |
+| GPU time per frame (*scene*) | Loaded equals baseline within 1 % | Self-hosted GPU runner |
+| Activate then deactivate each feature | Threads, resident memory (within 64 KiB) and GPU allocations return to the pre-activation level | Hosted CI where possible |
+
+"Hot loops contain no checks for inactive features" cannot be measured by a benchmark; it is a review item in the `hot-path-review` skill.
+
 ## Scenario budgets (initial targets, to be calibrated in Phase 0)
 
 Measured on reference machines that will be listed here. Each target is compared with OBS on the same machine and scene.

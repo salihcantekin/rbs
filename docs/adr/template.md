@@ -19,3 +19,7 @@ What becomes easier, what becomes harder, what we must now do (tests, tooling, d
 ## Alternatives considered
 
 Each alternative in one or two sentences and why it was not chosen.
+
+## Review
+
+Independent review per ADR-0014. Record: reviewer (human handle, or "independent AI session"), date, verdict (approve / changes requested), main concerns and how each was resolved.

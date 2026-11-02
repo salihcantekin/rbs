@@ -6,7 +6,8 @@ An ADR records one decision that is hard to reverse or affects more than one cra
 
 1. Copy [template.md](template.md) to `NNNN-short-title.md` with the next free number.
 2. Open a pull request with status `Proposed`.
-3. When merged, the status becomes `Accepted`. To change a decision, write a new ADR that supersedes the old one and update the old one's status to `Superseded by ADR-NNNN`. Do not rewrite accepted ADRs.
+3. Get an independent review ([ADR-0014](0014-review-policy.md), `architecture-review` skill) and record it in the ADR's `## Review` section.
+4. The status becomes `Accepted` only when the review is recorded and the owner approves; a PR may be merged while the ADR is still `Proposed`. To change a decision, write a new ADR that supersedes the old one and update the old one's status to `Superseded by ADR-NNNN`. Do not rewrite accepted ADRs.
 
 ## Index
 
@@ -24,3 +25,5 @@ An ADR records one decision that is hard to reverse or affects more than one cra
 | [0010](0010-project-license.md) | Project license | Proposed |
 | [0011](0011-english-only-repository.md) | English for all repository content | Accepted |
 | [0012](0012-ai-assisted-development.md) | Spec-first, AI-assisted development workflow | Accepted |
+| [0013](0013-zero-cost-when-unused.md) | Zero cost when unused | Accepted |
+| [0014](0014-review-policy.md) | Independent review for architecture, extra review for hot paths | Accepted |
