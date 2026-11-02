@@ -23,7 +23,10 @@ mod d3d12;
 mod metal;
 
 /// Most producer surfaces one importer keeps open at a time.
-pub const MAX_SURFACES: usize = 16;
+///
+/// Sized for several capture sessions at once: a WGC session keeps a ring of 5 surfaces
+/// plus replaced ones during a resize (capture-port spec, "Native surface rules").
+pub const MAX_SURFACES: usize = 64;
 /// Ticks after which a cached surface that was not seen again is closed.
 pub const SURFACE_IDLE_TICKS: u64 = 120;
 
