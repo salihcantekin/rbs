@@ -11,7 +11,7 @@ use rbs_core::time::Timestamp;
 use windows::Win32::Foundation::{
     DUPLICATE_CLOSE_SOURCE, DUPLICATE_SAME_ACCESS, DuplicateHandle, ERROR_BROKEN_PIPE,
     ERROR_IO_PENDING, ERROR_MORE_DATA, ERROR_NO_DATA, ERROR_PIPE_CONNECTED,
-    ERROR_PIPE_NOT_CONNECTED, GENERIC_ALL, HANDLE,
+    ERROR_PIPE_NOT_CONNECTED, GENERIC_ALL, HANDLE, WIN32_ERROR,
 };
 use windows::Win32::Graphics::Direct3D12::{
     D3D12_HEAP_FLAG_SHARED, D3D12_HEAP_PROPERTIES, D3D12_HEAP_TYPE_DEFAULT, D3D12_RESOURCE_DESC,
@@ -287,7 +287,7 @@ impl PreviewPublisher {
             match unsafe { self.connect.poll(self.pipe.raw()) } {
                 Poll::Pending => {}
                 Poll::Done(_) => self.connected(),
-                Poll::Failed(_) => self.disconnect(),
+                Poll::Failed(_) => self.disconnect(Offer::Keep),
             }
         }
         // Bounded: one release per surface plus `SUBSCRIBE` or `ACCEPT`; a UI holds at most
@@ -310,11 +310,13 @@ impl PreviewPublisher {
                     self.stats.rejected += 1;
                     self.start_read();
                 }
-                Poll::Failed(_) => {
+                Poll::Failed(e) => {
                     // Broken pipe or not connected: the UI closed its end (it dropped the
                     // subscriber and every frame, which share the pipe) or exited, so it
-                    // holds no surface any more.
-                    self.disconnect();
+                    // holds no surface any more. The pipe hands a closed client's unread
+                    // messages to our read before it fails, so this read failing proves
+                    // that no `ACCEPT` was written: un-accepted duplicates are ours to close.
+                    self.disconnect(Offer::close_if(gone(e)));
                 }
             }
         }
@@ -399,8 +401,9 @@ impl PreviewPublisher {
             return;
         }
         // SAFETY: our open pipe; the read is not issued (its completion was just taken).
-        if unsafe { self.read.read(self.pipe.raw()) }.is_err() {
-            self.disconnect();
+        if let Err(e) = unsafe { self.read.read(self.pipe.raw()) } {
+            // Only a closed client end proves that no `ACCEPT` is queued.
+            self.disconnect(Offer::close_if(gone(e)));
         }
     }
 
@@ -419,7 +422,7 @@ impl PreviewPublisher {
                     // A wrong token or another protocol: the pipe has one instance, so a
                     // client that does not subscribe is not allowed to keep it.
                     self.stats.rejected += 1;
-                    self.disconnect();
+                    self.disconnect(Offer::Keep);
                     return;
                 }
                 self.subscribe();
@@ -433,7 +436,7 @@ impl PreviewPublisher {
                 }
                 _ => {
                     self.stats.rejected += 1;
-                    self.disconnect();
+                    self.disconnect(Offer::Keep);
                 }
             },
             Conn::Subscribed => match pipe::decode::<{ pipe::RELEASE_WORDS }>(bytes) {
@@ -454,7 +457,7 @@ impl PreviewPublisher {
         // SAFETY: our connected pipe; `pid` is a valid out pointer.
         if unsafe { GetNamedPipeClientProcessId(self.pipe.raw(), &mut pid) }.is_err() {
             self.stats.rejected += 1;
-            self.disconnect();
+            self.disconnect(Offer::Keep);
             return;
         }
         // SAFETY: opens the client process for handle duplication only.
@@ -462,7 +465,7 @@ impl PreviewPublisher {
             Ok(h) => Owned(h),
             Err(_) => {
                 self.stats.rejected += 1;
-                self.disconnect();
+                self.disconnect(Offer::Keep);
                 return;
             }
         };
@@ -494,8 +497,9 @@ impl PreviewPublisher {
         self.offer = Some((process, handles));
         self.conn = Conn::Offered;
         if !ok || !self.send_surfaces(&handles) {
+            // `SURFACES` was never written: the client cannot know the values.
             self.stats.rejected += 1;
-            self.disconnect();
+            self.disconnect(Offer::Close);
         }
     }
 
@@ -543,7 +547,7 @@ impl PreviewPublisher {
                 self.stats.dropped += 1;
                 if gone {
                     // The UI's end is closed: it holds no surface any more.
-                    self.disconnect();
+                    self.disconnect(Offer::Keep);
                 }
             }
         }
@@ -563,19 +567,24 @@ impl PreviewPublisher {
         // SAFETY: our open pipe; the boxed operation outlives the write.
         match unsafe { op.write(pipe, len) } {
             Ok(()) => Ok(()),
-            Err(e) => {
-                Err(e == ERROR_BROKEN_PIPE || e == ERROR_NO_DATA || e == ERROR_PIPE_NOT_CONNECTED)
-            }
+            Err(e) => Err(gone(e)),
         }
     }
 
     /// Ends the connection; every surface is free again. Called only once the UI holds no
     /// surface: its end of the pipe is closed (it dropped the subscriber and every frame,
     /// or exited), or it never accepted the surfaces. The next tick listens again.
-    fn disconnect(&mut self) {
+    ///
+    /// `offer` says what happens to handles duplicated into a client that has not accepted
+    /// them: closed in its process only when it provably never wrote `ACCEPT`
+    /// ([`Offer::Close`]); otherwise ([`Offer::Keep`]: an engine-side end that cannot see
+    /// a queued `ACCEPT`) they are left to the client, a bounded leak until it exits,
+    /// because closing values the client may own could hit reused handles there.
+    fn disconnect(&mut self, offer: Offer) {
         // SAFETY: our own pipe handle; pending reads and writes on it fail and complete.
         let _ = unsafe { DisconnectNamedPipe(self.pipe.raw()) };
-        if let Some((process, handles)) = self.offer.take() {
+        let offered = self.offer.take();
+        if let (Offer::Close, Some((process, handles))) = (offer, offered) {
             // The client never accepted: it does not own these values and never closes
             // them (protocol rule), so closing them in its process cannot hit a reused value.
             for &h in handles.iter().filter(|&&h| h != 0) {
@@ -603,6 +612,8 @@ impl PreviewPublisher {
 impl Drop for PreviewPublisher {
     fn drop(&mut self) {
         let pipe = self.pipe.raw();
+        // An engine-side end: an `ACCEPT` may be queued or in the cancelled read, so
+        // un-accepted duplicates are never closed here (`Offer::Keep`).
         // SAFETY: every operation was started on `pipe`; cancelling waits until the kernel
         // no longer uses its memory, before the boxes are freed.
         unsafe {
@@ -612,8 +623,28 @@ impl Drop for PreviewPublisher {
                 let _ = w.cancel(pipe);
             }
         }
-        self.disconnect();
+        self.disconnect(Offer::Keep);
     }
+}
+
+/// What `disconnect` does with handles offered to a client that has not accepted them.
+#[derive(Clone, Copy)]
+enum Offer {
+    /// The client provably never wrote `ACCEPT`: close them in its process.
+    Close,
+    /// It may have: leave them (the client owns them if it accepted).
+    Keep,
+}
+
+impl Offer {
+    fn close_if(decisive: bool) -> Self {
+        if decisive { Self::Close } else { Self::Keep }
+    }
+}
+
+/// Whether a pipe error means the client's end is closed.
+fn gone(e: WIN32_ERROR) -> bool {
+    e == ERROR_BROKEN_PIPE || e == ERROR_NO_DATA || e == ERROR_PIPE_NOT_CONNECTED
 }
 
 fn create_slot(ctx: &GpuContext, w: u32, h: u32) -> Result<Slot, GpuError> {

@@ -84,11 +84,7 @@ impl PreviewLayer {
     /// layer shows frames `frame_interval` apart: the shown frame, the replaced frames
     /// within the retire time, one being written and one in flight.
     pub fn surfaces_needed(&self, frame_interval: Duration) -> usize {
-        let interval = frame_interval.as_nanos().max(1);
-        let retiring = self.retire_after.as_nanos().div_ceil(interval);
-        usize::try_from(retiring)
-            .unwrap_or(usize::MAX)
-            .saturating_add(3)
+        super::geometry::ring_needed(frame_interval, self.retire_after)
     }
 
     /// Surfaces in the engine's ring.

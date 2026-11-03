@@ -52,10 +52,6 @@ const COMPOSITIONOBJECT_ALL_ACCESS: u32 = 0x0003;
 /// within one refresh period.
 pub const DEFAULT_RETIRE_POLL: Duration = Duration::from_millis(4);
 
-/// How long the frame shown at `detach` stays with the UI after the compositor applied
-/// the removal: two refresh periods at 60 Hz, as the macOS retire time.
-const DETACH_HOLD: Duration = Duration::from_millis(34);
-
 /// A rectangle in the window's client area in physical pixels, origin at the top left.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct LayerRect {
@@ -92,8 +88,14 @@ pub struct PreviewLayer {
     shown: Option<PreviewFrame>,
     /// Replaced frames whose buffer the compositor may still read. Capacity: the ring size.
     retiring: Vec<PreviewFrame>,
-    /// The frame shown when the layer was detached, and when it may go back.
-    detached: Vec<(PreviewFrame, Timestamp)>,
+    /// The frame shown when the layer was detached. Its buffer stays the surface's
+    /// current one (it never reports available, and the engine must not reuse it while it
+    /// could be presented again), so it is held until a later `show` replaces it or the
+    /// layer drops.
+    detached: Option<PreviewFrame>,
+    /// Attached, but no frame presented since: the visual joins the window only at the
+    /// next `show`, so a stale buffer is never shown.
+    awaiting_frame: bool,
     /// Signalled by the system when the presentation manager is lost; owned by it.
     lost_event: HANDLE,
     /// When `retire` last looked at the waiting frames.
@@ -218,7 +220,8 @@ impl PreviewLayer {
             manager,
             surface,
             retiring: Vec::with_capacity(buffers.len()),
-            detached: Vec::with_capacity(1),
+            detached: None,
+            awaiting_frame: false,
             lost_event,
             buffers,
             _surface_handle: surface_handle,
@@ -270,23 +273,22 @@ impl PreviewLayer {
             .map_err(|_| GpuError::Unsupported("CreateTargetForHwnd failed"))?;
         self.target = Some(target);
         self.placed = None;
-        self.apply_root();
-        self.commit();
+        // The visual joins the window at the next `show`, never with an old buffer.
+        self.awaiting_frame = true;
         Ok(())
     }
 
-    /// Takes the layer out of its window and moves the shown frame to the retiring ones,
-    /// so every frame goes back once the compositor is done with it
-    /// ([`PreviewLayer::retire`]). Call it when the preview panel closes while the window
-    /// stays open.
+    /// Takes the layer out of its window and waits until the compositor has applied
+    /// that. Replaced frames go back as usual ([`PreviewLayer::retire`]); the shown one
+    /// stays the surface's current buffer, so it is held (one surface) until a later
+    /// `show` after a new attach replaces it, or the layer drops. Call it when the preview
+    /// panel closes while the window stays open.
     pub fn detach(&mut self, now: Timestamp) {
         self.leave_window();
         self.placed = None;
-        // The shown buffer stays the surface's current buffer, so it never reports
-        // available; it goes back `DETACH_HOLD` after the compositor has applied the
-        // removal, like the macOS rule (ADR-0034 decision 3).
+        self.awaiting_frame = false;
         if let Some(old) = self.shown.take() {
-            self.detached.push((old, now + DETACH_HOLD));
+            self.detached = Some(old);
         }
         self.retire(now);
     }
@@ -372,6 +374,7 @@ impl PreviewLayer {
                 debug_assert!(self.lost, "frame slot {} outside the ring", frame.slot());
                 drop(frame);
                 self.shown = None;
+                self.detached = None;
                 self.retire(now);
                 return;
             }
@@ -386,12 +389,21 @@ impl PreviewLayer {
         if r.is_err() {
             self.lost = true;
             self.shown = None;
+            self.detached = None;
             drop(frame);
             self.retire(now);
             return;
         }
+        if self.awaiting_frame {
+            self.awaiting_frame = false;
+            self.apply_root();
+            self.commit();
+        }
+        // Never reallocates: the engine sends at most one frame per surface.
         if let Some(old) = self.shown.replace(frame) {
-            // Never reallocates: the engine sends at most one frame per surface.
+            self.retiring.push(old);
+        }
+        if let Some(old) = self.detached.take() {
             self.retiring.push(old);
         }
         self.retire(now);
@@ -402,7 +414,6 @@ impl PreviewLayer {
     pub fn retire(&mut self, now: Timestamp) -> usize {
         self.checked = now;
         let lost = self.lost;
-        self.detached.retain(|(_, due)| !lost && now < *due);
         let buffers = &self.buffers;
         self.retiring.retain(|f| {
             // A lost manager reads nothing any more.
@@ -412,22 +423,23 @@ impl PreviewLayer {
                     unsafe { b.IsAvailable() }.is_ok_and(|available| available == 0)
                 })
         });
-        self.retiring.len() + self.detached.len()
+        self.retiring.len()
     }
 
-    /// When to call [`PreviewLayer::retire`] again, if a frame waits.
+    /// When to call [`PreviewLayer::retire`] again, if a replaced frame waits.
     pub fn next_retire(&self) -> Option<Timestamp> {
-        let poll = (!self.retiring.is_empty()).then(|| self.checked + self.poll);
-        let detached = self.detached.iter().map(|(_, due)| *due).min();
-        poll.into_iter().chain(detached).min()
+        (!self.retiring.is_empty()).then(|| self.checked + self.poll)
     }
 
-    /// Replaced frames still waiting.
+    /// Replaced frames still waiting (not counting the frame held since `detach`).
     pub fn retiring(&self) -> usize {
-        self.retiring.len() + self.detached.len()
+        self.retiring.len()
     }
 
     fn apply_root(&self) {
+        if self.awaiting_frame {
+            return;
+        }
         if let Some(target) = &self.target {
             // SAFETY: sets or clears the root of our own target to our own visual.
             let _ = unsafe {

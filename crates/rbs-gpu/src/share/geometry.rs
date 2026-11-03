@@ -6,6 +6,10 @@ use std::time::Duration;
 /// Where an image of `image` pixels goes when it is fitted into `rect` (x, y, width,
 /// height) keeping its aspect ratio and centred: `(x, y, scale)`, in `rect`'s units.
 /// A degenerate image or rectangle gives scale 0 at the rectangle's centre.
+#[cfg_attr(
+    target_os = "macos",
+    allow(dead_code, reason = "the macOS layer lets Core Animation fit")
+)]
 pub(crate) fn fit(rect: (f64, f64, f64, f64), image: (u32, u32)) -> (f64, f64, f64) {
     let (x, y, w, h) = rect;
     let (iw, ih) = (f64::from(image.0), f64::from(image.1));

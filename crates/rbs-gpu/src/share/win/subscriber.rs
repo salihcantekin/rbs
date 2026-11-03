@@ -142,7 +142,8 @@ pub struct PreviewSubscriber {
 
 impl PreviewSubscriber {
     /// Opens the engine's pipe, subscribes with the endpoint's token and receives the
-    /// surfaces. Blocks up to `timeout`; not for real-time threads.
+    /// surfaces. Blocks up to `timeout`, plus up to 1 s to finish the handshake once the
+    /// surfaces have arrived; not for real-time threads.
     ///
     /// `GpuError::Disconnected` when the pipe does not exist, belongs to another process
     /// than the one its name says, does not answer (for example a wrong token) or closes.
