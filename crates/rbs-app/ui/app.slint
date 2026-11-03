@@ -1,0 +1,499 @@
+// The RBS desktop shell. Layout geometry comes from the toolkit-neutral rbs-ui
+// crate: Slint has no recursive components, so Rust flattens each window's
+// layout tree into tab stacks and splitter handles with absolute positions.
+import { Theme, Tokens } from "tokens.slint";
+import { Button, MenuItem, MenuSurface, EmptyState } from "components.slint";
+
+export { Theme }
+
+export struct TabData { id: string, title: string, known: bool }
+export struct StackData { window: int, stack: int, x: length, y: length, w: length, h: length, tabs: [TabData], active: int }
+export struct HandleData { window: int, index: int, x: length, y: length, w: length, h: length, horizontal: bool, percent: int }
+export struct PanelEntry { id: string, title: string, open: bool }
+export struct WorkspaceEntry { name: string, built-in: bool, current: bool }
+
+// Edges, as passed to Shell.move-edge.
+export global Edges {
+    out property <int> left: 0;
+    out property <int> right: 1;
+    out property <int> top: 2;
+    out property <int> bottom: 3;
+}
+
+// State and commands shared by every window. Slint globals are per window, so
+// Rust pushes the same state into each window's copy.
+export global Shell {
+    // 0 not live, 1 live, 2 recording, 3 live and recording.
+    in property <int> live-state;
+    in property <string> live-duration;
+    in property <string> live-outputs;
+    in property <[PanelEntry]> panels;
+    in property <[WorkspaceEntry]> workspaces;
+    in property <string> workspace-name;
+    in property <bool> workspace-built-in;
+    in property <bool> locked;
+    in property <bool> can-undo;
+    in property <bool> can-redo;
+    in property <string> toast-text;
+    in property <bool> toast-visible;
+    in property <string> error-text;
+
+    callback relayout(int /* window */, length, length);
+    callback activate-tab(int /* window */, int /* stack */, int /* tab */);
+    callback close-panel(string);
+    callback toggle-panel(string);
+    callback move-edge(string, int /* window */, int /* edge */);
+    callback move-next-stack(string);
+    callback float-panel(string);
+    callback dock(int /* window */);
+    callback drag(int /* window */, int /* handle */, length);
+    callback drag-end();
+    callback nudge(int /* window */, int /* handle */, length);
+    callback switch-workspace(string);
+    callback save-workspace();
+    callback save-workspace-as(string);
+    callback restore-workspace();
+    callback set-locked(bool);
+    callback undo();
+    callback redo();
+    callback toast-undo();
+    callback toast-dismiss();
+    callback dismiss-error();
+}
+
+// Live indicator (rules U4, U21): state, duration and outputs in text, never colour alone.
+component LiveIndicator inherits Rectangle {
+    property <bool> active: Shell.live-state != 0;
+    property <string> state-text: Shell.live-state == 1 ? @tr("Live")
+        : Shell.live-state == 2 ? @tr("Recording")
+        : Shell.live-state == 3 ? @tr("Live and recording")
+        : @tr("Not live");
+    property <string> full: active
+        ? state-text + " " + Shell.live-duration + (Shell.live-outputs != "" ? " · " + Shell.live-outputs : "")
+        : state-text;
+    height: Tokens.size-control-md;
+    width: label.preferred-width + 2 * Tokens.space-3;
+    border-radius: Tokens.radius-sm;
+    background: active ? Theme.state-live : transparent;
+    border-width: active ? 0px : 1px;
+    border-color: Theme.border-strong;
+    accessible-role: AccessibleRole.text;
+    accessible-label: @tr("Live status: {}", full);
+    label := Text {
+        text: (active ? "● " : "○ ") + full;
+        color: active ? Theme.text-on-live : Theme.text-secondary;
+        font-size: Tokens.type-label-size;
+        font-weight: Tokens.type-label-weight;
+        vertical-alignment: center;
+        horizontal-alignment: center;
+    }
+}
+
+// What a panel shows until it is connected to the engine.
+component PanelContent inherits Rectangle {
+    in property <TabData> tab;
+    background: Theme.surface-raised;
+    if tab.known: EmptyState {
+        width: parent.width;
+        height: parent.height;
+        title: tab.title;
+        message: @tr("Not connected to the engine yet.");
+    }
+    if !tab.known: EmptyState {
+        width: parent.width;
+        height: parent.height;
+        title: tab.title;
+        message: @tr("This panel comes from a plugin that is not installed. Close it from its tab menu.");
+    }
+}
+
+component PanelMenu inherits PopupWindow {
+    in property <string> panel;
+    in property <string> title;
+    in property <bool> floating;
+    in property <int> window;
+    MenuSurface {
+        VerticalLayout {
+            padding: Tokens.space-1;
+            first := MenuItem { text: @tr("Move to left edge"); activated => { Shell.move-edge(panel, window, Edges.left); } }
+            MenuItem { text: @tr("Move to right edge"); activated => { Shell.move-edge(panel, window, Edges.right); } }
+            MenuItem { text: @tr("Move to top edge"); activated => { Shell.move-edge(panel, window, Edges.top); } }
+            MenuItem { text: @tr("Move to bottom edge"); activated => { Shell.move-edge(panel, window, Edges.bottom); } }
+            MenuItem { text: @tr("Move to next tab stack"); activated => { Shell.move-next-stack(panel); } }
+            if !floating: MenuItem { text: @tr("Float in its own window"); activated => { Shell.float-panel(panel); } }
+            if floating: MenuItem { text: @tr("Dock back"); activated => { Shell.dock(window); } }
+            MenuItem { text: @tr("Close {}", title); activated => { Shell.close-panel(panel); } }
+        }
+    }
+    init => { first.focus(); }
+}
+
+component Tab inherits Rectangle {
+    in property <TabData> tab;
+    in property <bool> selected;
+    callback activate();
+    callback open-menu();
+    callback close();
+    height: Tokens.size-control-md;
+    width: title.preferred-width + menu-button.width + close-button.width + 2 * Tokens.space-2;
+    border-radius: Tokens.radius-sm;
+    background: selected ? Theme.surface-raised : touch.has-hover ? Theme.surface-overlay : transparent;
+    accessible-role: AccessibleRole.tab;
+    accessible-label: tab.title;
+    accessible-item-selected: selected;
+    accessible-description: @tr("Menu key or Shift+F10 opens panel actions; Delete closes it");
+    accessible-action-default => { activate(); }
+    forward-focus: focus;
+    touch := TouchArea { clicked => { focus.focus(); activate(); } }
+    focus := FocusScope {
+        key-pressed(e) => {
+            if e.text == Key.Return || e.text == " " { activate(); return accept; }
+            if e.text == Key.Menu || (e.text == Key.F10 && e.modifiers.shift) { open-menu(); return accept; }
+            if e.text == Key.Delete { close(); return accept; }
+            reject
+        }
+    }
+    HorizontalLayout {
+        padding-left: Tokens.space-2;
+        title := Text {
+            text: tab.title;
+            color: selected ? Theme.text-primary : Theme.text-secondary;
+            font-size: Tokens.type-label-size;
+            font-weight: Tokens.type-label-weight;
+            vertical-alignment: center;
+        }
+        menu-button := Button {
+            width: Tokens.size-control-sm;
+            dense: true;
+            kind: "ghost";
+            text: "⋯";
+            accessible-name: @tr("Actions for {}", tab.title);
+            clicked => { open-menu(); }
+        }
+        close-button := Button {
+            width: Tokens.size-control-sm;
+            dense: true;
+            kind: "ghost";
+            text: "×";
+            accessible-name: @tr("Close {}", tab.title);
+            clicked => { close(); }
+        }
+    }
+    Rectangle {
+        y: parent.height - 2px;
+        height: 2px;
+        background: selected ? Theme.accent : transparent;
+    }
+    Rectangle {
+        border-width: focus.has-focus ? 2px : 0px;
+        border-color: Theme.border-focus;
+        border-radius: Tokens.radius-sm;
+    }
+}
+
+component StackView inherits Rectangle {
+    in property <StackData> data;
+    in property <bool> floating;
+    property <length> bar: Tokens.size-control-md + 2 * Tokens.space-1;
+    property <string> menu-panel;
+    property <string> menu-title;
+    background: Theme.surface-base;
+    border-color: Theme.border-subtle;
+    border-width: 1px;
+    accessible-role: tab-list;
+    Flickable {
+        x: 1px;
+        y: 1px;
+        width: parent.width - 2px;
+        height: bar;
+        content-width: tabs.preferred-width;
+        tabs := HorizontalLayout {
+            padding: Tokens.space-1;
+            spacing: Tokens.space-1;
+            alignment: start;
+            for t[i] in data.tabs: Tab {
+                tab: t;
+                selected: i == data.active;
+                activate => { Shell.activate-tab(data.window, data.stack, i); }
+                close => { Shell.close-panel(t.id); }
+                open-menu => {
+                    menu-panel = t.id;
+                    menu-title = t.title;
+                    menu.show();
+                }
+            }
+        }
+    }
+    if data.tabs.length > 0: PanelContent {
+        x: 1px;
+        y: bar + 1px;
+        width: parent.width - 2px;
+        height: max(0px, parent.height - bar - 2px);
+        tab: data.tabs[data.active];
+    }
+    menu := PanelMenu {
+        x: Tokens.space-2;
+        y: bar;
+        panel: menu-panel;
+        title: menu-title;
+        floating: root.floating;
+        window: data.window;
+    }
+}
+
+// Splitter between two panes: drag with the pointer, or focus it and use the arrow keys.
+component Splitter inherits Rectangle {
+    in property <HandleData> data;
+    background: focus.has-focus || touch.has-hover || touch.pressed ? Theme.accent : Theme.surface-sunken;
+    accessible-role: slider;
+    accessible-label: data.horizontal ? @tr("Resize panes left and right") : @tr("Resize panes up and down");
+    accessible-value: data.percent;
+    accessible-value-minimum: 0;
+    accessible-value-maximum: 100;
+    forward-focus: focus;
+    touch := TouchArea {
+        mouse-cursor: data.horizontal ? ew-resize : ns-resize;
+        pointer-event(e) => {
+            if e.kind == PointerEventKind.down { focus.focus(); }
+            if e.kind == PointerEventKind.up { Shell.drag-end(); }
+        }
+        moved => {
+            Shell.drag(data.window, data.index, data.horizontal ? self.mouse-x - self.pressed-x : self.mouse-y - self.pressed-y);
+        }
+    }
+    focus := FocusScope {
+        key-pressed(e) => {
+            if (data.horizontal && e.text == Key.LeftArrow) || (!data.horizontal && e.text == Key.UpArrow) {
+                Shell.nudge(data.window, data.index, e.modifiers.shift ? -4 * Tokens.space-8 : -Tokens.space-2);
+                return accept;
+            }
+            if (data.horizontal && e.text == Key.RightArrow) || (!data.horizontal && e.text == Key.DownArrow) {
+                Shell.nudge(data.window, data.index, e.modifiers.shift ? 4 * Tokens.space-8 : Tokens.space-2);
+                return accept;
+            }
+            reject
+        }
+    }
+}
+
+component DockArea inherits Rectangle {
+    in property <int> window;
+    in property <[StackData]> stacks;
+    in property <[HandleData]> handles;
+    in property <bool> floating;
+    changed width => { Shell.relayout(window, self.width, self.height); }
+    changed height => { Shell.relayout(window, self.width, self.height); }
+    init => { Shell.relayout(window, self.width, self.height); }
+    for s in stacks: StackView {
+        x: s.x;
+        y: s.y;
+        width: s.w;
+        height: s.h;
+        data: s;
+        floating: root.floating;
+    }
+    for h in handles: Splitter {
+        x: h.x;
+        y: h.y;
+        width: h.w;
+        height: h.h;
+        data: h;
+    }
+}
+
+component WorkspaceMenu inherits PopupWindow {
+    close-policy: close-on-click-outside;
+    MenuSurface {
+        width: 300px;
+        VerticalLayout {
+            padding: Tokens.space-2;
+            spacing: Tokens.space-1;
+            for w[i] in Shell.workspaces: MenuItem {
+                text: w.name;
+                checked: w.current;
+                activated => { Shell.switch-workspace(w.name); }
+            }
+            Rectangle { height: 1px; background: Theme.border-subtle; }
+            MenuItem { text: @tr("Save changes to {}", Shell.workspace-name); activated => { Shell.save-workspace(); } }
+            MenuItem {
+                text: @tr("Restore default of {}", Shell.workspace-name);
+                enabled: Shell.workspace-built-in;
+                activated => { Shell.restore-workspace(); }
+            }
+            MenuItem {
+                text: Shell.locked ? @tr("Unlock layout") : @tr("Lock layout");
+                checked: Shell.locked;
+                activated => { Shell.set-locked(!Shell.locked); }
+            }
+            MenuItem { text: @tr("Undo layout change"); enabled: Shell.can-undo; activated => { Shell.undo(); } }
+            MenuItem { text: @tr("Redo layout change"); enabled: Shell.can-redo; activated => { Shell.redo(); } }
+            Rectangle { height: 1px; background: Theme.border-subtle; }
+            HorizontalLayout {
+                spacing: Tokens.space-2;
+                Rectangle {
+                    border-width: 1px;
+                    border-radius: Tokens.radius-sm;
+                    border-color: name.has-focus ? Theme.border-focus : Theme.border-strong;
+                    background: Theme.surface-sunken;
+                    height: Tokens.size-control-md;
+                    name := TextInput {
+                        x: Tokens.space-2;
+                        width: parent.width - 2 * Tokens.space-2;
+                        color: Theme.text-primary;
+                        font-size: Tokens.type-body-size;
+                        vertical-alignment: center;
+                        accessible-label: @tr("New workspace name");
+                        accepted => { if self.text != "" { Shell.save-workspace-as(self.text); } }
+                    }
+                }
+                Button {
+                    text: @tr("Save as new");
+                    enabled: name.text != "";
+                    clicked => { Shell.save-workspace-as(name.text); }
+                }
+            }
+        }
+    }
+}
+
+component PanelsMenu inherits PopupWindow {
+    close-policy: close-on-click-outside;
+    MenuSurface {
+        width: 220px;
+        VerticalLayout {
+            padding: Tokens.space-2;
+            for p in Shell.panels: MenuItem {
+                text: p.title;
+                checked: p.open;
+                activated => { Shell.toggle-panel(p.id); }
+            }
+        }
+    }
+}
+
+// The window frame: live indicator, workspace and Panels menus (rule U21). It stays
+// in every workspace, even with every panel closed.
+component FrameBar inherits Rectangle {
+    height: Tokens.size-control-md + 2 * Tokens.space-2;
+    background: Theme.surface-sunken;
+    HorizontalLayout {
+        padding: Tokens.space-2;
+        spacing: Tokens.space-2;
+        alignment: start;
+        LiveIndicator { }
+        ws-button := Button {
+            text: @tr("Workspace: {} ▾", Shell.workspace-name);
+            clicked => { ws-menu.show(); }
+        }
+        panels-button := Button {
+            text: @tr("Panels ▾");
+            clicked => { panels-menu.show(); }
+        }
+        if Shell.locked: Text {
+            text: @tr("Layout locked");
+            color: Theme.text-secondary;
+            font-size: Tokens.type-caption-size;
+            vertical-alignment: center;
+        }
+    }
+    ws-menu := WorkspaceMenu {
+        x: ws-button.x;
+        y: parent.height;
+    }
+    panels-menu := PanelsMenu {
+        x: panels-button.x;
+        y: parent.height;
+    }
+}
+
+component Toast inherits Rectangle {
+    in property <string> text;
+    in property <string> action;
+    callback act();
+    callback dismiss();
+    height: Tokens.size-control-lg + 2 * Tokens.space-2;
+    width: row.preferred-width;
+    background: Theme.surface-overlay;
+    border-color: Theme.border-strong;
+    border-width: 1px;
+    border-radius: Tokens.radius-md;
+    accessible-role: AccessibleRole.text;
+    accessible-label: text;
+    row := HorizontalLayout {
+        padding: Tokens.space-2;
+        padding-left: Tokens.space-3;
+        spacing: Tokens.space-3;
+        Text {
+            text: root.text;
+            color: Theme.text-primary;
+            font-size: Tokens.type-body-size;
+            vertical-alignment: center;
+        }
+        if action != "": Button { text: root.action; kind: "primary"; clicked => { act(); } }
+        Button { text: @tr("Dismiss"); kind: "ghost"; clicked => { dismiss(); } }
+    }
+}
+
+export component MainWindow inherits Window {
+    title: @tr("RBS");
+    preferred-width: 1440px;
+    preferred-height: 900px;
+    min-width: 1280px;
+    min-height: 720px;
+    background: Theme.surface-sunken;
+    default-font-size: Tokens.type-body-size;
+    in property <[StackData]> stacks;
+    in property <[HandleData]> handles;
+    VerticalLayout {
+        frame := FrameBar { }
+        DockArea {
+            window: 0;
+            stacks: root.stacks;
+            handles: root.handles;
+        }
+    }
+    if Shell.toast-visible: Toast {
+        x: (parent.width - self.width) / 2;
+        y: parent.height - self.height - Tokens.space-6;
+        text: Shell.toast-text;
+        action: @tr("Undo");
+        act => { Shell.toast-undo(); }
+        dismiss => { Shell.toast-dismiss(); }
+    }
+    if Shell.error-text != "": Toast {
+        x: (parent.width - self.width) / 2;
+        y: frame.height + Tokens.space-2;
+        text: Shell.error-text;
+        action: "";
+        dismiss => { Shell.dismiss-error(); }
+    }
+}
+
+// A floating panel window. Its title names its panels for screen readers and F6-style switching.
+export component FloatWindow inherits Window {
+    in property <int> window;
+    in property <string> panel-names;
+    in property <[StackData]> stacks;
+    in property <[HandleData]> handles;
+    title: @tr("RBS – {}", panel-names);
+    preferred-width: 640px;
+    preferred-height: 420px;
+    background: Theme.surface-sunken;
+    default-font-size: Tokens.type-body-size;
+    VerticalLayout {
+        Rectangle {
+            height: Tokens.size-control-md + 2 * Tokens.space-1;
+            HorizontalLayout {
+                padding: Tokens.space-1;
+                alignment: start;
+                Button { text: @tr("Dock back"); clicked => { Shell.dock(root.window); } }
+            }
+        }
+        DockArea {
+            window: root.window;
+            stacks: root.stacks;
+            handles: root.handles;
+            floating: true;
+        }
+    }
+}

@@ -1,7 +1,7 @@
 # Spec: UI design system
 
 - Status: Draft
-- Owner crate(s): `rbs-ui` (toolkit-neutral model: panels, layout, workspaces, layout undo, tokens, live indicator), `rbs-app` (Slint desktop shell, planned)
+- Owner crate(s): `rbs-ui` (toolkit-neutral model: panels, layout, workspaces, layout undo, tokens, live indicator), `rbs-app` (Slint desktop shell; `ui/tokens.slint` is generated from the token file at build time, `ui/components.slint` is the component library)
 - Related ADRs: [0008](../adr/0008-ui-as-api-client.md), [0013](../adr/0013-zero-cost-when-unused.md), [0015](../adr/0015-ui-design-rules.md), [0016](../adr/0016-native-desktop-ui.md), [0017](../adr/0017-flexible-panels-and-workspaces.md), [0022](../adr/0022-native-ui-toolkit.md)
 - Rules: [UI principles](../ui/principles.md)
 
@@ -170,6 +170,8 @@ Interactions are counted as defined in the UI principles. "Max" is the limit for
 End stream, stop recording, delete a scene collection, delete a recording file, sign out of a service. "Remove from scene" (undoable) and "Delete source" (removes it from every scene; undoable) are distinct commands. Everything else that edits scenes, sources, filters, transitions, audio or settings is undoable.
 
 ## Keyboard
+
+Docking by keyboard (U21): Tab moves focus through the frame (workspace menu, Panels menu), then each tab stack's tabs and their buttons, then the splitters. On a focused tab, Enter or Space shows it, the Menu key or Shift+F10 opens its panel menu (move to an edge, move to the next tab stack, float or dock back, close), and Delete closes it. A focused splitter moves 8 px per arrow key, 128 px with Shift. Menus open with the first item focused and close with Escape.
 
 Every command is in the command palette (Ctrl/Cmd+K) with its shortcut. Defaults include: switch to scene 1-9 (Ctrl/Cmd+1..9), transition preview to program (Ctrl/Cmd+Enter; Space also works while the preview or program has focus), undo/redo, nudge source (arrows, Shift for 10 px), duplicate, delete, toggle studio mode. All shortcuts are rebindable; global hotkeys are opt-in.
 

@@ -1,0 +1,28 @@
+[package]
+name = "rbs-app"
+description = "The RBS desktop app: a native Slint shell that renders the rbs-ui panel, layout and workspace model."
+version.workspace = true
+edition.workspace = true
+# Slint 1.18 needs Rust 1.92 (ADR-0022, decision 6). Engine and port crates keep the workspace minimum.
+rust-version = "1.92"
+repository.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "rbs"
+path = "src/main.rs"
+
+[dependencies]
+rbs-ui = { path = "../rbs-ui" }
+# Exact pin (ADR-0022, decision 5). Skia renderer (decision 1). The wgpu path
+# (`unstable-wgpu-30`) is added with the preview, once the surface export
+# contract is in the GPU compositor spec (decision 2).
+slint = { version = "=1.18.1", default-features = false, features = ["std", "backend-winit", "renderer-skia", "accessibility", "compat-1-2"] }
+
+[build-dependencies]
+rbs-ui = { path = "../rbs-ui" }
+slint-build = "=1.18.1"
+
+[lints]
+workspace = true
