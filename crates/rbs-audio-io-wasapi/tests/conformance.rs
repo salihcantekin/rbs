@@ -254,23 +254,25 @@ mod hardware {
         assert_eq!(owned_resources(), 0);
     }
 
-    /// Process loopback delivers what the fixture plays: a 440 Hz tone.
-    fn delivers_the_tone(backend: &WasapiAudioBackend, app: &EndpointId) {
+    /// The tail of half a second of audio from `endpoint` (hang guard 3 s): its rms and
+    /// its frequency from zero crossings.
+    fn listen(backend: &WasapiAudioBackend, endpoint: &EndpointId) -> (f32, f32, f32) {
         let clock = Arc::new(MonotonicClock::new());
-        let stream = backend.open_input(&InputRequest::new(app.clone(), clock));
+        let stream = backend.open_input(&InputRequest::new(endpoint.clone(), clock));
         let Ok(mut stream) = stream else {
-            panic!("cannot open the fixture: {:?}", stream.err());
+            panic!("cannot open {endpoint}: {:?}", stream.err());
         };
         assert!(stream.start().is_ok());
         let rate = stream.format().sample_rate.hz() as usize;
-        let mut left = vec![0.0_f32; rate];
-        let mut right = vec![0.0_f32; rate];
+        let channels = stream.format().channels.channels();
+        let mut planes = vec![vec![0.0_f32; rate]; channels];
         let mut collected: Vec<f32> = Vec::new();
         let deadline = Instant::now() + Duration::from_secs(3);
         while collected.len() < rate / 2 && Instant::now() < deadline {
             std::thread::sleep(Duration::from_millis(10));
-            if let Ok(read) = stream.read(&mut [&mut left, &mut right]) {
-                collected.extend_from_slice(&left[..read.frames]);
+            let mut out: Vec<&mut [f32]> = planes.iter_mut().map(|p| p.as_mut_slice()).collect();
+            if let Ok(read) = stream.read(&mut out) {
+                collected.extend_from_slice(&planes[0][..read.frames]);
             }
         }
         stream.stop();
@@ -283,7 +285,32 @@ mod hardware {
             .count();
         let seconds = tail.len() as f32 / rate as f32;
         let frequency = crossings as f32 / 2.0 / seconds.max(f32::EPSILON);
+        (rms, frequency, seconds)
+    }
+
+    /// Process loopback delivers what the fixture plays: a 440 Hz tone. Skipped when
+    /// the default output's own mix is silent while the fixture plays, as with Remote
+    /// Desktop's "Remote Audio" device: then no loopback can hear anything.
+    fn delivers_the_tone(backend: &WasapiAudioBackend, app: &EndpointId) {
+        let (rms, frequency, seconds) = listen(backend, app);
         eprintln!("fixture capture: rms {rms:.4}, {frequency:.0} Hz over {seconds:.2} s");
+        if rms <= 0.01 {
+            let output = backend
+                .enumerate(EndpointKind::OutputLoopback)
+                .ok()
+                .and_then(|e| e.into_iter().find(|e| e.is_default));
+            if let Some(output) = output {
+                let (output_rms, _, _) = listen(backend, &output.id);
+                if output_rms == 0.0 {
+                    eprintln!(
+                        "skip tone check: the default output {} is silent while the fixture \
+                         plays (a remote session's audio device?)",
+                        output.name
+                    );
+                    return;
+                }
+            }
+        }
         assert!(rms > 0.01, "the application's audio was not captured");
         assert!((frequency - 440.0).abs() < 20.0, "{frequency} Hz");
     }
