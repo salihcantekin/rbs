@@ -2,13 +2,17 @@
 //! `Vec`). Staging, 16-bit conversion and `drain` allocate nothing in RBS code once the
 //! output vector has room. Media Foundation's own allocations bypass the Rust
 //! allocator and are not counted.
+//!
+//! Only the test thread's allocations count: the adapter does all its work on the
+//! calling thread, and the test harness's other threads (output capture, timers)
+//! allocate whenever they like, which once added 4 to a CI run.
 
 #![allow(clippy::unwrap_used, clippy::expect_used)] // Tests fail by panicking.
 
 mod common;
 
 use std::alloc::{GlobalAlloc, Layout, System};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::cell::Cell;
 
 use rbs_codec::{AudioEncoder, AudioEncoderConfig};
 use rbs_core::media::{AudioBlock, AudioFormat, CodecId};
@@ -16,12 +20,24 @@ use rbs_core::time::Timestamp;
 
 struct Counting;
 
-static ALLOCS: AtomicU64 = AtomicU64::new(0);
+thread_local! {
+    // Const-initialised `Cell`: reading it never allocates, so the allocator may use it.
+    static ALLOCS: Cell<u64> = const { Cell::new(0) };
+}
+
+fn count() {
+    // `try_with`: during thread teardown the slot may be gone; nothing to count then.
+    let _ = ALLOCS.try_with(|n| n.set(n.get() + 1));
+}
+
+fn allocations() -> u64 {
+    ALLOCS.with(Cell::get)
+}
 
 // SAFETY: forwards every call unchanged to the system allocator; only counts calls.
 unsafe impl GlobalAlloc for Counting {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
-        ALLOCS.fetch_add(1, Ordering::Relaxed);
+        count();
         // SAFETY: same contract as the caller's, forwarded to `System`.
         unsafe { System.alloc(layout) }
     }
@@ -32,7 +48,7 @@ unsafe impl GlobalAlloc for Counting {
     }
 
     unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
-        ALLOCS.fetch_add(1, Ordering::Relaxed);
+        count();
         // SAFETY: `ptr` came from `System.alloc` with this `layout`.
         unsafe { System.realloc(ptr, layout, new_size) }
     }
@@ -43,7 +59,6 @@ static GLOBAL: Counting = Counting;
 
 #[test]
 fn submit_and_drain_allocate_only_payloads() {
-    // One test, so no other test thread allocates while counting.
     for (name, factory) in common::factories() {
         let mut s = factory
             .create(&AudioEncoderConfig::new(
@@ -64,10 +79,10 @@ fn submit_and_drain_allocate_only_payloads() {
                 block_index += 1;
                 let block =
                     AudioBlock::planar(AudioFormat::STEREO_48K, ts, &[&left, &left]).unwrap();
-                let before = ALLOCS.load(Ordering::Relaxed);
+                let before = allocations();
                 s.submit(&block).unwrap();
                 s.drain(out).unwrap();
-                allocs += ALLOCS.load(Ordering::Relaxed) - before;
+                allocs += allocations() - before;
             }
             allocs
         };
