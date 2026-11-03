@@ -9,6 +9,7 @@ Keep this list current. When a new crate or module lands on one of these paths, 
 | Path | Runs | Location (current or planned) |
 | --- | --- | --- |
 | Audio thread: device callbacks, audio graph, audio filters | Every block (10 ms) | `crates/rbs-audio`, audio adapters in `crates/rbs-audio-io-*` |
+| Audio input hand-off: `AudioInputStream::read`, the sample ring (`RingProducer` pushes in OS callbacks, `RingConsumer::read`) and `EdgeClock` | Every OS packet and every block per Active audio input | `crates/rbs-audio-io/src/ring.rs`, `crates/rbs-audio-io/src/edge.rs`, adapters in `crates/rbs-audio-io-*` |
 | Render loop: compositor, GPU filters, transitions | Every frame per canvas | `crates/rbs-graph/src/runtime` (executor tick and swap), `crates/rbs-gpu` |
 | `Node::process` of every node type | Every frame or block | Wherever nodes are implemented |
 | Parameter reads by running nodes: `ParamReceiver::update` | Every frame or block per node with parameters | `crates/rbs-graph/src/runtime/param.rs` |

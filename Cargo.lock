@@ -3986,6 +3986,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "rbs-audio-io"
+version = "0.0.1"
+dependencies = [
+ "allocation-counter",
+ "criterion 0.8.2",
+ "rbs-core",
+]
+
+[[package]]
+name = "rbs-audio-io-test"
+version = "0.0.1"
+dependencies = [
+ "allocation-counter",
+ "rbs-audio-io",
+ "rbs-audio-io-test",
+ "rbs-core",
+]
+
+[[package]]
 name = "rbs-capture"
 version = "0.0.1"
 dependencies = [
