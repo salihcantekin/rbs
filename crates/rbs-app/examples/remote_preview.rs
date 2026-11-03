@@ -148,7 +148,8 @@ mod demo {
         layer: Option<PreviewLayer>,
         /// Mode `slint`.
         slint: Option<SlintPath>,
-        /// Polls retirement while it cannot wait for the next frame.
+        /// Retires at the oldest waiting frame's due time (layer) or polls GPU completion
+        /// (slint).
         timer: slint::Timer,
         clock: MonotonicClock,
     }
@@ -533,9 +534,9 @@ mod demo {
         retire();
     }
 
-    /// Releases replaced frames that nothing reads any more. Never waits. Polls on a
-    /// timer only while the engine may have no free surface (so no new frame would come
-    /// to trigger it).
+    /// Releases replaced frames that nothing reads any more. Never waits. While frames
+    /// wait, a one-shot timer calls it again at the oldest one's due time (layer) or in
+    /// 2 ms (slint).
     fn retire() {
         STATE.with(|s| {
             let mut s = s.borrow_mut();

@@ -1,5 +1,8 @@
 //! The preview as a Core Animation layer (spec `gpu-compositor.md`, "Preview export
 //! (cross-process)", ADR-0034). Engine and UI run in this process; time is fake.
+//!
+//! The layers here are never in a window, so they run on the test's own thread; a layer
+//! attached to a view must be used on the view's (main) thread.
 #![cfg(target_os = "macos")]
 #![allow(clippy::unwrap_used, clippy::expect_used)] // Tests fail by panicking.
 
@@ -214,6 +217,45 @@ fn layer_shows_engine_surfaces_and_retires_by_time() {
     assert_eq!(engine.held(ctx), 0);
 }
 
+/// Jittered frame times with retirement at `next_retire` (what the UI's timer does):
+/// the UI never holds more than the ring minus the engine's two.
+#[test]
+fn jittered_frames_retired_at_due_time_leave_the_engine_a_surface() {
+    let Some(ctx) = common::gpu() else { return };
+    let Some(mut probe) = Engine::new(ctx, 2) else {
+        return;
+    };
+    let needed = PreviewLayer::new(&probe.subscribe(ctx)).surfaces_needed(FRAME);
+    drop(probe);
+    let mut engine = Engine::new(ctx, needed).unwrap();
+    let mut sub = engine.subscribe(ctx);
+    let clock = TestClock::new();
+    let mut layer = PreviewLayer::new(&sub);
+    // Intervals around 16.7 ms: early, late and a long gap.
+    let gaps_ms = [16, 20, 12, 17, 25, 9, 16, 30, 16, 14, 19, 16];
+    for (i, gap) in gaps_ms.iter().cycle().take(48).enumerate() {
+        let target = clock.now() + Duration::from_millis(*gap);
+        // The timer fires at each due time before the next frame arrives.
+        while let Some(due) = layer.next_retire().filter(|d| *d <= target) {
+            clock.set(due);
+            layer.retire(clock.now());
+        }
+        clock.set(target);
+        let seq = i as u64 + 1;
+        assert!(
+            engine.publish(ctx, seq),
+            "engine found no free surface at {seq}"
+        );
+        layer.show(next(&mut sub), clock.now());
+        assert!(
+            layer.retiring() < needed - 2,
+            "UI holds {} of {needed} at {seq}",
+            1 + layer.retiring()
+        );
+        engine.held(ctx);
+    }
+}
+
 /// A ring too small for the retire time: the UI is told to poll, and frames still go
 /// back without a new one arriving.
 #[test]
@@ -274,6 +316,17 @@ fn rect_follows_the_superlayer_geometry() {
     let frame = layer.layer().frame();
     assert_eq!((frame.origin.x, frame.origin.y), (10.0, 80.0 - 20.0 - 40.0));
     assert_eq!((frame.size.width, frame.size.height), (30.0, 40.0));
+
+    // Unchanged rectangle and geometry: nothing is applied.
+    let moved = CGRect::new(CGPoint::new(1.0, 2.0), CGSize::new(3.0, 4.0));
+    layer.layer().setFrame(moved);
+    layer.set_rect(rect);
+    assert_eq!(
+        layer.layer().frame().origin.x,
+        1.0,
+        "set_rect re-applied an unchanged rect"
+    );
+    layer.layer().setFrame(frame);
 
     parent.setBounds(CGRect::new(
         CGPoint::new(0.0, 0.0),

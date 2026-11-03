@@ -34,7 +34,8 @@ pub struct LayerRect {
 
 /// The preview as a Core Animation layer above a window's content.
 ///
-/// Not `Send`: create and use it on the thread that owns the view (the UI's main thread).
+/// Not `Send`: create and use it on one thread; once attached to a view, the thread that
+/// owns the view (the UI's main thread).
 /// The layer sits above the toolkit's own layer, so toolkit content drawn over the
 /// preview rectangle (an in-window menu, for example) is hidden while the layer shows;
 /// the UI hides the layer while such content overlaps it ([`PreviewLayer::set_hidden`]).
@@ -253,12 +254,12 @@ impl PreviewLayer {
         self.retiring.len()
     }
 
-    /// Whether the engine may be out of free surfaces until [`PreviewLayer::retire`] runs
-    /// again: the shown frame, the retiring ones and one the engine may be writing or
-    /// sending fill the ring, so the next frame may not come. The UI then calls `retire`
-    /// at [`PreviewLayer::next_retire`] on a timer; otherwise the next frame's
-    /// [`PreviewLayer::show`] retires and no timer is needed. A ring of
-    /// [`PreviewLayer::surfaces_needed`] surfaces keeps this false at the frame rate.
+    /// Diagnostics: the shown frame, the retiring ones and one the engine may be writing
+    /// fill the ring, so the engine may find no free surface. The UI does not use it to
+    /// decide when to retire: while [`PreviewLayer::retiring`] is not zero it calls
+    /// [`PreviewLayer::retire`] at [`PreviewLayer::next_retire`] (a one-shot timer).
+    /// Waiting for the next frame instead holds surfaces up to a frame longer and makes
+    /// the engine drop frames (ADR-0034).
     pub fn engine_may_starve(&self) -> bool {
         !self.retiring.is_empty() && self.retiring.len() + 2 >= self.surfaces.len()
     }

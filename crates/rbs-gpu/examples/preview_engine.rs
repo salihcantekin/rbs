@@ -38,15 +38,14 @@ mod demo {
 
     const CANVAS: (u32, u32) = (1920, 1080);
     const PREVIEW: (u32, u32) = (1280, 720);
-    /// `RBS_PREVIEW_SIZE=<w>x<h>`, or the default.
-    fn preview_size() -> (u32, u32) {
-        std::env::var("RBS_PREVIEW_SIZE")
-            .ok()
-            .and_then(|v| {
-                let (w, h) = v.split_once('x')?;
-                Some((w.parse::<u32>().ok()?, h.parse::<u32>().ok()?))
-            })
-            .unwrap_or(PREVIEW)
+    /// `RBS_PREVIEW_SIZE=<w>x<h>`, or the default; an unreadable value is an error.
+    fn preview_size() -> Result<(u32, u32), String> {
+        let Ok(v) = std::env::var("RBS_PREVIEW_SIZE") else {
+            return Ok(PREVIEW);
+        };
+        v.split_once('x')
+            .and_then(|(w, h)| Some((w.parse::<u32>().ok()?, h.parse::<u32>().ok()?)))
+            .ok_or_else(|| format!("bad RBS_PREVIEW_SIZE {v} (want <w>x<h>)"))
     }
 
     const FRAME: Duration = Duration::from_nanos(16_666_667);
@@ -90,19 +89,22 @@ mod demo {
         ];
         let bar = solid(&ctx, &mut pool, [240, 240, 240, 255])?;
 
+        let (width, height) = preview_size()?;
         let mut publisher = PreviewPublisher::new(
             &ctx,
             PreviewDesc {
-                width: preview_size().0,
-                height: preview_size().1,
+                width,
+                height,
                 // What the UI's preview layer needs at 60 fps (`PreviewLayer::surfaces_needed`):
                 // one shown, up to three retiring for 34 ms, one being rendered, one in
                 // flight. Slint's texture path needs four of them. `RBS_PREVIEW_SURFACES`
-                // overrides it (2 to 8).
-                surfaces: std::env::var("RBS_PREVIEW_SURFACES")
-                    .ok()
-                    .and_then(|v| v.parse().ok())
-                    .unwrap_or(6),
+                // overrides it; the publisher rejects a size outside its range.
+                surfaces: match std::env::var("RBS_PREVIEW_SURFACES") {
+                    Ok(v) => v
+                        .parse()
+                        .map_err(|_| format!("bad RBS_PREVIEW_SURFACES {v}"))?,
+                    Err(_) => 6,
+                },
             },
         )?;
         println!("{}", publisher.endpoint());

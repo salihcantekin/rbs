@@ -289,10 +289,9 @@ impl PreviewLayer {                       // not Send: the UI's main thread
     pub fn retire(&mut self, now: Timestamp) -> usize;
     pub fn next_retire(&self) -> Option<Timestamp>;
     pub fn retiring(&self) -> usize;
-    /// The UI calls `retire` at `next_retire` (one-shot timer) while any frame waits.
-    /// Shown + retiring + one the engine writes fill the ring (diagnostics).
+    /// Diagnostics only: shown + retiring + one the engine writes fill the ring. The UI
+    /// calls `retire` at `next_retire` (one-shot timer) while `retiring() > 0`.
     pub fn engine_may_starve(&self) -> bool;
-}
 }
 ```
 
@@ -436,7 +435,7 @@ Run on any adapter, including software adapters in CI (lavapipe on Linux, WARP o
 - Export (macOS CI, the runner's Metal device): NV12 and P010 (where `gpu.p010`) surface bytes, read through the IOSurface API with its plane strides, equal the two-plane output byte for byte on a two-colour canvas; the frame is an `IoSurface` frame with `Ready` sync, the right pixel format, time and sequence; the surface wraps as a `CVPixelBuffer` of the same format, size and plane count; held surfaces are not reused and a full ring returns `ExportBusy`; frames come out in order, and frames dropped on another thread free their surfaces; a frame stays valid and unchanged after both the exporter and the pool are dropped; odd sizes and ring sizes outside 2..=32 are rejected; a steady export loop allocates at most 4 more per frame than the same conversion into pool planes and does not grow.
 
 - Preview export (macOS CI): a child process subscribes, aliases the surfaces on its own device and reads back each frame; colours match the canvas of the frame's sequence (sRGB encoded, within ±1), the IOSurface IDs it sees equal the engine's (same memory, no copy), frames arrive in order, and a held surface is not reused. A wrong token gets no surfaces; nothing is converted while nobody is subscribed; when the child exits the engine ends the subscription and frees every surface; the steady publish loop allocates at most a small constant per frame more than the conversion alone and does not grow.
-- Preview layer (macOS CI, ADR-0034, `tests/share_layer_metal.rs`): the layer's contents are the engine's surface of each shown frame (same IOSurface ID); with fake time at 60 fps and a ring of `surfaces_needed`, the engine never finds every surface busy and the UI holds the shown frame plus at most three; a replaced frame is released at its retire time, not before; `detach` retires the shown frame by the same rule; a ring of 3 reports `engine_may_starve` and recovers after the retire time; placement converts the top-left rectangle for flipped and unflipped superlayers and follows a height change. The on-screen check (placement, colours, no tearing, CPU) is a manual run of `remote_preview` on a Mac.
+- Preview layer (macOS CI, ADR-0034, `tests/share_layer_metal.rs`): the layer's contents are the engine's surface of each shown frame (same IOSurface ID); with fake time at an ideal 60 fps and a ring of `surfaces_needed`, the engine never finds every surface busy and the UI holds the shown frame plus at most three; with jittered frame times and retirement at `next_retire` the UI still holds at most `surfaces_needed - 2`; a replaced frame is released at its retire time, not before; `detach` retires the shown frame by the same rule; a ring of 3 reports `engine_may_starve` and recovers after the retire time; placement converts the top-left rectangle for flipped and unflipped superlayers, follows a height change and is a no-op for an unchanged rectangle. The on-screen check (placement, colours, no tearing, CPU) is a manual run of `remote_preview` on a Mac.
 ## Open questions
 
 - Whether the canvas working format should be configurable (`Rgba16Float` vs `Rgba8UnormSrgb` for low-end GPUs).
