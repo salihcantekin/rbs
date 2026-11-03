@@ -4416,6 +4416,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "rbs-sources"
+version = "0.0.1"
+dependencies = [
+ "rbs-audio",
+ "rbs-audio-io",
+ "rbs-audio-io-test",
+ "rbs-audio-io-wasapi",
+ "rbs-capture",
+ "rbs-capture-mf",
+ "rbs-capture-test",
+ "rbs-capture-wgc",
+ "rbs-core",
+ "rbs-engine",
+ "rbs-gpu",
+ "rbs-graph",
+ "rbs-nodes",
+ "rbs-scene",
+]
+
+[[package]]
 name = "rbs-thread-os"
 version = "0.0.1"
 dependencies = [

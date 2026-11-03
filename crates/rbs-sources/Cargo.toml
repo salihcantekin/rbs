@@ -1,0 +1,38 @@
+[package]
+name = "rbs-sources"
+description = "RBS scene source types: maps scene sources (display, window, camera, audio input) to capture and audio input graph nodes through the registered adapters (ADR-0039)."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+license.workspace = true
+publish.workspace = true
+
+# Engine layer (docs/architecture/overview.md#layers): depends on the scene model, the
+# graph, the node crates and the ports, never on an adapter. The composition root
+# registers adapters as port factory trait objects.
+[dependencies]
+rbs-core = { path = "../rbs-core" }
+rbs-graph = { path = "../rbs-graph" }
+rbs-scene = { path = "../rbs-scene" }
+rbs-gpu = { path = "../rbs-gpu" }
+rbs-capture = { path = "../rbs-capture" }
+rbs-audio-io = { path = "../rbs-audio-io" }
+rbs-audio = { path = "../rbs-audio" }
+rbs-nodes = { path = "../rbs-nodes" }
+
+[dev-dependencies]
+# Reference adapters of the capture and audio input ports (deterministic, no devices).
+rbs-capture-test = { path = "../rbs-capture-test" }
+rbs-audio-io-test = { path = "../rbs-audio-io-test" }
+
+[lints]
+workspace = true
+
+# The Windows hardware check (examples/scene_sources.rs) wires real adapters.
+# Example-only: the library never depends on an adapter (P1).
+[target.'cfg(windows)'.dev-dependencies]
+rbs-engine = { path = "../rbs-engine" }
+rbs-capture-wgc = { path = "../rbs-capture-wgc" }
+rbs-capture-mf = { path = "../rbs-capture-mf" }
+rbs-audio-io-wasapi = { path = "../rbs-audio-io-wasapi" }

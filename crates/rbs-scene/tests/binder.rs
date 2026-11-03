@@ -7,11 +7,15 @@ use std::sync::Arc;
 use rbs_core::lifecycle::Lifecycle;
 use rbs_core::media::Size;
 use rbs_core::timing::FrameRate;
-use rbs_graph::description::{GraphDescription, NodeId};
+use rbs_graph::description::{GraphDescription, NodeId, PartitionId};
 use rbs_graph::node::{LinkKind, NodeDescriptor, NodeKind, NodeTypeId, Pin};
 use rbs_scene::SceneCollection;
 use rbs_scene::binder::{BindError, BindProblem, Role, SceneBinder, resolve};
-use rbs_scene::model::{CanvasId, ItemContent, Layout, SceneId, SceneScope, Settings, SourceId};
+use rbs_scene::model::{
+    CanvasId, ItemContent, Layout, SceneId, SceneScope, SettingValue, Settings, SourceId,
+};
+
+const AUDIO: PartitionId = PartitionId(7);
 
 fn types(id: &NodeTypeId) -> Option<Arc<NodeDescriptor>> {
     let d = |kind, inputs, outputs| {
@@ -37,6 +41,19 @@ fn types(id: &NodeTypeId) -> Option<Arc<NodeDescriptor>> {
             NodeKind::Source,
             vec![],
             vec![Pin::one("audio", LinkKind::Audio)],
+        ),
+        "org.rbs.source.camera-mic" => d(
+            NodeKind::Source,
+            vec![],
+            vec![
+                Pin::one("video", LinkKind::Video),
+                Pin::one("audio", LinkKind::Audio),
+            ],
+        ),
+        "org.rbs.audio.mixer" => d(
+            NodeKind::AudioMixer,
+            vec![Pin::many("in", LinkKind::Audio)],
+            vec![Pin::one("main", LinkKind::Audio)],
         ),
         "org.rbs.filter.lut" | "org.rbs.filter.key" => d(
             NodeKind::VideoFilter,
@@ -447,6 +464,295 @@ fn sync_is_idempotent() {
     assert_eq!((s.graph.nodes().len(), s.graph.links().to_vec()), before);
 }
 
+fn audio_setup() -> (Setup, SourceId) {
+    let mut s = setup();
+    s.binder = SceneBinder::new(types).with_audio(AUDIO);
+    let (mic, _) = s
+        .col
+        .add_source("Mic", ty("org.rbs.source.mic"), Settings::new())
+        .unwrap();
+    s.col
+        .add_item(s.live, ItemContent::Source(mic), full(), None)
+        .unwrap();
+    (s, mic)
+}
+
+fn links_into(s: &Setup, node: NodeId) -> Vec<NodeId> {
+    s.graph
+        .links()
+        .iter()
+        .filter(|l| l.to.node == node)
+        .map(|l| l.from.node)
+        .collect()
+}
+
+#[test]
+fn audio_sources_feed_the_mixer_from_program_scenes_only() {
+    let (mut s, mic) = audio_setup();
+    let report = s.binder.sync(&s.col, &mut s.graph).unwrap();
+    assert!(report.problems.is_empty(), "{:?}", report.problems);
+    let mixer = s.binder.mixer(s.wide).unwrap();
+    let mic_node = s.binder.source_node(mic).unwrap();
+    let bound = report.mixers[&s.wide].clone();
+    assert!(bound.created);
+    assert_eq!(bound.node, mixer);
+    assert_eq!(bound.inputs.len(), 1);
+    assert_eq!(bound.inputs[0].source, mic);
+    assert_eq!(bound.inputs[0].producer, mic_node);
+    assert_eq!(links_into(&s, mixer), [mic_node]);
+    // Audio-only nodes and the mixer run in the audio partition; video stays on render.
+    assert_eq!(s.graph.node(mic_node).unwrap().partition, AUDIO);
+    assert_eq!(s.graph.node(mixer).unwrap().partition, AUDIO);
+    let cam = s.binder.source_node(s.cam).unwrap();
+    assert_eq!(s.graph.node(cam).unwrap().partition, PartitionId::RENDER);
+    assert_eq!(state(&s, mic_node), Lifecycle::Active);
+    assert_eq!(state(&s, mixer), Lifecycle::Active);
+    // The microphone is not a layer of the compositor.
+    let comp = s.binder.compositor(s.wide, Role::Program).unwrap();
+    assert!(!links_into(&s, comp).contains(&mic_node));
+    let program = &report.compositors[&(s.wide, Role::Program)];
+    assert!(program.layers.iter().all(|l| l.source != mic));
+
+    // Shown only in the preview scene: wanted Active, but not on air (no mixer link,
+    // so the plan does not schedule it).
+    let (rehearsal, _) = s.col.add_scene("Rehearsal", SceneScope::Shared).unwrap();
+    s.col
+        .add_item(rehearsal, ItemContent::Source(mic), full(), None)
+        .unwrap();
+    let items: Vec<_> = s
+        .col
+        .scene(s.live)
+        .unwrap()
+        .items
+        .iter()
+        .filter(|i| i.content == ItemContent::Source(mic))
+        .map(|i| i.id)
+        .collect();
+    s.col.remove_item(items[0]).unwrap();
+    s.col.set_preview(s.wide, Some(rehearsal)).unwrap();
+    let report = s.binder.sync(&s.col, &mut s.graph).unwrap();
+    assert!(links_into(&s, mixer).is_empty());
+    assert!(report.mixers[&s.wide].inputs.is_empty());
+    assert!(!report.created_sources.iter().any(|(id, _)| *id == mic));
+    assert_eq!(s.binder.source_node(mic), Some(mic_node));
+
+    // Hidden or unused: Standby and unlinked.
+    s.col.set_preview(s.wide, None).unwrap();
+    s.binder.sync(&s.col, &mut s.graph).unwrap();
+    assert_eq!(state(&s, mic_node), Lifecycle::Standby);
+    assert!(links_into(&s, mixer).is_empty());
+}
+
+#[test]
+fn each_canvas_mixes_only_its_own_program() {
+    let (mut s, mic) = audio_setup();
+    let (sys, _) = s
+        .col
+        .add_source("System", ty("org.rbs.source.mic"), Settings::new())
+        .unwrap();
+    let (vertical, _) = s.col.add_scene("Vertical", SceneScope::Shared).unwrap();
+    s.col
+        .add_item(vertical, ItemContent::Source(sys), full(), None)
+        .unwrap();
+    s.col.set_program(s.tall, Some(vertical)).unwrap();
+    let report = s.binder.sync(&s.col, &mut s.graph).unwrap();
+    let wide = s.binder.mixer(s.wide).unwrap();
+    let tall = s.binder.mixer(s.tall).unwrap();
+    assert_ne!(wide, tall);
+    assert_eq!(links_into(&s, wide), [s.binder.source_node(mic).unwrap()]);
+    assert_eq!(links_into(&s, tall), [s.binder.source_node(sys).unwrap()]);
+    assert_eq!(report.mixers.len(), 2);
+    // A canvas without a program scene still has a (silent) mixer; removing the
+    // canvas retires it.
+    s.col.set_program(s.tall, None).unwrap();
+    s.col.remove_canvas(s.tall).unwrap();
+    let report = s.binder.sync(&s.col, &mut s.graph).unwrap();
+    assert_eq!(report.retired_mixers, [tall]);
+    assert!(s.graph.node(tall).is_none());
+    assert!(s.binder.mixer(s.tall).is_none());
+}
+
+#[test]
+fn a_source_with_video_and_audio_binds_only_its_video() {
+    let (mut s, _) = audio_setup();
+    let (both, _) = s
+        .col
+        .add_source("Cam+mic", ty("org.rbs.source.camera-mic"), Settings::new())
+        .unwrap();
+    s.col
+        .add_item(s.live, ItemContent::Source(both), full(), None)
+        .unwrap();
+    let report = s.binder.sync(&s.col, &mut s.graph).unwrap();
+    assert_eq!(report.problems, [BindProblem::AudioOnVideoSource(both)]);
+    let node = s.binder.source_node(both).unwrap();
+    assert_eq!(s.graph.node(node).unwrap().partition, PartitionId::RENDER);
+    let comp = s.binder.compositor(s.wide, Role::Program).unwrap();
+    assert!(links_into(&s, comp).contains(&node));
+    let mixer = s.binder.mixer(s.wide).unwrap();
+    assert!(!links_into(&s, mixer).contains(&node));
+}
+
+#[test]
+fn filters_on_audio_sources_are_reported() {
+    let (mut s, mic) = audio_setup();
+    let (f, _) = s
+        .col
+        .add_filter(mic, ty("org.rbs.filter.lut"), Settings::new())
+        .unwrap();
+    let report = s.binder.sync(&s.col, &mut s.graph).unwrap();
+    assert_eq!(report.problems, [BindProblem::FilterOnAudioSource(f)]);
+    assert!(s.binder.filter_node(mic, f).is_none());
+}
+
+#[test]
+fn without_audio_microphones_are_left_out() {
+    let (mut s, mic) = audio_setup();
+    s.binder = SceneBinder::new(types);
+    let report = s.binder.sync(&s.col, &mut s.graph).unwrap();
+    assert_eq!(report.problems, [BindProblem::NoVideoOutput(mic)]);
+    assert!(report.mixers.is_empty());
+    assert!(s.binder.mixer(s.wide).is_none());
+}
+
+#[test]
+fn missing_mixer_type_changes_nothing() {
+    let s = setup();
+    let no_mixer = |id: &NodeTypeId| {
+        if id.as_str() == "org.rbs.audio.mixer" {
+            None
+        } else {
+            types(id)
+        }
+    };
+    let mut binder = SceneBinder::new(no_mixer).with_audio(AUDIO);
+    let mut graph = GraphDescription::new();
+    assert_eq!(binder.sync(&s.col, &mut graph), Err(BindError::NoMixer));
+    assert!(graph.nodes().is_empty());
+}
+
+#[test]
+fn changed_settings_give_the_source_a_new_node_and_keep_its_filters() {
+    let (mut s, _) = audio_setup();
+    let (f, _) = s
+        .col
+        .add_filter(s.cam, ty("org.rbs.filter.lut"), Settings::new())
+        .unwrap();
+    let report = s.binder.sync(&s.col, &mut s.graph).unwrap();
+    assert_eq!(report.created_sources.len(), 3);
+    assert_eq!(report.created_filters.len(), 1);
+    let old = s.binder.source_node(s.cam).unwrap();
+    let old_filter = s.binder.filter_node(s.cam, f).unwrap();
+    let comp = s.binder.compositor(s.wide, Role::Program).unwrap();
+
+    let mut settings = Settings::new();
+    settings.insert("target".into(), SettingValue::Text("cam-2".into()));
+    s.col.set_source_settings(s.cam, settings).unwrap();
+    let report = s.binder.sync(&s.col, &mut s.graph).unwrap();
+    let new = s.binder.source_node(s.cam).unwrap();
+    let new_filter = s.binder.filter_node(s.cam, f).unwrap();
+    assert_ne!(new, old);
+    assert_eq!(report.retired_sources, [old]);
+    assert_eq!(report.created_sources, [(s.cam, new)]);
+    assert_eq!(report.replaced_sources, [(s.cam, old, new)]);
+    assert!(report.retired_filters.is_empty() && report.created_filters.is_empty());
+    assert_eq!(new_filter, old_filter);
+    assert_eq!(state(&s, new), Lifecycle::Active);
+    assert!(s.graph.node(old).is_none());
+    assert!(links_into(&s, comp).contains(&new_filter));
+    assert!(links_into(&s, new_filter).contains(&new));
+
+    // Same settings again: nothing changes.
+    let report = s.binder.sync(&s.col, &mut s.graph).unwrap();
+    assert!(report.created_sources.is_empty() && report.retired_sources.is_empty());
+}
+
+#[test]
+fn deleted_sources_and_filters_are_reported_retired() {
+    let (mut s, mic) = audio_setup();
+    let (f, _) = s
+        .col
+        .add_filter(s.cam, ty("org.rbs.filter.lut"), Settings::new())
+        .unwrap();
+    s.binder.sync(&s.col, &mut s.graph).unwrap();
+    let cam = s.binder.source_node(s.cam).unwrap();
+    let filter = s.binder.filter_node(s.cam, f).unwrap();
+    let mic_node = s.binder.source_node(mic).unwrap();
+    s.col.delete_source(s.cam).unwrap();
+    s.col.delete_source(mic).unwrap();
+    let report = s.binder.sync(&s.col, &mut s.graph).unwrap();
+    let mut retired = report.retired_sources.clone();
+    retired.sort();
+    let mut expected = vec![cam, mic_node];
+    expected.sort();
+    assert_eq!(retired, expected);
+    assert_eq!(report.retired_filters, [filter]);
+    let mixer = s.binder.mixer(s.wide).unwrap();
+    assert!(links_into(&s, mixer).is_empty());
+}
+
+#[test]
+fn nodes_removed_by_someone_else_are_reported_retired() {
+    let (mut s, _) = audio_setup();
+    let (f, _) = s
+        .col
+        .add_filter(s.cam, ty("org.rbs.filter.lut"), Settings::new())
+        .unwrap();
+    let (g, _) = s
+        .col
+        .add_filter(s.screen, ty("org.rbs.filter.lut"), Settings::new())
+        .unwrap();
+    s.binder.sync(&s.col, &mut s.graph).unwrap();
+    let cam = s.binder.source_node(s.cam).unwrap();
+    let cam_filter = s.binder.filter_node(s.cam, f).unwrap();
+    let screen_filter = s.binder.filter_node(s.screen, g).unwrap();
+    for id in [cam, screen_filter] {
+        s.graph.set_state(id, Lifecycle::Standby).unwrap();
+        s.graph.remove_node(id).unwrap();
+    }
+    let report = s.binder.sync(&s.col, &mut s.graph).unwrap();
+    assert_eq!(report.retired_sources, [cam]);
+    let mut retired = report.retired_filters.clone();
+    retired.sort();
+    let mut expected = vec![cam_filter, screen_filter];
+    expected.sort();
+    assert_eq!(retired, expected);
+    assert_eq!(report.created_sources.len(), 1);
+}
+
+#[test]
+fn a_mixer_removed_by_someone_else_is_bound_again() {
+    let (mut s, mic) = audio_setup();
+    s.binder.sync(&s.col, &mut s.graph).unwrap();
+    let old = s.binder.mixer(s.wide).unwrap();
+    s.graph.set_state(old, Lifecycle::Standby).unwrap();
+    s.graph.remove_node(old).unwrap();
+    let report = s.binder.sync(&s.col, &mut s.graph).unwrap();
+    let bound = report.mixers[&s.wide].clone();
+    assert!(bound.created);
+    assert_ne!(bound.node, old);
+    let mic_node = s.binder.source_node(mic).unwrap();
+    assert_eq!(links_into(&s, bound.node), [mic_node]);
+}
+
+#[test]
+fn sync_with_audio_is_idempotent() {
+    let (mut s, _) = audio_setup();
+    s.binder.sync(&s.col, &mut s.graph).unwrap();
+    let snapshot = |g: &GraphDescription| {
+        let nodes: Vec<_> = g
+            .nodes()
+            .iter()
+            .map(|n| (n.id, n.state, n.partition))
+            .collect();
+        (nodes, g.links().to_vec())
+    };
+    let before = snapshot(&s.graph);
+    let report = s.binder.sync(&s.col, &mut s.graph).unwrap();
+    assert_eq!(snapshot(&s.graph), before);
+    assert!(report.mixers.values().all(|m| !m.created));
+    assert!(report.created_sources.is_empty() && report.created_filters.is_empty());
+}
+
 struct Lcg(u64);
 
 impl Lcg {
@@ -462,14 +768,31 @@ impl Lcg {
 /// After any sequence of edits, sync leaves the graph consistent with the collection.
 #[test]
 fn random_edits_keep_the_graph_in_step() {
+    random_edits(false);
+}
+
+/// The same with audio bound: mixer links, partitions and created/retired reports too.
+#[test]
+fn random_edits_with_audio_keep_the_graph_in_step() {
+    random_edits(true);
+}
+
+fn random_edits(audio: bool) {
     for seed in 0..30_u64 {
         let mut rng = Lcg(seed);
         let mut s = setup();
+        if audio {
+            s.binder = SceneBinder::new(types).with_audio(AUDIO);
+        }
         let kinds = [
             "org.rbs.source.camera",
             "org.rbs.source.screen",
             "org.example.ghost",
+            "org.rbs.source.mic",
+            "org.rbs.source.camera-mic",
         ];
+        // Instances the application would hold, from the reports alone.
+        let mut instances = std::collections::BTreeSet::new();
         for step in 0..80 {
             let sources: Vec<SourceId> = s.col.sources().map(|x| x.id).collect();
             let scenes: Vec<SceneId> = s.col.scenes().map(|x| x.id).collect();
@@ -481,7 +804,38 @@ fn random_edits_keep_the_graph_in_step() {
             let pick_src = sources.get(rng.below(sources.len())).copied();
             let pick_scene = scenes.get(rng.below(scenes.len())).copied();
             let pick_item = items.get(rng.below(items.len())).copied();
-            let _ = match rng.below(13) {
+            let _ = match rng.below(15) {
+                // Someone else removes a source or filter node.
+                14 => {
+                    let nodes: Vec<NodeId> = s
+                        .col
+                        .sources()
+                        .flat_map(|x| {
+                            let filters = x.filters.iter().map(|f| (x.id, Some(f.id)));
+                            std::iter::once((x.id, None)).chain(filters)
+                        })
+                        .filter_map(|(src, f)| match f {
+                            None => s.binder.source_node(src),
+                            Some(f) => s.binder.filter_node(src, f),
+                        })
+                        .collect();
+                    if let Some(&id) = nodes.get(rng.below(nodes.len())) {
+                        let st = s.graph.node(id).unwrap().state;
+                        if st == Lifecycle::Active {
+                            s.graph.set_state(id, Lifecycle::Standby).unwrap();
+                        }
+                        s.graph.remove_node(id).unwrap();
+                    }
+                    Ok(())
+                }
+                13 => pick_src.map_or(Ok(()), |x| {
+                    let mut settings = Settings::new();
+                    settings.insert(
+                        "target".into(),
+                        SettingValue::Text(format!("t{}", rng.below(2))),
+                    );
+                    s.col.set_source_settings(x, settings).map(|_| ())
+                }),
                 9 => {
                     let f = pick_src.and_then(|x| {
                         s.col
@@ -516,7 +870,7 @@ fn random_edits_keep_the_graph_in_step() {
                     .col
                     .add_source(
                         &format!("S{seed}-{step}"),
-                        ty(kinds[rng.below(3)]),
+                        ty(kinds[rng.below(if audio { 5 } else { 3 })]),
                         Settings::new(),
                     )
                     .map(|_| ()),
@@ -554,9 +908,43 @@ fn random_edits_keep_the_graph_in_step() {
                 _ => s.col.set_preview(s.wide, pick_scene).map(|_| ()),
             };
             let report = s.binder.sync(&s.col, &mut s.graph).unwrap();
+            for node in &report.retired_sources {
+                assert!(
+                    instances.remove(node),
+                    "seed {seed} step {step}: retired twice"
+                );
+            }
+            for (_, node) in &report.created_sources {
+                assert!(
+                    instances.insert(*node),
+                    "seed {seed} step {step}: created twice"
+                );
+            }
+            let bound: std::collections::BTreeSet<NodeId> = s
+                .col
+                .sources()
+                .filter_map(|x| s.binder.source_node(x.id))
+                .collect();
+            assert_eq!(
+                instances, bound,
+                "seed {seed} step {step}: reported sources"
+            );
             check_consistent(&s, &report, seed, step);
         }
     }
+}
+
+fn has_video(s: &Setup, src: SourceId) -> bool {
+    let t = s.col.source(src).map(|x| x.type_id.as_str().to_owned());
+    !matches!(t.as_deref(), Some("org.rbs.source.mic"))
+}
+
+fn has_audio(s: &Setup, src: SourceId) -> bool {
+    let t = s.col.source(src).map(|x| x.type_id.as_str().to_owned());
+    matches!(
+        t.as_deref(),
+        Some("org.rbs.source.mic" | "org.rbs.source.camera-mic")
+    )
 }
 
 /// Checks the graph against the collection without using the binder's own report for
@@ -565,6 +953,9 @@ fn check_consistent(s: &Setup, report: &rbs_scene::binder::BindReport, seed: u64
     let wanted = s.col.wanted_sources();
     let mut accounted = std::collections::BTreeSet::new();
     let tail_of = |src: SourceId| -> Option<NodeId> {
+        if !has_video(s, src) {
+            return None;
+        }
         let source = s.col.source(src)?;
         let node = s.binder.source_node(src)?;
         Some(
@@ -591,6 +982,16 @@ fn check_consistent(s: &Setup, report: &rbs_scene::binder::BindReport, seed: u64
             state(s, node),
             expect,
             "seed {seed} step {step}: source state"
+        );
+        let partition = s.graph.node(node).unwrap().partition;
+        let expect_partition = if has_video(s, src.id) {
+            PartitionId::RENDER
+        } else {
+            AUDIO
+        };
+        assert_eq!(
+            partition, expect_partition,
+            "seed {seed} step {step}: partition"
         );
         // The chain is exactly source -> f1 -> ... -> fn over enabled, bound filters.
         let mut chain = vec![node];
@@ -665,6 +1066,40 @@ fn check_consistent(s: &Setup, report: &rbs_scene::binder::BindReport, seed: u64
                 "seed {seed} step {step}: compositor links"
             );
         }
+    }
+    for canvas in s.col.canvases() {
+        let Some(mixer) = s.binder.mixer(canvas.id) else {
+            continue;
+        };
+        accounted.insert(mixer);
+        assert_eq!(state(s, mixer), Lifecycle::Active);
+        assert_eq!(s.graph.node(mixer).unwrap().partition, AUDIO);
+        let mut expected: Vec<NodeId> = canvas
+            .program
+            .map(|p| s.col.visible_sources(canvas.id, p).unwrap())
+            .into_iter()
+            .flatten()
+            .filter(|src| has_audio(s, *src) && !has_video(s, *src))
+            .filter_map(|src| s.binder.source_node(src))
+            .collect();
+        expected.sort();
+        expected.dedup();
+        let mut linked: Vec<NodeId> = s
+            .graph
+            .links()
+            .iter()
+            .filter(|l| l.to.node == mixer)
+            .map(|l| l.from.node)
+            .collect();
+        linked.sort();
+        assert_eq!(linked, expected, "seed {seed} step {step}: mixer links");
+        let mut reported: Vec<NodeId> = report.mixers[&canvas.id]
+            .inputs
+            .iter()
+            .map(|i| i.producer)
+            .collect();
+        reported.sort();
+        assert_eq!(reported, expected, "seed {seed} step {step}: mixer inputs");
     }
     let all: std::collections::BTreeSet<NodeId> = s.graph.nodes().iter().map(|n| n.id).collect();
     assert_eq!(all, accounted, "seed {seed} step {step}: unaccounted nodes");
