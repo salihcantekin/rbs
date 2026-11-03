@@ -4013,6 +4013,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "rbs-capture-mf"
+version = "0.0.1"
+dependencies = [
+ "allocation-counter",
+ "bytes",
+ "rbs-capture",
+ "rbs-core",
+ "windows",
+ "windows-core",
+]
+
+[[package]]
 name = "rbs-capture-pipewire"
 version = "0.0.1"
 dependencies = [

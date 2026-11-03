@@ -26,7 +26,8 @@ use objc2_av_foundation::{
 };
 use objc2_core_foundation::CFRetained;
 use objc2_core_media::{
-    CMSampleBuffer, CMTime, CMTimeFlags, CMVideoFormatDescriptionGetDimensions,
+    CMClock, CMSampleBuffer, CMSyncConvertTime, CMTime, CMTimeFlags,
+    CMVideoFormatDescriptionGetDimensions,
 };
 use objc2_core_video::{
     CVPixelBuffer, CVPixelBufferGetHeight, CVPixelBufferGetIOSurface,
@@ -73,6 +74,10 @@ const PIXEL_FORMAT_420V: u32 = 0x3432_3076;
 const PIXEL_FORMAT_BGRA: u32 = 0x4247_5241;
 
 const CAMERA_PREFIX: &str = "camera:";
+
+/// Largest distance between a sample's mapped time and its arrival before the sample
+/// time is treated as being on another clock.
+const MAX_PTS_SKEW: Duration = Duration::from_secs(1);
 
 static GRAVEYARD: Graveyard = Graveyard::new("rbs-avf-janitor", HANDLE_GRACE, JANITOR_PERIOD);
 
@@ -197,9 +202,14 @@ fn duration_rate(time: CMTime) -> Option<FrameRate> {
 /// The frame duration of `rate` for AVFoundation.
 fn rate_duration(rate: FrameRate) -> Option<CMTime> {
     let r = rate.per_second();
+    let (mut a, mut b) = (r.num(), r.den());
+    while b != 0 {
+        (a, b) = (b, a % b);
+    }
+    let gcd = a.max(1);
     Some(CMTime {
-        value: i64::from(r.den()),
-        timescale: i32::try_from(r.num()).ok()?,
+        value: i64::from(r.den() / gcd),
+        timescale: i32::try_from(r.num() / gcd).ok()?,
         flags: CMTimeFlags::Valid,
         epoch: 0,
     })
@@ -419,6 +429,8 @@ impl CaptureFactory for AvfCaptureFactory {
                 request.size,
                 request.frame_rate,
             )?;
+            // A rate AVFoundation cannot be given exactly is refused now, not at start.
+            rate_duration(choice.rate).ok_or(CaptureError::FormatUnsupported)?;
             chosen_of(&device, &choice).ok_or(CaptureError::FormatUnsupported)
         })?;
         let (_, color) = delivered(chosen.pixel_format).ok_or(CaptureError::FormatUnsupported)?;
@@ -562,7 +574,8 @@ struct SurfaceGrave {
 
 impl Grave for SurfaceGrave {
     fn is_idle(&self) -> bool {
-        // The graveyard adds its own grace from the first idle sample.
+        // Always true (`until - HANDLE_GRACE` lies in the past): the graveyard keeps the
+        // surface a full grace from burial, which ends after `until`.
         Instant::now() + HANDLE_GRACE >= self.until
     }
     fn bytes(&self) -> u64 {
@@ -598,6 +611,9 @@ struct Producer {
     drift: DriftEstimator,
     last_timestamp: Option<Timestamp>,
     stopped: bool,
+    /// The session's synchronization clock, set once the session is configured.
+    sync_clock: Option<Sendable<Retained<CMClock>>>,
+    host_clock: Sendable<CFRetained<CMClock>>,
 }
 
 /// Nanoseconds on the host clock (`mach_absolute_time`), the clock of the capture
@@ -667,13 +683,14 @@ impl Producer {
         self.return_free(now);
 
         // SAFETY: the image buffer of a video sample is a CVPixelBuffer.
-        let Some(buffer) = (unsafe { sample.image_buffer() }) else {
-            return;
-        };
-        if CVPixelBufferGetPixelFormatType(&buffer) != self.expected {
-            return;
-        }
-        let Some(surface) = CVPixelBufferGetIOSurface(Some(&buffer)) else {
+        let picture = unsafe { sample.image_buffer() }
+            .filter(|buffer| CVPixelBufferGetPixelFormatType(buffer) == self.expected)
+            .and_then(|buffer| CVPixelBufferGetIOSurface(Some(&buffer)).map(|s| (buffer, s)));
+        let Some((buffer, surface)) = picture else {
+            // Received but not deliverable (no IOSurface, unexpected format): counted,
+            // so a source that only sends such samples shows drops, not silence.
+            self.shared.ring.count_drop();
+            self.sequence += 1;
             return;
         };
         let width = clamp_u32(CVPixelBufferGetWidth(&buffer));
@@ -713,13 +730,28 @@ impl Producer {
         // Clock edge (ADR-0004): pair the host clock with the master clock now, then
         // convert the sample's host-clock presentation time.
         // SAFETY: reading the timing of a valid sample buffer.
-        let source = cm_time_nanos(unsafe { sample.presentation_time_stamp() });
+        let pts = unsafe { sample.presentation_time_stamp() };
+        // Sample times are on the session's synchronization clock, usually but not
+        // always the host clock; convert them to host time first.
+        let pts = match self.sync_clock.as_ref() {
+            // SAFETY: both arguments are clocks, the kinds the call accepts.
+            Some(clock) => unsafe { CMSyncConvertTime(pts, &clock.0, &self.host_clock.0) },
+            None => pts,
+        };
+        let source = cm_time_nanos(pts);
         let mapped = match source {
             Some(source) => {
                 let _ = self.drift.observe(host, arrived);
-                self.drift
+                let mapped = self
+                    .drift
                     .mapping()
-                    .map_or(arrived, |m| m.to_master(source))
+                    .map_or(arrived, |m| m.to_master(source));
+                // A time on an unexpected clock maps far from arrival: use arrival.
+                if mapped.as_nanos().abs_diff(arrived.as_nanos()) > MAX_PTS_SKEW.as_nanos() as u64 {
+                    arrived
+                } else {
+                    mapped
+                }
             }
             None => arrived,
         };
@@ -816,6 +848,9 @@ impl Active {
             self.session.0.stopRunning();
             self.output.0.setSampleBufferDelegate_queue(None, None);
         }
+        // A delegate call queued before the detach may still run: wait for the serial
+        // queue to drain, so none runs after `stop` returns and nothing is freed there.
+        self._queue.0.exec_sync(|| {});
     }
 }
 
@@ -859,7 +894,9 @@ impl AvfSession {
             return Err(CaptureError::TargetNotFound);
         }
         let (format, duration) =
-            find_format(&device, &self.chosen).ok_or(CaptureError::TargetNotFound)?;
+            // The device is there but no longer offers the format (another model behind
+            // the same id): not recoverable by retrying.
+            find_format(&device, &self.chosen).ok_or(CaptureError::FormatUnsupported)?;
         let (code, _) =
             delivered(self.chosen.pixel_format).ok_or(CaptureError::FormatUnsupported)?;
 
@@ -898,6 +935,9 @@ impl AvfSession {
             drift: DriftEstimator::new(Duration::from_millis(100)),
             last_timestamp: self.last_timestamp,
             stopped: false,
+            sync_clock: None,
+            // SAFETY: returns the process-wide host time clock.
+            host_clock: Sendable(unsafe { CMClock::host_time_clock() }),
         }));
         let delegate = Delegate::new(DelegateIvars {
             producer: Arc::clone(&producer),
@@ -952,6 +992,8 @@ impl AvfSession {
                 AVCaptureSessionRuntimeErrorNotification,
             )
         };
+        // SAFETY: a property read of a configured session.
+        lock(&producer).sync_clock = unsafe { session.synchronizationClock() }.map(Sendable);
         let observers = vec![
             observe(disconnected, &device, &lost),
             observe(runtime_error, &session, &lost),
