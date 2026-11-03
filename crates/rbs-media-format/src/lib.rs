@@ -7,12 +7,16 @@
 //!   conversion.
 //! - [`avc`]: `AVCDecoderConfigurationRecord` (avcC) parsing and building.
 //! - [`aac`]: `AudioSpecificConfig` parsing and ADTS headers.
+//! - [`amf0`]: AMF0 values for FLV script tags and RTMP commands.
+//! - [`flv`]: FLV tags and H.264/AAC tag bodies, shared by the FLV muxer and RTMP.
 //!
 //! Functions that run per packet write into a caller-provided `Vec<u8>` and do not
 //! allocate once it has capacity (hot paths, P6 and P15).
 
 pub mod aac;
+pub mod amf0;
 pub mod avc;
+pub mod flv;
 pub mod nal;
 
 use std::fmt;

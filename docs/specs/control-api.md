@@ -33,3 +33,4 @@ An OBS WebSocket compatibility layer (subset) is a plugin, so existing Stream De
 - Schema technology choice (needs an ADR).
 - Preview transport for remote clients: UI rule U5 requires a reduced-rate encoded preview for remote panels; WebRTC from the engine is the candidate.
 - Every UI command must exist as a control API command (UI rule U20).
+- Stable addressing for layout commands. `rbs_ui::LayoutCommand` addresses windows and tab stacks by index, which shifts after each change; it is internal to the desktop shell. The `ui.*` commands for remote callers address panels by panel id (open, close, float, dock, move to an edge) and need stable window ids before they can target a window or stack. To be specified with the schema.

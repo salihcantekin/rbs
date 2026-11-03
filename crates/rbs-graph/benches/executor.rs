@@ -91,5 +91,85 @@ fn param_update(c: &mut Criterion) {
     group.finish();
 }
 
-criterion_group!(benches, tick, swap, param_update);
+fn queue_crossing(c: &mut Criterion) {
+    // A frame crossing from the render partition to an encoder partition (ADR-0026):
+    // source and video writer on one executor, reader and encoder plus a packet writer
+    // on the other, reader and output on a third. Compare with the same pipeline in one
+    // partition.
+    use rbs_core::lifecycle::Lifecycle;
+    use rbs_graph::description::{GraphDescription, PartitionId};
+    use rbs_graph::node::NodeKind;
+    use rbs_graph::partition::Lowering;
+    use rbs_graph::runtime::Node;
+
+    let mut group = c.benchmark_group("queue_crossing");
+    for split in [false, true] {
+        let mut graph = GraphDescription::new();
+        let mut nodes = Vec::new();
+        for (kind, p) in [
+            (NodeKind::Source, 0),
+            (NodeKind::Encoder, 1),
+            (NodeKind::Muxer, 2),
+        ] {
+            let node = lean_nodes::Lean::new(kind);
+            let desc = Node::<()>::descriptor(&node).clone();
+            let id = graph.add_node(Arc::new(desc)).unwrap();
+            graph.set_state(id, Lifecycle::Standby).unwrap();
+            graph.set_state(id, Lifecycle::Active).unwrap();
+            if split {
+                graph.set_partition(id, PartitionId(p)).unwrap();
+            }
+            nodes.push((id, PartitionId(if split { p } else { 0 }), node));
+        }
+        graph.connect(nodes[0].0, "out", nodes[1].0, "in").unwrap();
+        graph.connect(nodes[1].0, "out", nodes[2].0, "in").unwrap();
+        let mut lowered = Lowering::new().lower(&graph);
+        let mut parts: Vec<_> = lowered
+            .parts
+            .keys()
+            .map(|p| (*p, channel::<()>(Arc::new(()), ())))
+            .collect();
+        let part = |parts: &mut Vec<(PartitionId, _)>, p: PartitionId| {
+            parts.iter().position(|(q, _)| *q == p).unwrap()
+        };
+        for (id, p, node) in nodes {
+            let i = part(&mut parts, p);
+            parts[i].1.0.adopt(id, Box::new(node)).unwrap();
+        }
+        for new in lowered.created.drain(..) {
+            let (w, r) = new.ends.writer::<()>();
+            let i = part(&mut parts, new.crossing.from);
+            parts[i].1.0.adopt(new.crossing.writer, w).unwrap();
+            let i = part(&mut parts, new.crossing.to);
+            parts[i]
+                .1
+                .0
+                .adopt(new.crossing.reader, r.into_node())
+                .unwrap();
+        }
+        let cadence = Cadence::frames(Timestamp::ZERO, FrameRate::FPS_60);
+        for (p, (ctl, exec)) in parts.iter_mut() {
+            ctl.apply(&lowered.parts[p]).unwrap();
+            exec.run_tick(Tick::of(&cadence, 0));
+            ctl.collect().unwrap().unwrap();
+        }
+        let mut i = 1_u64;
+        let name = if split {
+            "three_partitions"
+        } else {
+            "one_partition"
+        };
+        group.bench_function(name, |b| {
+            b.iter(|| {
+                for (_, (_, exec)) in parts.iter_mut() {
+                    exec.run_tick(Tick::of(&cadence, i));
+                }
+                i += 1;
+            })
+        });
+    }
+    group.finish();
+}
+
+criterion_group!(benches, tick, swap, param_update, queue_crossing);
 criterion_main!(benches);

@@ -21,7 +21,7 @@ use crate::pool::{TextureDesc, TexturePool};
 #[cfg(windows)]
 mod d3d12;
 #[cfg(target_vendor = "apple")]
-mod metal;
+pub(crate) mod metal;
 #[cfg(target_os = "linux")]
 mod vulkan;
 

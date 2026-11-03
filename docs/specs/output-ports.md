@@ -153,6 +153,8 @@ pub trait AudioEncoder: Send {
 | `codec.audio.sample_rates` | Set | e.g. `44100`, `48000` |
 | `codec.audio.channels.max` | Int | |
 
+Native input memory (`metal`, `d3d11`, `d3d12`, `vulkan`, `dmabuf`): the encoder receives native frames exported by `rbs-gpu` ([ADR-0025](../adr/0025-encoder-surface-export.md); `metal` is a `NativeSurface::IoSurface` with `SurfaceSync::Ready`, NV12 `'420v'` or P010 `'x420'`). Encoder adapters read the handle from the payload and do not depend on `rbs-gpu`. They keep the frame (and with it the lease) until the encoder API has finished reading the surface, then drop it; holding frames longer starves the exporter's fixed ring, which then drops frames.
+
 ## `rbs-mux`
 
 ```rust
@@ -287,12 +289,14 @@ Capability keys: `transport.schemes` (Set: `rtmp`, `rtmps`, `srt`, `file`, ...),
 
 ## `rbs-media-format` (format helpers)
 
-Pure functions shared by muxer and transport adapters (ADR-0019, decision 7). No traits, no state, no I/O, no threads; errors are `FormatError::{Truncated, Invalid, Unsupported}`.
+Pure functions and immutable set-up values shared by muxer and transport adapters (ADR-0019, decision 7). No traits, no mutable session state, no I/O, no threads; bitstream errors are `FormatError::{Truncated, Invalid, Unsupported}`.
 
 - `nal`: `annexb_units` and `length_prefixed_units` iterators (borrowing, never allocate), `annexb_first_header` (reads only up to the first start code), `annexb_to_length_prefixed` and `length_prefixed_to_annexb` (append to a caller-owned `Vec`, so a reused buffer stops allocating once it reaches the working size), `h264_type` and the `h264` NAL type constants.
 - `avc`: `AvcConfig` parses and builds `AVCDecoderConfigurationRecord` (avcC), and builds one from the SPS and PPS of an Annex B access unit. Session set-up only; not for hot paths.
 - `aac`: `AudioSpecificConfig` (parse, encode, AAC-LC constructor, sample rate) and the 7-byte ADTS header.
-- Planned: HEVC (hvcC), FLV tag bodies, Opus headers, as adapters need them.
+- `amf0`: AMF0 writers (number, boolean, string with long-string fallback, null, object, ECMA array) appending to a caller-owned `Vec`, and `decode`/`decode_all` into an owned `Decoded` tree (numbers, booleans, strings, objects, ECMA and strict arrays, dates, null, undefined) with nesting bounded at 16; XML documents decode as strings, typed objects as objects (class name dropped), the unsupported marker as undefined, and references and the AMF3 switch are refused (RTMP clients ask for `objectEncoding: 0`). Decoding allocates, never reserves from a count read off the wire, and is for size-bounded control messages (RTMP command replies) only.
+- `flv`: tag header, `PreviousTagSize` and whole-tag writers, `millis_since`, and `FlvTracks`. `FlvTracks::new` checks the stream descriptors once (at most one H.264 and one AAC stream; Annex B H.264 needs SPS and PPS in the extradata) and fails with `ConfigError::{Unsupported, Invalid}`. It then gives the `onMetaData` body, the AVC and AAC sequence header bodies, and per packet `plan` (validates, returns the exact body size, `PacketError` otherwise) and `write_body` (appends the body: access unit delimiters left out, Annex B re-framed with 4-byte lengths, composition offset clamped to signed 24 bits). `plan` and `write_body` never allocate beyond the caller's buffer. The FLV muxer wraps these bodies in tags; RTMP sends them as message bodies. The caller owns the clock origin and timestamps.
+- Planned: HEVC (hvcC), enhanced-RTMP bodies, Opus headers, as adapters need them.
 
 Hot functions (iterators and conversions) are linear in the payload and benchmarked through the adapters that call them.
 
@@ -329,6 +333,5 @@ The three port crates and the container types in `rbs-core` are Draft and pre-1.
 - `TransportError::QueueFull` retry: there is no "space available" signal yet; the output worker retries on its next packet or `poll_events` tick. An event may be added if measurements show it matters.
 - `Secret` is not zeroized on drop; a zeroizing type can replace it when a dependency for that is justified.
 - WHIP/WebRTC: codec and profile are negotiated in SDP, possibly after the encoder exists. The first WHIP adapter decides whether the transport offers only what `start` received, or the output builder negotiates before creating the encoder.
-- Hardware encoders that take native surfaces (D3D11, Vulkan, IOSurface, DMA-BUF) receive `FramePayload::Texture` ids today and need the `rbs-gpu` export path to get native handles; whether encoder adapters may depend on `rbs-gpu` or receive exported handles through a port-level type is decided with the GPU interop work.
 - Multi-pass or look-ahead tuning beyond `EncoderTuning` is left to `adapter_options` until a second adapter needs it.
 - HLS/DASH segmenting: a muxer that emits segment boundaries, or a transport that segments; decided when the first HLS adapter is written.

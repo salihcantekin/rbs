@@ -1,0 +1,110 @@
+# RBS design tokens (docs/specs/ui-design-system.md, "Tokens").
+# The single source of visual values. Shells generate their toolkit format from
+# this file; UI code refers to tokens by name only (rule U6). Values are initial
+# and are tuned in usability testing; names are a contract.
+format = 1
+
+# Live and recording colours are the same in every theme (rule U12): themes cannot change them.
+[fixed]
+"color.state.live" = "#c4262e"
+"color.text.on-live" = "#ffffff"
+
+[themes.dark]
+"color.surface.base" = "#121417"
+"color.surface.raised" = "#1b1e23"
+"color.surface.overlay" = "#252931"
+"color.surface.sunken" = "#0c0e10"
+"color.text.primary" = "#eceef2"
+"color.text.secondary" = "#a8afbb"
+"color.text.disabled" = "#6b717c"
+"color.text.inverse" = "#0c0e10"
+"color.border.subtle" = "#2a2f37"
+"color.border.strong" = "#6e7683"
+"color.border.focus" = "#6ea8ff"
+"color.accent" = "#5b9cff"
+"color.accent.hover" = "#7fb2ff"
+"color.accent.subtle" = "#1d2b44"
+"color.state.warning" = "#e3b341"
+"color.state.healthy" = "#3fb950"
+"color.state.error" = "#c38bf0"
+"color.action.destructive" = "#c38bf0"
+"color.meter.low" = "#3fb950"
+"color.meter.mid" = "#e3b341"
+"color.meter.high" = "#f0883e"
+"color.meter.clip" = "#c38bf0"
+
+[themes.light]
+"color.surface.base" = "#f5f6f8"
+"color.surface.raised" = "#ffffff"
+"color.surface.overlay" = "#ffffff"
+"color.surface.sunken" = "#e9ebef"
+"color.text.primary" = "#15171a"
+"color.text.secondary" = "#4f555e"
+"color.text.disabled" = "#9aa0a8"
+"color.text.inverse" = "#ffffff"
+"color.border.subtle" = "#dde0e5"
+"color.border.strong" = "#868c96"
+"color.border.focus" = "#1f6feb"
+"color.accent" = "#1f6feb"
+"color.accent.hover" = "#1a5fcc"
+"color.accent.subtle" = "#dbe7fd"
+"color.state.warning" = "#9a6700"
+"color.state.healthy" = "#1a7f37"
+"color.state.error" = "#8e3fb5"
+"color.action.destructive" = "#8e3fb5"
+"color.meter.low" = "#1a7f37"
+"color.meter.mid" = "#9a6700"
+"color.meter.high" = "#bc4c00"
+"color.meter.clip" = "#8e3fb5"
+
+[themes.high-contrast]
+"color.surface.base" = "#000000"
+"color.surface.raised" = "#0a0a0a"
+"color.surface.overlay" = "#141414"
+"color.surface.sunken" = "#000000"
+"color.text.primary" = "#ffffff"
+"color.text.secondary" = "#e6e6e6"
+"color.text.disabled" = "#9a9a9a"
+"color.text.inverse" = "#000000"
+"color.border.subtle" = "#8a8a8a"
+"color.border.strong" = "#ffffff"
+"color.border.focus" = "#ffd60a"
+"color.accent" = "#4cc2ff"
+"color.accent.hover" = "#8ad8ff"
+"color.accent.subtle" = "#00314d"
+"color.state.warning" = "#ffd60a"
+"color.state.healthy" = "#5cff7a"
+"color.state.error" = "#e9a6ff"
+"color.action.destructive" = "#e9a6ff"
+"color.meter.low" = "#5cff7a"
+"color.meter.mid" = "#ffd60a"
+"color.meter.high" = "#ff9f43"
+"color.meter.clip" = "#e9a6ff"
+
+# Logical pixels at 100 % scale.
+[length]
+"space.1" = 4
+"space.2" = 8
+"space.3" = 12
+"space.4" = 16
+"space.6" = 24
+"space.8" = 32
+"size.control.sm" = 24
+"size.control.md" = 28
+"size.control.lg" = 32
+"radius.sm" = 4
+"radius.md" = 6
+"radius.lg" = 10
+
+# Milliseconds. Every animation is off under "reduce motion".
+[duration]
+"motion.fast" = 120
+"motion.normal" = 180
+
+# Size and line height in logical pixels, weight 100-900.
+[type]
+"type.caption" = { size = 12, line = 16, weight = 400 }
+"type.body" = { size = 13, line = 20, weight = 400 }
+"type.label" = { size = 13, line = 20, weight = 500 }
+"type.title" = { size = 15, line = 22, weight = 600 }
+"type.heading" = { size = 20, line = 28, weight = 600 }
