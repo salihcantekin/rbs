@@ -282,12 +282,16 @@ impl LayoutSession {
     /// The switch is in the layout undo history like any other, and the toast
     /// names the previous workspace for the one-click way back (undo).
     pub fn switch_automatically(&mut self, to: Workspace) -> Result<Option<Toast>, CommandError> {
-        let previous = self.workspace.name.clone();
-        let toast = self.apply(LayoutCommand::Switch(to), Origin::Command)?;
-        if self.workspace.name == previous && toast.is_none() {
+        // One toast covers it: its way back (undo) also reopens any guarded
+        // panel the switch closed while live.
+        let before = self.workspace.clone();
+        self.apply(LayoutCommand::Switch(to), Origin::Command)?;
+        if self.workspace == before {
             return Ok(None);
         }
-        Ok(Some(Toast::SwitchedAutomatically { previous }))
+        Ok(Some(Toast::SwitchedAutomatically {
+            previous: before.name,
+        }))
     }
 
     /// End the current undo group (for example when a splitter drag ends).

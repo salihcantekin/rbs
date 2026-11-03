@@ -149,7 +149,7 @@ placement = { display = "edid:SAM-7012-HX55", connector = "HDMI-1", size = [1920
 - Layout changes and switches go into the UI's own layout undo history, not the engine command log. A history step is a whole-workspace snapshot; the moves of one splitter drag form one step; changes that leave the layout as it was record nothing; at least 100 steps are kept.
 - Every layout change is a command (open, close, show tab, move to stack, move to edge, float, dock, close window, resize, lock, switch). Pointer and keyboard both issue these commands. When `locked` is set, close, move to stack, move to edge, float, dock, close window and resize are refused if they come from the pointer; open, show tab, lock or unlock and switch are always allowed, and every command from the palette, a shortcut or the control API applies.
 - The result of every command is validated against the rules above; a command whose result would break one (for example splits nested deeper than 16 levels) is refused, so a workspace can always be saved and loaded again.
-- A switch that leaves a guarded panel closed while live shows the same undo toast as closing it. An automatic switch (on go live or stream end) shows a toast naming the previous workspace with a one-click way back.
+- A switch that leaves a guarded panel closed while live shows the same undo toast as closing it. An automatic switch (on go live or stream end) shows one toast naming the previous workspace with a one-click way back; that toast replaces the undo toast for any guarded panel the switch closed, because going back reopens it.
 - Deleting a workspace asks for confirmation; deleting a built-in workspace is not possible, only restoring its default.
 
 ## Core flows (contract for U1)
