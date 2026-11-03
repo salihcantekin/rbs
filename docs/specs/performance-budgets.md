@@ -58,7 +58,7 @@ The desktop UI (`rbs-app`) owns this budget (ADR-0022, owner decision 2026-11-02
 | --- | --- | --- |
 | No visible panel animates, not live | Process CPU, wake-ups | 0.0 % and no redraw timer |
 | 1080p preview and mixer meters visible and animating | Process CPU of the UI | at most 10 % of one core |
-| Same | Late frames (interval over 1.5 refresh periods) | 0 over 60 s |
+| Same | Late frames (interval over 1.5 refresh periods) | 0 over 60 s (open on the preview layer path: presentation is the window server's and needs Core Animation instrumentation, ADR-0034) |
 | Workspace switch | Time to the first frame of the new layout | under 100 ms (U21) |
 
 How it is reached: the preview as its own native layer that the toolkit never redraws ([ADR-0034](../adr/0034-preview-as-native-layer.md); Slint's GPU path cannot redraw only dirty regions), meters at 30 Hz and the live duration and stats at 1 Hz (rates are declared per panel in the [design system](ui-design-system.md#panel-model)), and no timer at all when nothing animates.
