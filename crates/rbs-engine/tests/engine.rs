@@ -417,7 +417,14 @@ fn a_drain_that_times_out_is_reported_and_still_releases_everything() {
     let stall = Arc::new(Gate::holding(Duration::from_secs(2)));
     let mut rig = Rig::build(Some(&log), None, Some(&stall), Duration::from_millis(100));
     rig.engine.apply(&rig.graph).unwrap();
-    rig.frame();
+    // The encoder may read a frame only on the next frame (same cadence, either order);
+    // the output ticks on its first packet.
+    for _ in 0..20 {
+        rig.frame();
+        if rig.encoder_probe.seen.load(Ordering::Relaxed) > 0 {
+            break;
+        }
+    }
     let output = rig.engine.worker_stats(OUTPUT).unwrap();
     // The sink is inside its stalled `process` once the output ticked.
     assert!(eventually(LIMIT, || rig
