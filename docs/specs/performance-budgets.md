@@ -58,10 +58,12 @@ The desktop UI (`rbs-app`) owns this budget (ADR-0022, owner decision 2026-11-02
 | --- | --- | --- |
 | No visible panel animates, not live | Process CPU, wake-ups | 0.0 % and no redraw timer |
 | 1080p preview and mixer meters visible and animating | Process CPU of the UI | at most 10 % of one core |
-| Same | Late frames (interval over 1.5 refresh periods) | 0 over 60 s |
+| Same | Late frames (interval over 1.5 refresh periods) | 0 over 60 s (open on the preview layer path: presentation is the window server's and needs Core Animation instrumentation, ADR-0034) |
 | Workspace switch | Time to the first frame of the new layout | under 100 ms (U21) |
 
-How it is reached: redraw only what changed (dirty regions), the preview as its own layer or window, meters at 30 Hz and the live duration and stats at 1 Hz (rates are declared per panel in the [design system](ui-design-system.md#panel-model)), and no timer at all when nothing animates.
+Measured 2026-11-03 on the reference Mac (`remote_preview` with `RBS_DEMO_SECONDS`, ADR-0034): 1080p preview and 16 meters at 30 Hz, 9.2 % (one run; 720p: 8.3-8.8 % over two), 60 fps, 1 to 4 preview frames skipped by the engine per 20 s; 720p preview alone 2.0 %. Before ADR-0034, with Slint drawing the preview at 720p: 15.3 % with meters and 12.2 % without. The budget is met with a thin margin.
+
+How it is reached: the preview as its own native layer that the toolkit never redraws ([ADR-0034](../adr/0034-preview-as-native-layer.md); Slint's GPU path cannot redraw only dirty regions), meters at 30 Hz and the live duration and stats at 1 Hz (rates are declared per panel in the [design system](ui-design-system.md#panel-model)), and no timer at all when nothing animates.
 
 ## Regression policy
 

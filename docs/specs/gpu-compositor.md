@@ -261,6 +261,40 @@ impl PreviewFrame {                       // Send; dropping it releases the surf
 }
 ```
 
+UI side, layer path (macOS, `rbs-gpu` feature `preview-layer`, [ADR-0034](../adr/0034-preview-as-native-layer.md)); the default way to show the preview:
+
+```rust
+pub struct LayerRect { pub x: f64, pub y: f64, pub width: f64, pub height: f64 } // points, top-left origin
+pub const DEFAULT_RETIRE_AFTER: Duration;  // 34 ms: two refresh periods at 60 Hz
+
+impl PreviewLayer {                       // not Send: the UI's main thread
+    /// A Core Animation layer for the subscriber's surfaces (resize-aspect, above the
+    /// toolkit's layer). Not in a window yet.
+    pub fn new(subscriber: &PreviewSubscriber) -> PreviewLayer;
+    pub fn surfaces(&self) -> usize;
+    /// Ring the engine needs at this frame interval: shown + retiring + written + in flight.
+    pub fn surfaces_needed(&self, frame_interval: Duration) -> usize;
+    /// Adds it to an AppKit view's backing layer. Main thread, live layer-backed NSView.
+    pub unsafe fn attach_to_ns_view(&mut self, ns_view: NonNull<c_void>) -> Result<(), GpuError>;
+    /// Leaves the window; the shown frame retires by the normal rule.
+    pub fn detach(&mut self, now: Timestamp);
+    /// No-op when neither the rectangle nor the superlayer's height or flip changed.
+    pub fn set_rect(&mut self, rect: LayerRect);
+    pub fn set_hidden(&self, hidden: bool);        // while toolkit content overlaps it
+    pub fn set_retire_after(&mut self, after: Duration);
+    /// Makes the frame's IOSurface the layer's contents and flushes the transaction to the
+    /// window server. Never waits or allocates.
+    pub fn show(&mut self, frame: PreviewFrame, now: Timestamp);
+    /// Gives back replaced frames older than the retire time. Returns how many wait.
+    pub fn retire(&mut self, now: Timestamp) -> usize;
+    pub fn next_retire(&self) -> Option<Timestamp>;
+    pub fn retiring(&self) -> usize;
+    /// Diagnostics only: shown + retiring + one the engine writes fill the ring. The UI
+    /// calls `retire` at `next_retire` (one-shot timer) while `retiring() > 0`.
+    pub fn engine_may_starve(&self) -> bool;
+}
+```
+
 - **Surfaces.** Single-plane `'RGBA'` IOSurfaces of the preview size, 4 bytes per pixel, created in `new`; the ring never grows. Each is aliased on the engine device as an `Rgba8UnormSrgb` render target owned by the publisher (no pool slots). `publish` draws one full-screen triangle that samples the linear `Rgba16Float` canvas bilinearly (any canvas size, scaled to the preview size), composites it over opaque black and writes it with sRGB encoding by the render target. One render pass, one submission, no copy, no CPU readback.
 - **Transport.** A Mach service in the user's bootstrap namespace, named `org.rbs.preview.<pid>.<n>.<random>` (unique per publisher; the random part keeps a stale name from being registered by another process and mistaken for this engine), with a random 64-bit token from the system CSPRNG (`arc4random_buf`). The engine hands both to the UI through the control API (for the demo, on the command line). Surfaces cross the process boundary as Mach send rights (`IOSurfaceCreateMachPort`, `IOSurfaceLookupFromMachPort`); IOSurface global IDs (`kIOSurfaceIsGlobal`) are not used.
 - **Messages.** Fixed-size, version 1, little structs of 32-bit words:
@@ -270,11 +304,12 @@ impl PreviewFrame {                       // Send; dropping it releases the surf
   - `RELEASE` (UI to the session port): generation, slot. Only the subscribed UI holds a send right to the session port, so no other process can release a surface. The engine accepts releases only there.
 - **End of a subscription.** The engine asks the kernel for a no-senders notice on the session port. It arrives once the UI's send right is gone: the UI dropped its subscriber and every frame, or exited (also while it held every surface and no `FRAME` could be sent). A `FRAME` send that finds the UI's port dead ends it too. Either way the UI holds no surface any more, so every surface is free again. The UI learns that the engine is gone from a dead-name notice on the service port (`GpuError::Disconnected`).
 - **Never block the render thread.** Every engine-side `mach_msg` call uses a zero timeout: in `tick`, at most ring size + 1 receives on the session port and 2 on the service port (so strangers flooding the service port cannot lengthen a tick), and the sends of `SURFACES` and `FRAME`. A `FRAME` that cannot be queued is dropped and its surface stays free (counted in `dropped`); since a UI holds at most one frame per surface, that needs a UI that stopped receiving. Queue limits are raised to `MACH_PORT_QLIMIT_MAX`, so releases (at most one per surface) cannot fill the session port. A send that times out has its rights returned by the kernel (pseudo-receive); they are destroyed at once, so no reference leaks.
-- **Lifetime.** The engine writes a surface only when it is not pending and the UI does not hold it. A slot is held from its `FRAME` until the UI's `RELEASE`. The UI releases a frame by dropping `PreviewFrame`, which it does only after its own GPU work that reads the surface has completed (for Slint, after a later frame's submission is done). The UI process retains every IOSurface it looked up, so a crashed or slow engine never leaves the UI with a dangling surface; at worst it shows a stale image. IOSurfaces are reference counted across processes and survive until both sides drop them.
+- **Lifetime.** The engine writes a surface only when it is not pending and the UI does not hold it. A slot is held from its `FRAME` until the UI's `RELEASE`. The UI releases a frame by dropping `PreviewFrame`, which it does only after nothing in the UI reads the surface: for Slint, after a later frame's submission is done; for `PreviewLayer`, best effort, a retire time after the frame was replaced as the layer's contents and the change was flushed to the window server (Core Animation applies it at the next refresh, or the one after, and reports no completion; IOSurface use counts and `IOSurfaceIsInUse` do not track layer contents). The retire time is two refresh periods of the slowest display (default 34 ms). Too short a time can show one torn monitoring frame, never a memory hazard. At 60 fps the layer holds up to four surfaces, so a UI using it needs a ring of `surfaces_needed` (6); a smaller ring makes the engine drop frames, never deadlock. The UI process retains every IOSurface it looked up, so a crashed or slow engine never leaves the UI with a dangling surface; at worst it shows a stale image. IOSurfaces are reference counted across processes and survive until both sides drop them.
 - **Colour.** The surface holds sRGB-encoded, opaque RGBA8 (`ColorSpace::SRGB`), the format the UI composites. The preview is for monitoring; the program output to encoders stays on the encoder export path.
 - **Security.** Any process of the same user can look up the service; without the token it gets nothing, and without the session port it cannot release a surface. The token must reach the UI through the control API in the product; the demo passes it on the command line, where other processes of the same user can read it. The token is not a defence against a process that can already read the engine's memory or control API.
 - **Namespace.** Engine and UI must share a bootstrap namespace (the same login session). An engine started over ssh or as a LaunchDaemon cannot be reached this way, and a sandboxed UI needs a mach-lookup exception (or an app-group name prefix). Handing a port over at spawn or through the control API is the fallback for those set-ups.
 - **Installed but unused costs nothing (P13).** A publisher exists only while a preview output is Active. While nobody is subscribed, `publish` returns at once without GPU work and `tick` makes one non-blocking receive call. The UI side starts its receive thread only while a preview panel is visible.
+- **Layer placement and overlap (ADR-0034).** The UI sets the layer's rectangle before every toolkit redraw (layout changes always redraw). The layer is above the toolkit's content: while toolkit content (menus, popups, toasts, dialogs) intersects the preview area, the UI hides the layer. Showing a frame costs one Core Animation transaction on the UI thread and no toolkit redraw.
 - **Same device, other process.** IOSurfaces are not tied to a device. The UI aliases them on its own Metal device with the same `interop::metal` code as the importer. Unified memory only, as for the encoder export.
 
 ### Native import (interop)
@@ -400,6 +435,7 @@ Run on any adapter, including software adapters in CI (lavapipe on Linux, WARP o
 - Export (macOS CI, the runner's Metal device): NV12 and P010 (where `gpu.p010`) surface bytes, read through the IOSurface API with its plane strides, equal the two-plane output byte for byte on a two-colour canvas; the frame is an `IoSurface` frame with `Ready` sync, the right pixel format, time and sequence; the surface wraps as a `CVPixelBuffer` of the same format, size and plane count; held surfaces are not reused and a full ring returns `ExportBusy`; frames come out in order, and frames dropped on another thread free their surfaces; a frame stays valid and unchanged after both the exporter and the pool are dropped; odd sizes and ring sizes outside 2..=32 are rejected; a steady export loop allocates at most 4 more per frame than the same conversion into pool planes and does not grow.
 
 - Preview export (macOS CI): a child process subscribes, aliases the surfaces on its own device and reads back each frame; colours match the canvas of the frame's sequence (sRGB encoded, within ±1), the IOSurface IDs it sees equal the engine's (same memory, no copy), frames arrive in order, and a held surface is not reused. A wrong token gets no surfaces; nothing is converted while nobody is subscribed; when the child exits the engine ends the subscription and frees every surface; the steady publish loop allocates at most a small constant per frame more than the conversion alone and does not grow.
+- Preview layer (macOS CI, ADR-0034, `tests/share_layer_metal.rs`): the layer's contents are the engine's surface of each shown frame (same IOSurface ID); with fake time at an ideal 60 fps and a ring of `surfaces_needed`, the engine never finds every surface busy and the UI holds the shown frame plus at most three; with jittered frame times and retirement at `next_retire` the UI still holds at most `surfaces_needed - 2`; a replaced frame is released at its retire time, not before; `detach` retires the shown frame by the same rule; a ring of 3 reports `engine_may_starve` and recovers after the retire time; placement converts the top-left rectangle for flipped and unflipped superlayers, follows a height change and is a no-op for an unchanged rectangle. The on-screen check (placement, colours, no tearing, CPU) is a manual run of `remote_preview` on a Mac.
 ## Open questions
 
 - Whether the canvas working format should be configurable (`Rgba16Float` vs `Rgba8UnormSrgb` for low-end GPUs).

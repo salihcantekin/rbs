@@ -18,6 +18,12 @@ wgpu = { version = "30.0.1", default-features = false, features = ["std", "parki
 bytemuck = { version = "1.25", features = ["derive"] }
 pollster = "0.4"
 
+[features]
+# UI-process code: shows the cross-process preview as a Core Animation layer of a window
+# (macOS, ADR-0034). Off by default so engine binaries carry no window code (P8); the UI
+# (rbs-app) turns it on.
+preview-layer = ["dep:objc2", "dep:objc2-quartz-core"]
+
 [dev-dependencies]
 # Same version as the dependency; listed again so benches can name wgpu types directly.
 wgpu = { version = "30.0.1", default-features = false, features = ["std", "parking_lot", "dx12", "metal", "vulkan", "wgsl"] }
@@ -30,6 +36,10 @@ harness = false
 [[bench]]
 name = "preview"
 harness = false
+
+[[test]]
+name = "share_layer_metal"
+required-features = ["preview-layer"]
 
 [lints]
 workspace = true
@@ -47,14 +57,22 @@ windows = { version = "0.62", features = ["Win32_Foundation", "Win32_Security", 
 objc2-metal = { version = "0.3.2", default-features = false, features = ["std", "MTLAllocation", "MTLDevice", "MTLPixelFormat", "MTLResource", "MTLTexture", "objc2-io-surface"] }
 objc2-io-surface = { version = "0.3.2", default-features = false, features = ["std", "IOSurfaceRef", "IOSurfaceTypes", "libc", "objc2-core-foundation"] }
 # Property dictionaries for creating the bi-planar IOSurfaces of the encoder export.
-objc2-core-foundation = { version = "0.3.2", default-features = false, features = ["std", "CFArray", "CFDictionary", "CFNumber", "CFString"] }
+objc2-core-foundation = { version = "0.3.2", default-features = false, features = ["std", "CFArray", "CFCGTypes", "CFDictionary", "CFNumber", "CFString"] }
+# The preview as a Core Animation layer (share::PreviewLayer, ADR-0034, feature
+# `preview-layer`); same objc2 versions as wgpu-hal and raw-window-metal, so nothing new
+# is built.
+objc2 = { version = "0.6.3", optional = true }
+objc2-quartz-core = { version = "0.3.2", default-features = false, features = ["std", "CALayer", "CATransaction", "objc2-core-foundation"], optional = true }
 # Mach messages and bootstrap lookups for the cross-process preview (ADR-0028).
 mach2 = "0.7"
 
 [target.'cfg(target_vendor = "apple")'.dev-dependencies]
+# Test-only: reads a PreviewLayer's contents back as an IOSurface.
+objc2 = "0.6.3"
+objc2-quartz-core = { version = "0.3.2", default-features = false, features = ["std", "CALayer", "objc2-core-foundation"] }
 # Test-only IOSurface producer for the import conformance test.
 objc2-io-surface = { version = "0.3.2", default-features = false, features = ["std", "IOSurfaceRef", "IOSurfaceTypes", "libc", "objc2-core-foundation"] }
-objc2-core-foundation = { version = "0.3.2", default-features = false, features = ["std", "CFDictionary", "CFNumber", "CFString"] }
+objc2-core-foundation = { version = "0.3.2", default-features = false, features = ["std", "CFCGTypes", "CFDictionary", "CFNumber", "CFString"] }
 # Test-only consumer check: exported surfaces must wrap as CVPixelBuffers for VideoToolbox.
 objc2-core-video = { version = "0.3.2", default-features = false, features = ["std", "CVBuffer", "CVImageBuffer", "CVPixelBuffer", "CVPixelBufferIOSurface", "CVReturn", "objc2-io-surface"] }
 

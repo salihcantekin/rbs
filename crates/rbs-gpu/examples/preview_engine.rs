@@ -3,7 +3,8 @@
 //! Composites an animated canvas at 60 Hz and shares it through a `PreviewPublisher`.
 //! Prints the endpoint (`service#token`) as its first line on stdout, then a status line
 //! every few seconds on stderr. Stops when stdin closes (the UI demo holds it open) or
-//! after `--seconds N`.
+//! after `--seconds N`. `RBS_PREVIEW_SIZE=<w>x<h>` sets the preview size (default
+//! 1280x720), `RBS_PREVIEW_SURFACES=<n>` the ring size (default 6).
 //!
 //! ```sh
 //! cargo run -p rbs-gpu --release --example preview_engine
@@ -37,6 +38,16 @@ mod demo {
 
     const CANVAS: (u32, u32) = (1920, 1080);
     const PREVIEW: (u32, u32) = (1280, 720);
+    /// `RBS_PREVIEW_SIZE=<w>x<h>`, or the default; an unreadable value is an error.
+    fn preview_size() -> Result<(u32, u32), String> {
+        let Ok(v) = std::env::var("RBS_PREVIEW_SIZE") else {
+            return Ok(PREVIEW);
+        };
+        v.split_once('x')
+            .and_then(|(w, h)| Some((w.parse::<u32>().ok()?, h.parse::<u32>().ok()?)))
+            .ok_or_else(|| format!("bad RBS_PREVIEW_SIZE {v} (want <w>x<h>)"))
+    }
+
     const FRAME: Duration = Duration::from_nanos(16_666_667);
 
     /// A 2x2 source of one sRGB colour; the `*Srgb` format decodes it to linear light.
@@ -78,14 +89,22 @@ mod demo {
         ];
         let bar = solid(&ctx, &mut pool, [240, 240, 240, 255])?;
 
+        let (width, height) = preview_size()?;
         let mut publisher = PreviewPublisher::new(
             &ctx,
             PreviewDesc {
-                width: PREVIEW.0,
-                height: PREVIEW.1,
-                // One shown, one waiting for the UI's last draw to finish on the GPU, one
-                // being rendered, one spare: with three the engine often finds none free.
-                surfaces: 4,
+                width,
+                height,
+                // What the UI's preview layer needs at 60 fps (`PreviewLayer::surfaces_needed`):
+                // one shown, up to three retiring for 34 ms, one being rendered, one in
+                // flight. Slint's texture path needs four of them. `RBS_PREVIEW_SURFACES`
+                // overrides it; the publisher rejects a size outside its range.
+                surfaces: match std::env::var("RBS_PREVIEW_SURFACES") {
+                    Ok(v) => v
+                        .parse()
+                        .map_err(|_| format!("bad RBS_PREVIEW_SURFACES {v}"))?,
+                    Err(_) => 6,
+                },
             },
         )?;
         println!("{}", publisher.endpoint());
