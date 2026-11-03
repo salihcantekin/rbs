@@ -1,0 +1,30 @@
+[package]
+name = "rbs-audio-io"
+description = "Audio input port for RBS: endpoints, input streams, the lock-free sample ring adapters share and the conformance suite."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+rbs-core = { path = "../rbs-core" }
+
+[features]
+# The conformance suite (`rbs_audio_io::conformance`). Adapter crates enable it in
+# their dev-dependencies; it is test support and is never needed at runtime.
+conformance = ["rbs-core/conformance"]
+
+[dev-dependencies]
+# Allocation guard for the real-time ring calls (performance budgets: no allocation on hot paths).
+allocation-counter = "0.8"
+# Micro-benchmark of the real-time ring hand-off (measure-performance skill).
+criterion = { version = "0.8", default-features = false, features = ["cargo_bench_support"] }
+
+[[bench]]
+name = "ring"
+harness = false
+
+[lints]
+workspace = true

@@ -20,7 +20,7 @@ In scope:
 
 Out of scope:
 
-- Audio input and application or system audio loopback: `rbs-audio-io` port.
+- Audio input and application or system audio loopback: `rbs-audio-io` port ([audio-io-port.md](audio-io-port.md)).
 - Importing native GPU surfaces into `wgpu` textures: `rbs-gpu` (ADR-0005). Capture adapters never depend on `wgpu`.
 - Compressed camera modes (MJPEG, H.264). Most USB webcams deliver 1080p30 and above only compressed, so this limits early cameras to their uncompressed modes (typically up to 720p30, or 1080p at low rates over USB 2). They will be added in a later minor version as compressed `CameraMode`s delivered as packets to a decoder node through the codec port; the cost is one decode per camera frame, on the GPU where the platform allows.
 - Media files, browser sources, remote guests: separate source node types, not OS capture.
