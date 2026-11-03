@@ -3983,6 +3983,7 @@ version = "0.0.1"
 dependencies = [
  "libc",
  "raw-window-handle",
+ "rbs-core",
  "rbs-gpu",
  "rbs-ui",
  "slint",

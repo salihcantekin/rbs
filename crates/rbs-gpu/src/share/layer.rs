@@ -6,6 +6,7 @@
 
 use std::ffi::c_void;
 use std::ptr::NonNull;
+use std::time::Duration;
 
 use objc2::msg_send;
 use objc2::rc::Retained;
@@ -13,6 +14,7 @@ use objc2::runtime::AnyObject;
 use objc2_core_foundation::{CFRetained, CGPoint, CGRect, CGSize};
 use objc2_io_surface::IOSurfaceRef;
 use objc2_quartz_core::{CALayer, CATransaction, kCAGravityResizeAspect};
+use rbs_core::time::Timestamp;
 
 use super::subscriber::{PreviewFrame, PreviewSubscriber};
 use crate::error::GpuError;
@@ -39,16 +41,17 @@ pub struct LayerRect {
 pub struct PreviewLayer {
     layer: Retained<CALayer>,
     surfaces: Vec<CFRetained<IOSurfaceRef>>,
-    /// Lowest use count seen per surface: the uses that are not the window server's
-    /// (for example `wgpu` aliases in either process). A surface whose count is above it
-    /// is still read by the window server.
-    idle_use: Vec<i32>,
     /// The frame whose surface is the layer's contents.
     shown: Option<PreviewFrame>,
-    /// Replaced frames the window server may still read. Capacity: the ring size.
-    retiring: Vec<PreviewFrame>,
+    /// Replaced frames and when they were replaced. Capacity: the ring size.
+    retiring: Vec<(PreviewFrame, Timestamp)>,
+    retire_after: Duration,
     rect: Option<LayerRect>,
 }
+
+/// Default time a replaced surface stays with the UI: one and a half refresh periods at
+/// 60 Hz. See [`PreviewLayer::set_retire_after`].
+pub const DEFAULT_RETIRE_AFTER: Duration = Duration::from_millis(25);
 
 impl PreviewLayer {
     /// A layer for `subscriber`'s surfaces, not yet in a window. Shows nothing until the
@@ -63,16 +66,28 @@ impl PreviewLayer {
         // Above the toolkit's layer even when the toolkit recreates its own.
         layer.setZPosition(1.0);
         let surfaces = subscriber.io_surfaces();
-        let idle_use = surfaces.iter().map(|s| s.use_count()).collect();
         let retiring = Vec::with_capacity(surfaces.len());
         Self {
             layer,
             surfaces,
-            idle_use,
             shown: None,
             retiring,
+            retire_after: DEFAULT_RETIRE_AFTER,
             rect: None,
         }
+    }
+
+    /// How long a replaced frame stays with the UI before it goes back to the engine.
+    ///
+    /// Core Animation reports no point at which the window server stops reading a
+    /// layer's old contents. It applies a commit at the next display refresh and reads
+    /// the new contents from then on (also when the display scans the surface out
+    /// directly), so one refresh period plus a margin is enough. Use one and a half
+    /// refresh periods of the slowest display the window is on; the default suits 60 Hz
+    /// and faster. A longer time holds more surfaces: at 60 frames per second each extra
+    /// 16.7 ms holds one more, and the engine needs one free surface per frame.
+    pub fn set_retire_after(&mut self, after: Duration) {
+        self.retire_after = after;
     }
 
     /// Adds the layer to an AppKit view's backing layer, above its content.
@@ -134,9 +149,10 @@ impl PreviewLayer {
         }
     }
 
-    /// Shows `frame`. The replaced frame goes back to the engine once the window server
-    /// no longer reads its surface ([`PreviewLayer::retire`]). Never waits, never allocates.
-    pub fn show(&mut self, frame: PreviewFrame) {
+    /// Shows `frame` from `now` (any monotonic clock, the same one for every call). The
+    /// replaced frame goes back to the engine once the retire time has passed
+    /// ([`PreviewLayer::retire`]). Never waits, never allocates.
+    pub fn show(&mut self, frame: PreviewFrame, now: Timestamp) {
         let Some(surface) = self.surfaces.get(frame.slot()) else {
             return;
         };
@@ -150,45 +166,37 @@ impl PreviewLayer {
         if let Some(old) = self.shown.replace(frame) {
             // Never reallocates: the engine sends at most one frame per surface, so at
             // most ring size - 1 frames retire while one is shown.
-            self.retiring.push(old);
+            self.retiring.push((old, now));
         }
-        self.retire();
+        self.retire(now);
     }
 
-    /// Releases replaced frames whose surface the window server no longer uses. Returns
-    /// how many still wait. Never waits.
-    pub fn retire(&mut self) -> usize {
-        let surfaces = &self.surfaces;
-        let idle_use = &mut self.idle_use;
-        self.retiring.retain(|f| {
-            let slot = f.slot();
-            let (Some(s), Some(idle)) = (surfaces.get(slot), idle_use.get_mut(slot)) else {
-                return false;
-            };
-            let count = s.use_count();
-            *idle = (*idle).min(count);
-            count > *idle
-        });
+    /// Gives back replaced frames whose retire time has passed by `now`. Returns how
+    /// many still wait. Never waits.
+    pub fn retire(&mut self, now: Timestamp) -> usize {
+        let after = self.retire_after;
+        self.retiring
+            .retain(|(_, replaced)| now.saturating_since(*replaced) < after);
         self.retiring.len()
     }
 
-    /// Use count of surface `slot` now and the idle level it is compared with
-    /// (diagnostics and tests).
-    pub fn use_counts(&self, slot: usize) -> Option<(i32, i32)> {
-        Some((
-            self.surfaces.get(slot)?.use_count(),
-            *self.idle_use.get(slot)?,
-        ))
+    /// When the oldest replaced frame can go back, if any waits.
+    pub fn next_retire(&self) -> Option<Timestamp> {
+        self.retiring
+            .iter()
+            .map(|(_, replaced)| *replaced + self.retire_after)
+            .min()
     }
 
-    /// Replaced frames still waiting for the window server.
+    /// Replaced frames still waiting.
     pub fn retiring(&self) -> usize {
         self.retiring.len()
     }
 
     /// Whether the engine may be out of free surfaces until [`PreviewLayer::retire`] runs
-    /// again: every surface but the shown one is retiring. The UI then polls `retire` on a
-    /// short timer; otherwise the next frame's [`PreviewLayer::show`] retires.
+    /// again: every surface but the shown one is retiring, so no new frame may come. The
+    /// UI then calls `retire` at [`PreviewLayer::next_retire`] on a timer; otherwise the
+    /// next frame's [`PreviewLayer::show`] retires and no timer is needed.
     pub fn engine_may_starve(&self) -> bool {
         !self.retiring.is_empty() && self.retiring.len() + 1 >= self.surfaces.len()
     }

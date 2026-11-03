@@ -49,6 +49,7 @@ mod demo {
     use std::time::{Duration, Instant};
 
     use raw_window_handle::{HasWindowHandle, RawWindowHandle};
+    use rbs_core::time::{Clock, MonotonicClock};
     use rbs_gpu::share::{
         LayerRect, PreviewEndpoint, PreviewFrame, PreviewLayer, PreviewSubscriber,
     };
@@ -150,6 +151,7 @@ mod demo {
         slint: Option<SlintPath>,
         /// Polls retirement while it cannot wait for the next frame.
         timer: slint::Timer,
+        clock: MonotonicClock,
     }
 
     /// Mode `slint`: frames are wgpu textures that Slint draws.
@@ -305,6 +307,7 @@ mod demo {
                 window_size: (0, 0),
                 slint: slint_path,
                 timer: slint::Timer::default(),
+                clock: MonotonicClock::new(),
             });
         });
 
@@ -495,7 +498,7 @@ mod demo {
             match st.mode {
                 Mode::Layer => {
                     if let Some(layer) = st.layer.as_mut() {
-                        layer.show(frame);
+                        layer.show(frame, st.clock.now());
                     }
                 }
                 Mode::Slint => {
@@ -536,10 +539,15 @@ mod demo {
             let Some(st) = s.as_mut() else {
                 return;
             };
+            let now = st.clock.now();
             let poll = match (st.layer.as_mut(), st.slint.as_mut()) {
                 (Some(layer), _) => {
-                    layer.retire();
-                    layer.engine_may_starve()
+                    layer.retire(now);
+                    // Only while no new frame may come; otherwise the next one retires.
+                    layer
+                        .next_retire()
+                        .filter(|_| layer.engine_may_starve())
+                        .map(|due| due.saturating_since(now).max(Duration::from_millis(1)))
                 }
                 (None, Some(p)) => {
                     while let Some((_, index)) = p.retiring.front() {
@@ -556,15 +564,17 @@ mod demo {
                         // Dropping the frame sends its release to the engine.
                         p.retiring.pop_front();
                     }
-                    !p.retiring.is_empty()
+                    (!p.retiring.is_empty()).then_some(Duration::from_millis(2))
                 }
-                (None, None) => false,
+                (None, None) => None,
             };
-            if !poll {
-                st.timer.stop();
-            } else if !st.timer.running() {
-                st.timer
-                    .start(slint::TimerMode::Repeated, Duration::from_millis(2), retire);
+            match poll {
+                None => st.timer.stop(),
+                Some(after) => {
+                    if !st.timer.running() {
+                        st.timer.start(slint::TimerMode::SingleShot, after, retire);
+                    }
+                }
             }
         });
     }

@@ -23,6 +23,7 @@ slint = { version = "=1.18.1", default-features = false, features = ["std", "bac
 [dev-dependencies]
 # The cross-process preview demo (examples/remote_preview.rs) imports engine surfaces.
 rbs-gpu = { path = "../rbs-gpu" }
+rbs-core = { path = "../rbs-core" }
 # The demo attaches the preview layer to the window's view (ADR-0034). Same pin as above;
 # the feature only reaches example and test builds.
 slint = { version = "=1.18.1", default-features = false, features = ["raw-window-handle-06"] }

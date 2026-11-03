@@ -499,12 +499,11 @@ fn contents_id(layer: &rbs_gpu::share::PreviewLayer) -> Option<u32> {
 }
 
 /// The layer path (ADR-0034): the layer's contents are the engine's surface itself, and
-/// a replaced frame goes back to the engine once nothing reads it. A layer outside any
-/// window is never composited, so its replaced frames go back at once; this also shows
-/// that the engine's and UI's Metal aliases do not count as "in use".
+/// a replaced frame goes back to the engine once its retire time has passed (fake time).
 #[cfg(target_os = "macos")]
 #[test]
 fn layer_shows_engine_surfaces_and_releases_replaced_frames() {
+    use rbs_core::time::{Clock, TestClock};
     use rbs_gpu::share::{LayerRect, PreviewLayer};
 
     let Some(ctx) = common::gpu() else { return };
@@ -515,15 +514,16 @@ fn layer_shows_engine_surfaces_and_releases_replaced_frames() {
     let endpoint = publisher.endpoint().clone();
     let mut sub =
         connect_in_process(ctx, &mut publisher, endpoint, Duration::from_secs(5)).unwrap();
-    // The UI may also alias the surfaces as textures (the toolkit fallback path).
-    let _textures = sub.textures(ctx).unwrap();
     let ids: Vec<u32> = publisher.surface_ids().collect();
+    let clock = TestClock::new();
     let mut layer = PreviewLayer::new(&sub);
+    layer.set_retire_after(Duration::from_millis(25));
     assert_eq!(
         contents_id(&layer),
         None,
         "nothing shown before the first frame"
     );
+    assert_eq!(layer.next_retire(), None);
     layer.set_rect(LayerRect {
         x: 10.0,
         y: 20.0,
@@ -531,40 +531,53 @@ fn layer_shows_engine_surfaces_and_releases_replaced_frames() {
         height: 32.0,
     });
 
-    for seq in 1..=8 {
-        engine.publish(ctx, &mut publisher, seq);
+    let mut frame = |seq: u64, publisher: &mut PreviewPublisher| {
+        engine.publish(ctx, publisher, seq);
         ctx.wait_idle().unwrap();
         publisher.tick(ctx).unwrap();
-        let frame = sub
+        let f = sub
             .recv(Duration::from_secs(1))
             .unwrap()
-            .expect("a frame per publish while only one is held");
-        assert_eq!(frame.sequence(), seq);
-        let id = ids[frame.slot()];
-        let slot = frame.slot();
-        layer.show(frame);
-        for s in 0..ids.len() {
-            eprintln!(
-                "seq {seq} shown slot {slot}: slot {s} (use count, idle level) {:?}",
-                layer.use_counts(s)
-            );
-        }
+            .expect("a frame per publish while a surface is free");
+        assert_eq!(f.sequence(), seq);
+        f
+    };
+
+    // Frames 30 ms apart: each replaced frame waits 25 ms, so at most one is held
+    // besides the shown one, and the ring of three keeps one surface free for the engine.
+    for seq in 1..=8 {
+        clock.advance(Duration::from_millis(30));
+        let f = frame(seq, &mut publisher);
+        let id = ids[f.slot()];
+        layer.show(f, clock.now());
         assert_eq!(
             contents_id(&layer),
             Some(id),
             "contents is the engine's surface"
         );
-        assert_eq!(
-            layer.retiring(),
-            0,
-            "a detached layer frees replaced frames at once"
-        );
-        assert!(!layer.engine_may_starve());
         publisher.tick(ctx).unwrap();
-        assert_eq!(publisher.held(), 1, "only the shown frame is held");
+        let expected_retiring = usize::from(seq > 1);
+        assert_eq!(layer.retiring(), expected_retiring, "seq {seq}");
+        assert_eq!(publisher.held(), 1 + expected_retiring, "seq {seq}");
     }
 
-    // Dropping the layer gives the shown frame back.
+    // No new frame: the replaced one goes back once its time has passed, not before.
+    let due = layer.next_retire().expect("one frame waits");
+    assert_eq!(layer.retire(clock.now()), 1, "replaced just now");
+    clock.set(due);
+    assert_eq!(layer.retire(clock.now()), 0, "retire time reached");
+    publisher.tick(ctx).unwrap();
+    assert_eq!(publisher.held(), 1, "only the shown frame is held");
+
+    // Every surface but the shown one retiring: the UI must poll on a timer.
+    let f = frame(9, &mut publisher);
+    layer.show(f, clock.now());
+    let f = frame(10, &mut publisher);
+    layer.show(f, clock.now());
+    assert_eq!(layer.retiring(), 2);
+    assert!(layer.engine_may_starve());
+
+    // Dropping the layer gives every frame back.
     drop(layer);
     publisher.tick(ctx).unwrap();
     assert_eq!(publisher.held(), 0);
