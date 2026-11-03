@@ -241,6 +241,7 @@ mod hardware {
             "drop",
             "endpoint lost",
         ]);
+        assert_eq!(owned_resources(), 0);
     }
 
     /// Process loopback delivers what the fixture plays: a 440 Hz tone.

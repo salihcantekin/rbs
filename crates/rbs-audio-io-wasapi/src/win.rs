@@ -17,8 +17,8 @@ use std::time::Duration;
 
 use windows::Wdk::System::SystemServices::RtlGetVersion;
 use windows::Win32::Foundation::{
-    CloseHandle, E_ACCESSDENIED, E_INVALIDARG, ERROR_NOT_FOUND, HANDLE, PROPERTYKEY, STILL_ACTIVE,
-    WAIT_OBJECT_0,
+    CloseHandle, E_ACCESSDENIED, E_INVALIDARG, ERROR_NOT_FOUND, GetLastError, HANDLE, PROPERTYKEY,
+    STILL_ACTIVE, WAIT_TIMEOUT,
 };
 use windows::Win32::Media::Audio::{
     AUDCLNT_BUFFERFLAGS_DATA_DISCONTINUITY, AUDCLNT_BUFFERFLAGS_SILENT,
@@ -259,9 +259,16 @@ fn device(
 ) -> Result<IMMDevice, AudioIoError> {
     // SAFETY: plain COM calls on live interfaces.
     unsafe {
-        let device = enumerator
-            .GetDevice(&HSTRING::from(id))
-            .map_err(|_| AudioIoError::EndpointNotFound)?;
+        let device =
+            enumerator
+                .GetDevice(&HSTRING::from(id))
+                .map_err(|e| match hresult(e.code()) {
+                    // A malformed id is as unknown as a missing one.
+                    AudioIoError::Backend { .. } if e.code() == E_INVALIDARG => {
+                        AudioIoError::EndpointNotFound
+                    }
+                    other => other,
+                })?;
         let active = device.GetState().is_ok_and(|s| s == DEVICE_STATE_ACTIVE);
         let flow = device
             .cast::<IMMEndpoint>()
@@ -591,12 +598,16 @@ const STATE_RUNNING: u8 = 0;
 const STATE_LOST: u8 = 1;
 const STATE_FORMAT_CHANGED: u8 = 2;
 const STATE_FAILED: u8 = 3;
+const STATE_BUSY: u8 = 4;
+const STATE_DENIED: u8 = 5;
 
 impl Status {
     fn set(&self, e: AudioIoError) {
         let state = match e {
             AudioIoError::EndpointLost => STATE_LOST,
             AudioIoError::FormatChanged => STATE_FORMAT_CHANGED,
+            AudioIoError::DeviceBusy => STATE_BUSY,
+            AudioIoError::PermissionDenied => STATE_DENIED,
             AudioIoError::Backend { code, .. } => {
                 self.code.store(code, Ordering::Relaxed);
                 STATE_FAILED
@@ -616,6 +627,8 @@ impl Status {
             STATE_RUNNING => None,
             STATE_LOST => Some(AudioIoError::EndpointLost),
             STATE_FORMAT_CHANGED => Some(AudioIoError::FormatChanged),
+            STATE_BUSY => Some(AudioIoError::DeviceBusy),
+            STATE_DENIED => Some(AudioIoError::PermissionDenied),
             _ => Some(AudioIoError::Backend {
                 domain: ErrorDomain::HResult,
                 code: self.code.load(Ordering::Relaxed),
@@ -709,15 +722,21 @@ impl WasapiStream {
                 code: i64::from(e.raw_os_error().unwrap_or(0)),
                 recoverable: true,
             })?;
-        let started =
-            started_rx
-                .recv_timeout(START_TIMEOUT)
-                .unwrap_or(Err(AudioIoError::Backend {
+        let started = match started_rx.recv_timeout(START_TIMEOUT) {
+            Ok(started) => started,
+            Err(_) => {
+                // The OS is slow to open the stream: give up within the port's budget.
+                // The thread sees the stop event or the closed channel and ends on
+                // its own; it is not joined here, which could block past the budget.
+                stop.set();
+                return Err(AudioIoError::Backend {
                     domain: ErrorDomain::HResult,
                     // HRESULT_FROM_WIN32(ERROR_TIMEOUT)
                     code: i64::from(0x8007_05B4_u32 as i32),
                     recoverable: true,
-                }));
+                });
+            }
+        };
         match started {
             Ok(consumer) => Ok(Active {
                 stop,
@@ -726,7 +745,7 @@ impl WasapiStream {
                 status,
             }),
             Err(e) => {
-                stop.set();
+                // The thread reported and is returning.
                 let _ = thread.join();
                 Err(e)
             }
@@ -797,6 +816,10 @@ impl Drop for WasapiStream {
 #[implement(IActivateAudioInterfaceCompletionHandler)]
 struct Completion {
     done: SyncSender<()>,
+    /// The activation parameters the PROPVARIANT blob points at. Owned by the handler,
+    /// which the OS keeps until the activation completes, so they outlive it even when
+    /// `activate_process` stops waiting.
+    _params: Box<AUDIOCLIENT_ACTIVATION_PARAMS>,
 }
 
 impl IActivateAudioInterfaceCompletionHandler_Impl for Completion_Impl {
@@ -811,7 +834,7 @@ impl IActivateAudioInterfaceCompletionHandler_Impl for Completion_Impl {
 
 /// An audio client capturing the process tree of `pid`.
 fn activate_process(pid: u32) -> Result<IAudioClient, AudioIoError> {
-    let params = AUDIOCLIENT_ACTIVATION_PARAMS {
+    let params = Box::new(AUDIOCLIENT_ACTIVATION_PARAMS {
         ActivationType: AUDIOCLIENT_ACTIVATION_TYPE_PROCESS_LOOPBACK,
         Anonymous: AUDIOCLIENT_ACTIVATION_PARAMS_0 {
             ProcessLoopbackParams: AUDIOCLIENT_PROCESS_LOOPBACK_PARAMS {
@@ -819,23 +842,28 @@ fn activate_process(pid: u32) -> Result<IAudioClient, AudioIoError> {
                 ProcessLoopbackMode: PROCESS_LOOPBACK_MODE_INCLUDE_TARGET_PROCESS_TREE,
             },
         },
-    };
+    });
     let mut variant = PROPVARIANT::default();
     // SAFETY: writes the VT_BLOB members of a zeroed PROPVARIANT. The blob points at
-    // `params`, which outlives the activation (it is waited for below); the variant
-    // is never passed to PropVariantClear, which would free the blob.
+    // the boxed `params`, which the completion handler owns until the activation has
+    // completed and the OS released the handler; the variant is never passed to
+    // PropVariantClear, which would free the blob.
     unsafe {
         let inner = &mut *variant.Anonymous.Anonymous;
         inner.vt = VT_BLOB;
         inner.Anonymous.blob = BLOB {
             cbSize: std::mem::size_of::<AUDIOCLIENT_ACTIVATION_PARAMS>() as u32,
-            pBlobData: (&raw const params).cast_mut().cast(),
+            pBlobData: (&raw const *params).cast_mut().cast(),
         };
     }
     let (done_tx, done_rx) = mpsc::sync_channel(1);
-    let handler: IActivateAudioInterfaceCompletionHandler = Completion { done: done_tx }.into();
-    // SAFETY: valid device path, IID, activation parameters and handler; the call
-    // copies the parameters before it returns.
+    let handler: IActivateAudioInterfaceCompletionHandler = Completion {
+        done: done_tx,
+        _params: params,
+    }
+    .into();
+    // SAFETY: valid device path, IID, activation parameters (alive as long as the
+    // handler, see above) and handler.
     let operation = unsafe {
         ActivateAudioInterfaceAsync(
             VIRTUAL_AUDIO_DEVICE_PROCESS_LOOPBACK,
@@ -890,10 +918,6 @@ fn open_stream(target: &Target, wave: &WaveFormat) -> Result<Opened, AudioIoErro
             };
             let device = device(&enumerator()?, kind, id)?;
             let client = activate_client(&device)?;
-            // The mix format may have changed since `open_input`.
-            if mix_format(&client)?.format != wave.format {
-                return Err(AudioIoError::FormatChanged);
-            }
             let mut flags = AUDCLNT_STREAMFLAGS_EVENTCALLBACK;
             if *loopback {
                 flags |= AUDCLNT_STREAMFLAGS_LOOPBACK;
@@ -936,11 +960,20 @@ fn open_stream(target: &Target, wave: &WaveFormat) -> Result<Opened, AudioIoErro
                 )
                 .map_err(error)?,
             None => {
+                // The mix format may have changed since `open_input`. The packets are
+                // read as `wave`'s sample type and channel count, so the format the
+                // stream is initialised with must be exactly that one.
                 let mix = client.GetMixFormat().map_err(error)?;
-                let result =
-                    client.Initialize(AUDCLNT_SHAREMODE_SHARED, flags, ENGINE_BUFFER, 0, mix, None);
+                let same = WaveFormat::parse(wave_fields(mix)).as_ref() == Some(wave);
+                let result = if same {
+                    client
+                        .Initialize(AUDCLNT_SHAREMODE_SHARED, flags, ENGINE_BUFFER, 0, mix, None)
+                        .map_err(error)
+                } else {
+                    Err(AudioIoError::FormatChanged)
+                };
                 CoTaskMemFree(Some(mix as _));
-                result.map_err(error)?;
+                result?;
             }
         }
         let mut period = 0_i64;
@@ -948,7 +981,11 @@ fn open_stream(target: &Target, wave: &WaveFormat) -> Result<Opened, AudioIoErro
             Ok(()) if period > 0 => Duration::from_nanos(period.unsigned_abs() * 100),
             _ => DEFAULT_PERIOD,
         };
-        let buffer_frames = client.GetBufferSize().map_err(error)? as usize;
+        // Process loopback clients may not implement every IAudioClient method.
+        let buffer_frames = client.GetBufferSize().map_or_else(
+            |_| ring::frames_for(wave.format.sample_rate, Duration::from_millis(100)),
+            |frames| frames as usize,
+        );
         let capture = client.GetService::<IAudioCaptureClient>().map_err(error)?;
         let event = Event::new()?;
         client.SetEventHandle(event.0).map_err(error)?;
@@ -1134,12 +1171,24 @@ fn run(setup: &Setup, started: Started) {
     loop {
         // SAFETY: every handle is live for the duration of the wait.
         let woke = unsafe { WaitForMultipleObjects(&handles, false, timeout) };
-        if woke == WAIT_OBJECT_0 {
-            break;
-        }
-        if woke.0 == WAIT_OBJECT_0.0 + 2 {
-            setup.status.set(AudioIoError::EndpointLost);
-            break;
+        match woke.0 {
+            // The stop event.
+            0 => break,
+            // The audio event, or a period without one (loopback while silent).
+            1 => {}
+            w if w == WAIT_TIMEOUT.0 => {}
+            // The captured process exited.
+            2 => {
+                setup.status.set(AudioIoError::EndpointLost);
+                break;
+            }
+            // WAIT_FAILED or an abandoned handle: never spin on it.
+            _ => {
+                // SAFETY: no preconditions.
+                let code = unsafe { GetLastError() }.to_hresult();
+                setup.status.set(hresult(code));
+                break;
+            }
         }
         let os = qpc_nanos();
         let now = setup.clock.now();

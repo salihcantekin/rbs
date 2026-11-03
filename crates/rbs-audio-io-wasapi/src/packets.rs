@@ -43,6 +43,11 @@ pub(crate) const MAX_STEP: Duration = Duration::from_millis(1);
 /// (a suspended machine) starts a new run instead of pushing seconds of silence.
 const MAX_FILL: Duration = Duration::from_millis(500);
 
+/// How far behind the latest possible start a packet without a valid time may
+/// follow the previous one before it is placed at the latest start instead (a new
+/// run), so missing times never let a run drift away from the clock.
+const MAX_UNTIMED_LAG: Duration = Duration::from_millis(5);
+
 /// Frames converted per step for devices with more channels than the stream
 /// delivers.
 const SCRATCH_FRAMES: usize = 1_024;
@@ -58,6 +63,25 @@ pub(crate) enum Samples<'a> {
     I32(&'a [i32]),
     /// The OS flagged the packet as silent (`AUDCLNT_BUFFERFLAGS_SILENT`).
     Silent,
+}
+
+impl<'a> Samples<'a> {
+    /// The samples after the first `frames` frames of `channels` channels.
+    fn skip(self, frames: usize, channels: usize) -> Self {
+        fn tail<T>(s: &[T], n: usize) -> &[T] {
+            s.get(n..).unwrap_or(&[])
+        }
+        let n = frames * channels;
+        match self {
+            Samples::F32(s) => Samples::F32(tail(s, n)),
+            Samples::F64(s) => Samples::F64(tail(s, n)),
+            Samples::U8(s) => Samples::U8(tail(s, n)),
+            Samples::I16(s) => Samples::I16(tail(s, n)),
+            Samples::I24(s) => Samples::I24(tail(s, n)),
+            Samples::I32(s) => Samples::I32(tail(s, n)),
+            Samples::Silent => Samples::Silent,
+        }
+    }
 }
 
 /// One packet as WASAPI hands it over.
@@ -142,19 +166,43 @@ impl Packets {
 
     /// Stores one packet handled at master time `now`.
     pub(crate) fn push(&mut self, packet: Packet<'_>, now: Timestamp) {
-        let frames = packet.frames;
+        let mut frames = packet.frames;
         if frames == 0 {
             return;
         }
-        let duration = self.rate.duration_of(frames as u64);
-        let latest = now - duration;
-        let measured = match packet.device_time {
+        let mut samples = packet.samples;
+        let mut duration = self.rate.duration_of(frames as u64);
+        let mut latest = now - duration;
+        let mut measured = match packet.device_time {
             Some(time) => self.edge.to_master(time, duration, now),
-            None if self.open => self.end,
+            // No valid time: follow the previous packet, unless that falls far
+            // behind the clock.
+            None if self.open && self.end + MAX_UNTIMED_LAG >= latest => self.end,
             None => latest,
         };
-        let mut start = measured;
         let mut new_run = !self.open || packet.discontinuity;
+        if self.filled && self.open && measured + MAX_STEP < self.end {
+            // Audio came back inside silence that was already filled: its head is
+            // dropped (counted) so the rest starts where the silence ended, instead of
+            // every later packet starting a new run after it.
+            let overlap = self.end.saturating_since(measured);
+            let head =
+                usize::try_from(overlap.as_nanos() * u128::from(self.rate.hz()) / 1_000_000_000)
+                    .unwrap_or(usize::MAX)
+                    .min(frames);
+            self.producer.lost(head as u64);
+            self.open = false;
+            if head == frames {
+                return;
+            }
+            samples = samples.skip(head, self.source_channels);
+            frames -= head;
+            measured = measured + self.rate.duration_of(head as u64);
+            duration = self.rate.duration_of(frames as u64);
+            latest = now - duration;
+            new_run = true;
+        }
+        let mut start = measured;
         if self.open && distance(measured, self.end) > MAX_STEP {
             new_run = true;
         }
@@ -164,8 +212,7 @@ impl Packets {
         }
         if start > latest + MAX_STEP {
             // Cannot follow the previous audio without ending in the future (the
-            // device clock runs ahead, or silence was filled up to here): lost,
-            // counted.
+            // device clock runs ahead): lost, counted.
             self.producer.lost(frames as u64);
             self.open = false;
             return;
@@ -173,7 +220,7 @@ impl Packets {
         if new_run {
             self.producer.gap();
         }
-        let written = self.store(packet.samples, frames, start);
+        let written = self.store(samples, frames, start);
         self.stored(start + duration, written);
         self.filled = false;
     }
@@ -254,7 +301,11 @@ impl Packets {
             return self.producer.push(start, &interleaved[..frames * source]) == Push::Written;
         }
         // More channels than delivered: the first `channels`, in steps through the
-        // planar scratch.
+        // planar scratch. The packet is stored whole or dropped whole.
+        if self.producer.free() < frames {
+            self.producer.lost(frames as u64);
+            return false;
+        }
         let mut done = 0;
         while done < frames {
             let n = (frames - done).min(SCRATCH_FRAMES);
@@ -434,16 +485,16 @@ mod tests {
     fn os_gaps_and_invalid_times_are_honoured() {
         let (mut packets, mut consumer, _) = path(2, false);
         let samples = vec![0.0_f32; PERIOD_FRAMES * 2];
-        let now = Timestamp::from_nanos(10 * PERIOD);
-        packets.observe(OFFSET + 10 * PERIOD, now);
-        packets.push(packet(&samples, OFFSET + PERIOD), now);
+        let at = |k: u64| Timestamp::from_nanos(k * PERIOD + 100_000);
+        packets.observe(OFFSET + 2 * PERIOD, Timestamp::from_nanos(2 * PERIOD));
+        packets.push(packet(&samples, OFFSET + PERIOD), at(2));
         // No valid time: follows the previous packet.
         packets.push(
             Packet {
                 device_time: None,
                 ..packet(&samples, 0)
             },
-            now,
+            at(3),
         );
         // The OS reports a gap, although the time follows on.
         packets.push(
@@ -452,7 +503,7 @@ mod tests {
                 samples: Samples::Silent,
                 ..packet(&samples, OFFSET + 3 * PERIOD)
             },
-            now,
+            at(4),
         );
         let reads = drain(&mut consumer);
         assert_eq!(reads.len(), 2, "{reads:?}");
@@ -506,6 +557,77 @@ mod tests {
         packets.push(packet(&samples, start + 20_500_000 + OFFSET), now);
         let reads = drain(&mut consumer);
         assert_eq!(reads.iter().filter(|r| r.discontinuity).count(), 1);
+    }
+
+    #[test]
+    fn audio_landing_inside_filled_silence_loses_its_head_once() {
+        let (mut packets, mut consumer, _) = path(2, true);
+        let start = 1_000_000_000_u64;
+        // Silence up to start + 40 ms.
+        packets.fill(Timestamp::from_nanos(start + 70_000_000));
+        drain(&mut consumer);
+        let samples = vec![0.5_f32; PERIOD_FRAMES * 2];
+        // Audio captured from start + 36 ms: its first 4 ms overlap the silence.
+        for k in 0..5_u64 {
+            let captured = start + 36_000_000 + k * PERIOD;
+            let now = Timestamp::from_nanos(captured + PERIOD + 300_000);
+            packets.observe(now.as_nanos() + OFFSET, now);
+            packets.push(packet(&samples, captured + OFFSET), now);
+        }
+        let reads = drain(&mut consumer);
+        // One new run where the silence ended, then continuous audio.
+        assert!(reads[0].discontinuity);
+        assert!(reads[1..].iter().all(|r| !r.discontinuity), "{reads:?}");
+        assert!(reads[0].timestamp.as_nanos().abs_diff(start + 40_000_000) < 25_000);
+        let delivered: usize = reads.iter().map(|r| r.frames).sum();
+        assert_eq!(delivered, 5 * PERIOD_FRAMES - 4 * 48);
+        assert_eq!(consumer.stats().dropped, 4 * 48);
+    }
+
+    #[test]
+    fn untimed_packets_never_drift_from_the_clock() {
+        let (mut packets, mut consumer, _) = path(2, false);
+        let samples = vec![0.0_f32; PERIOD_FRAMES * 2];
+        let untimed = |samples| Packet {
+            device_time: None,
+            ..packet(samples, 0)
+        };
+        packets.push(untimed(&samples), Timestamp::from_nanos(2 * PERIOD));
+        // The next one arrives 20 ms late: placed at the latest start, a new run.
+        packets.push(untimed(&samples), Timestamp::from_nanos(5 * PERIOD));
+        let reads = drain(&mut consumer);
+        assert_eq!(reads.len(), 2);
+        assert!(reads[1].discontinuity);
+        assert_eq!(reads[1].timestamp.as_nanos(), 4 * PERIOD);
+    }
+
+    #[test]
+    fn wide_packets_that_do_not_fit_are_dropped_whole() {
+        let format = AudioFormat::STEREO_48K;
+        let (producer, mut consumer) = ring::channel(format, 2_000, 64);
+        let mut packets = Packets::new(
+            producer,
+            format.sample_rate,
+            4,
+            None,
+            Timestamp::ZERO,
+            Arc::new(AtomicU64::new(0)),
+        );
+        let interleaved = vec![0_i16; 1_500 * 4];
+        let wide = |frames| Packet {
+            samples: Samples::I16(&interleaved),
+            frames,
+            device_time: None,
+            discontinuity: false,
+        };
+        packets.push(wide(1_500), Timestamp::from_nanos(1_000_000_000));
+        // Only 500 frames are free: the 1500-frame packet is dropped whole.
+        packets.push(wide(1_500), Timestamp::from_nanos(1_100_000_000));
+        let stats = consumer.stats();
+        assert_eq!(stats.captured, 3_000);
+        assert_eq!(stats.dropped, 1_500);
+        let reads = drain(&mut consumer);
+        assert_eq!(reads.iter().map(|r| r.frames).sum::<usize>(), 1_500);
     }
 
     #[test]

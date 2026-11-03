@@ -2,9 +2,10 @@
 //!
 //! Threads: `enumerate`, `open_input`, `start` and `stop` run on a control thread; the
 //! IO proc runs on the HAL's real-time IO thread and only touches its own `Capture`
-//! (stamping and the ring's producer); property listeners run on the HAL's
-//! notification thread and only store an atomic status; `read` runs on the audio
-//! thread and only touches the ring's consumer and that status.
+//! (stamping and the ring's producer); property listeners run on a private serial
+//! dispatch queue per Active stream, read HAL properties (not real-time) and store an
+//! atomic status; `read` runs on the audio thread and only touches the ring's
+//! consumer and that status.
 
 use std::ffi::{CStr, c_void};
 use std::mem::MaybeUninit;
@@ -14,30 +15,31 @@ use std::sync::{Arc, OnceLock, mpsc};
 use std::time::Duration;
 
 use block2::RcBlock;
+use dispatch2::{DispatchQueue, DispatchRetained};
 use objc2::AllocAnyThread;
 use objc2::rc::Retained;
 use objc2::runtime::{AnyObject, Bool};
 use objc2_av_foundation::{AVAuthorizationStatus, AVCaptureDevice, AVMediaTypeAudio};
 use objc2_core_audio::{
     AudioConvertHostTimeToNanos, AudioDeviceCreateIOProcID, AudioDeviceDestroyIOProcID,
-    AudioDeviceIOProcID, AudioDeviceStart, AudioDeviceStop, AudioHardwareCreateAggregateDevice,
-    AudioHardwareDestroyAggregateDevice, AudioObjectAddPropertyListener,
-    AudioObjectGetPropertyData, AudioObjectGetPropertyDataSize, AudioObjectID,
-    AudioObjectPropertyAddress, AudioObjectPropertyScope, AudioObjectPropertySelector,
-    AudioObjectRemovePropertyListener, CATapDescription, kAudioAggregateDeviceIsPrivateKey,
-    kAudioAggregateDeviceMainSubDeviceKey, kAudioAggregateDeviceNameKey,
-    kAudioAggregateDeviceSubDeviceListKey, kAudioAggregateDeviceTapAutoStartKey,
-    kAudioAggregateDeviceTapListKey, kAudioAggregateDeviceUIDKey,
-    kAudioDevicePropertyBufferFrameSize, kAudioDevicePropertyBufferFrameSizeRange,
-    kAudioDevicePropertyDeviceIsAlive, kAudioDevicePropertyDeviceUID,
-    kAudioDevicePropertyNominalSampleRate, kAudioDevicePropertyStreamConfiguration,
-    kAudioDevicePropertyStreams, kAudioHardwarePropertyDefaultInputDevice,
-    kAudioHardwarePropertyDefaultOutputDevice, kAudioHardwarePropertyDevices,
-    kAudioHardwarePropertyProcessObjectList, kAudioHardwarePropertyTranslatePIDToProcessObject,
-    kAudioHardwarePropertyTranslateUIDToDevice, kAudioObjectPropertyElementMain,
-    kAudioObjectPropertyName, kAudioObjectPropertyScopeGlobal, kAudioObjectPropertyScopeInput,
-    kAudioObjectPropertyScopeOutput, kAudioObjectSystemObject, kAudioProcessPropertyBundleID,
-    kAudioProcessPropertyIsRunningOutput, kAudioProcessPropertyPID,
+    AudioDeviceIOProcID, AudioDeviceStart, AudioDeviceStop, AudioGetCurrentHostTime,
+    AudioHardwareCreateAggregateDevice, AudioHardwareDestroyAggregateDevice,
+    AudioObjectAddPropertyListenerBlock, AudioObjectGetPropertyData,
+    AudioObjectGetPropertyDataSize, AudioObjectID, AudioObjectPropertyAddress,
+    AudioObjectPropertyScope, AudioObjectPropertySelector, AudioObjectRemovePropertyListenerBlock,
+    CATapDescription, kAudioAggregateDeviceIsPrivateKey, kAudioAggregateDeviceMainSubDeviceKey,
+    kAudioAggregateDeviceNameKey, kAudioAggregateDeviceSubDeviceListKey,
+    kAudioAggregateDeviceTapAutoStartKey, kAudioAggregateDeviceTapListKey,
+    kAudioAggregateDeviceUIDKey, kAudioDevicePropertyBufferFrameSize,
+    kAudioDevicePropertyBufferFrameSizeRange, kAudioDevicePropertyDeviceIsAlive,
+    kAudioDevicePropertyDeviceUID, kAudioDevicePropertyNominalSampleRate,
+    kAudioDevicePropertyStreamConfiguration, kAudioDevicePropertyStreams,
+    kAudioHardwarePropertyDefaultInputDevice, kAudioHardwarePropertyDefaultOutputDevice,
+    kAudioHardwarePropertyDevices, kAudioHardwarePropertyProcessObjectList,
+    kAudioHardwarePropertyTranslatePIDToProcessObject, kAudioHardwarePropertyTranslateUIDToDevice,
+    kAudioObjectPropertyElementMain, kAudioObjectPropertyName, kAudioObjectPropertyScopeGlobal,
+    kAudioObjectPropertyScopeInput, kAudioObjectPropertyScopeOutput, kAudioObjectSystemObject,
+    kAudioProcessPropertyBundleID, kAudioProcessPropertyIsRunningOutput, kAudioProcessPropertyPID,
     kAudioStreamPropertyVirtualFormat, kAudioSubDeviceUIDKey, kAudioSubTapDriftCompensationKey,
     kAudioSubTapUIDKey,
 };
@@ -665,9 +667,9 @@ impl Status {
 enum Buffers {
     /// All of them, from the first (an input device).
     All,
-    /// The last one (the tap's, after the output device's own inputs in the
-    /// aggregate).
-    Last,
+    /// The one at this index (the tap's, after the output device's own input
+    /// buffers in the aggregate).
+    Tap(usize),
 }
 
 /// The IO proc's state. Lives in a `Box` handed to the HAL as client data; touched
@@ -682,13 +684,16 @@ struct Capture {
 impl Capture {
     /// One IO cycle. **Real-time**: no allocation, locks, I/O or logging.
     fn cycle(&mut self, now: &AudioTimeStamp, list: &AudioBufferList, time: &AudioTimeStamp) {
-        // SAFETY: plain conversions of host time, no preconditions.
-        let os_now = unsafe { AudioConvertHostTimeToNanos(now.mHostTime) };
+        // The host clock and the master clock read back to back (the cycle's own
+        // `now` is when the HAL woke, earlier by the wake-up latency).
+        // SAFETY: plain host-time calls, no preconditions.
+        let os_now = unsafe { AudioConvertHostTimeToNanos(AudioGetCurrentHostTime()) };
         self.packets.observe(os_now, self.clock.now());
+        let _ = now;
         let count = list.mNumberBuffers as usize;
         let first = match self.buffers {
             Buffers::All => 0,
-            Buffers::Last => count.saturating_sub(1),
+            Buffers::Tap(index) => index,
         };
         let base = (&raw const list.mBuffers).cast::<AudioBuffer>();
         let mut buffers = [Buffer::default(); MAX_CHANNELS];
@@ -753,10 +758,14 @@ unsafe extern "C-unwind" fn io_proc(
 ) -> i32 {
     // SAFETY: `client` is the `Capture` registered with this IO proc, used by nothing
     // else until the proc is stopped; the HAL's pointers are valid for this call.
-    unsafe {
-        let capture = &mut *client.cast::<Capture>();
-        capture.cycle(now.as_ref(), input.as_ref(), input_time.as_ref());
-    }
+    let capture = unsafe { &mut *client.cast::<Capture>() };
+    // SAFETY: as above.
+    let (now, input, input_time) = unsafe { (now.as_ref(), input.as_ref(), input_time.as_ref()) };
+    // A panic must not unwind into the HAL's frames. `cycle` has no panicking paths
+    // by design; if one slipped in, the cycle is skipped.
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        capture.cycle(now, input, input_time);
+    }));
     0
 }
 
@@ -770,21 +779,11 @@ struct Watch {
     process: Option<AudioObjectID>,
 }
 
+/// Handles property changes on the session's private dispatch queue. Not real-time
+/// (it reads properties and may allocate); it only stores an atomic status that
+/// `read` sees.
 #[allow(non_upper_case_globals)]
-unsafe extern "C-unwind" fn on_property(
-    _object: AudioObjectID,
-    count: u32,
-    addresses: NonNull<AudioObjectPropertyAddress>,
-    client: *mut c_void,
-) -> i32 {
-    // SAFETY: `client` is the session's `Watch`, freed only after every listener was
-    // removed; the HAL passes `count` addresses.
-    let (watch, addresses) = unsafe {
-        (
-            &*client.cast::<Watch>(),
-            std::slice::from_raw_parts(addresses.as_ptr(), count as usize),
-        )
-    };
+fn on_property(watch: &Watch, addresses: &[AudioObjectPropertyAddress]) {
     for address in addresses {
         match address.mSelector {
             kAudioDevicePropertyDeviceIsAlive => {
@@ -817,8 +816,9 @@ unsafe extern "C-unwind" fn on_property(
             _ => {}
         }
     }
-    0
 }
+
+type ListenerBlock = RcBlock<dyn Fn(u32, NonNull<AudioObjectPropertyAddress>)>;
 
 /// Everything an Active stream holds in the HAL, released in reverse on drop.
 #[derive(Default)]
@@ -828,32 +828,48 @@ struct Session {
     /// The IO device, its proc and the proc's state.
     io: Option<(AudioObjectID, AudioDeviceIOProcID, *mut Capture, Owned)>,
     started: bool,
-    watch: Option<*mut Watch>,
+    /// Property listeners run as this block on this private serial queue, so `drop`
+    /// can wait for a listener that is running before releasing what it uses.
+    listener: Option<(DispatchRetained<DispatchQueue>, ListenerBlock)>,
     listeners: Vec<(AudioObjectID, AudioObjectPropertyAddress)>,
 }
 
-// SAFETY: the raw pointers are owned by the session (boxes it frees itself) and the
-// HAL objects are process-wide ids usable from any thread.
+// SAFETY: the raw pointer is a box the session owns and frees itself, the queue and
+// block are only used by the session's own calls, and the HAL objects are
+// process-wide ids usable from any thread.
 unsafe impl Send for Session {}
 
 impl Session {
+    fn watch(&mut self, watch: Watch) {
+        let queue = DispatchQueue::new("org.rbs.audio-io.coreaudio.listener", None);
+        let block = RcBlock::new(
+            move |count: u32, addresses: NonNull<AudioObjectPropertyAddress>| {
+                // SAFETY: the HAL passes `count` addresses, valid for this call.
+                let addresses =
+                    unsafe { std::slice::from_raw_parts(addresses.as_ptr(), count as usize) };
+                on_property(&watch, addresses);
+            },
+        );
+        self.listener = Some((queue, block));
+    }
+
     fn listen(
         &mut self,
         object: AudioObjectID,
         selector: AudioObjectPropertySelector,
     ) -> Result<(), AudioIoError> {
-        let Some(watch) = self.watch else {
+        let Some((queue, block)) = &self.listener else {
             return Ok(());
         };
         let address = address(selector, kAudioObjectPropertyScopeGlobal);
-        // SAFETY: a valid address and listener; `watch` lives until the listener is
-        // removed in `drop`.
+        // SAFETY: a valid address, queue and block; the HAL retains the block until
+        // the listener is removed in `drop`.
         check(unsafe {
-            AudioObjectAddPropertyListener(
+            AudioObjectAddPropertyListenerBlock(
                 object,
                 NonNull::from(&address),
-                Some(on_property),
-                watch.cast(),
+                Some(queue),
+                RcBlock::as_ptr(block),
             )
         })?;
         self.listeners.push((object, address));
@@ -865,7 +881,7 @@ impl Drop for Session {
     fn drop(&mut self) {
         // SAFETY: each id and pointer was created by this session and is released
         // once, the IO proc first (AudioDeviceStop from a non-IO thread returns after
-        // the last cycle), so no HAL thread uses a box when it is freed.
+        // the last cycle), so no HAL thread uses the capture box when it is freed.
         unsafe {
             if let Some((device, proc_id, capture, _owned)) = self.io.take() {
                 if self.started {
@@ -874,16 +890,19 @@ impl Drop for Session {
                 let _ = AudioDeviceDestroyIOProcID(device, proc_id);
                 drop(Box::from_raw(capture));
             }
-            if let Some(watch) = self.watch.take() {
+            if let Some((queue, block)) = self.listener.take() {
                 for (object, address) in self.listeners.drain(..) {
-                    let _ = AudioObjectRemovePropertyListener(
+                    let _ = AudioObjectRemovePropertyListenerBlock(
                         object,
                         NonNull::from(&address),
-                        Some(on_property),
-                        watch.cast(),
+                        Some(&queue),
+                        RcBlock::as_ptr(&block),
                     );
                 }
-                drop(Box::from_raw(watch));
+                // A listener already running finishes before this returns (the queue
+                // is serial), so nothing uses the block's state after it is dropped.
+                queue.exec_sync(|| {});
+                drop(block);
             }
             if let Some((aggregate, _owned)) = self.aggregate.take() {
                 let _ = AudioHardwareDestroyAggregateDevice(aggregate);
@@ -1030,7 +1049,8 @@ impl CoreAudioStream {
                 session.tap = Some((tap, Owned::new()));
                 let aggregate = create_aggregate(uid, &tap_uid)?;
                 session.aggregate = Some((aggregate, Owned::new()));
-                (aggregate, device, None, Buffers::Last)
+                let index = buffer_channels(device, kAudioObjectPropertyScopeInput).len();
+                (aggregate, device, None, Buffers::Tap(index))
             }
             Target::Application(pid) => {
                 let process = process_object(*pid).ok_or(AudioIoError::EndpointLost)?;
@@ -1044,15 +1064,18 @@ impl CoreAudioStream {
                 session.tap = Some((tap, Owned::new()));
                 let aggregate = create_aggregate(&output_uid, &tap_uid)?;
                 session.aggregate = Some((aggregate, Owned::new()));
-                (aggregate, output, Some(process), Buffers::Last)
+                let index = buffer_channels(output, kAudioObjectPropertyScopeInput).len();
+                (aggregate, output, Some(process), Buffers::Tap(index))
             }
         };
-        if buffers == Buffers::Last {
-            let tap_channels = buffer_channels(io_device, kAudioObjectPropertyScopeInput)
-                .last()
-                .copied()
-                .unwrap_or(0);
-            if nominal_rate(io_device) != Some(rate) || tap_channels != 2 {
+        if let Buffers::Tap(index) = buffers {
+            // The aggregate's inputs are the output device's own, then the tap's one
+            // stereo buffer.
+            let inputs = buffer_channels(io_device, kAudioObjectPropertyScopeInput);
+            if nominal_rate(io_device) != Some(rate)
+                || inputs.len() != index + 1
+                || inputs.get(index) != Some(&2)
+            {
                 return Err(AudioIoError::FormatChanged);
             }
         }
@@ -1075,25 +1098,25 @@ impl CoreAudioStream {
         // One mark per IO cycle for the whole ring, so small buffers keep their times.
         let marks = (capacity / frames + 16).max(ring::DEFAULT_MARKS);
         let (producer, consumer) = ring::channel(self.format, capacity, marks);
-        let capture = Box::into_raw(Box::new(Capture {
-            packets: Packets::new(producer, rate, Arc::clone(&self.last_end)),
-            clock: Arc::clone(&self.clock),
-            buffers,
-            channels: self.format.channels.channels(),
-        }));
-
-        session.watch = Some(Box::into_raw(Box::new(Watch {
+        session.watch(Watch {
             status: Arc::clone(&status),
             device: watched,
             rate,
             process,
-        })));
+        });
         session.listen(watched, kAudioDevicePropertyDeviceIsAlive)?;
         session.listen(watched, kAudioDevicePropertyNominalSampleRate)?;
         if process.is_some() {
             session.listen(SYSTEM, kAudioHardwarePropertyProcessObjectList)?;
         }
 
+        // Created last, so no early return above can leak it.
+        let capture = Box::into_raw(Box::new(Capture {
+            packets: Packets::new(producer, rate, Arc::clone(&self.last_end)),
+            clock: Arc::clone(&self.clock),
+            buffers,
+            channels: self.format.channels.channels(),
+        }));
         let mut proc_id: AudioDeviceIOProcID = None;
         // SAFETY: a valid device, IO proc and out pointer; `capture` stays valid
         // until the session destroys the proc.

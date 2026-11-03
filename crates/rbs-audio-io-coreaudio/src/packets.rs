@@ -148,6 +148,11 @@ impl Packets {
             let n = frames.min(only.samples.len() / channels.max(1));
             return self.producer.push(start, &only.samples[..n * channels]) == Push::Written;
         }
+        // Stored whole or dropped whole.
+        if self.producer.free() < frames {
+            self.producer.lost(frames as u64);
+            return false;
+        }
         let mut done = 0;
         while done < frames {
             let n = (frames - done).min(SCRATCH_FRAMES);
