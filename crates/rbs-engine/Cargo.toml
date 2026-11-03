@@ -1,0 +1,20 @@
+[package]
+name = "rbs-engine"
+description = "RBS engine loop: one worker thread per graph partition, the control loop for restarts, and shutdown in pipeline order."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+rbs-core = { path = "../rbs-core" }
+rbs-graph = { path = "../rbs-graph" }
+
+[lints]
+workspace = true
+
+[[bench]]
+name = "cross_thread"
+harness = false
