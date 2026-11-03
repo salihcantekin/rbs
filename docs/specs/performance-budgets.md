@@ -61,7 +61,7 @@ The desktop UI (`rbs-app`) owns this budget (ADR-0022, owner decision 2026-11-02
 | Same | Late frames (interval over 1.5 refresh periods) | 0 over 60 s |
 | Workspace switch | Time to the first frame of the new layout | under 100 ms (U21) |
 
-How it is reached: redraw only what changed (dirty regions), the preview as its own layer or window, meters at 30 Hz and the live duration and stats at 1 Hz (rates are declared per panel in the [design system](ui-design-system.md#panel-model)), and no timer at all when nothing animates.
+How it is reached: the preview as its own native layer that the toolkit never redraws ([ADR-0034](../adr/0034-preview-as-native-layer.md); Slint's GPU path cannot redraw only dirty regions), meters at 30 Hz and the live duration and stats at 1 Hz (rates are declared per panel in the [design system](ui-design-system.md#panel-model)), and no timer at all when nothing animates.
 
 ## Regression policy
 
