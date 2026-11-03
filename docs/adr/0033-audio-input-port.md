@@ -62,3 +62,4 @@ Forces:
   12. Marks per OS period: documented with `DEFAULT_MARKS`.
   13. Unrelated `Cargo.lock` change: reverted.
   14. Semver notes for `InputStats::new` and the support modules: added to the spec.
+- Record, 2026-11-03, PipeWire adapter (`rbs-audio-io-pipewire`): decision 5 places PipeWire's conversion after a graph-rate change "inside the daemon". It runs in libpipewire's stream adapter inside the capturing process, on PipeWire's data thread. It is still PipeWire's conversion, not adapter code, so the exception stands; the spec states the location. The adapter asks for the graph rate, so no conversion happens until the graph rate changes.

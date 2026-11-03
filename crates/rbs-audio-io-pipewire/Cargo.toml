@@ -1,0 +1,36 @@
+[package]
+name = "rbs-audio-io-pipewire"
+description = "PipeWire adapter for the RBS audio input port: microphones, output monitors and per-application capture on Linux."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+rbs-audio-io = { path = "../rbs-audio-io" }
+rbs-core = { path = "../rbs-core" }
+
+# PipeWire through pipewire-rs (MIT), as in rbs-capture-pipewire. Links libpipewire-0.3;
+# building needs its development headers.
+[target.'cfg(target_os = "linux")'.dependencies]
+libc = "0.2"
+pipewire = { version = "0.10", features = ["v0_3_34"] }
+
+[dev-dependencies]
+rbs-audio-io = { path = "../rbs-audio-io", features = ["conformance"] }
+# Allocation guards for the real-time `read` check and the per-cycle push.
+allocation-counter = "0.8"
+# Micro-benchmark of the per-cycle work (measure-performance skill).
+criterion = { version = "0.8", default-features = false, features = ["cargo_bench_support"] }
+
+[target.'cfg(target_os = "linux")'.dev-dependencies]
+pipewire = { version = "0.10", features = ["v0_3_34"] }
+
+[[bench]]
+name = "cycle"
+harness = false
+
+[lints]
+workspace = true
