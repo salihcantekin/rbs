@@ -21,7 +21,6 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
-use rbs_codec::RateControl;
 use rbs_core::capability::Requirement;
 use rbs_core::registry::{AdapterFactory, AdapterId, Registry};
 use rbs_engine::Engine;
@@ -198,9 +197,12 @@ fn record(a: &RecordArgs) -> Result<(), String> {
         rbs_transport_file::file_url(&out),
         a.container,
     );
-    settings.video.rate_control = RateControl::Cbr {
-        bitrate_bps: a.video_bitrate,
-    };
+    settings.video.rate_control = a.rate_control;
+    settings.video.keyframe_interval = a.keyframe_interval;
+    settings.video.max_b_frames = a.b_frames;
+    settings.video.profile = a.profile.clone();
+    settings.video.preset = a.preset;
+    settings.video.cbr_padding = a.cbr_padding;
     settings.audio = (!a.no_audio).then(|| {
         let mut audio = AudioSettings::default();
         audio.bitrate_bps = a.audio_bitrate;
@@ -215,6 +217,8 @@ fn record(a: &RecordArgs) -> Result<(), String> {
             println!("{name} sync offset: {ms} ms");
         }
     }
+
+    println!("video: {}", args::describe_video(a));
 
     let gpu = Arc::new(
         GpuContext::new(&GpuRequest::default()).map_err(|e| format!("no usable GPU: {e}"))?,

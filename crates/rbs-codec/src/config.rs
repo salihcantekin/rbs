@@ -112,6 +112,12 @@ pub struct VideoEncoderConfig {
     pub profile: Option<String>,
     /// Speed and latency tuning.
     pub tuning: EncoderTuning,
+    /// With [`RateControl::Cbr`], pad the stream with filler data so that every second
+    /// carries the full bitrate even when the picture needs fewer bits. Off by default.
+    /// Only adapters that declare `codec.video.cbr_padding` honour it; the others
+    /// refuse it as `Unsupported`, and any adapter refuses it with another rate-control
+    /// mode as `InvalidConfig`.
+    pub cbr_padding: bool,
     /// Opaque adapter-specific options. The engine never reads them (principle P3).
     pub adapter_options: Vec<(String, String)>,
 }
@@ -133,7 +139,7 @@ pub struct AudioEncoderConfig {
 
 impl VideoEncoderConfig {
     /// A configuration with a 2 s keyframe interval, no B-frames, no profile, default
-    /// tuning and no adapter options.
+    /// tuning, no CBR padding and no adapter options.
     pub fn new(
         codec: CodecId,
         format: VideoFormat,
@@ -151,6 +157,7 @@ impl VideoEncoderConfig {
             max_b_frames: 0,
             profile: None,
             tuning: EncoderTuning::default(),
+            cbr_padding: false,
             adapter_options: Vec::new(),
         }
     }
@@ -179,10 +186,28 @@ impl VideoEncoderConfig {
         self
     }
 
+    /// Turns CBR filler-data padding on or off ([`VideoEncoderConfig::cbr_padding`]).
+    pub fn with_cbr_padding(mut self, on: bool) -> Self {
+        self.cbr_padding = on;
+        self
+    }
+
     /// Adds an opaque adapter-specific option.
     pub fn with_adapter_option(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {
         self.adapter_options.push((key.into(), value.into()));
         self
+    }
+
+    /// `Err` with the reason when `cbr_padding` is set with a rate-control mode other
+    /// than CBR. Adapters call it from `create` and map the reason to `InvalidConfig`.
+    pub fn check_cbr_padding(&self) -> Result<(), String> {
+        if self.cbr_padding && !matches!(self.rate_control, RateControl::Cbr { .. }) {
+            return Err(format!(
+                "CBR padding needs constant bitrate, not {}",
+                self.rate_control.name()
+            ));
+        }
+        Ok(())
     }
 }
 

@@ -187,6 +187,11 @@ pub(crate) fn properties(plan: &Plan) -> Result<Vec<(Name, Value)>, String> {
         ),
     ]);
     list.extend(rate_properties(plan.codec, plan.rc, false));
+    if plan.cbr_padding {
+        // Only set when asked for, so encoders without it still open without padding;
+        // a refusal fails `create` (the user asked for it).
+        list.push((n.filler_data, Value::Bool(true)));
+    }
     Ok(list)
 }
 
@@ -244,6 +249,7 @@ mod tests {
                 Profile::H264High
             },
             rc,
+            cbr_padding: false,
             gop: 2000,
             color: ColorCodes::of(&ColorSpace::BT709_LIMITED).unwrap(),
         }
@@ -266,6 +272,18 @@ mod tests {
         assert_eq!(get(&list, sys::H264.peak_bitrate), Value::Int(6_000_000));
         assert_eq!(get(&list, sys::H264.output_color_profile), Value::Int(1));
         assert_eq!(get(&list, sys::H264_FULL_RANGE), Value::Bool(false));
+        assert!(list.iter().all(|(n, _)| *n != sys::H264.filler_data));
+    }
+
+    #[test]
+    fn cbr_padding_enables_filler_data() {
+        for codec in [CodecId::H264, CodecId::Hevc] {
+            let mut p = plan(codec, Rc::Cbr { bitrate: 6_000_000 });
+            p.cbr_padding = true;
+            let list = properties(&p).unwrap();
+            assert_eq!(get(&list, names(codec).filler_data), Value::Bool(true));
+            assert!(!optional(names(codec).filler_data));
+        }
     }
 
     #[test]

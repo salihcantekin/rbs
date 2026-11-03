@@ -407,6 +407,8 @@ fn codec_caps(display: &Display, codec: CodecId) -> Option<CodecCaps> {
         quality: c.rate_controls & sys::VA_RC_CQP != 0,
         // A new rate-control parameter buffer is taken with any picture.
         dynamic_bitrate: cbr || vbr,
+        // The adapter writes its own headers and writes no filler NAL units yet.
+        cbr_padding: false,
     };
     caps.usable().then_some(caps)
 }

@@ -206,7 +206,7 @@ mod tests {
     fn args(extra: &[&str]) -> RecordArgs {
         let all = ["record", "x.mkv"].iter().chain(extra).copied();
         match parse(all).unwrap() {
-            Command::Record(a) => a,
+            Command::Record(a) => *a,
             other => panic!("{other:?}"),
         }
     }

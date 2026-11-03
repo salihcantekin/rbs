@@ -345,6 +345,7 @@ fn probe_plan(codec: CodecId, profile: Profile, rc: Rc, width: u32, height: u32)
         low_latency: false,
         profile,
         rc,
+        cbr_padding: false,
         gop: 60,
         color: ColorCodes {
             primaries: 1,
@@ -420,6 +421,9 @@ pub(crate) fn probe() -> Result<DeviceCaps, String> {
             quality: at(Rc::Quality { level: 23 }, 1280, 720),
             // `MFXVideoENCODE_Reset` changes CBR and VBR rates in place.
             dynamic_bitrate: true,
+            // Filler data needs HRD conformance, which puts the rate in the SPS (a
+            // rate change would then need a new sequence); not mapped yet.
+            cbr_padding: false,
         });
     }
     codecs.retain(CodecCaps::usable);

@@ -58,7 +58,8 @@ fn rejected<F: ?Sized>(selection: &rbs_core::registry::Selection<F>) -> Vec<(Ada
 }
 
 /// The first video encoder, best first, that lists the codec, the input memory kind and
-/// the pixel format of `config` and opens a session for it.
+/// the pixel format of `config` (and CBR padding when asked for) and opens a session
+/// for it.
 pub(crate) fn video_encoder(
     registry: &Registry<dyn VideoEncoderFactory>,
     config: &VideoEncoderConfig,
@@ -76,6 +77,11 @@ pub(crate) fn video_encoder(
             codec_caps::INPUT_PIXEL_FORMAT,
             Constraint::Includes(config.format.pixel_format.as_str().to_owned()),
         );
+    let requirement = if config.cbr_padding {
+        requirement.with(codec_caps::VIDEO_CBR_PADDING, Constraint::Flag(true))
+    } else {
+        requirement
+    };
     let selection = registry.select(&requirement);
     let mut tried = rejected(&selection);
     for factory in &selection.candidates {

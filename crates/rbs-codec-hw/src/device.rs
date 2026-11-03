@@ -78,6 +78,9 @@ pub struct CodecCaps {
     pub quality: bool,
     /// Bitrate changes without a new session.
     pub dynamic_bitrate: bool,
+    /// Filler data that keeps a CBR stream at its full bitrate (only meaningful with
+    /// `cbr`).
+    pub cbr_padding: bool,
 }
 
 impl CodecCaps {
@@ -166,6 +169,7 @@ pub fn capability_set(device: &DeviceCaps) -> CapabilitySet {
     if all(|c| c.quality) {
         rate_controls.push("constant_quality");
     }
+    let cbr_padding = all(|c| c.cbr && c.cbr_padding);
     let mut reconfigure = vec![caps::RECONFIGURE_KEYFRAME];
     if all(|c| c.dynamic_bitrate) {
         reconfigure.insert(0, caps::RECONFIGURE_BITRATE);
@@ -206,6 +210,7 @@ pub fn capability_set(device: &DeviceCaps) -> CapabilitySet {
         // Frame reordering stays off until its depth is measured on hardware.
         .with(caps::VIDEO_B_FRAMES_MAX, CapabilityValue::Int(0))
         .with(caps::RECONFIGURE, set(reconfigure))
+        .with(caps::VIDEO_CBR_PADDING, CapabilityValue::Flag(cbr_padding))
         .with(caps::INPUT_MEMORY, set(["system"]))
         .with(
             caps::INPUT_PIXEL_FORMAT,
@@ -274,6 +279,21 @@ mod tests {
         );
         assert_eq!(values(&set, &caps::RECONFIGURE), ["bitrate", "keyframe"]);
         assert_eq!(set.get(&caps::HARDWARE), Some(&CapabilityValue::Flag(true)));
+        assert_eq!(
+            set.get(&caps::VIDEO_CBR_PADDING),
+            Some(&CapabilityValue::Flag(true))
+        );
+    }
+
+    #[test]
+    fn cbr_padding_needs_every_codec() {
+        let mut device = discrete_gpu();
+        device.codecs[1].cbr_padding = false;
+        let set = capability_set(&device);
+        assert_eq!(
+            set.get(&caps::VIDEO_CBR_PADDING),
+            Some(&CapabilityValue::Flag(false))
+        );
     }
 
     #[test]

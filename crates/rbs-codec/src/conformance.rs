@@ -27,7 +27,7 @@ use crate::config::{
     AudioEncoderConfig, EncoderChange, KeyframeInterval, RateControl, VideoEncoderConfig,
 };
 use crate::encoder::{AudioEncoder, AudioEncoderFactory, VideoEncoder, VideoEncoderFactory};
-use crate::error::EncodeError;
+use crate::error::{CreateError, EncodeError};
 
 /// Supplies input frames for the video suite in the memory kind the adapter takes.
 ///
@@ -232,6 +232,16 @@ pub fn video_encoder(factory: &dyn VideoEncoderFactory, frames: &mut dyn FrameSo
             let prefix = format!("{name}/{rc_name}");
             video_sequence(&mut report, &prefix, factory, frames, &config, &reconfigure);
         }
+        cbr_padding_cases(
+            &mut report,
+            name,
+            factory,
+            frames,
+            (codec, format, memory),
+            &rate_controls,
+            &reconfigure,
+            declares_cbr_padding(&caps),
+        );
         // Invalid input is refused, using the first rate-control mode.
         if let Some(rc_name) = rate_controls.first() {
             let rate_control = match rc_name.as_str() {
@@ -247,6 +257,76 @@ pub fn video_encoder(factory: &dyn VideoEncoderFactory, frames: &mut dyn FrameSo
         }
     }
     report
+}
+
+fn declares_cbr_padding(caps: &CapabilitySet) -> bool {
+    matches!(
+        caps.get(&caps::VIDEO_CBR_PADDING),
+        Some(CapabilityValue::Flag(true))
+    )
+}
+
+/// CBR padding: encodes with it when declared, else `create` refuses it as
+/// `Unsupported`; with another rate-control mode it is always `InvalidConfig`.
+#[allow(clippy::too_many_arguments)] // One flat list of what the case needs.
+fn cbr_padding_cases(
+    report: &mut Report,
+    name: &str,
+    factory: &dyn VideoEncoderFactory,
+    frames: &mut dyn FrameSource,
+    (codec, format, memory): (CodecId, VideoFormat, MemoryKind),
+    rate_controls: &[String],
+    reconfigure: &[String],
+    declared: bool,
+) {
+    let config = |rate_control| {
+        VideoEncoderConfig::new(codec, format, FrameRate::FPS_30, memory, rate_control)
+            .with_keyframe_interval(KeyframeInterval::Frames(KEYFRAME_EVERY))
+            .with_cbr_padding(true)
+    };
+    if rate_controls.iter().any(|r| r == "cbr") {
+        let cbr = config(RateControl::Cbr {
+            bitrate_bps: 1_000_000,
+        });
+        if declared {
+            let prefix = format!("{name}/cbr-padding");
+            video_sequence(report, &prefix, factory, frames, &cbr, reconfigure);
+        } else {
+            let outcome = match guarded(|| Ok::<_, String>(factory.create(&cbr).err())) {
+                Ok(Some(CreateError::Unsupported { .. })) => Ok(()),
+                Ok(Some(e)) => Err(format!(
+                    "undeclared CBR padding refused with {e}, not Unsupported"
+                )),
+                Ok(None) => Err("undeclared CBR padding was accepted".into()),
+                Err(e) => Err(e),
+            };
+            report.check(format!("{name}/cbr-padding-refused"), outcome);
+        }
+    }
+    let other = rate_controls.iter().find_map(|r| match r.as_str() {
+        "vbr" => Some(RateControl::Vbr {
+            target_bps: 1_000_000,
+            max_bps: 2_000_000,
+        }),
+        "constant_quality" => Some(RateControl::ConstantQuality { level: 23 }),
+        _ => None,
+    });
+    if let Some(rate_control) = other {
+        let outcome = match guarded(|| Ok::<_, String>(factory.create(&config(rate_control)).err()))
+        {
+            Ok(Some(CreateError::InvalidConfig(_))) => Ok(()),
+            Ok(Some(e)) => Err(format!(
+                "CBR padding with {} refused with {e}, not InvalidConfig",
+                rate_control.name()
+            )),
+            Ok(None) => Err(format!(
+                "CBR padding with {} was accepted",
+                rate_control.name()
+            )),
+            Err(e) => Err(e),
+        };
+        report.check(format!("{name}/cbr-padding-needs-cbr"), outcome);
+    }
 }
 
 fn video_sequence(

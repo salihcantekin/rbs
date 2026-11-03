@@ -27,10 +27,14 @@ enum Fault {
     IgnoresKeyframeRequest,
     DropsLastFrame,
     Panics,
+    /// Accepts CBR padding without declaring it, and with any rate-control mode.
+    AcceptsCbrPadding,
 }
 
 struct FakeVideoFactory {
     fault: Fault,
+    /// Declares and honours `codec.video.cbr_padding`.
+    padding: bool,
 }
 
 fn set(values: &[&str]) -> CapabilityValue {
@@ -62,12 +66,23 @@ impl AdapterFactory for FakeVideoFactory {
             .with(
                 caps::RECONFIGURE,
                 set(&[caps::RECONFIGURE_BITRATE, caps::RECONFIGURE_KEYFRAME]),
-            ))
+            )
+            .with(caps::VIDEO_CBR_PADDING, CapabilityValue::Flag(self.padding)))
     }
 }
 
 impl VideoEncoderFactory for FakeVideoFactory {
     fn create(&self, config: &VideoEncoderConfig) -> Result<Box<dyn VideoEncoder>, CreateError> {
+        if self.fault != Fault::AcceptsCbrPadding {
+            config
+                .check_cbr_padding()
+                .map_err(CreateError::InvalidConfig)?;
+            if config.cbr_padding && !self.padding {
+                return Err(CreateError::Unsupported {
+                    what: "CBR padding".into(),
+                });
+            }
+        }
         let interval = config.keyframe_interval.frames_at(config.frame_rate);
         Ok(Box::new(FakeVideo {
             fault: self.fault,
@@ -179,7 +194,11 @@ impl VideoEncoder for FakeVideo {
 }
 
 fn run(fault: Fault) -> Report {
-    conformance::video_encoder(&FakeVideoFactory { fault }, &mut SystemFrameSource::new())
+    let factory = FakeVideoFactory {
+        fault,
+        padding: false,
+    };
+    conformance::video_encoder(&factory, &mut SystemFrameSource::new())
 }
 
 fn failed_cases(report: &Report) -> Vec<String> {
@@ -191,8 +210,23 @@ fn correct_video_encoder_passes() {
     let report = run(Fault::None);
     report.assert_ran(&["h264/cbr/packets", "hevc/constant_quality/request-keyframe"]);
     assert!(report.skipped().next().is_none(), "{report}");
-    // probe + per codec: 2 rate controls x 5 cases + 2 invalid-input cases.
-    assert_eq!(report.cases.len(), 1 + 2 * (2 * 5 + 2), "{report}");
+    report.assert_ran(&["h264/cbr-padding-refused", "hevc/cbr-padding-needs-cbr"]);
+    // probe + per codec: 2 rate controls x 5 cases + 2 padding cases + 2 invalid-input
+    // cases.
+    assert_eq!(report.cases.len(), 1 + 2 * (2 * 5 + 2 + 2), "{report}");
+}
+
+#[test]
+fn declared_cbr_padding_is_encoded() {
+    let factory = FakeVideoFactory {
+        fault: Fault::None,
+        padding: true,
+    };
+    let report = conformance::video_encoder(&factory, &mut SystemFrameSource::new());
+    report.assert_passed();
+    report.assert_ran(&["h264/cbr-padding/packets", "hevc/cbr-padding-needs-cbr"]);
+    // The refusal case is replaced by a 5-case encode.
+    assert_eq!(report.cases.len(), 1 + 2 * (2 * 5 + 5 + 1 + 2), "{report}");
 }
 
 #[test]
@@ -205,6 +239,8 @@ fn each_video_fault_is_caught() {
         (Fault::IgnoresKeyframeRequest, "h264/cbr/request-keyframe"),
         (Fault::DropsLastFrame, "h264/cbr/packets"),
         (Fault::Panics, "h264/cbr/encode"),
+        (Fault::AcceptsCbrPadding, "h264/cbr-padding-refused"),
+        (Fault::AcceptsCbrPadding, "h264/cbr-padding-needs-cbr"),
     ];
     for (fault, case) in expectations {
         let report = run(fault);

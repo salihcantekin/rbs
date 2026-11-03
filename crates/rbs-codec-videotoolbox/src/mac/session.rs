@@ -560,6 +560,13 @@ impl VideoToolboxSession {
             return Err(unsupported(format!("picture size {w}x{h}")));
         }
         check_rate_control(&config.rate_control).map_err(CreateError::InvalidConfig)?;
+        config
+            .check_cbr_padding()
+            .map_err(CreateError::InvalidConfig)?;
+        if config.cbr_padding {
+            // VideoToolbox has no filler-data property.
+            return Err(unsupported("CBR padding"));
+        }
         let profile = profile_level(config)?;
         let frame_duration = config.frame_rate.frame_duration();
         if frame_duration.is_zero() {

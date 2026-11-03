@@ -14,6 +14,7 @@ use std::sync::Arc;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
 
+use rbs_codec::{EncoderPreset, KeyframeInterval, RateControl};
 use rbs_core::media::{CodecId, ContainerId, Size};
 use rbs_core::time::{Clock, Timestamp};
 use rbs_core::timing::{Cadence, SampleRate};
@@ -194,6 +195,55 @@ fn problems_outside_the_recorded_scene_do_not_stop_it() {
     assert_eq!(r.log.headers.load(Ordering::Relaxed), 0);
     assert_eq!(r.capture.live_buffers(), 0);
     assert_eq!(r.audio.active_streams(), 0);
+}
+
+#[test]
+fn every_video_quality_setting_reaches_the_encoder() {
+    let Some(gpu) = gpu() else { return };
+    let r = rig();
+    let (col, canvas) = scene();
+    let (engine, _) = engine_at_start();
+    let mut settings = RecordSettings::new(canvas, "mem://quality", ContainerId::Matroska);
+    settings.video.rate_control = RateControl::Vbr {
+        target_bps: 6_000_000,
+        max_bps: 9_000_000,
+    };
+    settings.video.keyframe_interval = KeyframeInterval::Frames(90);
+    settings.video.max_b_frames = 2;
+    settings.video.profile = Some("main".into());
+    settings.video.preset = EncoderPreset::Quality;
+    let recording = Recording::start(engine, gpu, &col, &r.adapters, &settings).unwrap();
+    let config = r.video_config.lock().unwrap().clone().unwrap();
+    assert_eq!(config.rate_control, settings.video.rate_control);
+    assert_eq!(config.keyframe_interval, KeyframeInterval::Frames(90));
+    assert_eq!(config.max_b_frames, 2);
+    assert_eq!(config.profile.as_deref(), Some("main"));
+    assert_eq!(config.tuning.preset, EncoderPreset::Quality);
+    assert!(!config.cbr_padding);
+    let report = recording.finish();
+    assert!(report.shutdown_errors.is_empty(), "{report:?}");
+}
+
+#[test]
+fn cbr_padding_skips_encoders_that_do_not_declare_it() {
+    let Some(gpu) = gpu() else { return };
+    let r = rig();
+    let (col, canvas) = scene();
+    let (engine, _) = engine_at_start();
+    let mut settings = RecordSettings::new(canvas, "mem://padded", ContainerId::Matroska);
+    settings.video.cbr_padding = true;
+    let err = Recording::start(engine, gpu, &col, &r.adapters, &settings).unwrap_err();
+    match &err {
+        RecordError::NoAdapter {
+            port: Port::VideoEncoder,
+            tried,
+        } => assert_eq!(tried.len(), 2, "both fakes rejected by capability: {err}"),
+        other => panic!("{other}"),
+    }
+    assert!(
+        r.video_config.lock().unwrap().is_none(),
+        "no session created"
+    );
 }
 
 #[test]
