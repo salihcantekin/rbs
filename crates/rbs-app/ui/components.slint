@@ -11,16 +11,19 @@ component FocusRing inherits Rectangle {
     border-radius: Tokens.radius-sm;
 }
 
-// Vector icon: "more" (three dots), "chevron-down", "check". Icons are paths, not
-// font glyphs, so they look the same on every OS (a glyph missing from the system
-// font shows as an empty box). Drawn in a 16 x 16 view box.
+// The icon set (docs/specs/ui-design-system.md, "Icons").
+export enum IconName { none, more, chevron-down, check, close, dot, ring }
+
+// Vector icon. Icons are paths, not font glyphs, so they look the same on every OS
+// (a glyph missing from the system font shows as an empty box). Drawn in a 16 x 16
+// view box. Decorative: the control that shows it carries the accessible name.
 export component Icon inherits Rectangle {
-    in property <string> name;
+    in property <IconName> name;
     in property <color> ink: Theme.text-primary;
-    width: Tokens.size-icon;
-    height: Tokens.size-icon;
+    width: Tokens.size-icon-box;
+    height: Tokens.size-icon-box;
     accessible-role: none;
-    if name == "more": Path {
+    if name == IconName.more: Path {
         width: 100%;
         height: 100%;
         viewbox-width: 16;
@@ -28,7 +31,7 @@ export component Icon inherits Rectangle {
         fill: root.ink;
         commands: "M 2.5 8 a 1.25 1.25 0 1 0 2.5 0 a 1.25 1.25 0 1 0 -2.5 0 Z M 6.75 8 a 1.25 1.25 0 1 0 2.5 0 a 1.25 1.25 0 1 0 -2.5 0 Z M 11 8 a 1.25 1.25 0 1 0 2.5 0 a 1.25 1.25 0 1 0 -2.5 0 Z";
     }
-    if name == "chevron-down": Path {
+    if name == IconName.chevron-down: Path {
         width: 100%;
         height: 100%;
         viewbox-width: 16;
@@ -37,7 +40,7 @@ export component Icon inherits Rectangle {
         stroke-width: Tokens.size-icon-stroke;
         commands: "M 4 6 L 8 10 L 12 6";
     }
-    if name == "check": Path {
+    if name == IconName.check: Path {
         width: 100%;
         height: 100%;
         viewbox-width: 16;
@@ -45,6 +48,32 @@ export component Icon inherits Rectangle {
         stroke: root.ink;
         stroke-width: Tokens.size-icon-stroke;
         commands: "M 3.5 8.5 L 6.5 11.5 L 12.5 4.5";
+    }
+    if name == IconName.close: Path {
+        width: 100%;
+        height: 100%;
+        viewbox-width: 16;
+        viewbox-height: 16;
+        stroke: root.ink;
+        stroke-width: Tokens.size-icon-stroke;
+        commands: "M 4.5 4.5 L 11.5 11.5 M 11.5 4.5 L 4.5 11.5";
+    }
+    if name == IconName.dot: Path {
+        width: 100%;
+        height: 100%;
+        viewbox-width: 16;
+        viewbox-height: 16;
+        fill: root.ink;
+        commands: "M 4 8 a 4 4 0 1 0 8 0 a 4 4 0 1 0 -8 0 Z";
+    }
+    if name == IconName.ring: Path {
+        width: 100%;
+        height: 100%;
+        viewbox-width: 16;
+        viewbox-height: 16;
+        stroke: root.ink;
+        stroke-width: Tokens.size-icon-stroke;
+        commands: "M 4 8 a 4 4 0 1 0 8 0 a 4 4 0 1 0 -8 0 Z";
     }
 }
 
@@ -56,12 +85,11 @@ export component Button inherits Rectangle {
     in property <bool> enabled: true;
     in property <bool> checked: false;
     in property <bool> dense: false;
-    // Optional icon after the text (see Icon); an icon-only button sets `text: ""`
-    // and must set `accessible-name`.
-    in property <string> icon;
+    // Optional icon after the text. For an icon-only button use IconButton.
+    in property <IconName> icon;
     callback clicked();
     height: dense ? Tokens.size-control-sm : Tokens.size-control-md;
-    min-width: content.preferred-width + (text == "" ? 0px : 2 * Tokens.space-3);
+    min-width: max(root.height, content.preferred-width + (text == "" ? 0px : 2 * Tokens.space-3));
     border-radius: Tokens.radius-sm;
     background: !enabled ? transparent
         : kind == "primary" ? (touch.has-hover ? Theme.accent-hover : Theme.accent)
@@ -87,7 +115,7 @@ export component Button inherits Rectangle {
             font-weight: Tokens.type-label-weight;
             vertical-alignment: center;
         }
-        if root.icon != "": VerticalLayout {
+        if root.icon != IconName.none: VerticalLayout {
             alignment: center;
             Icon { name: root.icon; ink: root.ink; }
         }
@@ -106,6 +134,17 @@ export component Button inherits Rectangle {
         clicked => { focus.focus(); root.clicked(); }
     }
     FocusRing { show: focus.has-focus; }
+}
+
+// Icon-only button (ghost, dense). `name` is required: it is the accessible name and
+// the tooltip-to-be, because the icon itself has no text.
+export component IconButton inherits Button {
+    in property <string> name;
+    text: "";
+    accessible-name: name;
+    kind: "ghost";
+    dense: true;
+    width: Tokens.size-control-sm;
 }
 
 // Menu item inside a Menu popup.
@@ -139,9 +178,12 @@ export component MenuItem inherits Rectangle {
         padding-right: Tokens.space-3;
         spacing: Tokens.space-2;
         VerticalLayout {
-            width: Tokens.space-4;
+            width: Tokens.size-icon-box;
             alignment: center;
-            Icon { name: root.checked ? "check" : ""; }
+            Icon {
+                name: root.checked ? IconName.check : IconName.none;
+                ink: root.enabled ? Theme.text-primary : Theme.text-disabled;
+            }
         }
         Text {
             text: root.text;

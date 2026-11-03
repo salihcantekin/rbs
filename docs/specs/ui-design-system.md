@@ -56,20 +56,27 @@ One family (initial choice: Inter, with the OS UI font as fallback). Numbers in 
 | Control height | `size.control.sm`=24 (dense Advanced/Expert views only), `.md`=28 (default), `.lg`=32 |
 | Radius | `radius.sm`=4, `radius.md`=6, `radius.lg`=10 |
 | Lines | `size.border`=1, `size.focus-ring`=2 |
-| Icons | `size.icon`=16 (icon box), `size.icon.stroke`=1.5 (line width). Icons are vector paths drawn by the component library, never font glyphs: a glyph missing from the OS font shows as an empty box (seen on Windows) |
+| Icons | `size.icon.box`=16 (icon box), `size.icon.stroke`=1.5 (line width) |
 | Menus | `size.menu.sm`=220, `size.menu.md`=300 (menu widths) |
 | Windows | `size.window.w`=1440, `size.window.h`=900 (first-start main window), `size.window.min-w`=1280, `size.window.min-h`=720 (U11 minimum of the main window), `size.floating.w`=640, `size.floating.h`=420 (first size of a floating window) |
 | Keyboard steps | `step.nudge`=8, `step.nudge-large`=128 (splitter move per arrow key, with Shift) |
 | Elevation | `elevation.0` (flat), `elevation.1` (popovers), `elevation.2` (dialogs); subtle, no heavy shadows |
 | Motion | `motion.fast`=120 ms, `motion.normal`=180 ms, `motion.easing.standard`; all motion disabled under "reduce motion" |
 
-A token file cannot set `size.focus-ring` below 2 (U7) or `size.window.min-w` / `.min-h` below 1280 / 720 (U11); the loader rejects such a file.
+A token file cannot set `size.focus-ring` below 2 or `size.icon.box` / `size.icon.stroke` below 12 / 1 (U7) or `size.window.min-w` / `.min-h` below 1280 / 720 (U11); the loader rejects such a file.
 
 ## Components
 
 The library is the only way to build UI (rule U6). Each component has: states (default, hover, pressed, focused, disabled, error), keyboard behaviour, accessible name and role, light/dark/high-contrast screenshots, and usage notes.
 
 Initial set: Button (primary, secondary, ghost, danger), IconButton, Toggle, Checkbox, Radio, Select, Combobox, Slider (with numeric entry), NumberField (drag to change), TextField, ColorPicker, Tabs, SegmentedControl, List and TreeList (drag reorder, inline rename), ContextMenu, Popover, Dialog, Toast, Tooltip, PropertyGrid (generated from a settings schema), EmptyState, StatusBadge (live, recording, warning), AudioMeter, AudioStrip (meter, fader, mute, monitor, filters), PreviewCanvas (handles, snapping, guides), SceneCard (thumbnail, name, live badge), TransitionPicker (preview thumbnail), CommandPalette, KeyboardShortcutHint.
+
+### Icons
+
+One icon set, drawn by the library's `Icon` component as vector paths in a 16 x 16 view box, sized by `size.icon.box` and stroked with `size.icon.stroke`. Icons are never font glyphs: a glyph missing from the OS font shows as an empty box (seen on Windows with U+22EF and U+25BE). Initial set: `more`, `chevron-down`, `check`, `close`, `dot` (filled, live state), `ring` (outline, not live). An icon is decorative (no accessible role): the control that shows it carries the name, and state is never shown by the icon alone (U7).
+
+- `Button` takes an optional trailing `icon`; its ink follows the button's text colour, including disabled.
+- `IconButton` is the icon-only button (ghost, dense, square). Its `name` is required and becomes the accessible name.
 
 ## Main window structure
 
