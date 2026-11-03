@@ -261,6 +261,26 @@ impl Graveyard {
 - `Graveyard` keeps a grave while it is referenced and for `grace` after it became idle, then drops it on its janitor thread, which exists only while the graveyard holds something (P13). `is_idle` is sampled once per period, so the grace starts at the first idle sample; it must stay true once true. `bytes` is read once at `bury`. A panic in a grave ends the janitor without losing the byte count, and the next `bury` starts a new one. Adapters bury stopped surface sets and replaced surfaces in it, which implements the native surface rules and keeps frees off the render thread.
 - Benchmark: `cargo bench -p rbs-capture --bench handoff`. Release build, cloud container, 2026-11-02: about 29 ns per publish, take and release; about 8 ns for a take with no new frame (unchanged from the WGC-local ring it replaced: 29 ns and 8 ns).
 
+## Camera helpers
+
+`rbs_capture::camera` is an adapter-support module like `handoff` (versioned with the port crate, outside the port contract). It turns the modes a device reports into the port's `CameraMode` list and picks the mode for a request, so every camera adapter applies the same rules.
+
+```rust
+#[non_exhaustive]
+pub struct NativeMode { pub width, pub height, pub pixel_format, pub min_rate, pub max_rate,
+                        pub index: usize }   // + new; index = the adapter's own format handle
+#[non_exhaustive]
+pub struct ModeChoice { pub index, pub size: Size, pub pixel_format, pub rate: FrameRate }
+pub fn camera_modes(modes: &[NativeMode]) -> Vec<CameraMode>;   // distinct, in listed order
+pub fn choose_mode(modes: &[NativeMode], pixel_formats: &[PixelFormat],
+                   size: Option<Size>, rate: Option<FrameRate>) -> Result<ModeChoice, CaptureError>;
+pub fn rate_cmp(a: FrameRate, b: FrameRate) -> Ordering;        // exact
+```
+
+- `pixel_format` of a native mode is what the adapter delivers for it, after any conversion the OS does on the way; a device format deliverable in several pixel formats is listed once per format.
+- Rules of `choose_mode`: the pixel format is the first requested one that some mode delivers (invariant 4), else `FormatUnsupported`; the size is the nearest to `request.size` (sum of width and height differences, ties to the larger picture), or the largest without one; among modes of that size, one whose rate range contains the requested rate, else the closest range, or the highest maximum rate without one; ties go to the mode listed first, so adapters list preferred device formats first. The rate is the request clamped into the range (exactly one of its bounds when clamped, so an adapter can hand the OS its own value back), or the range's maximum.
+- Unit tests in the module cover each rule; it is platform independent and never runs on the render thread.
+
 ## Pull, not push
 
 The render tick pulls with `latest_frame`; adapters do not push frames into the graph.
@@ -293,7 +313,7 @@ Checks: probe returns within 1 s (the fastest of up to three calls, so one-time 
 | `rbs-capture-dxgi` | Windows | display | d3d11 | 1 (fallback) |
 | `rbs-capture-mf` | Windows | camera | system, d3d11 | 2 |
 | `rbs-capture-sck` | macOS 12.3+ | display, window (picker on 14+ planned) | metal (IOSurface, ready on delivery) | 0 (implemented; hardware run passed 2026-11-03) |
-| `rbs-capture-avf` | macOS | camera | metal (IOSurface) | 2 |
+| `rbs-capture-avf` | macOS | camera | metal (IOSurface: NV12 or BGRA, ready on delivery) | 2 (implemented; hardware run pending) |
 | `rbs-capture-pipewire` | Linux (Wayland, X11 via portal) | camera (PipeWire `Video/Source` nodes); display, window (screen-cast portal picker) | dmabuf (ready), system | 0 (implemented; portal tested against a test portal, desktop run pending) |
 | `rbs-capture-v4l2` | Linux | camera | system, dmabuf | 2 |
 
@@ -306,6 +326,21 @@ Checks: probe returns within 1 s (the fastest of up to three calls, so one-time 
 - A frame status of `Stopped` counts as target loss (invariant 7), because closing a captured window does not always reach the stream delegate.
 - Soundness rests on ScreenCaptureKit not rendering into an IOSurface while its pixel buffer is retained. The hardware test `held_surface_is_not_rewritten` (`RBS_CAPTURE_HW=1`) checks it with the surface seed; it must pass on a Mac before `rbs-app` wires the adapter in.
 - On macOS 15 and later, the system may show its recurring screen-recording reminder on ScreenCaptureKit calls. This is an OS alert, not a permission prompt the adapter starts, so `open` still never prompts.
+
+### AVFoundation camera adapter notes
+
+- Targets: every video capture device (`devicesWithMediaType:`, which also lists external and Continuity cameras; discovery sessions renamed the external device type in macOS 14, and a constant missing on older systems would stop the binary from loading). Ids are `camera:<uniqueID>`, which Apple keeps stable across reconnections and reboots. Listing needs no permission and opens nothing. Each target's size is its largest mode.
+- Modes: every device format and frame-rate range, once as `nv12` and once as `bgra8`. AVFoundation's video data output delivers either from any device format (it converts on the way, in the capture pipeline), so the request order alone decides the pixel format. NV12 is `'420v'` (limited range), tagged `BT709_LIMITED`; reading the buffers' YCbCr matrix attachment instead is a follow-up. BGRA is tagged sRGB. Compressed formats stay out of scope (see Scope); AVFoundation decodes them before delivery, so a camera whose larger sizes are only MJPEG still offers them, decoded by the OS.
+- Memory: Metal only (IOSurface, `SurfaceSync::Ready`), like ScreenCaptureKit. The Metal importer aliases BGRA and decodes NV12 on the GPU. System memory is not offered.
+- Permission: `permission` maps `AVAuthorizationStatus` (restricted counts as denied). `open` and `start` refuse unless authorized, so creating the device input never shows the prompt; only `request_permission` does. Its process (or the app responsible for it, such as the terminal) needs `NSCameraUsageDescription` in its Info.plist, otherwise macOS ends the process at the request.
+- `open` picks the device format and rate with `rbs_capture::camera::choose_mode` and creates nothing. `start` finds the same device format again (size, media subtype and a rate range containing the chosen rate), builds an `AVCaptureSession` with the device input and a video data output (late frames discarded), sets the active format and a fixed frame duration while the device is locked for configuration, and runs the session. `startRunning` blocks until the camera streams; cameras can take longer than the 500 ms `start` budget to wake up. This is an accepted exception, like the ScreenCaptureKit one, until measured on hardware.
+- Errors: a device in use by another application or session is `DeviceBusy`, an unauthorized application `PermissionDenied`, a device that is gone at `start` `TargetNotFound`; a session that did not run is a recoverable `Backend` error.
+- Target loss (invariant 7): `AVCaptureDeviceWasDisconnectedNotification` for the device and `AVCaptureSessionRuntimeErrorNotification` for the session set an atomic flag that `latest_frame` reads. Both observers are removed at `stop`.
+- Hand-off: the same ring, graveyard and grace as the ScreenCaptureKit adapter. Each slot retains its `CVPixelBuffer`, which keeps AVFoundation from rendering into its IOSurface. Because the output's pool is small and stops delivering when the client holds too many buffers, free slots give their buffers back on the next sample (on the delegate's queue, never on the render thread); surfaces a frame was handed out with stay retained as `IOSurface`s for the grace. A plain retain does not keep the pool from reusing a surface for a new frame, but the pool skips surfaces that are in use (`IOSurfaceIsInUse`), and the Metal importer's cached textures may count as use: if they do, the pool grows or starves while the importer caches. Unverified; see the open items. Samples that cannot be delivered (no IOSurface, unexpected pixel format) and frames AVFoundation discards before the delegate sees them (`didDropSampleBuffer`) count as received and dropped.
+- Timestamps: sample presentation times are on the session's `synchronizationClock` (usually the host clock, not always); they are converted to host time (`CMSyncConvertTime`), then mapped to the master clock with the drift estimator like ScreenCaptureKit's. A mapped time more than 1 s from the arrival time is taken to be on an unexpected clock and replaced by the arrival time.
+- `reconfigure` is unsupported (cameras have no cursor; a rate change needs a new session).
+- `stop` stops the session, removes the observers, detaches the delegate and waits for its serial queue to drain, so no delegate call runs after `stop` returns. A rate AVFoundation cannot be given as an exact `CMTime` is refused at `open` (`FormatUnsupported`); a device format that is gone at `start` (another device behind the id) is `FormatUnsupported` too.
+- Soundness assumption: AVFoundation does not write into an IOSurface while its pixel buffer is retained, and its pool keeps delivering while three frames are held. The hardware test `held_surface_is_not_rewritten` (`RBS_CAPTURE_HW=1`, NV12 and BGRA) checks both; it must pass on a Mac before `rbs-app` wires the adapter in. CI runners have no camera, so CI covers probing, empty enumeration and the refusal checks only.
 
 ### PipeWire adapter notes
 
@@ -419,6 +454,14 @@ Records written from the reviewer's own output (ADR-0014). The spec stays Draft.
 - Resolved in round 2: a portal `start` reported success at `Paused`, before a format was agreed, so a link that cannot deliver the requested memory kind never failed `start` (now success only after a format is accepted, else `FormatUnsupported`); the `restoring` flag stayed set if a restore panicked, blocking later starts on that choice forever (now cleared by a drop guard that wakes the waiters); invariant 1 overstated the 60 s bound (reworded); the breaking change of the conformance helpers is recorded under semver.
 - Open: the owner's acceptance of the invariant 1 exception for live picks; a manual run against real portals (GNOME, KDE, wlroots); DMA-BUF casts are unverified (hosts request system memory for portal targets); no host calls `target_to_store` yet (`rbs-app` must store the new id after each `start`); the setup-budget timeout path is untested (the mock answers property reads with an error, not silence); a detached thread caught in `do_exit` passes the thread check.
 - Owner approval: early-phase merge policy (Salih, 2026-11-02); the invariant 1 exception awaits the owner's big review.
+
+### AVFoundation camera adapter and camera helpers
+
+- Reviewer: a fresh independent AI session, given the diff, specs and code only
+- Date: 2026-11-03
+- Verdict: approve with changes. No soundness bug and no Objective-C exception path found (`return_free` cannot race the render thread; formats and durations are set under the configuration lock and checked against the device's ranges; inputs and outputs are added only after `canAdd*`).
+- Resolved before merge: sample times are converted from the session's synchronization clock, with an arrival-time fallback for times more than 1 s off; `stop` drains the delegate queue; rates are reduced before conversion and refused at `open` when they do not fit a `CMTime`, and a vanished device format is `FormatUnsupported` instead of a retried `TargetNotFound`; undeliverable samples are counted as drops; the pool-reuse claim is marked unverified.
+- Open, needs a Mac with a camera: the hardware tests; a run through the `rbs-gpu` Metal importer (several seconds with texture caching) to check that cached textures do not starve AVFoundation's pool; measure `start` latency.
 
 ## Open questions
 
