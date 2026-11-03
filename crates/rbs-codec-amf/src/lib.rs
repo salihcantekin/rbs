@@ -11,7 +11,7 @@
 //!
 //! # Sessions
 //!
-//! Each session opens an AMF context on the first AMD device (Direct3D 11 on
+//! Each session opens an AMF context on the default device (Direct3D 11 on
 //! Windows, Vulkan on Linux) and one encoder component, with [`FRAMES_IN_FLIGHT`]
 //! host-memory input surfaces. `submit` copies the NV12 or P010 frame into the next
 //! free surface and submits it; `drain` takes the encoded data in submission order;
@@ -110,7 +110,7 @@ mod platform {
     }
 
     impl AmfFactory {
-        /// The adapter on the first AMD GPU the AMF runtime finds.
+        /// The adapter on the default GPU, when it is an AMD GPU with AMF.
         pub fn new() -> Self {
             Self::default()
         }
@@ -231,7 +231,7 @@ mod platform {
     }
 
     impl AmfFactory {
-        /// The adapter on the first AMD GPU the AMF runtime finds.
+        /// The adapter on the default GPU, when it is an AMD GPU with AMF.
         pub fn new() -> Self {
             Self::default()
         }

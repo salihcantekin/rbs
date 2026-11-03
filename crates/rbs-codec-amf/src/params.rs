@@ -43,7 +43,10 @@ pub(crate) fn color_profile(color: &ColorCodes) -> Option<i64> {
 /// The rate-control properties of `rc`: CBR with target = peak and a one-second
 /// VBV, peak-constrained VBR with a one-second VBV at the peak, or constant QP with
 /// I and P pictures at `level`. The VBV starts full.
-pub(crate) fn rate_properties(codec: CodecId, rc: Rc) -> Vec<(Name, Value)> {
+///
+/// With `running`, only the values a running encoder takes (rates and VBV size, or
+/// the QPs): the method and initial fullness are static.
+pub(crate) fn rate_properties(codec: CodecId, rc: Rc, running: bool) -> Vec<(Name, Value)> {
     let n = names(codec);
     let hevc = codec == CodecId::Hevc;
     let method = |cbr: bool| -> i64 {
@@ -59,14 +62,20 @@ pub(crate) fn rate_properties(codec: CodecId, rc: Rc) -> Vec<(Name, Value)> {
         }
     };
     let rates = |cbr: bool, target: u32, peak: u32| {
-        vec![
-            (n.rate_control, Value::Int(method(cbr))),
+        let mut list = Vec::with_capacity(5);
+        if !running {
+            list.push((n.rate_control, Value::Int(method(cbr))));
+        }
+        list.extend([
             (n.target_bitrate, Value::Int(i64::from(target))),
             (n.peak_bitrate, Value::Int(i64::from(peak))),
             (n.vbv_size, Value::Int(i64::from(peak))),
+        ]);
+        if !running {
             // 64 = 100 %.
-            (n.vbv_fullness, Value::Int(64)),
-        ]
+            list.push((n.vbv_fullness, Value::Int(64)));
+        }
+        list
     };
     match rc {
         Rc::Cbr { bitrate } => rates(true, bitrate, bitrate),
@@ -77,11 +86,15 @@ pub(crate) fn rate_properties(codec: CodecId, rc: Rc) -> Vec<(Name, Value)> {
             } else {
                 sys::AMF_VIDEO_ENCODER_RATE_CONTROL_METHOD_CONSTANT_QP as i64
             };
-            vec![
-                (n.rate_control, Value::Int(cqp)),
+            let mut list = Vec::with_capacity(3);
+            if !running {
+                list.push((n.rate_control, Value::Int(cqp)));
+            }
+            list.extend([
                 (n.qp_i, Value::Int(i64::from(level))),
                 (n.qp_p, Value::Int(i64::from(level))),
-            ]
+            ]);
+            list
         }
     }
 }
@@ -131,7 +144,10 @@ pub(crate) fn properties(plan: &Plan) -> Result<Vec<(Name, Value)>, String> {
     ];
     if hevc {
         list.extend([
-            (sys::HEVC_GOP_SIZE, Value::Int(i64::from(plan.gop))),
+            (
+                sys::HEVC_GOP_SIZE,
+                Value::Int(i64::from(plan.gop.min(MAX_HEVC_GOP))),
+            ),
             (sys::HEVC_GOPS_PER_IDR, Value::Int(0)),
             (
                 sys::HEVC_HEADER_MODE,
@@ -170,8 +186,36 @@ pub(crate) fn properties(plan: &Plan) -> Result<Vec<(Name, Value)>, String> {
             Value::Int(i64::from(plan.color.primaries)),
         ),
     ]);
-    list.extend(rate_properties(plan.codec, plan.rc));
+    list.extend(rate_properties(plan.codec, plan.rc, false));
     Ok(list)
+}
+
+/// Largest `HevcGOPSize` set; a longer interval still gets its IDR pictures from the
+/// engine (AMF may add non-IDR I pictures in between).
+pub(crate) const MAX_HEVC_GOP: u32 = 1000;
+
+/// Whether a refused `name` is ignored when the encoder is created: properties
+/// some encoders or firmware lack, whose default is acceptable. `BPicturesPattern`
+/// is read back instead (it must end up 0).
+pub(crate) fn optional(name: Name) -> bool {
+    let n = [&sys::H264, &sys::HEVC];
+    [
+        sys::H264_B_PIC_PATTERN,
+        sys::H264_HEADER_SPACING,
+        sys::H264_FULL_RANGE,
+        sys::HEVC_NOMINAL_RANGE,
+        sys::HEVC_GOP_SIZE,
+    ]
+    .contains(&name)
+        || n.iter().any(|n| {
+            [
+                n.output_color_profile,
+                n.output_transfer,
+                n.output_primaries,
+                n.vbv_fullness,
+            ]
+            .contains(&name)
+        })
 }
 
 /// 100-nanosecond ticks per frame at `fps` (AMF timestamps), at least 1.
@@ -230,7 +274,7 @@ mod tests {
         assert_eq!(list[0].0, sys::HEVC.usage);
         assert_eq!(get(&list, sys::HEVC.profile), Value::Int(2));
         assert_eq!(get(&list, sys::HEVC.bit_depth), Value::Int(10));
-        assert_eq!(get(&list, sys::HEVC_GOP_SIZE), Value::Int(2000));
+        assert_eq!(get(&list, sys::HEVC_GOP_SIZE), Value::Int(1000));
         assert_eq!(get(&list, sys::HEVC_GOPS_PER_IDR), Value::Int(0));
         assert_eq!(get(&list, sys::HEVC.qp_i), Value::Int(20));
         assert_eq!(get(&list, sys::HEVC.qp_p), Value::Int(20));
@@ -245,9 +289,24 @@ mod tests {
                 average: 4_000_000,
                 max: 8_000_000,
             },
+            false,
         );
         assert_eq!(get(&r, sys::HEVC.rate_control), Value::Int(2));
         assert_eq!(get(&r, sys::HEVC.vbv_size), Value::Int(8_000_000));
+        let running = rate_properties(CodecId::H264, Rc::Cbr { bitrate: 2_000_000 }, true);
+        assert!(
+            running
+                .iter()
+                .all(|(n, _)| *n != sys::H264.rate_control && *n != sys::H264.vbv_fullness)
+        );
+        assert_eq!(
+            get(&running, sys::H264.target_bitrate),
+            Value::Int(2_000_000)
+        );
+        assert!(optional(sys::HEVC.output_primaries));
+        assert!(optional(sys::H264_B_PIC_PATTERN));
+        assert!(!optional(sys::H264.usage));
+        assert!(!optional(sys::HEVC.target_bitrate));
         let mut p = plan(CodecId::H264, Rc::Cbr { bitrate: 1 });
         p.color.matrix = 0;
         assert!(properties(&p).is_err());

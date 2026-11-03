@@ -56,10 +56,18 @@ fn config(codec: CodecId, pixel_format: PixelFormat) -> VideoEncoderConfig {
 }
 
 fn encode(session: &mut dyn VideoEncoder, format: &VideoFormat, frames: u64) -> Vec<EncodedPacket> {
+    encode_range(session, format, 0..frames)
+}
+
+fn encode_range(
+    session: &mut dyn VideoEncoder,
+    format: &VideoFormat,
+    frames: std::ops::Range<u64>,
+) -> Vec<EncodedPacket> {
     let mut source = SystemFrameSource::new();
     let cadence = Cadence::frames(Timestamp::from_nanos(1_000_000_000), FrameRate::FPS_60);
     let mut packets = Vec::new();
-    for i in 0..frames {
+    for i in frames {
         let frame = source.frame(format, i, cadence.time_of(i)).unwrap();
         match session.submit(&frame) {
             Err(EncodeError::Busy) => {
@@ -109,6 +117,25 @@ fn h264_is_annex_b_with_parameter_sets() {
     }
     let stats = session.stats();
     assert_eq!((stats.submitted, stats.packets, stats.copied), (90, 90, 90));
+}
+
+#[test]
+fn encodes_again_after_flush() {
+    if !encodes("h264") {
+        return;
+    }
+    let config = config(CodecId::H264, PixelFormat::Nv12);
+    let mut session = AmfFactory::new().create_session(&config).unwrap();
+    assert_eq!(encode_range(&mut session, &config.format, 0..10).len(), 10);
+    // `flush` drained the encoder; the next frame restarts it with an IDR.
+    let packets = encode_range(&mut session, &config.format, 10..20);
+    assert_eq!(packets.len(), 10);
+    let types: Vec<u8> = nal::annexb_unit_headers(packets[0].data())
+        .map(|h| h & 0x1f)
+        .collect();
+    assert!(packets[0].keyframe(), "first packet after flush: {types:?}");
+    assert!(types.contains(&7) && types.contains(&5), "{types:?}");
+    assert!(packets[1..].iter().all(|p| !p.keyframe()));
 }
 
 #[test]

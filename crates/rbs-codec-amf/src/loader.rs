@@ -25,7 +25,9 @@ pub(crate) struct Api {
 // SAFETY: the factory is a process-wide object of the runtime that may be used from
 // any thread; it is only read after initialisation.
 unsafe impl Send for Api {}
-// SAFETY: as above.
+// SAFETY: as above. Several sessions may call the factory (`CreateContext`,
+// `CreateComponent`) from different threads at once; AMF documents the factory as
+// thread-safe, as FFmpeg and OBS rely on.
 unsafe impl Sync for Api {}
 
 #[cfg(target_os = "windows")]

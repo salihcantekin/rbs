@@ -27,6 +27,9 @@ use crate::sys::{self, Name, Names};
 /// submitted `FRAMES_IN_FLIGHT` frames earlier, at `flush` and in `Drop`.
 const WAIT: Duration = Duration::from_secs(10);
 
+/// Longest wait for AMF to release an input surface whose output was read.
+const RELEASE_WAIT: Duration = Duration::from_millis(100);
+
 /// Calls method `$m` of the AMF interface `$p`: `Ok(result)`, or `Err(name)` when
 /// the vtable has no such entry. Must be used inside `unsafe` with a live `$p`.
 macro_rules! vcall {
@@ -174,6 +177,14 @@ fn create_error(call: &str, r: sys::AMF_RESULT) -> CreateError {
         | sys::AMF_ENCODER_NOT_PRESENT => CreateError::Unsupported {
             what: format!("{call} refused the configuration (result {r})"),
         },
+        // No AMD device behind the context (for example a leftover runtime on a
+        // machine without an AMD GPU, or one that is not the default adapter):
+        // definitive, so the probe caches an empty set.
+        sys::AMF_NO_DEVICE | sys::AMF_DIRECTX_FAILED | sys::AMF_VULKAN_FAILED => {
+            CreateError::Unsupported {
+                what: format!("{call}: no AMD device (result {r})"),
+            }
+        }
         sys::AMF_OUT_OF_MEMORY => CreateError::ResourceExhausted,
         _ => CreateError::Device(format!("{call} failed with result {r}")),
     }
@@ -373,7 +384,7 @@ pub(crate) fn probe() -> Result<DeviceCaps, String> {
 /// One AMF encoder with its surfaces.
 pub(crate) struct AmfEngine {
     /// One host-memory surface per slot.
-    surfaces: Vec<Com<sys::AMFSurface>>,
+    surfaces: Vec<Surface>,
     /// Declared after `surfaces` and before `context`: dropped (terminated) after
     /// the surfaces are released and before the context goes.
     component: Option<Com<sys::AMFComponent>>,
@@ -388,6 +399,29 @@ pub(crate) struct AmfEngine {
     duration: i64,
     /// `Drain` was called: the next input needs a `Flush` first.
     drained: bool,
+    /// `Drain` returned `INPUT_FULL`: retried while waiting for output.
+    drain_pending: bool,
+    /// Rows of the luma and chroma planes.
+    rows: [usize; 2],
+}
+
+/// An input surface and its reference count when AMF does not hold it.
+struct Surface {
+    surface: Com<sys::AMFSurface>,
+    idle: i64,
+}
+
+/// The current reference count of `surface` (AMF has no getter: `Acquire` returns
+/// the count after adding one, which is released right away).
+fn references(surface: *mut sys::AMFSurface) -> Result<i64, &'static str> {
+    // SAFETY: a live surface owned by this engine; the extra reference is released
+    // right away.
+    unsafe {
+        let n = vcall!(surface, Acquire)?;
+        let _ = vcall!(surface, Release);
+        #[allow(clippy::useless_conversion)] // `amf_long` is 32 bits on Windows.
+        Ok(i64::from(n) - 1)
+    }
 }
 
 // SAFETY: the raw pointers are AMF interfaces owned by this engine. AMF objects may
@@ -405,37 +439,8 @@ impl AmfEngine {
         let n = names(plan.codec);
         let context = Context::open(api)?;
         let component = context.component(api, n)?;
-        for (name, value) in &properties {
-            // SAFETY: a live, uninitialised component and a NUL-terminated name.
-            let r = unsafe { set_property!(component.ptr(), name, variant(*value)) }
-                .map_err(missing)?;
-            if r != sys::AMF_OK {
-                return Err(create_error(
-                    &format!("SetProperty({})", wide_name(name)),
-                    r,
-                ));
-            }
-        }
-        let format = if plan.ten_bit {
-            sys::AMF_SURFACE_P010
-        } else {
-            sys::AMF_SURFACE_NV12
-        };
-        let side = |v: u32| i32::try_from(v).unwrap_or(i32::MAX);
-        // SAFETY: a live component with its properties set.
-        let r = unsafe {
-            vcall!(
-                component.ptr(),
-                Init,
-                format,
-                side(plan.width),
-                side(plan.height)
-            )
-        }
-        .map_err(missing)?;
-        if r != sys::AMF_OK {
-            return Err(create_error("Init", r));
-        }
+        // From here every error path drops the engine, which terminates the
+        // component before releasing it.
         let mut engine = AmfEngine {
             surfaces: Vec::with_capacity(FRAMES_IN_FLIGHT),
             component: Some(component),
@@ -446,7 +451,43 @@ impl AmfEngine {
             since_idr: 0,
             duration: params::frame_duration(plan.fps),
             drained: false,
+            drain_pending: false,
+            rows: [plan.height as usize, plan.height.div_ceil(2) as usize],
         };
+        let component = engine.component();
+        for (name, value) in &properties {
+            // SAFETY: a live, uninitialised component and a NUL-terminated name.
+            let r = unsafe { set_property!(component, name, variant(*value)) }.map_err(missing)?;
+            if r != sys::AMF_OK && !params::optional(name) {
+                return Err(create_error(
+                    &format!("SetProperty({})", wide_name(name)),
+                    r,
+                ));
+            }
+        }
+        if plan.codec == CodecId::H264 {
+            // Without B-frames the output is in input order; an encoder that
+            // refused the setting must still report 0 (or nothing: no B-frames).
+            // SAFETY: a live component and a NUL-terminated name.
+            let pattern = unsafe { int_property!(component, sys::H264_B_PIC_PATTERN) };
+            if pattern.is_some_and(|p| p != 0) {
+                return Err(CreateError::Unsupported {
+                    what: "the AMF H.264 encoder keeps B-frames on".into(),
+                });
+            }
+        }
+        let format = if plan.ten_bit {
+            sys::AMF_SURFACE_P010
+        } else {
+            sys::AMF_SURFACE_NV12
+        };
+        let side = |v: u32| i32::try_from(v).unwrap_or(i32::MAX);
+        // SAFETY: a live component with its properties set.
+        let r = unsafe { vcall!(component, Init, format, side(plan.width), side(plan.height)) }
+            .map_err(missing)?;
+        if r != sys::AMF_OK {
+            return Err(create_error("Init", r));
+        }
         let extradata = engine.extradata()?;
         for _ in 0..FRAMES_IN_FLIGHT {
             let mut raw: *mut sys::AMFSurface = ptr::null_mut();
@@ -466,9 +507,32 @@ impl AmfEngine {
             let surface = Com::new(raw)
                 .filter(|_| r == sys::AMF_OK)
                 .ok_or_else(|| create_error("AllocSurface", r))?;
-            engine.surfaces.push(surface);
+            // The references of a surface nobody else uses: ours plus any the
+            // runtime keeps for its own bookkeeping.
+            let idle = references(surface.ptr())
+                .map_err(|_| CreateError::Device("AMF surface without Acquire".into()))?;
+            engine.surfaces.push(Surface { surface, idle });
         }
         Ok((engine, extradata))
+    }
+
+    /// Sends a pending `Drain`. `INPUT_FULL` keeps it pending (retried while
+    /// output is read; the queued pictures come out without it).
+    fn try_drain(&mut self) -> Result<(), EngineError> {
+        if !self.drain_pending {
+            return Ok(());
+        }
+        // SAFETY: an initialised component.
+        let r =
+            unsafe { vcall!(self.component(), Drain) }.map_err(|m| EngineError::Failed(m, -1))?;
+        match r {
+            sys::AMF_OK => {
+                self.drain_pending = false;
+                Ok(())
+            }
+            sys::AMF_INPUT_FULL => Ok(()),
+            other => Err(engine_error("Drain", other)),
+        }
     }
 
     fn component(&self) -> *mut sys::AMFComponent {
@@ -490,9 +554,12 @@ impl AmfEngine {
             )
         }
         .map_err(missing)?;
-        // SAFETY: the variant's type says which member is set.
+        if r != sys::AMF_OK || v.type_ != sys::AMF_VARIANT_INTERFACE {
+            return Err(CreateError::Device("AMF returned no parameter sets".into()));
+        }
+        // SAFETY: the variant's type (checked above) says this member is set.
         let interface = unsafe { v.__bindgen_anon_1.pInterface };
-        if r != sys::AMF_OK || v.type_ != sys::AMF_VARIANT_INTERFACE || interface.is_null() {
+        if interface.is_null() {
             return Err(CreateError::Device("AMF returned no parameter sets".into()));
         }
         // The variant holds a reference to the interface: released below.
@@ -586,18 +653,19 @@ impl Engine for AmfEngine {
     }
 
     fn upload(&mut self, slot: usize, frame: &SystemFrame) -> Result<(), EngineError> {
-        let surface = self.surfaces[slot].ptr();
-        // AMF holds a reference to a surface it has not finished with. Ours plus
-        // the one `Acquire` adds make 2 when it is free.
-        // SAFETY: a live surface owned by this engine; the extra reference is
-        // released right away.
-        let references = unsafe {
-            let n = vcall!(surface, Acquire).map_err(|m| EngineError::Failed(m, -1))?;
-            let _ = vcall!(surface, Release);
-            n
-        };
-        if references > 2 {
-            return Err(EngineError::Busy);
+        let surface = self.surfaces[slot].surface.ptr();
+        let idle = self.surfaces[slot].idle;
+        // The session reuses a slot only after its output was read, so AMF is done
+        // with the surface or about to release it: wait briefly, never `Busy`
+        // (draining cannot free a slot that is not in flight).
+        let deadline = Instant::now() + RELEASE_WAIT;
+        while references(surface).map_err(|m| EngineError::Failed(m, -1))? > idle {
+            if Instant::now() >= deadline {
+                return Err(EngineError::Broken(
+                    "AMF kept an input surface after its output",
+                ));
+            }
+            std::thread::sleep(Duration::from_millis(1));
         }
         let mut planes: [(*mut u8, usize, usize); 2] = [(ptr::null_mut(), 0, 0); 2];
         for (i, p) in planes.iter_mut().enumerate() {
@@ -622,16 +690,21 @@ impl Engine for AmfEngine {
                 usize::try_from(rows).unwrap_or(0),
             );
         }
+        // Only the rows of the picture are written: the vertical pitch must cover
+        // them, and the slices never reach past them (whatever `VPitch` a plane
+        // reports).
         if planes
             .iter()
-            .any(|(p, pitch, rows)| p.is_null() || *pitch == 0 || *rows == 0)
+            .zip(self.rows)
+            .any(|((p, pitch, rows), needed)| p.is_null() || *pitch == 0 || *rows < needed)
         {
             return Err(EngineError::Broken("AMF surface plane without memory"));
         }
-        let [(y, y_pitch, y_rows), (uv, uv_pitch, uv_rows)] = planes;
-        // SAFETY: host planes of `pitch * rows` bytes each (AMF allocates the
-        // vertical pitch), owned by the surface, which AMF does not use now (checked
-        // above); the two planes do not overlap.
+        let [(y, y_pitch, _), (uv, uv_pitch, _)] = planes;
+        let [y_rows, uv_rows] = self.rows;
+        // SAFETY: host planes of at least `pitch * VPitch` bytes each, and `VPitch`
+        // covers the rows written (checked above); owned by the surface, which AMF
+        // no longer uses (checked above); the two planes do not overlap.
         let (luma, chroma) = unsafe {
             (
                 std::slice::from_raw_parts_mut(y, y_pitch * y_rows),
@@ -665,9 +738,10 @@ impl Engine for AmfEngine {
                 return Err(engine_error("Flush", r));
             }
             self.drained = false;
+            self.drain_pending = false;
         }
         let keyframe = idr || self.since_idr + 1 >= self.gop;
-        let surface = self.surfaces[slot].ptr();
+        let surface = self.surfaces[slot].surface.ptr();
         let stamp = i64::try_from(token).unwrap_or(i64::MAX);
         self.set_surface(surface, sys::TOKEN, Value::Int(stamp))?;
         self.mark_idr(surface, keyframe)?;
@@ -691,6 +765,7 @@ impl Engine for AmfEngine {
         let component = self.component();
         let deadline = Instant::now() + WAIT;
         let data = loop {
+            self.try_drain()?;
             let mut raw: *mut sys::AMFData = ptr::null_mut();
             // SAFETY: an initialised component and a valid out-pointer.
             let r = unsafe { vcall!(component, QueryOutput, &mut raw) }
@@ -745,26 +820,24 @@ impl Engine for AmfEngine {
         if self.drained {
             return Ok(());
         }
-        // SAFETY: an initialised component.
-        let r =
-            unsafe { vcall!(self.component(), Drain) }.map_err(|m| EngineError::Failed(m, -1))?;
-        if r != sys::AMF_OK {
-            return Err(engine_error("Drain", r));
-        }
         self.drained = true;
-        Ok(())
+        self.drain_pending = true;
+        self.try_drain()
     }
 
     fn set_rate_control(&mut self, rc: Rc) -> Result<(), EngineError> {
         let component = self.component();
-        for (name, value) in params::rate_properties(self.codec, rc) {
+        for (name, value) in params::rate_properties(self.codec, rc, true) {
             // SAFETY: an initialised component and a NUL-terminated name; rate
             // properties are dynamic (changed while encoding).
             let r = unsafe { set_property!(component, name, variant(value)) }
                 .map_err(|m| EngineError::Failed(m, -1))?;
             match r {
                 sys::AMF_OK => {}
-                sys::AMF_INVALID_ARG | sys::AMF_OUT_OF_RANGE | sys::AMF_NOT_SUPPORTED => {
+                sys::AMF_INVALID_ARG
+                | sys::AMF_OUT_OF_RANGE
+                | sys::AMF_NOT_SUPPORTED
+                | sys::AMF_ACCESS_DENIED => {
                     return Err(EngineError::Unsupported);
                 }
                 other => return Err(engine_error("SetProperty", other)),
