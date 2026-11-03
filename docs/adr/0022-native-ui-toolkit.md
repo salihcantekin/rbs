@@ -18,7 +18,7 @@ The prototypes ran engine and UI in one process. ADR-0008 makes the desktop UI a
 | 1. Preview without CPU copies | Shown in-process. External `wgpu` textures are displayed directly (`Image::try_from`), and the UI can also adopt an existing device | Shown in-process through a `shader` widget. iced creates its own device and cannot be given one | Not shown: the prototype copied frames through the CPU. Needs native texture import into Qt's RHI, written in C++ per backend |
 | Reuse of `rbs_gpu::interop` (wgpu 30) for the UI-side import | Possible: same `wgpu` major (`unstable-wgpu-30`) | Not possible with wgpu 27: the import code must be written again against iced's `wgpu`, or iced must catch up | Not possible: separate C++ and RHI code |
 | 2. Custom drawing at display rate | `Path` and primitives. Throughput is an open risk (see below) | `canvas` and `shader` widgets | Qt Quick `Shape` and the scene graph |
-| 3. Accessibility | Screen reader tree with roles and names (AccessKit), seen on Linux AT-SPI only. Keyboard focus, Windows and macOS not tested | Nothing exposed to screen readers | Most mature. Custom controls need `Accessible` annotations |
+| 3. Accessibility | Screen reader tree with roles and names (AccessKit), seen on Linux AT-SPI only. Keyboard focus, Windows and macOS not tested at the time (later met by the gate runs with Narrator and VoiceOver, see Review) | Nothing exposed to screen readers | Most mature. Custom controls need `Accessible` annotations |
 | 4. Fluent i18n, RTL layout | Bidi text shaped correctly. No Fluent integration and no layout mirroring known: **open** | Bidi text correct. No mirroring known: **open** | Bidi text correct. Built-in `LayoutMirroring` |
 | 5. Idle CPU | 0.0 % | 0.0 % | 0.0 % |
 | 6. Docking | Built on our model; works. `.slint` forbids recursive components, so the layout is flattened in Rust | Built on our model; works | Built on our model; works |
@@ -26,7 +26,7 @@ The prototypes ran engine and UI in one process. ADR-0008 makes the desktop UI a
 | Build and distribution | 256 s clean build, 22.6 MiB binary, 372 crates, Rust 1.92 | 142 s, 13.1 MiB, 204 crates, Rust 1.88 | 173 s plus a Qt install, a 7 MiB binary plus about 28 MiB of Qt libraries, a C++ toolchain, 87 shared libraries |
 | API stability | 1.x with semver, except the `unstable-wgpu-*` features | 0.x, breaking changes in every release | Qt is stable; `cxx-qt` is 0.x |
 
-There was no GPU in the test machine, so the rendering-load numbers came from a software rasteriser. On it, Slint's `femtovg-wgpu` renderer reached 6 to 7 frames per second where Qt's scene graph reached about 62. This may be only a property of software rendering, or it may be a real cost, for example re-tessellating `Path` geometry every frame. It is an open risk until it is measured on a GPU.
+There was no GPU in the test machine, so the rendering-load numbers came from a software rasteriser. On it, Slint's `femtovg-wgpu` renderer reached 6 to 7 frames per second where Qt's scene graph reached about 62. This may be only a property of software rendering, or it may be a real cost, for example re-tessellating `Path` geometry every frame. It is an open risk until it is measured on a GPU. (Resolved: on an M4 Pro GPU Slint kept 60 Hz with 0 late frames in every scenario, see Review.)
 
 ## Decision
 
@@ -34,7 +34,7 @@ There was no GPU in the test machine, so the rendering-load numbers came from a 
    - working accessibility (iced has none),
    - direct display of `wgpu` textures on the same `wgpu` major as `rbs-gpu` today, so `rbs_gpu::interop` code can be reused,
    - a Rust-only build (Qt brings a C++ toolchain, its own RHI interop and more than 80 shared libraries).
-2. Default topology is the one in ADR-0008: engine and UI in separate processes. The engine exports program, preview and projector surfaces as native handles. The UI imports them into its own `wgpu` device with the same `rbs_gpu::interop` code, and hands them to Slint as textures. There are no CPU copies on the default path (P4). Running both in one process with a shared device is an optional mode. The export side of this contract is not yet specified. It must be added to the [GPU compositor spec](../specs/gpu-compositor.md) before the UI crate shows engine output (spec first).
+2. Default topology is the one in ADR-0008: engine and UI in separate processes. The engine exports program, preview and projector surfaces as native handles. The UI imports them into its own `wgpu` device with `rbs_gpu::share` (built on `rbs_gpu::interop`, ADR-0028), and hands them to Slint as textures. There are no CPU copies on the default path (P4). Running both in one process with a shared device is an optional mode. The export side of this contract is specified in the [GPU compositor spec](../specs/gpu-compositor.md), section "Preview export (cross-process)".
 3. Rich visualisations follow two tiers, whichever toolkit is used:
    - Light, low-density graphics use the toolkit's vector primitives inside design-system components. Examples: audio meters, fader scales, equalizer curves, small charts.
    - Dense or per-pixel graphics are computed and drawn on the GPU by the engine or by a UI-side `wgpu` pass. The toolkit only composites the resulting textures. Examples: histograms, waveform and vectorscope, spectrum analysers with many bins, large meter bridges.
@@ -45,7 +45,7 @@ There was no GPU in the test machine, so the rendering-load numbers came from a 
    - Frame pacing on a real GPU: met. On Apple M4 Pro the Slint prototype kept 60 Hz with 0 late frames in every scenario (1080p preview, 64-band spectrum, dense paths of 1,024 and 4,096 points) with both renderers. By owner decision (2026-11-02) Qt is not measured.
    - CPU: by owner decision (2026-11-02) the limit of at most 10 % of one CPU core while preview and meters animate is not a gate for this ADR. It becomes a budget of the UI crate, to be reached by redrawing less (only changed regions, the preview as its own layer or window, lower update rates for meters and text), and moves into the [performance budgets](../specs/performance-budgets.md) when the UI crate is created. The prototype with Skia used 20 to 27 % for 1080p preview and up to 40 % for a 4,096-point path.
    - Zero-copy display of an engine surface imported from another process has been shown on at least one platform.
-   - Tabs, splitters and dock actions can be operated by keyboard alone. A smoke test with Narrator on Windows and VoiceOver on macOS reads the prototype's controls with correct roles and names.
+   - Tabs, splitters and dock actions can be operated by keyboard alone. A smoke test with Narrator on Windows and VoiceOver on macOS reads the `rbs-app` shell's controls with correct roles and names.
    - The independent review in this file approves, and the owner approves (CLAUDE.md rule 11).
 
 ## Consequences
@@ -53,6 +53,12 @@ There was no GPU in the test machine, so the rendering-load numbers came from a 
 - One rendering stack (`wgpu`) from engine to screen. Preview and visualisations stay on the GPU.
 - Licence: RBS source stays GPL-3.0-or-later (ADR-0010). Release binaries that include Slint under its GPL option are effectively GPL-3.0-only. Native in-process plugins distributed with or for those binaries must be GPL-3.0 compatible: code that is only GPL-2.0 is excluded. Sandboxed and out-of-process plugins (ADR-0006) are not linked with Slint and are unaffected. If this becomes a problem, the ways out are Slint's commercial licence or a toolkit swap.
 - Slint's release cadence and its `unstable-wgpu-*` API, which may change in minor releases, affect only the UI crate. The exact version pin and an integration test catch breakage.
+- Open risks at acceptance:
+  - Cross-process preview export works on macOS only. Linux (DMA-BUF) and Windows (D3D12 shared handles) follow the same contract and are still to be built.
+  - The publisher does not yet wait on a Metal shared event: a frame is sent only after its GPU work is known complete, which adds up to one poll of latency.
+  - UI CPU is above the 10 % UI crate budget: 15 % for the remote preview demo and 20 to 27 % for the Skia shell with a 1080p preview.
+  - When the UI stops returning frames (window hidden or not redrawing), the engine skips frames in bursts by design; the UI-side release path needs a test of its own.
+  - The real Program and Preview panels are not wired to the engine yet, and the demo window ignores SIGINT.
 - Requirement 4 is open for every candidate except Qt. We build Fluent string binding and right-to-left layout mirroring ourselves. Mirroring means mirrored layouts, icons and docking directions in the component library, estimated at a few weeks of component work. It is easier if it is designed into components from the start.
 - We also build the docking system ourselves: tab drag and drop, drop indicators and keyboard docking. None of the candidates provides docking for our model.
 - The Skia renderer adds a prebuilt Skia library (downloaded by `skia-bindings` at build time, BSD-3-Clause), about 5 MiB of binary size and about 20 MiB of memory compared with femtovg. If femtovg fixes its pipeline caching, switching back is a feature flag.
@@ -73,7 +79,7 @@ There was no GPU in the test machine, so the rendering-load numbers came from a 
   - a C++ toolchain and a Qt installation complicate building and contributing;
   - around 87 shared libraries must be shipped.
 
-  It remains the fallback if Slint fails the acceptance gate, and it is measured in the same gate run.
+  It remains the fallback if Slint fails the acceptance gate. By owner decision (2026-11-02) it is not measured.
 - **Slint with a CPU copy of the preview:** a simpler integration without the unstable feature, but it violates P4.
 
 ## Review
