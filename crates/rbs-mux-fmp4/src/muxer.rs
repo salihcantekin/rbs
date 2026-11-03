@@ -77,9 +77,6 @@ struct Track {
     /// SPS and PPS of the sample entry. In-band parameter sets must be one of these:
     /// a changed set would make the rest of the file undecodable.
     parameter_sets: Vec<Vec<u8>>,
-    /// Media time (in `timescale`) where presentation starts: the edit list maps it to
-    /// movie time 0, so the lead before the first packet does not show as a gap.
-    edit: u64,
     last_dts: Option<Timestamp>,
 }
 
@@ -88,12 +85,13 @@ pub(crate) struct Fmp4Muxer {
     has_video: bool,
     header: Vec<u8>,
     fragment: Duration,
-    /// How far before the first dts the media time origin lies, so streams that arrive
-    /// slightly out of order keep their timestamps.
-    origin_lead: Duration,
-    /// Media time 0, in nanoseconds of the master clock (the first dts minus the lead;
-    /// signed, so a first dts closer than the lead to the clock's zero still works).
+    /// Media time 0, in nanoseconds of the master clock: chosen when the first fragment
+    /// is emitted (see `Fmp4Muxer::flush`), so the earliest sample starts at 0 and no
+    /// edit list is needed. Signed, so an origin before the clock's zero still works.
     origin: Option<i128>,
+    /// Earliest dts accepted, in nanoseconds: the first dts minus the interleaving
+    /// bound until the origin is chosen, then the origin.
+    floor: Option<i128>,
     /// dts of the first sample of the fragment being collected.
     fragment_start: Option<Timestamp>,
     fragment_bytes: usize,
@@ -239,17 +237,9 @@ fn trak(out: &mut Vec<u8>, track: &Track, entry: &dyn Fn(&mut Vec<u8>), width: u
     boxes::u32(out, u32::from(height) << 16);
     boxes::close(out, tkhd);
 
-    // Edit list: presentation starts at `edit` (the lead before the first packet);
-    // duration 0 means "until the end", as fragmented files do not know it.
-    let edts = boxes::open(out, b"edts");
-    let elst = boxes::open_full(out, b"elst", 1, 0);
-    boxes::u32(out, 1);
-    boxes::u64(out, 0); // segment_duration
-    boxes::u64(out, track.edit); // media_time
-    boxes::u16(out, 1); // media_rate 1.0
-    boxes::u16(out, 0);
-    boxes::close(out, elst);
-    boxes::close(out, edts);
+    // No edit list: media time 0 is the earliest sample of the file, so presentation
+    // time equals media time. (FFmpeg reads a positive edit media time on an AAC track
+    // as encoder priming and skips that much audio.)
 
     let mdia = boxes::open(out, b"mdia");
     let mdhd = boxes::open_full(out, b"mdhd", 0, 0);
@@ -319,7 +309,6 @@ impl Fmp4Muxer {
         }
         boxes::close(&mut header, ftyp);
 
-        let lead = config.max_buffered();
         let mut tracks = Vec::with_capacity(config.streams.len());
         let mut traks = Vec::new();
         for (i, stream) in config.streams.iter().enumerate() {
@@ -362,7 +351,6 @@ impl Fmp4Muxer {
                         staging: Vec::new(),
                         committed: 0,
                         parameter_sets,
-                        edit: ticks(lead.as_nanos(), VIDEO_TIMESCALE),
                         last_dts: None,
                     };
                     trak(
@@ -404,7 +392,6 @@ impl Fmp4Muxer {
                         staging: Vec::new(),
                         committed: 0,
                         parameter_sets: Vec::new(),
-                        edit: ticks(lead.as_nanos(), rate),
                         last_dts: None,
                     };
                     let asc = stream.extradata.clone();
@@ -460,8 +447,8 @@ impl Fmp4Muxer {
             tracks,
             header,
             fragment: config.max_buffered(),
-            origin_lead: lead,
             origin: None,
+            floor: None,
             fragment_start: None,
             fragment_bytes: 0,
             fragment_samples: 0,
@@ -486,6 +473,27 @@ impl Fmp4Muxer {
         let Some(start) = self.fragment_start.take() else {
             return;
         };
+        if self.origin.is_none() {
+            // The first fragment: media time 0 is its earliest sample, unless that is
+            // less than the interleaving bound before the newest packet so far (a first
+            // fragment shorter than the bound, at a short GOP). Then the origin is that
+            // bound before the newest packet, so a packet still arriving within the
+            // bound keeps its timestamp; the file then starts a little after 0.
+            let newest = self
+                .tracks
+                .iter()
+                .filter_map(|t| t.last_dts)
+                .chain(next.map(|(_, dts)| dts))
+                .max()
+                .unwrap_or(start);
+            let bound = i128::try_from(self.fragment.as_nanos()).unwrap_or(i128::MAX);
+            // The packet that ends the fragment goes into the next one: it must not
+            // start before the origin either.
+            let earliest = next.map_or(start, |(_, dts)| start.min(dts));
+            let origin = nanos(earliest).min(nanos(newest).saturating_sub(bound));
+            self.origin = Some(origin);
+            self.floor = Some(origin);
+        }
         let active = || self.tracks.iter().filter(|t| !t.samples.is_empty());
         let moof_size = MOOF_FIXED
             + active()
@@ -640,11 +648,11 @@ impl Muxer for Fmp4Muxer {
         if track.last_dts.is_some_and(|last| dts < last) {
             return Err(MuxError::NonMonotonic { stream: stream.0 });
         }
-        let lead = i128::try_from(self.origin_lead.as_nanos()).unwrap_or(i128::MAX);
-        let origin = self.origin.unwrap_or(nanos(dts) - lead);
-        if nanos(dts) < origin {
+        let bound = i128::try_from(self.fragment.as_nanos()).unwrap_or(i128::MAX);
+        let floor = self.floor.unwrap_or(nanos(dts).saturating_sub(bound));
+        if nanos(dts) < floor {
             return Err(MuxError::InvalidPacket(
-                "dts more than the interleaving bound before the first packet".into(),
+                "dts more than the interleaving bound before the start".into(),
             ));
         }
         if packet.pts().saturating_since(dts) > MAX_COMPOSITION_DELAY {
@@ -721,7 +729,9 @@ impl Muxer for Fmp4Muxer {
                 self.flush(Some((index, dts)), out);
             }
         }
-        self.origin = Some(origin);
+        if self.floor.is_none() {
+            self.floor = Some(floor);
+        }
         let track = &mut self.tracks[index];
         track.committed = track.staging.len();
         track.last_dts = Some(dts);

@@ -165,10 +165,9 @@ fn run(length_prefixed: bool) {
         packets.push((StreamIndex(0), p.unwrap()));
     }
     let video_count = packets.len();
-    for (i, frame) in adts_frames(&std::fs::read(&audio).unwrap())
-        .into_iter()
-        .enumerate()
-    {
+    let audio_frames = adts_frames(&std::fs::read(&audio).unwrap());
+    let audio_count = audio_frames.len();
+    for (i, frame) in audio_frames.into_iter().enumerate() {
         let t = origin + rate.duration_of(i as u64 * 1024);
         let p = EncodedPacket::new(
             CodecId::Aac,
@@ -222,5 +221,36 @@ fn run(length_prefixed: bool) {
     // list maps that lead away, so presentation starts at 0.
     let start: f64 = fields[0].parse().unwrap();
     assert!(start.abs() < 1e-3, "start time {start}");
+
+    // Every audio sample is presented, from time 0: FFmpeg reads an AAC track's edit
+    // list media time as encoder priming and would skip that much audio.
+    let probe = Command::new("ffprobe")
+        .args(["-v", "error", "-select_streams", "a:0"])
+        .args(["-show_entries", "stream=start_time", "-of", "csv=p=0"])
+        .arg(&out)
+        .output()
+        .unwrap();
+    let text = String::from_utf8_lossy(&probe.stdout);
+    let start: f64 = text.trim().parse().unwrap();
+    assert!(start.abs() < 1e-3, "audio start time {start}");
+    let pcm = dir.join("out.pcm");
+    let decoded = ffmpeg(&[
+        "-i",
+        &path(&out),
+        "-map",
+        "0:a",
+        "-f",
+        "s16le",
+        "-ac",
+        "1",
+        &path(&pcm),
+    ]);
+    assert!(decoded.status.success());
+    let samples = std::fs::metadata(&pcm).unwrap().len() / 2;
+    let expected = audio_count as u64 * 1024;
+    assert!(
+        samples + 1024 >= expected,
+        "decoded {samples} audio samples of {expected}"
+    );
     std::fs::remove_dir_all(&dir).unwrap();
 }

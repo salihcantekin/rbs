@@ -12,7 +12,9 @@
 //!
 //! Prints the installed source types and their targets, one line per second, and
 //! fails when a source delivers nothing, a node does not start, or the canvas or the
-//! mix stalls. Adapters are dev-dependencies of this example only (P1).
+//! mix stalls. For each video source it also prints the age of the frame the canvas
+//! shows at each render tick (tick time minus the frame's capture timestamp): how far
+//! the picture lags the tick time that video packets are stamped with. Adapters are dev-dependencies of this example only (P1).
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::print_stdout)] // A hardware check fails by panicking.
 
@@ -30,7 +32,7 @@ fn main() -> std::process::ExitCode {
 mod windows_check {
     use std::process::ExitCode;
     use std::sync::Arc;
-    use std::sync::atomic::{AtomicU64, Ordering};
+    use std::sync::atomic::{AtomicI64, AtomicU64, Ordering};
     use std::time::{Duration, Instant};
 
     use rbs_audio::{AudioGraphConfig, InputStats, LevelMeter, MixerNode, MixerParams, Strip};
@@ -100,6 +102,78 @@ mod windows_check {
                     self.last = Some(t);
                     self.count.fetch_add(1, Ordering::Relaxed);
                 }
+            }
+            Ok(())
+        }
+    }
+
+    /// Frame age at each render tick: tick time minus the capture timestamp of the
+    /// newest frame on the source's output.
+    #[derive(Default)]
+    struct Ages {
+        ticks: AtomicU64,
+        sum_ns: AtomicI64,
+        min_ns: AtomicI64,
+        max_ns: AtomicI64,
+        /// Age at the first tick that shows a new frame (the freshest it gets).
+        fresh: AtomicU64,
+        fresh_sum_ns: AtomicI64,
+    }
+
+    impl Ages {
+        fn new() -> Self {
+            let a = Self::default();
+            a.min_ns.store(i64::MAX, Ordering::Relaxed);
+            a.max_ns.store(i64::MIN, Ordering::Relaxed);
+            a
+        }
+        fn ms(ns: i64) -> f64 {
+            ns as f64 / 1e6
+        }
+        fn report(&self) -> String {
+            let n = self.ticks.load(Ordering::Relaxed).max(1) as i64;
+            let f = self.fresh.load(Ordering::Relaxed).max(1) as i64;
+            format!(
+                "frame age at tick: mean {:.2} ms, min {:.2}, max {:.2} over {} ticks; at a new frame mean {:.2} ms over {} frames",
+                Self::ms(self.sum_ns.load(Ordering::Relaxed) / n),
+                Self::ms(self.min_ns.load(Ordering::Relaxed)),
+                Self::ms(self.max_ns.load(Ordering::Relaxed)),
+                self.ticks.load(Ordering::Relaxed),
+                Self::ms(self.fresh_sum_ns.load(Ordering::Relaxed) / f),
+                self.fresh.load(Ordering::Relaxed),
+            )
+        }
+    }
+
+    struct AgeSink {
+        desc: NodeDescriptor,
+        ages: Arc<Ages>,
+        last: Option<Timestamp>,
+    }
+
+    impl Node<GpuRuntime> for AgeSink {
+        fn descriptor(&self) -> &NodeDescriptor {
+            &self.desc
+        }
+        fn prepare(&mut self, _: &mut PrepareCtx<'_, GpuRuntime>) -> Result<(), NodeError> {
+            Ok(())
+        }
+        fn release(&mut self, _: &mut PrepareCtx<'_, GpuRuntime>) {}
+        fn process(&mut self, ctx: &mut ProcessCtx<'_, GpuRuntime>) -> Result<(), NodeError> {
+            let tick = ctx.tick().time;
+            let Some(t) = ctx.inputs().video(0, 0).map(|f| f.timestamp()) else {
+                return Ok(());
+            };
+            let age = tick.as_nanos() as i64 - t.as_nanos() as i64;
+            let a = &self.ages;
+            a.ticks.fetch_add(1, Ordering::Relaxed);
+            a.sum_ns.fetch_add(age, Ordering::Relaxed);
+            a.min_ns.fetch_min(age, Ordering::Relaxed);
+            a.max_ns.fetch_max(age, Ordering::Relaxed);
+            if self.last != Some(t) {
+                self.last = Some(t);
+                a.fresh.fetch_add(1, Ordering::Relaxed);
+                a.fresh_sum_ns.fetch_add(age, Ordering::Relaxed);
             }
             Ok(())
         }
@@ -222,6 +296,7 @@ mod windows_check {
         // Instances for the nodes the binder created.
         let mut stats: Vec<(&str, Stats)> = Vec::new();
         let mut video_nodes: Vec<(NodeId, Box<dyn Node<GpuRuntime>>)> = Vec::new();
+        let mut ages: Vec<(&str, Arc<Ages>)> = Vec::new();
         let mut audio_nodes: Vec<(NodeId, Box<dyn Node<()>>)> = Vec::new();
         let mut meters = std::collections::BTreeMap::new();
         for (source, node) in &report.created_sources {
@@ -242,6 +317,28 @@ mod windows_check {
                     assert_eq!(partition, PartitionId::RENDER);
                     stats.push((name, Stats::Video(Arc::clone(&v.stats))));
                     video_nodes.push((*node, Box::new(v.node)));
+                    // Measures the frame age on the source's output (outputs fan out).
+                    let desc = NodeDescriptor::new(
+                        NodeTypeId::new("org.rbs.example.age"),
+                        NodeKind::Output,
+                        vec![Pin::one("in", LinkKind::Video)],
+                        vec![],
+                    );
+                    let id = graph.add_node(Arc::new(desc.clone())).unwrap();
+                    graph.set_partition(id, PartitionId::RENDER).unwrap();
+                    graph.set_state(id, Lifecycle::Standby).unwrap();
+                    graph.set_state(id, Lifecycle::Active).unwrap();
+                    graph.connect(*node, "video", id, "in").unwrap();
+                    let a = Arc::new(Ages::new());
+                    ages.push((name, Arc::clone(&a)));
+                    video_nodes.push((
+                        id,
+                        Box::new(AgeSink {
+                            desc,
+                            ages: a,
+                            last: None,
+                        }),
+                    ));
                 }
                 SourceInstance::Audio(a) => {
                     println!(
@@ -384,6 +481,9 @@ mod windows_check {
         }
 
         println!("--- summary after {seconds} s");
+        for (name, a) in &ages {
+            println!("{name}: {}", a.report());
+        }
         let canvas = canvas_frames.load(Ordering::Relaxed);
         let mix = mix_blocks.load(Ordering::Relaxed);
         // 60 fps canvas and 100 audio blocks per second, with a second of start-up.
