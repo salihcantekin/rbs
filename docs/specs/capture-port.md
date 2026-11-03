@@ -368,6 +368,15 @@ Records written from the reviewer's own output (ADR-0014). The spec stays Draft.
 - Open, needs a Mac: confirm the content-rect units used for resizes; measure `enumerate` and `start` times; measure drops at 120 Hz with five held buffers. `Sendable` is a crate-private blanket `Send` wrapper; keep its uses to the documented types.
 - Owner approval: Salih, 2026-11-03 (early-phase merge policy).
 
+### PipeWire adapter (video source nodes)
+
+- Reviewer: a fresh independent AI session, given the code and specs only
+- Date: 2026-11-03
+- Verdict: request changes, all addressed before merge.
+- Resolved before merge: a held buffer leaked when its slot came free between returning buffers and claiming one (now returned on claim); held pointers went stale when PipeWire removed buffers (now forgotten in `remove_buffer`); retired rings could be freed on the render thread (now dropped on the control thread when idle, else buried); the consumer fixed the DMA-BUF modifier itself (now the source does); a missing target could fall back to another camera or stay silent (`node.dont-fallback`, loss after the first round trip); `enumerate` waited 500 ms (now 100 ms); the conformance test now counts the adapter's fds and threads with the source in a child process; CI waits for the daemon and WirePlumber.
+- Open: the DMA-BUF path has no test until a Linux GPU runner exists, and its no-rewrite assumption (see the PipeWire notes) needs a hardware check before `rbs-app` offers DMA-BUF from this adapter; no unit test isolates the held-buffer bookkeeping.
+- Owner approval: Salih, 2026-11-03 (early-phase merge policy).
+
 ## Open questions
 
 - Per-application capture (all windows of a process, as ScreenCaptureKit offers): a new `TargetKind` in a minor version.
