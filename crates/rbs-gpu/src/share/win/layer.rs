@@ -16,7 +16,7 @@ use std::num::NonZeroIsize;
 use std::time::Duration;
 
 use rbs_core::time::Timestamp;
-use windows::Win32::Foundation::{HANDLE, HMODULE, HWND, LUID, WAIT_OBJECT_0};
+use windows::Win32::Foundation::{HANDLE, HMODULE, HWND, LUID, RECT, WAIT_OBJECT_0};
 use windows::Win32::Graphics::CompositionSwapchain::{
     CreatePresentationFactory, IPresentationBuffer, IPresentationFactory, IPresentationManager,
     IPresentationSurface,
@@ -209,6 +209,20 @@ impl PreviewLayer {
             surface
                 .SetColorSpace(DXGI_COLOR_SPACE_RGB_FULL_G22_NONE_P709)
                 .map_err(fail("SetColorSpace failed"))?;
+            // The source rectangle starts empty, and an empty one shows nothing: the
+            // whole buffer is the picture.
+            let (width, height) = subscriber.size();
+            let source = RECT {
+                left: 0,
+                top: 0,
+                right: i32::try_from(width)
+                    .map_err(|_| GpuError::Unsupported("surface too wide"))?,
+                bottom: i32::try_from(height)
+                    .map_err(|_| GpuError::Unsupported("surface too tall"))?,
+            };
+            surface
+                .SetSourceRect(&source)
+                .map_err(fail("SetSourceRect failed"))?;
             let dxgi: IDXGIDevice = d3d.cast().map_err(fail("no IDXGIDevice"))?;
             let dcomp: IDCompositionDevice =
                 DCompositionCreateDevice(&dxgi).map_err(fail("DCompositionCreateDevice failed"))?;
