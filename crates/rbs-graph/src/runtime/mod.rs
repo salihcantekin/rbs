@@ -22,6 +22,7 @@ mod restart;
 mod schedule;
 
 pub mod param;
+pub mod queue;
 
 use std::fmt;
 
