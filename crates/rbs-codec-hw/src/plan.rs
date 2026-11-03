@@ -1,5 +1,6 @@
-//! Turns a [`VideoEncoderConfig`] into NVENC settings, refusing what the device or the
-//! adapter cannot do. Pure, so the mapping is tested without hardware.
+//! Turns a [`VideoEncoderConfig`] into vendor-neutral settings, refusing what the
+//! device or the adapters cannot do. Pure, so the mapping is tested without
+//! hardware. Each adapter maps the [`Plan`] to its own parameters.
 
 use rbs_codec::{CreateError, EncoderPreset, RateControl, VideoEncoderConfig};
 use rbs_core::media::{CodecId, MemoryKind, PixelFormat};
@@ -7,9 +8,10 @@ use rbs_media_format::h273::ColorCodes;
 
 use crate::device::DeviceCaps;
 
-/// Codec profile, mapped to an NVENC profile GUID.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum Profile {
+/// Codec profile.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[repr(u8)]
+pub enum Profile {
     /// H.264 Constrained Baseline (CAVLC, no B-frames).
     H264Baseline,
     /// H.264 Main.
@@ -22,75 +24,113 @@ pub(crate) enum Profile {
     HevcMain10,
 }
 
-/// NVENC rate control (`NV_ENC_RC_PARAMS`).
+impl Profile {
+    /// Every profile, in capability order.
+    pub const ALL: [Profile; 5] = [
+        Profile::H264Baseline,
+        Profile::H264Main,
+        Profile::H264High,
+        Profile::HevcMain,
+        Profile::HevcMain10,
+    ];
+
+    /// The `codec.video.profiles` value (`h264.high`, ...).
+    pub fn capability_name(self) -> &'static str {
+        match self {
+            Profile::H264Baseline => "h264.baseline",
+            Profile::H264Main => "h264.main",
+            Profile::H264High => "h264.high",
+            Profile::HevcMain => "hevc.main",
+            Profile::HevcMain10 => "hevc.main10",
+        }
+    }
+}
+
+/// Rate control, with bitrates that fit the 32-bit fields of every vendor API.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum Rc {
-    /// `NV_ENC_PARAMS_RC_CBR`: average = max = `bitrate`, VBV of one second.
+pub enum Rc {
+    /// Average = peak = `bitrate`.
     Cbr {
         /// Bits per second.
         bitrate: u32,
     },
-    /// `NV_ENC_PARAMS_RC_VBR` with a peak, VBV of one second at the peak.
+    /// Variable bitrate with a peak.
     Vbr {
         /// Average bits per second.
         average: u32,
         /// Peak bits per second.
         max: u32,
     },
-    /// `NV_ENC_PARAMS_RC_VBR` with no bitrate target and `targetQuality`.
+    /// Constant quality.
     Quality {
-        /// 1 (best) ..= 51; NVENC reads 0 as "automatic", so level 0 becomes 1.
-        target: u8,
+        /// 0 (best) ..= 51, on the codec's QP scale; each adapter maps it to its own
+        /// quality parameter.
+        level: u8,
     },
 }
 
-/// NVENC tuning (`NV_ENC_TUNING_INFO`).
+/// Speed and quality trade-off.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum Tuning {
-    /// `NV_ENC_TUNING_INFO_HIGH_QUALITY`.
-    HighQuality,
-    /// `NV_ENC_TUNING_INFO_LOW_LATENCY`.
-    LowLatency,
+pub enum Preset {
+    /// Least resource use.
+    Speed,
+    /// The default.
+    Balanced,
+    /// Best quality the machine can sustain in real time.
+    Quality,
 }
 
-/// Everything the engine needs to open a session.
+/// Everything an engine needs to open a session.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct Plan {
+pub struct Plan {
     /// `h264` or `hevc`.
     pub codec: CodecId,
-    /// Picture size.
+    /// Picture width.
     pub width: u32,
-    /// Picture size.
+    /// Picture height.
     pub height: u32,
-    /// True for P010 input (`NV_ENC_BUFFER_FORMAT_YUV420_10BIT`), else NV12.
+    /// True for P010 input (Main 10), else NV12.
     pub ten_bit: bool,
     /// Frame rate numerator and denominator.
     pub fps: (u32, u32),
-    /// Preset `P1` (fastest) ..= `P7` (best).
-    pub preset: u8,
-    /// Tuning.
-    pub tuning: Tuning,
+    /// Speed and quality trade-off.
+    pub preset: Preset,
+    /// Tune for low latency.
+    pub low_latency: bool,
     /// Profile.
     pub profile: Profile,
     /// Rate control.
     pub rc: Rc,
-    /// Frames between IDR pictures (`gopLength` = `idrPeriod`).
+    /// Frames between IDR pictures (the GOP length; P frames only).
     pub gop: u32,
     /// VUI colour description.
     pub color: ColorCodes,
+}
+
+impl Plan {
+    /// The input pixel format: P010 for 10 bits, else NV12.
+    pub fn pixel_format(&self) -> PixelFormat {
+        if self.ten_bit {
+            PixelFormat::P010
+        } else {
+            PixelFormat::Nv12
+        }
+    }
 }
 
 fn unsupported(what: impl Into<String>) -> CreateError {
     CreateError::Unsupported { what: what.into() }
 }
 
-/// The NVENC rate control for `rc`, or why it is invalid.
-pub(crate) fn rate_control(rc: &RateControl) -> Result<Rc, String> {
+/// The rate control for `rc`, or why it is invalid.
+pub fn rate_control(rc: &RateControl) -> Result<Rc, String> {
     let bps = |v: u64, name: &str| -> Result<u32, String> {
         match u32::try_from(v) {
             Ok(0) => Err(format!("{name} is zero")),
             Ok(v) => Ok(v),
-            Err(_) => Err(format!("{name} {v} bit/s is above NVENC's 32-bit limit")),
+            Err(_) => Err(format!(
+                "{name} {v} bit/s is above the encoder's 32-bit limit"
+            )),
         }
     };
     match *rc {
@@ -110,16 +150,22 @@ pub(crate) fn rate_control(rc: &RateControl) -> Result<Rc, String> {
             }
             Ok(Rc::Vbr { average, max })
         }
-        RateControl::ConstantQuality { level } if level <= 51 => Ok(Rc::Quality {
-            target: level.max(1),
-        }),
+        RateControl::ConstantQuality { level } if level <= 51 => Ok(Rc::Quality { level }),
         RateControl::ConstantQuality { level } => Err(format!("quality level {level} > 51")),
         _ => Err("unknown rate-control mode".into()),
     }
 }
 
 /// Validates `config` against `device` and maps it.
-pub(crate) fn plan(config: &VideoEncoderConfig, device: &DeviceCaps) -> Result<Plan, CreateError> {
+///
+/// Refused as `Unsupported`: a codec the device does not encode, input memory other
+/// than system, a pixel format other than NV12 (or P010 with 10-bit HEVC), odd or
+/// out-of-range sizes, a profile the device does not have, a rate-control mode the
+/// device does not have, and colours without H.273 code points. Refused as
+/// `InvalidConfig`: invalid bitrates or quality levels and a zero frame rate. The
+/// default profile is H.264 High (else Main, else Baseline) and HEVC Main or Main 10
+/// by pixel format.
+pub fn plan(config: &VideoEncoderConfig, device: &DeviceCaps) -> Result<Plan, CreateError> {
     let codec = config.codec;
     let caps = device
         .codec(codec)
@@ -129,7 +175,7 @@ pub(crate) fn plan(config: &VideoEncoderConfig, device: &DeviceCaps) -> Result<P
     }
     let ten_bit = match config.format.pixel_format {
         PixelFormat::Nv12 => false,
-        PixelFormat::P010 if codec == CodecId::Hevc && caps.ten_bit => true,
+        PixelFormat::P010 if codec == CodecId::Hevc && caps.ten_bit() => true,
         other => return Err(unsupported(format!("pixel format {other} with {codec}"))),
     };
     let size = config.format.size;
@@ -145,22 +191,34 @@ pub(crate) fn plan(config: &VideoEncoderConfig, device: &DeviceCaps) -> Result<P
             size.width, size.height, caps.width.0, caps.height.0, caps.width.1, caps.height.1
         )));
     }
+    let has = |p: Profile| caps.profiles.contains(p);
     let profile = match (codec, config.profile.as_deref(), ten_bit) {
-        (CodecId::H264, Some("baseline"), _) => Profile::H264Baseline,
-        (CodecId::H264, Some("main"), _) => Profile::H264Main,
-        (CodecId::H264, Some("high") | None, _) => Profile::H264High,
-        (CodecId::Hevc, Some("main") | None, false) => Profile::HevcMain,
-        (CodecId::Hevc, Some("main10") | None, true) => Profile::HevcMain10,
-        (_, Some(p), _) => {
-            return Err(unsupported(format!(
-                "profile {p} for {codec} with {}",
-                config.format.pixel_format
-            )));
-        }
-        _ => return Err(unsupported(format!("codec {codec}"))),
-    };
+        (CodecId::H264, Some("baseline"), _) => Some(Profile::H264Baseline),
+        (CodecId::H264, Some("main"), _) => Some(Profile::H264Main),
+        (CodecId::H264, Some("high"), _) => Some(Profile::H264High),
+        (CodecId::H264, None, _) => [Profile::H264High, Profile::H264Main, Profile::H264Baseline]
+            .into_iter()
+            .find(|p| has(*p)),
+        (CodecId::Hevc, Some("main") | None, false) => Some(Profile::HevcMain),
+        (CodecId::Hevc, Some("main10") | None, true) => Some(Profile::HevcMain10),
+        _ => None,
+    }
+    .filter(|p| has(*p))
+    .ok_or_else(|| {
+        unsupported(format!(
+            "profile {} for {codec} with {} on {}",
+            config.profile.as_deref().unwrap_or("(default)"),
+            config.format.pixel_format,
+            device.name
+        ))
+    })?;
     let rc = rate_control(&config.rate_control).map_err(CreateError::InvalidConfig)?;
-    if matches!(rc, Rc::Cbr { .. }) && !caps.cbr || !matches!(rc, Rc::Cbr { .. }) && !caps.vbr {
+    let mode_supported = match rc {
+        Rc::Cbr { .. } => caps.cbr,
+        Rc::Vbr { .. } => caps.vbr,
+        Rc::Quality { .. } => caps.quality,
+    };
+    if !mode_supported {
         return Err(unsupported(format!(
             "rate control {} on {}",
             config.rate_control.name(),
@@ -175,14 +233,9 @@ pub(crate) fn plan(config: &VideoEncoderConfig, device: &DeviceCaps) -> Result<P
         return Err(CreateError::InvalidConfig("zero frame rate".into()));
     }
     let preset = match config.tuning.preset {
-        EncoderPreset::Quality => 5,
-        EncoderPreset::Speed => 2,
-        _ => 4,
-    };
-    let tuning = if config.tuning.low_latency {
-        Tuning::LowLatency
-    } else {
-        Tuning::HighQuality
+        EncoderPreset::Quality => Preset::Quality,
+        EncoderPreset::Speed => Preset::Speed,
+        _ => Preset::Balanced,
     };
     Ok(Plan {
         codec,
@@ -191,10 +244,10 @@ pub(crate) fn plan(config: &VideoEncoderConfig, device: &DeviceCaps) -> Result<P
         ten_bit,
         fps,
         preset,
-        tuning,
+        low_latency: config.tuning.low_latency,
         profile,
         rc,
-        gop: config.keyframe_interval.frames_at(config.frame_rate),
+        gop: config.keyframe_interval.frames_at(config.frame_rate).max(1),
         color,
     })
 }
@@ -203,7 +256,8 @@ pub(crate) fn plan(config: &VideoEncoderConfig, device: &DeviceCaps) -> Result<P
 #[allow(clippy::unwrap_used)] // Tests fail by panicking.
 mod tests {
     use super::*;
-    use crate::device::tests::geforce;
+    use crate::device::Profiles;
+    use crate::device::testing::discrete_gpu;
     use rbs_codec::{EncoderTuning, KeyframeInterval};
     use rbs_core::media::{ColorSpace, Size, VideoFormat};
     use rbs_core::timing::FrameRate;
@@ -226,14 +280,15 @@ mod tests {
 
     #[test]
     fn streaming_defaults() {
-        let plan = plan(&config(CodecId::H264, PixelFormat::Nv12), &geforce()).unwrap();
+        let plan = plan(&config(CodecId::H264, PixelFormat::Nv12), &discrete_gpu()).unwrap();
         assert_eq!(plan.profile, Profile::H264High);
         assert_eq!(plan.rc, Rc::Cbr { bitrate: 6_000_000 });
         assert_eq!(plan.gop, 120);
         assert_eq!(plan.fps, (60, 1));
-        assert_eq!(plan.preset, 4);
-        assert_eq!(plan.tuning, Tuning::HighQuality);
+        assert_eq!(plan.preset, Preset::Balanced);
+        assert!(!plan.low_latency);
         assert!(!plan.ten_bit);
+        assert_eq!(plan.pixel_format(), PixelFormat::Nv12);
         assert_eq!((plan.color.primaries, plan.color.matrix), (1, 1));
     }
 
@@ -247,16 +302,30 @@ mod tests {
                 t.low_latency = true;
                 t
             });
-        let plan = plan(&config, &geforce()).unwrap();
+        let plan = plan(&config, &discrete_gpu()).unwrap();
         assert_eq!(plan.profile, Profile::HevcMain10);
         assert!(plan.ten_bit);
         assert_eq!(plan.gop, 30);
-        assert_eq!((plan.preset, plan.tuning), (5, Tuning::LowLatency));
+        assert_eq!((plan.preset, plan.low_latency), (Preset::Quality, true));
+    }
+
+    #[test]
+    fn default_h264_profile_follows_the_device() {
+        let mut device = discrete_gpu();
+        device.codecs[0].profiles = Profiles::NONE
+            .with(Profile::H264Baseline)
+            .with(Profile::H264Main);
+        let c = config(CodecId::H264, PixelFormat::Nv12);
+        assert_eq!(plan(&c, &device).unwrap().profile, Profile::H264Main);
+        assert!(matches!(
+            plan(&c.clone().with_profile("high"), &device),
+            Err(CreateError::Unsupported { .. })
+        ));
     }
 
     #[test]
     fn refusals() {
-        let device = geforce();
+        let device = discrete_gpu();
         let refused = |c: VideoEncoderConfig| plan(&c, &device).unwrap_err();
         assert!(matches!(
             refused(config(CodecId::H264, PixelFormat::P010)),
@@ -285,6 +354,16 @@ mod tests {
         let mut zero = config(CodecId::H264, PixelFormat::Nv12);
         zero.rate_control = RateControl::Cbr { bitrate_bps: 0 };
         assert!(matches!(refused(zero), CreateError::InvalidConfig(_)));
+
+        let mut no_quality = discrete_gpu();
+        no_quality.codecs[0].quality = false;
+        let mut cq = config(CodecId::H264, PixelFormat::Nv12);
+        cq.rate_control = RateControl::ConstantQuality { level: 20 };
+        assert!(matches!(
+            plan(&cq, &no_quality),
+            Err(CreateError::Unsupported { .. })
+        ));
+        assert_eq!(plan(&cq, &device).unwrap().rc, Rc::Quality { level: 20 });
     }
 
     #[test]
@@ -308,7 +387,7 @@ mod tests {
         );
         assert_eq!(
             rate_control(&RateControl::ConstantQuality { level: 0 }),
-            Ok(Rc::Quality { target: 1 })
+            Ok(Rc::Quality { level: 0 })
         );
         assert!(rate_control(&RateControl::ConstantQuality { level: 52 }).is_err());
         assert!(

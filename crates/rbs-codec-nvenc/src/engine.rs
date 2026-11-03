@@ -12,11 +12,12 @@ use std::ptr;
 use rbs_codec::CreateError;
 use rbs_core::media::{CodecId, PixelFormat, SystemFrame};
 
+use rbs_codec_hw::device::{CodecCaps, DeviceCaps, Profiles};
+use rbs_codec_hw::plan::{Plan, Preset, Profile, Rc};
+use rbs_codec_hw::session::{Engine, EngineError, Output};
+
 use crate::FRAMES_IN_FLIGHT;
-use crate::device::{CodecCaps, DeviceCaps};
 use crate::loader::{Api, api};
-use crate::plan::{Plan, Profile, Rc, Tuning};
-use crate::session::{Engine, EngineError, Output};
 use crate::sys::{self, cuda};
 
 /// Returns the function pointer, or a typed error when the driver did not fill it.
@@ -325,17 +326,24 @@ pub(crate) fn probe(ordinal: c_int) -> Result<DeviceCaps, String> {
                 side(cap(sys::NV_ENC_CAPS_HEIGHT_MAX), 0),
             ),
             mb_per_sec: u64::try_from(cap(sys::NV_ENC_CAPS_MB_PER_SEC_MAX)).unwrap_or(0),
-            ten_bit: codec == CodecId::Hevc
-                && cap(sys::NV_ENC_CAPS_SUPPORT_10BIT_ENCODE) != 0
-                && formats.contains(&sys::NV_ENC_BUFFER_FORMAT_YUV420_10BIT),
+            profiles: if codec == CodecId::H264 {
+                Profiles::H264_ALL
+            } else if cap(sys::NV_ENC_CAPS_SUPPORT_10BIT_ENCODE) != 0
+                && formats.contains(&sys::NV_ENC_BUFFER_FORMAT_YUV420_10BIT)
+            {
+                Profiles::HEVC_ALL
+            } else {
+                Profiles::HEVC_MAIN
+            },
             // A zero mask means the driver does not report modes; every NVENC
-            // generation has CBR and VBR.
+            // generation has CBR and VBR. Constant quality is VBR with a target.
             cbr: modes == 0 || modes & i64::from(sys::NV_ENC_PARAMS_RC_CBR) != 0,
             vbr: modes == 0 || modes & i64::from(sys::NV_ENC_PARAMS_RC_VBR) != 0,
+            quality: modes == 0 || modes & i64::from(sys::NV_ENC_PARAMS_RC_VBR) != 0,
             dynamic_bitrate: cap(sys::NV_ENC_CAPS_SUPPORT_DYN_BITRATE_CHANGE) != 0,
         });
     }
-    codecs.retain(|c| c.width.1 >= c.width.0 && c.height.1 >= c.height.0);
+    codecs.retain(|c| c.usable());
     Ok(DeviceCaps {
         name: device.name(ordinal),
         codecs,
@@ -362,13 +370,14 @@ fn apply_rc(rc: &mut sys::NV_ENC_RC_PARAMS, plan: Rc) {
             rc.vbvInitialDelay = max;
             rc.targetQuality = 0;
         }
-        Rc::Quality { target } => {
+        Rc::Quality { level } => {
             rc.rateControlMode = sys::NV_ENC_PARAMS_RC_VBR;
             rc.averageBitRate = 0;
             rc.maxBitRate = 0;
             rc.vbvBufferSize = 0;
             rc.vbvInitialDelay = 0;
-            rc.targetQuality = target;
+            // NVENC reads 0 as "automatic", so level 0 (best) becomes 1.
+            rc.targetQuality = level.max(1);
             rc.targetQualityLSB = 0;
         }
     }
@@ -429,10 +438,16 @@ impl NvencEngine {
         let codec = codec_guid(plan.codec).ok_or_else(|| CreateError::Unsupported {
             what: format!("codec {}", plan.codec),
         })?;
-        let preset = sys::NV_ENC_PRESET_GUIDS[usize::from(plan.preset.clamp(1, 7) - 1)];
-        let tuning = match plan.tuning {
-            Tuning::HighQuality => sys::NV_ENC_TUNING_INFO_HIGH_QUALITY,
-            Tuning::LowLatency => sys::NV_ENC_TUNING_INFO_LOW_LATENCY,
+        // P1 (fastest) ..= P7 (best).
+        let preset = sys::NV_ENC_PRESET_GUIDS[match plan.preset {
+            Preset::Speed => 1,
+            Preset::Balanced => 3,
+            Preset::Quality => 4,
+        }];
+        let tuning = if plan.low_latency {
+            sys::NV_ENC_TUNING_INFO_LOW_LATENCY
+        } else {
+            sys::NV_ENC_TUNING_INFO_HIGH_QUALITY
         };
         let buffer_format = if plan.ten_bit {
             sys::NV_ENC_BUFFER_FORMAT_YUV420_10BIT
@@ -679,6 +694,8 @@ impl NvencEngine {
 }
 
 impl Engine for NvencEngine {
+    const SLOTS: usize = FRAMES_IN_FLIGHT;
+
     fn upload(&mut self, slot: usize, frame: &SystemFrame) -> Result<(), EngineError> {
         let funcs = &self.device.api.nvenc.0;
         let lock = f(funcs.nvEncLockInputBuffer, "nvEncLockInputBuffer")?;

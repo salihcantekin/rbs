@@ -1,11 +1,12 @@
-//! The encoder session logic, over a small [`Engine`] trait that the NVENC engine
-//! implements. Everything here is plain Rust, so the port contract (ordering,
-//! keyframes, `Busy`, refusals, errors) is tested with a fake engine on machines
-//! without NVIDIA hardware.
+//! The encoder session logic, over a small [`Engine`] trait that each hardware
+//! adapter implements. Everything here is plain Rust, so the port contract
+//! (ordering, keyframes, `Busy`, refusals, errors) is tested with a fake engine on
+//! machines without the hardware.
 //!
-//! Each submitted frame takes the next of [`FRAMES_IN_FLIGHT`] slots (one NVENC input
-//! buffer and one bitstream buffer). Slots are used and drained strictly in submission
-//! order, which is the output order while no frames are reordered (no B-frames).
+//! Each submitted frame takes the next of [`Engine::SLOTS`] slots (for example one
+//! input buffer and one bitstream buffer). Slots are used and drained strictly in
+//! submission order, which is the output order while no frames are reordered (no
+//! B-frames).
 
 use rbs_codec::{EncodeError, EncoderChange, RateControl, VideoEncoder};
 use rbs_core::media::{
@@ -14,15 +15,16 @@ use rbs_core::media::{
 };
 use rbs_core::time::Timestamp;
 
+use crate::SessionStats;
 use crate::plan::{self, Rc};
-use crate::{FRAMES_IN_FLIGHT, SessionStats};
 
 /// A failure inside the engine.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum EngineError {
-    /// The encoder cannot take more work now (`NV_ENC_ERR_ENCODER_BUSY`).
+pub enum EngineError {
+    /// The encoder cannot take more work now. From `encode` the frame is not
+    /// consumed; from `output` without waiting it means "not finished yet".
     Busy,
-    /// The device is gone (`NV_ENC_ERR_DEVICE_NOT_EXIST`) or the CUDA context failed.
+    /// The device is gone.
     DeviceLost,
     /// The device refused a parameter (for example a rate-control change).
     Unsupported,
@@ -53,7 +55,7 @@ impl EngineError {
 
 /// One finished picture.
 #[derive(Debug)]
-pub(crate) struct Output {
+pub struct Output {
     /// Annex B access unit (exact size; the one payload allocation per packet).
     pub data: Vec<u8>,
     /// IDR picture.
@@ -62,8 +64,11 @@ pub(crate) struct Output {
     pub token: u64,
 }
 
-/// What the session needs from an encoder device. Slots are `0..FRAMES_IN_FLIGHT`.
-pub(crate) trait Engine: Send {
+/// What the session needs from an encoder device. Slots are `0..SLOTS`.
+pub trait Engine: Send {
+    /// Frames in flight before `submit` returns `Busy`.
+    const SLOTS: usize;
+
     /// Copies `frame` into the input buffer of `slot`. Not called for a slot that is
     /// in flight.
     fn upload(&mut self, slot: usize, frame: &SystemFrame) -> Result<(), EngineError>;
@@ -91,14 +96,14 @@ struct Slot {
 }
 
 /// A session over an engine. Implements the encoder port.
-pub(crate) struct Session<E: Engine> {
+pub struct Session<E: Engine> {
     engine: E,
     stream: StreamDescriptor,
     codec: CodecId,
     format: VideoFormat,
     rate_control: RateControl,
     dynamic_bitrate: bool,
-    slots: [Slot; FRAMES_IN_FLIGHT],
+    slots: Box<[Slot]>,
     /// Oldest slot in flight.
     head: usize,
     /// Slots in flight (submitted, not yet drained).
@@ -113,7 +118,7 @@ pub(crate) struct Session<E: Engine> {
 
 impl<E: Engine> Session<E> {
     /// A session over `engine`, which was opened for `format` and `rate_control`.
-    pub(crate) fn new(
+    pub fn new(
         engine: E,
         codec: CodecId,
         format: VideoFormat,
@@ -128,7 +133,7 @@ impl<E: Engine> Session<E> {
             format,
             rate_control,
             dynamic_bitrate,
-            slots: [Slot::default(); FRAMES_IN_FLIGHT],
+            slots: vec![Slot::default(); E::SLOTS.max(1)].into_boxed_slice(),
             head: 0,
             in_flight: 0,
             next_token: 0,
@@ -140,12 +145,12 @@ impl<E: Engine> Session<E> {
     }
 
     /// Counters of this session.
-    pub(crate) fn stats(&self) -> SessionStats {
+    pub fn stats(&self) -> SessionStats {
         self.stats
     }
 
-    #[cfg(test)]
-    pub(crate) fn engine(&self) -> &E {
+    /// The engine.
+    pub fn engine(&self) -> &E {
         &self.engine
     }
 
@@ -188,7 +193,7 @@ impl<E: Engine> Session<E> {
             // session does not support.
             return Err(self.fail(EngineError::Broken("encoder output out of order")));
         }
-        self.head = (self.head + 1) % FRAMES_IN_FLIGHT;
+        self.head = (self.head + 1) % self.slots.len();
         self.in_flight -= 1;
         let packet = EncodedPacket::new(
             self.codec,
@@ -228,10 +233,10 @@ impl<E: Engine> VideoEncoder for Session<E> {
                 "frame timestamp is not after the previous frame".into(),
             ));
         }
-        if self.in_flight == FRAMES_IN_FLIGHT {
+        if self.in_flight == self.slots.len() {
             return Err(EncodeError::Busy);
         }
-        let slot = (self.head + self.in_flight) % FRAMES_IN_FLIGHT;
+        let slot = (self.head + self.in_flight) % self.slots.len();
         if let Err(e) = self.engine.upload(slot, system) {
             return Err(self.fail(e));
         }
@@ -252,9 +257,9 @@ impl<E: Engine> VideoEncoder for Session<E> {
     fn drain(&mut self, out: &mut Vec<EncodedPacket>) -> Result<(), EncodeError> {
         self.check()?;
         // With every slot in flight, wait for the oldest picture so that `submit` has
-        // room again (the `Busy` contract). It was submitted `FRAMES_IN_FLIGHT` frames
-        // ago, so on real hardware it is long finished and the wait is a formality.
-        if self.in_flight == FRAMES_IN_FLIGHT {
+        // room again (the `Busy` contract). It was submitted `SLOTS` frames ago, so on
+        // real hardware it is long finished and the wait is a formality.
+        if self.in_flight == self.slots.len() {
             self.take_one(out, true)?;
         }
         while self.in_flight > 0 {
@@ -313,9 +318,10 @@ impl<E: Engine> VideoEncoder for Session<E> {
 }
 
 #[cfg(test)]
-pub(crate) mod fake {
+mod fake {
     //! A fake engine: pictures finish after a configurable number of `output` polls,
-    //! keyframes follow the GOP and IDR requests like NVENC with picture type decision.
+    //! keyframes follow the GOP and IDR requests like a hardware encoder with picture
+    //! type decision.
 
     use super::*;
 
@@ -349,7 +355,7 @@ pub(crate) mod fake {
         script: Script,
         gop: u32,
         since_idr: u32,
-        slots: [Pending; FRAMES_IN_FLIGHT],
+        slots: [Pending; FAKE_SLOTS],
         /// Calls of `end_of_stream`.
         pub eos: u32,
         /// Last rate control applied.
@@ -357,19 +363,24 @@ pub(crate) mod fake {
     }
 
     impl FakeEngine {
-        pub(crate) fn new(gop: u32, script: Script) -> Self {
+        pub fn new(gop: u32, script: Script) -> Self {
             Self {
                 script,
                 gop,
                 since_idr: 0,
-                slots: [Pending::default(); FRAMES_IN_FLIGHT],
+                slots: [Pending::default(); FAKE_SLOTS],
                 eos: 0,
                 rc: None,
             }
         }
     }
 
+    /// Slots of the fake engine.
+    pub(crate) const FAKE_SLOTS: usize = 8;
+
     impl Engine for FakeEngine {
+        const SLOTS: usize = FAKE_SLOTS;
+
         fn upload(&mut self, slot: usize, frame: &SystemFrame) -> Result<(), EngineError> {
             assert!(!self.slots[slot].busy, "upload into a slot in flight");
             assert!(frame.plane(0).is_some());
@@ -442,9 +453,10 @@ pub(crate) mod fake {
 #[cfg(test)]
 #[allow(clippy::unwrap_used)] // Tests fail by panicking.
 mod tests {
+    use super::fake::FAKE_SLOTS as FRAMES_IN_FLIGHT;
     use super::fake::{FakeEngine, Script};
     use super::*;
-    use crate::device::tests::geforce;
+    use crate::device::testing::discrete_gpu as geforce;
     use crate::device::{DeviceCaps, capability_set};
     use rbs_codec::conformance::{self, SystemFrameSource};
     use rbs_codec::{CreateError, VideoEncoderConfig, VideoEncoderFactory};
@@ -462,10 +474,10 @@ mod tests {
 
     impl AdapterFactory for FakeFactory {
         fn id(&self) -> AdapterId {
-            AdapterId::new("org.rbs.codec.nvenc-fake")
+            AdapterId::new("org.rbs.codec.hw-fake")
         }
         fn display_name(&self) -> &str {
-            "NVENC session over a fake engine"
+            "Hardware encoder session over a fake engine"
         }
         fn probe(&self) -> Result<CapabilitySet, ProbeError> {
             Ok(capability_set(&self.device))
@@ -646,7 +658,7 @@ mod tests {
     #[test]
     fn output_failure_is_unrecoverable() {
         let mut run = Run::new(Script {
-            output_error: Some(EngineError::Failed("nvEncLockBitstream", 20)),
+            output_error: Some(EngineError::Failed("LockBitstream", 20)),
             ..Script::default()
         });
         run.submit().unwrap();
