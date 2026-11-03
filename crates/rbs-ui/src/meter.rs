@@ -34,6 +34,11 @@ pub fn position(db: f32) -> f32 {
     if p.is_nan() { 0.0 } else { p.clamp(0.0, 1.0) }
 }
 
+/// `v` clamped to 0..=1; not a number is 0.
+fn unit(v: f32) -> f32 {
+    if v.is_nan() { 0.0 } else { v.clamp(0.0, 1.0) }
+}
+
 /// What one meter shows at one moment, as positions on the scale (see [`position`]).
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct MeterView {
@@ -58,13 +63,15 @@ impl MeterView {
     pub fn zones(&self) -> [(f32, f32); 3] {
         let mid = position(MID_FROM_DB);
         let high = position(HIGH_FROM_DB);
-        let level = self.level.clamp(0.0, 1.0);
+        let level = unit(self.level);
         let band = |from: f32, to: f32| (from, level.clamp(from, to));
         [band(0.0, mid), band(mid, high), band(high, 1.0)]
     }
 
     /// Where the lit zones and the peak-hold line go inside `bar` (any coordinate space
-    /// with the origin at the top left).
+    /// with the origin at the top left). Levels that are not a number count as 0; a `bar`
+    /// that is not finite gives rectangles that are not finite, which drawing code must
+    /// skip ([`Rect`] values come from the toolkit's layout).
     pub fn frames(&self, bar: Rect, orientation: Orientation) -> MeterFrames {
         let along = |from: f32, to: f32| match orientation {
             Orientation::Vertical => Rect {
@@ -81,11 +88,13 @@ impl MeterView {
             },
         };
         let zones = self.zones().map(|(from, to)| along(from, to));
-        let peak = self.peak.clamp(0.0, 1.0);
+        let peak = unit(self.peak);
         let peak_line = (peak > 0.0).then(|| match orientation {
             Orientation::Vertical => Rect {
                 x: bar.x,
-                y: (bar.y + bar.h * (1.0 - peak)).min(bar.y + bar.h - PEAK_LINE),
+                y: (bar.y + bar.h * (1.0 - peak))
+                    .min(bar.y + bar.h - PEAK_LINE)
+                    .max(bar.y),
                 w: bar.w,
                 h: PEAK_LINE.min(bar.h),
             },
@@ -131,12 +140,41 @@ pub struct MeterFrames {
     pub peak_zone: usize,
 }
 
+/// A meter's accessible value (spec "AudioMeter", Accessibility). Its text comes from
+/// the Fluent messages `meter-value-silent`, `meter-value-db` (variable `$db`) and
+/// `meter-value-clipped`; [`AccessibleLevel::english`] is the built-in English text until
+/// the UI has Fluent strings.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AccessibleLevel {
+    /// Highest level of the period in whole dBFS; `None` below the scale's floor.
+    pub level: Option<i32>,
+    /// The clip indicator is lit.
+    pub clipped: bool,
+}
+
+impl AccessibleLevel {
+    /// English text: "silent", "-12 dBFS", "-12 dBFS, clipped".
+    pub fn english(&self) -> String {
+        let level = match self.level {
+            None => "silent".to_owned(),
+            Some(db) => format!("{db} dBFS"),
+        };
+        if self.clipped {
+            format!("{level}, clipped")
+        } else {
+            level
+        }
+    }
+}
+
 /// Ballistics of one meter: the level, the peak-hold line and the clip latch.
 ///
 /// Time is passed in by the caller (time since any fixed start, the same for every
 /// call), so tests drive it without sleeping. No allocation.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Meter {
+    /// Highest level since the last [`Meter::take_report`].
+    report_db: f32,
     level_db: f32,
     peak_db: f32,
     peak_at: Duration,
@@ -153,6 +191,7 @@ impl Meter {
     /// A silent meter.
     pub const fn new() -> Self {
         Meter {
+            report_db: f32::NEG_INFINITY,
             level_db: f32::NEG_INFINITY,
             peak_db: f32::NEG_INFINITY,
             peak_at: Duration::ZERO,
@@ -169,6 +208,9 @@ impl Meter {
             level_db
         };
         self.level_db = level_db;
+        if level_db > self.report_db {
+            self.report_db = level_db;
+        }
         if level_db >= self.peak_at_time(now) {
             self.peak_db = level_db;
             self.peak_at = now;
@@ -195,6 +237,22 @@ impl Meter {
     /// The level last given to [`Meter::update`], in dBFS.
     pub fn level_db(&self) -> f32 {
         self.level_db
+    }
+
+    /// The accessible value since the last call (the highest level since then, and the
+    /// clip latch); starts a new report period. Call it at most once per second.
+    pub fn take_report(&mut self) -> AccessibleLevel {
+        let db = std::mem::replace(&mut self.report_db, f32::NEG_INFINITY);
+        let level = if db < FLOOR_DB {
+            None
+        } else {
+            // Whole dB; the scale tops out at 0 dBFS but a level above it is reported.
+            Some(db.round() as i32)
+        };
+        AccessibleLevel {
+            level,
+            clipped: self.clipped,
+        }
     }
 
     /// What the meter shows at `now`.
@@ -428,6 +486,68 @@ mod tests {
         assert!(m.view(ms(5000)).clipped);
         m.reset_clip();
         assert!(!m.view(ms(5000)).clipped);
+    }
+
+    #[test]
+    fn nan_views_draw_nothing() {
+        let bar = Rect {
+            x: 0.0,
+            y: 0.0,
+            w: 8.0,
+            h: 40.0,
+        };
+        let v = MeterView {
+            level: f32::NAN,
+            peak: f32::NAN,
+            clipped: false,
+        };
+        let f = v.frames(bar, Orientation::Vertical);
+        assert!(f.zones.iter().all(|r| r.h == 0.0));
+        assert_eq!(f.peak, None);
+    }
+
+    #[test]
+    fn peak_line_stays_inside_a_bar_shorter_than_the_line() {
+        let bar = Rect {
+            x: 0.0,
+            y: 10.0,
+            w: 8.0,
+            h: 1.0,
+        };
+        let v = MeterView {
+            level: 0.0,
+            peak: 1.0,
+            clipped: false,
+        };
+        let r = v
+            .frames(bar, Orientation::Vertical)
+            .peak
+            .unwrap_or_default();
+        assert!(r.y >= 10.0 && r.y + r.h <= 11.0 + 1e-6, "{r:?}");
+    }
+
+    #[test]
+    fn accessible_value_reports_the_period_peak() {
+        let mut m = Meter::new();
+        assert_eq!(m.take_report().english(), "silent");
+        m.update(-30.4, ms(0));
+        m.update(-12.2, ms(100));
+        m.update(-40.0, ms(200));
+        assert_eq!(
+            m.take_report(),
+            AccessibleLevel {
+                level: Some(-12),
+                clipped: false
+            }
+        );
+        // A new period starts empty.
+        assert_eq!(m.take_report().level, None);
+        m.update(-70.0, ms(300));
+        assert_eq!(m.take_report().english(), "silent");
+        m.update(0.4, ms(400));
+        assert_eq!(m.take_report().english(), "0 dBFS, clipped");
+        m.update(f32::NEG_INFINITY, ms(500));
+        assert_eq!(m.take_report().english(), "silent, clipped");
     }
 
     #[test]

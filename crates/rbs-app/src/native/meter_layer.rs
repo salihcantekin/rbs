@@ -83,10 +83,36 @@ struct MeterLayers {
     peak: Retained<CALayer>,
     clip: Retained<CALayer>,
     geometry: MeterGeometry,
-    /// What it shows now; `None` until the first update and after a colour change.
+    /// What it shows now; `None` until the first update.
     shown: Option<MeterView>,
     /// Zone whose colour the peak line has.
     peak_zone: usize,
+}
+
+impl MeterLayers {
+    /// Draws `v` with the current geometry, colours and scale. Call inside a transaction.
+    fn draw(&mut self, v: MeterView, colors: &CgColors, scale: f64) {
+        self.shown = Some(v);
+        let f = v.frames(self.geometry.bar, self.geometry.orientation);
+        for (l, r) in self.zones.iter().zip(f.zones) {
+            place(l, Some(r), scale);
+        }
+        if f.peak.is_some() && self.peak_zone != f.peak_zone {
+            self.peak_zone = f.peak_zone;
+            self.peak
+                .setBackgroundColor(Some(&colors.zones[f.peak_zone]));
+        }
+        place(&self.peak, f.peak, scale);
+        place(&self.clip, v.clipped.then_some(self.geometry.clip), scale);
+    }
+
+    /// Draws the shown view again (after a geometry, scale or colour change), so the
+    /// change shows at once even when no update follows (inactive audio).
+    fn redraw(&mut self, colors: &CgColors, scale: f64) {
+        if let Some(v) = self.shown {
+            self.draw(v, colors, scale);
+        }
+    }
 }
 
 /// A bridge of audio meters as Core Animation layers over a window's content.
@@ -134,7 +160,8 @@ impl MeterBridgeLayer {
     /// must be made on the main thread.
     pub unsafe fn attach_to_ns_view(&mut self, ns_view: NonNull<c_void>) -> Result<(), String> {
         // SAFETY: the caller guarantees a live NSView on the main thread; `layer` is a
-        // property of every NSView and returns its backing CALayer (retained) or nil.
+        // property of every NSView whose value is a `CALayer` or nil (objc2 retains the
+        // returned object).
         let root: Option<Retained<CALayer>> = unsafe {
             let view = ns_view.cast::<AnyObject>().as_ref();
             msg_send![view, layer]
@@ -172,10 +199,19 @@ impl MeterBridgeLayer {
     /// nothing when neither the rectangle nor the superlayer changed, so it can be called
     /// before every toolkit redraw.
     pub fn set_rect(&mut self, rect: Rect) {
+        let finite = [rect.x, rect.y, rect.w, rect.h]
+            .iter()
+            .all(|v| v.is_finite());
+        if !finite {
+            // A layout glitch; Core Animation would throw on a frame that is not finite.
+            return;
+        }
+        // `contentsAreFlipped` is the superlayer's effective orientation: flips of all
+        // its ancestors combined, not only its own `geometryFlipped`.
         let (height, flipped, scale) = self.root.superlayer().map_or((0.0, true, 1.0), |sup| {
             (
                 sup.bounds().size.height,
-                sup.isGeometryFlipped(),
+                sup.contentsAreFlipped(),
                 sup.contentsScale(),
             )
         });
@@ -187,11 +223,10 @@ impl MeterBridgeLayer {
         if scale != self.scale {
             self.scale = scale;
             self.placed = None;
-            // Every meter is placed again at the next update, on the new pixel grid.
+            // Every meter is placed again on the new pixel grid.
             transaction(|| {
                 for m in &mut self.meters {
-                    m.clip.setFrame(cg_rect(m.geometry.clip, scale));
-                    m.shown = None;
+                    m.redraw(&self.colors, scale);
                 }
             });
         }
@@ -220,16 +255,17 @@ impl MeterBridgeLayer {
         transaction(|| {
             self.root.setAutoresizingMask(mask);
             // Sublayers use top-left coordinates. `geometryFlipped` is relative to the
-            // superlayer, so the container flips only when its parent does not (an
-            // AppKit view's backing layer is often flipped already).
+            // superlayer, so the container flips only when its parent is not flipped in
+            // effect (an AppKit view's backing layer often is already).
             self.root.setGeometryFlipped(!flipped);
             self.root.setFrame(frame);
         });
     }
 
-    /// Sets the meters' geometry, in the bridge's coordinates. Adds or removes meters to
-    /// match; does nothing when nothing changed. Allocates when the count changes, so call
-    /// it on layout changes, not per update.
+    /// Sets the meters' geometry, in the bridge's coordinates, and redraws the meters
+    /// whose geometry changed at once. Adds or removes meters to match; does nothing when
+    /// nothing changed. Allocates when the count changes, so call it on layout changes,
+    /// not per update.
     pub fn set_meters(&mut self, geometry: &[MeterGeometry]) {
         let scale = self.scale;
         let same = self.meters.len() == geometry.len()
@@ -270,18 +306,15 @@ impl MeterBridgeLayer {
                 });
             }
             for (m, g) in self.meters.iter_mut().zip(geometry) {
-                if m.geometry != *g || m.shown.is_none() {
+                if m.geometry != *g {
                     m.geometry = *g;
-                    m.clip.setFrame(cg_rect(g.clip, scale));
-                    // Redraw with the new geometry at the next update.
-                    m.shown = None;
+                    m.redraw(&self.colors, scale);
                 }
             }
         });
     }
 
-    /// Changes the colours (theme change). The next [`MeterBridgeLayer::show`] redraws
-    /// every meter.
+    /// Changes the colours (theme change), at once.
     pub fn set_colors(&mut self, colors: &MeterColors) {
         self.colors = CgColors::new(colors);
         transaction(|| {
@@ -292,14 +325,13 @@ impl MeterBridgeLayer {
                 m.peak
                     .setBackgroundColor(Some(&self.colors.zones[m.peak_zone]));
                 m.clip.setBackgroundColor(Some(&self.colors.clip));
-                m.shown = None;
             }
         });
     }
 
     /// Shows one update: `views[i]` on meter `i` (extra views are ignored, missing ones
     /// leave their meters as they are). One transaction; meters whose view did not change
-    /// cost nothing. Never allocates.
+    /// cost nothing. No Rust heap allocation (Core Animation allocates inside its commit).
     pub fn show(&mut self, views: &[MeterView]) {
         let scale = self.scale;
         let changed = self
@@ -312,31 +344,9 @@ impl MeterBridgeLayer {
         }
         transaction(|| {
             for (m, v) in self.meters.iter_mut().zip(views) {
-                if m.shown == Some(*v) {
-                    continue;
+                if m.shown != Some(*v) {
+                    m.draw(*v, &self.colors, scale);
                 }
-                m.shown = Some(*v);
-                let f = v.frames(m.geometry.bar, m.geometry.orientation);
-                for (l, r) in m.zones.iter().zip(f.zones) {
-                    let empty = r.w <= 0.0 || r.h <= 0.0;
-                    set_hidden(l, empty);
-                    if !empty {
-                        l.setFrame(cg_rect(r, scale));
-                    }
-                }
-                match f.peak {
-                    None => set_hidden(&m.peak, true),
-                    Some(r) => {
-                        if m.peak_zone != f.peak_zone {
-                            m.peak_zone = f.peak_zone;
-                            m.peak
-                                .setBackgroundColor(Some(&self.colors.zones[f.peak_zone]));
-                        }
-                        m.peak.setFrame(cg_rect(r, scale));
-                        set_hidden(&m.peak, false);
-                    }
-                }
-                set_hidden(&m.clip, !v.clipped);
             }
         });
     }
@@ -357,6 +367,20 @@ impl MeterBridgeLayer {
 impl Drop for MeterBridgeLayer {
     fn drop(&mut self) {
         transaction(|| self.root.removeFromSuperlayer());
+    }
+}
+
+/// Shows `layer` over `rect`, or hides it when there is no rectangle, it is empty or it
+/// is not finite (Core Animation throws on a frame that is not finite).
+fn place(layer: &CALayer, rect: Option<Rect>, scale: f64) {
+    let drawable = rect
+        .filter(|r| [r.x, r.y, r.w, r.h].iter().all(|v| v.is_finite()) && r.w > 0.0 && r.h > 0.0);
+    match drawable {
+        Some(r) => {
+            layer.setFrame(cg_rect(r, scale));
+            set_hidden(layer, false);
+        }
+        None => set_hidden(layer, true),
     }
 }
 

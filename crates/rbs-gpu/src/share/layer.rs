@@ -169,8 +169,10 @@ impl PreviewLayer {
     /// toolkit redraw. `rect` is in the view's points (logical pixels of the toolkit when
     /// its scale factor is the window's).
     pub fn set_rect(&mut self, rect: LayerRect) {
+        // `contentsAreFlipped`: the superlayer's effective orientation (its ancestors'
+        // flips combined), not only its own `geometryFlipped`.
         let (height, flipped) = self.layer.superlayer().map_or((0.0, true), |sup| {
-            (sup.bounds().size.height, sup.isGeometryFlipped())
+            (sup.bounds().size.height, sup.contentsAreFlipped())
         });
         if self.placed == Some((rect, height, flipped)) {
             return;
