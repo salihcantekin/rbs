@@ -53,9 +53,6 @@ jobs:
           RBS_REQUIRE_D3D12: ${{ runner.os == 'Windows' && '1' || '' }}
           RBS_REQUIRE_NV12_SURFACE: ${{ runner.os == 'Linux' && '1' || '' }}
           RBS_REQUIRE_VIDEOTOOLBOX: ${{ runner.os == 'macOS' && '1' || '' }}
-      # TEMPORARY (PR #54 measurements; removed before merge).
-      - if: runner.os == 'macOS'
-        run: cargo bench -p rbs-codec-audiotoolbox --bench encode -- --warm-up-time 1 --measurement-time 3
       - run: cargo doc --workspace --no-deps
         env:
           RUSTDOCFLAGS: -D warnings
