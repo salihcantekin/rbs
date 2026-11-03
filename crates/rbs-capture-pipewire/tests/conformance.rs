@@ -46,6 +46,8 @@ mod source {
     /// The running source. Dropping it removes the node.
     pub struct TestSource {
         child: Mutex<Option<Child>>,
+        /// The child's stdout, kept open so its later output never hits a closed pipe.
+        _stdout: Mutex<Option<std::io::Lines<BufReader<std::process::ChildStdout>>>>,
     }
 
     fn serialize(value: Value) -> Vec<u8> {
@@ -180,7 +182,8 @@ mod source {
             };
             // The child prints `ready` once connected (test harness lines come first).
             let mut ready = false;
-            for line in BufReader::new(stdout).lines() {
+            let mut lines = BufReader::new(stdout).lines();
+            for line in lines.by_ref() {
                 match line {
                     Ok(line) if line.trim_end().ends_with("ready") => {
                         ready = true;
@@ -195,6 +198,7 @@ mod source {
                 panic!("test source did not start");
             }
             Self {
+                _stdout: Mutex::new(Some(lines)),
                 child: Mutex::new(Some(child)),
             }
         }
@@ -427,7 +431,7 @@ fn passes_conformance() {
             hooks = Hooks(std::sync::Arc::clone(&source));
             _source = source;
             options.hooks = Some(&hooks);
-            options.process_threads = Some(conformance::process_thread_count);
+            options.process_threads = Some(thread_count);
         } else if std::env::var_os("RBS_REQUIRE_PIPEWIRE").is_some_and(|v| !v.is_empty()) {
             panic!("RBS_REQUIRE_PIPEWIRE is set but no PipeWire daemon socket was found");
         } else {
@@ -513,6 +517,22 @@ fn follows_renegotiated_size(factory: &rbs_capture_pipewire::PipeWireCaptureFact
         "format() did not follow"
     );
     session.stop();
+}
+
+/// The process thread count, logging the thread names so a mismatch shows which
+/// thread is left.
+#[cfg(target_os = "linux")]
+fn thread_count() -> Option<u64> {
+    let names: Vec<String> = std::fs::read_dir("/proc/self/task")
+        .ok()?
+        .filter_map(Result::ok)
+        .map(|task| {
+            std::fs::read_to_string(task.path().join("comm"))
+                .map_or_else(|_| "?".to_owned(), |name| name.trim().to_owned())
+        })
+        .collect();
+    eprintln!("threads: {names:?}");
+    Some(names.len() as u64)
 }
 
 #[cfg(target_os = "linux")]
