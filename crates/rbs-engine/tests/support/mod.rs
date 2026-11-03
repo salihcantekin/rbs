@@ -4,7 +4,7 @@
 #![allow(dead_code, clippy::expect_used, clippy::unwrap_used)]
 
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};
 
 use rbs_core::lifecycle::Lifecycle;
@@ -15,7 +15,7 @@ use rbs_core::media::{
 use rbs_core::time::{Clock, Timestamp};
 use rbs_graph::description::{GraphDescription, NodeId, PartitionId};
 use rbs_graph::node::{LinkKind, NodeDescriptor, NodeKind, NodeTypeId, Pin};
-use rbs_graph::runtime::{Node, NodeError, PrepareCtx, ProcessCtx, Runtime};
+use rbs_graph::runtime::{Node, NodeError, PrepareCtx, ProcessCtx, Runtime, WarmCtx};
 
 /// The role of a test node.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -56,6 +56,29 @@ impl Probe {
     }
 }
 
+/// A gate a node's `cool` waits on, so a test can hold a swap past the engine's
+/// swap timeout. Waits at most `LIMIT` so a broken test cannot hang.
+#[derive(Debug, Default)]
+pub struct Gate {
+    open: Mutex<bool>,
+    changed: Condvar,
+}
+
+impl Gate {
+    pub fn open(&self) {
+        *self.open.lock().unwrap() = true;
+        self.changed.notify_all();
+    }
+
+    fn pass(&self) {
+        let open = self.open.lock().unwrap();
+        let _ = self
+            .changed
+            .wait_timeout_while(open, Duration::from_secs(30), |open| !*open)
+            .unwrap();
+    }
+}
+
 /// Records the order in which nodes were released, by name.
 pub type ReleaseLog = Arc<Mutex<Vec<&'static str>>>;
 
@@ -71,6 +94,8 @@ pub struct TestNode {
     last: Option<Timestamp>,
     /// Clock for latency measurements (sinks) and packet stamps (encoder).
     clock: Option<Arc<dyn Clock>>,
+    /// `cool` waits for this gate.
+    cool_gate: Option<Arc<Gate>>,
 }
 
 fn format() -> VideoFormat {
@@ -115,6 +140,7 @@ impl TestNode {
             fail_until_prepare: 0,
             last: None,
             clock: None,
+            cool_gate: None,
         }
     }
 
@@ -127,6 +153,12 @@ impl TestNode {
     /// `process` fails for the first `instances` prepared instances.
     pub fn failing(mut self, instances: u64) -> Self {
         self.fail_until_prepare = instances;
+        self
+    }
+
+    /// `cool` waits until `gate` opens.
+    pub fn cooling_on(mut self, gate: &Arc<Gate>) -> Self {
+        self.cool_gate = Some(Arc::clone(gate));
         self
     }
 
@@ -219,6 +251,12 @@ impl<X: Runtime> Node<X> for TestNode {
             }
         }
         Ok(())
+    }
+
+    fn cool(&mut self, _ctx: &mut WarmCtx<'_, X>) {
+        if let Some(gate) = &self.cool_gate {
+            gate.pass();
+        }
     }
 
     fn release(&mut self, _ctx: &mut PrepareCtx<'_, X>) {

@@ -99,7 +99,7 @@ fn run(name: &str, rate: FrameRate, offset: Duration, stamp_at_encoder: bool, pa
     let mean = (probe.latency_ns.load(Ordering::Relaxed) - sum0) / got.max(1);
     let n = (got as usize).min(SAMPLES);
     let mut samples: Vec<u64> = (0..n)
-        .map(|k| probe.samples[(seen as usize - 1 - k) % SAMPLES].load(Ordering::Relaxed))
+        .map(|k| probe.samples[(seen as usize - k) % SAMPLES].load(Ordering::Relaxed))
         .collect();
     samples.sort_unstable();
     let pct = |p: f64| samples[((samples.len() as f64 - 1.0) * p) as usize];

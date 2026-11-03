@@ -49,6 +49,8 @@ pub(crate) trait Part: Send {
     /// type differs.
     fn adopt_any(&mut self, id: NodeId, node: AnyNode) -> Result<(), AdoptAnyError>;
     fn has_worker(&self) -> bool;
+    /// True if the controller has an instance of `id`, idle or scheduled.
+    fn holds(&self, id: NodeId) -> bool;
     fn wake(&self);
     fn stats(&self) -> Arc<WorkerStats>;
     fn stop_worker(&mut self);
@@ -189,14 +191,12 @@ impl<X: Runtime> Part for Partition<X> {
                 self.controller.collect_timeout(timeout)?
             }
             (None, Some(executor)) => {
-                // No worker and an empty schedule on its way: the executor's running
-                // schedule is empty too (the worker is only stopped then), so this
-                // tick runs no node, warms none and cools none. Swap it here.
-                executor.run_tick(rbs_graph::runtime::Tick::new(
-                    self.next_tick,
-                    self.clock.now(),
-                ));
-                self.next_tick = self.next_tick.saturating_add(1);
+                // No worker and an empty schedule on its way. Swap it here, between
+                // ticks and without running one (no `begin_tick` or `end_tick` on this
+                // thread, no tick index used). The running schedule is empty too,
+                // unless a drain timed out and the worker was joined since: then its
+                // nodes are cooled here and released by the collect.
+                executor.swap_pending();
                 self.controller.collect()?
             }
             (None, None) => return Err(SettleError::Spawn(SpawnFailed(std::io::ErrorKind::Other))),
@@ -273,6 +273,10 @@ impl<X: Runtime> Part for Partition<X> {
 
     fn has_worker(&self) -> bool {
         self.worker.is_some()
+    }
+
+    fn holds(&self, id: NodeId) -> bool {
+        self.controller.is_idle(id) || self.controller.is_running(id)
     }
 
     fn wake(&self) {

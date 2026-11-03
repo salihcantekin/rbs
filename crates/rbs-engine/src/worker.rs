@@ -2,7 +2,10 @@
 //!
 //! Hot path (docs/architecture/hot-paths.md): the loop around `Executor::run_tick`
 //! runs every frame. Per iteration it reads the stop flag and the clock, and parks or
-//! waits on the doorbell; it never allocates, locks or does I/O (P6).
+//! waits on the doorbell; it never allocates or does I/O (P6). A cadence worker takes
+//! no lock. A doorbell worker takes the doorbell's registration lock once per wait;
+//! the only other party is a ringer's `try_lock`, which never waits, so the worker can
+//! wait at most for one `unpark` call. Doorbell workers run outputs, not render.
 
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};

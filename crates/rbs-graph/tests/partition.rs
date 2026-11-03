@@ -628,8 +628,11 @@ fn a_reader_that_leaves_packets_queued_rings_its_own_doorbell() {
     rig.tick(true, false);
     rig.tick(true, false);
     assert!(rig.bell.wait(Duration::ZERO));
-    // One burst passes; the reader rings so the rest does not wait for a timer.
-    rig.tick(false, true);
+    // One burst passes; the reader rings so the rest does not wait for a timer. The
+    // tick with the ring allocates nothing.
+    rig.got.lock().unwrap().reserve(4 * burst as usize); // the recorder's own growth
+    let info = allocation_counter::measure(|| rig.tick(false, true));
+    assert_eq!(info.count_total, 0, "the reader's ring allocated");
     assert!(rig.bell.wait(Duration::ZERO), "rang for the packets left");
     // The rest passes and nothing is left: no ring.
     rig.tick(false, true);

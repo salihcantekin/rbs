@@ -2,6 +2,7 @@
 //! started on the first command, and reports what happens through a callback.
 
 use std::fmt;
+use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
 use std::sync::{Mutex, PoisonError};
 use std::thread::JoinHandle;
@@ -54,7 +55,10 @@ enum State {
 
 /// Owns an [`Engine`] on a control thread of its own. Every call returns at once: it
 /// only queues a command. The thread starts with the first command, so an engine that
-/// is never used costs no thread.
+/// is never used costs no thread. Once started it stays until shutdown; while nothing
+/// runs it blocks on its command channel (no timer, no CPU), an accepted cost of one
+/// parked thread. The [`EventSink`] must not panic: a panic there ends the control
+/// thread, and later calls return [`EngineError::ShutDown`].
 pub struct EngineHandle {
     state: Mutex<State>,
 }
@@ -124,7 +128,7 @@ impl EngineHandle {
                 }
                 // The engine moved into the closure that failed to start and is
                 // dropped (and so shut down) with it.
-                Err(e) => return Err(EngineError::Spawn(PartitionId::RENDER, e.kind())),
+                Err(e) => return Err(EngineError::ControlThread(e.kind())),
             }
         }
         let State::Running { commands, .. } = &mut *state else {
@@ -177,7 +181,13 @@ fn control_loop(mut engine: Engine, mut sink: EventSink, commands: Receiver<Comm
                 Ok(applied) => sink(EngineEvent::Applied(applied)),
                 Err(e) => sink(EngineEvent::ApplyFailed(e)),
             },
-            Some(Command::Run(job)) => job(&mut engine),
+            Some(Command::Run(job)) => {
+                // A panicking job must not take the engine and its workers down.
+                let run = catch_unwind(AssertUnwindSafe(|| job(&mut engine)));
+                if run.is_err() {
+                    sink(EngineEvent::Error(EngineError::JobPanicked));
+                }
+            }
             Some(Command::Shutdown) => {
                 let report = engine.shutdown();
                 sink(EngineEvent::ShutDown(report));

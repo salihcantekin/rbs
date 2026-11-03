@@ -89,6 +89,11 @@ pub enum EngineError {
     SwapTimeout(PartitionId),
     /// The worker thread could not be started.
     Spawn(PartitionId, std::io::ErrorKind),
+    /// The [`EngineHandle`](crate::EngineHandle)'s control thread could not be started.
+    ControlThread(std::io::ErrorKind),
+    /// A job queued with [`EngineHandle::run`](crate::EngineHandle::run) panicked; the
+    /// engine keeps running.
+    JobPanicked,
     /// The engine was shut down.
     ShutDown,
 }
@@ -110,6 +115,8 @@ impl fmt::Display for EngineError {
             EngineError::Apply(p, e) => write!(f, "partition {p}: {e}"),
             EngineError::SwapTimeout(p) => write!(f, "partition {p} did not swap in time"),
             EngineError::Spawn(p, e) => write!(f, "partition {p}: cannot start worker: {e}"),
+            EngineError::ControlThread(e) => write!(f, "cannot start the control thread: {e}"),
+            EngineError::JobPanicked => f.write_str("an engine job panicked"),
             EngineError::ShutDown => f.write_str("engine is shut down"),
         }
     }
@@ -191,6 +198,11 @@ pub struct Engine {
     placement: HashMap<NodeId, PartitionId>,
     /// Endpoints of retired queues whose swap was not collected yet.
     retiring: Vec<(PartitionId, NodeId)>,
+    /// Partitions whose current part was not sent yet (a swap timed out, or a moved
+    /// instance arrived after their part was applied).
+    dirty: BTreeSet<PartitionId>,
+    /// Moves whose instance was not idle yet: `(node, from, to)`.
+    moves: Vec<(NodeId, PartitionId, PartitionId)>,
     shut_down: bool,
 }
 
@@ -228,6 +240,8 @@ impl Engine {
             crossings: Vec::new(),
             placement: HashMap::new(),
             retiring: Vec::new(),
+            dirty: BTreeSet::new(),
+            moves: Vec::new(),
             shut_down: false,
         }
     }
@@ -406,22 +420,29 @@ impl Engine {
         }
         self.crossings = lowered.crossings.clone();
         let order = self.pipeline_order();
+        let leaving: BTreeSet<PartitionId> = lowered.moved.iter().map(|m| m.1).collect();
+        for (p, part) in std::mem::take(&mut lowered.parts) {
+            self.current.insert(p, part);
+            self.dirty.insert(p);
+        }
+        self.placement = logical
+            .nodes()
+            .iter()
+            .map(|n| (n.id, n.partition))
+            .collect();
+        self.moves.extend(lowered.moved.iter().copied());
 
         // Phase 1: the partitions moved nodes leave, so their instances go idle.
-        let leaving: BTreeSet<PartitionId> = lowered.moved.iter().map(|m| m.1).collect();
         for p in order.iter().filter(|p| leaving.contains(p)) {
-            if let Some(part) = lowered.parts.get(p) {
-                self.apply_part(*p, part, &mut out);
-            }
+            self.send_current(*p, &mut out.reports, &mut out.events, &mut out.errors);
         }
-        // Move the idle instances.
-        for &(node, from, to) in &lowered.moved {
-            self.move_instance(node, from, to, &mut out.errors);
-        }
-        // Phase 2: every other part, in pipeline order.
-        for p in order.iter().filter(|p| !leaving.contains(p)) {
-            if let Some(part) = lowered.parts.get(p) {
-                self.apply_part(*p, part, &mut out);
+        // Move the idle instances; each partition that gains one is sent again below,
+        // also one that was sent in phase 1.
+        self.run_moves(&mut out.errors);
+        // Phase 2: every partition with a part not sent yet, in pipeline order.
+        for p in &order {
+            if self.dirty.contains(p) {
+                self.send_current(*p, &mut out.reports, &mut out.events, &mut out.errors);
             }
         }
 
@@ -431,51 +452,75 @@ impl Engine {
             self.retiring.push((c.to, c.reader));
         }
         self.drop_retired();
-
-        for (p, part) in std::mem::take(&mut lowered.parts) {
-            self.current.insert(p, part);
-        }
-        self.placement = logical
-            .nodes()
-            .iter()
-            .map(|n| (n.id, n.partition))
-            .collect();
         Ok(out)
     }
 
-    fn apply_part(&mut self, p: PartitionId, part: &GraphDescription, out: &mut Applied) {
+    /// Sends partition `p`'s current part if it is not sent yet and settles the swap.
+    /// A swap still in flight is collected first; if it does not come back in time, the
+    /// part stays unsent and [`Engine::service`] sends it later.
+    fn send_current(
+        &mut self,
+        p: PartitionId,
+        reports: &mut BTreeMap<PartitionId, ApplyReport>,
+        events: &mut Vec<(PartitionId, RuntimeEvent)>,
+        errors: &mut Vec<EngineError>,
+    ) {
         let timeout = self.config.swap_timeout;
+        let empty = GraphDescription::new();
         let Some(handle) = self.parts.get_mut(&p) else {
             return;
         };
-        // A swap still in flight (an earlier timeout) must be collected first.
         if handle.in_flight() {
             match handle.settle(timeout) {
-                Ok(c) => push_collected(p, c, &mut out.events),
-                Err(e) => out.errors.push(EngineError::settle(p, e)),
+                Ok(c) => push_collected(p, c, events),
+                Err(e) => errors.push(EngineError::settle(p, e)),
             }
             if handle.in_flight() {
-                out.errors.push(EngineError::SwapTimeout(p));
+                errors.push(EngineError::SwapTimeout(p));
                 return;
             }
         }
+        self.dirty.remove(&p);
+        let part = self.current.get(&p).unwrap_or(&empty);
         match handle.apply(part) {
             Ok(report) => {
-                out.events
-                    .extend(report.events.iter().cloned().map(|e| (p, e)));
-                out.reports.insert(p, report);
+                events.extend(report.events.iter().cloned().map(|e| (p, e)));
+                reports.insert(p, report);
             }
             Err(e) => {
-                out.errors.push(EngineError::Apply(p, e));
+                errors.push(EngineError::Apply(p, e));
                 return;
             }
         }
         match handle.settle(timeout) {
-            Ok(c) => push_collected(p, c, &mut out.events),
-            Err(e) => out.errors.push(EngineError::settle(p, e)),
+            Ok(c) => push_collected(p, c, events),
+            Err(e) => errors.push(EngineError::settle(p, e)),
         }
         if handle.in_flight() {
-            out.errors.push(EngineError::SwapTimeout(p));
+            errors.push(EngineError::SwapTimeout(p));
+        }
+    }
+
+    /// Moves the instances of pending moves whose old partition let them go. A move
+    /// whose old partition still has a swap in flight waits for a later call.
+    fn run_moves(&mut self, errors: &mut Vec<EngineError>) {
+        let pending = std::mem::take(&mut self.moves);
+        for (node, from, to) in pending {
+            // A node removed from the graph since, or moved on again, is not moved here.
+            if self.placement.get(&node) != Some(&to) {
+                continue;
+            }
+            // Already there (a move back after `MoveWrongRuntime`): nothing to move.
+            if self.parts.get(&to).is_some_and(|p| p.holds(node)) {
+                continue;
+            }
+            match self.move_instance(node, from, to, errors) {
+                Moved::Done => {
+                    self.dirty.insert(to);
+                }
+                Moved::Wait => self.moves.push((node, from, to)),
+                Moved::Failed => {}
+            }
         }
     }
 
@@ -485,27 +530,38 @@ impl Engine {
         from: PartitionId,
         to: PartitionId,
         errors: &mut Vec<EngineError>,
-    ) {
-        let taken = match self.parts.get_mut(&from).map(|p| p.take_any(node)) {
-            Some(Ok(Some(instance))) => instance,
-            Some(Ok(None)) | Some(Err(_)) | None => {
+    ) -> Moved {
+        let Some(source) = self.parts.get_mut(&from) else {
+            return Moved::Failed;
+        };
+        let taken = match source.take_any(node) {
+            Ok(Some(instance)) => instance,
+            // Still in the old schedule, which is in flight: try again after the swap.
+            Ok(None) | Err(ControlError::Running(_)) if source.in_flight() => {
+                return Moved::Wait;
+            }
+            Ok(None) | Err(_) => {
                 errors.push(EngineError::MoveNotIdle { node, from });
-                return;
+                return Moved::Failed;
             }
         };
         let Some(target) = self.parts.get_mut(&to) else {
-            return;
+            return Moved::Failed;
         };
         match target.adopt_any(node, taken) {
-            Ok(()) => {}
+            Ok(()) => Moved::Done,
             Err(AdoptAnyError::WrongRuntime(instance)) => {
                 if let Some(source) = self.parts.get_mut(&from) {
                     // It was just taken from there, so the id is free.
                     let _ = source.adopt_any(node, instance);
                 }
                 errors.push(EngineError::MoveWrongRuntime { node, from, to });
+                Moved::Failed
             }
-            Err(AdoptAnyError::Control(e)) => errors.push(EngineError::Control(to, e)),
+            Err(AdoptAnyError::Control(e)) => {
+                errors.push(EngineError::Control(to, e));
+                Moved::Failed
+            }
         }
     }
 
@@ -513,8 +569,14 @@ impl Engine {
     fn drop_retired(&mut self) {
         let parts = &mut self.parts;
         self.retiring.retain(|(p, id)| match parts.get_mut(p) {
-            // Idle (or already gone): dropped here, on the control thread.
-            Some(part) => matches!(part.take_any(*id), Err(ControlError::Running(_))),
+            Some(part) => match part.take_any(*id) {
+                // Idle: dropped here, on the control thread.
+                Ok(Some(_)) => false,
+                Err(ControlError::Running(_)) => true,
+                // Not here: still inside the executor while a swap is in flight, else gone.
+                Ok(None) => part.in_flight(),
+                Err(_) => false,
+            },
             None => false,
         });
     }
@@ -526,33 +588,29 @@ impl Engine {
         if self.shut_down {
             return out;
         }
-        let timeout = self.config.swap_timeout;
-        let empty = GraphDescription::new();
-        for p in self.pipeline_order() {
-            let Some(part) = self.parts.get_mut(&p) else {
+        let order = self.pipeline_order();
+        for p in &order {
+            let Some(part) = self.parts.get_mut(p) else {
                 continue;
             };
             match part.collect() {
-                Ok(c) => push_collected(p, c, &mut out.events),
-                Err(e) => out.errors.push(EngineError::settle(p, e)),
+                Ok(c) => push_collected(*p, c, &mut out.events),
+                Err(e) => out.errors.push(EngineError::settle(*p, e)),
             }
-            if part.in_flight() || !part.restart_due() {
+        }
+        // Work an earlier timeout left: moves, then parts not sent yet.
+        self.run_moves(&mut out.errors);
+        let mut reports = BTreeMap::new();
+        for p in &order {
+            let Some(part) = self.parts.get(p) else {
+                continue;
+            };
+            if part.in_flight() {
                 continue;
             }
-            let description = self.current.get(&p).unwrap_or(&empty);
-            match part.apply(description) {
-                Ok(report) => out.events.extend(report.events.into_iter().map(|e| (p, e))),
-                Err(e) => {
-                    out.errors.push(EngineError::Apply(p, e));
-                    continue;
-                }
-            }
-            match part.settle(timeout) {
-                Ok(c) => push_collected(p, c, &mut out.events),
-                Err(e) => out.errors.push(EngineError::settle(p, e)),
-            }
-            if part.in_flight() {
-                out.errors.push(EngineError::SwapTimeout(p));
+            if self.dirty.contains(p) || part.restart_due() {
+                self.dirty.insert(*p);
+                self.send_current(*p, &mut reports, &mut out.events, &mut out.errors);
             }
         }
         self.drop_retired();
@@ -567,7 +625,7 @@ impl Engine {
                 min(self.config.control_interval);
             }
         }
-        if !self.retiring.is_empty() {
+        if !self.retiring.is_empty() || !self.dirty.is_empty() || !self.moves.is_empty() {
             min(self.config.control_interval);
         }
         out.wait = wait;
@@ -610,6 +668,14 @@ impl Engine {
                 out.errors.push(EngineError::SwapTimeout(p));
             }
             part.stop_worker();
+            // A drain that timed out: the worker is joined now, so the empty schedule is
+            // swapped here and the nodes it held are released, not just dropped.
+            if part.in_flight() {
+                match part.settle(timeout) {
+                    Ok(c) => push_collected(p, c, &mut out.events),
+                    Err(e) => out.errors.push(EngineError::settle(p, e)),
+                }
+            }
         }
         for c in std::mem::take(&mut self.crossings) {
             self.retiring.push((c.from, c.writer));
@@ -618,6 +684,8 @@ impl Engine {
         self.drop_retired();
         self.retiring.clear();
         self.current.clear();
+        self.dirty.clear();
+        self.moves.clear();
         out
     }
 }
@@ -626,6 +694,13 @@ impl Drop for Engine {
     fn drop(&mut self) {
         let _ = self.shutdown();
     }
+}
+
+/// What became of one move.
+enum Moved {
+    Done,
+    Wait,
+    Failed,
 }
 
 fn push_collected(
