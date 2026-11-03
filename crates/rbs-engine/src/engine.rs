@@ -87,8 +87,9 @@ pub enum EngineError {
     Apply(PartitionId, ApplyError),
     /// The worker did not swap in time; [`Engine::service`] collects it later.
     SwapTimeout(PartitionId),
-    /// At shutdown the worker did not finish its final tick(s) in time; the partition
-    /// is drained without them.
+    /// At shutdown the worker did not finish its final tick(s) in time (a node hung in
+    /// `process`, most likely): the worker is joined, which waits for that node, and
+    /// the partition is drained on the control thread.
     DrainTimeout(PartitionId),
     /// The worker thread could not be started.
     Spawn(PartitionId, std::io::ErrorKind),
@@ -690,7 +691,11 @@ impl Engine {
             // then swap in the empty one.
             settle(part, &mut out);
             if !part.in_flight() && !part.drain(timeout) {
+                // Most likely a node hung in `process`: join the worker (this waits for
+                // the node to return, as a timed-out swap does) and drain inline, so the
+                // control thread does not wait another timeout for the swap.
                 out.errors.push(EngineError::DrainTimeout(p));
+                part.stop_worker();
             }
             if !part.in_flight() {
                 match part.apply(&empty) {

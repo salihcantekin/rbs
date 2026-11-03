@@ -256,7 +256,13 @@ impl<X: Runtime> Worker<X> {
         match asked {
             Ok(_) => {}
             Err(mode::HELD) => return true,
+            // STOP: unreachable today (a worker is stopped by `stop`, which consumes
+            // it); reported as not drained.
             Err(_) => return false,
+        }
+        if self.join.is_finished() {
+            // The thread died outside the executor's catch; nothing will answer.
+            return false;
         }
         self.wake();
         self.drained.recv_timeout(timeout).is_ok()
@@ -302,6 +308,9 @@ pub(crate) fn run<X: Runtime>(
                         // The final tick, at once: the next index, which may be up to
                         // one cadence period ahead of its time (or the newest due one).
                         let newest = index_due(clock.now()).unwrap_or(next).max(next);
+                        if newest > next {
+                            stats.late.fetch_add(newest - next, Ordering::Relaxed);
+                        }
                         executor.run_tick(Tick::of(&cadence, newest));
                         stats.ticks.fetch_add(1, Ordering::Relaxed);
                         next = newest.saturating_add(1);
@@ -395,8 +404,8 @@ mod tests {
     use std::sync::atomic::AtomicU64;
 
     use rbs_core::lifecycle::Lifecycle;
-    use rbs_core::time::TestClock;
-    use rbs_core::timing::FrameRate;
+    use rbs_core::time::{MonotonicClock, TestClock};
+    use rbs_core::timing::{FrameRate, Rational};
     use rbs_graph::description::GraphDescription;
     use rbs_graph::node::{LinkKind, NodeDescriptor, NodeKind, NodeTypeId, Pin};
     use rbs_graph::runtime::{Node, NodeError, PrepareCtx, ProcessCtx, channel};
@@ -415,6 +424,8 @@ mod tests {
         indices_ok: Arc<AtomicU64>,
         last: Option<u64>,
         stop_after: u64,
+        /// Asks for the drain at this tick instead.
+        drain_at: Option<u64>,
         signals: Arc<Signals>,
         clock: Option<TestClock>,
         bell: Option<Arc<Doorbell>>,
@@ -443,6 +454,14 @@ mod tests {
                 if n.is_multiple_of(2) {
                     bell.ring();
                 }
+            }
+            if self.drain_at == Some(n) {
+                let _ = self.signals.mode.compare_exchange(
+                    mode::RUN,
+                    mode::DRAIN,
+                    Ordering::AcqRel,
+                    Ordering::Acquire,
+                );
             }
             if n >= self.stop_after {
                 self.signals.mode.store(mode::STOP, Ordering::Release);
@@ -479,7 +498,25 @@ mod tests {
         stats: WorkerStats,
     }
 
-    fn run_on_this_thread(pacing: Pacing, clock: TestClock, bell: Option<Arc<Doorbell>>) -> Run {
+    /// How a measured run ends.
+    #[derive(Clone, Copy)]
+    enum End {
+        /// The driver stops the loop at this tick.
+        StopAfter(u64),
+        /// The driver asks for the drain at this tick; another thread stops the worker
+        /// once it holds, so the final ticks and the held wait are measured too.
+        DrainAt(u64),
+    }
+
+    /// Runs `run` on this thread under the allocation counter. `advance`: the driver
+    /// moves this test clock one frame per tick.
+    fn run_on_this_thread(
+        pacing: Pacing,
+        clock: Arc<dyn Clock>,
+        advance: Option<TestClock>,
+        bell: Option<Arc<Doorbell>>,
+        end: End,
+    ) -> Run {
         let (signals, _drained) = Signals::new();
         let signals = Arc::new(signals);
         let ticks = Arc::new(AtomicU64::new(0));
@@ -495,9 +532,16 @@ mod tests {
             ticks: Arc::clone(&ticks),
             indices_ok: Arc::clone(&indices_ok),
             last: None,
-            stop_after: TICKS,
+            stop_after: match end {
+                End::StopAfter(n) => n,
+                End::DrainAt(_) => u64::MAX,
+            },
+            drain_at: match end {
+                End::StopAfter(_) => None,
+                End::DrainAt(n) => Some(n),
+            },
             signals: Arc::clone(&signals),
-            clock: matches!(pacing, Pacing::Cadence { .. }).then(|| clock.clone()),
+            clock: advance,
             bell: bell.clone(),
         };
         let (mut controller, mut executor) = channel::<()>(Arc::new(()), ());
@@ -527,18 +571,36 @@ mod tests {
         // Registers this thread's handle once (as a worker's first wait does).
         let _ = std::thread::current();
         let stats = WorkerStats::default();
+        // Stops a held worker (its allocations are not counted: another thread).
+        let stopper = matches!(end, End::DrainAt(_)).then(|| {
+            let (signals, bell, worker) =
+                (Arc::clone(&signals), bell.clone(), std::thread::current());
+            std::thread::spawn(move || {
+                while signals.get() != mode::HELD {
+                    std::thread::yield_now();
+                }
+                signals.mode.store(mode::STOP, Ordering::Release);
+                if let Some(bell) = bell {
+                    bell.ring();
+                }
+                worker.unpark();
+            })
+        });
         let mut out = None;
         let info = allocation_counter::measure(|| {
             out = Some(run(
                 executor,
                 pacing,
-                &clock,
+                &*clock,
                 bell.as_deref(),
                 &signals,
                 &stats,
                 0,
             ));
         });
+        if let Some(stopper) = stopper {
+            stopper.join().unwrap();
+        }
         // Dropping the executor (and its nodes) happens outside the measurement.
         drop(out);
         Run {
@@ -555,7 +617,13 @@ mod tests {
         // Each tick moves the clock to the next one's time, so no tick waits or is late.
         let clock = TestClock::new();
         clock.advance(FRAME / 4);
-        let run = run_on_this_thread(Pacing::cadence_after(cadence, FRAME / 4), clock, None);
+        let run = run_on_this_thread(
+            Pacing::cadence_after(cadence, FRAME / 4),
+            Arc::new(clock.clone()),
+            Some(clock),
+            None,
+            End::StopAfter(TICKS),
+        );
         assert_eq!(run.allocations, 0, "the cadence worker loop allocated");
         assert_eq!(run.ticks.load(Ordering::Relaxed), TICKS);
         assert_eq!(run.indices_ok.load(Ordering::Relaxed), TICKS);
@@ -570,12 +638,67 @@ mod tests {
         let bell = Arc::new(Doorbell::new());
         let run = run_on_this_thread(
             Pacing::doorbell(Duration::from_micros(50)),
-            TestClock::new(),
+            Arc::new(TestClock::new()),
+            None,
             Some(bell),
+            End::StopAfter(TICKS),
         );
         assert_eq!(run.allocations, 0, "the doorbell worker loop allocated");
         assert_eq!(run.ticks.load(Ordering::Relaxed), TICKS);
         assert_eq!(run.indices_ok.load(Ordering::Relaxed), TICKS);
         assert_eq!(run.stats.ticks(), TICKS);
+    }
+
+    #[test]
+    fn a_cadence_worker_that_parks_between_ticks_does_not_allocate() {
+        // The production path: a real clock and a 10 kHz cadence, so the worker parks
+        // (`park_timeout` and `swap_pending`) before each tick.
+        let clock = MonotonicClock::new();
+        let rate = Rational::new(10_000, 1).unwrap();
+        let cadence = Cadence::new(clock.now(), rate);
+        let run = run_on_this_thread(
+            Pacing::cadence(cadence),
+            Arc::new(clock),
+            None,
+            None,
+            End::StopAfter(200),
+        );
+        assert_eq!(
+            run.allocations, 0,
+            "the parking cadence worker loop allocated"
+        );
+        assert_eq!(run.ticks.load(Ordering::Relaxed), 200);
+        assert_eq!(run.indices_ok.load(Ordering::Relaxed), 200);
+    }
+
+    #[test]
+    fn draining_and_holding_does_not_allocate() {
+        let cadence = Cadence::frames(Timestamp::ZERO, FrameRate::FPS_60);
+        let clock = TestClock::new();
+        let run = run_on_this_thread(
+            Pacing::cadence(cadence),
+            Arc::new(clock.clone()),
+            Some(clock),
+            None,
+            End::DrainAt(100),
+        );
+        assert_eq!(run.allocations, 0, "a cadence drain allocated");
+        // One final tick after the one that asked for the drain.
+        assert_eq!(run.ticks.load(Ordering::Relaxed), 101);
+        assert_eq!(run.indices_ok.load(Ordering::Relaxed), 101);
+
+        let bell = Arc::new(Doorbell::new());
+        let run = run_on_this_thread(
+            Pacing::doorbell(Duration::from_micros(50)),
+            Arc::new(TestClock::new()),
+            None,
+            Some(bell),
+            End::DrainAt(100),
+        );
+        assert_eq!(run.allocations, 0, "a doorbell drain allocated");
+        // The final tick, plus one per ring the driver left (it rings on even ticks).
+        let ticks = run.ticks.load(Ordering::Relaxed);
+        assert!((101..=103).contains(&ticks), "{ticks}");
+        assert_eq!(run.indices_ok.load(Ordering::Relaxed), ticks);
     }
 }

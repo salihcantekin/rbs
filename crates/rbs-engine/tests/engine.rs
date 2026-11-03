@@ -392,7 +392,7 @@ fn shutdown_passes_every_queued_packet_not_just_one_ticks_worth() {
     // in the queue: far more than one tick passes (PER_TICK_EVENTS). Shutdown starts
     // while it is stalled, normally; the output's drain then waits for it and passes
     // everything queued. (If the stall ends early the output passes them anyway.)
-    let stall = Arc::new(Gate::holding(Duration::from_secs(1)));
+    let stall = Arc::new(Gate::holding(Duration::from_secs(2)));
     let mut rig = Rig::build(None, None, Some(&stall), Duration::from_secs(10));
     rig.engine.apply(&rig.graph).unwrap();
     let backlog = 4 * PER_TICK_EVENTS as u64;
@@ -407,6 +407,29 @@ fn shutdown_passes_every_queued_packet_not_just_one_ticks_worth() {
     let report = rig.engine.shutdown();
     assert!(report.errors.is_empty(), "{:?}", report.errors);
     assert_eq!(rig.seen(), rig.encoder_probe.seen.load(Ordering::Relaxed));
+}
+
+#[test]
+fn a_drain_that_times_out_is_reported_and_still_releases_everything() {
+    // The sink's first `process` stalls far longer than the swap timeout, and shutdown
+    // starts while it does: the output's final ticks miss the timeout.
+    let log: ReleaseLog = Arc::new(Mutex::new(Vec::new()));
+    let stall = Arc::new(Gate::holding(Duration::from_secs(2)));
+    let mut rig = Rig::build(Some(&log), None, Some(&stall), Duration::from_millis(100));
+    rig.engine.apply(&rig.graph).unwrap();
+    rig.frame();
+    let output = rig.engine.worker_stats(OUTPUT).unwrap();
+    // The sink is inside its stalled `process` once the output ticked.
+    assert!(eventually(LIMIT, || rig
+        .sink_probe
+        .ticks
+        .load(Ordering::Relaxed)
+        == 1));
+    let report = rig.engine.shutdown();
+    assert_eq!(report.errors, vec![EngineError::DrainTimeout(OUTPUT)]);
+    assert_eq!(rig.engine.workers(), 0);
+    assert_eq!(*log.lock().unwrap(), vec!["source", "encoder", "sink"]);
+    assert!(output.ticks() >= 1);
 }
 
 #[test]
