@@ -3857,6 +3857,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "rbs-codec-vaapi"
+version = "0.0.1"
+dependencies = [
+ "criterion 0.8.2",
+ "libloading",
+ "rbs-codec",
+ "rbs-codec-hw",
+ "rbs-core",
+ "rbs-media-format",
+]
+
+[[package]]
 name = "rbs-codec-videotoolbox"
 version = "0.0.1"
 dependencies = [
