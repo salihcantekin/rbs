@@ -247,6 +247,8 @@ impl Importer {
     pub fn retire(&mut self, ctx: &GpuContext, pool: &mut TexturePool, now: Timestamp) {
         let tick = self.tick;
         self.tick += 1;
+        #[cfg(target_os = "linux")]
+        self.sync_files.retire(ctx);
         if self.entries.is_empty() {
             return;
         }

@@ -5,9 +5,9 @@
 //! Sync files (`SurfaceSync::SyncFile`) are waited on by the GPU, never by the CPU (P6):
 //! an already signalled file needs no work; otherwise a duplicate of the file is imported
 //! into a pooled binary semaphore (`VK_KHR_external_semaphore_fd`, `SYNC_FD`, temporary
-//! import) and the queue waits on it before any later submission runs. The extension is
-//! not enabled by wgpu, so Vulkan devices are opened through the HAL with it added
-//! ([`request_device`]).
+//! import) and staged as a wait of the queue's next submission, normally the render that
+//! reads the frame. The extension is not enabled by wgpu, so devices that can use it are
+//! opened through the HAL with it added ([`request_device`]).
 //!
 //! The import goes through wgpu-hal's `texture_from_dmabuf_fd`
 //! (`VK_EXT_external_memory_dma_buf` with `VK_EXT_image_drm_format_modifier`). The cache key
@@ -15,6 +15,7 @@
 //! keeps the buffer alive while the entry is cached, so a key never names another buffer.
 //! File descriptor numbers are not used as keys because the OS reuses them.
 
+use std::collections::VecDeque;
 use std::mem::ManuallyDrop;
 use std::os::fd::{BorrowedFd, FromRawFd, IntoRawFd, OwnedFd};
 use std::os::unix::fs::MetadataExt;
@@ -197,17 +198,27 @@ struct SyncState {
     device: wgpu::Device,
     loader: khr::external_semaphore_fd::Device,
     slots: Vec<Slot>,
+    /// Slots not in use. Capacity [`MAX_SYNC_WAITS`], so pushing never allocates.
+    free: Vec<usize>,
+    /// Busy slots, oldest first. Waits complete in submission order, so only the oldest is
+    /// polled. Capacity [`MAX_SYNC_WAITS`].
+    busy: VecDeque<usize>,
+    /// Slots whose wait is staged on the queue but may not have been submitted yet.
+    staged: Vec<usize>,
 }
 
 struct Slot {
     semaphore: vk::Semaphore,
-    /// The submission that consumed the wait. The slot is free once it completed.
-    busy: Option<wgpu::SubmissionIndex>,
+    /// A submission at or after the one that consumed the wait. Free once it completed.
+    done_after: Option<wgpu::SubmissionIndex>,
 }
 
 impl SyncFiles {
-    /// Makes the queue wait for `sync` before the next submission. `Ready` and signalled
-    /// sync files cost one `poll` system call at most and no GPU work.
+    /// Makes the queue's next submission wait for `sync`. `Ready` and signalled sync files
+    /// cost one `poll` system call at most and no GPU work.
+    ///
+    /// The wait is consumed by the next queue submission, normally the render that reads
+    /// the imported frame, so the reading batch itself waits on the producer's fence.
     pub(super) fn wait(&mut self, ctx: &GpuContext, sync: SurfaceSync) -> Result<(), GpuError> {
         let SurfaceSync::SyncFile { fd, .. } = sync else {
             return Ok(());
@@ -221,12 +232,22 @@ impl SyncFiles {
         };
         let slot = state.free_slot(ctx)?;
         let semaphore = state.slots[slot].semaphore;
+        // SAFETY: the HAL queue is only borrowed to stage one wait; it is taken before the
+        // import so a non-Vulkan queue leaves no payload behind.
+        let Some(queue) = (unsafe { ctx.queue().as_hal::<Vulkan>() }) else {
+            state.free.push(slot);
+            return Err(GpuError::Unsupported("render queue is not Vulkan"));
+        };
 
         // SAFETY: the producer keeps `fd` open while its lease is held (VideoFrame::native
         // contract) and the importer holds the lease. The duplicate is ours.
-        let dup: OwnedFd = unsafe { BorrowedFd::borrow_raw(fd) }
-            .try_clone_to_owned()
-            .map_err(|e| GpuError::Import(e.to_string()))?;
+        let dup: OwnedFd = match unsafe { BorrowedFd::borrow_raw(fd) }.try_clone_to_owned() {
+            Ok(dup) => dup,
+            Err(e) => {
+                state.free.push(slot);
+                return Err(GpuError::Import(e.to_string()));
+            }
+        };
         let raw = dup.into_raw_fd();
         let info = vk::ImportSemaphoreFdInfoKHR::default()
             .semaphore(semaphore)
@@ -239,21 +260,54 @@ impl SyncFiles {
         if let Err(e) = unsafe { state.loader.import_semaphore_fd(&info) } {
             // SAFETY: the import failed, so `raw` is still the duplicate created above.
             drop(unsafe { OwnedFd::from_raw_fd(raw) });
+            state.free.push(slot);
             return Err(GpuError::Import(format!("sync file import: {e}")));
         }
-        {
-            // SAFETY: the HAL queue is only borrowed to stage one wait; wgpu consumes it in
-            // the next submission, which follows right below.
-            let queue = unsafe { ctx.queue().as_hal::<Vulkan>() }
-                .ok_or(GpuError::Unsupported("render queue is not Vulkan"))?;
-            queue.add_wait_semaphore(semaphore, None, vk::PipelineStageFlags::ALL_COMMANDS);
-        }
-        // An empty submission consumes the wait now, so the slot's reuse can be tracked by
-        // its index. wgpu orders every later submission after it (wgpu-hal chains
-        // submissions with semaphores), so no later reader starts before the wait.
-        let index = ctx.queue().submit(std::iter::empty());
-        state.slots[slot].busy = Some(index);
+        queue.add_wait_semaphore(semaphore, None, vk::PipelineStageFlags::ALL_COMMANDS);
+        state.staged.push(slot);
         Ok(())
+    }
+
+    /// Once per render tick, after the tick's submissions: moves staged waits that a
+    /// submission consumed to the busy list. One empty submission gives them an index to
+    /// poll (it only tracks completion; the ordering came from the consuming batch).
+    pub(super) fn retire(&mut self, ctx: &GpuContext) {
+        let Some(state) = &mut self.state else {
+            return;
+        };
+        if state.staged.is_empty() {
+            return;
+        }
+        // SAFETY: the HAL queue is only borrowed to look at the staged wait list.
+        let Some(queue) = (unsafe { ctx.queue().as_hal::<Vulkan>() }) else {
+            return;
+        };
+        // Consumed waits move to the end of `busy` (no allocation: capacity
+        // MAX_SYNC_WAITS); unconsumed ones go back on the queue's list.
+        let first = state.busy.len();
+        let mut i = 0;
+        while i < state.staged.len() {
+            let slot = state.staged[i];
+            let semaphore = state.slots[slot].semaphore;
+            if queue.remove_wait_semaphore(semaphore) {
+                // Not submitted yet (the frame was not rendered this tick): stage it again.
+                // Only the render thread submits frames that read imported surfaces.
+                queue.add_wait_semaphore(semaphore, None, vk::PipelineStageFlags::ALL_COMMANDS);
+                i += 1;
+            } else {
+                state.busy.push_back(slot);
+                state.staged.swap_remove(i);
+            }
+        }
+        drop(queue);
+        if state.busy.len() == first {
+            return;
+        }
+        let index = ctx.queue().submit(std::iter::empty());
+        for k in first..state.busy.len() {
+            let slot = state.busy[k];
+            state.slots[slot].done_after = Some(index.clone());
+        }
     }
 }
 
@@ -269,27 +323,32 @@ impl SyncState {
         Ok(Self {
             device: ctx.device().clone(),
             loader,
-            slots: Vec::new(),
+            slots: Vec::with_capacity(MAX_SYNC_WAITS),
+            free: Vec::with_capacity(MAX_SYNC_WAITS),
+            busy: VecDeque::with_capacity(MAX_SYNC_WAITS),
+            staged: Vec::with_capacity(MAX_SYNC_WAITS),
         })
     }
 
-    /// A slot whose last wait has completed, creating one while fewer than
-    /// [`MAX_SYNC_WAITS`] exist.
+    /// A free slot: a never-used one, the oldest busy one if its submission completed, or
+    /// a new one while fewer than [`MAX_SYNC_WAITS`] exist. At most one poll per call.
     fn free_slot(&mut self, ctx: &GpuContext) -> Result<usize, GpuError> {
-        for (i, slot) in self.slots.iter_mut().enumerate() {
-            let free = match &slot.busy {
-                None => true,
-                Some(index) => ctx
-                    .device()
+        if let Some(slot) = self.free.pop() {
+            return Ok(slot);
+        }
+        if let Some(&oldest) = self.busy.front() {
+            let done = self.slots[oldest].done_after.as_ref().is_some_and(|index| {
+                ctx.device()
                     .poll(wgpu::PollType::Wait {
                         submission_index: Some(index.clone()),
                         timeout: Some(Duration::ZERO),
                     })
-                    .is_ok(),
-            };
-            if free {
-                slot.busy = None;
-                return Ok(i);
+                    .is_ok()
+            });
+            if done {
+                self.busy.pop_front();
+                self.slots[oldest].done_after = None;
+                return Ok(oldest);
             }
         }
         if self.slots.len() >= MAX_SYNC_WAITS {
@@ -308,40 +367,40 @@ impl SyncState {
         .map_err(|e| GpuError::Import(format!("semaphore: {e}")))?;
         self.slots.push(Slot {
             semaphore,
-            busy: None,
+            done_after: None,
         });
         Ok(self.slots.len() - 1)
     }
 }
 
 impl Drop for SyncState {
-    /// Waits (bounded) for the last waits to pass, then destroys the semaphores. Importers
-    /// are dropped off the real-time path (source stop, shutdown). Semaphores the GPU may
-    /// still use are leaked rather than destroyed.
+    /// Destroys the semaphores whose waits have passed, after a bounded wait for busy ones.
+    /// Importers are dropped off the real-time path (source stop, shutdown). A semaphore
+    /// the GPU may still use, or whose wait was never submitted, is leaked instead.
     fn drop(&mut self) {
-        let mut idle = true;
-        for slot in &self.slots {
-            if let Some(index) = &slot.busy {
-                idle &= self
-                    .device
+        // SAFETY: the HAL device and queue are only borrowed to clean up objects created
+        // on them.
+        let Some(hal) = (unsafe { self.device.as_hal::<Vulkan>() }) else {
+            return;
+        };
+        for (i, slot) in self.slots.iter().enumerate() {
+            if self.staged.contains(&i) {
+                // Possibly still on the queue's wait list: never destroy it.
+                continue;
+            }
+            let idle = slot.done_after.as_ref().is_none_or(|index| {
+                self.device
                     .poll(wgpu::PollType::Wait {
                         submission_index: Some(index.clone()),
                         timeout: Some(Duration::from_secs(1)),
                     })
-                    .is_ok();
+                    .is_ok()
+            });
+            if idle {
+                // SAFETY: created on this device in `free_slot`; not staged, and every
+                // submission that waited on it has completed (checked just above).
+                unsafe { hal.raw_device().destroy_semaphore(slot.semaphore, None) };
             }
-        }
-        if !idle {
-            return;
-        }
-        // SAFETY: the HAL device is only borrowed to destroy semaphores it created.
-        let Some(hal) = (unsafe { self.device.as_hal::<Vulkan>() }) else {
-            return;
-        };
-        for slot in &self.slots {
-            // SAFETY: created on this device in `free_slot`; every submission that waited on
-            // it has completed (checked above), and no wait is staged without a submission.
-            unsafe { hal.raw_device().destroy_semaphore(slot.semaphore, None) };
         }
     }
 }
@@ -368,8 +427,9 @@ fn is_signalled(fd: i32) -> Result<bool, GpuError> {
     Ok(pfd.revents & libc::POLLIN != 0)
 }
 
-/// Opens the device through the HAL, adding `VK_KHR_external_semaphore_fd` where the
-/// adapter can import sync files into semaphores. `None` when the adapter is not Vulkan.
+/// Opens the device through the HAL, adding `VK_KHR_external_semaphore_fd`, when the adapter
+/// can import sync files into semaphores and DMA-BUF import is requested. `None` otherwise
+/// (the caller then uses `request_device`).
 pub(super) fn request_device(
     adapter: &wgpu::Adapter,
     desc: &wgpu::DeviceDescriptor<'_>,
@@ -378,9 +438,17 @@ pub(super) fn request_device(
         // SAFETY: the HAL adapter is only borrowed to query support and open the device;
         // the guard is dropped before wgpu wraps the device.
         let hal = unsafe { adapter.as_hal::<Vulkan>() }?;
-        let sync_file = sync_file_importable(&hal);
+        // Only where the extension is useful: every other device takes wgpu's own
+        // `request_device`, which also applies wgpu's strict-compliance filtering.
+        if !desc
+            .required_features
+            .contains(wgpu::Features::VULKAN_EXTERNAL_MEMORY_DMA_BUF)
+            || !sync_file_importable(&hal)
+        {
+            return None;
+        }
         let callback = move |args: wgpu::hal::vulkan::CreateDeviceCallbackArgs<'_, '_, '_>| {
-            if sync_file && !args.extensions.contains(&khr::external_semaphore_fd::NAME) {
+            if !args.extensions.contains(&khr::external_semaphore_fd::NAME) {
                 args.extensions.push(khr::external_semaphore_fd::NAME);
             }
         };
@@ -395,7 +463,7 @@ pub(super) fn request_device(
                 Some(Box::new(callback)),
             )
         };
-        (open, sync_file)
+        (open, true)
     };
     let open = match open {
         Ok(open) => open,

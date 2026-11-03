@@ -299,8 +299,8 @@ impl GpuContext {
     }
 }
 
-/// Creates the device. Vulkan devices are opened through the HAL so the importer's
-/// optional extensions can be enabled; the flag says whether sync files can be waited on.
+/// Creates the device. Vulkan devices that can wait on sync files are opened through the
+/// HAL so that extension can be enabled; the flag says whether it was.
 fn request_device(
     adapter: &wgpu::Adapter,
     desc: &wgpu::DeviceDescriptor<'_>,
