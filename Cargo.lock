@@ -4193,6 +4193,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "rbs-codec-mf"
+version = "0.0.1"
+dependencies = [
+ "rbs-codec",
+ "rbs-codec-mf",
+ "rbs-core",
+ "rbs-media-format",
+ "windows",
+ "windows-core",
+]
+
+[[package]]
 name = "rbs-codec-nvenc"
 version = "0.0.1"
 dependencies = [
