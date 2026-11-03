@@ -244,14 +244,19 @@ impl Ring {
             // Release pairs with the Acquire in `claim`: the consumer's GPU-side reads
             // are ordered by the importer before it drops the lease. Every decrement is
             // a read-modify-write, so it stays in the release sequence.
-            let refused = s
-                .refs
-                .fetch_update(Ordering::Release, Ordering::Relaxed, |refs| {
-                    refs.checked_sub(1)
-                })
-                .is_err();
-            if refused {
-                self.misuses.fetch_add(1, Ordering::Relaxed);
+            let mut refs = s.refs.load(Ordering::Relaxed);
+            loop {
+                let Some(next) = refs.checked_sub(1) else {
+                    self.misuses.fetch_add(1, Ordering::Relaxed);
+                    return;
+                };
+                match s
+                    .refs
+                    .compare_exchange_weak(refs, next, Ordering::Release, Ordering::Relaxed)
+                {
+                    Ok(_) => return,
+                    Err(current) => refs = current,
+                }
             }
         }
     }
