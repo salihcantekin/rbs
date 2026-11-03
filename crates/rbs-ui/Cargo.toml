@@ -1,0 +1,18 @@
+[package]
+name = "rbs-ui"
+description = "Toolkit-neutral model of the RBS desktop UI: panels, dock layout, workspace files, layout undo, design tokens and the live indicator."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+license.workspace = true
+publish.workspace = true
+
+# Application layer (docs/architecture/overview.md). No engine, port, adapter or
+# toolkit dependency: the Slint shell in `rbs-app` renders this model (ADR-0022, decision 4).
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+toml = "0.9"
+
+[lints]
+workspace = true

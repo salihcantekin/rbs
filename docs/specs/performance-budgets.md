@@ -48,6 +48,19 @@ Measured on reference machines that will be listed here. Each target is compared
 | Glass-to-delivery latency, display capture (OS capture to `latest_frame`) | Latency | <= 1 frame interval |
 | Cold start to first preview frame | Time | < 1.5 s |
 
+## Desktop UI
+
+The desktop UI (`rbs-app`) owns this budget (ADR-0022, owner decision 2026-11-02). Measured with the gate script in `prototypes/ui-toolkit` (later a UI scenario test) on the reference Mac, release build, presented-frame timestamps.
+
+| Scenario | Metric | Target |
+| --- | --- | --- |
+| No visible panel animates, not live | Process CPU, wake-ups | 0.0 % and no redraw timer |
+| 1080p preview and mixer meters visible and animating | Process CPU of the UI | at most 10 % of one core |
+| Same | Late frames (interval over 1.5 refresh periods) | 0 over 60 s |
+| Workspace switch | Time to the first frame of the new layout | under 100 ms (U21) |
+
+How it is reached: redraw only what changed (dirty regions), the preview as its own layer or window, meters at 30 Hz and the live duration and stats at 1 Hz (rates are declared per panel in the [design system](ui-design-system.md#panel-model)), and no timer at all when nothing animates.
+
 ## Regression policy
 
 - Micro-benchmarks: CI fails on > 5 % regression with statistical confidence (criterion comparison against `main`).
