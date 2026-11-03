@@ -30,11 +30,12 @@ use rbs_core::time::{Clock, TestClock, Timestamp};
 use rbs_core::timing::{Cadence, FrameRate, SampleRate};
 use rbs_engine::{Engine, EngineConfig};
 use rbs_gpu::{GpuContext, GpuError, GpuRequest};
+use rbs_graph::description::PartitionId;
 use rbs_graph::node::NodeTypeId;
 use rbs_mux::{Muxer, MuxerConfig, MuxerFactory, caps as mux_caps};
 use rbs_record::{
-    AUDIO, AUDIO_ENCODER, OUTPUT, RENDER, RecordAdapters, RecordError, RecordSettings, Recording,
-    VIDEO_ENCODER,
+    AUDIO, AUDIO_ENCODER, OUTPUT, Port, RENDER, RecordAdapters, RecordError, RecordSettings,
+    Recording, VIDEO_ENCODER,
 };
 use rbs_scene::SceneCollection;
 use rbs_scene::model::{CanvasId, ItemContent, Layout, SceneScope, Settings};
@@ -48,7 +49,7 @@ const W: u32 = 64;
 const H: u32 = 36;
 const FPS: FrameRate = FrameRate::FPS_30;
 /// Hang guard only; the loop ends when the packet counts are reached.
-const LIMIT: Duration = Duration::from_secs(60);
+const LIMIT: Duration = Duration::from_secs(20);
 /// Clock step per loop round: half an audio block, so the audio worker never falls
 /// behind its catch-up window.
 const STEP: Duration = Duration::from_millis(5);
@@ -311,20 +312,29 @@ impl Transport for LogTransport {
 
 // ---- Rig -----------------------------------------------------------------------------
 
-fn adapters(log: &Arc<Log>, submitted: &Arc<AtomicU64>) -> RecordAdapters {
+/// The reference adapters, kept so a test can count what they opened.
+struct Rig {
+    adapters: RecordAdapters,
+    capture: Arc<TestCaptureFactory>,
+    audio: Arc<TestAudioBackend>,
+    log: Arc<Log>,
+    submitted: Arc<AtomicU64>,
+}
+
+fn rig() -> Rig {
+    let log = Arc::new(Log::default());
+    let submitted = Arc::new(AtomicU64::new(0));
+    let capture = Arc::new(TestCaptureFactory::new());
+    let audio = Arc::new(TestAudioBackend::new());
     let mut a = RecordAdapters::new();
-    a.sources
-        .register_capture(Arc::new(TestCaptureFactory::new()))
-        .unwrap();
-    a.sources
-        .register_audio(Arc::new(TestAudioBackend::new()))
-        .unwrap();
+    a.sources.register_capture(capture.clone()).unwrap();
+    a.sources.register_audio(audio.clone()).unwrap();
     for (id, broken) in [("org.rbs.test.broken", true), ("org.rbs.test.h264", false)] {
         a.video_encoders
             .register(Arc::new(FakeVideoFactory {
                 id,
                 broken,
-                submitted: Arc::clone(submitted),
+                submitted: Arc::clone(&submitted),
             }))
             .unwrap();
     }
@@ -332,42 +342,39 @@ fn adapters(log: &Arc<Log>, submitted: &Arc<AtomicU64>) -> RecordAdapters {
         .register(Arc::new(FakeAacFactory::new()))
         .unwrap();
     a.muxers
-        .register(Arc::new(LogMuxerFactory(Arc::clone(log))))
+        .register(Arc::new(LogMuxerFactory(Arc::clone(&log))))
         .unwrap();
     a.transports
-        .register(Arc::new(LogTransportFactory(Arc::clone(log))))
+        .register(Arc::new(LogTransportFactory(Arc::clone(&log))))
         .unwrap();
     a.probe();
-    a
+    Rig {
+        adapters: a,
+        capture,
+        audio,
+        log,
+        submitted,
+    }
 }
 
-/// Display full canvas, camera in the corner, microphone, system audio.
+const SOURCES: [(&str, &str); 4] = [
+    ("Display", types::DISPLAY_SOURCE),
+    ("Camera", types::CAMERA_SOURCE),
+    ("Microphone", types::AUDIO_INPUT_SOURCE),
+    ("System audio", types::AUDIO_OUTPUT_SOURCE),
+];
+
+/// Display full canvas, camera in the corner, microphone, system audio, on air.
 fn scene() -> (SceneCollection, CanvasId) {
     let mut col = SceneCollection::new();
     let (canvas, _) = col.add_canvas("Main", Size::new(W, H), FPS).unwrap();
     let (scene, _) = col.add_scene("Live", SceneScope::Shared).unwrap();
-    for (name, t, layout) in [
-        (
-            "Display",
-            types::DISPLAY_SOURCE,
-            Layout::new([0.0, 0.0], [W as f32, H as f32]),
-        ),
-        (
-            "Camera",
-            types::CAMERA_SOURCE,
-            Layout::new([40.0, 22.0], [20.0, 11.0]),
-        ),
-        (
-            "Microphone",
-            types::AUDIO_INPUT_SOURCE,
-            Layout::new([0.0, 0.0], [1.0, 1.0]),
-        ),
-        (
-            "System audio",
-            types::AUDIO_OUTPUT_SOURCE,
-            Layout::new([0.0, 0.0], [1.0, 1.0]),
-        ),
-    ] {
+    for (name, t) in SOURCES {
+        let layout = match t {
+            types::DISPLAY_SOURCE => Layout::new([0.0, 0.0], [W as f32, H as f32]),
+            types::CAMERA_SOURCE => Layout::new([40.0, 22.0], [20.0, 11.0]),
+            _ => Layout::new([0.0, 0.0], [1.0, 1.0]),
+        };
         let (id, _) = col
             .add_source(name, NodeTypeId::new_static(t), Settings::new())
             .unwrap();
@@ -378,11 +385,12 @@ fn scene() -> (SceneCollection, CanvasId) {
     (col, canvas)
 }
 
-const PARTITIONS: [rbs_graph::description::PartitionId; 5] =
-    [RENDER, AUDIO, VIDEO_ENCODER, AUDIO_ENCODER, OUTPUT];
+/// The engine time when the recording starts: off the frame and block grids, so the
+/// test sees the real offsets between the cadences.
+const START: Timestamp = Timestamp::from_nanos(3_217_000_000);
 
-/// Ticks a cadence worker must have run (or skipped) by `now`: the indices whose time
-/// plus `offset` is due. Every worker starts at index 0, the clock being 0 at `apply`.
+/// Ticks of a cadence due by `now` after `offset`: the count of indices whose time plus
+/// `offset` is at or before `now`.
 fn due(cadence: &Cadence, offset: Duration, now: Timestamp) -> u64 {
     now.as_nanos()
         .checked_sub(offset.as_nanos() as u64)
@@ -391,38 +399,56 @@ fn due(cadence: &Cadence, offset: Duration, now: Timestamp) -> u64 {
 }
 
 /// Moves the clock in `STEP`s, waking every worker, until `done` or the hang guard.
-/// After each step it waits until every cadence worker has run each tick now due, so
-/// no worker falls behind the test clock (a worker that did would skip ticks, which is
-/// right in real time but not what this test checks).
+/// After each step it waits until every cadence worker has run (or skipped) the tick
+/// due at the start and each one due since, so no worker falls behind the test clock (one that
+/// did would skip ticks, which is right in real time but not what this test checks).
 fn run_until(
     recording: &mut Recording,
     clock: &TestClock,
+    audio: bool,
     mut done: impl FnMut(&Recording) -> bool,
 ) -> bool {
     let frames = Cadence::frames(Timestamp::ZERO, FPS);
-    let cadences = [
+    let mut cadences = vec![
         (RENDER, frames, Duration::ZERO),
         (VIDEO_ENCODER, frames, FPS.frame_duration() / 4),
-        (
-            AUDIO,
-            AudioGraphConfig::default().cadence(Timestamp::ZERO),
-            Duration::ZERO,
-        ),
     ];
-    let start = Instant::now();
-    while start.elapsed() < LIMIT {
+    if audio {
+        cadences.push((
+            AUDIO,
+            AudioGraphConfig::default().cadence(START),
+            Duration::ZERO,
+        ));
+    }
+    let partitions: &[PartitionId] = if audio {
+        &[RENDER, AUDIO, VIDEO_ENCODER, AUDIO_ENCODER, OUTPUT]
+    } else {
+        &[RENDER, VIDEO_ENCODER, OUTPUT]
+    };
+    let start = clock.now();
+    let wall = Instant::now();
+    // Each worker first runs the tick already due at the start, before the clock moves
+    // (a worker that started after the next tick was due would skip it).
+    for (p, _, _) in &cadences {
+        let stats = recording.engine().worker_stats(*p).unwrap();
+        while stats.ticks() == 0 && wall.elapsed() < LIMIT {
+            recording.engine().wake(*p);
+            std::thread::yield_now();
+        }
+    }
+    while wall.elapsed() < LIMIT {
         if done(recording) {
             return true;
         }
         clock.advance(STEP);
         let now = clock.now();
-        for p in PARTITIONS {
-            recording.engine().wake(p);
+        for p in partitions {
+            recording.engine().wake(*p);
         }
         for (p, cadence, offset) in &cadences {
             let stats = recording.engine().worker_stats(*p).unwrap();
-            let want = due(cadence, *offset, now);
-            while stats.ticks() + stats.late() < want && start.elapsed() < LIMIT {
+            let want = due(cadence, *offset, now) - due(cadence, *offset, start) + 1;
+            while stats.ticks() + stats.late() < want && wall.elapsed() < LIMIT {
                 recording.engine().wake(*p);
                 std::thread::yield_now();
             }
@@ -434,17 +460,32 @@ fn run_until(
     false
 }
 
+fn engine_at_start() -> (Engine, TestClock) {
+    let clock = TestClock::new();
+    clock.set(START);
+    let engine = Engine::with_clock(Arc::new(clock.clone()), EngineConfig::default());
+    (engine, clock)
+}
+
+fn pts_of(log: &Log, stream: u16) -> Vec<Timestamp> {
+    log.packets
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|p| p.stream == stream)
+        .map(|p| p.pts)
+        .collect()
+}
+
 #[test]
 fn a_scene_records_video_and_audio_in_sync_on_the_master_clock() {
     let Some(gpu) = gpu() else { return };
-    let log = Arc::new(Log::default());
-    let submitted = Arc::new(AtomicU64::new(0));
-    let adapters = adapters(&log, &submitted);
+    let r = rig();
+    let log = &r.log;
     let (col, canvas) = scene();
-    let clock = TestClock::new();
-    let engine = Engine::with_clock(Arc::new(clock.clone()), EngineConfig::default());
+    let (engine, clock) = engine_at_start();
     let settings = RecordSettings::new(canvas, "mem://recording", ContainerId::Matroska);
-    let mut recording = Recording::start(engine, gpu, &col, &adapters, &settings).unwrap();
+    let mut recording = Recording::start(engine, gpu, &col, &r.adapters, &settings).unwrap();
 
     let started = recording.started().clone();
     assert_eq!(started.video_encoder.adapter.as_str(), "org.rbs.test.h264");
@@ -458,8 +499,9 @@ fn a_scene_records_video_and_audio_in_sync_on_the_master_clock() {
         started.sources.iter().all(|s| s.failed.is_none()),
         "{started:?}"
     );
+    assert!(started.problems.is_empty(), "{started:?}");
 
-    let reached = run_until(&mut recording, &clock, |_| {
+    let reached = run_until(&mut recording, &clock, true, |_| {
         log.count(0) >= 12 && log.count(1) >= 20
     });
     assert!(reached, "packets: {:?}", recording.progress());
@@ -467,12 +509,13 @@ fn a_scene_records_video_and_audio_in_sync_on_the_master_clock() {
     let report = recording.finish();
     assert!(report.shutdown_errors.is_empty(), "{report:?}");
     assert_eq!(report.failure, None);
-    assert_eq!(report.progress.mux_drops, 0);
-    assert_eq!(report.progress.audio_queue_drops, 0);
-    assert_eq!(report.progress.audio_packet_drops, 0);
-    assert_eq!(report.progress.late_audio_ticks, 0);
-    assert_eq!(report.progress.late_render_ticks, 0);
-    for s in &report.progress.sources {
+    let p = &report.progress;
+    assert_eq!(p.mux_drops, 0);
+    assert_eq!(p.audio_queue_drops, 0);
+    assert_eq!(p.audio_packet_drops, 0);
+    assert_eq!(p.late_audio_ticks, 0);
+    assert_eq!(p.late_render_ticks, 0);
+    for s in &p.sources {
         assert!(s.frames > 0, "{} delivered nothing: {report:?}", s.name);
     }
 
@@ -484,25 +527,19 @@ fn a_scene_records_video_and_audio_in_sync_on_the_master_clock() {
     assert_eq!(log.headers.load(Ordering::Relaxed), 1);
     assert_eq!(log.trailers.load(Ordering::Relaxed), 1);
     assert_eq!(log.finished.load(Ordering::Relaxed), 1);
-
-    let packets = log.packets.lock().unwrap().clone();
-    let video: Vec<Timestamp> = packets
-        .iter()
-        .filter(|p| p.stream == 0)
-        .map(|p| p.pts)
-        .collect();
-    let audio: Vec<Timestamp> = packets
-        .iter()
-        .filter(|p| p.stream == 1)
-        .map(|p| p.pts)
-        .collect();
     assert!(
-        packets
+        log.packets
+            .lock()
+            .unwrap()
             .iter()
             .all(|p| (p.stream == 0) == (p.codec == CodecId::H264))
     );
+    let video = pts_of(log, 0);
+    let audio = pts_of(log, 1);
 
-    // Video: master time on the canvas cadence, strictly increasing.
+    // Video: master time on the canvas cadence (origin 0), strictly increasing, from
+    // the first render tick after the start on (the first frame needs a capture and a
+    // readback, a few ticks).
     let frames = Cadence::frames(Timestamp::ZERO, FPS);
     for pair in video.windows(2) {
         assert!(pair[0] < pair[1], "video pts not increasing: {pair:?}");
@@ -511,7 +548,25 @@ fn a_scene_records_video_and_audio_in_sync_on_the_master_clock() {
         let i = frames.index_at_or_before(*t).unwrap();
         assert_eq!(frames.time_of(i), *t, "video pts off the canvas cadence");
     }
-    // Audio: continuous, one AAC frame apart.
+    let first_tick = frames.time_of(due(&frames, Duration::ZERO, START) - 1);
+    assert!(
+        video[0] >= first_tick && video[0] <= first_tick + FPS.frame_duration() * 4,
+        "first video pts {:?}, first render tick {first_tick:?}",
+        video[0]
+    );
+
+    // Audio: the first packet is the first mixed block, which carries the time of its
+    // first sample, the tick time minus the graph latency (ADR-0037), not the tick time
+    // itself. The audio cadence starts at `START`, where the worker runs its first tick;
+    // the input may need one more block before it delivers.
+    let graph = settings.audio_graph;
+    let ticks = graph.cadence(START);
+    let first_tick = audio[0] + graph.latency;
+    assert!(
+        first_tick == ticks.time_of(0) || first_tick == ticks.time_of(1),
+        "first audio pts {:?} is not a block time of the first audio ticks",
+        audio[0]
+    );
     let aac = SampleRate::HZ_48000.duration_of(1024);
     for pair in audio.windows(2) {
         let step = pair[1].saturating_since(pair[0]);
@@ -520,40 +575,96 @@ fn a_scene_records_video_and_audio_in_sync_on_the_master_clock() {
             "audio gap or overlap: {pair:?}"
         );
     }
-    // One timeline: both start near the clock's origin and end before the clock, and
-    // they start within the audio latency plus two frames of each other.
-    let first_v = video[0];
-    let first_a = audio[0];
-    let bound = settings.audio_graph.latency + FPS.frame_duration() * 2;
-    let apart = first_v
-        .saturating_since(first_a)
-        .max(first_a.saturating_since(first_v));
-    assert!(
-        apart <= bound,
-        "video starts at {first_v:?}, audio at {first_a:?}"
-    );
     assert!(*video.last().unwrap() <= end && *audio.last().unwrap() <= end);
-    assert!(submitted.load(Ordering::Relaxed) >= 12);
+    assert!(r.submitted.load(Ordering::Relaxed) >= 12);
+}
+
+#[test]
+fn without_audio_only_video_is_recorded_and_audio_sources_stay_closed() {
+    let Some(gpu) = gpu() else { return };
+    let r = rig();
+    let (col, canvas) = scene();
+    let (engine, clock) = engine_at_start();
+    let mut settings = RecordSettings::new(canvas, "mem://video", ContainerId::Matroska);
+    settings.audio = None;
+    let mut recording = Recording::start(engine, gpu, &col, &r.adapters, &settings).unwrap();
+    let started = recording.started().clone();
+    let names: Vec<&str> = started.sources.iter().map(|s| s.name.as_str()).collect();
+    assert_eq!(names, ["Display", "Camera"]);
+    assert_eq!(started.audio_encoder, None);
+    assert_eq!(r.audio.active_streams(), 0, "no audio stream opened");
+    assert!(!recording.engine().has_worker(AUDIO));
+    let reached = run_until(&mut recording, &clock, false, |_| r.log.count(0) >= 5);
+    assert!(reached, "{:?}", recording.progress());
+    let report = recording.finish();
+    assert!(report.shutdown_errors.is_empty(), "{report:?}");
+    assert_eq!(r.log.streams.lock().unwrap().len(), 1);
+    assert_eq!(r.log.count(1), 0);
+}
+
+#[test]
+fn problems_outside_the_recorded_scene_do_not_stop_it() {
+    let Some(gpu) = gpu() else { return };
+    let r = rig();
+    let (mut col, canvas) = scene();
+    // An unknown plugin source in a scene that is not on air.
+    let (idle, _) = col.add_scene("Idle", SceneScope::Shared).unwrap();
+    let (plugin, _) = col
+        .add_source(
+            "Plugin",
+            NodeTypeId::new_static("com.example.plugin"),
+            Settings::new(),
+        )
+        .unwrap();
+    col.add_item(
+        idle,
+        ItemContent::Source(plugin),
+        Layout::new([0.0, 0.0], [8.0, 8.0]),
+        None,
+    )
+    .unwrap();
+    let (engine, _clock) = engine_at_start();
+    let settings = RecordSettings::new(canvas, "mem://x", ContainerId::Matroska);
+    let recording =
+        Recording::start(engine, Arc::clone(&gpu), &col, &r.adapters, &settings).unwrap();
+    assert_eq!(recording.started().problems.len(), 1);
+    assert_eq!(recording.started().sources.len(), 4);
+    let _ = recording.finish();
+
+    // The same source on air stops the start before anything opens.
+    let r = rig();
+    let program = col.canvas(canvas).unwrap().program.unwrap();
+    col.add_item(
+        program,
+        ItemContent::Source(plugin),
+        Layout::new([0.0, 0.0], [8.0, 8.0]),
+        None,
+    )
+    .unwrap();
+    let (engine, _clock) = engine_at_start();
+    let err = Recording::start(engine, gpu, &col, &r.adapters, &settings).unwrap_err();
+    assert!(matches!(err, RecordError::Problems(_)), "{err}");
+    assert_eq!(r.log.headers.load(Ordering::Relaxed), 0);
+    assert_eq!(r.capture.live_buffers(), 0);
+    assert_eq!(r.audio.active_streams(), 0);
 }
 
 #[test]
 fn an_unknown_canvas_or_a_missing_encoder_fails_before_anything_runs() {
     let Some(gpu) = gpu() else { return };
-    let log = Arc::new(Log::default());
-    let submitted = Arc::new(AtomicU64::new(0));
     let (col, canvas) = scene();
 
     // An empty video encoder registry.
-    let mut adapters = adapters(&log, &submitted);
-    adapters.video_encoders = rbs_core::registry::Registry::new();
-    let engine = Engine::with_clock(Arc::new(TestClock::new()), EngineConfig::default());
+    let mut r = rig();
+    r.adapters.video_encoders = rbs_core::registry::Registry::new();
+    let (engine, _) = engine_at_start();
     let settings = RecordSettings::new(canvas, "mem://x", ContainerId::Matroska);
-    let err = Recording::start(engine, Arc::clone(&gpu), &col, &adapters, &settings).unwrap_err();
+    let err = Recording::start(engine, Arc::clone(&gpu), &col, &r.adapters, &settings).unwrap_err();
     assert!(
         matches!(
             err,
             RecordError::NoAdapter {
-                port: "video encoder",
+                port: Port::VideoEncoder,
                 ..
             }
         ),
@@ -561,12 +672,18 @@ fn an_unknown_canvas_or_a_missing_encoder_fails_before_anything_runs() {
     );
 
     // A container no muxer lists.
-    let adapters = self::adapters(&log, &submitted);
-    let engine = Engine::with_clock(Arc::new(TestClock::new()), EngineConfig::default());
+    let r = rig();
+    let (engine, _) = engine_at_start();
     let settings = RecordSettings::new(canvas, "mem://x", ContainerId::Mp4Fragmented);
-    let err = Recording::start(engine, Arc::clone(&gpu), &col, &adapters, &settings).unwrap_err();
+    let err = Recording::start(engine, Arc::clone(&gpu), &col, &r.adapters, &settings).unwrap_err();
     assert!(
-        matches!(err, RecordError::NoAdapter { port: "muxer", .. }),
+        matches!(
+            err,
+            RecordError::NoAdapter {
+                port: Port::Muxer,
+                ..
+            }
+        ),
         "{err}"
     );
 
@@ -576,9 +693,15 @@ fn an_unknown_canvas_or_a_missing_encoder_fails_before_anything_runs() {
         c.add_canvas("A", Size::new(W, H), FPS).unwrap();
         c.add_canvas("B", Size::new(W, H), FPS).unwrap()
     };
-    let engine = Engine::with_clock(Arc::new(TestClock::new()), EngineConfig::default());
+    let (engine, _) = engine_at_start();
     let settings = RecordSettings::new(other, "mem://x", ContainerId::Matroska);
-    let err = Recording::start(engine, gpu, &col, &adapters, &settings).unwrap_err();
+    let err = Recording::start(engine, gpu, &col, &r.adapters, &settings).unwrap_err();
     assert!(matches!(err, RecordError::UnknownCanvas(_)), "{err}");
-    assert_eq!(log.headers.load(Ordering::Relaxed), 0, "nothing was opened");
+    assert_eq!(
+        r.log.headers.load(Ordering::Relaxed),
+        0,
+        "nothing was opened"
+    );
+    assert_eq!(r.capture.live_buffers(), 0);
+    assert_eq!(r.audio.active_streams(), 0);
 }

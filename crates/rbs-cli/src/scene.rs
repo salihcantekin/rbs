@@ -65,7 +65,8 @@ fn whole_fps(rate: FrameRate) -> i64 {
 }
 
 /// The camera's rectangle: a 16:9 picture 4/15 of the canvas wide, a margin of 1/40
-/// of the width from the bottom-right corner (512 x 288 at 1360, 744 on 1920 x 1080).
+/// of the width from the bottom-right corner. On 1920 x 1080 it is 512 x 288 with its
+/// top-left corner at (1360, 744).
 pub fn camera_layout(width: u32, height: u32) -> Layout {
     let w = width as f32 * 4.0 / 15.0;
     let h = w * 9.0 / 16.0;

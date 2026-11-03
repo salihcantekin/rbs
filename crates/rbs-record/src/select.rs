@@ -13,9 +13,10 @@ use rbs_mux::{MuxerFactory, caps as mux_caps};
 use rbs_nodes::VideoEncoderNode;
 use rbs_transport::{TransportFactory, caps as transport_caps};
 
-use crate::recording::RecordError;
+use crate::recording::{Port, RecordError};
 
 /// The adapter chosen for one port.
+#[non_exhaustive]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Chosen {
     /// Its id.
@@ -84,7 +85,7 @@ pub(crate) fn video_encoder(
         }
     }
     Err(RecordError::NoAdapter {
-        port: "video encoder",
+        port: Port::VideoEncoder,
         tried,
     })
 }
@@ -105,7 +106,7 @@ pub(crate) fn audio_encoder(
         }
     }
     Err(RecordError::NoAdapter {
-        port: "audio encoder",
+        port: Port::AudioEncoder,
         tried,
     })
 }
@@ -120,7 +121,7 @@ pub(crate) fn muxer(
     match selection.best() {
         Some(f) => Ok((Arc::clone(f), Chosen::of(f.as_ref()))),
         None => Err(RecordError::NoAdapter {
-            port: "muxer",
+            port: Port::Muxer,
             tried: rejected(&selection),
         }),
     }
@@ -147,7 +148,7 @@ pub(crate) fn transport(
     match selection.best() {
         Some(f) => Ok((Arc::clone(f), Chosen::of(f.as_ref()))),
         None => Err(RecordError::NoAdapter {
-            port: "transport",
+            port: Port::Transport,
             tried: rejected(&selection),
         }),
     }

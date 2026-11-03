@@ -15,13 +15,14 @@ mod args;
 mod platform;
 mod scene;
 
-use std::io::BufRead;
+use std::io::{BufRead, IsTerminal};
 use std::process::ExitCode;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use rbs_codec::RateControl;
+use rbs_core::capability::Requirement;
 use rbs_core::registry::{AdapterFactory, AdapterId, Registry};
 use rbs_engine::Engine;
 use rbs_gpu::{GpuContext, GpuRequest};
@@ -135,7 +136,9 @@ fn line(elapsed: Duration, p: &Progress) -> String {
     }
     s.push_str(&format!(
         " | {} packets | late {}/{}",
-        p.packets_written, p.late_render_ticks, p.late_audio_ticks
+        p.packets_muxed(),
+        p.late_render_ticks,
+        p.late_audio_ticks
     ));
     s
 }
@@ -145,11 +148,27 @@ fn record(a: &RecordArgs) -> Result<(), String> {
     for e in errors {
         eprintln!("warning: {e}");
     }
-    if let Some(wanted) = &a.encoder {
-        let id = resolve(&adapters.video_encoders, wanted)?;
-        adapters.video_encoders.set_user_choice(Some(id));
-    }
+    let wanted = match &a.encoder {
+        Some(name) => Some(resolve(&adapters.video_encoders, name)?),
+        None => None,
+    };
     adapters.probe();
+    if let Some(id) = wanted {
+        // Only the named encoder: if it cannot open, the recording fails rather than
+        // quietly using another one.
+        let candidates = adapters
+            .video_encoders
+            .select(&Requirement::new())
+            .candidates;
+        let factory = candidates
+            .into_iter()
+            .find(|f| f.id() == id)
+            .ok_or_else(|| format!("encoder {id} is not available on this system"))?;
+        let mut only = Registry::new();
+        only.register(factory).map_err(|e| e.to_string())?;
+        only.probe_all();
+        adapters.video_encoders = only;
+    }
     if adapters.video_encoders.ids().next().is_none()
         || (!a.no_audio && adapters.audio_encoders.ids().next().is_none())
     {
@@ -163,14 +182,25 @@ fn record(a: &RecordArgs) -> Result<(), String> {
     for s in &built.skipped {
         println!("left out: {s}");
     }
+    if a.duration.is_none() && !std::io::stdin().is_terminal() {
+        return Err("without a terminal nothing can press Enter: pass --seconds".into());
+    }
     let out = std::path::absolute(&a.out).map_err(|e| format!("{}: {e}", a.out.display()))?;
+    let existed = out.exists();
+    if existed && !a.overwrite {
+        return Err(format!(
+            "{} exists; pass --overwrite to replace it",
+            out.display()
+        ));
+    }
     let mut settings = RecordSettings::new(built.canvas, args::file_url(&out), a.container);
     settings.video.rate_control = RateControl::Cbr {
         bitrate_bps: a.video_bitrate,
     };
-    settings.audio = (!a.no_audio).then(|| AudioSettings {
-        bitrate_bps: a.audio_bitrate,
-        ..AudioSettings::default()
+    settings.audio = (!a.no_audio).then(|| {
+        let mut audio = AudioSettings::default();
+        audio.bitrate_bps = a.audio_bitrate;
+        audio
     });
 
     let gpu = Arc::new(
@@ -179,8 +209,17 @@ fn record(a: &RecordArgs) -> Result<(), String> {
     println!("gpu: {}", gpu.adapter_name());
     let mut engine = Engine::new();
     engine.set_thread_policy(Some(Arc::new(rbs_thread_os::OsThreadPolicy::new())));
-    let mut recording = Recording::start(engine, gpu, &built.collection, &adapters, &settings)
-        .map_err(|e| e.to_string())?;
+    let mut recording = match Recording::start(engine, gpu, &built.collection, &adapters, &settings)
+    {
+        Ok(r) => r,
+        Err(e) => {
+            // A failed start may have created the file; leave no empty file behind.
+            if !existed && out.exists() {
+                let _ = std::fs::remove_file(&out);
+            }
+            return Err(e.to_string());
+        }
+    };
     let started = recording.started().clone();
     println!(
         "video encoder: {} | audio encoder: {} | muxer: {} | transport: {}",
@@ -261,8 +300,8 @@ fn record(a: &RecordArgs) -> Result<(), String> {
         );
     }
     println!(
-        "output: {} packets, {} muxer drops, backlog peak {}, {} lost at finish; audio drops {} (queue) {} (encoder); late ticks render {} audio {}",
-        p.packets_written,
+        "output: {} packets muxed, {} muxer drops, backlog peak {}, {} lost at finish; audio drops {} (queue) {} (encoder); late ticks render {} audio {}",
+        p.packets_muxed(),
         p.mux_drops,
         p.backlog_peak,
         report.finish_lost,
@@ -279,7 +318,7 @@ fn record(a: &RecordArgs) -> Result<(), String> {
     let failure = failure.or(report.failure);
     match failure {
         Some(why) => Err(why),
-        None if p.packets_written == 0 => Err("no packet reached the file".into()),
+        None if p.packets_muxed() == 0 => Err("no packet reached the file".into()),
         None if !report.shutdown_errors.is_empty() => Err("the engine did not stop cleanly".into()),
         None => Ok(()),
     }

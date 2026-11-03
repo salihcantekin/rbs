@@ -20,10 +20,12 @@ Out of scope: streaming (same graph, a network transport; later), several output
 ```rust
 // rbs_record
 pub const RENDER: PartitionId = PartitionId::RENDER; // capture, compositor, video export
-pub const AUDIO: PartitionId;          // 1: audio inputs, mixer
-pub const VIDEO_ENCODER: PartitionId;  // 2
-pub const AUDIO_ENCODER: PartitionId;  // 3
-pub const OUTPUT: PartitionId;         // 4: muxer + transport
+pub const AUDIO: PartitionId;          // 1: audio inputs, mixer (default)
+pub const VIDEO_ENCODER: PartitionId;  // 2 (default)
+pub const AUDIO_ENCODER: PartitionId;  // 3 (default)
+pub const OUTPUT: PartitionId;         // 4: muxer + transport (default)
+
+#[non_exhaustive] pub enum Port { VideoEncoder, AudioEncoder, Muxer, Transport } // Display
 
 pub struct RecordAdapters {            // registries filled and probed by the composition root
     pub sources: SourceTypes,
@@ -34,28 +36,36 @@ pub struct RecordAdapters {            // registries filled and probed by the co
 }
 impl RecordAdapters { pub fn new() -> Self; pub fn probe(&mut self); }
 
-pub struct RecordSettings {
+#[non_exhaustive] pub struct Partitions { // the non-render partition ids; defaults are the constants above
+    pub audio: PartitionId, pub video_encoder: PartitionId,
+    pub audio_encoder: PartitionId, pub output: PartitionId,
+}
+
+#[non_exhaustive] pub struct RecordSettings {
     pub canvas: CanvasId, pub url: String, pub container: ContainerId,
     pub video: VideoSettings,            // codec H.264, CBR 12 Mbit/s, keyframe every 2 s, NV12
     pub audio: Option<AudioSettings>,    // AAC 160 kbit/s; None: video only
     pub audio_graph: AudioGraphConfig,   // default: 48 kHz stereo, 10 ms blocks, 50 ms latency
+    pub partitions: Partitions,
 }
 impl RecordSettings { pub fn new(canvas: CanvasId, url: impl Into<String>, container: ContainerId) -> Self; }
 
 impl Recording {
     pub fn start(engine: Engine, gpu: Arc<GpuContext>, collection: &SceneCollection,
         adapters: &RecordAdapters, settings: &RecordSettings) -> Result<Recording, RecordError>;
-    pub fn started(&self) -> &StartReport;  // chosen adapters, sources (adapter, target, failed)
+    pub fn started(&self) -> &StartReport;  // chosen adapters, sources (node, adapter, target, failed), problems
     pub fn engine(&self) -> &Engine;
     pub fn node_name(&self, node: NodeId) -> Option<&str>;
     pub fn service(&mut self) -> Serviced;  // the engine's control loop, plus failure tracking
     pub fn failure(&self) -> Option<String>;
-    pub fn progress(&self) -> Progress;     // plain counters; peaks since the previous call
+    pub fn progress(&self) -> Progress;     // plain counters; peaks since the previous call; packets_muxed()
     pub fn mixer_anomalies(&self) -> u64;
     pub fn finish(self) -> FinishReport;    // shutdown in pipeline order
 }
 pub fn scheme_of(url: &str) -> Option<&str>;
 ```
+
+Settings and report types are `#[non_exhaustive]` (ADR-0040 decision 7): callers start from `new`/`default` and set fields.
 
 ### The graph
 
@@ -69,28 +79,30 @@ audio inputs --audio--> mixer ==audio==> audio encoder ==packets==> output s1
 | Partition | Runtime | Pacing |
 | --- | --- | --- |
 | `RENDER` | `GpuRuntime` on the given device | the canvas frame rate from time 0 |
-| `AUDIO` | `()` | `Pacing::stream(audio_graph.cadence(now), 4)` |
-| `VIDEO_ENCODER` | `()` | the canvas frame rate, a quarter frame after render |
-| `AUDIO_ENCODER` | `()` | doorbell (one tick per queued block), 100 ms heartbeat |
-| `OUTPUT` | `()` | `Pacing::output()` |
+| `partitions.audio` | `()` | `Pacing::stream(audio_graph.cadence(now), 4)` |
+| `partitions.video_encoder` | `()` | the canvas frame rate, a quarter frame after render |
+| `partitions.audio_encoder` | `()` | doorbell (one tick per queued block), 100 ms heartbeat |
+| `partitions.output` | `()` | `Pacing::output()` |
+
+Without audio (`audio: None`) the two audio partitions are not added: three worker threads.
 
 ### `Recording::start`
 
-1. The canvas must exist (`UnknownCanvas`). The export is NV12 (or `video.format`) at the canvas size.
+1. The canvas must exist (`UnknownCanvas`) and have a program scene (`NoProgram`). The export is NV12 (or `video.format`) at the canvas size.
 2. Adapters are chosen before anything opens, each from its registry's `select`, best first (user choice, preference order, hardware first, registration order):
    - video encoder: `codec.video.encode` includes the codec, `input.memory` includes `system`, `input.pixel_format` includes the export format; the first candidate whose `VideoEncoderNode::open` succeeds;
    - audio encoder (when `audio` is set): `codec.audio.encode` includes the codec; the first whose session is created for `audio_graph.format` and the bitrate;
    - muxer: `mux.container` includes the container; the best;
    - transport: `transport.schemes` includes the URL's scheme (lower case) and `transport.input` includes `container.transport_input()`; the best.
    No candidate: `NoAdapter { port, tried }`, with each rejected or failed adapter and why. A URL without a scheme is `InvalidUrl`.
-3. The collection is bound with `SceneBinder::new(sources.node_types()).with_audio(AUDIO)`. Any `BindProblem` fails the start (`Problems`); the composition root builds scenes from installed types only.
-4. Every created source is instantiated (`SourceTypes::instantiate` with the engine's clock and `audio_graph`); an instantiation error fails the start (`Source`). Video sources go to `RENDER`, audio-only sources to `AUDIO` (the binder chose).
+3. The collection is bound with `SceneBinder::new(sources.node_types())`, `.with_audio(partitions.audio)` only when audio is recorded. A `BindProblem` fails the start (`Problems`) only when it leaves out a source the program scene shows or, with audio, plays: an unknown source type, or a source with no video output when video is what it contributes (an audio-only source without audio is simply not recorded). Problems anywhere else in the collection go to `StartReport::problems` and the recording goes on.
+4. Only the sources the output's plan schedules are instantiated (`SourceTypes::instantiate` with the engine's clock and `audio_graph`), in plan order: sources of other scenes or canvases, and audio sources when audio is off, are never opened. An instantiation error fails the start (`Source`). Video sources go to `RENDER`, audio-only sources to `partitions.audio` (the binder chose).
 5. The export, the video encoder and the output (streams: video, then audio) are added Active and linked to the program compositor of the canvas; the audio encoder to the canvas's mixer. The compositor's layers come from `node_layers` over the final plan; mixer strips from `report.mixers[canvas].inputs`, gain 1, each with a level meter, and a master meter.
-6. The partitions are added and every instance adopted, then the graph is applied once. If the compositor, mixer, export, an encoder or the output did not join, or the engine reported errors or links that could not cross partitions, the engine is shut down and the start fails with `Start([(node, reason)])`. A source that did not join (a camera another program holds) is recorded in `StartReport::sources[i].failed` and the recording goes on without it.
+6. The partitions are added and every instance adopted, then the graph is applied once. If the compositor, mixer, export, an encoder or the output did not join, or the engine reported errors or links that could not cross partitions, the engine is shut down and the start fails with `Start(Vec<StartFailure { node, reason }>)`, which also lists the shutdown's errors (node `"shutdown"`). The output may have opened the destination by then; removing a file it created is the composition root's job. A source that did not join (a camera another program holds) is recorded in `StartReport::sources[i].failed` and the recording goes on without it.
 
 ### Running and stopping
 
-- `service` runs `Engine::service` and reads its events: a `Failed` event of a source updates that source's `failed`; a permanent failure (`retry_at: None`) of an essential node sets `failure`. `failure()` also returns the output's first permanent failure cause (`OutputNodeStats::failure`). The composition root stops when `failure()` is set.
+- `service` runs `Engine::service` and reads its events, matched to sources by `SourceState::node`: a `Failed` event of a source sets that source's `failed`, `Restarted` or `Recovered` clears it; a permanent failure (`retry_at: None`) of an essential node sets `failure`. `failure()` also returns the output's first permanent failure cause (`OutputNodeStats::failure`). The composition root stops when `failure()` is set.
 - `finish` shuts the engine down (sources first, the output last, which writes the container's trailer and finishes the transport) and returns the final `Progress`, `failure`, shutdown errors, `flush_lost` (packets the video encoder still held) and `finish_lost` (output items not delivered).
 
 ### Invariants
@@ -104,31 +116,38 @@ audio inputs --audio--> mixer ==audio==> audio encoder ==packets==> output s1
 
 ### `rbs-cli`
 
-- `rbs-cli record <file.mkv|file.mp4> [options]`: `.mkv` is Matroska, `.mp4` fragmented MP4. Options: `--seconds N` (else until Enter), `--size WxH` (even, default 1920x1080), `--fps N` (default 60), `--bitrate KBPS` (default 12000), `--audio-bitrate KBPS` (default 160), `--encoder ID` (a video encoder adapter id or its last dotted part, set as the registry's user choice), `--display N`, `--camera N` (indices from `devices`), `--no-camera`, `--no-mic`, `--no-system-audio`, `--no-audio`. Bad arguments exit with code 2 and the usage text.
+- `rbs-cli record <file.mkv|file.mp4> [options]`: `.mkv` is Matroska, `.mp4` fragmented MP4. Options: `--seconds N` (else until Enter; required when stdin is not a terminal, so a script cannot record forever), `--overwrite` (replace an existing file; without it an existing file is refused), `--size WxH` (even, default 1920x1080), `--fps N` (default 60), `--bitrate KBPS` (default 12000), `--audio-bitrate KBPS` (default 160), `--encoder ID` (a video encoder adapter id or its last dotted part: only that encoder is used, no fallback; an unknown id is an error), `--display N`, `--camera N` (indices from `devices`), `--no-camera`, `--no-mic`, `--no-system-audio`, `--no-audio`. Bad arguments exit with code 2 and the usage text.
 - The scene: one canvas of the given size and rate, one scene on air with the chosen display filling the canvas (cursor on, at the canvas rate), the camera at 1280x720 30 fps in a 16:9 rectangle 4/15 of the canvas wide, a margin of 1/40 of the width from the bottom-right corner, the default microphone and the default system audio. A type with no target is left out and said so; no display is an error.
 - Adapters: Matroska, fMP4 and file on every platform; Windows adds WGC and Media Foundation capture, WASAPI, NVENC and AMF (in that order), Media Foundation AAC. A platform without video or audio encoders says recording is not available there yet.
-- The engine gets `OsThreadPolicy` (ADR-0030). The device is `GpuRequest::default()` (high performance, no software adapter). The file path is made absolute and turned into a `file://` URL (`%`, space, `#`, `?` escaped).
-- Exit code 0 when the recording ran and stopped cleanly with packets written; 1 when start failed, the recording failed while running, the engine did not stop cleanly, or no packet was written.
+- The engine gets `OsThreadPolicy` (ADR-0030). The device is `GpuRequest::default()` (high performance, no software adapter). The file path is made absolute and turned into a `file://` URL from its components: a drive path is `file:///C:/...`, a UNC path `file://server/share/...` (verbatim `\\?\` prefixes included), and `%`, space, `#`, `?` and a `\` inside a name are escaped. When the start fails after the file was created, `rbs-cli` removes it.
+- Exit code 0 when the recording ran and stopped cleanly with packets muxed (`Progress::packets_muxed`); 1 when start failed, the recording failed while running, the engine did not stop cleanly, or no packet was muxed.
 - `rbs-cli devices` lists installed source types with numbered targets, and every registered adapter as available or unavailable.
 
 ## Errors and failure behaviour
 
-`RecordError` (non-exhaustive): `UnknownCanvas`, `InvalidUrl`, `Bind`, `Problems`, `NotBound`, `Source { name, error }`, `UnsupportedSource`, `NoAdapter { port, tried }`, `Graph`, `Engine`, `Start(nodes)`. Run-time failures do not panic or end the process: they are `failure()` and `StartReport::sources[i].failed`; the nodes' own restart rules apply (a source with a recoverable error restarts with back-off, ADR-0024; an output that wrote media never restarts, ADR-0038).
+`RecordError` (non-exhaustive): `UnknownCanvas`, `NoProgram`, `InvalidUrl`, `Bind`, `Problems`, `NotBound`, `Source { name, error }`, `UnsupportedSource`, `NoAdapter { port, tried }`, `Graph`, `Engine` (for example a partition id already in use), `Start(Vec<StartFailure>)`. Run-time failures do not panic or end the process: they are `failure()` and `StartReport::sources[i].failed`; the nodes' own restart rules apply (a source with a recoverable error restarts with back-off, ADR-0024; an output that wrote media never restarts, ADR-0038).
 
 ## Performance requirements
 
-Control-thread only; the graph's hot paths are the nodes' and keep their budgets. Five worker threads while recording (`RENDER`, `AUDIO` with a raised class, two encoders, the output).
+Control-thread only; the graph's hot paths are the nodes' and keep their budgets. Five worker threads while recording (render, audio, two encoders, the output), three without audio. Every cadence partition gets the `Periodic` thread class from the engine's policy; the doorbell partitions get `Responsive`.
 
 ## Conformance tests
 
-- `crates/rbs-record/tests/record.rs` (any GPU adapter, lavapipe on CI): a scene with the synthetic display, camera, microphone and loopback records through a fake H.264 encoder (after a candidate that fails to open), the Media Foundation AAC session over its fake engine and a logging muxer and transport, on a `TestClock` moved in 5 ms steps with every cadence worker waited for by tick count. Checks: chosen adapters; every source delivers; streams are H.264 then AAC; header, trailer and transport finish once; video `pts` strictly increasing and on the canvas cadence; audio `pts` one AAC frame apart with no gap; both streams start within the audio latency plus two frames of each other and end before the clock; no muxer, queue or encoder drops; no late ticks. A missing video encoder, an unlisted container and an unknown canvas fail before anything opens.
-- `crates/rbs-cli` unit tests: argument parsing and refusals, file URLs, the scene (sources present, left out on request, bad indices refused, camera rectangle).
+- `crates/rbs-record/tests/record.rs` (any GPU adapter, lavapipe on CI): a scene with the synthetic display, camera, microphone and loopback records through a fake H.264 encoder (after a candidate that fails to open), the Media Foundation AAC session over its fake engine and a logging muxer and transport, on a `TestClock` started off the frame grid (3.217 s) and moved in 5 ms steps, every cadence worker waited for by tick count (hang guard 20 s). Tests:
+  - `a_scene_records_video_and_audio_in_sync_on_the_master_clock`: chosen adapters; every source delivers; streams are H.264 then AAC; header, trailer and transport finish once; video `pts` exactly on the canvas cadence, the first within four frames of the first tick; the first audio `pts` plus the graph latency exactly on the audio cadence at the start (index 0 or 1), every step one AAC frame (±1 µs); no muxer, queue or encoder drops; no late ticks.
+  - `without_audio_only_video_is_recorded_and_audio_sources_stay_closed`: one stream, no audio stream opened, no audio worker.
+  - `problems_outside_the_recorded_scene_do_not_stop_it`: an unknown source type in another scene is a reported problem; put on air, it fails the start with `Problems` before anything opens.
+  - `an_unknown_canvas_or_a_missing_encoder_fails_before_anything_runs`: `NoAdapter` for the video encoder and the muxer, `UnknownCanvas`; no capture buffer or audio stream was opened.
+- `crates/rbs-cli` unit tests: argument parsing and refusals, file URLs (drive, UNC, verbatim on Windows; a write through the file transport to the URL's path), the scene (sources present, left out on request, bad indices refused, camera rectangle).
 - Hardware (manual, Windows): `rbs-cli record <file> --seconds 20` to `.mkv` and `.mp4`, with NVENC and with `--encoder amf`; `ffprobe` streams, packet steps and a decode pass; an A/V sync measurement with a clip that flashes the screen white and beeps at the same time every second, played full screen while recording display and system audio.
+
+Windows result (SC-PC, RTX 4090 + AMD iGPU, 2026-11-03), PASS: `rbs-cli record` with WGC display, Media Foundation camera (Cam Link 4K), WASAPI microphone (Shure MV7+) and loopback, NVENC (default) and AMF (`--encoder amf`), Media Foundation AAC. 20 s MKV: 1210 frames exported, 1202 encoded, 0 dropped, 0 resyncs, 0 late render or audio ticks, 0 queue or muxer drops; `ffprobe`: H.264 High 1920x1080 60/1 and AAC LC 48 kHz stereo, video steps 16.667 ms and audio steps 21.333 ms throughout, a full decode without errors. MP4 and AMF runs the same. The first packets: audio at 1.000 s, video 83 to 138 ms later (the first canvas frame waits for the display's first capture). The last 1 to 8 frames the encoder still held at shutdown are lost (open question below). Sync, measured end to end with a clip that flashes white and beeps every second played full screen by `ffplay` on the recorded display: audio leads the picture by 44 ms on average (29 to 63 ms over 28 flashes, after subtracting the analysis filter's delay measured on the clip itself); this includes `ffplay`'s output, DWM presentation and WGC capture latency on the video side. FFmpeg drops the first second of audio of the fragmented MP4 file: it reads the audio track's edit list (media time = the muxer's 1 s lead) as encoder priming (`rbs-mux-fmp4`, follow-up).
 
 ## Open questions
 
 - End of stream: the video encoder's held frames and the AAC encoder's last frames are lost at shutdown until the engine has a drain hook (engine spec).
-- Capture latency: video content at tick `t` is each source's newest frame, so video lags audio by the source's latency; per-source sync offsets (a video offset in the scene model, the audio input's offset parameter) are the follow-up.
-- Starting and stopping a recording while the engine keeps running (preview in the desktop app): detach the recording's nodes, finish the output, keep the scene bound.
+- Capture latency: video content at tick `t` is each source's newest frame, so video lags audio by the source's latency (about 44 ms end to end for a display on Windows, measured above); per-source sync offsets (a video offset in the scene model, the audio input's offset parameter) are the follow-up.
+- The fMP4 audio edit list: FFmpeg applies a non-zero audio `media_time` as priming in fragmented files; the muxer should start media time at the first packet or signal the lead differently.
+- Starting and stopping a recording while the engine keeps running (preview in the desktop app): the `attach`/`detach` entry point of ADR-0040 decision 6.
 - Several outputs per canvas (record and stream with one encoder) share the encoders through many-output packet pins.
 - Ctrl+C in `rbs-cli` ends the process without a trailer (Matroska stays playable, without duration and cues); a console control handler that stops cleanly is a follow-up.

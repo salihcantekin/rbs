@@ -40,6 +40,8 @@ rbs-codec-mf = { path = "../rbs-codec-mf" }
 # Reference adapters for the scene-building tests (deterministic, no devices).
 rbs-capture-test = { path = "../rbs-capture-test" }
 rbs-audio-io-test = { path = "../rbs-audio-io-test" }
+# The file URL test writes through the file transport.
+rbs-transport = { path = "../rbs-transport" }
 
 [lints]
 workspace = true

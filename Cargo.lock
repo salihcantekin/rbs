@@ -4196,6 +4196,7 @@ dependencies = [
  "rbs-scene",
  "rbs-sources",
  "rbs-thread-os",
+ "rbs-transport",
  "rbs-transport-file",
 ]
 

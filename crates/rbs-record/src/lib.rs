@@ -21,8 +21,8 @@ mod recording;
 mod select;
 
 pub use recording::{
-    AUDIO, AUDIO_ENCODER, AudioSettings, FinishReport, OUTPUT, Progress, RENDER, RecordAdapters,
-    RecordError, RecordSettings, Recording, SourceProgress, SourceState, StartReport,
-    VIDEO_ENCODER, VideoSettings,
+    AUDIO, AUDIO_ENCODER, AudioSettings, FinishReport, OUTPUT, Partitions, Port, Progress, RENDER,
+    RecordAdapters, RecordError, RecordSettings, Recording, SourceProgress, SourceState,
+    StartFailure, StartReport, VIDEO_ENCODER, VideoSettings,
 };
 pub use select::{Chosen, scheme_of};

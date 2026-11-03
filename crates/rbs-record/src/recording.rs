@@ -1,6 +1,6 @@
 //! The recording: graph assembly, start, progress and finish.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -31,21 +31,23 @@ use rbs_nodes::output::OutputNodeStats;
 use rbs_nodes::{OutputNode, VideoExportNode};
 use rbs_scene::SceneCollection;
 use rbs_scene::binder::{BindError, BindProblem, Role, SceneBinder};
-use rbs_scene::model::CanvasId;
+use rbs_scene::model::{CanvasId, SourceId};
+use rbs_sources::types::{SourceClass, class_of};
 use rbs_sources::{InstanceContext, SourceError, SourceInstance, SourceTypes, node_layers};
 use rbs_transport::{TransportConfig, TransportFactory, TransportInput};
 
 use crate::select::{self, Chosen};
 
-/// The render partition: capture sources, the compositor and the video export.
+/// The render partition: capture sources, the compositor and the video export. The
+/// scene binder places video sources here, so it is not configurable.
 pub const RENDER: PartitionId = PartitionId::RENDER;
-/// The audio partition: audio inputs and the mixer, at block cadence.
+/// Default audio partition: audio inputs and the mixer, at block cadence.
 pub const AUDIO: PartitionId = PartitionId(1);
-/// The video encoder, a quarter frame after the render tick.
+/// Default video encoder partition, a quarter frame after the render tick.
 pub const VIDEO_ENCODER: PartitionId = PartitionId(2);
-/// The audio encoder, one tick per queued block.
+/// Default audio encoder partition, one tick per queued block.
 pub const AUDIO_ENCODER: PartitionId = PartitionId(3);
-/// The muxed output (muxer and transport).
+/// Default output partition (muxer and transport).
 pub const OUTPUT: PartitionId = PartitionId(4);
 
 /// Audio ticks a late audio worker still runs in order (ADR-0037).
@@ -54,6 +56,31 @@ const AUDIO_CATCH_UP: u32 = 4;
 const AUDIO_ENCODER_PACKETS: usize = 64;
 /// Layers and strips the compositor and the mixer hold without allocating.
 const MIN_CAPACITY: usize = 16;
+
+/// The ports a recording chooses adapters for.
+#[non_exhaustive]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Port {
+    /// Video encoder.
+    VideoEncoder,
+    /// Audio encoder.
+    AudioEncoder,
+    /// Muxer.
+    Muxer,
+    /// Transport.
+    Transport,
+}
+
+impl fmt::Display for Port {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            Port::VideoEncoder => "video encoder",
+            Port::AudioEncoder => "audio encoder",
+            Port::Muxer => "muxer",
+            Port::Transport => "transport",
+        })
+    }
+}
 
 /// The adapters a recording may use, each port's registry probed by the caller.
 pub struct RecordAdapters {
@@ -107,6 +134,7 @@ impl fmt::Debug for RecordAdapters {
 }
 
 /// Video encoding of the recording.
+#[non_exhaustive]
 #[derive(Debug, Clone, PartialEq)]
 pub struct VideoSettings {
     /// Codec.
@@ -134,6 +162,7 @@ impl Default for VideoSettings {
 }
 
 /// Audio encoding of the recording.
+#[non_exhaustive]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AudioSettings {
     /// Codec.
@@ -152,7 +181,34 @@ impl Default for AudioSettings {
     }
 }
 
+/// The partitions a recording adds to the engine (render is always
+/// [`PartitionId::RENDER`]). Each must be new to the engine.
+#[non_exhaustive]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Partitions {
+    /// Audio inputs and the mixer.
+    pub audio: PartitionId,
+    /// The video encoder.
+    pub video_encoder: PartitionId,
+    /// The audio encoder.
+    pub audio_encoder: PartitionId,
+    /// The output.
+    pub output: PartitionId,
+}
+
+impl Default for Partitions {
+    fn default() -> Self {
+        Self {
+            audio: AUDIO,
+            video_encoder: VIDEO_ENCODER,
+            audio_encoder: AUDIO_ENCODER,
+            output: OUTPUT,
+        }
+    }
+}
+
 /// What to record and where.
+#[non_exhaustive]
 #[derive(Debug, Clone, PartialEq)]
 pub struct RecordSettings {
     /// The canvas recorded (its program scene).
@@ -167,6 +223,8 @@ pub struct RecordSettings {
     pub audio: Option<AudioSettings>,
     /// The audio graph's format, block size and latency.
     pub audio_graph: AudioGraphConfig,
+    /// Partition ids.
+    pub partitions: Partitions,
 }
 
 impl RecordSettings {
@@ -179,8 +237,18 @@ impl RecordSettings {
             video: VideoSettings::default(),
             audio: Some(AudioSettings::default()),
             audio_graph: AudioGraphConfig::default(),
+            partitions: Partitions::default(),
         }
     }
+}
+
+/// A node of the recording that did not start, and why.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StartFailure {
+    /// The node's role (`"video encoder"`), or `"engine"` / a link.
+    pub node: String,
+    /// Why.
+    pub reason: String,
 }
 
 /// Why a recording could not start.
@@ -189,11 +257,13 @@ impl RecordSettings {
 pub enum RecordError {
     /// The collection has no canvas with this id.
     UnknownCanvas(CanvasId),
+    /// The canvas has no program scene.
+    NoProgram(CanvasId),
     /// The URL has no scheme.
     InvalidUrl(String),
     /// The binder refused the collection.
     Bind(BindError),
-    /// The binder could not represent parts of the collection.
+    /// The binder could not represent sources the recorded scene shows.
     Problems(Vec<BindProblem>),
     /// The canvas has no program compositor or mixer.
     NotBound(&'static str),
@@ -209,22 +279,24 @@ pub enum RecordError {
     /// No adapter of a port could serve the recording: each one tried, and why not.
     NoAdapter {
         /// The port.
-        port: &'static str,
+        port: Port,
         /// Adapters tried or rejected, with the reason.
         tried: Vec<(AdapterId, String)>,
     },
     /// The graph refused an edit (a bug in this crate).
     Graph(GraphError),
-    /// The engine refused an edit.
+    /// The engine refused an edit (for example a partition id already in use).
     Engine(EngineError),
-    /// Nodes the recording needs did not start: `(node, reason)`.
-    Start(Vec<(String, String)>),
+    /// Nodes the recording needs did not start; the engine was shut down. Shutdown
+    /// errors are listed with node `"shutdown"`.
+    Start(Vec<StartFailure>),
 }
 
 impl fmt::Display for RecordError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             RecordError::UnknownCanvas(id) => write!(f, "no canvas {id:?}"),
+            RecordError::NoProgram(id) => write!(f, "canvas {id:?} has no program scene"),
             RecordError::InvalidUrl(url) => write!(f, "not a URL: {url}"),
             RecordError::Bind(e) => write!(f, "binding the scene failed: {e}"),
             RecordError::Problems(p) => write!(f, "the scene cannot be bound: {p:?}"),
@@ -244,8 +316,8 @@ impl fmt::Display for RecordError {
             RecordError::Engine(e) => write!(f, "engine: {e}"),
             RecordError::Start(nodes) => {
                 write!(f, "the recording did not start")?;
-                for (node, why) in nodes {
-                    write!(f, "; {node}: {why}")?;
+                for n in nodes {
+                    write!(f, "; {}: {}", n.node, n.reason)?;
                 }
                 Ok(())
             }
@@ -267,20 +339,25 @@ impl From<EngineError> for RecordError {
     }
 }
 
-/// A source of the recorded canvas as started.
+/// A recorded source as started.
+#[non_exhaustive]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SourceState {
+    /// Its node in the graph.
+    pub node: NodeId,
     /// The source's name.
     pub name: String,
     /// The adapter capturing it.
     pub adapter: AdapterId,
     /// The capture target or audio endpoint id.
     pub target: String,
-    /// Why it did not start or stopped, if it did not or did.
+    /// Why it is not running, while it is not (did not start, or failed and waits for
+    /// a restart); cleared when it runs again.
     pub failed: Option<String>,
 }
 
 /// What [`Recording::start`] chose and started.
+#[non_exhaustive]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StartReport {
     /// The video encoder.
@@ -291,11 +368,15 @@ pub struct StartReport {
     pub muxer: Chosen,
     /// The transport.
     pub transport: Chosen,
-    /// The sources bound for the collection, in binder order.
+    /// The recorded sources (those the output's plan schedules), in binder order.
     pub sources: Vec<SourceState>,
+    /// Binder problems that do not stop the recording: elsewhere in the collection,
+    /// or not fatal (a skipped filter, the video of a source with audio).
+    pub problems: Vec<BindProblem>,
 }
 
 /// Counters of one source.
+#[non_exhaustive]
 #[derive(Debug, Clone, PartialEq)]
 pub struct SourceProgress {
     /// The source's name.
@@ -311,6 +392,7 @@ pub struct SourceProgress {
 }
 
 /// Counters of a running recording, read on the control thread.
+#[non_exhaustive]
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct Progress {
     /// Per source, in [`StartReport::sources`] order.
@@ -327,8 +409,8 @@ pub struct Progress {
     pub audio_packet_drops: u64,
     /// Audio blocks lost at the queue between the mixer and the audio encoder.
     pub audio_queue_drops: u64,
-    /// Packets the output took, all streams.
-    pub packets_written: u64,
+    /// Packets the output took, all streams, including those the muxer dropped.
+    pub packets_taken: u64,
     /// Packets the muxer dropped as out of order.
     pub mux_drops: u64,
     /// Largest output backlog (transport queue full).
@@ -341,7 +423,15 @@ pub struct Progress {
     pub master_peak_db: Option<f32>,
 }
 
+impl Progress {
+    /// Packets muxed into the destination: taken minus dropped.
+    pub fn packets_muxed(&self) -> u64 {
+        self.packets_taken.saturating_sub(self.mux_drops)
+    }
+}
+
 /// The result of [`Recording::finish`].
+#[non_exhaustive]
 #[derive(Debug, Clone, PartialEq)]
 pub struct FinishReport {
     /// The counters at the end.
@@ -350,7 +440,9 @@ pub struct FinishReport {
     pub failure: Option<String>,
     /// Errors while the engine drained.
     pub shutdown_errors: Vec<String>,
-    /// Packets the encoders still held at shutdown (lost, engine spec open question).
+    /// Packets the video encoder still held at shutdown (lost, engine spec open
+    /// question). Frames in the export's readback ring and the audio encoder's last
+    /// frames are lost too and not counted.
     pub flush_lost: u64,
     /// Output items not delivered when the output finished.
     pub finish_lost: u64,
@@ -365,10 +457,10 @@ enum Watch {
 pub struct Recording {
     engine: Engine,
     started: StartReport,
-    watches: Vec<(NodeId, Watch)>,
+    /// Per recorded source, in `started.sources` order.
+    watches: Vec<Watch>,
     /// Nodes without which the recording cannot go on.
     essential: BTreeMap<NodeId, &'static str>,
-    names: BTreeMap<NodeId, String>,
     failure: Option<String>,
     export: Arc<ExportNodeStats>,
     encoder: Arc<EncoderNodeStats>,
@@ -376,6 +468,7 @@ pub struct Recording {
     output: Arc<OutputNodeStats>,
     master: Option<Arc<LevelMeter>>,
     mixer: Option<Arc<MixerStats>>,
+    partitions: Partitions,
     render_worker: Option<Arc<WorkerStats>>,
     audio_worker: Option<Arc<WorkerStats>>,
     // Parameter senders: kept so the nodes' channels stay open (gain, layers, offsets
@@ -409,15 +502,71 @@ fn sum(counters: &[&AtomicU64]) -> u64 {
     counters.iter().map(|c| c.load(Ordering::Relaxed)).sum()
 }
 
+fn peak_db(meter: &LevelMeter) -> f32 {
+    let levels = meter.take();
+    (0..levels.channels())
+        .map(|ch| levels.peak_db(ch))
+        .fold(f32::NEG_INFINITY, f32::max)
+}
+
+/// The source a problem names, if any (a filter problem names the filter's source).
+fn problem_source(collection: &SceneCollection, p: &BindProblem) -> Option<SourceId> {
+    let filter_owner = |id| {
+        collection
+            .sources()
+            .find(|s| s.filters.iter().any(|f| f.id == id))
+            .map(|s| s.id)
+    };
+    match p {
+        BindProblem::UnknownSourceType(s, _)
+        | BindProblem::NoVideoOutput(s)
+        | BindProblem::AudioOnVideoSource(s) => Some(*s),
+        BindProblem::UnknownFilterType(f, _)
+        | BindProblem::NoVideoPins(f)
+        | BindProblem::FilterOnAudioSource(f) => filter_owner(*f),
+        _ => None,
+    }
+}
+
+/// Whether `p` stops a recording that shows `recorded`: a recorded source left out of
+/// the graph. Without audio, audio-only sources are meant to be left out.
+fn is_fatal(
+    collection: &SceneCollection,
+    recorded: &BTreeSet<SourceId>,
+    audio: bool,
+    p: &BindProblem,
+) -> bool {
+    let Some(source) = problem_source(collection, p) else {
+        return false;
+    };
+    if !recorded.contains(&source) {
+        return false;
+    }
+    match p {
+        BindProblem::UnknownSourceType(..) => true,
+        BindProblem::NoVideoOutput(_) => {
+            let audio_only = collection
+                .source(source)
+                .and_then(|s| class_of(&s.type_id))
+                .is_some_and(|c| matches!(c, SourceClass::Audio(_)));
+            audio || !audio_only
+        }
+        _ => false,
+    }
+}
+
 impl Recording {
     /// Binds `collection`, attaches the encoders and the output to the canvas of
-    /// `settings`, and starts `engine` on `gpu`. The engine must have no partitions yet;
-    /// the recording adds [`RENDER`], [`AUDIO`], [`VIDEO_ENCODER`], [`AUDIO_ENCODER`]
-    /// and [`OUTPUT`]. Control thread; may block while devices open.
+    /// `settings`, and starts `engine` on `gpu`. The recording adds
+    /// [`PartitionId::RENDER`] and the partitions of `settings.partitions` (the audio
+    /// ones only when audio is recorded); none of them may exist yet. Control thread;
+    /// may block while devices open.
     ///
+    /// Only what the canvas's program scene shows and plays is instantiated and run.
     /// A source that does not start is reported in [`StartReport::sources`] and the
     /// recording goes on without it; a compositor, mixer, export, encoder or output that
-    /// does not start fails the call, after the engine was shut down.
+    /// does not start fails the call after the engine was shut down. The output may
+    /// have opened (and, for a file, created or truncated) the destination by then.
     pub fn start(
         mut engine: Engine,
         gpu: Arc<GpuContext>,
@@ -425,15 +574,24 @@ impl Recording {
         adapters: &RecordAdapters,
         settings: &RecordSettings,
     ) -> Result<Self, RecordError> {
+        let canvas_id = settings.canvas;
         let canvas = collection
-            .canvas(settings.canvas)
-            .ok_or(RecordError::UnknownCanvas(settings.canvas))?;
+            .canvas(canvas_id)
+            .ok_or(RecordError::UnknownCanvas(canvas_id))?;
+        let program = canvas.program.ok_or(RecordError::NoProgram(canvas_id))?;
+        let recorded = collection
+            .visible_sources(canvas_id, program)
+            .map_err(|_| RecordError::NoProgram(canvas_id))?;
         let (width, height) = (canvas.size.width, canvas.size.height);
         let fps = canvas.frame_rate;
         let clock = engine.clock();
         let audio_graph = settings.audio_graph;
+        let parts = settings.partitions;
+        let with_audio = settings.audio.is_some();
 
         // Adapters for the encoders and the output, chosen before anything opens.
+        // System memory: the export reads the canvas back (the P4 exception of
+        // ADR-0038); native export will take the memory kind from the encoder.
         let export = VideoExportNode::new(settings.video.format, width, height);
         let video_config = VideoEncoderConfig::new(
             settings.video.codec,
@@ -462,15 +620,77 @@ impl Recording {
 
         // The scene.
         let mut graph = GraphDescription::new();
-        let mut binder = SceneBinder::new(adapters.sources.node_types()).with_audio(AUDIO);
+        let mut binder = SceneBinder::new(adapters.sources.node_types());
+        if with_audio {
+            binder = binder.with_audio(parts.audio);
+        }
         let report = binder
             .sync(collection, &mut graph)
             .map_err(RecordError::Bind)?;
-        if !report.problems.is_empty() {
-            return Err(RecordError::Problems(report.problems));
+        let (fatal, problems): (Vec<_>, Vec<_>) = report
+            .problems
+            .iter()
+            .cloned()
+            .partition(|p| is_fatal(collection, &recorded, with_audio, p));
+        if !fatal.is_empty() {
+            return Err(RecordError::Problems(fatal));
         }
+
+        // Video: compositor -> export -> encoder -> output s0.
+        let compositor_id = binder
+            .compositor(canvas_id, Role::Program)
+            .ok_or(RecordError::NotBound("program compositor"))?;
+        let mut essential = BTreeMap::new();
+        essential.insert(compositor_id, "compositor");
+        let export_stats = export.stats();
+        let export_id = add(&mut graph, Node::<GpuRuntime>::descriptor(&export), RENDER)?;
+        essential.insert(export_id, "video export");
+        let encoder_stats = video_encoder.stats();
+        let encoder_id = add(
+            &mut graph,
+            Node::<()>::descriptor(&video_encoder),
+            parts.video_encoder,
+        )?;
+        essential.insert(encoder_id, "video encoder");
+        let output = OutputNode::new(
+            streams,
+            transport,
+            TransportConfig::new(
+                settings.url.clone(),
+                TransportInput::Container(settings.container),
+            ),
+        )
+        .with_muxer(muxer, settings.container, None);
+        let output_stats = output.stats();
+        let output_id = add(&mut graph, Node::<()>::descriptor(&output), parts.output)?;
+        essential.insert(output_id, "output");
+        graph.connect(compositor_id, "canvas", export_id, "canvas")?;
+        graph.connect(export_id, "video", encoder_id, "video")?;
+        graph.connect(encoder_id, "packets", output_id, "s0")?;
+
+        // Audio: mixer -> encoder -> output s1.
+        let mut audio = None;
+        if let Some((node, chosen)) = audio_encoder {
+            let mixer_id = binder
+                .mixer(canvas_id)
+                .ok_or(RecordError::NotBound("mixer"))?;
+            essential.insert(mixer_id, "mixer");
+            let dropped = node.dropped();
+            let id = add(
+                &mut graph,
+                Node::<()>::descriptor(&node),
+                parts.audio_encoder,
+            )?;
+            essential.insert(id, "audio encoder");
+            graph.connect(mixer_id, "main", id, "in")?;
+            graph.connect(id, "packets", output_id, "s1")?;
+            audio = Some((mixer_id, id, node, chosen, dropped));
+        }
+
+        // What the output's plan schedules: only those sources are instantiated.
+        let plan = graph.plan();
+        let scheduled: BTreeSet<NodeId> = plan.order.iter().copied().collect();
         let ctx = InstanceContext::new(Arc::clone(&clock), audio_graph);
-        let mut names = BTreeMap::new();
         let mut sources = Vec::new();
         let mut watches = Vec::new();
         let mut meters = BTreeMap::new();
@@ -478,6 +698,9 @@ impl Recording {
         let mut render_nodes: Vec<(NodeId, Box<dyn Node<GpuRuntime>>)> = Vec::new();
         let mut audio_nodes: Vec<(NodeId, Box<dyn Node<()>>)> = Vec::new();
         for (source_id, node) in &report.created_sources {
+            if !scheduled.contains(node) {
+                continue;
+            }
             let Some(source) = collection.source(*source_id) else {
                 continue;
             };
@@ -492,78 +715,31 @@ impl Recording {
             match instance {
                 SourceInstance::Video(v) => {
                     sources.push(SourceState {
-                        name: name.clone(),
+                        node: *node,
+                        name,
                         adapter: v.adapter,
                         target: v.target.as_str().to_owned(),
                         failed: None,
                     });
-                    watches.push((*node, Watch::Video(v.stats)));
+                    watches.push(Watch::Video(v.stats));
                     render_nodes.push((*node, Box::new(v.node)));
                 }
                 SourceInstance::Audio(a) => {
                     sources.push(SourceState {
-                        name: name.clone(),
+                        node: *node,
+                        name,
                         adapter: a.adapter,
                         target: a.endpoint.as_str().to_owned(),
                         failed: None,
                     });
                     let meter = Arc::new(LevelMeter::new(audio_graph.format.channels.channels()));
                     meters.insert(*source_id, Arc::clone(&meter));
-                    watches.push((*node, Watch::Audio(a.stats, meter)));
+                    watches.push(Watch::Audio(a.stats, meter));
                     keep.push(Box::new(a.offset));
                     audio_nodes.push((*node, Box::new(a.node)));
                 }
                 _ => return Err(RecordError::UnsupportedSource(name)),
             }
-            names.insert(*node, name);
-        }
-
-        // Video: compositor -> export -> encoder.
-        let canvas_id = settings.canvas;
-        let compositor_id = binder
-            .compositor(canvas_id, Role::Program)
-            .ok_or(RecordError::NotBound("program compositor"))?;
-        let mut essential = BTreeMap::new();
-        essential.insert(compositor_id, "compositor");
-        let export_stats = export.stats();
-        let export_id = add(&mut graph, Node::<GpuRuntime>::descriptor(&export), RENDER)?;
-        essential.insert(export_id, "video export");
-        let encoder_stats = video_encoder.stats();
-        let encoder_id = add(
-            &mut graph,
-            Node::<()>::descriptor(&video_encoder),
-            VIDEO_ENCODER,
-        )?;
-        essential.insert(encoder_id, "video encoder");
-        let output = OutputNode::new(
-            streams,
-            transport,
-            TransportConfig::new(
-                settings.url.clone(),
-                TransportInput::Container(settings.container),
-            ),
-        )
-        .with_muxer(muxer, settings.container, None);
-        let output_stats = output.stats();
-        let output_id = add(&mut graph, Node::<()>::descriptor(&output), OUTPUT)?;
-        essential.insert(output_id, "output");
-        graph.connect(compositor_id, "canvas", export_id, "canvas")?;
-        graph.connect(export_id, "video", encoder_id, "video")?;
-        graph.connect(encoder_id, "packets", output_id, "s0")?;
-
-        // Audio: mixer -> encoder.
-        let mut audio = None;
-        if let Some((node, chosen)) = audio_encoder {
-            let mixer_id = binder
-                .mixer(canvas_id)
-                .ok_or(RecordError::NotBound("mixer"))?;
-            essential.insert(mixer_id, "mixer");
-            let dropped = node.dropped();
-            let id = add(&mut graph, Node::<()>::descriptor(&node), AUDIO_ENCODER)?;
-            essential.insert(id, "audio encoder");
-            graph.connect(mixer_id, "main", id, "in")?;
-            graph.connect(id, "packets", output_id, "s1")?;
-            audio = Some((mixer_id, id, node, chosen, dropped));
         }
 
         // Instances that need the final plan: layers in link order, mixer strips.
@@ -571,7 +747,7 @@ impl Recording {
             .compositors
             .get(&(canvas_id, Role::Program))
             .ok_or(RecordError::NotBound("program compositor"))?;
-        let layers = node_layers(bound, &graph.plan());
+        let layers = node_layers(bound, &plan);
         let (compositor, layer_sender) = CompositorNode::new(
             CanvasDesc { width, height },
             u32::try_from(layers.len().max(MIN_CAPACITY)).unwrap_or(u32::MAX),
@@ -587,35 +763,37 @@ impl Recording {
             Pacing::cadence(frames),
         )?;
         engine.add_partition::<()>(
-            AUDIO,
-            Arc::new(()),
-            (),
-            Pacing::stream(audio_graph.cadence(clock.now()), AUDIO_CATCH_UP),
-        )?;
-        engine.add_partition::<()>(
-            VIDEO_ENCODER,
+            parts.video_encoder,
             Arc::new(()),
             (),
             Pacing::cadence_after(frames, fps.frame_duration() / 4),
         )?;
-        engine.add_partition::<()>(
-            AUDIO_ENCODER,
-            Arc::new(()),
-            (),
-            Pacing::doorbell(DEFAULT_DOORBELL_TIMER),
-        )?;
-        engine.add_partition::<()>(OUTPUT, Arc::new(()), (), Pacing::output())?;
+        engine.add_partition::<()>(parts.output, Arc::new(()), (), Pacing::output())?;
+        if with_audio {
+            engine.add_partition::<()>(
+                parts.audio,
+                Arc::new(()),
+                (),
+                Pacing::stream(audio_graph.cadence(clock.now()), AUDIO_CATCH_UP),
+            )?;
+            engine.add_partition::<()>(
+                parts.audio_encoder,
+                Arc::new(()),
+                (),
+                Pacing::doorbell(DEFAULT_DOORBELL_TIMER),
+            )?;
+        }
 
         for (id, node) in render_nodes {
             engine.adopt(RENDER, id, node)?;
         }
         for (id, node) in audio_nodes {
-            engine.adopt(AUDIO, id, node)?;
+            engine.adopt(parts.audio, id, node)?;
         }
         engine.adopt::<GpuRuntime>(RENDER, compositor_id, Box::new(compositor))?;
         engine.adopt::<GpuRuntime>(RENDER, export_id, Box::new(export))?;
-        engine.adopt::<()>(VIDEO_ENCODER, encoder_id, Box::new(video_encoder))?;
-        engine.adopt::<()>(OUTPUT, output_id, Box::new(output))?;
+        engine.adopt::<()>(parts.video_encoder, encoder_id, Box::new(video_encoder))?;
+        engine.adopt::<()>(parts.output, output_id, Box::new(output))?;
         let mut master = None;
         let mut mixer_stats = None;
         let mut audio_dropped = None;
@@ -645,8 +823,8 @@ impl Recording {
                 MixerParams::new(strips).with_master_meter(Arc::clone(&meter)),
             );
             keep.push(Box::new(params));
-            engine.adopt::<()>(AUDIO, mixer_id, Box::new(mixer))?;
-            engine.adopt::<()>(AUDIO_ENCODER, id, Box::new(node))?;
+            engine.adopt::<()>(parts.audio, mixer_id, Box::new(mixer))?;
+            engine.adopt::<()>(parts.audio_encoder, id, Box::new(node))?;
             master = Some(meter);
             mixer_stats = Some(stats);
             audio_dropped = Some(dropped);
@@ -656,31 +834,40 @@ impl Recording {
         let applied = engine.apply(&graph)?;
         let mut fatal = Vec::new();
         for error in &applied.errors {
-            fatal.push(("engine".to_owned(), error.to_string()));
+            fatal.push(StartFailure {
+                node: "engine".to_owned(),
+                reason: error.to_string(),
+            });
         }
         for (link, problem) in &applied.problems {
-            fatal.push((format!("link {link:?}"), format!("{problem:?}")));
+            fatal.push(StartFailure {
+                node: format!("link {link:?}"),
+                reason: format!("{problem:?}"),
+            });
         }
         for report in applied.reports.values() {
             for (node, why) in &report.failed {
                 if let Some(role) = essential.get(node) {
-                    fatal.push(((*role).to_owned(), why.to_string()));
-                } else if let Some(name) = names.get(node) {
-                    if let Some(s) = sources.iter_mut().find(|s| &s.name == name) {
-                        s.failed = Some(why.to_string());
-                    }
+                    fatal.push(StartFailure {
+                        node: (*role).to_owned(),
+                        reason: why.to_string(),
+                    });
+                } else if let Some(s) = sources.iter_mut().find(|s| s.node == *node) {
+                    s.failed = Some(why.to_string());
                 }
             }
         }
         if !fatal.is_empty() {
-            let _ = engine.shutdown();
+            for e in engine.shutdown().errors {
+                fatal.push(StartFailure {
+                    node: "shutdown".to_owned(),
+                    reason: e.to_string(),
+                });
+            }
             return Err(RecordError::Start(fatal));
         }
-        for (id, role) in &essential {
-            names.insert(*id, (*role).to_owned());
-        }
         let render_worker = engine.worker_stats(RENDER);
-        let audio_worker = engine.worker_stats(AUDIO);
+        let audio_worker = engine.worker_stats(parts.audio);
         Ok(Self {
             engine,
             started: StartReport {
@@ -689,10 +876,10 @@ impl Recording {
                 muxer: muxer_chosen,
                 transport: transport_chosen,
                 sources,
+                problems,
             },
             watches,
             essential,
-            names,
             failure: None,
             export: export_stats,
             encoder: encoder_stats,
@@ -700,18 +887,19 @@ impl Recording {
             output: output_stats,
             master,
             mixer: mixer_stats,
+            partitions: parts,
             render_worker,
             audio_worker,
             _keep: keep,
         })
     }
 
-    /// What was chosen and started.
+    /// What was chosen and started, with each source's current state.
     pub fn started(&self) -> &StartReport {
         &self.started
     }
 
-    /// The engine's clock (the master clock of every timestamp in the file).
+    /// The engine (its clock is the master clock of every timestamp in the file).
     pub fn engine(&self) -> &Engine {
         &self.engine
     }
@@ -719,33 +907,45 @@ impl Recording {
     /// The name of a node of the recording (a source name or a role such as
     /// `"video encoder"`), for messages about engine events.
     pub fn node_name(&self, node: NodeId) -> Option<&str> {
-        self.names.get(&node).map(String::as_str)
+        self.essential.get(&node).copied().or_else(|| {
+            self.started
+                .sources
+                .iter()
+                .find(|s| s.node == node)
+                .map(|s| s.name.as_str())
+        })
     }
 
     /// Runs the engine's control loop once (restarts, swaps) and notes failures: a
-    /// source that fails is marked in [`StartReport::sources`]; an essential node that
-    /// fails for good, or an output failure, ends the recording ([`Recording::failure`]).
-    /// Call it again after `wait` (at most about 100 ms).
+    /// source that fails is marked in [`StartReport::sources`] until it runs again; an
+    /// essential node that fails for good, or an output failure, ends the recording
+    /// ([`Recording::failure`]). Call it again after `wait` (at most about 100 ms).
     pub fn service(&mut self) -> Serviced {
         let serviced = self.engine.service();
         for (_, event) in &serviced.events {
-            let RuntimeEvent::Failed {
-                node,
-                cause,
-                retry_at,
-                ..
-            } = event
-            else {
-                continue;
-            };
-            if let Some(role) = self.essential.get(node) {
-                if retry_at.is_none() && self.failure.is_none() {
-                    self.failure = Some(format!("{role}: {cause:?}"));
+            match event {
+                RuntimeEvent::Failed {
+                    node,
+                    cause,
+                    retry_at,
+                    ..
+                } => {
+                    if let Some(role) = self.essential.get(node) {
+                        if retry_at.is_none() && self.failure.is_none() {
+                            self.failure = Some(format!("{role}: {cause:?}"));
+                        }
+                    } else if let Some(s) =
+                        self.started.sources.iter_mut().find(|s| s.node == *node)
+                    {
+                        s.failed = Some(format!("{cause:?}"));
+                    }
                 }
-            } else if let Some(name) = self.names.get(node) {
-                if let Some(s) = self.started.sources.iter_mut().find(|s| &s.name == name) {
-                    s.failed = Some(format!("{cause:?}"));
+                RuntimeEvent::Restarted { node, .. } | RuntimeEvent::Recovered { node } => {
+                    if let Some(s) = self.started.sources.iter_mut().find(|s| s.node == *node) {
+                        s.failed = None;
+                    }
                 }
+                _ => {}
             }
         }
         serviced
@@ -763,9 +963,11 @@ impl Recording {
 
     /// The counters now. Peak levels are those since the previous call.
     pub fn progress(&self) -> Progress {
-        let mut sources = Vec::with_capacity(self.watches.len());
-        for ((_, watch), state) in self.watches.iter().zip(&self.started.sources) {
-            sources.push(match watch {
+        let sources = self
+            .watches
+            .iter()
+            .zip(&self.started.sources)
+            .map(|(watch, state)| match watch {
                 Watch::Video(v) => SourceProgress {
                     name: state.name.clone(),
                     frames: v.frames.load(Ordering::Relaxed),
@@ -775,25 +977,21 @@ impl Recording {
                 },
                 Watch::Audio(a, meter) => {
                     let c = a.read();
-                    let levels = meter.take();
-                    let peak = (0..levels.channels())
-                        .map(|ch| levels.peak_db(ch))
-                        .fold(f32::NEG_INFINITY, f32::max);
                     SourceProgress {
                         name: state.name.clone(),
                         frames: c.frames_in,
-                        peak_db: Some(peak),
+                        peak_db: Some(peak_db(meter)),
                         resyncs: c.resyncs,
                         errors: c.read_errors,
                     }
                 }
-            });
-        }
+            })
+            .collect();
         let audio_queue_drops = self
             .engine
             .crossings()
             .iter()
-            .filter(|c| c.from == AUDIO && c.to == AUDIO_ENCODER)
+            .filter(|c| c.from == self.partitions.audio && c.to == self.partitions.audio_encoder)
             .map(|c| c.stats.overflows())
             .sum();
         let e = &self.encoder;
@@ -808,17 +1006,12 @@ impl Recording {
                 .as_ref()
                 .map_or(0, |d| d.load(Ordering::Relaxed)),
             audio_queue_drops,
-            packets_written: self.output.packets.load(Ordering::Relaxed),
+            packets_taken: self.output.packets.load(Ordering::Relaxed),
             mux_drops: self.output.mux_drops.load(Ordering::Relaxed),
             backlog_peak: self.output.backlog_peak.load(Ordering::Relaxed),
             late_render_ticks: self.render_worker.as_ref().map_or(0, |w| w.late()),
             late_audio_ticks: self.audio_worker.as_ref().map_or(0, |w| w.late()),
-            master_peak_db: self.master.as_ref().map(|m| {
-                let levels = m.take();
-                (0..levels.channels())
-                    .map(|ch| levels.peak_db(ch))
-                    .fold(f32::NEG_INFINITY, f32::max)
-            }),
+            master_peak_db: self.master.as_deref().map(peak_db),
         }
     }
 
