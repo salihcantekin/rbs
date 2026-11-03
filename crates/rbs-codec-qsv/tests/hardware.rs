@@ -136,6 +136,16 @@ fn hevc_main10_from_p010() {
     let packets = encode(&mut session, &config.format, 40);
     assert_eq!(packets.len(), 40);
     assert!(packets[0].keyframe() && packets[30].keyframe());
+    // Parameter sets in band on every IDR, so each one starts a decodable stream.
+    for i in [0, 30] {
+        let types: Vec<u8> = nal::annexb_unit_headers(packets[i].data())
+            .map(|h| (h >> 1) & 0x3f)
+            .collect();
+        assert!(
+            types.contains(&32) && types.contains(&33) && types.contains(&34),
+            "IDR {i}: {types:?}"
+        );
+    }
 }
 
 #[test]
