@@ -29,12 +29,7 @@ fn status(call: &'static str, s: sys::NVENCSTATUS) -> Result<(), EngineError> {
     match s {
         sys::NV_ENC_SUCCESS => Ok(()),
         sys::NV_ENC_ERR_ENCODER_BUSY | sys::NV_ENC_ERR_LOCK_BUSY => Err(EngineError::Busy),
-        sys::NV_ENC_ERR_DEVICE_NOT_EXIST | sys::NV_ENC_ERR_NO_ENCODE_DEVICE => {
-            Err(EngineError::DeviceLost)
-        }
-        sys::NV_ENC_ERR_UNSUPPORTED_PARAM | sys::NV_ENC_ERR_INVALID_PARAM => {
-            Err(EngineError::Unsupported)
-        }
+        sys::NV_ENC_ERR_DEVICE_NOT_EXIST => Err(EngineError::DeviceLost),
         other => Err(EngineError::Failed(call, i64::from(other))),
     }
 }
@@ -47,7 +42,8 @@ fn create_error(call: &'static str, s: sys::NVENCSTATUS) -> CreateError {
         }
         sys::NV_ENC_ERR_UNSUPPORTED_PARAM
         | sys::NV_ENC_ERR_INVALID_PARAM
-        | sys::NV_ENC_ERR_UNSUPPORTED_DEVICE => CreateError::Unsupported {
+        | sys::NV_ENC_ERR_UNSUPPORTED_DEVICE
+        | sys::NV_ENC_ERR_NO_ENCODE_DEVICE => CreateError::Unsupported {
             what: format!("{call} refused the configuration (status {s})"),
         },
         _ => CreateError::Device(format!("{call} failed with status {s}")),
@@ -285,10 +281,9 @@ pub(crate) fn probe(ordinal: c_int) -> Result<DeviceCaps, String> {
     }
     let device = match Device::open(api, ordinal) {
         Ok(d) => d,
-        // No encoder on this board (or no free session right now): nothing to offer.
-        Err(CreateError::Unsupported { .. } | CreateError::ResourceExhausted) => {
-            return Ok(DeviceCaps::default());
-        }
+        // No encoder on this board: nothing to offer, for good.
+        Err(CreateError::Unsupported { .. }) => return Ok(DeviceCaps::default()),
+        // No free session or context right now: the caller probes again later.
         Err(e) => return Err(e.to_string()),
     };
     let _current = device
@@ -402,6 +397,9 @@ pub(crate) struct NvencEngine {
     pitches: [u32; FRAMES_IN_FLIGHT],
     /// Slots encoded but not yet read back.
     pending: [bool; FRAMES_IN_FLIGHT],
+    /// Token of each slot's last encode, so `Drop` reads pending slots back in
+    /// submission order (NVENC requires bitstreams to be locked in that order).
+    tokens: [u64; FRAMES_IN_FLIGHT],
     buffer_format: sys::NV_ENC_BUFFER_FORMAT,
     pixel_format: PixelFormat,
     width: u32,
@@ -530,6 +528,7 @@ impl NvencEngine {
             outputs: [ptr::null_mut(); FRAMES_IN_FLIGHT],
             pitches: [0; FRAMES_IN_FLIGHT],
             pending: [false; FRAMES_IN_FLIGHT],
+            tokens: [0; FRAMES_IN_FLIGHT],
             buffer_format,
             pixel_format: if plan.ten_bit {
                 PixelFormat::P010
@@ -766,12 +765,15 @@ impl Engine for NvencEngine {
         let s = unsafe { encode(self.encoder(), &mut pic) };
         if s == sys::NV_ENC_ERR_NEED_MORE_INPUT {
             // Only happens when NVENC reorders or looks ahead, which the session
-            // configuration rules out.
+            // configuration rules out. The picture is still queued in this slot's
+            // bitstream; `Drop` drains it after end-of-stream.
             self.pending[slot] = true;
+            self.tokens[slot] = token;
             return Err(EngineError::Broken("NVENC buffered a frame (reordering)"));
         }
         status("nvEncEncodePicture", s)?;
         self.pending[slot] = true;
+        self.tokens[slot] = token;
         Ok(())
     }
 
@@ -801,9 +803,15 @@ impl Engine for NvencEngine {
         params.reInitEncodeParams.encodeConfig = &mut *config;
         // SAFETY: initialised session; `params` is versioned and points at a live
         // configuration that differs from the current one only in rate control.
-        status("nvEncReconfigureEncoder", unsafe {
-            reconfigure(self.encoder(), &mut *params)
-        })?;
+        let s = unsafe { reconfigure(self.encoder(), &mut *params) };
+        if matches!(
+            s,
+            sys::NV_ENC_ERR_UNSUPPORTED_PARAM | sys::NV_ENC_ERR_INVALID_PARAM
+        ) {
+            // The device refused the new rate; the session keeps the old one.
+            return Err(EngineError::Unsupported);
+        }
+        status("nvEncReconfigureEncoder", s)?;
         *self.config = *config;
         self.init.encodeConfig = &mut *self.config;
         Ok(())
@@ -817,9 +825,14 @@ impl Drop for NvencEngine {
         };
         // Let queued pictures finish before their buffers go away.
         if self.pending.iter().any(|p| *p) && self.send_eos().is_ok() {
-            for slot in 0..FRAMES_IN_FLIGHT {
-                if self.pending[slot] {
-                    let _ = self.lock_output(slot, true);
+            // Oldest first: at most `FRAMES_IN_FLIGHT` selection passes, no allocation.
+            while let Some(slot) = (0..FRAMES_IN_FLIGHT)
+                .filter(|s| self.pending[*s])
+                .min_by_key(|s| self.tokens[*s])
+            {
+                if self.lock_output(slot, true).is_err() {
+                    // `lock_output` clears `pending` only once the lock succeeded.
+                    self.pending[slot] = false;
                 }
             }
         }

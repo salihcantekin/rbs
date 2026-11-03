@@ -115,13 +115,16 @@ mod platform {
     use crate::{SessionStats, plan};
 
     /// The probed device, read once per process (opening CUDA and an NVENC session
-    /// takes longer than the probe budget; later probes are free).
+    /// takes longer than the probe budget; later probes are free). Only definitive
+    /// results are kept: a probe that found no free session or could not create a
+    /// context is repeated next time.
     fn device() -> Result<&'static DeviceCaps, ProbeError> {
-        static DEVICE: OnceLock<Result<DeviceCaps, String>> = OnceLock::new();
-        match DEVICE.get_or_init(|| probe(0)) {
-            Ok(d) => Ok(d),
-            Err(e) => Err(ProbeError::new(e.clone())),
+        static DEVICE: OnceLock<DeviceCaps> = OnceLock::new();
+        if let Some(d) = DEVICE.get() {
+            return Ok(d);
         }
+        let probed = probe(0).map_err(ProbeError::new)?;
+        Ok(DEVICE.get_or_init(|| probed))
     }
 
     /// Factory of the NVENC adapter.
@@ -141,7 +144,8 @@ mod platform {
             &self,
             config: &VideoEncoderConfig,
         ) -> Result<NvencSession, CreateError> {
-            let device = device().map_err(|e| CreateError::Device(e.reason))?;
+            // A probe failure is temporary (no free session or context right now).
+            let device = device().map_err(|_| CreateError::ResourceExhausted)?;
             let plan = plan::plan(config, device)?;
             let dynamic_bitrate = device
                 .codec(config.codec)

@@ -173,7 +173,14 @@ impl<E: Engine> Session<E> {
             Ok(None) if !wait => return Ok(false),
             Ok(None) => return Err(self.fail(EngineError::Broken("encoder returned no picture"))),
             Err(EngineError::Busy) if !wait => return Ok(false),
-            Err(e) => return Err(self.fail(e)),
+            // A lock that fails leaves the picture unread; retrying it would repeat
+            // the failure forever, so the session ends (only device loss keeps its
+            // own error).
+            Err(EngineError::DeviceLost) => return Err(self.fail(EngineError::DeviceLost)),
+            Err(EngineError::Failed(call, status)) => {
+                return Err(self.fail(EngineError::Failed(call, status)));
+            }
+            Err(_) => return Err(self.fail(EngineError::Broken("reading a picture failed"))),
         };
         let expected = self.slots[slot];
         if output.token != expected.token {
@@ -298,6 +305,9 @@ impl<E: Engine> VideoEncoder for Session<E> {
         while self.in_flight > 0 {
             self.take_one(out, true)?;
         }
+        // The stream may go on after end-of-stream; start it again with an IDR so it
+        // is decodable from there.
+        self.keyframe_pending = true;
         Ok(())
     }
 }
@@ -643,6 +653,39 @@ mod tests {
         let e = run.session.drain(&mut run.packets).unwrap_err();
         assert!(!e.is_recoverable());
         assert!(run.submit().is_err());
+    }
+
+    #[test]
+    fn a_refused_lock_ends_the_session_instead_of_retrying() {
+        for error in [EngineError::Unsupported, EngineError::Busy] {
+            let mut run = Run::new(Script {
+                output_error: Some(error),
+                ..Script::default()
+            });
+            run.submit().unwrap();
+            // Without waiting, Busy means "not finished yet".
+            let drained = run.session.drain(&mut run.packets);
+            if drained.is_ok() {
+                assert!(run.packets.is_empty());
+            }
+            let e = run.session.flush(&mut run.packets).unwrap_err();
+            assert!(!e.is_recoverable(), "{e:?}");
+            assert!(run.submit().is_err());
+        }
+    }
+
+    #[test]
+    fn the_first_frame_after_a_flush_is_a_keyframe() {
+        let mut run = Run::new(Script::default());
+        for _ in 0..3 {
+            run.submit().unwrap();
+        }
+        run.session.flush(&mut run.packets).unwrap();
+        run.submit().unwrap();
+        run.submit().unwrap();
+        run.session.flush(&mut run.packets).unwrap();
+        let keyframes: Vec<bool> = run.packets.iter().map(EncodedPacket::keyframe).collect();
+        assert_eq!(keyframes, [true, false, false, true, false]);
     }
 
     #[test]
