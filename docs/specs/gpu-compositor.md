@@ -333,7 +333,7 @@ pub const DEFAULT_RETIRE_POLL: Duration;  // 4 ms
 impl PreviewLayer {                       // not Send: the window's thread
     /// D3D11 device on the engine's adapter, the shared textures as composition swapchain
     /// buffers, a DirectComposition visual showing them. `Unsupported` without a
-    /// composition swapchain (remote desktop, WARP): use `textures` instead.
+    /// composition swapchain (WARP) or in a remote desktop session (`SM_REMOTESESSION`: the factory claims support there but nothing shows): use `textures` instead.
     pub fn new(subscriber: &PreviewSubscriber) -> Result<PreviewLayer, GpuError>;
     pub fn surfaces(&self) -> usize;
     pub fn surfaces_needed(&self, frame_interval: Duration) -> usize; // shown + retiring + written + in flight; 5 at 60 fps

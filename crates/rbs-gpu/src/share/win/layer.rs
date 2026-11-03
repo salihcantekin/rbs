@@ -37,6 +37,7 @@ use windows::Win32::Graphics::Dxgi::{
     CreateDXGIFactory2, DXGI_CREATE_FACTORY_FLAGS, IDXGIAdapter, IDXGIDevice, IDXGIFactory4,
 };
 use windows::Win32::System::Threading::WaitForSingleObject;
+use windows::Win32::UI::WindowsAndMessaging::{GetSystemMetrics, SM_REMOTESESSION};
 use windows::core::Interface;
 use windows_numerics::Matrix3x2;
 
@@ -116,6 +117,15 @@ impl PreviewLayer {
     /// ([`PreviewSubscriber::textures`]).
     pub fn new(subscriber: &PreviewSubscriber) -> Result<Self, GpuError> {
         let fail = |what: &'static str| move |_: windows::core::Error| GpuError::Unsupported(what);
+        // Over remote desktop the presentation factory can report support while the
+        // session never shows the buffers (the area stays black), so the toolkit path
+        // is used there.
+        // SAFETY: reads a system metric; no arguments to uphold.
+        if unsafe { GetSystemMetrics(SM_REMOTESESSION) } != 0 {
+            return Err(GpuError::Unsupported(
+                "composition swapchain not shown in a remote desktop session",
+            ));
+        }
         let luid = subscriber.adapter_luid();
         let luid = LUID {
             LowPart: luid as u32,

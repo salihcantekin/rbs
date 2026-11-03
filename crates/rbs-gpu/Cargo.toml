@@ -32,6 +32,7 @@ preview-layer = [
     "windows/Win32_Graphics_Direct3D11",
     "windows/Win32_Graphics_DirectComposition",
     "windows/Win32_Graphics_Dxgi",
+    "windows/Win32_UI_WindowsAndMessaging",
 ]
 
 [dev-dependencies]
