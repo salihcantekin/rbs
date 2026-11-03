@@ -87,3 +87,5 @@ Windows constraints:
   - `benches/preview.rs`: `publish_cpu` 39.0 us, `tick_cpu` 6.6 us, `frame_gpu` 170 us; `share_alloc_metal`: 40 allocations per frame against 52 for the NV12 conversion alone (does not grow).
   - Cross-process tests pass (run four times in a row). Not caused by this change and recorded only: the demo process exits with code 2170 from a DLL's process-detach code (all of `main` runs; `TerminateProcess` exits 0; injected capture hooks are loaded on that machine).
   - Status Accepted after three independent review rounds and this run; the human hot-path sign-off (P15) of the Windows publisher is part of the owner's pending review with ADR-0030 and ADR-0033.
+
+- Record, 2026-11-03: the owner (Salih) signed off the human hot-path review (P15) for this decision; see the sign-off table in `docs/architecture/hot-paths.md`.

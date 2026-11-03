@@ -62,3 +62,5 @@ Reviewer: independent AI session (ADR-0014), given only the diff, this ADR, the 
 10. Minor, hot-path checklist incomplete: the GPU nodes' per-frame wgpu allocations and the before/after table go to the human hot-path sign-off, which stays pending (P15).
 
 Owner approval: Salih, 2026-11-03, under the early-phase policy that lets threads accept ADRs after the independent review is recorded. The human hot-path sign-off (P15) remains open with the other pending hot-path reviews.
+
+- Record, 2026-11-03: the owner (Salih) signed off the human hot-path review (P15) for this decision; see the sign-off table in `docs/architecture/hot-paths.md`.
