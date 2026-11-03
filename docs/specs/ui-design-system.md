@@ -15,9 +15,9 @@ Binding now (once ADR-0015 is accepted): token names, the component list and con
 
 Tokens are defined once in a data file ([`crates/rbs-ui/tokens.toml`](../../crates/rbs-ui/tokens.toml)) and generated into the native toolkit's format (ADR-0016), and exported as CSS variables only for remote clients outside the desktop app. UI code references tokens by name only (rule U6).
 
-File layout (format 1): `[fixed]` holds the colours no theme may change (`color.state.live`, `color.text.on-live`); `[themes.dark]`, `[themes.light]` and `[themes.high-contrast]` each define exactly the theme colour names below, as `#rrggbb` or `#rrggbbaa`; `[length]` (logical pixels), `[duration]` (milliseconds) and `[type]` (`{ size, line, weight }`) hold the rest. Token names are lowercase words joined by `.` or `-`. `rbs_ui::tokens` parses the file and fails on a missing, unknown or invalid token, and on any failed contrast rule:
+File layout (format 1): `[fixed]` holds the colours no theme may change (`color.state.live`, `color.text.on-live`); `[themes.dark]`, `[themes.light]` and `[themes.high-contrast]` each define exactly the theme colour names below, as opaque `#rrggbb`; `[length]` (logical pixels: the spacing, control height and radius tokens below), `[duration]` (milliseconds: `motion.fast`, `motion.normal`) and `[type]` (`{ size, line, weight }` for the five text styles) hold the rest. Token names are lowercase words joined by `.` or `-`. A custom theme is a complete token file; its `[fixed]` values must equal the built-in ones (`#c4262e` and `#ffffff`), otherwise it is refused. Elevation and easing tokens are added to the file together with the components that use them. `rbs_ui::tokens` parses the file and fails on a missing, unknown or invalid token, a changed fixed colour, and any failed contrast rule:
 
-- text: `color.text.primary` and `.secondary` on every surface, `color.text.inverse` on `color.accent`, `color.text.primary` on `color.accent.subtle`, and `color.text.on-live` on `color.state.live`: at least 4.5:1 (7:1 in `high-contrast`);
+- text: `color.text.primary` and `.secondary` on every surface, `color.text.inverse` on `color.accent`, and `color.text.primary` on `color.accent.subtle`: at least 4.5:1 (7:1 in `high-contrast`); `color.text.on-live` on `color.state.live`: at least 4.5:1 in every theme, because both are fixed;
 - non-text: `color.border.focus` on `surface.base` and `.raised`, `color.border.strong`, `color.state.*` and `color.action.destructive` on `surface.raised`, `color.meter.*` on `surface.sunken`, and `color.state.live` on `surface.base`: at least 3:1;
 - `color.state.error`, `color.action.destructive` and `color.meter.clip` differ in hue from `color.state.live` by at least 45 degrees (rule U12).
 
@@ -88,7 +88,7 @@ Workspaces are client-side UI state. The desktop UI crate owns the panel model a
 
 ### Panel model
 
-- A panel id is `<namespace>.<panel>` in lowercase ASCII letters, digits, `.`, `-` and `_`, at most 128 bytes, with optional parameters `?key=value&key=value` in the same characters.
+- A panel id is `<namespace>.<panel>` in lowercase ASCII letters, digits, `.`, `-` and `_`, at most 128 bytes, with optional parameters `?key=value&key=value` in the same characters. Each key appears once and parameters are stored sorted by key, so one panel has exactly one id.
 - Every panel has a stable id (`rbs.scenes`, `rbs.sources`, `rbs.preview`, `rbs.program`, `rbs.properties`, `rbs.mixer`, `rbs.live-controls`, `rbs.transition`, `rbs.outputs`, `rbs.stats`, `rbs.status-bar`, plugin panels as `<plugin-id>.<panel>`), a title, an icon, a default dock position and an optional shortcut.
 - Panels that can exist more than once take parameters in the id: `rbs.preview?canvas=vertical`, `rbs.program?canvas=horizontal`. Without a parameter they show the canvas being edited.
 - A layout is a tree per window: splits (horizontal or vertical, with ratios) whose leaves are tab stacks of panels. Floating windows and projectors have their own tree or content plus their position.
@@ -129,7 +129,7 @@ placement = { display = "edid:SAM-7012-HX55", connector = "HDMI-1", size = [1920
 - `locked` blocks pointer moves, resizes and close buttons. Commands from the palette, shortcuts and the control API still apply.
 - Unknown panel ids (for example from an uninstalled plugin) are kept in the file and shown as a placeholder that offers to install or remove them.
 - The format is versioned; RBS reads older versions and migrates them. A file with a newer `format` is refused with a message, never rewritten.
-- Validation: unknown keys are errors; there is exactly one `main` window and it is first; a panel id appears at most once in the whole workspace; a split has at least two children, one positive ratio per child, ratios summing to 1 (within 0.01, then normalised) and at most 16 levels of nesting; a tab stack may carry `active` (index of the visible tab, default 0); only the main window's root may be an empty stack (`{ tabs = [] }`, every panel closed); a floating window holds at least one panel; a projector has `content` and no `layout`; names have 1 to 64 characters, no control characters, and are unique ignoring case.
+- Validation: unknown keys are errors; there is exactly one `main` window and it is first; a panel id appears at most once in the whole workspace; a split has at least two children, one positive ratio per child, ratios summing to 1 (within 0.01, then normalised) and at most 16 levels of nesting; a tab stack may carry `active` (index of the visible tab, default 0); only the main window's root may be an empty stack (`{ tabs = [] }`, every panel closed); a floating window holds at least one panel; a projector has `content` and no `layout`; names have 1 to 64 characters, no control characters, and are unique ignoring case (Unicode lowercase, not locale-specific).
 - Files are named after a slug of the workspace name and written atomically (temporary file, then rename). Files that fail to parse are listed as problems and left untouched. Built-in workspaces need no file; saving a changed built-in writes an override file, and restoring its default removes it.
 
 ### Built-in workspaces
@@ -147,7 +147,9 @@ placement = { display = "edid:SAM-7012-HX55", connector = "HDMI-1", size = [1920
 - Optional `on_go_live` and `on_stream_end` workspace settings, stored in the UI settings, not in the scene collection or output profile.
 - Switching only changes UI state; it never reconfigures sources or outputs.
 - Layout changes and switches go into the UI's own layout undo history, not the engine command log. A history step is a whole-workspace snapshot; the moves of one splitter drag form one step; changes that leave the layout as it was record nothing; at least 100 steps are kept.
-- Every layout change is a command (open, close, show tab, move to stack, move to edge, float, dock, close window, resize, lock, switch). Pointer and keyboard both issue these commands; `locked` refuses them only when they come from the pointer, except for showing another tab.
+- Every layout change is a command (open, close, show tab, move to stack, move to edge, float, dock, close window, resize, lock, switch). Pointer and keyboard both issue these commands. When `locked` is set, close, move to stack, move to edge, float, dock, close window and resize are refused if they come from the pointer; open, show tab, lock or unlock and switch are always allowed, and every command from the palette, a shortcut or the control API applies.
+- The result of every command is validated against the rules above; a command whose result would break one (for example splits nested deeper than 16 levels) is refused, so a workspace can always be saved and loaded again.
+- A switch that leaves a guarded panel closed while live shows the same undo toast as closing it. An automatic switch (on go live or stream end) shows a toast naming the previous workspace with a one-click way back.
 - Deleting a workspace asks for confirmation; deleting a built-in workspace is not possible, only restoring its default.
 
 ## Core flows (contract for U1)
@@ -189,4 +191,5 @@ The comparison prototype and its measurements are in [`prototypes/ui-toolkit`](.
 ## Open questions
 
 - Final font choice and licence.
+- JSON Schema for the workspace file (promised by ADR-0017): not delivered yet; the Rust parser in `rbs-ui` is the reference until it is.
 - Expressiveness of the declarative plugin panel format (forms, lists, charts, live previews).

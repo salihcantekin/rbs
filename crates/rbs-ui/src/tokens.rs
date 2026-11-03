@@ -41,8 +41,40 @@ pub const THEME_COLORS: &[&str] = &[
     "color.meter.clip",
 ];
 
-/// Colour tokens that are the same in every theme.
-pub const FIXED_COLORS: &[&str] = &["color.state.live", "color.text.on-live"];
+/// Colour tokens that are the same in every theme, with their only allowed
+/// values. A custom token file must repeat them unchanged (rule U12).
+pub const FIXED: &[(&str, &str)] = &[
+    ("color.state.live", "#c4262e"),
+    ("color.text.on-live", "#ffffff"),
+];
+
+/// Length tokens every file defines (logical pixels).
+pub const LENGTHS: &[&str] = &[
+    "space.1",
+    "space.2",
+    "space.3",
+    "space.4",
+    "space.6",
+    "space.8",
+    "size.control.sm",
+    "size.control.md",
+    "size.control.lg",
+    "radius.sm",
+    "radius.md",
+    "radius.lg",
+];
+
+/// Duration tokens every file defines (milliseconds).
+pub const DURATIONS: &[&str] = &["motion.fast", "motion.normal"];
+
+/// Text styles every file defines.
+pub const TYPE_STYLES: &[&str] = &[
+    "type.caption",
+    "type.body",
+    "type.label",
+    "type.title",
+    "type.heading",
+];
 
 /// An sRGB colour with alpha.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -58,7 +90,8 @@ pub struct Color {
 }
 
 impl Color {
-    /// Parse `#rrggbb` or `#rrggbbaa`.
+    /// Parse `#rrggbb` or `#rrggbbaa`. Token files accept only `#rrggbb`,
+    /// because contrast is checked on opaque colours.
     pub fn parse(s: &str) -> Option<Color> {
         let hex = s.strip_prefix('#')?;
         if !(hex.len() == 6 || hex.len() == 8) || !hex.bytes().all(|b| b.is_ascii_hexdigit()) {
@@ -170,7 +203,8 @@ fn colors(
                 return Err(TokenError(format!("{what} has unknown colour {k}")));
             }
             let c = Color::parse(&v)
-                .ok_or_else(|| TokenError(format!("{what}: {k} = {v:?} is not #rrggbb[aa]")))?;
+                .filter(|c| c.a == 255 && v.len() == 7)
+                .ok_or_else(|| TokenError(format!("{what}: {k} = {v:?} is not #rrggbb")))?;
             Ok((k, c))
         })
         .collect()
@@ -245,7 +279,25 @@ impl Tokens {
         if raw.format != 1 {
             return Err(TokenError(format!("unsupported format {}", raw.format)));
         }
-        let fixed = colors(raw.fixed, FIXED_COLORS, "[fixed]")?;
+        let fixed_names: Vec<&str> = FIXED.iter().map(|(n, _)| *n).collect();
+        let fixed = colors(raw.fixed, &fixed_names, "[fixed]")?;
+        for (name, value) in FIXED {
+            if Color::parse(value) != Some(fixed[*name]) {
+                return Err(TokenError(format!(
+                    "{name} is fixed at {value}; a token file cannot change it"
+                )));
+            }
+        }
+        let require = |have: Vec<&String>, need: &[&str], what: &str| match need
+            .iter()
+            .find(|n| !have.iter().any(|h| h == *n))
+        {
+            Some(n) => Err(TokenError(format!("[{what}] is missing {n}"))),
+            None => Ok(()),
+        };
+        require(raw.length.keys().collect(), LENGTHS, "length")?;
+        require(raw.duration.keys().collect(), DURATIONS, "duration")?;
+        require(raw.type_styles.keys().collect(), TYPE_STYLES, "type")?;
         let mut raw_themes = raw.themes;
         let mut themes = Vec::new();
         for t in THEMES {
@@ -398,6 +450,20 @@ mod tests {
                 .contains("unknown colour")
         );
 
+        let other_live = BUILT_IN.replacen("#c4262e", "#ff0000", 1);
+        assert!(Tokens::parse(&other_live).unwrap_err().0.contains("fixed"));
+
+        let alpha = BUILT_IN.replacen("\"#121417\"", "\"#12141780\"", 1);
+        assert!(Tokens::parse(&alpha).unwrap_err().0.contains("#rrggbb"));
+
+        let no_motion = BUILT_IN.replacen("\"motion.fast\" = 120\n", "", 1);
+        assert!(
+            Tokens::parse(&no_motion)
+                .unwrap_err()
+                .0
+                .contains("motion.fast")
+        );
+
         let missing = BUILT_IN.replacen("\"color.meter.clip\" = \"#e9a6ff\"\n", "", 1);
         assert!(
             Tokens::parse(&missing)
@@ -406,7 +472,7 @@ mod tests {
                 .contains("missing color.meter.clip")
         );
 
-        let bad_name = BUILT_IN.replacen("\"space.1\" = 4", "\"Space 1\" = 4", 1);
+        let bad_name = BUILT_IN.replacen("\"space.1\" = 4", "\"space.1\" = 4\n\"Space 1\" = 4", 1);
         assert!(
             Tokens::parse(&bad_name)
                 .unwrap_err()

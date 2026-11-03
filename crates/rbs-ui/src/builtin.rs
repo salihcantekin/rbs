@@ -4,7 +4,7 @@
 
 use crate::layout::{Axis, Node};
 use crate::panel::id;
-use crate::workspace::Workspace;
+use crate::workspace::{Workspace, same_name};
 
 /// Names of the built-in workspaces, in menu order.
 pub const NAMES: [&str; 4] = ["Edit", "Live", "Minimal", "Audio"];
@@ -105,14 +105,12 @@ pub fn all() -> [Workspace; 4] {
 
 /// The default of the built-in workspace called `name` (case-insensitive).
 pub fn by_name(name: &str) -> Option<Workspace> {
-    all()
-        .into_iter()
-        .find(|w| w.name.eq_ignore_ascii_case(name))
+    all().into_iter().find(|w| same_name(&w.name, name))
 }
 
 /// Is `name` a built-in workspace name (case-insensitive)?
 pub fn is_built_in(name: &str) -> bool {
-    NAMES.iter().any(|n| n.eq_ignore_ascii_case(name))
+    NAMES.iter().any(|n| same_name(n, name))
 }
 
 #[cfg(test)]

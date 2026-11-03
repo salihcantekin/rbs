@@ -254,6 +254,17 @@ impl Node {
         }
     }
 
+    /// Is there an empty tab stack anywhere except as the whole tree?
+    pub fn has_empty_stack_below_root(&self) -> bool {
+        match self {
+            Node::Tabs(_) => false,
+            Node::Split(s) => s.children.iter().any(|c| match c {
+                Node::Tabs(t) => t.tabs.is_empty(),
+                Node::Split(_) => c.has_empty_stack_below_root(),
+            }),
+        }
+    }
+
     /// Depth of the deepest split (a tab stack has depth 0).
     pub fn depth(&self) -> usize {
         match self {

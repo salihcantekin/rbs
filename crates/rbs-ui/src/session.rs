@@ -91,8 +91,15 @@ pub enum Origin {
 /// A notice the shell shows after a change.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Toast {
-    /// A guarded panel was closed while live: "Program closed. Undo" (rule U21).
+    /// A guarded panel was closed while live, directly, with its window, or by
+    /// a workspace switch: "Program closed. Undo" (rule U21).
     ClosedWhileLive(PanelId),
+    /// The workspace was switched automatically on going live or ending the
+    /// stream; the toast offers a one-click way back to `previous` (rule U21).
+    SwitchedAutomatically {
+        /// Name of the workspace shown before.
+        previous: String,
+    },
 }
 
 /// Why a command was refused.
@@ -238,10 +245,20 @@ impl LayoutSession {
             }
             LayoutCommand::SetLocked(locked) => next.locked = locked,
             LayoutCommand::Switch(w) => {
-                w.validate()?;
+                closed.extend(
+                    before
+                        .panels()
+                        .into_iter()
+                        .filter(|p| !w.is_open(p))
+                        .cloned(),
+                );
                 next = w;
             }
         }
+        // Every result is checked, so a sequence of valid commands can never
+        // produce a workspace that fails to load again (for example by nesting
+        // splits deeper than the file format allows).
+        next.validate()?;
         if next == before {
             return Ok(None);
         }
@@ -259,6 +276,18 @@ impl LayoutSession {
             None
         };
         Ok(toast)
+    }
+
+    /// Switch workspace because the stream started or ended (opt-in, rule U21).
+    /// The switch is in the layout undo history like any other, and the toast
+    /// names the previous workspace for the one-click way back (undo).
+    pub fn switch_automatically(&mut self, to: Workspace) -> Result<Option<Toast>, CommandError> {
+        let previous = self.workspace.name.clone();
+        let toast = self.apply(LayoutCommand::Switch(to), Origin::Command)?;
+        if self.workspace.name == previous && toast.is_none() {
+            return Ok(None);
+        }
+        Ok(Some(Toast::SwitchedAutomatically { previous }))
     }
 
     /// End the current undo group (for example when a splitter drag ends).
@@ -340,6 +369,65 @@ mod tests {
             .apply(LayoutCommand::CloseWindow { window: 1 }, Origin::Command)
             .unwrap();
         assert_eq!(t, Some(Toast::ClosedWhileLive(id("rbs.mixer"))));
+    }
+
+    #[test]
+    fn switch_while_live_reports_dropped_guarded_panels() {
+        let mut s = LayoutSession::new(builtin::live());
+        s.set_live(LiveStatus {
+            live: true,
+            ..LiveStatus::default()
+        });
+        let t = s
+            .apply(LayoutCommand::Switch(builtin::edit()), Origin::Command)
+            .unwrap();
+        assert_eq!(t, Some(Toast::ClosedWhileLive(id("rbs.program"))));
+        let t = s.switch_automatically(builtin::minimal()).unwrap();
+        assert_eq!(
+            t,
+            Some(Toast::SwitchedAutomatically {
+                previous: "Edit".into()
+            })
+        );
+        assert!(s.undo());
+        assert_eq!(s.workspace().name, "Edit");
+    }
+
+    #[test]
+    fn edge_moves_cannot_exceed_the_file_depth() {
+        let mut s = LayoutSession::new(builtin::minimal());
+        let edges = [Edge::Left, Edge::Top];
+        for i in 0..40 {
+            let _ = s.apply(
+                LayoutCommand::MoveToEdge {
+                    panel: id("rbs.program"),
+                    window: 0,
+                    edge: edges[i % 2],
+                },
+                Origin::Command,
+            );
+            let text = s.workspace().to_toml().unwrap();
+            Workspace::from_toml(&text).unwrap();
+        }
+        // A layout deeper than the file allows is refused, never stored.
+        let mut w = builtin::minimal();
+        for i in 0..40 {
+            let mut n = crate::layout::Node::tabs(vec![
+                PanelId::parse(&format!("com.example.p{i}")).unwrap(),
+            ]);
+            std::mem::swap(&mut n, w.windows[0].layout_mut().unwrap());
+            let axis = if i % 2 == 0 {
+                crate::layout::Axis::Horizontal
+            } else {
+                crate::layout::Axis::Vertical
+            };
+            *w.windows[0].layout_mut().unwrap() = crate::layout::Node::split(
+                axis,
+                vec![(0.5, n), (0.5, w.windows[0].layout().unwrap().clone())],
+            );
+        }
+        let mut s = LayoutSession::new(builtin::minimal());
+        assert!(s.apply(LayoutCommand::Switch(w), Origin::Command).is_err());
     }
 
     #[test]

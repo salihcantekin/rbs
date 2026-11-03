@@ -150,9 +150,12 @@ impl From<Window> for RawWindow {
 
 /// A workspace.
 ///
-/// Invariants, checked by [`Workspace::from_toml`] and kept by every method:
+/// Invariants, checked by [`Workspace::validate`] (called by [`Workspace::from_toml`]):
 /// exactly one main window and it is first; a panel id appears at most once in
-/// the whole workspace; splits are at most [`MAX_DEPTH`] deep.
+/// the whole workspace; only the main window's root may be an empty stack;
+/// splits are at most [`MAX_DEPTH`] deep. The operations below keep all of them
+/// except the depth limit, which repeated edge moves can exceed;
+/// [`crate::LayoutSession::apply`] validates every result and refuses such a change.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Workspace {
@@ -198,6 +201,12 @@ impl fmt::Display for WorkspaceError {
 }
 
 impl std::error::Error for WorkspaceError {}
+
+/// Are two workspace names the same? Names are unique ignoring case, using
+/// Unicode lowercase (so "Çanlı" and "çanlı" are the same name).
+pub fn same_name(a: &str, b: &str) -> bool {
+    a == b || a.to_lowercase() == b.to_lowercase()
+}
 
 /// Check a workspace name: 1 to 64 characters, not only spaces, no control characters.
 pub fn validate_name(name: &str) -> Result<(), WorkspaceError> {
@@ -264,6 +273,12 @@ impl Workspace {
         let mut seen: Vec<&PanelId> = Vec::new();
         for w in &self.windows {
             if let Some(l) = w.layout() {
+                if l.has_empty_stack_below_root() {
+                    return invalid("only the main window's root may be an empty tab stack");
+                }
+                if matches!(w.content, WindowContent::Floating(_)) && l.is_empty() {
+                    return invalid("a floating window must hold at least one panel");
+                }
                 if l.depth() > MAX_DEPTH {
                     return invalid("splits are nested too deeply");
                 }
@@ -420,8 +435,10 @@ impl Workspace {
             window
         };
         self.drop_empty_floating();
-        let target = self.windows[window]
-            .layout_mut()
+        let target = self
+            .windows
+            .get_mut(window)
+            .and_then(Window::layout_mut)
             .ok_or(WorkspaceError::NoTarget)?;
         if target.insert_into_stack(stack, id.clone(), None) {
             Ok(())
@@ -443,11 +460,15 @@ impl Workspace {
         let (w, _, _) = self
             .find(id)
             .ok_or_else(|| WorkspaceError::NotOpen(id.clone()))?;
-        let source_vanishes = w != window
-            && w != 0
+        let only_panel = w != 0
             && self.windows[w]
                 .layout()
                 .is_some_and(|l| l.panels().len() == 1);
+        if only_panel && w == window {
+            // The only panel of a floating window is already at every edge of it.
+            return Ok(());
+        }
+        let source_vanishes = only_panel && w != window;
         if let Some(l) = self.windows[w].layout_mut() {
             l.remove(id);
         }
@@ -457,8 +478,10 @@ impl Workspace {
             window
         };
         self.drop_empty_floating();
-        let l = self.windows[target]
-            .layout_mut()
+        let l = self
+            .windows
+            .get_mut(target)
+            .and_then(Window::layout_mut)
             .ok_or(WorkspaceError::NoTarget)?;
         l.insert_at_edge(id.clone(), edge);
         Ok(())
@@ -686,6 +709,35 @@ placement = { display = "edid:SAM-7012-HX55", connector = "HDMI-1", size = [1920
         assert_eq!(w.find(&mixer).map(|l| l.0), Some(f));
         assert_eq!(w.move_to_stack(&mixer, 9, 0), Err(WorkspaceError::NoTarget));
         w.validate().unwrap();
+    }
+
+    #[test]
+    fn edge_of_own_floating_window_is_a_no_op() {
+        let mut w = builtin::edit();
+        let stats = id("rbs.stats");
+        let f = w.float(&stats).unwrap();
+        w.float(&id("rbs.outputs")).unwrap();
+        let before = w.clone();
+        w.move_to_edge(&stats, f, Edge::Left).unwrap();
+        assert_eq!(w, before);
+        // Last window too: no index out of bounds.
+        let g = w.float(&id("rbs.transition")).unwrap();
+        w.move_to_edge(&id("rbs.transition"), g, Edge::Top).unwrap();
+        w.validate().unwrap();
+    }
+
+    #[test]
+    fn empty_stacks_only_at_the_main_root() {
+        let base = "format = 1\nname = \"x\"\n[[windows]]\nkind = \"main\"\n";
+        let nested = format!(
+            "{base}layout = {{ split = \"vertical\", ratios = [0.5, 0.5], children = [{{ tabs = [] }}, {{ tabs = [\"rbs.mixer\"] }}] }}"
+        );
+        assert!(Workspace::from_toml(&nested).is_err());
+        let floating = format!(
+            "{base}layout = {{ tabs = [] }}\n[[windows]]\nkind = \"floating\"\nlayout = {{ split = \"vertical\", ratios = [0.5, 0.5], children = [{{ tabs = [] }}, {{ tabs = [] }}] }}"
+        );
+        assert!(Workspace::from_toml(&floating).is_err());
+        assert!(Workspace::from_toml(&format!("{base}layout = {{ tabs = [] }}")).is_ok());
     }
 
     #[test]

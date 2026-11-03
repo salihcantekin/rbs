@@ -43,7 +43,8 @@ fn valid_word(s: &str) -> bool {
 }
 
 impl PanelId {
-    /// Parse and validate a panel id.
+    /// Parse and validate a panel id. Parameters are sorted by key, so
+    /// `rbs.x?b=1&a=2` and `rbs.x?a=2&b=1` are the same id.
     pub fn parse(s: &str) -> Result<Self, PanelIdError> {
         let err = |reason| PanelIdError {
             input: s.to_owned(),
@@ -62,7 +63,11 @@ impl PanelId {
                 "the base must be `namespace.panel` in lowercase letters, digits, `.`, `-` and `_`",
             ));
         }
-        if let Some(params) = params {
+        let Some(params) = params else {
+            return Ok(PanelId(s.to_owned()));
+        };
+        let mut pairs: Vec<(&str, &str)> = Vec::new();
+        {
             let mut keys: Vec<&str> = Vec::new();
             for pair in params.split('&') {
                 let Some((k, v)) = pair.split_once('=') else {
@@ -77,9 +82,13 @@ impl PanelId {
                     return Err(err("a parameter key appears twice"));
                 }
                 keys.push(k);
+                pairs.push((k, v));
             }
         }
-        Ok(PanelId(s.to_owned()))
+        // Canonical form: parameters sorted by key, so one panel has one id.
+        pairs.sort_unstable();
+        let joined: Vec<String> = pairs.iter().map(|(k, v)| format!("{k}={v}")).collect();
+        Ok(PanelId(format!("{base}?{}", joined.join("&"))))
     }
 
     /// The id as written.
@@ -276,6 +285,14 @@ mod tests {
             assert!(PanelId::parse(bad).is_err(), "{bad}");
         }
         assert!(PanelId::parse(&format!("rbs.{}", "a".repeat(200))).is_err());
+    }
+
+    #[test]
+    fn parameters_are_canonical() {
+        let a = PanelId::parse("rbs.program?canvas=v&a=b").unwrap();
+        let b = PanelId::parse("rbs.program?a=b&canvas=v").unwrap();
+        assert_eq!(a, b);
+        assert_eq!(a.as_str(), "rbs.program?a=b&canvas=v");
     }
 
     #[test]

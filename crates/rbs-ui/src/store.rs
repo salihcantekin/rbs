@@ -11,7 +11,7 @@ use std::io;
 use std::path::{Path, PathBuf};
 
 use crate::builtin;
-use crate::workspace::{Workspace, WorkspaceError, validate_name};
+use crate::workspace::{Workspace, WorkspaceError, same_name, validate_name};
 
 /// Errors from the workspace store.
 #[derive(Debug)]
@@ -140,7 +140,7 @@ impl WorkspaceStore {
             .files()?
             .0
             .into_iter()
-            .find(|(_, w)| w.name.eq_ignore_ascii_case(name))
+            .find(|(_, w)| same_name(&w.name, name))
             .map(|(p, _)| p))
     }
 
@@ -152,7 +152,7 @@ impl WorkspaceStore {
             .map(|n| Listed {
                 name: (*n).to_owned(),
                 built_in: true,
-                modified: files.iter().any(|(_, w)| w.name.eq_ignore_ascii_case(n)),
+                modified: files.iter().any(|(_, w)| same_name(&w.name, n)),
             })
             .collect();
         let mut user: Vec<Listed> = files
@@ -165,7 +165,7 @@ impl WorkspaceStore {
             })
             .collect();
         user.sort_by_key(|l| l.name.to_lowercase());
-        user.dedup_by(|a, b| a.name.eq_ignore_ascii_case(&b.name));
+        user.dedup_by(|a, b| same_name(&a.name, &b.name));
         workspaces.extend(user);
         Ok(Listing {
             workspaces,
@@ -193,7 +193,13 @@ impl WorkspaceStore {
         };
         fs::create_dir_all(&self.dir)?;
         let tmp = path.with_extension("toml.tmp");
-        fs::write(&tmp, text)?;
+        {
+            use std::io::Write;
+            let mut f = fs::File::create(&tmp)?;
+            f.write_all(text.as_bytes())?;
+            // Flush to disk before the rename, so a crash cannot leave an empty file.
+            f.sync_all()?;
+        }
         fs::rename(&tmp, &path)?;
         Ok(path)
     }
@@ -235,8 +241,14 @@ impl WorkspaceStore {
             .file_of(from)?
             .ok_or_else(|| StoreError::NotFound(from.to_owned()))?;
         let mut w = self.load(from)?;
+        if same_name(from, to) {
+            // Only the case changes: rewrite the same file.
+            validate_name(to)?;
+            w.name = to.to_owned();
+            self.save(&w)?;
+            return Ok(());
+        }
         self.save_as(&w, to)?;
-        w.name = to.to_owned();
         fs::remove_file(path)?;
         Ok(())
     }
@@ -359,6 +371,14 @@ mod tests {
         s.save_as(&mine, "My live: chat").unwrap();
         assert!(d.0.join("my-live-chat-2.toml").exists());
         s.rename("My live: chat", "Second").unwrap();
+        s.rename("second", "SECOND").unwrap();
+        s.rename("SECOND", "Second").unwrap();
+        s.save_as(&mine, "Çanlı").unwrap();
+        assert!(matches!(
+            s.save_as(&mine, "çanlı"),
+            Err(StoreError::NameTaken(_))
+        ));
+        s.delete("ÇANLı").unwrap();
         let names: Vec<_> = s
             .list()
             .unwrap()
