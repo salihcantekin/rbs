@@ -42,8 +42,9 @@ jobs:
           components: clippy
       - uses: Swatinem/rust-cache@v2
       # Software Vulkan (lavapipe) so rbs-gpu golden image tests run instead of skipping.
+      # rbs-app (Slint, Skia renderer) links fontconfig and loads xkbcommon on Linux.
       - if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y mesa-vulkan-drivers
+        run: sudo apt-get update && sudo apt-get install -y mesa-vulkan-drivers libfontconfig1-dev libxkbcommon-dev
       - run: cargo clippy --workspace --all-targets -- -D warnings
       - run: cargo test --workspace
         env:

@@ -95,6 +95,18 @@ format = 1
 "radius.sm" = 4
 "radius.md" = 6
 "radius.lg" = 10
+"size.border" = 1
+"size.focus-ring" = 2
+"size.menu.sm" = 220
+"size.menu.md" = 300
+"size.window.w" = 1440
+"size.window.h" = 900
+"size.window.min-w" = 1280
+"size.window.min-h" = 720
+"size.floating.w" = 640
+"size.floating.h" = 420
+"step.nudge" = 8
+"step.nudge-large" = 128
 
 # Milliseconds. Every animation is off under "reduce motion".
 [duration]
