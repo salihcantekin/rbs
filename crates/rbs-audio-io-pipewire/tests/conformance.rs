@@ -52,6 +52,8 @@ fn slow_passes_conformance() {
         eprintln!("no PipeWire daemon: only probing is checked");
         let report = conformance::run(&backend, &mut RealTimePacer::new(), &Options::default());
         eprintln!("{report}");
+        // Elsewhere nothing follows: the daemon tests below are Linux-only.
+        #[cfg(target_os = "linux")]
         return;
     }
     #[cfg(target_os = "linux")]
