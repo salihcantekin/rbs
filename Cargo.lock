@@ -900,6 +900,7 @@ dependencies = [
 name = "rbs-gpu"
 version = "0.0.1"
 dependencies = [
+ "ash",
  "bytemuck",
  "criterion 0.7.0",
  "libc",

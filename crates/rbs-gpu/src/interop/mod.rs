@@ -72,6 +72,8 @@ pub struct Importer {
     tick: u64,
     #[cfg(windows)]
     fences: d3d12::Fences,
+    #[cfg(target_os = "linux")]
+    sync_files: vulkan::SyncFiles,
 }
 
 impl Importer {
@@ -157,7 +159,11 @@ impl Importer {
                 Ok(surface as u64)
             }
             #[cfg(target_os = "linux")]
-            NativeSurface::DmaBuf(ref dmabuf) => vulkan::validate(ctx, dmabuf, sync),
+            NativeSurface::DmaBuf(ref dmabuf) => {
+                let key = vulkan::validate(ctx, dmabuf, sync)?;
+                self.sync_files.wait(ctx, sync)?;
+                Ok(key)
+            }
             NativeSurface::D3d11Texture { .. } => Err(GpuError::Unsupported(
                 "D3D11 texture pointers; share the texture with an NT handle",
             )),
@@ -346,6 +352,16 @@ fn open_backend(
             Err(GpuError::Unsupported("surface kind"))
         }
     }
+}
+
+/// Opens a Vulkan device through the HAL with the importer's optional extensions, or `None`
+/// when the adapter is not Vulkan. The flag says whether sync files can be waited on.
+#[cfg(target_os = "linux")]
+pub(crate) fn vulkan_request_device(
+    adapter: &wgpu::Adapter,
+    desc: &wgpu::DeviceDescriptor<'_>,
+) -> Option<Result<(wgpu::Device, wgpu::Queue, bool), GpuError>> {
+    vulkan::request_device(adapter, desc)
 }
 
 /// The D3D adapter LUID of a device running on D3D12, as `HighPart << 32 | LowPart`.
