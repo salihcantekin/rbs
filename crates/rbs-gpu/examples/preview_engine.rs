@@ -39,6 +39,7 @@ mod demo {
     const PREVIEW: (u32, u32) = (1280, 720);
     const FRAME: Duration = Duration::from_nanos(16_666_667);
 
+    /// A 2x2 source of one sRGB colour; the `*Srgb` format decodes it to linear light.
     fn solid(
         ctx: &GpuContext,
         pool: &mut TexturePool,
@@ -46,7 +47,7 @@ mod demo {
     ) -> Result<TextureId, GpuError> {
         let id = pool.acquire(
             ctx,
-            &TextureDesc::source(2, 2, wgpu::TextureFormat::Rgba8Unorm),
+            &TextureDesc::source(2, 2, wgpu::TextureFormat::Rgba8UnormSrgb),
         )?;
         readback::upload(ctx, pool, id, &rgba.repeat(4))?;
         Ok(id)
@@ -82,7 +83,9 @@ mod demo {
             PreviewDesc {
                 width: PREVIEW.0,
                 height: PREVIEW.1,
-                surfaces: 3,
+                // One shown, one waiting for the UI's last draw to finish on the GPU, one
+                // being rendered, one spare: with three the engine often finds none free.
+                surfaces: 4,
             },
         )?;
         println!("{}", publisher.endpoint());
