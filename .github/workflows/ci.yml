@@ -5,9 +5,20 @@ on:
     branches: [main]
   pull_request:
 
+# A new push to a pull request cancels its older, now outdated run. Runs on main are
+# never cancelled, so every merge leaves a complete run (and a fresh cache) behind.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 env:
   CARGO_TERM_COLOR: always
   RUSTFLAGS: -D warnings
+  # Line tables only: backtraces and panic locations keep file and line, but the
+  # target directory, the cache and link times shrink (full debug info on Windows
+  # made a 2.4 GB cache that took minutes to compress and upload).
+  CARGO_PROFILE_DEV_DEBUG: line-tables-only
+  CARGO_PROFILE_TEST_DEBUG: line-tables-only
 
 jobs:
   fmt:
@@ -42,7 +53,11 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy
+      # Only main saves the cache; pull requests restore main's. Saving per pull request
+      # cost minutes per run on Windows and evicted main's cache (10 GB repo limit).
       - uses: Swatinem/rust-cache@v2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       # Per-test timeouts, no retries and per-test timings (ADR-0032, .config/nextest.toml).
       - uses: taiki-e/install-action@v2
         with:
