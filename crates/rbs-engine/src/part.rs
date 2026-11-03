@@ -6,6 +6,7 @@ use std::any::Any;
 use std::sync::Arc;
 use std::time::Duration;
 
+use rbs_core::thread::ThreadPolicy;
 use rbs_core::time::Clock;
 use rbs_graph::description::{GraphDescription, NodeId, PartitionId};
 use rbs_graph::partition::{QueueEnds, QueueReaderEnd};
@@ -57,6 +58,8 @@ pub(crate) trait Part: Send {
     /// Runs the worker's final tick(s) (see `Worker::drain`); true if the worker
     /// drained within `timeout` or there is no worker.
     fn drain(&mut self, timeout: Duration) -> bool;
+    /// The policy for workers started from now on (ADR-0030).
+    fn set_thread_policy(&mut self, policy: Option<Arc<dyn ThreadPolicy>>);
     /// From now on no worker starts; swaps without one run inline (shutdown).
     fn close(&mut self);
 }
@@ -97,6 +100,7 @@ pub(crate) struct Partition<X: Runtime> {
     sent_empty: bool,
     /// Shutting down: never start a worker again.
     closing: bool,
+    thread_policy: Option<Arc<dyn ThreadPolicy>>,
 }
 
 impl<X: Runtime> Partition<X> {
@@ -122,6 +126,7 @@ impl<X: Runtime> Partition<X> {
             next_tick: 0,
             sent_empty: true,
             closing: false,
+            thread_policy: None,
         }
     }
 
@@ -152,6 +157,7 @@ impl<X: Runtime> Partition<X> {
             bell: self.bell.clone(),
             stats: Arc::clone(&self.stats),
             next: self.next_tick,
+            policy: self.thread_policy.clone(),
         };
         match Worker::spawn(&mut self.parked, spec) {
             Ok(worker) => {
@@ -204,7 +210,10 @@ impl<X: Runtime> Part for Partition<X> {
                 // `end_tick` on this thread, no tick index used). Normally the running
                 // schedule is empty too. At shutdown, after a timed-out swap, this may
                 // warm or cool nodes on the control thread before they are released.
+                // The executor is attached to this thread for the swap (ADR-0030).
+                executor.attach();
                 executor.swap_pending();
+                executor.detach();
                 self.controller.collect()?
             }
             (None, None) => return Err(SettleError::Spawn(SpawnFailed(std::io::ErrorKind::Other))),
@@ -301,6 +310,10 @@ impl<X: Runtime> Part for Partition<X> {
         self.closing = true;
     }
 
+    fn set_thread_policy(&mut self, policy: Option<Arc<dyn ThreadPolicy>>) {
+        self.thread_policy = policy;
+    }
+
     fn drain(&mut self, timeout: Duration) -> bool {
         self.worker.as_ref().is_none_or(|w| w.drain(timeout))
     }
@@ -319,5 +332,10 @@ impl<X: Runtime> Drop for Partition<X> {
     fn drop(&mut self) {
         // The engine drains before dropping; this only joins the thread.
         self.stop_worker();
+        // Cool what is left on the control thread with the runtime attached, then
+        // detach and drop (ADR-0030).
+        if let Some(executor) = self.parked.take() {
+            executor.retire();
+        }
     }
 }

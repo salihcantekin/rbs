@@ -3884,6 +3884,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "rbs-thread-os"
+version = "0.0.1"
+dependencies = [
+ "libc",
+ "rbs-core",
+ "windows",
+ "zbus",
+]
+
+[[package]]
 name = "rbs-transport"
 version = "0.0.1"
 dependencies = [
