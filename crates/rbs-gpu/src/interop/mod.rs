@@ -11,12 +11,15 @@
 
 use std::time::Duration;
 
-use rbs_core::media::{FramePayload, Lease, NativeSurface, TextureId, VideoFrame};
+use rbs_core::media::{
+    FramePayload, Lease, NativeSurface, PixelFormat, TextureId, VideoFormat, VideoFrame,
+};
 use rbs_core::time::Timestamp;
 
 use crate::context::GpuContext;
 use crate::error::GpuError;
 use crate::pool::{TextureDesc, TexturePool};
+use crate::yuv_decode::{YuvDecoder, YuvSource, decoded_color, decoded_desc};
 
 #[cfg(windows)]
 mod d3d12;
@@ -42,14 +45,22 @@ const USAGE: wgpu::TextureUsages =
 
 /// A producer surface opened by a backend: the wrapper texture and what it looks like.
 struct Opened {
+    /// The surface, or its luma plane for 4:2:0 surfaces.
     texture: wgpu::Texture,
     desc: TextureDesc,
+    /// The interleaved CbCr plane of a 4:2:0 surface (NV12, P010), decoded to RGB on import.
+    chroma: Option<(wgpu::Texture, TextureDesc)>,
 }
 
 struct Entry {
     /// Producer identity of the surface (handle value or object pointer).
     key: u64,
+    /// The surface's pool slot (its luma plane for 4:2:0 surfaces).
     id: TextureId,
+    /// The chroma plane's pool slot of a 4:2:0 surface. Such surfaces are decoded into a
+    /// fresh canvas-format slot on every import, so no frame references `id` or `chroma`;
+    /// the native lease goes back once the decode (and the hand-back) completed.
+    chroma: Option<TextureId>,
     /// Frame size the surface was first delivered with. A frame of another size on the same
     /// key means the producer's handle value now names another object.
     frame_size: (u32, u32),
@@ -74,6 +85,8 @@ pub struct Importer {
     fences: d3d12::Fences,
     #[cfg(target_os = "linux")]
     sync_files: vulkan::SyncFiles,
+    /// Created on the first 4:2:0 surface (P13).
+    decoder: Option<YuvDecoder>,
 }
 
 impl Importer {
@@ -124,9 +137,38 @@ impl Importer {
         // A producer resends a surface only after its lease was released, so this is
         // normally `None`; replacing drops a stale lease.
         entry.native = Some(lease);
-        let mut out = pool
-            .frame(entry.id, format, timestamp)?
-            .with_sequence(sequence);
+        let (id, chroma) = (entry.id, entry.chroma);
+        let mut out = match chroma {
+            None => pool.frame(id, format, timestamp)?,
+            Some(chroma) => {
+                // 4:2:0: decode into a fresh slot that the returned frame alone holds. The
+                // decode's submission reads the planes, so `retire` hands the lease back
+                // only after it.
+                let decoder = self.decoder.get_or_insert_with(|| YuvDecoder::new(ctx));
+                let (w, h) = (format.size.width, format.size.height);
+                let target = pool.acquire(ctx, &decoded_desc(w, h))?;
+                let decoded = decoder
+                    .decode(
+                        ctx,
+                        pool,
+                        YuvSource::Planes { luma: id, chroma },
+                        format.color,
+                        target,
+                    )
+                    .and_then(|_| {
+                        let rgb = VideoFormat::new(
+                            format.size,
+                            PixelFormat::Rgba16Float,
+                            decoded_color(format.color),
+                        );
+                        pool.frame(target, rgb, timestamp)
+                    });
+                // The frame's lease (if any) keeps the slot; the importer keeps nothing.
+                let _ = pool.release(target);
+                decoded?
+            }
+        };
+        out = out.with_sequence(sequence);
         if let Some(t) = source_time {
             out = out.with_source_time(t);
         }
@@ -189,10 +231,21 @@ impl Importer {
         }
         let opened = open_backend(ctx, surface, frame_size)?;
         let id = pool.insert_external(ctx, opened.texture, opened.desc)?;
+        let chroma = match opened.chroma {
+            None => None,
+            Some((texture, desc)) => match pool.insert_external(ctx, texture, desc) {
+                Ok(c) => Some(c),
+                Err(e) => {
+                    let _ = pool.release(id);
+                    return Err(e);
+                }
+            },
+        };
         ctx.metrics().count_surface_opened();
         self.entries.push(Entry {
             key,
             id,
+            chroma,
             frame_size,
             last_seen: self.tick,
             // Set by the next `retire`, which sees `last_seen == tick`.
@@ -223,6 +276,9 @@ impl Importer {
     fn close(&mut self, i: usize, pool: &mut TexturePool) {
         let e = self.entries.swap_remove(i);
         let _ = pool.release(e.id);
+        if let Some(c) = e.chroma {
+            let _ = pool.release(c);
+        }
     }
 
     /// Closes every cached surface that is not in use (no producer lease, no frame).

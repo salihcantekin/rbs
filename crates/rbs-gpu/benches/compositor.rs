@@ -108,6 +108,25 @@ fn bench(c: &mut Criterion) {
             ctx.wait_idle().expect("wait");
         });
     });
+    // Source decode (camera / native NV12 import): planes back to a canvas-format texture.
+    let mut decoder = rbs_gpu::YuvDecoder::new(&ctx);
+    let decoded = pool
+        .acquire(&ctx, &rbs_gpu::yuv_decode::decoded_desc(W, H))
+        .expect("decoded");
+    group.bench_function("nv12_decode", |b| {
+        b.iter(|| {
+            decoder
+                .decode(
+                    &ctx,
+                    &pool,
+                    rbs_gpu::YuvSource::Planes { luma, chroma },
+                    rbs_core::media::ColorSpace::BT709_LIMITED,
+                    decoded,
+                )
+                .expect("decode");
+            ctx.wait_idle().expect("wait");
+        });
+    });
     if let Ok(surface) = pool.acquire(&ctx, &yuv::surface_desc(YuvFormat::Nv12, W, H)) {
         group.bench_function("nv12_surface", |b| {
             b.iter(|| {

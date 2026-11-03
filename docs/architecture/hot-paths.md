@@ -15,7 +15,7 @@ Keep this list current. When a new crate or module lands on one of these paths, 
 | Queue endpoints between partitions | Every frame or packet per crossing link | `crates/rbs-graph/src/runtime/queue.rs` |
 | Capture frame hand-off: `CaptureSession::latest_frame` and the adapter code it calls | Every frame per Active capture source | `crates/rbs-capture`, adapters in `crates/rbs-capture-*` |
 | Frame, texture and audio buffer pools | Every frame or block | `crates/rbs-gpu`, `crates/rbs-audio` |
-| Colour conversion to encoder formats (NV12, P010) | Every frame per encoder | `crates/rbs-gpu` |
+| Colour conversion to encoder formats (NV12, P010) and YUV source decode | Every frame per encoder or YUV source | `crates/rbs-gpu` |
 | Encoder submit/drain and packet fan-out | Every frame per encoder | `crates/rbs-codec*`, `crates/rbs-graph` |
 | Muxers and transport send loops | Every packet | `crates/rbs-mux*`, `crates/rbs-transport*` |
 | Bitstream conversion (Annex B / length-prefixed, FLV tag bodies) | Every packet per converting output | `crates/rbs-media-format` |
