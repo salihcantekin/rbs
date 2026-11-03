@@ -297,7 +297,13 @@ impl Drop for Context {
 /// What the encoder of `codec` can do, or `None` when it is absent.
 fn codec_caps(api: &'static Api, context: &Context, codec: CodecId) -> Option<CodecCaps> {
     let n = names(codec);
-    let component = context.component(api, n).ok()?;
+    let component = match context.component(api, n) {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("[amf-diag] {codec}: component: {e}");
+            return None;
+        }
+    };
     let mut raw: *mut sys::AMFCaps = ptr::null_mut();
     // SAFETY: a live component and a valid out-pointer.
     let r = unsafe { vcall!(component.ptr(), GetCaps, &mut raw) }.ok()?;
@@ -331,6 +337,7 @@ fn codec_caps(api: &'static Api, context: &Context, codec: CodecId) -> Option<Co
             p010 |= format == sys::AMF_SURFACE_P010;
         }
     }
+    eprintln!("[amf-diag] {codec}: w {min_w}..{max_w} h {min_h}..{max_h} formats {formats} nv12 {nv12} p010 {p010} max_profile {max_profile:?} throughput {throughput:?}");
     if !nv12 {
         return None;
     }
@@ -359,6 +366,7 @@ fn codec_caps(api: &'static Api, context: &Context, codec: CodecId) -> Option<Co
         quality: true,
         dynamic_bitrate: true,
     };
+    eprintln!("[amf-diag] {codec}: caps {c:?} usable {}", c.usable());
     c.usable().then_some(c)
 }
 
