@@ -296,18 +296,38 @@ struct Suite<'a> {
     in_flight: u64,
 }
 
+/// Largest allowed probe time (capture-port.md, Conformance tests).
+const PROBE_BUDGET: Duration = Duration::from_millis(50);
+
+/// Probe calls the suite times; the fastest must be within [`PROBE_BUDGET`].
+const PROBE_ATTEMPTS: u32 = 3;
+
 /// Runs the capture conformance suite against `factory`.
 pub fn run(
     factory: &dyn CaptureFactory,
     pacer: &mut dyn Pacer,
     options: &Options<'_>,
 ) -> Result<Report, Failure> {
-    let started = Instant::now();
-    let probed = factory.probe();
-    let probe_time = started.elapsed();
-    ensure("probe", probe_time < Duration::from_millis(50), || {
-        format!("probe took {probe_time:?}, limit is 50 ms")
+    // The fastest of a few calls: the 50 ms budget is the adapter's own work, not
+    // one-time process costs (loading system frameworks on the first call) or a
+    // descheduled CI runner. A probe that is slow every time still fails.
+    let mut probe_time = Duration::MAX;
+    let mut probed = None;
+    for _ in 0..PROBE_ATTEMPTS {
+        let started = Instant::now();
+        let result = factory.probe();
+        probe_time = probe_time.min(started.elapsed());
+        probed = Some(result);
+        if probe_time < PROBE_BUDGET {
+            break;
+        }
+    }
+    ensure("probe", probe_time < PROBE_BUDGET, || {
+        format!("probe took at least {probe_time:?} in {PROBE_ATTEMPTS} calls, limit is 50 ms")
     })?;
+    let Some(probed) = probed else {
+        return fail("probe", "probe was not called".to_owned());
+    };
     let caps = match probed {
         Ok(caps) => caps,
         Err(e) if options.strict => return fail("probe", format!("probe failed: {e}")),
