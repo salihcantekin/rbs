@@ -634,7 +634,10 @@ impl NvencEngine {
             outputBitstream: self.outputs[slot],
             ..Default::default()
         };
-        params.set_doNotWait(u32::from(!wait));
+        // DIAG (temporary): RBS_NVENC_DIAG_BLOCK=1 never uses doNotWait.
+        let block = std::env::var("RBS_NVENC_DIAG_BLOCK").is_ok_and(|v| v == "1");
+        params.set_doNotWait(u32::from(!wait && !block));
+        eprintln!("[nvenc-diag] lock slot {slot} wait {wait} block {block}");
         // SAFETY: the bitstream buffer belongs to this session and has a picture
         // queued (`pending`).
         let s = unsafe { lock(self.encoder(), &mut params) };
@@ -643,6 +646,7 @@ impl NvencEngine {
         }
         status("nvEncLockBitstream", s)?;
         let len = params.bitstreamSizeInBytes as usize;
+        eprintln!("[nvenc-diag] lock -> {s} len {len} ptr {:?} hwstatus {}", params.bitstreamBufferPtr, params.hwEncodeStatus);
         let data = if len == 0 || params.bitstreamBufferPtr.is_null() {
             Vec::new()
         } else {

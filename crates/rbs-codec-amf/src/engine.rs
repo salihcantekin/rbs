@@ -667,6 +667,9 @@ impl Engine for AmfEngine {
             }
             std::thread::sleep(Duration::from_millis(1));
         }
+        // DIAG (temporary)
+        let mem = unsafe { vcall!(surface, GetMemoryType) }.unwrap_or(999);
+        eprintln!("[amf-diag] upload slot {slot} refs {:?} idle {idle} memtype {mem}", references(surface));
         let mut planes: [(*mut u8, usize, usize); 2] = [(ptr::null_mut(), 0, 0); 2];
         for (i, p) in planes.iter_mut().enumerate() {
             // SAFETY: a live surface; the plane belongs to it (no reference added)
@@ -684,6 +687,7 @@ impl Engine for AmfEngine {
                     vcall!(plane, GetVPitch).unwrap_or(0),
                 )
             };
+            eprintln!("[amf-diag]   plane {i} native {native:?} pitch {pitch} rows {rows}");
             *p = (
                 native.cast(),
                 usize::try_from(pitch).unwrap_or(0),
@@ -752,11 +756,13 @@ impl Engine for AmfEngine {
         }
         // SAFETY: an initialised component; a surface is an `AMFData` (its vtable
         // starts with the `AMFData` entries) and AMF adds its own reference.
+        eprintln!("[amf-diag] SubmitInput slot {slot} refs before {:?}", references(surface));
         let r = unsafe { vcall!(component, SubmitInput, surface.cast::<sys::AMFData>()) }
             .map_err(|m| EngineError::Failed(m, -1))?;
         if r != sys::AMF_OK {
             return Err(engine_error("SubmitInput", r));
         }
+        eprintln!("[amf-diag] SubmitInput -> {r}, refs after {:?}, memtype {:?}", references(surface), unsafe { vcall!(surface, GetMemoryType) });
         self.since_idr = if keyframe { 0 } else { self.since_idr + 1 };
         Ok(())
     }
