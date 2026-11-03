@@ -28,7 +28,7 @@ Forces: zero copy on the default path (P4), no allocation per frame (P6), adapte
 
 - The VideoToolbox adapter can be written against `rbs-codec` and `rbs-core` only, with `input.memory = metal`. The codec conformance suite needs a frame source for Metal memory; `rbs-gpu`'s exporter can provide one in the adapter's tests.
 - `YuvConverter::convert` and `convert_to_surface` return the `wgpu::SubmissionIndex` of their work, so an exporter can tell when a frame is complete without waiting. This changes their return type, and `GpuError` gains `ExportBusy`, `Export` and `DeviceLost`. Both are breaking changes to `rbs-gpu` (pre-1.0, engine-internal); every caller is in this repository.
-- A failed Metal command buffer counts as completed, so the exporter checks for device loss before delivering and returns `GpuError::DeviceLost` instead of frames from a lost device.
+- A failed Metal command buffer counts as completed, so the exporter checks for device loss before delivering and returns `GpuError::DeviceLost` instead of frames from a lost device. Residual risk: a non-fatal command buffer error that does not lose the device is not visible through wgpu, so such a frame is delivered with wrong contents (memory-safe).
 - Waiting for completion adds latency of one GPU poll (the frame is delivered on the next `take_ready` after the GPU finishes, normally the same or the next render tick). A sync-object variant (`MTLSharedEvent`) can remove it later without changing encoders that accept `Ready`.
 - The media-types and output-ports specs change: native frames have two possible single consumers, and the open question about encoder handles is closed.
 - Leak risk: an encoder that never drops frames starves the ring; this shows as `ExportBusy` and dropped frames, not as unbounded memory.
@@ -53,4 +53,5 @@ Forces: zero copy on the default path (P4), no allocation per frame (P6), adapte
   - Dropping without `close` leaked pool slots. Resolved by the ring design: there are no pool slots and no `close`.
   - Hot-path process: the conversion benchmarks are re-measured; the export calls add one non-blocking poll, which the importer already runs every tick. They are covered by an allocation-bound test on the macOS runner.
   - Minor: layout checks extended to every plane field; leasing moved after the device check; consumer rules (frame dropped by VideoToolbox, address-keyed caches) and ring sizing added to the spec; frames-in-flight capability left as an open question; semver impact stated.
+- Re-check by the same reviewer after the fixes: approve. Remaining minors addressed: the residual command buffer error risk is stated, and the engine keeps `lease_owner()` so the last ring reference is dropped off the real-time threads.
 - Owner approval: per the early-phase policy (2026-11-03), threads may mark ADRs Accepted.

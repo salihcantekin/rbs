@@ -204,6 +204,14 @@ impl SurfaceExporter {
         self.pending.len()
     }
 
+    /// The lease owner of exported frames. The engine keeps this handle until the encoder
+    /// has shut down and drops it on a background thread, so the last reference (and the
+    /// release of the surfaces) never falls on a real-time thread (media-types spec,
+    /// "Lifetime").
+    pub fn lease_owner(&self) -> Arc<dyn LeaseOwner> {
+        self.ring.clone()
+    }
+
     /// Exported frames the encoder still holds.
     pub fn held(&self) -> usize {
         self.ring
@@ -274,8 +282,8 @@ impl SurfaceExporter {
                 return Err(GpuError::Unsupported("submission of another device"));
             }
         }
-        // Metal counts a command buffer that failed as completed; a lost device is the
-        // only way such a failure is reported, so check it before calling the frame good.
+        // Metal counts a failed command buffer as completed. A lost device is caught here;
+        // a non-fatal command buffer error is not (residual risk, ADR-0025).
         if ctx.metrics().device_lost() {
             self.pending.clear();
             for p in &mut self.planes {
