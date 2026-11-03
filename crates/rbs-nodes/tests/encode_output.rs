@@ -11,11 +11,13 @@ use std::sync::atomic::Ordering;
 
 use rbs_core::lifecycle::Lifecycle;
 use rbs_core::media::{Bytes, ContainerId};
-use rbs_core::time::Timestamp;
+use rbs_core::time::{Clock, TestClock, Timestamp};
 use rbs_core::timing::{Cadence, FrameRate};
-use rbs_graph::runtime::{PER_TICK_EVENTS, Tick};
+use rbs_graph::runtime::{JoinError, PER_TICK_EVENTS, Tick};
 use rbs_nodes::encode::CARRY_PACKETS;
+use rbs_nodes::output::WaitClock;
 use rbs_nodes::{OutputNode, VideoEncoderNode};
+use std::time::Duration;
 use support::{
     EncoderState, FakeEncoderFactory, FakeMuxerFactory, FakeTransportFactory, FrameSource, Got,
     Rig, TransportState, encoder_config, file_config,
@@ -213,7 +215,180 @@ fn a_restarted_encoder_with_another_stream_fails_permanently() {
     let report = c.rig.apply();
     let failed = report.failed.iter().find(|f| f.0 == c.encoder);
     assert!(failed.is_some(), "{report:?}");
-    assert_eq!(c.enc_state.sessions.load(Ordering::Relaxed), 2);
+    // `open` (probe), the first `prepare`, the second `prepare`.
+    assert_eq!(c.enc_state.sessions.load(Ordering::Relaxed), 3);
+}
+
+#[test]
+fn an_opened_encoder_holds_no_session_until_prepare() {
+    let state = Arc::new(EncoderState::default());
+    let node = VideoEncoderNode::open(
+        Arc::new(FakeEncoderFactory(Arc::clone(&state))),
+        encoder_config(),
+    )
+    .unwrap();
+    assert_eq!(state.sessions.load(Ordering::Relaxed), 1, "probed once");
+    assert_eq!(
+        state.live.load(Ordering::Relaxed),
+        0,
+        "installed holds nothing"
+    );
+
+    drop(node);
+
+    let c = chain(1, 1, 64, TransportState::logging());
+    let mut c = c;
+    assert_eq!(
+        c.enc_state.live.load(Ordering::Relaxed),
+        1,
+        "active holds one"
+    );
+    c.rig
+        .graph
+        .set_state(c.encoder, Lifecycle::Standby)
+        .unwrap();
+    c.rig.apply();
+    c.rig.tick();
+    assert_eq!(
+        c.enc_state.live.load(Ordering::Relaxed),
+        0,
+        "standby holds none"
+    );
+}
+
+#[test]
+fn a_refused_frame_loses_no_packet_of_the_same_tick() {
+    // 40 packets per frame every other tick: tick 2 starts by passing 8 carried packets,
+    // then its frame is refused. Those 8 must still reach the output.
+    let mut c = chain(2, 40, 4096, TransportState::logging());
+    c.rig.ticks(2);
+    c.enc_state.refuse_next.store(true, Ordering::Relaxed);
+    c.rig.ticks(10);
+    c.rig.drain();
+
+    assert_eq!(c.enc_stats.refused.load(Ordering::Relaxed), 1);
+    let submitted = c.enc_state.submitted.load(Ordering::Relaxed);
+    let times = media_times(&c.tx_state.got());
+    let lost = c.enc_stats.flush_lost.load(Ordering::Relaxed);
+    assert_eq!(
+        times.len() as u64 + lost,
+        40 * submitted,
+        "every packet arrived"
+    );
+    assert_eq!(
+        c.enc_stats.packets.load(Ordering::Relaxed),
+        times.len() as u64
+    );
+    let health = c.rig.exec.health(c.encoder);
+    assert!(health.is_none_or(|h| h.errors == 0), "{health:?}");
+}
+
+#[test]
+fn an_output_that_wrote_media_refuses_to_restart() {
+    let mut c = chain(1, 1, 64, TransportState::logging());
+    let clock = TestClock::new();
+    c.rig.ctl.set_clock(Arc::new(clock.clone()));
+    c.rig.ticks(2);
+    // An adapter bug: the executor bypasses the node as recoverable (ADR-0024).
+    c.tx_state.panic.store(true, Ordering::Relaxed);
+    c.rig.ticks(2);
+    c.tx_state.panic.store(false, Ordering::Relaxed);
+    let health = c.rig.exec.health(c.output).unwrap();
+    assert!(health.bypassed && !health.permanent, "{health:?}");
+
+    // The controller takes the node out, the back-off passes and it prepares the node
+    // again: the node must refuse instead of opening (and truncating) the destination
+    // a second time.
+    let mut refused = false;
+    for _ in 0..6 {
+        clock.advance(Duration::from_secs(60));
+        let report = c.rig.apply();
+        let prepared = report
+            .failed
+            .iter()
+            .any(|f| f.0 == c.output && matches!(f.1, JoinError::Prepare(_)));
+        if prepared {
+            refused = true;
+            break;
+        }
+        c.rig.tick();
+    }
+    assert!(refused, "the output was not prepared again");
+    assert_eq!(c.tx_state.started.load(Ordering::Relaxed), 1);
+    assert_eq!(
+        c.out_stats.failure.get().map(String::as_str),
+        Some("an output that wrote media cannot restart")
+    );
+}
+
+#[test]
+fn a_muxer_failure_keeps_its_cause() {
+    let mut c = chain(1, 1, 64, TransportState::logging());
+    c.rig.ticks(1);
+    // Media goes nowhere: the output fails for good and says why.
+    c.tx_state.closed.store(true, Ordering::Relaxed);
+    c.rig.ticks(1);
+    let health = c.rig.exec.health(c.output).unwrap();
+    assert!(health.permanent, "{health:?}");
+    let failure = c.out_stats.failure.get().cloned().unwrap_or_default();
+    assert!(failure.starts_with("transport: "), "{failure}");
+}
+
+#[test]
+fn release_gives_up_on_a_full_queue_without_sleeping() {
+    let clock = Arc::new(StepClock::default());
+    let tx = TransportState::logging();
+    let mut rig = Rig::new();
+    let state = Arc::new(EncoderState::default());
+    let encoder = VideoEncoderNode::open(
+        Arc::new(FakeEncoderFactory(Arc::clone(&state))),
+        encoder_config(),
+    )
+    .unwrap();
+    let output = OutputNode::new(
+        vec![encoder.stream().clone()],
+        Arc::new(FakeTransportFactory(Arc::clone(&tx))),
+        file_config(),
+    )
+    .with_muxer(Arc::new(FakeMuxerFactory), ContainerId::Matroska, None)
+    .with_finish_timeout(Duration::from_secs(5))
+    .with_wait_clock(Arc::clone(&clock) as Arc<dyn WaitClock>);
+    let stats = output.stats();
+    let source = rig.add(Box::new(FrameSource::new(1)));
+    let encoder = rig.add(Box::new(encoder));
+    let output = rig.add(Box::new(output));
+    rig.graph
+        .connect(source, "video", encoder, "video")
+        .unwrap();
+    rig.graph.connect(encoder, "packets", output, "s0").unwrap();
+    rig.apply();
+    rig.ticks(2);
+    tx.full.store(true, Ordering::Relaxed);
+    rig.ticks(3);
+    rig.drain();
+
+    // 5 s in 5 ms steps, all on the test clock.
+    assert_eq!(clock.pauses.load(Ordering::Relaxed), 1000);
+    assert!(stats.finish_lost.load(Ordering::Relaxed) >= 3);
+    assert_eq!(tx.finished.load(Ordering::Relaxed), 1);
+    assert!(!tx.got().contains(&Got::Trailer));
+}
+
+/// A wait clock that moves forward by each pause instead of sleeping.
+#[derive(Default)]
+struct StepClock {
+    clock: TestClock,
+    pauses: std::sync::atomic::AtomicU64,
+}
+
+impl WaitClock for StepClock {
+    fn now(&self) -> Timestamp {
+        self.clock.now()
+    }
+    fn pause(&self, duration: Duration) {
+        self.pauses.fetch_add(1, Ordering::Relaxed);
+        self.clock.advance(duration);
+    }
 }
 
 #[test]

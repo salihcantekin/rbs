@@ -41,7 +41,7 @@ pub const VIDEO_ENCODER_NODE_TYPE: &str = "org.rbs.video-encoder"; // Encoder; "
 pub const CARRY_PACKETS: usize = 64;
 impl VideoEncoderNode {                                       // Node<X> for every Runtime X
     pub fn open(factory: Arc<dyn VideoEncoderFactory>, config: VideoEncoderConfig)
-        -> Result<Self, CreateError>;                         // creates the session now
+        -> Result<Self, CreateError>;                         // probes a session, then drops it
     pub fn stream(&self) -> &StreamDescriptor;
     pub fn stats(&self) -> Arc<EncoderNodeStats>;             // submitted, packets, busy_drops, refused,
                                                               // overflow_drops, flush_lost
@@ -57,9 +57,17 @@ impl OutputNode {                                             // Node<X> for eve
         fragment_duration: Option<Duration>) -> Self;
     pub fn with_backlog(self, items: usize) -> Self;          // default 4096
     pub fn with_finish_timeout(self, timeout: Duration) -> Self; // default 5 s
+    pub fn with_wait_clock(self, clock: Arc<dyn WaitClock>) -> Self; // default SystemWaitClock
     pub fn stats(&self) -> Arc<OutputNodeStats>;              // packets, sent, transport_drops, mux_drops,
-                                                              // backlog_peak, keyframe_requests, finish_lost
+                                                              // backlog_peak, keyframe_requests, finish_lost,
+                                                              // failure: OnceLock<String>
 }
+/// Time source of the blocking waits in `prepare` and `release` (control thread).
+pub trait WaitClock: Send + Sync {
+    fn now(&self) -> Timestamp;
+    fn pause(&self, duration: Duration);                       // tests advance a TestClock
+}
+pub struct SystemWaitClock;                                   // MonotonicClock + thread::sleep
 ```
 
 A recording, one partition per encoder and per output (ADR-0026):
@@ -78,15 +86,15 @@ Counters are atomics in an `Arc`, read on any thread; nodes update them with rel
 | `prepare` | Fills the request with [`complete_request`] (keeps what it already has), `CaptureFactory::open`, `CaptureSession::start` (may block up to 500 ms; control thread) |
 | `process` | `latest_frame`: `None` keeps the last frame on the link. A `Native` frame goes through `RenderLocal::importer` (zero copy), a `System` frame through the node's `SourceUpload`; the `Texture` frame is set on "video" |
 | `cool` | Returns the upload's plane textures to the pool |
-| `release` | `stop`, then drops the session |
+| `release` | `stop`, then drops the session and the upload's decoder |
 
-`import_preferences` decides by the device's graphics API: D3D12 offers `[D3d11, D3d12, System]` with `GpuImportTarget { Luid(adapter_luid), [TimelineFence, Ready] }`; Metal offers `[Metal, System]` (IOSurfaces need no device check); Vulkan and others `[System]` until DMA-BUF import is verified on hardware. Default pixel formats are `rbs_gpu::upload::UPLOAD_FORMATS` (`Nv12, P010, Bgra8, Rgba8`).
+`import_preferences` decides by the device's graphics API: D3D12 offers `[D3d11, D3d12, System]` with `GpuImportTarget { Luid(adapter_luid), [TimelineFence, Ready] }`; Metal offers `[Metal, System]` (IOSurfaces need no device check); Vulkan and others `[System]` until DMA-BUF import is verified on hardware. Default pixel formats are `rbs_gpu::upload::UPLOAD_FORMATS` (`Nv12, P010, Bgra8, Rgba8`), without P010 when the device lacks `gpu.p010`.
 
 Invariants:
 
 1. Nothing is opened before `prepare`; after `release` the session is stopped and dropped.
 2. Every frame on "video" is a pool texture of the render runtime with the capture frame's timestamp, sequence and source time.
-3. A frame that fails to import or upload is dropped (the producer gets its surface back) and counted; the last good frame stays on the link.
+3. A frame that fails to import or upload is dropped (the producer gets its surface back) and counted; the last good frame stays on the link. `GpuError::Unsupported` and `InvalidSize` fail permanently (the source keeps sending what the device cannot take); other errors are `Backend`.
 
 ### Video export node
 
@@ -105,9 +113,9 @@ Invariants:
 
 | Call | Does |
 | --- | --- |
-| `open` | Creates the first session (control thread); its `stream()` is kept |
-| `prepare` | Creates a session if `release` dropped it; refuses with `NodeError::Permanent` if its `stream()` differs from the first. Reserves the drain and carry-over buffers |
-| `process` | Passes carried packets first. Submits a frame not seen before (timestamp, sequence) once; on `Busy` drains and retries once, then drops it (`busy_drops`). Drains and passes packets |
+| `open` | Creates a session (control thread), keeps its `stream()` and drops it: an installed node holds no encoder (P13) |
+| `prepare` | Creates the session; refuses with `NodeError::Permanent` if its `stream()` differs from the probed one, or if creation fails with anything but `ResourceExhausted`. Reserves the drain and carry-over buffers |
+| `process` | Passes carried packets first. Submits a frame not seen before (timestamp, sequence) once; on `Busy` drains and retries once, then drops it (`busy_drops`); a refused frame is dropped (`refused`). Drains and passes packets |
 | `release` | Flushes and drops the session; flushed and carried packets are lost and counted (`flush_lost`) |
 
 Invariants:
@@ -115,13 +123,13 @@ Invariants:
 1. Each distinct input frame is submitted at most once.
 2. Packets leave in the order the session produced them. At most `PER_TICK_EVENTS` per tick go on "packets"; up to `CARRY_PACKETS` more wait for the next ticks.
 3. The packet stream is always decodable: when the carry-over is full, packets are dropped up to the next keyframe and `EncoderChange::RequestKeyframe` is sent.
-4. A refused frame (`EncodeError::InvalidInput`) fails the tick (`NodeError::InvalidInput`); a device loss or non-recoverable failure is permanent.
+4. A refused frame (`EncodeError::InvalidInput`) is counted and does not fail the tick: a failed tick discards the packets the node already pushed in it, which would break the stream. A device loss or non-recoverable failure is permanent.
 
 ### Output node
 
 | Call | Does |
 | --- | --- |
-| `prepare` | Creates the muxer (required exactly when the transport's input is `Container(c)`, and only for that `c`) and the transport, `start(streams)`, `begin`, and sends the header, waiting up to the finish timeout for queue room |
+| `prepare` | Refuses permanently once the node wrote media (a restart would truncate the destination). Creates the muxer (required exactly when the transport's input is `Container(c)`, and only for that `c`) and the transport, `start(streams)`, `begin`, and sends the header, waiting up to the finish timeout for queue room on the wait clock |
 | `process` | Sends the backlog first; then for each stream `i` in order, each packet of pin `s{i}`: muxed into chunks, or forwarded as a packet item. `QueueFull` appends to the backlog. Polls transport events |
 | `release` | Delivers the backlog and the muxer's `finish` chunks within the finish timeout, then `Transport::finish` with the time left |
 
@@ -131,6 +139,8 @@ Invariants:
 2. The backlog is preallocated; a full backlog fails the node permanently (no holes in a recording).
 3. Any transport error other than `QueueFull`, any muxer error other than `NonMonotonic` (dropped, counted) and a `Disconnected` event fail permanently, so a file output is never restarted (which would truncate it).
 4. After `release` the transport has been finished; undelivered items are counted (`finish_lost`).
+5. Muxer and transport creation errors and `begin` errors are permanent; a `start` error is retried only when `TransportError::is_recoverable`.
+6. The first permanent failure's cause (for example `muxer: invalid packet: ...`) is kept in `failure`; the string is built only on that path.
 
 ## Errors and failure behaviour
 
@@ -144,7 +154,7 @@ Nodes report through `NodeError` (ADR-0020): `Permanent` for what retrying canno
 
 ## Conformance tests
 
-- `crates/rbs-nodes/tests/encode_output.rs`: frames submitted once; header, media and trailer in order; backlog on `QueueFull` delivered in order; backlog overflow is permanent; carry-over in order; carry overflow resumes at a keyframe and requests one; a changed stream after restart is permanent; no allocation per tick.
+- `crates/rbs-nodes/tests/encode_output.rs`: frames submitted once; header, media and trailer in order; backlog on `QueueFull` delivered in order; backlog overflow is permanent; carry-over in order; carry overflow resumes at a keyframe and requests one; a changed stream after restart is permanent; no session while installed or in Standby; a refused frame loses no packet; an output that wrote media refuses to restart; a failure keeps its cause; `release` gives up on a full queue on the wait clock without sleeping; no allocation per tick.
 - `crates/rbs-nodes/tests/pipeline_gpu.rs` (any GPU adapter; CI uses lavapipe, WARP and Metal): a BGRA window and an NV12 camera from the synthetic adapter go through capture, compositor and export, and arrive as NV12 with the right format, times and luma.
 - `crates/rbs-gpu/tests/upload_download.rs`: download codes, busy ring, stale frames, buffer recycling, `frames_cpu_copied`; upload of padded BGRA rows and NV12.
 - Hardware (manual, `crates/rbs-nodes/examples/record.rs`): screen and camera to an H.264 Matroska file with the platform's adapters.
@@ -153,5 +163,6 @@ Nodes report through `NodeError` (ADR-0020): `Permanent` for what retrying canno
 
 - End of stream: frames an encoder holds back at `release` are lost; a final flush into the graph needs a drain hook in the engine (engine spec).
 - Transport feedback (`KeyframeRequested`, `BitrateHint`) to the encoder goes through the control plane; not wired yet.
+- Outputs that may restart safely (network transports) need a transport capability; until then every output that wrote media is single-use.
 - Native export across the partition queue (move instead of share), D3D11/D3D12 input for NVENC and AMF, and a D3D12 exporter remove the readback on Windows (ADR-0038).
 - YUY2 and I420 system frames (common on webcams) are not uploaded yet; a camera that offers only those fails `prepare` with `FormatUnsupported`.

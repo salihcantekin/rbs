@@ -133,7 +133,12 @@ pub struct EncoderState {
     pub packets_per_frame: AtomicU64,
     /// Extradata of sessions created from now on.
     pub extradata: Mutex<Bytes>,
+    /// Sessions created.
     pub sessions: AtomicU64,
+    /// Sessions alive (created and not dropped yet).
+    pub live: AtomicU64,
+    /// While set, the next `submit` refuses its frame (`InvalidInput`) and clears it.
+    pub refuse_next: AtomicBool,
 }
 
 pub struct FakeEncoderFactory(pub Arc<EncoderState>);
@@ -145,6 +150,7 @@ impl AdapterFactory for FakeEncoderFactory {
 impl VideoEncoderFactory for FakeEncoderFactory {
     fn create(&self, config: &VideoEncoderConfig) -> Result<Box<dyn VideoEncoder>, CreateError> {
         self.0.sessions.fetch_add(1, Ordering::Relaxed);
+        self.0.live.fetch_add(1, Ordering::Relaxed);
         let extradata = self.0.extradata.lock().unwrap().clone();
         Ok(Box::new(FakeEncoder {
             state: Arc::clone(&self.0),
@@ -169,11 +175,20 @@ pub struct FakeEncoder {
     payload: Bytes,
 }
 
+impl Drop for FakeEncoder {
+    fn drop(&mut self) {
+        self.state.live.fetch_sub(1, Ordering::Relaxed);
+    }
+}
+
 impl VideoEncoder for FakeEncoder {
     fn stream(&self) -> &StreamDescriptor {
         &self.stream
     }
     fn submit(&mut self, frame: &VideoFrame) -> Result<(), EncodeError> {
+        if self.state.refuse_next.swap(false, Ordering::Relaxed) {
+            return Err(EncodeError::InvalidInput("refused by the test".into()));
+        }
         if !matches!(frame.payload(), FramePayload::System(_)) || *frame.format() != nv12() {
             return Err(EncodeError::InvalidInput("format".into()));
         }
@@ -283,6 +298,10 @@ pub enum Got {
 pub struct TransportState {
     /// While set, `send` returns `QueueFull`.
     pub full: AtomicBool,
+    /// While set, `send` panics (an adapter bug).
+    pub panic: AtomicBool,
+    /// While set, `send` fails with `Io` (a disk error).
+    pub closed: AtomicBool,
     /// When false, nothing is logged (allocation tests); `sent` still counts.
     pub log_enabled: AtomicBool,
     pub log: Mutex<Vec<Got>>,
@@ -325,6 +344,12 @@ impl Transport for FakeTransport {
         Ok(())
     }
     fn send(&mut self, item: TransportItem<'_>) -> Result<SendOutcome, TransportError> {
+        if self.0.panic.load(Ordering::Relaxed) {
+            panic!("transport bug (test)");
+        }
+        if self.0.closed.load(Ordering::Relaxed) {
+            return Err(TransportError::Io("disk full (test)".into()));
+        }
         if self.0.full.load(Ordering::Relaxed) {
             return Err(TransportError::QueueFull);
         }

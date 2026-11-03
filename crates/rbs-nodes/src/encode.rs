@@ -74,21 +74,20 @@ pub struct VideoEncoderNode {
 }
 
 impl VideoEncoderNode {
-    /// Creates the encoder session now (control thread) so that [`Self::stream`] is known
-    /// for the outputs' muxers. Construct the node when its output starts: the session
-    /// holds an encoder until `release`.
+    /// Creates an encoder session once (control thread) to learn [`Self::stream`] for the
+    /// outputs' muxers and checks the configuration, then drops it: an installed node
+    /// holds no encoder (P13). `prepare` creates the session that runs.
     pub fn open(
         factory: Arc<dyn VideoEncoderFactory>,
         config: VideoEncoderConfig,
     ) -> Result<Self, CreateError> {
-        let session = factory.create(&config)?;
-        let stream = session.stream().clone();
+        let stream = factory.create(&config)?.stream().clone();
         Ok(Self {
             descriptor: video_encoder_descriptor(),
             factory,
             config,
             stream,
-            session: Some(session),
+            session: None,
             last: None,
             drained: Vec::new(),
             carry: VecDeque::new(),
@@ -130,9 +129,11 @@ impl VideoEncoderNode {
                 add(&self.stats.busy_drops, 1);
                 Ok(())
             }
+            // Not an error of the tick: packets already pushed this tick would be
+            // discarded with it and break the stream (spec, invariant 4).
             Err(EncodeError::InvalidInput(_)) => {
                 add(&self.stats.refused, 1);
-                Err(NodeError::InvalidInput("the encoder refused the frame"))
+                Ok(())
             }
             Err(e) => Err(encode_error(e)),
         }
@@ -195,10 +196,10 @@ impl<X: Runtime> Node<X> for VideoEncoderNode {
 
     fn prepare(&mut self, _ctx: &mut PrepareCtx<'_, X>) -> Result<(), NodeError> {
         if self.session.is_none() {
-            let session = self
-                .factory
-                .create(&self.config)
-                .map_err(|e| NodeError::Failed(format!("encoder: {e}")))?;
+            let session = self.factory.create(&self.config).map_err(|e| match e {
+                e if e.is_recoverable() => NodeError::Failed(format!("encoder: {e}")),
+                _ => NodeError::Permanent("the encoder cannot be created"),
+            })?;
             if *session.stream() != self.stream {
                 // The outputs wrote headers for the first stream; a different one needs a
                 // new output chain (output ports spec, `VideoEncoder::stream`).

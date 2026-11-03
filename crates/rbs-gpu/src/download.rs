@@ -56,7 +56,8 @@ pub struct DownloadStats {
     pub stale: u64,
     /// Read-back frames dropped because consumers held every frame buffer.
     pub no_buffer: u64,
-    /// Readbacks the device failed to map.
+    /// Readbacks that failed: the device could not map them, or the frame could not be
+    /// built.
     pub failed: u64,
 }
 
@@ -339,7 +340,11 @@ impl YuvDownload {
                 stride,
             },
         ];
-        let system = SystemFrame::new(self.format, bytes, &planes).ok()?;
+        let Ok(system) = SystemFrame::new(self.format, bytes, &planes) else {
+            // Cannot happen for the layout `new` computed; counted, never silent.
+            self.stats.failed += 1;
+            return None;
+        };
         Some(VideoFrame::system(slot.timestamp, system, None).with_sequence(slot.sequence))
     }
 

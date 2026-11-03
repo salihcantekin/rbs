@@ -2,11 +2,12 @@
 //! its own partition (spec `docs/specs/io-nodes.md`, "Output node").
 
 use std::collections::VecDeque;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::{Duration, Instant};
+use std::sync::{Arc, OnceLock};
+use std::time::Duration;
 
 use rbs_core::media::{ContainerId, EncodedPacket, MuxChunk, StreamDescriptor, StreamIndex};
+use rbs_core::time::{Clock, MonotonicClock, Timestamp};
 use rbs_graph::node::{LinkKind, NodeDescriptor, NodeKind, NodeTypeId, Pin};
 use rbs_graph::runtime::{Node, NodeError, PrepareCtx, ProcessCtx, Runtime};
 use rbs_mux::{MuxError, Muxer, MuxerConfig, MuxerFactory};
@@ -55,6 +56,32 @@ pub struct OutputNodeStats {
     pub keyframe_requests: AtomicU64,
     /// Items still undelivered when `release` gave up.
     pub finish_lost: AtomicU64,
+    /// Why the output stopped for good, set once at the first permanent failure.
+    pub failure: OnceLock<String>,
+}
+
+/// The time source of an output's blocking waits in `prepare` and `release` (control
+/// thread): when to give up, and how to wait before trying again. Injected so tests
+/// never sleep (ADR-0032).
+pub trait WaitClock: Send + Sync {
+    /// The current time.
+    fn now(&self) -> Timestamp;
+    /// Waits about `duration` before the next try.
+    fn pause(&self, duration: Duration);
+}
+
+/// The production [`WaitClock`]: the monotonic clock and a thread sleep.
+#[derive(Debug, Default, Clone, Copy)]
+pub struct SystemWaitClock(MonotonicClock);
+
+impl WaitClock for SystemWaitClock {
+    fn now(&self) -> Timestamp {
+        self.0.now()
+    }
+
+    fn pause(&self, duration: Duration) {
+        std::thread::sleep(duration);
+    }
 }
 
 fn add(counter: &AtomicU64, n: u64) {
@@ -95,6 +122,9 @@ pub struct OutputNode {
     muxer_setup: Option<MuxerSetup>,
     backlog_limit: usize,
     finish_timeout: Duration,
+    clock: Arc<dyn WaitClock>,
+    /// Media reached the transport: a new session would truncate the destination.
+    wrote_media: bool,
     transport: Option<Box<dyn Transport>>,
     muxer: Option<Box<dyn Muxer>>,
     backlog: VecDeque<Item>,
@@ -119,6 +149,8 @@ impl OutputNode {
             muxer_setup: None,
             backlog_limit: DEFAULT_BACKLOG,
             finish_timeout: DEFAULT_FINISH_TIMEOUT,
+            clock: Arc::new(SystemWaitClock::default()),
+            wrote_media: false,
             transport: None,
             muxer: None,
             backlog: VecDeque::new(),
@@ -157,9 +189,22 @@ impl OutputNode {
         self
     }
 
+    /// The time source of the waits in `prepare` and `release` (tests).
+    pub fn with_wait_clock(mut self, clock: Arc<dyn WaitClock>) -> Self {
+        self.clock = clock;
+        self
+    }
+
     /// The node's counters.
     pub fn stats(&self) -> Arc<OutputNodeStats> {
         Arc::clone(&self.stats)
+    }
+
+    /// Records why the output stopped (first cause only) and returns the node error.
+    /// Runs once per output at most: the string is built only on this path.
+    fn fail(&self, error: NodeError, cause: impl FnOnce() -> String) -> NodeError {
+        let _ = self.stats.failure.set(cause());
+        error
     }
 
     /// Hands `item` to the transport, or appends it to the backlog when the queue is
@@ -173,12 +218,17 @@ impl OutputNode {
                     return Ok(());
                 }
                 Err(TransportError::QueueFull) => {}
-                Err(_) => return Err(NodeError::Permanent("transport failed")),
+                Err(e) => {
+                    return Err(self.fail(NodeError::Permanent("transport failed"), || {
+                        format!("transport: {e}")
+                    }));
+                }
             }
         }
         if self.backlog.len() >= self.backlog_limit {
-            return Err(NodeError::Permanent(
-                "output backlog full: the destination is too slow",
+            return Err(self.fail(
+                NodeError::Permanent("output backlog full: the destination is too slow"),
+                || "output backlog full: the destination is too slow".into(),
             ));
         }
         self.backlog.push_back(item);
@@ -197,10 +247,26 @@ impl OutputNode {
                     self.backlog.pop_front();
                 }
                 Err(TransportError::QueueFull) => return Ok(false),
-                Err(_) => return Err(NodeError::Permanent("transport failed")),
+                Err(e) => {
+                    return Err(self.fail(NodeError::Permanent("transport failed"), || {
+                        format!("transport: {e}")
+                    }));
+                }
             }
         }
         Ok(true)
+    }
+
+    /// A start error: retried with back-off when the transport says it may
+    /// recover (a network connection), permanent otherwise (a denied path).
+    fn transport_error(&self, what: &'static str, e: TransportError) -> NodeError {
+        if e.is_recoverable() {
+            NodeError::Failed(format!("{what}: {e}"))
+        } else {
+            self.fail(NodeError::Permanent("the transport cannot start"), || {
+                format!("{what}: {e}")
+            })
+        }
     }
 
     fn count(&self, outcome: SendOutcome) {
@@ -213,6 +279,7 @@ impl OutputNode {
         let index = StreamIndex(stream as u16);
         let Some(muxer) = self.muxer.as_mut() else {
             // Shares the payload; no copy.
+            self.wrote_media = true;
             return self.send(Item::Packet(index, packet.clone()));
         };
         match muxer.write(index, packet, &mut self.chunks) {
@@ -221,8 +288,13 @@ impl OutputNode {
                 add(&self.stats.mux_drops, 1);
                 return Ok(());
             }
-            Err(_) => return Err(NodeError::Permanent("muxer failed")),
+            Err(e) => {
+                return Err(self.fail(NodeError::Permanent("muxer failed"), || {
+                    format!("muxer: {e}")
+                }));
+            }
         }
+        self.wrote_media = true;
         let mut chunks = std::mem::take(&mut self.chunks);
         let mut result = Ok(());
         for chunk in chunks.drain(..) {
@@ -235,18 +307,18 @@ impl OutputNode {
     }
 
     /// Blocks up to `deadline` until the backlog is delivered (control thread only).
-    fn drain_until(&mut self, deadline: Instant) -> bool {
+    fn drain_until(&mut self, deadline: Timestamp) -> bool {
         loop {
             match self.drain_backlog() {
                 Ok(true) => return true,
-                Ok(false) if Instant::now() < deadline => std::thread::sleep(FINISH_RETRY),
+                Ok(false) if self.clock.now() < deadline => self.clock.pause(FINISH_RETRY),
                 _ => return false,
             }
         }
     }
 
     /// Sends `chunks` from `prepare` or `release` (control thread), waiting for room.
-    fn send_blocking(&mut self, chunks: Vec<MuxChunk>, deadline: Instant) -> bool {
+    fn send_blocking(&mut self, chunks: Vec<MuxChunk>, deadline: Timestamp) -> bool {
         for chunk in chunks {
             if self.send(Item::Chunk(chunk)).is_err() || !self.drain_until(deadline) {
                 return false;
@@ -274,6 +346,14 @@ impl<X: Runtime> Node<X> for OutputNode {
     }
 
     fn prepare(&mut self, _ctx: &mut PrepareCtx<'_, X>) -> Result<(), NodeError> {
+        if self.wrote_media {
+            // A restart (after a panic in an adapter, ADR-0024) would open the destination
+            // again and truncate a file; an output is single-use once media went out.
+            return Err(self.fail(
+                NodeError::Permanent("an output that wrote media cannot restart"),
+                || "an output that wrote media cannot restart".into(),
+            ));
+        }
         let wants_muxer = match &self.transport_config.input {
             TransportInput::Container(c) => Some(*c),
             _ => None,
@@ -285,12 +365,11 @@ impl<X: Runtime> Node<X> for OutputNode {
                 if let Some(d) = setup.fragment_duration {
                     config = config.with_fragment_duration(d);
                 }
-                Some(
-                    setup
-                        .factory
-                        .create(&config)
-                        .map_err(|e| NodeError::Failed(format!("muxer: {e}")))?,
-                )
+                Some(setup.factory.create(&config).map_err(|e| {
+                    self.fail(NodeError::Permanent("the muxer cannot be created"), || {
+                        format!("muxer: {e}")
+                    })
+                })?)
             }
             _ => {
                 return Err(NodeError::Permanent(
@@ -301,10 +380,16 @@ impl<X: Runtime> Node<X> for OutputNode {
         let mut transport = self
             .transport_factory
             .create(&self.transport_config)
-            .map_err(|e| NodeError::Failed(format!("transport: {e}")))?;
+            .map_err(|e| {
+                // Never fixed by retrying (transport port).
+                self.fail(
+                    NodeError::Permanent("the transport cannot be created"),
+                    || format!("transport: {e}"),
+                )
+            })?;
         transport
             .start(&self.streams)
-            .map_err(|e| NodeError::Failed(format!("transport start: {e}")))?;
+            .map_err(|e| self.transport_error("transport start", e))?;
         self.transport = Some(transport);
         self.backlog = VecDeque::with_capacity(self.backlog_limit);
         self.chunks = Vec::with_capacity(16);
@@ -314,11 +399,15 @@ impl<X: Runtime> Node<X> for OutputNode {
             let begun = muxer.begin(&mut header);
             self.muxer = Some(muxer);
             if let Err(e) = begun {
-                return Err(NodeError::Failed(format!("muxer begin: {e}")));
+                return Err(self.fail(NodeError::Permanent("muxer begin failed"), || {
+                    format!("muxer begin: {e}")
+                }));
             }
-            let deadline = Instant::now() + self.finish_timeout;
+            let deadline = self.clock.now() + self.finish_timeout;
             if !self.send_blocking(header, deadline) {
-                return Err(NodeError::Failed("could not write the header".into()));
+                return Err(NodeError::Failed(
+                    "could not write the header in time".into(),
+                ));
             }
         }
         Ok(())
@@ -344,13 +433,17 @@ impl<X: Runtime> Node<X> for OutputNode {
             }
         }
         if disconnected {
-            return Err(NodeError::Permanent("transport disconnected"));
+            return Err(
+                self.fail(NodeError::Permanent("transport disconnected"), || {
+                    "transport disconnected".into()
+                }),
+            );
         }
         Ok(())
     }
 
     fn release(&mut self, _ctx: &mut PrepareCtx<'_, X>) {
-        let deadline = Instant::now() + self.finish_timeout;
+        let deadline = self.clock.now() + self.finish_timeout;
         let mut delivered = self.transport.is_some() && self.drain_until(deadline);
         if let Some(mut muxer) = self.muxer.take() {
             let mut tail = Vec::new();
@@ -363,7 +456,7 @@ impl<X: Runtime> Node<X> for OutputNode {
         }
         self.backlog = VecDeque::new();
         if let Some(mut transport) = self.transport.take() {
-            let left = deadline.saturating_duration_since(Instant::now());
+            let left = deadline.saturating_since(self.clock.now());
             let _ = transport.finish(left);
         }
         self.chunks = Vec::new();

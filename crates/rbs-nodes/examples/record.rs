@@ -305,7 +305,7 @@ mod windows_record {
             if start.elapsed() >= next_print {
                 next_print += Duration::from_secs(1);
                 println!(
-                    "t={:>2}s screen={} camera={} export={} (busy {}, lost {}) encoded={} packets={} written={} cpu_copies={}",
+                    "t={:>2}s screen={} camera={} export={} (busy {}, lost {}) encoded={} packets={} muxed={} chunks={} cpu_copies={}",
                     start.elapsed().as_secs(),
                     screen_stats.frames.load(Ordering::Relaxed),
                     camera_stats
@@ -316,6 +316,7 @@ mod windows_record {
                     export_stats.lost.load(Ordering::Relaxed),
                     encoder_stats.submitted.load(Ordering::Relaxed),
                     encoder_stats.packets.load(Ordering::Relaxed),
+                    output_stats.packets.load(Ordering::Relaxed),
                     output_stats.sent.load(Ordering::Relaxed),
                     gpu.metrics().frames_cpu_copied(),
                 );
@@ -341,5 +342,18 @@ mod windows_record {
         );
         let size = std::fs::metadata(&args.out).map(|m| m.len()).unwrap_or(0);
         println!("file: {} ({} bytes)", args.out, size);
+        let mut failed = !shutdown.errors.is_empty();
+        if let Some(cause) = output_stats.failure.get() {
+            println!("output failed: {cause}");
+            failed = true;
+        }
+        let delivered = output_stats.packets.load(Ordering::Relaxed);
+        if delivered == 0 {
+            println!("output failed: no packet reached the output");
+            failed = true;
+        }
+        if failed {
+            std::process::exit(1);
+        }
     }
 }

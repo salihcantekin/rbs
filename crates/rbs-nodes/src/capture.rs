@@ -8,10 +8,12 @@ use rbs_capture::{
     CaptureError, CaptureFactory, CaptureRequest, CaptureSession, GpuDeviceId, GpuImportTarget,
     SyncKind,
 };
-use rbs_core::media::{FramePayload, MemoryKind};
-use rbs_gpu::GpuContext;
+use rbs_core::capability::CapabilityValue;
+use rbs_core::media::{FramePayload, MemoryKind, PixelFormat};
+use rbs_gpu::context::CAP_P010;
 use rbs_gpu::node::GpuRuntime;
 use rbs_gpu::upload::{SourceUpload, UPLOAD_FORMATS};
+use rbs_gpu::{GpuContext, GpuError};
 use rbs_graph::node::{LinkKind, NodeDescriptor, NodeKind, NodeTypeId, Pin};
 use rbs_graph::runtime::{Node, NodeError, PrepareCtx, ProcessCtx, WarmCtx};
 
@@ -92,7 +94,14 @@ pub fn complete_request(ctx: &GpuContext, mut request: CaptureRequest) -> Captur
         request = request.with_gpu(gpu);
     }
     if request.pixel_formats.is_empty() {
-        request = request.with_pixel_formats(&UPLOAD_FORMATS);
+        // P010 planes are 16-bit normalized textures (`gpu.p010`).
+        let p010 = ctx.capabilities().get(&CAP_P010) == Some(&CapabilityValue::Flag(true));
+        let formats: Vec<PixelFormat> = UPLOAD_FORMATS
+            .iter()
+            .copied()
+            .filter(|f| p010 || *f != PixelFormat::P010)
+            .collect();
+        request = request.with_pixel_formats(&formats);
     }
     request
 }
@@ -192,10 +201,17 @@ impl Node<GpuRuntime> for CaptureSourceNode {
         };
         let texture = match texture {
             Ok(t) => t,
-            Err(_) => {
+            Err(e) => {
                 // The frame (and the producer's lease) is dropped; the last frame stays.
                 add(&self.stats.gpu_errors);
-                return Err(NodeError::Backend("capture frame import failed"));
+                return Err(match e {
+                    // The source sends what this device cannot take; a restart would
+                    // get the same frames.
+                    GpuError::Unsupported(_) | GpuError::InvalidSize { .. } => {
+                        NodeError::Permanent("capture frame format unsupported by the GPU")
+                    }
+                    _ => NodeError::Backend("capture frame import failed"),
+                });
             }
         };
         // Dropping the previous frame only releases its lease.
@@ -212,5 +228,8 @@ impl Node<GpuRuntime> for CaptureSourceNode {
         if let Some(mut session) = self.session.take() {
             session.stop();
         }
+        // The decoder's pipelines and bind groups go too: nothing GPU-side in Standby
+        // (P13). `cool` already returned the plane textures.
+        self.upload = SourceUpload::new();
     }
 }
