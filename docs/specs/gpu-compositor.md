@@ -289,7 +289,8 @@ impl PreviewLayer {                       // not Send: the UI's main thread
     pub fn retire(&mut self, now: Timestamp) -> usize;
     pub fn next_retire(&self) -> Option<Timestamp>;
     pub fn retiring(&self) -> usize;
-    /// Shown + retiring + one the engine writes fill the ring: poll `retire` at `next_retire`.
+    /// The UI calls `retire` at `next_retire` (one-shot timer) while any frame waits.
+    /// Shown + retiring + one the engine writes fill the ring (diagnostics).
     pub fn engine_may_starve(&self) -> bool;
 }
 }

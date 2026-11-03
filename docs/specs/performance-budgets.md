@@ -61,6 +61,8 @@ The desktop UI (`rbs-app`) owns this budget (ADR-0022, owner decision 2026-11-02
 | Same | Late frames (interval over 1.5 refresh periods) | 0 over 60 s (open on the preview layer path: presentation is the window server's and needs Core Animation instrumentation, ADR-0034) |
 | Workspace switch | Time to the first frame of the new layout | under 100 ms (U21) |
 
+Measured 2026-11-03 on the reference Mac (`remote_preview` with `RBS_DEMO_SECONDS`, ADR-0034): 1080p preview and 16 meters at 30 Hz, 9.2 % (720p: 8.3-8.8 %), 60 fps, no dropped frame; preview alone 2.0 %. Before ADR-0034, with Slint drawing the preview: 15.3 % and 12.2 %. The budget is met with a thin margin.
+
 How it is reached: the preview as its own native layer that the toolkit never redraws ([ADR-0034](../adr/0034-preview-as-native-layer.md); Slint's GPU path cannot redraw only dirty regions), meters at 30 Hz and the live duration and stats at 1 Hz (rates are declared per panel in the [design system](ui-design-system.md#panel-model)), and no timer at all when nothing animates.
 
 ## Regression policy
