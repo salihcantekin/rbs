@@ -8,13 +8,15 @@
 //! - [`interop`]: imports native producer surfaces zero-copy as pool textures.
 //! - `export` (macOS): converts canvases into IOSurfaces that VideoToolbox encodes
 //!   without a copy.
+//! - [`share`]: cross-process preview; the engine shares scaled canvases with a UI
+//!   process as IOSurfaces (macOS), never as pixels.
 //! - [`node`]: the render executor's graph runtime and the compositor node.
 //! - [`readback`]: explicit, counted CPU readback (fallback and tests only).
 //!
 //! `Compositor::render`, `YuvConverter::convert` / `convert_to_surface` and the pool
 //! are hot paths (`docs/architecture/hot-paths.md`): RBS code in them does not allocate.
 //! `unsafe` appears only in [`pool`] (the lease contract of `rbs_core::media`) and
-//! [`interop`] (native surface import) and `export` (native surface export), all marked
+//! [`interop`] (native surface import) `export` (native surface export) and [`share`] (cross-process preview), all marked
 //! low-level modules (P11).
 
 pub mod compositor;
@@ -27,6 +29,7 @@ pub mod math;
 pub mod node;
 pub mod pool;
 pub mod readback;
+pub mod share;
 pub mod yuv;
 
 pub use compositor::{CanvasDesc, Compositor, Layer, RenderStats, Transfer};

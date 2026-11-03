@@ -95,6 +95,8 @@ impl GpuMetrics {
 /// Created when the first canvas becomes Active; an engine with no active canvas
 /// holds none (P13).
 pub struct GpuContext {
+    instance: wgpu::Instance,
+    adapter: wgpu::Adapter,
     device: wgpu::Device,
     queue: wgpu::Queue,
     capabilities: CapabilitySet,
@@ -225,6 +227,8 @@ impl GpuContext {
 
         let adapter_luid = crate::interop::adapter_luid(&device);
         Ok(Self {
+            instance,
+            adapter,
             device,
             queue,
             capabilities,
@@ -255,6 +259,18 @@ impl GpuContext {
     /// Shared counters.
     pub fn metrics(&self) -> &Arc<GpuMetrics> {
         &self.metrics
+    }
+
+    /// The wgpu instance the device was created from. A UI process hands it, with
+    /// [`Self::adapter`], [`Self::device`] and [`Self::queue`], to its toolkit so that both
+    /// render on one device (ADR-0028, decision 6).
+    pub fn instance(&self) -> &wgpu::Instance {
+        &self.instance
+    }
+
+    /// The selected adapter.
+    pub fn adapter(&self) -> &wgpu::Adapter {
+        &self.adapter
     }
 
     /// The wgpu device.

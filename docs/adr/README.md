@@ -39,3 +39,4 @@ An ADR records one decision that is hard to reverse or affects more than one cra
 | [0024](0024-node-restart-with-back-off.md) | Restart failed nodes with back-off, contained to the failed node | Accepted |
 | [0025](0025-encoder-surface-export.md) | Hand encoders exported GPU surfaces as native frames | Accepted |
 | [0026](0026-partitions-and-queues.md) | Partitions joined by queue endpoint nodes | Accepted |
+| [0028](0028-cross-process-preview-surfaces.md) | Share preview surfaces with the UI process as native handles | Proposed |

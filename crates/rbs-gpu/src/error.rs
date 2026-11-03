@@ -56,6 +56,8 @@ pub enum GpuError {
     },
     /// Copying a texture to the CPU failed.
     Readback(String),
+    /// The other process of a cross-process preview is gone, or never answered.
+    Disconnected(&'static str),
 }
 
 impl fmt::Display for GpuError {
@@ -83,6 +85,7 @@ impl fmt::Display for GpuError {
             Self::PoolFull { capacity } => write!(f, "texture pool full ({capacity} slots)"),
             Self::InvalidSize { width, height } => write!(f, "invalid size {width}x{height}"),
             Self::Readback(msg) => write!(f, "readback failed: {msg}"),
+            Self::Disconnected(what) => write!(f, "preview peer disconnected: {what}"),
         }
     }
 }

@@ -2,7 +2,7 @@
 
 - Status: Draft
 - Owner crate(s): `rbs-gpu`
-- Related ADRs: [0005](../adr/0005-gpu-compositing-with-wgpu.md), [0013](../adr/0013-zero-cost-when-unused.md)
+- Related ADRs: [0005](../adr/0005-gpu-compositing-with-wgpu.md), [0013](../adr/0013-zero-cost-when-unused.md), [0022](../adr/0022-native-ui-toolkit.md), [0025](../adr/0025-encoder-surface-export.md), [0028](../adr/0028-cross-process-preview-surfaces.md)
 - Related specs: [media-graph.md](media-graph.md), [performance-budgets.md](performance-budgets.md)
 
 ## Purpose
@@ -17,12 +17,12 @@ In scope:
 - Texture pool with allocation-free reuse, stale-id detection and leases for consumers on other threads.
 - Compositor: one per canvas; draws layers with a 2D affine transform, source crop, opacity and premultiplied alpha blending, in linear light on `Rgba16Float`.
 - Conversion of a canvas to NV12 or P010 (two planes, or one multi-planar texture; BT.709) on the GPU.
-- Native export of converted frames to encoders (IOSurface for VideoToolbox) and native import of producer surfaces, both below.
+- Native export of converted frames to encoders (IOSurface for VideoToolbox), preview export to a UI in another process, and native import of producer surfaces, all below.
 - Explicit, counted CPU readback (fallback and tests only).
 
 Out of scope (later specs or PRs):
 
-- Export on D3D12 (NT handle) and Vulkan (exportable memory, DMA-BUF); same frame shape as the macOS exporter (ADR-0025).
+- Export on D3D12 (NT handle) and Vulkan (exportable memory, DMA-BUF); same frame shape as the macOS exporter (ADR-0025). Cross-process preview on Linux and Windows (ADR-0028).
 - Scene tree evaluation (groups, nesting, animation): `rbs-scene` flattens a scene into the layer list below.
 - Filters, masks, blend modes other than "normal", transitions and HDR output (PQ, HLG, BT.2020).
 
@@ -177,6 +177,77 @@ impl SurfaceExporter {
 - The encoder node wrapper keeps `lease_owner()` until the encoder worker has shut down and drops it on a background thread, so the last ring reference, which releases the surfaces, is never dropped on a real-time thread.
 - Installed but unused costs nothing: an exporter exists only while an encoder that takes Metal memory is Active (P13). Dropping it frees its GPU objects; surfaces live on only while frames hold them.
 
+### Preview export (cross-process)
+
+Implements [ADR-0028](../adr/0028-cross-process-preview-surfaces.md) and the export side required by [ADR-0022](../adr/0022-native-ui-toolkit.md), decision 2: the engine shares program, preview and projector images with a UI in another process as native surfaces, never as pixels. Lives in `rbs_gpu::share`, a marked low-level module (P11). macOS only so far; Linux (DMA-BUF over a Unix socket) and Windows (NT handles) follow with the same messages.
+
+Engine side, owned by the render executor:
+
+```rust
+pub const MAX_PREVIEW_SURFACES: usize = 8;
+
+pub struct PreviewDesc { pub width: u32, pub height: u32, pub surfaces: usize }
+
+impl PreviewPublisher {
+    /// Creates `surfaces` (2..=8) 'RGBA' IOSurfaces, aliases them as render targets and
+    /// registers a Mach service under a fresh name. Non-real-time.
+    pub fn new(ctx: &GpuContext, desc: PreviewDesc) -> Result<PreviewPublisher, GpuError>;
+    /// What a UI needs to connect: the service name and the access token.
+    pub fn endpoint(&self) -> &PreviewEndpoint;          // { service: String, token: u64 }
+    /// Scales `canvas` into the next free surface. Does nothing (counted in `skipped`)
+    /// while no UI is subscribed. `GpuError::ExportBusy` when every surface is pending or
+    /// held by the UI: the frame is dropped.
+    pub fn publish(&mut self, ctx: &GpuContext, pool: &TexturePool, canvas: TextureId,
+        timestamp: Timestamp, sequence: u64) -> Result<(), GpuError>;
+    /// Handles subscribe and release messages and sends every converted frame whose GPU
+    /// work has completed. Never blocks. Once per render tick.
+    pub fn tick(&mut self, ctx: &GpuContext) -> Result<(), GpuError>;
+    pub fn subscribed(&self) -> bool;
+    pub fn held(&self) -> usize;                         // surfaces the UI holds
+    pub fn stats(&self) -> PreviewStats;                 // converted, sent, skipped, busy, dropped, subscribes
+    pub fn surface_ids(&self) -> impl Iterator<Item = u32>; // IOSurfaceGetID, for tests
+}
+```
+
+UI side, in the UI process:
+
+```rust
+impl PreviewSubscriber {
+    /// Looks up the service, subscribes with the token and receives the surfaces.
+    /// Blocks up to `timeout`; not for real-time threads.
+    pub fn connect(endpoint: &PreviewEndpoint, timeout: Duration) -> Result<PreviewSubscriber, GpuError>;
+    pub fn size(&self) -> (u32, u32);
+    pub fn surfaces(&self) -> usize;
+    pub fn surface_id(&self, slot: usize) -> Option<u32>;
+    /// The next frame, waiting up to `timeout` (zero polls). `Ok(None)` on timeout,
+    /// `GpuError::Disconnected` once the engine is gone.
+    pub fn recv(&self, timeout: Duration) -> Result<Option<PreviewFrame>, GpuError>;
+    /// Aliases every surface on the UI's device as `Rgba8UnormSrgb` with
+    /// `TEXTURE_BINDING | RENDER_ATTACHMENT | COPY_SRC` (what Slint's `Image::try_from` takes).
+    pub fn textures(&self, ctx: &GpuContext) -> Result<Vec<wgpu::Texture>, GpuError>;
+}
+
+impl PreviewFrame {                       // Send; dropping it releases the surface
+    pub fn slot(&self) -> usize;
+    pub fn sequence(&self) -> u64;
+    pub fn timestamp(&self) -> Timestamp;
+}
+```
+
+- **Surfaces.** Single-plane `'RGBA'` IOSurfaces of the preview size, 4 bytes per pixel, created in `new`; the ring never grows. Each is aliased on the engine device as an `Rgba8UnormSrgb` render target owned by the publisher (no pool slots). `publish` draws one full-screen triangle that samples the linear `Rgba16Float` canvas bilinearly (any canvas size, scaled to the preview size), composites it over opaque black and writes it with sRGB encoding by the render target. One render pass, one submission, no copy, no CPU readback.
+- **Transport.** A Mach service in the user's bootstrap namespace, named `org.rbs.preview.<pid>.<n>` (unique per publisher), with a random 64-bit token. The engine hands both to the UI through the control API (for the demo, on the command line). Surfaces cross the process boundary as Mach send rights (`IOSurfaceCreateMachPort`, `IOSurfaceLookupFromMachPort`); IOSurface global IDs (`kIOSurfaceIsGlobal`) are not used.
+- **Messages.** Fixed-size, version 1, little structs of 32-bit words:
+  - `SUBSCRIBE` (UI to engine): version, token, and a send right to the UI's reply port. A wrong version or token is ignored. A new subscription replaces the previous one and starts a new generation; all surfaces are free again.
+  - `SURFACES` (engine to UI): version, generation, width, height, count, and one port descriptor per surface (copied send rights; the engine keeps its own).
+  - `FRAME` (engine to UI): generation, slot, sequence, timestamp in nanoseconds.
+  - `RELEASE` (UI to engine): generation, slot. Releases of an older generation are ignored.
+- **Never block the render thread.** Every engine-side `mach_msg` call uses a zero timeout: receiving `SUBSCRIBE` and `RELEASE` in `tick` (at most 2 x the ring size messages per call), and sending `SURFACES` and `FRAME`. A `FRAME` that cannot be queued (the UI's queue is full) is dropped and its surface freed (counted in `dropped`). A send to a dead UI port ends the subscription and frees every surface. The engine's receive queue limit is raised to `MACH_PORT_QLIMIT_MAX`, so releases (at most one per surface per generation) cannot fill it.
+- **Lifetime.** The engine writes a surface only when it is not pending and the UI does not hold it. A slot is held from its `FRAME` until the UI's `RELEASE`. The UI releases a frame by dropping `PreviewFrame`, which it does only after its own GPU work that reads the surface has completed (for Slint, after a later frame's submission is done). The UI process retains every IOSurface it looked up, so a crashed or slow engine never leaves the UI with a dangling surface; at worst it shows a stale image. IOSurfaces are reference counted across processes and survive until both sides drop them.
+- **Colour.** The surface holds sRGB-encoded, opaque RGBA8 (`ColorSpace::SRGB`), the format the UI composites. The preview is for monitoring; the program output to encoders stays on the encoder export path.
+- **Security.** Any process of the same user can look up the service; without the token it gets nothing. The token is not a defence against a process that can already read the engine's memory or control API.
+- **Installed but unused costs nothing (P13).** A publisher exists only while a preview output is Active. While nobody is subscribed, `publish` returns at once without GPU work and `tick` makes one non-blocking receive call. The UI side starts its receive thread only while a preview panel is visible.
+- **Same device, other process.** IOSurfaces are not tied to a device. The UI aliases them on its own Metal device with the same `interop::metal` code as the importer. Unified memory only, as for the encoder export.
+
 ### Native import (interop)
 
 Implements the importer side of [media-types.md, Native surfaces](media-types.md#native-surfaces). Lives in `rbs_gpu::interop`, a marked low-level module (P11) with one submodule per backend, compiled only on its platform.
@@ -278,7 +349,7 @@ Device loss is reported by wgpu through the device-lost callback and surfaced as
 
 ## Performance requirements
 
-- `Compositor::render`, `YuvConverter::convert`, `YuvConverter::convert_to_surface`, `SurfaceExporter::export` and `take_ready`, and the pool's `acquire` (reuse), `release` and `get` are hot paths ([hot-paths.md](../architecture/hot-paths.md)). RBS code inside them does not allocate. wgpu allocates internally while recording and submitting command buffers (about 130 allocations per frame for render + NV12 in the first measurement); the `alloc_per_frame` test asserts this does not grow over time and adds at most a small constant per layer. Reducing it (for example re-recorded render bundles) is follow-up work with its own measurements.
+- `Compositor::render`, `YuvConverter::convert`, `YuvConverter::convert_to_surface`, `SurfaceExporter::export` and `take_ready`, `PreviewPublisher::publish` and `tick`, and the pool's `acquire` (reuse), `release` and `get` are hot paths ([hot-paths.md](../architecture/hot-paths.md)). RBS code inside them does not allocate. wgpu allocates internally while recording and submitting command buffers (about 130 allocations per frame for render + NV12 in the first measurement); the `alloc_per_frame` test asserts this does not grow over time and adds at most a small constant per layer. Reducing it (for example re-recorded render bundles) is follow-up work with its own measurements.
 - No CPU readback on the default path (P4).
 - Installed but unused: a `GpuContext` is created only when the first canvas becomes Active. A compositor or converter that is not Active is dropped, releasing its GPU objects (P13).
 - Benchmarks: `benches/compositor.rs` measures 1080p frame time (render, render + NV12, waiting for the GPU) with 1, 8 and 32 layers, and the CPU cost of recording and submitting 32 layers.
@@ -296,6 +367,7 @@ Run on any adapter, including software adapters in CI (lavapipe on Linux, WARP o
 - Readback increments `frames_cpu_copied`.
 - Export (macOS CI, the runner's Metal device): NV12 and P010 (where `gpu.p010`) surface bytes, read through the IOSurface API with its plane strides, equal the two-plane output byte for byte on a two-colour canvas; the frame is an `IoSurface` frame with `Ready` sync, the right pixel format, time and sequence; the surface wraps as a `CVPixelBuffer` of the same format, size and plane count; held surfaces are not reused and a full ring returns `ExportBusy`; frames come out in order, and frames dropped on another thread free their surfaces; a frame stays valid and unchanged after both the exporter and the pool are dropped; odd sizes and ring sizes outside 2..=32 are rejected; a steady export loop allocates at most 4 more per frame than the same conversion into pool planes and does not grow.
 
+- Preview export (macOS CI): a child process subscribes, aliases the surfaces on its own device and reads back each frame; colours match the canvas of the frame's sequence (sRGB encoded, within ±1), the IOSurface IDs it sees equal the engine's (same memory, no copy), frames arrive in order, and a held surface is not reused. A wrong token gets no surfaces; nothing is converted while nobody is subscribed; when the child exits the engine ends the subscription and frees every surface; the steady publish loop allocates at most a small constant per frame more than the conversion alone and does not grow.
 ## Open questions
 
 - Whether the canvas working format should be configurable (`Rgba16Float` vs `Rgba8UnormSrgb` for low-end GPUs).
@@ -304,4 +376,5 @@ Run on any adapter, including software adapters in CI (lavapipe on Linux, WARP o
 - D3D cache key: an NT handle value can be reused by the OS after the producer closes the handle, so a cached entry could alias a different texture. Producers keep ring handles open for the session today; validating entries (for example `CompareObjectHandles` on a duplicated handle) is a follow-up. IOSurface addresses cannot be reused while cached, because the Metal texture retains the surface.
 - Encoder frames in flight: a capability (for example `codec.video.frames_in_flight`) so the export ring can be sized from the encoder instead of the adapter's documentation.
 - IOSurface export on Macs with a discrete GPU (storage mode and synchronization), and a sync-object hand-off (`MTLSharedEvent`) instead of `Ready` to save the poll latency.
+- Preview over the control API: how the UI gets the endpoint (a `preview.subscribe` query returning service and token), and multiple UI subscribers per publisher.
 - Rotation and non-affine transforms (perspective, corner pin) as filters vs layer properties.
