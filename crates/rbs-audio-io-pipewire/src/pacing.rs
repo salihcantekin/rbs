@@ -11,10 +11,12 @@
 //!
 //! A packet starts a new run when its measured time is far from where the run
 //! predicts (a skipped cycle, a quantum or rate change), or when it had to be moved
-//! more than [`MAX_STEP`] to satisfy the two hard rules: a packet never starts before
-//! the previous one ended (no audio overlaps in time) and never ends after the master
+//! more than [`MAX_STEP`] to satisfy the two hard rules: a packet that starts a run never
+//! starts before the previous one ended (no audio overlaps in time) and never ends after the master
 //! time at which it is handled. A packet that cannot satisfy both is not stamped; the
-//! caller counts it as lost.
+//! caller counts it as lost. Within a run a packet may start up to [`MAX_STEP`] before
+//! the previous one ended, so the run follows a device that runs fast against the
+//! master clock as well as one that runs slow.
 //!
 //! Pure logic on numbers; no allocation, safe on the real-time thread.
 
@@ -107,23 +109,30 @@ impl Pacing {
     ) -> Option<Stamp> {
         let duration = self.rate.duration_of(frames as u64);
         let gap = (duration / 2).clamp(MIN_GAP, MAX_ERROR);
-        let wanted = match self.next {
+        let (wanted, continuing) = match self.next {
             Some(expected) if distance(measured, expected) <= gap => {
                 let step = (distance(measured, expected).as_nanos() / PULL) as u64;
                 let step = Duration::from_nanos(step);
-                if measured > expected {
+                let wanted = if measured > expected {
                     expected + step
                 } else {
                     expected - step
-                }
+                };
+                (wanted, true)
             }
-            _ => measured,
+            _ => (measured, false),
         };
+        // A run follows its device both ways: a continued packet may start up to
+        // `MAX_STEP` before the previous one ended (a device running fast against the
+        // master clock). A new run never overlaps the previous packet.
+        let floor = self
+            .end
+            .map(|end| if continuing { end - MAX_STEP } else { end });
         let mut timestamp = wanted;
-        if let Some(end) = self.end
-            && timestamp < end
+        if let Some(floor) = floor
+            && timestamp < floor
         {
-            timestamp = end;
+            timestamp = floor;
         }
         let latest = (now + FUTURE_SLACK)
             .as_nanos()
@@ -132,7 +141,7 @@ impl Pacing {
         if timestamp > latest {
             timestamp = latest;
         }
-        if self.end.is_some_and(|end| timestamp < end) {
+        if floor.is_some_and(|floor| timestamp < floor) {
             // Cannot both follow the previous packet and end by `now`.
             self.next = None;
             return None;
@@ -182,8 +191,9 @@ mod tests {
                 "{stamp:?} ends after {now:?}"
             );
             if let Some(end) = self.end {
-                assert!(stamp.timestamp >= end, "{stamp:?} overlaps {end:?}");
-                if !stamp.new_run {
+                if stamp.new_run {
+                    assert!(stamp.timestamp >= end, "{stamp:?} overlaps {end:?}");
+                } else {
                     assert!(
                         distance(stamp.timestamp, end) <= MAX_STEP,
                         "{stamp:?} continues a run ending at {end:?}"
@@ -230,6 +240,30 @@ mod tests {
         let last = last.map_or(0, Timestamp::as_nanos);
         let error = last.abs_diff(1_999 * 10_010_000);
         assert!(error < 200_000, "accumulated {error} ns");
+    }
+
+    #[test]
+    fn devices_drifting_either_way_never_lose_audio() {
+        // Ten minutes of 1024-frame packets from devices 100 ppm fast and slow against
+        // the master clock, with 0.2 ms of wake-up jitter.
+        for ppm in [-100_i64, -20, 20, 100] {
+            let mut pacing = Pacing::new(RATE);
+            let mut checker = Checker { end: None };
+            let period = RATE.duration_of(1_024).as_nanos() as i64;
+            let period = period + period * ppm / 1_000_000;
+            for k in 0..28_125_i64 {
+                let jitter = (k * 7_919 % 400) * 500;
+                let cycle = 1_000_000_000 + k * period;
+                let measured = Timestamp::from_nanos((cycle - period + jitter) as u64);
+                let now = Timestamp::from_nanos((cycle + jitter + 50_000) as u64);
+                let s = match pacing.stamp(measured, 1_024, now) {
+                    Some(s) => s,
+                    None => panic!("{ppm} ppm: packet {k} lost"),
+                };
+                assert_eq!(s.new_run, k == 0, "{ppm} ppm: packet {k} started a run");
+                checker.check(s, 1_024, now);
+            }
+        }
     }
 
     #[test]

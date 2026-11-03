@@ -775,7 +775,14 @@ struct Watch {
     /// (link, output port, input port), so a link removed by someone else (a patchbay,
     /// the session manager) is noticed and made again.
     link_globals: Vec<(u32, u32, u32)>,
+    /// Application streams: how often each (output port, input port) link was removed
+    /// by someone else. After [`MAX_RELINKS`] the adapter stops fighting whatever
+    /// removes it (a session-manager policy, a patchbay rule).
+    removals: Vec<(u32, u32, u8)>,
 }
+
+/// Times a link removed by someone else is made again.
+const MAX_RELINKS: u8 = 3;
 
 impl Watch {
     /// Links every application port to the stream's matching ports. Control side of
@@ -801,6 +808,10 @@ impl Watch {
                         .links
                         .iter()
                         .any(|(o, i, _)| *o == app.id && *i == port.id)
+                    && !self
+                        .removals
+                        .iter()
+                        .any(|(o, i, n)| (*o, *i) == (app.id, port.id) && *n > MAX_RELINKS)
                 {
                     wanted.push((app.node, app.id, port.id));
                 }
@@ -827,6 +838,7 @@ impl Watch {
         }
         self.app_nodes.remove(&id);
         self.ports.retain(|p| p.id != id && p.node != id);
+        self.removals.retain(|(o, i, _)| *o != id && *i != id);
         self.links.retain(|(o, i, _)| *o != id && *i != id);
         if let Some(at) = self
             .link_globals
@@ -835,7 +847,23 @@ impl Watch {
         {
             let (_, output, input) = self.link_globals.swap_remove(at);
             self.links.retain(|(o, i, _)| (*o, *i) != (output, input));
-            self.relink(core);
+            // PipeWire removes an application's links before its ports when it
+            // closes a stream: only links to ports of live application nodes come back.
+            let live = self
+                .ports
+                .iter()
+                .any(|p| p.id == output && self.app_nodes.contains(&p.node));
+            if live {
+                match self
+                    .removals
+                    .iter_mut()
+                    .find(|(o, i, _)| (*o, *i) == (output, input))
+                {
+                    Some((_, _, n)) => *n = n.saturating_add(1),
+                    None => self.removals.push((output, input, 1)),
+                }
+                self.relink(core);
+            }
         }
         self.app_clients.remove(&id) && self.app_clients.is_empty()
     }

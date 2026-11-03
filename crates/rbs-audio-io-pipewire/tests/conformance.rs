@@ -37,8 +37,8 @@ fn required() -> bool {
 }
 
 #[test]
-#[ignore = "slow: about 8 s of real audio through a real PipeWire daemon (the suite runs \
-            300 ms runs, overflow and restart per endpoint, then graph changes)"]
+#[ignore = "slow: about 14 s of real audio through a real PipeWire daemon (the suite runs \
+            300 ms runs, overflow and restart per endpoint, then graph changes and drifting clocks)"]
 fn slow_passes_conformance() {
     use rbs_audio_io::conformance::{self, Options, RealTimePacer};
     use rbs_audio_io_pipewire::PipeWireAudioBackend;
@@ -94,6 +94,79 @@ fn slow_passes_conformance() {
         // were linked.
         delivers_what_was_played();
         survives_graph_changes();
+        follows_drifting_devices();
+    }
+}
+
+/// A master clock running `ppm` parts per million faster (positive) or slower than
+/// `CLOCK_MONOTONIC`, so the daemon's device clock drifts against it like a real
+/// device's crystal.
+#[cfg(target_os = "linux")]
+struct SkewedClock {
+    base: rbs_core::time::MonotonicClock,
+    ppm: i64,
+}
+
+#[cfg(target_os = "linux")]
+impl rbs_core::time::Clock for SkewedClock {
+    fn now(&self) -> rbs_core::time::Timestamp {
+        let t = i128::from(self.base.now().as_nanos());
+        let skewed = t + t * i128::from(self.ppm) / 1_000_000;
+        rbs_core::time::Timestamp::from_nanos(u64::try_from(skewed.max(0)).unwrap_or(0))
+    }
+}
+
+/// Devices whose clock runs fast or slow against the master clock lose no audio and
+/// keep one run: their drift shows as small steps. 1000 ppm (ten times a poor
+/// crystal) so a few seconds show what minutes would at real drift.
+#[cfg(target_os = "linux")]
+fn follows_drifting_devices() {
+    use std::sync::Arc;
+    use std::time::{Duration, Instant};
+
+    use rbs_audio_io::{AudioBackend, EndpointId, InputRequest};
+    use rbs_core::time::MonotonicClock;
+
+    let _sink = fixture::Fixture::start("sink", "fixture_process");
+    let backend = rbs_audio_io_pipewire::PipeWireAudioBackend::new();
+    for ppm in [1_000_i64, -1_000] {
+        let clock = Arc::new(SkewedClock {
+            base: MonotonicClock::new(),
+            ppm,
+        });
+        let request =
+            InputRequest::new(EndpointId::new(format!("monitor:{}", fixture::SINK)), clock);
+        let mut stream = match backend.open_input(&request) {
+            Ok(stream) => stream,
+            Err(e) => panic!("open: {e}"),
+        };
+        if let Err(e) = stream.start() {
+            panic!("start: {e}");
+        }
+        let rate = u64::from(stream.format().sample_rate.hz());
+        let mut buffers = vec![vec![0.0_f32; 4_096]; 2];
+        let mut delivered = 0_u64;
+        // The clock starts at zero now, so the first packets end before it and are
+        // dropped; count drops from the first delivered audio on.
+        let mut dropped_before = None;
+        // Three seconds of audio; the guard only catches a hang (ADR-0032).
+        let guard = Instant::now() + Duration::from_secs(30);
+        while delivered < rate * 3 {
+            assert!(Instant::now() < guard, "{ppm} ppm: only {delivered} frames");
+            let mut slices: Vec<&mut [f32]> = buffers.iter_mut().map(Vec::as_mut_slice).collect();
+            match stream.read(&mut slices) {
+                Ok(read) if read.frames > 0 => {
+                    dropped_before.get_or_insert(stream.stats().dropped);
+                    delivered += read.frames as u64;
+                }
+                Ok(_) => std::thread::sleep(Duration::from_millis(5)),
+                Err(e) => panic!("{ppm} ppm: read: {e}"),
+            }
+        }
+        let stats = stream.stats();
+        assert_eq!(Some(stats.dropped), dropped_before, "{ppm} ppm: {stats:?}");
+        assert_eq!(stats.discontinuities, 1, "{ppm} ppm: {stats:?}");
+        stream.stop();
     }
 }
 
