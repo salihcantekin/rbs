@@ -1,13 +1,16 @@
 //! The window's side of the studio (ADR-0041 decision 7): state shown in the `Studio`
 //! global, commands to the control thread, the meters' 30 Hz refresh while the Mixer is
-//! visible, and the Program panel's preview layer.
+//! visible, the Program panel's preview layer, and recording with its output settings.
 
+use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use rbs_app::record_profile::{self, AUDIO_KBPS, Format, RecordProfile, VIDEO_KBPS};
 use rbs_app::studio_host::{
-    Command, SourceKind, SourceRow, SourceStatus, StudioHost, Target, Update,
+    Command, EncoderInfo, RecordRequest, RecordingUpdate, SourceKind, SourceRow, SourceStatus,
+    StudioHost, Target, Update,
 };
 use rbs_audio::LevelMeter;
 use rbs_scene::model::SourceId;
@@ -20,6 +23,14 @@ use crate::ui::{KindData, MeterRow, ScaleMark, SourceData, StackData, Studio, Ta
 pub const METER_PERIOD: Duration = Duration::from_millis(33);
 /// Accessible meter values change at most this often (U16).
 const REPORT_EVERY: u32 = 30;
+
+/// Codes of `Studio.rec-state`.
+pub mod rec_state {
+    pub const OFF: i32 = 0;
+    pub const STARTING: i32 = 1;
+    pub const RECORDING: i32 = 2;
+    pub const STOPPING: i32 = 3;
+}
 
 /// Codes of `Studio.preview-state`.
 pub mod preview_state {
@@ -63,10 +74,30 @@ pub struct StudioUi {
     pub preview_ready: bool,
     pub deleted: String,
     pub deleted_serial: u64,
+    /// [`rec_state`].
+    pub rec_state: i32,
+    /// The running recording's file and when it started.
+    pub rec_file: Option<(PathBuf, Instant)>,
+    /// The last recording's outcome, or why one did not start.
+    pub rec_note: String,
+    /// The note is a problem (shown as an error).
+    pub rec_note_bad: bool,
+    /// Why this system cannot record (`None`: it can).
+    pub cannot_record: Option<String>,
+    encoders: Vec<EncoderInfo>,
+    /// The output settings and where they are saved.
+    pub profile: RecordProfile,
+    config: PathBuf,
+    /// Why the settings could not be saved or loaded.
+    pub profile_note: String,
+    /// The folder field shows this; it changes only on load and on Return (typing is
+    /// never overwritten by a sync).
+    pub folder_serial: u64,
 }
 
 impl StudioUi {
-    pub fn new() -> Self {
+    pub fn new(config: &Path) -> Self {
+        let (profile, why) = record_profile::load(config);
         let scale = SCALE_MARKS_DB
             .iter()
             .map(|db| ScaleMark {
@@ -95,6 +126,18 @@ impl StudioUi {
             preview_ready: false,
             deleted: String::new(),
             deleted_serial: 0,
+            rec_state: rec_state::OFF,
+            rec_file: None,
+            rec_note: String::new(),
+            rec_note_bad: false,
+            cannot_record: Some("The studio is starting.".into()),
+            encoders: Vec::new(),
+            profile,
+            config: config.to_owned(),
+            profile_note: why
+                .map(|w| format!("The saved recording settings were not used: {w}"))
+                .unwrap_or_default(),
+            folder_serial: 1,
         }
     }
 
@@ -109,6 +152,39 @@ impl StudioUi {
 
     /// Pushes the scalar state into a window's `Studio` global.
     pub fn push(&self, g: &Studio<'_>, preview_state: i32, picture_panel: &str) {
+        g.set_rec_state(self.rec_state);
+        g.set_rec_file(
+            self.rec_file
+                .as_ref()
+                .map(|(p, _)| file_name(p))
+                .unwrap_or_default()
+                .into(),
+        );
+        g.set_rec_note(self.rec_note.as_str().into());
+        g.set_rec_note_bad(self.rec_note_bad);
+        g.set_rec_unavailable(self.cannot_record.clone().unwrap_or_default().into());
+        let p = &self.profile;
+        g.set_out_format(Format::ALL.iter().position(|f| *f == p.format).unwrap_or(0) as i32);
+        g.set_out_formats(strings(Format::ALL.iter().map(|f| f.label().to_owned())));
+        let mut encoders = vec!["Automatic (best available)".to_owned()];
+        encoders.extend(self.encoders.iter().map(|e| e.name.clone()));
+        g.set_out_encoders(strings(encoders));
+        g.set_out_encoder(self.encoder_index() as i32);
+        let video = self.video_options();
+        g.set_out_video_rates(strings(video.iter().map(|k| kbps(*k))));
+        g.set_out_video_rate(video.iter().position(|k| *k == p.video_kbps).unwrap_or(0) as i32);
+        g.set_out_audio_rates(strings(AUDIO_KBPS.iter().map(|k| kbps(*k))));
+        g.set_out_audio_rate(
+            AUDIO_KBPS
+                .iter()
+                .position(|k| *k == p.audio_kbps)
+                .unwrap_or(0) as i32,
+        );
+        g.set_out_note(self.profile_note.as_str().into());
+        if g.get_out_folder_serial() != self.folder_serial as i32 {
+            g.set_out_folder(self.profile.folder.display().to_string().into());
+            g.set_out_folder_serial(self.folder_serial as i32);
+        }
         g.set_picture_panel(picture_panel.into());
         g.set_state(self.state);
         g.set_failure(self.failure.as_str().into());
@@ -149,6 +225,127 @@ impl StudioUi {
         self.send(Command::UndoDelete);
     }
 
+    /// The picked encoder's place in the list (0: automatic, also when the saved one is
+    /// not on this system).
+    fn encoder_index(&self) -> usize {
+        self.profile
+            .encoder
+            .as_ref()
+            .and_then(|id| self.encoders.iter().position(|e| e.id == *id))
+            .map_or(0, |i| i + 1)
+    }
+
+    /// The video bitrates offered: the presets, and the saved one if it is not one.
+    fn video_options(&self) -> Vec<u32> {
+        let mut v = VIDEO_KBPS.to_vec();
+        if !v.contains(&self.profile.video_kbps) {
+            v.push(self.profile.video_kbps);
+            v.sort_unstable();
+        }
+        v
+    }
+
+    /// Starts recording with the output settings.
+    pub fn record(&mut self) {
+        if self.rec_state != rec_state::OFF {
+            return;
+        }
+        if let Some(why) = &self.cannot_record {
+            self.set_note(why.clone(), true);
+            return;
+        }
+        let p = &self.profile;
+        if let Some(why) = p.problem() {
+            self.set_note(why, true);
+            return;
+        }
+        let encoder = match self.encoder_index() {
+            0 => None,
+            i => self.encoders.get(i - 1).map(|e| e.id.clone()),
+        };
+        let request = RecordRequest {
+            path: p.file_for(chrono::Local::now().naive_local()),
+            container: p.format.container(),
+            encoder,
+            video_bitrate_bps: u64::from(p.video_kbps) * 1000,
+            audio_bitrate_bps: u64::from(p.audio_kbps) * 1000,
+        };
+        self.rec_state = rec_state::STARTING;
+        self.set_note(String::new(), false);
+        self.send(Command::StartRecording(request));
+    }
+
+    pub fn stop_recording(&mut self) {
+        if self.rec_state == rec_state::RECORDING {
+            self.rec_state = rec_state::STOPPING;
+            self.send(Command::StopRecording);
+        }
+    }
+
+    fn set_note(&mut self, note: String, bad: bool) {
+        self.rec_note = note;
+        self.rec_note_bad = bad;
+    }
+
+    /// The folder field was confirmed.
+    pub fn set_folder(&mut self, text: &str) {
+        let folder = PathBuf::from(text.trim());
+        if folder.is_absolute() {
+            self.profile.folder = folder;
+            self.save_profile();
+        } else {
+            self.profile_note = "The folder must be a full path, for example C:\\Videos.".into();
+        }
+        // The field shows the folder in use (also after a refused entry).
+        self.folder_serial += 1;
+    }
+
+    pub fn set_format(&mut self, i: i32) {
+        if let Some(f) = Format::ALL.get(i as usize) {
+            self.profile.format = *f;
+            self.save_profile();
+        }
+    }
+
+    pub fn set_encoder(&mut self, i: i32) {
+        self.profile.encoder = match i {
+            0 => None,
+            i => match self.encoders.get(i as usize - 1) {
+                Some(e) => Some(e.id.clone()),
+                None => return,
+            },
+        };
+        self.save_profile();
+    }
+
+    pub fn set_video_rate(&mut self, i: i32) {
+        if let Some(k) = self.video_options().get(i as usize) {
+            self.profile.video_kbps = *k;
+            self.save_profile();
+        }
+    }
+
+    pub fn set_audio_rate(&mut self, i: i32) {
+        if let Some(k) = AUDIO_KBPS.get(i as usize) {
+            self.profile.audio_kbps = *k;
+            self.save_profile();
+        }
+    }
+
+    fn save_profile(&mut self) {
+        self.profile_note = match record_profile::save(&self.config, &self.profile) {
+            Ok(()) => String::new(),
+            Err(e) => format!("The recording settings could not be saved: {e}"),
+        };
+    }
+
+    /// The recording's duration so far, while one runs.
+    pub fn recording_for(&self) -> Option<(Duration, String)> {
+        self.rec_file
+            .as_ref()
+            .map(|(p, since)| (since.elapsed(), file_name(p)))
+    }
+
     pub fn reset_clip(&mut self, i: i32) {
         if let Some(s) = self.slots.get_mut(i as usize) {
             s.ballistics.reset_clip();
@@ -164,7 +361,11 @@ impl StudioUi {
                 preview,
                 kinds,
                 notes,
+                encoders,
+                cannot_record,
             } => {
+                self.encoders = encoders;
+                self.cannot_record = cannot_record;
                 for n in notes {
                     log(&n);
                 }
@@ -184,6 +385,20 @@ impl StudioUi {
             }
             Update::Failed(why) => {
                 self.state = 2;
+                self.cannot_record = Some(format!("The studio stopped: {why}"));
+                if self.rec_state != rec_state::OFF {
+                    // The studio's shutdown closed the file.
+                    self.rec_state = rec_state::OFF;
+                    if let Some((p, _)) = self.rec_file.take() {
+                        self.set_note(
+                            format!(
+                                "The recording stopped: {why}. What was recorded is in {}.",
+                                p.display()
+                            ),
+                            true,
+                        );
+                    }
+                }
                 self.failure = why.clone();
                 out.error = Some(format!("The studio stopped: {why}"));
             }
@@ -208,8 +423,65 @@ impl StudioUi {
                 self.deleted_serial += 1;
             }
             Update::Error(e) => out.error = Some(e),
+            Update::Recording(r) => self.recording(r, &mut out),
         }
         out
+    }
+
+    fn recording(&mut self, r: RecordingUpdate, out: &mut Applied) {
+        match r {
+            RecordingUpdate::Started {
+                path,
+                video_encoder,
+                audio_encoder,
+            } => {
+                log(&format!(
+                    "recording to {} (video: {video_encoder}, audio: {})",
+                    path.display(),
+                    audio_encoder.as_deref().unwrap_or("none")
+                ));
+                self.rec_state = rec_state::RECORDING;
+                self.rec_file = Some((path, Instant::now()));
+                self.set_note(format!("Video encoder: {video_encoder}"), false);
+            }
+            RecordingUpdate::NotStarted(why) => {
+                self.rec_state = rec_state::OFF;
+                self.rec_file = None;
+                self.set_note(format!("The recording did not start: {why}"), true);
+            }
+            RecordingUpdate::Stopped {
+                path,
+                failure,
+                frames,
+                dropped,
+            } => {
+                self.rec_state = rec_state::OFF;
+                self.rec_file = None;
+                log(&format!(
+                    "recording stopped: {frames} frames, {dropped} dropped, failure: {failure:?}"
+                ));
+                match failure {
+                    None => {
+                        let mut note = format!("Saved {}", path.display());
+                        if dropped > 0 {
+                            note.push_str(&format!(
+                                " ({dropped} of {} frames dropped)",
+                                frames + dropped
+                            ));
+                        }
+                        self.set_note(note, false);
+                    }
+                    Some(why) => {
+                        let text = format!(
+                            "The recording stopped: {why}. What was recorded is in {}.",
+                            path.display()
+                        );
+                        out.error = Some(text.clone());
+                        self.set_note(text, true);
+                    }
+                }
+            }
+        }
     }
 
     fn set_rows(&mut self, rows: Vec<SourceRow>) {
@@ -312,6 +584,26 @@ impl StudioUi {
 pub struct Applied {
     pub error: Option<String>,
     pub preview: Option<rbs_gpu::share::PreviewEndpoint>,
+}
+
+fn file_name(p: &Path) -> String {
+    p.file_name().map_or_else(
+        || p.display().to_string(),
+        |n| n.to_string_lossy().into_owned(),
+    )
+}
+
+fn kbps(k: u32) -> String {
+    format!("{k} kbit/s")
+}
+
+fn strings(items: impl IntoIterator<Item = String>) -> ModelRc<SharedString> {
+    ModelRc::from(Rc::new(VecModel::from(
+        items
+            .into_iter()
+            .map(SharedString::from)
+            .collect::<Vec<_>>(),
+    )))
 }
 
 /// Rows are replaced only where they changed, so unchanged rows keep their views.

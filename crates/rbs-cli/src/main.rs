@@ -193,7 +193,11 @@ fn record(a: &RecordArgs) -> Result<(), String> {
             out.display()
         ));
     }
-    let mut settings = RecordSettings::new(built.canvas, args::file_url(&out), a.container);
+    let mut settings = RecordSettings::new(
+        built.canvas,
+        rbs_transport_file::file_url(&out),
+        a.container,
+    );
     settings.video.rate_control = RateControl::Cbr {
         bitrate_bps: a.video_bitrate,
     };

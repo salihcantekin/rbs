@@ -77,7 +77,9 @@ export component Icon inherits Rectangle {
     }
 }
 
-// Button: kinds "primary", "secondary", "ghost". Activated by click, Enter or Space.
+// Button: kinds "primary", "secondary", "ghost", and "live" (only for stopping a live
+// or recording output: the fixed live colour, rule U12). Activated by click, Enter or
+// Space.
 export component Button inherits Rectangle {
     in property <string> text;
     in property <string> accessible-name: text;
@@ -93,6 +95,7 @@ export component Button inherits Rectangle {
     border-radius: Tokens.radius-sm;
     background: !enabled ? transparent
         : kind == "primary" ? (touch.has-hover ? Theme.accent-hover : Theme.accent)
+        : kind == "live" ? Theme.state-live
         : checked ? Theme.accent-subtle
         : touch.has-hover ? Theme.surface-overlay
         : kind == "ghost" ? transparent : Theme.surface-raised;
@@ -104,7 +107,7 @@ export component Button inherits Rectangle {
     accessible-enabled: enabled;
     accessible-action-default => { if enabled { clicked(); } }
     forward-focus: focus;
-    property <color> ink: !enabled ? Theme.text-disabled : kind == "primary" ? Theme.text-inverse : Theme.text-primary;
+    property <color> ink: !enabled ? Theme.text-disabled : kind == "primary" ? Theme.text-inverse : kind == "live" ? Theme.text-on-live : Theme.text-primary;
     content := HorizontalLayout {
         alignment: center;
         spacing: Tokens.space-1;
@@ -248,4 +251,100 @@ export component EmptyState inherits Rectangle {
             Button { text: root.action; kind: "primary"; clicked => { root.act(); } }
         }
     }
+}
+
+// Select: a button showing the chosen option; it opens a list of the options. The
+// owner counts `open` as an overlay (the preview layer hides under popups).
+export component Select inherits Rectangle {
+    // The field's name: the accessible name is "<label>: <option>".
+    in property <string> label;
+    in property <[string]> options;
+    in property <int> index;
+    in property <bool> enabled: true;
+    out property <bool> open: menu.is-open;
+    callback selected(int);
+    height: Tokens.size-control-md;
+    Button {
+        width: root.width;
+        height: root.height;
+        text: root.options[root.index];
+        accessible-name: @tr("{}: {}", root.label, root.options[root.index]);
+        icon: IconName.chevron-down;
+        enabled: root.enabled;
+        clicked => { menu.show(); }
+    }
+    menu := PopupWindow {
+        close-policy: close-on-click-outside;
+        y: root.height;
+        width: root.width;
+        MenuSurface {
+            width: root.width;
+            accessible-role: list;
+            accessible-label: root.label;
+            VerticalLayout {
+                padding: Tokens.space-2;
+                spacing: Tokens.space-1;
+                for o[i] in root.options: MenuItem {
+                    text: o;
+                    checked: i == root.index;
+                    autofocus: i == root.index;
+                    activated => { root.selected(i); menu.close(); }
+                }
+            }
+        }
+    }
+}
+
+// SegmentedControl: a few mutually exclusive options side by side.
+export component SegmentedControl inherits Rectangle {
+    in property <string> label;
+    in property <[string]> options;
+    in property <int> index;
+    in property <bool> enabled: true;
+    callback selected(int);
+    height: Tokens.size-control-md;
+    accessible-role: groupbox;
+    accessible-label: label;
+    HorizontalLayout {
+        spacing: Tokens.space-1;
+        alignment: start;
+        for o[i] in root.options: Button {
+            text: o;
+            accessible-name: @tr("{}: {}", root.label, o);
+            checked: i == root.index;
+            enabled: root.enabled;
+            clicked => { root.selected(i); }
+        }
+    }
+}
+
+// TextField: one line of text. `accepted` runs on Return and when focus leaves.
+export component TextField inherits Rectangle {
+    in property <string> label;
+    in-out property <string> text;
+    in property <bool> enabled: true;
+    callback accepted(string);
+    height: Tokens.size-control-md;
+    border-radius: Tokens.radius-sm;
+    border-width: Tokens.size-border;
+    border-color: input.has-focus ? Theme.border-focus : Theme.border-subtle;
+    background: Theme.surface-sunken;
+    forward-focus: input;
+    input := TextInput {
+        x: Tokens.space-2;
+        width: parent.width - 2 * Tokens.space-2;
+        height: parent.height;
+        text <=> root.text;
+        enabled: root.enabled;
+        single-line: true;
+        vertical-alignment: center;
+        color: root.enabled ? Theme.text-primary : Theme.text-disabled;
+        font-size: Tokens.type-body-size;
+        selection-background-color: Theme.accent-subtle;
+        selection-foreground-color: Theme.text-primary;
+        accessible-label: root.label;
+        accepted => { root.accepted(self.text); }
+    }
+    property <bool> focused: input.has-focus;
+    changed focused => { if !focused { root.accepted(root.text); } }
 }

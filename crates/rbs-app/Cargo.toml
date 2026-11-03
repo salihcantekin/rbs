@@ -27,6 +27,11 @@ rbs-ui = { path = "../rbs-ui" }
 slint = { version = "=1.18.1", default-features = false, features = ["std", "backend-winit", "renderer-skia", "accessibility", "compat-1-2", "unstable-wgpu-30", "raw-window-handle-06"] }
 # The Program panel attaches the preview layer to the window (ADR-0034, ADR-0036).
 raw-window-handle = "0.6"
+# The recording settings file (src/record_profile.rs); the versions rbs-ui already uses.
+serde = { version = "1", features = ["derive"] }
+toml = "0.9"
+# Local time for recording file names; already built by Slint with these features.
+chrono = { version = "0.4", default-features = false, features = ["clock"] }
 
 # Application layer: a composition root (ADR-0041 decision 7). The studio runs in this
 # process on its own control thread; with rbs-cli, this is the only place that names
@@ -43,6 +48,7 @@ rbs-thread-os = { path = "../rbs-thread-os" }
 rbs-mux-matroska = { path = "../rbs-mux-matroska" }
 rbs-mux-fmp4 = { path = "../rbs-mux-fmp4" }
 rbs-transport-file = { path = "../rbs-transport-file" }
+rbs-codec = { path = "../rbs-codec" }
 rbs-capture-test = { path = "../rbs-capture-test", optional = true }
 rbs-audio-io-test = { path = "../rbs-audio-io-test", optional = true }
 
@@ -72,8 +78,9 @@ rbs-audio-io = { path = "../rbs-audio-io" }
 rbs-audio-io-coreaudio = { path = "../rbs-audio-io-coreaudio" }
 rbs-audio-io-wasapi = { path = "../rbs-audio-io-wasapi" }
 rbs-codec = { path = "../rbs-codec" }
+rbs-mux = { path = "../rbs-mux" }
 rbs-codec-audiotoolbox = { path = "../rbs-codec-audiotoolbox" }
-rbs-codec-mf = { path = "../rbs-codec-mf" }
+rbs-codec-mf = { path = "../rbs-codec-mf", features = ["testing"] }
 
 [target.'cfg(target_os = "macos")'.dev-dependencies]
 # The meter layer test reads the bridge's sublayers.
