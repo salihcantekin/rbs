@@ -489,7 +489,11 @@ mod demo {
                     }
                     if tick.is_multiple_of(30) {
                         for (i, m) in ballistics.iter().enumerate() {
-                            values.set_row_data(i, format!("{:.0} dBFS", m.level_db()).into());
+                            let clipped = if m.view(now).clipped { ", clipped" } else { "" };
+                            values.set_row_data(
+                                i,
+                                format!("{:.0} dBFS{clipped}", m.level_db()).into(),
+                            );
                         }
                     }
                 },
