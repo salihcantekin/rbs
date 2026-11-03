@@ -12,6 +12,7 @@
 mod support;
 
 use std::alloc::{GlobalAlloc, Layout, System};
+use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use rbs_codec::conformance::{FrameSource, SystemFrameSource};
@@ -53,10 +54,15 @@ unsafe impl GlobalAlloc for Counting {
 #[global_allocator]
 static GLOBAL: Counting = Counting;
 
+/// The counter is process-wide, so the tests of this file must not overlap: one
+/// test's frame generation would be counted in the other's window.
+static SERIAL: Mutex<()> = Mutex::new(());
+
 const WARM_UP: u64 = 40;
 const MEASURED: u64 = 120;
 
 fn measure(memory: MemoryKind, frames: &mut dyn FrameSource) {
+    let _serial = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
     let factory = VideoToolboxFactory::with_software();
     let has_h264 = matches!(
         factory.probe().unwrap().get(&rbs_codec::caps::VIDEO_ENCODE),
