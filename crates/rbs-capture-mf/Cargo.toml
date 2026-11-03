@@ -1,0 +1,30 @@
+[package]
+name = "rbs-capture-mf"
+description = "Media Foundation adapter for the RBS capture port: Windows cameras in their native uncompressed formats."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+bytes = "1.9"
+rbs-capture = { path = "../rbs-capture" }
+rbs-core = { path = "../rbs-core" }
+
+[target.'cfg(windows)'.dependencies]
+# Microsoft's official bindings (MIT OR Apache-2.0), same version as rbs-capture-wgc.
+windows = { version = "0.62", features = [
+    "Win32_Foundation",
+    "Win32_Media_MediaFoundation",
+    "Win32_System_Com",
+    "Win32_System_Performance",
+] }
+windows-core = "0.62"
+
+[dev-dependencies]
+allocation-counter = "0.8"
+
+[lints]
+workspace = true
