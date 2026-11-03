@@ -428,6 +428,7 @@ impl<X: Runtime> Controller<X> {
                     // slots are already laid out and have lower indices.
                     if let Some(&producer) = first_output.get(&link.from.node) {
                         schedule.links.push(producer + link.from.pin as u32);
+                        schedule.link_sources.push(link.from.node);
                     }
                 }
                 schedule.pins.push(Span {

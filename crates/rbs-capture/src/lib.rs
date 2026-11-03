@@ -10,6 +10,7 @@
 pub mod caps;
 pub mod conformance;
 mod error;
+pub mod handoff;
 mod session;
 mod target;
 

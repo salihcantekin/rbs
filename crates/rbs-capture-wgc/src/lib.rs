@@ -15,7 +15,7 @@
 //!   the render thread never frees them and importers never see a reused handle value.
 //! - On each `FrameArrived` callback (an OS thread) the adapter copies the new frame into
 //!   a free ring texture, signals the shared fence and publishes the slot through the
-//!   lock-free [`handoff::Ring`].
+//!   lock-free [`Ring`].
 //! - `latest_frame` on the render thread takes the newest slot and returns a
 //!   `D3dSharedHandle` frame with a `TimelineFence` sync. It does not allocate, lock or
 //!   call into the OS.
@@ -32,13 +32,10 @@ use rbs_core::media::{
 };
 use rbs_core::time::Timestamp;
 
-#[doc(hidden)]
-pub mod handoff;
-
 #[cfg(windows)]
 mod win;
 
-use handoff::Ring;
+use rbs_capture::handoff::Ring;
 
 /// Adapter id.
 pub const ADAPTER_ID: &str = "org.rbs.capture.wgc";
@@ -179,7 +176,7 @@ impl<O: AsRef<Ring> + LeaseOwner + 'static> Consumer<O> {
         // adopts it and releases it when the frame and its clones are dropped.
         let lease = unsafe { Lease::adopt(Arc::clone(&self.owner), slot as u64) };
         let surface = NativeSurface::d3d_shared_handle(handle, true, D3dApi::D3d11, self.luid);
-        let sync = SurfaceSync::timeline_fence(self.fence, meta.fence_value);
+        let sync = SurfaceSync::timeline_fence(self.fence, meta.sync_value);
         // SAFETY: guaranteed by the contract of `Consumer::new`: the handle and fence are
         // live, describe a texture of `self.format` on `self.luid`, and stay valid and
         // unwritten while the lease holds the slot.
@@ -204,18 +201,12 @@ impl<O: AsRef<Ring> + LeaseOwner + 'static> Consumer<O> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use handoff::FrameMeta;
+    use rbs_capture::handoff::FrameMeta;
     use rbs_core::media::{ColorSpace, MemoryKind, PixelFormat};
 
     fn meta(sequence: u64, width: u32) -> FrameMeta {
-        FrameMeta {
-            timestamp: 1_000 + sequence,
-            sequence,
-            source_time: 7_000 + sequence,
-            fence_value: sequence + 1,
-            width,
-            height: 720,
-        }
+        FrameMeta::new(1_000 + sequence, sequence, 7_000 + sequence, width, 720)
+            .with_sync_value(sequence + 1)
     }
 
     /// A lease owner over a bare ring, for tests whose handles are never opened.
