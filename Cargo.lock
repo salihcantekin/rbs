@@ -3787,6 +3787,7 @@ dependencies = [
 name = "rbs-engine"
 version = "0.0.1"
 dependencies = [
+ "allocation-counter",
  "rbs-core",
  "rbs-graph",
 ]

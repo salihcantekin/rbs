@@ -18,3 +18,7 @@ workspace = true
 [[bench]]
 name = "cross_thread"
 harness = false
+
+[dev-dependencies]
+# Allocation guard for the worker loop (performance budgets: no allocation on hot paths).
+allocation-counter = "0.8"

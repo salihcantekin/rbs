@@ -59,17 +59,18 @@ pub enum EngineEvent { Applied(Applied), ApplyFailed(EngineError),
     Runtime(PartitionId, RuntimeEvent), Error(EngineError), ShutDown(Shutdown) }
 ```
 
-Invariants (tested in `crates/rbs-engine/tests/engine.rs` unless noted; the doorbell heartbeat without a ring and tick indices across worker restarts are not tested yet):
+Invariants (tested in `crates/rbs-engine/tests/engine.rs` unless noted):
 
 1. **Zero cost when unused.** A partition has a worker thread exactly while its running schedule has nodes. An engine whose partitions run nothing has no thread, and `service().wait` is `None` when nothing runs and no restart is due. An `EngineHandle` starts its control thread on the first command.
 2. **Cadence.** Tick `i` of a `Cadence` worker runs no earlier than `cadence.time_of(i) + offset` on the engine clock and carries `Tick::of(&cadence, i)`. Tick indices never repeat, also across worker restarts. A late worker runs only the newest due tick; `WorkerStats::late` grows by the number skipped.
-3. **Doorbell.** A `Doorbell` worker ticks after each ring and after `timer` without one. With a long timer, every tick follows a ring (at most two wake-ups per ring).
+3. **Doorbell.** A `Doorbell` worker ticks after each ring and after `timer` without one (also when nothing ever rings). With a long timer, every tick follows a ring (at most two wake-ups per ring).
 4. **Swaps.** After `Engine::apply` returns without `SwapTimeout`, each touched partition runs its new schedule. A cadence worker swaps on wake-up between ticks (`Executor::swap_pending`) and never runs an extra tick to do so (`rbs-graph` test `swap_pending_swaps_between_ticks_without_running_a_tick`).
 5. **Moves** follow ADR-0026 Decision 6 in two phases; a partition that gains a moved instance is sent its part again after the move, also when it lost a node in the same edit. The moved instance runs in its new partition; a move to another runtime keeps it in the old one (`MoveWrongRuntime`). A move whose old partition has not swapped in time waits and is finished by `service`.
 6. **Retired endpoints** are dropped once idle, on the control thread, also when their swap timed out (then by `service`).
 6a. **Unsent parts.** A part not sent because a swap was still in flight is sent by a later `service`; `service().wait` stays bounded while such work is pending.
 7. **Restarts.** A node bypassed on a worker is reported (`RuntimeEvent::Failed`) by a later `service` and, after its back-off, prepared again (`Restarted`) without any edit.
 8. **Shutdown order.** Partitions drain in pipeline order (topological along queues, ties and cycles by id): every node of a producer partition is released before any node of the partitions it feeds. All workers are joined afterwards; later calls return `EngineError::ShutDown`.
+8a. **Final ticks.** Before its empty schedule is swapped in, each running partition runs its final tick(s) on its own worker, on the old schedule: a `Cadence` worker one tick at once (the next free index, which may be up to one period ahead of its time), so an encoder encodes the last frame render wrote; a `Doorbell` worker one tick, then one more for each ring a `PacketReader` left because packets were still queued (at most `MAX_DRAIN_TICKS` = 4096), so every packet queued before the output drains is passed on. Afterwards the worker runs no tick; the empty schedule is swapped (and nodes cooled) on the same worker thread.
 9. **Runtime types** are checked: typed calls on a partition of another runtime return `WrongRuntime`.
 
 Thread rules: every `Engine` method runs on the control thread and may block up to `EngineConfig::swap_timeout` per partition. `EngineHandle` methods never block (they queue a command); its `EventSink` runs on the control thread and must not block. Dropping an `EngineHandle` shuts down and joins.
@@ -77,6 +78,7 @@ Thread rules: every `Engine` method runs on the control thread and may block up 
 ## Errors and failure behaviour
 
 - `EngineError` reports per-partition problems inside `Applied::errors`, `Serviced::errors` and `Shutdown::errors`; one partition's failure does not stop the others. `Engine::apply` returns `Err` only for `UnknownPartition` (nothing applied) and `ShutDown`.
+- Final ticks that do not finish within `swap_timeout` are reported (`DrainTimeout`); the partition is then drained without waiting for them.
 - A swap that does not complete within `swap_timeout` is reported (`SwapTimeout`); `service` collects it and finishes what waited for it (unsent parts, moves, retired endpoints). A worker thread that cannot start is reported (`Spawn`) and tried again on the next apply. A drain that times out at shutdown is finished after the worker is joined: the nodes are cooled on the control thread and released.
 - `EngineHandle`: a panicking `run` job is reported (`EngineError::JobPanicked`) and the engine keeps running; a panicking `EventSink` ends the control thread. A node hung in `process` blocks shutdown (and so `EngineHandle`'s drop) until it returns.
 - `X::Local` and node instances move to a new OS thread whenever a partition's worker is stopped and started again (ADR-0013), so they must not be thread-affine. A runtime that needs a thread-bound context (COM apartment, CUDA current context) creates it per tick or holds it outside `Local` until an attach hook exists.
@@ -84,17 +86,16 @@ Thread rules: every `Engine` method runs on the control thread and may block up 
 
 ## Performance requirements
 
-- The worker loop (hot path) does per iteration: one atomic load, clock reads, a `park_timeout` or `Doorbell::wait`, `Executor::swap_pending` (one `try_recv` when nothing is pending) and `run_tick`. No allocation or I/O. Cadence workers take no lock; `Doorbell::wait` takes the doorbell's registration lock, contended at most by a ringer's `try_lock` around one `unpark` (output workers only).
+- The worker loop (hot path) does per iteration: one atomic load of the worker's mode (run, drain, held, stop; two on a doorbell worker, before and after its wait), clock reads, a `park_timeout` or `Doorbell::wait`, `Executor::swap_pending` (one `try_recv` when nothing is pending) and `run_tick`. No allocation or I/O. Cadence workers take no lock; `Doorbell::wait` takes the doorbell's registration lock, contended at most by a ringer's `try_lock` around one `unpark` (output workers only).
 - Measured with `cargo bench -p rbs-engine --bench cross_thread` (numbers in ADR-0027): packet hand-off encoder to output across threads p50 36 us; render to output at 60 fps with a quarter-frame encoder offset mean 4.4 ms.
 
 ## Conformance tests
 
-`crates/rbs-engine/tests/engine.rs`; the lowering property `crates/rbs-graph/tests/partition_plan.rs` (the parts' plans together equal the logical plan over random graphs and edits).
+`crates/rbs-engine/tests/engine.rs`; the allocation guard for the worker loop (both pacings, run on the test thread) in `crates/rbs-engine/src/worker.rs`; the lowering property `crates/rbs-graph/tests/partition_plan.rs` (the parts' plans together equal the logical plan over random graphs and edits).
 
 ## Open questions
 
 - Thread priorities, real-time classes and high-resolution timers per platform.
-- Whether drains should run a final tick: today a cadence partition is drained between ticks (its last frame is not encoded) and an output drain passes at most one tick's packets (`PER_TICK_EVENTS`) before release.
 - An attach hook on `Runtime` for thread-affine resources when a worker thread changes.
 - A move overtaken by a second move of the same node before its first finished (A to B pending after a timeout, then B to C) is dropped and the second reports `MoveNotIdle`; the node is applied again on the next edit that touches it. Tracking where each instance actually is would close this.
 - A non-blocking `apply` state machine if a control-thread caller ever cannot wait.

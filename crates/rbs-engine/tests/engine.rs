@@ -14,11 +14,12 @@ use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use rbs_core::lifecycle::Lifecycle;
 use rbs_core::time::{Clock, TestClock, Timestamp};
 use rbs_core::timing::{Cadence, FrameRate};
 use rbs_engine::{Engine, EngineConfig, EngineError, EngineEvent, EngineHandle, Pacing};
 use rbs_graph::description::{GraphDescription, NodeId, PartitionId};
-use rbs_graph::runtime::{RestartPolicy, Runtime, RuntimeEvent};
+use rbs_graph::runtime::{PER_TICK_EVENTS, RestartPolicy, Runtime, RuntimeEvent};
 use support::{Gate, Probe, ReleaseLog, Role, TestNode, add, eventually};
 
 const RENDER: PartitionId = PartitionId::RENDER;
@@ -49,16 +50,22 @@ struct Rig {
     sink: NodeId,
     sink_probe: Arc<Probe>,
     encoder_probe: Arc<Probe>,
+    source_probe: Arc<Probe>,
 }
 
 impl Rig {
     fn new(log: Option<&ReleaseLog>) -> Self {
-        Self::build(log, None, Duration::from_secs(10))
+        Self::build(log, None, None, Duration::from_secs(10))
     }
 
-    /// `gate`: the encoder's and the sink's `cool` wait for it. `swap_timeout`: the
-    /// engine's.
-    fn build(log: Option<&ReleaseLog>, gate: Option<&Arc<Gate>>, swap_timeout: Duration) -> Self {
+    /// `gate`: the encoder's and the sink's `cool` wait for it. `stall`: the sink's
+    /// `process` waits for it. `swap_timeout`: the engine's.
+    fn build(
+        log: Option<&ReleaseLog>,
+        gate: Option<&Arc<Gate>>,
+        stall: Option<&Arc<Gate>>,
+        swap_timeout: Duration,
+    ) -> Self {
         let clock = TestClock::new();
         let mut engine = Engine::with_clock(
             Arc::new(clock.clone()),
@@ -87,12 +94,16 @@ impl Rig {
             if let (Some(gate), Role::Encoder | Role::PacketSink) = (gate, role) {
                 node = node.cooling_on(gate);
             }
+            if let (Some(stall), Role::PacketSink) = (stall, role) {
+                node = node.processing_on(stall);
+            }
             node
         };
         let source = named(Role::Source, "source");
         let encoder = named(Role::Encoder, "encoder");
         let sink = named(Role::PacketSink, "sink");
         let (sink_probe, encoder_probe) = (Arc::clone(&sink.probe), Arc::clone(&encoder.probe));
+        let source_probe = Arc::clone(&source.probe);
         let ids = (
             add(&mut graph, &source, RENDER),
             add(&mut graph, &encoder, ENCODER),
@@ -114,6 +125,7 @@ impl Rig {
             sink: ids.2,
             sink_probe,
             encoder_probe,
+            source_probe,
         }
     }
 
@@ -351,6 +363,131 @@ fn shutdown_drains_in_pipeline_order_and_stops_every_worker() {
 }
 
 #[test]
+fn shutdown_encodes_the_last_frame_render_wrote() {
+    let mut rig = Rig::new(None);
+    rig.engine.apply(&rig.graph).unwrap();
+    for _ in 0..3 {
+        rig.frame();
+    }
+    let ran = rig.source_probe.last_frame_ns.load(Ordering::Relaxed);
+    let report = rig.engine.shutdown();
+    assert!(report.errors.is_empty(), "{:?}", report.errors);
+    // Render ran a final tick (the next index, at once), the encoder a final tick that
+    // encoded its frame, and the output passed the packet on.
+    let last = rig.source_probe.last_frame_ns.load(Ordering::Relaxed);
+    assert!(last > ran, "render ran a final tick");
+    assert_eq!(
+        rig.encoder_probe.last_frame_ns.load(Ordering::Relaxed),
+        last
+    );
+    assert_eq!(rig.seen(), rig.encoder_probe.seen.load(Ordering::Relaxed));
+    for probe in [&rig.source_probe, &rig.encoder_probe, &rig.sink_probe] {
+        assert_eq!(probe.repeated_indices.load(Ordering::Relaxed), 0);
+    }
+}
+
+#[test]
+fn shutdown_passes_every_queued_packet_not_just_one_ticks_worth() {
+    // The sink's first `process` stalls (a slow output) for a while, so packets pile up
+    // in the queue: far more than one tick passes (PER_TICK_EVENTS). Shutdown starts
+    // while it is stalled, normally; the output's drain then waits for it and passes
+    // everything queued. (If the stall ends early the output passes them anyway.)
+    let stall = Arc::new(Gate::holding(Duration::from_secs(1)));
+    let mut rig = Rig::build(None, None, Some(&stall), Duration::from_secs(10));
+    rig.engine.apply(&rig.graph).unwrap();
+    let backlog = 4 * PER_TICK_EVENTS as u64;
+    for _ in 0..backlog * 2 {
+        rig.frame();
+        if rig.encoder_probe.seen.load(Ordering::Relaxed) > backlog {
+            break;
+        }
+    }
+    assert!(rig.encoder_probe.seen.load(Ordering::Relaxed) > backlog);
+    assert!(rig.seen() < PER_TICK_EVENTS as u64, "the sink is stalled");
+    let report = rig.engine.shutdown();
+    assert!(report.errors.is_empty(), "{:?}", report.errors);
+    assert_eq!(rig.seen(), rig.encoder_probe.seen.load(Ordering::Relaxed));
+}
+
+#[test]
+fn a_doorbell_worker_ticks_on_its_timer_without_a_ring() {
+    // A partition with no packet queue: nothing ever rings its doorbell.
+    let mut engine = Engine::with_clock(Arc::new(TestClock::new()), EngineConfig::default());
+    engine
+        .add_partition::<()>(
+            OUTPUT,
+            Arc::new(()),
+            (),
+            Pacing::doorbell(Duration::from_millis(1)),
+        )
+        .unwrap();
+    let mut graph = GraphDescription::new();
+    let source = TestNode::new(Role::Source, "source");
+    let sink = TestNode::new(Role::VideoSink, "sink");
+    let probe = Arc::clone(&sink.probe);
+    let ids = (
+        add(&mut graph, &source, OUTPUT),
+        add(&mut graph, &sink, OUTPUT),
+    );
+    graph.connect(ids.0, "out", ids.1, "in").unwrap();
+    engine.adopt::<()>(OUTPUT, ids.0, Box::new(source)).unwrap();
+    engine.adopt::<()>(OUTPUT, ids.1, Box::new(sink)).unwrap();
+    engine.apply(&graph).unwrap();
+    assert!(engine.crossings().is_empty());
+    // The apply's wake-up rings once; every further tick is the timer's.
+    let stats = engine.worker_stats(OUTPUT).unwrap();
+    assert!(
+        eventually(LIMIT, || stats.ticks() >= 5),
+        "{}",
+        stats.ticks()
+    );
+    assert!(probe.ticks.load(Ordering::Relaxed) >= 4);
+}
+
+#[test]
+fn tick_indices_never_repeat_across_worker_restarts() {
+    let clock = TestClock::new();
+    let mut engine = Engine::with_clock(Arc::new(clock.clone()), EngineConfig::default());
+    engine
+        .add_partition::<()>(RENDER, Arc::new(()), (), cadence())
+        .unwrap();
+    let mut graph = GraphDescription::new();
+    let source = TestNode::new(Role::Source, "source");
+    let sink = TestNode::new(Role::VideoSink, "sink");
+    let probe = Arc::clone(&sink.probe);
+    let ids = (
+        add(&mut graph, &source, RENDER),
+        add(&mut graph, &sink, RENDER),
+    );
+    graph.connect(ids.0, "out", ids.1, "in").unwrap();
+    engine.adopt::<()>(RENDER, ids.0, Box::new(source)).unwrap();
+    engine.adopt::<()>(RENDER, ids.1, Box::new(sink)).unwrap();
+    let stats = engine.worker_stats(RENDER).unwrap();
+    let frames = |engine: &Engine, n: u64| {
+        for _ in 0..n {
+            let before = stats.ticks();
+            clock.advance(FRAME);
+            engine.wake(RENDER);
+            assert!(eventually(LIMIT, || stats.ticks() > before));
+        }
+    };
+    for round in 1..=3 {
+        engine.apply(&graph).unwrap();
+        assert!(engine.has_worker(RENDER));
+        assert_eq!(stats.starts(), round);
+        frames(&engine, 3);
+        // Standby: the schedule is empty and the worker stops. The clock does not
+        // move, so the restarted worker finds the tick it last ran still current.
+        graph.set_state(ids.1, Lifecycle::Standby).unwrap();
+        engine.apply(&graph).unwrap();
+        assert!(!engine.has_worker(RENDER));
+        graph.set_state(ids.1, Lifecycle::Active).unwrap();
+    }
+    assert_eq!(probe.ticks.load(Ordering::Relaxed), 9);
+    assert_eq!(probe.repeated_indices.load(Ordering::Relaxed), 0);
+}
+
+#[test]
 fn partitions_keep_their_runtime_types_apart() {
     let mut engine = Engine::with_clock(Arc::new(TestClock::new()), EngineConfig::default());
     engine
@@ -506,7 +643,7 @@ fn nodes_swapping_partitions_in_one_edit_both_run() {
 #[test]
 fn a_move_held_up_by_a_swap_timeout_finishes_from_the_control_loop() {
     let gate = Arc::new(Gate::default());
-    let mut rig = Rig::build(None, Some(&gate), Duration::from_millis(20));
+    let mut rig = Rig::build(None, Some(&gate), None, Duration::from_millis(20));
     rig.engine.apply(&rig.graph).unwrap();
     rig.frame();
     // The encoder's `cool` blocks, so its old partition does not swap in time.
@@ -545,7 +682,7 @@ fn a_move_held_up_by_a_swap_timeout_finishes_from_the_control_loop() {
 #[test]
 fn retired_endpoints_are_dropped_after_a_swap_timeout() {
     let gate = Arc::new(Gate::default());
-    let mut rig = Rig::build(None, Some(&gate), Duration::from_millis(20));
+    let mut rig = Rig::build(None, Some(&gate), None, Duration::from_millis(20));
     rig.engine.apply(&rig.graph).unwrap();
     rig.frame();
     let packets = rig.engine.crossings()[1].clone();
@@ -628,7 +765,7 @@ fn an_idle_partition_swaps_without_running_a_tick() {
 #[test]
 fn a_move_out_of_a_partition_whose_part_was_not_sent_yet_still_happens() {
     let gate = Arc::new(Gate::default());
-    let mut rig = Rig::build(None, None, Duration::from_millis(20));
+    let mut rig = Rig::build(None, None, None, Duration::from_millis(20));
     // A second encoder in the encoder partition whose `cool` blocks.
     let slow = TestNode::new(Role::Encoder, "slow").cooling_on(&gate);
     let slow_sink = TestNode::new(Role::PacketSink, "slow-sink");

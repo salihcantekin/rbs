@@ -44,6 +44,12 @@ pub struct Probe {
     pub latency_ns: AtomicU64,
     /// The latest latencies, in ns, as a ring (preallocated; see `Probe::with_samples`).
     pub samples: Vec<AtomicU64>,
+    /// One more than the index of the last tick `process` saw (0: none yet).
+    pub next_index: AtomicU64,
+    /// `process` calls whose tick index was not above the one before.
+    pub repeated_indices: AtomicU64,
+    /// Time, in ns, of the last frame a source wrote or an encoder encoded.
+    pub last_frame_ns: AtomicU64,
 }
 
 impl Probe {
@@ -114,6 +120,8 @@ pub struct TestNode {
     clock: Option<Arc<dyn Clock>>,
     /// `cool` waits for this gate.
     cool_gate: Option<Arc<Gate>>,
+    /// The first `process` waits for this gate.
+    process_gate: Option<Arc<Gate>>,
 }
 
 fn format() -> VideoFormat {
@@ -159,6 +167,7 @@ impl TestNode {
             last: None,
             clock: None,
             cool_gate: None,
+            process_gate: None,
         }
     }
 
@@ -177,6 +186,12 @@ impl TestNode {
     /// `cool` waits until `gate` opens.
     pub fn cooling_on(mut self, gate: &Arc<Gate>) -> Self {
         self.cool_gate = Some(Arc::clone(gate));
+        self
+    }
+
+    /// The first `process` waits until `gate` opens (a stalled output).
+    pub fn processing_on(mut self, gate: &Arc<Gate>) -> Self {
+        self.process_gate = Some(Arc::clone(gate));
         self
     }
 
@@ -214,6 +229,13 @@ impl<X: Runtime> Node<X> for TestNode {
             return Err(NodeError::Backend("scripted failure"));
         }
         let tick = ctx.tick();
+        let index = tick.index + 1;
+        if self.probe.next_index.swap(index, Ordering::Relaxed) >= index {
+            self.probe.repeated_indices.fetch_add(1, Ordering::Relaxed);
+        }
+        if let Some(gate) = self.process_gate.take() {
+            gate.pass();
+        }
         let inputs = ctx.inputs();
         match self.role {
             Role::Source => {
@@ -224,6 +246,9 @@ impl<X: Runtime> Node<X> for TestNode {
                     None,
                 );
                 let _ = ctx.outputs().set_video(0, Some(frame));
+                self.probe
+                    .last_frame_ns
+                    .store(tick.time.as_nanos(), Ordering::Relaxed);
             }
             Role::Encoder => {
                 let Some(frame) = inputs.video(0, 0) else {
@@ -235,6 +260,9 @@ impl<X: Runtime> Node<X> for TestNode {
                 }
                 self.last = Some(t);
                 self.probe.seen.fetch_add(1, Ordering::Relaxed);
+                self.probe
+                    .last_frame_ns
+                    .store(t.as_nanos(), Ordering::Relaxed);
                 let stamp = self.clock.as_ref().map_or(t, |c| c.now());
                 let packet = EncodedPacket::new(
                     CodecId::H264,

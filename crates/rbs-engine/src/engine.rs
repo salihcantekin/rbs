@@ -87,6 +87,9 @@ pub enum EngineError {
     Apply(PartitionId, ApplyError),
     /// The worker did not swap in time; [`Engine::service`] collects it later.
     SwapTimeout(PartitionId),
+    /// At shutdown the worker did not finish its final tick(s) in time; the partition
+    /// is drained without them.
+    DrainTimeout(PartitionId),
     /// The worker thread could not be started.
     Spawn(PartitionId, std::io::ErrorKind),
     /// The [`EngineHandle`](crate::EngineHandle)'s control thread could not be started.
@@ -114,6 +117,7 @@ impl fmt::Display for EngineError {
             EngineError::Control(p, e) => write!(f, "partition {p}: {e}"),
             EngineError::Apply(p, e) => write!(f, "partition {p}: {e}"),
             EngineError::SwapTimeout(p) => write!(f, "partition {p} did not swap in time"),
+            EngineError::DrainTimeout(p) => write!(f, "partition {p} did not drain in time"),
             EngineError::Spawn(p, e) => write!(f, "partition {p}: cannot start worker: {e}"),
             EngineError::ControlThread(e) => write!(f, "cannot start the control thread: {e}"),
             EngineError::JobPanicked => f.write_str("an engine job panicked"),
@@ -645,6 +649,10 @@ impl Engine {
     /// Stops the engine: drains the partitions in pipeline order (render, then
     /// encoders, then outputs; ADR-0026 Decision 8), so each partition's inputs stop
     /// before the next one flushes, then stops every worker. Idempotent.
+    ///
+    /// Each running partition first runs its final tick(s) on its worker: one tick on a
+    /// cadence, so an encoder encodes the last frame render wrote; on a doorbell, ticks
+    /// until no reader has packets left. Then the empty schedule is swapped in.
     pub fn shutdown(&mut self) -> Shutdown {
         let mut out = Shutdown::default();
         if self.shut_down {
@@ -678,8 +686,12 @@ impl Engine {
                     }
                 }
             };
-            // Finish a swap still in flight, then drain.
+            // Finish a swap still in flight, run the final tick(s) on the old schedule,
+            // then swap in the empty one.
             settle(part, &mut out);
+            if !part.in_flight() && !part.drain(timeout) {
+                out.errors.push(EngineError::DrainTimeout(p));
+            }
             if !part.in_flight() {
                 match part.apply(&empty) {
                     Ok(report) => out.events.extend(report.events.into_iter().map(|e| (p, e))),
