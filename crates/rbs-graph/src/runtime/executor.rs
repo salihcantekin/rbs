@@ -10,7 +10,7 @@ use crate::description::NodeId;
 use super::controller::Retired;
 use super::schedule::Entry;
 use super::schedule::{Inputs, Outputs, Schedule, Slot};
-use super::{NodeError, ProcessCtx, Runtime, Tick, WarmCtx};
+use super::{ProcessCtx, Runtime, Tick, WarmCtx};
 
 /// Consecutive failed ticks after which a node is bypassed, unless changed with
 /// [`Executor::set_failure_limit`].
@@ -30,8 +30,11 @@ pub struct NodeHealth {
     pub panicked: bool,
     /// `warm` failed.
     pub warm_failed: bool,
-    /// `process` returned [`NodeError::Permanent`](super::NodeError::Permanent).
+    /// `process` or `warm` returned [`NodeError::Permanent`](super::NodeError::Permanent).
     pub permanent: bool,
+    /// Summary of the last error from `process` or `warm`
+    /// ([`NodeError::summary`](super::NodeError::summary)), or "panicked".
+    pub last_error: Option<&'static str>,
     /// The node is no longer called: it failed too often, panicked, or failed to warm.
     /// Its video outputs keep their last frame; event outputs stay empty.
     pub bypassed: bool,
@@ -157,9 +160,15 @@ impl<X: Runtime> Executor<X> {
                     health.errors += 1;
                     health.consecutive_errors = health.consecutive_errors.saturating_add(1);
                     match &result {
-                        Err(_) => health.panicked = true,
-                        Ok(Err(NodeError::Permanent(_))) => health.permanent = true,
-                        _ => {}
+                        Err(_) => {
+                            health.panicked = true;
+                            health.last_error = Some("panicked");
+                        }
+                        Ok(Err(e)) => {
+                            health.permanent |= e.is_permanent();
+                            health.last_error = Some(e.summary());
+                        }
+                        Ok(Ok(())) => {}
                     }
                     if health.panicked
                         || health.permanent
@@ -232,9 +241,14 @@ impl<X: Runtime> Executor<X> {
                 Ok(Ok(())) => false,
                 Err(_) => {
                     entry.health.panicked = true;
+                    entry.health.last_error = Some("panicked");
                     true
                 }
-                Ok(Err(_)) => true,
+                Ok(Err(e)) => {
+                    entry.health.permanent = e.is_permanent();
+                    entry.health.last_error = Some(e.summary());
+                    true
+                }
             };
             if failed {
                 entry.health.warm_failed = true;

@@ -154,8 +154,10 @@ impl Rig {
         (report, collected)
     }
 
+    /// The source's instance is in the schedule (a node held without an instance
+    /// while it waits is in the plan, but not running).
     fn scheduled(&self) -> bool {
-        self.exec.scheduled().any(|id| id == self.source)
+        self.ctl.is_running(self.source)
     }
 
     fn now(&self) -> Timestamp {
@@ -306,12 +308,15 @@ fn a_node_that_runs_cleanly_long_enough_is_forgiven() {
     assert_eq!(rig.ctl.fault(rig.source).map(|f| f.attempts), Some(2));
 
     rig.clock.advance(Duration::from_secs(10));
-    let (report, _) = rig.edit();
+    // Forgiveness is due; the control loop sees it without an edit.
+    assert!(rig.ctl.restart_due());
+    let (_, collected) = rig.edit();
     assert!(
-        report
+        collected
             .events
             .contains(&RuntimeEvent::Recovered { node: rig.source })
     );
+    assert!(!rig.ctl.restart_due());
     assert_eq!(rig.ctl.fault(rig.source), None);
 
     // A later failure starts from the first wait again.
@@ -329,7 +334,7 @@ fn a_permanent_prepare_error_waits_for_the_user() {
     rig.script.prepare_permanent.store(true, Ordering::Relaxed);
     let (report, _) = rig.edit();
     assert_eq!(failed_events(&report.events), vec![(1, None)]);
-    assert_eq!(rig.ctl.next_retry(), None);
+    assert_eq!(rig.ctl.next_due(), None);
 
     rig.clock.advance(Duration::from_secs(3600));
     assert!(!rig.ctl.restart_due());
@@ -472,4 +477,303 @@ fn a_failed_warm_up_is_reported_and_restarted() {
     rig.run_tick();
     assert!(!rig.exec.health(id).expect("scheduled").bypassed);
     assert_eq!(warms.load(Ordering::Relaxed), 2);
+}
+
+#[test]
+fn switching_off_and_on_retries_a_node_that_failed_while_scheduled() {
+    let mut rig = Rig::new();
+    rig.edit();
+    rig.script.process_permanent.store(true, Ordering::Relaxed);
+    rig.run_tick();
+    let (_, collected) = rig.edit();
+    assert_eq!(failed_events(&collected.events), vec![(1, None)]);
+
+    // Off while the failed instance is still scheduled: its leaving health is stale.
+    rig.graph
+        .set_state(rig.source, Lifecycle::Standby)
+        .expect("standby");
+    let (report, collected) = rig.edit();
+    assert!(
+        report
+            .events
+            .contains(&RuntimeEvent::Cleared { node: rig.source })
+    );
+    assert!(failed_events(&collected.events).is_empty());
+    assert_eq!(rig.ctl.fault(rig.source), None);
+
+    rig.script.process_permanent.store(false, Ordering::Relaxed);
+    rig.graph
+        .set_state(rig.source, Lifecycle::Active)
+        .expect("active");
+    rig.edit();
+    assert!(rig.scheduled());
+    rig.run_tick();
+    assert!(!rig.exec.health(rig.source).expect("scheduled").bypassed);
+}
+
+#[test]
+fn retry_while_the_failed_instance_is_scheduled_or_in_flight_is_not_undone() {
+    let mut rig = Rig::new();
+    rig.edit();
+    rig.script.process_permanent.store(true, Ordering::Relaxed);
+    rig.run_tick();
+    rig.edit(); // records the permanent failure
+    assert!(rig.ctl.fault(rig.source).is_some());
+
+    // Retry while the take-out schedule is in flight.
+    rig.ctl.apply(&rig.graph).expect("apply");
+    rig.script.process_permanent.store(false, Ordering::Relaxed);
+    assert!(rig.ctl.retry(rig.source));
+    rig.run_tick();
+    let collected = rig.ctl.collect().expect("executor").expect("swapped");
+    assert!(
+        failed_events(&collected.events).is_empty(),
+        "stale health ignored"
+    );
+    assert!(rig.ctl.restart_due());
+    rig.edit();
+    assert!(rig.scheduled());
+    assert_eq!(rig.ctl.fault(rig.source), None);
+
+    // Retry while the bypassed instance is still scheduled: it is taken out, then
+    // prepared again.
+    rig.script.process_permanent.store(true, Ordering::Relaxed);
+    rig.run_tick();
+    rig.edit();
+    rig.script.process_permanent.store(false, Ordering::Relaxed);
+    let prepares = rig.script.prepares.load(Ordering::Relaxed);
+    assert!(rig.ctl.retry(rig.source));
+    assert!(rig.ctl.restart_due());
+    rig.edit(); // taken out and released
+    assert!(!rig.scheduled());
+    assert!(rig.ctl.restart_due());
+    rig.edit(); // prepared again
+    assert!(rig.scheduled());
+    assert_eq!(rig.script.prepares.load(Ordering::Relaxed), prepares + 1);
+    assert!(!rig.ctl.restart_due());
+}
+
+#[test]
+fn a_node_the_plan_skips_after_its_wait_does_not_keep_the_loop_busy() {
+    let mut rig = Rig::new();
+    rig.script.prepare_failures.store(1, Ordering::Relaxed);
+    rig.edit();
+    // The user switches off the only output: the source has no sink any more.
+    let sink = rig.graph.nodes()[1].id;
+    rig.graph
+        .set_state(sink, Lifecycle::Standby)
+        .expect("standby");
+    rig.edit();
+    rig.clock.advance(Duration::from_secs(1));
+    assert!(rig.ctl.restart_due());
+    rig.edit();
+    assert!(!rig.ctl.restart_due(), "parked until an edit schedules it");
+    assert_eq!(rig.ctl.next_due(), None);
+    // Switching the output back on schedules and prepares it.
+    rig.graph
+        .set_state(sink, Lifecycle::Active)
+        .expect("active");
+    rig.edit();
+    assert!(rig.scheduled());
+}
+
+#[test]
+fn a_flapping_node_escalates_even_when_the_loop_is_late() {
+    let mut rig = Rig::new();
+    rig.exec.set_failure_limit(1);
+    rig.edit();
+    for expected in 1..=3_u32 {
+        rig.script.process_fails.store(true, Ordering::Relaxed);
+        rig.run_tick();
+        // The control loop only gets to it much later than `stable_after`.
+        rig.clock.advance(Duration::from_secs(60));
+        let (_, collected) = rig.edit();
+        assert!(
+            !collected
+                .events
+                .iter()
+                .any(|e| matches!(e, RuntimeEvent::Recovered { .. })),
+            "a bypassed node is never forgiven"
+        );
+        assert_eq!(failed_events(&collected.events)[0].0, expected);
+        rig.script.process_fails.store(false, Ordering::Relaxed);
+        rig.edit(); // taken out
+        rig.clock.advance(Duration::from_secs(60));
+        rig.edit(); // restarted
+        assert!(rig.scheduled());
+    }
+}
+
+#[test]
+fn a_failure_stays_contained_to_its_node_in_a_chain() {
+    // source -> filter -> output: a failing filter neither releases its source nor
+    // its output (P7).
+    let mut rig = Rig::new();
+    let sink = rig.graph.nodes()[1].id;
+    let filter_desc = NodeDescriptor::new(
+        NodeTypeId::new("org.rbs.test.filter"),
+        NodeKind::VideoFilter,
+        vec![Pin::one("in", LinkKind::Video)],
+        vec![Pin::one("out", LinkKind::Video)],
+    );
+    let filter_script = Arc::new(Script::default());
+    let filter = rig
+        .graph
+        .add_node(Arc::new(filter_desc.clone()))
+        .expect("node");
+    rig.graph
+        .set_state(filter, Lifecycle::Standby)
+        .expect("standby");
+    rig.graph
+        .set_state(filter, Lifecycle::Active)
+        .expect("active");
+    let link = rig
+        .graph
+        .links()
+        .iter()
+        .copied()
+        .find(|l| l.from.node == rig.source)
+        .expect("link");
+    assert!(rig.graph.disconnect(link));
+    rig.graph
+        .connect(rig.source, "out", filter, "in")
+        .expect("link");
+    rig.graph.connect(filter, "out", sink, "in").expect("link");
+    rig.ctl
+        .adopt(
+            filter,
+            Box::new(Flaky {
+                desc: filter_desc,
+                script: Arc::clone(&filter_script),
+            }),
+        )
+        .expect("adopt");
+    rig.edit();
+    assert!(rig.ctl.is_running(filter));
+
+    filter_script.process_fails.store(true, Ordering::Relaxed);
+    rig.exec.set_failure_limit(1);
+    rig.run_tick();
+    rig.edit();
+    let (report, collected) = rig.edit();
+    assert!(!rig.ctl.is_running(filter));
+    assert!(report.plan.order.contains(&filter), "held in the plan");
+    assert!(rig.scheduled() && rig.ctl.is_running(sink));
+    assert_eq!(rig.script.releases.load(Ordering::Relaxed), 0);
+    assert_eq!(
+        collected.left.iter().map(|(id, _)| *id).collect::<Vec<_>>(),
+        vec![filter]
+    );
+}
+
+#[test]
+fn removing_a_failed_node_drops_its_record() {
+    let mut rig = Rig::new();
+    rig.script.prepare_permanent.store(true, Ordering::Relaxed);
+    rig.edit();
+    assert_eq!(rig.ctl.faulted(), vec![rig.source]);
+    rig.graph
+        .set_state(rig.source, Lifecycle::Standby)
+        .expect("standby");
+    rig.graph.remove_node(rig.source).expect("remove");
+    let (report, _) = rig.edit();
+    assert!(
+        report
+            .events
+            .contains(&RuntimeEvent::Cleared { node: rig.source })
+    );
+    assert!(rig.ctl.faulted().is_empty());
+}
+
+#[test]
+fn a_permanent_warm_error_is_not_restarted() {
+    struct NoPermission(NodeDescriptor);
+    impl Node<()> for NoPermission {
+        fn descriptor(&self) -> &NodeDescriptor {
+            &self.0
+        }
+        fn prepare(&mut self, _: &mut PrepareCtx<'_, ()>) -> Result<(), NodeError> {
+            Ok(())
+        }
+        fn release(&mut self, _: &mut PrepareCtx<'_, ()>) {}
+        fn warm(&mut self, _: &mut rbs_graph::runtime::WarmCtx<'_, ()>) -> Result<(), NodeError> {
+            Err(NodeError::Permanent("screen recording not allowed"))
+        }
+        fn process(&mut self, _: &mut ProcessCtx<'_, ()>) -> Result<(), NodeError> {
+            Ok(())
+        }
+    }
+    let (mut ctl, mut exec) = channel::<()>(Arc::new(()), ());
+    let clock = TestClock::new();
+    ctl.set_clock(Arc::new(clock.clone()));
+    let src = NodeDescriptor::new(
+        NodeTypeId::new("org.rbs.test.screen"),
+        NodeKind::Source,
+        vec![],
+        vec![Pin::one("out", LinkKind::Video)],
+    );
+    let out = NodeDescriptor::new(
+        NodeTypeId::new("org.rbs.test.sink"),
+        NodeKind::Output,
+        vec![Pin::one("in", LinkKind::Video)],
+        vec![],
+    );
+    let mut graph = GraphDescription::new();
+    let a = graph.add_node(Arc::new(src.clone())).expect("node");
+    let b = graph.add_node(Arc::new(out.clone())).expect("node");
+    for n in [a, b] {
+        graph.set_state(n, Lifecycle::Standby).expect("standby");
+        graph.set_state(n, Lifecycle::Active).expect("active");
+    }
+    graph.connect(a, "out", b, "in").expect("link");
+    ctl.adopt(a, Box::new(NoPermission(src))).expect("adopt");
+    ctl.adopt(b, Box::new(Sink(out))).expect("adopt");
+    let cadence = Cadence::frames(Timestamp::ZERO, FrameRate::FPS_60);
+    let mut tick = 0;
+    let mut edit = |ctl: &mut Controller<()>, exec: &mut Executor<()>| {
+        ctl.apply(&graph).expect("apply");
+        exec.run_tick(Tick::of(&cadence, tick));
+        tick += 1;
+        ctl.collect().expect("executor").expect("swapped")
+    };
+    edit(&mut ctl, &mut exec);
+    let collected = edit(&mut ctl, &mut exec);
+    assert!(collected.events.iter().any(|e| matches!(
+        e,
+        RuntimeEvent::Failed { cause: FaultCause::Bypassed(h), retry_at: None, .. }
+            if h.permanent && h.last_error == Some("screen recording not allowed")
+    )));
+    clock.advance(Duration::from_secs(3600));
+    edit(&mut ctl, &mut exec);
+    assert!(!ctl.restart_due());
+}
+
+#[test]
+fn the_policy_gives_up_on_repeated_bypasses_too() {
+    let mut rig = Rig::new();
+    rig.ctl
+        .set_restart_policy(RestartPolicy::default().give_up_after(2));
+    rig.exec.set_failure_limit(1);
+    rig.script.process_fails.store(true, Ordering::Relaxed);
+    rig.edit();
+    rig.run_tick();
+    let (_, collected) = rig.edit();
+    assert!(failed_events(&collected.events)[0].1.is_some());
+    rig.edit();
+    rig.clock.advance(Duration::from_secs(1));
+    rig.edit();
+    rig.run_tick();
+    let (_, collected) = rig.edit();
+    assert_eq!(failed_events(&collected.events), vec![(2, None)]);
+}
+
+#[test]
+fn delay_saturates_at_the_maximum() {
+    let p = RestartPolicy::backoff(Duration::from_millis(500), Duration::from_secs(30));
+    assert_eq!(p.delay(1), Duration::from_millis(500));
+    assert_eq!(p.delay(2), Duration::from_secs(1));
+    assert_eq!(p.delay(7), Duration::from_secs(30));
+    assert_eq!(p.delay(u32::MAX), Duration::from_secs(30));
+    let huge = RestartPolicy::backoff(Duration::MAX, Duration::MAX);
+    assert_eq!(huge.delay(40), Duration::MAX);
 }

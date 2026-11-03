@@ -1,7 +1,7 @@
 //! The control side: owns idle node instances, prepares joining nodes and builds
 //! schedules for the executor.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::Arc;
@@ -34,7 +34,8 @@ pub fn channel<X: Runtime>(
         bypasses_seen: 0,
         shared: Arc::clone(&shared),
         idle: HashMap::new(),
-        running: HashMap::new(),
+        placed: HashMap::new(),
+        epochs: HashMap::new(),
         outbox: to_exec,
         inbox: from_exec,
         in_flight: false,
@@ -186,6 +187,8 @@ impl std::error::Error for ControlError {}
 struct Placement {
     index: u32,
     outputs: Span,
+    /// The scheduled instance's epoch; `None` for a node held without an instance.
+    epoch: Option<u64>,
 }
 
 /// The control-thread side of a running graph.
@@ -198,14 +201,17 @@ pub struct Controller<X: Runtime> {
     shared: Arc<X::Shared>,
     idle: HashMap<NodeId, Box<dyn Node<X>>>,
     /// Layout of the schedule last sent (the executor runs it, or will after its next
-    /// tick).
-    running: HashMap<NodeId, Placement>,
+    /// tick), including nodes held there without an instance.
+    placed: HashMap<NodeId, Placement>,
     outbox: SyncSender<Schedule<X>>,
     inbox: Receiver<Retired<X>>,
     in_flight: bool,
     /// Time for back-off; the production master clock unless replaced.
     clock: Arc<dyn Clock>,
     faults: Faults,
+    /// Instance epoch per node: bumped by every successful `prepare` and by clearing a
+    /// failure record, so health of an older instance is recognised as stale.
+    epochs: HashMap<NodeId, u64>,
     /// Bumped by the executor whenever it bypasses a node, so the control side learns
     /// about it without waiting for an edit.
     bypasses: Arc<AtomicU64>,
@@ -216,7 +222,7 @@ pub struct Controller<X: Runtime> {
 impl<X: Runtime> Controller<X> {
     /// Hands over the instance for node `id`, idle (Standby) until a plan schedules it.
     pub fn adopt(&mut self, id: NodeId, node: Box<dyn Node<X>>) -> Result<(), ControlError> {
-        if self.idle.contains_key(&id) || self.running.contains_key(&id) {
+        if self.idle.contains_key(&id) || self.is_running(id) {
             return Err(ControlError::AlreadyAdopted(id));
         }
         self.idle.insert(id, node);
@@ -225,7 +231,7 @@ impl<X: Runtime> Controller<X> {
 
     /// Takes back an idle instance (for example to destroy it: Standby to Installed).
     pub fn take(&mut self, id: NodeId) -> Result<Option<Box<dyn Node<X>>>, ControlError> {
-        if self.running.contains_key(&id) {
+        if self.is_running(id) {
             return Err(ControlError::Running(id));
         }
         Ok(self.idle.remove(&id))
@@ -233,7 +239,29 @@ impl<X: Runtime> Controller<X> {
 
     /// True if node `id` is in the schedule last sent.
     pub fn is_running(&self, id: NodeId) -> bool {
-        self.running.contains_key(&id)
+        self.running_epoch(id).is_some()
+    }
+
+    /// The epoch of the instance of `id` in the schedule last sent, if it has one.
+    fn running_epoch(&self, id: NodeId) -> Option<u64> {
+        self.placed.get(&id).and_then(|p| p.epoch)
+    }
+
+    fn epoch(&self, id: NodeId) -> u64 {
+        self.epochs.get(&id).copied().unwrap_or(0)
+    }
+
+    fn bump_epoch(&mut self, id: NodeId) -> u64 {
+        let e = self.epochs.entry(id).or_insert(0);
+        *e += 1;
+        *e
+    }
+
+    /// True if the scheduled instance of `id` failed, or was superseded by a retry, and
+    /// must leave the schedule before it can be restarted.
+    fn must_leave(&self, id: NodeId) -> bool {
+        self.running_epoch(id)
+            .is_some_and(|e| e != self.epoch(id) || self.faults.waiting(id))
     }
 
     /// True if node `id` has an idle instance here.
@@ -271,23 +299,49 @@ impl<X: Runtime> Controller<X> {
 
     /// Forgets the failures of node `id`, so the next `apply` prepares it at once
     /// (the user's "retry"). Returns whether there was a record.
+    ///
+    /// Health still reported for the failed instance afterwards is ignored. If that
+    /// instance is still scheduled, the next `apply` takes it out and the one after
+    /// prepares it again.
     pub fn retry(&mut self, id: NodeId) -> bool {
-        self.faults.clear(id)
-    }
-
-    /// The earliest time a waiting node may be restarted.
-    pub fn next_retry(&self) -> Option<Timestamp> {
-        self.faults.next_retry()
+        let had = self.faults.clear(id);
+        if had {
+            self.bump_epoch(id);
+        }
+        had
     }
 
     /// True if calling `apply` again with the same description would change the
-    /// schedule because of restarts: a scheduled node failed and must be taken out, or
-    /// a waiting node's back-off is over. The engine's control loop checks this on its
-    /// timer and re-applies the current description.
+    /// schedule because of restarts: the executor bypassed a node since the last
+    /// `collect`, a scheduled node failed and must be taken out, a waiting node's
+    /// back-off is over, or a restarted node is due to be forgiven.
+    ///
+    /// The engine's control loop, on its timer: `collect` (an `apply` is refused while
+    /// a schedule is in flight), then if this is true, `apply` the current
+    /// description; sleep for at most [`Controller::next_due`].
     pub fn restart_due(&self) -> bool {
-        self.bypasses.load(Ordering::Relaxed) != self.bypasses_seen
-            || self.running.keys().any(|&id| self.faults.waiting(id))
-            || self.next_retry().is_some_and(|at| at <= self.clock.now())
+        if self.bypasses.load(Ordering::Relaxed) != self.bypasses_seen {
+            return true;
+        }
+        let now = self.clock.now();
+        self.placed.iter().any(|(&id, p)| match p.epoch {
+            Some(_) => self.must_leave(id),
+            // Held without an instance: due once its gate opens.
+            None => matches!(self.faults.gate(id, now), Gate::Open),
+        }) || self.faults.next_deadline().is_some_and(|at| at <= now)
+    }
+
+    /// How long until [`Controller::restart_due`] may turn true without a new bypass:
+    /// zero if it is true now, `None` if nothing is scheduled to happen. Measured on
+    /// the controller's clock, so the engine can sleep for it directly.
+    pub fn next_due(&self) -> Option<Duration> {
+        if self.restart_due() {
+            return Some(Duration::ZERO);
+        }
+        let now = self.clock.now();
+        self.faults
+            .next_deadline()
+            .map(|at| at.saturating_since(now))
     }
 
     /// True while a sent schedule has not come back through [`Controller::collect`].
@@ -298,9 +352,12 @@ impl<X: Runtime> Controller<X> {
     /// Plans `description`, prepares the nodes that join, and sends the schedule. The
     /// executor swaps to it after its next tick.
     ///
-    /// A node whose `prepare` fails (or that has no instance) is left out: the plan is
-    /// recomputed as if it were Standby, so nodes that depended on it are skipped too.
-    /// Nodes prepared in a round that a later failure made unschedulable are released
+    /// A node whose `prepare` fails, or that waits for a restart (ADR-0024), stays in
+    /// the plan without an instance: its outputs keep their last video frame and its
+    /// dependants keep running, so a failure stays contained to that node (P7). A node
+    /// with no instance or a different descriptor is a configuration problem: the plan
+    /// is recomputed as if it were Standby, so nodes that depended on it are skipped
+    /// too, and nodes prepared in a round that this made unschedulable are released
     /// again before returning.
     pub fn apply(&mut self, description: &GraphDescription) -> Result<ApplyReport, ApplyError> {
         if self.in_flight {
@@ -311,40 +368,37 @@ impl<X: Runtime> Controller<X> {
         let mut working: Option<GraphDescription> = None;
         let mut failed: Vec<(NodeId, JoinError)> = Vec::new();
 
-        // Restart bookkeeping. A node the scene no longer wants is no longer failing:
-        // switching it off and on again is a retry.
-        let unwanted: Vec<NodeId> = self
+        // A node the scene no longer wants (switched off or removed) is no longer
+        // failing: switching it on again prepares it at once.
+        let mut unwanted: Vec<NodeId> = self
             .faults
             .nodes()
-            .filter(|&id| {
-                !self.running.contains_key(&id)
-                    && description.node(id).map(|e| e.state) != Some(Lifecycle::Active)
-            })
+            .filter(|&id| description.node(id).map(|e| e.state) != Some(Lifecycle::Active))
             .collect();
+        unwanted.sort();
         for id in unwanted {
             self.faults.clear(id);
+            self.bump_epoch(id);
+            events.push(RuntimeEvent::Cleared { node: id });
         }
-        let running = &self.running;
-        self.faults
-            .settle(now, |id| running.contains_key(&id), &mut events);
-        // Keep out nodes that wait for a restart, and take out scheduled nodes that
-        // failed (bypassed) so they are released before they are restarted.
+
+        // Nodes held in the plan without an instance: waiting for their back-off, or
+        // scheduled but failed (or retried) and to be released before a restart.
+        let mut hollow: HashSet<NodeId> = HashSet::new();
         for entry in description.nodes() {
             if entry.state != Lifecycle::Active {
                 continue;
             }
-            let closed = match self.faults.gate(entry.id, now) {
-                Gate::Closed(retry_at) => Some(retry_at),
-                Gate::Open if self.running.contains_key(&entry.id) => self
-                    .faults
-                    .waiting(entry.id)
-                    .then(|| self.faults.status(entry.id).and_then(|s| s.retry_at)),
-                Gate::Open => None,
-            };
-            if let Some(retry_at) = closed {
-                let graph = working.get_or_insert_with(|| description.clone());
-                let _ = graph.set_state(entry.id, Lifecycle::Standby);
-                failed.push((entry.id, JoinError::BackingOff { retry_at }));
+            let id = entry.id;
+            let retry_at = self.faults.status(id).and_then(|f| f.retry_at);
+            if self.is_running(id) {
+                if self.must_leave(id) {
+                    hollow.insert(id);
+                    failed.push((id, JoinError::BackingOff { retry_at }));
+                }
+            } else if let Gate::Closed(retry_at) = self.faults.gate(id, now) {
+                hollow.insert(id);
+                failed.push((id, JoinError::BackingOff { retry_at }));
             }
         }
 
@@ -358,7 +412,7 @@ impl<X: Runtime> Controller<X> {
             }
             let mut newly_failed = Vec::new();
             for &id in &plan.order {
-                if self.running.contains_key(&id) || prepared.contains_key(&id) {
+                if hollow.contains(&id) || self.is_running(id) || prepared.contains_key(&id) {
                     continue;
                 }
                 let graph = working.as_ref().unwrap_or(description);
@@ -382,22 +436,27 @@ impl<X: Runtime> Controller<X> {
                             }
                             Ok(Err(_)) | Err(_) => {
                                 // Same handling for an error and a panic: return what
-                                // a partial prepare took, keep the instance idle.
+                                // a partial prepare took, keep the instance idle, and
+                                // hold the node in the plan without it.
                                 let _ = catch_unwind(AssertUnwindSafe(|| node.release(&mut ctx)));
                                 self.idle.insert(id, node);
                                 let error = match result {
                                     Ok(Err(e)) => JoinError::Prepare(e),
                                     _ => JoinError::Panicked,
                                 };
-                                let permanent =
-                                    matches!(error, JoinError::Prepare(NodeError::Permanent(_)));
+                                let permanent = matches!(
+                                    &error,
+                                    JoinError::Prepare(e) if e.is_permanent()
+                                );
                                 events.push(self.faults.fail(
                                     id,
                                     FaultCause::Join(error.clone()),
                                     permanent,
+                                    None,
                                     now,
                                 ));
-                                newly_failed.push((id, error));
+                                hollow.insert(id);
+                                failed.push((id, error));
                             }
                         }
                     }
@@ -414,8 +473,20 @@ impl<X: Runtime> Controller<X> {
             failed.extend(newly_failed);
         };
 
+        let scheduled: HashSet<NodeId> = plan.order.iter().copied().collect();
+        // A node whose wait is over but that the plan skipped for another reason (no
+        // sink, starved) is not due until an edit schedules it.
+        let parked: Vec<NodeId> = self
+            .faults
+            .nodes()
+            .filter(|id| !scheduled.contains(id) && self.faults.waiting(*id))
+            .collect();
+        for id in parked {
+            if matches!(self.faults.gate(id, now), Gate::Open) {
+                self.faults.park(id);
+            }
+        }
         // Prepared nodes a later round made unschedulable go back to idle.
-        let scheduled: std::collections::HashSet<NodeId> = plan.order.iter().copied().collect();
         let unused: Vec<NodeId> = prepared
             .keys()
             .copied()
@@ -429,8 +500,12 @@ impl<X: Runtime> Controller<X> {
 
         let mut joined: Vec<NodeId> = prepared.keys().copied().collect();
         joined.sort();
+        let mut fresh_epochs: HashMap<NodeId, u64> = HashMap::with_capacity(joined.len());
+        for &id in &joined {
+            fresh_epochs.insert(id, self.bump_epoch(id));
+        }
         let graph = working.as_ref().unwrap_or(description);
-        let schedule = self.build(graph, &plan, &mut prepared);
+        let schedule = self.build(graph, &plan, &mut prepared, &hollow, &fresh_epochs);
         let placements = schedule
             .nodes
             .iter()
@@ -441,6 +516,7 @@ impl<X: Runtime> Controller<X> {
                     Placement {
                         index: i as u32,
                         outputs: e.outputs,
+                        epoch: e.epoch,
                     },
                 )
             })
@@ -455,7 +531,7 @@ impl<X: Runtime> Controller<X> {
                 return Err(ApplyError::ExecutorGone);
             }
         }
-        self.running = placements;
+        self.placed = placements;
         self.in_flight = true;
         for id in joined {
             if let Some(event) = self.faults.rejoined(id, now) {
@@ -500,24 +576,32 @@ impl<X: Runtime> Controller<X> {
         let mut collected = Collected::default();
         for entry in retired.schedule.nodes {
             collected.health.push((entry.id, entry.health));
-            // Count a bypass once: the record waits until the node is restarted.
-            if entry.health.bypassed && !self.faults.waiting(entry.id) {
-                let permanent = entry.health.permanent;
-                collected.events.push(self.faults.fail(
-                    entry.id,
-                    FaultCause::Bypassed(entry.health),
-                    permanent,
-                    now,
-                ));
+            // Health of an older instance (replaced, retried or switched off since) is
+            // stale and never recorded.
+            let current = entry.epoch.filter(|&e| e == self.epoch(entry.id));
+            if let Some(epoch) = current {
+                if entry.health.bypassed {
+                    // Count a bypass once per instance.
+                    if !self.faults.counted(entry.id, epoch) {
+                        let permanent = entry.health.permanent;
+                        collected.events.push(self.faults.fail(
+                            entry.id,
+                            FaultCause::Bypassed(entry.health),
+                            permanent,
+                            Some(epoch),
+                            now,
+                        ));
+                    }
+                } else if let Some(event) = self.faults.forgive_if_stable(entry.id, now) {
+                    // Ran cleanly up to this swap for `stable_after` since its restart.
+                    collected.events.push(event);
+                }
             }
             if let Some(node) = entry.node {
                 collected.left.push((entry.id, entry.health));
                 self.release_one(entry.id, node);
             }
         }
-        let running = &self.running;
-        self.faults
-            .settle(now, |id| running.contains_key(&id), &mut collected.events);
         // The old slots (and any frames still in them) are dropped here, off the
         // real-time thread.
         collected
@@ -559,6 +643,8 @@ impl<X: Runtime> Controller<X> {
         graph: &GraphDescription,
         plan: &SchedulePlan,
         prepared: &mut HashMap<NodeId, Box<dyn Node<X>>>,
+        hollow: &HashSet<NodeId>,
+        fresh_epochs: &HashMap<NodeId, u64>,
     ) -> Schedule<X> {
         let mut schedule = Schedule::empty();
         let mut first_output: HashMap<NodeId, u32> = HashMap::with_capacity(plan.order.len());
@@ -606,10 +692,17 @@ impl<X: Runtime> Controller<X> {
             };
 
             let node = prepared.remove(&id);
+            let mut epoch = None;
             if node.is_some() {
                 schedule.fresh.push(index as u32);
-            } else if let Some(old) = self.running.get(&id) {
-                schedule.carry_nodes.push((old.index, index as u32));
+                epoch = fresh_epochs.get(&id).copied();
+            } else if let Some(old) = self.placed.get(&id) {
+                // A node held without an instance keeps the last frame of the instance
+                // that left (P7), but the instance itself stays behind to be released.
+                if !hollow.contains(&id) && old.epoch.is_some() {
+                    schedule.carry_nodes.push((old.index, index as u32));
+                    epoch = old.epoch;
+                }
                 for (pin, p) in descriptor.outputs.iter().enumerate() {
                     if p.kind == LinkKind::Video {
                         schedule
@@ -625,6 +718,7 @@ impl<X: Runtime> Controller<X> {
                 pins,
                 health: NodeHealth::default(),
                 warmed: false,
+                epoch,
             });
         }
         schedule

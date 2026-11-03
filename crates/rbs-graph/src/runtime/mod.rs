@@ -128,6 +128,23 @@ impl fmt::Display for NodeError {
     }
 }
 
+impl NodeError {
+    /// True if retrying will not help ([`NodeError::Permanent`]).
+    pub fn is_permanent(&self) -> bool {
+        matches!(self, NodeError::Permanent(_))
+    }
+
+    /// A short static description, for counters that must not allocate.
+    pub fn summary(&self) -> &'static str {
+        match self {
+            NodeError::InvalidInput(m) | NodeError::Backend(m) | NodeError::Permanent(m) => m,
+            NodeError::Output(_) => "output error",
+            NodeError::NotReady => "not ready",
+            NodeError::Failed(_) => "failed",
+        }
+    }
+}
+
 impl std::error::Error for NodeError {}
 
 impl From<OutputError> for NodeError {

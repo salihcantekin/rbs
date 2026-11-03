@@ -1,13 +1,14 @@
 //! Restart with back-off for nodes that failed, and the events that report it
 //! (principle P7, ADR-0024).
 //!
-//! The controller keeps one [`Fault`] record per node that failed: a `prepare` that
-//! returned an error or panicked, or a node the executor bypassed (too many failed
-//! ticks, a panic, a failed `warm`). While a record waits, the node is kept out of
-//! every plan, so a `prepare` that blocks is not retried on every edit. When the wait
-//! is over, the next `apply` prepares the node again. A node that then runs without
-//! being bypassed for [`RestartPolicy::stable_after`] is forgiven: its record is
-//! removed and the next failure starts the back-off from the beginning.
+//! The controller keeps one failure record per node that failed: a `prepare` that
+//! returned an error or panicked, or an instance the executor bypassed (too many
+//! failed ticks, a panic, a failed `warm`, a permanent error). While a record waits,
+//! the node is held in the plan without an instance, so its neighbours keep running
+//! and a `prepare` that blocks is not retried on every edit. When the wait is over,
+//! the next `apply` prepares the node again. If its instance is still not bypassed at
+//! a swap [`RestartPolicy::stable_after`] after the restart, it is forgiven: its
+//! record is removed and the next failure starts the back-off from the beginning.
 
 use std::collections::HashMap;
 use std::time::Duration;
@@ -121,6 +122,12 @@ pub enum RuntimeEvent {
         /// The node.
         node: NodeId,
     },
+    /// A failure record was dropped because the scene no longer wants the node
+    /// (switched off or removed). Switching it on again prepares it at once.
+    Cleared {
+        /// The node.
+        node: NodeId,
+    },
 }
 
 /// The failure record of one node.
@@ -131,6 +138,11 @@ pub(crate) struct Fault {
     retry_at: Option<Timestamp>,
     /// Set when the node joined again after the failure; cleared by a new failure.
     rejoined_at: Option<Timestamp>,
+    /// The instance epoch whose bypass was recorded, so it is counted once.
+    counted_epoch: Option<u64>,
+    /// The wait is over but the plan skipped the node for another reason (no sink,
+    /// starved); not due until an edit schedules it again.
+    parked: bool,
 }
 
 /// All failure records of a controller.
@@ -157,11 +169,14 @@ impl Faults {
     }
 
     /// Records a failure; `permanent` skips the back-off and waits for the user.
+    /// `epoch` is the failed instance's epoch for a bypass, `None` for a failed
+    /// `prepare`.
     pub(crate) fn fail(
         &mut self,
         node: NodeId,
         cause: FaultCause,
         permanent: bool,
+        epoch: Option<u64>,
         now: Timestamp,
     ) -> RuntimeEvent {
         let policy = self.policy;
@@ -169,9 +184,15 @@ impl Faults {
             attempts: 0,
             retry_at: None,
             rejoined_at: None,
+            counted_epoch: None,
+            parked: false,
         });
         record.attempts = record.attempts.saturating_add(1);
         record.rejoined_at = None;
+        record.parked = false;
+        if epoch.is_some() {
+            record.counted_epoch = epoch;
+        }
         let gave_up = permanent
             || policy
                 .max_attempts
@@ -187,6 +208,13 @@ impl Faults {
             cause,
             retry_at: record.retry_at,
         }
+    }
+
+    /// True if the bypass of instance `epoch` of `node` was already recorded.
+    pub(crate) fn counted(&self, node: NodeId, epoch: u64) -> bool {
+        self.records
+            .get(&node)
+            .is_some_and(|r| r.counted_epoch == Some(epoch))
     }
 
     /// Whether `node` may be prepared at `now`. A node without a record, or whose
@@ -209,6 +237,15 @@ impl Faults {
             .is_some_and(|r| r.rejoined_at.is_none())
     }
 
+    /// Notes that the plan skipped a waiting node whose wait is over.
+    pub(crate) fn park(&mut self, node: NodeId) {
+        if let Some(r) = self.records.get_mut(&node) {
+            if r.rejoined_at.is_none() {
+                r.parked = true;
+            }
+        }
+    }
+
     /// Marks that a failed node joined again; returns the restart event.
     pub(crate) fn rejoined(&mut self, node: NodeId, now: Timestamp) -> Option<RuntimeEvent> {
         let record = self.records.get_mut(&node)?;
@@ -216,35 +253,31 @@ impl Faults {
             return None;
         }
         record.rejoined_at = Some(now);
+        record.parked = false;
         Some(RuntimeEvent::Restarted {
             node,
             attempt: record.attempts,
         })
     }
 
-    /// Forgives nodes that have run cleanly long enough; `running` says whether a node
-    /// is in the schedule.
-    pub(crate) fn settle(
+    /// Forgives `node` if it was restarted at least `stable_after` ago. The caller
+    /// checks that the instance is the current one and was not bypassed.
+    pub(crate) fn forgive_if_stable(
         &mut self,
+        node: NodeId,
         now: Timestamp,
-        running: impl Fn(NodeId) -> bool,
-        events: &mut Vec<RuntimeEvent>,
-    ) {
+    ) -> Option<RuntimeEvent> {
         let stable = self.policy.stable_after;
-        let mut forgiven: Vec<NodeId> = self
+        let due = self
             .records
-            .iter()
-            .filter(|(id, r)| {
-                r.rejoined_at
-                    .is_some_and(|at| now.saturating_since(at) >= stable)
-                    && running(**id)
-            })
-            .map(|(id, _)| *id)
-            .collect();
-        forgiven.sort();
-        for node in forgiven {
+            .get(&node)
+            .and_then(|r| r.rejoined_at)
+            .is_some_and(|at| now.saturating_since(at) >= stable);
+        if due {
             self.records.remove(&node);
-            events.push(RuntimeEvent::Recovered { node });
+            Some(RuntimeEvent::Recovered { node })
+        } else {
+            None
         }
     }
 
@@ -253,12 +286,17 @@ impl Faults {
         self.records.remove(&node).is_some()
     }
 
-    /// The earliest time a waiting node may be retried.
-    pub(crate) fn next_retry(&self) -> Option<Timestamp> {
+    /// The earliest time something is due: a waiting node's retry (unless parked) or
+    /// a restarted node's forgiveness.
+    pub(crate) fn next_deadline(&self) -> Option<Timestamp> {
+        let stable = self.policy.stable_after;
         self.records
             .values()
-            .filter(|r| r.rejoined_at.is_none())
-            .filter_map(|r| r.retry_at)
+            .filter_map(|r| match r.rejoined_at {
+                Some(at) => Some(at + stable),
+                None if r.parked => None,
+                None => r.retry_at,
+            })
             .min()
     }
 
