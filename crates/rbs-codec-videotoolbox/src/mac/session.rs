@@ -91,6 +91,9 @@ const IN_FLIGHT: u32 = 1;
 const COMPLETING: u32 = 2;
 const DONE: u32 = 3;
 const STATE_MASK: u32 = 0xff;
+/// Callback errors in a row that end the session: a whole window of frames in flight.
+const ERRORS_IN_A_ROW: u32 = FRAMES_IN_FLIGHT as u32;
+
 /// Generations are 24 bits: the upper bits of [`Slot::word`] and of the frame refcon.
 const GENERATION_MASK: u32 = 0x00ff_ffff;
 
@@ -151,6 +154,8 @@ struct Shared {
     slots: Box<[Slot]>,
     /// First failure: kind in the upper 32 bits, OSStatus in the lower.
     failure: AtomicU64,
+    /// Frames in a row whose callback reported an error.
+    frame_errors: AtomicU32,
     /// Master time of VideoToolbox time 0, set before the first real frame.
     base_ns: AtomicI64,
     /// The decoder configuration atom name (`avcC` or `hvcC`), created once.
@@ -226,15 +231,20 @@ impl Shared {
         // SAFETY: this caller won the claim and owns the slot (see `Sync`).
         drop(unsafe { (*slot.lease.get()).take() });
         let outcome = if status != 0 {
-            // A failed frame is lost; only a broken session ends the session.
-            if is_fatal(status) {
+            // A failed frame is lost; a broken session, or errors on a whole window of
+            // frames in a row (a stream that silently stopped), ends the session.
+            let in_a_row = self.frame_errors.fetch_add(1, Ordering::Relaxed) + 1;
+            if is_fatal(status) || in_a_row >= ERRORS_IN_A_ROW {
                 self.fail(FAIL_STATUS, status);
             }
             Outcome::Lost
         } else {
             match sample.filter(|_| !flags.contains(VTEncodeInfoFlags::FrameDropped)) {
                 Some(sample) => match self.packet(sample) {
-                    Some(packet) => Outcome::Packet(packet),
+                    Some(packet) => {
+                        self.frame_errors.store(0, Ordering::Relaxed);
+                        Outcome::Packet(packet)
+                    }
                     None => {
                         self.fail(FAIL_PACKET, 0);
                         Outcome::Lost
@@ -420,9 +430,11 @@ pub struct VideoToolboxSession {
     // Field order matters: the handle is dropped (session invalidated) before `shared`.
     handle: Handle,
     shared: Arc<Shared>,
-    /// Slots in submission order: `(index, forced keyframe)`. A fixed ring, so
+    /// Slots in submission order: `(index, forced keyframe, refused)`. `refused` marks a
+    /// frame `submit` already reported as failed (its callback ran inside the refused
+    /// encode call); `drain` frees it without counting it again. A fixed ring, so
     /// `submit` and `drain` never allocate.
-    order: [(u8, bool); FRAMES_IN_FLIGHT],
+    order: [(u8, bool, bool); FRAMES_IN_FLIGHT],
     order_head: usize,
     order_len: usize,
     /// Master time of the first real frame, once known.
@@ -578,6 +590,7 @@ impl VideoToolboxSession {
                 })
                 .collect(),
             failure: AtomicU64::new(0),
+            frame_errors: AtomicU32::new(0),
             base_ns: AtomicI64::new(0),
             atom: Frozen(CFString::from_str(atom)),
             primed: OnceLock::new(),
@@ -716,7 +729,7 @@ impl VideoToolboxSession {
         Ok(Self {
             handle,
             shared,
-            order: [(0, false); FRAMES_IN_FLIGHT],
+            order: [(0, false, false); FRAMES_IN_FLIGHT],
             order_head: 0,
             order_len: 0,
             first_ns: None,
@@ -763,7 +776,7 @@ impl VideoToolboxSession {
     /// State of the oldest frame in flight, if any.
     fn head_state(&self) -> Option<u32> {
         (self.order_len > 0).then(|| {
-            let (index, _) = self.order[self.order_head];
+            let (index, ..) = self.order[self.order_head];
             self.shared.slots[usize::from(index)]
                 .word
                 .load(Ordering::Acquire)
@@ -905,7 +918,7 @@ impl VideoToolboxSession {
     fn push_order(&mut self, index: usize, forced: bool) {
         let tail = (self.order_head + self.order_len) % FRAMES_IN_FLIGHT;
         // `index < FRAMES_IN_FLIGHT <= u8::MAX` (checked at compile time below).
-        self.order[tail] = (index as u8, forced);
+        self.order[tail] = (index as u8, forced, false);
         self.order_len += 1;
     }
 
@@ -1314,6 +1327,10 @@ impl VideoEncoder for VideoToolboxSession {
                 slot.word.store(word(generation, FREE), Ordering::Release);
                 // The slot was pushed last; nothing was pushed after it.
                 self.order_len -= 1;
+            } else {
+                // The callback already completed it; `drain` frees it silently.
+                let tail = (self.order_head + self.order_len - 1) % FRAMES_IN_FLIGHT;
+                self.order[tail].2 = true;
             }
             return Err(status_error(status, true));
         }
@@ -1326,12 +1343,14 @@ impl VideoEncoder for VideoToolboxSession {
 
     fn drain(&mut self, out: &mut Vec<EncodedPacket>) -> Result<(), EncodeError> {
         while self.head_state() == Some(DONE) {
-            let (index, forced) = self.order[self.order_head];
+            let (index, forced, refused) = self.order[self.order_head];
             let slot = &self.shared.slots[usize::from(index)];
             let generation = slot.word.load(Ordering::Acquire) >> 8;
             // SAFETY: the slot is `DONE`, so this thread owns it again.
             let outcome = unsafe { std::mem::replace(&mut *slot.outcome.get(), Outcome::Empty) };
             match outcome {
+                // Already reported by `submit`, and `keyframe_next` was never cleared.
+                _ if refused => {}
                 Outcome::Packet(packet) => {
                     out.push(packet);
                     self.packets += 1;
@@ -1455,6 +1474,7 @@ mod tests {
             frame_duration: Duration::from_millis(33),
             slots: Box::new([]),
             failure: AtomicU64::new(0),
+            frame_errors: AtomicU32::new(0),
             base_ns: AtomicI64::new(0),
             atom: Frozen(CFString::from_str("avcC")),
             primed: OnceLock::new(),
@@ -1497,6 +1517,7 @@ mod tests {
             frame_duration: Duration::from_millis(33),
             slots: Box::new([slot]),
             failure: AtomicU64::new(0),
+            frame_errors: AtomicU32::new(0),
             base_ns: AtomicI64::new(0),
             atom: Frozen(CFString::from_str("avcC")),
             primed: OnceLock::new(),
@@ -1528,6 +1549,7 @@ mod tests {
             frame_duration: Duration::from_millis(33),
             slots,
             failure: AtomicU64::new(0),
+            frame_errors: AtomicU32::new(0),
             base_ns: AtomicI64::new(0),
             atom: Frozen(CFString::from_str("avcC")),
             primed: OnceLock::new(),
@@ -1554,7 +1576,6 @@ mod tests {
             None,
         );
         assert_eq!(shared.failure(), Some((FAIL_STATUS, kVTInvalidSessionErr)));
-        // A dropped frame (no sample) is lost without a failure.
         assert_eq!(shared.slots[1].word.load(Ordering::Acquire), word(2, DONE));
     }
 
@@ -1574,5 +1595,48 @@ mod tests {
             fourcc_of(&f(PixelFormat::I420, ColorSpace::BT709_LIMITED)),
             None
         );
+    }
+
+    #[test]
+    fn errors_on_a_whole_window_of_frames_end_the_session() {
+        let n = ERRORS_IN_A_ROW as usize;
+        let slots: Box<[Slot]> = (0..n + 1)
+            .map(|_| Slot {
+                word: AtomicU32::new(word(1, IN_FLIGHT)),
+                lease: UnsafeCell::new(None),
+                outcome: UnsafeCell::new(Outcome::Empty),
+            })
+            .collect();
+        let shared = Shared {
+            codec: CodecId::H264,
+            bitstream: BitstreamFormat::LengthPrefixed { length_size: 4 },
+            frame_duration: Duration::from_millis(33),
+            slots,
+            failure: AtomicU64::new(0),
+            frame_errors: AtomicU32::new(0),
+            base_ns: AtomicI64::new(0),
+            atom: Frozen(CFString::from_str("avcC")),
+            primed: OnceLock::new(),
+        };
+        // A frame VideoToolbox dropped (status 0, no sample) is lost without an error.
+        shared.on_output((1 << 8) | 1, 0, VTEncodeInfoFlags::FrameDropped, None);
+        assert_eq!(shared.slots[0].word.load(Ordering::Acquire), word(1, DONE));
+        assert_eq!(shared.frame_errors.load(Ordering::Relaxed), 0);
+        for index in 1..n {
+            shared.on_output(
+                (1 << 8) | (index + 1),
+                -12_902,
+                VTEncodeInfoFlags::empty(),
+                None,
+            );
+        }
+        assert_eq!(shared.failure(), None, "one short of the window");
+        shared.on_output(
+            (1 << 8) | (n + 1),
+            -12_902,
+            VTEncodeInfoFlags::empty(),
+            None,
+        );
+        assert_eq!(shared.failure(), Some((FAIL_STATUS, -12_902)));
     }
 }
