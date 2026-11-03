@@ -58,6 +58,12 @@ objc2-core-foundation = { version = "0.3.2", default-features = false, features 
 # Test-only consumer check: exported surfaces must wrap as CVPixelBuffers for VideoToolbox.
 objc2-core-video = { version = "0.3.2", default-features = false, features = ["std", "CVBuffer", "CVImageBuffer", "CVPixelBuffer", "CVPixelBufferIOSurface", "CVReturn", "objc2-io-surface"] }
 
+# Sync-file waits on Vulkan: wgpu does not enable VK_KHR_external_semaphore_fd, so the
+# importer loads it itself (same ash version as wgpu-hal), and checks sync files with poll.
+[target.'cfg(target_os = "linux")'.dependencies]
+ash = { version = "0.38", default-features = false, features = ["std"] }
+libc = "0.2.180"
+
 [target.'cfg(target_os = "linux")'.dev-dependencies]
 # Test-only udmabuf producer for the DMA-BUF import test (memfd + ioctl).
 libc = "0.2.180"
