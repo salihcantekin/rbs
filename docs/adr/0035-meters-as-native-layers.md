@@ -12,15 +12,17 @@ After ADR-0034 the UI met its CPU budget (at most 10 % of one core with the prev
 
 The meter itself was not specified beyond rule U16 (dBFS scale, peak hold, clip indicator). This ADR also adds the AudioMeter contract to the design system spec.
 
-Measured on the reference Mac (MacBook Pro M4 Pro, macOS 26, release build of `remote_preview` with `preview_engine`, preview as a layer per ADR-0034, 16 meters at 30 Hz with their accessible values at 1 Hz, 21 s windows, process CPU of the UI from `getrusage`), runs alternated in one sitting:
+Measured on the reference Mac (MacBook Pro M4 Pro, macOS 26, release build of `remote_preview` with `preview_engine`, preview as a layer per ADR-0034, meters at 30 Hz with their accessible values at 1 Hz, 21 s windows, process CPU of the UI from `getrusage`), runs alternated within each sitting:
 
-| Meters drawn by | 720p preview | 1080p preview |
-| --- | --- | --- |
-| Slint (`RBS_METER_MODE=slint`) | 8.4, 8.5, 8.6, 9.1 % | 9.2 % |
-| Layers (`RBS_METER_MODE=layer`, this ADR) | 2.4, 2.4, 2.4, 2.7 % | 2.5 % |
-| No meters (preview only) | 1.9, 2.0 % | |
+| Meters drawn by | 16 meters, 720p | 16 meters, 1080p | 128 meters, 720p |
+| --- | --- | --- | --- |
+| Slint (`RBS_METER_MODE=slint`) | 8.4, 8.5, 8.6, 9.1 %; later 9.0, 9.1 % | 9.2 % | 13.5, 13.7 % |
+| Layers (`RBS_METER_MODE=layer`, this ADR) | 2.4, 2.4, 2.4, 2.7 %; later 1.9, 2.5 % | 2.5 % | 3.0, 3.1 % |
+| No meters (preview only) | 1.9, 2.0 % | | |
 
-Every run showed 60.0 fps; frames more than 25 ms apart in delivery to the UI ranged from 0 to 3 per run in both meter modes. Peak resident memory was 103-104 MiB in every run. The 1080p figures are single runs.
+Every run showed 60.0 fps; frames more than 25 ms apart in delivery to the UI ranged from 0 to 4 per run in both meter modes. Peak resident memory was 103-105 MiB in every run. The 1080p figures are single runs. With 128 meters Slint's cost grows with the meters drawn (13.5 %, over budget); the layers' stays near the preview alone.
+
+WindowServer CPU over the same windows (from `ps` CPU time) was 46.5-48.8 % in every run, against 48.9-49.4 % with no demo running: its baseline on the measuring desktop (other apps open) is larger than any difference, so this data cannot show what the layers add to the window server. It does not show a transfer of the saved cost to WindowServer either (128 meters: 46.5 % with layers, 48.4-48.8 % with Slint). A quiet-desktop measurement stays open, as for ADR-0034.
 
 ## Decision
 
@@ -35,7 +37,7 @@ Every run showed 60.0 fps; frames more than 25 ms apart in delivery to the UI ra
 
 ## Consequences
 
-- Meter updates no longer redraw the window on macOS; the toolkit redraws for layout, input and text at 1 Hz. The UI with preview and meters goes from about 8.5 % to about 2.5 % of one core, 0.5 points above the preview alone: the budget now has a wide margin.
+- Meter updates no longer redraw the window on macOS; the toolkit redraws for layout, input and text at 1 Hz. The UI with preview and 16 meters goes from 8.4-9.1 % to 1.9-2.7 % of one core, within about a point of the preview alone (1.9-2.0 %), and 128 meters cost 3.0-3.1 % instead of 13.5-13.7 %: the budget now has a wide margin and holds at mixer scale.
 - Meters must be laid out so the shell can tell the bridge where each meter is. In the demo, Rust and the Slint markup share the layout constants; the shell's AudioStrip component must expose each meter's rectangle (for example with a callback on geometry change) when it is built.
 - Two drawing paths for the same meter (layer and toolkit fallback). Both take their geometry from `MeterView::frames`, so they differ only in how a rectangle becomes pixels; the conformance test `crates/rbs-app/tests/meter_layer_macos.rs` checks the layer against it.
 - A screenshot of the window through the toolkit no longer contains the meters' moving parts on macOS (as for the preview).
