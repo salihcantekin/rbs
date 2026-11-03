@@ -1,5 +1,5 @@
 //! Bounded queues between partitions, and the endpoint nodes that use them
-//! (ADR-0025).
+//! (ADR-0026).
 //!
 //! A link between nodes on different executors becomes a queue: a writer node in the
 //! producer's partition and a reader node in the consumer's. Both are ordinary

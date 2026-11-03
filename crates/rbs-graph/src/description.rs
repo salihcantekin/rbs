@@ -23,7 +23,7 @@ pub struct NodeId(u32);
 
 impl NodeId {
     /// First id of the range reserved for nodes the runtime adds itself (queue
-    /// endpoints between partitions, ADR-0025). [`GraphDescription::add_node`] never
+    /// endpoints between partitions, ADR-0026). [`GraphDescription::add_node`] never
     /// issues these.
     pub const RESERVED_START: u32 = 0xF000_0000;
 
@@ -46,7 +46,7 @@ impl NodeId {
     }
 }
 
-/// The executor a node runs on (ADR-0025). Nodes in different partitions run on
+/// The executor a node runs on (ADR-0026). Nodes in different partitions run on
 /// different threads; links between them become bounded queues.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
 pub struct PartitionId(pub u32);
@@ -306,7 +306,7 @@ impl GraphDescription {
         Ok(())
     }
 
-    /// Assigns the node to a partition (ADR-0025). Takes effect on the next `apply`;
+    /// Assigns the node to a partition (ADR-0026). Takes effect on the next `apply`;
     /// moving a scheduled node restarts it on the other executor.
     pub fn set_partition(&mut self, id: NodeId, partition: PartitionId) -> Result<(), GraphError> {
         let index = self.index(id)?;

@@ -1,4 +1,4 @@
-# ADR-0025: Partitions joined by queue endpoint nodes
+# ADR-0026: Partitions joined by queue endpoint nodes
 
 - Status: Accepted
 - Date: 2026-11-03

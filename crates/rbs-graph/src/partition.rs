@@ -1,4 +1,4 @@
-//! Splitting a graph description into partitions joined by queues (ADR-0025).
+//! Splitting a graph description into partitions joined by queues (ADR-0026).
 //!
 //! Every node belongs to a partition ([`NodeEntry::partition`]); each partition runs
 //! on its own executor (render, one per encoder, one per output). The scene and the

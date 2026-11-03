@@ -92,7 +92,7 @@ fn param_update(c: &mut Criterion) {
 }
 
 fn queue_crossing(c: &mut Criterion) {
-    // A frame crossing from the render partition to an encoder partition (ADR-0025):
+    // A frame crossing from the render partition to an encoder partition (ADR-0026):
     // source and video writer on one executor, reader and encoder plus a packet writer
     // on the other, reader and output on a third. Compare with the same pipeline in one
     // partition.

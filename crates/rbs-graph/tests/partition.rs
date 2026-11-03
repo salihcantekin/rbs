@@ -1,4 +1,4 @@
-//! Partitions and queues between executors (ADR-0025).
+//! Partitions and queues between executors (ADR-0026).
 
 #![allow(clippy::unwrap_used, clippy::expect_used)] // Tests fail by panicking.
 
