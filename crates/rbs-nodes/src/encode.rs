@@ -250,8 +250,11 @@ impl<X: Runtime> Node<X> for VideoEncoderNode {
         let session = self.session.as_mut().ok_or(NodeError::NotReady)?;
         if draining {
             // End of stream (ADR-0043): the frame above was the last one. A flush may
-            // wait for the encoder; final ticks are bounded by the drain timeout.
-            // Packets the queue cannot take now are carried and lost at `release`.
+            // wait for the encoder's in-flight frames and may grow `drained` past its
+            // reserve; final ticks are bounded by the drain timeout. A cadence partition
+            // runs one final tick, so packets past the pin's per-tick limit are carried
+            // and counted as `flush_lost` at `release` (hardware sessions hold at most
+            // their slots, a few frames, well below it).
             session.flush(&mut self.drained).map_err(encode_error)?;
             self.ended = true;
             add(&self.stats.flushes, 1);

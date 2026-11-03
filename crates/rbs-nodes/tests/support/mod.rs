@@ -468,6 +468,7 @@ impl Rig {
         let cadence = Cadence::frames(Timestamp::ZERO, FrameRate::FPS_60);
         self.exec.run_tick(Tick::of(&cadence, self.tick).draining());
         self.tick += 1;
-        let _ = self.ctl.collect();
+        let collected = self.ctl.collect().unwrap();
+        assert!(collected.is_some(), "the drain swap completed");
     }
 }

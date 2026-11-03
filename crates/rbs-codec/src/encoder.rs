@@ -35,7 +35,10 @@ pub trait VideoEncoder: Send {
     fn reconfigure(&mut self, change: &EncoderChange) -> Result<(), EncodeError>;
 
     /// Encodes every pending frame and moves the remaining packets to `out`. After a
-    /// flush, every submitted frame has produced exactly one packet.
+    /// flush, every submitted frame has produced exactly one packet. It waits only for
+    /// frames already submitted (at most the session's in-flight frames); with nothing
+    /// pending it returns at once, and a second flush is allowed and emits nothing.
+    /// Called on the encoder node's final tick (ADR-0043) and again in `release`.
     fn flush(&mut self, out: &mut Vec<EncodedPacket>) -> Result<(), EncodeError>;
 }
 

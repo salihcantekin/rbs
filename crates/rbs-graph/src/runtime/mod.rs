@@ -100,9 +100,12 @@ pub struct Tick {
     pub index: u64,
     /// Master-clock time of the tick.
     pub time: Timestamp,
-    /// A final tick of a draining partition (ADR-0029, ADR-0043): its nodes leave the
-    /// schedule after it and the partitions feeding it have drained, so this is the end
-    /// of their streams. Nodes that hold data back (encoders) may flush on it.
+    /// A final tick of a draining partition (ADR-0029, ADR-0043): the partitions
+    /// feeding it have drained, so no new input is produced upstream, and its nodes
+    /// leave the schedule after the final ticks. A cadence partition runs exactly one;
+    /// a doorbell partition may run several while queued input still arrives, so a node
+    /// there must not treat the first one as the end of its input. Part of `Tick`
+    /// equality.
     pub draining: bool,
 }
 

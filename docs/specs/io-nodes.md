@@ -188,6 +188,7 @@ Nodes report through `NodeError` (ADR-0020): `Permanent` for what retrying canno
 ## Open questions
 
 - End of stream for the audio encoder node: its doorbell partition may run several final ticks while blocks are still queued, so it does not flush on `Tick::draining` yet; the AAC tail it holds (under one frame plus the codec's delay) is dropped at `release`. It needs a way to know its input queue is empty.
+- Encoders with deep look-ahead or B-frames flush more packets than one final tick on a cadence partition can pass (`PER_TICK_EVENTS`); the rest is counted in `flush_lost`. Today's hardware adapters hold at most their few slots (ADR-0043). More final ticks while a node has output pending would close this.
 - Transport feedback (`KeyframeRequested`, `BitrateHint`) to the encoder goes through the control plane; not wired yet.
 - Outputs that may restart safely (network transports) need a transport capability; until then every output that wrote media is single-use ([#84](https://github.com/salihcantekin/rbs/issues/84)).
 - Native export across the partition queue (move instead of share), D3D11/D3D12 input for NVENC and AMF, and a D3D12 exporter remove the readback; the export node then chooses by the encoder's memory kinds (ADR-0038, [#83](https://github.com/salihcantekin/rbs/issues/83)).

@@ -438,3 +438,18 @@ fn without_a_final_tick_held_frames_are_counted_as_lost() {
     assert_eq!(c.enc_stats.flush_lost.load(Ordering::Relaxed), 2 * 3);
     assert_eq!(media_times(&c.tx_state.got()).len(), 9 * 3);
 }
+
+#[test]
+fn a_flush_past_the_per_tick_limit_counts_what_one_final_tick_cannot_pass() {
+    // 10 packets per frame, two frames held: the final tick's flush yields 30 packets
+    // against 16 per tick. The rest is carried and counted, never silently dropped.
+    let mut c = chain(1, 10, 64, TransportState::logging());
+    c.enc_state.hold_frames.store(2, Ordering::Relaxed);
+    c.rig.ticks(10);
+    c.rig.drain_with_final_tick();
+
+    let delivered = media_times(&c.tx_state.got()).len() as u64;
+    let lost = c.enc_stats.flush_lost.load(Ordering::Relaxed);
+    assert_eq!(delivered + lost, 11 * 10);
+    assert_eq!(lost, 30 - PER_TICK_EVENTS as u64);
+}
