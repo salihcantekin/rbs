@@ -51,3 +51,4 @@ An ADR records one decision that is hard to reverse or affects more than one cra
 | [0036](0036-windows-preview-layer.md) | Cross-process preview on Windows: shared D3D12 textures, a named pipe and a composition swapchain layer | Accepted |
 | [0037](0037-audio-graph.md) | Audio graph: block-cadence partitions on the shared executor, drift correction in input nodes, one graph format | Accepted |
 | [0038](0038-io-graph-nodes.md) | Graph nodes for capture, encoding and outputs in an engine crate | Accepted |
+| [0039](0039-scene-source-types.md) | Scene source types map to port nodes through a registry; the binder routes audio to one mixer | Proposed |
