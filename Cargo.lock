@@ -861,6 +861,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "rbs-mux-fmp4"
+version = "0.0.1"
+dependencies = [
+ "criterion 0.8.2",
+ "rbs-core",
+ "rbs-media-format",
+ "rbs-mux",
+]
+
+[[package]]
 name = "rbs-mux-mpegts"
 version = "0.0.1"
 dependencies = [
