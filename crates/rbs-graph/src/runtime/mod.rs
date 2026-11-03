@@ -18,6 +18,7 @@
 
 mod controller;
 mod executor;
+mod restart;
 mod schedule;
 
 pub mod param;
@@ -31,6 +32,7 @@ pub use controller::{
     ApplyError, ApplyReport, Collected, ControlError, Controller, JoinError, channel,
 };
 pub use executor::{DEFAULT_FAILURE_LIMIT, Executor, NodeHealth};
+pub use restart::{FaultCause, FaultStatus, RestartPolicy, RuntimeEvent};
 pub use schedule::{Inputs, OutputError, Outputs, PER_TICK_EVENTS, Rejected};
 
 use crate::description::NodeId;
@@ -107,6 +109,10 @@ pub enum NodeError {
     NotReady,
     /// A failure with a message; only for `prepare` and `release`, which may allocate.
     Failed(String),
+    /// A failure that retrying will not fix (permission denied, a device that is gone
+    /// for good). From `prepare` the node is not restarted automatically; from
+    /// `process` it is bypassed at once. The user retries it (ADR-0024).
+    Permanent(&'static str),
 }
 
 impl fmt::Display for NodeError {
@@ -117,6 +123,7 @@ impl fmt::Display for NodeError {
             NodeError::Output(e) => write!(f, "output error: {e}"),
             NodeError::NotReady => f.write_str("node not ready"),
             NodeError::Failed(m) => f.write_str(m),
+            NodeError::Permanent(m) => write!(f, "permanent failure: {m}"),
         }
     }
 }

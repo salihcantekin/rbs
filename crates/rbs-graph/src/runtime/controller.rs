@@ -5,15 +5,18 @@ use std::collections::HashMap;
 use std::fmt;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{Receiver, RecvTimeoutError, SyncSender, TryRecvError, sync_channel};
 use std::time::Duration;
 
 use rbs_core::lifecycle::Lifecycle;
+use rbs_core::time::{Clock, MonotonicClock, Timestamp};
 
 use crate::description::{GraphDescription, Link, NodeId, SchedulePlan};
 use crate::node::LinkKind;
 
 use super::executor::{Executor, NodeHealth};
+use super::restart::{FaultCause, FaultStatus, Faults, Gate, RestartPolicy, RuntimeEvent};
 use super::schedule::{Entry, Schedule, Slot, Span};
 use super::{Node, NodeError, PrepareCtx, Runtime};
 
@@ -25,25 +28,36 @@ pub fn channel<X: Runtime>(
 ) -> (Controller<X>, Executor<X>) {
     let (to_exec, from_ctrl) = sync_channel(1);
     let (to_ctrl, from_exec) = sync_channel(1);
+    let bypasses = Arc::new(AtomicU64::new(0));
     let controller = Controller {
+        bypasses: Arc::clone(&bypasses),
+        bypasses_seen: 0,
         shared: Arc::clone(&shared),
         idle: HashMap::new(),
         running: HashMap::new(),
         outbox: to_exec,
         inbox: from_exec,
         in_flight: false,
+        clock: Arc::new(MonotonicClock::new()),
+        faults: Faults::default(),
     };
-    (controller, Executor::new(shared, local, from_ctrl, to_ctrl))
+    (
+        controller,
+        Executor::new(shared, local, from_ctrl, to_ctrl, bypasses),
+    )
 }
 
 /// A schedule the executor swapped out, on its way back to the controller.
 pub(crate) struct Retired<X: Runtime> {
     schedule: Schedule<X>,
+    /// The executor's bypass counter when it swapped; every bypass counted up to here
+    /// shows in this schedule's health.
+    bypasses: u64,
 }
 
 impl<X: Runtime> Retired<X> {
-    pub(crate) fn new(schedule: Schedule<X>) -> Self {
-        Self { schedule }
+    pub(crate) fn new(schedule: Schedule<X>, bypasses: u64) -> Self {
+        Self { schedule, bypasses }
     }
 }
 
@@ -54,8 +68,12 @@ pub struct ApplyReport {
     /// The plan that was sent. Nodes whose `prepare` failed were left out and the plan
     /// recomputed without them, so this can differ from `description.plan()`.
     pub plan: SchedulePlan,
-    /// Nodes the description wants Active that could not join, and why.
+    /// Nodes the description wants Active that could not join, and why. Includes
+    /// nodes kept out because they are waiting for a restart
+    /// ([`JoinError::BackingOff`]).
     pub failed: Vec<(NodeId, JoinError)>,
+    /// Failures, restarts and recoveries noticed by this call, for the event stream.
+    pub events: Vec<RuntimeEvent>,
 }
 
 /// Why a node the description wants Active could not join the schedule.
@@ -70,6 +88,12 @@ pub enum JoinError {
     Prepare(NodeError),
     /// `prepare` panicked (`release` was called).
     Panicked,
+    /// The node failed earlier and waits for a restart: until `retry_at`, or for the
+    /// user ([`Controller::retry`]) when `retry_at` is `None` (ADR-0024).
+    BackingOff {
+        /// When the next `apply` may prepare it again.
+        retry_at: Option<Timestamp>,
+    },
 }
 
 impl fmt::Display for JoinError {
@@ -79,6 +103,12 @@ impl fmt::Display for JoinError {
             JoinError::DescriptorMismatch => f.write_str("instance descriptor does not match"),
             JoinError::Prepare(e) => write!(f, "prepare failed: {e}"),
             JoinError::Panicked => f.write_str("prepare panicked"),
+            JoinError::BackingOff { retry_at: Some(t) } => {
+                write!(f, "waiting to restart at {} ns", t.as_nanos())
+            }
+            JoinError::BackingOff { retry_at: None } => {
+                f.write_str("not restarted automatically; retry it")
+            }
         }
     }
 }
@@ -94,6 +124,9 @@ pub struct Collected {
     /// Counters of every node of the swapped-out schedule as of the swap, including
     /// nodes that stayed; this is how the control side sees bypassed nodes.
     pub health: Vec<(NodeId, NodeHealth)>,
+    /// Failures (bypassed nodes) and recoveries noticed by this call, for the event
+    /// stream.
+    pub events: Vec<RuntimeEvent>,
 }
 
 /// Why a description could not be applied.
@@ -170,6 +203,14 @@ pub struct Controller<X: Runtime> {
     outbox: SyncSender<Schedule<X>>,
     inbox: Receiver<Retired<X>>,
     in_flight: bool,
+    /// Time for back-off; the production master clock unless replaced.
+    clock: Arc<dyn Clock>,
+    faults: Faults,
+    /// Bumped by the executor whenever it bypasses a node, so the control side learns
+    /// about it without waiting for an edit.
+    bypasses: Arc<AtomicU64>,
+    /// The counter value whose bypasses have been collected.
+    bypasses_seen: u64,
 }
 
 impl<X: Runtime> Controller<X> {
@@ -200,6 +241,55 @@ impl<X: Runtime> Controller<X> {
         self.idle.contains_key(&id)
     }
 
+    /// Replaces the clock used for restart back-off (tests use `TestClock`).
+    pub fn set_clock(&mut self, clock: Arc<dyn Clock>) {
+        self.clock = clock;
+    }
+
+    /// Sets when failed nodes are restarted (ADR-0024). Applies to the next failure;
+    /// waits already scheduled keep their time.
+    pub fn set_restart_policy(&mut self, policy: RestartPolicy) {
+        self.faults.set_policy(policy);
+    }
+
+    /// The restart policy in use.
+    pub fn restart_policy(&self) -> RestartPolicy {
+        self.faults.policy()
+    }
+
+    /// The failure state of node `id`, if it failed and has not been forgiven.
+    pub fn fault(&self, id: NodeId) -> Option<FaultStatus> {
+        self.faults.status(id)
+    }
+
+    /// Nodes with a failure record, in id order.
+    pub fn faulted(&self) -> Vec<NodeId> {
+        let mut ids: Vec<NodeId> = self.faults.nodes().collect();
+        ids.sort();
+        ids
+    }
+
+    /// Forgets the failures of node `id`, so the next `apply` prepares it at once
+    /// (the user's "retry"). Returns whether there was a record.
+    pub fn retry(&mut self, id: NodeId) -> bool {
+        self.faults.clear(id)
+    }
+
+    /// The earliest time a waiting node may be restarted.
+    pub fn next_retry(&self) -> Option<Timestamp> {
+        self.faults.next_retry()
+    }
+
+    /// True if calling `apply` again with the same description would change the
+    /// schedule because of restarts: a scheduled node failed and must be taken out, or
+    /// a waiting node's back-off is over. The engine's control loop checks this on its
+    /// timer and re-applies the current description.
+    pub fn restart_due(&self) -> bool {
+        self.bypasses.load(Ordering::Relaxed) != self.bypasses_seen
+            || self.running.keys().any(|&id| self.faults.waiting(id))
+            || self.next_retry().is_some_and(|at| at <= self.clock.now())
+    }
+
     /// True while a sent schedule has not come back through [`Controller::collect`].
     pub fn in_flight(&self) -> bool {
         self.in_flight
@@ -216,8 +306,48 @@ impl<X: Runtime> Controller<X> {
         if self.in_flight {
             return Err(ApplyError::Busy);
         }
+        let now = self.clock.now();
+        let mut events: Vec<RuntimeEvent> = Vec::new();
         let mut working: Option<GraphDescription> = None;
         let mut failed: Vec<(NodeId, JoinError)> = Vec::new();
+
+        // Restart bookkeeping. A node the scene no longer wants is no longer failing:
+        // switching it off and on again is a retry.
+        let unwanted: Vec<NodeId> = self
+            .faults
+            .nodes()
+            .filter(|&id| {
+                !self.running.contains_key(&id)
+                    && description.node(id).map(|e| e.state) != Some(Lifecycle::Active)
+            })
+            .collect();
+        for id in unwanted {
+            self.faults.clear(id);
+        }
+        let running = &self.running;
+        self.faults
+            .settle(now, |id| running.contains_key(&id), &mut events);
+        // Keep out nodes that wait for a restart, and take out scheduled nodes that
+        // failed (bypassed) so they are released before they are restarted.
+        for entry in description.nodes() {
+            if entry.state != Lifecycle::Active {
+                continue;
+            }
+            let closed = match self.faults.gate(entry.id, now) {
+                Gate::Closed(retry_at) => Some(retry_at),
+                Gate::Open if self.running.contains_key(&entry.id) => self
+                    .faults
+                    .waiting(entry.id)
+                    .then(|| self.faults.status(entry.id).and_then(|s| s.retry_at)),
+                Gate::Open => None,
+            };
+            if let Some(retry_at) = closed {
+                let graph = working.get_or_insert_with(|| description.clone());
+                let _ = graph.set_state(entry.id, Lifecycle::Standby);
+                failed.push((entry.id, JoinError::BackingOff { retry_at }));
+            }
+        }
+
         let mut prepared: HashMap<NodeId, Box<dyn Node<X>>> = HashMap::new();
         let plan = loop {
             let plan = working.as_ref().unwrap_or(description).plan();
@@ -259,6 +389,14 @@ impl<X: Runtime> Controller<X> {
                                     Ok(Err(e)) => JoinError::Prepare(e),
                                     _ => JoinError::Panicked,
                                 };
+                                let permanent =
+                                    matches!(error, JoinError::Prepare(NodeError::Permanent(_)));
+                                events.push(self.faults.fail(
+                                    id,
+                                    FaultCause::Join(error.clone()),
+                                    permanent,
+                                    now,
+                                ));
                                 newly_failed.push((id, error));
                             }
                         }
@@ -289,6 +427,8 @@ impl<X: Runtime> Controller<X> {
             }
         }
 
+        let mut joined: Vec<NodeId> = prepared.keys().copied().collect();
+        joined.sort();
         let graph = working.as_ref().unwrap_or(description);
         let schedule = self.build(graph, &plan, &mut prepared);
         let placements = schedule
@@ -317,8 +457,17 @@ impl<X: Runtime> Controller<X> {
         }
         self.running = placements;
         self.in_flight = true;
+        for id in joined {
+            if let Some(event) = self.faults.rejoined(id, now) {
+                events.push(event);
+            }
+        }
         failed.sort_by_key(|(id, _)| *id);
-        Ok(ApplyReport { plan, failed })
+        Ok(ApplyReport {
+            plan,
+            failed,
+            events,
+        })
     }
 
     /// Takes back the schedule the executor swapped out, if it has; calls `release` on
@@ -346,14 +495,29 @@ impl<X: Runtime> Controller<X> {
 
     fn absorb(&mut self, retired: Retired<X>) -> Collected {
         self.in_flight = false;
+        self.bypasses_seen = retired.bypasses;
+        let now = self.clock.now();
         let mut collected = Collected::default();
         for entry in retired.schedule.nodes {
             collected.health.push((entry.id, entry.health));
+            // Count a bypass once: the record waits until the node is restarted.
+            if entry.health.bypassed && !self.faults.waiting(entry.id) {
+                let permanent = entry.health.permanent;
+                collected.events.push(self.faults.fail(
+                    entry.id,
+                    FaultCause::Bypassed(entry.health),
+                    permanent,
+                    now,
+                ));
+            }
             if let Some(node) = entry.node {
                 collected.left.push((entry.id, entry.health));
                 self.release_one(entry.id, node);
             }
         }
+        let running = &self.running;
+        self.faults
+            .settle(now, |id| running.contains_key(&id), &mut collected.events);
         // The old slots (and any frames still in them) are dropped here, off the
         // real-time thread.
         collected

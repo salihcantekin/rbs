@@ -2,6 +2,7 @@
 
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{Receiver, SyncSender, TryRecvError, TrySendError};
 
 use crate::description::NodeId;
@@ -9,7 +10,7 @@ use crate::description::NodeId;
 use super::controller::Retired;
 use super::schedule::Entry;
 use super::schedule::{Inputs, Outputs, Schedule, Slot};
-use super::{ProcessCtx, Runtime, Tick, WarmCtx};
+use super::{NodeError, ProcessCtx, Runtime, Tick, WarmCtx};
 
 /// Consecutive failed ticks after which a node is bypassed, unless changed with
 /// [`Executor::set_failure_limit`].
@@ -29,6 +30,8 @@ pub struct NodeHealth {
     pub panicked: bool,
     /// `warm` failed.
     pub warm_failed: bool,
+    /// `process` returned [`NodeError::Permanent`](super::NodeError::Permanent).
+    pub permanent: bool,
     /// The node is no longer called: it failed too often, panicked, or failed to warm.
     /// Its video outputs keep their last frame; event outputs stay empty.
     pub bypassed: bool,
@@ -50,6 +53,8 @@ pub struct Executor<X: Runtime> {
     /// until it is delivered.
     pending: Option<Retired<X>>,
     failure_limit: u32,
+    /// Bumped on every bypass; read by the controller (ADR-0024).
+    bypasses: Arc<AtomicU64>,
 }
 
 impl<X: Runtime> Executor<X> {
@@ -58,6 +63,7 @@ impl<X: Runtime> Executor<X> {
         local: X::Local,
         inbox: Receiver<Schedule<X>>,
         outbox: SyncSender<Retired<X>>,
+        bypasses: Arc<AtomicU64>,
     ) -> Self {
         Self {
             shared,
@@ -67,6 +73,7 @@ impl<X: Runtime> Executor<X> {
             outbox,
             pending: None,
             failure_limit: DEFAULT_FAILURE_LIMIT,
+            bypasses,
         }
     }
 
@@ -149,11 +156,17 @@ impl<X: Runtime> Executor<X> {
                 Ok(Err(_)) | Err(_) => {
                     health.errors += 1;
                     health.consecutive_errors = health.consecutive_errors.saturating_add(1);
-                    if result.is_err() {
-                        health.panicked = true;
+                    match &result {
+                        Err(_) => health.panicked = true,
+                        Ok(Err(NodeError::Permanent(_))) => health.permanent = true,
+                        _ => {}
                     }
-                    if health.panicked || health.consecutive_errors >= self.failure_limit {
+                    if health.panicked
+                        || health.permanent
+                        || health.consecutive_errors >= self.failure_limit
+                    {
                         health.bypassed = true;
+                        self.bypasses.fetch_add(1, Ordering::Relaxed);
                     }
                     // Partial events from a failed tick are not passed on.
                     for slot in rest[..entry.outputs.len()].iter_mut() {
@@ -184,6 +197,9 @@ impl<X: Runtime> Executor<X> {
     }
 
     fn swap(&mut self, mut next: Schedule<X>) {
+        // Bypasses up to here show in the health of the schedule being retired; warm-up
+        // failures below are counted after it and reported with the next one.
+        let bypasses = self.bypasses.load(Ordering::Relaxed);
         let old = &mut self.current;
         for &(from, to) in &next.carry_nodes {
             let (from, to) = (from as usize, to as usize);
@@ -223,6 +239,7 @@ impl<X: Runtime> Executor<X> {
             if failed {
                 entry.health.warm_failed = true;
                 entry.health.bypassed = true;
+                self.bypasses.fetch_add(1, Ordering::Relaxed);
                 // Return what a partial warm-up took; `warmed` stays false, so the node
                 // is not cooled a second time when it leaves.
                 let _ = catch_unwind(AssertUnwindSafe(|| node.cool(&mut ctx)));
@@ -231,7 +248,7 @@ impl<X: Runtime> Executor<X> {
             }
         }
         let old = std::mem::replace(&mut self.current, next);
-        let retired = Retired::new(old);
+        let retired = Retired::new(old, bypasses);
         match self.outbox.try_send(retired) {
             Ok(()) => {}
             Err(TrySendError::Full(r)) => self.pending = Some(r),
