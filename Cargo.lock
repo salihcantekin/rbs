@@ -3912,6 +3912,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "rbs-transport-srt"
+version = "0.0.1"
+dependencies = [
+ "criterion 0.8.2",
+ "rbs-core",
+ "rbs-media-format",
+ "rbs-mux",
+ "rbs-mux-mpegts",
+ "rbs-transport",
+ "rtrb",
+]
+
+[[package]]
 name = "rbs-ui"
 version = "0.0.1"
 dependencies = [
