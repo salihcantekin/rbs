@@ -4017,6 +4017,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "rbs-audio-io-wasapi"
+version = "0.0.1"
+dependencies = [
+ "allocation-counter",
+ "criterion 0.8.2",
+ "rbs-audio-io",
+ "rbs-core",
+ "windows",
+ "windows-core",
+]
+
+[[package]]
 name = "rbs-capture"
 version = "0.0.1"
 dependencies = [
