@@ -1,0 +1,35 @@
+[package]
+name = "rbs-record"
+description = "Records a canvas of an RBS scene collection: binds the scene, attaches the video and audio encoders and a muxed output, and runs it on the engine (ADR-0040)."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+license.workspace = true
+publish.workspace = true
+
+# Engine layer (docs/architecture/overview.md#layers): the engine loop, the scene, the
+# node crates and the ports, never an adapter (P1). The composition roots (`rbs-cli`,
+# `rbs-app`) hand adapters in as probed port registries.
+[dependencies]
+rbs-core = { path = "../rbs-core" }
+rbs-graph = { path = "../rbs-graph" }
+rbs-engine = { path = "../rbs-engine" }
+rbs-scene = { path = "../rbs-scene" }
+rbs-sources = { path = "../rbs-sources" }
+rbs-gpu = { path = "../rbs-gpu" }
+rbs-audio = { path = "../rbs-audio" }
+rbs-nodes = { path = "../rbs-nodes" }
+rbs-codec = { path = "../rbs-codec" }
+rbs-mux = { path = "../rbs-mux" }
+rbs-transport = { path = "../rbs-transport" }
+
+[dev-dependencies]
+# Reference adapters of the capture and audio input ports (deterministic, no devices).
+rbs-capture-test = { path = "../rbs-capture-test" }
+rbs-audio-io-test = { path = "../rbs-audio-io-test" }
+# The real AAC session over its fake engine (runs on every platform).
+rbs-codec-mf = { path = "../rbs-codec-mf", features = ["testing"] }
+
+[lints]
+workspace = true

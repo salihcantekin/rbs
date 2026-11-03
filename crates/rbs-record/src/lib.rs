@@ -1,0 +1,28 @@
+//! Records one canvas of a scene collection to a file (spec `docs/specs/recording.md`,
+//! ADR-0040).
+//!
+//! [`Recording::start`] binds the collection with the scene binder and the source type
+//! registry, builds the compositor and the mixer, attaches the video export, the video
+//! and audio encoders and a muxed output, adds the partitions to the engine and applies:
+//!
+//! ```text
+//! sources --video--> compositor --canvas--> export ==video==> video encoder ==packets==+
+//!  (render)           (render)              (render)          (video encoder)        |
+//!                                                                                     +==> output
+//! audio inputs --audio--> mixer ==audio==> audio encoder ==packets===================+   (output)
+//!  (audio)                (audio)          (audio encoder)
+//! ```
+//!
+//! Adapters come in as probed port registries and are chosen by capability (P1, P3).
+//! Every stream is timestamped on the engine's master clock, so the muxer keeps them
+//! in sync (ADR-0004).
+
+mod recording;
+mod select;
+
+pub use recording::{
+    AUDIO, AUDIO_ENCODER, AudioSettings, FinishReport, OUTPUT, Partitions, Port, Progress, RENDER,
+    RecordAdapters, RecordError, RecordSettings, Recording, SourceProgress, SourceState,
+    StartFailure, StartReport, VIDEO_ENCODER, VideoSettings,
+};
+pub use select::{Chosen, scheme_of};

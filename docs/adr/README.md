@@ -52,3 +52,4 @@ An ADR records one decision that is hard to reverse or affects more than one cra
 | [0037](0037-audio-graph.md) | Audio graph: block-cadence partitions on the shared executor, drift correction in input nodes, one graph format | Accepted |
 | [0038](0038-io-graph-nodes.md) | Graph nodes for capture, encoding and outputs in an engine crate | Accepted |
 | [0039](0039-scene-source-types.md) | Scene source types map to port nodes through a registry; the binder routes audio to a mixer per canvas | Accepted |
+| [0040](0040-recording-composition.md) | A recording of a canvas is assembled by an engine crate; `rbs-cli record` is the first composition root that runs it | Accepted |

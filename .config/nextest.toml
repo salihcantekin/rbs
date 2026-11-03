@@ -13,7 +13,7 @@
 gpu = { max-threads = 1 }
 
 [[profile.default.overrides]]
-filter = 'package(rbs-gpu) | package(rbs-app) | package(rbs-capture-sck) | package(rbs-capture-avf) | package(rbs-capture-mf) | package(rbs-capture-wgc) | package(rbs-capture-pipewire) | package(rbs-audio-io-pipewire) | package(/^rbs-codec-/)'
+filter = 'package(rbs-gpu) | package(rbs-record) | package(rbs-app) | package(rbs-capture-sck) | package(rbs-capture-avf) | package(rbs-capture-mf) | package(rbs-capture-wgc) | package(rbs-capture-pipewire) | package(rbs-audio-io-pipewire) | package(/^rbs-codec-/)'
 test-group = 'gpu'
 
 [profile.default]
