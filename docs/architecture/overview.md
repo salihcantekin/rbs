@@ -28,7 +28,7 @@ RBS is a headless engine built around a **media graph**: a set of nodes (sources
 | Format helpers | `rbs-media-format` (H.264/HEVC Annex B and length-prefixed conversion, parameter-set parsing, FLV tag bodies, ADTS; pure functions shared by muxer and transport adapters, ADR-0019) | Foundation only |
 | Engine | `rbs-graph`, `rbs-scene`, `rbs-gpu`, `rbs-audio` | Foundation, ports, `wgpu` |
 | Ports | `rbs-capture`, `rbs-audio-io`, `rbs-codec`, `rbs-mux`, `rbs-transport` | Foundation only |
-| Adapters | `rbs-capture-wgc`, `rbs-capture-sck`, `rbs-capture-pipewire`, `rbs-codec-ffmpeg`, `rbs-codec-nvenc`, `rbs-codec-videotoolbox`, `rbs-mux-mpegts`, `rbs-mux-flv`, `rbs-mux-fmp4`, `rbs-transport-file`, `rbs-transport-rtmp`, `rbs-transport-srt`, `rbs-transport-whip`, ... | Their port, Foundation, format helpers, vendor crates |
+| Adapters | `rbs-capture-wgc`, `rbs-capture-sck`, `rbs-capture-pipewire`, `rbs-codec-ffmpeg`, `rbs-codec-nvenc`, `rbs-codec-videotoolbox`, `rbs-mux-mpegts`, `rbs-mux-flv`, `rbs-mux-fmp4`, `rbs-mux-matroska`, `rbs-transport-file`, `rbs-transport-rtmp`, `rbs-transport-srt`, `rbs-transport-whip`, ... | Their port, Foundation, format helpers, vendor crates |
 | Plugins | `rbs-plugin-sdk`, `rbs-plugin-host` | Foundation, ports |
 | Control | `rbs-api` (schema + server) | Engine, Foundation |
 | Applications | `rbs-app` (desktop UI), `rbs-cli` | Everything; this is the composition root |
