@@ -72,6 +72,8 @@ pub const LENGTHS: &[&str] = &[
     "radius.lg",
     "size.border",
     "size.focus-ring",
+    "size.icon",
+    "size.icon.stroke",
     "size.menu.sm",
     "size.menu.md",
     "size.window.w",

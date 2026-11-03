@@ -171,7 +171,8 @@ component Tab inherits Rectangle {
             width: Tokens.size-control-sm;
             dense: true;
             kind: "ghost";
-            text: "⋯";
+            text: "";
+            icon: "more";
             accessible-name: @tr("Actions for {}", tab.title);
             clicked => { open-menu(); }
         }
@@ -394,11 +395,13 @@ component FrameBar inherits Rectangle {
         alignment: start;
         LiveIndicator { }
         ws-button := Button {
-            text: @tr("Workspace: {} ▾", Shell.workspace-name);
+            text: @tr("Workspace: {}", Shell.workspace-name);
+            icon: "chevron-down";
             clicked => { ws-menu.show(); }
         }
         panels-button := Button {
-            text: @tr("Panels ▾");
+            text: @tr("Panels");
+            icon: "chevron-down";
             clicked => { panels-menu.show(); }
         }
         if Shell.locked: Text {

@@ -56,6 +56,7 @@ One family (initial choice: Inter, with the OS UI font as fallback). Numbers in 
 | Control height | `size.control.sm`=24 (dense Advanced/Expert views only), `.md`=28 (default), `.lg`=32 |
 | Radius | `radius.sm`=4, `radius.md`=6, `radius.lg`=10 |
 | Lines | `size.border`=1, `size.focus-ring`=2 |
+| Icons | `size.icon`=16 (icon box), `size.icon.stroke`=1.5 (line width). Icons are vector paths drawn by the component library, never font glyphs: a glyph missing from the OS font shows as an empty box (seen on Windows) |
 | Menus | `size.menu.sm`=220, `size.menu.md`=300 (menu widths) |
 | Windows | `size.window.w`=1440, `size.window.h`=900 (first-start main window), `size.window.min-w`=1280, `size.window.min-h`=720 (U11 minimum of the main window), `size.floating.w`=640, `size.floating.h`=420 (first size of a floating window) |
 | Keyboard steps | `step.nudge`=8, `step.nudge-large`=128 (splitter move per arrow key, with Shift) |
