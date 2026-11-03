@@ -97,6 +97,11 @@ mod platform {
         pub fn new() -> Self {
             Self
         }
+
+        /// How long `start` waits for the portal to restore a choice. No effect here.
+        pub fn with_restore_timeout(self, _timeout: std::time::Duration) -> Self {
+            self
+        }
     }
 
     impl AdapterFactory for PipeWireCaptureFactory {

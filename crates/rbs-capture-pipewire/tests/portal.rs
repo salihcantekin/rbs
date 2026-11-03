@@ -66,6 +66,9 @@ mod linux {
 
     use super::{INNER, mock};
 
+    /// Longest run of the checks (they take about 1.5 s).
+    const WATCHDOG: Duration = Duration::from_secs(30);
+
     fn required() -> bool {
         std::env::var_os("RBS_REQUIRE_PIPEWIRE").is_some_and(|v| !v.is_empty())
     }
@@ -106,16 +109,35 @@ mod linux {
             let _ = bus.kill();
             panic!("dbus-daemon printed no address");
         };
-        let status = Command::new(exe())
+        let checks = Command::new(exe())
             .args(["--exact", "portal_checks", "--ignored", "--nocapture"])
             .arg("--test-threads=1")
             .env("DBUS_SESSION_BUS_ADDRESS", &address)
             .env(INNER, "1")
-            .status();
+            .spawn();
+        let status = checks.map(|mut checks| {
+            // Every call in the checks has its own limit; this guard turns a hang
+            // nobody foresaw into a failure instead of a stuck CI job.
+            let deadline = Instant::now() + WATCHDOG;
+            loop {
+                match checks.try_wait() {
+                    Ok(Some(status)) => return Some(status),
+                    Ok(None) if Instant::now() < deadline => {
+                        std::thread::sleep(Duration::from_millis(10));
+                    }
+                    _ => {
+                        let _ = checks.kill();
+                        let _ = checks.wait();
+                        return None;
+                    }
+                }
+            }
+        });
         let _ = bus.kill();
         let _ = bus.wait();
         match status {
-            Ok(status) => assert!(status.success(), "portal checks failed: {status}"),
+            Ok(Some(status)) => assert!(status.success(), "portal checks failed: {status}"),
+            Ok(None) => panic!("portal checks did not finish within {WATCHDOG:?}"),
             Err(e) => panic!("run the portal checks: {e}"),
         }
     }
@@ -370,11 +392,14 @@ mod linux {
     /// A token that no longer restores makes the portal show its dialog; `start` closes
     /// it and reports the target as not found instead of waiting for the user.
     fn refuses_a_used_token_without_waiting_for_the_user(portal: &Portal) {
+        const LIMIT: Duration = Duration::from_millis(100);
         let first = PipeWireCaptureFactory::new();
         let target = pick(&first, TargetKind::Display);
         drop(started(&first, &target.id));
         // Another process (a fresh factory) only has the used token from the scene.
-        let fresh = PipeWireCaptureFactory::new();
+        // The test portal never answers such a restore, so a short limit keeps the
+        // test fast; the default (2 s) is for real portals.
+        let fresh = PipeWireCaptureFactory::new().with_restore_timeout(LIMIT);
         let (_, closed, _) = portal.counts();
         let mut session = match fresh.open(&request(&target.id)) {
             Ok(session) => session,
@@ -382,17 +407,14 @@ mod linux {
         };
         let begun = Instant::now();
         assert!(matches!(session.start(), Err(CaptureError::TargetNotFound)));
-        assert!(
-            begun.elapsed() < Duration::from_secs(4),
-            "start waited too long"
-        );
+        assert!(begun.elapsed() < LIMIT * 5, "start waited too long");
         let (open, closed_after, _) = portal.counts();
         assert_eq!(closed_after, closed + 1, "the dialog was not closed");
         assert_eq!(open, 0, "the failed restore left a session open");
         // The used token is known to be dead now: no second wait.
         let begun = Instant::now();
         assert!(matches!(session.start(), Err(CaptureError::TargetNotFound)));
-        assert!(begun.elapsed() < Duration::from_millis(500));
+        assert!(begun.elapsed() < LIMIT, "the dead token was tried again");
     }
 
     fn refuses_rgba(factory: &PipeWireCaptureFactory) {
@@ -785,7 +807,9 @@ mod mock {
                 if node_ready_rx.recv().is_err() {
                     return;
                 }
-                bus_loop(node, commands);
+                bus_loop(node, &commands);
+                // The test ended (stdin closed): remove the node so the process exits.
+                let _ = commands.send(source::Message::Quit);
             }
         });
         source::run(SIZE.0 as u32, SIZE.1 as u32, receiver, move |id| {
@@ -796,7 +820,7 @@ mod mock {
         let _ = bus.join();
     }
 
-    fn bus_loop(node: Arc<AtomicU32>, source: pipewire::channel::Sender<source::Message>) {
+    fn bus_loop(node: Arc<AtomicU32>, source: &pipewire::channel::Sender<source::Message>) {
         let Ok(conn) = Connection::new_session() else {
             panic!("test portal: no session bus")
         };

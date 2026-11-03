@@ -541,15 +541,33 @@ fn accept(request: &CaptureRequest) -> Result<Offer, CaptureError> {
 }
 
 /// Factory of the PipeWire adapter.
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct PipeWireCaptureFactory {
     picks: Arc<Mutex<Picks>>,
+    restore_timeout: Duration,
+}
+
+impl Default for PipeWireCaptureFactory {
+    fn default() -> Self {
+        Self {
+            picks: Arc::default(),
+            restore_timeout: RESTORE_TIMEOUT,
+        }
+    }
 }
 
 impl PipeWireCaptureFactory {
     /// Creates the factory. Does nothing until used.
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Sets how long `start` waits for the portal to restore a screen or window
+    /// choice before it closes the dialog and returns `TargetNotFound` (default 2 s).
+    /// Tests against a test portal use a short one.
+    pub fn with_restore_timeout(mut self, timeout: Duration) -> Self {
+        self.restore_timeout = timeout;
+        self
     }
 }
 
@@ -653,6 +671,7 @@ impl CaptureFactory for PipeWireCaptureFactory {
                     token: None,
                     cursor: request.cursor,
                     picks: Arc::clone(&self.picks),
+                    restore_timeout: self.restore_timeout,
                 });
                 (source, offer)
             }
@@ -1447,6 +1466,7 @@ struct PortalSource {
     token: Option<String>,
     cursor: bool,
     picks: Arc<Mutex<Picks>>,
+    restore_timeout: Duration,
 }
 
 impl PortalSource {
@@ -1474,7 +1494,7 @@ impl PortalSource {
             kind: self.kind,
             cursor: self.cursor,
             restore_token: Some(&token),
-            timeout: Some(RESTORE_TIMEOUT),
+            timeout: Some(self.restore_timeout),
         });
         // Once the portal tried to restore, the token is used up: the new one (if any)
         // replaces it. A failure before that (no bus, a failed call) keeps it.
