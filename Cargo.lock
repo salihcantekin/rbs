@@ -4174,6 +4174,32 @@ dependencies = [
 ]
 
 [[package]]
+name = "rbs-cli"
+version = "0.0.1"
+dependencies = [
+ "rbs-audio-io-test",
+ "rbs-audio-io-wasapi",
+ "rbs-capture-mf",
+ "rbs-capture-test",
+ "rbs-capture-wgc",
+ "rbs-codec",
+ "rbs-codec-amf",
+ "rbs-codec-mf",
+ "rbs-codec-nvenc",
+ "rbs-core",
+ "rbs-engine",
+ "rbs-gpu",
+ "rbs-graph",
+ "rbs-mux-fmp4",
+ "rbs-mux-matroska",
+ "rbs-record",
+ "rbs-scene",
+ "rbs-sources",
+ "rbs-thread-os",
+ "rbs-transport-file",
+]
+
+[[package]]
 name = "rbs-codec"
 version = "0.0.1"
 dependencies = [
@@ -4405,6 +4431,26 @@ dependencies = [
  "rbs-transport",
  "rbs-transport-file",
  "wgpu",
+]
+
+[[package]]
+name = "rbs-record"
+version = "0.0.1"
+dependencies = [
+ "rbs-audio",
+ "rbs-audio-io-test",
+ "rbs-capture-test",
+ "rbs-codec",
+ "rbs-codec-mf",
+ "rbs-core",
+ "rbs-engine",
+ "rbs-gpu",
+ "rbs-graph",
+ "rbs-mux",
+ "rbs-nodes",
+ "rbs-scene",
+ "rbs-sources",
+ "rbs-transport",
 ]
 
 [[package]]

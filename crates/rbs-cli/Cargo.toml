@@ -1,0 +1,45 @@
+[package]
+name = "rbs-cli"
+description = "The headless RBS command line: records a scene to a file with the platform's adapters (ADR-0040)."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "rbs-cli"
+path = "src/main.rs"
+
+# Application layer: the composition root. It may depend on everything and is the only
+# place (with rbs-app) that names adapters (P1).
+[dependencies]
+rbs-core = { path = "../rbs-core" }
+rbs-engine = { path = "../rbs-engine" }
+rbs-graph = { path = "../rbs-graph" }
+rbs-gpu = { path = "../rbs-gpu" }
+rbs-scene = { path = "../rbs-scene" }
+rbs-sources = { path = "../rbs-sources" }
+rbs-record = { path = "../rbs-record" }
+rbs-codec = { path = "../rbs-codec" }
+rbs-thread-os = { path = "../rbs-thread-os" }
+rbs-mux-matroska = { path = "../rbs-mux-matroska" }
+rbs-mux-fmp4 = { path = "../rbs-mux-fmp4" }
+rbs-transport-file = { path = "../rbs-transport-file" }
+
+[target.'cfg(windows)'.dependencies]
+rbs-capture-wgc = { path = "../rbs-capture-wgc" }
+rbs-capture-mf = { path = "../rbs-capture-mf" }
+rbs-audio-io-wasapi = { path = "../rbs-audio-io-wasapi" }
+rbs-codec-nvenc = { path = "../rbs-codec-nvenc" }
+rbs-codec-amf = { path = "../rbs-codec-amf" }
+rbs-codec-mf = { path = "../rbs-codec-mf" }
+
+[dev-dependencies]
+# Reference adapters for the scene-building tests (deterministic, no devices).
+rbs-capture-test = { path = "../rbs-capture-test" }
+rbs-audio-io-test = { path = "../rbs-audio-io-test" }
+
+[lints]
+workspace = true
