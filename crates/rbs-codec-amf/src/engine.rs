@@ -1,6 +1,12 @@
 //! The AMF engine: one AMF context (D3D11 on Windows, Vulkan on Linux) and one
-//! encoder component in it, fed from host-memory surfaces that this engine
-//! allocates, one per slot.
+//! encoder component in it, fed from host-memory surfaces allocated from the
+//! context, one per frame.
+//!
+//! A surface is never reused: `SubmitInput` converts a host surface in place to the
+//! context's device memory (its memory type, planes and pitch change), so writing a
+//! frame into a surface that was submitted before writes through stale plane
+//! pointers (seen on Windows as access violations and heap corruption). This is
+//! what FFmpeg and OBS do for host input too.
 //!
 //! AMF keeps its own queue: `SubmitInput` takes a surface and `QueryOutput` returns
 //! finished pictures in input order (no B-frames). The engine uses the slot only for
@@ -26,9 +32,6 @@ use crate::sys::{self, Name, Names};
 /// Longest wait for one picture. A picture is waited for only when it was
 /// submitted `FRAMES_IN_FLIGHT` frames earlier, at `flush` and in `Drop`.
 const WAIT: Duration = Duration::from_secs(10);
-
-/// Longest wait for AMF to release an input surface whose output was read.
-const RELEASE_WAIT: Duration = Duration::from_millis(100);
 
 /// Calls method `$m` of the AMF interface `$p`: `Ok(result)`, or `Err(name)` when
 /// the vtable has no such entry. Must be used inside `unsafe` with a live `$p`.
@@ -381,12 +384,16 @@ pub(crate) fn probe() -> Result<DeviceCaps, String> {
     })
 }
 
-/// One AMF encoder with its surfaces.
+/// One AMF encoder.
 pub(crate) struct AmfEngine {
-    /// One host-memory surface per slot.
-    surfaces: Vec<Surface>,
-    /// Declared after `surfaces` and before `context`: dropped (terminated) after
-    /// the surfaces are released and before the context goes.
+    /// The host-memory surface of each slot between `upload` and `encode`; empty
+    /// otherwise (once submitted, the surface belongs to AMF).
+    staged: [Option<Com<sys::AMFSurface>>; FRAMES_IN_FLIGHT],
+    /// Format and size of the input surfaces.
+    surface_format: sys::AMF_SURFACE_FORMAT,
+    surface_size: (i32, i32),
+    /// Declared after `staged` and before `context`: dropped (terminated) after
+    /// the staged surfaces are released and before the context goes.
     component: Option<Com<sys::AMFComponent>>,
     context: Context,
     names: &'static Names,
@@ -405,25 +412,6 @@ pub(crate) struct AmfEngine {
     rows: [usize; 2],
 }
 
-/// An input surface and its reference count when AMF does not hold it.
-struct Surface {
-    surface: Com<sys::AMFSurface>,
-    idle: i64,
-}
-
-/// The current reference count of `surface` (AMF has no getter: `Acquire` returns
-/// the count after adding one, which is released right away).
-fn references(surface: *mut sys::AMFSurface) -> Result<i64, &'static str> {
-    // SAFETY: a live surface owned by this engine; the extra reference is released
-    // right away.
-    unsafe {
-        let n = vcall!(surface, Acquire)?;
-        let _ = vcall!(surface, Release);
-        #[allow(clippy::useless_conversion)] // `amf_long` is 32 bits on Windows.
-        Ok(i64::from(n) - 1)
-    }
-}
-
 // SAFETY: the raw pointers are AMF interfaces owned by this engine. AMF objects may
 // be used from any thread as long as calls are not concurrent, which `&mut self`
 // ensures.
@@ -439,10 +427,18 @@ impl AmfEngine {
         let n = names(plan.codec);
         let context = Context::open(api)?;
         let component = context.component(api, n)?;
+        let format = if plan.ten_bit {
+            sys::AMF_SURFACE_P010
+        } else {
+            sys::AMF_SURFACE_NV12
+        };
+        let side = |v: u32| i32::try_from(v).unwrap_or(i32::MAX);
         // From here every error path drops the engine, which terminates the
         // component before releasing it.
-        let mut engine = AmfEngine {
-            surfaces: Vec::with_capacity(FRAMES_IN_FLIGHT),
+        let engine = AmfEngine {
+            staged: Default::default(),
+            surface_format: format,
+            surface_size: (side(plan.width), side(plan.height)),
             component: Some(component),
             context,
             names: n,
@@ -476,12 +472,6 @@ impl AmfEngine {
                 });
             }
         }
-        let format = if plan.ten_bit {
-            sys::AMF_SURFACE_P010
-        } else {
-            sys::AMF_SURFACE_NV12
-        };
-        let side = |v: u32| i32::try_from(v).unwrap_or(i32::MAX);
         // SAFETY: a live component with its properties set.
         let r = unsafe { vcall!(component, Init, format, side(plan.width), side(plan.height)) }
             .map_err(missing)?;
@@ -489,30 +479,6 @@ impl AmfEngine {
             return Err(create_error("Init", r));
         }
         let extradata = engine.extradata()?;
-        for _ in 0..FRAMES_IN_FLIGHT {
-            let mut raw: *mut sys::AMFSurface = ptr::null_mut();
-            // SAFETY: a live context and a valid out-pointer.
-            let r = unsafe {
-                vcall!(
-                    engine.context.ptr(),
-                    AllocSurface,
-                    sys::AMF_MEMORY_HOST,
-                    format,
-                    side(plan.width),
-                    side(plan.height),
-                    &mut raw
-                )
-            }
-            .map_err(missing)?;
-            let surface = Com::new(raw)
-                .filter(|_| r == sys::AMF_OK)
-                .ok_or_else(|| create_error("AllocSurface", r))?;
-            // The references of a surface nobody else uses: ours plus any the
-            // runtime keeps for its own bookkeeping.
-            let idle = references(surface.ptr())
-                .map_err(|_| CreateError::Device("AMF surface without Acquire".into()))?;
-            engine.surfaces.push(Surface { surface, idle });
-        }
         Ok((engine, extradata))
     }
 
@@ -653,23 +619,33 @@ impl Engine for AmfEngine {
     }
 
     fn upload(&mut self, slot: usize, frame: &SystemFrame) -> Result<(), EngineError> {
-        let surface = self.surfaces[slot].surface.ptr();
-        let idle = self.surfaces[slot].idle;
-        // The session reuses a slot only after its output was read, so AMF is done
-        // with the surface or about to release it: wait briefly, never `Busy`
-        // (draining cannot free a slot that is not in flight).
-        let deadline = Instant::now() + RELEASE_WAIT;
-        while references(surface).map_err(|m| EngineError::Failed(m, -1))? > idle {
-            if Instant::now() >= deadline {
-                return Err(EngineError::Broken(
-                    "AMF kept an input surface after its output",
-                ));
-            }
-            std::thread::sleep(Duration::from_millis(1));
+        // A fresh surface for every frame (see the module documentation).
+        self.staged[slot] = None;
+        let mut raw: *mut sys::AMFSurface = ptr::null_mut();
+        let (width, height) = self.surface_size;
+        // SAFETY: a live context and a valid out-pointer.
+        let r = unsafe {
+            vcall!(
+                self.context.ptr(),
+                AllocSurface,
+                sys::AMF_MEMORY_HOST,
+                self.surface_format,
+                width,
+                height,
+                &mut raw
+            )
         }
-        // DIAG (temporary)
-        let mem = unsafe { vcall!(surface, GetMemoryType) }.unwrap_or(999);
-        eprintln!("[amf-diag] upload slot {slot} refs {:?} idle {idle} memtype {mem}", references(surface));
+        .map_err(|m| EngineError::Failed(m, -1))?;
+        let owned = Com::new(raw)
+            .filter(|_| r == sys::AMF_OK)
+            .ok_or_else(|| engine_error("AllocSurface", r))?;
+        let surface = owned.ptr();
+        // SAFETY: a live surface.
+        let memory =
+            unsafe { vcall!(surface, GetMemoryType) }.map_err(|m| EngineError::Failed(m, -1))?;
+        if memory != sys::AMF_MEMORY_HOST {
+            return Err(EngineError::Broken("AMF allocated a non-host surface"));
+        }
         let mut planes: [(*mut u8, usize, usize); 2] = [(ptr::null_mut(), 0, 0); 2];
         for (i, p) in planes.iter_mut().enumerate() {
             // SAFETY: a live surface; the plane belongs to it (no reference added)
@@ -687,7 +663,6 @@ impl Engine for AmfEngine {
                     vcall!(plane, GetVPitch).unwrap_or(0),
                 )
             };
-            eprintln!("[amf-diag]   plane {i} native {native:?} pitch {pitch} rows {rows}");
             *p = (
                 native.cast(),
                 usize::try_from(pitch).unwrap_or(0),
@@ -706,9 +681,10 @@ impl Engine for AmfEngine {
         }
         let [(y, y_pitch, _), (uv, uv_pitch, _)] = planes;
         let [y_rows, uv_rows] = self.rows;
-        // SAFETY: host planes of at least `pitch * VPitch` bytes each, and `VPitch`
-        // covers the rows written (checked above); owned by the surface, which AMF
-        // no longer uses (checked above); the two planes do not overlap.
+        // SAFETY: host planes (memory type checked above) of at least
+        // `pitch * VPitch` bytes each, and `VPitch` covers the rows written (checked
+        // above); owned by the new surface, which nothing else refers to yet; the
+        // two planes do not overlap.
         let (luma, chroma) = unsafe {
             (
                 std::slice::from_raw_parts_mut(y, y_pitch * y_rows),
@@ -730,6 +706,7 @@ impl Engine for AmfEngine {
         ) {
             return Err(EngineError::Broken("frame planes do not match the session"));
         }
+        self.staged[slot] = Some(owned);
         Ok(())
     }
 
@@ -745,7 +722,12 @@ impl Engine for AmfEngine {
             self.drain_pending = false;
         }
         let keyframe = idr || self.since_idr + 1 >= self.gop;
-        let surface = self.surfaces[slot].surface.ptr();
+        // Our reference is released when this returns: once submitted, AMF holds
+        // its own, and on failure the session uploads the frame again.
+        let owned = self.staged[slot]
+            .take()
+            .ok_or(EngineError::Broken("encode without an uploaded surface"))?;
+        let surface = owned.ptr();
         let stamp = i64::try_from(token).unwrap_or(i64::MAX);
         self.set_surface(surface, sys::TOKEN, Value::Int(stamp))?;
         self.mark_idr(surface, keyframe)?;
@@ -756,13 +738,11 @@ impl Engine for AmfEngine {
         }
         // SAFETY: an initialised component; a surface is an `AMFData` (its vtable
         // starts with the `AMFData` entries) and AMF adds its own reference.
-        eprintln!("[amf-diag] SubmitInput slot {slot} refs before {:?}", references(surface));
         let r = unsafe { vcall!(component, SubmitInput, surface.cast::<sys::AMFData>()) }
             .map_err(|m| EngineError::Failed(m, -1))?;
         if r != sys::AMF_OK {
             return Err(engine_error("SubmitInput", r));
         }
-        eprintln!("[amf-diag] SubmitInput -> {r}, refs after {:?}, memtype {:?}", references(surface), unsafe { vcall!(surface, GetMemoryType) });
         self.since_idr = if keyframe { 0 } else { self.since_idr + 1 };
         Ok(())
     }
@@ -855,9 +835,9 @@ impl Engine for AmfEngine {
 
 impl Drop for AmfEngine {
     fn drop(&mut self) {
-        // Surfaces first (AMF keeps its own references to queued ones), then the
-        // component, then (as a field) the context.
-        self.surfaces.clear();
+        // Staged surfaces first (AMF keeps its own references to queued ones), then
+        // the component, then (as a field) the context.
+        self.staged = Default::default();
         if let Some(component) = self.component.take() {
             // SAFETY: an initialised component, terminated once; its queued work is
             // discarded and its references to surfaces released.

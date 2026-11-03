@@ -5,8 +5,7 @@
 
 use rbs_codec::conformance::{self, SystemFrameSource};
 use rbs_codec::{
-    CreateError, EncodeError, EncoderChange, VideoEncoder, VideoEncoderConfig,
-    VideoEncoderFactory,
+    CreateError, EncodeError, EncoderChange, VideoEncoder, VideoEncoderConfig, VideoEncoderFactory,
 };
 use rbs_codec_nvenc::NvencFactory as Inner;
 use rbs_core::capability::CapabilitySet;
@@ -38,7 +37,10 @@ impl VideoEncoderFactory for Logged {
             config.codec, config.format.size, config.format.pixel_format, config.rate_control
         );
         let r = self.0.create(config);
-        eprintln!("[diag] create -> {:?}", r.as_ref().map(|_| ()).map_err(|e| e.to_string()));
+        eprintln!(
+            "[diag] create -> {:?}",
+            r.as_ref().map(|_| ()).map_err(|e| e.to_string())
+        );
         r.map(|inner| Box::new(Session { inner, n: 0 }) as Box<dyn VideoEncoder>)
     }
 }
