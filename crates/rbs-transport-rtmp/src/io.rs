@@ -1,16 +1,19 @@
 //! The I/O thread: connects, publishes, writes queued packets and answers the
 //! server's control messages, reconnecting by the session's policy.
 //!
-//! One thread owns the socket and is its only writer. The socket is blocking with
-//! short timeouts ([`SLICE`]), so every wait re-checks the abort flag. Server
-//! messages are read when the thread is idle and at least every [`READ_INTERVAL`]
-//! while it is busy, with the socket switched to non-blocking for that read.
+//! One thread owns the socket and is its only writer. Writes block without a timeout
+//! (a timed-out send leaves the socket in an undefined state on Windows); to abort,
+//! the producer shuts the socket down through a registered clone, which ends any
+//! blocked call. Reads during set-up use short timeouts ([`SLICE`]) to meet their
+//! deadline. Server messages are read when the thread is idle and between messages
+//! at least every [`READ_INTERVAL`] while it is busy, with the socket switched to
+//! non-blocking for that read; a long write of one message delays it.
 
 use std::collections::VecDeque;
 use std::io::{ErrorKind, Read, Write};
 use std::net::{Shutdown, TcpStream, ToSocketAddrs};
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering, fence};
-use std::sync::{Arc, OnceLock, mpsc};
+use std::sync::{Arc, Mutex, OnceLock, mpsc};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -40,6 +43,9 @@ pub(crate) const CHUNK_SIZE: usize = 4096;
 /// Largest message accepted from the server, checked from the chunk header before
 /// the body is stored or AMF0-decoded. Servers send only small control messages.
 pub(crate) const MAX_MESSAGE: usize = 64 * 1024;
+/// Most reads per poll of the server's messages, so a flooding server cannot keep
+/// the I/O thread from sending (or from seeing an abort).
+const POLL_READS: usize = 4;
 const HANDSHAKE_LEN: usize = 1536;
 const RTMP_VERSION: u8 = 3;
 
@@ -85,6 +91,28 @@ pub(crate) struct Shared {
     pub keyframe_wanted: AtomicBool,
     /// The error that ended the session for good.
     pub error: OnceLock<TransportError>,
+    /// The I/O thread has ended: nothing will take items from the hand-off again.
+    pub exited: AtomicBool,
+    /// A clone of the connected socket, so an abort can shut it down and end a
+    /// blocked read or write. Locked only on connect, disconnect and abort, never by
+    /// `send`.
+    socket: Mutex<Option<TcpStream>>,
+}
+
+impl Shared {
+    /// Sets the abort flag and shuts the current socket down, which ends any call
+    /// the I/O thread is blocked in (except DNS and `connect`).
+    pub(crate) fn abort(&self) {
+        self.abort.store(true, Ordering::SeqCst);
+        let socket = self.socket.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(socket) = socket.as_ref() {
+            let _ = socket.shutdown(Shutdown::Both);
+        }
+    }
+
+    fn register(&self, socket: Option<TcpStream>) {
+        *self.socket.lock().unwrap_or_else(|e| e.into_inner()) = socket;
+    }
 }
 
 /// What the I/O thread needs. The key is the stream key in clear text: it goes on
@@ -117,13 +145,16 @@ fn protocol(what: &str) -> Fail {
     )))
 }
 
-/// Server text without the stream key, and bounded in length.
+/// Server text without the stream key, and bounded in length. The part of the key
+/// before a `?` is removed too: servers such as nginx-rtmp echo only the name.
 fn redact(text: &str, key: &str) -> String {
-    let mut text = if key.is_empty() {
-        text.to_owned()
-    } else {
-        text.replace(key, "<redacted>")
-    };
+    let mut text = text.to_owned();
+    let name = key.split('?').next().unwrap_or_default();
+    for secret in [key, name] {
+        if !secret.is_empty() {
+            text = text.replace(secret, "<redacted>");
+        }
+    }
     if text.len() > 256 {
         let mut end = 256;
         while !text.is_char_boundary(end) {
@@ -155,6 +186,14 @@ struct Conn {
     /// Control replies (acknowledgements, pongs), written between messages.
     control: Vec<u8>,
     read_buf: Box<[u8]>,
+    shared: Arc<Shared>,
+}
+
+impl Drop for Conn {
+    fn drop(&mut self) {
+        // Close the clone too, or the socket would stay open.
+        self.shared.register(None);
+    }
 }
 
 impl Conn {
@@ -162,42 +201,62 @@ impl Conn {
         write_all(&mut self.stream, data, shared)
     }
 
-    /// Reads what the server sent without waiting; handles control messages and
-    /// queues command replies.
+    /// Reads what the server sent without waiting (at most [`POLL_READS`] reads);
+    /// handles control messages, queues command replies, then writes the control
+    /// replies with the socket blocking again.
     fn poll_reads(&mut self, shared: &Shared, key: &str) -> Result<(), Fail> {
         self.stream
             .set_nonblocking(true)
             .map_err(|e| connection("socket", &e))?;
-        let result = loop {
-            match self.stream.read(&mut self.read_buf) {
-                Ok(0) => break Err(closed()),
-                Ok(n) => {
-                    if let Err(e) = self.received(n, shared, key) {
-                        break Err(e);
-                    }
-                }
-                Err(e) if e.kind() == ErrorKind::WouldBlock => break Ok(()),
-                Err(e) if e.kind() == ErrorKind::Interrupted => {}
-                Err(e) => break Err(connection("receive", &e)),
+        let mut result = Ok(());
+        for _ in 0..POLL_READS {
+            if shared.abort.load(Ordering::Acquire) {
+                result = Err(Fail::Aborted);
+                break;
             }
-        };
+            match self.stream.read(&mut self.read_buf) {
+                Ok(0) => result = Err(closed()),
+                Ok(n) => result = self.received(n, key),
+                Err(e) if e.kind() == ErrorKind::WouldBlock => break,
+                Err(e) if e.kind() == ErrorKind::Interrupted => continue,
+                Err(e) => result = Err(connection("receive", &e)),
+            }
+            if result.is_err() {
+                break;
+            }
+        }
         self.stream
             .set_nonblocking(false)
             .map_err(|e| connection("socket", &e))?;
-        result
+        result?;
+        self.flush_control(shared)
     }
 
     /// One blocking read of at most [`SLICE`]; `Ok` also when nothing arrived.
     fn read_once(&mut self, shared: &Shared, key: &str) -> Result<(), Fail> {
         match self.stream.read(&mut self.read_buf) {
             Ok(0) => Err(closed()),
-            Ok(n) => self.received(n, shared, key),
+            Ok(n) => {
+                self.received(n, key)?;
+                self.flush_control(shared)
+            }
             Err(e) if is_timeout(&e) => Ok(()),
             Err(e) => Err(connection("receive", &e)),
         }
     }
 
-    fn received(&mut self, n: usize, shared: &Shared, key: &str) -> Result<(), Fail> {
+    /// Writes pending control replies (the socket must be blocking).
+    fn flush_control(&mut self, shared: &Shared) -> Result<(), Fail> {
+        if self.control.is_empty() {
+            return Ok(());
+        }
+        let written = write_all(&mut self.stream, &self.control, shared);
+        self.control.clear();
+        written
+    }
+
+    /// Handles `n` received bytes; control replies are queued in `control`.
+    fn received(&mut self, n: usize, key: &str) -> Result<(), Fail> {
         self.bytes_in += n as u64;
         self.reader.feed(&self.read_buf[..n]);
         loop {
@@ -235,13 +294,6 @@ impl Conn {
             self.acked = self.bytes_in;
             // The sequence number is the byte count, wrapping at 2^32.
             chunk::write_control(&mut self.control, chunk::MSG_ACK, self.bytes_in as u32);
-        }
-        if !self.control.is_empty() {
-            let control = std::mem::take(&mut self.control);
-            let written = write_all(&mut self.stream, &control, shared);
-            self.control = control;
-            self.control.clear();
-            written?;
         }
         Ok(())
     }
@@ -287,9 +339,8 @@ fn is_timeout(e: &std::io::Error) -> bool {
     )
 }
 
-/// Writes all of `data`, in calls of at most [`SLICE`] each, re-checking the abort
-/// flag between them. Partial writes continue where they stopped, so a slow peer
-/// never tears a message.
+/// Writes all of `data`, re-checking the abort flag between partial writes. A
+/// blocked write ends when an abort shuts the socket down.
 fn write_all(stream: &mut TcpStream, mut data: &[u8], shared: &Shared) -> Result<(), Fail> {
     while !data.is_empty() {
         if shared.abort.load(Ordering::Acquire) {
@@ -422,15 +473,15 @@ impl Io {
             }
             let error = match result {
                 Ok(()) | Err(Fail::Aborted) => break,
+                // An abort shuts the socket down; the error that follows is its echo.
+                Err(Fail::Error(_)) if self.shared.abort.load(Ordering::Acquire) => break,
                 Err(Fail::Error(e)) => e,
             };
             let retry = error.is_recoverable() && attempts.is_none_or(|n| attempt < n);
-            if !retry {
+            if !retry || self.finishing() {
+                // Also while finishing with nothing queued: no reason to reconnect,
+                // but what was in flight may be lost, so `finish` reports the error.
                 let _ = self.shared.error.set(error);
-                break;
-            }
-            if self.finishing() {
-                // `finish` with nothing left to deliver: no reason to reconnect.
                 break;
             }
             attempt += 1;
@@ -441,9 +492,10 @@ impl Io {
             if !self.back_off(delay) {
                 break;
             }
-            delay = (delay * 2).min(max.max(initial));
+            delay = delay.saturating_mul(2).min(max.max(initial));
         }
         self.discard_all();
+        self.shared.exited.store(true, Ordering::Release);
         let _ = done.send(());
     }
 
@@ -455,7 +507,10 @@ impl Io {
     /// Waits `delay` before the next attempt; `false` if the session is aborted, or
     /// finishing with nothing left to deliver, meanwhile.
     fn back_off(&self, delay: Duration) -> bool {
-        let until = Instant::now() + delay;
+        let now = Instant::now();
+        let until = now
+            .checked_add(delay)
+            .unwrap_or(now + Duration::from_secs(86_400));
         loop {
             if self.shared.abort.load(Ordering::Acquire) || self.finishing() {
                 return false;
@@ -510,7 +565,8 @@ impl Io {
         let setup = |e: std::io::Error| connection("socket", &e);
         stream.set_nodelay(true).map_err(setup)?;
         stream.set_read_timeout(Some(SLICE)).map_err(setup)?;
-        stream.set_write_timeout(Some(SLICE)).map_err(setup)?;
+        self.shared
+            .register(Some(stream.try_clone().map_err(setup)?));
         let mut conn = Conn {
             stream,
             reader: ChunkReader::new(MAX_MESSAGE),
@@ -522,7 +578,12 @@ impl Io {
             replies: VecDeque::new(),
             control: Vec::with_capacity(64),
             read_buf: vec![0; 16 * 1024].into_boxed_slice(),
+            shared: Arc::clone(&self.shared),
         };
+        // An abort that came before the registration found no socket to shut down.
+        if self.shared.abort.load(Ordering::SeqCst) {
+            return Err(Fail::Aborted);
+        }
         self.handshake(&mut conn, deadline)?;
         let shared = Arc::clone(&self.shared);
         let key = self.config.key.clone();
@@ -579,7 +640,9 @@ impl Io {
         conn.wait_reply(&shared, key, deadline, "publish", |reply| match reply {
             Reply::Status(s) if s.code == "NetStream.Publish.Start" => Some(Ok(())),
             Reply::Status(s) if s.is_error() => Some(Err(rejected("publish", &s, key))),
-            Reply::Error { info, .. } => Some(Err(rejected("publish", &info, key))),
+            Reply::Error { txn, info } if txn == command::TXN_PUBLISH => {
+                Some(Err(rejected("publish", &info, key)))
+            }
             _ => None,
         })?;
         Ok(conn)
@@ -660,7 +723,12 @@ impl Io {
                         Ok(())
                     } else {
                         waiting_for_key = false;
-                        self.send_item(conn, &item, &mut headers_sent, shared)
+                        let sent = self.send_item(conn, &item, &mut headers_sent, shared);
+                        if sent.is_err() {
+                            // Its delivery is unknown: count it as lost.
+                            progress.discarded.fetch_add(1, Ordering::Relaxed);
+                        }
+                        sent
                     };
                     drop(item);
                     progress.done_items.fetch_add(1, Ordering::Release);
@@ -787,6 +855,11 @@ mod tests {
     fn redacts_the_key_and_bounds_server_text() {
         let text = redact("stream live_abc is already publishing", "live_abc");
         assert_eq!(text, "stream <redacted> is already publishing");
+        let text = redact("stream live_abc denied", "live_abc?bandwidthtest=true");
+        assert_eq!(
+            text, "stream <redacted> denied",
+            "nginx echoes the name only"
+        );
         assert_eq!(redact(&"é".repeat(300), "").len(), 256);
     }
 }

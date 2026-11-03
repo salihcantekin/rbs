@@ -105,16 +105,7 @@ impl<T> Staging<T> {
     }
 
     fn over(&self, entry: &Entry<T>, limits: Limits, committed: Committed) -> bool {
-        let held = self.bytes + committed.bytes;
-        // One item larger than the limit still goes into an empty queue.
-        if held > 0 && held + entry.bytes > limits.max_bytes {
-            return true;
-        }
-        let oldest = match (committed.oldest_ts, self.front_ts()) {
-            (Some(a), Some(b)) => Some(a.min(b)),
-            (a, b) => a.or(b),
-        };
-        oldest.is_some_and(|oldest| entry.ts.saturating_sub(oldest) > limits.max_duration_ns)
+        over_with(self.bytes, self.front_ts(), entry, limits, committed)
     }
 
     /// Stages `entry`, applying the drop policy when a limit would be passed:
@@ -126,7 +117,8 @@ impl<T> Staging<T> {
     /// 3. Only then drop staged audio, oldest first.
     /// 4. If still over, refuse `entry` (a refused keyframe cuts its GOP too).
     ///
-    /// So delivered video never continues from a missing reference picture.
+    /// So delivered video never continues from a missing reference picture. Each
+    /// rule is one pass over the queue, so a call is linear in the staged items.
     pub(crate) fn admit(
         &mut self,
         entry: Entry<T>,
@@ -145,10 +137,7 @@ impl<T> Staging<T> {
         }
         if self.over(&entry, limits, committed) {
             // Rule 1: whole GOPs, oldest first.
-            while self.over(&entry, limits, committed) {
-                let Some(end) = self.oldest_gop_end(entry.class == Class::Key) else {
-                    break;
-                };
+            if let Some(end) = self.old_gops_end(&entry, limits, committed) {
                 result.dropped += self.drop_video(..end, |_| true);
             }
             // Rule 2: cut the current GOP.
@@ -158,8 +147,9 @@ impl<T> Staging<T> {
                     .iter()
                     .rposition(|e| e.class == Class::Key)
                     .unwrap_or(0);
-                result.dropped += self.drop_video(start.., |c| c == Class::Inter);
-                if entry.class == Class::Inter || result.dropped > 0 {
+                let cut = self.drop_video(start.., |c| c == Class::Inter);
+                result.dropped += cut;
+                if entry.class == Class::Inter || cut > 0 {
                     self.refusing = true;
                     result.cut = true;
                 }
@@ -168,14 +158,8 @@ impl<T> Staging<T> {
                 }
             }
             // Rule 3: audio, oldest first.
-            while self.over(&entry, limits, committed) {
-                let Some(i) = self.queue.iter().position(|e| e.class == Class::Audio) else {
-                    break;
-                };
-                if let Some(e) = self.queue.remove(i) {
-                    self.bytes -= e.bytes;
-                    result.dropped += 1;
-                }
+            if self.over(&entry, limits, committed) {
+                result.dropped += self.drop_old_audio(&entry, limits, committed);
             }
             if self.over(&entry, limits, committed) {
                 if entry.class == Class::Key {
@@ -191,17 +175,71 @@ impl<T> Staging<T> {
         result
     }
 
-    /// End (exclusive) of the oldest staged GOP: the first keyframe that has staged
-    /// video before it. With `incoming_key`, all staged video counts as old GOPs.
-    fn oldest_gop_end(&self, incoming_key: bool) -> Option<usize> {
+    /// Rule 1 in one scan: the end (exclusive) of the old GOPs to drop, that is the
+    /// first GOP boundary (a keyframe with staged video before it) at which dropping
+    /// all earlier video is enough, or the last boundary if none is. With a keyframe
+    /// `entry`, the end of the queue is a boundary too. `None` without a boundary.
+    fn old_gops_end(
+        &self,
+        entry: &Entry<T>,
+        limits: Limits,
+        committed: Committed,
+    ) -> Option<usize> {
+        let mut video_bytes = 0;
         let mut seen_video = false;
+        let mut first_audio: Option<u64> = None;
+        let mut last = None;
         for (i, e) in self.queue.iter().enumerate() {
             if e.class == Class::Key && seen_video {
-                return Some(i);
+                last = Some(i);
+                let front = first_audio.or(Some(e.ts));
+                if !over_with(self.bytes - video_bytes, front, entry, limits, committed) {
+                    return last;
+                }
             }
-            seen_video |= e.class.is_video();
+            match e.class {
+                Class::Audio => {
+                    first_audio.get_or_insert(e.ts);
+                }
+                _ => {
+                    seen_video = true;
+                    video_bytes += e.bytes;
+                }
+            }
         }
-        (incoming_key && seen_video).then_some(self.queue.len())
+        if entry.class == Class::Key && seen_video {
+            return Some(self.queue.len());
+        }
+        last
+    }
+
+    /// Rule 3 in one pass: drops the oldest audio until the limits hold (or no audio
+    /// is left); returns how many.
+    fn drop_old_audio(&mut self, entry: &Entry<T>, limits: Limits, committed: Committed) -> u32 {
+        let mut count = 0_u32;
+        let mut bytes = self.bytes;
+        let mut front: Option<u64> = None;
+        for e in &self.queue {
+            if !over_with(bytes, front.or(Some(e.ts)), entry, limits, committed) {
+                break;
+            }
+            if e.class == Class::Audio {
+                bytes -= e.bytes;
+                count += 1;
+            } else {
+                front.get_or_insert(e.ts);
+            }
+        }
+        let mut left = count;
+        self.queue.retain(|e| {
+            let drop = left > 0 && e.class == Class::Audio;
+            if drop {
+                left -= 1;
+            }
+            !drop
+        });
+        self.bytes = bytes;
+        count
     }
 
     /// Drops the video entries in `range` whose class passes `filter`; returns how many.
@@ -225,6 +263,27 @@ impl<T> Staging<T> {
         self.bytes -= bytes;
         dropped
     }
+}
+
+/// Whether staging `entry` passes a limit, with `staged` bytes staged and the oldest
+/// staged item at `front`.
+fn over_with<T>(
+    staged: u64,
+    front: Option<u64>,
+    entry: &Entry<T>,
+    limits: Limits,
+    committed: Committed,
+) -> bool {
+    let held = staged + committed.bytes;
+    // One item larger than the limit still goes into an empty queue.
+    if held > 0 && held + entry.bytes > limits.max_bytes {
+        return true;
+    }
+    let oldest = match (committed.oldest_ts, front) {
+        (Some(a), Some(b)) => Some(a.min(b)),
+        (a, b) => a.or(b),
+    };
+    oldest.is_some_and(|oldest| entry.ts.saturating_sub(oldest) > limits.max_duration_ns)
 }
 
 #[cfg(test)]
@@ -310,6 +369,23 @@ mod tests {
         let r = s.admit(entry(3, Class::Key, 10), limits(30), none);
         assert_eq!((r.queued, r.dropped, r.cut), (true, 2, false));
         assert_eq!(items(&s), vec![1, 3]);
+    }
+
+    #[test]
+    fn dropping_old_gops_does_not_cut_the_current_one() {
+        let mut s = Staging::with_capacity(16);
+        let none = Committed::default();
+        for (n, c) in [(0, Class::Key), (1, Class::Inter), (2, Class::Key)] {
+            s.admit(entry(n, c, 10), limits(30), none);
+        }
+        let r = s.admit(entry(3, Class::Audio, 10), limits(30), none);
+        assert_eq!((r.queued, r.dropped, r.cut), (true, 2, false));
+        assert!(!s.is_refusing(), "the GOP of keyframe 2 is intact");
+        assert!(
+            s.admit(entry(4, Class::Inter, 1), limits(1000), none)
+                .queued
+        );
+        assert_eq!(items(&s), vec![2, 3, 4]);
     }
 
     #[test]

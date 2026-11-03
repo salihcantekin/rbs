@@ -118,6 +118,11 @@ impl Running {
     /// Moves staged items to the hand-off while it has room (`limit` items in flight).
     fn pump(&mut self, limit: usize) -> bool {
         self.retire();
+        if self.shared.exited.load(Ordering::Acquire) {
+            // Nothing takes items any more; they stay staged and are counted as
+            // dropped when the session ends.
+            return false;
+        }
         let mut moved = false;
         while self.committed.len() < limit && self.producer.slots() > 0 {
             let Some(entry) = self.staging.pop() else {
@@ -172,13 +177,13 @@ impl Running {
         abort: bool,
     ) -> (Result<(), TransportError>, TransportStats) {
         let start = Instant::now();
-        let deadline = start + budget;
+        let deadline = later(start, budget);
         let mut ended = false;
         let mut timed_out = false;
         if abort {
-            self.shared.abort.store(true, Ordering::Release);
+            self.shared.abort();
         } else {
-            let clean = start + budget * CLEAN_SHARE / 5;
+            let clean = later(start, budget / 5 * CLEAN_SHARE);
             // Hand over what is staged, then ask for a clean end.
             while !self.staging.is_empty() {
                 self.pump(RING_SLOTS);
@@ -206,7 +211,7 @@ impl Running {
             }
         }
         if !ended {
-            self.shared.abort.store(true, Ordering::Release);
+            self.shared.abort();
             self.thread.thread().unpark();
             let grace = deadline.saturating_duration_since(Instant::now());
             if self.done.recv_timeout(grace).is_err() {
@@ -216,6 +221,11 @@ impl Running {
         }
         self.staging_dropped();
         self.retire();
+        // Items pushed while the thread was ending were never taken.
+        let done = self.shared.progress.done_items.load(Ordering::Acquire);
+        self.items_dropped += self.pushed.saturating_sub(done);
+        self.committed.clear();
+        self.committed_bytes = 0;
         let stats = self.stats();
         let error = self.shared.error.get().cloned();
         if self.thread.join().is_err() {
@@ -238,6 +248,13 @@ impl Running {
             self.items_dropped += 1;
         }
     }
+}
+
+/// `start + d`, or a day later when that overflows (`finish(Duration::MAX)`).
+fn later(start: Instant, d: Duration) -> Instant {
+    start
+        .checked_add(d)
+        .unwrap_or(start + Duration::from_secs(86_400))
 }
 
 /// Longest single wait of `finish` while it hands staged items over.

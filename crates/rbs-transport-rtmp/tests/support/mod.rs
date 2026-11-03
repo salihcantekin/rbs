@@ -94,6 +94,9 @@ pub struct Behaviour {
     pub sink: bool,
     /// Never answer `connect` (the client's setup times out).
     pub silent: bool,
+    /// After answering `publish`, stop reading until the test also waits on this
+    /// barrier (a stall in the middle of a stream).
+    pub pause: Option<Arc<std::sync::Barrier>>,
 }
 
 pub struct TestServer {
@@ -403,6 +406,11 @@ fn serve(mut conn: TcpStream, b: &Behaviour, first: bool) -> Session {
         }
         if !out.is_empty() && conn.write_all(&out).is_err() {
             return session;
+        }
+        if name.as_deref() == Some("publish") {
+            if let Some(pause) = &b.pause {
+                pause.wait();
+            }
         }
         if is_media {
             media += 1;

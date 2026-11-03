@@ -5,6 +5,7 @@ use rbs_media_format::amf0::{self, Decoded, Value};
 /// Transaction ids of the commands that get replies.
 pub(crate) const TXN_CONNECT: f64 = 1.0;
 pub(crate) const TXN_CREATE_STREAM: f64 = 4.0;
+pub(crate) const TXN_PUBLISH: f64 = 5.0;
 
 /// Shown to the server as the encoder's name, as other encoders do (`FMLE/3.0` is
 /// what ingest servers recognise as a live encoder).
@@ -53,7 +54,7 @@ pub(crate) fn create_stream(out: &mut Vec<u8>) {
 
 /// `publish(5, null, key, "live")`, sent on the created stream.
 pub(crate) fn publish(out: &mut Vec<u8>, key: &str) {
-    start(out, "publish", 5.0);
+    start(out, "publish", TXN_PUBLISH);
     amf0::null(out);
     amf0::string(out, key);
     amf0::string(out, "live");
@@ -122,9 +123,18 @@ impl Status {
     }
 }
 
-/// Decodes a command message body (the caller has bounded its size).
+/// Decodes a command message body (the caller has bounded its size). Commands whose
+/// values cannot be decoded (AMF0 references, AMF3 values in a reply the client does
+/// not need) are [`Reply::Other`]; only a command without a readable name is an
+/// error.
 pub(crate) fn parse_reply(body: &[u8]) -> Result<Reply, &'static str> {
-    let values = amf0::decode_all(body).map_err(|_| "malformed AMF0 command")?;
+    let (name, _) = amf0::decode(body).map_err(|_| "malformed AMF0 command")?;
+    if name.as_str().is_none() {
+        return Err("command without a name");
+    }
+    let Ok(values) = amf0::decode_all(body) else {
+        return Ok(Reply::Other);
+    };
     let name = values.first().and_then(Decoded::as_str).unwrap_or_default();
     let txn = values.get(1).and_then(Decoded::as_number).unwrap_or(0.0);
     Ok(match name {

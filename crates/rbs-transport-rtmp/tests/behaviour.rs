@@ -495,7 +495,7 @@ fn finish_and_drop_respect_their_bounds_against_a_silent_server() {
     let started = Instant::now();
     let result = t.finish(Duration::from_millis(300));
     assert!(
-        started.elapsed() < Duration::from_millis(600),
+        started.elapsed() < Duration::from_millis(350),
         "{:?}",
         started.elapsed()
     );
@@ -508,7 +508,7 @@ fn finish_and_drop_respect_their_bounds_against_a_silent_server() {
     let started = Instant::now();
     drop(t);
     assert!(
-        started.elapsed() < Duration::from_millis(500),
+        started.elapsed() < Duration::from_millis(250),
         "{:?}",
         started.elapsed()
     );
@@ -530,6 +530,12 @@ fn refuses_bad_configurations() {
         config("rtmp://127.0.0.1/live").with_adapter_option("chunk_size", "8192"),
         config("rtmp://127.0.0.1"),
         config("rtmp://127.0.0.1/live").with_queue(QueueLimits::new(0, Duration::from_secs(1))),
+        config("rtmp://127.0.0.1/live").with_queue(QueueLimits::new(1024, Duration::ZERO)),
+        config("rtmp://127.0.0.1/live").with_reconnect(ReconnectPolicy::Backoff {
+            initial: Duration::ZERO,
+            max: Duration::from_secs(1),
+            attempts: None,
+        }),
     ];
     for c in cases {
         let error = RtmpTransportFactory.create(&c).err().unwrap();
@@ -595,4 +601,65 @@ fn audio_only_output_needs_no_keyframe() {
         .map(|m| m.type_id)
         .collect::<Vec<_>>();
     assert_eq!(media, [18, 8, 8, 8, 8, 8, 8]);
+}
+
+#[test]
+fn after_a_stall_video_resumes_at_a_keyframe_with_intact_gops() {
+    // The server stops reading right after publish; the sender keeps going.
+    let pause = std::sync::Arc::new(std::sync::Barrier::new(2));
+    let server = TestServer::start(Behaviour {
+        pause: Some(std::sync::Arc::clone(&pause)),
+        ..Behaviour::default()
+    });
+    let config =
+        config(&server.url()).with_queue(QueueLimits::new(512 * 1024, Duration::from_secs(3)));
+    let mut t = RtmpTransportFactory.create(&config).unwrap();
+    t.start(&streams()).unwrap();
+    let mut events = Vec::new();
+    wait_for(&mut t, &mut events, |e| *e == TransportEvent::Connected);
+    // 600 frames of 64 KiB (38 MiB): far more than socket buffers and the queue.
+    let mut refused = 0;
+    for i in 0..600 {
+        let outcome = send(&mut t, VIDEO, &video(1000 + i * 33, i % 30 == 0, 64 * 1024));
+        refused += u32::from(matches!(outcome, SendOutcome::Dropped { .. }));
+        send(&mut t, AUDIO, &audio(1000 + i * 33));
+    }
+    t.poll_events(&mut events);
+    assert!(refused > 0, "the queue must have overflowed");
+    assert!(
+        events.contains(&TransportEvent::KeyframeRequested),
+        "{events:?}"
+    );
+    assert!(
+        events
+            .iter()
+            .any(|e| matches!(e, TransportEvent::Dropped { .. })),
+        "{events:?}"
+    );
+    pause.wait();
+    t.finish(Duration::from_secs(20)).unwrap();
+    let sessions = server.finish();
+    let media = sessions[0].media();
+    assert_eq!(
+        media.iter().map(|m| m.type_id).take(3).collect::<Vec<_>>(),
+        [18, 9, 8]
+    );
+    // Every delivered inter frame directly follows the previous delivered video
+    // frame: no frame of its GOP was lost.
+    let video: Vec<_> = media[3..].iter().filter(|m| m.type_id == 9).collect();
+    assert!(
+        video.len() > 30 && video.len() < 600,
+        "{} frames",
+        video.len()
+    );
+    assert_eq!(video[0].body[0], 0x17);
+    for pair in video.windows(2) {
+        if pair[1].body[0] == 0x27 {
+            assert_eq!(
+                pair[1].timestamp - pair[0].timestamp,
+                33,
+                "gap before an inter frame"
+            );
+        }
+    }
 }

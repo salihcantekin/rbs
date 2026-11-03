@@ -50,7 +50,8 @@ use rbs_core::capability::{CapabilitySet, CapabilityValue};
 use rbs_core::media::CodecId;
 use rbs_core::registry::{AdapterFactory, AdapterId, ProbeError};
 use rbs_transport::{
-    CreateError, Transport, TransportConfig, TransportFactory, TransportInput, caps,
+    CreateError, ReconnectPolicy, Transport, TransportConfig, TransportFactory, TransportInput,
+    caps,
 };
 
 /// Stable adapter id.
@@ -114,8 +115,17 @@ impl TransportFactory for RtmpTransportFactory {
                 ));
             }
         };
-        if config.queue.max_bytes == 0 {
-            return Err(CreateError::InvalidConfig("queue of 0 bytes".into()));
+        if config.queue.max_bytes == 0 || config.queue.max_duration.is_zero() {
+            return Err(CreateError::InvalidConfig(
+                "queue limits of 0 bytes or 0 seconds".into(),
+            ));
+        }
+        if let ReconnectPolicy::Backoff { initial, .. } = config.reconnect {
+            if initial.is_zero() {
+                return Err(CreateError::InvalidConfig(
+                    "reconnect back-off starting at 0 (it would retry in a tight loop)".into(),
+                ));
+            }
         }
         Ok(Box::new(session::RtmpTransport::new(session::Settings {
             url,
