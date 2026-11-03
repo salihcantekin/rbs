@@ -135,9 +135,9 @@ impl Pacing {
     /// The thread class a worker with this pacing asks for (ADR-0030).
     fn thread_class(&self) -> ThreadClass {
         match self {
-            Pacing::Cadence { cadence, .. } => ThreadClass::Periodic {
-                period: cadence.time_of(1).saturating_since(cadence.time_of(0)),
-            },
+            Pacing::Cadence { cadence, .. } => {
+                ThreadClass::periodic(cadence.time_of(1).saturating_since(cadence.time_of(0)))
+            }
             Pacing::Doorbell { .. } => ThreadClass::Responsive,
         }
     }
@@ -289,7 +289,9 @@ impl<X: Runtime> Worker<X> {
                     next,
                 );
                 executor.detach();
-                drop(guard);
+                // The restore is the composition root's code: a panic in it must not
+                // lose the executor.
+                let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| drop(guard)));
                 (executor, next)
             })
         });

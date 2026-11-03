@@ -1034,7 +1034,7 @@ fn workers_enter_the_thread_policy_and_attach_the_runtime_on_every_thread() {
     assert_eq!(render_requests.len(), 2, "{requests:?}");
     for (_, class) in render_requests {
         match class {
-            ThreadClass::Periodic { period } => {
+            ThreadClass::Periodic { period, .. } => {
                 assert!(
                     period.abs_diff(FRAME) < Duration::from_micros(1),
                     "{class:?}"
@@ -1053,4 +1053,75 @@ fn workers_enter_the_thread_policy_and_attach_the_runtime_on_every_thread() {
     assert!(attaches >= 2, "{attaches}");
     assert_eq!(attaches, log.detaches.load(Ordering::Relaxed));
     assert_eq!(log.wrong_thread.load(Ordering::Relaxed), 0);
+}
+
+/// Panics in `enter` for responsive threads and in the restore for periodic ones.
+struct PanickingPolicy;
+
+impl ThreadPolicy for PanickingPolicy {
+    fn enter(&self, request: &ThreadRequest<'_>) -> Result<ThreadGuard, ThreadPolicyError> {
+        if request.class == ThreadClass::Responsive {
+            panic!("enter panicked");
+        }
+        Ok(ThreadGuard::restoring(ThreadGrant::Raised, || {
+            panic!("restore panicked")
+        }))
+    }
+}
+
+#[test]
+fn a_panicking_thread_policy_loses_no_executor() {
+    let clock = TestClock::new();
+    let mut engine = Engine::with_clock(Arc::new(clock.clone()), EngineConfig::default());
+    engine.set_thread_policy(Some(Arc::new(PanickingPolicy)));
+    engine
+        .add_partition::<()>(RENDER, Arc::new(()), (), cadence())
+        .unwrap();
+    engine
+        .add_partition::<()>(
+            OUTPUT,
+            Arc::new(()),
+            (),
+            Pacing::doorbell(Duration::from_millis(1)),
+        )
+        .unwrap();
+    let mut graph = GraphDescription::new();
+    let mut ids = Vec::new();
+    for p in [RENDER, OUTPUT] {
+        let (source, sink) = (
+            TestNode::new(Role::Source, "source"),
+            TestNode::new(Role::VideoSink, "sink"),
+        );
+        let pair = (add(&mut graph, &source, p), add(&mut graph, &sink, p));
+        graph.connect(pair.0, "out", pair.1, "in").unwrap();
+        engine.adopt::<()>(p, pair.0, Box::new(source)).unwrap();
+        engine.adopt::<()>(p, pair.1, Box::new(sink)).unwrap();
+        ids.push(pair);
+    }
+    let render = engine.worker_stats(RENDER).unwrap();
+    let output = engine.worker_stats(OUTPUT).unwrap();
+    for round in 1..=2 {
+        engine.apply(&graph).unwrap();
+        assert!(engine.has_worker(RENDER), "round {round}");
+        let before = render.ticks();
+        clock.advance(FRAME);
+        engine.wake(RENDER);
+        assert!(
+            eventually(LIMIT, || render.ticks() > before),
+            "round {round}"
+        );
+        // Stopping runs the panicking restore; the executor must come back.
+        graph.set_state(ids[0].1, Lifecycle::Standby).unwrap();
+        let applied = engine.apply(&graph).unwrap();
+        assert!(applied.errors.is_empty(), "{:?}", applied.errors);
+        assert!(!engine.has_worker(RENDER));
+        graph.set_state(ids[0].1, Lifecycle::Active).unwrap();
+    }
+    assert_eq!(render.starts(), 2);
+    assert_eq!(render.thread_grant(), Some(ThreadGrant::Raised));
+    // A panic in `enter` counts as an error; the worker runs anyway.
+    assert!(eventually(LIMIT, || output.ticks() >= 3));
+    assert_eq!(output.policy_errors(), 1);
+    let report = engine.shutdown();
+    assert!(report.errors.is_empty(), "{:?}", report.errors);
 }

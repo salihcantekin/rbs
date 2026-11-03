@@ -114,9 +114,7 @@ mod tests {
 
     #[test]
     fn periodic_and_responsive_requests_are_granted_or_refused_cleanly() {
-        let periodic = enter_on_new_thread(ThreadClass::Periodic {
-            period: Duration::from_nanos(16_666_667),
-        });
+        let periodic = enter_on_new_thread(ThreadClass::periodic(Duration::from_nanos(16_666_667)));
         let responsive = enter_on_new_thread(ThreadClass::Responsive);
         // On Windows and macOS these calls need no privilege.
         #[cfg(any(windows, target_os = "macos"))]

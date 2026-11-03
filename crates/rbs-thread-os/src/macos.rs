@@ -31,6 +31,10 @@ unsafe extern "C" {
 
 /// `QOS_CLASS_USER_INTERACTIVE` from <sys/qos.h>.
 const QOS_CLASS_USER_INTERACTIVE: u32 = 0x21;
+/// `QOS_CLASS_DEFAULT`.
+const QOS_CLASS_DEFAULT: u32 = 0x15;
+/// `QOS_CLASS_UNSPECIFIED`: not accepted by `pthread_set_qos_class_self_np`.
+const QOS_CLASS_UNSPECIFIED: u32 = 0;
 
 /// The shortest computation Apple silicon accepts for a time-constraint thread.
 const MIN_COMPUTATION: Duration = Duration::from_micros(50);
@@ -42,8 +46,9 @@ pub(crate) fn enter(
     request: &ThreadRequest<'_>,
 ) -> Result<ThreadGuard, ThreadPolicyError> {
     match request.class {
-        ThreadClass::Periodic { period } if config.realtime && !period.is_zero() => {
-            time_constraint(period)
+        // Like the other platforms, a refused real-time class falls back to a raised one.
+        ThreadClass::Periodic { period, .. } if config.realtime && !period.is_zero() => {
+            time_constraint(period).or_else(|_| user_interactive())
         }
         _ => user_interactive(),
     }
@@ -115,8 +120,52 @@ fn user_interactive() -> Result<ThreadGuard, ThreadPolicyError> {
     if rc != 0 {
         return Err(ThreadPolicyError::Os(rc));
     }
+    // A thread that never had a class reports "unspecified", which cannot be set back;
+    // the default class is what it ran with.
+    let old = if old == QOS_CLASS_UNSPECIFIED {
+        QOS_CLASS_DEFAULT
+    } else {
+        old
+    };
     Ok(ThreadGuard::restoring(ThreadGrant::Raised, move || {
         // SAFETY: as above, on the same thread.
         let _ = unsafe { pthread_set_qos_class_self_np(old, relative) };
     }))
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used)] // Tests fail by panicking.
+
+    use super::*;
+
+    fn qos() -> u32 {
+        let (mut class, mut relative) = (0u32, 0 as libc::c_int);
+        // SAFETY: as in `user_interactive`.
+        let rc =
+            unsafe { pthread_get_qos_class_np(libc::pthread_self(), &mut class, &mut relative) };
+        assert_eq!(rc, 0);
+        class
+    }
+
+    #[test]
+    fn a_responsive_guard_raises_and_restores_the_qos_class() {
+        std::thread::spawn(|| {
+            let before = qos();
+            let guard = enter(
+                &OsThreadConfig::default(),
+                &ThreadRequest::new("t", ThreadClass::Responsive),
+            )
+            .unwrap();
+            assert_eq!(qos(), QOS_CLASS_USER_INTERACTIVE);
+            drop(guard);
+            let after = qos();
+            assert!(
+                after == before || (before == QOS_CLASS_UNSPECIFIED && after == QOS_CLASS_DEFAULT),
+                "{before:#x} -> {after:#x}"
+            );
+        })
+        .join()
+        .unwrap();
+    }
 }

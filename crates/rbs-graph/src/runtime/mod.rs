@@ -55,7 +55,12 @@ pub trait Runtime: 'static {
     /// swap made without a worker. A runtime with thread-bound resources (a COM
     /// apartment, a current CUDA or GL context) binds them here, since workers restart
     /// on new OS threads (ADR-0013, ADR-0030). Not real-time: may allocate and make
-    /// system calls. A panic is caught and the executor runs on.
+    /// system calls. A panic is caught and the executor runs on. On the control thread a
+    /// context may already be current there; `attach` saves it and `detach` restores it.
+    /// When the engine drops a partition it attaches and then drops the executor (and
+    /// `Local`) without a detach. If a worker thread dies from a panic outside the
+    /// executor's catch, the executor is lost without a detach, so `Local`'s own `Drop`
+    /// must not assume a bound context.
     fn attach(shared: &Self::Shared, local: &mut Self::Local) {
         let _ = (shared, local);
     }

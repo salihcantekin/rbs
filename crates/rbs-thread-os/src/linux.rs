@@ -50,15 +50,16 @@ pub(crate) fn enter(
 
 /// Sets this thread's timer slack in ns; returns how to restore the old one.
 fn timer_slack(ns: libc::c_ulong) -> Option<Undo> {
+    const ZERO: libc::c_ulong = 0;
     // SAFETY: PR_GET_TIMERSLACK takes no pointers and only reads the calling thread's
-    // slack; the unused arguments are zero as the man page asks.
-    let old = unsafe { libc::prctl(libc::PR_GET_TIMERSLACK, 0, 0, 0, 0) };
+    // slack; the unused arguments are zero `unsigned long`s as the man page asks.
+    let old = unsafe { libc::prctl(libc::PR_GET_TIMERSLACK, ZERO, ZERO, ZERO, ZERO) };
     if old < 0 {
         return None;
     }
     // SAFETY: PR_SET_TIMERSLACK takes the slack by value and only affects the calling
     // thread.
-    let set = unsafe { libc::prctl(libc::PR_SET_TIMERSLACK, ns, 0, 0, 0) };
+    let set = unsafe { libc::prctl(libc::PR_SET_TIMERSLACK, ns, ZERO, ZERO, ZERO) };
     if set != 0 {
         return None;
     }
@@ -66,7 +67,7 @@ fn timer_slack(ns: libc::c_ulong) -> Option<Undo> {
     let old = old as libc::c_ulong;
     Some(Box::new(move || {
         // SAFETY: as above; runs on the same thread (the guard is not `Send`).
-        let _ = unsafe { libc::prctl(libc::PR_SET_TIMERSLACK, old, 0, 0, 0) };
+        let _ = unsafe { libc::prctl(libc::PR_SET_TIMERSLACK, old, ZERO, ZERO, ZERO) };
     }))
 }
 
@@ -135,18 +136,39 @@ fn nice(value: libc::c_int) -> Option<Undo> {
     }))
 }
 
-/// Asks rtkit to make the calling thread `SCHED_RR`. rtkit only grants threads of a
-/// process with `RLIMIT_RTTIME` set, so this sets it to rtkit's maximum (process-wide,
-/// and not raised again afterwards: a real-time thread that runs that long without
-/// blocking gets `SIGXCPU`, which the worker loops never do).
+/// The longest an rtkit call may take before the worker gives up on it.
+#[cfg(feature = "rtkit")]
+const RTKIT_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(250);
+
+/// One system-bus connection for the process, made on first use (`None` if there is no
+/// bus); every call on it is bounded by `RTKIT_TIMEOUT`.
+#[cfg(feature = "rtkit")]
+fn system_bus() -> Option<&'static zbus::blocking::Connection> {
+    static BUS: std::sync::OnceLock<Option<zbus::blocking::Connection>> =
+        std::sync::OnceLock::new();
+    BUS.get_or_init(|| {
+        zbus::blocking::connection::Builder::system()
+            .ok()?
+            .method_timeout(RTKIT_TIMEOUT)
+            .build()
+            .ok()
+    })
+    .as_ref()
+}
+
+/// Asks rtkit to make the calling thread `SCHED_RR` (feature `rtkit`). rtkit only grants
+/// threads of a process with `RLIMIT_RTTIME` set, so this lowers it to rtkit's maximum,
+/// process-wide and for good, once rtkit answered: the soft limit is half the hard one,
+/// so an overrun first gets `SIGXCPU` (whose default action still ends the process; the
+/// composition root that enables this feature must handle it) before `SIGKILL`.
 #[cfg(feature = "rtkit")]
 fn rtkit(priority: libc::c_int) -> Option<Undo> {
-    use zbus::blocking::{Connection, Proxy};
+    use zbus::blocking::Proxy;
 
     let old = sched_get()?;
-    let connection = Connection::system().ok()?;
+    let connection = system_bus()?;
     let kit = Proxy::new(
-        &connection,
+        connection,
         "org.freedesktop.RealtimeKit1",
         "/org/freedesktop/RealtimeKit1",
         "org.freedesktop.RealtimeKit1",
@@ -165,7 +187,7 @@ fn rtkit(priority: libc::c_int) -> Option<Undo> {
     }
     if limit.rlim_max == libc::RLIM_INFINITY || limit.rlim_max > max_rttime {
         let lowered = libc::rlimit {
-            rlim_cur: max_rttime,
+            rlim_cur: max_rttime / 2,
             rlim_max: max_rttime,
         };
         // SAFETY: `lowered` is a valid struct that outlives the call; lowering a limit
@@ -184,4 +206,41 @@ fn rtkit(priority: libc::c_int) -> Option<Undo> {
 #[cfg(not(feature = "rtkit"))]
 fn rtkit(_: libc::c_int) -> Option<Undo> {
     None
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used)] // Tests fail by panicking.
+
+    use super::*;
+
+    fn slack() -> libc::c_int {
+        const ZERO: libc::c_ulong = 0;
+        // SAFETY: as in `timer_slack`.
+        unsafe { libc::prctl(libc::PR_GET_TIMERSLACK, ZERO, ZERO, ZERO, ZERO) }
+    }
+
+    #[test]
+    fn the_guard_restores_slack_policy_and_nice_value() {
+        std::thread::spawn(|| {
+            let (slack_before, sched_before) = (slack(), sched_get().unwrap());
+            let guard = enter(
+                &OsThreadConfig::default(),
+                &ThreadRequest::new(
+                    "t",
+                    ThreadClass::periodic(std::time::Duration::from_millis(16)),
+                ),
+            )
+            .unwrap();
+            // Real-time threads have no slack at all on recent kernels.
+            assert!(slack() <= 1, "{}", slack());
+            drop(guard);
+            assert_eq!(slack(), slack_before);
+            let sched_after = sched_get().unwrap();
+            assert_eq!(sched_after.0, sched_before.0);
+            assert_eq!(sched_after.1.sched_priority, sched_before.1.sched_priority);
+        })
+        .join()
+        .unwrap();
+    }
 }

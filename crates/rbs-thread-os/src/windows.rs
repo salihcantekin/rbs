@@ -2,6 +2,12 @@
 //! Multimedia Class Scheduler keeps above normal threads within its CPU budget), an
 //! above-normal priority for responsive ones, and 1 ms timer resolution for both so
 //! `park_timeout` does not round up to the 15.6 ms default tick.
+//!
+//! Side effects (ADR-0030): while any thread is registered with MMCSS, Windows applies
+//! `NetworkThrottlingIndex` to non-multimedia network traffic system-wide (10 packets
+//! per ms by default); a thread that uses up the task's CPU share drops to low priority
+//! for the rest of the period; Windows 11 may ignore `timeBeginPeriod` for a process
+//! without a visible window, so a headless engine can keep the coarse timer.
 
 use rbs_core::thread::{ThreadClass, ThreadGrant, ThreadGuard, ThreadPolicyError, ThreadRequest};
 use windows::Win32::Media::{timeBeginPeriod, timeEndPeriod};

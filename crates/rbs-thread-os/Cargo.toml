@@ -27,10 +27,16 @@ windows = { version = "0.62", features = [
 ] }
 
 [features]
-default = ["rtkit"]
+default = []
 # Linux: ask rtkit (org.freedesktop.RealtimeKit1) for SCHED_RR when the process may
-# not set a real-time class itself.
+# not set a real-time class itself. Off by default: rtkit only grants a process with
+# RLIMIT_RTTIME set, and a real-time thread that then runs that long without blocking
+# gets the process killed (ADR-0030). Enable only with a SIGXCPU strategy in place.
 rtkit = ["dep:zbus"]
 
 [lints]
 workspace = true
+
+[[bench]]
+name = "wakeup"
+harness = false

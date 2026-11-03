@@ -9,6 +9,7 @@
 //! threads run at the platform's default class (ADR-0013).
 
 use std::fmt;
+use std::marker::PhantomData;
 use std::time::Duration;
 
 /// What a thread does, so that a policy can pick its class.
@@ -16,7 +17,9 @@ use std::time::Duration;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ThreadClass {
     /// Work once per `period` that must finish well inside it: the render executor and
-    /// encoders at frame cadence.
+    /// encoders at frame cadence. Build it with [`ThreadClass::periodic`]; more fields
+    /// (a compute budget) may be added.
+    #[non_exhaustive]
     Periodic {
         /// The time between two runs.
         period: Duration,
@@ -24,6 +27,13 @@ pub enum ThreadClass {
     /// Event-driven work that should run soon after a wake-up but has no deadline per
     /// period: outputs, muxers, network sends.
     Responsive,
+}
+
+impl ThreadClass {
+    /// Periodic work once per `period`.
+    pub const fn periodic(period: Duration) -> Self {
+        ThreadClass::Periodic { period }
+    }
 }
 
 /// A request for one thread, made on that thread.
@@ -81,11 +91,19 @@ impl fmt::Display for ThreadPolicyError {
 impl std::error::Error for ThreadPolicyError {}
 
 /// Undoes what a policy did for a thread when dropped. Must be dropped on the thread
-/// it was made for; it is neither `Send` nor `Sync`, so it cannot leave that thread.
+/// it was made for; it is neither `Send` nor `Sync`, so it cannot leave that thread:
+///
+/// ```compile_fail
+/// use rbs_core::thread::{ThreadGrant, ThreadGuard};
+/// fn send<T: Send>(_: T) {}
+/// send(ThreadGuard::new(ThreadGrant::Unchanged));
+/// ```
 #[must_use = "dropping the guard undoes the thread's class at once"]
 pub struct ThreadGuard {
     grant: ThreadGrant,
     restore: Option<Box<dyn FnOnce()>>,
+    /// Keeps the guard `!Send` and `!Sync` whatever `restore` holds.
+    _thread_bound: PhantomData<*const ()>,
 }
 
 impl ThreadGuard {
@@ -94,6 +112,7 @@ impl ThreadGuard {
         Self {
             grant,
             restore: None,
+            _thread_bound: PhantomData,
         }
     }
 
@@ -102,6 +121,7 @@ impl ThreadGuard {
         Self {
             grant,
             restore: Some(Box::new(restore)),
+            _thread_bound: PhantomData,
         }
     }
 
@@ -132,8 +152,11 @@ impl Drop for ThreadGuard {
 /// composition root hands one to the engine.
 pub trait ThreadPolicy: Send + Sync + 'static {
     /// Called on the thread the request is for, before its real-time work starts. Not
-    /// real-time: may allocate and make system calls, but must not block for long (it
-    /// delays the thread's first tick). On error the thread runs at its default class.
+    /// real-time: may allocate and make system calls, but must return within about a
+    /// quarter second whatever the system does (bound every IPC call with a timeout): it
+    /// delays the thread's first tick, and a call that never returns stalls the engine.
+    /// On error the thread runs at its default class. The guard's restore must not panic;
+    /// callers catch it anyway.
     fn enter(&self, request: &ThreadRequest<'_>) -> Result<ThreadGuard, ThreadPolicyError>;
 }
 
