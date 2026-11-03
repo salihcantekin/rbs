@@ -180,6 +180,17 @@ pub enum Command {
     /// Stop the running recording; the file is complete when
     /// [`RecordingUpdate::Stopped`] arrives.
     StopRecording,
+    /// Change the canvas's size and rate (Settings, Video). The studio restarts with
+    /// it (ADR-0041: a running studio's canvas does not change); the program scene's
+    /// items are placed again for the new size. Refused while recording. Always
+    /// answered with [`Update::Canvas`]; the UI drops its preview connection first,
+    /// since the old studio's preview ends.
+    SetCanvas {
+        /// The new size.
+        size: Size,
+        /// The new rate.
+        fps: FrameRate,
+    },
 }
 
 /// A video encoder the user can pick.
@@ -249,6 +260,24 @@ pub enum Update {
         encoders: Vec<EncoderInfo>,
         /// Why this system cannot record, or `None` when it can.
         cannot_record: Option<String>,
+        /// The canvas's size.
+        size: Size,
+        /// The canvas's rate.
+        fps: FrameRate,
+        /// The main display's size in pixels, when known (for "Main display" in
+        /// Settings).
+        display: Option<(u32, u32)>,
+    },
+    /// The canvas the studio runs now, after [`Command::SetCanvas`]: changed, or
+    /// unchanged when the change was refused (an [`Update::Error`] says why). Connect
+    /// to `preview` again.
+    Canvas {
+        /// The preview endpoint.
+        preview: Option<PreviewEndpoint>,
+        /// The canvas's size.
+        size: Size,
+        /// The canvas's rate.
+        fps: FrameRate,
     },
     /// The studio cannot run (no GPU, or a studio node failed for good).
     Failed(String),
@@ -279,16 +308,29 @@ impl HostConfig {
     /// 1920 x 1080 at 30 frames per second with a 1280 x 720 preview where the platform
     /// has one (macOS, Windows).
     pub fn desktop() -> Self {
-        let preview = cfg!(any(target_os = "macos", windows)).then_some(PreviewDesc {
-            width: 1280,
-            height: 720,
-            surfaces: 3,
-        });
-        Self {
-            size: Size::new(1920, 1080),
-            fps: FrameRate::FPS_30,
-            preview,
-        }
+        Self::canvas(Size::new(1920, 1080), FrameRate::FPS_30)
+    }
+
+    /// A canvas of `size` at `fps`, with a preview of its aspect ratio where the
+    /// platform has one (macOS, Windows).
+    pub fn canvas(size: Size, fps: FrameRate) -> Self {
+        let preview =
+            cfg!(any(target_os = "macos", windows)).then(|| preview_desc(size, PREVIEW_SURFACES));
+        Self { size, fps, preview }
+    }
+}
+
+/// Surfaces in the preview's ring.
+const PREVIEW_SURFACES: usize = 3;
+
+/// The preview's surfaces for a canvas of `size`: its aspect ratio, the longer side
+/// 1280 pixels (or the canvas's, if smaller), even sides.
+fn preview_desc(size: Size, surfaces: usize) -> PreviewDesc {
+    let (width, height) = crate::canvas_profile::preview_size(size.width, size.height);
+    PreviewDesc {
+        width,
+        height,
+        surfaces,
     }
 }
 
@@ -302,11 +344,12 @@ impl StudioHost {
     /// Starts the control thread. It makes the adapters (`adapters`, then probes them)
     /// and the GPU context (`gpu`) on that thread, starts the studio with an empty scene
     /// and reports through `notify`, which runs on the control thread and must not block.
+    /// `engine` makes the studio's engine, again whenever the canvas changes.
     pub fn spawn(
         config: HostConfig,
         adapters: impl FnOnce() -> (RecordAdapters, Vec<String>) + Send + 'static,
         gpu: impl FnOnce() -> Result<Arc<GpuContext>, String> + Send + 'static,
-        engine: impl FnOnce() -> Engine + Send + 'static,
+        engine: impl Fn() -> Engine + Send + 'static,
         notify: impl Fn(Update) + Send + 'static,
     ) -> std::io::Result<Self> {
         let (tx, rx) = mpsc::channel();
@@ -349,13 +392,20 @@ struct Host {
     waiting: bool,
     /// The running recording's file.
     recording: Option<PathBuf>,
+    /// Makes an engine for a restart.
+    engine: Box<dyn Fn() -> Engine>,
+    gpu: Arc<GpuContext>,
+    /// The preview's ring size, when there is a preview.
+    preview_surfaces: Option<usize>,
+    /// Why the studio could not start again after a canvas change.
+    dead: Option<String>,
 }
 
 fn run(
     config: HostConfig,
     adapters: impl FnOnce() -> (RecordAdapters, Vec<String>),
     gpu: impl FnOnce() -> Result<Arc<GpuContext>, String>,
-    engine: impl FnOnce() -> Engine,
+    engine: impl Fn() -> Engine + 'static,
     rx: Receiver<Command>,
     notify: &dyn Fn(Update),
 ) {
@@ -379,6 +429,10 @@ fn run(
             Ok(c) => {
                 if !failed {
                     host.command(c, notify);
+                }
+                if let Some(why) = host.dead.take() {
+                    failed = true;
+                    notify(Update::Failed(why));
                 }
             }
             Err(RecvTimeoutError::Timeout) => {}
@@ -415,7 +469,7 @@ fn start(
     config: HostConfig,
     adapters: impl FnOnce() -> (RecordAdapters, Vec<String>),
     gpu: impl FnOnce() -> Result<Arc<GpuContext>, String>,
-    engine: impl FnOnce() -> Engine,
+    engine: impl Fn() -> Engine + 'static,
 ) -> Result<(Host, Update), String> {
     let (mut adapters, mut notes) = adapters();
     adapters.probe();
@@ -433,8 +487,29 @@ fn start(
         .map_err(|e| format!("program: {e:?}"))?;
     let mut settings = StudioSettings::new(canvas);
     settings.preview = config.preview;
-    let studio = Studio::start(engine(), gpu, &collection, &adapters.sources, &settings)
-        .map_err(|e| e.to_string())?;
+    let studio = Studio::start(
+        engine(),
+        Arc::clone(&gpu),
+        &collection,
+        &adapters.sources,
+        &settings,
+    )
+    .map_err(|e| e.to_string())?;
+    let display = adapters
+        .sources
+        .targets(&SourceKind::Screen.type_id())
+        .unwrap_or_default()
+        .into_iter()
+        .find(|t| t.is_default)
+        .or_else(|| {
+            adapters
+                .sources
+                .targets(&SourceKind::Screen.type_id())
+                .unwrap_or_default()
+                .into_iter()
+                .next()
+        })
+        .and_then(|t| t.size);
     let installed = adapters.sources.installed();
     let kinds = SourceKind::ALL
         .into_iter()
@@ -462,6 +537,9 @@ fn start(
         notes,
         encoders,
         cannot_record,
+        size: config.size,
+        fps: config.fps,
+        display,
     };
     Ok((
         Host {
@@ -474,6 +552,10 @@ fn start(
             undo: None,
             waiting: false,
             recording: None,
+            engine: Box::new(engine),
+            gpu,
+            preview_surfaces: config.preview.map(|p| p.surfaces),
+            dead: None,
         },
         update,
     ))
@@ -534,7 +616,97 @@ impl Host {
                 self.stop_recording(None, notify);
                 self.publish(notify);
             }
+            Command::SetCanvas { size, fps } => {
+                if let Err(why) = self.set_canvas(size, fps) {
+                    notify(Update::Error(why));
+                }
+                let (size, fps) = self
+                    .collection
+                    .canvas(self.canvas)
+                    .map_or((size, fps), |c| (c.size, c.frame_rate));
+                notify(Update::Canvas {
+                    preview: self.studio.preview(),
+                    size,
+                    fps,
+                });
+                self.rows.clear();
+                self.publish(notify);
+            }
         }
+    }
+
+    /// Restarts the studio with the canvas at `size` and `fps`, the program scene's
+    /// items placed again for it. When the new canvas does not start, the old one
+    /// starts again and the error says why; when that fails too, `dead` says why.
+    fn set_canvas(&mut self, size: Size, fps: FrameRate) -> Result<(), String> {
+        if self.recording.is_some() {
+            return Err("Stop the recording before changing the canvas.".into());
+        }
+        let canvas = self
+            .collection
+            .canvas(self.canvas)
+            .ok_or("the canvas is gone")?;
+        let (old_size, old_fps) = (canvas.size, canvas.frame_rate);
+        if (old_size, old_fps) == (size, fps) {
+            return Ok(());
+        }
+        let before = self.collection.clone();
+        self.collection
+            .set_canvas_format(self.canvas, size, fps)
+            .map_err(|e| format!("canvas: {e:?}"))?;
+        let items: Vec<_> = self
+            .collection
+            .scenes_for(self.canvas)
+            .flat_map(|s| s.items.iter().map(|i| (i.id, i.layout)))
+            .collect();
+        for (id, layout) in items {
+            let moved = rescale_layout(
+                &layout,
+                (old_size.width, old_size.height),
+                (size.width, size.height),
+            );
+            let _ = self.collection.set_item_layout(id, None, moved);
+        }
+        // Old layouts would come back with an undo.
+        self.undo = None;
+        let _ = self.studio.shutdown();
+        match self.restart() {
+            Ok(()) => Ok(()),
+            Err(why) => {
+                self.collection = before;
+                match self.restart() {
+                    Ok(()) => Err(format!(
+                        "The canvas {} x {} cannot be used: {why}",
+                        size.width, size.height
+                    )),
+                    Err(again) => {
+                        self.dead = Some(again);
+                        Err(why)
+                    }
+                }
+            }
+        }
+    }
+
+    /// Starts a new studio for the collection as it is.
+    fn restart(&mut self) -> Result<(), String> {
+        let canvas = self
+            .collection
+            .canvas(self.canvas)
+            .ok_or("the canvas is gone")?;
+        let mut settings = StudioSettings::new(self.canvas);
+        settings.preview = self.preview_surfaces.map(|n| preview_desc(canvas.size, n));
+        let studio = Studio::start(
+            (self.engine)(),
+            Arc::clone(&self.gpu),
+            &self.collection,
+            &self.adapters.sources,
+            &settings,
+        )
+        .map_err(|e| e.to_string())?;
+        self.studio = studio;
+        self.waiting = self.studio.waiting();
+        Ok(())
     }
 
     /// Starts recording to `r.path`; the file's folder is made first.
@@ -783,4 +955,84 @@ pub fn camera_layout(width: u32, height: u32) -> Layout {
         [width as f32 - w - margin, height as f32 - h - margin],
         [w, h],
     )
+}
+
+/// `layout` on a canvas of `from` placed again on a canvas of `to`. A picture that
+/// fills the canvas's width or height, centred (as a screen is added), is fitted to the
+/// new canvas with its own aspect ratio. Anything else keeps its size relative to the
+/// canvas (the smaller of the two scale factors, so its shape stays) and its margin to
+/// the nearest edges: a camera in a corner stays in that corner.
+pub fn rescale_layout(layout: &Layout, from: (u32, u32), to: (u32, u32)) -> Layout {
+    let (fw, fh) = (from.0.max(1) as f32, from.1.max(1) as f32);
+    let (tw, th) = (to.0 as f32, to.1 as f32);
+    let [x, y] = layout.position;
+    let [w, h] = layout.size;
+    let near = |a: f32, b: f32| (a - b).abs() < 1.0;
+    let centred = near(x + w / 2.0, fw / 2.0) && near(y + h / 2.0, fh / 2.0);
+    let mut out = *layout;
+    if centred && (near(w.abs(), fw) || near(h.abs(), fh)) && w != 0.0 && h != 0.0 {
+        // Fit: the limiting side takes the canvas's size.
+        let (nw, nh) = if w.abs() * th >= h.abs() * tw {
+            (tw, tw * h.abs() / w.abs())
+        } else {
+            (th * w.abs() / h.abs(), th)
+        };
+        out.size = [nw * w.signum(), nh * h.signum()];
+        out.position = [(tw - nw) / 2.0, (th - nh) / 2.0];
+        return out;
+    }
+    let s = (tw / fw).min(th / fh);
+    let axis = |pos: f32, len: f32, old: f32, new: f32| {
+        let size = len * s;
+        let centre = pos + len / 2.0;
+        let pos = if near(centre, old / 2.0) {
+            (new - size) / 2.0
+        } else if centre < old / 2.0 {
+            pos * s
+        } else {
+            new - (old - pos - len) * s - size
+        };
+        (pos, size)
+    };
+    let (nx, nw) = axis(x, w, fw, tw);
+    let (ny, nh) = axis(y, h, fh, th);
+    out.position = [nx, ny];
+    out.size = [nw, nh];
+    out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_fitted_screen_is_fitted_again() {
+        let l = Layout::fit(1920, 1080, 3440, 1440);
+        let got = rescale_layout(&l, (1920, 1080), (3440, 1440));
+        assert_eq!(got, Layout::new([0.0, 0.0], [3440.0, 1440.0]));
+        let full = Layout::new([0.0, 0.0], [1920.0, 1080.0]);
+        let got = rescale_layout(&full, (1920, 1080), (3440, 1440));
+        assert_eq!(got, Layout::fit(3440, 1440, 1920, 1080));
+        let got = rescale_layout(&full, (1920, 1080), (1280, 720));
+        assert_eq!(got, Layout::new([0.0, 0.0], [1280.0, 720.0]));
+    }
+
+    #[test]
+    fn a_camera_stays_in_its_corner() {
+        let got = rescale_layout(&camera_layout(1920, 1080), (1920, 1080), (3840, 2160));
+        assert_eq!(got, camera_layout(3840, 2160));
+        let got = rescale_layout(&camera_layout(1920, 1080), (1920, 1080), (3440, 1440));
+        let s = 1440.0 / 1080.0;
+        let cam = camera_layout(1920, 1080);
+        let right = 1920.0 - cam.position[0] - cam.size[0];
+        assert!((got.size[0] - cam.size[0] * s).abs() < 0.01);
+        assert!((3440.0 - got.position[0] - got.size[0] - right * s).abs() < 0.01);
+        assert!((1440.0 - got.position[1] - got.size[1] - right * s).abs() < 0.01);
+    }
+
+    #[test]
+    fn previews_keep_the_canvas_aspect() {
+        let d = preview_desc(Size::new(3440, 1440), 3);
+        assert_eq!((d.width, d.height, d.surfaces), (1280, 534, 3));
+    }
 }

@@ -3,7 +3,7 @@
 // layout tree into tab stacks and splitter handles with absolute positions.
 import { Theme, Tokens } from "tokens.slint";
 import { Button, IconButton, Icon, IconName, MenuItem, MenuSurface, EmptyState } from "components.slint";
-import { Studio, SourceData, KindData, TargetData, MeterRow, ScaleMark, ProgramPanel, SourcesPanel, MixerPanel, LiveControlsPanel, OutputsPanel, RecordingSettings } from "studio.slint";
+import { Studio, SourceData, KindData, TargetData, MeterRow, ScaleMark, ProgramPanel, SourcesPanel, MixerPanel, LiveControlsPanel, OutputsPanel, RecordingSettings, VideoSettings } from "studio.slint";
 
 export { Theme, Tokens, Studio, SourceData, KindData, TargetData, MeterRow, ScaleMark }
 
@@ -568,6 +568,8 @@ export component SettingsWindow inherits Window {
     min-width: Tokens.size-menu-md * 2;
     background: Theme.surface-raised;
     default-font-size: Tokens.type-body-size;
+    // 0 Video, 1 Recording.
+    in-out property <int> section: 1;
     HorizontalLayout {
         Rectangle {
             width: Tokens.size-menu-sm;
@@ -577,23 +579,33 @@ export component SettingsWindow inherits Window {
                 alignment: start;
                 accessible-role: list;
                 accessible-label: @tr("Settings sections");
-                MenuItem { text: @tr("Recording"); checked: true; }
+                MenuItem {
+                    text: @tr("Video");
+                    checked: root.section == 0;
+                    activated => { root.section = 0; }
+                }
+                MenuItem {
+                    text: @tr("Recording");
+                    checked: root.section == 1;
+                    activated => { root.section = 1; }
+                }
             }
         }
         Flickable {
-            content-height: section.preferred-height;
-            section := VerticalLayout {
+            content-height: page.preferred-height;
+            page := VerticalLayout {
                 padding: Tokens.space-4;
                 spacing: Tokens.space-3;
                 alignment: start;
                 Text {
-                    text: @tr("Recording");
+                    text: root.section == 0 ? @tr("Video") : @tr("Recording");
                     color: Theme.text-primary;
                     font-size: Tokens.type-heading-size;
                     font-weight: Tokens.type-heading-weight;
                     accessible-role: none;
                 }
-                RecordingSettings { }
+                if root.section == 0: VideoSettings { }
+                if root.section == 1: RecordingSettings { }
             }
         }
     }

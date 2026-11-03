@@ -7,6 +7,7 @@ use std::rc::Rc;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use rbs_app::canvas_profile::{self, CanvasProfile, RATES, SIZES};
 use rbs_app::record_profile::{self, AUDIO_KBPS, Format, RecordProfile, VIDEO_KBPS};
 use rbs_app::studio_host::{
     Command, EncoderInfo, RecordRequest, RecordingUpdate, SourceKind, SourceRow, SourceStatus,
@@ -93,11 +94,20 @@ pub struct StudioUi {
     /// The folder field shows this; it changes only on load and on Return (typing is
     /// never overwritten by a sync).
     pub folder_serial: u64,
+    /// The canvas (Settings, Video), as saved; the studio runs it once started.
+    pub canvas: CanvasProfile,
+    /// The main display's size, when known.
+    display: Option<(u32, u32)>,
+    /// A canvas change was sent; the studio restarts.
+    canvas_restarting: bool,
+    /// Why the canvas could not be saved, loaded or changed.
+    canvas_note: String,
 }
 
 impl StudioUi {
     pub fn new(config: &Path) -> Self {
         let (profile, why) = record_profile::load(config);
+        let (canvas, canvas_why) = canvas_profile::load(config);
         let scale = SCALE_MARKS_DB
             .iter()
             .map(|db| ScaleMark {
@@ -138,6 +148,12 @@ impl StudioUi {
                 .map(|w| format!("The saved recording settings were not used: {w}"))
                 .unwrap_or_default(),
             folder_serial: 1,
+            canvas,
+            display: None,
+            canvas_restarting: false,
+            canvas_note: canvas_why
+                .map(|w| format!("The saved canvas was not used: {w}"))
+                .unwrap_or_default(),
         }
     }
 
@@ -203,6 +219,23 @@ impl StudioUi {
             g.set_out_folder(self.profile.folder.display().to_string().into());
             g.set_out_folder_serial(self.folder_serial as i32);
         }
+        let sizes = self.canvas_sizes();
+        g.set_canvas_sizes(strings(sizes.iter().map(|(_, label)| label.clone())));
+        g.set_canvas_size(
+            sizes
+                .iter()
+                .position(|(s, _)| *s == (self.canvas.width, self.canvas.height))
+                .unwrap_or(0) as i32,
+        );
+        g.set_canvas_rates(strings(RATES.iter().map(|r| format!("{r}"))));
+        g.set_canvas_rate(
+            RATES
+                .iter()
+                .position(|r| *r == self.canvas.fps)
+                .unwrap_or(0) as i32,
+        );
+        g.set_canvas_restarting(self.canvas_restarting);
+        g.set_canvas_note(self.canvas_note.as_str().into());
         g.set_picture_panel(picture_panel.into());
         g.set_state(self.state);
         g.set_failure(self.failure.as_str().into());
@@ -357,6 +390,93 @@ impl StudioUi {
         };
     }
 
+    /// The canvas sizes offered, with their labels: the presets, the main display's
+    /// size, and the saved size if it is none of them.
+    fn canvas_sizes(&self) -> Vec<((u32, u32), String)> {
+        let label = |(w, h): (u32, u32)| {
+            if h > w {
+                format!("{w} x {h} (vertical)")
+            } else {
+                format!("{w} x {h}")
+            }
+        };
+        let mut v: Vec<_> = SIZES.iter().map(|s| (*s, label(*s))).collect();
+        let display = self
+            .display
+            .and_then(|(w, h)| canvas_profile::canvas_for_display(w, h));
+        if let Some(d) = display {
+            match v.iter_mut().find(|(s, _)| *s == d) {
+                Some(entry) => entry.1 = format!("{} (main display)", label(d)),
+                None => v.push((d, format!("{} (main display)", label(d)))),
+            }
+        }
+        let saved = (self.canvas.width, self.canvas.height);
+        if !v.iter().any(|(s, _)| *s == saved) {
+            v.push((saved, label(saved)));
+        }
+        v
+    }
+
+    /// A canvas size was picked. `close_preview` runs before the studio restarts:
+    /// the old studio's preview ends with it.
+    pub fn set_canvas_size(&mut self, i: i32, close_preview: impl FnOnce()) {
+        if let Some(((w, h), _)) = self.canvas_sizes().get(i as usize) {
+            let next = CanvasProfile {
+                width: *w,
+                height: *h,
+                ..self.canvas
+            };
+            self.change_canvas(next, close_preview);
+        }
+    }
+
+    /// A frame rate was picked.
+    pub fn set_canvas_rate(&mut self, i: i32, close_preview: impl FnOnce()) {
+        if let Some(fps) = RATES.get(i as usize) {
+            let next = CanvasProfile {
+                fps: *fps,
+                ..self.canvas
+            };
+            self.change_canvas(next, close_preview);
+        }
+    }
+
+    fn change_canvas(&mut self, next: CanvasProfile, close_preview: impl FnOnce()) {
+        if next == self.canvas || self.canvas_restarting {
+            return;
+        }
+        if self.rec_state != rec_state::OFF {
+            self.canvas_note = "Stop the recording before changing the canvas.".into();
+            return;
+        }
+        if let Some(why) = next.problem() {
+            self.canvas_note = why;
+            return;
+        }
+        self.canvas = next;
+        self.save_canvas();
+        if self.state != 1 || self.host.is_none() {
+            // Not running: the next start uses it.
+            return;
+        }
+        close_preview();
+        self.preview_ready = false;
+        self.preview_failed = false;
+        self.canvas_restarting = true;
+        self.send(Command::SetCanvas {
+            size: next.size(),
+            fps: next.frame_rate(),
+        });
+    }
+
+    fn save_canvas(&mut self) {
+        if let Err(e) = canvas_profile::save(&self.config, &self.canvas) {
+            self.canvas_note = format!("The canvas could not be saved: {e}");
+        } else {
+            self.canvas_note.clear();
+        }
+    }
+
     /// The recording's duration so far, while one runs.
     pub fn recording_for(&self) -> Option<(Duration, String)> {
         self.rec_file
@@ -381,7 +501,10 @@ impl StudioUi {
                 notes,
                 encoders,
                 cannot_record,
+                display,
+                ..
             } => {
+                self.display = display;
                 self.encoders = encoders;
                 self.cannot_record = cannot_record;
                 for n in notes {
@@ -398,6 +521,26 @@ impl StudioUi {
                     })
                     .collect();
                 self.kinds.set_vec(rows);
+                self.preview_offered = preview.is_some();
+                out.preview = preview;
+            }
+            Update::Canvas { preview, size, fps } => {
+                self.canvas_restarting = false;
+                let running = (size.width, size.height, whole_fps(fps));
+                if running != (self.canvas.width, self.canvas.height, self.canvas.fps) {
+                    // Refused: keep what runs (the error says why).
+                    self.canvas = CanvasProfile {
+                        width: size.width,
+                        height: size.height,
+                        fps: whole_fps(fps),
+                        ..self.canvas
+                    };
+                    let note = std::mem::take(&mut self.canvas_note);
+                    self.save_canvas();
+                    if self.canvas_note.is_empty() {
+                        self.canvas_note = note;
+                    }
+                }
                 self.preview_offered = preview.is_some();
                 out.preview = preview;
             }
@@ -664,4 +807,9 @@ pub fn log(line: &str) {
     {
         eprintln!("rbs: {line}");
     }
+}
+
+fn whole_fps(rate: rbs_core::timing::FrameRate) -> u32 {
+    let r = rate.per_second();
+    r.num().div_ceil(r.den().max(1))
 }
