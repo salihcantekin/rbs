@@ -1,6 +1,6 @@
 # ADR-0024: Restart failed nodes with back-off, contained to the failed node
 
-- Status: Proposed
+- Status: Accepted
 - Date: 2026-11-03
 - Deciders: Salih (owner)
 
@@ -125,4 +125,4 @@ Independent AI session per ADR-0014, 2026-11-03. It got only the proposal, specs
 15. Missing tests: added, as listed above, plus `delay_saturates_at_the_maximum` and `the_policy_gives_up_on_repeated_bypasses_too`.
 16. The WIP commit is squashed on merge; the hollow-entry alternative is now the decision.
 
-Merged under the early-phase merge policy (Salih, 2026-11-02: merge once CI is green; large reviews later). The status stays Proposed until the owner accepts it; the P15 human sign-off on the executor change is part of that later review.
+Owner approval: Salih, 2026-11-03 (early-phase policy: merge once CI is green and ADRs may be accepted without waiting; large reviews later). The P15 human sign-off on the executor change is part of that later review.

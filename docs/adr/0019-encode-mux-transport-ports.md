@@ -1,6 +1,6 @@
 # ADR-0019: Separate encode, mux and transport ports for outputs
 
-- Status: Proposed
+- Status: Accepted
 - Date: 2026-11-02
 - Amends: ADR-0003 (adapters may also depend on the format-helper crate `rbs-media-format`, which depends only on `rbs-core`)
 - Deciders: Salih (owner)
@@ -66,4 +66,4 @@ Contract details: [output ports spec](../specs/output-ports.md).
   8. Ambiguous outcomes and chunk keyframes -> `Queued` / `QueuedAfterDrops` / `Dropped`; `keyframe` means an entry point for every stream; chunk-input drop and reconnect rules.
   9. Weak or flaky conformance checks, test support in runtime builds -> tighter interleaving bound, entry-point checks, structural TS/Matroska readers, more negative cases, `assert_ran`, generous timing ceilings, `conformance` cargo features, docs CI with `--all-features`.
   10. Open, accepted as follow-ups: encoder delay signalling, a space-available signal for `QueueFull`, zeroizing `Secret`, allocation guard in the suites, whole-GOP dropping checked only through adapter tests.
-- Owner approval: pending (status stays Proposed; early-phase merge policy allows merging while Proposed)
+- Owner approval: 2026-11-03, under the early-phase policy (Salih: ADRs may be marked Accepted by threads after the independent review)
