@@ -239,13 +239,14 @@ pub fn packets(
         PacketWriter {
             desc: writer_descriptor(LinkKind::Packets),
             tx,
-            doorbell,
+            doorbell: Arc::clone(&doorbell),
             resync: true,
             stats: Arc::clone(&stats),
         },
         PacketReader {
             desc: reader_descriptor(LinkKind::Packets),
             rx,
+            doorbell: Arc::clone(&doorbell),
             pending: None,
             resync: true,
             stats: Arc::clone(&stats),
@@ -422,10 +423,13 @@ impl<X: Runtime> Node<X> for PacketWriter {
 }
 
 /// Passes on packets waiting in a queue, up to the per-tick event capacity; the rest
-/// stay queued for the next tick. After a release it starts again at a keyframe.
+/// stay queued for the next tick, and the reader rings its own partition's doorbell so
+/// that tick comes at once. After a release it starts again at a keyframe.
 pub struct PacketReader {
     desc: NodeDescriptor,
     rx: Receiver<EncodedPacket>,
+    /// The consumer partition's doorbell, rung when packets are left for the next tick.
+    doorbell: Arc<Doorbell>,
     /// A packet taken from the queue that did not fit into this tick's output.
     pending: Option<EncodedPacket>,
     /// Waiting for a keyframe: the queue was drained in the middle of a stream.
@@ -473,6 +477,9 @@ impl<X: Runtime> Node<X> for PacketReader {
                 }
                 Err(rejected) => {
                     self.pending = Some(rejected.value);
+                    // More are waiting: the worker ticks again without waiting for
+                    // the writer's next ring or its timer.
+                    self.doorbell.ring();
                     break;
                 }
             }

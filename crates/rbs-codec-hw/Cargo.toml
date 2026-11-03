@@ -1,0 +1,31 @@
+[package]
+name = "rbs-codec-hw"
+description = "Shared, vendor-neutral session logic for RBS hardware video encoder adapters (NVENC, QSV, AMF, VA-API)."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+rbs-codec = { path = "../rbs-codec" }
+rbs-core = { path = "../rbs-core" }
+# H.273 colour code points for the VUI.
+rbs-media-format = { path = "../rbs-media-format" }
+
+[features]
+# Test devices for the tests of adapters.
+testing = []
+
+[dev-dependencies]
+rbs-codec = { path = "../rbs-codec", features = ["conformance"] }
+# Micro-benchmark of the session hand-off (measure-performance skill, ADR-0009).
+criterion = { version = "0.8", default-features = false, features = ["cargo_bench_support"] }
+
+[[bench]]
+name = "session"
+harness = false
+
+[lints]
+workspace = true

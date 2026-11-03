@@ -491,6 +491,7 @@ struct PacketRig {
     got: Arc<std::sync::Mutex<Vec<(u64, bool)>>>,
     cadence: Cadence,
     tick: u64,
+    bell: Arc<Doorbell>,
     _ctl: (Controller<()>, Controller<()>),
 }
 
@@ -531,6 +532,7 @@ impl PacketRig {
         let mut lowering = Lowering::new();
         lowering.set_packet_capacity(capacity);
         let mut lowered = lowering.lower(&graph);
+        let bell = lowering.doorbell(OUTPUT);
         let (mut pc, mut prod) = channel::<()>(Arc::new(()), ());
         let (mut cc, mut cons) = channel::<()>(Arc::new(()), ());
         pc.adopt(a, Box::new(gop_node)).unwrap();
@@ -554,6 +556,7 @@ impl PacketRig {
             got,
             cadence,
             tick: 1,
+            bell,
             _ctl: (pc, cc),
         }
     }
@@ -615,6 +618,26 @@ fn packets_carried_over_to_the_next_tick_keep_their_order() {
         assert_eq!(*dts, i as u64);
     }
     assert_eq!(rig.stats.overflows() + rig.stats.resync_drops(), 0);
+}
+
+#[test]
+fn a_reader_that_leaves_packets_queued_rings_its_own_doorbell() {
+    let burst = rbs_graph::runtime::PER_TICK_EVENTS as u64;
+    let mut rig = PacketRig::new(burst, 1000, 256);
+    // Two bursts wait; the writer rang.
+    rig.tick(true, false);
+    rig.tick(true, false);
+    assert!(rig.bell.wait(Duration::ZERO));
+    // One burst passes; the reader rings so the rest does not wait for a timer. The
+    // tick with the ring allocates nothing.
+    rig.got.lock().unwrap().reserve(4 * burst as usize); // the recorder's own growth
+    let info = allocation_counter::measure(|| rig.tick(false, true));
+    assert_eq!(info.count_total, 0, "the reader's ring allocated");
+    assert!(rig.bell.wait(Duration::ZERO), "rang for the packets left");
+    // The rest passes and nothing is left: no ring.
+    rig.tick(false, true);
+    assert!(!rig.bell.wait(Duration::ZERO));
+    assert_eq!(rig.got().len() as u64, 2 * burst);
 }
 
 #[test]

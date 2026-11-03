@@ -13,7 +13,7 @@ use objc2_metal::{
 use rbs_core::media::SurfaceSync;
 
 use super::{Opened, USAGE};
-use crate::context::GpuContext;
+use crate::context::{CAP_P010, GpuContext};
 use crate::error::GpuError;
 use crate::pool::TextureDesc;
 
@@ -44,7 +44,7 @@ pub(super) fn open(ctx: &GpuContext, surface: usize) -> Result<Opened, GpuError>
     // this whole call. The reference does not outlive the call.
     let io: &IOSurfaceRef = unsafe { &*(surface as *const IOSurfaceRef) };
     if io.plane_count() > 1 {
-        return Err(GpuError::Unsupported("planar IOSurface"));
+        return open_biplanar(ctx, io);
     }
     let (format, mtl_format) = map_format(io.pixel_format())?;
     let width = u32::try_from(io.width()).map_err(|_| GpuError::InvalidSize {
@@ -74,12 +74,104 @@ pub(super) fn open(ctx: &GpuContext, surface: usize) -> Result<Opened, GpuError>
     )?;
     Ok(Opened {
         texture,
+        chroma: None,
         desc: TextureDesc {
             width,
             height,
             format,
             usage: USAGE,
         },
+    })
+}
+
+/// `kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange` ('420v', NV12 limited range).
+const FOURCC_420V: u32 = u32::from_be_bytes(*b"420v");
+/// `kCVPixelFormatType_420YpCbCr8BiPlanarFullRange` ('420f', NV12 full range).
+const FOURCC_420F: u32 = u32::from_be_bytes(*b"420f");
+/// `kCVPixelFormatType_420YpCbCr10BiPlanarVideoRange` ('x420', P010 limited range).
+const FOURCC_X420: u32 = u32::from_be_bytes(*b"x420");
+/// `kCVPixelFormatType_420YpCbCr10BiPlanarFullRange` ('xf20', P010 full range).
+const FOURCC_XF20: u32 = u32::from_be_bytes(*b"xf20");
+
+/// Opens a bi-planar 4:2:0 IOSurface as two plane textures (Y' and CbCr) for the YUV
+/// decode. The range comes from the frame's `ColorSpace`, not from the fourcc.
+fn open_biplanar(ctx: &GpuContext, io: &IOSurfaceRef) -> Result<Opened, GpuError> {
+    let ten_bit = match io.pixel_format() {
+        FOURCC_420V | FOURCC_420F => false,
+        FOURCC_X420 | FOURCC_XF20 => true,
+        _ => {
+            return Err(GpuError::Unsupported(
+                "planar IOSurface format ('420v', '420f', 'x420', 'xf20')",
+            ));
+        }
+    };
+    if ten_bit && !ctx.has(&CAP_P010) {
+        return Err(GpuError::Unsupported(
+            "10-bit IOSurfaces need 16-bit normalized textures (gpu.p010)",
+        ));
+    }
+    if io.plane_count() != 2 {
+        return Err(GpuError::Unsupported("IOSurface with more than two planes"));
+    }
+    let plane_size = |plane: usize| -> Result<(u32, u32), GpuError> {
+        let w = u32::try_from(io.width_of_plane(plane)).unwrap_or(u32::MAX);
+        let h = u32::try_from(io.height_of_plane(plane)).unwrap_or(u32::MAX);
+        if w == 0 || h == 0 || w.max(h) > ctx.max_texture_dimension() {
+            return Err(GpuError::InvalidSize {
+                width: w,
+                height: h,
+            });
+        }
+        Ok((w, h))
+    };
+    let (width, height) = plane_size(0)?;
+    let (cw, ch) = plane_size(1)?;
+    if !width.is_multiple_of(2) || !height.is_multiple_of(2) || cw != width / 2 || ch != height / 2
+    {
+        return Err(GpuError::InvalidSize { width, height });
+    }
+    let (luma_format, luma_mtl, chroma_format, chroma_mtl) = if ten_bit {
+        (
+            wgpu::TextureFormat::R16Unorm,
+            MTLPixelFormat::R16Unorm,
+            wgpu::TextureFormat::Rg16Unorm,
+            MTLPixelFormat::RG16Unorm,
+        )
+    } else {
+        (
+            wgpu::TextureFormat::R8Unorm,
+            MTLPixelFormat::R8Unorm,
+            wgpu::TextureFormat::Rg8Unorm,
+            MTLPixelFormat::RG8Unorm,
+        )
+    };
+    let plane = |index: usize, format, mtl_format, width, height| {
+        alias_plane(
+            ctx,
+            io,
+            index,
+            PlaneTexture {
+                format,
+                mtl_format,
+                width,
+                height,
+                mtl_usage: MTLTextureUsage::ShaderRead,
+                usage: USAGE,
+            },
+        )
+    };
+    let luma = plane(0, luma_format, luma_mtl, width, height)?;
+    let chroma = plane(1, chroma_format, chroma_mtl, cw, ch)?;
+    let desc = |width, height, format| TextureDesc {
+        width,
+        height,
+        format,
+        usage: USAGE,
+    };
+    Ok(Opened {
+        texture: luma,
+        desc: desc(width, height, luma_format),
+        chroma: Some((chroma, desc(cw, ch, chroma_format))),
     })
 }
 

@@ -72,6 +72,7 @@ jobs:
           RBS_REQUIRE_D3D12: ${{ runner.os == 'Windows' && '1' || '' }}
           RBS_REQUIRE_NV12_SURFACE: ${{ runner.os == 'Linux' && '1' || '' }}
           RBS_REQUIRE_PIPEWIRE: ${{ runner.os == 'Linux' && '1' || '' }}
+          RBS_REQUIRE_VIDEOTOOLBOX: ${{ runner.os == 'macOS' && '1' || '' }}
       - run: cargo doc --workspace --no-deps
         env:
           RUSTDOCFLAGS: -D warnings

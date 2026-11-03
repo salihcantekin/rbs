@@ -104,6 +104,32 @@ impl<X: Runtime> Executor<X> {
             .map(|e| e.health)
     }
 
+    /// Binds the executor to the calling thread: calls [`Runtime::attach`]. Call it on a
+    /// thread before it ticks or swaps, and [`Executor::detach`] on the same thread
+    /// before the executor moves to another one. A panic in the hook is caught.
+    pub fn attach(&mut self) {
+        let (shared, local) = (&*self.shared, &mut self.local);
+        let _ = catch_unwind(AssertUnwindSafe(|| X::attach(shared, local)));
+    }
+
+    /// Unbinds the executor from the calling thread: calls [`Runtime::detach`]. A panic
+    /// in the hook is caught.
+    pub fn detach(&mut self) {
+        let (shared, local) = (&*self.shared, &mut self.local);
+        let _ = catch_unwind(AssertUnwindSafe(|| X::detach(shared, local)));
+    }
+
+    /// Drops the executor on the calling thread with its runtime attached: `attach`,
+    /// `cool` for every node still warm, `detach`, then the nodes and `Local` are
+    /// dropped (so `Local`'s own `Drop` runs unattached and must not rely on a bound
+    /// context). For an executor whose last thread is gone, such as one parked on the
+    /// control thread when its partition is dropped.
+    pub fn retire(mut self) {
+        self.attach();
+        cool_all(&mut self.current.nodes, &self.shared, &mut self.local);
+        self.detach();
+    }
+
     /// Runs one tick, then applies a pending schedule so the next tick runs it.
     ///
     /// Order: `Runtime::begin_tick`, `process` of every scheduled node in dependency
@@ -117,6 +143,19 @@ impl<X: Runtime> Executor<X> {
         self.process_all(tick);
         let (shared, local) = (&*self.shared, &mut self.local);
         let _ = catch_unwind(AssertUnwindSafe(|| X::end_tick(shared, local, tick)));
+        self.maintain();
+    }
+
+    /// Applies a schedule the controller sent, now, without running a tick: the same
+    /// swap `run_tick` does after its nodes ran (`cool` for nodes that leave, `warm`
+    /// for nodes that join), and it also hands back a retired schedule the controller
+    /// could not take yet. Does nothing if nothing is pending.
+    ///
+    /// For workers that wait between ticks (frame cadence): when the control thread
+    /// wakes them after an `apply`, the swap does not have to wait for the next tick.
+    /// Same rules as the swap in `run_tick`: no allocation besides what `warm` and
+    /// `cool` choose to do, no blocking, no lock.
+    pub fn swap_pending(&mut self) {
         self.maintain();
     }
 

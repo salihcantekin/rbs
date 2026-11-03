@@ -162,6 +162,7 @@ pub(super) fn open(
     };
     Ok(Opened {
         texture,
+        chroma: None,
         desc: TextureDesc {
             width,
             height,
