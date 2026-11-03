@@ -98,7 +98,7 @@ impl Default for CanvasProfile {
     }
 }
 
-/// A display's size as a canvas size: even sides, at most [`MAX_SIDE`], aspect kept.
+/// A display's size as a canvas size: even sides, at most 7680 pixels, aspect kept.
 pub fn canvas_for_display(width: u32, height: u32) -> Option<(u32, u32)> {
     if width == 0 || height == 0 {
         return None;
