@@ -218,8 +218,9 @@ fn run(length_prefixed: bool) {
     let text = String::from_utf8_lossy(&probe.stdout);
     let fields: Vec<&str> = text.lines().next().unwrap_or_default().split(',').collect();
     assert_eq!(fields[1].parse::<usize>().unwrap(), video_count, "{text}");
-    // Media time starts one interleaving bound (1 s) before the first dts.
+    // Media time starts one interleaving bound (1 s) before the first dts; the edit
+    // list maps that lead away, so presentation starts at 0.
     let start: f64 = fields[0].parse().unwrap();
-    assert!((start - 1.0).abs() < 1e-3, "start time {start}");
+    assert!(start.abs() < 1e-3, "start time {start}");
     std::fs::remove_dir_all(&dir).unwrap();
 }

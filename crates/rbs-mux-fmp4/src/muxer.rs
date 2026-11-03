@@ -28,6 +28,17 @@ const MOOF_FIXED: usize = 8 + 16; // moof header + mfhd
 const TRAF_FIXED: usize = 8 + 16 + 20 + 20; // traf + tfhd + tfdt (v1) + trun header
 const TRUN_SAMPLE: usize = 16;
 const MDAT_HEADER: usize = 8;
+/// Largest sample accepted, and the payload bytes after which a fragment ends early.
+/// Together they keep every box and data offset far below the 4 GiB a 32-bit box size
+/// can describe, and bound the memory a fragment holds.
+const MAX_SAMPLE_BYTES: usize = 1 << 30;
+const MAX_FRAGMENT_BYTES: usize = 1 << 30;
+/// Samples after which a fragment ends early (a stream of equal timestamps would
+/// otherwise never end it).
+const MAX_FRAGMENT_SAMPLES: usize = 1 << 16;
+/// Largest pts - dts accepted: keeps the signed 32-bit composition offset in range at
+/// any timescale up to 384 kHz.
+const MAX_COMPOSITION_DELAY: Duration = Duration::from_secs(60);
 
 enum Kind {
     /// H.264; `length_size` is `None` for Annex B input, converted to 4-byte lengths.
@@ -60,6 +71,15 @@ struct Track {
     /// Annex B input converted to 4-byte lengths, the samples of this fragment in
     /// order. Converting at `write` reads the input once; the capacity is reused.
     staging: Vec<u8>,
+    /// Bytes of `staging` that belong to samples already in `samples`; bytes after it
+    /// are the packet being written.
+    committed: usize,
+    /// SPS and PPS of the sample entry. In-band parameter sets must be one of these:
+    /// a changed set would make the rest of the file undecodable.
+    parameter_sets: Vec<Vec<u8>>,
+    /// Media time (in `timescale`) where presentation starts: the edit list maps it to
+    /// movie time 0, so the lead before the first packet does not show as a gap.
+    edit: u64,
     last_dts: Option<Timestamp>,
 }
 
@@ -71,29 +91,49 @@ pub(crate) struct Fmp4Muxer {
     /// How far before the first dts the media time origin lies, so streams that arrive
     /// slightly out of order keep their timestamps.
     origin_lead: Duration,
-    origin: Option<Timestamp>,
+    /// Media time 0, in nanoseconds of the master clock (the first dts minus the lead;
+    /// signed, so a first dts closer than the lead to the clock's zero still works).
+    origin: Option<i128>,
     /// dts of the first sample of the fragment being collected.
     fragment_start: Option<Timestamp>,
+    fragment_bytes: usize,
+    fragment_samples: usize,
     sequence: u32,
     last_chunk: Option<Timestamp>,
     began: bool,
     finished: bool,
 }
 
-/// `d` in `timescale` units, rounded to the nearest (a nominal 1024-sample AAC frame
-/// at 48 kHz is 21 333 333 ns, which must still be 1024 ticks).
-fn ticks(d: Duration, timescale: u32) -> u64 {
-    ((d.as_nanos() * u128::from(timescale) + 500_000_000) / 1_000_000_000) as u64
+/// `nanos` in `timescale` units, rounded to the nearest, like
+/// `rbs_core::timing::TimeBase::ticks_in` (a 1024-sample AAC frame at 48 kHz is
+/// 21 333 333 ns and must still be 1024 ticks). Positions are rounded and durations
+/// are differences of rounded positions, so they add up exactly.
+fn ticks(nanos: u128, timescale: u32) -> u64 {
+    u64::try_from((nanos * u128::from(timescale) + 500_000_000) / 1_000_000_000).unwrap_or(u64::MAX)
+}
+
+fn nanos(t: Timestamp) -> i128 {
+    i128::from(t.as_nanos())
 }
 
 /// Whether an Annex B unit goes into an `avc1` sample: parameter sets live in the
 /// sample entry and access unit delimiters are not needed.
 fn keep_unit(unit: &[u8]) -> bool {
-    !unit.is_empty()
-        && !matches!(
-            nal::h264_type(unit),
-            Some(h264::AUD | h264::SPS | h264::PPS)
-        )
+    !unit.is_empty() && !is_parameter_set(unit) && nal::h264_type(unit) != Some(h264::AUD)
+}
+
+fn is_parameter_set(unit: &[u8]) -> bool {
+    matches!(nal::h264_type(unit), Some(h264::SPS | h264::PPS))
+}
+
+/// Refuses an in-band SPS or PPS that differs from the sample entry's.
+fn check_parameter_set(track: &Track, unit: &[u8]) -> Result<(), MuxError> {
+    if is_parameter_set(unit) && !track.parameter_sets.iter().any(|p| p == unit) {
+        return Err(MuxError::InvalidPacket(
+            "H.264 parameter sets changed; fragmented MP4 needs a new output".into(),
+        ));
+    }
+    Ok(())
 }
 
 fn avcc_for(stream: &StreamDescriptor) -> Result<(Vec<u8>, Option<u8>), CreateError> {
@@ -164,7 +204,9 @@ fn mp4a_entry(out: &mut Vec<u8>, channels: u16, rate: u32, asc: &[u8]) {
     boxes::u16(out, channels);
     boxes::u16(out, 16); // samplesize
     boxes::u32(out, 0); // pre_defined, reserved
-    boxes::u32(out, rate << 16);
+    // 16.16 fixed point; rates above 65535 Hz do not fit, and decoders take the rate
+    // from the AudioSpecificConfig.
+    boxes::u32(out, if rate <= 0xffff { rate << 16 } else { 0 });
     let esds = boxes::open_full(out, b"esds", 0, 0);
     // ES_Descriptor > DecoderConfigDescriptor > DecoderSpecificInfo, SLConfigDescriptor.
     // Lengths fit one byte: the AudioSpecificConfig is a few bytes (checked at create).
@@ -196,6 +238,18 @@ fn trak(out: &mut Vec<u8>, track: &Track, entry: &dyn Fn(&mut Vec<u8>), width: u
     boxes::u32(out, u32::from(width) << 16);
     boxes::u32(out, u32::from(height) << 16);
     boxes::close(out, tkhd);
+
+    // Edit list: presentation starts at `edit` (the lead before the first packet);
+    // duration 0 means "until the end", as fragmented files do not know it.
+    let edts = boxes::open(out, b"edts");
+    let elst = boxes::open_full(out, b"elst", 1, 0);
+    boxes::u32(out, 1);
+    boxes::u64(out, 0); // segment_duration
+    boxes::u64(out, track.edit); // media_time
+    boxes::u16(out, 1); // media_rate 1.0
+    boxes::u16(out, 0);
+    boxes::close(out, elst);
+    boxes::close(out, edts);
 
     let mdia = boxes::open(out, b"mdia");
     let mdhd = boxes::open_full(out, b"mdhd", 0, 0);
@@ -259,11 +313,13 @@ impl Fmp4Muxer {
         let ftyp = boxes::open(&mut header, b"ftyp");
         header.extend_from_slice(b"iso6");
         boxes::u32(&mut header, 0);
-        for brand in [b"iso6", b"isom", b"mp41", b"cmfc"] {
+        // Not `cmfc`: a CMAF track file has one track, and these fragments carry all.
+        for brand in [b"iso6", b"isom", b"mp41"] {
             header.extend_from_slice(brand);
         }
         boxes::close(&mut header, ftyp);
 
+        let lead = config.max_buffered();
         let mut tracks = Vec::with_capacity(config.streams.len());
         let mut traks = Vec::new();
         for (i, stream) in config.streams.iter().enumerate() {
@@ -275,7 +331,20 @@ impl Fmp4Muxer {
                         format, frame_rate, ..
                     },
                 ) => {
+                    if tracks
+                        .iter()
+                        .any(|t: &Track| matches!(t.kind, Kind::Video { .. }))
+                    {
+                        // A keyframe chunk must be an entry point for every stream; with
+                        // two video tracks whose GOPs differ, fragments rarely are.
+                        return Err(CreateError::Unsupported {
+                            what: "more than one video stream in fragmented MP4".into(),
+                        });
+                    }
                     let (avcc, length_size) = avcc_for(stream)?;
+                    let parameter_sets = AvcConfig::parse(&avcc)
+                        .map(|c| c.sps.iter().chain(&c.pps).map(|p| p.to_vec()).collect())
+                        .map_err(|e| CreateError::InvalidConfig(format!("H.264 extradata: {e}")))?;
                     let (Ok(width), Ok(height)) = (
                         u16::try_from(format.size.width),
                         u16::try_from(format.size.height),
@@ -291,6 +360,9 @@ impl Fmp4Muxer {
                         nominal: frame_rate.frame_duration(),
                         samples: Vec::new(),
                         staging: Vec::new(),
+                        committed: 0,
+                        parameter_sets,
+                        edit: ticks(lead.as_nanos(), VIDEO_TIMESCALE),
                         last_dts: None,
                     };
                     trak(
@@ -330,6 +402,9 @@ impl Fmp4Muxer {
                         nominal: format.sample_rate.duration_of(u64::from(frame_size)),
                         samples: Vec::new(),
                         staging: Vec::new(),
+                        committed: 0,
+                        parameter_sets: Vec::new(),
+                        edit: ticks(lead.as_nanos(), rate),
                         last_dts: None,
                     };
                     let asc = stream.extradata.clone();
@@ -385,9 +460,11 @@ impl Fmp4Muxer {
             tracks,
             header,
             fragment: config.max_buffered(),
-            origin_lead: config.max_buffered(),
+            origin_lead: lead,
             origin: None,
             fragment_start: None,
+            fragment_bytes: 0,
+            fragment_samples: 0,
             sequence: 1,
             last_chunk: None,
             began: false,
@@ -395,10 +472,11 @@ impl Fmp4Muxer {
         })
     }
 
-    /// Media time of `t` in `timescale` units from the origin.
+    /// Media time of `t` in `timescale` units from the origin, rounded to the nearest.
+    /// `write` refuses timestamps before the origin.
     fn media_time(&self, t: Timestamp, timescale: u32) -> u64 {
-        let origin = self.origin.unwrap_or(t);
-        (t.saturating_since(origin).as_nanos() * u128::from(timescale) / 1_000_000_000) as u64
+        let since = nanos(t) - self.origin.unwrap_or_else(|| nanos(t));
+        ticks(u128::try_from(since).unwrap_or(0), timescale)
     }
 
     /// Emits the collected samples as one `moof` + `mdat` chunk. `next` is the track
@@ -439,6 +517,7 @@ impl Fmp4Muxer {
             boxes::close(&mut chunk, tfdt);
             let trun = boxes::open_full(&mut chunk, b"trun", 1, TRUN_FLAGS);
             boxes::u32(&mut chunk, track.samples.len() as u32);
+            // Below 4 GiB: see MAX_SAMPLE_BYTES and MAX_FRAGMENT_BYTES.
             boxes::u32(&mut chunk, data_offset as u32);
             for (i, s) in track.samples.iter().enumerate() {
                 let dts = self.media_time(s.dts, track.timescale);
@@ -446,16 +525,24 @@ impl Fmp4Muxer {
                     Some(next) => self.media_time(next.dts, track.timescale),
                     None => match following {
                         Some(dts) => self.media_time(dts, track.timescale),
-                        None => dts + ticks(s.duration.unwrap_or(track.nominal), track.timescale),
+                        None => self.media_time(
+                            s.dts + s.duration.unwrap_or(track.nominal),
+                            track.timescale,
+                        ),
                     },
                 };
-                let pts = self.media_time(s.pts, track.timescale) as i64;
-                let cts = (pts - dts as i64).clamp(i64::from(i32::MIN), i64::from(i32::MAX)) as i32;
-                boxes::u32(&mut chunk, end.saturating_sub(dts) as u32);
+                // pts >= dts (packet invariant) and pts - dts <= MAX_COMPOSITION_DELAY
+                // (checked in `write`), so the offset is non-negative and fits an i32.
+                let pts = self.media_time(s.pts, track.timescale);
+                let cts = u32::try_from(pts.saturating_sub(dts)).unwrap_or(u32::MAX);
+                // dts is non-decreasing in a track; a fragment spans at most
+                // `fragment_duration`, so durations fit 32 bits at these timescales.
+                let duration = u32::try_from(end.saturating_sub(dts)).unwrap_or(u32::MAX);
+                boxes::u32(&mut chunk, duration);
                 boxes::u32(&mut chunk, s.size);
                 let sync = s.keyframe || matches!(track.kind, Kind::Audio);
                 boxes::u32(&mut chunk, if sync { SYNC_SAMPLE } else { NON_SYNC_SAMPLE });
-                chunk.extend_from_slice(&cts.to_be_bytes());
+                boxes::u32(&mut chunk, cts);
                 data_offset += s.size as usize;
             }
             boxes::close(&mut chunk, trun);
@@ -468,11 +555,13 @@ impl Fmp4Muxer {
             for s in &track.samples {
                 chunk.extend_from_slice(&s.data);
             }
-            chunk.extend_from_slice(&track.staging);
+            chunk.extend_from_slice(&track.staging[..track.committed]);
         }
         boxes::close(&mut chunk, mdat);
         debug_assert_eq!(chunk.len(), chunk.capacity());
 
+        // An entry point for every stream: audio samples all are, and there is at most
+        // one video track (checked at create), whose first sample must be a keyframe.
         let keyframe = if self.has_video {
             self.tracks
                 .iter()
@@ -484,9 +573,18 @@ impl Fmp4Muxer {
         };
         for track in &mut self.tracks {
             track.samples.clear();
-            track.staging.clear();
+            // Keep the packet being written (after `committed`) for the next fragment.
+            track.staging.copy_within(track.committed.., 0);
+            track
+                .staging
+                .truncate(track.staging.len() - track.committed);
+            track.committed = 0;
         }
+        self.fragment_bytes = 0;
+        self.fragment_samples = 0;
         self.sequence = self.sequence.wrapping_add(1);
+        // Chunk timestamps never go back: a fragment can start earlier than the one
+        // before when a stream arrives late (within the interleaving bound).
         let timestamp = self.last_chunk.map_or(start, |last| last.max(start));
         self.last_chunk = Some(timestamp);
         out.push(MuxChunk::new(
@@ -542,74 +640,102 @@ impl Muxer for Fmp4Muxer {
         if track.last_dts.is_some_and(|last| dts < last) {
             return Err(MuxError::NonMonotonic { stream: stream.0 });
         }
-        let size = match track.kind {
-            Kind::Video {
-                length_size: Some(size),
-            } => {
-                for unit in nal::length_prefixed_units(data, size) {
-                    unit.map_err(|_| {
-                        MuxError::InvalidPacket("truncated length-prefixed NAL unit".into())
-                    })?;
-                }
-                data.len()
-            }
-            // Sized when converted below; this only checks that there is media.
-            Kind::Video { length_size: None } => usize::from(
-                nal::annexb_unit_headers(data)
-                    .any(|h| !matches!(h & 0x1f, h264::AUD | h264::SPS | h264::PPS)),
-            ),
-            Kind::Audio => data.len(),
-        };
-        if size == 0 {
-            return Err(MuxError::InvalidPacket("packet without media".into()));
-        }
-        let mut size = u32::try_from(size).map_err(|_| MuxError::Overflow("sample size"))?;
-        let origin = self.origin.unwrap_or(dts - self.origin_lead);
-        if dts < origin {
+        let lead = i128::try_from(self.origin_lead.as_nanos()).unwrap_or(i128::MAX);
+        let origin = self.origin.unwrap_or(nanos(dts) - lead);
+        if nanos(dts) < origin {
             return Err(MuxError::InvalidPacket(
                 "dts more than the interleaving bound before the first packet".into(),
             ));
         }
+        if packet.pts().saturating_since(dts) > MAX_COMPOSITION_DELAY {
+            return Err(MuxError::InvalidPacket(
+                "pts more than a minute after dts".into(),
+            ));
+        }
 
-        // A fragment ends before a video keyframe (so fragments start at entry points)
-        // or once it spans the fragment duration (the interleaving bound). A keyframe
-        // joins a fragment its track has no samples in yet, so the fragment starts at it.
-        let video_key = matches!(track.kind, Kind::Video { .. })
-            && packet.keyframe()
-            && !track.samples.is_empty();
+        // Validate and size the packet before anything changes or is emitted, so an
+        // error leaves no output and no state behind.
+        let track = &mut self.tracks[index];
+        let mut stored = packet.data().clone();
+        let size = match track.kind {
+            Kind::Video {
+                length_size: Some(length_size),
+            } => {
+                for unit in nal::length_prefixed_units(data, length_size) {
+                    let unit = unit.map_err(|_| {
+                        MuxError::InvalidPacket("truncated length-prefixed NAL unit".into())
+                    })?;
+                    check_parameter_set(track, unit)?;
+                }
+                data.len()
+            }
+            Kind::Video { length_size: None } => {
+                // Converted after the committed samples; a flush below keeps it.
+                let staged = track.staging.len();
+                let mut result = Ok(());
+                for unit in nal::annexb_units(data) {
+                    if let Err(e) = check_parameter_set(track, unit) {
+                        result = Err(e);
+                        break;
+                    }
+                    if keep_unit(unit) {
+                        boxes::u32(&mut track.staging, unit.len() as u32);
+                        track.staging.extend_from_slice(unit);
+                    }
+                    if track.staging.len() - staged > MAX_SAMPLE_BYTES {
+                        result = Err(MuxError::Overflow("sample size"));
+                        break;
+                    }
+                }
+                let converted = track.staging.len() - staged;
+                if result.is_ok() && converted == 0 {
+                    result = Err(MuxError::InvalidPacket("packet without media".into()));
+                }
+                if let Err(e) = result {
+                    track.staging.truncate(staged);
+                    return Err(e);
+                }
+                stored = Bytes::new();
+                converted
+            }
+            Kind::Audio => data.len(),
+        };
+        if size > MAX_SAMPLE_BYTES {
+            return Err(MuxError::Overflow("sample size"));
+        }
+        let keyframe = packet.keyframe();
+        let is_video = matches!(track.kind, Kind::Video { .. });
+        let track_has_samples = !track.samples.is_empty();
+
+        // A fragment ends before a video keyframe (so fragments start at entry points),
+        // once it spans the fragment duration (the interleaving bound), or before it
+        // would exceed its byte or sample bound. A keyframe joins a fragment its track
+        // has no samples in yet, so the fragment starts at it. Very short GOPs therefore
+        // give short fragments (one per GOP); there is no minimum length.
         if let Some(start) = self.fragment_start {
-            if video_key || dts.saturating_since(start) >= self.fragment {
+            if (is_video && keyframe && track_has_samples)
+                || dts.saturating_since(start) >= self.fragment
+                || self.fragment_bytes + size > MAX_FRAGMENT_BYTES
+                || self.fragment_samples >= MAX_FRAGMENT_SAMPLES
+            {
                 self.flush(Some((index, dts)), out);
             }
         }
-        let track = &mut self.tracks[index];
-        let mut data = packet.data().clone();
-        if let Kind::Video { length_size: None } = track.kind {
-            let staged = track.staging.len();
-            for unit in nal::annexb_units(packet.data()).filter(|u| keep_unit(u)) {
-                boxes::u32(&mut track.staging, unit.len() as u32);
-                track.staging.extend_from_slice(unit);
-            }
-            let converted = track.staging.len() - staged;
-            match u32::try_from(converted) {
-                Ok(converted) if converted > 0 => size = converted,
-                _ => {
-                    track.staging.truncate(staged);
-                    return Err(MuxError::InvalidPacket("packet without media".into()));
-                }
-            }
-            data = Bytes::new();
-        }
         self.origin = Some(origin);
+        let track = &mut self.tracks[index];
+        track.committed = track.staging.len();
         track.last_dts = Some(dts);
         track.samples.push(Sample {
-            data,
+            data: stored,
             dts,
             pts: packet.pts(),
             duration: packet.duration(),
-            keyframe: packet.keyframe(),
-            size,
+            keyframe,
+            // At most MAX_SAMPLE_BYTES.
+            size: size as u32,
         });
+        self.fragment_bytes += size;
+        self.fragment_samples += 1;
         let start = self.fragment_start.get_or_insert(dts);
         *start = (*start).min(dts);
         Ok(())

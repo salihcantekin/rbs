@@ -14,8 +14,8 @@ const LP4: BitstreamFormat = BitstreamFormat::LengthPrefixed { length_size: 4 };
 const MP4: ContainerId = ContainerId::Mp4Fragmented;
 
 /// Container boxes whose payload is more boxes.
-const CONTAINERS: [&[u8; 4]; 9] = [
-    b"moov", b"trak", b"mdia", b"minf", b"dinf", b"stbl", b"mvex", b"moof", b"traf",
+const CONTAINERS: [&[u8; 4]; 10] = [
+    b"moov", b"trak", b"edts", b"mdia", b"minf", b"dinf", b"stbl", b"mvex", b"moof", b"traf",
 ];
 
 #[derive(Debug)]
@@ -195,6 +195,10 @@ fn header_is_ftyp_and_moov_with_sample_entries() {
         ["ftyp", "moov"]
     );
     assert_eq!(&boxes[0].payload[..4], b"iso6");
+    assert!(
+        !boxes[0].payload.windows(4).any(|w| w == b"cmfc"),
+        "not a CMAF track file"
+    );
     let moov = &boxes[1];
     assert_eq!(moov.child(b"mvhd").u32_at(96), 3, "next track id");
     let traks: Vec<&Box_> = moov.all(b"trak").collect();
@@ -205,6 +209,18 @@ fn header_is_ftyp_and_moov_with_sample_entries() {
         .map(|t| t.u32_at(4))
         .collect();
     assert_eq!(trex, [1, 2]);
+
+    // Edit lists start presentation after the 1 s lead, in each track's timescale.
+    let edits: Vec<(u64, u64)> = traks
+        .iter()
+        .map(|t| {
+            let elst = t.child(b"edts").child(b"elst");
+            assert_eq!(elst.payload[0], 1, "version 1");
+            assert_eq!(elst.u32_at(4), 1, "one entry");
+            (elst.u64_at(8), elst.u64_at(16))
+        })
+        .collect();
+    assert_eq!(edits, [(0, 90_000), (0, 48_000)]);
 
     let mdia = traks[0].child(b"mdia");
     assert_eq!(mdia.child(b"mdhd").u32_at(12), 90_000, "video timescale");
@@ -386,8 +402,8 @@ fn annexb_input_is_converted_and_parameter_sets_dropped() {
     muxer.begin(&mut chunks).unwrap();
     let au = vec![
         0, 0, 1, 0x09, 0xf0, // AUD
-        0, 0, 0, 1, 0x67, 0x64, 0, 0x1f, // SPS
-        0, 0, 1, 0x68, 0xeb, // PPS
+        0, 0, 0, 1, 0x67, 0x64, 0x00, 0x1f, 0xac, 0xd9, 0x40, 0x50, 0x05, // SPS
+        0, 0, 1, 0x68, 0xeb, 0xe3, 0xcb, // PPS (both as in the avcC)
         0, 0, 0, 1, 0x06, 5, // SEI
         0, 0, 1, 0x65, 1, 2, // IDR
     ];
@@ -518,4 +534,149 @@ fn rejects_bad_configs_and_packets() {
         muxer.finish(&mut out),
         Err(MuxError::InvalidState(_))
     ));
+}
+
+#[test]
+fn changed_parameter_sets_and_bad_annexb_leave_no_output() {
+    for format in [LP4, BitstreamFormat::AnnexB] {
+        let mut stream = h264_stream();
+        stream.bitstream = format;
+        let config = MuxerConfig::new(MP4, vec![stream]);
+        let mut muxer = Fmp4MuxerFactory.create(&config).unwrap();
+        let mut chunks = Vec::new();
+        muxer.begin(&mut chunks).unwrap();
+        let (key, other_sps, empty_units) = if format == LP4 {
+            (
+                vec![0, 0, 0, 2, 0x65, 1],
+                vec![0, 0, 0, 4, 0x67, 0x42, 0, 0x1e, 0, 0, 0, 2, 0x65, 1],
+                None,
+            )
+        } else {
+            (
+                vec![0, 0, 1, 0x65, 1],
+                vec![0, 0, 1, 0x67, 0x42, 0, 0x1e, 0, 0, 1, 0x65, 1],
+                Some(vec![0, 0, 1, 0, 0, 1, 0x09, 0x10]),
+            )
+        };
+        muxer
+            .write(
+                StreamIndex(0),
+                &video(0, 0, true, key.clone(), format),
+                &mut chunks,
+            )
+            .unwrap();
+        // Both would end the fragment (keyframes); the error must come first.
+        let changed = video(33, 33, true, other_sps, format);
+        assert!(matches!(
+            muxer.write(StreamIndex(0), &changed, &mut chunks),
+            Err(MuxError::InvalidPacket(_))
+        ));
+        if let Some(units) = empty_units {
+            let empty = video(33, 33, true, units, format);
+            assert!(matches!(
+                muxer.write(StreamIndex(0), &empty, &mut chunks),
+                Err(MuxError::InvalidPacket(_))
+            ));
+        }
+        assert_eq!(chunks.len(), 1, "no fragment was emitted by a failed write");
+        muxer
+            .write(
+                StreamIndex(0),
+                &video(66, 66, true, key, format),
+                &mut chunks,
+            )
+            .unwrap();
+        muxer.finish(&mut chunks).unwrap();
+        let samples: Vec<usize> = chunks[1..]
+            .iter()
+            .map(|c| fragment(&c.data).1[0].samples.len())
+            .collect();
+        assert_eq!(samples, [1, 1], "only the good packets, one per fragment");
+        let (_, _, mdat) = fragment(&chunks[2].data);
+        assert_eq!(
+            mdat,
+            [0, 0, 0, 2, 0x65, 1],
+            "the pending packet survived the flush"
+        );
+    }
+}
+
+#[test]
+fn a_second_video_stream_is_refused() {
+    let config = MuxerConfig::new(MP4, vec![h264_stream(), aac_stream(), h264_stream()]);
+    assert!(matches!(
+        Fmp4MuxerFactory.create(&config),
+        Err(CreateError::Unsupported { .. })
+    ));
+}
+
+/// Real clocks are not whole milliseconds: 30 fps frames and 1024-sample AAC frames
+/// fall between nanoseconds. Durations must still be constant and fragments must
+/// continue exactly where the previous one ended.
+#[test]
+fn rounded_positions_give_exact_durations_and_continuous_fragments() {
+    use rbs_core::timing::{Cadence, FrameRate, SampleRate};
+    let config = MuxerConfig::new(MP4, vec![h264_stream(), aac_stream()]);
+    let mut muxer = Fmp4MuxerFactory.create(&config).unwrap();
+    let mut chunks = Vec::new();
+    muxer.begin(&mut chunks).unwrap();
+    let origin = Timestamp::from_nanos(3_000_000_007);
+    let frames = Cadence::frames(origin, FrameRate::FPS_30);
+    let mut packets = Vec::new();
+    for i in 0..90u64 {
+        let dts = frames.time_of(i);
+        // B-frame style: pts two frames after dts.
+        let pts = frames.time_of(i + 2);
+        let key = i % 30 == 0;
+        let data = Bytes::from(vec![0, 0, 0, 2, if key { 0x65 } else { 0x41 }, i as u8]);
+        let p = EncodedPacket::new(CodecId::H264, LP4, pts, dts, key, data).unwrap();
+        packets.push((StreamIndex(0), p));
+    }
+    for i in 0..140u64 {
+        let t = origin + SampleRate::HZ_48000.duration_of(i * 1024);
+        let p = EncodedPacket::new(
+            CodecId::Aac,
+            BitstreamFormat::Raw,
+            t,
+            t,
+            true,
+            Bytes::from_static(&[1, 2, 3]),
+        )
+        .unwrap();
+        packets.push((StreamIndex(1), p));
+    }
+    packets.sort_by_key(|(s, p)| (p.dts(), *s));
+    for (s, p) in &packets {
+        muxer.write(*s, p, &mut chunks).unwrap();
+    }
+    muxer.finish(&mut chunks).unwrap();
+
+    let mut next_base = [None, None];
+    let mut durations = [Vec::new(), Vec::new()];
+    for c in &chunks[1..] {
+        for run in fragment(&c.data).1 {
+            let t = run.track as usize - 1;
+            if let Some(expected) = next_base[t] {
+                assert_eq!(run.base, expected, "track {} continues exactly", run.track);
+            }
+            next_base[t] = Some(run.base + run.samples.iter().map(|s| u64::from(s.0)).sum::<u64>());
+            durations[t].extend(run.samples.iter().map(|s| s.0));
+            if t == 0 {
+                assert!(run.samples.iter().all(|s| s.3 == 6000), "two frames of CTS");
+            }
+        }
+    }
+    // 30 fps at 90 kHz is exactly 3000 ticks; AAC frames are exactly 1024.
+    assert!(
+        durations[0].iter().all(|&d| d == 3000),
+        "{:?}",
+        durations[0]
+    );
+    assert!(
+        durations[1].iter().all(|&d| d == 1024),
+        "{:?}",
+        durations[1]
+    );
+    assert_eq!(durations[0].len(), 90);
+    assert_eq!(durations[1].len(), 140);
 }
