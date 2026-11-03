@@ -206,7 +206,7 @@ impl SurfaceExporter {
 
 ### Preview export (cross-process)
 
-Implements [ADR-0028](../adr/0028-cross-process-preview-surfaces.md) and the export side required by [ADR-0022](../adr/0022-native-ui-toolkit.md), decision 2: the engine shares program, preview and projector images with a UI in another process as native surfaces, never as pixels. Lives in `rbs_gpu::share`, a marked low-level module (P11). macOS only so far; Linux (DMA-BUF over a Unix socket) and Windows (NT handles) follow with the same messages.
+Implements [ADR-0028](../adr/0028-cross-process-preview-surfaces.md) and the export side required by [ADR-0022](../adr/0022-native-ui-toolkit.md), decision 2: the engine shares program, preview and projector images with a UI in another process as native surfaces, never as pixels. Lives in `rbs_gpu::share`, a marked low-level module (P11). Backends: macOS (IOSurfaces over Mach, below) and Windows (shared D3D12 textures over a named pipe, [ADR-0035](../adr/0035-windows-preview-layer.md), see [Windows](#windows-backend-adr-0035)); Linux (DMA-BUF over a Unix socket) follows with the same messages.
 
 Engine side, owned by the render executor:
 
@@ -312,6 +312,55 @@ impl PreviewLayer {                       // not Send: the UI's main thread
 - **Installed but unused costs nothing (P13).** A publisher exists only while a preview output is Active. While nobody is subscribed, `publish` returns at once without GPU work and `tick` makes one non-blocking receive call. The UI side starts its receive thread only while a preview panel is visible.
 - **Layer placement and overlap (ADR-0034).** The UI sets the layer's rectangle before every toolkit redraw (layout changes always redraw). The layer is above the toolkit's content: while toolkit content (menus, popups, toasts, dialogs) intersects the preview area, the UI hides the layer. Showing a frame costs one Core Animation transaction on the UI thread and no toolkit redraw.
 - **Same device, other process.** IOSurfaces are not tied to a device. The UI aliases them on its own Metal device with the same `interop::metal` code as the importer. Unified memory only, as for the encoder export.
+
+#### Windows backend (ADR-0035)
+
+Same types and semantics as above; the differences:
+
+```rust
+// Engine side: as on macOS, without `surface_ids`.
+impl PreviewSubscriber {
+    pub fn adapter_luid(&self) -> u64;                   // the surfaces open only on this adapter
+    pub fn surface_handle(&self, slot: usize) -> Option<u64>; // NT handle in this process, owned by the subscriber
+    /// Opens every surface on the UI's D3D12 device (same LUID, else `WrongAdapter`) as
+    /// `Rgba8Unorm` holding sRGB-encoded values, `TEXTURE_BINDING | RENDER_ATTACHMENT | COPY_SRC`.
+    pub fn textures(&self, ctx: &GpuContext) -> Result<Vec<wgpu::Texture>, GpuError>;
+}
+
+pub struct LayerRect { pub x: f64, pub y: f64, pub width: f64, pub height: f64 } // physical pixels, top-left origin
+pub const DEFAULT_RETIRE_POLL: Duration;  // 4 ms
+
+impl PreviewLayer {                       // not Send: the window's thread
+    /// D3D11 device on the engine's adapter, the shared textures as composition swapchain
+    /// buffers, a DirectComposition visual showing them. `Unsupported` without a
+    /// composition swapchain (remote desktop, WARP): use `textures` instead.
+    pub fn new(subscriber: &PreviewSubscriber) -> Result<PreviewLayer, GpuError>;
+    pub fn surfaces(&self) -> usize;
+    pub fn surfaces_needed(&self, frame_interval: Duration) -> usize; // shown + retiring + written + in flight; 5 at 60 fps
+    /// Topmost composition target of the window, above the toolkit's swapchain.
+    pub unsafe fn attach_to_hwnd(&mut self, hwnd: NonZeroIsize) -> Result<(), GpuError>;
+    pub fn detach(&mut self, now: Timestamp);
+    pub fn set_rect(&mut self, rect: LayerRect);   // aspect fit; no-op when unchanged
+    pub fn set_hidden(&self, hidden: bool);
+    pub fn set_retire_poll(&mut self, poll: Duration);
+    /// `SetBuffer` + `Present` of the frame's buffer. Never waits or allocates.
+    pub fn show(&mut self, frame: PreviewFrame, now: Timestamp);
+    /// Gives back replaced frames whose buffer `IsAvailable`. Returns how many wait.
+    pub fn retire(&mut self, now: Timestamp) -> usize;
+    pub fn next_retire(&self) -> Option<Timestamp>; // last check + poll, while a frame waits
+    pub fn retiring(&self) -> usize;
+    pub fn lost(&self) -> bool;                     // presentation manager lost: recreate or fall back
+}
+```
+
+- **Surfaces.** Committed `R8G8B8A8_UNORM` textures on the render device's D3D12 device, `D3D12_HEAP_FLAG_SHARED`, `ALLOW_RENDER_TARGET | ALLOW_SIMULTANEOUS_ACCESS`, one unnamed NT handle each. The preview pass encodes sRGB in the shader (`fs_preview_encode`), since flip-model and composition presentation take no sRGB formats; the bytes equal the macOS surfaces'. The render device must be D3D12 (`GpuContext` prefers D3D12 on Windows), else `new` returns `Unsupported`.
+- **Transport.** A message-mode named pipe `\\.\pipe\org.rbs.preview.<pid>.<n>.<nonce>`: one instance, created with `FILE_FLAG_FIRST_PIPE_INSTANCE`, remote clients rejected, default security (only the creating user, SYSTEM and administrators may write). Token from `BCryptGenRandom`. The UI opens it with identification-level impersonation and checks that the server's process id is the pid in the name.
+- **Messages.** Little-endian 32-bit words, version 1: `SUBSCRIBE` (id, version, token: 4 words), `SURFACES` (id, version, generation, width, height, count, adapter LUID, then 8 handle values of 2 words: 24 words), `FRAME` (id, generation, slot, sequence, timestamp: 7 words), `RELEASE` (id, generation, slot: 3 words). Ids as on macOS. The first message on a connection must be a valid `SUBSCRIBE`, else the engine disconnects. On `SUBSCRIBE` the engine duplicates every surface handle into the client process (`OpenProcess(PROCESS_DUP_HANDLE)` on the pid the pipe reports, `DuplicateHandle`); the UI owns the duplicates. If `SURFACES` is not sent, the engine closes them in the UI process.
+- **Never block the render thread.** The connect, one read and ring size + 2 writes are overlapped operations with their own boxed `OVERLAPPED`, buffer and event; completion is checked by reading `OVERLAPPED::Internal` and collected without waiting. At most ring size + 1 messages are read per tick. A `FRAME` without a free write buffer is dropped (`dropped`), its surface stays free.
+- **End of a subscription.** The engine's read fails once the UI's end is closed (subscriber and every frame dropped, or the process exited, also while holding every surface), or a write finds the pipe closed: every surface is free and the next tick listens again. The UI's read fails once the engine is gone (`Disconnected`).
+- **Lifetime with the layer.** A replaced frame is released when its presentation buffer reports `IsAvailable` (the desktop compositor no longer reads it): a completion signal, so no torn frame from early release. Checked on every `show` and, while a frame waits, by a one-shot timer at `next_retire`.
+- **Fallback.** Without a composition swapchain the UI uses `textures` (ADR-0028 path); the toolkit must treat the `Rgba8Unorm` values as sRGB-encoded.
+- **Placement and overlap.** As on macOS, but in physical pixels (the toolkit's logical rectangle times its scale factor); the visual is in a topmost target, so the UI hides it while toolkit content overlaps the preview.
 
 ### Native import (interop)
 
