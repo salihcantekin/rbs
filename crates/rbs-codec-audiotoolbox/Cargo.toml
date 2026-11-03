@@ -1,0 +1,33 @@
+[package]
+name = "rbs-codec-audiotoolbox"
+description = "AudioToolbox adapter for the RBS encoder port: AAC-LC on macOS."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+rbs-codec = { path = "../rbs-codec" }
+rbs-core = { path = "../rbs-core" }
+# AudioSpecificConfig for the stream extradata (ADR-0019, decision 7).
+rbs-media-format = { path = "../rbs-media-format" }
+
+# Apple's frameworks through the objc2 bindings (MIT OR Apache-2.0 OR Zlib), same
+# version family as the other macOS adapters.
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2-audio-toolbox = { version = "0.3.2", default-features = false, features = ["std", "AudioConverter", "objc2-core-audio-types"] }
+objc2-core-audio-types = { version = "0.3.2", default-features = false, features = ["std"] }
+
+[dev-dependencies]
+rbs-codec = { path = "../rbs-codec", features = ["conformance"] }
+# Micro-benchmarks for the encode path (measure-performance skill, ADR-0009).
+criterion = { version = "0.8", default-features = false, features = ["cargo_bench_support"] }
+
+[[bench]]
+name = "encode"
+harness = false
+
+[lints]
+workspace = true
