@@ -43,8 +43,27 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       # Software Vulkan (lavapipe) so rbs-gpu golden image tests run instead of skipping.
       # rbs-app (Slint, Skia renderer) links fontconfig and loads xkbcommon on Linux.
+      # PipeWire headers build rbs-capture-pipewire; the daemon and WirePlumber let its
+      # conformance test link a test source to a capture stream.
       - if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y mesa-vulkan-drivers libfontconfig1-dev libxkbcommon-dev
+        run: >-
+          sudo apt-get update && sudo apt-get install -y mesa-vulkan-drivers
+          libfontconfig1-dev libxkbcommon-dev
+          libpipewire-0.3-dev pipewire wireplumber dbus-daemon
+      - if: runner.os == 'Linux'
+        name: start a private PipeWire daemon
+        run: |
+          dir="$RUNNER_TEMP/pipewire"
+          mkdir -m 700 -p "$dir"
+          echo "XDG_RUNTIME_DIR=$dir" >> "$GITHUB_ENV"
+          export XDG_RUNTIME_DIR="$dir"
+          nohup pipewire > "$RUNNER_TEMP/pipewire.log" 2>&1 &
+          for _ in $(seq 50); do [ -S "$dir/pipewire-0" ] && break; sleep 0.1; done
+          [ -S "$dir/pipewire-0" ] || { cat "$RUNNER_TEMP/pipewire.log"; exit 1; }
+          nohup dbus-run-session -- wireplumber > "$RUNNER_TEMP/wireplumber.log" 2>&1 &
+          # WirePlumber is ready once it shows up as a client of the daemon.
+          for _ in $(seq 100); do pw-cli ls Client 2>/dev/null | grep -qi wireplumber && break; sleep 0.1; done
+          pw-cli ls Client | grep -qi wireplumber || { cat "$RUNNER_TEMP/wireplumber.log"; exit 1; }
       - run: cargo clippy --workspace --all-targets -- -D warnings
       - run: cargo test --workspace
         env:
@@ -52,6 +71,7 @@ jobs:
           RBS_REQUIRE_GPU: "1"
           RBS_REQUIRE_D3D12: ${{ runner.os == 'Windows' && '1' || '' }}
           RBS_REQUIRE_NV12_SURFACE: ${{ runner.os == 'Linux' && '1' || '' }}
+          RBS_REQUIRE_PIPEWIRE: ${{ runner.os == 'Linux' && '1' || '' }}
           RBS_REQUIRE_VIDEOTOOLBOX: ${{ runner.os == 'macOS' && '1' || '' }}
       - run: cargo doc --workspace --no-deps
         env:

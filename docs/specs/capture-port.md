@@ -266,7 +266,7 @@ The render tick pulls with `latest_frame`; adapters do not push frames into the 
 - `options.process_threads`: a process-wide thread count measured by the suite itself rather than reported by the adapter (`conformance::process_thread_count` reads `/proc/self/task` on Linux). Only meaningful when the test binary runs one test at a time; the reference adapter's conformance test is alone in its binary for that reason.
 - `options.strict`: every skip is a failure. Self-hosted hardware runners use it.
 
-Checks: probe within 50 ms and never panics; `enumerate` agrees with `capture.target.enumerate` and returns only the asked kind; `pick` returns `Unsupported` when not declared (declared pickers need a user and are skipped); unknown id returns `TargetNotFound`; GPU memory kinds are refused without a matching import target; every declared pixel format and memory kind is delivered, and request order decides both; then for each enumerable target: no frames and no resources in Standby, timestamps and sequence numbers per invariants 2 and 3, latest wins after a pause, no allocation or free in `latest_frame` plus drop, frames in flight, resize, stop, restart, resources back to baseline after stop and after drop, and finally target loss.
+Checks: probe within 50 ms (the fastest of up to three calls, so one-time process costs and runner scheduling do not count) and never panics; `enumerate` agrees with `capture.target.enumerate` and returns only the asked kind; `pick` returns `Unsupported` when not declared (declared pickers need a user and are skipped); unknown id returns `TargetNotFound`; GPU memory kinds are refused without a matching import target; every declared pixel format and memory kind is delivered, and request order decides both; then for each enumerable target: no frames and no resources in Standby, timestamps and sequence numbers per invariants 2 and 3, latest wins after a pause, no allocation or free in `latest_frame` plus drop, frames in flight, resize, stop, restart, resources back to baseline after stop and after drop, and finally target loss.
 
 `rbs-capture-test` runs the suite strictly against the reference adapter and against wrappers that each break one invariant (allocates per frame, frames before start, delivers after stop, hides drops, lags one frame behind the newest, keeps a three-frame queue, leaks a frame on drop, ignores target loss, stale format after resize) to prove each check fails.
 
@@ -278,9 +278,9 @@ Checks: probe within 50 ms and never panics; `enumerate` agrees with `capture.ta
 | `rbs-capture-wgc` | Windows 10 1903+ | display, window | d3d11 (NT shared texture + shared fence) | 0 (implemented) |
 | `rbs-capture-dxgi` | Windows | display | d3d11 | 1 (fallback) |
 | `rbs-capture-mf` | Windows | camera | system, d3d11 | 2 |
-| `rbs-capture-sck` | macOS 12.3+ | display, window (picker on 14+ planned) | metal (IOSurface, ready on delivery) | 0 (implemented; hardware run pending) |
+| `rbs-capture-sck` | macOS 12.3+ | display, window (picker on 14+ planned) | metal (IOSurface, ready on delivery) | 0 (implemented; hardware run passed 2026-11-03) |
 | `rbs-capture-avf` | macOS | camera | metal (IOSurface) | 2 |
-| `rbs-capture-pipewire` | Linux (Wayland, X11 via portal) | display, window (picker) | dmabuf, system | 0 prototype |
+| `rbs-capture-pipewire` | Linux (Wayland, X11 via portal) | camera (PipeWire `Video/Source` nodes); display, window (portal picker) next | dmabuf (ready), system | 0 (nodes implemented; portal next) |
 | `rbs-capture-v4l2` | Linux | camera | system, dmabuf | 2 |
 
 ### ScreenCaptureKit adapter notes
@@ -292,6 +292,18 @@ Checks: probe within 50 ms and never panics; `enumerate` agrees with `capture.ta
 - A frame status of `Stopped` counts as target loss (invariant 7), because closing a captured window does not always reach the stream delegate.
 - Soundness rests on ScreenCaptureKit not rendering into an IOSurface while its pixel buffer is retained. The hardware test `held_surface_is_not_rewritten` (`RBS_CAPTURE_HW=1`) checks it with the surface seed; it must pass on a Mac before `rbs-app` wires the adapter in.
 - On macOS 15 and later, the system may show its recurring screen-recording reminder on ScreenCaptureKit calls. This is an OS alert, not a permission prompt the adapter starts, so `open` still never prompts.
+
+### PipeWire adapter notes
+
+- Targets: every `Video/Source` node (cameras through the session manager's V4L2 or libcamera monitor, and other applications' video sources) is a `Camera` target with id `node:<node.name>`. Screens and windows need the desktop portal and come in a later change; until then `enumerate(Display | Window)` returns `Unsupported`. `permission` is `Granted`: node access is governed by the daemon (the camera portal only matters inside Flatpak).
+- `open` reads the node's `EnumFormat` params and narrows the request to the first requested pixel format the node offers in a requested memory kind (BGRA or BGRx for `bgra8`, RGBA or RGBx for `rgba8`), so `format()` is exact before `start` and the negotiation cannot land elsewhere. Nodes that offer only YUV formats return `FormatUnsupported` until a conversion path exists.
+- DMA-BUF: offered only for a `DrmRenderNode` import target that accepts `ready` sync, with exactly the importer's modifiers (linear when it names none), following PipeWire's DMA-BUF negotiation: with several modifiers the offer is `DONT_FIXATE` and the source, which allocates, fixes the modifier; the adapter waits for the fixed format. Single-plane buffers only. Each slot owns a duplicate of the buffer's fd and keeps the PipeWire buffer dequeued while any frame refers to it, so the producer never writes into a held buffer; the importer caches by inode, so a new fd number for the same buffer does not import twice. Up to five buffers (the ring slots: three frames in flight, the newest, and the one being published) stay dequeued, so the adapter asks for 8 buffers and requires at least 6; freed buffers go back when the next buffer arrives, or when their slot is claimed again. Buffers PipeWire removes (renegotiation, disconnect) are forgotten, never queued again.
+- Soundness assumption (DMA-BUF): a source does not write into a buffer while the consumer keeps it dequeued, and after a renegotiation or `stop` does not reuse the memory of a buffer whose fd the adapter still holds. Sources that share one pool between several consumers or keep their pool across renegotiation could break this. It needs a hardware test on a Linux GPU (a held DMA-BUF is not rewritten, as `held_surface_is_not_rewritten` checks for ScreenCaptureKit) before `rbs-app` offers DMA-BUF from this adapter; system memory is unaffected.
+- System memory: the adapter copies the mapped buffer into a reused buffer of its own and returns the PipeWire buffer at once; every such frame counts in `cpu_copied`. The fourth byte of BGRx and RGBx is set to opaque during the copy.
+- Timestamps: the buffer header's `pts` (nanoseconds, `CLOCK_MONOTONIC`) is mapped to the master clock with the drift estimator; a missing header, or one more than 1 s older than arrival, falls back to the arrival time.
+- Resizes: a source may renegotiate its size at any time; later frames and `format()` follow. Target loss: the node missing from the first registry round trip after `start` or leaving the registry later, or the stream going to `Error` or `Unconnected`. The stream sets `node.dont-fallback`, so the session manager never links another source (a different camera) in place of a missing target.
+- One stream thread (`rbs-pipewire`) per Active session owns every PipeWire object; `enumerate` (at most 100 ms) and `open` (at most 500 ms) use a short-lived connection on the calling thread. A stopped session keeps a ring that frames still refer to; at the next `start` or the drop it is dropped there if idle, or else buried in the adapter's graveyard (`rbs-pipewire-janitor`), so the last lease, dropped on the render thread, never closes fds or frees there.
+- Building needs the `libpipewire-0.3` development headers and libclang (bindgen). The conformance test publishes its own test source node from a child process (so the adapter's threads and fds are counted alone) and needs a running daemon with WirePlumber; CI starts both and sets `RBS_REQUIRE_PIPEWIRE`. It covers shared memory only; the DMA-BUF path is untested until a Linux GPU runner exists.
 
 ## Review
 
@@ -352,7 +364,17 @@ Records written from the reviewer's own output (ADR-0014). The spec stays Draft.
 - Date: 2026-11-03
 - Verdict: approve with changes. Ring protocol, latest_frame rules, retention after stop, timestamps, stop order and permission handling checked.
 - Resolved before merge: start failures stop the stream; the stream follows target resizes; `Stopped` frames count as target loss; window sizes use their display's scale; the sample handler runs in an autorelease pool; the deployment target is documented; `open` checks the format before asking the OS; the attachment type and pixel format are checked; a hardware test for the surface-retention assumption was added.
-- Open, needs a Mac: run `held_surface_is_not_rewritten` and the hardware conformance (blocks wiring the adapter into `rbs-app`); confirm the content-rect units used for resizes; measure `enumerate` and `start` times; measure drops at 120 Hz with five held buffers. `Sendable` is a crate-private blanket `Send` wrapper; keep its uses to the documented types.
+- Hardware run, 2026-11-03: `held_surface_is_not_rewritten` and the hardware conformance passed on an M4 Pro Mac (all six tests with `RBS_CAPTURE_HW=1`), so the adapter may be wired into `rbs-app`. The tests never request permission, so grant screen recording to the terminal (under Claude Code, its helper app) first.
+- Open, needs a Mac: confirm the content-rect units used for resizes; measure `enumerate` and `start` times; measure drops at 120 Hz with five held buffers. `Sendable` is a crate-private blanket `Send` wrapper; keep its uses to the documented types.
+- Owner approval: Salih, 2026-11-03 (early-phase merge policy).
+
+### PipeWire adapter (video source nodes)
+
+- Reviewer: a fresh independent AI session, given the code and specs only
+- Date: 2026-11-03
+- Verdict: request changes, all addressed before merge.
+- Resolved before merge: a held buffer leaked when its slot came free between returning buffers and claiming one (now returned on claim); held pointers went stale when PipeWire removed buffers (now forgotten in `remove_buffer`); retired rings could be freed on the render thread (now dropped on the control thread when idle, else buried); the consumer fixed the DMA-BUF modifier itself (now the source does); a missing target could fall back to another camera or stay silent (`node.dont-fallback`, loss after the first round trip); `enumerate` waited 500 ms (now 100 ms); the conformance test now counts the adapter's fds and threads with the source in a child process; CI waits for the daemon and WirePlumber.
+- Open: the DMA-BUF path has no test until a Linux GPU runner exists, and its no-rewrite assumption (see the PipeWire notes) needs a hardware check before `rbs-app` offers DMA-BUF from this adapter; no unit test isolates the held-buffer bookkeeping.
 - Owner approval: Salih, 2026-11-03 (early-phase merge policy).
 
 ## Open questions
