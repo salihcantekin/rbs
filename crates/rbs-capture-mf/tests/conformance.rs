@@ -92,7 +92,8 @@ fn hardware_session_passes_conformance() {
 /// The adapter with its declared pixel formats narrowed to those the connected cameras
 /// offer. The probe cannot ask devices, so it declares every format the adapter can
 /// deliver; a given camera offers some of them (capture-port.md, Media Foundation
-/// notes), and invariant 10 can only hold for the cameras at hand.
+/// notes), and invariant 10 can only hold for the cameras at hand. With no camera the
+/// declaration is kept as it is.
 #[cfg(windows)]
 struct Connected(MfCaptureFactory);
 
@@ -118,6 +119,10 @@ impl rbs_core::registry::AdapterFactory for Connected {
             .iter()
             .flat_map(|t| t.modes.iter().map(|m| m.pixel_format.as_str().to_owned()))
             .collect();
+        // Without a camera no session check runs, so the full declaration stays.
+        if offered.is_empty() {
+            return Ok(set);
+        }
         Ok(set.with(
             caps::PIXEL_FORMATS,
             CapabilityValue::Set(offered.into_iter().collect()),
