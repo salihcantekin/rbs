@@ -183,8 +183,8 @@ impl App {
     fn command(&mut self, c: LayoutCommand, origin: Origin) {
         // Leaving a workspace: write its pending changes first, because the
         // debounced save only ever writes the current workspace.
-        if self.save_due && matches!(c, LayoutCommand::Switch(_)) {
-            self.persist_now();
+        if matches!(c, LayoutCommand::Switch(_)) {
+            self.flush();
         }
         match self.session.apply(c, origin) {
             Ok(toast) => {
@@ -211,7 +211,16 @@ impl App {
         self.save_due = true;
     }
 
+    /// Write pending changes now. Called before anything that may leave the
+    /// current workspace or reload it from disk (switch, undo, redo).
+    fn flush(&mut self) {
+        if self.save_due {
+            self.persist_now();
+        }
+    }
+
     fn undo(&mut self) {
+        self.flush();
         if self.session.undo() {
             self.toast = None;
             self.changed();
@@ -219,6 +228,7 @@ impl App {
     }
 
     fn redo(&mut self) {
+        self.flush();
         if self.session.redo() {
             self.toast = None;
             self.changed();
@@ -615,6 +625,8 @@ fn install(g: &Shell<'_>, ctx: &Ctx) {
         app.command(c, Origin::Command);
     });
     on!(on_switch_workspace, |app, name: slint::SharedString| {
+        // Save first, so loading the workspace already shown reads the latest copy.
+        app.flush();
         match app.store.load(&name) {
             Ok(ws) => app.command(LayoutCommand::Switch(ws), Origin::Command),
             Err(e) => app.error = Some(UiError::Other(e.to_string())),
