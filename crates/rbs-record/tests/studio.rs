@@ -344,3 +344,67 @@ fn a_ui_subscribed_to_the_studio_preview_gets_canvas_frames() {
     let (_, errors) = studio.shutdown();
     assert!(errors.is_empty(), "{errors:?}");
 }
+
+fn resyncs(studio: &Studio, name: &str) -> u64 {
+    let p = studio.progress();
+    let s = p.sources.iter().find(|s| s.name == name);
+    s.map_or(0, |s| s.resyncs)
+}
+
+#[test]
+fn audio_sync_offsets_apply_from_the_start_and_while_it_runs() {
+    let Some(gpu) = gpu() else { return };
+    let r = rig();
+    let (col, canvas) = scene();
+    let mic = col.sources().find(|s| s.name == "Microphone").unwrap().id;
+    let system = col.sources().find(|s| s.name == "System audio").unwrap().id;
+    let display = col.sources().find(|s| s.name == "Display").unwrap().id;
+    const MS_40: i64 = 40_000_000;
+    let mut settings = StudioSettings::new(canvas);
+    settings.audio_offsets.insert(mic, MS_40);
+    let (engine, clock) = engine_at_start();
+    let mut studio = Studio::start(engine, gpu, &col, &r.adapters.sources, &settings).unwrap();
+    let reached = run_until(&mut studio, &clock, |s| {
+        s.progress().master_peak_db.is_some_and(f32::is_finite)
+    });
+    assert!(reached);
+    let base = (
+        resyncs(&studio, "Microphone"),
+        resyncs(&studio, "System audio"),
+    );
+
+    // The microphone has had its offset since its first block: the same value again
+    // changes nothing, so its input does not resync.
+    assert!(studio.set_audio_offset(mic, MS_40));
+    let blocks = |s: &Studio| s.engine().worker_stats(AUDIO).unwrap().ticks();
+    let t = blocks(&studio);
+    assert!(run_until(&mut studio, &clock, |s| blocks(s) >= t + 20));
+    assert_eq!(
+        resyncs(&studio, "Microphone"),
+        base.0,
+        "no change, no resync"
+    );
+
+    // A change above 5 ms resyncs the running input once; the other source keeps its
+    // timeline.
+    assert!(studio.set_audio_offset(system, -MS_40 / 4));
+    let reached = run_until(&mut studio, &clock, |s| resyncs(s, "System audio") > base.1);
+    assert!(reached, "{:?}", studio.progress());
+    let t = blocks(&studio);
+    assert!(run_until(&mut studio, &clock, |s| blocks(s) >= t + 20));
+    assert_eq!(resyncs(&studio, "System audio"), base.1 + 1);
+    assert_eq!(resyncs(&studio, "Microphone"), base.0);
+    assert_eq!(
+        studio.settings().audio_offsets.get(&system),
+        Some(&(-MS_40 / 4))
+    );
+
+    // 0 removes it; a source without an audio input only keeps the setting.
+    assert!(studio.set_audio_offset(mic, 0));
+    assert!(!studio.settings().audio_offsets.contains_key(&mic));
+    assert!(!studio.set_audio_offset(display, MS_40));
+    assert_eq!(studio.settings().audio_offsets.get(&display), Some(&MS_40));
+
+    let (_, errors) = studio.shutdown();
+    assert!(errors.is_empty(), "{errors:?}");
+}

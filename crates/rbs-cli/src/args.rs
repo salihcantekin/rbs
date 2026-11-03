@@ -48,6 +48,10 @@ pub struct RecordArgs {
     pub no_system_audio: bool,
     /// Record no audio track.
     pub no_audio: bool,
+    /// Microphone sync offset in ms: positive delays it, negative advances it.
+    pub mic_offset_ms: i32,
+    /// System audio sync offset in ms: positive delays it, negative advances it.
+    pub system_audio_offset_ms: i32,
     /// Replace an existing file.
     pub overwrite: bool,
 }
@@ -71,6 +75,10 @@ record options:
   --no-mic             no microphone
   --no-system-audio    no system audio
   --no-audio           no audio track at all
+  --mic-offset MS      delay the microphone by MS ms, -200..200 (negative plays it
+                       earlier, by 35 ms at most)
+  --system-audio-offset MS
+                       the same for the system audio
   --overwrite          replace the file if it exists";
 
 fn value<'a>(it: &mut impl Iterator<Item = &'a str>, flag: &str) -> Result<&'a str, String> {
@@ -87,6 +95,21 @@ fn positive(text: &str, flag: &str) -> Result<u32, String> {
         0 => Err(format!("{flag} must be above 0")),
         n => Ok(n),
     }
+}
+
+/// Largest sync offset accepted, in ms (the audio input's FIFO holds this much,
+/// `rbs_sources::DEFAULT_MAX_AUDIO_OFFSET`). An advance is further limited by the audio
+/// graph's latency; the input clamps it.
+pub const MAX_OFFSET_MS: i32 = 200;
+
+fn offset(text: &str, flag: &str) -> Result<i32, String> {
+    let ms = number::<i32>(text, flag)?;
+    if ms.unsigned_abs() > MAX_OFFSET_MS.unsigned_abs() {
+        return Err(format!(
+            "{flag}: {ms} ms is more than {MAX_OFFSET_MS} ms either way"
+        ));
+    }
+    Ok(ms)
 }
 
 fn size(text: &str) -> Result<Size, String> {
@@ -147,6 +170,8 @@ fn record<'a>(mut it: impl Iterator<Item = &'a str>) -> Result<RecordArgs, Strin
         no_mic: false,
         no_system_audio: false,
         no_audio: false,
+        mic_offset_ms: 0,
+        system_audio_offset_ms: 0,
         overwrite: false,
     };
     while let Some(arg) = it.next() {
@@ -173,6 +198,10 @@ fn record<'a>(mut it: impl Iterator<Item = &'a str>) -> Result<RecordArgs, Strin
             "--no-mic" => a.no_mic = true,
             "--no-system-audio" => a.no_system_audio = true,
             "--no-audio" => a.no_audio = true,
+            "--mic-offset" => a.mic_offset_ms = offset(value(&mut it, arg)?, arg)?,
+            "--system-audio-offset" => {
+                a.system_audio_offset_ms = offset(value(&mut it, arg)?, arg)?;
+            }
             "--overwrite" => a.overwrite = true,
             flag if flag.starts_with("--") => return Err(format!("unknown option {flag}")),
             path if out.is_none() => out = Some(PathBuf::from(path)),
@@ -271,6 +300,10 @@ mod tests {
             "1",
             "--no-camera",
             "--no-system-audio",
+            "--mic-offset",
+            "-30",
+            "--system-audio-offset",
+            "25",
         ])
         .unwrap();
         assert_eq!(a.container, ContainerId::Mp4Fragmented);
@@ -282,6 +315,7 @@ mod tests {
         assert_eq!(a.encoder.as_deref(), Some("amf"));
         assert_eq!(a.display, Some(1));
         assert!(a.no_camera && a.no_system_audio && !a.no_mic);
+        assert_eq!((a.mic_offset_ms, a.system_audio_offset_ms), (-30, 25));
     }
 
     #[test]
@@ -295,6 +329,12 @@ mod tests {
             (&["a.mkv", "--fps", "0"][..], "above 0"),
             (&["a.mkv", "--seconds"][..], "needs a value"),
             (&["a.mkv", "--loud"][..], "unknown option"),
+            (&["a.mkv", "--mic-offset", "201"][..], "more than 200 ms"),
+            (
+                &["a.mkv", "--system-audio-offset", "-250"][..],
+                "more than 200 ms",
+            ),
+            (&["a.mkv", "--mic-offset", "1.5"][..], "not a number"),
         ] {
             let err = parse_record(args).unwrap_err();
             assert!(err.contains(want), "{args:?}: {err}");

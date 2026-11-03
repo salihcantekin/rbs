@@ -2,15 +2,14 @@
 //! preview and metered, with recordings started and stopped while it runs (spec
 //! `docs/specs/recording.md`, "Studio", ADR-0041).
 
-use std::any::Any;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use rbs_audio::{
-    AudioGraphConfig, EncoderNode, InputStats, LevelMeter, MeterSinkNode, MixerNode, MixerParams,
-    MixerStats, Strip,
+    AudioGraphConfig, EncoderNode, InputParams, InputStats, LevelMeter, MeterSinkNode, MixerNode,
+    MixerParams, MixerStats, Strip,
 };
 use rbs_codec::{AudioEncoderConfig, VideoEncoderConfig};
 use rbs_core::lifecycle::Lifecycle;
@@ -68,6 +67,10 @@ pub struct StudioSettings {
     /// A preview of the canvas for a UI (macOS and Windows). `None`: the canvas is only
     /// rendered while something records it.
     pub preview: Option<PreviewDesc>,
+    /// Sync offset in ns of each audio source (ADR-0037): positive delays the source,
+    /// negative advances it. Sources not listed have none. The audio input clamps it to
+    /// its range (`rbs_sources::DEFAULT_MAX_AUDIO_OFFSET` at most).
+    pub audio_offsets: BTreeMap<SourceId, i64>,
 }
 
 impl StudioSettings {
@@ -79,6 +82,7 @@ impl StudioSettings {
             audio_graph: AudioGraphConfig::default(),
             partitions: Partitions::default(),
             preview: None,
+            audio_offsets: BTreeMap::new(),
         }
     }
 }
@@ -129,8 +133,8 @@ struct Instance {
     partition: PartitionId,
     gpu: bool,
     watch: Watch,
-    // The audio input's offset sender, kept so its channel stays open.
-    _keep: Option<Box<dyn Any + Send>>,
+    // The audio input's sync offset channel.
+    offset: Option<ParamSender<InputParams>>,
 }
 
 /// One bound source.
@@ -673,7 +677,7 @@ impl Studio {
                         partition: RENDER,
                         gpu: true,
                         watch: Watch::Video(v.stats),
-                        _keep: None,
+                        offset: None,
                     });
                 }
                 SourceInstance::Audio(a) => {
@@ -685,13 +689,18 @@ impl Studio {
                         ))
                     }));
                     let partition = self.settings.partitions.audio;
+                    let mut offset = a.offset;
+                    // Sent before the node runs, so its first block already has it.
+                    if let Some(&ns) = self.settings.audio_offsets.get(&entry.source) {
+                        offset.send(input_params(ns));
+                    }
                     self.engine
                         .adopt::<()>(partition, entry.state.node, Box::new(a.node))?;
                     entry.instance = Some(Instance {
                         partition,
                         gpu: false,
                         watch: Watch::Audio(a.stats, meter),
-                        _keep: Some(Box::new(a.offset)),
+                        offset: Some(offset),
                     });
                 }
                 _ => {
@@ -808,6 +817,30 @@ impl Studio {
     /// The engine (its clock is the master clock).
     pub fn engine(&self) -> &Engine {
         &self.engine
+    }
+
+    /// Sets the sync offset of an audio source in ns: positive delays it, negative
+    /// advances it, 0 removes it (ADR-0037). It is kept per source, so it also applies
+    /// when the source opens later or is rebound after a settings change. A running
+    /// input takes it on its next block: a change below 5 ms slews, a larger one
+    /// resyncs once. Returns true if a running input of that source got it.
+    pub fn set_audio_offset(&mut self, source: SourceId, offset_ns: i64) -> bool {
+        if offset_ns == 0 {
+            self.settings.audio_offsets.remove(&source);
+        } else {
+            self.settings.audio_offsets.insert(source, offset_ns);
+        }
+        let live = self
+            .entries
+            .iter_mut()
+            .filter(|e| e.source == source)
+            .filter_map(|e| e.instance.as_mut()?.offset.as_mut());
+        let mut sent = false;
+        for offset in live {
+            offset.send(input_params(offset_ns));
+            sent = true;
+        }
+        sent
     }
 
     /// The level meter of a source's mixer strip.
@@ -1255,6 +1288,16 @@ impl Studio {
 }
 
 /// Engine errors and links that could not cross partitions, as failures.
+/// The input parameters for a sync offset in ns (positive delays).
+fn input_params(offset_ns: i64) -> InputParams {
+    let d = std::time::Duration::from_nanos(offset_ns.unsigned_abs());
+    if offset_ns < 0 {
+        InputParams::advanced(d)
+    } else {
+        InputParams::delayed(d)
+    }
+}
+
 fn engine_failures(applied: &Applied) -> Vec<StartFailure> {
     let mut out = Vec::new();
     for error in &applied.errors {
