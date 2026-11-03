@@ -36,10 +36,14 @@ fn main() {
     bench(&mut c, "submit_drain/fake_stereo_48k_10ms", &mut fake);
     #[cfg(windows)]
     {
-        let mut mf = rbs_codec_mf::MfAacFactory::new()
-            .create_session(&config)
-            .unwrap();
-        bench(&mut c, "submit_drain/mf_aac_stereo_48k_10ms", &mut mf);
+        use rbs_core::registry::AdapterFactory;
+        let factory = rbs_codec_mf::MfAacFactory::new();
+        if factory.probe().unwrap().is_empty() {
+            eprintln!("no Media Foundation AAC encoder here: mf bench skipped");
+        } else {
+            let mut mf = factory.create_session(&config).unwrap();
+            bench(&mut c, "submit_drain/mf_aac_stereo_48k_10ms", &mut mf);
+        }
     }
     c.final_summary();
 }

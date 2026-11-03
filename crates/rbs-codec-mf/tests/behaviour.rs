@@ -143,6 +143,24 @@ fn a_gap_restarts_the_timeline() {
 }
 
 #[test]
+fn the_discontinuity_threshold_is_one_codec_frame() {
+    let rate = STEREO.sample_rate;
+    let left = tone(1024, 0);
+    for (name, f) in common::factories() {
+        for (gap, restarts) in [(1023u64, false), (1024, true)] {
+            let mut s = session(f.as_ref());
+            let mut out = Vec::new();
+            submit(s.as_mut(), ORIGIN, &left);
+            let next = ORIGIN + rate.duration_of(1024 + gap);
+            submit(s.as_mut(), next, &left);
+            s.flush(&mut out).unwrap();
+            let restarted = out.iter().any(|p| p.pts() == next);
+            assert_eq!(restarted, restarts, "{name}: gap of {gap} samples");
+        }
+    }
+}
+
+#[test]
 fn small_jitter_is_continuous() {
     for (name, f) in common::factories() {
         let mut s = session(f.as_ref());

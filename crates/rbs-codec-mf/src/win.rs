@@ -64,6 +64,7 @@ struct Runtime;
 
 impl Runtime {
     fn start() -> Result<Self, CreateError> {
+        ensure_mta();
         // SAFETY: plain FFI call, balanced by `Drop`.
         unsafe { MFStartup(MF_VERSION, MFSTARTUP_LITE) }
             .map_err(|e| CreateError::Device(format!("MFStartup: {e}")))?;
@@ -225,8 +226,11 @@ pub(crate) struct MfEngine {
     _runtime: Runtime,
 }
 
-// SAFETY: the MFT and the samples are free-threaded COM objects used in the MTA; the
-// session (and with it the engine) is used by one thread at a time (port rule).
+// SAFETY: the AAC MFT (ThreadingModel Both) and Media Foundation samples are agile,
+// free-threaded in-process objects without thread affinity, so the apartment of the
+// creating thread does not matter (the MTA when it never initialised COM, otherwise
+// its own); the session (and with it the engine) is used by one thread at a time
+// (port rule).
 unsafe impl Send for MfEngine {}
 
 impl MfEngine {
@@ -273,7 +277,8 @@ impl MfEngine {
             mft.SetInputType(0, &input_type, 0)
                 .map_err(device("SetInputType"))?;
         }
-        let extradata = encoder_asc(&mft).unwrap_or_else(|| checked.asc.to_bytes().to_vec());
+        let extradata =
+            encoder_asc(&mft, checked).unwrap_or_else(|| checked.asc.to_bytes().to_vec());
         // SAFETY: plain MFT query.
         let info = unsafe { mft.GetOutputStreamInfo(0) }.map_err(device("GetOutputStreamInfo"))?;
         let provides = info.dwFlags & MFT_OUTPUT_STREAM_PROVIDES_SAMPLES.0 as u32 != 0;
@@ -378,8 +383,8 @@ fn push_buffer(buffer: &IMFMediaBuffer, out: &mut Output) -> Result<(), EncodeEr
 }
 
 /// The `AudioSpecificConfig` the encoder reports in its output type, if it is a valid
-/// AAC-LC one.
-fn encoder_asc(mft: &IMFTransform) -> Option<Vec<u8>> {
+/// AAC-LC one for the session's rate and channels.
+fn encoder_asc(mft: &IMFTransform, checked: &Checked) -> Option<Vec<u8>> {
     let mut blob = [0u8; 64];
     let mut len = 0u32;
     // SAFETY: plain attribute reads into a stack buffer of its stated size.
@@ -391,7 +396,10 @@ fn encoder_asc(mft: &IMFTransform) -> Option<Vec<u8>> {
     }
     let asc = blob.get(WAVEINFO_TAIL..len as usize)?;
     let parsed = AudioSpecificConfig::parse(asc).ok()?;
-    (parsed.object_type == 2).then(|| asc.to_vec())
+    let matches = parsed.object_type == 2
+        && parsed.sample_rate() == checked.format.sample_rate.hz()
+        && usize::from(parsed.channels) == checked.channels;
+    matches.then(|| asc.to_vec())
 }
 
 impl Engine for MfEngine {
