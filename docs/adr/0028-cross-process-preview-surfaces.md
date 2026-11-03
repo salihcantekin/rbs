@@ -1,6 +1,6 @@
 # ADR-0028: Share preview surfaces with the UI process as native handles
 
-- Status: Proposed
+- Status: Accepted
 - Date: 2026-11-03
 - Deciders: Salih (owner)
 - Builds on: ADR-0008 (UI as a control API client), ADR-0022 (Slint, decision 2 and the acceptance gate), ADR-0025 (encoder surface export), ADR-0013 (zero cost when unused)
@@ -67,4 +67,5 @@ Only macOS has both a GPU export path and a GPU-backed CI runner today. DMA-BUF 
   1. Any send error other than a dead UI port also ended the subscription. Fixed: only `MACH_SEND_INVALID_DEST` ends it; other errors drop the frame.
   2. A timed-out `SUBSCRIBE` leaked its reply right (`mach_msg_destroy` skips `msgh_local_port`). Fixed: `send` also drops the pseudo-received reply right.
   3. A refused or flood-delayed subscriber learns it only at its timeout. Accepted for version 1: same-user denial of service is out of scope (Consequences); a `REFUSED` reply can be added with a version bump.
-- Hot path: benchmark table in the PR; owner approval per the early-phase policy (2026-11-03).
+- Hot path (macOS CI runner, Apple Paravirtual device, `benches/preview.rs`, 1080p canvas to 720p preview, ring of 3, subscriber in the same process): `publish` 30.3 µs CPU (record and submit one pass), `tick` with one frame sent and one release received 3.8 µs CPU, publish to GPU completion 525 µs; 36,441 frames sent, 0 dropped. A steady loop allocates no more than an NV12 conversion plus 4 (`share_alloc_metal`). New path, so there is no earlier number to compare with.
+- Owner approval: per the early-phase policy (2026-11-03), threads may mark ADRs Accepted.
