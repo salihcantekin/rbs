@@ -54,8 +54,31 @@ pub struct SessionStats {
     pub copied: u64,
 }
 
+// The session logic is plain Rust and is unit-tested everywhere; outside the
+// supported platforms only the tests use it.
+#[cfg(any(
+    test,
+    all(
+        any(target_os = "windows", target_os = "linux"),
+        target_pointer_width = "64"
+    )
+))]
 mod device;
+#[cfg(any(
+    test,
+    all(
+        any(target_os = "windows", target_os = "linux"),
+        target_pointer_width = "64"
+    )
+))]
 mod plan;
+#[cfg(any(
+    test,
+    all(
+        any(target_os = "windows", target_os = "linux"),
+        target_pointer_width = "64"
+    )
+))]
 mod session;
 
 #[cfg(all(
