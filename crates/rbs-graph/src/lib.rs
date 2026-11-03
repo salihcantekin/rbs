@@ -13,6 +13,7 @@
 
 pub mod description;
 pub mod node;
+pub mod partition;
 pub mod runtime;
 
 pub use rbs_core::lifecycle::{InvalidTransition, Lifecycle};

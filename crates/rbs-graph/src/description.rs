@@ -22,9 +22,39 @@ use crate::node::{DescriptorError, LinkKind, NodeDescriptor, NodeKind};
 pub struct NodeId(u32);
 
 impl NodeId {
+    /// First id of the range reserved for nodes the runtime adds itself (queue
+    /// endpoints between partitions, ADR-0025). [`GraphDescription::add_node`] never
+    /// issues these.
+    pub const RESERVED_START: u32 = 0xF000_0000;
+
     /// The raw id.
     pub const fn get(self) -> u32 {
         self.0
+    }
+
+    /// True for ids in the reserved range.
+    pub const fn is_reserved(self) -> bool {
+        self.0 >= Self::RESERVED_START
+    }
+
+    pub(crate) const fn reserved(offset: u32) -> Self {
+        Self(Self::RESERVED_START.saturating_add(offset))
+    }
+}
+
+/// The executor a node runs on (ADR-0025). Nodes in different partitions run on
+/// different threads; links between them become bounded queues.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
+pub struct PartitionId(pub u32);
+
+impl PartitionId {
+    /// The render partition, where nodes go unless assigned elsewhere.
+    pub const RENDER: Self = Self(0);
+}
+
+impl fmt::Display for PartitionId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "partition#{}", self.0)
     }
 }
 
@@ -69,6 +99,8 @@ pub struct NodeEntry {
     pub descriptor: Arc<NodeDescriptor>,
     /// Its lifecycle state.
     pub state: Lifecycle,
+    /// The executor it runs on; [`PartitionId::RENDER`] unless assigned.
+    pub partition: PartitionId,
 }
 
 /// A node taken out of a description together with its links, so an undo can put both
@@ -201,15 +233,16 @@ impl GraphDescription {
     /// Adds a node in the Installed state, after validating its descriptor.
     pub fn add_node(&mut self, descriptor: Arc<NodeDescriptor>) -> Result<NodeId, GraphError> {
         descriptor.validate().map_err(GraphError::Descriptor)?;
+        if self.next_id >= NodeId::RESERVED_START {
+            return Err(GraphError::IdsExhausted);
+        }
         let id = NodeId(self.next_id);
-        self.next_id = self
-            .next_id
-            .checked_add(1)
-            .ok_or(GraphError::IdsExhausted)?;
+        self.next_id += 1;
         self.nodes.push(NodeEntry {
             id,
             descriptor,
             state: Lifecycle::Installed,
+            partition: PartitionId::RENDER,
         });
         Ok(id)
     }
@@ -267,6 +300,29 @@ impl GraphDescription {
             .transition(to)
             .map_err(|e| GraphError::Lifecycle(id, e))?;
         Ok(())
+    }
+
+    /// Assigns the node to a partition (ADR-0025). Takes effect on the next `apply`;
+    /// moving a scheduled node restarts it on the other executor.
+    pub fn set_partition(&mut self, id: NodeId, partition: PartitionId) -> Result<(), GraphError> {
+        let index = self.index(id)?;
+        self.nodes[index].partition = partition;
+        Ok(())
+    }
+
+    /// Builds a description from parts the partitioner already validated: logical
+    /// nodes keep their ids, reserved ids are used for queue endpoints.
+    pub(crate) fn from_parts(mut nodes: Vec<NodeEntry>, links: Vec<Link>, next_id: u32) -> Self {
+        nodes.sort_by_key(|n| n.id);
+        Self {
+            nodes,
+            links,
+            next_id,
+        }
+    }
+
+    pub(crate) fn next_id(&self) -> u32 {
+        self.next_id
     }
 
     /// The node with this id.
@@ -807,9 +863,10 @@ mod tests {
     #[test]
     fn ids_exhaust_with_an_error() -> Result<(), GraphError> {
         let mut g = GraphDescription::new();
-        g.next_id = u32::MAX - 1;
+        g.next_id = NodeId::RESERVED_START - 1;
         let last = g.add_node(source())?;
-        assert_eq!(last.get(), u32::MAX - 1);
+        assert_eq!(last.get(), NodeId::RESERVED_START - 1);
+        assert!(!last.is_reserved());
         assert_eq!(g.add_node(source()).err(), Some(GraphError::IdsExhausted));
         Ok(())
     }
