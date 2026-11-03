@@ -15,7 +15,9 @@ use rbs_app::studio_host::{
 };
 use rbs_audio_io_test::TestAudioBackend;
 use rbs_capture_test::TestCaptureFactory;
+use rbs_core::media::Size;
 use rbs_core::time::TestClock;
+use rbs_core::timing::FrameRate;
 use rbs_engine::{Engine, EngineConfig};
 use rbs_gpu::{GpuContext, GpuError, GpuRequest};
 use rbs_record::RecordAdapters;
@@ -175,4 +177,54 @@ fn sources_are_added_deleted_and_restored_through_the_host() {
             }
         }
     }
+}
+
+#[test]
+fn a_new_canvas_restarts_the_studio_with_the_sources() {
+    let Some(gpu) = gpu() else { return };
+    let (host, rx) = host(gpu);
+    let size = next(&rx, |u| match u {
+        Update::Started { size, fps, .. } => Some((size, fps)),
+        Update::Failed(e) => panic!("{e}"),
+        _ => None,
+    });
+    assert_eq!(size, (Size::new(1920, 1080), FrameRate::FPS_30));
+    let inputs = targets(&host, &rx, SourceKind::AudioInput);
+    host.send(Command::AddSource {
+        kind: SourceKind::AudioInput,
+        target: inputs[0].clone(),
+    });
+    let rows = rows_where(&rx, |r| {
+        r.len() == 1 && r[0].status == SourceStatus::Running
+    });
+    let id = rows[0].id;
+
+    host.send(Command::SetCanvas {
+        size: Size::new(1280, 720),
+        fps: FrameRate::FPS_60,
+    });
+    let (preview, size, fps) = next(&rx, |u| match u {
+        Update::Canvas { preview, size, fps } => Some((preview, size, fps)),
+        Update::Error(e) | Update::Failed(e) => panic!("{e}"),
+        _ => None,
+    });
+    assert!(preview.is_none(), "this host has no preview");
+    assert_eq!((size, fps), (Size::new(1280, 720), FrameRate::FPS_60));
+    // The new studio runs the same source.
+    let rows = rows_where(&rx, |r| r.len() == 1);
+    assert_eq!(rows[0].id, id);
+    assert_eq!(rows[0].status, SourceStatus::Running, "{rows:?}");
+    assert!(rows[0].meter.is_some());
+
+    // The same canvas again changes nothing and still answers.
+    host.send(Command::SetCanvas {
+        size: Size::new(1280, 720),
+        fps: FrameRate::FPS_60,
+    });
+    let again = next(&rx, |u| match u {
+        Update::Canvas { size, .. } => Some(size),
+        Update::Error(e) | Update::Failed(e) => panic!("{e}"),
+        _ => None,
+    });
+    assert_eq!(again, Size::new(1280, 720));
 }

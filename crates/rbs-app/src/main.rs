@@ -890,6 +890,12 @@ fn install(g: &Shell<'_>, ctx: &Ctx) {
 }
 
 /// Connect one window's `Studio` callbacks to the studio and give it the shared models.
+/// Drops the preview layer before the studio restarts (its frames go back first).
+fn close_preview() {
+    #[cfg(any(target_os = "macos", windows))]
+    preview::close();
+}
+
 fn install_studio(g: &Studio<'_>, ctx: &Ctx) {
     if let Ok(app) = ctx.app.try_borrow() {
         app.studio.attach_models(g);
@@ -942,6 +948,12 @@ fn install_studio(g: &Studio<'_>, ctx: &Ctx) {
     });
     on!(on_set_audio_rate, |app, i: i32| {
         app.studio.set_audio_rate(i);
+    });
+    on!(on_set_canvas_size, |app, i: i32| {
+        app.studio.set_canvas_size(i, close_preview);
+    });
+    on!(on_set_canvas_rate, |app, i: i32| {
+        app.studio.set_canvas_rate(i, close_preview);
     });
     // A popup opened or closed: the preview layer hides or shows at once.
     #[cfg(any(target_os = "macos", windows))]
@@ -1025,9 +1037,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     install(&main.global::<Shell>(), &ctx);
     install_studio(&main.global::<Studio>(), &ctx);
     CTX.with(|c| *c.borrow_mut() = Some(ctx.clone()));
-    // The studio: its own control thread (ADR-0041 decision 7).
+    // The studio: its own control thread (ADR-0041 decision 7), on the saved canvas.
+    let studio_canvas = {
+        let c = ctx.app.borrow().studio.canvas;
+        studio_host::HostConfig::canvas(c.size(), c.frame_rate())
+    };
     match studio_host::StudioHost::spawn(
-        studio_host::HostConfig::desktop(),
+        studio_canvas,
         rbs_app::platform::adapters,
         || {
             // A hardware adapter, else a software one (a virtual machine, for example):

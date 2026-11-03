@@ -85,6 +85,18 @@ export global Studio {
     in property <string> out-summary;
     // Opens the Settings window at its Recording section.
     callback open-settings();
+
+    // The canvas (Settings, Video): sizes and rates offered, the ones in use.
+    in property <[string]> canvas-sizes;
+    in property <int> canvas-size;
+    in property <[string]> canvas-rates;
+    in property <int> canvas-rate;
+    // The studio restarts with a new canvas; true until it runs again.
+    in property <bool> canvas-restarting;
+    // A problem with the canvas or its file; empty when none.
+    in property <string> canvas-note;
+    callback set-canvas-size(int);
+    callback set-canvas-rate(int);
 }
 
 // The add-source picker: a kind, then what it captures. Keyboard: arrows are not
@@ -486,6 +498,54 @@ export component RecordingSettings inherits Rectangle {
     // The field shows what Rust set last; typing in it is never overwritten by a sync.
     property <int> folder-serial: Studio.out-folder-serial;
     changed folder-serial => { folder.text = Studio.out-folder; }
+}
+
+// The canvas's size and frame rate: the Video section of the Settings window (U17).
+// A change restarts the studio with the new canvas; not while recording.
+export component VideoSettings inherits Rectangle {
+    property <bool> can-change: Studio.state == 1 && Studio.rec-state == 0 && !Studio.canvas-restarting;
+    form := VerticalLayout {
+        spacing: Tokens.space-3;
+        alignment: start;
+        Text {
+            text: Studio.rec-state != 0
+                ? @tr("Stop the recording to change the canvas.")
+                : Studio.canvas-restarting
+                ? @tr("The studio is restarting with the new canvas.")
+                : @tr("A change restarts the studio: the picture stops for a moment.");
+            color: Theme.text-secondary;
+            font-size: Tokens.type-body-size;
+            wrap: word-wrap;
+        }
+        Field {
+            label: @tr("Canvas size");
+            Select {
+                label: @tr("Canvas size");
+                options: Studio.canvas-sizes;
+                index: Studio.canvas-size;
+                enabled: can-change;
+                selected(i) => { Studio.set-canvas-size(i); }
+            }
+        }
+        Field {
+            label: @tr("Frame rate");
+            SegmentedControl {
+                label: @tr("Frame rate");
+                options: Studio.canvas-rates;
+                index: Studio.canvas-rate;
+                enabled: can-change;
+                selected(i) => { Studio.set-canvas-rate(i); }
+            }
+        }
+        if Studio.canvas-note != "": Text {
+            text: Studio.canvas-note;
+            color: Theme.state-error;
+            font-size: Tokens.type-body-size;
+            wrap: word-wrap;
+        }
+    }
+    preferred-height: form.preferred-height;
+    min-height: form.min-height;
 }
 
 // Outputs: what each output will do, in one line each, and the way to its settings.
