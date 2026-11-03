@@ -1,0 +1,37 @@
+[package]
+name = "rbs-capture-sck"
+description = "ScreenCaptureKit adapter for the RBS capture port: macOS displays and windows as zero-copy IOSurfaces."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+rbs-capture = { path = "../rbs-capture" }
+rbs-core = { path = "../rbs-core" }
+
+# Apple's frameworks through the objc2 bindings (MIT OR Apache-2.0 OR Zlib), same
+# versions as rbs-gpu and wgpu-hal.
+[target.'cfg(target_os = "macos")'.dependencies]
+block2 = "0.6"
+dispatch2 = { version = "0.3", default-features = false, features = ["std", "alloc"] }
+libc = "0.2"
+objc2 = "0.6"
+objc2-core-foundation = { version = "0.3.2", default-features = false, features = ["std", "CFArray", "CFCGTypes", "CFDictionary", "CFString"] }
+objc2-core-graphics = { version = "0.3.2", default-features = false, features = ["std", "CGColorSpace", "CGDirectDisplay", "CGGeometry", "CGWindow"] }
+objc2-core-media = { version = "0.3.2", default-features = false, features = ["std", "CMSampleBuffer", "CMTime", "CMFormatDescription", "CMBase", "objc2-core-video"] }
+objc2-core-video = { version = "0.3.2", default-features = false, features = ["std", "CVBuffer", "CVImageBuffer", "CVPixelBuffer", "CVPixelBufferIOSurface", "CVReturn", "objc2-io-surface"] }
+objc2-foundation = { version = "0.3.2", default-features = false, features = ["std", "NSArray", "NSDictionary", "NSEnumerator", "NSError", "NSObject", "NSProcessInfo", "NSString", "NSValue"] }
+objc2-io-surface = { version = "0.3.2", default-features = false, features = ["std", "IOSurfaceRef", "IOSurfaceTypes", "objc2-core-foundation"] }
+objc2-screen-capture-kit = { version = "0.3.2", default-features = false, features = ["std", "SCError", "SCShareableContent", "SCStream", "block2", "dispatch2", "libc", "objc2-core-foundation", "objc2-core-graphics", "objc2-core-media"] }
+
+[dev-dependencies]
+allocation-counter = "0.8"
+
+[target.'cfg(target_os = "macos")'.dev-dependencies]
+objc2-io-surface = { version = "0.3.2", default-features = false, features = ["std", "IOSurfaceRef", "objc2-core-foundation"] }
+
+[lints]
+workspace = true

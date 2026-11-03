@@ -278,10 +278,20 @@ Checks: probe within 50 ms and never panics; `enumerate` agrees with `capture.ta
 | `rbs-capture-wgc` | Windows 10 1903+ | display, window | d3d11 (NT shared texture + shared fence) | 0 (implemented) |
 | `rbs-capture-dxgi` | Windows | display | d3d11 | 1 (fallback) |
 | `rbs-capture-mf` | Windows | camera | system, d3d11 | 2 |
-| `rbs-capture-sck` | macOS 12.3+ | display, window (picker on 14+) | metal (IOSurface) | 0 prototype |
+| `rbs-capture-sck` | macOS 12.3+ | display, window (picker on 14+ planned) | metal (IOSurface, ready on delivery) | 0 (implemented; hardware run pending) |
 | `rbs-capture-avf` | macOS | camera | metal (IOSurface) | 2 |
 | `rbs-capture-pipewire` | Linux (Wayland, X11 via portal) | display, window (picker) | dmabuf, system | 0 prototype |
 | `rbs-capture-v4l2` | Linux | camera | system, dmabuf | 2 |
+
+### ScreenCaptureKit adapter notes
+
+- Minimum deployment target macOS 12.3: the bindings link ScreenCaptureKit strongly, so an older macOS cannot load the binary; the probe's version check only catches a wrong deployment setting.
+- `enumerate`, `open` and `start` wait for the replay daemon (`SCShareableContent`, `startCapture`). Warm calls take tens to a few hundred milliseconds; the first call of a process can exceed the 100 ms and 500 ms budgets above. The adapter waits at most 2 s and then returns a recoverable `Backend` error. This is an accepted exception for this adapter until measured on hardware.
+- Resizes (invariant 6): the stream is configured at the target's pixel size. When the frame attachments (content rect, content scale, scale factor) show a new native size, the sample handler reconfigures the stream without waiting, and later frames carry the new size.
+- Window pixel sizes use the scale of the display that shows the window's centre.
+- A frame status of `Stopped` counts as target loss (invariant 7), because closing a captured window does not always reach the stream delegate.
+- Soundness rests on ScreenCaptureKit not rendering into an IOSurface while its pixel buffer is retained. The hardware test `held_surface_is_not_rewritten` (`RBS_CAPTURE_HW=1`) checks it with the surface seed; it must pass on a Mac before `rbs-app` wires the adapter in.
+- On macOS 15 and later, the system may show its recurring screen-recording reminder on ScreenCaptureKit calls. This is an OS alert, not a permission prompt the adapter starts, so `open` still never prompts.
 
 ## Review
 
@@ -335,6 +345,15 @@ Records written from the reviewer's own output (ADR-0014). The spec stays Draft.
 - Resolved before merge: the module is marked adapter support outside the port contract, `FrameMeta` is `#[non_exhaustive]` with a constructor, `push` and `reap` are crate-private; the calling protocol is documented and `release` refuses underflow instead of wrapping or panicking; the janitor clears its flag and keeps the byte count on a panic; `Grave` methods are required; the janitor test waits on channels and joins the thread, covering exit and restart; janitor threads are named per adapter; spec listing matches the code; benchmark numbers recorded.
 - Open: the WGC resize budget check-then-add is not atomic across sessions (overshoot by one texture each, predates this change); tokens carry no generation bits.
 - Owner approval: Salih, 2026-11-02 (early-phase merge policy).
+
+### ScreenCaptureKit adapter
+
+- Reviewer: a fresh independent AI session, given the code and specs only
+- Date: 2026-11-03
+- Verdict: approve with changes. Ring protocol, latest_frame rules, retention after stop, timestamps, stop order and permission handling checked.
+- Resolved before merge: start failures stop the stream; the stream follows target resizes; `Stopped` frames count as target loss; window sizes use their display's scale; the sample handler runs in an autorelease pool; the deployment target is documented; `open` checks the format before asking the OS; the attachment type and pixel format are checked; a hardware test for the surface-retention assumption was added.
+- Open, needs a Mac: run `held_surface_is_not_rewritten` and the hardware conformance (blocks wiring the adapter into `rbs-app`); confirm the content-rect units used for resizes; measure `enumerate` and `start` times; measure drops at 120 Hz with five held buffers. `Sendable` is a crate-private blanket `Send` wrapper; keep its uses to the documented types.
+- Owner approval: Salih, 2026-11-03 (early-phase merge policy).
 
 ## Open questions
 
