@@ -90,7 +90,10 @@ pub trait Engine: Send {
     fn encode(&mut self, slot: usize, token: u64, idr: bool) -> Result<(), EngineError>;
 
     /// The output of `slot`, which is in flight. With `wait == false`, `Ok(None)` when
-    /// the picture is not finished yet; with `wait == true`, blocks until it is.
+    /// the picture is not finished yet; with `wait == true`, blocks until it is. An
+    /// engine without a reliable non-blocking read may, with `wait == false`, block
+    /// briefly on a picture that a newer one follows (NVENC) and return `Ok(None)`
+    /// for the newest.
     fn output(&mut self, slot: usize, wait: bool) -> Result<Option<Output>, EngineError>;
 
     /// Tells the encoder no more input follows for now, so every queued picture

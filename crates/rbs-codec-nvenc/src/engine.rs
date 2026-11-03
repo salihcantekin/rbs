@@ -624,8 +624,13 @@ impl NvencEngine {
         plane_sizes(self.pixel_format, self.width, self.height).unwrap_or_default()
     }
 
-    /// Reads back and unlocks the bitstream of `slot`.
-    fn lock_output(&mut self, slot: usize, wait: bool) -> Result<Option<Output>, EngineError> {
+    /// Reads back and unlocks the bitstream of `slot`, waiting until it is finished.
+    ///
+    /// Never uses `doNotWait`: in synchronous mode NVENC can return success for an
+    /// unfinished picture with a size far beyond the buffer (seen on an RTX 4090,
+    /// driver 610.88: 3,102,088 bytes for a 320x240 HEVC picture), so the size of a
+    /// non-blocking lock cannot be trusted.
+    fn lock_output(&mut self, slot: usize) -> Result<Output, EngineError> {
         let funcs = &self.device.api.nvenc.0;
         let lock = f(funcs.nvEncLockBitstream, "nvEncLockBitstream")?;
         let unlock = f(funcs.nvEncUnlockBitstream, "nvEncUnlockBitstream")?;
@@ -634,16 +639,24 @@ impl NvencEngine {
             outputBitstream: self.outputs[slot],
             ..Default::default()
         };
-        params.set_doNotWait(u32::from(!wait));
+        params.set_doNotWait(0);
         // SAFETY: the bitstream buffer belongs to this session and has a picture
         // queued (`pending`).
         let s = unsafe { lock(self.encoder(), &mut params) };
-        if s == sys::NV_ENC_ERR_LOCK_BUSY && !wait {
-            return Ok(None);
-        }
         status("nvEncLockBitstream", s)?;
         let len = params.bitstreamSizeInBytes as usize;
-        let data = if len == 0 || params.bitstreamBufferPtr.is_null() {
+        // A picture never needs more than twice the raw frame; a larger size is a
+        // driver fault, refused instead of reading past the bitstream buffer.
+        let [(row0, rows0), (row1, rows1)] = self.planes();
+        let limit = 2 * (row0 * rows0 + row1 * rows1) + 64 * 1024;
+        let data = if len > limit {
+            // SAFETY: the buffer was locked above.
+            let _ = unsafe { unlock(self.encoder(), self.outputs[slot]) };
+            self.pending[slot] = false;
+            return Err(EngineError::Broken(
+                "NVENC reported a picture larger than its buffer",
+            ));
+        } else if len == 0 || params.bitstreamBufferPtr.is_null() {
             Vec::new()
         } else {
             // SAFETY: while locked, `bitstreamBufferPtr` points at
@@ -660,11 +673,11 @@ impl NvencEngine {
         if data.is_empty() {
             return Err(EngineError::Broken("NVENC returned an empty picture"));
         }
-        Ok(Some(Output {
+        Ok(Output {
             data,
             keyframe,
             token,
-        }))
+        })
     }
 
     fn send_eos(&mut self) -> Result<(), EngineError> {
@@ -783,8 +796,15 @@ impl Engine for NvencEngine {
     }
 
     fn output(&mut self, slot: usize, wait: bool) -> Result<Option<Output>, EngineError> {
+        // A blocking lock is the only reliable one (`lock_output`). Without waiting,
+        // the newest picture stays in flight so NVENC encodes it while the caller
+        // prepares the next frame; an older one was queued before it and NVENC
+        // finishes pictures in order, so locking it blocks for less than one encode.
+        if !wait && !newer_pending(&self.pending, &self.tokens, slot) {
+            return Ok(None);
+        }
         let _current = self.device.push()?;
-        self.lock_output(slot, wait)
+        self.lock_output(slot).map(Some)
     }
 
     fn end_of_stream(&mut self) -> Result<(), EngineError> {
@@ -823,6 +843,19 @@ impl Engine for NvencEngine {
     }
 }
 
+/// True when a slot other than `slot` holds a picture submitted after the one in
+/// `slot`.
+fn newer_pending(pending: &[bool], tokens: &[u64], slot: usize) -> bool {
+    let Some(&own) = tokens.get(slot) else {
+        return false;
+    };
+    pending
+        .iter()
+        .zip(tokens)
+        .enumerate()
+        .any(|(s, (p, t))| s != slot && *p && *t > own)
+}
+
 impl Drop for NvencEngine {
     fn drop(&mut self) {
         let Ok(_current) = self.device.push() else {
@@ -835,7 +868,7 @@ impl Drop for NvencEngine {
                 .filter(|s| self.pending[*s])
                 .min_by_key(|s| self.tokens[*s])
             {
-                if self.lock_output(slot, true).is_err() {
+                if self.lock_output(slot).is_err() {
                     // `lock_output` clears `pending` only once the lock succeeded.
                     self.pending[slot] = false;
                 }
@@ -855,5 +888,25 @@ impl Drop for NvencEngine {
             }
         }
         // `device` drops after this, destroying the session and the context.
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::newer_pending;
+
+    #[test]
+    fn only_pictures_followed_by_a_newer_one_are_read_without_waiting() {
+        // Slots 0..3 hold tokens 4, 5, 2, 3 (a wrapped ring); slot 3 is not pending.
+        let tokens = [4, 5, 2, 3];
+        let pending = [true, true, true, false];
+        assert!(newer_pending(&pending, &tokens, 2));
+        assert!(newer_pending(&pending, &tokens, 0));
+        // The newest picture stays in flight.
+        assert!(!newer_pending(&pending, &tokens, 1));
+        // A single picture in flight is the newest.
+        assert!(!newer_pending(&[true, false], &[7, 3], 0));
+        // An index outside the ring is never ready.
+        assert!(!newer_pending(&pending, &tokens, 9));
     }
 }

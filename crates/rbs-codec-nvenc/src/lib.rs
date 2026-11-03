@@ -18,8 +18,9 @@
 //! Each session owns a CUDA context on device 0 and one NVENC session in synchronous
 //! mode with [`FRAMES_IN_FLIGHT`] NVENC-allocated input and bitstream buffers.
 //! `submit` copies the system-memory NV12 or P010 frame into the next input buffer and
-//! queues it; `drain` reads finished pictures back in submission order without waiting
-//! (`doNotWait`); `flush` sends end-of-stream and waits for the rest. Every call pushes
+//! queues it; `drain` reads pictures back in submission order, leaving the newest in
+//! flight (bitstreams are always locked blocking: a `doNotWait` lock can report a
+//! bogus size in synchronous mode); `flush` sends end-of-stream and waits for the rest. Every call pushes
 //! the session's CUDA context on the calling thread and pops it again.
 //!
 //! The encoder runs with picture type decision, no B-frames and no look-ahead, so each
