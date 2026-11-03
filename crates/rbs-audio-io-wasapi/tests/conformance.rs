@@ -217,10 +217,20 @@ mod hardware {
             ..Options::default()
         };
         let selected = Selected { backend, app };
-        for kind in [EndpointKind::Input, EndpointKind::OutputLoopback] {
-            let listed = selected.enumerate(kind).map(|e| e.len()).unwrap_or(0);
-            assert_eq!(listed, 1, "no default {kind} endpoint");
+        // A machine without a microphone still runs every case on the loopback and
+        // the fixture; the output device is required.
+        let inputs = selected
+            .enumerate(EndpointKind::Input)
+            .map(|e| e.len())
+            .unwrap_or(0);
+        if inputs == 0 {
+            eprintln!("no active microphone: the Input kind is not covered on this machine");
         }
+        let outputs = selected
+            .enumerate(EndpointKind::OutputLoopback)
+            .map(|e| e.len())
+            .unwrap_or(0);
+        assert_eq!(outputs, 1, "no default output endpoint");
         let report = conformance::run(&selected, &mut RealTimePacer::new(), &options);
         eprintln!("{report}");
         report.assert_ran(&[

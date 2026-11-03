@@ -17,8 +17,8 @@ use std::time::Duration;
 
 use windows::Wdk::System::SystemServices::RtlGetVersion;
 use windows::Win32::Foundation::{
-    CloseHandle, E_ACCESSDENIED, E_FAIL, E_INVALIDARG, ERROR_NOT_FOUND, GetLastError, HANDLE,
-    PROPERTYKEY, STILL_ACTIVE, WAIT_TIMEOUT,
+    CloseHandle, E_ACCESSDENIED, E_FAIL, E_INVALIDARG, E_OUTOFMEMORY, ERROR_NOT_FOUND,
+    GetLastError, HANDLE, PROPERTYKEY, STILL_ACTIVE, WAIT_TIMEOUT,
 };
 use windows::Win32::Media::Audio::{
     AUDCLNT_BUFFERFLAGS_DATA_DISCONTINUITY, AUDCLNT_BUFFERFLAGS_SILENT,
@@ -41,7 +41,7 @@ use windows::Win32::System::Com::StructuredStorage::{
 };
 use windows::Win32::System::Com::{
     BLOB, CLSCTX_ALL, COINIT_MULTITHREADED, CoCreateInstance, CoIncrementMTAUsage, CoInitializeEx,
-    CoTaskMemFree, CoUninitialize, STGM_READ,
+    CoTaskMemAlloc, CoTaskMemFree, CoUninitialize, STGM_READ,
 };
 use windows::Win32::System::Performance::{QueryPerformanceCounter, QueryPerformanceFrequency};
 use windows::Win32::System::SystemInformation::OSVERSIONINFOW;
@@ -818,10 +818,6 @@ impl Drop for WasapiStream {
 #[implement(IActivateAudioInterfaceCompletionHandler)]
 struct Completion {
     done: SyncSender<()>,
-    /// The activation parameters the PROPVARIANT blob points at. Owned by the handler,
-    /// which the OS keeps until the activation completes, so they outlive it even when
-    /// `activate_process` stops waiting.
-    _params: Box<AUDIOCLIENT_ACTIVATION_PARAMS>,
 }
 
 impl IActivateAudioInterfaceCompletionHandler_Impl for Completion_Impl {
@@ -836,7 +832,7 @@ impl IActivateAudioInterfaceCompletionHandler_Impl for Completion_Impl {
 
 /// An audio client capturing the process tree of `pid`.
 fn activate_process(pid: u32) -> Result<IAudioClient, AudioIoError> {
-    let params = Box::new(AUDIOCLIENT_ACTIVATION_PARAMS {
+    let params = AUDIOCLIENT_ACTIVATION_PARAMS {
         ActivationType: AUDIOCLIENT_ACTIVATION_TYPE_PROCESS_LOOPBACK,
         Anonymous: AUDIOCLIENT_ACTIVATION_PARAMS_0 {
             ProcessLoopbackParams: AUDIOCLIENT_PROCESS_LOOPBACK_PARAMS {
@@ -844,28 +840,40 @@ fn activate_process(pid: u32) -> Result<IAudioClient, AudioIoError> {
                 ProcessLoopbackMode: PROCESS_LOOPBACK_MODE_INCLUDE_TARGET_PROCESS_TREE,
             },
         },
-    });
+    };
+    // The activation takes ownership of the blob and frees it later: a boxed block the
+    // adapter freed after activation was freed twice and corrupted the heap, and a
+    // block it kept was reused by the heap after the stream stopped. So the blob comes
+    // from the COM task allocator and is never freed here. If the OS kept it on some
+    // path, the cost is one 12-byte block per activation.
+    let size = std::mem::size_of::<AUDIOCLIENT_ACTIVATION_PARAMS>();
+    // SAFETY: plain allocation; checked for null below.
+    let blob = unsafe { CoTaskMemAlloc(size) }.cast::<AUDIOCLIENT_ACTIVATION_PARAMS>();
+    if blob.is_null() {
+        return Err(AudioIoError::Backend {
+            domain: ErrorDomain::HResult,
+            code: i64::from(E_OUTOFMEMORY.0),
+            recoverable: true,
+        });
+    }
+    // SAFETY: `blob` is a fresh allocation of `size` bytes; CoTaskMemAlloc aligns for
+    // any fundamental type.
+    unsafe { blob.write(params) };
     let mut variant = PROPVARIANT::default();
-    // SAFETY: writes the VT_BLOB members of a zeroed PROPVARIANT. The blob points at
-    // the boxed `params`, which the completion handler owns until the activation has
-    // completed and the OS released the handler; the variant is never passed to
-    // PropVariantClear, which would free the blob.
+    // SAFETY: writes the VT_BLOB members of a zeroed PROPVARIANT. The variant is never
+    // passed to PropVariantClear: the blob belongs to the activation (see above).
     unsafe {
         let inner = &mut *variant.Anonymous.Anonymous;
         inner.vt = VT_BLOB;
         inner.Anonymous.blob = BLOB {
-            cbSize: std::mem::size_of::<AUDIOCLIENT_ACTIVATION_PARAMS>() as u32,
-            pBlobData: (&raw const *params).cast_mut().cast(),
+            cbSize: size as u32,
+            pBlobData: blob.cast(),
         };
     }
     let (done_tx, done_rx) = mpsc::sync_channel(1);
-    let handler: IActivateAudioInterfaceCompletionHandler = Completion {
-        done: done_tx,
-        _params: params,
-    }
-    .into();
-    // SAFETY: valid device path, IID, activation parameters (alive as long as the
-    // handler, see above) and handler.
+    let handler: IActivateAudioInterfaceCompletionHandler = Completion { done: done_tx }.into();
+    // SAFETY: valid device path, IID, activation parameters (owned by the activation,
+    // see above) and handler.
     let operation = unsafe {
         ActivateAudioInterfaceAsync(
             VIRTUAL_AUDIO_DEVICE_PROCESS_LOOPBACK,
