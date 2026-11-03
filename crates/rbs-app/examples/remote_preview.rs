@@ -527,12 +527,16 @@ mod demo {
                                 .map_or((0, 0), |st| (st.counters.measured_frames, st.counters.late))
                         });
                         println!(
-                            "MEASURE mode={} meters={} seconds={wall:.1} fps={:.1} late={late} cpu_pct={:.1} peak_rss_mib={:.0}",
+                            "MEASURE mode={} meters={} meter_mode={} seconds={wall:.1} fps={:.1} late={late} cpu_pct={:.1} peak_rss_mib={:.0}",
                             match mode {
                                 Mode::Layer => "layer",
                                 Mode::Slint => "slint",
                             },
                             u8::from(meters),
+                            match meter_mode {
+                                Mode::Layer => "layer",
+                                Mode::Slint => "slint",
+                            },
                             frames as f64 / wall,
                             100.0 * cpu / wall,
                             peak_rss_mib(),

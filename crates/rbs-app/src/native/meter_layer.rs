@@ -95,7 +95,8 @@ struct MeterLayers {
 /// thread). Like the preview layer (ADR-0034) it sits above the toolkit's layer, so the
 /// UI hides it ([`MeterBridgeLayer::set_hidden`]) while toolkit content overlaps it.
 pub struct MeterBridgeLayer {
-    /// Container over the bridge's rectangle; its sublayers use top-left coordinates.
+    /// Container over the bridge's rectangle; its sublayers use top-left coordinates
+    /// once it is placed ([`MeterBridgeLayer::set_rect`]).
     root: Retained<CALayer>,
     meters: Vec<MeterLayers>,
     colors: CgColors,
@@ -108,7 +109,6 @@ impl MeterBridgeLayer {
     /// An empty bridge, not yet in a window. Not for real-time threads.
     pub fn new(colors: &MeterColors) -> Self {
         let root = CALayer::new();
-        root.setGeometryFlipped(true);
         root.setOpaque(false);
         root.setMasksToBounds(true);
         // Above the toolkit's layer even when the toolkit recreates its own.
@@ -191,6 +191,10 @@ impl MeterBridgeLayer {
         );
         transaction(|| {
             self.root.setAutoresizingMask(mask);
+            // Sublayers use top-left coordinates. `geometryFlipped` is relative to the
+            // superlayer, so the container flips only when its parent does not (an
+            // AppKit view's backing layer is often flipped already).
+            self.root.setGeometryFlipped(!flipped);
             self.root.setFrame(frame);
         });
     }

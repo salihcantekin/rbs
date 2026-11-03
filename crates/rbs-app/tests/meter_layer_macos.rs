@@ -155,12 +155,15 @@ fn placement_converts_to_the_parent_origin() {
         (f.origin.x, f.origin.y, f.size.width, f.size.height),
         (20.0, 40.0, 400.0, 60.0)
     );
-    // A flipped parent keeps the top-left origin.
+    // Under an unflipped parent the container flips, so meters use top-left coordinates.
+    assert!(bridge.layer().isGeometryFlipped());
+    // A flipped parent (an AppKit view's backing layer often is) keeps the top-left
+    // origin, and the container must not flip again (it would turn the meters upside
+    // down: seen on the reference Mac).
     parent.setGeometryFlipped(true);
     bridge.set_rect(rect);
     assert_eq!(bridge.layer().frame().origin.y, 300.0);
-    // The container keeps top-left coordinates for the meters.
-    assert!(bridge.layer().isGeometryFlipped());
+    assert!(!bridge.layer().isGeometryFlipped());
 }
 
 #[test]
