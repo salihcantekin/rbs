@@ -3,6 +3,17 @@
 # `cargo nextest run --workspace` runs the fast tier; add `--run-ignored only` for the
 # slow tier. CI uses `--profile ci`. Plain `cargo test` keeps working.
 
+# GPU and hardware-encoder tests share one device per machine. nextest runs each test in
+# its own process, so without a limit dozens of processes open the device at once; the
+# macOS runners' virtual Metal device then reports "Parent device is lost". One at a
+# time keeps them deterministic; everything else still runs in parallel.
+[test-groups]
+gpu = { max-threads = 1 }
+
+[[profile.default.overrides]]
+filter = 'package(rbs-gpu) | package(rbs-app) | package(rbs-capture-sck) | package(rbs-capture-wgc) | package(rbs-capture-pipewire) | package(/^rbs-codec-/)'
+test-group = 'gpu'
+
 [profile.default]
 # A flaky test fails the run. It is fixed, never retried.
 retries = 0

@@ -44,6 +44,7 @@ The procedure is the `test-reliability` skill; the rules are in the [testing str
 - `rbs-engine` gains `WorkerStats::stops()`, a counter bumped on the control thread before a worker is joined (not on the worker's hot path); tests use it to react to engine steps instead of timing them.
 - Every future test is reviewed against these rules; a new real-time wait in a test needs a comment saying why it is a hang guard.
 - Hardware conformance runs and soak tests stay outside hosted CI, as before.
+- Tests that open the GPU or a hardware encoder run one at a time under nextest (test group `gpu`): with a process per test, dozens of processes opening the device at once made the macOS runners' virtual Metal device report "Parent device is lost".
 - Developers who use plain `cargo test` keep working; nextest adds per-test timeouts and process isolation (each test in its own process, which also removes interference between tests that count process threads).
 
 ## Alternatives considered
