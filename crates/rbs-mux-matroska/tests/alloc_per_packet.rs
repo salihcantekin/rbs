@@ -1,7 +1,7 @@
 //! Heap allocations on the Matroska mux path (spec `docs/specs/output-ports.md`,
 //! allocation rule).
 //!
-//! After warm-up the muxer allocates exactly once per cluster: the `moof` + `mdat`
+//! After warm-up the muxer allocates exactly once per cluster: the Cluster
 //! chunk, sized exactly so `Bytes::from` neither reallocates nor adds a shared header.
 //! Collecting a sample only clones the packet's `Bytes` (a reference count; the input
 //! here is cloned once beforehand so `Bytes` made from a `Vec` is already shared).
@@ -44,18 +44,30 @@ unsafe impl GlobalAlloc for Counting {
 #[global_allocator]
 static GLOBAL: Counting = Counting;
 
+// One test for both inputs: the counter is global, so tests must not run in parallel.
 #[test]
 fn one_allocation_per_cluster_after_warm_up() {
-    let config = MuxerConfig::new(ContainerId::Matroska, vec![h264_stream(), aac_stream()]);
+    run(BitstreamFormat::LengthPrefixed { length_size: 4 });
+    // Annex B: converted into the reused staging buffer, including the pending access
+    // unit moved by `copy_within` when it ends a cluster.
+    run(BitstreamFormat::AnnexB);
+}
+
+fn run(format: BitstreamFormat) {
+    let mut video = h264_stream();
+    video.bitstream = format;
+    let config = MuxerConfig::new(ContainerId::Matroska, vec![video, aac_stream()]);
     let mut muxer = MatroskaMuxerFactory.create(&config).unwrap();
-    let lp = BitstreamFormat::LengthPrefixed { length_size: 4 };
     let mut input = Vec::new();
     for i in 0..2000u64 {
         let t = Timestamp::from_nanos(1_000_000_000 + i * 33_333_333);
-        let mut data = 5996u32.to_be_bytes().to_vec();
+        let mut data = match format {
+            BitstreamFormat::AnnexB => vec![0, 0, 0, 1],
+            _ => 5996u32.to_be_bytes().to_vec(),
+        };
         data.push(if i % 30 == 0 { 0x65 } else { 0x41 });
         data.resize(6000, 0xab);
-        let v = EncodedPacket::new(CodecId::H264, lp, t, t, i % 30 == 0, Bytes::from(data));
+        let v = EncodedPacket::new(CodecId::H264, format, t, t, i % 30 == 0, Bytes::from(data));
         input.push((StreamIndex(0), v.unwrap()));
         let a = EncodedPacket::new(
             CodecId::Aac,
@@ -84,6 +96,9 @@ fn one_allocation_per_cluster_after_warm_up() {
     let allocs = ALLOCS.load(Ordering::Relaxed) - before;
     let clusters = (chunks.len() - clusters_before) as u64;
     assert!(clusters > 50);
-    assert_eq!(allocs, clusters, "allocations for {clusters} clusters");
+    assert_eq!(
+        allocs, clusters,
+        "{format:?}: allocations for {clusters} clusters"
+    );
     drop(shared);
 }

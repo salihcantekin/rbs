@@ -502,3 +502,101 @@ fn rejects_bad_configs_and_packets() {
         Err(MuxError::InvalidState(_))
     ));
 }
+
+/// Every block timestamp of every cluster, absolute (cluster + relative), in ms.
+fn block_times(chunks: &[MuxChunk]) -> Vec<(u64, i64)> {
+    chunks
+        .iter()
+        .filter(|c| matches!(c.kind, ChunkKind::Media { .. }))
+        .flat_map(|c| {
+            let (base, blocks) = cluster(&c.data);
+            blocks
+                .into_iter()
+                .map(move |b| (b.track, base as i64 + i64::from(b.relative)))
+        })
+        .collect()
+}
+
+#[test]
+fn a_lagging_stream_never_overflows_block_timestamps() {
+    let config = MuxerConfig::new(MKV, vec![h264_stream(), aac_stream()]);
+    let mut muxer = MatroskaMuxerFactory.create(&config).unwrap();
+    let mut chunks = Vec::new();
+    muxer.begin(&mut chunks).unwrap();
+    // 40 s of video in one GOP, then audio far behind: refused (interleaving bound).
+    for i in 0..1200u64 {
+        let ms = i * 1000 / 30;
+        let t = if i == 0 { 0x65 } else { 0x41 };
+        let p = video(ms, ms, i == 0, vec![0, 0, 0, 2, t, 1], LP4);
+        muxer.write(StreamIndex(0), &p, &mut chunks).unwrap();
+    }
+    assert!(matches!(
+        muxer.write(StreamIndex(1), &audio(0), &mut chunks),
+        Err(MuxError::InvalidPacket(_))
+    ));
+    // Late within the bound: kept, and its cluster's timestamps stay exact.
+    muxer
+        .write(StreamIndex(1), &audio(39_500), &mut chunks)
+        .unwrap();
+    muxer.finish(&mut chunks).unwrap();
+    let times = block_times(&chunks);
+    let video_times: Vec<i64> = times.iter().filter(|t| t.0 == 1).map(|t| t.1).collect();
+    let expected: Vec<i64> = (0..1200i64).map(|i| 1000 + (i * 1000 / 30)).collect();
+    assert_eq!(video_times, expected, "every video block at its own time");
+    assert!(times.contains(&(2, 1000 + 39_500)));
+}
+
+#[test]
+fn long_fragment_durations_are_capped_for_16_bit_block_times() {
+    let mut config = MuxerConfig::new(MKV, vec![h264_stream()]);
+    config.fragment_duration = Some(std::time::Duration::from_secs(60));
+    let mut muxer = MatroskaMuxerFactory.create(&config).unwrap();
+    let mut chunks = Vec::new();
+    muxer.begin(&mut chunks).unwrap();
+    // One 50 s GOP with B-frame style pts (+10 s is the composition bound).
+    for i in 0..1500u64 {
+        let ms = i * 1000 / 30;
+        let t = if i == 0 { 0x65 } else { 0x41 };
+        let p = video(ms + 10_000, ms, i == 0, vec![0, 0, 0, 2, t, 1], LP4);
+        muxer.write(StreamIndex(0), &p, &mut chunks).unwrap();
+    }
+    muxer.finish(&mut chunks).unwrap();
+    assert!(chunks.len() > 3, "a header and clusters of at most 20 s");
+    // Time 0 is the capped lead (20 s) before the first dts, and pts are exact.
+    let times: Vec<i64> = block_times(&chunks).iter().map(|t| t.1).collect();
+    let expected: Vec<i64> = (0..1500i64)
+        .map(|i| 20_000 + 10_000 + i * 1000 / 30)
+        .collect();
+    assert_eq!(times, expected);
+}
+
+#[test]
+fn clusters_end_at_the_block_limit() {
+    let config = MuxerConfig::new(MKV, vec![aac_stream()]);
+    let mut muxer = MatroskaMuxerFactory.create(&config).unwrap();
+    let mut chunks = Vec::new();
+    muxer.begin(&mut chunks).unwrap();
+    // Equal timestamps never end a cluster by time.
+    for _ in 0..(1 << 16) + 10 {
+        muxer.write(StreamIndex(0), &audio(0), &mut chunks).unwrap();
+    }
+    muxer.finish(&mut chunks).unwrap();
+    let counts: Vec<usize> = chunks[1..]
+        .iter()
+        .map(|c| cluster(&c.data).1.len())
+        .collect();
+    assert_eq!(counts, [1 << 16, 10]);
+}
+
+#[test]
+fn length_prefixed_packets_without_slices_are_refused() {
+    let config = MuxerConfig::new(MKV, vec![h264_stream()]);
+    let mut muxer = MatroskaMuxerFactory.create(&config).unwrap();
+    let mut out = Vec::new();
+    muxer.begin(&mut out).unwrap();
+    let aud_only = video(0, 0, true, vec![0, 0, 0, 2, 0x09, 0xf0], LP4);
+    assert!(matches!(
+        muxer.write(StreamIndex(0), &aud_only, &mut out),
+        Err(MuxError::InvalidPacket(_))
+    ));
+}

@@ -22,9 +22,11 @@
 //!   stream, which two independent GOP structures would rarely give.
 //! - A failed `write` emits nothing and changes nothing.
 //! - Timestamps are milliseconds (`TimestampScale` 1 000 000), rounded to the nearest.
-//!   Time 0 is one interleaving bound before the first dts, so streams that arrive
-//!   slightly out of order keep their timestamps; a dts earlier than that is refused,
-//!   and pts may trail dts by at most 10 s. Players show the recording from its first
+//!   Time 0 is one interleaving bound (at most 20 s) before the first dts, so streams
+//!   that arrive slightly out of order keep their timestamps; a dts earlier than that,
+//!   or more than the bound behind the newest dts of any stream, is refused, and pts
+//!   may trail dts by at most 10 s. A Cluster's dts range stays below its span even
+//!   for late blocks, so every 16-bit block timestamp is exact. Players show the recording from its first
 //!   block, about one second in. Block timestamps are presentation times; the Cluster
 //!   timestamp is the earliest in the Cluster.
 //! - Length-prefixed H.264 is copied as is; Annex B input is converted to 4-byte

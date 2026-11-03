@@ -121,8 +121,12 @@ pub(crate) struct MatroskaMuxer {
     /// the packet being written.
     staging: Vec<u8>,
     committed: usize,
-    /// dts of the first block of the cluster being collected.
+    /// Earliest and latest dts of the blocks in the cluster being collected.
     cluster_start: Option<Timestamp>,
+    cluster_end: Timestamp,
+    /// Latest dts written to any stream: packets more than the interleaving bound
+    /// behind it are refused (port invariant 2).
+    newest_dts: Option<Timestamp>,
     cluster_bytes: usize,
     seq: u32,
     last_chunk: Option<Timestamp>,
@@ -257,7 +261,10 @@ impl MatroskaMuxer {
                     ebml::bytes(&mut header, CODEC_PRIVATE, &avcc);
                     let interval =
                         u64::try_from(frame_rate.frame_duration().as_nanos()).unwrap_or(u64::MAX);
-                    ebml::uint(&mut header, DEFAULT_DURATION, interval);
+                    // 0 is not allowed (RFC 9559); leave it out for absurd frame rates.
+                    if interval > 0 {
+                        ebml::uint(&mut header, DEFAULT_DURATION, interval);
+                    }
                     let video = ebml::open(&mut header, VIDEO);
                     ebml::uint(&mut header, PIXEL_WIDTH, u64::from(format.size.width));
                     ebml::uint(&mut header, PIXEL_HEIGHT, u64::from(format.size.height));
@@ -322,12 +329,16 @@ impl MatroskaMuxer {
             tracks,
             header,
             cluster_span: lead.min(MAX_CLUSTER_SPAN),
-            origin_lead: lead,
+            // The interleaving bound, capped like the span: block timestamps are 16-bit,
+            // and players show the lead as the file's start time.
+            origin_lead: lead.min(MAX_CLUSTER_SPAN),
             origin: None,
             blocks: Vec::new(),
             staging: Vec::new(),
             committed: 0,
             cluster_start: None,
+            cluster_end: Timestamp::from_nanos(0),
+            newest_dts: None,
             cluster_bytes: 0,
             seq: 0,
             last_chunk: None,
@@ -378,8 +389,13 @@ impl MatroskaMuxer {
             // At most MAX_SAMPLE_BYTES, so the 4-byte size holds it.
             ebml::size4(&mut chunk, 4 + b.len);
             ebml::size1(&mut chunk, b.track);
+            // 0 <= relative < span (<= 20 s) + composition delay (<= 10 s) + rounding,
+            // which fits an i16 of milliseconds: `write` keeps the dts range of a cluster
+            // below the span and refuses larger composition delays.
             let relative = self.millis(b.pts) - base;
-            chunk.extend_from_slice(&i16::try_from(relative).unwrap_or(i16::MAX).to_be_bytes());
+            debug_assert!((0..=i64::from(i16::MAX)).contains(&relative));
+            let relative = i16::try_from(relative).unwrap_or(i16::MAX);
+            chunk.extend_from_slice(&relative.to_be_bytes());
             chunk.push(if b.keyframe { 0x80 } else { 0 });
             match &b.payload {
                 Payload::Shared(data) => chunk.extend_from_slice(data),
@@ -480,6 +496,14 @@ impl Muxer for MatroskaMuxer {
                 "dts more than the interleaving bound before the first packet".into(),
             ));
         }
+        if self
+            .newest_dts
+            .is_some_and(|newest| newest.saturating_since(dts) > self.origin_lead)
+        {
+            return Err(MuxError::InvalidPacket(
+                "dts more than the interleaving bound behind another stream".into(),
+            ));
+        }
         if packet.pts().saturating_since(dts) > MAX_COMPOSITION_DELAY {
             return Err(MuxError::InvalidPacket(
                 "pts more than 10 s after dts".into(),
@@ -493,11 +517,16 @@ impl Muxer for MatroskaMuxer {
             Kind::Video {
                 length_size: Some(length_size),
             } => {
+                let mut media = false;
                 for unit in nal::length_prefixed_units(data, length_size) {
                     let unit = unit.map_err(|_| {
                         MuxError::InvalidPacket("truncated length-prefixed NAL unit".into())
                     })?;
                     check_parameter_set(track, unit)?;
+                    media |= keep_unit(unit);
+                }
+                if !media {
+                    return Err(MuxError::InvalidPacket("packet without media".into()));
                 }
                 (Payload::Shared(packet.data().clone()), data.len())
             }
@@ -541,9 +570,12 @@ impl Muxer for MatroskaMuxer {
         // once it spans the cluster duration (the interleaving bound, at most 20 s), or
         // before it would exceed its byte or block bound. A keyframe joins a cluster its
         // track has no blocks in yet, so the cluster starts at it.
+        // The span counts the earliest and latest dts with this packet included, so a
+        // late block cannot stretch a cluster either.
         if let Some(start) = self.cluster_start {
+            let span = self.cluster_end.max(dts).saturating_since(start.min(dts));
             if (video_key && track_in_cluster)
-                || dts.saturating_since(start) >= self.cluster_span
+                || span >= self.cluster_span
                 || self.cluster_bytes + len > MAX_CLUSTER_BYTES
                 || self.blocks.len() >= MAX_CLUSTER_BLOCKS
             {
@@ -578,6 +610,12 @@ impl Muxer for MatroskaMuxer {
         self.cluster_bytes += len;
         let start = self.cluster_start.get_or_insert(dts);
         *start = (*start).min(dts);
+        self.cluster_end = if self.blocks.len() == 1 {
+            dts
+        } else {
+            self.cluster_end.max(dts)
+        };
+        self.newest_dts = Some(self.newest_dts.map_or(dts, |n| n.max(dts)));
         Ok(())
     }
 
