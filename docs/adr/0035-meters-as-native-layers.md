@@ -40,7 +40,7 @@ Every run showed 60.0 fps; frames more than 25 ms apart in delivery to the UI ra
 - Two drawing paths for the same meter (layer and toolkit fallback). Both take their geometry from `MeterView::frames`, so they differ only in how a rectangle becomes pixels; the conformance test `crates/rbs-app/tests/meter_layer_macos.rs` checks the layer against it.
 - A screenshot of the window through the toolkit no longer contains the meters' moving parts on macOS (as for the preview).
 - Colours: the layer's colours are sRGB `CGColor`s, which Core Animation colour-manages; Slint's Metal layer carries no colour space, so its token colours reach the wide-gamut display unmanaged and look a little more saturated. Side by side the meter fill is slightly less saturated than the same token drawn by Slint. The right fix is to tag the toolkit's layer as sRGB (tokens and contrast checks are sRGB), which changes every colour of the UI and is follow-up work, not part of this ADR.
-- Edges are snapped to device pixels (`contentsScale` of the parent), as the toolkit draws them; unsnapped half-pixel edges showed as soft 1 px columns on the Retina display.
+- Edges are snapped to device pixels (`contentsScale` of the parent), as the toolkit draws them; unsnapped half-pixel edges showed as soft 1 px columns on the Retina display. Snapping cannot know how the toolkit rounds its own fractional edges (seen: 1 device pixel off the background on some meters), so the toolkit's layout places meters on whole points; the demo does, and the AudioStrip component must.
 - The design system's requirement 8 now names native layers for graphics that move at the meter rate or faster.
 
 ## Alternatives considered

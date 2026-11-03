@@ -117,7 +117,8 @@ mod demo {
                     property <length> gap: 4px;
                     property <length> clip-h: 6px;
                     property <length> clip-gap: 2px;
-                    property <length> meter-w: (self.width - 2 * pad - 15 * gap) / 16;
+                    // Whole points, so the layer's snapped edges and Slint's agree.
+                    property <length> meter-w: floor((self.width - 2 * pad - 15 * gap) / 16 / 1px) * 1px;
                     property <length> bar-y: pad + clip-h + clip-gap;
                     property <length> bar-h: self.height - bar-y - pad;
                     // Static parts, drawn once: clip indicator outline and bar background.
@@ -658,8 +659,9 @@ mod demo {
                 h: window.get_strip_height(),
             });
             // Same arithmetic as the markup; set_meters does nothing when unchanged.
-            let meter_w =
-                (width - 2.0 * STRIP_PAD - (METERS as f32 - 1.0) * METER_GAP) / METERS as f32;
+            let meter_w = ((width - 2.0 * STRIP_PAD - (METERS as f32 - 1.0) * METER_GAP)
+                / METERS as f32)
+                .floor();
             let bar_y = STRIP_PAD + CLIP_HEIGHT + CLIP_GAP;
             let bar_h = STRIP_HEIGHT - bar_y - STRIP_PAD;
             let mut geometry = [MeterGeometry {
