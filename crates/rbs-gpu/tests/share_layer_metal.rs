@@ -235,6 +235,7 @@ fn small_ring_reports_starvation_until_retired() {
     clock.advance(DEFAULT_RETIRE_AFTER);
     assert_eq!(layer.retire(clock.now()), 0);
     assert!(!layer.engine_may_starve());
+    assert_eq!(engine.held(ctx), 1, "the engine sees the releases");
     assert!(engine.publish(ctx, 5), "a surface is free again");
     drop(layer);
     drop(next(&mut sub));
