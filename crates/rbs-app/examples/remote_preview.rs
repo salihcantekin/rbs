@@ -146,7 +146,6 @@ mod demo {
         ids: String,
         /// Mode `layer`, created at the first redraw (the window's view exists then).
         layer: Option<PreviewLayer>,
-        window_size: (u32, u32),
         /// Mode `slint`.
         slint: Option<SlintPath>,
         /// Polls retirement while it cannot wait for the next frame.
@@ -289,7 +288,17 @@ mod demo {
         // subscriber. A second subscriber is not allowed, so the layer is made here and
         // attached at the first redraw.
         let layer = match mode {
-            Mode::Layer => Some(PreviewLayer::new(&sub)),
+            Mode::Layer => {
+                let layer = PreviewLayer::new(&sub);
+                let needed = layer.surfaces_needed(Duration::from_nanos(16_666_667));
+                if layer.surfaces() < needed {
+                    eprintln!(
+                        "remote_preview: the engine's ring has {} surfaces, the layer needs {needed} at 60 fps; frames will be dropped",
+                        layer.surfaces()
+                    );
+                }
+                Some(layer)
+            }
             Mode::Slint => None,
         };
         STATE.with(|s| {
@@ -304,7 +313,6 @@ mod demo {
                 },
                 ids,
                 layer,
-                window_size: (0, 0),
                 slint: slint_path,
                 timer: slint::Timer::default(),
                 clock: MonotonicClock::new(),
@@ -454,11 +462,6 @@ mod demo {
                     return;
                 }
                 attached.set(true);
-            }
-            let size = window.window().size();
-            if (size.width, size.height) != st.window_size {
-                st.window_size = (size.width, size.height);
-                layer.invalidate_rect();
             }
             layer.set_rect(LayerRect {
                 x: f64::from(window.get_area_x()),

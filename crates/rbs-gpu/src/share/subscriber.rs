@@ -229,7 +229,7 @@ impl PreviewSubscriber {
     }
 
     /// The surfaces in slot order, retained (for [`super::PreviewLayer`]).
-    #[cfg(target_os = "macos")]
+    #[cfg(all(target_os = "macos", feature = "preview-layer"))]
     pub(super) fn io_surfaces(&self) -> Vec<CFRetained<IOSurfaceRef>> {
         self.surfaces.iter().map(|s| s.0.clone()).collect()
     }

@@ -95,9 +95,10 @@ mod demo {
             PreviewDesc {
                 width: preview_size().0,
                 height: preview_size().1,
-                // One shown, one waiting for the UI's last draw to finish on the GPU, one
-                // being rendered, one spare: with three the engine often finds none free.
-                surfaces: 4,
+                // What the UI's preview layer needs at 60 fps (`PreviewLayer::surfaces_needed`):
+                // one shown, up to three retiring for 34 ms, one being rendered, one in
+                // flight. Slint's texture path needs four of them.
+                surfaces: 6,
             },
         )?;
         println!("{}", publisher.endpoint());

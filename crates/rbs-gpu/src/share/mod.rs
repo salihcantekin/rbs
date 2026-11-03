@@ -16,7 +16,7 @@
 //! Hot path: `PreviewPublisher::publish` and `PreviewPublisher::tick` do not allocate in
 //! RBS code and never wait: every Mach call on the engine side uses a zero timeout.
 
-#[cfg(target_os = "macos")]
+#[cfg(all(target_os = "macos", feature = "preview-layer"))]
 mod layer;
 #[cfg(target_vendor = "apple")]
 mod mach;
@@ -28,8 +28,8 @@ mod subscriber;
 use std::fmt;
 use std::str::FromStr;
 
-#[cfg(target_os = "macos")]
-pub use layer::{LayerRect, PreviewLayer};
+#[cfg(all(target_os = "macos", feature = "preview-layer"))]
+pub use layer::{DEFAULT_RETIRE_AFTER, LayerRect, PreviewLayer};
 #[cfg(target_vendor = "apple")]
 pub use publisher::PreviewPublisher;
 #[cfg(target_vendor = "apple")]
