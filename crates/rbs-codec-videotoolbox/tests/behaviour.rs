@@ -198,6 +198,9 @@ fn mismatching_input_is_refused() {
     let mut out = Vec::new();
     s.flush(&mut out).unwrap();
     assert_eq!(out.len(), 1);
+    // The test still holds both frames; only the encoder's references must be gone.
+    assert_eq!(frames.held(), 2);
+    drop((first, again));
     drop(s);
     assert_eq!(frames.held(), 0);
 }
