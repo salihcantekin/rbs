@@ -37,8 +37,12 @@ impl NodeId {
         self.0 >= Self::RESERVED_START
     }
 
-    pub(crate) const fn reserved(offset: u32) -> Self {
-        Self(Self::RESERVED_START.saturating_add(offset))
+    /// The reserved id at `offset`, or `None` past the end of the id space.
+    pub(crate) const fn reserved(offset: u32) -> Option<Self> {
+        match Self::RESERVED_START.checked_add(offset) {
+            Some(id) => Some(Self(id)),
+            None => None,
+        }
     }
 }
 

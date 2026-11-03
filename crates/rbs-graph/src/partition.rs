@@ -21,8 +21,8 @@ use rbs_core::lifecycle::Lifecycle;
 use crate::description::{GraphDescription, Link, NodeEntry, NodeId, PartitionId, PinRef};
 use crate::node::{LinkKind, NodeDescriptor};
 use crate::runtime::queue::{
-    self, Doorbell, PACKET_QUEUE_PACKETS, PacketReader, PacketWriter, QueueStats,
-    VIDEO_QUEUE_FRAMES, VideoReader, VideoWriter,
+    self, Doorbell, PACKET_QUEUE_PACKETS, PacketReader, PacketWriter, QueueStats, VideoReader,
+    VideoWriter,
 };
 use crate::runtime::{Node, Runtime};
 
@@ -109,6 +109,9 @@ pub enum LowerProblem {
     /// Only video and packet links can cross partitions; audio runs on the audio
     /// executor and bytes and data links are not carried by queues yet.
     UnsupportedKind(LinkKind),
+    /// The reserved id range for queue endpoints is used up (about 134 million
+    /// queues created by one lowering).
+    IdsExhausted,
 }
 
 /// The result of [`Lowering::lower`].
@@ -126,11 +129,15 @@ pub struct Lowered {
     /// Queues removed by this call. Their endpoints are no longer in any part; take
     /// them back from their controllers after the next swap and drop them.
     pub retired: Vec<Crossing>,
-    /// Nodes whose partition changed since the last call: `(node, old, new)`. After
-    /// the old partition's controller let the node go (it is no longer in that part),
-    /// move the instance to the new partition's controller.
+    /// Nodes whose partition changed since the last call: `(node, old, new)`. Apply
+    /// in two phases: first the old partitions' parts (their controllers let the node
+    /// go after the swap is collected), then move each instance with `take` and
+    /// `adopt`, then apply the new partitions' parts. Applying a new part first fails
+    /// with `JoinError::NoInstance` for the moved node.
     pub moved: Vec<(NodeId, PartitionId, PartitionId)>,
-    /// Links that could not cross.
+    /// Links that could not cross. While this is not empty the parts are not a
+    /// faithful split of the logical graph (those links are missing), so their plans
+    /// may schedule less than the logical plan.
     pub problems: Vec<(Link, LowerProblem)>,
 }
 
@@ -148,7 +155,6 @@ pub struct Lowering {
     doorbells: BTreeMap<PartitionId, Arc<Doorbell>>,
     partitions: BTreeSet<PartitionId>,
     assigned: HashMap<NodeId, PartitionId>,
-    video_capacity: usize,
     packet_capacity: usize,
     video_writer: Arc<NodeDescriptor>,
     video_reader: Arc<NodeDescriptor>,
@@ -172,8 +178,7 @@ impl Default for Lowering {
 }
 
 impl Lowering {
-    /// A lowering with default queue capacities ([`VIDEO_QUEUE_FRAMES`],
-    /// [`PACKET_QUEUE_PACKETS`]).
+    /// A lowering with the default packet queue capacity ([`PACKET_QUEUE_PACKETS`]).
     pub fn new() -> Self {
         Self {
             ends: HashMap::new(),
@@ -181,7 +186,6 @@ impl Lowering {
             doorbells: BTreeMap::new(),
             partitions: BTreeSet::new(),
             assigned: HashMap::new(),
-            video_capacity: VIDEO_QUEUE_FRAMES,
             packet_capacity: PACKET_QUEUE_PACKETS,
             video_writer: Arc::new(queue::writer_descriptor(LinkKind::Video)),
             video_reader: Arc::new(queue::reader_descriptor(LinkKind::Video)),
@@ -190,9 +194,9 @@ impl Lowering {
         }
     }
 
-    /// Capacity of queues created from now on: video frames and packets (at least 1).
-    pub fn set_capacities(&mut self, video_frames: usize, packets: usize) {
-        self.video_capacity = video_frames.max(1);
+    /// Capacity of packet queues created from now on (at least 1). Video queues hold
+    /// one frame: the newest wins.
+    pub fn set_packet_capacity(&mut self, packets: usize) {
         self.packet_capacity = packets.max(1);
     }
 
@@ -258,12 +262,18 @@ impl Lowering {
             let ends = match self.ends.get(&key) {
                 Some(e) => e.clone(),
                 None => {
-                    let writer = NodeId::reserved(self.next_offset);
-                    let reader = NodeId::reserved(self.next_offset + 1);
-                    self.next_offset += 2;
+                    let ids = self.next_offset.checked_add(1).and_then(|r| {
+                        Some((NodeId::reserved(self.next_offset)?, NodeId::reserved(r)?))
+                    });
+                    let Some((writer, reader)) = ids else {
+                        seen.remove(&key);
+                        out.problems.push((*link, LowerProblem::IdsExhausted));
+                        continue;
+                    };
+                    self.next_offset = self.next_offset.saturating_add(2);
                     let (queue_ends, stats) = match link.kind {
                         LinkKind::Video => {
-                            let (w, r, s) = queue::video(self.video_capacity);
+                            let (w, r, s) = queue::video();
                             (QueueEnds::Video(w, r), s)
                         }
                         _ => {

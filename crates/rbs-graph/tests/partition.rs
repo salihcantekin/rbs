@@ -187,28 +187,112 @@ fn a_slow_encoder_sees_counted_video_drops_and_only_the_newest_frame() {
     let mut rig = Rig::new();
     let lowered = rig.apply();
     let video = lowered.crossings[0].stats.clone();
-    // Render runs five ticks while the encoder does not run.
+    let base = video.sent();
+    // Render runs five ticks while the encoder does not run: each new frame replaces
+    // the one waiting.
     for _ in 0..5 {
         let tick = Tick::of(&rig.cadence, rig.tick);
         rig.parts.get_mut(&RENDER).unwrap().1.run_tick(tick);
         rig.tick += 1;
     }
-    // Capacity 2: two frames wait, three were dropped by the writer.
-    assert_eq!(video.sent(), 2);
-    assert_eq!(video.dropped_full(), 3);
+    assert_eq!(video.sent(), base + 5);
     let before = video.video_drops();
     let tick = Tick::of(&rig.cadence, rig.tick);
     rig.parts.get_mut(&ENCODER).unwrap().1.run_tick(tick);
-    // The reader took both waiting frames and kept the newest.
-    assert_eq!(video.skipped(), 1);
     assert_eq!(video.received(), 1);
-    assert_eq!(video.video_drops(), before + 1);
+    assert!(before >= 4, "four replaced frames are counted: {before}");
+    assert_eq!(video.video_drops(), before, "taking a frame drops nothing");
+}
+
+/// Records the timestamp of the video frame it sees, in nanoseconds.
+struct Probe {
+    desc: rbs_graph::node::NodeDescriptor,
+    last: Arc<AtomicU64>,
+}
+
+impl Node<()> for Probe {
+    fn descriptor(&self) -> &rbs_graph::node::NodeDescriptor {
+        &self.desc
+    }
+    fn prepare(
+        &mut self,
+        _: &mut rbs_graph::runtime::PrepareCtx<'_, ()>,
+    ) -> Result<(), rbs_graph::runtime::NodeError> {
+        Ok(())
+    }
+    fn release(&mut self, _: &mut rbs_graph::runtime::PrepareCtx<'_, ()>) {}
+    fn process(
+        &mut self,
+        ctx: &mut rbs_graph::runtime::ProcessCtx<'_, ()>,
+    ) -> Result<(), rbs_graph::runtime::NodeError> {
+        if let Some(frame) = ctx.inputs().video(0, 0) {
+            self.last
+                .store(frame.timestamp().as_nanos(), Ordering::Relaxed);
+        }
+        Ok(())
+    }
+}
+
+#[test]
+fn after_a_stall_the_consumer_gets_the_newest_frame_not_a_stale_one() {
+    use rbs_graph::node::{LinkKind, NodeDescriptor, NodeTypeId, Pin};
+    let mut graph = GraphDescription::new();
+    let src_node = Lean::new(NodeKind::Source);
+    let src = graph
+        .add_node(Arc::new(Node::<()>::descriptor(&src_node).clone()))
+        .unwrap();
+    let probe = Probe {
+        desc: NodeDescriptor::new(
+            NodeTypeId::new("org.rbs.test.probe"),
+            NodeKind::Output,
+            vec![Pin::one("in", LinkKind::Video)],
+            vec![],
+        ),
+        last: Arc::new(AtomicU64::new(u64::MAX)),
+    };
+    let last = Arc::clone(&probe.last);
+    let sink = graph.add_node(Arc::new(probe.desc.clone())).unwrap();
+    for id in [src, sink] {
+        graph.set_state(id, Lifecycle::Standby).unwrap();
+        graph.set_state(id, Lifecycle::Active).unwrap();
+    }
+    graph.set_partition(sink, ENCODER).unwrap();
+    graph.connect(src, "out", sink, "in").unwrap();
+
+    let mut lowering = Lowering::new();
+    let mut lowered = lowering.lower(&graph);
+    let (mut render, mut render_exec) = channel::<()>(Arc::new(()), ());
+    let (mut enc, mut enc_exec) = channel::<()>(Arc::new(()), ());
+    render.adopt(src, Box::new(src_node)).unwrap();
+    enc.adopt(sink, Box::new(probe)).unwrap();
+    let new = lowered.created.pop().unwrap();
+    let (writer, reader) = new.ends.writer::<()>();
+    render.adopt(new.crossing.writer, writer).unwrap();
+    enc.adopt(new.crossing.reader, reader.into_node::<()>())
+        .unwrap();
+    let cadence = Cadence::frames(Timestamp::ZERO, FrameRate::FPS_60);
+    render.apply(&lowered.parts[&RENDER]).unwrap();
+    enc.apply(&lowered.parts[&ENCODER]).unwrap();
+    // Schedules swap in at the end of a tick.
+    render_exec.run_tick(Tick::of(&cadence, 0));
+    enc_exec.run_tick(Tick::of(&cadence, 0));
+    let mut index = 1;
+    for _ in 0..5 {
+        render_exec.run_tick(Tick::of(&cadence, index));
+        index += 1;
+    }
+    enc_exec.run_tick(Tick::of(&cadence, index));
+    let newest = Tick::of(&cadence, index - 1).time.as_nanos();
+    assert_eq!(last.load(Ordering::Relaxed), newest);
+    assert_eq!(new.crossing.stats.sent(), 5);
+    assert_eq!(new.crossing.stats.received(), 1);
+    assert_eq!(new.crossing.stats.skipped(), 4);
 }
 
 #[test]
 fn a_stalled_output_overflows_its_own_queue_only() {
     let mut rig = Rig::new();
-    rig.lowering.set_capacities(2, 4);
+    rig.lowering.set_packet_capacity(4);
     let lowered = rig.apply();
     let packets = lowered.crossings[1].stats.clone();
     for _ in 0..10 {
@@ -325,4 +409,297 @@ fn queue_endpoints_do_not_allocate_per_tick() {
         }
     });
     assert_eq!(info.count_total, 0, "ticks with queues allocated");
+}
+
+/// Makes `burst` packets per tick with increasing decode times; every `gop`-th packet
+/// is a keyframe.
+struct Gop {
+    desc: rbs_graph::node::NodeDescriptor,
+    burst: u64,
+    gop: u64,
+    next: u64,
+}
+
+impl Node<()> for Gop {
+    fn descriptor(&self) -> &rbs_graph::node::NodeDescriptor {
+        &self.desc
+    }
+    fn prepare(
+        &mut self,
+        _: &mut rbs_graph::runtime::PrepareCtx<'_, ()>,
+    ) -> Result<(), rbs_graph::runtime::NodeError> {
+        Ok(())
+    }
+    fn release(&mut self, _: &mut rbs_graph::runtime::PrepareCtx<'_, ()>) {}
+    fn process(
+        &mut self,
+        ctx: &mut rbs_graph::runtime::ProcessCtx<'_, ()>,
+    ) -> Result<(), rbs_graph::runtime::NodeError> {
+        use rbs_core::media::{BitstreamFormat, Bytes, CodecId, EncodedPacket};
+        for _ in 0..self.burst {
+            let t = Timestamp::from_nanos(self.next);
+            let packet = EncodedPacket::new(
+                CodecId::H264,
+                BitstreamFormat::AnnexB,
+                t,
+                t,
+                self.next.is_multiple_of(self.gop),
+                Bytes::from_static(b"\0\0\x01"),
+            )
+            .map_err(|_| rbs_graph::runtime::NodeError::InvalidInput("timestamps"))?;
+            self.next += 1;
+            let _ = ctx.outputs().push_packet(0, packet);
+        }
+        Ok(())
+    }
+}
+
+/// Records `(decode time, keyframe)` of every packet it gets.
+struct Recorder {
+    desc: rbs_graph::node::NodeDescriptor,
+    got: Arc<std::sync::Mutex<Vec<(u64, bool)>>>,
+}
+
+impl Node<()> for Recorder {
+    fn descriptor(&self) -> &rbs_graph::node::NodeDescriptor {
+        &self.desc
+    }
+    fn prepare(
+        &mut self,
+        _: &mut rbs_graph::runtime::PrepareCtx<'_, ()>,
+    ) -> Result<(), rbs_graph::runtime::NodeError> {
+        Ok(())
+    }
+    fn release(&mut self, _: &mut rbs_graph::runtime::PrepareCtx<'_, ()>) {}
+    fn process(
+        &mut self,
+        ctx: &mut rbs_graph::runtime::ProcessCtx<'_, ()>,
+    ) -> Result<(), rbs_graph::runtime::NodeError> {
+        let mut got = self.got.lock().unwrap();
+        for p in ctx.inputs().packets(0) {
+            got.push((p.dts().as_nanos(), p.keyframe()));
+        }
+        Ok(())
+    }
+}
+
+/// A `Gop` producer in partition 1 and a `Recorder` in partition 2.
+struct PacketRig {
+    stats: Arc<rbs_graph::runtime::queue::QueueStats>,
+    prod: Executor<()>,
+    cons: Executor<()>,
+    got: Arc<std::sync::Mutex<Vec<(u64, bool)>>>,
+    cadence: Cadence,
+    tick: u64,
+    _ctl: (Controller<()>, Controller<()>),
+}
+
+impl PacketRig {
+    fn new(burst: u64, gop: u64, capacity: usize) -> Self {
+        use rbs_graph::node::{LinkKind, NodeDescriptor, NodeTypeId, Pin};
+        let gop_node = Gop {
+            desc: NodeDescriptor::new(
+                NodeTypeId::new("org.rbs.test.gop"),
+                NodeKind::Source,
+                vec![],
+                vec![Pin::one("out", LinkKind::Packets)],
+            ),
+            burst,
+            gop,
+            next: 0,
+        };
+        let got = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let rec = Recorder {
+            desc: NodeDescriptor::new(
+                NodeTypeId::new("org.rbs.test.recorder"),
+                NodeKind::Output,
+                vec![Pin::one("in", LinkKind::Packets)],
+                vec![],
+            ),
+            got: Arc::clone(&got),
+        };
+        let mut graph = GraphDescription::new();
+        let a = graph.add_node(Arc::new(gop_node.desc.clone())).unwrap();
+        let b = graph.add_node(Arc::new(rec.desc.clone())).unwrap();
+        for id in [a, b] {
+            graph.set_state(id, Lifecycle::Standby).unwrap();
+            graph.set_state(id, Lifecycle::Active).unwrap();
+        }
+        graph.set_partition(a, ENCODER).unwrap();
+        graph.set_partition(b, OUTPUT).unwrap();
+        graph.connect(a, "out", b, "in").unwrap();
+        let mut lowering = Lowering::new();
+        lowering.set_packet_capacity(capacity);
+        let mut lowered = lowering.lower(&graph);
+        let (mut pc, mut prod) = channel::<()>(Arc::new(()), ());
+        let (mut cc, mut cons) = channel::<()>(Arc::new(()), ());
+        pc.adopt(a, Box::new(gop_node)).unwrap();
+        cc.adopt(b, Box::new(rec)).unwrap();
+        let new = lowered.created.pop().unwrap();
+        let stats = Arc::clone(&new.crossing.stats);
+        let (writer, reader) = new.ends.writer::<()>();
+        pc.adopt(new.crossing.writer, writer).unwrap();
+        cc.adopt(new.crossing.reader, reader.into_node::<()>())
+            .unwrap();
+        pc.apply(&lowered.parts[&ENCODER]).unwrap();
+        cc.apply(&lowered.parts[&OUTPUT]).unwrap();
+        let cadence = Cadence::frames(Timestamp::ZERO, FrameRate::FPS_60);
+        // Schedules swap in at the end of a tick (nothing runs in it yet).
+        cons.run_tick(Tick::of(&cadence, 0));
+        prod.run_tick(Tick::of(&cadence, 0));
+        Self {
+            stats,
+            prod,
+            cons,
+            got,
+            cadence,
+            tick: 1,
+            _ctl: (pc, cc),
+        }
+    }
+
+    fn tick(&mut self, producer: bool, consumer: bool) {
+        let t = Tick::of(&self.cadence, self.tick);
+        if producer {
+            self.prod.run_tick(t);
+        }
+        if consumer {
+            self.cons.run_tick(t);
+        }
+        self.tick += 1;
+    }
+
+    fn got(&self) -> Vec<(u64, bool)> {
+        self.got.lock().unwrap().clone()
+    }
+}
+
+#[test]
+fn after_a_packet_overflow_the_output_resumes_at_a_keyframe() {
+    let mut rig = PacketRig::new(3, 5, 4);
+    // The output stalls while 12 packets are made into a queue of 4.
+    for _ in 0..4 {
+        rig.tick(true, false);
+    }
+    assert!(rig.stats.overflows() > 0);
+    for _ in 0..6 {
+        rig.tick(true, true);
+    }
+    assert!(rig.stats.resync_drops() > 0);
+    let got = rig.got();
+    assert_eq!(&got[..4], &[(0, true), (1, false), (2, false), (3, false)]);
+    // Packets arrive in order; after every gap comes a keyframe.
+    for pair in got.windows(2) {
+        let ((a, _), (b, key)) = (pair[0], pair[1]);
+        assert!(b > a, "in order: {got:?}");
+        assert!(b == a + 1 || key, "a gap must end at a keyframe: {got:?}");
+    }
+    assert!(got.len() > 4, "the stream resumed: {got:?}");
+}
+
+#[test]
+fn packets_carried_over_to_the_next_tick_keep_their_order() {
+    let burst = rbs_graph::runtime::PER_TICK_EVENTS as u64;
+    let mut rig = PacketRig::new(burst, 1000, 256);
+    // Three full bursts wait while the output stalls; the reader passes on at most one
+    // burst per tick.
+    for _ in 0..3 {
+        rig.tick(true, false);
+    }
+    for _ in 0..3 {
+        rig.tick(false, true);
+    }
+    let got = rig.got();
+    assert_eq!(got.len() as u64, 3 * burst);
+    for (i, (dts, _)) in got.iter().enumerate() {
+        assert_eq!(*dts, i as u64);
+    }
+    assert_eq!(rig.stats.overflows() + rig.stats.resync_drops(), 0);
+}
+
+#[test]
+fn one_ring_wakes_a_parked_worker() {
+    let bell = Arc::new(Doorbell::new());
+    let worker = {
+        let bell = Arc::clone(&bell);
+        std::thread::spawn(move || bell.wait(Duration::from_secs(30)))
+    };
+    // Once registered, a single ring wakes it, parked or about to park.
+    while !bell.has_worker() {
+        std::thread::yield_now();
+    }
+    let started = std::time::Instant::now();
+    bell.ring();
+    assert!(worker.join().expect("worker"), "woken by the ring");
+    assert!(
+        started.elapsed() < Duration::from_secs(20),
+        "not the timeout"
+    );
+}
+
+#[test]
+fn an_active_node_moves_between_partitions_in_two_phases() {
+    let mut rig = Rig::new();
+    rig.apply();
+    for _ in 0..3 {
+        rig.run();
+    }
+    rig.graph.set_partition(rig.enc, OUTPUT).expect("partition");
+    let mut lowered = rig.lowering.lower(&rig.graph);
+    for new in lowered.created.drain(..) {
+        let (writer, reader) = new.ends.writer::<()>();
+        let c = &new.crossing;
+        rig.parts
+            .get_mut(&c.from)
+            .unwrap()
+            .0
+            .adopt(c.writer, writer)
+            .unwrap();
+        rig.parts
+            .get_mut(&c.to)
+            .unwrap()
+            .0
+            .adopt(c.reader, reader.into_node::<()>())
+            .unwrap();
+    }
+    let swap = |rig: &mut Rig, p: PartitionId, part: &GraphDescription| {
+        let tick = Tick::of(&rig.cadence, rig.tick);
+        let (ctl, exec) = rig.parts.get_mut(&p).unwrap();
+        let report = ctl.apply(part).expect("apply");
+        assert!(report.failed.is_empty(), "{p}: {:?}", report.failed);
+        exec.run_tick(tick);
+        ctl.collect().expect("executor").expect("swapped");
+    };
+    // Phase 1: the partitions the node leaves.
+    let old: Vec<PartitionId> = lowered.moved.iter().map(|m| m.1).collect();
+    for p in &old {
+        swap(&mut rig, *p, &lowered.parts[p]);
+    }
+    for (id, from, to) in &lowered.moved {
+        let node = rig.parts.get_mut(from).unwrap().0.take(*id).unwrap();
+        let node = node.expect("idle instance");
+        rig.parts.get_mut(to).unwrap().0.adopt(*id, node).unwrap();
+    }
+    // Phase 2: every other part.
+    for (p, part) in &lowered.parts {
+        if !old.contains(p) {
+            swap(&mut rig, *p, part);
+        }
+    }
+    // Retired endpoints are idle now; take them back.
+    for c in &lowered.retired {
+        for (p, id) in [(c.from, c.writer), (c.to, c.reader)] {
+            let ctl = &mut rig.parts.get_mut(&p).unwrap().0;
+            assert!(!ctl.is_running(id));
+            ctl.take(id).unwrap();
+        }
+    }
+    rig.tick += 1;
+    let packets_before = rig.packets_seen.load(Ordering::Relaxed);
+    for _ in 0..5 {
+        rig.run();
+    }
+    assert!(rig.running(OUTPUT).contains(&rig.enc));
+    assert!(rig.running(ENCODER).is_empty());
+    assert!(rig.packets_seen.load(Ordering::Relaxed) >= packets_before + 4);
 }
