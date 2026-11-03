@@ -57,6 +57,11 @@ mod shared {
             thread::yield_now();
         }
         let mut sub = handle.join().expect("join").expect("subscribe");
+        // On Windows the engine sees the UI's `ACCEPT` at a later tick.
+        while !publisher.subscribed() {
+            publisher.tick(&ctx).expect("tick");
+            thread::yield_now();
+        }
 
         let mut g = c.benchmark_group("preview");
         let mut seq = 0u64;

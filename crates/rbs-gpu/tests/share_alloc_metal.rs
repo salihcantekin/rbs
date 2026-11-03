@@ -120,6 +120,17 @@ fn preview_allocations_are_bounded() {
         thread::yield_now();
     }
     let mut sub = handle.join().unwrap().unwrap();
+    // On Windows `connect` returns once its `ACCEPT` is written; the engine reads it at a
+    // later tick. Wait for the condition (the bound is a hang guard only).
+    let start = std::time::Instant::now();
+    while !publisher.subscribed() {
+        assert!(
+            start.elapsed() < Duration::from_secs(5),
+            "subscription not seen"
+        );
+        publisher.tick(ctx).unwrap();
+        thread::yield_now();
+    }
 
     let mut preview = |i| {
         publisher
