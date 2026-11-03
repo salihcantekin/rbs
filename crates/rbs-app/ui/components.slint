@@ -136,7 +136,7 @@ export component Button inherits Rectangle {
     FocusRing { show: focus.has-focus; }
 }
 
-// Icon-only button (ghost, dense). `name` is required: it is the accessible name and
+// Icon-only button (ghost, dense). Always set `name`: it is the accessible name and
 // the tooltip-to-be, because the icon itself has no text.
 export component IconButton inherits Button {
     in property <string> name;

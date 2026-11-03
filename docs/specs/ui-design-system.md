@@ -76,7 +76,7 @@ Initial set: Button (primary, secondary, ghost, danger), IconButton, Toggle, Che
 One icon set, drawn by the library's `Icon` component as vector paths in a 16 x 16 view box, sized by `size.icon.box` and stroked with `size.icon.stroke`. Icons are never font glyphs: a glyph missing from the OS font shows as an empty box (seen on Windows with U+22EF and U+25BE). Initial set: `more`, `chevron-down`, `check`, `close`, `dot` (filled, live state), `ring` (outline, not live). An icon is decorative (no accessible role): the control that shows it carries the name, and state is never shown by the icon alone (U7).
 
 - `Button` takes an optional trailing `icon`; its ink follows the button's text colour, including disabled.
-- `IconButton` is the icon-only button (ghost, dense, square). Its `name` is required and becomes the accessible name.
+- `IconButton` is the icon-only button (ghost, dense, square). Its `name` must be set and becomes the accessible name (Slint cannot enforce required properties; an accessibility-tree check is a follow-up).
 
 ## Main window structure
 
