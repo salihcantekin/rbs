@@ -1,6 +1,6 @@
 # ADR-0036: Cross-process preview on Windows: shared D3D12 textures, a named pipe and a composition swapchain layer
 
-- Status: Proposed
+- Status: Accepted
 - Date: 2026-11-03
 - Deciders: Salih (owner)
 - Builds on: ADR-0028 (preview surfaces shared as native handles, decision 8), ADR-0034 (preview as a native compositor layer, decision 6), ADR-0013 (zero cost when unused)
@@ -56,7 +56,7 @@ Windows constraints:
   1. High: the default pipe DACL lets every local account connect for reading and occupy the single instance; the ADR's "one failed connection" claim was wrong for a client that sends nothing. Fixed: explicit user-only DACL; wording corrected; same-user denial of service stays out of scope as on macOS (no tick-based kick, which would make in-process tests timing dependent).
   2. Medium: a UI that timed out after `SUBSCRIBE` could leave duplicated handles (and textures) in its process. Fixed: `ACCEPT` handshake; the engine closes un-accepted duplicates.
   3. Medium: the UI wrapped handle values before checking the message id and version. Fixed: nothing is wrapped before `ACCEPT` is written.
-  4. Medium: no Windows hot-path numbers, bench or allocation test. Fixed: bench and allocation test run on Windows; numbers below.
+  4. Medium: no Windows hot-path numbers, bench or allocation test. Fixed: bench and allocation test run on Windows; numbers in the hardware run below.
   5. Medium: after `detach` the shown buffer never reports available. Fixed: wait for commit completion, then the 34 ms rule.
   6. Medium: layer arithmetic untested; spec test list. Fixed: `share::geometry` (fit, ring size) with unit tests on every platform; spec Testing entries.
   7. Low: any read error ended the subscription. Fixed: only broken or unconnected pipe; `MORE_DATA` is rejected and ignored.
@@ -69,7 +69,7 @@ Windows constraints:
 - 2026-11-03, independent AI session (fresh context), round 2: changes requested. Findings and resolution:
   1. High: dropping the publisher, or an engine-side disconnect while `Offered`, closed duplicates the UI might already own (an `ACCEPT` in flight), so the UI could later close reused handle values. Fixed: the engine closes un-accepted duplicates only on decisive signals (UI closed its end, `SURFACES` not sent); otherwise a bounded leak until the client exits (decision 3).
   2. Medium: same-user denial of service is weaker than on macOS. Accepted and documented (Consequences); low-integrity processes are now excluded by a mandatory label.
-  3. Medium: no P15 numbers yet. Open: the owner's Windows hardware run.
+  3. Medium: no P15 numbers yet. Resolved by the hardware run below.
   4. Medium: a detached then re-attached layer could show stale content, and the 34 ms rule after `detach` could release a frame the compositor still showed. Fixed: the detached frame is kept until replaced; the visual is added at the first `show` after attach.
   5. Low: the subscriber's connect documentation omitted the 1 s `ACCEPT` grace. Fixed.
   6. Low: wording (reads per tick are ring size + 2; decision 6 said offset and scale). Fixed.
@@ -80,3 +80,10 @@ Windows constraints:
   3. Low: "never shows the stale frame" overstated (present and commit are separate channels). Fixed: wording says one untorn old frame at worst.
   4. Low: the drop comment ignored the kept detached frame. Fixed.
   5. Low: the engine must run at medium integrity or above. Documented (decision 2).
+- 2026-11-03, owner's Windows machine (RTX 4090, physical console; `remote_preview`, 20 s per run, 1280x720 preview, engine ring 6):
+  - First console run showed a black preview area: the presentation surface's source rectangle starts empty and was never set. Fixed (`SetSourceRect` to the whole surface). Desktop Duplication capture then showed the layer's pixels equal to the Slint path's (56,111,223 / 56,186,84 / 214,56,47) at the same place, also after a move and resize.
+  - Over remote desktop the factory reports support but nothing is shown; `PreviewLayer::new` now refuses there (decision 8) and the Slint path draws.
+  - UI process CPU (one core): layer 1.3 %, with 16 meters (Slint-drawn on Windows) 7.6 %; Slint path 5.0 %, with meters 9.5 % (a first sitting measured 6.7 % and 10.2 %, over budget). 60 fps, 0 late frames, engine `busy` 0 and `dropped` 0 in every run.
+  - `benches/preview.rs`: `publish_cpu` 39.0 us, `tick_cpu` 6.6 us, `frame_gpu` 170 us; `share_alloc_metal`: 40 allocations per frame against 52 for the NV12 conversion alone (does not grow).
+  - Cross-process tests pass (run four times in a row). Not caused by this change and recorded only: the demo process exits with code 2170 from a DLL's process-detach code (all of `main` runs; `TerminateProcess` exits 0; injected capture hooks are loaded on that machine).
+  - Status Accepted after three independent review rounds and this run; the human hot-path sign-off (P15) of the Windows publisher is part of the owner's pending review with ADR-0030 and ADR-0033.
