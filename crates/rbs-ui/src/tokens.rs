@@ -49,9 +49,11 @@ pub const FIXED: &[(&str, &str)] = &[
 ];
 
 /// Lengths a token file may not set below these values: the focus ring must stay
-/// visible (rule U7) and the main window must fit the 1280 x 720 minimum (rule U11).
+/// visible and icons legible (rule U7), and the main window must fit the 1280 x 720 minimum (rule U11).
 pub const MINIMUMS: &[(&str, f32, &str)] = &[
     ("size.focus-ring", 2.0, "rule U7"),
+    ("size.icon.box", 12.0, "rule U7"),
+    ("size.icon.stroke", 1.0, "rule U7"),
     ("size.window.min-w", 1280.0, "rule U11"),
     ("size.window.min-h", 720.0, "rule U11"),
 ];
@@ -72,6 +74,8 @@ pub const LENGTHS: &[&str] = &[
     "radius.lg",
     "size.border",
     "size.focus-ring",
+    "size.icon.box",
+    "size.icon.stroke",
     "size.menu.sm",
     "size.menu.md",
     "size.window.w",
@@ -487,6 +491,16 @@ mod tests {
 
         let thin_ring = base.replacen("\"size.focus-ring\" = 2", "\"size.focus-ring\" = 0", 1);
         assert!(Tokens::parse(&thin_ring).unwrap_err().0.contains("U7"));
+        let no_icon = base.replacen("\"size.icon.box\" = 16", "\"size.icon.box\" = 0", 1);
+        let e = Tokens::parse(&no_icon).unwrap_err().0;
+        assert!(e.contains("size.icon.box") && e.contains("U7"), "{e}");
+        let hairline = base.replacen(
+            "\"size.icon.stroke\" = 1.5",
+            "\"size.icon.stroke\" = 0.5",
+            1,
+        );
+        let e = Tokens::parse(&hairline).unwrap_err().0;
+        assert!(e.contains("size.icon.stroke") && e.contains("U7"), "{e}");
         let small = base.replacen(
             "\"size.window.min-w\" = 1280",
             "\"size.window.min-w\" = 800",

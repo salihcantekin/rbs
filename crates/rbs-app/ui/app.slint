@@ -2,7 +2,7 @@
 // crate: Slint has no recursive components, so Rust flattens each window's
 // layout tree into tab stacks and splitter handles with absolute positions.
 import { Theme, Tokens } from "tokens.slint";
-import { Button, MenuItem, MenuSurface, EmptyState } from "components.slint";
+import { Button, IconButton, Icon, IconName, MenuItem, MenuSurface, EmptyState } from "components.slint";
 
 export { Theme, Tokens }
 
@@ -76,20 +76,30 @@ component LiveIndicator inherits Rectangle {
         ? state-text + " " + Shell.live-duration + (Shell.live-outputs != "" ? " · " + Shell.live-outputs : "")
         : state-text;
     height: Tokens.size-control-md;
-    width: label.preferred-width + 2 * Tokens.space-3;
+    width: content.preferred-width + 2 * Tokens.space-3;
     border-radius: Tokens.radius-sm;
     background: active ? Theme.state-live : transparent;
     border-width: active ? 0px : Tokens.size-border;
     border-color: Theme.border-strong;
     accessible-role: AccessibleRole.text;
     accessible-label: @tr("Live status: {}", full);
-    label := Text {
-        text: (active ? "● " : "○ ") + full;
-        color: active ? Theme.text-on-live : Theme.text-secondary;
-        font-size: Tokens.type-label-size;
-        font-weight: Tokens.type-label-weight;
-        vertical-alignment: center;
-        horizontal-alignment: center;
+    content := HorizontalLayout {
+        alignment: center;
+        spacing: Tokens.space-1;
+        VerticalLayout {
+            alignment: center;
+            Icon {
+                name: active ? IconName.dot : IconName.ring;
+                ink: active ? Theme.text-on-live : Theme.text-secondary;
+            }
+        }
+        Text {
+            text: full;
+            color: active ? Theme.text-on-live : Theme.text-secondary;
+            font-size: Tokens.type-label-size;
+            font-weight: Tokens.type-label-weight;
+            vertical-alignment: center;
+        }
     }
 }
 
@@ -167,20 +177,14 @@ component Tab inherits Rectangle {
             font-weight: Tokens.type-label-weight;
             vertical-alignment: center;
         }
-        menu-button := Button {
-            width: Tokens.size-control-sm;
-            dense: true;
-            kind: "ghost";
-            text: "⋯";
-            accessible-name: @tr("Actions for {}", tab.title);
+        menu-button := IconButton {
+            icon: IconName.more;
+            name: @tr("Actions for {}", tab.title);
             clicked => { open-menu(); }
         }
-        close-button := Button {
-            width: Tokens.size-control-sm;
-            dense: true;
-            kind: "ghost";
-            text: "×";
-            accessible-name: @tr("Close {}", tab.title);
+        close-button := IconButton {
+            icon: IconName.close;
+            name: @tr("Close {}", tab.title);
             clicked => { close(); }
         }
     }
@@ -394,11 +398,13 @@ component FrameBar inherits Rectangle {
         alignment: start;
         LiveIndicator { }
         ws-button := Button {
-            text: @tr("Workspace: {} ▾", Shell.workspace-name);
+            text: @tr("Workspace: {}", Shell.workspace-name);
+            icon: IconName.chevron-down;
             clicked => { ws-menu.show(); }
         }
         panels-button := Button {
-            text: @tr("Panels ▾");
+            text: @tr("Panels");
+            icon: IconName.chevron-down;
             clicked => { panels-menu.show(); }
         }
         if Shell.locked: Text {
