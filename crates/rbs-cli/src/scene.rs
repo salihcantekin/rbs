@@ -119,7 +119,12 @@ pub fn build(types: &SourceTypes, args: &RecordArgs) -> Result<BuiltScene, Strin
         "Display",
         types::DISPLAY_SOURCE,
         settings,
-        Layout::new([0.0, 0.0], [w as f32, h as f32]),
+        // Its own aspect ratio, centred: a 21:9 display is not squeezed into 16:9.
+        display
+            .size
+            .map_or(Layout::new([0.0, 0.0], [w as f32, h as f32]), |(sw, sh)| {
+                Layout::fit(w, h, sw, sh)
+            }),
     )?;
 
     if args.no_camera {

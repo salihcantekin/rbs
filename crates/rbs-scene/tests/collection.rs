@@ -758,3 +758,27 @@ fn negative_size_flips_and_rotation_composes_inside_nested_scenes() {
     close(t.apply(0.0, 0.0), (0.0, 1080.0));
     close(t.apply(1.0, 1.0), (960.0, 0.0));
 }
+
+#[test]
+fn fit_keeps_the_aspect_ratio_and_centres() {
+    // 21:9 display on a 16:9 canvas: full width, bars above and below.
+    let l = Layout::fit(1920, 1080, 3440, 1440);
+    assert_eq!(l.size[0], 1920.0);
+    assert!((l.size[1] - 803.7209).abs() < 0.01, "{l:?}");
+    assert!((l.position[1] - (1080.0 - l.size[1]) / 2.0).abs() < 0.001);
+    assert_eq!(l.position[0], 0.0);
+    // 4:3 on 16:9: full height, bars left and right.
+    assert_eq!(
+        Layout::fit(1920, 1080, 1440, 1080),
+        Layout::new([240.0, 0.0], [1440.0, 1080.0])
+    );
+    // Same aspect fills; an unknown size fills.
+    assert_eq!(
+        Layout::fit(1920, 1080, 3840, 2160),
+        Layout::new([0.0, 0.0], [1920.0, 1080.0])
+    );
+    assert_eq!(
+        Layout::fit(1920, 1080, 0, 0),
+        Layout::new([0.0, 0.0], [1920.0, 1080.0])
+    );
+}

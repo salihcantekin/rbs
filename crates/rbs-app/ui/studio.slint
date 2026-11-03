@@ -81,6 +81,10 @@ export global Studio {
     callback set-encoder(int);
     callback set-video-rate(int);
     callback set-audio-rate(int);
+    // One line: format, encoder, bitrates and folder of the next recording.
+    in property <string> out-summary;
+    // Opens the Settings window at its Recording section.
+    callback open-settings();
 }
 
 // The add-source picker: a kind, then what it captures. Keyboard: arrows are not
@@ -406,92 +410,123 @@ component Field inherits VerticalLayout {
     @children
 }
 
-// Outputs: the recording's settings (glossary: output profile). They apply to the next
-// recording and are saved at once.
-export component OutputsPanel inherits Rectangle {
-    background: Theme.surface-raised;
+// The recording's settings (glossary: output profile): the Recording section of the
+// Settings window (U17). They apply to the next recording and are saved at once. The
+// owner counts `menu-open` as an overlay where a preview layer is shown.
+export component RecordingSettings inherits Rectangle {
     property <bool> idle: Studio.rec-state == 0;
-    Flickable {
-        width: parent.width;
-        height: parent.height;
-        content-height: form.preferred-height;
-        form := VerticalLayout {
-            padding: Tokens.space-3;
-            spacing: Tokens.space-3;
-            alignment: start;
-            Text {
-                text: @tr("Recording");
-                color: Theme.text-primary;
-                font-size: Tokens.type-title-size;
-                font-weight: Tokens.type-title-weight;
-                accessible-role: none;
-            }
-            if !idle: Text {
-                text: @tr("Changes apply to the next recording.");
-                color: Theme.text-secondary;
-                font-size: Tokens.type-body-size;
-                wrap: word-wrap;
-            }
-            Field {
+    out property <bool> menu-open: encoder.open || video.open || audio.open;
+    form := VerticalLayout {
+        spacing: Tokens.space-3;
+        alignment: start;
+        if !idle: Text {
+            text: @tr("Changes apply to the next recording.");
+            color: Theme.text-secondary;
+            font-size: Tokens.type-body-size;
+            wrap: word-wrap;
+        }
+        Field {
+            label: @tr("Folder");
+            folder := TextField {
                 label: @tr("Folder");
-                folder := TextField {
-                    label: @tr("Folder");
-                    text: Studio.out-folder;
-                    enabled: idle;
-                    accepted(t) => { Studio.set-folder(t); }
-                }
-            }
-            Field {
-                label: @tr("Format");
-                SegmentedControl {
-                    label: @tr("Format");
-                    options: Studio.out-formats;
-                    index: Studio.out-format;
-                    enabled: idle;
-                    selected(i) => { Studio.set-format(i); }
-                }
-            }
-            Field {
-                label: @tr("Video encoder");
-                encoder := Select {
-                    label: @tr("Video encoder");
-                    options: Studio.out-encoders;
-                    index: Studio.out-encoder;
-                    enabled: idle;
-                    selected(i) => { Studio.set-encoder(i); }
-                }
-            }
-            Field {
-                label: @tr("Video bitrate");
-                video := Select {
-                    label: @tr("Video bitrate");
-                    options: Studio.out-video-rates;
-                    index: Studio.out-video-rate;
-                    enabled: idle;
-                    selected(i) => { Studio.set-video-rate(i); }
-                }
-            }
-            Field {
-                label: @tr("Audio bitrate");
-                audio := Select {
-                    label: @tr("Audio bitrate");
-                    options: Studio.out-audio-rates;
-                    index: Studio.out-audio-rate;
-                    enabled: idle;
-                    selected(i) => { Studio.set-audio-rate(i); }
-                }
-            }
-            if Studio.out-note != "": Text {
-                text: Studio.out-note;
-                color: Theme.state-error;
-                font-size: Tokens.type-body-size;
-                wrap: word-wrap;
+                text: Studio.out-folder;
+                enabled: idle;
+                accepted(t) => { Studio.set-folder(t); }
             }
         }
+        Field {
+            label: @tr("Format");
+            SegmentedControl {
+                label: @tr("Format");
+                options: Studio.out-formats;
+                index: Studio.out-format;
+                enabled: idle;
+                selected(i) => { Studio.set-format(i); }
+            }
+        }
+        Field {
+            label: @tr("Video encoder");
+            encoder := Select {
+                label: @tr("Video encoder");
+                options: Studio.out-encoders;
+                index: Studio.out-encoder;
+                enabled: idle;
+                selected(i) => { Studio.set-encoder(i); }
+            }
+        }
+        Field {
+            label: @tr("Video bitrate");
+            video := Select {
+                label: @tr("Video bitrate");
+                options: Studio.out-video-rates;
+                index: Studio.out-video-rate;
+                enabled: idle;
+                selected(i) => { Studio.set-video-rate(i); }
+            }
+        }
+        Field {
+            label: @tr("Audio bitrate");
+            audio := Select {
+                label: @tr("Audio bitrate");
+                options: Studio.out-audio-rates;
+                index: Studio.out-audio-rate;
+                enabled: idle;
+                selected(i) => { Studio.set-audio-rate(i); }
+            }
+        }
+        if Studio.out-note != "": Text {
+            text: Studio.out-note;
+            color: Theme.state-error;
+            font-size: Tokens.type-body-size;
+            wrap: word-wrap;
+        }
     }
+    preferred-height: form.preferred-height;
+    min-height: form.min-height;
     // The field shows what Rust set last; typing in it is never overwritten by a sync.
     property <int> folder-serial: Studio.out-folder-serial;
     changed folder-serial => { folder.text = Studio.out-folder; }
-    property <bool> menu-open: encoder.open || video.open || audio.open;
-    changed menu-open => { Studio.overlays += menu-open ? 1 : -1; Studio.overlays-changed(); }
+}
+
+// Outputs: what each output will do, in one line each, and the way to its settings.
+// Settings live in the Settings window (U17), not in this panel.
+export component OutputsPanel inherits Rectangle {
+    background: Theme.surface-raised;
+    Flickable {
+        width: parent.width;
+        height: parent.height;
+        content-height: list.preferred-height;
+        list := VerticalLayout {
+            padding: Tokens.space-3;
+            spacing: Tokens.space-1;
+            alignment: start;
+            Rectangle {
+                accessible-role: list-item;
+                accessible-label: @tr("Recording, {}", summary.text);
+                VerticalLayout {
+                    spacing: Tokens.space-1;
+                    Text {
+                        text: Studio.rec-state == 2 ? @tr("Recording · recording now") : @tr("Recording");
+                        color: Theme.text-primary;
+                        font-size: Tokens.type-label-size;
+                        font-weight: Tokens.type-label-weight;
+                    }
+                    summary := Text {
+                        text: Studio.out-summary;
+                        color: Theme.text-secondary;
+                        font-size: Tokens.type-caption-size;
+                        wrap: word-wrap;
+                    }
+                }
+            }
+            HorizontalLayout {
+                padding-top: Tokens.space-1;
+                alignment: start;
+                Button {
+                    text: @tr("Recording settings");
+                    clicked => { Studio.open-settings(); }
+                }
+            }
+        }
+    }
 }

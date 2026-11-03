@@ -114,6 +114,8 @@ pub struct Target {
     pub target: String,
     /// The OS default of its kind (audio endpoints).
     pub is_default: bool,
+    /// Native size in pixels when known (displays and windows).
+    pub size: Option<(u32, u32)>,
 }
 
 /// How a source is doing.
@@ -492,6 +494,7 @@ impl Host {
                         adapter: t.adapter.as_str().to_owned(),
                         target: t.target,
                         is_default: t.is_default,
+                        size: t.size,
                     })
                     .collect();
                 notify(Update::Targets(kind, targets));
@@ -629,7 +632,12 @@ impl Host {
         let layout = match kind {
             SourceKind::Screen | SourceKind::Window => {
                 settings.insert(keys::FPS.into(), SettingValue::Int(fps));
-                Layout::new([0.0, 0.0], [w as f32, h as f32])
+                // As large as fits with its own aspect ratio, centred: a 21:9 display
+                // is not squeezed into a 16:9 canvas.
+                match target.size {
+                    Some((sw, sh)) => Layout::fit(w, h, sw, sh),
+                    None => Layout::new([0.0, 0.0], [w as f32, h as f32]),
+                }
             }
             SourceKind::Camera => {
                 let (cw, ch, cfps) = CAMERA_SIZE;

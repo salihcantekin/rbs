@@ -31,7 +31,7 @@ Out of scope, later changes:
 | `SceneScope` | `Canvas(id)`: only that canvas shows it, directly or nested. `Shared`: every canvas may show it (U15) |
 | `Scene` | Name, `scope`, `items` bottom first |
 | `SceneItem` | `content` (`Source` or nested `Scene`), `visible`, default `layout`, `overrides: BTreeMap<CanvasId, Layout>`; `layout_on(canvas)` picks the override or the default |
-| `Layout` | Box at `position` (top-left, canvas pixels) of `size` (negative flips), rotated clockwise by `rotation` degrees about its centre; `crop` in source pixels; `opacity` 0..=1 |
+| `Layout` | Box at `position` (top-left, canvas pixels) of `size` (negative flips), rotated clockwise by `rotation` degrees about its centre; `crop` in source pixels; `opacity` 0..=1. `Layout::fit(box_w, box_h, source_w, source_h)` is the largest centred box with the source's aspect ratio (letterbox or pillarbox) |
 | `Settings` | `BTreeMap<String, SettingValue>`; values `Bool`, `Int`, `Float` (finite), `Text`. Schemas come with the plugin SDK |
 
 ### Edits (`SceneCollection`)
