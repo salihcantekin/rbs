@@ -1,6 +1,6 @@
 # ADR-0041: A studio keeps a canvas running for preview and meters; recordings start and stop on the running engine
 
-- Status: Accepted (independent review 2026-11-03, see Review; the hot-path sign-off of P15 for the two new nodes is pending, see Consequences)
+- Status: Accepted (independent review and owner's P15 sign-off 2026-11-03, see Review)
 - Date: 2026-11-03
 - Deciders: Salih (owner)
 - Supersedes: [ADR-0040](0040-recording-composition.md) decision 6 (who owns the graph when `rbs-app` records)
@@ -67,3 +67,4 @@ Forces: P1 (engine code names no adapter), P4 (the preview never reads frames ba
   9. ADR text did not match the code. Fixed: decision 1 (audio partitions), decision 3 (rollback causes); a source's first failure reason is kept.
   10. Semver and `finish` errors. Added to Consequences.
 - 2026-11-03: Accepted by the implementing thread under the owner's ADR policy, after the fixes above; the P15 sign-off for `PreviewNode::process` and `MeterSinkNode` stays with the owner.
+- 2026-11-03: Salih gave the P15 sign-off for the preview node, the meter sink and the worker's base store (`hot-paths.md`); the SC-PC numbers are added with the desktop app's hardware run.
