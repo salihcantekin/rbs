@@ -215,8 +215,8 @@ fn mismatched_planes_are_rejected() {
         .unwrap();
     let mut conv = YuvConverter::new(ctx, YuvFormat::Nv12, W, H).unwrap();
     assert_eq!(
-        conv.convert(ctx, &pool, canvas, luma, wrong),
-        Err(GpuError::TargetMismatch(wrong))
+        conv.convert(ctx, &pool, canvas, luma, wrong).err(),
+        Some(GpuError::TargetMismatch(wrong))
     );
 }
 
@@ -236,8 +236,8 @@ fn p010_rejects_nv12_planes() {
         .unwrap();
     let mut conv = YuvConverter::new(ctx, YuvFormat::P010, W, H).unwrap();
     assert_eq!(
-        conv.convert(ctx, &pool, canvas, luma, chroma),
-        Err(GpuError::TargetMismatch(luma))
+        conv.convert(ctx, &pool, canvas, luma, chroma).err(),
+        Some(GpuError::TargetMismatch(luma))
     );
 }
 
@@ -289,7 +289,7 @@ fn wrong_surface_is_rejected() {
         .unwrap();
     let mut conv = YuvConverter::new(ctx, YuvFormat::Nv12, W, H).unwrap();
     assert_eq!(
-        conv.convert_to_surface(ctx, &pool, canvas, luma),
-        Err(GpuError::TargetMismatch(luma))
+        conv.convert_to_surface(ctx, &pool, canvas, luma).err(),
+        Some(GpuError::TargetMismatch(luma))
     );
 }

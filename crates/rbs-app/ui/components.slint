@@ -1,0 +1,153 @@
+// RBS component library, first part (docs/specs/ui-design-system.md, "Components").
+// Every value comes from the generated tokens (rule U6). Every control is reachable
+// by keyboard, shows a focus ring and has an accessible role and name (rule U7).
+import { Theme, Tokens } from "tokens.slint";
+
+// Focus ring drawn around a focused control.
+component FocusRing inherits Rectangle {
+    in property <bool> show;
+    border-width: show ? Tokens.size-focus-ring : 0px;
+    border-color: Theme.border-focus;
+    border-radius: Tokens.radius-sm;
+}
+
+// Button: kinds "primary", "secondary", "ghost". Activated by click, Enter or Space.
+export component Button inherits Rectangle {
+    in property <string> text;
+    in property <string> accessible-name: text;
+    in property <string> kind: "secondary";
+    in property <bool> enabled: true;
+    in property <bool> checked: false;
+    in property <bool> dense: false;
+    callback clicked();
+    height: dense ? Tokens.size-control-sm : Tokens.size-control-md;
+    min-width: label.preferred-width + 2 * Tokens.space-3;
+    border-radius: Tokens.radius-sm;
+    background: !enabled ? transparent
+        : kind == "primary" ? (touch.has-hover ? Theme.accent-hover : Theme.accent)
+        : checked ? Theme.accent-subtle
+        : touch.has-hover ? Theme.surface-overlay
+        : kind == "ghost" ? transparent : Theme.surface-raised;
+    border-width: kind == "secondary" ? Tokens.size-border : 0px;
+    border-color: Theme.border-subtle;
+    accessible-role: button;
+    accessible-label: accessible-name;
+    accessible-checked: checked;
+    accessible-enabled: enabled;
+    accessible-action-default => { if enabled { clicked(); } }
+    forward-focus: focus;
+    label := Text {
+        text: root.text;
+        color: !enabled ? Theme.text-disabled : kind == "primary" ? Theme.text-inverse : Theme.text-primary;
+        font-size: Tokens.type-label-size;
+        font-weight: Tokens.type-label-weight;
+        vertical-alignment: center;
+        horizontal-alignment: center;
+    }
+    focus := FocusScope {
+        enabled: root.enabled;
+        key-pressed(e) => {
+            if e.text == Key.Return || e.text == " " { root.clicked(); return accept; }
+            reject
+        }
+    }
+    // The TouchArea comes after the FocusScope so it is on top: a FocusScope
+    // under the pointer takes the press for itself (focus-on-click).
+    touch := TouchArea {
+        enabled: root.enabled;
+        clicked => { focus.focus(); root.clicked(); }
+    }
+    FocusRing { show: focus.has-focus; }
+}
+
+// Menu item inside a Menu popup.
+export component MenuItem inherits Rectangle {
+    in property <string> text;
+    in property <bool> checked;
+    in property <bool> enabled: true;
+    // Focus this item when it is created (the first item of a menu that just opened).
+    in property <bool> autofocus;
+    callback activated();
+    // Focusing in `init` is too early: the popup window is not active yet and
+    // the request is lost. A one-shot timer focuses once, after the first frame,
+    // and then stops, so it costs nothing while the menu stays open.
+    property <bool> focused-once;
+    Timer {
+        interval: 1ms;
+        running: root.autofocus && !root.focused-once;
+        triggered => { root.focused-once = true; focus.focus(); }
+    }
+    height: Tokens.size-control-md;
+    background: focus.has-focus || touch.has-hover ? Theme.accent-subtle : transparent;
+    border-radius: Tokens.radius-sm;
+    accessible-role: button;
+    accessible-label: text;
+    accessible-checked: checked;
+    accessible-enabled: enabled;
+    accessible-action-default => { if enabled { activated(); } }
+    forward-focus: focus;
+    HorizontalLayout {
+        padding-left: Tokens.space-2;
+        padding-right: Tokens.space-3;
+        spacing: Tokens.space-2;
+        Text {
+            width: Tokens.space-4;
+            text: root.checked ? "✓" : "";
+            color: Theme.text-primary;
+            vertical-alignment: center;
+        }
+        Text {
+            text: root.text;
+            color: root.enabled ? Theme.text-primary : Theme.text-disabled;
+            font-size: Tokens.type-body-size;
+            vertical-alignment: center;
+        }
+    }
+    focus := FocusScope {
+        enabled: root.enabled;
+        key-pressed(e) => {
+            if e.text == Key.Return || e.text == " " { root.activated(); return accept; }
+            reject
+        }
+    }
+    // The TouchArea comes after the FocusScope so it is on top: a FocusScope
+    // under the pointer takes the press for itself (focus-on-click).
+    touch := TouchArea {
+        enabled: root.enabled;
+        clicked => { root.activated(); }
+    }
+}
+
+// Popover surface for menus.
+export component MenuSurface inherits Rectangle {
+    background: Theme.surface-overlay;
+    border-color: Theme.border-strong;
+    border-width: Tokens.size-border;
+    border-radius: Tokens.radius-md;
+}
+
+// Empty state: what the panel is for and the next action (rule U10).
+export component EmptyState inherits Rectangle {
+    in property <string> title;
+    in property <string> message;
+    VerticalLayout {
+        alignment: center;
+        spacing: Tokens.space-2;
+        padding: Tokens.space-4;
+        Text {
+            text: root.title;
+            color: Theme.text-primary;
+            font-size: Tokens.type-title-size;
+            font-weight: Tokens.type-title-weight;
+            horizontal-alignment: center;
+            wrap: word-wrap;
+        }
+        Text {
+            text: root.message;
+            color: Theme.text-secondary;
+            font-size: Tokens.type-body-size;
+            horizontal-alignment: center;
+            wrap: word-wrap;
+        }
+    }
+}

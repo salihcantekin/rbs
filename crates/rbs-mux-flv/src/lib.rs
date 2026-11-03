@@ -26,7 +26,6 @@
 //! Limitations: one video and one audio stream; H.264 and AAC only (no enhanced-RTMP
 //! HEVC/AV1 yet).
 
-mod amf0;
 mod muxer;
 
 use rbs_core::capability::{CapabilitySet, CapabilityValue};

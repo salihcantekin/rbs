@@ -48,6 +48,14 @@ pub const FIXED: &[(&str, &str)] = &[
     ("color.text.on-live", "#ffffff"),
 ];
 
+/// Lengths a token file may not set below these values: the focus ring must stay
+/// visible (rule U7) and the main window must fit the 1280 x 720 minimum (rule U11).
+pub const MINIMUMS: &[(&str, f32, &str)] = &[
+    ("size.focus-ring", 2.0, "rule U7"),
+    ("size.window.min-w", 1280.0, "rule U11"),
+    ("size.window.min-h", 720.0, "rule U11"),
+];
+
 /// Length tokens every file defines (logical pixels).
 pub const LENGTHS: &[&str] = &[
     "space.1",
@@ -62,6 +70,18 @@ pub const LENGTHS: &[&str] = &[
     "radius.sm",
     "radius.md",
     "radius.lg",
+    "size.border",
+    "size.focus-ring",
+    "size.menu.sm",
+    "size.menu.md",
+    "size.window.w",
+    "size.window.h",
+    "size.window.min-w",
+    "size.window.min-h",
+    "size.floating.w",
+    "size.floating.h",
+    "step.nudge",
+    "step.nudge-large",
 ];
 
 /// Duration tokens every file defines (milliseconds).
@@ -335,6 +355,13 @@ impl Tokens {
                     .into(),
             ));
         }
+        for (name, min, rule) in MINIMUMS {
+            if raw.length.get(*name).is_some_and(|v| v < min) {
+                return Err(TokenError(format!(
+                    "{name} must be at least {min} ({rule})"
+                )));
+            }
+        }
         let tokens = Tokens {
             fixed,
             themes,
@@ -457,6 +484,15 @@ mod tests {
 
         let alpha = base.replacen("\"#121417\"", "\"#12141780\"", 1);
         assert!(Tokens::parse(&alpha).unwrap_err().0.contains("#rrggbb"));
+
+        let thin_ring = base.replacen("\"size.focus-ring\" = 2", "\"size.focus-ring\" = 0", 1);
+        assert!(Tokens::parse(&thin_ring).unwrap_err().0.contains("U7"));
+        let small = base.replacen(
+            "\"size.window.min-w\" = 1280",
+            "\"size.window.min-w\" = 800",
+            1,
+        );
+        assert!(Tokens::parse(&small).unwrap_err().0.contains("U11"));
 
         let no_motion = base.replacen("\"motion.fast\" = 120\n", "", 1);
         assert!(

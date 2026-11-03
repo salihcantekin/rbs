@@ -37,5 +37,6 @@ An ADR records one decision that is hard to reverse or affects more than one cra
 | [0022](0022-native-ui-toolkit.md) | Slint as the desktop UI toolkit | Proposed |
 | [0023](0023-node-parameter-channels.md) | Latest-value parameter channels for running nodes | Accepted |
 | [0024](0024-node-restart-with-back-off.md) | Restart failed nodes with back-off, contained to the failed node | Accepted |
+| [0025](0025-encoder-surface-export.md) | Hand encoders exported GPU surfaces as native frames | Accepted |
 | [0026](0026-partitions-and-queues.md) | Partitions joined by queue endpoint nodes | Accepted |
 | [0027](0027-engine-loop.md) | Engine loop: a worker thread per partition in a headless rbs-engine crate | Accepted |
