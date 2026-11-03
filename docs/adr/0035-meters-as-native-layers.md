@@ -12,7 +12,15 @@ After ADR-0034 the UI met its CPU budget (at most 10 % of one core with the prev
 
 The meter itself was not specified beyond rule U16 (dBFS scale, peak hold, clip indicator). This ADR also adds the AudioMeter contract to the design system spec.
 
-MEASUREMENTS_PLACEHOLDER
+Measured on the reference Mac (MacBook Pro M4 Pro, macOS 26, release build of `remote_preview` with `preview_engine`, preview as a layer per ADR-0034, 16 meters at 30 Hz with their accessible values at 1 Hz, 21 s windows, process CPU of the UI from `getrusage`), runs alternated in one sitting:
+
+| Meters drawn by | 720p preview | 1080p preview |
+| --- | --- | --- |
+| Slint (`RBS_METER_MODE=slint`) | 8.4, 8.5, 8.6, 9.1 % | 9.2 % |
+| Layers (`RBS_METER_MODE=layer`, this ADR) | 2.4, 2.4, 2.4, 2.7 % | 2.5 % |
+| No meters (preview only) | 1.9, 2.0 % | |
+
+Every run showed 60.0 fps; frames more than 25 ms apart in delivery to the UI ranged from 0 to 3 per run in both meter modes. Peak resident memory was 103-104 MiB in every run. The 1080p figures are single runs.
 
 ## Decision
 
@@ -27,10 +35,12 @@ MEASUREMENTS_PLACEHOLDER
 
 ## Consequences
 
-- Meter updates no longer redraw the window on macOS; the toolkit redraws for layout, input and text at 1 Hz. Measured gain: see Review.
+- Meter updates no longer redraw the window on macOS; the toolkit redraws for layout, input and text at 1 Hz. The UI with preview and meters goes from about 8.5 % to about 2.5 % of one core, 0.5 points above the preview alone: the budget now has a wide margin.
 - Meters must be laid out so the shell can tell the bridge where each meter is. In the demo, Rust and the Slint markup share the layout constants; the shell's AudioStrip component must expose each meter's rectangle (for example with a callback on geometry change) when it is built.
 - Two drawing paths for the same meter (layer and toolkit fallback). Both take their geometry from `MeterView::frames`, so they differ only in how a rectangle becomes pixels; the conformance test `crates/rbs-app/tests/meter_layer_macos.rs` checks the layer against it.
 - A screenshot of the window through the toolkit no longer contains the meters' moving parts on macOS (as for the preview).
+- Colours: the layer's colours are sRGB `CGColor`s, which Core Animation colour-manages; Slint's Metal layer carries no colour space, so its token colours reach the wide-gamut display unmanaged and look a little more saturated. Side by side the meter fill is slightly less saturated than the same token drawn by Slint. The right fix is to tag the toolkit's layer as sRGB (tokens and contrast checks are sRGB), which changes every colour of the UI and is follow-up work, not part of this ADR.
+- Edges are snapped to device pixels (`contentsScale` of the parent), as the toolkit draws them; unsnapped half-pixel edges showed as soft 1 px columns on the Retina display.
 - The design system's requirement 8 now names native layers for graphics that move at the meter rate or faster.
 
 ## Alternatives considered

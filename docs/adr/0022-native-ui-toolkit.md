@@ -125,3 +125,4 @@ There was no GPU in the test machine, so the rendering-load numbers came from a 
   6. Slint's licence options change so that the GPL-3.0-only option or its terms for RBS (ADR-0010) no longer hold.
 
   A trigger starts a new ADR with measurements; it does not reverse this one by itself. Native layers (ADR-0034) and the toolkit-neutral model, client and interop code carry over to any replacement, which keeps the reversal cost stated in Consequences.
+- 2026-11-03: [ADR-0035](0035-meters-as-native-layers.md) supersedes decision 3, first tier, in part: on macOS the moving parts of audio meters are native compositor layers, not the toolkit's vector primitives.
