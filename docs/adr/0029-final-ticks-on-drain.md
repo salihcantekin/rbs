@@ -1,6 +1,6 @@
 # ADR-0029: Final ticks on drain
 
-- Status: Proposed
+- Status: Accepted
 - Date: 2026-11-03
 - Deciders: Salih (owner)
 - Amends: [ADR-0027](0027-engine-loop.md) Decision 7 (drains swap between ticks) and Decision 3 (the worker reads a stop flag).
@@ -56,3 +56,5 @@ Concerns:
 8. Skipped ticks not counted in the drain branch -> counted in `WorkerStats::late` like the run path.
 9. Stall-based test could be flaky on a very slow CI -> stall raised to 2 s (128 frames take milliseconds); the post-condition holds either way.
 10. `drain` reports an unreachable STOP as a timeout -> commented.
+
+Re-review (same independent session, 2026-11-03, at the head that adds the allocation-guard warm-up): **approve**. All ten concerns resolved. Remaining nits, accepted as they are: the 10 kHz guard does not prove it parked (asserting it would be timing-dependent under load); "twice per partition" can be three waits when a swap is still in flight as shutdown starts (unchanged from ADR-0027). It also found that `a_move_held_up_by_a_swap_timeout_finishes_from_the_control_loop` and `retired_endpoints_are_dropped_after_a_swap_timeout` fail about 2 in 12 runs under load on main as well; they are a separate follow-up. Accepted under the owner's early-phase ADR policy (2026-11-03); the human hot-path review follows in the owner's later review round.

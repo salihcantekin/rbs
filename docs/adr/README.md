@@ -40,4 +40,4 @@ An ADR records one decision that is hard to reverse or affects more than one cra
 | [0025](0025-encoder-surface-export.md) | Hand encoders exported GPU surfaces as native frames | Accepted |
 | [0026](0026-partitions-and-queues.md) | Partitions joined by queue endpoint nodes | Accepted |
 | [0027](0027-engine-loop.md) | Engine loop: a worker thread per partition in a headless rbs-engine crate | Accepted |
-| [0029](0029-final-ticks-on-drain.md) | Final ticks on drain | Proposed |
+| [0029](0029-final-ticks-on-drain.md) | Final ticks on drain | Accepted |
