@@ -224,6 +224,8 @@ mod tests {
     fn the_guard_restores_slack_policy_and_nice_value() {
         std::thread::spawn(|| {
             let (slack_before, sched_before) = (slack(), sched_get().unwrap());
+            // SAFETY: plain value arguments; reads this thread's own nice value.
+            let nice_before = unsafe { libc::getpriority(libc::PRIO_PROCESS, tid() as libc::id_t) };
             let guard = enter(
                 &OsThreadConfig::default(),
                 &ThreadRequest::new(
@@ -239,6 +241,9 @@ mod tests {
             let sched_after = sched_get().unwrap();
             assert_eq!(sched_after.0, sched_before.0);
             assert_eq!(sched_after.1.sched_priority, sched_before.1.sched_priority);
+            // SAFETY: as above.
+            let nice_after = unsafe { libc::getpriority(libc::PRIO_PROCESS, tid() as libc::id_t) };
+            assert_eq!(nice_after, nice_before);
         })
         .join()
         .unwrap();

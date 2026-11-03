@@ -119,6 +119,17 @@ impl<X: Runtime> Executor<X> {
         let _ = catch_unwind(AssertUnwindSafe(|| X::detach(shared, local)));
     }
 
+    /// Drops the executor on the calling thread with its runtime attached: `attach`,
+    /// `cool` for every node still warm, `detach`, then the nodes and `Local` are
+    /// dropped (so `Local`'s own `Drop` runs unattached and must not rely on a bound
+    /// context). For an executor whose last thread is gone, such as one parked on the
+    /// control thread when its partition is dropped.
+    pub fn retire(mut self) {
+        self.attach();
+        cool_all(&mut self.current.nodes, &self.shared, &mut self.local);
+        self.detach();
+    }
+
     /// Runs one tick, then applies a pending schedule so the next tick runs it.
     ///
     /// Order: `Runtime::begin_tick`, `process` of every scheduled node in dependency

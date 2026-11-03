@@ -332,12 +332,10 @@ impl<X: Runtime> Drop for Partition<X> {
     fn drop(&mut self) {
         // The engine drains before dropping; this only joins the thread.
         self.stop_worker();
-        // `Executor::drop` cools what is left and drops `X::Local` here, on the control
-        // thread: attach first, so thread-bound resources are released with their
-        // context current (ADR-0030). Nothing detaches: the executor is gone.
-        if let Some(mut executor) = self.parked.take() {
-            executor.attach();
-            drop(executor);
+        // Cool what is left on the control thread with the runtime attached, then
+        // detach and drop (ADR-0030).
+        if let Some(executor) = self.parked.take() {
+            executor.retire();
         }
     }
 }
