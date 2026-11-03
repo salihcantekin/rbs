@@ -287,12 +287,14 @@ Capability keys: `transport.schemes` (Set: `rtmp`, `rtmps`, `srt`, `file`, ...),
 
 ## `rbs-media-format` (format helpers)
 
-Pure functions shared by muxer and transport adapters (ADR-0019, decision 7). No traits, no state, no I/O, no threads; errors are `FormatError::{Truncated, Invalid, Unsupported}`.
+Pure functions and immutable set-up values shared by muxer and transport adapters (ADR-0019, decision 7). No traits, no mutable session state, no I/O, no threads; bitstream errors are `FormatError::{Truncated, Invalid, Unsupported}`.
 
 - `nal`: `annexb_units` and `length_prefixed_units` iterators (borrowing, never allocate), `annexb_first_header` (reads only up to the first start code), `annexb_to_length_prefixed` and `length_prefixed_to_annexb` (append to a caller-owned `Vec`, so a reused buffer stops allocating once it reaches the working size), `h264_type` and the `h264` NAL type constants.
 - `avc`: `AvcConfig` parses and builds `AVCDecoderConfigurationRecord` (avcC), and builds one from the SPS and PPS of an Annex B access unit. Session set-up only; not for hot paths.
 - `aac`: `AudioSpecificConfig` (parse, encode, AAC-LC constructor, sample rate) and the 7-byte ADTS header.
-- Planned: HEVC (hvcC), FLV tag bodies, Opus headers, as adapters need them.
+- `amf0`: AMF0 writers (number, boolean, string with long-string fallback, null, object, ECMA array) appending to a caller-owned `Vec`, and `decode`/`decode_all` into an owned `Decoded` tree (numbers, booleans, strings, objects, ECMA and strict arrays, dates, null, undefined) with nesting bounded at 16. Decoding allocates and is for control messages (RTMP command replies) only.
+- `flv`: tag header, `PreviousTagSize` and whole-tag writers, `millis_since`, and `FlvTracks`. `FlvTracks::new` checks the stream descriptors once (at most one H.264 and one AAC stream; Annex B H.264 needs SPS and PPS in the extradata) and fails with `ConfigError::{Unsupported, Invalid}`. It then gives the `onMetaData` body, the AVC and AAC sequence header bodies, and per packet `plan` (validates, returns the exact body size, `PacketError` otherwise) and `write_body` (appends the body: access unit delimiters left out, Annex B re-framed with 4-byte lengths, composition offset clamped to signed 24 bits). `plan` and `write_body` never allocate beyond the caller's buffer. The FLV muxer wraps these bodies in tags; RTMP sends them as message bodies. The caller owns the clock origin and timestamps.
+- Planned: HEVC (hvcC), enhanced-RTMP bodies, Opus headers, as adapters need them.
 
 Hot functions (iterators and conversions) are linear in the payload and benchmarked through the adapters that call them.
 
