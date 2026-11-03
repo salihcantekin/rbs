@@ -7,8 +7,8 @@
 //!
 //! With `RBS_CAPTURE_HW=1` on a Mac with a camera whose terminal has camera permission,
 //! the hardware tests also open real sessions. They never ask for permission (a prompt
-//! would block the run): grant it first, for example by running any camera app from the
-//! same terminal, or under Claude Code to its helper app.
+//! would block the run): grant it first with
+//! `cargo run -p rbs-capture-avf --example request_permission` from the same terminal.
 
 use rbs_capture::conformance::{self, Options, RealTimePacer};
 use rbs_capture_avf::AvfCaptureFactory;
@@ -47,6 +47,12 @@ fn hardware() -> bool {
         eprintln!("skipped: set RBS_CAPTURE_HW=1 on a Mac with a camera and camera permission");
         return false;
     }
+    use rbs_capture::{CaptureFactory, Permission, TargetKind};
+    let permission = AvfCaptureFactory::new().permission(TargetKind::Camera);
+    assert!(
+        permission == Permission::Granted,
+        "camera permission is {permission:?}: run `cargo run -p rbs-capture-avf --example request_permission` from this terminal first"
+    );
     true
 }
 
