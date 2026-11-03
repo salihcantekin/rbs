@@ -469,6 +469,89 @@ fn shutdown_passes_every_queued_packet_not_just_one_ticks_worth() {
     assert_eq!(rig.seen(), rig.encoder_probe.seen.load(Ordering::Relaxed));
 }
 
+/// Takes `id` out of the graph (Standby first: an Active node cannot be removed).
+fn remove(graph: &mut GraphDescription, id: NodeId) {
+    graph.set_state(id, Lifecycle::Standby).unwrap();
+    graph.remove_node(id).unwrap();
+}
+
+#[test]
+fn a_branch_removed_with_apply_draining_drains_while_render_keeps_running() {
+    // ADR-0041: a recording's encoder and output leave a running engine. A preview
+    // (a video sink on render) keeps the source scheduled.
+    let log: ReleaseLog = Arc::new(Mutex::new(Vec::new()));
+    let mut rig = Rig::new(Some(&log));
+    let preview = TestNode::new(Role::VideoSink, "preview");
+    let preview_probe = Arc::clone(&preview.probe);
+    let preview_id = add(&mut rig.graph, &preview, RENDER);
+    rig.graph
+        .connect(rig.source, "out", preview_id, "in")
+        .unwrap();
+    rig.engine
+        .adopt::<Ticks>(RENDER, preview_id, Box::new(preview))
+        .unwrap();
+    let full = rig.graph.clone();
+    let setup = rig.engine.apply(&full).unwrap();
+    assert!(setup.errors.is_empty(), "{:?}", setup.errors);
+    for _ in 0..4 {
+        rig.frame();
+    }
+    let encoded = rig.encoder_probe.seen.load(Ordering::Relaxed);
+    assert!(encoded > 0);
+
+    let mut without = full.clone();
+    remove(&mut without, rig.encoder);
+    remove(&mut without, rig.sink);
+    let applied = rig.engine.apply_draining(&without).unwrap();
+    assert!(applied.errors.is_empty(), "{:?}", applied.errors);
+    // The encoder ran its final tick before the sink drained: every packet it made
+    // reached the sink, and both were released, the encoder first.
+    assert_eq!(*log.lock().unwrap(), vec!["encoder", "sink"]);
+    assert_eq!(rig.seen(), rig.encoder_probe.seen.load(Ordering::Relaxed));
+    assert!(rig.seen() >= encoded);
+    assert!(!rig.engine.has_worker(ENCODER));
+    assert!(!rig.engine.has_worker(OUTPUT));
+    assert!(rig.engine.crossings().is_empty());
+
+    // Render never stopped: the preview keeps getting frames.
+    assert!(rig.engine.has_worker(RENDER));
+    let shown = preview_probe.seen.load(Ordering::Relaxed);
+    rig.frame();
+    rig.frame();
+    assert!(preview_probe.seen.load(Ordering::Relaxed) > shown);
+    assert_eq!(*log.lock().unwrap(), vec!["encoder", "sink"]);
+
+    // The drained partitions take a branch again: their workers start and run.
+    let applied = rig.engine.apply(&full).unwrap();
+    assert!(applied.errors.is_empty(), "{:?}", applied.errors);
+    let before = rig.seen();
+    for _ in 0..4 {
+        rig.frame();
+    }
+    assert!(rig.engine.has_worker(ENCODER));
+    assert!(rig.seen() > before, "the output runs again");
+    let report = rig.engine.shutdown();
+    assert!(report.errors.is_empty(), "{:?}", report.errors);
+}
+
+#[test]
+fn apply_without_draining_runs_no_final_tick() {
+    let mut rig = Rig::new(None);
+    rig.engine.apply(&rig.graph).unwrap();
+    for _ in 0..3 {
+        rig.frame();
+    }
+    let ticks = rig.encoder_probe.ticks.load(Ordering::Relaxed);
+    let mut without = rig.graph.clone();
+    remove(&mut without, rig.encoder);
+    remove(&mut without, rig.sink);
+    remove(&mut without, rig.source);
+    let applied = rig.engine.apply(&without).unwrap();
+    assert!(applied.errors.is_empty(), "{:?}", applied.errors);
+    assert_eq!(rig.encoder_probe.ticks.load(Ordering::Relaxed), ticks);
+    assert_eq!(rig.engine.workers(), 0);
+}
+
 #[test]
 fn a_drain_that_times_out_is_reported_and_still_releases_everything() {
     // The sink's first `process` stalls far longer than the swap timeout, and shutdown

@@ -66,3 +66,4 @@ Forces:
   17. A script without `--seconds` recorded forever: refused when stdin is not a terminal.
   18. Doc fixes; `packets_written` counted packets the muxer dropped: `packets_taken` and `packets_muxed()`.
 - 2026-11-03: marked Accepted by the implementing thread under the owner's standing ADR policy; Windows hardware pass recorded in the spec.
+- 2026-11-03: decision 6 (a caller-owned graph for `rbs-app`) superseded by [ADR-0041](0041-studio-recording-on-a-running-engine.md): `rbs_record::Studio` owns the running graph and starts and stops recordings on it.

@@ -2,18 +2,18 @@
 
 - Status: Draft
 - Owner crate(s): `rbs-record`, `rbs-cli`
-- Related ADRs: [0004](../adr/0004-single-master-clock.md), [0013](../adr/0013-zero-cost-when-unused.md), [0026](../adr/0026-partitions-and-queues.md), [0027](../adr/0027-engine-loop.md), [0037](../adr/0037-audio-graph.md), [0038](../adr/0038-io-graph-nodes.md), [0039](../adr/0039-scene-source-types.md), [0040](../adr/0040-recording-composition.md)
+- Related ADRs: [0004](../adr/0004-single-master-clock.md), [0013](../adr/0013-zero-cost-when-unused.md), [0026](../adr/0026-partitions-and-queues.md), [0027](../adr/0027-engine-loop.md), [0037](../adr/0037-audio-graph.md), [0038](../adr/0038-io-graph-nodes.md), [0039](../adr/0039-scene-source-types.md), [0040](../adr/0040-recording-composition.md), [0041](../adr/0041-studio-recording-on-a-running-engine.md)
 - Builds on: [scene sources](scene-sources.md), [scene model](scene-model.md) (binder), [I/O nodes](io-nodes.md), [audio graph](audio-graph.md), [engine](engine.md), [output ports](output-ports.md)
 
 ## Purpose
 
-Records the program scene of one canvas of a scene collection to a file: the sources the scene shows and plays, composited, encoded (video and audio) and muxed, with every stream on the master clock. `rbs-record` assembles and runs it on the engine; `rbs-cli record` is the headless command that registers the platform's adapters and builds a fixed scene.
+Records the program scene of one canvas of a scene collection to a file: the sources the scene shows and plays, composited, encoded (video and audio) and muxed, with every stream on the master clock. `rbs-record` assembles and runs it on the engine; `rbs-cli record` is the headless command that registers the platform's adapters and builds a fixed scene. A `Studio` keeps the canvas running for a UI (preview, meters, scene edits) and starts and stops recordings on the running engine (ADR-0041); `Recording` is a studio without a preview plus one recording.
 
 ## Scope
 
-In scope: what `Recording::start` builds and how it chooses adapters, the partitions, stream order and timestamps, start and run-time failures, progress counters, the `rbs-cli` commands.
+In scope: what `Recording::start` builds and how it chooses adapters, the partitions, stream order and timestamps, start and run-time failures, progress counters, the `rbs-cli` commands; the `Studio`: preview, meters, scene edits and recordings started and stopped on a running engine.
 
-Out of scope: streaming (same graph, a network transport; later), several outputs per canvas, starting and stopping a recording on an engine that keeps running (the desktop app's step), scene documents on disk, the control API, end-of-stream flushing of encoders (engine spec, open question).
+Out of scope: streaming (same graph, a network transport; later), several outputs per canvas, scene documents on disk, the control API, end-of-stream flushing of encoders (engine spec, open question).
 
 ## Contract
 
@@ -63,6 +63,50 @@ impl Recording {
     pub fn finish(self) -> FinishReport;    // shutdown in pipeline order
 }
 pub fn scheme_of(url: &str) -> Option<&str>;
+
+// The studio (ADR-0041)
+pub const MAX_LAYERS: usize = 64;      // layers and strips held without allocating
+#[non_exhaustive] pub struct StudioSettings {
+    pub canvas: CanvasId, pub audio: bool, pub audio_graph: AudioGraphConfig,
+    pub partitions: Partitions, pub preview: Option<PreviewDesc>,
+}
+impl StudioSettings { pub fn new(canvas: CanvasId) -> Self; } // audio on, no preview
+#[non_exhaustive] pub struct OutputSettings {
+    pub url: String, pub container: ContainerId,
+    pub video: VideoSettings, pub audio: Option<AudioSettings>,
+}
+impl OutputSettings { pub fn new(url: impl Into<String>, container: ContainerId) -> Self; }
+impl RecordSettings { pub fn studio(&self) -> StudioSettings; pub fn output(&self) -> OutputSettings; }
+#[non_exhaustive] pub struct Updated { pub problems: Vec<BindProblem>, pub failed: Vec<StartFailure> }
+
+impl Studio {
+    pub fn start(engine: Engine, gpu: Arc<GpuContext>, collection: &SceneCollection,
+        sources: &SourceTypes, settings: &StudioSettings) -> Result<Studio, RecordError>;
+    pub fn update(&mut self, collection: &SceneCollection, sources: &SourceTypes)
+        -> Result<Updated, RecordError>;
+    pub fn start_recording(&mut self, adapters: &RecordAdapters, out: &OutputSettings)
+        -> Result<&StartReport, RecordError>;
+    pub fn stop_recording(&mut self) -> Option<FinishReport>;
+    pub fn is_recording(&self) -> bool;
+    pub fn recording(&self) -> Option<&StartReport>;
+    pub fn recording_failure(&self) -> Option<String>;
+    pub fn service(&mut self) -> Serviced;
+    pub fn failure(&self) -> Option<String>;          // a studio node failed for good
+    pub fn sources(&self) -> Vec<SourceState>;        // scheduled sources, binder order
+    pub fn problems(&self) -> &[BindProblem];
+    pub fn progress(&self) -> Progress;               // sources always; recording counters while one runs
+    pub fn preview(&self) -> Option<PreviewEndpoint>; // once the preview node is prepared
+    pub fn preview_stats(&self) -> Option<&Arc<PreviewNodeStats>>;
+    pub fn meter(&self, source: SourceId) -> Option<&Arc<LevelMeter>>;
+    pub fn master_meter(&self) -> Option<&Arc<LevelMeter>>;
+    pub fn mixer_anomalies(&self) -> u64;
+    pub fn node_name(&self, node: NodeId) -> Option<&str>;
+    pub fn settings(&self) -> &StudioSettings;
+    pub fn engine(&self) -> &Engine;
+    pub fn shutdown(&mut self) -> (Option<FinishReport>, Vec<String>);
+}
+impl Recording { pub fn studio(&self) -> &Studio; }
+// RecordError gains AlreadyRecording.
 ```
 
 Settings and report types are `#[non_exhaustive]` (ADR-0040 decision 7): callers start from `new`/`default` and set fields.
@@ -105,13 +149,25 @@ Without audio (`audio: None`) the two audio partitions are not added: three work
 - `service` runs `Engine::service` and reads its events, matched to sources by `SourceState::node`: a `Failed` event of a source sets that source's `failed`, `Restarted` or `Recovered` clears it; a permanent failure (`retry_at: None`) of an essential node sets `failure`. `failure()` also returns the output's first permanent failure cause (`OutputNodeStats::failure`). The composition root stops when `failure()` is set.
 - `finish` shuts the engine down (sources first, the output last, which writes the container's trailer and finishes the transport) and returns the final `Progress`, `failure`, shutdown errors, `flush_lost` (packets the video encoder still held) and `finish_lost` (output items not delivered).
 
+### Studio (ADR-0041)
+
+1. `Studio::start` checks the canvas (`UnknownCanvas`, `NoProgram`), binds the collection (`with_audio(partitions.audio)` when `settings.audio`), adds `RENDER` and the video encoder and output partitions, and with audio the audio and audio encoder partitions (pacing as in the table above), and adopts a compositor (`MAX_LAYERS` layers) and, with audio, the canvas's mixer (`MAX_LAYERS` strips, a master meter). With `settings.preview` a `PreviewNode` (I/O nodes spec) is linked to the compositor's `canvas` on `RENDER`; with audio a `MeterSinkNode` (audio graph spec) to the mixer's `main` on the audio partition. These are the studio's nodes: if one does not start, the engine is shut down and the start fails with `Start`.
+2. Sources: the sources the plan schedules are instantiated and adopted (video to `RENDER`, audio-only to the audio partition); a source that cannot be instantiated or does not start is reported in `sources()[i].failed` and the studio runs without it. Binder problems are reported in `problems()`, never fatal. Without a preview the compositor has no sink, so video sources are opened only while a recording runs; without audio no audio source is opened (P13). The compositor gets `node_layers` of the plan and the mixer one strip per input of `report.mixers[canvas]`, gain 1, each with a level meter (`meter(source)`), through their parameter channels.
+3. `update(collection, sources)`: the canvas must keep its size and rate (`NotBound`). The binder syncs; new sources get entries, retired ones are taken back from their partitions after the apply; a replaced source (settings changed) is applied break-before-make (one apply without the new node first). Scheduled sources without an instance are instantiated, layers and strips are sent again, and the graph is applied once. Returns problems and the nodes that did not join.
+4. `start_recording(adapters, out)`: `AlreadyRecording` while one runs; `NotBound("mixer")` for audio on a studio without audio. Adapters are chosen as in `Recording::start` step 2 before anything is added. Then the export (`RENDER`), video encoder, audio encoder (with `out.audio`) and output are added Active and linked (output streams: video, then audio), sources only now scheduled are opened, layers are sent and the graph is applied once. If the export, an encoder or the output did not join, or the engine reported errors or links that could not cross partitions, the recording's nodes are removed again (plain apply) and taken back, and the call fails with `Start` (removal errors listed with node `"rollback"`); the studio runs on. The output may have created the destination.
+5. `stop_recording()`: the recording's nodes are removed and the graph applied with `Engine::apply_draining`: the encoders run their final tick, the output drains its queue and writes the trailer in `release`, their partitions stop; render and audio keep running when the preview or the meter sink keeps them scheduled. Instances are taken back. Returns a `FinishReport` (its `shutdown_errors` are the apply's errors), or `None` when nothing records.
+6. `service()` maps engine events as `Recording::service` does; a permanent failure of a studio node sets `failure()`, of a recording node `recording_failure()` (which also returns the output's first permanent failure). The composition root stops the recording when `recording_failure()` is set.
+7. `shutdown()` stops a running recording as `stop_recording`, then shuts the engine down. Every call runs on the control thread.
+
+`Recording::start` is a studio without a preview, in a strict mode: a binder problem that leaves out a source of the program scene fails the start (`Problems`) and a source that cannot be instantiated fails it (`Source`), both before any device opens; then `start_recording`'s steps with the adapters chosen before the studio started. `finish` is `Studio::shutdown`.
+
 ### Invariants
 
 1. Engine code names no adapter: `rbs-record` depends on ports, node crates, the scene and the engine only (P1), and selects by capability (P3).
 2. Nothing opens before `start` has chosen every adapter: a missing encoder, muxer or transport fails before any device or file is touched.
 3. Video packet `pts` is the canvas tick time that produced the frame (on the canvas cadence from time 0); audio packet `pts` starts at the first mixed block's time (tick time minus the graph latency, the time of its first sample) and advances by exactly one codec frame. Both are master-clock time, so streams are in sync by timestamp; the muxer maps them to one origin.
 4. Output stream 0 is video and stream 1 audio, in the order the output declares them to the muxer.
-5. A recording that is not started holds no thread, device or file; after `finish` every worker has stopped and the transport is finished (P13).
+5. A recording that is not started holds no thread, device or file; after `finish` every worker has stopped and the transport is finished (P13). After `stop_recording` the encoder and output partitions have no worker and the transport is finished; video sources are closed unless a preview shows them.
 6. `start` and `finish` run on the control thread. Nothing in `rbs-record` runs per frame or per block; the per-frame work is in the nodes ([I/O nodes](io-nodes.md), [audio graph](audio-graph.md)).
 
 ### `rbs-cli`
@@ -132,6 +188,12 @@ Without audio (`audio: None`) the two audio partitions are not added: three work
 Control-thread only; the graph's hot paths are the nodes' and keep their budgets. Five worker threads while recording (render, audio, two encoders, the output), three without audio. Every cadence partition gets the `Periodic` thread class from the engine's policy; the doorbell partitions get `Responsive`.
 
 ## Conformance tests
+
+- `crates/rbs-record/tests/studio.rs` (same rig and clock driver as `record.rs`, shared in `tests/support`):
+  - `recordings_start_and_stop_while_the_studio_keeps_running`: without a preview no render worker and no capture open while the meters run; two recordings in a row on one engine, each with its trailer and finished transport, the recording partitions stopped and video sources closed afterwards, `AlreadyRecording` while one runs.
+  - `a_recording_that_cannot_start_leaves_the_studio_running`: `NoAdapter` for a container without a muxer; an output that cannot open its destination fails with `Start` naming the output, nothing records, the studio runs, the next recording works.
+  - `scene_edits_open_and_close_sources_while_it_runs`: a microphone and a camera added while recording are opened, metered and delivered; removed again, they are closed and the recording goes on.
+  - `a_preview_where_the_platform_has_none_fails_the_start` (Linux): the preview node's permanent `prepare` failure fails `Studio::start` with nothing left open.
 
 - `crates/rbs-record/tests/record.rs` (any GPU adapter, lavapipe on CI): a scene with the synthetic display, camera, microphone and loopback records through a fake H.264 encoder (after a candidate that fails to open), the Media Foundation AAC session over its fake engine and a logging muxer and transport, on a `TestClock` started off the frame grid (3.217 s) and moved in 5 ms steps, every cadence worker waited for by tick count and the GPU waited idle after each step, so readbacks complete before the next render tick on software adapters too (hang guard 20 s). Tests:
   - `a_scene_records_video_and_audio_in_sync_on_the_master_clock`: chosen adapters; every source delivers; streams are H.264 then AAC; header, trailer and transport finish once; video `pts` exactly on the canvas cadence, the first within four frames of the first tick; the first audio `pts` plus the graph latency exactly on the audio cadence at the start (index 0 or 1), every step one AAC frame (±1 µs); no muxer, queue or encoder drops; no late ticks.

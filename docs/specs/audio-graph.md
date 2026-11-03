@@ -143,6 +143,16 @@ impl EncoderNode {
 
 Descriptor `org.rbs.audio.encoder`, kind `Encoder`, input `in` (Audio), output `packets` (Packets). Generic over the runtime. `process` submits the input block (if any), drains into a vector reserved in `new` and passes up to `PER_TICK_EVENTS` packets per tick; up to `packets` wait for the next ticks, more are dropped and counted. `release` flushes the encoder and discards what it returns (end of stream through the graph is an open question of the engine spec). Submit and drain errors are `NodeError::Backend`.
 
+### Meter sink (`rbs_audio::MeterSinkNode`, ADR-0041)
+
+```rust
+pub const METER_SINK_NODE_TYPE: &str = "org.rbs.audio.meter-sink";
+pub fn meter_sink_descriptor() -> NodeDescriptor;   // Output, input "in" (Audio), no outputs
+impl MeterSinkNode { pub fn new() -> Self; }
+```
+
+Generic over the runtime; runs in the mixer's partition (no queue). `process` does nothing: the node only gives the scheduler a path to an output, so a mixer whose meters a UI shows runs while nothing records or plays. `prepare` and `release` do nothing.
+
 ## Errors and failure behaviour
 
 - `AudioGraphError` (non-exhaustive): `InvalidFormat`, `BlockFrames`, `Latency`; construction only.
