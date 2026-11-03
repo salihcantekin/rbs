@@ -299,6 +299,9 @@ struct Suite<'a> {
 /// Largest allowed probe time (capture-port.md, Conformance tests).
 const PROBE_BUDGET: Duration = Duration::from_millis(50);
 
+/// Longest wait for a joined thread to leave the process thread count.
+const THREAD_EXIT_GRACE: Duration = Duration::from_millis(200);
+
 /// Probe calls the suite times; the fastest must be within [`PROBE_BUDGET`].
 const PROBE_ATTEMPTS: u32 = 3;
 
@@ -892,8 +895,19 @@ impl Suite<'_> {
             })?,
             _ => self.skip(check, "adapter does not report resources"),
         }
-        if self.options.process_threads.is_some() {
-            match (baseline.1, now.1) {
+        if let Some(count) = self.options.process_threads {
+            // A joined thread can still be listed for a moment: the kernel wakes the
+            // joiner before it removes the exiting task from the process. Give such a
+            // thread a short while to disappear; a leaked one stays and still fails.
+            let mut now = now.1;
+            let deadline = Instant::now() + THREAD_EXIT_GRACE;
+            while matches!((baseline.1, now), (Some(before), Some(n)) if n > before)
+                && Instant::now() < deadline
+            {
+                std::thread::sleep(Duration::from_millis(1));
+                now = count();
+            }
+            match (baseline.1, now) {
                 (Some(before), Some(now)) => ensure(check, now == before, || {
                     format!("process has {now} threads {when}, {before} before open")
                 })?,

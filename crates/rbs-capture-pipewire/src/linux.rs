@@ -6,10 +6,11 @@
 //! The render thread only touches the lock-free ring.
 
 use std::cell::{Cell, RefCell};
+use std::collections::HashMap;
 use std::os::fd::{FromRawFd, OwnedFd};
 use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Arc, Once, mpsc};
+use std::sync::{Arc, Mutex, MutexGuard, Once, PoisonError, mpsc};
 use std::thread::JoinHandle;
 use std::time::Duration;
 
@@ -32,6 +33,7 @@ use rbs_core::registry::{AdapterFactory, AdapterId, HARDWARE, ProbeError};
 use rbs_core::time::{Clock, Timestamp};
 use rbs_core::timing::{DriftEstimator, FrameRate};
 
+use crate::portal::{self, Cast, CastRequest};
 use crate::{ADAPTER_ID, Consumer, FRAMES_IN_FLIGHT, Picture, RING_SLOTS, STREAM_BUFFERS, Shared};
 
 /// Highest frame rate offered in the stream negotiation.
@@ -44,6 +46,23 @@ const DAEMON_TIMEOUT: Duration = Duration::from_millis(500);
 const ENUMERATE_TIMEOUT: Duration = Duration::from_millis(100);
 
 const NODE_PREFIX: &str = "node:";
+
+/// Ids of portal targets: `portal:display:<key>` or `portal:window:<key>`, where the key
+/// is the restore token the portal handed out at `pick`, or [`LIVE_PREFIX`] and a
+/// number for a pick the portal gave no token for.
+const PORTAL_PREFIX: &str = "portal:";
+
+/// Keys of picks without a restore token, whose cast the factory keeps until a session
+/// starts it.
+const LIVE_PREFIX: &str = "live-";
+
+/// Picks without a restore token kept at once; the oldest is closed first.
+const MAX_LIVE: usize = 4;
+
+/// Longest wait for the portal to restore a choice at `start`. A valid token restores
+/// without a dialog in well under this; a portal that shows its dialog instead (the
+/// token is no longer valid) is answered with `TargetNotFound` and the dialog closed.
+const RESTORE_TIMEOUT: Duration = Duration::from_secs(2);
 
 /// Largest accepted age, in nanoseconds, of a buffer's header timestamp at arrival.
 const MAX_PTS_AGE: u64 = 1_000_000_000;
@@ -370,10 +389,88 @@ fn narrow(offer: &Offer, available: &[NodeFormat]) -> Option<Offer> {
     })
 }
 
-fn parse(id: &TargetId) -> Option<&str> {
-    id.as_str()
-        .strip_prefix(NODE_PREFIX)
-        .filter(|name| !name.is_empty())
+/// What a target id names.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Target<'a> {
+    /// A video source node, by `node.name`.
+    Node(&'a str),
+    /// A portal screen cast, by restore token or live pick key.
+    Portal { kind: TargetKind, key: &'a str },
+}
+
+fn parse(id: &TargetId) -> Option<Target<'_>> {
+    let id = id.as_str();
+    if let Some(name) = id.strip_prefix(NODE_PREFIX) {
+        return (!name.is_empty()).then_some(Target::Node(name));
+    }
+    let (kind, key) = id.strip_prefix(PORTAL_PREFIX)?.split_once(':')?;
+    let kind = match kind {
+        "display" => TargetKind::Display,
+        "window" => TargetKind::Window,
+        _ => return None,
+    };
+    (!key.is_empty()).then_some(Target::Portal { kind, key })
+}
+
+fn portal_id(kind: TargetKind, key: &str) -> TargetId {
+    TargetId::new(format!("{PORTAL_PREFIX}{}:{key}", kind.as_str()))
+}
+
+/// The portal choices of one factory, shared with its sessions.
+#[derive(Debug, Default)]
+struct Picks {
+    /// Every key and restore token seen, by choice (an index into `newest`). Restore
+    /// tokens are single use, so all ids that ever named a choice map to it.
+    choices: HashMap<String, usize>,
+    /// The newest restore token per choice; `None` once a start returned no new token,
+    /// so the choice cannot be restored any more.
+    newest: Vec<Option<String>>,
+    /// Casts picked without a restore token, until a session starts them.
+    live: Vec<(String, Cast)>,
+    next_live: u64,
+}
+
+fn lock(picks: &Mutex<Picks>) -> MutexGuard<'_, Picks> {
+    picks.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
+impl Picks {
+    /// The choice `key` names, added with `key` as its token if unknown (an id stored by
+    /// an earlier run).
+    fn choice(&mut self, key: &str) -> usize {
+        if let Some(choice) = self.choices.get(key) {
+            return *choice;
+        }
+        self.newest.push(Some(key.to_owned()));
+        let choice = self.newest.len() - 1;
+        self.choices.insert(key.to_owned(), choice);
+        choice
+    }
+
+    /// The newest token of the choice `key` names: `None` if it cannot be restored.
+    fn newest(&mut self, key: &str) -> Option<String> {
+        let choice = self.choice(key);
+        self.newest.get(choice).cloned().flatten()
+    }
+
+    /// Records `token` as the newest of the choice `key` names (`None`: no token left).
+    fn advance(&mut self, key: &str, token: Option<String>) {
+        let choice = self.choice(key);
+        if let Some(token) = &token {
+            self.choices.insert(token.clone(), choice);
+        }
+        if let Some(newest) = self.newest.get_mut(choice) {
+            *newest = token;
+        }
+    }
+}
+
+impl Drop for Picks {
+    fn drop(&mut self) {
+        for (_, cast) in &mut self.live {
+            cast.close();
+        }
+    }
 }
 
 /// What the stream offers, from the request.
@@ -445,12 +542,14 @@ fn accept(request: &CaptureRequest) -> Result<Offer, CaptureError> {
 
 /// Factory of the PipeWire adapter.
 #[derive(Debug, Default)]
-pub struct PipeWireCaptureFactory;
+pub struct PipeWireCaptureFactory {
+    picks: Arc<Mutex<Picks>>,
+}
 
 impl PipeWireCaptureFactory {
     /// Creates the factory. Does nothing until used.
     pub fn new() -> Self {
-        Self
+        Self::default()
     }
 }
 
@@ -471,11 +570,19 @@ impl AdapterFactory for PipeWireCaptureFactory {
         }
         let set =
             |items: &[&str]| CapabilityValue::Set(items.iter().map(|s| (*s).to_owned()).collect());
-        let kinds = ["camera"];
+        // Screens and windows come through the desktop portal on the session bus;
+        // whether the portal runs is only known when `pick` asks it.
+        let portal = portal::bus_present();
+        let kinds: &[&str] = if portal {
+            &["display", "window", "camera"]
+        } else {
+            &["camera"]
+        };
+        let picker: &[&str] = if portal { &["display", "window"] } else { &[] };
         Ok(CapabilitySet::new()
-            .with(caps::TARGET_KINDS, set(&kinds))
-            .with(caps::TARGET_ENUMERATE, set(&kinds))
-            .with(caps::TARGET_PICKER, set(&[]))
+            .with(caps::TARGET_KINDS, set(kinds))
+            .with(caps::TARGET_ENUMERATE, set(&["camera"]))
+            .with(caps::TARGET_PICKER, set(picker))
             .with(
                 caps::PIXEL_FORMATS,
                 set(&[PixelFormat::Bgra8.as_str(), PixelFormat::Rgba8.as_str()]),
@@ -484,7 +591,7 @@ impl AdapterFactory for PipeWireCaptureFactory {
                 caps::MEMORY,
                 set(&[MemoryKind::DmaBuf.as_str(), MemoryKind::System.as_str()]),
             )
-            .with(caps::CURSOR, CapabilityValue::Flag(false))
+            .with(caps::CURSOR, CapabilityValue::Flag(portal))
             .with(
                 caps::FRAME_RATE_MAX,
                 CapabilityValue::Int(i64::from(MAX_RATE)),
@@ -502,7 +609,7 @@ impl CaptureFactory for PipeWireCaptureFactory {
     fn enumerate(&self, kind: TargetKind) -> Result<Vec<CaptureTarget>, CaptureError> {
         if kind != TargetKind::Camera {
             return Err(CaptureError::Unsupported(
-                "screens and windows need the desktop portal",
+                "screens and windows are chosen with pick (desktop portal)",
             ));
         }
         Ok(video_sources()?
@@ -518,18 +625,44 @@ impl CaptureFactory for PipeWireCaptureFactory {
     }
 
     fn open(&self, request: &CaptureRequest) -> Result<Box<dyn CaptureSession>, CaptureError> {
-        let name = parse(&request.target).ok_or(CaptureError::TargetNotFound)?;
+        let target = parse(&request.target).ok_or(CaptureError::TargetNotFound)?;
         let offer = accept(request)?;
-        let Some(available) = query(Some(name), DAEMON_TIMEOUT)?.1 else {
-            return Err(CaptureError::TargetNotFound);
+        let (source, offer) = match target {
+            Target::Node(name) => {
+                let Some(available) = query(Some(name), DAEMON_TIMEOUT)?.1 else {
+                    return Err(CaptureError::TargetNotFound);
+                };
+                let offer = narrow(&offer, &available).ok_or(CaptureError::FormatUnsupported)?;
+                (Source::Node(name.to_owned()), offer)
+            }
+            Target::Portal { kind, key } => {
+                let mut picks = lock(&self.picks);
+                let known = if key.starts_with(LIVE_PREFIX) {
+                    picks.live.iter().any(|(k, _)| k == key)
+                } else {
+                    picks.newest(key).is_some()
+                };
+                drop(picks);
+                if !known {
+                    return Err(CaptureError::TargetNotFound);
+                }
+                let offer = portal_offer(offer).ok_or(CaptureError::FormatUnsupported)?;
+                let source = Source::Portal(PortalSource {
+                    kind,
+                    key: key.to_owned(),
+                    token: None,
+                    cursor: request.cursor,
+                    picks: Arc::clone(&self.picks),
+                });
+                (source, offer)
+            }
         };
-        let offer = narrow(&offer, &available).ok_or(CaptureError::FormatUnsupported)?;
         let pixel_format = offer
             .wires
             .first()
             .map_or(PixelFormat::Bgra8, |w| w.pixel_format);
         Ok(Box::new(PipeWireSession {
-            node: name.to_owned(),
+            source,
             offer,
             clock: Arc::clone(&request.clock),
             format: VideoFormat::new(Size::new(0, 0), pixel_format, ColorSpace::SRGB),
@@ -541,11 +674,83 @@ impl CaptureFactory for PipeWireCaptureFactory {
         }))
     }
 
+    fn pick(&self, kind: TargetKind) -> Result<CaptureTarget, CaptureError> {
+        if !matches!(kind, TargetKind::Display | TargetKind::Window) {
+            return Err(CaptureError::Unsupported("cameras are listed by enumerate"));
+        }
+        if !portal::bus_present() {
+            return Err(CaptureError::Unsupported(
+                "no session bus for the desktop portal",
+            ));
+        }
+        // Waits for the user; the cursor is embedded so a live pick (below) shows it.
+        let mut cast = Cast::start(&CastRequest {
+            kind,
+            cursor: true,
+            restore_token: None,
+            timeout: None,
+        })?;
+        let size = cast.stream.size;
+        let mut picks = lock(&self.picks);
+        let key = match cast.stream.restore_token.clone() {
+            Some(token) => {
+                // A session restores the choice with the token at `start`; nothing is
+                // kept meanwhile (Standby, P13).
+                cast.close();
+                drop(cast);
+                picks.advance(&token, Some(token.clone()));
+                token
+            }
+            None => {
+                // The portal cannot restore this choice (no persistence, or the user
+                // declined it): keep the started cast for the session that opens it.
+                picks.next_live += 1;
+                let key = format!("{LIVE_PREFIX}{}", picks.next_live);
+                picks.live.push((key.clone(), cast));
+                if picks.live.len() > MAX_LIVE {
+                    let (_, mut oldest) = picks.live.remove(0);
+                    oldest.close();
+                }
+                key
+            }
+        };
+        drop(picks);
+        let name = match kind {
+            TargetKind::Display => "Picked display",
+            _ => "Picked window",
+        };
+        let target = CaptureTarget::new(portal_id(kind, &key), kind, name);
+        Ok(match size {
+            Some((w, h)) => target.with_size(w, h),
+            None => target,
+        })
+    }
+
     fn permission(&self, _kind: TargetKind) -> Permission {
         // Outside a sandbox the daemon grants access to nodes; inside one the camera
-        // portal decides, which `start` reports as `PermissionDenied`.
+        // portal decides, which `start` reports as `PermissionDenied`. Screens and
+        // windows are granted per choice in the portal's dialog (`pick`), so there is
+        // no separate permission to ask for.
         Permission::Granted
     }
+}
+
+/// The offer for a portal screen cast. Compositors deliver screens and windows in
+/// BGRA or BGRx (mutter, KWin, wlroots); RGB orders are not offered, so `format()` is
+/// exact before `start`. Memory kinds stay in request order: whether the compositor
+/// can share DMA-BUFs with the importer's modifiers is only known once linked.
+fn portal_offer(offer: Offer) -> Option<Offer> {
+    if offer.wires.first()?.pixel_format != PixelFormat::Bgra8 {
+        // The first requested format the adapter supports must win (invariant 4);
+        // when that is RGBA, a portal target cannot deliver it.
+        return None;
+    }
+    let wires: Vec<Wire> = offer
+        .wires
+        .into_iter()
+        .filter(|w| w.pixel_format == PixelFormat::Bgra8)
+        .collect();
+    Some(Offer { wires, ..offer })
 }
 
 fn serialize(value: Value) -> Option<Vec<u8>> {
@@ -1069,8 +1274,16 @@ struct Ended {
     last_timestamp: Option<Timestamp>,
 }
 
+/// How the stream reaches its source.
+enum Link {
+    /// A node of the default daemon connection, by `node.name`.
+    Node(String),
+    /// The node of a portal cast, on the connection the portal opened for it.
+    Portal { fd: OwnedFd, node: u32 },
+}
+
 /// Runs one session's PipeWire main loop until told to stop.
-fn run_stream(node: String, producer: Producer, stop: pw::channel::Receiver<()>) -> Ended {
+fn run_stream(link: Link, producer: Producer, stop: pw::channel::Receiver<()>) -> Ended {
     let fallback = Ended {
         sequence: producer.sequence,
         last_timestamp: producer.last_timestamp,
@@ -1089,7 +1302,11 @@ fn run_stream(node: String, producer: Producer, stop: pw::channel::Receiver<()>)
         fail(&producer);
         return fallback;
     };
-    let Ok(core) = context.connect_rc(None) else {
+    let (connected, node, portal_node) = match link {
+        Link::Node(name) => (context.connect_rc(None), name, None),
+        Link::Portal { fd, node } => (context.connect_fd_rc(fd, None), String::new(), Some(node)),
+    };
+    let Ok(core) = connected else {
         fail(&producer);
         return fallback;
     };
@@ -1110,9 +1327,14 @@ fn run_stream(node: String, producer: Producer, stop: pw::channel::Receiver<()>)
             let target_id = Rc::clone(&target_id);
             let node = node.clone();
             move |global| {
-                if global.type_ == pw::types::ObjectType::Node
-                    && global.props.and_then(|p| p.get("node.name")) == Some(node.as_str())
-                {
+                if global.type_ != pw::types::ObjectType::Node {
+                    return;
+                }
+                let found = match portal_node {
+                    Some(id) => global.id == id,
+                    None => global.props.and_then(|p| p.get("node.name")) == Some(node.as_str()),
+                };
+                if found {
                     target_id.set(Some(global.id));
                 }
             }
@@ -1143,15 +1365,20 @@ fn run_stream(node: String, producer: Producer, stop: pw::channel::Receiver<()>)
         })
         .register();
 
-    let props = pw::properties::properties! {
+    let mut props = pw::properties::properties! {
         *pw::keys::MEDIA_TYPE => "Video",
         *pw::keys::MEDIA_CATEGORY => "Capture",
-        *pw::keys::MEDIA_ROLE => "Camera",
-        "target.object" => node.as_str(),
         *pw::keys::NODE_NAME => "rbs-capture",
         // Never link to another source (a different camera) when the target is gone.
         "node.dont-fallback" => "true",
     };
+    match portal_node {
+        Some(_) => props.insert(*pw::keys::MEDIA_ROLE, "Screen"),
+        None => {
+            props.insert(*pw::keys::MEDIA_ROLE, "Camera");
+            props.insert("target.object", node.as_str());
+        }
+    }
     let Ok(stream) = pw::stream::StreamRc::new(core.clone(), "rbs-capture", props) else {
         fail(&producer);
         return fallback;
@@ -1174,7 +1401,8 @@ fn run_stream(node: String, producer: Producer, stop: pw::channel::Receiver<()>)
     if stream
         .connect(
             spa::utils::Direction::Input,
-            None,
+            // Portal nodes are named by id; the portal's connection only shows them.
+            portal_node,
             pw::stream::StreamFlags::AUTOCONNECT
                 | pw::stream::StreamFlags::MAP_BUFFERS
                 | pw::stream::StreamFlags::DONT_RECONNECT,
@@ -1199,10 +1427,87 @@ struct Active {
     thread: Option<JoinHandle<Ended>>,
     consumer: Consumer,
     status: Arc<Status>,
+    /// The portal cast feeding the stream; closed after the stream thread ends.
+    cast: Option<Cast>,
+}
+
+/// What a session captures.
+enum Source {
+    /// A video source node, by `node.name`, on the default daemon connection.
+    Node(String),
+    /// A portal screen cast.
+    Portal(PortalSource),
+}
+
+struct PortalSource {
+    kind: TargetKind,
+    /// The key of the id the session was opened with.
+    key: String,
+    /// The newest restore token this session knows of.
+    token: Option<String>,
+    cursor: bool,
+    picks: Arc<Mutex<Picks>>,
+}
+
+impl PortalSource {
+    /// Starts the cast: the live pick if this key has one, otherwise restores the
+    /// choice with the newest token, without a dialog.
+    fn start(&mut self) -> Result<Cast, CaptureError> {
+        let token = {
+            let mut picks = lock(&self.picks);
+            if let Some(index) = picks.live.iter().position(|(k, _)| *k == self.key) {
+                let (_, cast) = picks.live.remove(index);
+                // Started once; it cannot be restored after it stops.
+                picks.advance(&self.key, None);
+                self.token = None;
+                return Ok(cast);
+            }
+            if self.key.starts_with(LIVE_PREFIX) && !picks.choices.contains_key(&self.key) {
+                return Err(CaptureError::TargetNotFound);
+            }
+            // An unknown key is a token stored in a scene by an earlier run.
+            picks
+                .newest(&self.key)
+                .ok_or(CaptureError::TargetNotFound)?
+        };
+        let result = Cast::start(&CastRequest {
+            kind: self.kind,
+            cursor: self.cursor,
+            restore_token: Some(&token),
+            timeout: Some(RESTORE_TIMEOUT),
+        });
+        // Once the portal tried to restore, the token is used up: the new one (if any)
+        // replaces it. A failure before that (no bus, a failed call) keeps it.
+        let used = match &result {
+            Ok(_) | Err(CaptureError::Cancelled | CaptureError::PermissionDenied) => true,
+            Err(CaptureError::Backend {
+                domain: ErrorDomain::Library,
+                code,
+                ..
+            }) => *code == portal::code::TIMEOUT || *code == portal::code::NO_STREAM,
+            Err(_) => false,
+        };
+        if used {
+            let next = result
+                .as_ref()
+                .ok()
+                .and_then(|cast| cast.stream.restore_token.clone());
+            lock(&self.picks).advance(&self.key, next.clone());
+            self.token = next;
+        }
+        match result {
+            Err(CaptureError::Backend {
+                domain: ErrorDomain::Library,
+                code: portal::code::TIMEOUT,
+                ..
+            }) => Err(CaptureError::TargetNotFound),
+            other => other,
+        }
+    }
 }
 
 struct PipeWireSession {
-    node: String,
+    source: Source,
     offer: Offer,
     clock: Arc<dyn Clock>,
     format: VideoFormat,
@@ -1256,21 +1561,51 @@ impl PipeWireSession {
             last_timestamp: self.last_timestamp,
             started: Some(started_tx),
         });
+        let (link, mut cast) = match &mut self.source {
+            Source::Node(name) => (Link::Node(name.clone()), None),
+            Source::Portal(source) => {
+                let mut cast = source.start()?;
+                match cast.open_remote() {
+                    Ok(fd) => (
+                        Link::Portal {
+                            fd,
+                            node: cast.stream.node,
+                        },
+                        Some(cast),
+                    ),
+                    Err(e) => {
+                        cast.close();
+                        return Err(e);
+                    }
+                }
+            }
+        };
+        let close = |cast: &mut Option<Cast>| {
+            if let Some(cast) = cast.as_mut() {
+                cast.close();
+            }
+        };
         let (stop_tx, stop_rx) = pw::channel::channel();
-        let node = self.node.clone();
-        let thread = std::thread::Builder::new()
+        let spawned = std::thread::Builder::new()
             .name("rbs-pipewire".into())
             .spawn(move || {
                 let producer = producer;
-                run_stream(node, producer.0, stop_rx)
-            })
-            .map_err(|e| backend(i64::from(e.raw_os_error().unwrap_or(libc::EAGAIN))))?;
+                run_stream(link, producer.0, stop_rx)
+            });
+        let thread = match spawned {
+            Ok(thread) => thread,
+            Err(e) => {
+                close(&mut cast);
+                return Err(backend(i64::from(e.raw_os_error().unwrap_or(libc::EAGAIN))));
+            }
+        };
         let started = started_rx
             .recv_timeout(DAEMON_TIMEOUT)
             .unwrap_or_else(|_| Err(backend(i64::from(libc::ETIMEDOUT))));
         if let Err(e) = started {
             let _ = stop_tx.send(());
             let _ = thread.join();
+            close(&mut cast);
             return Err(e);
         }
         // SAFETY: the stream thread only publishes complete single-plane DMA-BUFs of
@@ -1282,6 +1617,7 @@ impl PipeWireSession {
             thread: Some(thread),
             consumer,
             status,
+            cast,
         })
     }
 }
@@ -1311,6 +1647,9 @@ impl CaptureSession for PipeWireSession {
         if let Some(ended) = active.thread.take().and_then(|t| t.join().ok()) {
             self.next_sequence = ended.sequence;
             self.last_timestamp = ended.last_timestamp;
+        }
+        if let Some(cast) = active.cast.as_mut() {
+            cast.close();
         }
         let shared = Arc::clone(active.consumer.shared());
         let waiting = shared.ring.clear();
@@ -1351,7 +1690,26 @@ impl CaptureSession for PipeWireSession {
                 self.offer.frame_rate = Some(rate);
                 Ok(())
             }
+            CaptureChange::Cursor(cursor) => match &mut self.source {
+                // Applies from the next start, like the frame rate.
+                Source::Portal(source) => {
+                    source.cursor = cursor;
+                    Ok(())
+                }
+                Source::Node(_) => Err(CaptureError::Unsupported("cameras have no cursor")),
+            },
             _ => Err(CaptureError::Unsupported("change not supported")),
+        }
+    }
+
+    fn current_target(&self) -> Option<TargetId> {
+        match &self.source {
+            Source::Portal(source) => source
+                .token
+                .as_deref()
+                .filter(|token| *token != source.key)
+                .map(|token| portal_id(source.kind, token)),
+            Source::Node(_) => None,
         }
     }
 }
@@ -1371,10 +1729,48 @@ mod tests {
     fn ids_name_nodes() {
         assert_eq!(
             parse(&TargetId::new("node:v4l2_input.usb")),
-            Some("v4l2_input.usb")
+            Some(Target::Node("v4l2_input.usb"))
         );
         assert_eq!(parse(&TargetId::new("node:")), None);
         assert_eq!(parse(&TargetId::new("display:1")), None);
+    }
+
+    #[test]
+    fn ids_name_portal_choices() {
+        let id = portal_id(TargetKind::Window, "0d1e-55");
+        assert_eq!(id.as_str(), "portal:window:0d1e-55");
+        assert_eq!(
+            parse(&id),
+            Some(Target::Portal {
+                kind: TargetKind::Window,
+                key: "0d1e-55"
+            })
+        );
+        assert_eq!(
+            parse(&TargetId::new("portal:display:live-3")),
+            Some(Target::Portal {
+                kind: TargetKind::Display,
+                key: "live-3"
+            })
+        );
+        assert_eq!(parse(&TargetId::new("portal:display:")), None);
+        assert_eq!(parse(&TargetId::new("portal:camera:abc")), None);
+        assert_eq!(parse(&TargetId::new("portal:abc")), None);
+    }
+
+    #[test]
+    fn portal_offers_only_bgra() {
+        let offer = |wires: Vec<Wire>| Offer {
+            wires,
+            memory: vec![MemoryKind::DmaBuf, MemoryKind::System],
+            modifiers: Vec::new(),
+            frame_rate: None,
+        };
+        let bgra_first = portal_offer(offer(WIRES.to_vec())).map(|o| o.wires);
+        assert_eq!(bgra_first, Some(vec![WIRES[0], WIRES[1]]));
+        assert!(portal_offer(offer(vec![WIRES[2], WIRES[0]])).is_none());
+        let kept = portal_offer(offer(vec![WIRES[1]])).map(|o| o.memory);
+        assert_eq!(kept, Some(vec![MemoryKind::DmaBuf, MemoryKind::System]));
     }
 
     #[test]
