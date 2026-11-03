@@ -122,6 +122,39 @@ fn h264_is_annex_b_with_parameter_sets() {
     assert_eq!((stats.submitted, stats.packets, stats.copied), (90, 90, 90));
 }
 
+/// The parameter sets of an Annex B buffer, in order (H.264 SPS and PPS, HEVC VPS, SPS
+/// and PPS).
+fn parameter_sets(data: &[u8], codec: CodecId) -> Vec<Vec<u8>> {
+    nal::annexb_units(data)
+        .filter(|u| match codec {
+            CodecId::Hevc => matches!((u[0] >> 1) & 0x3f, 32..=34),
+            _ => matches!(u[0] & 0x1f, 7 | 8),
+        })
+        .map(<[u8]>::to_vec)
+        .collect()
+}
+
+/// Muxers compare in-band parameter sets with the extradata byte for byte (Matroska,
+/// fMP4); AMF's `ExtraData` property once left out the VUI the in-band SPS carries.
+#[test]
+fn extradata_equals_the_in_band_parameter_sets() {
+    if !encodes("h264") {
+        return;
+    }
+    let config = config(CodecId::H264, PixelFormat::Nv12);
+    let mut session = AmfFactory::new().create_session(&config).unwrap();
+    let extradata = parameter_sets(&session.stream().extradata, CodecId::H264);
+    let packets = encode(&mut session, &config.format, 31);
+    for i in [0, 30] {
+        assert!(packets[i].keyframe(), "packet {i}");
+        assert_eq!(
+            parameter_sets(packets[i].data(), CodecId::H264),
+            extradata,
+            "IDR {i}"
+        );
+    }
+}
+
 #[test]
 fn encodes_again_after_flush() {
     if !encodes("h264") {

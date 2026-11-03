@@ -22,7 +22,10 @@ use rbs_codec_hw::copy::{DstPlane, copy_420};
 use rbs_codec_hw::device::{CodecCaps, DeviceCaps, Profiles};
 use rbs_codec_hw::plan::{Plan, Rc};
 use rbs_codec_hw::session::{Engine, EngineError, Output};
-use rbs_core::media::{CodecId, SystemFrame};
+use rbs_core::media::{
+    Bytes, CodecId, ColorSpace, PixelFormat, PlaneLayout, Size, SystemFrame, VideoFormat,
+};
+use rbs_media_format::nal;
 
 use crate::FRAMES_IN_FLIGHT;
 use crate::loader::{Api, api};
@@ -435,7 +438,7 @@ impl AmfEngine {
         let side = |v: u32| i32::try_from(v).unwrap_or(i32::MAX);
         // From here every error path drops the engine, which terminates the
         // component before releasing it.
-        let engine = AmfEngine {
+        let mut engine = AmfEngine {
             staged: Default::default(),
             surface_format: format,
             surface_size: (side(plan.width), side(plan.height)),
@@ -478,8 +481,45 @@ impl AmfEngine {
         if r != sys::AMF_OK {
             return Err(create_error("Init", r));
         }
-        let extradata = engine.extradata()?;
+        // AMF's `ExtraData` property leaves out the VUI (colour description, timing)
+        // that the in-band parameter sets of every IDR carry (seen on a Radeon iGPU,
+        // driver 2026), so a muxer that compares them byte for byte refuses the
+        // first IDR. The parameter sets of a priming picture are the ones the
+        // stream really uses; the property is the fallback.
+        let reported = engine.extradata()?;
+        let extradata = engine.prime(plan)?.unwrap_or(reported);
         Ok((engine, extradata))
+    }
+
+    /// Encodes one black IDR picture, drains it and returns its parameter sets as
+    /// Annex B, or `None` if it carries none. The engine stays drained, so the next
+    /// `encode` flushes the encoder and starts the stream afresh (the session asks
+    /// for an IDR first).
+    fn prime(&mut self, plan: &Plan) -> Result<Option<Vec<u8>>, CreateError> {
+        let device = |e: EngineError| CreateError::Device(format!("priming picture: {e:?}"));
+        let frame = black_frame(plan)
+            .ok_or_else(|| CreateError::Device("priming picture: frame layout".into()))?;
+        self.upload(0, &frame).map_err(device)?;
+        self.encode(0, 0, true).map_err(device)?;
+        self.end_of_stream().map_err(device)?;
+        let output = self
+            .output(0, true)
+            .map_err(device)?
+            .ok_or_else(|| CreateError::Device("priming picture: no output".into()))?;
+        let mut sets = Vec::new();
+        for unit in nal::annexb_units(&output.data) {
+            let parameter_set = match self.codec {
+                CodecId::Hevc => unit
+                    .first()
+                    .is_some_and(|h| matches!((h >> 1) & 0x3f, 32..=34)),
+                _ => matches!(nal::h264_type(unit), Some(nal::h264::SPS | nal::h264::PPS)),
+            };
+            if parameter_set {
+                sets.extend_from_slice(&[0, 0, 0, 1]);
+                sets.extend_from_slice(unit);
+            }
+        }
+        Ok((!sets.is_empty()).then_some(sets))
     }
 
     /// Sends a pending `Drain`. `INPUT_FULL` keeps it pending (retried while
@@ -586,6 +626,44 @@ impl AmfEngine {
             self.set_surface(surface, sys::H264_INSERT_PPS, Value::Bool(idr))
         }
     }
+}
+
+/// A black picture of the session's size and format, limited range.
+fn black_frame(plan: &Plan) -> Option<SystemFrame> {
+    let (w, h) = (plan.width as usize, plan.height as usize);
+    // Luma 16 and chroma 128 (8-bit), or the same levels in P010's high bits.
+    let (bytes_per_sample, luma, chroma): (usize, &[u8], &[u8]) = if plan.ten_bit {
+        (2, &[0x00, 0x10], &[0x00, 0x80])
+    } else {
+        (1, &[16], &[128])
+    };
+    let stride = w * bytes_per_sample;
+    let chroma_rows = h.div_ceil(2);
+    let mut data = Vec::with_capacity(stride * (h + chroma_rows));
+    for _ in 0..w * h {
+        data.extend_from_slice(luma);
+    }
+    for _ in 0..stride / bytes_per_sample * chroma_rows / 2 {
+        data.extend_from_slice(chroma);
+        data.extend_from_slice(chroma);
+    }
+    let format = VideoFormat::new(
+        Size::new(plan.width, plan.height),
+        if plan.ten_bit {
+            PixelFormat::P010
+        } else {
+            PixelFormat::Nv12
+        },
+        ColorSpace::BT709_LIMITED,
+    );
+    let planes = [
+        PlaneLayout { offset: 0, stride },
+        PlaneLayout {
+            offset: stride * h,
+            stride,
+        },
+    ];
+    SystemFrame::new(format, Bytes::from(data), &planes).ok()
 }
 
 /// The bytes of an AMF buffer.

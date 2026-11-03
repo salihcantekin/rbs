@@ -22,8 +22,9 @@
 //! The encoder runs with P frames only (no B-frames, no pre-analysis), so each
 //! frame yields one packet in order. The adapter places the IDR frames itself at
 //! the configured interval and on keyframe requests, with the parameter sets in band
-//! on every IDR; the extradata holds the parameter sets the encoder reports at
-//! creation. Each surface carries the session's frame token as a property, which
+//! on every IDR; the extradata holds the parameter sets of a black priming picture
+//! the session encodes and drains when it is created (AMF's `ExtraData` property
+//! leaves out the VUI the in-band ones carry), so the two are byte for byte equal. Each surface carries the session's frame token as a property, which
 //! the output data echoes, so a reordered or lost packet is detected.
 //!
 //! Input is host memory only for now: native D3D11 and Vulkan surfaces wait for

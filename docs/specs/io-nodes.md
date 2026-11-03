@@ -163,6 +163,6 @@ Nodes report through `NodeError` (ADR-0020): `Permanent` for what retrying canno
 
 - End of stream: frames an encoder holds back at `release` are lost; a final flush into the graph needs a drain hook in the engine (engine spec).
 - Transport feedback (`KeyframeRequested`, `BitrateHint`) to the encoder goes through the control plane; not wired yet.
-- Outputs that may restart safely (network transports) need a transport capability; until then every output that wrote media is single-use.
-- Native export across the partition queue (move instead of share), D3D11/D3D12 input for NVENC and AMF, and a D3D12 exporter remove the readback on Windows (ADR-0038).
-- YUY2 and I420 system frames (common on webcams) are not uploaded yet; a camera that offers only those fails `prepare` with `FormatUnsupported`.
+- Outputs that may restart safely (network transports) need a transport capability; until then every output that wrote media is single-use ([#84](https://github.com/salihcantekin/rbs/issues/84)).
+- Native export across the partition queue (move instead of share), D3D11/D3D12 input for NVENC and AMF, and a D3D12 exporter remove the readback; the export node then chooses by the encoder's memory kinds (ADR-0038, [#83](https://github.com/salihcantekin/rbs/issues/83)).
+- YUY2 and I420 system frames (common on webcams) are not uploaded yet; a camera that offers only those fails `prepare` with `FormatUnsupported` ([#85](https://github.com/salihcantekin/rbs/issues/85)).
