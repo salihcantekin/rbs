@@ -16,7 +16,7 @@ use std::num::NonZeroIsize;
 use std::time::Duration;
 
 use rbs_core::time::Timestamp;
-use windows::Win32::Foundation::{HANDLE, HMODULE, HWND, LUID};
+use windows::Win32::Foundation::{HANDLE, HMODULE, HWND, LUID, WAIT_OBJECT_0};
 use windows::Win32::Graphics::CompositionSwapchain::{
     CreatePresentationFactory, IPresentationBuffer, IPresentationFactory, IPresentationManager,
     IPresentationSurface,
@@ -36,6 +36,7 @@ use windows::Win32::Graphics::Dxgi::Common::{
 use windows::Win32::Graphics::Dxgi::{
     CreateDXGIFactory2, DXGI_CREATE_FACTORY_FLAGS, IDXGIAdapter, IDXGIDevice, IDXGIFactory4,
 };
+use windows::Win32::System::Threading::WaitForSingleObject;
 use windows::core::Interface;
 use windows_numerics::Matrix3x2;
 
@@ -50,6 +51,10 @@ const COMPOSITIONOBJECT_ALL_ACCESS: u32 = 0x0003;
 /// compositor gives a buffer back at its next composition after the replacing present,
 /// within one refresh period.
 pub const DEFAULT_RETIRE_POLL: Duration = Duration::from_millis(4);
+
+/// How long the frame shown at `detach` stays with the UI after the compositor applied
+/// the removal: two refresh periods at 60 Hz, as the macOS retire time.
+const DETACH_HOLD: Duration = Duration::from_millis(34);
 
 /// A rectangle in the window's client area in physical pixels, origin at the top left.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -87,6 +92,10 @@ pub struct PreviewLayer {
     shown: Option<PreviewFrame>,
     /// Replaced frames whose buffer the compositor may still read. Capacity: the ring size.
     retiring: Vec<PreviewFrame>,
+    /// The frame shown when the layer was detached, and when it may go back.
+    detached: Vec<(PreviewFrame, Timestamp)>,
+    /// Signalled by the system when the presentation manager is lost; owned by it.
+    lost_event: HANDLE,
     /// When `retire` last looked at the waiting frames.
     checked: Timestamp,
     poll: Duration,
@@ -200,6 +209,8 @@ impl PreviewLayer {
                 .map_err(fail("SetContent failed"))?;
             (handle, surface, dcomp, visual)
         };
+        // SAFETY: a query of our own manager; the event stays owned by it.
+        let lost_event = unsafe { manager.GetLostEvent() }.map_err(fail("GetLostEvent failed"))?;
         let (width, height) = subscriber.size();
         Ok(Self {
             _d3d: d3d,
@@ -207,6 +218,8 @@ impl PreviewLayer {
             manager,
             surface,
             retiring: Vec::with_capacity(buffers.len()),
+            detached: Vec::with_capacity(1),
+            lost_event,
             buffers,
             _surface_handle: surface_handle,
             dcomp,
@@ -228,11 +241,7 @@ impl PreviewLayer {
     /// the compositor gives it back (up to one refresh plus a poll), one being written and
     /// one in flight.
     pub fn surfaces_needed(&self, frame_interval: Duration) -> usize {
-        let interval = frame_interval.as_nanos().max(1);
-        let retiring = (frame_interval + self.poll).as_nanos().div_ceil(interval);
-        usize::try_from(retiring)
-            .unwrap_or(usize::MAX)
-            .saturating_add(3)
+        crate::share::geometry::ring_needed(frame_interval, frame_interval + self.poll)
     }
 
     /// Surfaces in the engine's ring.
@@ -271,16 +280,29 @@ impl PreviewLayer {
     /// ([`PreviewLayer::retire`]). Call it when the preview panel closes while the window
     /// stays open.
     pub fn detach(&mut self, now: Timestamp) {
-        if let Some(target) = self.target.take() {
-            // SAFETY: clears the root of our own target.
-            let _ = unsafe { target.SetRoot(None::<&IDCompositionVisual>) };
-            self.commit();
-        }
+        self.leave_window();
         self.placed = None;
+        // The shown buffer stays the surface's current buffer, so it never reports
+        // available; it goes back `DETACH_HOLD` after the compositor has applied the
+        // removal, like the macOS rule (ADR-0034 decision 3).
         if let Some(old) = self.shown.take() {
-            self.retiring.push(old);
+            self.detached.push((old, now + DETACH_HOLD));
         }
         self.retire(now);
+    }
+
+    /// Takes the visual out of the window and waits until the compositor has applied it
+    /// (UI thread, not real-time).
+    fn leave_window(&mut self) {
+        if let Some(target) = self.target.take() {
+            // SAFETY: clears the root of our own target, commits, and waits for the
+            // compositor to process the commit.
+            unsafe {
+                let _ = target.SetRoot(None::<&IDCompositionVisual>);
+                let _ = self.dcomp.Commit();
+                let _ = self.dcomp.WaitForCommitCompletion();
+            }
+        }
     }
 
     /// Places the layer over `rect` of the window's client area (physical pixels; the
@@ -293,22 +315,24 @@ impl PreviewLayer {
             return;
         }
         self.placed = Some(rect);
-        let (bw, bh) = (f64::from(self.width), f64::from(self.height));
-        let scale = (rect.width / bw).min(rect.height / bh).max(0.0);
-        let x = rect.x + (rect.width - bw * scale) / 2.0;
-        let y = rect.y + (rect.height - bh * scale) / 2.0;
+        let (x, y, scale) = crate::share::geometry::fit(
+            (rect.x, rect.y, rect.width, rect.height),
+            (self.width, self.height),
+        );
+        // Scale and translation in one matrix with a zero offset, so the result does not
+        // depend on the order in which DirectComposition applies offset and transform.
         let m = Matrix3x2 {
             M11: scale as f32,
             M12: 0.0,
             M21: 0.0,
             M22: scale as f32,
-            M31: 0.0,
-            M32: 0.0,
+            M31: x.round() as f32,
+            M32: y.round() as f32,
         };
         // SAFETY: plain property changes of our own visual; `m` outlives the call.
         unsafe {
-            let _ = self.visual.SetOffsetX2(x.round() as f32);
-            let _ = self.visual.SetOffsetY2(y.round() as f32);
+            let _ = self.visual.SetOffsetX2(0.0);
+            let _ = self.visual.SetOffsetY2(0.0);
             let _ = self.visual.SetTransform2(&m);
         }
         self.commit();
@@ -333,10 +357,24 @@ impl PreviewLayer {
     /// replaced frame goes back to the engine once the compositor no longer reads it
     /// ([`PreviewLayer::retire`]). Never waits, never allocates.
     pub fn show(&mut self, frame: PreviewFrame, now: Timestamp) {
-        let Some(buffer) = self.buffers.get(frame.slot()) else {
-            debug_assert!(false, "frame slot {} outside the ring", frame.slot());
-            self.retire(now);
-            return;
+        if !self.lost {
+            // SAFETY: a zero-timeout check of the manager's own event.
+            let signalled = unsafe { WaitForSingleObject(self.lost_event, 0) } == WAIT_OBJECT_0;
+            if signalled {
+                self.lost = true;
+            }
+        }
+        let buffer = match self.buffers.get(frame.slot()) {
+            Some(b) if !self.lost => b,
+            _ => {
+                // Lost: the system reads none of our buffers any more, so every frame,
+                // this one included, goes back at once.
+                debug_assert!(self.lost, "frame slot {} outside the ring", frame.slot());
+                drop(frame);
+                self.shown = None;
+                self.retire(now);
+                return;
+            }
         };
         // SAFETY: `buffer` belongs to this manager; the engine wrote it completely before
         // sending the frame (it waits for its GPU work), so it is ready to present.
@@ -347,6 +385,10 @@ impl PreviewLayer {
         };
         if r.is_err() {
             self.lost = true;
+            self.shown = None;
+            drop(frame);
+            self.retire(now);
+            return;
         }
         if let Some(old) = self.shown.replace(frame) {
             // Never reallocates: the engine sends at most one frame per surface.
@@ -359,8 +401,9 @@ impl PreviewLayer {
     /// many still wait. Never waits.
     pub fn retire(&mut self, now: Timestamp) -> usize {
         self.checked = now;
-        let buffers = &self.buffers;
         let lost = self.lost;
+        self.detached.retain(|(_, due)| !lost && now < *due);
+        let buffers = &self.buffers;
         self.retiring.retain(|f| {
             // A lost manager reads nothing any more.
             !lost
@@ -369,17 +412,19 @@ impl PreviewLayer {
                     unsafe { b.IsAvailable() }.is_ok_and(|available| available == 0)
                 })
         });
-        self.retiring.len()
+        self.retiring.len() + self.detached.len()
     }
 
     /// When to call [`PreviewLayer::retire`] again, if a frame waits.
     pub fn next_retire(&self) -> Option<Timestamp> {
-        (!self.retiring.is_empty()).then(|| self.checked + self.poll)
+        let poll = (!self.retiring.is_empty()).then(|| self.checked + self.poll);
+        let detached = self.detached.iter().map(|(_, due)| *due).min();
+        poll.into_iter().chain(detached).min()
     }
 
     /// Replaced frames still waiting.
     pub fn retiring(&self) -> usize {
-        self.retiring.len()
+        self.retiring.len() + self.detached.len()
     }
 
     fn apply_root(&self) {
@@ -403,14 +448,11 @@ impl PreviewLayer {
 
 impl Drop for PreviewLayer {
     fn drop(&mut self) {
-        if let Some(target) = self.target.take() {
-            // SAFETY: clears the root of our own target.
-            let _ = unsafe { target.SetRoot(None::<&IDCompositionVisual>) };
-            self.commit();
-        }
-        // The frames drop after this and go back to the engine at once. If the window
-        // stays open, the compositor may show the last one until its next composition, so
-        // the engine could write a surface still on screen (one torn preview frame at
-        // worst); `detach` and waiting for `retiring() == 0` first avoids that.
+        // The frames drop after this and go back to the engine at once, after the
+        // compositor has applied the removal. If the window stays open and the compositor
+        // scans a buffer out directly, it may show it until the next refresh, so the
+        // engine could write a surface still on screen (one torn preview frame at worst);
+        // `detach` and waiting for `retiring() == 0` first avoids that.
+        self.leave_window();
     }
 }

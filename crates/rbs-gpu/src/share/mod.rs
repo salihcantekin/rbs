@@ -19,6 +19,8 @@
 //! RBS code and never wait: every Mach call on the engine side uses a zero timeout, and
 //! every pipe operation on Windows is overlapped and only polled.
 
+#[cfg(any(test, all(windows, feature = "preview-layer")))]
+mod geometry;
 #[cfg(all(target_os = "macos", feature = "preview-layer"))]
 mod layer;
 #[cfg(target_vendor = "apple")]

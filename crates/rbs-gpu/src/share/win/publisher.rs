@@ -10,8 +10,8 @@ use rbs_core::media::TextureId;
 use rbs_core::time::Timestamp;
 use windows::Win32::Foundation::{
     DUPLICATE_CLOSE_SOURCE, DUPLICATE_SAME_ACCESS, DuplicateHandle, ERROR_BROKEN_PIPE,
-    ERROR_IO_PENDING, ERROR_NO_DATA, ERROR_PIPE_CONNECTED, ERROR_PIPE_NOT_CONNECTED, GENERIC_ALL,
-    HANDLE,
+    ERROR_IO_PENDING, ERROR_MORE_DATA, ERROR_NO_DATA, ERROR_PIPE_CONNECTED,
+    ERROR_PIPE_NOT_CONNECTED, GENERIC_ALL, HANDLE,
 };
 use windows::Win32::Graphics::Direct3D12::{
     D3D12_HEAP_FLAG_SHARED, D3D12_HEAP_PROPERTIES, D3D12_HEAP_TYPE_DEFAULT, D3D12_RESOURCE_DESC,
@@ -74,6 +74,9 @@ enum Conn {
     Listening,
     /// A client is connected; its first message must be a valid `SUBSCRIBE`.
     Connected,
+    /// `SURFACES` is sent; the handles in the client process are still ours until its
+    /// `ACCEPT` (a client that gives up before reading them cannot close them).
+    Offered,
     /// The client subscribed and has the surfaces.
     Subscribed,
 }
@@ -97,6 +100,9 @@ pub struct PreviewPublisher {
         reason = "the kernel holds pointers into each operation while it runs"
     )]
     writes: Vec<Box<Op>>,
+    /// While `Offered`: the client process and the handle values duplicated into it,
+    /// closed there if the client leaves without accepting.
+    offer: Option<(Owned, [u64; pipe::MAX_SURFACES])>,
     generation: u32,
     pipeline: wgpu::RenderPipeline,
     slots: Vec<Slot>,
@@ -143,9 +149,13 @@ impl PreviewPublisher {
         let nonce = u32::from_le_bytes(random[8..12].try_into().unwrap_or_default());
         let service = format!("org.rbs.preview.{}.{n}.{nonce:08x}", std::process::id());
         let path = pipe::pipe_path(&service);
-        // SAFETY: `path` is a NUL-terminated UTF-16 string that outlives the call. One
-        // instance, created first (a squatter makes this fail), local clients only, default
-        // security (only the creating user, SYSTEM and administrators may write).
+        // The default DACL of a pipe lets Everyone connect for reading, which would let any
+        // local account occupy the single instance; only our own user may open it.
+        let security = pipe::UserOnly::new()?;
+        let attributes = security.attributes();
+        // SAFETY: `path` is a NUL-terminated UTF-16 string and `attributes` points to a
+        // descriptor that outlive the call. One instance, created first (a squatter makes
+        // this fail), local clients only.
         let handle = unsafe {
             CreateNamedPipeW(
                 PCWSTR(path.as_ptr()),
@@ -155,9 +165,10 @@ impl PreviewPublisher {
                 pipe::PIPE_BUFFER,
                 pipe::PIPE_BUFFER,
                 0,
-                None,
+                Some(&attributes),
             )
         };
+        drop(security);
         if handle.is_invalid() {
             return Err(GpuError::Export("CreateNamedPipeW failed"));
         }
@@ -176,6 +187,7 @@ impl PreviewPublisher {
             connect: Op::new()?,
             read: Op::new()?,
             writes,
+            offer: None,
             generation: 0,
             pipeline,
             pending: VecDeque::with_capacity(slots.len()),
@@ -278,10 +290,10 @@ impl PreviewPublisher {
                 Poll::Failed(_) => self.disconnect(),
             }
         }
-        // Bounded: one release per surface plus `SUBSCRIBE`; a UI holds at most one
-        // release per surface, so this drains what a well-behaved UI can have sent.
-        for _ in 0..=self.slots.len() {
-            if !matches!(self.conn, Conn::Connected | Conn::Subscribed) {
+        // Bounded: one release per surface plus `SUBSCRIBE` or `ACCEPT`; a UI holds at most
+        // one release per surface, so this drains what a well-behaved UI can have sent.
+        for _ in 0..=self.slots.len() + 1 {
+            if !self.connected_state() {
                 break;
             }
             // SAFETY: the read was started on our pipe.
@@ -291,10 +303,17 @@ impl PreviewPublisher {
                     self.handle_message(n as usize);
                     self.start_read();
                 }
+                Poll::Failed(e) if e == ERROR_MORE_DATA => {
+                    // A message longer than any of this protocol: ignored (its rest arrives
+                    // as further reads, which fail to decode). The UI may be alive and
+                    // holding surfaces, so this does not end the subscription.
+                    self.stats.rejected += 1;
+                    self.start_read();
+                }
                 Poll::Failed(_) => {
-                    // Broken pipe (the UI closed its end or exited), a too long message or
-                    // a cancelled read: the UI can hold no surface any more, or broke the
-                    // protocol.
+                    // Broken pipe or not connected: the UI closed its end (it dropped the
+                    // subscriber and every frame, which share the pipe) or exited, so it
+                    // holds no surface any more.
                     self.disconnect();
                 }
             }
@@ -368,8 +387,15 @@ impl PreviewPublisher {
         self.start_read();
     }
 
+    fn connected_state(&self) -> bool {
+        matches!(
+            self.conn,
+            Conn::Connected | Conn::Offered | Conn::Subscribed
+        )
+    }
+
     fn start_read(&mut self) {
-        if !matches!(self.conn, Conn::Connected | Conn::Subscribed) {
+        if !self.connected_state() {
             return;
         }
         // SAFETY: our open pipe; the read is not issued (its completion was just taken).
@@ -378,9 +404,10 @@ impl PreviewPublisher {
         }
     }
 
-    /// One message from the client: `SUBSCRIBE` first, then `RELEASE`s.
+    /// One message from the client: `SUBSCRIBE` first, `ACCEPT` after `SURFACES`, then
+    /// `RELEASE`s.
     fn handle_message(&mut self, len: usize) {
-        let bytes = &self.read.buf[..len.min(pipe::MSG_BYTES)];
+        let bytes = self.read.data(len);
         match self.conn {
             Conn::Connected => {
                 let valid = pipe::decode::<{ pipe::SUBSCRIBE_WORDS }>(bytes).is_some_and(|w| {
@@ -390,13 +417,25 @@ impl PreviewPublisher {
                 });
                 if !valid {
                     // A wrong token or another protocol: the pipe has one instance, so a
-                    // stranger is not allowed to keep it.
+                    // client that does not subscribe is not allowed to keep it.
                     self.stats.rejected += 1;
                     self.disconnect();
                     return;
                 }
                 self.subscribe();
             }
+            Conn::Offered => match pipe::decode::<{ pipe::ACCEPT_WORDS }>(bytes) {
+                Some([pipe::ID_ACCEPT, generation]) if generation == self.generation => {
+                    // The handles are the UI's now; it closes them.
+                    self.offer = None;
+                    self.conn = Conn::Subscribed;
+                    self.stats.subscribes += 1;
+                }
+                _ => {
+                    self.stats.rejected += 1;
+                    self.disconnect();
+                }
+            },
             Conn::Subscribed => match pipe::decode::<{ pipe::RELEASE_WORDS }>(bytes) {
                 Some([pipe::ID_RELEASE, generation, slot]) if generation == self.generation => {
                     if let Some(s) = self.slots.get_mut(slot as usize) {
@@ -451,29 +490,13 @@ impl PreviewPublisher {
             *out = target.0 as usize as u64;
         }
         self.generation = self.generation.wrapping_add(1);
-        let sent = ok && self.send_surfaces(&handles);
-        if !sent {
-            // The client never learns these handle values: close them in its process.
-            for &h in handles.iter().filter(|&&h| h != 0) {
-                // SAFETY: closes a handle we duplicated into the client process above.
-                let _ = unsafe {
-                    DuplicateHandle(
-                        process.raw(),
-                        HANDLE(h as usize as *mut c_void),
-                        HANDLE::default(),
-                        std::ptr::null_mut(),
-                        0,
-                        false,
-                        DUPLICATE_CLOSE_SOURCE,
-                    )
-                };
-            }
+        // Until the client accepts, the duplicates are ours to close (`disconnect`).
+        self.offer = Some((process, handles));
+        self.conn = Conn::Offered;
+        if !ok || !self.send_surfaces(&handles) {
             self.stats.rejected += 1;
             self.disconnect();
-            return;
         }
-        self.conn = Conn::Subscribed;
-        self.stats.subscribes += 1;
     }
 
     fn send_surfaces(&mut self, handles: &[u64; pipe::MAX_SURFACES]) -> bool {
@@ -536,7 +559,7 @@ impl PreviewPublisher {
         // SAFETY: the operation does not run (checked above); taking its old completion
         // does not wait.
         let _ = unsafe { op.poll(pipe) };
-        let len = pipe::encode(words, &mut op.buf);
+        let len = op.fill(words);
         // SAFETY: our open pipe; the boxed operation outlives the write.
         match unsafe { op.write(pipe, len) } {
             Ok(()) => Ok(()),
@@ -548,10 +571,28 @@ impl PreviewPublisher {
 
     /// Ends the connection; every surface is free again. Called only once the UI holds no
     /// surface: its end of the pipe is closed (it dropped the subscriber and every frame,
-    /// or exited), or it never subscribed. The next tick listens again.
+    /// or exited), or it never accepted the surfaces. The next tick listens again.
     fn disconnect(&mut self) {
         // SAFETY: our own pipe handle; pending reads and writes on it fail and complete.
         let _ = unsafe { DisconnectNamedPipe(self.pipe.raw()) };
+        if let Some((process, handles)) = self.offer.take() {
+            // The client never accepted: it does not own these values and never closes
+            // them (protocol rule), so closing them in its process cannot hit a reused value.
+            for &h in handles.iter().filter(|&&h| h != 0) {
+                // SAFETY: closes a handle we duplicated into the client process.
+                let _ = unsafe {
+                    DuplicateHandle(
+                        process.raw(),
+                        HANDLE(h as usize as *mut c_void),
+                        HANDLE::default(),
+                        std::ptr::null_mut(),
+                        0,
+                        false,
+                        DUPLICATE_CLOSE_SOURCE,
+                    )
+                };
+            }
+        }
         self.conn = Conn::Idle;
         for s in &mut self.slots {
             s.held = false;
@@ -565,13 +606,13 @@ impl Drop for PreviewPublisher {
         // SAFETY: every operation was started on `pipe`; cancelling waits until the kernel
         // no longer uses its memory, before the boxes are freed.
         unsafe {
-            self.connect.cancel(pipe);
-            self.read.cancel(pipe);
+            let _ = self.connect.cancel(pipe);
+            let _ = self.read.cancel(pipe);
             for w in &mut self.writes {
-                w.cancel(pipe);
+                let _ = w.cancel(pipe);
             }
-            let _ = DisconnectNamedPipe(pipe);
         }
+        self.disconnect();
     }
 }
 

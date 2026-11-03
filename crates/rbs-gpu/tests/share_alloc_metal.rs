@@ -1,12 +1,13 @@
 //! Heap allocations per preview frame (spec `gpu-compositor.md`, "Preview export
-//! (cross-process)").
+//! (cross-process)"). Runs on macOS and Windows (the file name predates the Windows
+//! backend, ADR-0035).
 //!
 //! RBS code in `PreviewPublisher::publish` and `tick` does not allocate. The test runs a
 //! steady loop (publish, wait, tick sends the frame, the subscriber receives and drops it,
 //! the next tick takes the release) and compares it with an NV12 conversion into pool
 //! planes, which records more GPU work: the preview may add only a small constant (wgpu's
 //! poll bookkeeping), and nothing may grow over time.
-#![cfg(target_vendor = "apple")]
+#![cfg(any(target_vendor = "apple", windows))]
 #![allow(clippy::unwrap_used, clippy::expect_used)] // Tests fail by panicking.
 
 mod common;

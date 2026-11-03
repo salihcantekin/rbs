@@ -306,8 +306,16 @@ fn ui_that_exits_holding_every_surface_frees_them() {
     // No frame can be sent (every surface is held), so only the kernel (no-senders notice
     // on macOS, broken pipe on Windows) can tell the engine that the UI is gone.
     assert_unsubscribed(ctx, &mut publisher, &mut engine, &mut sequence);
-    // And a new UI can subscribe again.
     assert_eq!(publisher.stats().subscribes, 1);
+    // And a new UI can subscribe again and gets every frame right (on Windows this
+    // listens again after a connection that ended with writes of its own still queued).
+    let out = run_child(ctx, &mut publisher, &mut engine, "check", &mut sequence);
+    assert!(
+        out.contains("preview child ok"),
+        "second child did not run:\n{out}"
+    );
+    assert_eq!(publisher.stats().subscribes, 2);
+    assert_unsubscribed(ctx, &mut publisher, &mut engine, &mut sequence);
 }
 
 /// The "UI" process. Run by the tests above; ignored in normal runs.

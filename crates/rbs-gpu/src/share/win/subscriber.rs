@@ -68,7 +68,7 @@ impl Link {
         // SAFETY: the operation does not run (checked above); taking its old completion
         // does not wait.
         let _ = unsafe { op.poll(pipe) };
-        let len = pipe::encode([pipe::ID_RELEASE, self.generation, slot], &mut op.buf);
+        let len = op.fill([pipe::ID_RELEASE, self.generation, slot]);
         // SAFETY: our open pipe; the boxed operation lives in `writes` until `Link` drops,
         // which cancels and waits first. A dead engine fails at once (nothing to release).
         let _ = unsafe { op.write(pipe, len) };
@@ -81,7 +81,7 @@ impl Drop for Link {
             for w in writes.iter_mut() {
                 // SAFETY: each write was started on our pipe; this waits until the kernel
                 // no longer uses its memory.
-                unsafe { w.cancel(self.pipe.raw()) };
+                let _ = unsafe { w.cancel(self.pipe.raw()) };
             }
         }
     }
@@ -198,17 +198,13 @@ impl PreviewSubscriber {
 
         let mut write = Op::new().map_err(|_| GpuError::Disconnected("CreateEventW failed"))?;
         let token = pipe::split(endpoint.token);
-        let len = pipe::encode(
-            [pipe::ID_SUBSCRIBE, pipe::VERSION, token[0], token[1]],
-            &mut write.buf,
-        );
+        let len = write.fill([pipe::ID_SUBSCRIBE, pipe::VERSION, token[0], token[1]]);
         // SAFETY: our open pipe; `write` lives until it is waited for below.
         unsafe { write.write(pipe.raw(), len) }
             .map_err(|_| GpuError::Disconnected("preview engine does not accept"))?;
-        let sent = wait(&mut write, pipe.raw(), deadline);
-        if !matches!(sent, Some(Poll::Done(_))) {
+        if !matches!(wait(&mut write, pipe.raw(), deadline), Some(Poll::Done(_))) {
             // SAFETY: the write was started on `pipe`; waits until the kernel is done.
-            unsafe { write.cancel(pipe.raw()) };
+            let _ = unsafe { write.cancel(pipe.raw()) };
             return Err(GpuError::Disconnected("preview engine does not accept"));
         }
 
@@ -216,43 +212,72 @@ impl PreviewSubscriber {
         // SAFETY: our open pipe; the boxed read is cancelled before it drops.
         unsafe { read.read(pipe.raw()) }
             .map_err(|_| GpuError::Disconnected("preview engine closed the pipe"))?;
-        let got = wait(&mut read, pipe.raw(), deadline);
-        let n = match got {
+        let n = match wait(&mut read, pipe.raw(), deadline) {
             Some(Poll::Done(n)) => n as usize,
             Some(_) => return Err(GpuError::Disconnected("preview engine closed the pipe")),
             None => {
+                // Giving up before `ACCEPT` leaves the handle values to the engine: it
+                // closes them in this process once the pipe closes, so nothing leaks even
+                // if `SURFACES` arrived just now.
                 // SAFETY: as above.
-                unsafe { read.cancel(pipe.raw()) };
+                let _ = unsafe { read.cancel(pipe.raw()) };
                 return Err(GpuError::Disconnected("preview engine did not answer"));
             }
         };
-        let Some(w) = pipe::decode::<{ pipe::SURFACES_WORDS }>(&read.buf[..n]) else {
+        // Nothing here closes a received handle value before `ACCEPT` is written: until
+        // then the engine owns them (it closes them if this process leaves without
+        // accepting), so an invalid or foreign message cannot make us close unrelated
+        // handles.
+        let Some(w) = pipe::decode::<{ pipe::SURFACES_WORDS }>(read.data(n)) else {
             return Err(GpuError::Disconnected("preview surfaces are invalid"));
         };
-        // Take every handle first, so an error below leaks none: they are ours now.
-        let count = w[5] as usize;
-        let surfaces: Vec<Owned> = w[8..]
-            .chunks_exact(2)
-            .take(count.min(pipe::MAX_SURFACES))
-            .map(|p| Owned(HANDLE(pipe::join([p[0], p[1]]) as usize as *mut c_void)))
-            .collect();
         if w[0] != pipe::ID_SURFACES {
             return Err(GpuError::Disconnected("preview surfaces are invalid"));
         }
         if w[1] != pipe::VERSION {
             return Err(GpuError::Disconnected("preview protocol version mismatch"));
         }
+        let count = w[5] as usize;
+        let values: Vec<u64> = w[8..]
+            .chunks_exact(2)
+            .take(count.min(pipe::MAX_SURFACES))
+            .map(|p| pipe::join([p[0], p[1]]))
+            .collect();
         if !(2..=pipe::MAX_SURFACES).contains(&count)
             || w[3] == 0
             || w[4] == 0
-            || surfaces.iter().any(|h| h.raw().0.is_null())
+            || values.contains(&0)
         {
             return Err(GpuError::Disconnected("preview surfaces are invalid"));
         }
+        let generation = w[2];
+        let len = write.fill([pipe::ID_ACCEPT, generation]);
+        // SAFETY: our open pipe; the last write has completed, so `write` is not issued.
+        let started = unsafe { write.write(pipe.raw(), len) }.is_ok();
+        // The accept is tiny and the pipe buffer empty, so it completes at once; a short
+        // grace past the deadline keeps a deadline that just ran out from losing it.
+        let grace = deadline.max(Instant::now() + Duration::from_secs(1));
+        let accepted = started
+            && match wait(&mut write, pipe.raw(), grace) {
+                Some(Poll::Done(_)) => true,
+                Some(_) => false,
+                // SAFETY: as above; the completion tells whether it was written.
+                None => matches!(unsafe { write.cancel(pipe.raw()) }, Poll::Done(_)),
+            };
+        if !accepted {
+            // Not accepted: the handles stay the engine's to close (or, if the engine is
+            // gone, stay open until this process exits).
+            return Err(GpuError::Disconnected("preview engine closed the pipe"));
+        }
+        // Accepted: the handle values are ours from here on and close with the subscriber.
+        let surfaces: Vec<Owned> = values
+            .into_iter()
+            .map(|v| Owned(HANDLE(v as usize as *mut c_void)))
+            .collect();
         Ok(Self {
             link: Arc::new(Link {
                 pipe,
-                generation: w[2],
+                generation,
                 writes: Mutex::new(vec![write]),
             }),
             surfaces,
@@ -311,7 +336,7 @@ impl PreviewSubscriber {
                     return Err(GpuError::Disconnected("preview engine closed the pipe"));
                 }
                 Some(Poll::Done(n)) => {
-                    let bytes = &self.read.buf[..(n as usize).min(pipe::MSG_BYTES)];
+                    let bytes = self.read.data(n as usize);
                     if let Some([pipe::ID_FRAME, generation, slot, s0, s1, t0, t1]) =
                         pipe::decode::<{ pipe::FRAME_WORDS }>(bytes)
                         && generation == self.link.generation
@@ -361,7 +386,7 @@ impl Drop for PreviewSubscriber {
     fn drop(&mut self) {
         // SAFETY: the read was started on the link's pipe, which outlives this call (the
         // link is dropped after the fields); this waits until the kernel is done with it.
-        unsafe { self.read.cancel(self.link.pipe.raw()) };
+        let _ = unsafe { self.read.cancel(self.link.pipe.raw()) };
     }
 }
 
