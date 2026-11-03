@@ -141,6 +141,7 @@ pub(super) fn open(ctx: &GpuContext, handle: u64) -> Result<Opened, GpuError> {
     };
     Ok(Opened {
         texture,
+        chroma: None,
         desc: TextureDesc {
             width,
             height: desc.Height,

@@ -3029,6 +3029,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "objc2-audio-toolbox"
+version = "0.3.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6948501a91121d6399b79abaa33a8aa4ea7857fe019f341b8c23ad6e81b79b08"
+dependencies = [
+ "bitflags 2.13.2",
+ "objc2 0.6.5",
+ "objc2-core-audio-types",
+ "objc2-foundation 0.3.2",
+]
+
+[[package]]
 name = "objc2-cloud-kit"
 version = "0.2.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3362,6 +3374,18 @@ dependencies = [
  "objc2 0.5.3",
  "objc2-core-location",
  "objc2-foundation 0.2.2",
+]
+
+[[package]]
+name = "objc2-video-toolbox"
+version = "0.3.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "05bf9a3c14831a7d9641b0d81d87dd913ee238a012b2fde27db5a84b56f5df3e"
+dependencies = [
+ "bitflags 2.13.2",
+ "objc2-core-foundation",
+ "objc2-core-media",
+ "objc2-core-video",
 ]
 
 [[package]]
@@ -3903,12 +3927,106 @@ dependencies = [
 ]
 
 [[package]]
+name = "rbs-codec-amf"
+version = "0.0.1"
+dependencies = [
+ "criterion 0.8.2",
+ "libloading",
+ "rbs-codec",
+ "rbs-codec-hw",
+ "rbs-core",
+ "rbs-media-format",
+]
+
+[[package]]
+name = "rbs-codec-audiotoolbox"
+version = "0.0.1"
+dependencies = [
+ "criterion 0.8.2",
+ "objc2-audio-toolbox",
+ "objc2-core-audio-types",
+ "rbs-codec",
+ "rbs-core",
+ "rbs-media-format",
+]
+
+[[package]]
+name = "rbs-codec-hw"
+version = "0.0.1"
+dependencies = [
+ "criterion 0.8.2",
+ "rbs-codec",
+ "rbs-core",
+ "rbs-media-format",
+]
+
+[[package]]
+name = "rbs-codec-nvenc"
+version = "0.0.1"
+dependencies = [
+ "criterion 0.8.2",
+ "libloading",
+ "rbs-codec",
+ "rbs-codec-hw",
+ "rbs-core",
+ "rbs-media-format",
+]
+
+[[package]]
+name = "rbs-codec-qsv"
+version = "0.0.1"
+dependencies = [
+ "criterion 0.8.2",
+ "libloading",
+ "rbs-codec",
+ "rbs-codec-hw",
+ "rbs-core",
+ "rbs-media-format",
+]
+
+[[package]]
+name = "rbs-codec-vaapi"
+version = "0.0.1"
+dependencies = [
+ "criterion 0.8.2",
+ "libloading",
+ "rbs-codec",
+ "rbs-codec-hw",
+ "rbs-core",
+ "rbs-media-format",
+]
+
+[[package]]
+name = "rbs-codec-videotoolbox"
+version = "0.0.1"
+dependencies = [
+ "criterion 0.8.2",
+ "objc2-core-foundation",
+ "objc2-core-media",
+ "objc2-core-video",
+ "objc2-io-surface",
+ "objc2-video-toolbox",
+ "rbs-codec",
+ "rbs-core",
+ "rbs-media-format",
+]
+
+[[package]]
 name = "rbs-core"
 version = "0.0.1"
 dependencies = [
  "allocation-counter",
  "bytes",
  "criterion 0.8.2",
+]
+
+[[package]]
+name = "rbs-engine"
+version = "0.0.1"
+dependencies = [
+ "allocation-counter",
+ "rbs-core",
+ "rbs-graph",
 ]
 
 [[package]]
@@ -4004,6 +4122,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "rbs-thread-os"
+version = "0.0.1"
+dependencies = [
+ "libc",
+ "rbs-core",
+ "windows",
+ "zbus",
+]
+
+[[package]]
 name = "rbs-transport"
 version = "0.0.1"
 dependencies = [
@@ -4017,6 +4145,30 @@ version = "0.0.1"
 dependencies = [
  "criterion 0.8.2",
  "rbs-core",
+ "rbs-transport",
+ "rtrb",
+]
+
+[[package]]
+name = "rbs-transport-rtmp"
+version = "0.0.1"
+dependencies = [
+ "criterion 0.8.2",
+ "rbs-core",
+ "rbs-media-format",
+ "rbs-transport",
+ "rtrb",
+]
+
+[[package]]
+name = "rbs-transport-srt"
+version = "0.0.1"
+dependencies = [
+ "criterion 0.8.2",
+ "rbs-core",
+ "rbs-media-format",
+ "rbs-mux",
+ "rbs-mux-mpegts",
  "rbs-transport",
  "rtrb",
 ]

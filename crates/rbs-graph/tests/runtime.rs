@@ -727,3 +727,24 @@ fn collect_reports_health_of_nodes_that_stay() {
     let (_, health) = collected.health.iter().find(|(id, _)| *id == bad).unwrap();
     assert!(health.bypassed && health.warm_failed);
 }
+
+#[test]
+fn swap_pending_swaps_between_ticks_without_running_a_tick() {
+    let mut rig = Rig::new();
+    let out = rig.node("out", Role::Sink);
+    let src = rig.node("src", Role::Source);
+    rig.link(src, out);
+    rig.activate(&[src, out]);
+    rig.ctl.apply(&rig.graph).unwrap();
+    rig.log.take();
+    // Nothing pending is a no-op; then the pending schedule is warmed and swapped in,
+    // and no node processes.
+    rig.exec.swap_pending();
+    assert_eq!(rig.log.take(), ["warm src", "warm out"]);
+    assert_eq!(rig.exec.scheduled().collect::<Vec<_>>(), [src, out]);
+    rig.ctl.collect().unwrap().expect("swapped");
+    rig.exec.swap_pending();
+    assert!(rig.log.take().is_empty());
+    rig.tick();
+    assert_eq!(rig.log.take(), ["out saw [0]"]);
+}

@@ -13,9 +13,10 @@ Keep this list current. When a new crate or module lands on one of these paths, 
 | `Node::process` of every node type | Every frame or block | Wherever nodes are implemented |
 | Parameter reads by running nodes: `ParamReceiver::update` | Every frame or block per node with parameters | `crates/rbs-graph/src/runtime/param.rs` |
 | Queue endpoints between partitions | Every frame or packet per crossing link | `crates/rbs-graph/src/runtime/queue.rs` |
+| Engine worker loop: pacing, doorbell wait, the call into `Executor::run_tick` and `swap_pending` | Every tick per partition | `crates/rbs-engine/src/worker.rs` |
 | Capture frame hand-off: `CaptureSession::latest_frame` and the adapter code it calls | Every frame per Active capture source | `crates/rbs-capture`, adapters in `crates/rbs-capture-*` |
 | Frame, texture and audio buffer pools | Every frame or block | `crates/rbs-gpu`, `crates/rbs-audio` |
-| Colour conversion to encoder formats (NV12, P010) | Every frame per encoder | `crates/rbs-gpu` |
+| Colour conversion to encoder formats (NV12, P010) and YUV source decode | Every frame per encoder or YUV source | `crates/rbs-gpu` |
 | Preview export to the UI process: `PreviewPublisher::publish` and `tick` (one non-blocking Mach send per frame, ADR-0028) | Every frame per subscribed preview | `crates/rbs-gpu/src/share` |
 | Encoder submit/drain and packet fan-out | Every frame per encoder | `crates/rbs-codec*`, `crates/rbs-graph` |
 | Muxers and transport send loops | Every packet | `crates/rbs-mux*`, `crates/rbs-transport*` |

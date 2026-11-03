@@ -50,6 +50,27 @@ pub trait Runtime: 'static {
     /// Owned by the executor thread; lent as `&mut` to `warm` and `process`.
     type Local: Send + 'static;
 
+    /// Called on a thread that is about to run this executor, before its first tick or
+    /// swap there: each time a worker thread starts, and on the control thread around a
+    /// swap made without a worker. A runtime with thread-bound resources (a COM
+    /// apartment, a current CUDA or GL context) binds them here, since workers restart
+    /// on new OS threads (ADR-0013, ADR-0030). Not real-time: may allocate and make
+    /// system calls. A panic is caught and the executor runs on. On the control thread a
+    /// context may already be current there; `attach` saves it and `detach` restores it.
+    /// When the engine drops a partition it retires the executor (`Executor::retire`):
+    /// attach, cool, detach, then `Local` is dropped. Release thread-bound state in
+    /// `detach`; `Local`'s own `Drop` runs unattached (also when a worker thread dies
+    /// from a panic outside the executor's catch) and must not assume a bound context.
+    fn attach(shared: &Self::Shared, local: &mut Self::Local) {
+        let _ = (shared, local);
+    }
+
+    /// Called on the same thread after its last tick or swap there, before `Local`
+    /// moves to another thread: unbinds what `attach` bound. Not real-time.
+    fn detach(shared: &Self::Shared, local: &mut Self::Local) {
+        let _ = (shared, local);
+    }
+
     /// Called once per tick before any node runs (for example GPU fence polling and
     /// retiring imported surfaces). Real-time rules apply.
     fn begin_tick(shared: &Self::Shared, local: &mut Self::Local, tick: Tick) {

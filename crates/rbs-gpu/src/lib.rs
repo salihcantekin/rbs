@@ -5,6 +5,8 @@
 //! - [`compositor`]: draws a flat list of layers into a linear `Rgba16Float` canvas.
 //! - [`yuv`]: converts a canvas to NV12 or P010 (two planes, or one multi-planar texture)
 //!   for encoders.
+//! - [`yuv_decode`]: decodes NV12 or P010 sources (cameras, native YUV surfaces) to the
+//!   canvas format.
 //! - [`interop`]: imports native producer surfaces zero-copy as pool textures.
 //! - `export` (macOS): converts canvases into IOSurfaces that VideoToolbox encodes
 //!   without a copy.
@@ -31,6 +33,7 @@ pub mod pool;
 pub mod readback;
 pub mod share;
 pub mod yuv;
+pub mod yuv_decode;
 
 pub use compositor::{CanvasDesc, Compositor, Layer, RenderStats, Transfer};
 pub use context::{GpuContext, GpuMetrics, GpuRequest, PowerPreference};
@@ -40,6 +43,7 @@ pub use math::{Affine2, UvRect};
 pub use pool::{DEFAULT_POOL_SLOTS, PooledTexture, TextureDesc, TexturePool};
 pub use rbs_core::media::TextureId;
 pub use yuv::{YuvConverter, YuvFormat};
+pub use yuv_decode::{YuvDecoder, YuvSource};
 
 /// The canvas working format: linear light, 16-bit float per channel, premultiplied alpha.
 pub const CANVAS_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba16Float;

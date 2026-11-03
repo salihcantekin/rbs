@@ -11,6 +11,7 @@ Specs are the current contracts of RBS. Code must match them; a PR that changes 
 | [capture-port.md](capture-port.md) | Draft | `rbs-capture`, `rbs-capture-*` adapters |
 | [output-ports.md](output-ports.md) | Draft | `rbs-codec`, `rbs-mux`, `rbs-transport` |
 | [media-graph.md](media-graph.md) | Draft | `rbs-graph` (graph description, plan, node contract, executor and controller, parameter channels, restart with back-off, partitions and queues), `rbs-core` (`lifecycle`) |
+| [engine.md](engine.md) | Draft | `rbs-engine` (worker threads per partition, pacing, control loop, shutdown, non-blocking handle) |
 | [media-types.md](media-types.md) | Draft | `rbs-core` (`media`, `timing`) |
 | [scene-model.md](scene-model.md) | Draft | `rbs-scene` (model, edits, undo, flattening, graph binding; document format planned) |
 | [gpu-compositor.md](gpu-compositor.md) | Draft | `rbs-gpu` |
