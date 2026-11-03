@@ -167,6 +167,59 @@ fn placement_converts_to_the_parent_origin() {
 }
 
 #[test]
+fn edges_snap_to_device_pixels() {
+    let parent = CALayer::new();
+    parent.setFrame(CGRect::new(
+        CGPoint::new(0.0, 0.0),
+        CGSize::new(800.0, 400.0),
+    ));
+    parent.setGeometryFlipped(true);
+    parent.setContentsScale(2.0);
+    let mut bridge = MeterBridgeLayer::new(&colors());
+    bridge.attach_to_layer(&parent);
+    bridge.set_rect(Rect {
+        x: 10.3,
+        y: 20.0,
+        w: 300.0,
+        h: 56.0,
+    });
+    let on_grid = |v: f64| ((v * 2.0) - (v * 2.0).round()).abs() < 1e-9;
+    let f = bridge.layer().frame();
+    assert!(on_grid(f.origin.x) && on_grid(f.origin.x + f.size.width));
+    bridge.set_meters(&[MeterGeometry {
+        bar: Rect {
+            x: 8.0,
+            y: 16.0,
+            w: 13.37,
+            h: 32.0,
+        },
+        clip: Rect {
+            x: 8.0,
+            y: 8.0,
+            w: 13.37,
+            h: 6.0,
+        },
+        orientation: Orientation::Vertical,
+    }]);
+    bridge.show(&[MeterView {
+        level: 0.77,
+        peak: 0.93,
+        clipped: true,
+    }]);
+    for l in sublayers(&bridge).iter().filter(|l| !l.isHidden()) {
+        let r = l.frame();
+        for edge in [
+            r.origin.x,
+            r.origin.y,
+            r.origin.x + r.size.width,
+            r.origin.y + r.size.height,
+        ] {
+            assert!(on_grid(edge), "{r:?}");
+        }
+    }
+}
+
+#[test]
 fn colours_come_from_the_theme_tokens() {
     let tokens = Tokens::built_in().unwrap();
     for theme in rbs_ui::tokens::THEMES {

@@ -103,6 +103,9 @@ pub struct MeterBridgeLayer {
     /// The last placement: the rectangle, the superlayer's height and whether it is
     /// flipped (the bottom-left origin depends on both).
     placed: Option<(Rect, f64, bool)>,
+    /// Device pixels per point of the window (the superlayer's `contentsScale`): edges
+    /// are snapped to device pixels, as the toolkit draws them, so they stay sharp.
+    scale: f64,
 }
 
 impl MeterBridgeLayer {
@@ -118,6 +121,7 @@ impl MeterBridgeLayer {
             meters: Vec::new(),
             colors: CgColors::new(colors),
             placed: None,
+            scale: 1.0,
         }
     }
 
@@ -164,12 +168,33 @@ impl MeterBridgeLayer {
     }
 
     /// Places the bridge over `rect` of its superlayer (the view's points, top-left
-    /// origin, as the toolkit's logical pixels when its scale factor is the window's). Does nothing when neither the rectangle nor the superlayer changed, so it
-    /// can be called before every toolkit redraw.
+    /// origin: the toolkit's logical pixels when its scale factor is the window's). Does
+    /// nothing when neither the rectangle nor the superlayer changed, so it can be called
+    /// before every toolkit redraw.
     pub fn set_rect(&mut self, rect: Rect) {
-        let (height, flipped) = self.root.superlayer().map_or((0.0, true), |sup| {
-            (sup.bounds().size.height, sup.isGeometryFlipped())
+        let (height, flipped, scale) = self.root.superlayer().map_or((0.0, true, 1.0), |sup| {
+            (
+                sup.bounds().size.height,
+                sup.isGeometryFlipped(),
+                sup.contentsScale(),
+            )
         });
+        let scale = if scale.is_finite() && scale > 0.0 {
+            scale
+        } else {
+            1.0
+        };
+        if scale != self.scale {
+            self.scale = scale;
+            self.placed = None;
+            // Every meter is placed again at the next update, on the new pixel grid.
+            transaction(|| {
+                for m in &mut self.meters {
+                    m.clip.setFrame(cg_rect(m.geometry.clip, scale));
+                    m.shown = None;
+                }
+            });
+        }
         if self.placed == Some((rect, height, flipped)) {
             return;
         }
@@ -185,9 +210,12 @@ impl MeterBridgeLayer {
                 CAAutoresizingMask::LayerMinYMargin,
             )
         };
-        let frame = CGRect::new(
-            CGPoint::new(f64::from(rect.x), y),
-            CGSize::new(f64::from(rect.w.max(0.0)), f64::from(rect.h.max(0.0))),
+        let frame = snap(
+            CGRect::new(
+                CGPoint::new(f64::from(rect.x), y),
+                CGSize::new(f64::from(rect.w.max(0.0)), f64::from(rect.h.max(0.0))),
+            ),
+            scale,
         );
         transaction(|| {
             self.root.setAutoresizingMask(mask);
@@ -203,6 +231,7 @@ impl MeterBridgeLayer {
     /// match; does nothing when nothing changed. Allocates when the count changes, so call
     /// it on layout changes, not per update.
     pub fn set_meters(&mut self, geometry: &[MeterGeometry]) {
+        let scale = self.scale;
         let same = self.meters.len() == geometry.len()
             && self
                 .meters
@@ -243,7 +272,7 @@ impl MeterBridgeLayer {
             for (m, g) in self.meters.iter_mut().zip(geometry) {
                 if m.geometry != *g || m.shown.is_none() {
                     m.geometry = *g;
-                    m.clip.setFrame(cg_rect(g.clip));
+                    m.clip.setFrame(cg_rect(g.clip, scale));
                     // Redraw with the new geometry at the next update.
                     m.shown = None;
                 }
@@ -272,6 +301,7 @@ impl MeterBridgeLayer {
     /// leave their meters as they are). One transaction; meters whose view did not change
     /// cost nothing. Never allocates.
     pub fn show(&mut self, views: &[MeterView]) {
+        let scale = self.scale;
         let changed = self
             .meters
             .iter()
@@ -291,7 +321,7 @@ impl MeterBridgeLayer {
                     let empty = r.w <= 0.0 || r.h <= 0.0;
                     set_hidden(l, empty);
                     if !empty {
-                        l.setFrame(cg_rect(r));
+                        l.setFrame(cg_rect(r, scale));
                     }
                 }
                 match f.peak {
@@ -302,7 +332,7 @@ impl MeterBridgeLayer {
                             m.peak
                                 .setBackgroundColor(Some(&self.colors.zones[f.peak_zone]));
                         }
-                        m.peak.setFrame(cg_rect(r));
+                        m.peak.setFrame(cg_rect(r, scale));
                         set_hidden(&m.peak, false);
                     }
                 }
@@ -336,11 +366,27 @@ fn set_hidden(layer: &CALayer, hidden: bool) {
     }
 }
 
-fn cg_rect(r: Rect) -> CGRect {
-    CGRect::new(
-        CGPoint::new(f64::from(r.x), f64::from(r.y)),
-        CGSize::new(f64::from(r.w.max(0.0)), f64::from(r.h.max(0.0))),
+/// `r` with its edges on the device pixel grid of `scale` pixels per point.
+fn cg_rect(r: Rect, scale: f64) -> CGRect {
+    snap(
+        CGRect::new(
+            CGPoint::new(f64::from(r.x), f64::from(r.y)),
+            CGSize::new(f64::from(r.w.max(0.0)), f64::from(r.h.max(0.0))),
+        ),
+        scale,
     )
+}
+
+/// Rounds each edge (not the size) to a device pixel, so neighbouring rectangles that
+/// share an edge still share it after snapping.
+fn snap(r: CGRect, scale: f64) -> CGRect {
+    let px = |v: f64| (v * scale).round() / scale;
+    let (x0, y0) = (px(r.origin.x), px(r.origin.y));
+    let (x1, y1) = (
+        px(r.origin.x + r.size.width),
+        px(r.origin.y + r.size.height),
+    );
+    CGRect::new(CGPoint::new(x0, y0), CGSize::new(x1 - x0, y1 - y0))
 }
 
 /// Runs `f` in an explicit transaction without implicit animations (frame and colour
