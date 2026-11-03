@@ -6,7 +6,7 @@ import { Theme, Tokens } from "tokens.slint";
 // Focus ring drawn around a focused control.
 component FocusRing inherits Rectangle {
     in property <bool> show;
-    border-width: show ? 2px : 0px;
+    border-width: show ? Tokens.size-focus-ring : 0px;
     border-color: Theme.border-focus;
     border-radius: Tokens.radius-sm;
 }
@@ -28,7 +28,7 @@ export component Button inherits Rectangle {
         : checked ? Theme.accent-subtle
         : touch.has-hover ? Theme.surface-overlay
         : kind == "ghost" ? transparent : Theme.surface-raised;
-    border-width: kind == "secondary" ? 1px : 0px;
+    border-width: kind == "secondary" ? Tokens.size-border : 0px;
     border-color: Theme.border-subtle;
     accessible-role: button;
     accessible-label: accessible-name;
@@ -44,16 +44,18 @@ export component Button inherits Rectangle {
         vertical-alignment: center;
         horizontal-alignment: center;
     }
-    touch := TouchArea {
-        enabled: root.enabled;
-        clicked => { focus.focus(); root.clicked(); }
-    }
     focus := FocusScope {
         enabled: root.enabled;
         key-pressed(e) => {
             if e.text == Key.Return || e.text == " " { root.clicked(); return accept; }
             reject
         }
+    }
+    // The TouchArea comes after the FocusScope so it is on top: a FocusScope
+    // under the pointer takes the press for itself (focus-on-click).
+    touch := TouchArea {
+        enabled: root.enabled;
+        clicked => { focus.focus(); root.clicked(); }
     }
     FocusRing { show: focus.has-focus; }
 }
@@ -63,7 +65,18 @@ export component MenuItem inherits Rectangle {
     in property <string> text;
     in property <bool> checked;
     in property <bool> enabled: true;
+    // Focus this item when it is created (the first item of a menu that just opened).
+    in property <bool> autofocus;
     callback activated();
+    // Focusing in `init` is too early: the popup window is not active yet and
+    // the request is lost. A one-shot timer focuses once, after the first frame,
+    // and then stops, so it costs nothing while the menu stays open.
+    property <bool> focused-once;
+    Timer {
+        interval: 1ms;
+        running: root.autofocus && !root.focused-once;
+        triggered => { root.focused-once = true; focus.focus(); }
+    }
     height: Tokens.size-control-md;
     background: focus.has-focus || touch.has-hover ? Theme.accent-subtle : transparent;
     border-radius: Tokens.radius-sm;
@@ -90,10 +103,6 @@ export component MenuItem inherits Rectangle {
             vertical-alignment: center;
         }
     }
-    touch := TouchArea {
-        enabled: root.enabled;
-        clicked => { root.activated(); }
-    }
     focus := FocusScope {
         enabled: root.enabled;
         key-pressed(e) => {
@@ -101,13 +110,19 @@ export component MenuItem inherits Rectangle {
             reject
         }
     }
+    // The TouchArea comes after the FocusScope so it is on top: a FocusScope
+    // under the pointer takes the press for itself (focus-on-click).
+    touch := TouchArea {
+        enabled: root.enabled;
+        clicked => { root.activated(); }
+    }
 }
 
 // Popover surface for menus.
 export component MenuSurface inherits Rectangle {
     background: Theme.surface-overlay;
     border-color: Theme.border-strong;
-    border-width: 1px;
+    border-width: Tokens.size-border;
     border-radius: Tokens.radius-md;
 }
 

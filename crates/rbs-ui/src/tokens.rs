@@ -62,6 +62,18 @@ pub const LENGTHS: &[&str] = &[
     "radius.sm",
     "radius.md",
     "radius.lg",
+    "size.border",
+    "size.focus-ring",
+    "size.menu.sm",
+    "size.menu.md",
+    "size.window.w",
+    "size.window.h",
+    "size.window.min-w",
+    "size.window.min-h",
+    "size.floating.w",
+    "size.floating.h",
+    "step.nudge",
+    "step.nudge-large",
 ];
 
 /// Duration tokens every file defines (milliseconds).

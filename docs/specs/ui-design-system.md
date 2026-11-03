@@ -15,7 +15,7 @@ Binding now (once ADR-0015 is accepted): token names, the component list and con
 
 Tokens are defined once in a data file ([`crates/rbs-ui/tokens.toml`](../../crates/rbs-ui/tokens.toml)) and generated into the native toolkit's format (ADR-0016), and exported as CSS variables only for remote clients outside the desktop app. UI code references tokens by name only (rule U6).
 
-File layout (format 1): `[fixed]` holds the colours no theme may change (`color.state.live`, `color.text.on-live`); `[themes.dark]`, `[themes.light]` and `[themes.high-contrast]` each define exactly the theme colour names below, as opaque `#rrggbb`; `[length]` (logical pixels: the spacing, control height and radius tokens below), `[duration]` (milliseconds: `motion.fast`, `motion.normal`) and `[type]` (`{ size, line, weight }` for the five text styles) hold the rest. Token names are lowercase words joined by `.` or `-`. A custom theme is a complete token file; its `[fixed]` values must equal the built-in ones (`#c4262e` and `#ffffff`), otherwise it is refused. Elevation and easing tokens are added to the file together with the components that use them. `rbs_ui::tokens` parses the file and fails on a missing, unknown or invalid token, a changed fixed colour, and any failed contrast rule:
+File layout (format 1): `[fixed]` holds the colours no theme may change (`color.state.live`, `color.text.on-live`); `[themes.dark]`, `[themes.light]` and `[themes.high-contrast]` each define exactly the theme colour names below, as opaque `#rrggbb`; `[length]` (logical pixels: the spacing, size, radius, line, menu, window and keyboard step tokens below), `[duration]` (milliseconds: `motion.fast`, `motion.normal`) and `[type]` (`{ size, line, weight }` for the five text styles) hold the rest. Token names are lowercase words joined by `.` or `-`. A custom theme is a complete token file; its `[fixed]` values must equal the built-in ones (`#c4262e` and `#ffffff`), otherwise it is refused. Elevation and easing tokens are added to the file together with the components that use them. `rbs_ui::tokens` parses the file and fails on a missing, unknown or invalid token, a changed fixed colour, and any failed contrast rule:
 
 - text: `color.text.primary` and `.secondary` on every surface, `color.text.inverse` on `color.accent`, and `color.text.primary` on `color.accent.subtle`: at least 4.5:1 (7:1 in `high-contrast`); `color.text.on-live` on `color.state.live`: at least 4.5:1 in every theme, because both are fixed;
 - non-text: `color.border.focus` on `surface.base` and `.raised`, `color.border.strong`, `color.state.*` and `color.action.destructive` on `surface.raised`, `color.meter.*` on `surface.sunken`, and `color.state.live` on `surface.base`: at least 3:1;
@@ -55,6 +55,10 @@ One family (initial choice: Inter, with the OS UI font as fallback). Numbers in 
 | Spacing (4 px grid) | `space.1`=4, `space.2`=8, `space.3`=12, `space.4`=16, `space.6`=24, `space.8`=32 |
 | Control height | `size.control.sm`=24 (dense Advanced/Expert views only), `.md`=28 (default), `.lg`=32 |
 | Radius | `radius.sm`=4, `radius.md`=6, `radius.lg`=10 |
+| Lines | `size.border`=1, `size.focus-ring`=2 |
+| Menus | `size.menu.sm`=220, `size.menu.md`=300 (menu widths) |
+| Windows | `size.window.w`=1440, `size.window.h`=900 (first-start main window), `size.window.min-w`=1280, `size.window.min-h`=720 (U11 minimum of the main window), `size.floating.w`=640, `size.floating.h`=420 (first size of a floating window) |
+| Keyboard steps | `step.nudge`=8, `step.nudge-large`=128 (splitter move per arrow key, with Shift) |
 | Elevation | `elevation.0` (flat), `elevation.1` (popovers), `elevation.2` (dialogs); subtle, no heavy shadows |
 | Motion | `motion.fast`=120 ms, `motion.normal`=180 ms, `motion.easing.standard`; all motion disabled under "reduce motion" |
 
@@ -171,7 +175,7 @@ End stream, stop recording, delete a scene collection, delete a recording file, 
 
 ## Keyboard
 
-Docking by keyboard (U21): Tab moves focus through the frame (workspace menu, Panels menu), then each tab stack's tabs and their buttons, then the splitters. On a focused tab, Enter or Space shows it, the Menu key or Shift+F10 opens its panel menu (move to an edge, move to the next tab stack, float or dock back, close), and Delete closes it. A focused splitter moves 8 px per arrow key, 128 px with Shift. Menus open with the first item focused and close with Escape.
+Docking by keyboard (U21): Tab moves focus through the frame (workspace menu, Panels menu), then each tab stack's tabs and their buttons, then the splitters. On a focused tab, Enter or Space shows it, the Menu key or Shift+F10 opens its panel menu (move to an edge, move to the next tab stack, float or dock back, close), and Delete closes it. A focused splitter moves by `step.nudge` per arrow key, `step.nudge-large` with Shift. Menus open with the first item focused; Tab and Shift+Tab move between items, Enter or Space chooses one and closes the menu, Escape closes it. Delete or Backspace on a focused tab closes it.
 
 Every command is in the command palette (Ctrl/Cmd+K) with its shortcut. Defaults include: switch to scene 1-9 (Ctrl/Cmd+1..9), transition preview to program (Ctrl/Cmd+Enter; Space also works while the preview or program has focus), undo/redo, nudge source (arrows, Shift for 10 px), duplicate, delete, toggle studio mode. All shortcuts are rebindable; global hotkeys are opt-in.
 

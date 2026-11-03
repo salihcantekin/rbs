@@ -4,7 +4,7 @@
 import { Theme, Tokens } from "tokens.slint";
 import { Button, MenuItem, MenuSurface, EmptyState } from "components.slint";
 
-export { Theme }
+export { Theme, Tokens }
 
 export struct TabData { id: string, title: string, known: bool }
 export struct StackData { window: int, stack: int, x: length, y: length, w: length, h: length, tabs: [TabData], active: int }
@@ -34,9 +34,12 @@ export global Shell {
     in property <bool> locked;
     in property <bool> can-undo;
     in property <bool> can-redo;
-    in property <string> toast-text;
-    in property <bool> toast-visible;
-    in property <string> error-text;
+    // 0 none, 1 "<subject> closed." (undo), 2 automatic switch from workspace <subject>.
+    in property <int> toast-kind;
+    in property <string> toast-subject;
+    // 0 none, 1 layout locked, 2 other error with <error-detail>.
+    in property <int> error-kind;
+    in property <string> error-detail;
 
     callback relayout(int /* window */, length, length);
     callback activate-tab(int /* window */, int /* stack */, int /* tab */);
@@ -46,6 +49,7 @@ export global Shell {
     callback move-next-stack(string);
     callback float-panel(string);
     callback dock(int /* window */);
+    // Wanted position of the handle along its axis, in the dock area.
     callback drag(int /* window */, int /* handle */, length);
     callback drag-end();
     callback nudge(int /* window */, int /* handle */, length);
@@ -75,7 +79,7 @@ component LiveIndicator inherits Rectangle {
     width: label.preferred-width + 2 * Tokens.space-3;
     border-radius: Tokens.radius-sm;
     background: active ? Theme.state-live : transparent;
-    border-width: active ? 0px : 1px;
+    border-width: active ? 0px : Tokens.size-border;
     border-color: Theme.border-strong;
     accessible-role: AccessibleRole.text;
     accessible-label: @tr("Live status: {}", full);
@@ -115,17 +119,16 @@ component PanelMenu inherits PopupWindow {
     MenuSurface {
         VerticalLayout {
             padding: Tokens.space-1;
-            first := MenuItem { text: @tr("Move to left edge"); activated => { Shell.move-edge(panel, window, Edges.left); } }
-            MenuItem { text: @tr("Move to right edge"); activated => { Shell.move-edge(panel, window, Edges.right); } }
-            MenuItem { text: @tr("Move to top edge"); activated => { Shell.move-edge(panel, window, Edges.top); } }
-            MenuItem { text: @tr("Move to bottom edge"); activated => { Shell.move-edge(panel, window, Edges.bottom); } }
-            MenuItem { text: @tr("Move to next tab stack"); activated => { Shell.move-next-stack(panel); } }
-            if !floating: MenuItem { text: @tr("Float in its own window"); activated => { Shell.float-panel(panel); } }
-            if floating: MenuItem { text: @tr("Dock back"); activated => { Shell.dock(window); } }
-            MenuItem { text: @tr("Close {}", title); activated => { Shell.close-panel(panel); } }
+            MenuItem { autofocus: true; text: @tr("Move to left edge"); activated => { Shell.move-edge(panel, window, Edges.left); root.close(); } }
+            MenuItem { text: @tr("Move to right edge"); activated => { Shell.move-edge(panel, window, Edges.right); root.close(); } }
+            MenuItem { text: @tr("Move to top edge"); activated => { Shell.move-edge(panel, window, Edges.top); root.close(); } }
+            MenuItem { text: @tr("Move to bottom edge"); activated => { Shell.move-edge(panel, window, Edges.bottom); root.close(); } }
+            MenuItem { text: @tr("Move to next tab stack"); activated => { Shell.move-next-stack(panel); root.close(); } }
+            if !floating: MenuItem { text: @tr("Float in its own window"); activated => { Shell.float-panel(panel); root.close(); } }
+            if floating: MenuItem { text: @tr("Dock back"); activated => { Shell.dock(window); root.close(); } }
+            MenuItem { text: @tr("Close {}", title); activated => { Shell.close-panel(panel); root.close(); } }
         }
     }
-    init => { first.focus(); }
 }
 
 component Tab inherits Rectangle {
@@ -141,18 +144,20 @@ component Tab inherits Rectangle {
     accessible-role: AccessibleRole.tab;
     accessible-label: tab.title;
     accessible-item-selected: selected;
-    accessible-description: @tr("Menu key or Shift+F10 opens panel actions; Delete closes it");
+    accessible-description: @tr("Menu key or Shift+F10 opens panel actions; Delete or Backspace closes it");
     accessible-action-default => { activate(); }
     forward-focus: focus;
-    touch := TouchArea { clicked => { focus.focus(); activate(); } }
     focus := FocusScope {
         key-pressed(e) => {
             if e.text == Key.Return || e.text == " " { activate(); return accept; }
             if e.text == Key.Menu || (e.text == Key.F10 && e.modifiers.shift) { open-menu(); return accept; }
-            if e.text == Key.Delete { close(); return accept; }
+            if e.text == Key.Delete || e.text == Key.Backspace { close(); return accept; }
             reject
         }
     }
+    // The TouchArea comes after the FocusScope so it is on top: a FocusScope
+    // under the pointer takes the press for itself (focus-on-click).
+    touch := TouchArea { clicked => { focus.focus(); activate(); } }
     HorizontalLayout {
         padding-left: Tokens.space-2;
         title := Text {
@@ -180,12 +185,12 @@ component Tab inherits Rectangle {
         }
     }
     Rectangle {
-        y: parent.height - 2px;
-        height: 2px;
+        y: parent.height - Tokens.size-focus-ring;
+        height: Tokens.size-focus-ring;
         background: selected ? Theme.accent : transparent;
     }
     Rectangle {
-        border-width: focus.has-focus ? 2px : 0px;
+        border-width: focus.has-focus ? Tokens.size-focus-ring : 0px;
         border-color: Theme.border-focus;
         border-radius: Tokens.radius-sm;
     }
@@ -199,12 +204,12 @@ component StackView inherits Rectangle {
     property <string> menu-title;
     background: Theme.surface-base;
     border-color: Theme.border-subtle;
-    border-width: 1px;
+    border-width: Tokens.size-border;
     accessible-role: tab-list;
     Flickable {
-        x: 1px;
-        y: 1px;
-        width: parent.width - 2px;
+        x: Tokens.size-border;
+        y: Tokens.size-border;
+        width: parent.width - 2 * Tokens.size-border;
         height: bar;
         content-width: tabs.preferred-width;
         tabs := HorizontalLayout {
@@ -225,10 +230,10 @@ component StackView inherits Rectangle {
         }
     }
     if data.tabs.length > 0: PanelContent {
-        x: 1px;
-        y: bar + 1px;
-        width: parent.width - 2px;
-        height: max(0px, parent.height - bar - 2px);
+        x: Tokens.size-border;
+        y: bar + Tokens.size-border;
+        width: parent.width - 2 * Tokens.size-border;
+        height: max(0px, parent.height - bar - 2 * Tokens.size-border);
         tab: data.tabs[data.active];
     }
     menu := PanelMenu {
@@ -251,6 +256,21 @@ component Splitter inherits Rectangle {
     accessible-value-minimum: 0;
     accessible-value-maximum: 100;
     forward-focus: focus;
+    focus := FocusScope {
+        key-pressed(e) => {
+            if (data.horizontal && e.text == Key.LeftArrow) || (!data.horizontal && e.text == Key.UpArrow) {
+                Shell.nudge(data.window, data.index, e.modifiers.shift ? -Tokens.step-nudge-large : -Tokens.step-nudge);
+                return accept;
+            }
+            if (data.horizontal && e.text == Key.RightArrow) || (!data.horizontal && e.text == Key.DownArrow) {
+                Shell.nudge(data.window, data.index, e.modifiers.shift ? Tokens.step-nudge-large : Tokens.step-nudge);
+                return accept;
+            }
+            reject
+        }
+    }
+    // The TouchArea comes after the FocusScope so it is on top: a FocusScope
+    // under the pointer takes the press for itself (focus-on-click).
     touch := TouchArea {
         mouse-cursor: data.horizontal ? ew-resize : ns-resize;
         pointer-event(e) => {
@@ -258,20 +278,9 @@ component Splitter inherits Rectangle {
             if e.kind == PointerEventKind.up { Shell.drag-end(); }
         }
         moved => {
-            Shell.drag(data.window, data.index, data.horizontal ? self.mouse-x - self.pressed-x : self.mouse-y - self.pressed-y);
-        }
-    }
-    focus := FocusScope {
-        key-pressed(e) => {
-            if (data.horizontal && e.text == Key.LeftArrow) || (!data.horizontal && e.text == Key.UpArrow) {
-                Shell.nudge(data.window, data.index, e.modifiers.shift ? -4 * Tokens.space-8 : -Tokens.space-2);
-                return accept;
-            }
-            if (data.horizontal && e.text == Key.RightArrow) || (!data.horizontal && e.text == Key.DownArrow) {
-                Shell.nudge(data.window, data.index, e.modifiers.shift ? 4 * Tokens.space-8 : Tokens.space-2);
-                return accept;
-            }
-            reject
+            // The handle's wanted position in the dock area: idempotent however many
+            // move events arrive before the layout catches up.
+            Shell.drag(data.window, data.index, data.horizontal ? data.x + self.mouse-x - self.pressed-x : data.y + self.mouse-y - self.pressed-y);
         }
     }
 }
@@ -281,6 +290,7 @@ component DockArea inherits Rectangle {
     in property <[StackData]> stacks;
     in property <[HandleData]> handles;
     in property <bool> floating;
+    changed window => { Shell.relayout(window, self.width, self.height); }
     changed width => { Shell.relayout(window, self.width, self.height); }
     changed height => { Shell.relayout(window, self.width, self.height); }
     init => { Shell.relayout(window, self.width, self.height); }
@@ -304,34 +314,35 @@ component DockArea inherits Rectangle {
 component WorkspaceMenu inherits PopupWindow {
     close-policy: close-on-click-outside;
     MenuSurface {
-        width: 300px;
+        width: Tokens.size-menu-md;
         VerticalLayout {
             padding: Tokens.space-2;
             spacing: Tokens.space-1;
             for w[i] in Shell.workspaces: MenuItem {
+                autofocus: i == 0;
                 text: w.name;
                 checked: w.current;
-                activated => { Shell.switch-workspace(w.name); }
+                activated => { Shell.switch-workspace(w.name); root.close(); }
             }
-            Rectangle { height: 1px; background: Theme.border-subtle; }
-            MenuItem { text: @tr("Save changes to {}", Shell.workspace-name); activated => { Shell.save-workspace(); } }
+            Rectangle { height: Tokens.size-border; background: Theme.border-subtle; }
+            MenuItem { text: @tr("Save changes to {}", Shell.workspace-name); activated => { Shell.save-workspace(); root.close(); } }
             MenuItem {
                 text: @tr("Restore default of {}", Shell.workspace-name);
                 enabled: Shell.workspace-built-in;
-                activated => { Shell.restore-workspace(); }
+                activated => { Shell.restore-workspace(); root.close(); }
             }
             MenuItem {
                 text: Shell.locked ? @tr("Unlock layout") : @tr("Lock layout");
                 checked: Shell.locked;
-                activated => { Shell.set-locked(!Shell.locked); }
+                activated => { Shell.set-locked(!Shell.locked); root.close(); }
             }
-            MenuItem { text: @tr("Undo layout change"); enabled: Shell.can-undo; activated => { Shell.undo(); } }
-            MenuItem { text: @tr("Redo layout change"); enabled: Shell.can-redo; activated => { Shell.redo(); } }
-            Rectangle { height: 1px; background: Theme.border-subtle; }
+            MenuItem { text: @tr("Undo layout change"); enabled: Shell.can-undo; activated => { Shell.undo(); root.close(); } }
+            MenuItem { text: @tr("Redo layout change"); enabled: Shell.can-redo; activated => { Shell.redo(); root.close(); } }
+            Rectangle { height: Tokens.size-border; background: Theme.border-subtle; }
             HorizontalLayout {
                 spacing: Tokens.space-2;
                 Rectangle {
-                    border-width: 1px;
+                    border-width: Tokens.size-border;
                     border-radius: Tokens.radius-sm;
                     border-color: name.has-focus ? Theme.border-focus : Theme.border-strong;
                     background: Theme.surface-sunken;
@@ -343,13 +354,13 @@ component WorkspaceMenu inherits PopupWindow {
                         font-size: Tokens.type-body-size;
                         vertical-alignment: center;
                         accessible-label: @tr("New workspace name");
-                        accepted => { if self.text != "" { Shell.save-workspace-as(self.text); } }
+                        accepted => { if self.text != "" { Shell.save-workspace-as(self.text); root.close(); } }
                     }
                 }
                 Button {
                     text: @tr("Save as new");
                     enabled: name.text != "";
-                    clicked => { Shell.save-workspace-as(name.text); }
+                    clicked => { Shell.save-workspace-as(name.text); root.close(); }
                 }
             }
         }
@@ -359,13 +370,14 @@ component WorkspaceMenu inherits PopupWindow {
 component PanelsMenu inherits PopupWindow {
     close-policy: close-on-click-outside;
     MenuSurface {
-        width: 220px;
+        width: Tokens.size-menu-sm;
         VerticalLayout {
             padding: Tokens.space-2;
-            for p in Shell.panels: MenuItem {
+            for p[i] in Shell.panels: MenuItem {
+                autofocus: i == 0;
                 text: p.title;
                 checked: p.open;
-                activated => { Shell.toggle-panel(p.id); }
+                activated => { Shell.toggle-panel(p.id); root.close(); }
             }
         }
     }
@@ -415,7 +427,7 @@ component Toast inherits Rectangle {
     width: row.preferred-width;
     background: Theme.surface-overlay;
     border-color: Theme.border-strong;
-    border-width: 1px;
+    border-width: Tokens.size-border;
     border-radius: Tokens.radius-md;
     accessible-role: AccessibleRole.text;
     accessible-label: text;
@@ -436,10 +448,10 @@ component Toast inherits Rectangle {
 
 export component MainWindow inherits Window {
     title: @tr("RBS");
-    preferred-width: 1440px;
-    preferred-height: 900px;
-    min-width: 1280px;
-    min-height: 720px;
+    preferred-width: Tokens.size-window-w;
+    preferred-height: Tokens.size-window-h;
+    min-width: Tokens.size-window-min-w;
+    min-height: Tokens.size-window-min-h;
     background: Theme.surface-sunken;
     default-font-size: Tokens.type-body-size;
     in property <[StackData]> stacks;
@@ -452,18 +464,18 @@ export component MainWindow inherits Window {
             handles: root.handles;
         }
     }
-    if Shell.toast-visible: Toast {
+    if Shell.toast-kind != 0: Toast {
         x: (parent.width - self.width) / 2;
         y: parent.height - self.height - Tokens.space-6;
-        text: Shell.toast-text;
+        text: Shell.toast-kind == 1 ? @tr("{} closed.", Shell.toast-subject) : @tr("Switched workspace automatically from {}.", Shell.toast-subject);
         action: @tr("Undo");
         act => { Shell.toast-undo(); }
         dismiss => { Shell.toast-dismiss(); }
     }
-    if Shell.error-text != "": Toast {
+    if Shell.error-kind != 0: Toast {
         x: (parent.width - self.width) / 2;
         y: frame.height + Tokens.space-2;
-        text: Shell.error-text;
+        text: Shell.error-kind == 1 ? @tr("The layout is locked. Unlock it from the workspace menu.") : @tr("That did not work: {}", Shell.error-detail);
         action: "";
         dismiss => { Shell.dismiss-error(); }
     }
@@ -476,8 +488,8 @@ export component FloatWindow inherits Window {
     in property <[StackData]> stacks;
     in property <[HandleData]> handles;
     title: @tr("RBS – {}", panel-names);
-    preferred-width: 640px;
-    preferred-height: 420px;
+    preferred-width: Tokens.size-floating-w;
+    preferred-height: Tokens.size-floating-h;
     background: Theme.surface-sunken;
     default-font-size: Tokens.type-body-size;
     VerticalLayout {
