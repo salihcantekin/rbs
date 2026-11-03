@@ -188,8 +188,16 @@ fn serve(socket: &UdpSocket, b: &Behaviour, stop: &AtomicBool, sessions: &Mutex<
     let mut out = Vec::with_capacity(2048);
     let mut next_id = 1000_u32;
     let mut ever_connected = 0_usize;
-    while !stop.load(Ordering::SeqCst) {
-        if let Ok((n, from)) = socket.recv_from(&mut buf) {
+    loop {
+        // Once stopped, the packets already received are still read (a client's last
+        // shutdown may be queued when `finish` is called); the loop ends at the first
+        // read that finds none.
+        let stopping = stop.load(Ordering::SeqCst);
+        let received = socket.recv_from(&mut buf);
+        if stopping && received.is_err() {
+            break;
+        }
+        if let Ok((n, from)) = received {
             let p = &buf[..n];
             if n >= 16 && p[0] & 0x80 != 0 {
                 let kind = ((word(p, 0) >> 16) & 0x7FFF) as u16;
