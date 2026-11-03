@@ -645,7 +645,18 @@ impl NvencEngine {
         let s = unsafe { lock(self.encoder(), &mut params) };
         status("nvEncLockBitstream", s)?;
         let len = params.bitstreamSizeInBytes as usize;
-        let data = if len == 0 || params.bitstreamBufferPtr.is_null() {
+        // A picture never needs more than twice the raw frame; a larger size is a
+        // driver fault, refused instead of reading past the bitstream buffer.
+        let [(row0, rows0), (row1, rows1)] = self.planes();
+        let limit = 2 * (row0 * rows0 + row1 * rows1) + 64 * 1024;
+        let data = if len > limit {
+            // SAFETY: the buffer was locked above.
+            let _ = unsafe { unlock(self.encoder(), self.outputs[slot]) };
+            self.pending[slot] = false;
+            return Err(EngineError::Broken(
+                "NVENC reported a picture larger than its buffer",
+            ));
+        } else if len == 0 || params.bitstreamBufferPtr.is_null() {
             Vec::new()
         } else {
             // SAFETY: while locked, `bitstreamBufferPtr` points at

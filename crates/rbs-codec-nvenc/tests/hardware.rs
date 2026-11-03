@@ -29,8 +29,7 @@ fn encodes(codec: &str) -> bool {
         Some(CapabilityValue::Set(s)) if s.iter().any(|c| c == codec)
     );
     // `RBS_REQUIRE_NVENC=1` makes only H.264 mandatory (as in the conformance suite's core
-    // cases): some devices have no HEVC encoder (an AMD Ryzen 7000 iGPU refuses the
-    // AMF HEVC component), and their HEVC tests skip.
+    // cases): boards without an HEVC encoder skip the HEVC tests.
     if !found {
         assert!(
             codec != "h264" || !std::env::var("RBS_REQUIRE_NVENC").is_ok_and(|v| v == "1"),
