@@ -4,7 +4,7 @@
 //! Prints the endpoint (`service#token`) as its first line on stdout, then a status line
 //! every few seconds on stderr. Stops when stdin closes (the UI demo holds it open) or
 //! after `--seconds N`. `RBS_PREVIEW_SIZE=<w>x<h>` sets the preview size (default
-//! 1280x720).
+//! 1280x720), `RBS_PREVIEW_SURFACES=<n>` the ring size (default 6).
 //!
 //! ```sh
 //! cargo run -p rbs-gpu --release --example preview_engine
@@ -97,8 +97,12 @@ mod demo {
                 height: preview_size().1,
                 // What the UI's preview layer needs at 60 fps (`PreviewLayer::surfaces_needed`):
                 // one shown, up to three retiring for 34 ms, one being rendered, one in
-                // flight. Slint's texture path needs four of them.
-                surfaces: 6,
+                // flight. Slint's texture path needs four of them. `RBS_PREVIEW_SURFACES`
+                // overrides it (2 to 8).
+                surfaces: std::env::var("RBS_PREVIEW_SURFACES")
+                    .ok()
+                    .and_then(|v| v.parse().ok())
+                    .unwrap_or(6),
             },
         )?;
         println!("{}", publisher.endpoint());

@@ -546,10 +546,10 @@ mod demo {
             let poll = match (st.layer.as_mut(), st.slint.as_mut()) {
                 (Some(layer), _) => {
                     layer.retire(now);
-                    // Only while no new frame may come; otherwise the next one retires.
+                    // At the oldest frame's retire time: waiting for the next frame would
+                    // hold surfaces up to a frame longer than the rule asks.
                     layer
                         .next_retire()
-                        .filter(|_| layer.engine_may_starve())
                         .map(|due| due.saturating_since(now).max(Duration::from_millis(1)))
                 }
                 (None, Some(p)) => {
