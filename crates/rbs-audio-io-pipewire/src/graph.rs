@@ -40,7 +40,9 @@ pub(crate) fn parse_id(id: &EndpointId) -> Option<(EndpointKind, &str)> {
 /// The media class an endpoint kind reads from.
 pub(crate) fn class_matches(kind: EndpointKind, class: &str) -> bool {
     match kind {
-        EndpointKind::Input => class.starts_with("Audio/Source"),
+        // Duplex nodes (the Pro Audio profile of multi-channel interfaces) capture
+        // through their output ports too.
+        EndpointKind::Input => class.starts_with("Audio/Source") || class == "Audio/Duplex",
         EndpointKind::OutputLoopback => class.starts_with("Audio/Sink"),
         EndpointKind::Application => class == "Stream/Output/Audio",
         _ => false,
@@ -122,12 +124,24 @@ pub(crate) fn default_name(value: &str) -> Option<&str> {
 }
 
 /// Which of an application's ports feed which of the capture stream's stereo ports:
-/// the same position, `MONO` into both, and anything else by port index.
+/// left positions into `FL`, right positions into `FR`, centre and mono positions into
+/// both, LFE into neither, and unknown positions (`AUXn`) by port index. PipeWire's port
+/// mixer sums what is linked at unity gain, so a surround application is downmixed
+/// without losing its centre (dialogue) channel.
 pub(crate) fn feeds(app_channel: &str, app_index: u32, ours: &str, our_index: u32) -> bool {
-    match app_channel {
-        "FL" | "FR" => app_channel == ours,
-        "MONO" => true,
-        _ => app_index == our_index,
+    const LEFT: [&str; 9] = ["FL", "SL", "RL", "FLC", "RLC", "FLW", "FLH", "TFL", "TRL"];
+    const RIGHT: [&str; 9] = ["FR", "SR", "RR", "FRC", "RRC", "FRW", "FRH", "TFR", "TRR"];
+    const BOTH: [&str; 8] = ["MONO", "FC", "RC", "BC", "TC", "TFC", "TRC", "FCH"];
+    if LEFT.contains(&app_channel) {
+        ours == "FL"
+    } else if RIGHT.contains(&app_channel) {
+        ours == "FR"
+    } else if BOTH.contains(&app_channel) {
+        true
+    } else if app_channel.starts_with("LFE") {
+        false
+    } else {
+        app_index == our_index
     }
 }
 
@@ -153,6 +167,7 @@ mod tests {
     fn classes_select_kinds() {
         assert!(class_matches(EndpointKind::Input, "Audio/Source"));
         assert!(class_matches(EndpointKind::Input, "Audio/Source/Virtual"));
+        assert!(class_matches(EndpointKind::Input, "Audio/Duplex"));
         assert!(class_matches(EndpointKind::OutputLoopback, "Audio/Sink"));
         assert!(!class_matches(EndpointKind::Input, "Stream/Input/Audio"));
         assert!(class_matches(
@@ -209,6 +224,9 @@ mod tests {
         assert!(feeds("FL", 0, "FL", 0));
         assert!(!feeds("FL", 0, "FR", 1));
         assert!(feeds("MONO", 0, "FR", 1));
+        assert!(feeds("FC", 2, "FL", 0) && feeds("FC", 2, "FR", 1));
+        assert!(feeds("RR", 5, "FR", 1) && !feeds("RR", 5, "FL", 0));
+        assert!(!feeds("LFE", 3, "FL", 0));
         assert!(feeds("AUX1", 1, "FR", 1));
         assert!(!feeds("AUX2", 2, "FR", 1));
     }

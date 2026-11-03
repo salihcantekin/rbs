@@ -446,7 +446,7 @@ impl AudioBackend for PipeWireAudioBackend {
             clock: Arc::clone(&request.clock),
             buffer: request.clamped_buffer(),
             max_packet: snapshot.max_quantum(),
-            last_stamp: Arc::new(AtomicU64::new(0)),
+            last_end: Arc::new(AtomicU64::new(0)),
             active: None,
             totals: InputStats::default(),
         }))
@@ -486,9 +486,9 @@ struct PipeWireStream {
     buffer: Duration,
     /// Largest packet PipeWire may deliver (the graph's maximum quantum).
     max_packet: usize,
-    /// Master time of the last packet, in nanoseconds, so a restarted stream stamps
-    /// later.
-    last_stamp: Arc<AtomicU64>,
+    /// Master time at which the last packet ended, in nanoseconds, so a restarted
+    /// stream starts later.
+    last_end: Arc<AtomicU64>,
     active: Option<Active>,
     /// Counters of rings closed by `stop`.
     totals: InputStats,
@@ -502,7 +502,7 @@ impl PipeWireStream {
         let (producer, consumer) = ring::channel(self.format, capacity, ring::DEFAULT_MARKS);
         let status = Arc::new(Status::default());
         let capture = Capture {
-            packets: Packets::new(producer, rate, Arc::clone(&self.last_stamp)),
+            packets: Packets::new(producer, rate, Arc::clone(&self.last_end)),
             clock: Arc::clone(&self.clock),
             channels: self.format.channels.channels(),
         };
@@ -625,7 +625,10 @@ impl Capture {
         let os_now = monotonic_nanos();
         let channels = self.channels;
         let datas = buffer.datas_mut();
+        // What the buffer holds if it cannot be read: lost, and counted.
+        let lost = datas.first().map_or(0, |d| u64::from(d.chunk().size()) / 4);
         if datas.len() < channels {
+            self.packets.lose(lost);
             return;
         }
         let mut planes: [&[f32]; MAX_CHANNELS] = [&[]; MAX_CHANNELS];
@@ -633,13 +636,13 @@ impl Capture {
         for (plane, data) in planes.iter_mut().zip(datas.iter_mut()).take(channels) {
             let offset = data.chunk().offset() as usize;
             let size = data.chunk().size() as usize;
-            let Some(bytes) = data.data() else {
-                return;
-            };
-            let Some(bytes) = offset
-                .checked_add(size)
-                .and_then(|end| bytes.get(offset..end))
-            else {
+            let bytes = data.data().and_then(|bytes| {
+                offset
+                    .checked_add(size)
+                    .and_then(|end| bytes.get(offset..end))
+            });
+            let Some(bytes) = bytes else {
+                self.packets.lose(lost);
                 return;
             };
             // SAFETY: every bit pattern is a valid `f32`, and `align_to` only puts
@@ -647,6 +650,7 @@ impl Capture {
             // the buffer while it is dequeued.
             let (head, samples, _) = unsafe { bytes.align_to::<f32>() };
             if !head.is_empty() {
+                self.packets.lose(lost);
                 return;
             }
             frames = frames.min(samples.len());
@@ -767,6 +771,10 @@ struct Watch {
     own_node: Option<u32>,
     /// Application streams: links this stream created, by (output port, input port).
     links: Vec<(u32, u32, pw::link::Link)>,
+    /// Application streams: registry ids of links into this stream's node, by
+    /// (link, output port, input port), so a link removed by someone else (a patchbay,
+    /// the session manager) is noticed and made again.
+    link_globals: Vec<(u32, u32, u32)>,
 }
 
 impl Watch {
@@ -813,13 +821,22 @@ impl Watch {
     }
 
     /// Forgets a removed global. Returns whether the target is gone.
-    fn remove(&mut self, kind: EndpointKind, id: u32) -> bool {
+    fn remove(&mut self, kind: EndpointKind, id: u32, core: &pw::core::CoreRc) -> bool {
         if kind != EndpointKind::Application {
             return self.node == Some(id);
         }
         self.app_nodes.remove(&id);
         self.ports.retain(|p| p.id != id && p.node != id);
         self.links.retain(|(o, i, _)| *o != id && *i != id);
+        if let Some(at) = self
+            .link_globals
+            .iter()
+            .position(|(link, _, _)| *link == id)
+        {
+            let (_, output, input) = self.link_globals.swap_remove(at);
+            self.links.retain(|(o, i, _)| (*o, *i) != (output, input));
+            self.relink(core);
+        }
         self.app_clients.remove(&id) && self.app_clients.is_empty()
     }
 }
@@ -904,6 +921,17 @@ fn run_stream(
                             watch.relink(&core);
                         }
                     }
+                    pw::types::ObjectType::Link if app => {
+                        let get = |key| props.get(key).and_then(parse_u32);
+                        if let (Some(node), Some(output), Some(input)) = (
+                            get("link.input.node"),
+                            get("link.output.port"),
+                            get("link.input.port"),
+                        ) && watch.own_node == Some(node)
+                        {
+                            watch.link_globals.push((global.id, output, input));
+                        }
+                    }
                     _ => {}
                 }
             }
@@ -911,8 +939,9 @@ fn run_stream(
         .global_remove({
             let watch = Rc::clone(&watch);
             let lose = lose.clone();
+            let core = core.clone();
             move |id| {
-                if watch.borrow_mut().remove(kind, id) {
+                if watch.borrow_mut().remove(kind, id, &core) {
                     lose();
                 }
             }
@@ -944,9 +973,6 @@ fn run_stream(
         *pw::keys::MEDIA_ROLE => "Production",
         *pw::keys::NODE_NAME => STREAM_NAME,
         *pw::keys::APP_NAME => "RBS",
-        // Scheduled every cycle even while nothing plays into a monitor or an
-        // application, so those streams deliver continuous (silent) audio.
-        "node.always-process" => "true",
         // Never link to another node (the default microphone) when the target is gone.
         "node.dont-fallback" => "true",
     };
@@ -955,6 +981,13 @@ fn run_stream(
     }
     if kind == EndpointKind::OutputLoopback {
         props.insert("stream.capture.sink", "true");
+    }
+    if kind != EndpointKind::Input {
+        // Scheduled every cycle even while nothing plays into the monitor or the
+        // application, so these streams deliver continuous (silent) audio. Not for
+        // inputs: a microphone that is not linked must deliver nothing, not silence
+        // that looks like a quiet room.
+        props.insert("node.always-process", "true");
     }
     let Ok(stream) = pw::stream::StreamRc::new(core.clone(), STREAM_NAME, props) else {
         return fail(&report);

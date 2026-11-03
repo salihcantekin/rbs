@@ -37,7 +37,9 @@ fn required() -> bool {
 }
 
 #[test]
-fn passes_conformance() {
+#[ignore = "slow: about 8 s of real audio through a real PipeWire daemon (the suite runs \
+            300 ms runs, overflow and restart per endpoint, then graph changes)"]
+fn slow_passes_conformance() {
     use rbs_audio_io::conformance::{self, Options, RealTimePacer};
     use rbs_audio_io_pipewire::PipeWireAudioBackend;
 
@@ -64,7 +66,10 @@ fn passes_conformance() {
             strict: required(),
             ..Options::default()
         };
-        let report = conformance::run(&backend, &mut RealTimePacer::new(), &options);
+        // Only the fixture endpoints: a developer's daemon has real devices, which the
+        // suite cannot remove.
+        let fixtures = FixturesOnly(backend);
+        let report = conformance::run(&fixtures, &mut RealTimePacer::new(), &options);
         eprintln!("{report}");
         report.assert_ran(&[
             "probe",
@@ -88,7 +93,179 @@ fn passes_conformance() {
         // delivered is the audio played, which also proves the application's ports
         // were linked.
         delivers_what_was_played();
+        survives_graph_changes();
     }
+}
+
+/// The ids of the fixture endpoints.
+#[cfg(target_os = "linux")]
+fn fixture_ids() -> [String; 3] {
+    [
+        format!("source:{}", fixture::MIC),
+        format!("monitor:{}", fixture::SINK),
+        format!("app:{}", fixture::APP),
+    ]
+}
+
+/// The PipeWire backend, listing only the fixture endpoints.
+#[cfg(target_os = "linux")]
+struct FixturesOnly(rbs_audio_io_pipewire::PipeWireAudioBackend);
+
+#[cfg(target_os = "linux")]
+impl rbs_core::registry::AdapterFactory for FixturesOnly {
+    fn id(&self) -> rbs_core::registry::AdapterId {
+        self.0.id()
+    }
+
+    fn display_name(&self) -> &str {
+        self.0.display_name()
+    }
+
+    fn probe(&self) -> Result<rbs_core::capability::CapabilitySet, rbs_core::registry::ProbeError> {
+        self.0.probe()
+    }
+}
+
+#[cfg(target_os = "linux")]
+impl rbs_audio_io::AudioBackend for FixturesOnly {
+    fn enumerate(
+        &self,
+        kind: rbs_audio_io::EndpointKind,
+    ) -> Result<Vec<rbs_audio_io::AudioEndpoint>, rbs_audio_io::AudioIoError> {
+        let ids = fixture_ids();
+        let mut list = self.0.enumerate(kind)?;
+        list.retain(|e| ids.iter().any(|id| id == e.id.as_str()));
+        Ok(list)
+    }
+
+    fn open_input(
+        &self,
+        request: &rbs_audio_io::InputRequest,
+    ) -> Result<Box<dyn rbs_audio_io::AudioInputStream>, rbs_audio_io::AudioIoError> {
+        self.0.open_input(request)
+    }
+}
+
+/// Sets a key of the daemon's `settings` metadata (0 resets it) with `pw-metadata`.
+#[cfg(target_os = "linux")]
+fn set_setting(key: &str, value: u32) {
+    let status = std::process::Command::new("pw-metadata")
+        .args(["-n", "settings", "0", key, &value.to_string()])
+        .stdout(std::process::Stdio::null())
+        .status();
+    assert!(
+        status.is_ok_and(|s| s.success()),
+        "pw-metadata {key} {value}"
+    );
+}
+
+/// Resets the graph settings this test changes, also when it fails.
+#[cfg(target_os = "linux")]
+struct ResetSettings;
+
+#[cfg(target_os = "linux")]
+impl Drop for ResetSettings {
+    fn drop(&mut self) {
+        set_setting("clock.force-quantum", 0);
+        set_setting("clock.force-rate", 0);
+    }
+}
+
+/// The graph's quantum and rate change while a monitor stream is read (any client
+/// asking for another latency does this on a desktop). Every read keeps invariants 2
+/// and 3: strictly increasing, never ahead of the clock, and a read that continues a
+/// run starts where the previous one ended. Audio that cannot be placed is counted
+/// as dropped, so accounting still holds.
+#[cfg(target_os = "linux")]
+fn survives_graph_changes() {
+    use std::sync::Arc;
+    use std::time::{Duration, Instant};
+
+    use rbs_audio_io::{AudioBackend, EndpointId, InputRequest};
+    use rbs_core::time::{Clock, MonotonicClock};
+
+    const TOLERANCE: u64 = 2_000_000;
+
+    let _sink = fixture::Fixture::start("sink", "fixture_process");
+    let _reset = ResetSettings;
+    let clock = Arc::new(MonotonicClock::new());
+    let backend = rbs_audio_io_pipewire::PipeWireAudioBackend::new();
+    let request = InputRequest::new(
+        EndpointId::new(format!("monitor:{}", fixture::SINK)),
+        clock.clone(),
+    );
+    let mut stream = match backend.open_input(&request) {
+        Ok(stream) => stream,
+        Err(e) => panic!("open: {e}"),
+    };
+    if let Err(e) = stream.start() {
+        panic!("start: {e}");
+    }
+    let rate = u64::from(stream.format().sample_rate.hz());
+    let mut buffers = vec![vec![0.0_f32; 4_096]; 2];
+    let mut last: Option<(u64, u64)> = None;
+    let mut delivered = 0_u64;
+    let steps: [(&str, u32); 8] = [
+        ("clock.force-quantum", 256),
+        ("clock.force-quantum", 2_048),
+        ("clock.force-quantum", 64),
+        ("clock.force-quantum", 1_024),
+        ("clock.force-quantum", 0),
+        ("clock.force-rate", 44_100),
+        ("clock.force-rate", 96_000),
+        ("clock.force-rate", 0),
+    ];
+    for (key, value) in steps {
+        set_setting(key, value);
+        // 250 ms of audio after each change; the guard only catches a hang (ADR-0032).
+        let wanted = delivered + rate / 4;
+        let guard = Instant::now() + Duration::from_secs(5);
+        while delivered < wanted {
+            assert!(Instant::now() < guard, "no audio after {key} = {value}");
+            let mut slices: Vec<&mut [f32]> = buffers.iter_mut().map(Vec::as_mut_slice).collect();
+            let read = match stream.read(&mut slices) {
+                Ok(read) => read,
+                Err(e) => panic!("read after {key} = {value}: {e}"),
+            };
+            let now = clock.now().as_nanos();
+            if read.frames == 0 {
+                std::thread::sleep(Duration::from_millis(2));
+                continue;
+            }
+            let start = read.timestamp.as_nanos();
+            let end = start + read.frames as u64 * 1_000_000_000 / rate;
+            assert!(
+                end <= now + TOLERANCE,
+                "after {key} = {value}: read ends {} us after it was made",
+                (end - now) / 1_000
+            );
+            if let Some((previous_start, previous_end)) = last {
+                assert!(
+                    start > previous_start,
+                    "after {key} = {value}: not increasing"
+                );
+                assert!(
+                    start + TOLERANCE >= previous_end,
+                    "after {key} = {value}: overlaps the previous read by {} us",
+                    (previous_end - start) / 1_000
+                );
+                if !read.discontinuity {
+                    assert!(
+                        start.abs_diff(previous_end) <= TOLERANCE,
+                        "after {key} = {value}: a continued read stepped {} us",
+                        (start as i64 - previous_end as i64) / 1_000
+                    );
+                }
+            }
+            last = Some((start, end));
+            delivered += read.frames as u64;
+        }
+    }
+    stream.stop();
+    let stats = stream.stats();
+    assert_eq!(stats.delivered, delivered);
+    assert_eq!(stats.captured, stats.delivered + stats.dropped, "{stats:?}");
+    eprintln!("graph changes: {stats:?}");
 }
 
 /// The fixtures play a 0.25 amplitude sine on every channel; the microphone is mono

@@ -21,25 +21,21 @@ pub(crate) struct Packets {
     edge: EdgeClock,
     pacing: Pacing,
     rate: SampleRate,
-    /// Master time of the last packet in nanoseconds, kept by the stream so a restart
-    /// stamps later.
-    last_stamp: Arc<AtomicU64>,
+    /// Master time at which the last packet ended, in nanoseconds, kept by the stream
+    /// so a restarted stream starts later.
+    last_end: Arc<AtomicU64>,
 }
 
 impl Packets {
-    /// Packets at `rate` into `producer`, stamped later than `last_stamp`.
-    pub(crate) fn new(
-        producer: RingProducer,
-        rate: SampleRate,
-        last_stamp: Arc<AtomicU64>,
-    ) -> Self {
-        let floor = Timestamp::from_nanos(last_stamp.load(Ordering::Relaxed));
+    /// Packets at `rate` into `producer`, starting no earlier than `last_end`.
+    pub(crate) fn new(producer: RingProducer, rate: SampleRate, last_end: Arc<AtomicU64>) -> Self {
+        let floor = Timestamp::from_nanos(last_end.load(Ordering::Relaxed));
         Self {
             producer,
             edge: EdgeClock::default(),
             pacing: Pacing::new(rate).with_floor(floor),
             rate,
-            last_stamp,
+            last_end,
         }
     }
 
@@ -63,7 +59,12 @@ impl Packets {
         let measured =
             self.edge
                 .to_master(captured_end.saturating_sub(duration_nanos), duration, now);
-        let stamp = self.pacing.stamp(measured, frames, now);
+        let Some(stamp) = self.pacing.stamp(measured, frames, now) else {
+            // Cannot follow the previous packet without ending in the future (the
+            // graph's quantum or rate just changed): lost, counted.
+            self.producer.lost(frames as u64);
+            return;
+        };
         if stamp.new_run {
             self.producer.gap();
         }
@@ -71,8 +72,16 @@ impl Packets {
             // Counted by the ring, whose next stored packet starts a new run.
             self.pacing.break_run();
         }
-        self.last_stamp
-            .store(stamp.timestamp.as_nanos(), Ordering::Relaxed);
+        if let Some(end) = self.pacing.end() {
+            self.last_end.store(end.as_nanos(), Ordering::Relaxed);
+        }
+    }
+
+    /// A buffer of `frames` frames that could not be read (an unexpected layout):
+    /// counted as lost, and the next packet starts a new run.
+    pub(crate) fn lose(&mut self, frames: u64) {
+        self.producer.lost(frames);
+        self.pacing.break_run();
     }
 }
 
