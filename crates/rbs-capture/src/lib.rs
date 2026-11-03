@@ -7,6 +7,7 @@
 //! This crate is a port: it depends only on `rbs-core` and never on an OS API, GPU
 //! library or adapter (principle P1).
 
+pub mod camera;
 pub mod caps;
 pub mod conformance;
 mod error;

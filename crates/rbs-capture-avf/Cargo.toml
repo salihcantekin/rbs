@@ -1,0 +1,36 @@
+[package]
+name = "rbs-capture-avf"
+description = "AVFoundation adapter for the RBS capture port: macOS cameras as zero-copy IOSurfaces."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+rbs-capture = { path = "../rbs-capture" }
+rbs-core = { path = "../rbs-core" }
+
+# Apple's frameworks through the objc2 bindings (MIT OR Apache-2.0 OR Zlib), same
+# versions as rbs-capture-sck and rbs-gpu.
+[target.'cfg(target_os = "macos")'.dependencies]
+block2 = "0.6"
+dispatch2 = { version = "0.3", default-features = false, features = ["std", "alloc"] }
+libc = "0.2"
+objc2 = "0.6"
+objc2-av-foundation = { version = "0.3.2", default-features = false, features = ["std", "block2", "dispatch2", "objc2-core-media", "objc2-core-video", "AVCaptureDevice", "AVCaptureInput", "AVCaptureOutputBase", "AVCaptureVideoDataOutput", "AVCaptureSession", "AVMediaFormat", "AVError"] }
+objc2-core-media = { version = "0.3.2", default-features = false, features = ["std", "CMSampleBuffer", "CMTime", "CMFormatDescription", "CMBase", "objc2-core-video"] }
+objc2-core-video = { version = "0.3.2", default-features = false, features = ["std", "CVBuffer", "CVImageBuffer", "CVPixelBuffer", "CVPixelBufferIOSurface", "CVReturn", "objc2-io-surface"] }
+objc2-foundation = { version = "0.3.2", default-features = false, features = ["std", "NSArray", "NSDictionary", "NSEnumerator", "NSError", "NSNotification", "NSObject", "NSOperation", "NSProcessInfo", "NSString", "NSValue", "block2"] }
+objc2-io-surface = { version = "0.3.2", default-features = false, features = ["std", "IOSurfaceRef", "IOSurfaceTypes", "objc2-core-foundation"] }
+objc2-core-foundation = { version = "0.3.2", default-features = false, features = ["std"] }
+
+[dev-dependencies]
+allocation-counter = "0.8"
+
+[target.'cfg(target_os = "macos")'.dev-dependencies]
+objc2-io-surface = { version = "0.3.2", default-features = false, features = ["std", "IOSurfaceRef", "objc2-core-foundation"] }
+
+[lints]
+workspace = true
