@@ -100,21 +100,33 @@ pub struct Tick {
     pub index: u64,
     /// Master-clock time of the tick.
     pub time: Timestamp,
+    /// A final tick of a draining partition (ADR-0029, ADR-0043): its nodes leave the
+    /// schedule after it and the partitions feeding it have drained, so this is the end
+    /// of their streams. Nodes that hold data back (encoders) may flush on it.
+    pub draining: bool,
 }
 
 impl Tick {
     /// A tick at an explicit time.
     pub const fn new(index: u64, time: Timestamp) -> Self {
-        Self { index, time }
+        Self {
+            index,
+            time,
+            draining: false,
+        }
     }
 
     /// Tick `index` of `cadence`; the time is computed from the index, so it never
     /// drifts.
     pub fn of(cadence: &Cadence, index: u64) -> Self {
-        Self {
-            index,
-            time: cadence.time_of(index),
-        }
+        Self::new(index, cadence.time_of(index))
+    }
+
+    /// The same tick, marked as a final tick of a draining partition.
+    #[must_use]
+    pub const fn draining(mut self) -> Self {
+        self.draining = true;
+        self
     }
 }
 

@@ -139,6 +139,8 @@ pub struct EncoderState {
     pub live: AtomicU64,
     /// While set, the next `submit` refuses its frame (`InvalidInput`) and clears it.
     pub refuse_next: AtomicBool,
+    /// Frames the encoder holds back until later frames or a flush (encoder delay).
+    pub hold_frames: AtomicU64,
 }
 
 pub struct FakeEncoderFactory(pub Arc<EncoderState>);
@@ -212,7 +214,10 @@ impl VideoEncoder for FakeEncoder {
         Ok(())
     }
     fn drain(&mut self, out: &mut Vec<EncodedPacket>) -> Result<(), EncodeError> {
-        out.append(&mut self.pending);
+        let per_frame = self.state.packets_per_frame.load(Ordering::Relaxed).max(1);
+        let held = (self.state.hold_frames.load(Ordering::Relaxed) * per_frame) as usize;
+        let ready = self.pending.len().saturating_sub(held);
+        out.extend(self.pending.drain(..ready));
         Ok(())
     }
     fn reconfigure(&mut self, change: &EncoderChange) -> Result<(), EncodeError> {
@@ -222,7 +227,8 @@ impl VideoEncoder for FakeEncoder {
         Ok(())
     }
     fn flush(&mut self, out: &mut Vec<EncodedPacket>) -> Result<(), EncodeError> {
-        self.drain(out)
+        out.append(&mut self.pending);
+        Ok(())
     }
 }
 
@@ -453,5 +459,15 @@ impl Rig {
     pub fn drain(&mut self) {
         self.ctl.drain().unwrap();
         self.tick();
+    }
+
+    /// Drains as the engine does (ADR-0029, ADR-0043): the swap waits behind one final
+    /// tick marked `draining` on the old schedule, then collect releases every node.
+    pub fn drain_with_final_tick(&mut self) {
+        self.ctl.drain().unwrap();
+        let cadence = Cadence::frames(Timestamp::ZERO, FrameRate::FPS_60);
+        self.exec.run_tick(Tick::of(&cadence, self.tick).draining());
+        self.tick += 1;
+        let _ = self.ctl.collect();
     }
 }

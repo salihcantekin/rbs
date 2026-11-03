@@ -44,7 +44,7 @@ impl VideoEncoderNode {                                       // Node<X> for eve
         -> Result<Self, CreateError>;                         // probes a session, then drops it
     pub fn stream(&self) -> &StreamDescriptor;
     pub fn stats(&self) -> Arc<EncoderNodeStats>;             // submitted, packets, busy_drops, refused,
-                                                              // overflow_drops, flush_lost
+                                                              // overflow_drops, flush_lost, flushes
 }
 
 // rbs_nodes::output
@@ -115,8 +115,8 @@ Invariants:
 | --- | --- |
 | `open` | Creates a session (control thread), keeps its `stream()` and drops it: an installed node holds no encoder (P13) |
 | `prepare` | Creates the session; refuses with `NodeError::Permanent` if its `stream()` differs from the probed one, or if creation fails with anything but `ResourceExhausted`. Reserves the drain and carry-over buffers |
-| `process` | Passes carried packets first. Submits a frame not seen before (timestamp, sequence) once; on `Busy` drains and retries once, then drops it (`busy_drops`); a refused frame is dropped (`refused`). Drains and passes packets |
-| `release` | Flushes and drops the session; flushed and carried packets are lost and counted (`flush_lost`) |
+| `process` | Passes carried packets first. Submits a frame not seen before (timestamp, sequence) once; on `Busy` drains and retries once, then drops it (`busy_drops`); a refused frame is dropped (`refused`). Drains and passes packets. On a final tick (`Tick::draining`, ADR-0043) it flushes instead of draining, passes every packet (carrying what the queue cannot take now), counts `flushes` and submits nothing afterwards; the flush may wait for the encoder, bounded by the drain timeout |
+| `release` | Flushes and drops the session; packets flushed here (the node left without a final tick: a live edit or a timed-out drain) and carried packets are lost and counted (`flush_lost`) |
 
 Invariants:
 
@@ -187,7 +187,7 @@ Nodes report through `NodeError` (ADR-0020): `Permanent` for what retrying canno
 
 ## Open questions
 
-- End of stream: frames an encoder holds back at `release` are lost; a final flush into the graph needs a drain hook in the engine (engine spec).
+- End of stream for the audio encoder node: its doorbell partition may run several final ticks while blocks are still queued, so it does not flush on `Tick::draining` yet; the AAC tail it holds (under one frame plus the codec's delay) is dropped at `release`. It needs a way to know its input queue is empty.
 - Transport feedback (`KeyframeRequested`, `BitrateHint`) to the encoder goes through the control plane; not wired yet.
 - Outputs that may restart safely (network transports) need a transport capability; until then every output that wrote media is single-use ([#84](https://github.com/salihcantekin/rbs/issues/84)).
 - Native export across the partition queue (move instead of share), D3D11/D3D12 input for NVENC and AMF, and a D3D12 exporter remove the readback; the export node then chooses by the encoder's memory kinds (ADR-0038, [#83](https://github.com/salihcantekin/rbs/issues/83)).

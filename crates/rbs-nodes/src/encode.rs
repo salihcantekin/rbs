@@ -48,9 +48,12 @@ pub struct EncoderNodeStats {
     /// Packets dropped because the carry-over buffer was full, and the packets after
     /// them up to the next keyframe.
     pub overflow_drops: AtomicU64,
-    /// Packets lost at `release`: the session was flushed but the node has no tick left
-    /// to pass them on (open question in the spec).
+    /// Packets lost at `release`: the node left the schedule without a final tick (a
+    /// live edit, or a drain that timed out), so the session's flush and the carried
+    /// packets had no tick left to pass them on.
     pub flush_lost: AtomicU64,
+    /// Final ticks on which the session was flushed into the graph (ADR-0043).
+    pub flushes: AtomicU64,
 }
 
 fn add(counter: &AtomicU64, n: u64) {
@@ -70,6 +73,8 @@ pub struct VideoEncoderNode {
     carry: VecDeque<EncodedPacket>,
     /// After a carry overflow: packets are dropped until the next keyframe.
     resync: bool,
+    /// The session was flushed on a final tick: it takes no more frames.
+    ended: bool,
     stats: Arc<EncoderNodeStats>,
 }
 
@@ -92,6 +97,7 @@ impl VideoEncoderNode {
             drained: Vec::new(),
             carry: VecDeque::new(),
             resync: false,
+            ended: false,
             stats: Arc::default(),
         })
     }
@@ -209,12 +215,14 @@ impl<X: Runtime> Node<X> for VideoEncoderNode {
         }
         self.last = None;
         self.resync = false;
+        self.ended = false;
         self.drained = Vec::with_capacity(DRAIN_CAPACITY);
         self.carry = VecDeque::with_capacity(CARRY_PACKETS);
         Ok(())
     }
 
     fn process(&mut self, ctx: &mut ProcessCtx<'_, X>) -> Result<(), NodeError> {
+        let draining = ctx.tick().draining;
         let inputs = ctx.inputs();
         let outputs = ctx.outputs();
 
@@ -228,6 +236,9 @@ impl<X: Runtime> Node<X> for VideoEncoderNode {
         }
 
         let mut result = Ok(());
+        if self.ended {
+            return result;
+        }
         if let Some(frame) = inputs.video(VIDEO_PIN, 0) {
             let key = (frame.timestamp(), frame.sequence());
             if self.last != Some(key) {
@@ -237,7 +248,16 @@ impl<X: Runtime> Node<X> for VideoEncoderNode {
         }
 
         let session = self.session.as_mut().ok_or(NodeError::NotReady)?;
-        session.drain(&mut self.drained).map_err(encode_error)?;
+        if draining {
+            // End of stream (ADR-0043): the frame above was the last one. A flush may
+            // wait for the encoder; final ticks are bounded by the drain timeout.
+            // Packets the queue cannot take now are carried and lost at `release`.
+            session.flush(&mut self.drained).map_err(encode_error)?;
+            self.ended = true;
+            add(&self.stats.flushes, 1);
+        } else {
+            session.drain(&mut self.drained).map_err(encode_error)?;
+        }
         // `drained` keeps its capacity; `pass` moves each packet out.
         let mut drained = std::mem::take(&mut self.drained);
         for packet in drained.drain(..) {
