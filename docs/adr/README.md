@@ -49,4 +49,4 @@ An ADR records one decision that is hard to reverse or affects more than one cra
 | [0034](0034-preview-as-native-layer.md) | Show the engine preview as a native compositor layer, not through the toolkit's redraw | Accepted |
 | [0035](0035-meters-as-native-layers.md) | Draw the moving parts of audio meters as native compositor layers | Accepted |
 | [0036](0036-windows-preview-layer.md) | Cross-process preview on Windows: shared D3D12 textures, a named pipe and a composition swapchain layer | Accepted |
-| [0037](0037-audio-graph.md) | Audio graph: block-cadence partitions on the shared executor, drift correction in input nodes, one graph format | Proposed |
+| [0037](0037-audio-graph.md) | Audio graph: block-cadence partitions on the shared executor, drift correction in input nodes, one graph format | Accepted |

@@ -183,13 +183,38 @@ fn a_flagged_gap_shorter_than_the_tolerance_is_filled() {
 }
 
 #[test]
-fn a_restarted_stream_resyncs() {
+fn a_stray_timestamp_restarts_the_map_and_it_realigns() {
+    // A packet 3 s ahead restarts the map twice: there, and at the next (correct)
+    // packet. One 2 s behind restarts it once; the position, locked at the stray's
+    // time, then runs past the FIFO and carries the head back to the right time.
+    for (off, resyncs) in [(3.0, 2), (-2.0, 1)] {
+        let mut r = rig(Script {
+            // One packet after 2 s claims a time `off` seconds away: too far to bridge.
+            stray: Some((96_000, 96_480, off)),
+            ..Script::default()
+        });
+        r.run(400);
+        let c = r.stats.read();
+        assert_eq!(c.resyncs, resyncs, "offset {off}: {c:?}");
+        assert!(c.discarded_frames > 0, "offset {off}");
+        assert_eq!(r.silent_blocks_after(Duration::from_millis(2_300)), 0);
+        assert!(r.max_error_after(Duration::from_millis(2_300)) < 50e-6);
+    }
+}
+
+#[test]
+fn late_audio_in_small_packets_is_dropped_not_mapped() {
     let mut r = rig(Script {
-        // 2 s missing: larger than the FIFO, so the map restarts.
-        gaps: vec![(96_000, 96_000)],
+        // 1 ms packets 49.5 ms late: the position runs past more than one packet, so
+        // several consecutive runs land behind the head, the later ones within the map
+        // tolerance. None of them may move the map.
+        packet: 48,
+        late: Some((96_000, 144_000, Duration::from_micros(49_500))),
         ..Script::default()
     });
-    r.run(600);
-    assert!(r.max_error_after(Duration::from_millis(4_200)) < 50e-6);
-    assert!(r.silent_blocks_after(Duration::from_millis(4_200)) == 0);
+    r.run(500);
+    let c = r.stats.read();
+    assert!(c.overlaps_dropped > 0);
+    assert_eq!(c.resyncs, 0, "{c:?}");
+    assert!(r.max_error_after(Duration::from_millis(2_000)) < 50e-6);
 }

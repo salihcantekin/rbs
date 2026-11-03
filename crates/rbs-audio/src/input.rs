@@ -317,11 +317,6 @@ impl State {
         }
         if diff > 0.0 {
             let gap = (diff / self.dt).round() as usize;
-            if self.len + gap + n > self.cap && self.locked {
-                // Make room by forgetting what no later output frame can reach.
-                let reach = (self.p.floor() - BEFORE as f64).max(0.0) as usize;
-                self.drop_front(reach.min(self.len));
-            }
             if self.len + gap + n <= self.cap {
                 self.shift(self.len, n, self.len + gap);
                 for c in 0..self.src_channels {
@@ -340,6 +335,10 @@ impl State {
             self.shift(self.len + n - keep, keep, self.len);
             self.len += keep;
             InputStats::add(&stats.overlaps_dropped, (n - keep) as u64);
+            if keep == 0 {
+                // Wholly behind the head: the next run may be too, so stay on guard.
+                self.ahead = ahead;
+            }
             return;
         }
         // Too far off to bridge: start the map again at this run.

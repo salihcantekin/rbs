@@ -43,6 +43,9 @@ pub struct Script {
     /// Packets from device frame `.0` up to (not including) `.1` are delivered `.2`
     /// later.
     pub late: Option<(u64, u64, Duration)>,
+    /// Packets starting at device frames `.0...1` report timestamps `.2` seconds off
+    /// (a stray timestamp); their audio and delivery time are unchanged.
+    pub stray: Option<(u64, u64, f64)>,
 }
 
 impl Default for Script {
@@ -56,6 +59,7 @@ impl Default for Script {
             delay: Duration::from_millis(1),
             gaps: Vec::new(),
             late: None,
+            stray: None,
         }
     }
 }
@@ -149,7 +153,12 @@ impl AudioInputStream for Device {
             }
         }
         let first = self.next;
-        let ts = self.time_of(first) + self.jitter(first);
+        let mut ts = self.time_of(first) + self.jitter(first);
+        if let Some((from, until, off)) = self.script.stray {
+            if first >= from && first < until {
+                ts += off;
+            }
+        }
         self.next += n as u64;
         let d = std::mem::replace(&mut self.pending_discontinuity, false);
         Ok(AudioRead::new(

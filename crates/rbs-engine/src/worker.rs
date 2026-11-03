@@ -809,7 +809,8 @@ mod tests {
         assert_eq!(run.ticks.load(Ordering::Relaxed), 30);
         assert_eq!(run.indices_ok.load(Ordering::Relaxed), 30);
         assert_eq!(run.stats.late(), 0);
-        assert!(run.stats.caught_up() > 0, "the worker never fell behind");
+        // Each jump of three frames leaves two ticks to run behind their time.
+        assert_eq!(run.stats.caught_up(), 20);
     }
 
     #[test]
