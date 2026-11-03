@@ -57,6 +57,18 @@ pub(crate) fn brc(rc: Rc) -> Brc {
     }
 }
 
+/// Bytes of a bitstream for `rc` with `raw` bytes per input frame: twice a raw frame
+/// (headroom for constant quality at its best levels), or one second at the peak
+/// rate when that is larger (the runtime checks bitstreams against its HRD buffer).
+pub(crate) fn bitstream_bytes(rc: Rc, raw: usize) -> usize {
+    let peak = match rc {
+        Rc::Cbr { bitrate } => bitrate,
+        Rc::Vbr { max, .. } => max,
+        Rc::Quality { .. } => 0,
+    };
+    (raw * 2).max(peak as usize / 8 + 1)
+}
+
 /// `x` rounded up to a multiple of `to`.
 pub(crate) fn align(x: u32, to: u32) -> u32 {
     x.div_ceil(to) * to
@@ -192,13 +204,14 @@ fn header<T>(id: u32) -> sys::mfxExtBuffer {
     }
 }
 
-/// Encoder parameters with their extension buffers (VUI colour description and the
-/// reset option), boxed so the pointers between them stay valid.
+/// Encoder parameters with their extension buffers (VUI colour description, coding
+/// options and the reset option), boxed so the pointers between them stay valid.
 pub(crate) struct Params {
     pub param: sys::mfxVideoParam,
     signal: sys::mfxExtVideoSignalInfo,
+    coding: sys::mfxExtCodingOption,
     reset: sys::mfxExtEncoderResetOption,
-    ext: [*mut sys::mfxExtBuffer; 2],
+    ext: [*mut sys::mfxExtBuffer; 3],
 }
 
 impl Params {
@@ -219,11 +232,22 @@ impl Params {
             StartNewSequence: sys::MFX_CODINGOPTION_OFF as u16,
             ..Default::default()
         };
+        // No HRD parameters in the VUI and no HRD conformance: the SPS then does not
+        // carry the rate, so `Reset` can change it without a new sequence.
+        let off = sys::MFX_CODINGOPTION_OFF as u16;
+        let coding = sys::mfxExtCodingOption {
+            Header: header::<sys::mfxExtCodingOption>(sys::MFX_EXTBUFF_CODING_OPTION),
+            NalHrdConformance: off,
+            VuiNalHrdParameters: off,
+            VuiVclHrdParameters: off,
+            ..Default::default()
+        };
         let mut params = Box::new(Params {
             param: video_param(plan, async_depth),
             signal,
+            coding,
             reset,
-            ext: [ptr::null_mut(); 2],
+            ext: [ptr::null_mut(); 3],
         });
         params.link(false);
         params
@@ -233,9 +257,10 @@ impl Params {
     /// value; with `reset`, also at the reset option (only valid for `Reset`).
     pub(crate) fn link(&mut self, reset: bool) {
         self.ext[0] = (&raw mut self.signal).cast();
-        self.ext[1] = (&raw mut self.reset).cast();
+        self.ext[1] = (&raw mut self.coding).cast();
+        self.ext[2] = (&raw mut self.reset).cast();
         self.param.ExtParam = self.ext.as_mut_ptr();
-        self.param.NumExtParam = if reset { 2 } else { 1 };
+        self.param.NumExtParam = if reset { 3 } else { 2 };
     }
 
     /// A copy of these parameters with the rate control `rc`, linked for `Reset`.
@@ -243,8 +268,9 @@ impl Params {
         let mut next = Box::new(Params {
             param: self.param,
             signal: self.signal,
+            coding: self.coding,
             reset: self.reset,
-            ext: [ptr::null_mut(); 2],
+            ext: [ptr::null_mut(); 3],
         });
         let b = brc(rc);
         // SAFETY: `param` was built by `video_param` for encoding, so `mfx` and its
@@ -361,9 +387,9 @@ mod tests {
     fn rate_change_keeps_the_rest() {
         let p = plan(CodecId::H264, Rc::Cbr { bitrate: 6_000_000 });
         let params = Params::new(&p, 4);
-        assert_eq!(params.param.NumExtParam, 1);
+        assert_eq!(params.param.NumExtParam, 2);
         let next = params.with_rc(Rc::Cbr { bitrate: 3_000_000 });
-        assert_eq!(next.param.NumExtParam, 2);
+        assert_eq!(next.param.NumExtParam, 3);
         assert_eq!(next.param.ExtParam, next.ext.as_ptr().cast_mut());
         // SAFETY: built for encoding.
         let (a, b) = unsafe {
@@ -386,6 +412,12 @@ mod tests {
         assert_eq!(rates, (6000, 3000));
         assert_eq!(a.GopPicSize, b.GopPicSize);
         assert_eq!(a.IdrInterval, 0);
+    }
+
+    #[test]
+    fn bitstreams_hold_a_second_at_the_peak() {
+        assert_eq!(bitstream_bytes(Rc::Quality { level: 1 }, 1000), 2000);
+        assert_eq!(bitstream_bytes(Rc::Cbr { bitrate: 80_000 }, 1000), 10_001);
     }
 
     #[test]

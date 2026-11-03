@@ -17,7 +17,7 @@ use rbs_media_format::h273::ColorCodes;
 
 use crate::FRAMES_IN_FLIGHT;
 use crate::loader::{Api, api};
-use crate::params::{Params, align, annex_b, frame_info, video_param};
+use crate::params::{self, Params, align, annex_b, frame_info, video_param};
 use crate::sys;
 
 /// Longest wait for one picture, in milliseconds. A picture is waited for only when
@@ -89,7 +89,7 @@ impl Display {
         if display.is_null() {
             return Err(OpenError::Temporary(format!("vaGetDisplayDRM({path})")));
         }
-        let mut display = Display {
+        let display = Display {
             api,
             display,
             _node: node,
@@ -98,8 +98,7 @@ impl Display {
         // SAFETY: a display from `vaGetDisplayDRM` and valid out-pointers.
         let s = unsafe { (api.va.initialize)(display.display, &mut major, &mut minor) };
         if s != sys::va::VA_STATUS_SUCCESS {
-            // Not initialised: nothing for `Drop` to terminate.
-            display.display = ptr::null_mut();
+            // `Drop` still calls `vaTerminate`, which frees the display.
             return Err(OpenError::Temporary(format!("vaInitialize failed ({s})")));
         }
         Ok(display)
@@ -110,8 +109,9 @@ impl Display {
 impl Drop for Display {
     fn drop(&mut self) {
         if !self.display.is_null() {
-            // SAFETY: initialised by `open`, terminated once, after the session that
-            // used it was closed (field order of `Device`).
+            // SAFETY: a display from `vaGetDisplayDRM` (initialised or not; terminating
+            // frees it either way), terminated once, after the session that used it was
+            // closed (`Device::drop`).
             let _ = unsafe { (self.api.va.terminate)(self.display) };
         }
     }
@@ -182,7 +182,7 @@ impl Device {
         // SAFETY: released once, as returned by `MFXEnumImplementations`.
         let _ = unsafe { (v.release_description)(loader, desc) };
 
-        let mut render_node = 128;
+        let mut render_node = intel_render_node().unwrap_or(128);
         let mut ext: sys::mfxHDL = ptr::null_mut();
         // SAFETY: as above. Older runtimes do not report extended device ids.
         let s = unsafe {
@@ -241,45 +241,52 @@ impl Device {
         Ok(device)
     }
 
-    /// True when the runtime accepts `plan` as it is (allowing only adjustments of
-    /// fields the plan does not set).
+    /// True when the runtime accepts `plan` with the fields that shape the stream
+    /// (codec, profile, input format, size, rate-control method, no reordering)
+    /// unchanged. Other fields it may adjust.
     fn accepts(&self, plan: &Plan) -> bool {
         let mut input = video_param(plan, 1);
         let mut output = input;
         // SAFETY: a live session; both parameter blocks are valid and have no
         // extension buffers.
         let s = unsafe { (self.api.vpl.query)(self.session, &mut input, &mut output) };
-        if s == sys::MFX_ERR_NONE {
-            return true;
+        match s {
+            sys::MFX_ERR_NONE => true,
+            sys::MFX_WRN_INCOMPATIBLE_VIDEO_PARAM => same_stream(&input, &output),
+            _ => false,
         }
-        if s != sys::MFX_WRN_INCOMPATIBLE_VIDEO_PARAM {
-            return false;
-        }
-        // SAFETY: both blocks are encoder parameters (`video_param`, and `Query`
-        // writes the same layout back).
-        let (a, b) = unsafe { (input.__bindgen_anon_1.mfx, output.__bindgen_anon_1.mfx) };
-        // SAFETY: as above.
-        let (ae, be) = unsafe {
-            (
-                a.__bindgen_anon_1.__bindgen_anon_1,
-                b.__bindgen_anon_1.__bindgen_anon_1,
-            )
-        };
-        // SAFETY: as above.
-        let (asz, bsz) = unsafe {
-            (
-                a.FrameInfo.__bindgen_anon_1.__bindgen_anon_1,
-                b.FrameInfo.__bindgen_anon_1.__bindgen_anon_1,
-            )
-        };
-        a.CodecId == b.CodecId
-            && a.CodecProfile == b.CodecProfile
-            && a.FrameInfo.FourCC == b.FrameInfo.FourCC
-            && ae.RateControlMethod == be.RateControlMethod
-            && ae.GopRefDist == be.GopRefDist
-            && (asz.Width, asz.Height, asz.CropW, asz.CropH)
-                == (bsz.Width, bsz.Height, bsz.CropW, bsz.CropH)
     }
+}
+
+/// True when `b` keeps the fields of `a` that shape the stream: codec, profile,
+/// input format, sizes, rate-control method and GOP reference distance. Both must be
+/// encoder parameters.
+fn same_stream(a: &sys::mfxVideoParam, b: &sys::mfxVideoParam) -> bool {
+    // SAFETY: both blocks are encoder parameters (built by `video_param`, or written
+    // back by `Query` or `GetVideoParam` in the same layout), so `mfx` and its encoder
+    // and size members are the initialised union members.
+    let (a, b) = unsafe { (a.__bindgen_anon_1.mfx, b.__bindgen_anon_1.mfx) };
+    // SAFETY: as above.
+    let (ae, be) = unsafe {
+        (
+            a.__bindgen_anon_1.__bindgen_anon_1,
+            b.__bindgen_anon_1.__bindgen_anon_1,
+        )
+    };
+    // SAFETY: as above.
+    let (asz, bsz) = unsafe {
+        (
+            a.FrameInfo.__bindgen_anon_1.__bindgen_anon_1,
+            b.FrameInfo.__bindgen_anon_1.__bindgen_anon_1,
+        )
+    };
+    a.CodecId == b.CodecId
+        && a.CodecProfile == b.CodecProfile
+        && a.FrameInfo.FourCC == b.FrameInfo.FourCC
+        && ae.RateControlMethod == be.RateControlMethod
+        && ae.GopRefDist == be.GopRefDist
+        && (asz.Width, asz.Height, asz.CropW, asz.CropH)
+            == (bsz.Width, bsz.Height, bsz.CropW, bsz.CropH)
 }
 
 impl Drop for Device {
@@ -297,6 +304,22 @@ impl Drop for Device {
         // SAFETY: the loader came from `MFXLoad`, its session is closed, and it is
         // unloaded once.
         unsafe { (v.unload)(self.loader) };
+    }
+}
+
+/// The first DRM render node of an Intel GPU (PCI vendor 0x8086), for runtimes that
+/// do not report theirs. `None` elsewhere or when sysfs has no answer.
+fn intel_render_node() -> Option<u32> {
+    #[cfg(target_os = "linux")]
+    {
+        (128..192).find(|n| {
+            std::fs::read_to_string(format!("/sys/class/drm/renderD{n}/device/vendor"))
+                .is_ok_and(|v| v.trim() == "0x8086")
+        })
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        None
     }
 }
 
@@ -438,6 +461,10 @@ pub(crate) struct QsvEngine {
     pitch: usize,
     /// Rows of luma in a surface (the aligned height).
     luma_rows: usize,
+    /// Bytes of one input surface.
+    raw_bytes: usize,
+    /// Bytes of each slot's bitstream.
+    bitstream_bytes: usize,
 }
 
 // SAFETY: the raw pointers are oneVPL handles and buffers owned by this engine.
@@ -514,6 +541,15 @@ impl QsvEngine {
             Vec::new()
         };
         let extradata = annex_b(&[&vps, &sps, &pps]);
+        if !same_stream(&params.param, &actual) {
+            // `Init` corrected a field that shapes the stream: the session would not
+            // be what was asked for.
+            // SAFETY: the encoder was initialised above and is closed once.
+            let _ = unsafe { (v.encode_close)(device.session) };
+            return Err(CreateError::Unsupported {
+                what: "the QSV runtime changed the profile, format, size or rate control".into(),
+            });
+        }
         // SAFETY: `GetVideoParam` filled the encoder parameters.
         let (mfx, buffer_kb) = unsafe {
             let mfx = actual.__bindgen_anon_1.mfx;
@@ -534,7 +570,7 @@ impl QsvEngine {
         let surface_bytes = pitch * luma_rows * 3 / 2;
         let bitstream_bytes =
             (usize::from(buffer_kb) * usize::from(mfx.BRCParamMultiplier.max(1)) * 1000)
-                .max(surface_bytes);
+                .max(params::bitstream_bytes(plan.rc, surface_bytes));
 
         let mut engine = QsvEngine {
             device,
@@ -542,6 +578,8 @@ impl QsvEngine {
             params,
             pitch,
             luma_rows,
+            raw_bytes: surface_bytes,
+            bitstream_bytes,
         };
         if extradata.is_empty() {
             return Err(CreateError::Device(
@@ -626,7 +664,14 @@ impl Engine for QsvEngine {
     ) -> Result<(), EngineError> {
         let (pitch, luma_rows) = (self.pitch, self.luma_rows);
         let s = &mut self.slots[slot];
-        if s.surface.Data.Locked != 0 {
+        // The runtime updates `Locked` from its own threads: read it atomically.
+        // SAFETY: the field is a live, aligned `u16` inside the boxed surface, and the
+        // runtime only accesses it atomically as well.
+        let locked = unsafe {
+            std::sync::atomic::AtomicU16::from_ptr(&raw mut s.surface.Data.Locked)
+                .load(std::sync::atomic::Ordering::Acquire)
+        };
+        if locked != 0 {
             // The runtime still reads this surface.
             return Err(EngineError::Busy);
         }
@@ -735,6 +780,23 @@ impl Engine for QsvEngine {
             if self.slots[slot].pending {
                 self.sync(slot, true)?;
             }
+        }
+        // The runtime checks bitstreams against its buffer for the new rate: grow
+        // them first. No picture is in flight (all synced above); a synced picture not
+        // read yet moves with its bytes.
+        let needed = params::bitstream_bytes(rc, self.raw_bytes);
+        if needed > self.bitstream_bytes {
+            for s in &mut self.slots {
+                let mut data = vec![0u8; needed].into_boxed_slice();
+                let used = s.bitstream.DataOffset as usize + s.bitstream.DataLength as usize;
+                if let (Some(to), Some(from)) = (data.get_mut(..used), s.data.get(..used)) {
+                    to.copy_from_slice(from);
+                }
+                s.bitstream.Data = data.as_mut_ptr();
+                s.bitstream.MaxLength = u32::try_from(data.len()).unwrap_or(u32::MAX);
+                s.data = data;
+            }
+            self.bitstream_bytes = needed;
         }
         let mut next = self.params.with_rc(rc);
         // SAFETY: an initialised encoder with no picture in flight; `next` is

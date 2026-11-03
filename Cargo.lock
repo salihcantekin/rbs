@@ -3836,7 +3836,6 @@ dependencies = [
 name = "rbs-codec-qsv"
 version = "0.0.1"
 dependencies = [
- "criterion 0.8.2",
  "libloading",
  "rbs-codec",
  "rbs-codec-hw",
