@@ -1,7 +1,7 @@
 //! Heap allocations per frame on the render path (spec docs/specs/gpu-compositor.md,
 //! "Performance requirements").
 //!
-//! RBS code in `Compositor::render` and `Nv12Converter::convert` does not allocate; wgpu
+//! RBS code in `Compositor::render` and `YuvConverter::convert` does not allocate; wgpu
 //! allocates internally while recording and submitting a command buffer. This test
 //! measures the total per frame and asserts that it (a) does not grow over time and
 //! (b) grows by at most a small constant per extra layer, so it stays bounded.
@@ -14,7 +14,9 @@ use std::alloc::{GlobalAlloc, Layout, System};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use common::solid;
-use rbs_gpu::{CanvasDesc, Compositor, Layer, Nv12Converter, TextureDesc, TexturePool, nv12};
+use rbs_gpu::{
+    CanvasDesc, Compositor, Layer, TextureDesc, TexturePool, YuvConverter, YuvFormat, yuv,
+};
 
 struct Counting;
 
@@ -60,10 +62,14 @@ fn allocs_per_frame(layer_count: usize) -> Option<(f64, f64)> {
         64,
     )
     .unwrap();
-    let mut conv = Nv12Converter::new(ctx, W, H).unwrap();
+    let mut conv = YuvConverter::new(ctx, YuvFormat::Nv12, W, H).unwrap();
     let canvas = pool.acquire(ctx, &TextureDesc::canvas(W, H)).unwrap();
-    let luma = pool.acquire(ctx, &nv12::luma_desc(W, H)).unwrap();
-    let chroma = pool.acquire(ctx, &nv12::chroma_desc(W, H)).unwrap();
+    let luma = pool
+        .acquire(ctx, &yuv::luma_desc(YuvFormat::Nv12, W, H))
+        .unwrap();
+    let chroma = pool
+        .acquire(ctx, &yuv::chroma_desc(YuvFormat::Nv12, W, H))
+        .unwrap();
     let src = solid(ctx, &mut pool, 16, 16, [0.2, 0.4, 0.6, 1.0]);
     let layers: Vec<Layer> = (0..layer_count)
         .map(|i| Layer::new(src, i as f32, i as f32, 64.0, 36.0))

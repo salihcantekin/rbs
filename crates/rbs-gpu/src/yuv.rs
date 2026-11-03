@@ -1,48 +1,116 @@
-//! Canvas to NV12 conversion for encoders (BT.709, limited range).
+//! Canvas to NV12 or P010 conversion for encoders (BT.709, limited range).
 //!
-//! Two outputs: one multi-planar NV12 texture ([`surface_desc`],
-//! [`Nv12Converter::convert_to_surface`]) where the device supports the format
-//! (capability `gpu.nv12_surface`), which hardware encoders consume directly, or two plane
-//! textures ([`luma_desc`], [`chroma_desc`], [`Nv12Converter::convert`]) everywhere else.
+//! Two outputs: one multi-planar texture ([`surface_desc`],
+//! [`YuvConverter::convert_to_surface`]) where the device supports the format
+//! (capability `gpu.nv12_surface` or `gpu.p010_surface`), which hardware encoders consume
+//! directly, or two plane textures ([`luma_desc`], [`chroma_desc`], [`YuvConverter::convert`])
+//! everywhere else.
 //!
 //! Hot path: both conversions record two render passes (luma at full size,
-//! chroma at half size) and submits them. It does not allocate in RBS code. Render
-//! passes are used instead of a compute pass because `R8Unorm` and `Rg8Unorm` are
-//! render targets on every backend, while storage writes to them need optional features.
+//! chroma at half size) and submit them. It does not allocate in RBS code. Render
+//! passes are used instead of a compute pass because the plane formats are render targets,
+//! while storage writes to them need optional features. NV12 and P010 share one shader;
+//! the code levels are pipeline-overridable constants.
 
-use crate::context::{CAP_NV12_SURFACE, CAP_SOFTWARE, GpuContext};
+use crate::context::{CAP_NV12_SURFACE, CAP_P010, CAP_P010_SURFACE, CAP_SOFTWARE, GpuContext};
 use crate::error::GpuError;
 use crate::pool::{TextureDesc, TexturePool};
-use rbs_core::media::TextureId;
+use rbs_core::media::{PixelFormat, TextureId};
 
-/// Description of the NV12 luma plane: `R8Unorm`, `width x height`.
-pub fn luma_desc(width: u32, height: u32) -> TextureDesc {
+/// The encoder format a [`YuvConverter`] writes: 4:2:0 with interleaved chroma.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum YuvFormat {
+    /// 8-bit: `R8Unorm` luma, `Rg8Unorm` chroma.
+    Nv12,
+    /// 10-bit in the high bits of 16-bit words: `R16Unorm` luma, `Rg16Unorm` chroma.
+    /// Needs `gpu.p010`.
+    P010,
+}
+
+impl YuvFormat {
+    /// The `rbs-core` pixel format of the converted frame.
+    pub fn pixel_format(self) -> PixelFormat {
+        match self {
+            Self::Nv12 => PixelFormat::Nv12,
+            Self::P010 => PixelFormat::P010,
+        }
+    }
+
+    fn luma_format(self) -> wgpu::TextureFormat {
+        match self {
+            Self::Nv12 => wgpu::TextureFormat::R8Unorm,
+            Self::P010 => wgpu::TextureFormat::R16Unorm,
+        }
+    }
+
+    fn chroma_format(self) -> wgpu::TextureFormat {
+        match self {
+            Self::Nv12 => wgpu::TextureFormat::Rg8Unorm,
+            Self::P010 => wgpu::TextureFormat::Rg16Unorm,
+        }
+    }
+
+    fn surface_format(self) -> wgpu::TextureFormat {
+        match self {
+            Self::Nv12 => wgpu::TextureFormat::NV12,
+            Self::P010 => wgpu::TextureFormat::P010,
+        }
+    }
+
+    /// Bytes per luma sample (and per chroma component).
+    fn sample_bytes(self) -> u32 {
+        match self {
+            Self::Nv12 => 1,
+            Self::P010 => 2,
+        }
+    }
+
+    /// Shader constants: limited-range code levels and the code-to-unorm scale.
+    fn constants(self) -> [(&'static str, f64); 5] {
+        let (bits, scale) = match self {
+            Self::Nv12 => (8, 1.0 / 255.0),
+            // A 10-bit code shifted into the high bits of a 16-bit unorm word.
+            Self::P010 => (10, 64.0 / 65535.0),
+        };
+        let k = f64::from(1u32 << (bits - 8));
+        [
+            ("y_black", 16.0 * k),
+            ("y_range", 219.0 * k),
+            ("c_mid", 128.0 * k),
+            ("c_range", 224.0 * k),
+            ("code_scale", scale),
+        ]
+    }
+}
+
+/// Description of the luma plane: `width x height`.
+pub fn luma_desc(format: YuvFormat, width: u32, height: u32) -> TextureDesc {
     TextureDesc {
         width,
         height,
-        format: wgpu::TextureFormat::R8Unorm,
+        format: format.luma_format(),
         usage: plane_usage(),
     }
 }
 
-/// Description of the NV12 chroma plane: `Rg8Unorm` (Cb, Cr), `width/2 x height/2`.
-pub fn chroma_desc(width: u32, height: u32) -> TextureDesc {
+/// Description of the interleaved chroma plane (Cb, Cr): `width/2 x height/2`.
+pub fn chroma_desc(format: YuvFormat, width: u32, height: u32) -> TextureDesc {
     TextureDesc {
         width: width / 2,
         height: height / 2,
-        format: wgpu::TextureFormat::Rg8Unorm,
+        format: format.chroma_format(),
         usage: plane_usage(),
     }
 }
 
-/// Description of a single NV12 texture with both planes, for encoders.
+/// Description of a single multi-planar texture with both planes, for encoders.
 ///
-/// Needs `wgpu::Features::TEXTURE_FORMAT_NV12` (capability `gpu.nv12_surface`).
-pub fn surface_desc(width: u32, height: u32) -> TextureDesc {
+/// Needs capability `gpu.nv12_surface` (NV12) or `gpu.p010_surface` (P010).
+pub fn surface_desc(format: YuvFormat, width: u32, height: u32) -> TextureDesc {
     TextureDesc {
         width,
         height,
-        format: wgpu::TextureFormat::NV12,
+        format: format.surface_format(),
         usage: wgpu::TextureUsages::RENDER_ATTACHMENT
             | wgpu::TextureUsages::COPY_SRC
             | wgpu::TextureUsages::COPY_DST,
@@ -55,19 +123,20 @@ fn plane_usage() -> wgpu::TextureUsages {
         | wgpu::TextureUsages::COPY_SRC
 }
 
-/// Converts canvases of one size to NV12 planes.
-pub struct Nv12Converter {
+/// Converts canvases of one size to NV12 or P010.
+pub struct YuvConverter {
+    format: YuvFormat,
     width: u32,
     height: u32,
     luma: wgpu::RenderPipeline,
     chroma: wgpu::RenderPipeline,
-    /// Software adapters only: planes and a buffer for the staged NV12 surface path.
+    /// Software adapters only: planes and a buffer for the staged surface path.
     staged: Option<Staged>,
 }
 
-/// Intermediate planes for adapters where rendering into NV12 plane views is not
+/// Intermediate planes for adapters where rendering into plane views is not
 /// reliable (software adapters: lavapipe writes plane 1 over plane 0). The planes are
-/// rendered as usual and copied into the NV12 texture through one GPU buffer; nothing
+/// rendered as usual and copied into the multi-planar texture through one GPU buffer; nothing
 /// reaches the CPU.
 struct Staged {
     luma: wgpu::Texture,
@@ -80,10 +149,10 @@ struct Staged {
 }
 
 impl Staged {
-    fn new(ctx: &GpuContext, width: u32, height: u32) -> Self {
+    fn new(ctx: &GpuContext, format: YuvFormat, width: u32, height: u32) -> Self {
         let plane = |d: TextureDesc| {
             let texture = ctx.device().create_texture(&wgpu::TextureDescriptor {
-                label: Some("rbs-gpu nv12 staged plane"),
+                label: Some("rbs-gpu yuv staged plane"),
                 size: wgpu::Extent3d {
                     width: d.width,
                     height: d.height,
@@ -99,13 +168,14 @@ impl Staged {
             let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
             (texture, view)
         };
-        let (luma, luma_view) = plane(luma_desc(width, height));
-        let (chroma, chroma_view) = plane(chroma_desc(width, height));
-        // A luma row is `width` bytes; a chroma row is `width / 2` texels of 2 bytes.
+        let (luma, luma_view) = plane(luma_desc(format, width, height));
+        let (chroma, chroma_view) = plane(chroma_desc(format, width, height));
+        // A luma row is `width` samples; a chroma row is `width / 2` texels of two samples.
+        let row = width * format.sample_bytes();
         let pitch =
-            width.div_ceil(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT) * wgpu::COPY_BYTES_PER_ROW_ALIGNMENT;
+            row.div_ceil(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT) * wgpu::COPY_BYTES_PER_ROW_ALIGNMENT;
         let buffer = ctx.device().create_buffer(&wgpu::BufferDescriptor {
-            label: Some("rbs-gpu nv12 staged"),
+            label: Some("rbs-gpu yuv staged"),
             size: u64::from(pitch) * u64::from(height + height / 2),
             usage: wgpu::BufferUsages::COPY_SRC | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
@@ -120,7 +190,7 @@ impl Staged {
         }
     }
 
-    /// Copies both planes into `surface` (an NV12 texture of the same size).
+    /// Copies both planes into `surface` (a multi-planar texture of the same size).
     fn copy_into(&self, encoder: &mut wgpu::CommandEncoder, surface: &wgpu::Texture) {
         let planes = [
             (&self.luma, wgpu::TextureAspect::Plane0, 0u64),
@@ -162,9 +232,20 @@ impl Staged {
     }
 }
 
-impl Nv12Converter {
-    /// Creates a converter for `width x height` canvases. Both must be even and non-zero.
-    pub fn new(ctx: &GpuContext, width: u32, height: u32) -> Result<Self, GpuError> {
+impl YuvConverter {
+    /// Creates a converter to `format` for `width x height` canvases. Both must be even and
+    /// non-zero. P010 needs capability `gpu.p010`.
+    pub fn new(
+        ctx: &GpuContext,
+        format: YuvFormat,
+        width: u32,
+        height: u32,
+    ) -> Result<Self, GpuError> {
+        if format == YuvFormat::P010 && !ctx.has(&CAP_P010) {
+            return Err(GpuError::Unsupported(
+                "P010 needs 16-bit normalized render targets (gpu.p010)",
+            ));
+        }
         let max = ctx.max_texture_dimension();
         if width == 0
             || height == 0
@@ -177,17 +258,18 @@ impl Nv12Converter {
         }
         let device = ctx.device();
         let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("rbs-gpu nv12"),
-            source: wgpu::ShaderSource::Wgsl(include_str!("shaders/nv12.wgsl").into()),
+            label: Some("rbs-gpu yuv"),
+            source: wgpu::ShaderSource::Wgsl(include_str!("shaders/yuv.wgsl").into()),
         });
         let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-            label: Some("rbs-gpu nv12"),
+            label: Some("rbs-gpu yuv"),
             bind_group_layouts: &[Some(&ctx.sampled_layout)],
             immediate_size: 0,
         });
-        let pipeline = |entry: &str, format: wgpu::TextureFormat| {
+        let constants = format.constants();
+        let pipeline = |entry: &str, target: wgpu::TextureFormat| {
             device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-                label: Some("rbs-gpu nv12"),
+                label: Some("rbs-gpu yuv"),
                 layout: Some(&layout),
                 vertex: wgpu::VertexState {
                     module: &module,
@@ -201,9 +283,12 @@ impl Nv12Converter {
                 fragment: Some(wgpu::FragmentState {
                     module: &module,
                     entry_point: Some(entry),
-                    compilation_options: Default::default(),
+                    compilation_options: wgpu::PipelineCompilationOptions {
+                        constants: &constants,
+                        ..Default::default()
+                    },
                     targets: &[Some(wgpu::ColorTargetState {
-                        format,
+                        format: target,
                         blend: None,
                         write_mask: wgpu::ColorWrites::ALL,
                     })],
@@ -212,17 +297,27 @@ impl Nv12Converter {
                 cache: None,
             })
         };
+        let surface_cap = match format {
+            YuvFormat::Nv12 => &CAP_NV12_SURFACE,
+            YuvFormat::P010 => &CAP_P010_SURFACE,
+        };
         Ok(Self {
+            format,
             width,
             height,
-            luma: pipeline("fs_luma", wgpu::TextureFormat::R8Unorm),
-            chroma: pipeline("fs_chroma", wgpu::TextureFormat::Rg8Unorm),
-            staged: (ctx.has(&CAP_NV12_SURFACE) && ctx.has(&CAP_SOFTWARE))
-                .then(|| Staged::new(ctx, width, height)),
+            luma: pipeline("fs_luma", format.luma_format()),
+            chroma: pipeline("fs_chroma", format.chroma_format()),
+            staged: (ctx.has(surface_cap) && ctx.has(&CAP_SOFTWARE))
+                .then(|| Staged::new(ctx, format, width, height)),
         })
     }
 
-    /// Writes the NV12 planes of `canvas` into `luma` and `chroma`.
+    /// The format this converter writes.
+    pub fn format(&self) -> YuvFormat {
+        self.format
+    }
+
+    /// Writes the planes of `canvas` into `luma` and `chroma`.
     ///
     /// Hot path. The planes must match [`luma_desc`] and [`chroma_desc`] for this size.
     pub fn convert(
@@ -234,17 +329,21 @@ impl Nv12Converter {
         chroma: TextureId,
     ) -> Result<(), GpuError> {
         let source = self.source(pool, canvas)?;
-        let luma_tex = plane(pool, luma, &luma_desc(self.width, self.height))?;
-        let chroma_tex = plane(pool, chroma, &chroma_desc(self.width, self.height))?;
+        let luma_tex = plane(pool, luma, &luma_desc(self.format, self.width, self.height))?;
+        let chroma_tex = plane(
+            pool,
+            chroma,
+            &chroma_desc(self.format, self.width, self.height),
+        )?;
         let encoder = self.record(ctx, source, luma_tex, chroma_tex);
         ctx.queue().submit(Some(encoder.finish()));
         Ok(())
     }
 
-    /// Writes the NV12 planes of `canvas` into the single NV12 texture `surface`.
+    /// Writes both planes of `canvas` into the single multi-planar texture `surface`.
     ///
-    /// Hot path. `surface` must match [`surface_desc`] for this size; without
-    /// `gpu.nv12_surface` such a texture cannot be created and [`Self::convert`] is used.
+    /// Hot path. `surface` must match [`surface_desc`] for this format and size; without
+    /// the surface capability such a texture cannot be created and [`Self::convert`] is used.
     pub fn convert_to_surface(
         &mut self,
         ctx: &GpuContext,
@@ -254,7 +353,7 @@ impl Nv12Converter {
     ) -> Result<(), GpuError> {
         let source = self.source(pool, canvas)?;
         let tex = pool.get(surface).ok_or(GpuError::StaleTexture(surface))?;
-        let expected = surface_desc(self.width, self.height);
+        let expected = surface_desc(self.format, self.width, self.height);
         let d = tex.desc();
         if d.format != expected.format
             || d.width != expected.width
@@ -304,11 +403,11 @@ impl Nv12Converter {
         let mut encoder = ctx
             .device()
             .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                label: Some("rbs-gpu nv12"),
+                label: Some("rbs-gpu yuv"),
             });
         for (pipeline, view) in [(&self.luma, luma), (&self.chroma, chroma)] {
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("rbs-gpu nv12"),
+                label: Some("rbs-gpu yuv"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                     view,
                     depth_slice: None,
