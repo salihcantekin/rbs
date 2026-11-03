@@ -204,7 +204,7 @@ impl PreviewPublisher {
     pub fn tick(&mut self, ctx: &GpuContext) -> Result<(), GpuError>;
     pub fn subscribed(&self) -> bool;
     pub fn held(&self) -> usize;                         // surfaces the UI holds
-    pub fn stats(&self) -> PreviewStats;                 // converted, sent, skipped, busy, dropped, subscribes
+    pub fn stats(&self) -> PreviewStats;                 // converted, sent, skipped, busy, dropped, subscribes, rejected
     pub fn surface_ids(&self) -> impl Iterator<Item = u32>; // IOSurfaceGetID, for tests
 }
 ```
@@ -221,7 +221,7 @@ impl PreviewSubscriber {
     pub fn surface_id(&self, slot: usize) -> Option<u32>;
     /// The next frame, waiting up to `timeout` (zero polls). `Ok(None)` on timeout,
     /// `GpuError::Disconnected` once the engine is gone.
-    pub fn recv(&self, timeout: Duration) -> Result<Option<PreviewFrame>, GpuError>;
+    pub fn recv(&mut self, timeout: Duration) -> Result<Option<PreviewFrame>, GpuError>;
     /// Aliases every surface on the UI's device as `Rgba8UnormSrgb` with
     /// `TEXTURE_BINDING | RENDER_ATTACHMENT | COPY_SRC` (what Slint's `Image::try_from` takes).
     pub fn textures(&self, ctx: &GpuContext) -> Result<Vec<wgpu::Texture>, GpuError>;
@@ -352,7 +352,7 @@ Device loss is reported by wgpu through the device-lost callback and surfaced as
 - `Compositor::render`, `YuvConverter::convert`, `YuvConverter::convert_to_surface`, `SurfaceExporter::export` and `take_ready`, `PreviewPublisher::publish` and `tick`, and the pool's `acquire` (reuse), `release` and `get` are hot paths ([hot-paths.md](../architecture/hot-paths.md)). RBS code inside them does not allocate. wgpu allocates internally while recording and submitting command buffers (about 130 allocations per frame for render + NV12 in the first measurement); the `alloc_per_frame` test asserts this does not grow over time and adds at most a small constant per layer. Reducing it (for example re-recorded render bundles) is follow-up work with its own measurements.
 - No CPU readback on the default path (P4).
 - Installed but unused: a `GpuContext` is created only when the first canvas becomes Active. A compositor or converter that is not Active is dropped, releasing its GPU objects (P13).
-- Benchmarks: `benches/compositor.rs` measures 1080p frame time (render, render + NV12, waiting for the GPU) with 1, 8 and 32 layers, and the CPU cost of recording and submitting 32 layers.
+- Benchmarks: `benches/preview.rs` (macOS) measures the CPU time of `PreviewPublisher::publish` and `tick` and the GPU frame time of the preview pass (1080p canvas to 720p). `benches/compositor.rs` measures 1080p frame time (render, render + NV12, waiting for the GPU) with 1, 8 and 32 layers, and the CPU cost of recording and submitting 32 layers.
 
 ## Conformance tests
 

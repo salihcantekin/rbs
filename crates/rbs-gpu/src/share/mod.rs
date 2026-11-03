@@ -1,9 +1,9 @@
 //! Cross-process preview (spec `docs/specs/gpu-compositor.md`, "Preview export
 //! (cross-process)", ADR-0028).
 //!
-//! The engine's [`PreviewPublisher`] scales canvases into a fixed ring of RGBA IOSurfaces
+//! The engine's `PreviewPublisher` scales canvases into a fixed ring of RGBA IOSurfaces
 //! and shares them with one UI process over a Mach service. The UI's
-//! [`PreviewSubscriber`] looks the surfaces up once, aliases them as textures on its own
+//! `PreviewSubscriber` looks the surfaces up once, aliases them as textures on its own
 //! device and then receives one small message per frame. No pixels cross the process
 //! boundary and nothing is copied: both processes use the same IOSurface memory.
 //!
@@ -12,7 +12,7 @@
 //! This is a marked low-level module (principle P11): every `unsafe` block states its
 //! invariant.
 //!
-//! Hot path: [`PreviewPublisher::publish`] and [`PreviewPublisher::tick`] do not allocate in
+//! Hot path: `PreviewPublisher::publish` and `PreviewPublisher::tick` do not allocate in
 //! RBS code and never wait: every Mach call on the engine side uses a zero timeout.
 
 #[cfg(target_vendor = "apple")]

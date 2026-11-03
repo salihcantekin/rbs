@@ -15,10 +15,14 @@ path = "src/main.rs"
 
 [dependencies]
 rbs-ui = { path = "../rbs-ui" }
-# Exact pin (ADR-0022, decision 5). Skia renderer (decision 1). The wgpu path
-# (`unstable-wgpu-30`) is added with the preview, once the surface export
-# contract is in the GPU compositor spec (decision 2).
-slint = { version = "=1.18.1", default-features = false, features = ["std", "backend-winit", "renderer-skia", "accessibility", "compat-1-2"] }
+# Exact pin (ADR-0022, decision 5). Skia renderer (decision 1). `unstable-wgpu-30`
+# lets the preview display engine surfaces imported on rbs-gpu's device (decision 2,
+# ADR-0028); it must track rbs-gpu's wgpu major.
+slint = { version = "=1.18.1", default-features = false, features = ["std", "backend-winit", "renderer-skia", "accessibility", "compat-1-2", "unstable-wgpu-30"] }
+
+[dev-dependencies]
+# The cross-process preview demo (examples/remote_preview.rs) imports engine surfaces.
+rbs-gpu = { path = "../rbs-gpu" }
 
 [build-dependencies]
 rbs-ui = { path = "../rbs-ui" }
