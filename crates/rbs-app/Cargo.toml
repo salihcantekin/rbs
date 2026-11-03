@@ -36,6 +36,18 @@ rbs-core = { path = "../rbs-core" }
 # the feature only reaches example and test builds.
 slint = { version = "=1.18.1", default-features = false, features = ["raw-window-handle-06"] }
 raw-window-handle = "0.6"
+# The audio graph check (examples/audio_graph.rs) is a composition root: it wires the
+# platform's audio and AAC adapters into the engine. Every one builds on every platform.
+rbs-audio = { path = "../rbs-audio" }
+rbs-audio-io = { path = "../rbs-audio-io" }
+rbs-audio-io-coreaudio = { path = "../rbs-audio-io-coreaudio" }
+rbs-audio-io-wasapi = { path = "../rbs-audio-io-wasapi" }
+rbs-codec = { path = "../rbs-codec" }
+rbs-codec-audiotoolbox = { path = "../rbs-codec-audiotoolbox" }
+rbs-codec-mf = { path = "../rbs-codec-mf" }
+rbs-engine = { path = "../rbs-engine" }
+rbs-graph = { path = "../rbs-graph" }
+rbs-thread-os = { path = "../rbs-thread-os" }
 
 [target.'cfg(target_os = "macos")'.dev-dependencies]
 # The meter layer test reads the bridge's sublayers.
