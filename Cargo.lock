@@ -3164,6 +3164,7 @@ dependencies = [
  "objc2 0.6.5",
  "objc2-core-audio-types",
  "objc2-core-foundation",
+ "objc2-foundation 0.3.2",
 ]
 
 [[package]]
@@ -3991,6 +3992,24 @@ version = "0.0.1"
 dependencies = [
  "allocation-counter",
  "criterion 0.8.2",
+ "rbs-core",
+]
+
+[[package]]
+name = "rbs-audio-io-coreaudio"
+version = "0.0.1"
+dependencies = [
+ "allocation-counter",
+ "block2 0.6.2",
+ "criterion 0.8.2",
+ "libc",
+ "objc2 0.6.5",
+ "objc2-av-foundation",
+ "objc2-core-audio",
+ "objc2-core-audio-types",
+ "objc2-core-foundation",
+ "objc2-foundation 0.3.2",
+ "rbs-audio-io",
  "rbs-core",
 ]
 
