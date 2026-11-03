@@ -156,11 +156,16 @@ fn lost(what: &str) -> Fail {
     Fail::Error(TransportError::Connection(what.into()))
 }
 
+/// A read that found nothing within its time. Windows sometimes reports a blocking
+/// `recv` whose `SO_RCVTIMEO` expired as `ERROR_IO_PENDING` (997, "Overlapped I/O
+/// operation is in progress") instead of `WSAETIMEDOUT`; no datagram was consumed,
+/// so it is a timeout too.
 fn is_timeout(e: &std::io::Error) -> bool {
+    const IO_PENDING: i32 = 997;
     matches!(
         e.kind(),
         ErrorKind::WouldBlock | ErrorKind::TimedOut | ErrorKind::Interrupted
-    )
+    ) || (cfg!(windows) && e.raw_os_error() == Some(IO_PENDING))
 }
 
 /// Errors a connected UDP socket reports for an ICMP message about an earlier
@@ -976,6 +981,19 @@ impl Io {
 #[allow(clippy::unwrap_used)] // Tests fail by panicking.
 mod tests {
     use super::*;
+
+    #[test]
+    fn timeouts_include_windows_pending_reads() {
+        assert!(is_timeout(&std::io::Error::from(ErrorKind::WouldBlock)));
+        assert!(is_timeout(&std::io::Error::from(ErrorKind::TimedOut)));
+        assert_eq!(
+            is_timeout(&std::io::Error::from_raw_os_error(997)),
+            cfg!(windows)
+        );
+        assert!(!is_timeout(&std::io::Error::from(
+            ErrorKind::PermissionDenied
+        )));
+    }
 
     fn conn() -> Conn {
         let socket = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
