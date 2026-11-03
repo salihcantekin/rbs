@@ -1,4 +1,5 @@
-//! Bitstream and framing helpers shared by muxer and transport adapters (ADR-0019).
+//! Bitstream and framing helpers shared by encoder, muxer and transport adapters
+//! (ADR-0019).
 //!
 //! Pure functions over byte slices. They depend only on `rbs-core`, so any adapter may
 //! use them without depending on another adapter.
@@ -7,6 +8,7 @@
 //!   conversion.
 //! - [`avc`]: `AVCDecoderConfigurationRecord` (avcC) parsing and building.
 //! - [`aac`]: `AudioSpecificConfig` parsing and ADTS headers.
+//! - [`h273`]: ITU-T H.273 colour code points for encoder adapters.
 //! - [`amf0`]: AMF0 values for FLV script tags and RTMP commands.
 //! - [`flv`]: FLV tags and H.264/AAC tag bodies, shared by the FLV muxer and RTMP.
 //!
@@ -17,6 +19,7 @@ pub mod aac;
 pub mod amf0;
 pub mod avc;
 pub mod flv;
+pub mod h273;
 pub mod nal;
 
 use std::fmt;

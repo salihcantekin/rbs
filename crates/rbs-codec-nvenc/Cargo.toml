@@ -1,0 +1,34 @@
+[package]
+name = "rbs-codec-nvenc"
+description = "NVIDIA NVENC adapter for the RBS encoder port: H.264 and HEVC on Windows and Linux, loaded at run time."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+rbs-codec = { path = "../rbs-codec" }
+rbs-core = { path = "../rbs-core" }
+# H.273 colour code points for the VUI.
+rbs-media-format = { path = "../rbs-media-format" }
+
+# The NVIDIA driver libraries are opened at run time, so building needs no SDK and a
+# machine without an NVIDIA driver simply probes to nothing.
+[target.'cfg(all(any(target_os = "windows", target_os = "linux"), target_pointer_width = "64"))'.dependencies]
+libloading = "0.8.9"
+
+[dev-dependencies]
+rbs-codec = { path = "../rbs-codec", features = ["conformance"] }
+# Hardware tests check the NAL units of the output.
+rbs-media-format = { path = "../rbs-media-format" }
+# Micro-benchmark of the encode hand-off (measure-performance skill, ADR-0009).
+criterion = { version = "0.8", default-features = false, features = ["cargo_bench_support"] }
+
+[[bench]]
+name = "encode"
+harness = false
+
+[lints]
+workspace = true
