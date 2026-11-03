@@ -194,16 +194,22 @@ pub fn compositor_descriptor() -> NodeDescriptor;   // kind Compositor; input "l
 
 pub struct PixelCrop { pub left: u32, pub top: u32, pub right: u32, pub bottom: u32 }
 pub struct NodeLayer {
-    pub link: usize,          // index of the link on the "layers" pin (connection order)
+    pub producer: NodeId,     // the graph node whose video this layer draws (BoundLayer::producer)
+    pub link: usize,          // hint: index of its link on the "layers" pin when the list was made
     pub transform: Affine2,   // unit square of the cropped source to canvas pixels
     pub crop: PixelCrop,      // in source pixels; turned into texture coordinates with the real source size
-    pub opacity: f32,
+    pub opacity: f32,         // 0.0..=1.0; the value a fade ends at
+    pub fade: Option<Fade>,   // animates opacity, evaluated against tick time
     pub opaque: bool,         // ignore source alpha (XRGB sources)
 }
+pub struct Fade { pub from: f32, pub start: Timestamp, pub duration: Duration }  // linear from `from` to `opacity`
+
+pub type LayerSender = ParamSender<Vec<NodeLayer>>;
 
 impl CompositorNode {
-    pub fn new(canvas: CanvasDesc, layers: Vec<NodeLayer>) -> CompositorNode;
-    pub fn set_layers(&mut self, layers: Vec<NodeLayer>);   // while the node is idle (control thread)
+    /// `capacity` is the most layers the node draws; it sizes the compositor in `prepare`.
+    pub fn new(canvas: CanvasDesc, capacity: u32, layers: Vec<NodeLayer>) -> (CompositorNode, LayerSender);
+    pub fn capacity(&self) -> u32;
 }
 ```
 
@@ -211,11 +217,14 @@ impl CompositorNode {
 - `prepare` (control thread) builds the `Compositor` for the canvas and reserves room for the layer list. `release` drops it.
 - `warm` (render thread) acquires and releases three canvas textures, so the pool's free list holds a ring and `process` reuses them without allocating. `cool` does nothing: the textures stay in the pool's free list for the next user or a trim.
 - `process` does the following each tick:
-  1. Builds the layer list in a reserved buffer. Each `NodeLayer` takes the current frame on its link. A link without a frame, or with a frame that is not a pool texture, is skipped; native frames are imported by the source wrapper before they reach a link.
-  2. Converts the crop with the texture's size. The source transfer is `Srgb` when the frame's colour space says sRGB and the texture format does not decode it in the sampler.
-  3. Acquires a canvas texture, renders, and publishes it on "canvas": `Rgba16Float`, `ColorSpace::LINEAR_BT709`, the tick's time, and sequence = tick index. The pool slot is released at once, so the frame's lease keeps it alive.
-  4. RBS code allocates nothing here (hot path). A ring larger than three only grows when consumers hold more frames than that.
-- Layer lists reach a running node through the graph runtime's parameter channel (latest value, no allocation on the executor), which is being added to `rbs-graph`. Until it lands, the application sets layers while the node is idle.
+  1. Takes the newest layer list from the parameter channel, if one was sent (`ParamReceiver::update`; no allocation, no waiting).
+  2. Builds the layer list in a reserved buffer. Each `NodeLayer` finds its link: the hint is used when `Inputs::source(LAYERS_PIN, link)` is its producer, else `Inputs::find(LAYERS_PIN, producer)` looks it up (a list can meet an older or newer schedule, and link positions shift when a producer leaves the plan). A layer whose producer is not scheduled, whose link has no frame, or whose frame is not a pool texture is skipped; native frames are imported by the source wrapper before they reach a link. Layers past `capacity` are not drawn.
+  3. Converts the crop with the texture's size. The source transfer is `Srgb` when the frame's colour space says sRGB and the texture format does not decode it in the sampler.
+  4. Evaluates a fade at the tick's time: before `start` the opacity is `from`, after `start + duration` it is `opacity`, linear in between.
+  5. Acquires a canvas texture, renders, and publishes it on "canvas": `Rgba16Float`, `ColorSpace::LINEAR_BT709`, the tick's time, and sequence = tick index. The pool slot is released at once, so the frame's lease keeps it alive.
+  6. RBS code allocates nothing here (hot path). A ring larger than three only grows when consumers hold more frames than that.
+- Layer lists reach the node through the graph runtime's parameter channel ([ADR-0023](../adr/0023-node-parameter-channels.md)): the latest list wins, and the control side reuses the replaced list with `LayerSender::recycle` before `send`, so steady edits allocate nothing on either side. Fades are sent once as targets with timing (ADR-0023, decision 7), not as one list per frame.
+- Growing past `capacity` needs a new node (the compositor's layer buffer is sized in `prepare`, a non-real-time call). The application picks a capacity with room for the scene, for example the scene's layer count rounded up to a multiple of 16.
 
 ### Readback (fallback only)
 
