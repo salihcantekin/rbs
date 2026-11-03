@@ -1,6 +1,6 @@
 # ADR-0034: Show the engine preview as a native compositor layer, not through the toolkit's redraw
 
-- Status: Proposed
+- Status: Accepted
 - Date: 2026-11-03
 - Deciders: Salih (owner)
 - Builds on: ADR-0028 (preview surfaces shared as native handles), ADR-0013 (zero cost when unused)
@@ -17,7 +17,7 @@ Profile and measurements on the reference Mac (MacBook Pro M4 Pro, built-in ProM
 | Slint draws the preview (`RBS_PREVIEW_MODE=slint`) | 12.2 % | 15.3 % |
 | Layer (`RBS_PREVIEW_MODE=layer`, this ADR) | 2.0 % (twice) | 8.3-8.8 %; 9.2 % at 1080p |
 
-Every layer run kept 60 fps (`dropped` counter 0); the engine skipped 1 to 4 of about 1,190 frames per run (about 20 s measured after 1 s of the 21 s window) for want of a free surface (`ExportBusy`); a ring of 8 made it 1 and changed nothing else. The 1080p figure is a single run (n = 1); the 720p figures are two runs each. Earlier sittings gave the same picture (Slint 10.7-14.3 % and 12.8-19.2 %; layer 1.4-1.8 % and 6.1-9.3 %); the machine's background load moves both paths by a few points, so compare paths within one sitting.
+Every layer run showed 60.0 fps in the UI's 21 s measurement window; by the engine's own counters over its whole run (about 1,190 converted frames, `dropped` 0), it skipped 1 to 4 frames per run for want of a free surface (`ExportBusy`); a ring of 8 made it 1 and changed nothing else. The 1080p figure is a single run (n = 1); the 720p figures are two runs each. Earlier sittings gave the same picture (Slint 10.7-14.3 % and 12.8-19.2 %; layer 1.4-1.8 % and 6.1-9.3 %); the machine's background load moves both paths by a few points, so compare paths within one sitting.
 
 `sample` of the Slint path: about 70 % of the main thread's busy time is the per-frame redraw (Skia item drawing, `wgpu` surface acquire, encode, submit, present); no single hot spot. With the layer, a preview frame costs one Core Animation transaction (about 12 % of the main thread's busy time); what remains is Slint redrawing the meters and the status line at the display rate.
 
@@ -56,4 +56,12 @@ Every layer run kept 60 fps (`dropped` counter 0); the engine skipped 1 to 4 of 
 
 ## Review
 
-Independent review per ADR-0014: pending.
+- 2026-11-03, independent AI session (fresh context: proposal, specs and code only), round 1: changes requested. Main concerns and resolution:
+  1. The release rule read as a guarantee and 25 ms did not cover a missed refresh. Response: decision 3 states it as best effort with the worst case (one torn monitoring frame, no memory hazard); `show` flushes the transaction; 34 ms (two refreshes at 60 Hz); ring size from `surfaces_needed`; alternatives that report release (presented handler, `AVSampleBufferDisplayLayer`, display-link counting) recorded with reasons.
+  2. Accepted ADR-0022 and ADR-0028 were changed without saying so. Response: "Supersedes in part" header; pointers appended to their Review sections.
+  3. The late-frame budget row could no longer be checked. Response: marked open in the budget spec; Consequences say why.
+  4. `DEFAULT_RETIRE_AFTER` not re-exported; `set_rect` cache ignored the superlayer's height and attach; Drop released frames possibly on screen; opaque layer with letterbox bars; UI code built into engine binaries. Response: all fixed (re-export, cache on rectangle + height + flip with an autoresizing mask, `detach`, not opaque, `preview-layer` feature off by default).
+  5. Tests missed the 60 fps ring and placement. Response: `tests/share_layer_metal.rs` covers them with `TestClock`.
+- Round 1 Mac runs then showed the retire time costs frames: 25 ms with a ring of 4 gave 30 fps, 34 ms with a ring of 6 gave 48-51 fps while retirement waited for the next frame. Response: a one-shot timer at `next_retire` (decision 3); final run 60 fps.
+- 2026-11-03, independent AI session (fresh context), round 2: changes requested (docs gave two timer rules; measurement wording; jitter and no-op tests; example input errors), then approved after commit be96f94. No hot-path code changed (P15 not triggered: `layer.rs` is UI-side).
+- Owner: under the early-phase ADR policy (2026-11-03) threads may mark an ADR Accepted after its independent review. Status: Accepted, 2026-11-03.
