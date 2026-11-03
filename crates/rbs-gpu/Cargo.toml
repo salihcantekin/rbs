@@ -49,6 +49,8 @@ objc2-core-foundation = { version = "0.3.2", default-features = false, features 
 # Test-only IOSurface producer for the import conformance test.
 objc2-io-surface = { version = "0.3.2", default-features = false, features = ["std", "IOSurfaceRef", "IOSurfaceTypes", "libc", "objc2-core-foundation"] }
 objc2-core-foundation = { version = "0.3.2", default-features = false, features = ["std", "CFDictionary", "CFNumber", "CFString"] }
+# Test-only consumer check: exported surfaces must wrap as CVPixelBuffers for VideoToolbox.
+objc2-core-video = { version = "0.3.2", default-features = false, features = ["std", "CVBuffer", "CVImageBuffer", "CVPixelBuffer", "CVPixelBufferIOSurface", "CVReturn", "objc2-io-surface"] }
 
 [target.'cfg(target_os = "linux")'.dev-dependencies]
 # Test-only udmabuf producer for the DMA-BUF import test (memfd + ioctl).

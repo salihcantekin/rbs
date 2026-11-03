@@ -91,13 +91,13 @@ fn export_allocations_are_bounded() {
     window(50, &mut plain);
     let plain_a = window(FRAMES, &mut plain);
 
-    let mut exporter = SurfaceExporter::new(ctx, &mut pool, YuvFormat::Nv12, W, H, 3).unwrap();
+    let mut exporter = SurfaceExporter::new(ctx, YuvFormat::Nv12, W, H, 3).unwrap();
     let mut export = |i| {
         exporter
             .export(ctx, &pool, canvas, Timestamp::from_nanos(i), i)
             .unwrap();
         ctx.wait_idle().unwrap();
-        let frame = exporter.take_ready(ctx, &pool).unwrap().expect("ready");
+        let frame = exporter.take_ready(ctx).unwrap().expect("ready");
         drop(frame);
     };
     window(50, &mut export);
@@ -115,5 +115,4 @@ fn export_allocations_are_bounded() {
         "export adds {} allocations per frame",
         export_a - plain_a
     );
-    exporter.close(&mut pool);
 }

@@ -97,10 +97,10 @@ fn surface_bytes(io: &IOSurfaceRef) -> [Vec<u8>; 2] {
 }
 
 /// Waits for the GPU and takes the next ready frame.
-fn ready(ctx: &GpuContext, pool: &TexturePool, exporter: &mut SurfaceExporter) -> VideoFrame {
+fn ready(ctx: &GpuContext, exporter: &mut SurfaceExporter) -> VideoFrame {
     ctx.wait_idle().unwrap();
     exporter
-        .take_ready(ctx, pool)
+        .take_ready(ctx)
         .unwrap()
         .expect("frame ready after wait_idle")
 }
@@ -116,11 +116,11 @@ fn round_trip(format: YuvFormat) {
     let canvas = canvas(ctx, &mut pool);
     let want = reference(ctx, &mut pool, format, canvas);
 
-    let mut exporter = SurfaceExporter::new(ctx, &mut pool, format, W, H, 3).unwrap();
+    let mut exporter = SurfaceExporter::new(ctx, format, W, H, 3).unwrap();
     exporter
         .export(ctx, &pool, canvas, Timestamp::from_nanos(42), 7)
         .unwrap();
-    let frame = ready(ctx, &pool, &mut exporter);
+    let frame = ready(ctx, &mut exporter);
     assert_eq!(frame.timestamp(), Timestamp::from_nanos(42));
     assert_eq!(frame.sequence(), 7);
     assert_eq!(frame.format().pixel_format, format.pixel_format());
@@ -139,7 +139,6 @@ fn round_trip(format: YuvFormat) {
     let stats = exporter.stats();
     assert_eq!((stats.converted, stats.delivered, stats.busy), (1, 1, 0));
     drop(frame);
-    exporter.close(&mut pool);
 }
 
 #[test]
@@ -157,13 +156,13 @@ fn held_surfaces_are_not_reused() {
     let Some(ctx) = common::gpu() else { return };
     let mut pool = TexturePool::new();
     let canvas = canvas(ctx, &mut pool);
-    let mut exporter = SurfaceExporter::new(ctx, &mut pool, YuvFormat::Nv12, W, H, 2).unwrap();
+    let mut exporter = SurfaceExporter::new(ctx, YuvFormat::Nv12, W, H, 2).unwrap();
 
     let take = |exporter: &mut SurfaceExporter, n: u64| {
         exporter
             .export(ctx, &pool, canvas, Timestamp::from_nanos(n), n)
             .unwrap();
-        ready(ctx, &pool, exporter)
+        ready(ctx, exporter)
     };
     let first = take(&mut exporter, 1);
     let second = take(&mut exporter, 2);
@@ -185,59 +184,116 @@ fn held_surfaces_are_not_reused() {
     let third = take(&mut exporter, 3);
     assert_eq!(std::ptr::from_ref(io_surface(&third)), released);
     drop((second, third));
-    exporter.close(&mut pool);
 }
 
 #[test]
-fn frames_outlive_close() {
+fn frames_outlive_exporter_and_pool() {
     let Some(ctx) = common::gpu() else { return };
     let mut pool = TexturePool::new();
     let canvas = canvas(ctx, &mut pool);
     let want = reference(ctx, &mut pool, YuvFormat::Nv12, canvas);
     let before = pool.allocated();
-    let mut exporter = SurfaceExporter::new(ctx, &mut pool, YuvFormat::Nv12, W, H, 2).unwrap();
-    assert_eq!(pool.allocated(), before + 4, "two plane slots per surface");
+    let mut exporter = SurfaceExporter::new(ctx, YuvFormat::Nv12, W, H, 2).unwrap();
+    assert_eq!(pool.allocated(), before, "the exporter holds no pool slots");
     exporter
         .export(ctx, &pool, canvas, Timestamp::ZERO, 0)
         .unwrap();
-    let frame = ready(ctx, &pool, &mut exporter);
-    exporter.close(&mut pool);
+    let frame = ready(ctx, &mut exporter);
+    assert_eq!(exporter.held(), 1);
 
-    // The encoder still holds the frame: its surface stays valid and unchanged.
+    // The encoder still holds the frame after the render side is torn down: the lease
+    // alone keeps the surface valid and unchanged.
+    drop(exporter);
+    drop(pool);
+    ctx.wait_idle().unwrap();
     assert_eq!(surface_bytes(io_surface(&frame)), want);
     drop(frame);
-    // The next pool call collects the retired slot; the canvas reuses nothing new.
-    let spare = pool.acquire(ctx, &TextureDesc::canvas(W, H)).unwrap();
-    pool.release(spare).unwrap();
+}
+
+#[test]
+fn frames_come_out_in_order_and_drop_on_other_threads() {
+    let Some(ctx) = common::gpu() else { return };
+    let mut pool = TexturePool::new();
+    let canvas = canvas(ctx, &mut pool);
+    let mut exporter = SurfaceExporter::new(ctx, YuvFormat::Nv12, W, H, 4).unwrap();
+    for n in 0..3 {
+        exporter
+            .export(ctx, &pool, canvas, Timestamp::from_nanos(n), n)
+            .unwrap();
+    }
+    assert_eq!(exporter.pending(), 3);
+    ctx.wait_idle().unwrap();
+    let frames: Vec<VideoFrame> =
+        std::iter::from_fn(|| exporter.take_ready(ctx).unwrap()).collect();
     assert_eq!(
-        pool.allocated(),
-        before + 1,
-        "only the spare canvas remains"
+        frames.iter().map(VideoFrame::sequence).collect::<Vec<_>>(),
+        [0, 1, 2]
     );
+    assert_eq!(exporter.held(), 3);
+
+    // An encoder thread drops the frames; the surfaces become free for the render thread.
+    std::thread::spawn(move || drop(frames)).join().unwrap();
+    assert_eq!(exporter.held(), 0);
+    for n in 3..7 {
+        exporter
+            .export(ctx, &pool, canvas, Timestamp::from_nanos(n), n)
+            .unwrap();
+    }
+    assert_eq!(exporter.stats().busy, 0);
+}
+
+#[test]
+fn surfaces_wrap_as_cvpixelbuffers() {
+    use objc2_core_video::{
+        CVPixelBuffer, CVPixelBufferCreateWithIOSurface, CVPixelBufferGetHeight,
+        CVPixelBufferGetPixelFormatType, CVPixelBufferGetPlaneCount, CVPixelBufferGetWidth,
+        kCVReturnSuccess,
+    };
+    let Some(ctx) = common::gpu() else { return };
+    let mut pool = TexturePool::new();
+    let canvas = canvas(ctx, &mut pool);
+    let mut exporter = SurfaceExporter::new(ctx, YuvFormat::Nv12, W, H, 2).unwrap();
+    exporter
+        .export(ctx, &pool, canvas, Timestamp::ZERO, 0)
+        .unwrap();
+    let frame = ready(ctx, &mut exporter);
+    let mut out: *mut CVPixelBuffer = std::ptr::null_mut();
+    // SAFETY: the surface is valid while `frame` lives; `out` is a valid out pointer and
+    // receives a +1 reference, which `CFRetained::from_raw` takes over.
+    let buffer = unsafe {
+        let status = CVPixelBufferCreateWithIOSurface(
+            None,
+            io_surface(&frame),
+            None,
+            std::ptr::NonNull::from(&mut out),
+        );
+        assert_eq!(status, kCVReturnSuccess);
+        objc2_core_foundation::CFRetained::from_raw(std::ptr::NonNull::new(out).unwrap())
+    };
+    assert_eq!(CVPixelBufferGetPixelFormatType(&buffer), FOURCC_NV12);
+    assert_eq!(CVPixelBufferGetPlaneCount(&buffer), 2);
+    assert_eq!(CVPixelBufferGetWidth(&buffer), W as usize);
+    assert_eq!(CVPixelBufferGetHeight(&buffer), H as usize);
 }
 
 #[test]
 fn invalid_configurations_are_rejected() {
     let Some(ctx) = common::gpu() else { return };
-    let mut pool = TexturePool::new();
     assert!(matches!(
-        SurfaceExporter::new(ctx, &mut pool, YuvFormat::Nv12, 15, 8, 3),
+        SurfaceExporter::new(ctx, YuvFormat::Nv12, 15, 8, 3),
         Err(GpuError::InvalidSize { .. })
     ));
     assert!(matches!(
-        SurfaceExporter::new(ctx, &mut pool, YuvFormat::Nv12, W, H, 1),
+        SurfaceExporter::new(ctx, YuvFormat::Nv12, W, H, 1),
         Err(GpuError::Unsupported(_))
     ));
-    assert_eq!(pool.allocated(), 0);
 }
 
 #[test]
 fn nothing_is_ready_before_export() {
     let Some(ctx) = common::gpu() else { return };
-    let mut pool = TexturePool::new();
-    let mut exporter = SurfaceExporter::new(ctx, &mut pool, YuvFormat::Nv12, W, H, 2).unwrap();
-    assert!(exporter.take_ready(ctx, &pool).unwrap().is_none());
+    let mut exporter = SurfaceExporter::new(ctx, YuvFormat::Nv12, W, H, 2).unwrap();
+    assert!(exporter.take_ready(ctx).unwrap().is_none());
     assert_eq!(exporter.pending(), 0);
     assert_eq!(exporter.format().pixel_format, PixelFormat::Nv12);
-    exporter.close(&mut pool);
 }

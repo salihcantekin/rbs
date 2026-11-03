@@ -38,6 +38,8 @@ pub enum GpuError {
         /// Surfaces in the exporter's ring.
         surfaces: u32,
     },
+    /// The device was lost; work on it is discarded.
+    DeviceLost,
     /// Creating a native export surface failed (at creation only, not per frame).
     Export(&'static str),
     /// The pool has no free slot for a new texture.
@@ -76,6 +78,7 @@ impl fmt::Display for GpuError {
             Self::ExportBusy { surfaces } => {
                 write!(f, "all {surfaces} export surfaces are in use")
             }
+            Self::DeviceLost => f.write_str("the GPU device was lost"),
             Self::Export(msg) => write!(f, "native export failed: {msg}"),
             Self::PoolFull { capacity } => write!(f, "texture pool full ({capacity} slots)"),
             Self::InvalidSize { width, height } => write!(f, "invalid size {width}x{height}"),

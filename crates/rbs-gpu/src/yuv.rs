@@ -330,15 +330,13 @@ impl YuvConverter {
         luma: TextureId,
         chroma: TextureId,
     ) -> Result<wgpu::SubmissionIndex, GpuError> {
-        let source = self.source(pool, canvas)?;
         let luma_tex = plane(pool, luma, &luma_desc(self.format, self.width, self.height))?;
         let chroma_tex = plane(
             pool,
             chroma,
             &chroma_desc(self.format, self.width, self.height),
         )?;
-        let encoder = self.record(ctx, source, luma_tex, chroma_tex);
-        Ok(ctx.queue().submit(Some(encoder.finish())))
+        self.convert_views(ctx, pool, canvas, luma_tex, chroma_tex)
     }
 
     /// Writes both planes of `canvas` into the single multi-planar texture `surface` and
@@ -375,6 +373,22 @@ impl YuvConverter {
                 encoder
             }
         };
+        Ok(ctx.queue().submit(Some(encoder.finish())))
+    }
+
+    /// Writes the planes of `canvas` into two views the caller created for this format
+    /// and size (luma and chroma render targets, for example aliased native surfaces).
+    /// The views are not checked. Hot path.
+    pub(crate) fn convert_views(
+        &mut self,
+        ctx: &GpuContext,
+        pool: &TexturePool,
+        canvas: TextureId,
+        luma: &wgpu::TextureView,
+        chroma: &wgpu::TextureView,
+    ) -> Result<wgpu::SubmissionIndex, GpuError> {
+        let source = self.source(pool, canvas)?;
+        let encoder = self.record(ctx, source, luma, chroma);
         Ok(ctx.queue().submit(Some(encoder.finish())))
     }
 

@@ -2,12 +2,15 @@
 //! ADR-0025).
 //!
 //! macOS: [`SurfaceExporter`] owns a fixed ring of bi-planar IOSurfaces (`'420v'` for NV12,
-//! `'x420'` for P010, the layouts VideoToolbox takes). Each plane is aliased as a pool
-//! texture, so [`YuvConverter::convert`] renders straight into the surface: no copy, no
-//! CPU readback. Once the GPU has finished, [`SurfaceExporter::take_ready`] returns a
-//! native `IoSurface` frame with `SurfaceSync::Ready` and a pool lease. The encoder adapter
+//! `'x420'` for P010, the layouts VideoToolbox takes). Each plane is aliased as a Metal
+//! texture, so the YUV conversion renders straight into the surface: no copy, no CPU
+//! readback. Once the GPU has finished, [`SurfaceExporter::take_ready`] returns a native
+//! `IoSurface` frame with `SurfaceSync::Ready` and a lease on the ring. The encoder adapter
 //! (the frame's only consumer) wraps the surface in a `CVPixelBuffer` and drops the frame
 //! when VideoToolbox no longer reads it; the ring reuses a surface only after that.
+//!
+//! The lease owner is the ring itself and it retains every IOSurface, so an exported
+//! frame keeps its surface alive whatever is dropped first (exporter, pool, device).
 //!
 //! This is a marked low-level module (principle P11): every `unsafe` block states its
 //! invariant.
@@ -16,6 +19,8 @@
 //! allocate in RBS code. [`SurfaceExporter::new`] creates every surface up front.
 
 use std::collections::VecDeque;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::Duration;
 
 use objc2_core_foundation::{CFArray, CFDictionary, CFNumber, CFRetained, CFString, CFType};
@@ -27,7 +32,8 @@ use objc2_io_surface::{
 };
 use objc2_metal::{MTLDevice, MTLPixelFormat, MTLTextureUsage};
 use rbs_core::media::{
-    ColorSpace, NativeSurface, Size, SurfaceSync, TextureId, VideoFormat, VideoFrame,
+    ColorSpace, Lease, LeaseOwner, NativeSurface, Size, SurfaceSync, TextureId, VideoFormat,
+    VideoFrame,
 };
 use rbs_core::time::Timestamp;
 
@@ -63,11 +69,48 @@ pub struct ExportStats {
     pub busy: u64,
 }
 
-struct Surface {
-    /// Keeps the surface alive for the exporter; the plane textures retain it too.
-    io: CFRetained<IOSurfaceRef>,
-    luma: TextureId,
-    chroma: TextureId,
+/// A retained IOSurface that may be shared between threads.
+struct SharedSurface(CFRetained<IOSurfaceRef>);
+
+// SAFETY: IOSurface objects are thread-safe: retain/release are atomic and the surface
+// may be used from any thread (and process). The ring only keeps the surface alive and
+// reads its address; it never locks or writes the surface from another thread.
+unsafe impl Send for SharedSurface {}
+// SAFETY: see `Send`; shared references only read the (immutable) address.
+unsafe impl Sync for SharedSurface {}
+
+/// The lease owner of exported frames: one retained surface and one lease count per
+/// ring entry. Shared with encoder threads through leases.
+struct Ring {
+    surfaces: Box<[(SharedSurface, AtomicU32)]>,
+}
+
+// SAFETY: a surface is written by the exporter only while its count is zero (checked
+// with `Acquire` in `SurfaceExporter::export`, paired with the `Release` decrement here).
+// `retain` is reachable only through a `Lease` clone, which already holds a reference,
+// or from `take_ready` on the exporter's own thread, so a count never rises from zero
+// behind the exporter's back. The surfaces are retained by the ring, which every lease
+// keeps alive, so they stay valid for as long as any lease exists.
+unsafe impl LeaseOwner for Ring {
+    fn retain(&self, token: u64) {
+        if let Some((_, count)) = self.surfaces.get(token as usize) {
+            // Relaxed: the caller already holds a reference, so nothing is published.
+            count.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+
+    fn release(&self, token: u64) {
+        if let Some((_, count)) = self.surfaces.get(token as usize) {
+            // Release: the encoder's reads happen before the exporter writes again.
+            count.fetch_sub(1, Ordering::Release);
+        }
+    }
+}
+
+/// The exporter's GPU side of one ring entry: views of the aliased planes.
+struct Planes {
+    luma: wgpu::TextureView,
+    chroma: wgpu::TextureView,
     /// Converted but not yet handed out.
     pending: bool,
 }
@@ -82,12 +125,13 @@ struct Pending {
 /// Converts canvases into IOSurfaces for VideoToolbox. Owned by the render thread.
 ///
 /// Installed but unused costs nothing: an exporter exists only while an encoder that
-/// takes Metal memory is Active (P13). Call [`Self::close`] with the pool when the encoder
-/// stops; dropping the exporter without it keeps the surfaces until the pool is dropped.
+/// takes Metal memory is Active (P13). It holds no pool slots; dropping it frees its GPU
+/// objects, and each surface lives on only while an exported frame holds it.
 pub struct SurfaceExporter {
     converter: YuvConverter,
     format: VideoFormat,
-    surfaces: Vec<Surface>,
+    ring: Arc<Ring>,
+    planes: Vec<Planes>,
     /// Converted surfaces in submission order; capacity is the ring size.
     pending: VecDeque<Pending>,
     /// Where the search for a free surface starts (round robin).
@@ -97,13 +141,14 @@ pub struct SurfaceExporter {
 
 impl SurfaceExporter {
     /// Creates `surfaces` IOSurfaces of `format` and `width x height` and aliases their
-    /// planes in `pool` (two slots per surface). Not for real-time threads: it allocates.
+    /// planes on the render device. Not for real-time threads: it allocates.
     ///
-    /// `width` and `height` must be even. `surfaces` is 2 to [`MAX_EXPORT_SURFACES`];
-    /// pick the frames the encoder holds at once plus two. P010 needs `gpu.p010`.
+    /// `width` and `height` must be even. `surfaces` is 2 to [`MAX_EXPORT_SURFACES`]; see
+    /// the spec for sizing. P010 needs `gpu.p010`. The device must have unified memory
+    /// (Apple silicon): coherency of GPU-written IOSurfaces on discrete GPUs is not
+    /// verified yet, so they get `GpuError::Unsupported`.
     pub fn new(
         ctx: &GpuContext,
-        pool: &mut TexturePool,
         format: YuvFormat,
         width: u32,
         height: u32,
@@ -115,28 +160,28 @@ impl SurfaceExporter {
         // Checks the size, the P010 capability and builds the pipelines.
         let converter = YuvConverter::new(ctx, format, width, height)?;
         let layout = Layout::new(ctx, format, width, height)?;
-        let mut exporter = Self {
+        let mut ring = Vec::with_capacity(surfaces);
+        let mut planes = Vec::with_capacity(surfaces);
+        for _ in 0..surfaces {
+            let (io, p) = layout.create(ctx)?;
+            ring.push((SharedSurface(io), AtomicU32::new(0)));
+            planes.push(p);
+        }
+        Ok(Self {
             converter,
             format: VideoFormat::new(
                 Size::new(width, height),
                 format.pixel_format(),
                 ColorSpace::BT709_LIMITED,
             ),
-            surfaces: Vec::with_capacity(surfaces),
+            ring: Arc::new(Ring {
+                surfaces: ring.into_boxed_slice(),
+            }),
+            planes,
             pending: VecDeque::with_capacity(surfaces),
             next: 0,
             stats: ExportStats::default(),
-        };
-        for _ in 0..surfaces {
-            match layout.create(ctx, pool) {
-                Ok(s) => exporter.surfaces.push(s),
-                Err(e) => {
-                    exporter.close(pool);
-                    return Err(e);
-                }
-            }
-        }
-        Ok(exporter)
+        })
     }
 
     /// The format of exported frames: NV12 or P010, BT.709 limited range.
@@ -151,7 +196,7 @@ impl SurfaceExporter {
 
     /// Surfaces in the ring.
     pub fn surfaces(&self) -> usize {
-        self.surfaces.len()
+        self.planes.len()
     }
 
     /// Converted frames not yet handed out by [`Self::take_ready`].
@@ -159,8 +204,17 @@ impl SurfaceExporter {
         self.pending.len()
     }
 
-    /// Converts `canvas` into the next free surface. The frame becomes available from
-    /// [`Self::take_ready`] once the GPU has finished.
+    /// Exported frames the encoder still holds.
+    pub fn held(&self) -> usize {
+        self.ring
+            .surfaces
+            .iter()
+            .filter(|(_, c)| c.load(Ordering::Acquire) > 0)
+            .count()
+    }
+
+    /// Converts `canvas` (a canvas texture in `pool`) into the next free surface. The
+    /// frame becomes available from [`Self::take_ready`] once the GPU has finished.
     ///
     /// Hot path; does not allocate in RBS code. Returns [`GpuError::ExportBusy`] when every
     /// surface is pending or still held by the encoder; the caller drops the frame.
@@ -172,19 +226,22 @@ impl SurfaceExporter {
         timestamp: Timestamp,
         sequence: u64,
     ) -> Result<(), GpuError> {
-        let n = self.surfaces.len();
+        let n = self.planes.len();
+        let ring = &self.ring.surfaces;
+        let planes = &self.planes;
         let Some(i) = (0..n).map(|k| (self.next + k) % n).find(|&i| {
-            let s = &self.surfaces[i];
-            !s.pending && pool.lease_count(s.luma) == 0
+            // Acquire: pairs with the `Release` decrement of the encoder's last lease, so
+            // its reads of the surface happen before this conversion writes it.
+            !planes[i].pending && ring[i].1.load(Ordering::Acquire) == 0
         }) else {
             self.stats.busy += 1;
             return Err(GpuError::ExportBusy { surfaces: n as u32 });
         };
-        let s = &mut self.surfaces[i];
+        let p = &mut self.planes[i];
         let submission = self
             .converter
-            .convert(ctx, pool, canvas, s.luma, s.chroma)?;
-        s.pending = true;
+            .convert_views(ctx, pool, canvas, &p.luma, &p.chroma)?;
+        p.pending = true;
         self.next = (i + 1) % n;
         self.stats.converted += 1;
         // At most one entry per surface, so this never grows past the reserved capacity.
@@ -201,40 +258,49 @@ impl SurfaceExporter {
     /// frame (`SurfaceSync::Ready`) holding a lease on the surface; `None` when no frame is
     /// complete yet. Call in a loop until `None`, once per render tick. Does not block.
     ///
-    /// Hot path; does not allocate in RBS code.
-    pub fn take_ready(
-        &mut self,
-        ctx: &GpuContext,
-        pool: &TexturePool,
-    ) -> Result<Option<VideoFrame>, GpuError> {
+    /// Returns `GpuError::DeviceLost` once the device is lost: frames converted on a lost
+    /// device are never delivered. Hot path; does not allocate in RBS code.
+    pub fn take_ready(&mut self, ctx: &GpuContext) -> Result<Option<VideoFrame>, GpuError> {
         let Some(front) = self.pending.front() else {
             return Ok(None);
         };
-        let done = ctx
-            .device()
-            .poll(wgpu::PollType::Wait {
-                submission_index: Some(front.submission.clone()),
-                timeout: Some(Duration::ZERO),
-            })
-            .is_ok();
-        if !done {
-            return Ok(None);
+        match ctx.device().poll(wgpu::PollType::Wait {
+            submission_index: Some(front.submission.clone()),
+            timeout: Some(Duration::ZERO),
+        }) {
+            Ok(_) => {}
+            Err(wgpu::PollError::Timeout) => return Ok(None),
+            Err(wgpu::PollError::WrongSubmissionIndex(..)) => {
+                return Err(GpuError::Unsupported("submission of another device"));
+            }
+        }
+        // Metal counts a command buffer that failed as completed; a lost device is the
+        // only way such a failure is reported, so check it before calling the frame good.
+        if ctx.metrics().device_lost() {
+            self.pending.clear();
+            for p in &mut self.planes {
+                p.pending = false;
+            }
+            return Err(GpuError::DeviceLost);
         }
         let Some(p) = self.pending.pop_front() else {
             return Ok(None);
         };
-        let s = &mut self.surfaces[p.surface];
-        s.pending = false;
-        let lease = pool.lease(s.luma)?;
-        let ptr = std::ptr::from_ref::<IOSurfaceRef>(&s.io) as usize;
+        self.planes[p.surface].pending = false;
+        let token = p.surface as u64;
+        self.ring.retain(token);
+        let owner: Arc<dyn LeaseOwner> = self.ring.clone();
+        // SAFETY: one reference to entry `token` was counted just above and is handed over.
+        let lease = unsafe { Lease::adopt(owner, token) };
+        let ptr = std::ptr::from_ref::<IOSurfaceRef>(&self.ring.surfaces[p.surface].0.0) as usize;
         self.stats.delivered += 1;
         // SAFETY: `ptr` is a live IOSurfaceRef of `self.format` (created by `Layout::create`
-        // with these sizes and the matching '420v'/'x420' layout). It stays valid while
-        // `lease` lives: the lease keeps the luma pool slot, whose Metal texture retains the
-        // surface, from being dropped, even after `close`. The exporter writes a surface
-        // only when its luma slot has no lease, so it does not write while the frame
-        // exists. The GPU writes of this frame have completed (polled above), so the surface
-        // is ready on delivery.
+        // with these sizes and the matching '420v'/'x420' layout, checked after creation).
+        // The ring retains it and `lease` keeps the ring alive, so it stays valid while the
+        // lease lives, whatever else is dropped. The exporter writes a surface only when its
+        // count is zero, so it does not write while this frame exists. The GPU writes of
+        // this frame have completed (polled above, device not lost), so the surface is
+        // ready on delivery.
         let frame = unsafe {
             VideoFrame::native(
                 self.format,
@@ -245,18 +311,6 @@ impl SurfaceExporter {
             )
         };
         Ok(Some(frame.with_sequence(p.sequence)))
-    }
-
-    /// Releases the pool slots of every surface. Frames already handed out stay valid
-    /// until the encoder drops them; pending frames are discarded. Not for real-time
-    /// threads.
-    pub fn close(mut self, pool: &mut TexturePool) {
-        self.pending.clear();
-        for s in self.surfaces.drain(..) {
-            // Both ids are still owned by the exporter; release cannot fail for them.
-            let _ = pool.release(s.luma);
-            let _ = pool.release(s.chroma);
-        }
     }
 }
 
@@ -283,6 +337,11 @@ impl Layout {
                 .as_hal::<Metal>()
                 .ok_or(GpuError::Unsupported("render device is not Metal"))?;
             let raw = hal.raw_device();
+            if !raw.hasUnifiedMemory() {
+                return Err(GpuError::Unsupported(
+                    "IOSurface export on a GPU without unified memory",
+                ));
+            }
             (
                 raw.minimumLinearTextureAlignmentForPixelFormat(luma_mtl),
                 raw.minimumLinearTextureAlignmentForPixelFormat(chroma_mtl),
@@ -311,19 +370,26 @@ impl Layout {
         })
     }
 
-    /// Creates one IOSurface and aliases its planes as pool textures.
-    fn create(&self, ctx: &GpuContext, pool: &mut TexturePool) -> Result<Surface, GpuError> {
+    /// Creates one IOSurface and aliases its planes as render targets.
+    fn create(&self, ctx: &GpuContext) -> Result<(CFRetained<IOSurfaceRef>, Planes), GpuError> {
         let io = self.io_surface()?;
+        let w = self.width as usize;
+        let h = self.height as usize;
+        let sample = sample_bytes(self.format);
+        let plane_ok = |p: usize, pw: usize, ph: usize, bpe: usize, row: usize| {
+            io.width_of_plane(p) == pw
+                && io.height_of_plane(p) == ph
+                && io.bytes_per_element_of_plane(p) == bpe
+                && io.bytes_per_row_of_plane(p) >= row
+        };
         if io.plane_count() != 2
-            || io.width_of_plane(0) != self.width as usize
-            || io.height_of_plane(0) != self.height as usize
+            || !plane_ok(0, w, h, sample, w * sample)
+            || !plane_ok(1, w / 2, h / 2, 2 * sample, w * sample)
         {
             return Err(GpuError::Export("IOSurface has an unexpected plane layout"));
         }
         let (luma_mtl, chroma_mtl) = mtl_formats(self.format);
         let usage = MTLTextureUsage::ShaderRead | MTLTextureUsage::RenderTarget;
-        let luma_desc = yuv::luma_desc(self.format, self.width, self.height);
-        let chroma_desc = yuv::chroma_desc(self.format, self.width, self.height);
         let alias = |plane: usize, desc: crate::pool::TextureDesc, mtl_format| {
             alias_plane(
                 ctx,
@@ -338,23 +404,26 @@ impl Layout {
                     usage: desc.usage,
                 },
             )
+            .map(|t| t.create_view(&wgpu::TextureViewDescriptor::default()))
         };
-        let luma_tex = alias(0, luma_desc, luma_mtl)?;
-        let chroma_tex = alias(1, chroma_desc, chroma_mtl)?;
-        let luma = pool.insert_external(ctx, luma_tex, luma_desc)?;
-        let chroma = match pool.insert_external(ctx, chroma_tex, chroma_desc) {
-            Ok(id) => id,
-            Err(e) => {
-                let _ = pool.release(luma);
-                return Err(e);
-            }
-        };
-        Ok(Surface {
+        let luma = alias(
+            0,
+            yuv::luma_desc(self.format, self.width, self.height),
+            luma_mtl,
+        )?;
+        let chroma = alias(
+            1,
+            yuv::chroma_desc(self.format, self.width, self.height),
+            chroma_mtl,
+        )?;
+        Ok((
             io,
-            luma,
-            chroma,
-            pending: false,
-        })
+            Planes {
+                luma,
+                chroma,
+                pending: false,
+            },
+        ))
     }
 
     fn io_surface(&self) -> Result<CFRetained<IOSurfaceRef>, GpuError> {

@@ -904,6 +904,7 @@ dependencies = [
  "criterion 0.7.0",
  "libc",
  "objc2-core-foundation",
+ "objc2-core-video",
  "objc2-io-surface",
  "objc2-metal",
  "pollster",

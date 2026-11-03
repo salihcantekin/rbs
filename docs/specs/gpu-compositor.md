@@ -147,30 +147,33 @@ Implements [ADR-0025](../adr/0025-encoder-surface-export.md): encoders get the c
 
 ```rust
 impl SurfaceExporter {
-    /// Creates `surfaces` (2..=MAX_EXPORT_SURFACES = 32) IOSurfaces and aliases their planes in `pool`.
-    /// Non-real-time. P010 needs `gpu.p010`; width and height must be even.
-    pub fn new(ctx: &GpuContext, pool: &mut TexturePool, format: YuvFormat, width: u32, height: u32, surfaces: usize)
+    /// Creates `surfaces` (2..=MAX_EXPORT_SURFACES = 32) IOSurfaces and aliases their planes.
+    /// Non-real-time. P010 needs `gpu.p010`; width and height must be even; the device must
+    /// have unified memory, else `GpuError::Unsupported`.
+    pub fn new(ctx: &GpuContext, format: YuvFormat, width: u32, height: u32, surfaces: usize)
         -> Result<SurfaceExporter, GpuError>;
-    /// Converts `canvas` into the next free surface. `GpuError::ExportBusy` when every surface is
-    /// pending or held by the encoder: the caller drops the frame.
+    /// Converts `canvas` (a pool canvas) into the next free surface. `GpuError::ExportBusy`
+    /// when every surface is pending or held by the encoder: the caller drops the frame.
     pub fn export(&mut self, ctx: &GpuContext, pool: &TexturePool, canvas: TextureId, timestamp: Timestamp, sequence: u64)
         -> Result<(), GpuError>;
     /// The oldest converted frame whose GPU work completed, or `None`. Never blocks.
-    pub fn take_ready(&mut self, ctx: &GpuContext, pool: &TexturePool) -> Result<Option<VideoFrame>, GpuError>;
-    /// Releases the pool slots; frames already handed out stay valid until dropped.
-    pub fn close(self, pool: &mut TexturePool);
+    /// `GpuError::DeviceLost` once the device is lost (pending frames are discarded).
+    pub fn take_ready(&mut self, ctx: &GpuContext) -> Result<Option<VideoFrame>, GpuError>;
     pub fn format(&self) -> &VideoFormat;   // NV12 or P010, ColorSpace::BT709_LIMITED
     pub fn stats(&self) -> ExportStats;     // converted, delivered, busy
+    pub fn held(&self) -> usize;            // frames the encoder still holds
 }
 ```
 
-- Surfaces: bi-planar IOSurfaces, `'420v'` (`kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange`, NV12) or `'x420'` (`kCVPixelFormatType_420YpCbCr10BiPlanarVideoRange`, P010), limited range. Row pitch is aligned to IOSurface's row alignment and Metal's minimum linear texture alignment for the plane format; plane offsets are page aligned (4096).
-- Each plane is aliased as a Metal texture (`R8Unorm`/`RG8Unorm`, or `R16Unorm`/`RG16Unorm`) of `luma_desc`/`chroma_desc`, inserted into the pool as an external texture. `convert` renders into them, so there is no copy and no CPU readback.
-- All surfaces are created in `new`; the ring never grows. A surface is written only when it is not pending and its luma slot has no lease.
-- `take_ready` polls the conversion's submission without waiting. When it has completed, the frame is `VideoFrame::native(format, t, NativeSurface::io_surface(ptr), SurfaceSync::Ready, lease)` with the exporter's sequence number, and `lease` is a pool lease on the luma slot. The slot's Metal texture retains the IOSurface, so the pointer stays valid while the lease lives, including after `close`.
-- Frames come out in conversion order. Call `take_ready` until `None` once per render tick; a frame is normally ready on the tick after its conversion.
-- Consumer rules (encoder adapters): wrap the surface with `CVPixelBufferCreateWithIOSurface` (cache the wrapper per surface address: the ring reuses a small set), set the colour attachments from the frame's `ColorSpace`, and drop the frame only after VideoToolbox has finished with it (its output callback). The frame is not shareable.
-- Installed but unused costs nothing: an exporter exists only while an encoder that takes Metal memory is Active (P13). Dropping it without `close` keeps its pool slots until the pool is dropped.
+- Surfaces: bi-planar IOSurfaces, `'420v'` (`kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange`, NV12) or `'x420'` (`kCVPixelFormatType_420YpCbCr10BiPlanarVideoRange`, P010), limited range. Row pitch is aligned to IOSurface's row alignment and Metal's minimum linear texture alignment for the plane format; plane offsets are page aligned (4096). After creation the plane count, sizes, bytes per element and row pitch are checked against the request.
+- Each plane is aliased as a Metal render target (`R8Unorm`/`RG8Unorm`, or `R16Unorm`/`RG16Unorm`) owned by the exporter; it uses no pool slots. The two-plane conversion renders into them, so there is no copy and no CPU readback.
+- Unified memory only (Apple silicon) for now: whether GPU writes to an IOSurface-backed texture are visible to VideoToolbox on a discrete GPU without a synchronize step is not verified. Intel Macs with a discrete GPU fall back to the CPU path until it is.
+- The lease owner is the ring: it retains every IOSurface and keeps one atomic count per surface. A frame's lease keeps the ring, and so its surface, alive whatever is dropped first (exporter, pool, device). All surfaces are created in `new`; the ring never grows. A surface is written only when it is not pending and its count is zero (`Acquire` load, paired with the `Release` decrement of the encoder's last lease).
+- `take_ready` polls the conversion's submission without waiting (`PollError::Timeout` means not yet). When it has completed and the device is not lost, the frame is `VideoFrame::native(format, t, NativeSurface::io_surface(ptr), SurfaceSync::Ready, lease)` with the exporter's sequence number. Metal reports a failed command buffer as completed; the device-lost check is the only signal for that, so frames are not delivered after a loss.
+- Frames come out in conversion order. Call `take_ready` until `None` once per render tick; a frame is normally ready on the tick after its conversion. The poll is the same non-blocking `device.poll` the importer's `retire` already runs every tick.
+- Ring size: at least the encoder input queue's capacity plus the frames the encoder API keeps in flight (look-ahead, reordering) plus two. A capability for frames in flight is an open question; until then the encoder adapter documents its figure.
+- Consumer rules (encoder adapters): wrap the surface with `CVPixelBufferCreateWithIOSurface`, set the colour attachments from the frame's `ColorSpace`, and drop the frame once VideoToolbox has finished with it: after its output callback, including when the frame was dropped (`kVTEncodeInfo_FrameDropped`) or the session was invalidated. A cache of pixel buffers keyed by surface address is allowed only while it also holds the frame's lease or retains the surface; clear it when the encoder stops, so it never keeps a ring alive.
+- Installed but unused costs nothing: an exporter exists only while an encoder that takes Metal memory is Active (P13). Dropping it frees its GPU objects; surfaces live on only while frames hold them.
 
 ### Native import (interop)
 
@@ -267,7 +270,7 @@ impl CompositorNode {
 
 ## Errors and failure behaviour
 
-All fallible calls return `GpuError` (no panics, no `unwrap` in library code). Variants: `NoAdapter`, `DeviceRequest`, `StaleTexture`, `UnknownTexture`, `TargetMismatch`, `TooManyLayers`, `Unsupported`, `WrongAdapter`, `Import`, `ExportBusy`, `Export`, `PoolFull`, `InvalidSize`, `Readback`. Errors on the render path carry only `Copy` data so building them does not allocate.
+All fallible calls return `GpuError` (no panics, no `unwrap` in library code). Variants: `NoAdapter`, `DeviceRequest`, `StaleTexture`, `UnknownTexture`, `TargetMismatch`, `TooManyLayers`, `Unsupported`, `WrongAdapter`, `Import`, `ExportBusy`, `Export`, `DeviceLost`, `PoolFull`, `InvalidSize`, `Readback`. Errors on the render path carry only `Copy` data so building them does not allocate.
 
 Device loss is reported by wgpu through the device-lost callback and surfaced as a metric; recovery (recreate context, re-warm sources) is a graph-level concern for a later spec.
 
@@ -289,7 +292,7 @@ Run on any adapter, including software adapters in CI (lavapipe on Linux, WARP o
 - NV12 and P010 surfaces (where `gpu.nv12_surface` / `gpu.p010_surface`; required on Linux CI): both planes of `convert_to_surface` equal the two-plane output byte for byte on a two-colour canvas; a texture of another format is rejected.
 - Allocations per frame do not grow over time and grow by at most a small constant per layer.
 - Readback increments `frames_cpu_copied`.
-- Export (macOS CI, the runner's Metal device): NV12 and P010 (where `gpu.p010`) surface bytes, read through the IOSurface API with its plane strides, equal the two-plane output byte for byte on a two-colour canvas; the frame is an `IoSurface` frame with `Ready` sync, the right pixel format, time and sequence; held surfaces are not reused and a full ring returns `ExportBusy`; frames stay valid and unchanged after `close`; odd sizes and ring sizes outside 2..=32 are rejected; a steady export loop allocates at most 4 more per frame than the same conversion into pool planes and does not grow.
+- Export (macOS CI, the runner's Metal device): NV12 and P010 (where `gpu.p010`) surface bytes, read through the IOSurface API with its plane strides, equal the two-plane output byte for byte on a two-colour canvas; the frame is an `IoSurface` frame with `Ready` sync, the right pixel format, time and sequence; the surface wraps as a `CVPixelBuffer` of the same format, size and plane count; held surfaces are not reused and a full ring returns `ExportBusy`; frames come out in order, and frames dropped on another thread free their surfaces; a frame stays valid and unchanged after both the exporter and the pool are dropped; odd sizes and ring sizes outside 2..=32 are rejected; a steady export loop allocates at most 4 more per frame than the same conversion into pool planes and does not grow.
 
 ## Open questions
 
@@ -297,4 +300,6 @@ Run on any adapter, including software adapters in CI (lavapipe on Linux, WARP o
 - DMA-BUF device identity on multi-GPU Linux (DRM render node or device UUID in `DmaBufSurface`).
 - Waiting on an imported fence on Vulkan and Metal through wgpu's HAL (D3D12 uses `ID3D12CommandQueue::Wait`). Metal producers deliver `Ready` surfaces until then.
 - D3D cache key: an NT handle value can be reused by the OS after the producer closes the handle, so a cached entry could alias a different texture. Producers keep ring handles open for the session today; validating entries (for example `CompareObjectHandles` on a duplicated handle) is a follow-up. IOSurface addresses cannot be reused while cached, because the Metal texture retains the surface.
+- Encoder frames in flight: a capability (for example `codec.video.frames_in_flight`) so the export ring can be sized from the encoder instead of the adapter's documentation.
+- IOSurface export on Macs with a discrete GPU (storage mode and synchronization), and a sync-object hand-off (`MTLSharedEvent`) instead of `Ready` to save the poll latency.
 - Rotation and non-affine transforms (perspective, corner pin) as filters vs layer properties.
