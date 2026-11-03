@@ -1,0 +1,36 @@
+[package]
+name = "rbs-codec-vaapi"
+description = "VA-API adapter for the RBS encoder port: H.264 on Linux, loaded at run time."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+rbs-codec = { path = "../rbs-codec" }
+rbs-codec-hw = { path = "../rbs-codec-hw" }
+rbs-core = { path = "../rbs-core" }
+# H.273 colour code points for the VUI.
+rbs-media-format = { path = "../rbs-media-format" }
+
+# libva is opened at run time, so building needs no SDK and a machine
+# without a VA-API driver simply probes to nothing.
+[target.'cfg(all(target_os = "linux", any(target_arch = "x86_64", target_arch = "aarch64")))'.dependencies]
+libloading = "0.8.9"
+
+[dev-dependencies]
+rbs-codec = { path = "../rbs-codec", features = ["conformance"] }
+# Hardware tests check the NAL units of the output.
+rbs-media-format = { path = "../rbs-media-format" }
+# Micro-benchmark of the encode hand-off (measure-performance skill, ADR-0009).
+criterion = { version = "0.8", default-features = false, features = ["cargo_bench_support"] }
+
+
+[lints]
+workspace = true
+
+[[bench]]
+name = "encode"
+harness = false
