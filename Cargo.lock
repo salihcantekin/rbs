@@ -3981,6 +3981,8 @@ dependencies = [
 name = "rbs-app"
 version = "0.0.1"
 dependencies = [
+ "libc",
+ "raw-window-handle",
  "rbs-gpu",
  "rbs-ui",
  "slint",
@@ -4261,10 +4263,12 @@ dependencies = [
  "criterion 0.7.0",
  "libc",
  "mach2",
+ "objc2 0.6.5",
  "objc2-core-foundation",
  "objc2-core-video",
  "objc2-io-surface",
  "objc2-metal 0.3.2",
+ "objc2-quartz-core 0.3.2",
  "pollster",
  "rbs-core",
  "rbs-graph",
@@ -4828,6 +4832,7 @@ dependencies = [
  "num-traits",
  "once_cell",
  "pin-weak",
+ "raw-window-handle",
  "slint-macros",
  "unicode-segmentation",
  "vtable",

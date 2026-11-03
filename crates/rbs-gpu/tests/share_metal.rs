@@ -482,3 +482,83 @@ fn wrong_token_gets_no_surfaces_and_idle_publish_does_no_work() {
         Err(GpuError::Disconnected(_))
     ));
 }
+
+/// IOSurface ID of a layer's contents.
+#[cfg(target_os = "macos")]
+fn contents_id(layer: &rbs_gpu::share::PreviewLayer) -> Option<u32> {
+    // SAFETY: reading `contents` has no requirement beyond a live layer; it is unsafe
+    // only because its type is not known to the compiler.
+    let contents = unsafe { layer.layer().contents() }?;
+    let object: &objc2::runtime::AnyObject = &contents;
+    // SAFETY: the layer's contents are only ever set to IOSurfaces, which are toll-free
+    // bridged with `IOSurfaceRef`.
+    let surface = unsafe {
+        &*(object as *const objc2::runtime::AnyObject).cast::<objc2_io_surface::IOSurfaceRef>()
+    };
+    Some(surface.id())
+}
+
+/// The layer path (ADR-0034): the layer's contents are the engine's surface itself, and
+/// a replaced frame goes back to the engine once nothing reads it. A layer outside any
+/// window is never composited, so its replaced frames go back at once; this also shows
+/// that the engine's and UI's Metal aliases do not count as "in use".
+#[cfg(target_os = "macos")]
+#[test]
+fn layer_shows_engine_surfaces_and_releases_replaced_frames() {
+    use rbs_gpu::share::{LayerRect, PreviewLayer};
+
+    let Some(ctx) = common::gpu() else { return };
+    let Some(mut publisher) = publisher(ctx) else {
+        return;
+    };
+    let mut engine = Engine::new(ctx);
+    let endpoint = publisher.endpoint().clone();
+    let mut sub =
+        connect_in_process(ctx, &mut publisher, endpoint, Duration::from_secs(5)).unwrap();
+    // The UI may also alias the surfaces as textures (the toolkit fallback path).
+    let _textures = sub.textures(ctx).unwrap();
+    let ids: Vec<u32> = publisher.surface_ids().collect();
+    let mut layer = PreviewLayer::new(&sub);
+    assert_eq!(
+        contents_id(&layer),
+        None,
+        "nothing shown before the first frame"
+    );
+    layer.set_rect(LayerRect {
+        x: 10.0,
+        y: 20.0,
+        width: 64.0,
+        height: 32.0,
+    });
+
+    for seq in 1..=8 {
+        engine.publish(ctx, &mut publisher, seq);
+        ctx.wait_idle().unwrap();
+        publisher.tick(ctx).unwrap();
+        let frame = sub
+            .recv(Duration::from_secs(1))
+            .unwrap()
+            .expect("a frame per publish while only one is held");
+        assert_eq!(frame.sequence(), seq);
+        let id = ids[frame.slot()];
+        layer.show(frame);
+        assert_eq!(
+            contents_id(&layer),
+            Some(id),
+            "contents is the engine's surface"
+        );
+        assert_eq!(
+            layer.retiring(),
+            0,
+            "a detached layer frees replaced frames at once"
+        );
+        assert!(!layer.engine_may_starve());
+        publisher.tick(ctx).unwrap();
+        assert_eq!(publisher.held(), 1, "only the shown frame is held");
+    }
+
+    // Dropping the layer gives the shown frame back.
+    drop(layer);
+    publisher.tick(ctx).unwrap();
+    assert_eq!(publisher.held(), 0);
+}

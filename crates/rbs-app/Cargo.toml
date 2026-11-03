@@ -23,6 +23,14 @@ slint = { version = "=1.18.1", default-features = false, features = ["std", "bac
 [dev-dependencies]
 # The cross-process preview demo (examples/remote_preview.rs) imports engine surfaces.
 rbs-gpu = { path = "../rbs-gpu" }
+# The demo attaches the preview layer to the window's view (ADR-0034). Same pin as above;
+# the feature only reaches example and test builds.
+slint = { version = "=1.18.1", default-features = false, features = ["raw-window-handle-06"] }
+raw-window-handle = "0.6"
+
+[target.'cfg(target_vendor = "apple")'.dev-dependencies]
+# The demo's self-measurement reads process CPU time (getrusage).
+libc = "0.2.180"
 
 [build-dependencies]
 rbs-ui = { path = "../rbs-ui" }

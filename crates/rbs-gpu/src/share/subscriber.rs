@@ -228,6 +228,12 @@ impl PreviewSubscriber {
         self.surfaces.len()
     }
 
+    /// The surfaces in slot order, retained (for [`super::PreviewLayer`]).
+    #[cfg(target_os = "macos")]
+    pub(super) fn io_surfaces(&self) -> Vec<CFRetained<IOSurfaceRef>> {
+        self.surfaces.iter().map(|s| s.0.clone()).collect()
+    }
+
     /// Global IOSurface ID of surface `slot` (diagnostics and tests).
     pub fn surface_id(&self, slot: usize) -> Option<u32> {
         self.surfaces.get(slot).map(|s| s.0.id())

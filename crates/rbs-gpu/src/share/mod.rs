@@ -4,7 +4,8 @@
 //! The engine's `PreviewPublisher` scales canvases into a fixed ring of RGBA IOSurfaces
 //! and shares them with one UI process over a Mach service. The UI's
 //! `PreviewSubscriber` looks the surfaces up once, aliases them as textures on its own
-//! device and then receives one small message per frame. No pixels cross the process
+//! device (or shows them as a Core Animation layer, `PreviewLayer`, ADR-0034) and then
+//! receives one small message per frame. No pixels cross the process
 //! boundary and nothing is copied: both processes use the same IOSurface memory.
 //!
 //! Only macOS has a backend so far; the endpoint and descriptor types exist everywhere.
@@ -15,6 +16,8 @@
 //! Hot path: `PreviewPublisher::publish` and `PreviewPublisher::tick` do not allocate in
 //! RBS code and never wait: every Mach call on the engine side uses a zero timeout.
 
+#[cfg(target_os = "macos")]
+mod layer;
 #[cfg(target_vendor = "apple")]
 mod mach;
 #[cfg(target_vendor = "apple")]
@@ -25,6 +28,8 @@ mod subscriber;
 use std::fmt;
 use std::str::FromStr;
 
+#[cfg(target_os = "macos")]
+pub use layer::{LayerRect, PreviewLayer};
 #[cfg(target_vendor = "apple")]
 pub use publisher::PreviewPublisher;
 #[cfg(target_vendor = "apple")]
