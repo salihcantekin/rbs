@@ -1,0 +1,30 @@
+[package]
+name = "rbs-audio"
+description = "RBS audio graph: input nodes with drift correction and resampling, the mixer, level meters and the audio encoder node."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+rbs-core = { path = "../rbs-core" }
+rbs-graph = { path = "../rbs-graph" }
+rbs-audio-io = { path = "../rbs-audio-io" }
+rbs-codec = { path = "../rbs-codec" }
+
+[dev-dependencies]
+# Deterministic audio input with a drifting device clock (reference adapter of the port).
+rbs-audio-io-test = { path = "../rbs-audio-io-test" }
+# Allocation guard for `process` of every node (performance budgets: no allocation on hot paths).
+allocation-counter = "0.8"
+# Micro-benchmarks of the input node and the mixer (measure-performance skill).
+criterion = { version = "0.8", default-features = false, features = ["cargo_bench_support"] }
+
+[[bench]]
+name = "nodes"
+harness = false
+
+[lints]
+workspace = true

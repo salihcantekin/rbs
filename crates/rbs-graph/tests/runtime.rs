@@ -628,40 +628,6 @@ fn many_input_links_keep_connection_order() {
 }
 
 #[test]
-fn audio_links_are_refused_without_preparing_anything() {
-    let mut rig = Rig::new();
-    let mic = rig
-        .graph
-        .add_node(Arc::new(NodeDescriptor::new(
-            NodeTypeId::new("org.rbs.test.mic"),
-            NodeKind::Source,
-            vec![],
-            vec![Pin::one("out", LinkKind::Audio)],
-        )))
-        .unwrap();
-    let mon = rig
-        .graph
-        .add_node(Arc::new(NodeDescriptor::new(
-            NodeTypeId::new("org.rbs.test.monitor"),
-            NodeKind::Output,
-            vec![Pin::one("in", LinkKind::Audio)],
-            vec![],
-        )))
-        .unwrap();
-    rig.graph.connect(mic, "out", mon, "in").unwrap();
-    for id in [mic, mon] {
-        rig.graph.set_state(id, Lifecycle::Standby).unwrap();
-        rig.graph.set_state(id, Lifecycle::Active).unwrap();
-    }
-    assert!(matches!(
-        rig.ctl.apply(&rig.graph),
-        Err(ApplyError::UnsupportedLink(_))
-    ));
-    assert!(!rig.ctl.in_flight());
-    assert!(rig.log.take().is_empty());
-}
-
-#[test]
 fn a_node_that_failed_warm_is_not_cooled_again_when_it_leaves() {
     let mut rig = Rig::new();
     let mut probe = Probe::new("src", Role::Source, &rig.log);

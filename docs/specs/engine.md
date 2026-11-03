@@ -2,7 +2,7 @@
 
 - Status: Draft
 - Owner crate(s): `rbs-engine`
-- Related ADRs: [0013](../adr/0013-zero-cost-when-unused.md), [0020](../adr/0020-node-contract-and-schedule-swap.md), [0024](../adr/0024-node-restart-with-back-off.md), [0026](../adr/0026-partitions-and-queues.md), [0027](../adr/0027-engine-loop.md), [0029](../adr/0029-final-ticks-on-drain.md), [0030](../adr/0030-worker-thread-setup.md)
+- Related ADRs: [0037](../adr/0037-audio-graph.md), [0013](../adr/0013-zero-cost-when-unused.md), [0020](../adr/0020-node-contract-and-schedule-swap.md), [0024](../adr/0024-node-restart-with-back-off.md), [0026](../adr/0026-partitions-and-queues.md), [0027](../adr/0027-engine-loop.md), [0029](../adr/0029-final-ticks-on-drain.md), [0030](../adr/0030-worker-thread-setup.md)
 
 ## Purpose
 
@@ -12,7 +12,7 @@ Runs a logical media graph split into partitions, each partition's executor on i
 
 In scope: worker threads, pacing, applying lowered descriptions to partitions (including node moves), the restart control loop, shutdown, a non-blocking handle for UI threads.
 
-Out of scope (later): CPU affinity, waitable high-resolution timers, audio partitions, the control API (`rbs-api`).
+Out of scope (later): CPU affinity, waitable high-resolution timers, the control API (`rbs-api`). Audio partitions are ordinary `Cadence` partitions at the block rate with `catch_up` (ADR-0037, [audio graph spec](audio-graph.md)).
 
 ## Contract
 
@@ -44,7 +44,7 @@ impl Engine {
 }
 
 pub enum Pacing {
-    Cadence { cadence: Cadence, offset: Duration },  // render, encoders
+    Cadence { cadence: Cadence, offset: Duration, catch_up: u32 },  // render, encoders (catch_up 0); audio (Pacing::stream)
     Doorbell { timer: Duration },                    // outputs
 }
 
@@ -63,7 +63,7 @@ pub enum EngineEvent { Applied(Applied), ApplyFailed(EngineError),
 Invariants (tested in `crates/rbs-engine/tests/engine.rs` unless noted):
 
 1. **Zero cost when unused.** A partition has a worker thread exactly while its running schedule has nodes. An engine whose partitions run nothing has no thread, and `service().wait` is `None` when nothing runs and no restart is due. An `EngineHandle` starts its control thread on the first command.
-2. **Cadence.** Tick `i` of a `Cadence` worker runs no earlier than `cadence.time_of(i) + offset` on the engine clock and carries `Tick::of(&cadence, i)`. Tick indices never repeat, also across worker restarts. A late worker runs only the newest due tick; `WorkerStats::late` grows by the number skipped.
+2. **Cadence.** Tick `i` of a `Cadence` worker runs no earlier than `cadence.time_of(i) + offset` on the engine clock and carries `Tick::of(&cadence, i)`. Tick indices never repeat, also across worker restarts. A late worker at most `catch_up` ticks behind runs the next tick, so it runs every due tick in order and counts each one run behind time in `WorkerStats::caught_up` (audio partitions, where a skipped tick is a lost block; `Pacing::stream(cadence, catch_up)`); further behind, or with `catch_up` 0 (video: `Pacing::cadence`, `cadence_after`), it runs only the newest due tick and `WorkerStats::late` grows by the number skipped (`worker.rs` tests `a_stream_worker_*`).
 3. **Doorbell.** A `Doorbell` worker ticks after each ring and after `timer` without one (also when nothing ever rings). With a long timer, every tick follows a ring (at most two wake-ups per ring).
 4. **Swaps.** After `Engine::apply` returns without `SwapTimeout`, each touched partition runs its new schedule. A cadence worker swaps on wake-up between ticks (`Executor::swap_pending`) and never runs an extra tick to do so (`rbs-graph` test `swap_pending_swaps_between_ticks_without_running_a_tick`).
 5. **Moves** follow ADR-0026 Decision 6 in two phases; a partition that gains a moved instance is sent its part again after the move, also when it lost a node in the same edit. The moved instance runs in its new partition; a move to another runtime keeps it in the old one (`MoveWrongRuntime`). A move whose old partition has not swapped in time waits and is finished by `service`.

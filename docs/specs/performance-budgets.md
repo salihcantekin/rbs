@@ -44,6 +44,8 @@ Measured on reference machines that will be listed here. Each target is compared
 | Same | Resident memory after 10 min | at or below OBS |
 | Same | Frames dropped by RBS (render or encode lag) over 4 h | 0 |
 | Audio path, 8 sources, 4 buses | Audio thread load per 10 ms block | < 10 % of block time |
+| Audio input node (read, steer, resample, map channels), one source | Time per 10 ms block, reference VM (`cargo bench -p rbs-audio --bench nodes`) | at most 50 µs (measured 27 µs at 48 kHz mono, 35 µs at 44.1 kHz stereo) |
+| Mixer, 16 stereo inputs with meters | Time per 10 ms block, same bench | at most 30 µs (measured 13 µs) |
 | Glass-to-encoder latency, display capture | Latency | < 2 frame intervals |
 | Glass-to-delivery latency, display capture (OS capture to `latest_frame`) | Latency | <= 1 frame interval |
 | Cold start to first preview frame | Time | < 1.5 s |

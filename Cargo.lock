@@ -3997,6 +3997,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "rbs-audio"
+version = "0.0.1"
+dependencies = [
+ "allocation-counter",
+ "criterion 0.8.2",
+ "rbs-audio-io",
+ "rbs-audio-io-test",
+ "rbs-codec",
+ "rbs-core",
+ "rbs-graph",
+]
+
+[[package]]
 name = "rbs-audio-io"
 version = "0.0.1"
 dependencies = [
@@ -4190,6 +4203,18 @@ dependencies = [
  "rbs-codec",
  "rbs-core",
  "rbs-media-format",
+]
+
+[[package]]
+name = "rbs-codec-mf"
+version = "0.0.1"
+dependencies = [
+ "criterion 0.8.2",
+ "rbs-codec",
+ "rbs-codec-mf",
+ "rbs-core",
+ "rbs-media-format",
+ "windows",
 ]
 
 [[package]]
