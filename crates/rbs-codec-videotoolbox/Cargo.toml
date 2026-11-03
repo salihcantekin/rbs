@@ -13,7 +13,6 @@ rbs-codec = { path = "../rbs-codec" }
 rbs-core = { path = "../rbs-core" }
 # Wait-free single-producer single-consumer ring from the output callback to `drain`
 # (P6). MIT or Apache-2.0, no dependencies; already used by the transports.
-rtrb = "0.4"
 
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2-core-foundation = { version = "0.3.2", default-features = false, features = ["std", "CFArray", "CFBase", "CFData", "CFDictionary", "CFNumber", "CFString"] }

@@ -21,11 +21,21 @@ use rbs_core::registry::{AdapterFactory, AdapterId, ProbeError};
 
 pub use session::VideoToolboxSession;
 
-/// Smallest and largest picture side the adapter declares. Apple's encoders take
-/// larger pictures on some machines; 4096 is what every Apple silicon media engine
-/// supports for both codecs.
+/// Picture limits the adapter declares: 4096x2304 is what every Apple silicon media
+/// engine supports for both codecs. Some machines take larger pictures; the adapter
+/// does not promise them.
 const MIN_SIDE: i64 = 64;
-const MAX_SIDE: i64 = 4096;
+const MAX_WIDTH: i64 = 4096;
+const MAX_HEIGHT: i64 = 2304;
+
+/// Constant quality (`kVTCompressionPropertyKey_Quality` without a bitrate) is an
+/// Apple silicon media engine feature; Intel Macs and software encoders lack it.
+const CONSTANT_QUALITY: bool = cfg!(target_arch = "aarch64");
+
+/// The system's encoder list, read once per process: it does not change while the
+/// process runs, and the first read loads encoder plug-ins (too slow to repeat within
+/// the probe budget).
+static ENCODERS: OnceLock<Vec<EncoderInfo>> = OnceLock::new();
 
 /// One encoder from `VTCopyVideoEncoderList`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -39,10 +49,6 @@ struct EncoderInfo {
 #[derive(Debug, Default)]
 pub struct VideoToolboxFactory {
     software: bool,
-    /// The system's encoder list, read once per process: it does not change while the
-    /// process runs, and the first read loads encoder plug-ins (too slow to repeat
-    /// within the probe budget).
-    encoders: OnceLock<Vec<EncoderInfo>>,
 }
 
 impl VideoToolboxFactory {
@@ -54,10 +60,7 @@ impl VideoToolboxFactory {
     /// The adapter that also offers Apple's software encoders
     /// (`org.rbs.codec.videotoolbox-software`).
     pub fn with_software() -> Self {
-        Self {
-            software: true,
-            encoders: OnceLock::new(),
-        }
+        Self { software: true }
     }
 
     /// Creates a session with its concrete type, for callers that want its counters.
@@ -78,7 +81,7 @@ impl VideoToolboxFactory {
     }
 
     fn encoders(&self) -> &[EncoderInfo] {
-        self.encoders.get_or_init(read_encoder_list)
+        ENCODERS.get_or_init(read_encoder_list)
     }
 
     /// Codecs this adapter offers, in a fixed order.
@@ -175,15 +178,9 @@ impl AdapterFactory for VideoToolboxFactory {
             profiles.extend(["hevc.main", "hevc.main10"]);
         }
         let mut rate_controls = vec!["cbr", "vbr"];
-        if !self.software {
-            // Constant quality (`kVTCompressionPropertyKey_Quality` without a bitrate) is
-            // an Apple silicon media engine feature.
+        if !self.software && CONSTANT_QUALITY {
             rate_controls.push("constant_quality");
         }
-        let side = CapabilityValue::IntRange {
-            min: MIN_SIDE,
-            max: MAX_SIDE,
-        };
         Ok(CapabilitySet::new()
             .with(caps::HARDWARE, CapabilityValue::Flag(!self.software))
             .with(caps::VIDEO_ENCODE, set(&names))
@@ -192,8 +189,20 @@ impl AdapterFactory for VideoToolboxFactory {
                 caps::VIDEO_BIT_DEPTH,
                 set(if hevc { &["8", "10"] } else { &["8"] }),
             )
-            .with(caps::VIDEO_WIDTH, side.clone())
-            .with(caps::VIDEO_HEIGHT, side)
+            .with(
+                caps::VIDEO_WIDTH,
+                CapabilityValue::IntRange {
+                    min: MIN_SIDE,
+                    max: MAX_WIDTH,
+                },
+            )
+            .with(
+                caps::VIDEO_HEIGHT,
+                CapabilityValue::IntRange {
+                    min: MIN_SIDE,
+                    max: MAX_HEIGHT,
+                },
+            )
             .with(caps::VIDEO_FPS_MAX, CapabilityValue::Int(60))
             .with(caps::VIDEO_RATE_CONTROL, set(&rate_controls))
             // Frame reordering is left off until its depth is measured on hardware.

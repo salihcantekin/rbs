@@ -27,8 +27,8 @@ use rbs_core::media::{
 };
 use rbs_core::time::Timestamp;
 
-/// Surfaces of one ring: more than the encoder's frames in flight, so the source
-/// never runs dry while the encoder still holds frames.
+/// Surfaces of one ring by default: more than the encoder's frames in flight, so the
+/// source never runs dry while the encoder still holds frames.
 pub const RING: usize = 20;
 
 struct Entry {
@@ -150,7 +150,9 @@ pub fn fill(buffer: &CVPixelBuffer, format: &VideoFormat, index: u64) {
 /// A `metal` frame source over a ring of IOSurfaces.
 pub struct IoSurfaceSource {
     rings: Vec<Arc<Ring>>,
+    ring_size: usize,
     next: usize,
+    sync: SurfaceSync,
 }
 
 impl Default for IoSurfaceSource {
@@ -162,9 +164,49 @@ impl Default for IoSurfaceSource {
 impl IoSurfaceSource {
     /// A source with no rings yet; one is created per format on first use.
     pub fn new() -> Self {
+        Self::with_ring(RING)
+    }
+
+    /// A source whose rings have `size` surfaces.
+    pub fn with_ring(size: usize) -> Self {
         Self {
             rings: Vec::new(),
+            ring_size: size,
             next: 0,
+            sync: SurfaceSync::Ready,
+        }
+    }
+
+    /// Hands out frames with `sync` instead of `SurfaceSync::Ready`.
+    pub fn with_sync(mut self, sync: SurfaceSync) -> Self {
+        self.sync = sync;
+        self
+    }
+
+    /// A frame whose surface has format `actual` but which claims `claimed`.
+    pub fn mislabelled(
+        &mut self,
+        actual: &VideoFormat,
+        claimed: &VideoFormat,
+        timestamp: Timestamp,
+    ) -> VideoFrame {
+        let ring = self.ring(actual);
+        let entry = &ring.entries[0];
+        assert_eq!(entry.count.load(Ordering::Acquire), 0);
+        ring.retain(0);
+        let surface = CFRetained::as_ptr(&entry.surface).as_ptr() as usize;
+        // SAFETY: the reference counted just above is handed to the lease.
+        let lease = unsafe { Lease::adopt(Arc::clone(&ring) as Arc<dyn LeaseOwner>, 0) };
+        // SAFETY: the surface is live and retained by the ring; the encoder must check
+        // its size and format against `claimed` and refuse it.
+        unsafe {
+            VideoFrame::native(
+                *claimed,
+                timestamp,
+                NativeSurface::io_surface(surface),
+                SurfaceSync::Ready,
+                lease,
+            )
         }
     }
 
@@ -172,7 +214,7 @@ impl IoSurfaceSource {
         if let Some(r) = self.rings.iter().find(|r| r.format == *format) {
             return Arc::clone(r);
         }
-        let entries = (0..RING)
+        let entries = (0..self.ring_size)
             .map(|_| {
                 let buffer = surface_buffer(format);
                 let surface = CVPixelBufferGetIOSurface(Some(&buffer)).expect("IOSurface");
@@ -196,9 +238,9 @@ impl IoSurfaceSource {
         self.rings.iter().map(|r| r.held()).sum()
     }
 
-    /// Distinct surfaces handed out so far (at most `RING` per format).
+    /// Distinct surfaces handed out so far (at most the ring size per format).
     pub fn surfaces(&self) -> usize {
-        self.rings.len() * RING
+        self.rings.len() * self.ring_size
     }
 }
 
@@ -221,10 +263,11 @@ impl FrameSource for IoSurfaceSource {
             return None;
         }
         let ring = self.ring(format);
-        let slot = (0..RING)
-            .map(|i| (self.next + i) % RING)
+        let n = self.ring_size;
+        let slot = (0..n)
+            .map(|i| (self.next + i) % n)
             .find(|&i| ring.entries[i].count.load(Ordering::Acquire) == 0)?;
-        self.next = (slot + 1) % RING;
+        self.next = (slot + 1) % n;
         let entry = &ring.entries[slot];
         fill(&entry.buffer, format, index);
         ring.retain(slot as u64);
@@ -238,7 +281,7 @@ impl FrameSource for IoSurfaceSource {
                 *format,
                 timestamp,
                 NativeSurface::io_surface(surface),
-                SurfaceSync::Ready,
+                self.sync,
                 lease,
             )
         };

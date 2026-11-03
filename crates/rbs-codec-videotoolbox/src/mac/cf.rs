@@ -64,8 +64,9 @@ pub(crate) fn dictionary(
     CFDictionary::from_slices(keys, values)
 }
 
-/// The `avcC` or `hvcC` record of a video format description.
-pub(crate) fn decoder_config_record(desc: &CMFormatDescription, atom: &str) -> Option<Vec<u8>> {
+/// The CFData of the `atom` record (`avcC` or `hvcC`) of a video format description.
+/// Retains only; never allocates.
+fn decoder_config_data(desc: &CMFormatDescription, atom: &CFString) -> Option<CFRetained<CFData>> {
     // SAFETY: the key is a CoreFoundation constant that lives for the process.
     let key = unsafe { kCMFormatDescriptionExtension_SampleDescriptionExtensionAtoms };
     // SAFETY: `desc` is a valid format description; the getter returns a retained value.
@@ -74,8 +75,27 @@ pub(crate) fn decoder_config_record(desc: &CMFormatDescription, atom: &str) -> O
     // SAFETY: the sample description atoms are a dictionary from atom names (CFString)
     // to their payloads (CFData, or an array of CFData for repeated atoms).
     let atoms: &CFDictionary<CFString, CFType> = unsafe { atoms.cast_unchecked() };
-    let name = CFString::from_str(atom);
-    let value = atoms.get(&name)?;
-    let data = value.downcast_ref::<CFData>()?;
-    Some(data.to_vec())
+    atoms.get(atom)?.downcast::<CFData>().ok()
+}
+
+/// The `avcC` or `hvcC` record of a video format description, copied.
+pub(crate) fn decoder_config_record(
+    desc: &CMFormatDescription,
+    atom: &CFString,
+) -> Option<Vec<u8>> {
+    decoder_config_data(desc, atom).map(|d| d.to_vec())
+}
+
+/// True when the `atom` record of `desc` equals `record`. Called for keyframes from the
+/// output callback: compares in place, without allocating.
+pub(crate) fn decoder_config_matches(
+    desc: &CMFormatDescription,
+    atom: &CFString,
+    record: &[u8],
+) -> bool {
+    let Some(data) = decoder_config_data(desc, atom) else {
+        return false;
+    };
+    // SAFETY: the bytes belong to `data`, an immutable CFData retained for this scope.
+    unsafe { data.as_bytes_unchecked() == record }
 }

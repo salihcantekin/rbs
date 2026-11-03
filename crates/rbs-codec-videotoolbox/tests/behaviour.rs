@@ -10,10 +10,15 @@
 mod support;
 
 use rbs_codec::conformance::{FrameSource, SystemFrameSource};
-use rbs_codec::{EncodeError, KeyframeInterval, RateControl, VideoEncoder, VideoEncoderConfig};
-use rbs_codec_videotoolbox::{VideoToolboxFactory, VideoToolboxSession};
+use rbs_codec::{
+    EncodeError, EncoderChange, KeyframeInterval, RateControl, VideoEncoder, VideoEncoderConfig,
+};
+use rbs_codec_videotoolbox::{
+    FRAMES_IN_FLIGHT, SURFACE_CACHE, VideoToolboxFactory, VideoToolboxSession,
+};
 use rbs_core::media::{
-    BitstreamFormat, CodecId, ColorSpace, EncodedPacket, MemoryKind, PixelFormat, Size, VideoFormat,
+    BitstreamFormat, CodecId, ColorSpace, EncodedPacket, MemoryKind, PixelFormat, Size,
+    SurfaceSync, VideoFormat,
 };
 use rbs_core::registry::AdapterFactory;
 use rbs_core::time::Timestamp;
@@ -236,4 +241,106 @@ fn unsupported_configurations_are_refused_at_create() {
     gpu.memory = MemoryKind::System;
     gpu.rate_control = RateControl::Cbr { bitrate_bps: 0 };
     assert!(factory.create_session(&gpu).is_err());
+}
+
+#[test]
+fn a_full_session_is_busy_until_drained() {
+    let Some(mut s) = session(&config(
+        CodecId::H264,
+        PixelFormat::Nv12,
+        MemoryKind::System,
+    )) else {
+        return;
+    };
+    let mut frames = SystemFrameSource::new();
+    let format = format(PixelFormat::Nv12);
+    let cadence = Cadence::frames(ORIGIN, FrameRate::FPS_30);
+    for i in 0..FRAMES_IN_FLIGHT as u64 {
+        let frame = frames.frame(&format, i, cadence.time_of(i)).unwrap();
+        s.submit(&frame).unwrap();
+    }
+    let next = FRAMES_IN_FLIGHT as u64;
+    let frame = frames.frame(&format, next, cadence.time_of(next)).unwrap();
+    assert!(matches!(s.submit(&frame), Err(EncodeError::Busy)));
+    let mut out = Vec::new();
+    s.flush(&mut out).unwrap();
+    assert_eq!(out.len(), FRAMES_IN_FLIGHT);
+    s.submit(&frame).unwrap();
+    s.flush(&mut out).unwrap();
+    assert_eq!(out.len(), FRAMES_IN_FLIGHT + 1);
+}
+
+#[test]
+fn a_surface_of_another_size_is_refused() {
+    let Some(mut s) = session(&config(CodecId::H264, PixelFormat::Nv12, MemoryKind::Metal)) else {
+        return;
+    };
+    let mut frames = IoSurfaceSource::new();
+    let actual = VideoFormat::new(
+        Size::new(320, 180),
+        PixelFormat::Nv12,
+        ColorSpace::BT709_LIMITED,
+    );
+    let frame = frames.mislabelled(&actual, &format(PixelFormat::Nv12), ORIGIN);
+    assert!(matches!(
+        s.submit(&frame),
+        Err(EncodeError::InvalidInput(_))
+    ));
+    drop(frame);
+    assert_eq!(frames.held(), 0);
+}
+
+#[test]
+fn surfaces_that_are_not_ready_are_refused() {
+    let Some(mut s) = session(&config(CodecId::H264, PixelFormat::Nv12, MemoryKind::Metal)) else {
+        return;
+    };
+    let mut frames = IoSurfaceSource::new().with_sync(SurfaceSync::keyed_mutex(0, 1));
+    let frame = frames.frame(&format(PixelFormat::Nv12), 0, ORIGIN).unwrap();
+    assert!(matches!(
+        s.submit(&frame),
+        Err(EncodeError::InvalidInput(_))
+    ));
+}
+
+#[test]
+fn switching_rate_control_mode_is_unsupported() {
+    let Some(mut s) = session(&config(
+        CodecId::H264,
+        PixelFormat::Nv12,
+        MemoryKind::System,
+    )) else {
+        return;
+    };
+    let vbr = RateControl::Vbr {
+        target_bps: 1_000_000,
+        max_bps: 2_000_000,
+    };
+    assert!(matches!(
+        s.reconfigure(&EncoderChange::Bitrate(vbr)),
+        Err(EncodeError::Unsupported)
+    ));
+    let cbr = RateControl::Cbr {
+        bitrate_bps: 1_000_000,
+    };
+    s.reconfigure(&EncoderChange::Bitrate(cbr)).unwrap();
+}
+
+#[test]
+fn a_ring_larger_than_the_cache_still_releases_every_surface() {
+    let Some(mut s) = session(&config(CodecId::H264, PixelFormat::Nv12, MemoryKind::Metal)) else {
+        return;
+    };
+    let ring = SURFACE_CACHE + 8;
+    let mut frames = IoSurfaceSource::with_ring(ring);
+    let count = 3 * ring as u64;
+    let packets = encode(&mut s, &mut frames, count);
+    assert_eq!(packets.len(), count as usize);
+    assert_eq!(frames.held(), 0);
+    let stats = s.stats();
+    assert!(
+        stats.wrapped as usize > SURFACE_CACHE,
+        "evicted surfaces are wrapped again"
+    );
+    assert!(stats.wrapped <= count);
 }

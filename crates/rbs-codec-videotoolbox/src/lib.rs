@@ -27,10 +27,11 @@
 //! testing), the session fails unrecoverably instead of producing packets that do not
 //! match `stream()`.
 //!
-//! Packets are built in VideoToolbox's output callback (its own thread): one exact-size
-//! `Vec` per packet is the one payload allocation the port allows. They travel to
-//! `drain` through a wait-free single-producer ring, so `submit` and `drain` never wait
-//! on a lock (P6).
+//! Packets are built in VideoToolbox's output callback (its own threads): one exact-size
+//! `Vec` per packet is the one payload allocation the port allows. Each frame owns a
+//! slot that the callback claims with one compare-exchange and fills; `drain` takes
+//! finished slots in submission order, so `submit`, `drain` and the callback never wait
+//! on a lock (P6) and the output order never depends on callback order.
 //!
 //! # Adapters
 //!
@@ -69,7 +70,7 @@ pub struct SessionStats {
     pub submitted: u64,
     /// Packets moved out by `drain` or `flush`.
     pub packets: u64,
-    /// Frames VideoToolbox dropped instead of encoding.
+    /// Frames that produced no packet (dropped by VideoToolbox, or failed).
     pub dropped: u64,
     /// System-memory frames copied into a pixel buffer.
     pub copied: u64,
