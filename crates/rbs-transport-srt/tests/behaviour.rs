@@ -144,6 +144,7 @@ fn sends_the_handshake_then_whole_chunks_in_order() {
 }
 
 #[test]
+#[ignore = "slow: waits out the 4 s SRT latency in real time; runs in the slow tier (ADR-0032)"]
 fn retransmits_what_the_listener_reports_lost() {
     let server = TestServer::start(Behaviour {
         lose_every: Some(7),
@@ -331,10 +332,11 @@ fn after_a_stall_media_resumes_at_a_keyframe_with_intact_gops() {
     }
 }
 
-/// Extra time a loaded CI runner may take to wake a thread after a timed wait.
-/// The code keeps the budget exactly; this only absorbs scheduler latency (a
-/// 50 ms margin failed on macOS CI with 390 ms against a 300 ms budget).
-const SCHEDULING_SLACK: Duration = Duration::from_millis(200);
+/// Extra time a loaded CI runner may take to wake a thread after a timed wait. The
+/// code keeps the budget exactly; the bound below only catches a call that ignores its
+/// budget, so it is a hang guard with room for any scheduler delay, not a precision
+/// check (ADR-0032; a 50 ms margin failed on macOS CI with 390 ms against 300 ms).
+const SCHEDULING_SLACK: Duration = Duration::from_secs(1);
 
 #[test]
 fn finish_and_drop_respect_their_bounds_against_a_silent_listener() {

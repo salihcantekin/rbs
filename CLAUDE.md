@@ -21,6 +21,7 @@ A headless live production engine in Rust (capture, compose, encode, stream, rec
 11. **Never review your own architecture.** ADRs, port changes, public contract changes (plugin SDK, control API, scene format), crate layering changes and new core/port dependencies need an independent review: a human, or a fresh AI session that gets only the proposal, specs and code (P14, [ADR-0014](docs/adr/0014-review-policy.md), `architecture-review` skill). An ADR stays `Proposed` until that review is recorded and the owner approves.
 12. **Hot paths need numbers and a human.** Code edited inside, or called directly from, the [hot paths](docs/architecture/hot-paths.md) needs before/after measurements, the `hot-path-review` checklist and a human maintainer's approval (P15). Your own checklist is never the only review.
 13. **UI follows binding rules.** Any UI work follows [UI principles](docs/ui/principles.md) (U1-U21), uses only design tokens and library components from the [design system](docs/specs/ui-design-system.md), and uses [glossary](docs/ui/glossary.md) terms ([ADR-0015](docs/adr/0015-ui-design-rules.md)). Run the `ui-review` skill.
+14. **Tests are fast and deterministic.** No flaky or hanging test: one that fails without a code change blocks all other work until its root cause is fixed; never retry, ignore or re-run to get green. Time-dependent logic uses an injected clock (`TestClock`), tests never sleep for timing, wait for conditions or tick indices instead of durations, and bound real time only as hang guards. Unit tests run in milliseconds; slow ones are `#[ignore = "slow: ..."]`. Run the tests of the crates you touch, not the whole suite each time ([ADR-0032](docs/adr/0032-fast-deterministic-tests.md), `test-reliability` skill).
 
 ## Workspace layout
 
@@ -34,7 +35,7 @@ A headless live production engine in Rust (capture, compose, encode, stream, rec
 ```sh
 cargo fmt --all -- --check
 cargo clippy --workspace --all-targets -- -D warnings
-cargo test --workspace
+cargo test --workspace            # or: cargo nextest run --workspace (CI uses nextest)
 cargo doc --workspace --no-deps
 ```
 
@@ -52,12 +53,13 @@ A task is done when all four pass, the acceptance criteria are met, and specs ar
 | `hot-path-review` | Any change in or called from a hot path |
 | `architecture-review` | Reviewing someone else's ADR, port or contract change (never your own) |
 | `ui-review` | Any change to UI code, tokens, components, UI text or plugin UI |
+| `test-reliability` | Writing or changing tests, or a test that failed, hung or got slow |
 
 ## How to work
 
 - Keep each change to one crate and one concern where possible. Prefer several small PRs over one large one.
 - Read the relevant spec and ADRs before writing code; cite them in the PR.
 - Write tests first for contracts: conformance tests for ports, property tests for pure logic.
-- Use the controllable `TestClock` from `rbs-core` in tests; never sleep for timing.
+- Use the controllable `TestClock` from `rbs-core` in tests; never sleep for timing. While iterating, run `cargo test -p <crate>` for the crates you change; run the whole workspace before you push.
 - When a requirement is unclear or a spec seems wrong, stop and ask the human instead of guessing.
 - Prefer well-maintained crates already listed in specs. Adding a new dependency to a core or port crate needs a justification in the PR.

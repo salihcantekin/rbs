@@ -44,3 +44,4 @@ An ADR records one decision that is hard to reverse or affects more than one cra
 | [0029](0029-final-ticks-on-drain.md) | Final ticks on drain | Accepted |
 | [0030](0030-worker-thread-setup.md) | Worker thread setup: a thread policy port and a runtime attach hook | Accepted |
 | [0031](0031-adapter-support-crates.md) | Adapter support crates | Accepted |
+| [0032](0032-fast-deterministic-tests.md) | Fast, deterministic tests: no flaky or hanging test, fake time, tiers and per-test timeouts | Accepted |

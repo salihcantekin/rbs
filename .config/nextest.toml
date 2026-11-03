@@ -1,0 +1,25 @@
+# Test runner settings (ADR-0032, docs/specs/testing-strategy.md).
+#
+# `cargo nextest run --workspace` runs the fast tier; add `--run-ignored only` for the
+# slow tier. CI uses `--profile ci`. Plain `cargo test` keeps working.
+
+[profile.default]
+# A flaky test fails the run. It is fixed, never retried.
+retries = 0
+# Report a test still running after 15 s, kill it at 60 s: a hang fails fast instead
+# of holding the job until the runner's own timeout.
+slow-timeout = { period = "15s", terminate-after = 4 }
+# A test that leaks a thread or child process holding stdout is reported, not waited on.
+leak-timeout = "1s"
+
+[profile.ci]
+retries = 0
+slow-timeout = { period = "15s", terminate-after = 4 }
+leak-timeout = "1s"
+# Run everything and list every failure, so one run shows all problems.
+fail-fast = false
+failure-output = "immediate-final"
+
+[profile.ci.junit]
+# Per-test durations; CI prints the slowest tests from it.
+path = "junit.xml"

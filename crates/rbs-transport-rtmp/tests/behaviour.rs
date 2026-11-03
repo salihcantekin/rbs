@@ -481,10 +481,11 @@ fn reconnects_resending_headers_and_resuming_at_a_keyframe() {
     assert_eq!(media.len(), 3 + 3, "keyframe and the two frames after it");
 }
 
-/// Extra time a loaded CI runner may take to wake a thread after a timed wait.
-/// The code keeps the budget exactly; this only absorbs scheduler latency (a
-/// 50 ms margin failed on macOS CI with 390 ms against a 300 ms budget).
-const SCHEDULING_SLACK: Duration = Duration::from_millis(200);
+/// Extra time a loaded CI runner may take to wake a thread after a timed wait. The
+/// code keeps the budget exactly; the bound below only catches a call that ignores its
+/// budget, so it is a hang guard with room for any scheduler delay, not a precision
+/// check (ADR-0032; a 50 ms margin failed on macOS CI with 390 ms against 300 ms).
+const SCHEDULING_SLACK: Duration = Duration::from_secs(1);
 
 #[test]
 fn finish_and_drop_respect_their_bounds_against_a_silent_server() {

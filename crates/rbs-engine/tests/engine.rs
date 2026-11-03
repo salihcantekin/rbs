@@ -3,7 +3,10 @@
 //!
 //! Time is a `TestClock`; tests move it and wake the workers. They wait for other
 //! threads with `eventually` (yielding with a generous real-time limit), never for a
-//! duration.
+//! duration, and wait for a tick by its index ([`support::Ticks`]), not by a counter a
+//! worker bumps after the tick. A node that must outlast an engine timeout is held by a
+//! gate the test opens once the engine gave up (`WorkerStats::stops`), so no outcome
+//! depends on how fast threads are scheduled (ADR-0032).
 
 #![allow(clippy::unwrap_used, clippy::expect_used)] // Tests fail by panicking.
 
@@ -23,7 +26,9 @@ use rbs_core::timing::{Cadence, FrameRate};
 use rbs_engine::{Engine, EngineConfig, EngineError, EngineEvent, EngineHandle, Pacing};
 use rbs_graph::description::{GraphDescription, NodeId, PartitionId};
 use rbs_graph::runtime::{PER_TICK_EVENTS, RestartPolicy, Runtime, RuntimeEvent};
-use support::{Gate, Probe, ReleaseLog, Role, TestNode, add, eventually};
+use support::{
+    Gate, Probe, ReleaseLog, Role, TestNode, TickLog, Ticks, add, eventually, open_when,
+};
 
 const RENDER: PartitionId = PartitionId::RENDER;
 const ENCODER: PartitionId = PartitionId(7);
@@ -38,14 +43,52 @@ impl Runtime for Other {
     type Local = ();
 }
 
+fn frames() -> Cadence {
+    Cadence::frames(Timestamp::ZERO, FrameRate::FPS_60)
+}
+
 fn cadence() -> Pacing {
-    Pacing::cadence(Cadence::frames(Timestamp::ZERO, FrameRate::FPS_60))
+    Pacing::cadence(frames())
+}
+
+/// The encoder partition ticks half a frame after render, so it always encodes the
+/// frame render wrote before it (the order of the two threads never decides).
+const ENCODER_OFFSET: Duration = Duration::from_nanos(8_333_333);
+
+/// The cadence index due at `now` with `offset`, if any.
+fn due_index(now: Timestamp, offset: Duration) -> Option<u64> {
+    let since = now.as_nanos().checked_sub(offset.as_nanos() as u64)?;
+    frames().index_at_or_before(Timestamp::from_nanos(since))
+}
+
+/// Advances `clock` by one frame in two halves: the encoder's tick, then render's.
+/// Waits for each tick by index in each partition in `parts` that has a worker.
+fn step_frame(engine: &Engine, clock: &TestClock, logs: &[(PartitionId, Duration, &TickLog)]) {
+    for half in [ENCODER_OFFSET, FRAME - ENCODER_OFFSET] {
+        clock.advance(half);
+        let now = clock.now();
+        for (p, offset, log) in logs {
+            if !engine.has_worker(*p) {
+                continue;
+            }
+            let Some(index) = due_index(now, *offset) else {
+                continue;
+            };
+            engine.wake(*p);
+            assert!(
+                eventually(LIMIT, || log.next() > index),
+                "{p} ran tick {index}"
+            );
+        }
+    }
 }
 
 /// source (render) -> encoder (partition 7) -> packet sink (partition 3). The output
-/// timer is an hour, so the output worker only ticks when its doorbell rings.
+/// timer is an hour, so the output worker only ticks when its doorbell rings. Every
+/// partition runs [`Ticks`], so a test can wait for a tick by its index.
 struct Rig {
     clock: TestClock,
+    logs: [Arc<TickLog>; 3],
     engine: Engine,
     graph: GraphDescription,
     source: NodeId,
@@ -74,16 +117,22 @@ impl Rig {
             Arc::new(clock.clone()),
             EngineConfig::default().swap_timeout(swap_timeout),
         );
+        let logs: [Arc<TickLog>; 3] = Default::default();
         engine
-            .add_partition::<()>(RENDER, Arc::new(()), (), cadence())
+            .add_partition::<Ticks>(RENDER, Arc::clone(&logs[0]), (), cadence())
             .unwrap();
         engine
-            .add_partition::<()>(ENCODER, Arc::new(()), (), cadence())
+            .add_partition::<Ticks>(
+                ENCODER,
+                Arc::clone(&logs[1]),
+                (),
+                Pacing::cadence_after(frames(), ENCODER_OFFSET),
+            )
             .unwrap();
         engine
-            .add_partition::<()>(
+            .add_partition::<Ticks>(
                 OUTPUT,
-                Arc::new(()),
+                Arc::clone(&logs[2]),
                 (),
                 Pacing::doorbell(Duration::from_secs(3600)),
             )
@@ -114,13 +163,18 @@ impl Rig {
         );
         graph.connect(ids.0, "out", ids.1, "in").unwrap();
         graph.connect(ids.1, "out", ids.2, "in").unwrap();
-        engine.adopt::<()>(RENDER, ids.0, Box::new(source)).unwrap();
         engine
-            .adopt::<()>(ENCODER, ids.1, Box::new(encoder))
+            .adopt::<Ticks>(RENDER, ids.0, Box::new(source))
             .unwrap();
-        engine.adopt::<()>(OUTPUT, ids.2, Box::new(sink)).unwrap();
+        engine
+            .adopt::<Ticks>(ENCODER, ids.1, Box::new(encoder))
+            .unwrap();
+        engine
+            .adopt::<Ticks>(OUTPUT, ids.2, Box::new(sink))
+            .unwrap();
         Self {
             clock,
+            logs,
             engine,
             graph,
             source: ids.0,
@@ -132,25 +186,17 @@ impl Rig {
         }
     }
 
-    /// Moves the clock one frame and waits until the cadence workers ran that tick.
+    /// Moves the clock one frame and waits until the cadence workers ran their ticks
+    /// of it: the encoder's (half a frame in), then render's.
     fn frame(&mut self) {
-        let before: Vec<u64> = [RENDER, ENCODER]
-            .iter()
-            .filter(|p| self.engine.has_worker(**p))
-            .map(|p| self.engine.worker_stats(*p).unwrap().ticks())
-            .collect();
-        self.clock.advance(FRAME);
-        let parts: Vec<PartitionId> = [RENDER, ENCODER]
-            .into_iter()
-            .filter(|p| self.engine.has_worker(*p))
-            .collect();
-        for p in &parts {
-            self.engine.wake(*p);
-        }
-        for (p, before) in parts.iter().zip(before) {
-            let stats = self.engine.worker_stats(*p).unwrap();
-            assert!(eventually(LIMIT, || stats.ticks() > before), "{p} ticked");
-        }
+        step_frame(
+            &self.engine,
+            &self.clock,
+            &[
+                (RENDER, Duration::ZERO, &self.logs[0]),
+                (ENCODER, ENCODER_OFFSET, &self.logs[1]),
+            ],
+        );
     }
 
     fn seen(&self) -> u64 {
@@ -395,19 +441,26 @@ fn shutdown_passes_every_queued_packet_not_just_one_ticks_worth() {
     // in the queue: far more than one tick passes (PER_TICK_EVENTS). Shutdown starts
     // while it is stalled, normally; the output's drain then waits for it and passes
     // everything queued. (If the stall ends early the output passes them anyway.)
-    let stall = Arc::new(Gate::holding(Duration::from_secs(2)));
-    let mut rig = Rig::build(None, None, Some(&stall), Duration::from_secs(10));
+    let stall = Arc::new(Gate::holding(LIMIT));
+    let mut rig = Rig::build(None, None, Some(&stall), LIMIT);
     rig.engine.apply(&rig.graph).unwrap();
     let backlog = 4 * PER_TICK_EVENTS as u64;
-    for _ in 0..backlog * 2 {
+    // The encoder ticks after render in every frame, so it encodes one frame per frame
+    // from the second on.
+    for _ in 0..backlog + 2 {
         rig.frame();
-        if rig.encoder_probe.seen.load(Ordering::Relaxed) > backlog {
-            break;
-        }
     }
     assert!(rig.encoder_probe.seen.load(Ordering::Relaxed) > backlog);
     assert!(rig.seen() < PER_TICK_EVENTS as u64, "the sink is stalled");
+    // The stall ends once shutdown ran render's final tick: shutdown has started, and
+    // the output drains only after render and the encoder did.
+    let source_ticks = Arc::clone(&rig.source_probe);
+    let before = source_ticks.ticks.load(Ordering::Relaxed);
+    let opener = open_when(&stall, LIMIT, move || {
+        source_ticks.ticks.load(Ordering::Relaxed) > before
+    });
     let report = rig.engine.shutdown();
+    assert!(opener.join().unwrap(), "render ran its final tick");
     assert!(report.errors.is_empty(), "{:?}", report.errors);
     assert_eq!(rig.seen(), rig.encoder_probe.seen.load(Ordering::Relaxed));
 }
@@ -417,7 +470,7 @@ fn a_drain_that_times_out_is_reported_and_still_releases_everything() {
     // The sink's first `process` stalls far longer than the swap timeout, and shutdown
     // starts while it does: the output's final ticks miss the timeout.
     let log: ReleaseLog = Arc::new(Mutex::new(Vec::new()));
-    let stall = Arc::new(Gate::holding(Duration::from_secs(2)));
+    let stall = Arc::new(Gate::holding(LIMIT));
     let mut rig = Rig::build(Some(&log), None, Some(&stall), Duration::from_millis(100));
     rig.engine.apply(&rig.graph).unwrap();
     // The encoder may read a frame only on the next frame (same cadence, either order);
@@ -435,8 +488,26 @@ fn a_drain_that_times_out_is_reported_and_still_releases_everything() {
         .ticks
         .load(Ordering::Relaxed)
         == 1));
+    // The stall ends only once the engine gave up on the output's final ticks and
+    // stops its worker, so the drain times out however the threads are scheduled.
+    let stops = rig.engine.worker_stats(OUTPUT).unwrap();
+    let opener = open_when(&stall, LIMIT, move || stops.stops() > 0);
     let report = rig.engine.shutdown();
-    assert_eq!(report.errors, vec![EngineError::DrainTimeout(OUTPUT)]);
+    assert!(opener.join().unwrap(), "the output worker was stopped");
+    assert!(
+        report.errors.contains(&EngineError::DrainTimeout(OUTPUT)),
+        "{:?}",
+        report.errors
+    );
+    // A starved machine may also miss the timeout elsewhere; that is reported too.
+    assert!(
+        report.errors.iter().all(|e| matches!(
+            e,
+            EngineError::DrainTimeout(_) | EngineError::SwapTimeout(_)
+        )),
+        "{:?}",
+        report.errors
+    );
     assert_eq!(rig.engine.workers(), 0);
     assert_eq!(*log.lock().unwrap(), vec!["source", "encoder", "sink"]);
     assert!(output.ticks() >= 1);
@@ -481,8 +552,9 @@ fn a_doorbell_worker_ticks_on_its_timer_without_a_ring() {
 fn tick_indices_never_repeat_across_worker_restarts() {
     let clock = TestClock::new();
     let mut engine = Engine::with_clock(Arc::new(clock.clone()), EngineConfig::default());
+    let log = Arc::new(TickLog::default());
     engine
-        .add_partition::<()>(RENDER, Arc::new(()), (), cadence())
+        .add_partition::<Ticks>(RENDER, Arc::clone(&log), (), cadence())
         .unwrap();
     let mut graph = GraphDescription::new();
     let source = TestNode::new(Role::Source, "source");
@@ -493,19 +565,27 @@ fn tick_indices_never_repeat_across_worker_restarts() {
         add(&mut graph, &sink, RENDER),
     );
     graph.connect(ids.0, "out", ids.1, "in").unwrap();
-    engine.adopt::<()>(RENDER, ids.0, Box::new(source)).unwrap();
-    engine.adopt::<()>(RENDER, ids.1, Box::new(sink)).unwrap();
+    engine
+        .adopt::<Ticks>(RENDER, ids.0, Box::new(source))
+        .unwrap();
+    engine
+        .adopt::<Ticks>(RENDER, ids.1, Box::new(sink))
+        .unwrap();
     let stats = engine.worker_stats(RENDER).unwrap();
+    // Waits for each tick by its index: `stats.ticks()` is bumped after a tick, so a
+    // count read right after `apply` may still miss the tick that swapped, and the next
+    // frame would then be skipped as late.
     let frames = |engine: &Engine, n: u64| {
         for _ in 0..n {
-            let before = stats.ticks();
             clock.advance(FRAME);
+            let index = frames().index_at_or_before(clock.now()).unwrap();
             engine.wake(RENDER);
-            assert!(eventually(LIMIT, || stats.ticks() > before));
+            assert!(eventually(LIMIT, || log.next() > index), "tick {index}");
         }
     };
     for round in 1..=3 {
-        engine.apply(&graph).unwrap();
+        let applied = engine.apply(&graph).unwrap();
+        assert!(applied.errors.is_empty(), "{:?}", applied.errors);
         assert!(engine.has_worker(RENDER));
         assert_eq!(stats.starts(), round);
         frames(&engine, 3);
@@ -518,6 +598,7 @@ fn tick_indices_never_repeat_across_worker_restarts() {
     }
     assert_eq!(probe.ticks.load(Ordering::Relaxed), 9);
     assert_eq!(probe.repeated_indices.load(Ordering::Relaxed), 0);
+    assert_eq!(stats.late(), 0, "no frame was skipped");
 }
 
 #[test]
@@ -710,7 +791,7 @@ fn a_move_held_up_by_a_swap_timeout_finishes_from_the_control_loop() {
     }));
     assert!(
         rig.engine
-            .take::<()>(ENCODER, rig.encoder)
+            .take::<Ticks>(ENCODER, rig.encoder)
             .unwrap()
             .is_none()
     );
@@ -749,13 +830,13 @@ fn retired_endpoints_are_dropped_after_a_swap_timeout() {
     // The reader was taken back and dropped by the engine.
     assert!(
         rig.engine
-            .take::<()>(OUTPUT, packets.reader)
+            .take::<Ticks>(OUTPUT, packets.reader)
             .unwrap()
             .is_none()
     );
     assert!(
         rig.engine
-            .take::<()>(ENCODER, packets.writer)
+            .take::<Ticks>(ENCODER, packets.writer)
             .unwrap()
             .is_none()
     );
@@ -810,9 +891,11 @@ fn a_move_out_of_a_partition_whose_part_was_not_sent_yet_still_happens() {
     let k2 = add(&mut rig.graph, &slow_sink, OUTPUT);
     rig.graph.connect(rig.source, "out", e2, "in").unwrap();
     rig.graph.connect(e2, "out", k2, "in").unwrap();
-    rig.engine.adopt::<()>(ENCODER, e2, Box::new(slow)).unwrap();
     rig.engine
-        .adopt::<()>(OUTPUT, k2, Box::new(slow_sink))
+        .adopt::<Ticks>(ENCODER, e2, Box::new(slow))
+        .unwrap();
+    rig.engine
+        .adopt::<Ticks>(OUTPUT, k2, Box::new(slow_sink))
         .unwrap();
     rig.engine.apply(&rig.graph).unwrap();
     rig.frame();
@@ -835,7 +918,7 @@ fn a_move_out_of_a_partition_whose_part_was_not_sent_yet_still_happens() {
     }));
     assert!(
         rig.engine
-            .take::<()>(ENCODER, rig.encoder)
+            .take::<Ticks>(ENCODER, rig.encoder)
             .unwrap()
             .is_none()
     );
@@ -843,9 +926,9 @@ fn a_move_out_of_a_partition_whose_part_was_not_sent_yet_still_happens() {
 
 #[test]
 fn shutdown_after_a_timed_out_swap_leaves_no_worker() {
-    // `cool` waits at most 200 ms for a gate nobody opens: the shutdown's first wait
-    // (20 ms) times out while a schedule with nodes is in flight.
-    let gate = Arc::new(Gate::holding(Duration::from_millis(200)));
+    // `cool` waits for a gate that opens only once shutdown stops the worker: the
+    // shutdown's first wait (20 ms) times out while a schedule with nodes is in flight.
+    let gate = Arc::new(Gate::holding(LIMIT));
     let mut engine = Engine::with_clock(
         Arc::new(TestClock::new()),
         EngineConfig::default().swap_timeout(Duration::from_millis(20)),
@@ -875,7 +958,10 @@ fn shutdown_after_a_timed_out_swap_leaves_no_worker() {
         .unwrap();
     let applied = engine.apply(&graph).unwrap();
     assert!(applied.errors.contains(&EngineError::SwapTimeout(RENDER)));
+    let stops = engine.worker_stats(RENDER).unwrap();
+    let opener = open_when(&gate, LIMIT, move || stops.stops() > 0);
     let report = engine.shutdown();
+    assert!(opener.join().unwrap(), "the worker was stopped");
     assert!(report.errors.contains(&EngineError::SwapTimeout(RENDER)));
     assert_eq!(engine.workers(), 0, "no worker after shutdown");
     let mut released = log.lock().unwrap().clone();

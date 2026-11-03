@@ -439,15 +439,16 @@ unsafe impl LeaseOwner for Ring {
 /// Fills a buffer with a flat pattern that differs per slot.
 fn pattern(pf: PixelFormat, len: usize, slot: usize) -> Vec<u8> {
     let shade = 32 + 64 * (slot as u8 % 3);
-    match pf {
-        PixelFormat::Yuy2 => (0..len)
-            .map(|i| if i % 2 == 0 { shade } else { 128 })
-            .collect(),
-        PixelFormat::Nv12 => vec![shade; len],
-        _ => (0..len)
-            .map(|i| if i % 4 == 3 { 255 } else { shade })
-            .collect(),
-    }
+    // `repeat` copies by doubling, so even an unoptimised test build fills a 4K
+    // frame in microseconds (a per-byte iterator took seconds per suite).
+    let unit: &[u8] = match pf {
+        PixelFormat::Yuy2 => &[shade, 128],
+        PixelFormat::Nv12 => &[shade],
+        _ => &[shade, shade, shade, 255],
+    };
+    let mut bytes = unit.repeat(len.div_ceil(unit.len()));
+    bytes.truncate(len);
+    bytes
 }
 
 struct Active {
