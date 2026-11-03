@@ -158,22 +158,53 @@ pub struct Options<'a> {
     /// harness will import frames into. Without it, declared GPU memory kinds are
     /// skipped (a failure in strict mode).
     pub gpu: Option<&'a GpuImportTarget>,
-    /// Counts the threads of the whole process, independently of what the adapter
-    /// reports (see [`process_thread_count`]). Only meaningful when the test binary
-    /// runs one test at a time (`--test-threads=1`).
-    pub process_threads: Option<fn() -> Option<u64>>,
+    /// Lists the thread ids of the whole process, independently of what the adapter
+    /// reports (see [`process_thread_ids`]). Only meaningful when the test binary runs
+    /// one test at a time (`--test-threads=1`).
+    pub process_threads: Option<fn() -> Option<Vec<u64>>>,
 }
 
-/// The number of threads of this process, where the platform makes that cheap to read
+/// The ids of this process's threads, where the platform makes that cheap to read
 /// without extra dependencies (Linux: `/proc/self/task`). `None` elsewhere.
-pub fn process_thread_count() -> Option<u64> {
+pub fn process_thread_ids() -> Option<Vec<u64>> {
     if cfg!(target_os = "linux") {
-        std::fs::read_dir("/proc/self/task")
-            .ok()
-            .map(|entries| entries.count() as u64)
+        let entries = std::fs::read_dir("/proc/self/task").ok()?;
+        Some(
+            entries
+                .filter_map(Result::ok)
+                .filter_map(|entry| entry.file_name().to_str()?.parse().ok())
+                .collect(),
+        )
     } else {
         None
     }
+}
+
+/// Whether the thread `id` of this process is exiting (Linux `PF_EXITING` in its
+/// `stat` flags) or already gone. `false` where it cannot be told.
+fn thread_exiting(id: u64) -> bool {
+    /// `PF_EXITING`: set when the task enters `do_exit`, before a joiner wakes.
+    const PF_EXITING: u64 = 0x4;
+    if !cfg!(target_os = "linux") {
+        return false;
+    }
+    let Ok(stat) = std::fs::read_to_string(format!("/proc/self/task/{id}/stat")) else {
+        return true;
+    };
+    // Fields after the parenthesised name: state, ppid, pgrp, session, tty_nr, tpgid,
+    // flags.
+    stat.rsplit_once(')')
+        .and_then(|(_, rest)| rest.split_whitespace().nth(6))
+        .and_then(|flags| flags.parse::<u64>().ok())
+        .is_some_and(|flags| flags & PF_EXITING != 0)
+}
+
+/// Threads in `now` that are not in `before`.
+fn new_threads(before: &[u64], now: &[u64]) -> Vec<u64> {
+    now.iter()
+        .copied()
+        .filter(|t| !before.contains(t))
+        .collect()
 }
 
 impl Default for Options<'_> {
@@ -392,10 +423,10 @@ impl Suite<'_> {
         Ok(self.report)
     }
 
-    fn resources(&self) -> (Option<u64>, Option<u64>) {
+    fn resources(&self) -> (Option<u64>, Option<Vec<u64>>) {
         (
             self.options.hooks.and_then(|h| h.resources()),
-            self.options.process_threads.and_then(|count| count()),
+            self.options.process_threads.and_then(|ids| ids()),
         )
     }
 
@@ -744,7 +775,7 @@ impl Suite<'_> {
                 );
             }
         }
-        self.check_resources("standby", baseline, "after open")?;
+        self.check_resources("standby", &baseline, "after open")?;
         self.pass("standby");
 
         session.start().map_err(|e| Failure {
@@ -756,6 +787,18 @@ impl Suite<'_> {
             detail: format!("{id}: second start must be a no-op, failed: {e}"),
         })?;
         self.pass("start");
+
+        // An id the adapter asks the host to store must open.
+        if let Some(stored) = session.target_to_store() {
+            let reopened = self.open(&stored, &[], &[]);
+            ensure("target to store", reopened.is_ok(), || {
+                format!(
+                    "{id}: target_to_store {stored} does not open: {:?}",
+                    reopened.err()
+                )
+            })?;
+            self.pass("target to store");
+        }
 
         let clock = self.pacer.clock();
         let stats_at_start = session.stats();
@@ -830,7 +873,7 @@ impl Suite<'_> {
                 );
             }
         }
-        self.check_resources("stop", baseline, "after stop")?;
+        self.check_resources("stop", &baseline, "after stop")?;
         self.pass("stop");
 
         // Invariant 3, accounted once over the whole run while the adapter is quiet:
@@ -874,7 +917,7 @@ impl Suite<'_> {
         }
 
         drop(session);
-        self.check_resources("drop", baseline, "after drop")?;
+        self.check_resources("drop", &baseline, "after drop")?;
         self.pass("drop");
         Ok(())
     }
@@ -882,7 +925,7 @@ impl Suite<'_> {
     fn check_resources(
         &mut self,
         check: &'static str,
-        baseline: (Option<u64>, Option<u64>),
+        baseline: &(Option<u64>, Option<Vec<u64>>),
         when: &str,
     ) -> Result<(), Failure> {
         let now = self.resources();
@@ -893,10 +936,27 @@ impl Suite<'_> {
             _ => self.skip(check, "adapter does not report resources"),
         }
         if self.options.process_threads.is_some() {
-            match (baseline.1, now.1) {
-                (Some(before), Some(now)) => ensure(check, now == before, || {
-                    format!("process has {now} threads {when}, {before} before open")
-                })?,
+            // Threads are compared by id: a thread that existed before open may end
+            // meanwhile (an earlier session's thread still exiting), which is fine;
+            // a thread that did not exist before is the adapter's, unless it is
+            // already exiting. A joined thread can still be listed for a moment,
+            // because the kernel wakes the joiner before it removes the exiting task;
+            // such a task is marked exiting, so it is told apart without waiting.
+            match (&baseline.1, &now.1) {
+                (Some(before), Some(now)) => {
+                    let new: Vec<u64> = new_threads(before, now)
+                        .into_iter()
+                        .filter(|id| !thread_exiting(*id))
+                        .collect();
+                    ensure(check, new.is_empty(), || {
+                        format!(
+                            "process has {} new threads {when} ({new:?}; {} before open, {} now)",
+                            new.len(),
+                            before.len(),
+                            now.len()
+                        )
+                    })?;
+                }
                 _ => self.skip(check, "process thread count unavailable"),
             }
         }
@@ -1111,5 +1171,16 @@ impl Suite<'_> {
             format!("frame memory {} was not requested", frame.memory_kind())
         })?;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn new_threads_ignore_ended_ones() {
+        assert_eq!(new_threads(&[1, 2, 3], &[1, 3]), Vec::<u64>::new());
+        assert_eq!(new_threads(&[1, 2], &[1, 2, 7]), vec![7]);
     }
 }

@@ -4,17 +4,22 @@
 //!
 //! # Targets
 //!
-//! This first part captures PipeWire video source nodes (`media.class = Video/Source`):
-//! cameras exposed by the session manager (V4L2 and libcamera devices) and virtual
-//! sources. Their ids are `node:<node.name>`. Screen and window capture through the
-//! XDG desktop portal builds on the same stream code and is added separately.
+//! - Cameras: PipeWire video source nodes (`media.class = Video/Source`) exposed by the
+//!   session manager (V4L2 and libcamera devices) and virtual sources, listed by
+//!   `enumerate`. Their ids are `node:<node.name>`.
+//! - Screens and windows: chosen by the user in the XDG desktop portal's dialog
+//!   (`pick`, ScreenCast interface). Their ids are `portal:display:<token>` or
+//!   `portal:window:<token>`, where the token restores the choice without a dialog.
+//!   Restore tokens are single use: after each `start` the session's
+//!   `target_to_store` names the id to store from then on.
 //!
 //! # How frames travel
 //!
 //! - `open` checks the request, reads the node's formats and narrows the request to the
 //!   first pixel format and memory kind both sides support. It creates nothing that
 //!   outlives the call (Standby, P13).
-//! - `start` runs a PipeWire main loop on its own thread with one input stream linked
+//! - `start` (portal targets: after restoring the cast and opening the PipeWire
+//!   connection the portal grants for it) runs a PipeWire main loop on its own thread with one input stream linked
 //!   to the node. The stream offers that format, as DMA-BUF with exactly the importer's
 //!   modifiers or in shared memory.
 //! - On each buffer the stream thread claims a free slot of the lock-free
@@ -38,6 +43,8 @@ pub(crate) use frames::{Consumer, Picture, Shared};
 
 #[cfg(target_os = "linux")]
 mod linux;
+#[cfg(target_os = "linux")]
+mod portal;
 
 /// Adapter id.
 pub const ADAPTER_ID: &str = "org.rbs.capture.pipewire";
@@ -89,6 +96,11 @@ mod platform {
         /// Creates the factory. Does nothing until used.
         pub fn new() -> Self {
             Self
+        }
+
+        /// How long `start` waits for the portal to restore a choice. No effect here.
+        pub fn with_restore_timeout(self, _timeout: std::time::Duration) -> Self {
+            self
         }
     }
 

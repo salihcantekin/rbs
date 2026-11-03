@@ -237,6 +237,21 @@ pub trait CaptureSession: Send {
         let _ = change;
         Err(CaptureError::Unsupported("reconfigure"))
     }
+
+    /// The id the host should store for this target from now on, when it differs from
+    /// the id the session was opened with.
+    ///
+    /// Some OS restore tokens are single use: the PipeWire screen-cast portal hands
+    /// out a new token at every `start` and invalidates the one it restored. Such
+    /// adapters return the id carrying the newest token of the same choice; the host
+    /// reads it after every successful `start` and replaces the id it stores (in the
+    /// scene) with it. Within one process the adapter keeps accepting every id that
+    /// named the choice. `None` means the opened id stays valid, or, after `start`
+    /// returned `TargetNotFound`, that no id restores the choice any more (the user
+    /// picks again). Not real-time; call it on a control thread. Default: `None`.
+    fn target_to_store(&self) -> Option<TargetId> {
+        None
+    }
 }
 
 /// The factory every capture adapter implements.

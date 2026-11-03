@@ -16,6 +16,10 @@ rbs-core = { path = "../rbs-core" }
 # Linux distribution that ships PipeWire; building needs its development headers.
 [target.'cfg(target_os = "linux")'.dependencies]
 bytes = "1.9"
+# The desktop portal over the session bus through libdbus (dbus-rs, MIT/Apache-2.0).
+# zbus would avoid the C library but leaves a process-lifetime `async-io` thread
+# behind after its first connection, which breaks zero cost when unused (P13).
+dbus = { version = "0.9.12", default-features = false, features = ["stdfd"] }
 libc = "0.2"
 pipewire = { version = "0.10", features = ["v0_3_34"] }
 
@@ -23,6 +27,7 @@ pipewire = { version = "0.10", features = ["v0_3_34"] }
 allocation-counter = "0.8"
 
 [target.'cfg(target_os = "linux")'.dev-dependencies]
+dbus = { version = "0.9.12", default-features = false, features = ["stdfd"] }
 pipewire = { version = "0.10", features = ["v0_3_34"] }
 
 [lints]
