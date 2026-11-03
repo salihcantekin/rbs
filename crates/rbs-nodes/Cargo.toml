@@ -1,0 +1,44 @@
+[package]
+name = "rbs-nodes"
+description = "Built-in RBS graph nodes that wrap the ports: capture sources, the encoder feed, encoders and outputs (ADR-0038)."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+license.workspace = true
+publish.workspace = true
+
+# Engine layer (docs/architecture/overview.md#layers): depends on the graph, the GPU
+# crate and the ports, never on an adapter. The composition root hands adapters in as
+# port factory trait objects.
+[dependencies]
+rbs-core = { path = "../rbs-core" }
+rbs-graph = { path = "../rbs-graph" }
+rbs-gpu = { path = "../rbs-gpu" }
+rbs-capture = { path = "../rbs-capture" }
+rbs-codec = { path = "../rbs-codec" }
+rbs-mux = { path = "../rbs-mux" }
+rbs-transport = { path = "../rbs-transport" }
+# Only to read the render device's graphics API (`wgpu::Backend`); same version and
+# features as rbs-gpu, so nothing new is built.
+wgpu = { version = "30.0.1", default-features = false, features = ["std", "parking_lot", "dx12", "metal", "vulkan", "wgsl"] }
+
+[dev-dependencies]
+# Synthetic capture for the pipeline tests (deterministic, no threads).
+rbs-capture-test = { path = "../rbs-capture-test" }
+# Allocation guard for the nodes' `process` (performance budgets: no allocation on hot paths).
+allocation-counter = "0.8"
+
+[lints]
+workspace = true
+
+# The Windows hardware check (examples/record.rs) wires real adapters. Example-only:
+# the library itself never depends on an adapter (P1).
+[target.'cfg(windows)'.dev-dependencies]
+rbs-engine = { path = "../rbs-engine" }
+rbs-capture-wgc = { path = "../rbs-capture-wgc" }
+rbs-capture-mf = { path = "../rbs-capture-mf" }
+rbs-codec-nvenc = { path = "../rbs-codec-nvenc" }
+rbs-codec-amf = { path = "../rbs-codec-amf" }
+rbs-mux-matroska = { path = "../rbs-mux-matroska" }
+rbs-transport-file = { path = "../rbs-transport-file" }

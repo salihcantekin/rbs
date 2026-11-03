@@ -4267,6 +4267,7 @@ version = "0.0.1"
 dependencies = [
  "ash",
  "bytemuck",
+ "bytes",
  "criterion 0.7.0",
  "libc",
  "mach2",
@@ -4346,6 +4347,29 @@ dependencies = [
  "rbs-core",
  "rbs-media-format",
  "rbs-mux",
+]
+
+[[package]]
+name = "rbs-nodes"
+version = "0.0.1"
+dependencies = [
+ "allocation-counter",
+ "rbs-capture",
+ "rbs-capture-mf",
+ "rbs-capture-test",
+ "rbs-capture-wgc",
+ "rbs-codec",
+ "rbs-codec-amf",
+ "rbs-codec-nvenc",
+ "rbs-core",
+ "rbs-engine",
+ "rbs-gpu",
+ "rbs-graph",
+ "rbs-mux",
+ "rbs-mux-matroska",
+ "rbs-transport",
+ "rbs-transport-file",
+ "wgpu",
 ]
 
 [[package]]
