@@ -75,3 +75,5 @@ Concerns:
 11. `prctl` zero arguments and overview rows -> `0 as c_ulong`; Foundation row lists the port; adapter row ordered.
 
 Accepted 2026-11-03 under the owner's early-phase ADR policy, after the re-review's remaining change (item 4) was made as the reviewer proposed. Open for the owner: the human hot-path sign-off and Windows/macOS wake-up numbers (item 6).
+
+- Record, 2026-11-03: the owner (Salih) signed off the human hot-path review (P15) for this decision; see the sign-off table in `docs/architecture/hot-paths.md`.

@@ -44,3 +44,5 @@ ADR-0003 lets an adapter depend only on its port, `rbs-core` and vendor crates; 
   - AV1 and native-surface input are not in the shared plan: stated as known limits in the spec and crate docs; they are added here when the first adapter needs them.
   - Test devices were compiled into runtime builds: moved behind the `testing` feature.
   - `flush` with nothing in flight did not re-arm the IDR, and `copied` counts a retried frame twice: the first is fixed, the second is documented.
+
+- Record, 2026-11-03: the owner (Salih) signed off the human hot-path review (P15) for this decision; see the sign-off table in `docs/architecture/hot-paths.md`.
