@@ -1,7 +1,7 @@
 # Test runner settings (ADR-0032, docs/specs/testing-strategy.md).
 #
-# `cargo nextest run --workspace` runs the fast tier; add `--run-ignored only` for the
-# slow tier. CI uses `--profile ci`. Plain `cargo test` keeps working.
+# `cargo nextest run --workspace` runs the fast tier; add `--run-ignored only -E 'test(/^slow_/)'`
+# for the slow tier. CI uses `--profile ci`. Plain `cargo test` keeps working.
 
 # GPU and hardware-encoder tests share one device per machine. nextest runs each test in
 # its own process, so without a limit dozens of processes open the device at once; the

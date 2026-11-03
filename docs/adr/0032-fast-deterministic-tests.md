@@ -29,7 +29,7 @@ The repository already said "use the `TestClock`, never sleep for timing" ([test
 
 5. **Tiers.**
    - *Fast tier* (default `cargo test` / `cargo nextest run`): every unit, property, conformance and in-process integration test. Each test should take well under 1 s; a test binary over 1 s needs a reason in a comment. The whole fast tier of a crate runs in seconds, so a change runs `cargo test -p <crate>` for the crates it touches.
-   - *Slow tier*: a deterministic test that must take seconds of real time (a protocol latency, a real daemon round trip) is marked `#[ignore = "slow: <why>"]` and runs with `cargo nextest run --run-ignored only`. CI runs both tiers.
+   - *Slow tier*: a deterministic test that must take seconds of real time (a protocol latency, a real daemon round trip) is marked `#[ignore = "slow: <why>"]`, named `slow_*`, and runs with `cargo nextest run --run-ignored only -E 'test(/^slow_/)'` (the name selects it: other ignored tests are child-process helpers or need a tool). CI runs both tiers.
    - *Hardware and tool tiers*: tests that need hardware skip at run time unless `RBS_REQUIRE_<THING>=1` is set (as today); tests that need an external tool are `#[ignore = "needs <tool>"]` in `*_interop` binaries.
 
 6. **CI enforces it.** CI runs tests with `cargo-nextest` and the `ci` profile in `.config/nextest.toml`: no retries, a test still running at 15 s is reported and one at 60 s is killed (a hang fails in a minute, not at the job timeout), every job has a timeout, and the slowest tests of every run are printed in the job summary. Timings are reported, not gated: a pass/fail gate on wall-clock time would itself be flaky.

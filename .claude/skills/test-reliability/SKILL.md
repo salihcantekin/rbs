@@ -40,7 +40,7 @@ Check each item; a reviewer checks them again.
 - [ ] Every real-time bound is a hang guard: at least 10x the expected time, at least 250 ms (prefer 1 s or more when a passing run does not wait for it), with a comment saying so. No wall-clock performance asserts; use a benchmark (`measure-performance`).
 - [ ] An expected timeout cannot be missed because the other side finished early: the other side is held until the timeout was observed.
 - [ ] The outcome does not depend on thread order unless the test sets the order.
-- [ ] Fast: the test takes well under 1 s in a debug build. Expensive fixtures are built cheaply (`slice::repeat` instead of per-byte iterators; small frames unless size is the point). A test that must take seconds of real time is `#[ignore = "slow: <why>"]`.
+- [ ] Fast: the test takes well under 1 s in a debug build. Expensive fixtures are built cheaply (`slice::repeat` instead of per-byte iterators; small frames unless size is the point). A test that must take seconds of real time is `#[ignore = "slow: <why>"]` and named `slow_*` (the slow tier selects by name).
 - [ ] Hardware tests skip unless `RBS_REQUIRE_<THING>=1`; external tools are `#[ignore = "needs <tool>"]` in a `*_interop` binary.
 - [ ] No test depends on other tests in the same process (nextest runs each test in its own process; `cargo test` runs them as threads of one process: both must pass).
 

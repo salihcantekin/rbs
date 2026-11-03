@@ -23,7 +23,7 @@ Thank you for helping. RBS is designed so that contributions can be checked by m
 
    While iterating, run only the crates you change (`cargo test -p <crate>`). CI runs the whole suite with `cargo nextest` (no retries, per-test timeouts).
 
-4. Tests must be fast and deterministic ([ADR-0032](docs/adr/0032-fast-deterministic-tests.md), [testing strategy](docs/specs/testing-strategy.md#rules)): inject time with `TestClock`, never sleep for timing, no wall-clock asserts except generous hang guards, slow tests `#[ignore = "slow: ..."]`. A flaky or hanging test is fixed before anything else merges.
+4. Tests must be fast and deterministic ([ADR-0032](docs/adr/0032-fast-deterministic-tests.md), [testing strategy](docs/specs/testing-strategy.md#rules)): inject time with `TestClock`, never sleep for timing, no wall-clock asserts except generous hang guards, slow tests `#[ignore = "slow: ..."]` and named `slow_*`. A flaky or hanging test is fixed before anything else merges.
 5. If you touched a [hot path](docs/architecture/hot-paths.md), include before/after numbers (see [performance budgets](docs/specs/performance-budgets.md)) and the `hot-path-review` checklist. A maintainer must approve.
 6. If you added a feature, make sure it costs nothing while inactive (principle P13).
 7. ADRs, port changes and public contract changes need an independent review before they are accepted ([ADR-0014](docs/adr/0014-review-policy.md)).

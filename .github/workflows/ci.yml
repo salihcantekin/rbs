@@ -84,13 +84,13 @@ jobs:
           RBS_REQUIRE_NV12_SURFACE: ${{ runner.os == 'Linux' && '1' || '' }}
           RBS_REQUIRE_PIPEWIRE: ${{ runner.os == 'Linux' && '1' || '' }}
           RBS_REQUIRE_VIDEOTOOLBOX: ${{ runner.os == 'macOS' && '1' || '' }}
-      # The slow tier: `#[ignore = "slow: ..."]` tests. Tests that need an external tool
-      # (`ffmpeg_interop`) stay out until CI installs it.
+      # The slow tier: `#[ignore = "slow: ..."]` tests named `slow_*`. Other ignored tests
+      # (child-process helpers, tool-dependent `ffmpeg_interop`) are not selected.
       - name: slow tests
         shell: bash
         run: >-
           cargo nextest run --workspace --profile ci --run-ignored only --no-tests=pass
-          -E 'not binary(ffmpeg_interop)'
+          -E 'test(/^slow_/)'
         env:
           RBS_REQUIRE_GPU: "1"
           RBS_REQUIRE_D3D12: ${{ runner.os == 'Windows' && '1' || '' }}

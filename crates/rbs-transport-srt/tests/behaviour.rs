@@ -145,7 +145,7 @@ fn sends_the_handshake_then_whole_chunks_in_order() {
 
 #[test]
 #[ignore = "slow: waits out the 4 s SRT latency in real time; runs in the slow tier (ADR-0032)"]
-fn retransmits_what_the_listener_reports_lost() {
+fn slow_retransmits_what_the_listener_reports_lost() {
     let server = TestServer::start(Behaviour {
         lose_every: Some(7),
         ..Behaviour::default()
