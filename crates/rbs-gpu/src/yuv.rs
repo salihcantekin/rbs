@@ -36,14 +36,14 @@ impl YuvFormat {
         }
     }
 
-    fn luma_format(self) -> wgpu::TextureFormat {
+    pub(crate) fn luma_format(self) -> wgpu::TextureFormat {
         match self {
             Self::Nv12 => wgpu::TextureFormat::R8Unorm,
             Self::P010 => wgpu::TextureFormat::R16Unorm,
         }
     }
 
-    fn chroma_format(self) -> wgpu::TextureFormat {
+    pub(crate) fn chroma_format(self) -> wgpu::TextureFormat {
         match self {
             Self::Nv12 => wgpu::TextureFormat::Rg8Unorm,
             Self::P010 => wgpu::TextureFormat::Rg16Unorm,
@@ -392,7 +392,7 @@ impl YuvConverter {
         Ok(ctx.queue().submit(Some(encoder.finish())))
     }
 
-    fn source<'p>(
+    pub(crate) fn source<'p>(
         &self,
         pool: &'p TexturePool,
         canvas: TextureId,
@@ -408,7 +408,7 @@ impl YuvConverter {
     }
 
     /// Records the luma and chroma passes into the two views.
-    fn record(
+    pub(crate) fn record(
         &self,
         ctx: &GpuContext,
         source: &wgpu::BindGroup,

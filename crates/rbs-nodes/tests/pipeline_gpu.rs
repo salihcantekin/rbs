@@ -1,0 +1,255 @@
+//! Capture source -> compositor -> video export on the render runtime, with the
+//! synthetic capture adapter (spec `io-nodes.md`, "Capture source node" and "Video export
+//! node"). Runs on any GPU adapter, software included (lavapipe, WARP on CI).
+
+#![allow(clippy::unwrap_used, clippy::expect_used)] // Tests fail by panicking.
+
+use std::sync::{Arc, Mutex, OnceLock};
+
+use rbs_capture::{CaptureRequest, TargetId};
+use rbs_capture_test::TestCaptureFactory;
+use rbs_core::lifecycle::Lifecycle;
+use rbs_core::media::{FramePayload, PixelFormat, Size, VideoFrame};
+use rbs_core::time::{TestClock, Timestamp};
+use rbs_core::timing::{Cadence, FrameRate};
+use rbs_gpu::node::{CompositorNode, GpuRuntime, NodeLayer, RenderLocal};
+use rbs_gpu::{CanvasDesc, GpuContext, GpuError, GpuRequest, YuvFormat};
+use rbs_graph::description::{GraphDescription, NodeId};
+use rbs_graph::node::{LinkKind, NodeDescriptor, NodeKind, NodeTypeId, Pin};
+use rbs_graph::runtime::{
+    Controller, Executor, Node, NodeError, PrepareCtx, ProcessCtx, Tick, channel,
+};
+use rbs_nodes::{CaptureSourceNode, VideoExportNode};
+
+const W: u32 = 128;
+const H: u32 = 72;
+
+/// Keeps every new frame on its input.
+struct Probe {
+    desc: NodeDescriptor,
+    frames: Arc<Mutex<Vec<VideoFrame>>>,
+    last: Option<(Timestamp, u64)>,
+}
+
+impl Node<GpuRuntime> for Probe {
+    fn descriptor(&self) -> &NodeDescriptor {
+        &self.desc
+    }
+    fn prepare(&mut self, _: &mut PrepareCtx<'_, GpuRuntime>) -> Result<(), NodeError> {
+        Ok(())
+    }
+    fn process(&mut self, ctx: &mut ProcessCtx<'_, GpuRuntime>) -> Result<(), NodeError> {
+        if let Some(frame) = ctx.inputs().video(0, 0) {
+            let key = (frame.timestamp(), frame.sequence());
+            if self.last != Some(key) {
+                self.last = Some(key);
+                self.frames.lock().unwrap().push(frame.share().unwrap());
+            }
+        }
+        Ok(())
+    }
+    fn release(&mut self, _: &mut PrepareCtx<'_, GpuRuntime>) {}
+}
+
+fn gpu() -> Option<Arc<GpuContext>> {
+    // One device per test binary: software Vulkan drivers crash with several.
+    static CTX: OnceLock<Option<Arc<GpuContext>>> = OnceLock::new();
+    let ctx = CTX.get_or_init(|| {
+        match GpuContext::new(&GpuRequest {
+            allow_software: true,
+            ..GpuRequest::default()
+        }) {
+            Ok(ctx) => Some(Arc::new(ctx)),
+            Err(GpuError::NoAdapter) => None,
+            Err(e) => panic!("{e}"),
+        }
+    });
+    if ctx.is_none() {
+        assert!(
+            std::env::var_os("RBS_REQUIRE_GPU").is_none_or(|v| v.is_empty()),
+            "RBS_REQUIRE_GPU is set but no adapter was found"
+        );
+        eprintln!("SKIPPED: no GPU adapter");
+    }
+    ctx.clone()
+}
+
+type Frames = Arc<Mutex<Vec<VideoFrame>>>;
+
+struct Rig {
+    graph: GraphDescription,
+    ctl: Controller<GpuRuntime>,
+    exec: Executor<GpuRuntime>,
+    ctx: Arc<GpuContext>,
+    clock: TestClock,
+    tick: u64,
+}
+
+impl Rig {
+    fn add(&mut self, node: Box<dyn Node<GpuRuntime>>) -> NodeId {
+        let id = self
+            .graph
+            .add_node(Arc::new(node.descriptor().clone()))
+            .unwrap();
+        self.graph.set_state(id, Lifecycle::Standby).unwrap();
+        self.graph.set_state(id, Lifecycle::Active).unwrap();
+        self.ctl.adopt(id, node).unwrap();
+        id
+    }
+
+    /// One render tick at 30 fps with the capture clock at the tick's time; the GPU is
+    /// waited on afterwards so readbacks complete deterministically by the next tick.
+    fn tick(&mut self) {
+        let cadence = Cadence::frames(Timestamp::ZERO, FrameRate::FPS_30);
+        let tick = Tick::of(&cadence, self.tick);
+        self.clock.set(tick.time);
+        self.exec.run_tick(tick);
+        self.ctx.wait_idle().unwrap();
+        self.ctx.poll();
+        self.tick += 1;
+        let _ = self.ctl.collect();
+    }
+}
+
+/// target -> capture -> compositor (one layer filling the canvas) -> export -> probe.
+fn pipeline(
+    target: &str,
+    size: Option<Size>,
+    formats: &[PixelFormat],
+) -> Option<(Rig, Frames, NodeId)> {
+    let ctx = gpu()?;
+    let (ctl, exec) = channel::<GpuRuntime>(Arc::clone(&ctx), RenderLocal::default());
+    let clock = TestClock::new();
+    let mut rig = Rig {
+        graph: GraphDescription::new(),
+        ctl,
+        exec,
+        ctx,
+        clock: clock.clone(),
+        tick: 0,
+    };
+    let mut request = CaptureRequest::new(TargetId::new(target), Arc::new(clock))
+        .with_frame_rate(FrameRate::FPS_30);
+    if let Some(size) = size {
+        request = request.with_size(size);
+    }
+    if !formats.is_empty() {
+        request = request.with_pixel_formats(formats);
+    }
+    let capture = rig.add(Box::new(CaptureSourceNode::new(
+        Arc::new(TestCaptureFactory::new()),
+        request,
+    )));
+    let (comp, _layers) = CompositorNode::new(
+        CanvasDesc {
+            width: W,
+            height: H,
+        },
+        4,
+        vec![NodeLayer::new(capture, 0, 0.0, 0.0, W as f32, H as f32)],
+    );
+    let comp = rig.add(Box::new(comp));
+    let export = rig.add(Box::new(VideoExportNode::new(YuvFormat::Nv12, W, H)));
+    let frames = Arc::new(Mutex::new(Vec::new()));
+    let probe = rig.add(Box::new(Probe {
+        desc: NodeDescriptor::new(
+            NodeTypeId::new_static("org.rbs.test.probe"),
+            NodeKind::Output,
+            vec![Pin::one("in", LinkKind::Video)],
+            vec![],
+        ),
+        frames: Arc::clone(&frames),
+        last: None,
+    }));
+    rig.graph.connect(capture, "video", comp, "layers").unwrap();
+    rig.graph.connect(comp, "canvas", export, "canvas").unwrap();
+    rig.graph.connect(export, "video", probe, "in").unwrap();
+    let report = rig.ctl.apply(&rig.graph).unwrap();
+    assert!(report.failed.is_empty(), "{report:?}");
+    rig.exec.swap_pending();
+    let _ = rig.ctl.collect();
+    Some((rig, frames, export))
+}
+
+/// The luma and chroma bytes at the centre of an NV12 system frame.
+fn centre(frame: &VideoFrame) -> (u8, u8, u8) {
+    let FramePayload::System(sys) = frame.payload() else {
+        panic!("expected a system frame, got {:?}", frame.payload());
+    };
+    let (luma, ls) = sys.plane(0).unwrap();
+    let (chroma, cs) = sys.plane(1).unwrap();
+    let (x, y) = (W as usize / 2, H as usize / 2);
+    let c = (y / 2) * cs + (x / 2) * 2;
+    (luma[y * ls + x], chroma[c], chroma[c + 1])
+}
+
+/// Limited-range BT.709 luma of an sRGB grey level: sRGB decode to linear light, then
+/// the BT.709 OETF (what the converter writes, gpu-compositor spec).
+fn expected_luma(grey: u8) -> u8 {
+    let c = f64::from(grey) / 255.0;
+    let linear = if c <= 0.04045 {
+        c / 12.92
+    } else {
+        ((c + 0.055) / 1.055).powf(2.4)
+    };
+    let v = if linear < 0.018 {
+        4.5 * linear
+    } else {
+        1.099 * linear.powf(0.45) - 0.099
+    };
+    (16.0 + 219.0 * v).round() as u8
+}
+
+#[test]
+fn a_window_is_captured_composited_and_exported_as_nv12() {
+    let Some((mut rig, frames, export)) = pipeline("test-window-0", None, &[PixelFormat::Bgra8])
+    else {
+        return;
+    };
+    for _ in 0..6 {
+        rig.tick();
+    }
+    let frames = frames.lock().unwrap();
+    // The readback of tick i is delivered on tick i + 1.
+    assert!(frames.len() >= 4, "only {} frames", frames.len());
+    let cadence = Cadence::frames(Timestamp::ZERO, FrameRate::FPS_30);
+    for (i, frame) in frames.iter().enumerate() {
+        let format = frame.format();
+        assert_eq!(format.pixel_format, PixelFormat::Nv12);
+        assert_eq!(format.size, Size::new(W, H));
+        assert_eq!(frame.timestamp(), Tick::of(&cadence, i as u64).time);
+        assert_eq!(frame.sequence(), i as u64);
+        // A grey sRGB window: limited-range luma near the grey level, neutral chroma.
+        let (y, cb, cr) = centre(frame);
+        let near = [32u8, 96, 160]
+            .map(expected_luma)
+            .iter()
+            .any(|e| e.abs_diff(y) <= 2);
+        assert!(near, "luma {y}");
+        assert!(
+            cb.abs_diff(128) <= 2 && cr.abs_diff(128) <= 2,
+            "chroma {cb} {cr}"
+        );
+    }
+    let health = rig.exec.health(export).unwrap();
+    assert_eq!(health.errors, 0, "{health:?}");
+}
+
+#[test]
+fn a_camera_in_system_nv12_is_uploaded_decoded_and_exported() {
+    let Some((mut rig, frames, _)) = pipeline("test-camera-0", Some(Size::new(640, 480)), &[])
+    else {
+        return;
+    };
+    for _ in 0..4 {
+        rig.tick();
+    }
+    let frames = frames.lock().unwrap();
+    assert!(frames.len() >= 2, "only {} frames", frames.len());
+    for frame in frames.iter() {
+        assert_eq!(frame.format().pixel_format, PixelFormat::Nv12);
+        let (y, _, _) = centre(frame);
+        // The test camera's pattern is a grey level of 32, 96 or 160 in every byte.
+        assert!((16..=235).contains(&y), "luma {y}");
+    }
+}

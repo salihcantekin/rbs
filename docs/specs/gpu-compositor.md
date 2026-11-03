@@ -168,6 +168,58 @@ pub fn decoded_color(source: ColorSpace) -> ColorSpace;         // linear, sourc
 - One render pass with one full-screen triangle, submitted per frame. The scale, range and matrix fold into a 3x4 affine matrix computed on the CPU. The transfer is a uniform branch, the same for every pixel of the draw. The bind group and parameter buffer are cached per source (by plane ids, which carry a generation, at most `MAX_DECODE_SOURCES` = 64, least recently used replaced). The buffer is rewritten only when the colour space changes. A cached bind group keeps its plane textures alive, so callers call `forget` when they release a source's planes (the importer does so when it closes a surface); entries whose planes left the pool are also dropped on the next cache miss. Steady-state cost assumes stable plane slots per source (as the importer's are); a caller that acquires new planes every frame creates a bind group every frame. Steady-state decoding allocates no more than wgpu's own recording and submission (`alloc_decode` test: 56 allocations per frame on lavapipe against 66 for one NV12 conversion; it must not grow and must stay within 4 of the conversion).
 - Hot path (`Colour conversion` in [hot-paths.md](../architecture/hot-paths.md)). Benchmark: `frame_1080p/nv12_decode`.
 
+### System-memory upload
+
+Sources that deliver CPU buffers (Media Foundation cameras, the synthetic test adapter) are uploaded by `rbs_gpu::upload::SourceUpload` in the capture source node ([io-nodes.md](io-nodes.md), ADR-0038).
+
+```rust
+pub const UPLOAD_FORMATS: [PixelFormat; 4] = [Nv12, P010, Bgra8, Rgba8];
+pub fn supports(pf: PixelFormat) -> bool;
+impl SourceUpload {
+    pub fn new() -> SourceUpload;                       // holds nothing
+    /// `System` frame -> `Texture` frame of the same timestamp, sequence and source time;
+    /// other frames are returned unchanged. Hot path.
+    pub fn upload(&mut self, ctx: &GpuContext, pool: &mut TexturePool, frame: VideoFrame)
+        -> Result<VideoFrame, GpuError>;
+    pub fn prepare_for(&mut self, ctx: &GpuContext, pool: &mut TexturePool, format: &VideoFormat)
+        -> Result<(), GpuError>;                        // optional: creates what `upload` would on first use
+    pub fn release(&mut self, pool: &mut TexturePool);  // returns the plane textures
+    pub fn uploaded(&self) -> u64;
+}
+```
+
+- `Bgra8` / `Rgba8`: written with `Queue::write_texture` (any row stride) into a pool texture acquired per frame (`Bgra8Unorm` / `Rgba8Unorm`, sampled, `COPY_DST | COPY_SRC`) and released at once, so the frame's lease keeps it, as for the canvas. The frame keeps its own format and colour space; the compositor applies the sRGB transfer when the colour space says so.
+- `Nv12` / `P010`: written into two plane textures the upload keeps (`R8Unorm` + `Rg8Unorm`, or the 16-bit pair), one pair per size and bit depth, then decoded by the upload's own `YuvDecoder` (rule 6 of "Native import") into a canvas-format pool texture acquired per frame. The result is `Rgba16Float` with `decoded_color(...)`. One pair is enough: queue order puts the next frame's writes after the previous decode. Colour spaces the decode cannot handle are refused before anything is written (`check_color`).
+- Not real-time on first use: a new size or format creates its plane textures and pool slots, and the first 4:2:0 frame creates the decoder (P13), like the importer's first sight of a surface. Later frames of that size allocate nothing in RBS code; wgpu stages the bytes internally.
+- Other system formats (YUY2, I420, ...) are `GpuError::Unsupported`.
+
+### System-memory download
+
+`rbs_gpu::download::YuvDownload` is the CPU fallback of the encoder conversion, for encoders that take only system memory (NVENC and AMF on Windows today; ADR-0038). It is used by the video export node ([io-nodes.md](io-nodes.md)).
+
+```rust
+pub const DOWNLOAD_RING: usize = 4;      // staging buffers in flight
+pub const DOWNLOAD_BUFFERS: usize = 6;   // recycled frame buffers
+impl YuvDownload {
+    pub fn new(ctx: &GpuContext, format: YuvFormat, width: u32, height: u32) -> Result<YuvDownload, GpuError>;
+    pub fn format(&self) -> &VideoFormat;  // size, NV12/P010, BT709_LIMITED
+    pub fn stride(&self) -> usize;         // bytes per row of both planes, a multiple of 256
+    /// Converts and starts the readback; `Ok(false)` (counted `busy`) when every staging
+    /// buffer is in flight. Hot path, never waits.
+    pub fn submit(&mut self, ctx: &GpuContext, pool: &TexturePool, canvas: &VideoFrame) -> Result<bool, GpuError>;
+    /// The newest completed readback as a `System` frame; older completed ones are dropped
+    /// (`stale`). Hot path, never waits.
+    pub fn take_ready(&mut self, ctx: &GpuContext) -> Result<Option<VideoFrame>, GpuError>;
+    pub fn stats(&self) -> DownloadStats;  // converted, delivered, busy, stale, no_buffer, failed
+    pub fn in_flight(&self) -> usize;
+}
+```
+
+- `submit` records the conversion (the `YuvConverter` passes) into two plane textures the download owns, copies both planes into one staging buffer (luma rows, then chroma rows, both with `stride`), submits once and calls `map_async`; the callback only stores an atomic state.
+- `take_ready` walks the ring from the oldest slot while slots are complete, after `GpuContext::poll` (the render runtime polls at the end of each tick). The newest mapped slot is copied (one `memcpy` of the whole buffer) into a frame buffer that no consumer holds (`Bytes::is_unique`, then `try_into_mut`; the buffers are created in the shared representation, so this keeps their allocation), unmapped, and returned as a `System` frame with the canvas frame's timestamp and sequence and plane layouts at offsets `0` and `stride * height`. With every buffer held by consumers the frame is dropped (`no_buffer`).
+- Every delivered frame increments `GpuMetrics::frames_cpu_copied` (P4).
+- A map failure frees the slot and returns `GpuError::Readback` once.
+
 ### Native export
 
 Implements [ADR-0025](../adr/0025-encoder-surface-export.md): encoders get the converted frame as a native frame they are the only consumer of, and never depend on `rbs-gpu`. Lives in `rbs_gpu::export`, a marked low-level module (P11). macOS only so far.

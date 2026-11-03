@@ -17,6 +17,9 @@ rbs-graph = { path = "../rbs-graph" }
 wgpu = { version = "30.0.1", default-features = false, features = ["std", "parking_lot", "dx12", "metal", "vulkan", "wgsl"] }
 bytemuck = { version = "1.25", features = ["derive"] }
 pollster = "0.4"
+# Recycled frame buffers of the system-memory download (`BytesMut`); already in the
+# graph through rbs-core.
+bytes = "1.9"
 
 [features]
 # UI-process code: shows the cross-process preview as a native layer of a window: a Core
@@ -46,6 +49,10 @@ harness = false
 
 [[bench]]
 name = "preview"
+harness = false
+
+[[bench]]
+name = "transfer"
 harness = false
 
 [[test]]

@@ -23,6 +23,7 @@
 
 pub mod compositor;
 pub mod context;
+pub mod download;
 pub mod error;
 #[cfg(target_vendor = "apple")]
 pub mod export;
@@ -32,16 +33,19 @@ pub mod node;
 pub mod pool;
 pub mod readback;
 pub mod share;
+pub mod upload;
 pub mod yuv;
 pub mod yuv_decode;
 
 pub use compositor::{CanvasDesc, Compositor, Layer, RenderStats, Transfer};
 pub use context::{GpuContext, GpuMetrics, GpuRequest, PowerPreference};
+pub use download::{DownloadStats, YuvDownload};
 pub use error::GpuError;
 pub use interop::Importer;
 pub use math::{Affine2, UvRect};
 pub use pool::{DEFAULT_POOL_SLOTS, PooledTexture, TextureDesc, TexturePool};
 pub use rbs_core::media::TextureId;
+pub use upload::SourceUpload;
 pub use yuv::{YuvConverter, YuvFormat};
 pub use yuv_decode::{YuvDecoder, YuvSource};
 

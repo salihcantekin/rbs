@@ -22,6 +22,8 @@ The runtime model of the engine: nodes, typed links, scheduling and live editing
 | Muxer | packets | packets or bytes | via mux port |
 | Output | any media | no media | stream and recording (packets or bytes, via transport port); virtual camera, NDI or SDI out, monitoring device, preview (video or audio) |
 
+The built-in nodes that wrap the ports (capture sources, video export, encoders, outputs) are specified in [io-nodes.md](io-nodes.md).
+
 ## Links
 
 Links are typed: `Video`, `Audio`, `Packets`, `Bytes` (muxed container output), `Data`. The graph is a DAG for every link type: feedback such as congestion events driving an encoder's bitrate goes through the control plane, not a graph link. A link carries a format descriptor (for video: size, pixel format, colour space, memory kind). The value types and formats are defined in the [media types spec](media-types.md). Video links carry only pool-texture or system-memory frames: native capture surfaces are imported by `rbs-gpu` in the source node wrapper and never travel on a link. Format negotiation happens when the link is created; a converter node is inserted automatically when needed and is visible in the graph.

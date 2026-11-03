@@ -17,6 +17,7 @@ Specs are the current contracts of RBS. Code must match them; a PR that changes 
 | [media-types.md](media-types.md) | Draft | `rbs-core` (`media`, `timing`) |
 | [scene-model.md](scene-model.md) | Draft | `rbs-scene` (model, edits, undo, flattening, graph binding; document format planned) |
 | [gpu-compositor.md](gpu-compositor.md) | Draft | `rbs-gpu` |
+| [io-nodes.md](io-nodes.md) | Draft | `rbs-nodes` (capture source, video export, video encoder and output nodes), `rbs-gpu` (`upload`, `download`) |
 | [plugin-sdk.md](plugin-sdk.md) | Draft | `rbs-plugin-sdk`, `rbs-plugin-host` (planned) |
 | [performance-budgets.md](performance-budgets.md) | Draft | `benches/`, CI |
 | [control-api.md](control-api.md) | Draft | `rbs-api` (planned) |
