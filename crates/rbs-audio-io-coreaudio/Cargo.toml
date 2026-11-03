@@ -1,0 +1,39 @@
+[package]
+name = "rbs-audio-io-coreaudio"
+description = "CoreAudio adapter for the RBS audio input port: microphones, output loopback and per-application capture on macOS."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+rbs-audio-io = { path = "../rbs-audio-io" }
+rbs-core = { path = "../rbs-core" }
+
+# objc2 framework bindings (MIT), as in rbs-capture-avf and rbs-codec-audiotoolbox.
+[target.'cfg(target_os = "macos")'.dependencies]
+block2 = "0.6"
+dispatch2 = { version = "0.3", default-features = false, features = ["std", "alloc"] }
+libc = "0.2"
+objc2 = "0.6"
+objc2-av-foundation = { version = "0.3.2", default-features = false, features = ["std", "block2", "AVCaptureDevice", "AVMediaFormat"] }
+objc2-core-audio = { version = "0.3.2", default-features = false, features = ["std", "AudioHardware", "HostTime", "block2", "dispatch2", "objc2", "objc2-core-audio-types", "objc2-foundation"] }
+objc2-core-audio-types = { version = "0.3.2", default-features = false, features = ["std"] }
+objc2-core-foundation = { version = "0.3.2", default-features = false, features = ["std", "CFDictionary", "CFString"] }
+objc2-foundation = { version = "0.3.2", default-features = false, features = ["std", "NSArray", "NSDictionary", "NSObject", "NSProcessInfo", "NSString", "NSUUID", "NSValue"] }
+
+[dev-dependencies]
+rbs-audio-io = { path = "../rbs-audio-io", features = ["conformance"] }
+# Allocation guards for the per-cycle push and the real-time `read` check.
+allocation-counter = "0.8"
+# Micro-benchmark of the per-cycle work (measure-performance skill).
+criterion = { version = "0.8", default-features = false, features = ["cargo_bench_support"] }
+
+[[bench]]
+name = "cycle"
+harness = false
+
+[lints]
+workspace = true

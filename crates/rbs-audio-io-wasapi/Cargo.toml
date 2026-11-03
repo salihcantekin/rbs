@@ -1,0 +1,52 @@
+[package]
+name = "rbs-audio-io-wasapi"
+description = "WASAPI adapter for the RBS audio input port: microphones, output loopback and per-application capture on Windows."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+rbs-audio-io = { path = "../rbs-audio-io" }
+rbs-core = { path = "../rbs-core" }
+
+# The `windows` crate (MIT or Apache-2.0), as in rbs-capture-mf and rbs-capture-wgc.
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.62", features = [
+    "Wdk_System_SystemServices",
+    "Win32_Foundation",
+    "Win32_Media_Audio",
+    "Win32_Security",
+    "Win32_System_Com",
+    "Win32_System_Com_StructuredStorage",
+    "Win32_System_Performance",
+    "Win32_System_SystemInformation",
+    "Win32_System_Threading",
+    "Win32_System_Variant",
+    "Win32_UI_Shell_PropertiesSystem",
+] }
+windows-core = "0.62"
+
+[dev-dependencies]
+rbs-audio-io = { path = "../rbs-audio-io", features = ["conformance"] }
+# Allocation guards for the per-packet push and the real-time `read` check.
+allocation-counter = "0.8"
+# Micro-benchmark of the per-packet work (measure-performance skill).
+criterion = { version = "0.8", default-features = false, features = ["cargo_bench_support"] }
+
+[target.'cfg(windows)'.dev-dependencies]
+windows = { version = "0.62", features = [
+    "Win32_Foundation",
+    "Win32_Media_Audio",
+    "Win32_System_Com",
+    "Win32_System_Threading",
+] }
+
+[[bench]]
+name = "packet"
+harness = false
+
+[lints]
+workspace = true
