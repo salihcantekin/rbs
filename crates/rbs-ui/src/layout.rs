@@ -1,0 +1,660 @@
+//! The layout tree of one window: splits whose leaves are tab stacks.
+//!
+//! Spec: `docs/specs/ui-design-system.md`, "Panel model" and "Workspace file".
+//! Tab stacks are addressed by their depth-first index in the tree, which is
+//! what [`Node::flatten`] reports for each stack.
+
+use serde::{Deserialize, Serialize};
+
+use crate::panel::PanelId;
+
+/// Deepest nesting of splits accepted in a file.
+pub const MAX_DEPTH: usize = 16;
+
+/// Thickness of a splitter handle in logical pixels.
+pub const HANDLE_THICKNESS: f32 = 6.0;
+
+/// Smallest length a pane can be dragged to, in logical pixels.
+pub const MIN_PANE: f32 = 48.0;
+
+/// Share of the window a panel gets when it is moved to an edge.
+pub const EDGE_SHARE: f32 = 0.25;
+
+/// Direction of a split. `Horizontal` places children side by side,
+/// `Vertical` stacks them top to bottom.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Axis {
+    /// Children left to right.
+    Horizontal,
+    /// Children top to bottom.
+    Vertical,
+}
+
+/// An edge of a window, for "move to an edge" (UI rule U21).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Edge {
+    /// Left edge.
+    Left,
+    /// Right edge.
+    Right,
+    /// Top edge.
+    Top,
+    /// Bottom edge.
+    Bottom,
+}
+
+/// A split: two or more children with one ratio each. Ratios are positive and sum to 1.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Split {
+    /// Direction.
+    pub axis: Axis,
+    /// Share of each child.
+    pub ratios: Vec<f32>,
+    /// Children.
+    pub children: Vec<Node>,
+}
+
+/// A tab stack. Only the root of a window may be empty (every panel closed).
+#[derive(Clone, Debug, PartialEq)]
+pub struct Tabs {
+    /// Panels, in tab order.
+    pub tabs: Vec<PanelId>,
+    /// Index of the visible tab.
+    pub active: usize,
+}
+
+/// A layout tree node.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(try_from = "RawNode", into = "RawNode")]
+pub enum Node {
+    /// A split.
+    Split(Split),
+    /// A tab stack.
+    Tabs(Tabs),
+}
+
+/// File shape of a node: `{ split, ratios, children }` or `{ tabs, active }`.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawNode {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    split: Option<Axis>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    ratios: Option<Vec<f32>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    children: Option<Vec<Node>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    tabs: Option<Vec<PanelId>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    active: Option<usize>,
+}
+
+impl TryFrom<RawNode> for Node {
+    type Error = String;
+
+    fn try_from(r: RawNode) -> Result<Self, String> {
+        match (r.split, r.ratios, r.children, r.tabs, r.active) {
+            (Some(axis), Some(ratios), Some(children), None, None) => {
+                if children.len() < 2 {
+                    return Err("a split needs at least two children".into());
+                }
+                if ratios.len() != children.len() {
+                    return Err(format!(
+                        "a split has {} children but {} ratios",
+                        children.len(),
+                        ratios.len()
+                    ));
+                }
+                if ratios.iter().any(|r| !r.is_finite() || *r <= 0.0) {
+                    return Err("split ratios must be positive numbers".into());
+                }
+                let sum: f32 = ratios.iter().sum();
+                if (sum - 1.0).abs() > 0.01 {
+                    return Err(format!("split ratios must sum to 1, not {sum}"));
+                }
+                let ratios = ratios.iter().map(|r| r / sum).collect();
+                Ok(Node::Split(Split {
+                    axis,
+                    ratios,
+                    children,
+                }))
+            }
+            (None, None, None, Some(tabs), active) => {
+                let active = active.unwrap_or(0);
+                if active >= tabs.len().max(1) {
+                    return Err(format!(
+                        "active tab {active} is out of range for {} tabs",
+                        tabs.len()
+                    ));
+                }
+                Ok(Node::Tabs(Tabs { tabs, active }))
+            }
+            _ => Err(
+                "a layout node is either `{ split, ratios, children }` or `{ tabs, active }`"
+                    .into(),
+            ),
+        }
+    }
+}
+
+impl From<Node> for RawNode {
+    fn from(n: Node) -> Self {
+        match n {
+            Node::Split(s) => RawNode {
+                split: Some(s.axis),
+                ratios: Some(s.ratios),
+                children: Some(s.children),
+                tabs: None,
+                active: None,
+            },
+            Node::Tabs(t) => RawNode {
+                split: None,
+                ratios: None,
+                children: None,
+                active: (t.active != 0).then_some(t.active),
+                tabs: Some(t.tabs),
+            },
+        }
+    }
+}
+
+/// An axis-aligned rectangle in logical pixels.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct Rect {
+    /// Left.
+    pub x: f32,
+    /// Top.
+    pub y: f32,
+    /// Width.
+    pub w: f32,
+    /// Height.
+    pub h: f32,
+}
+
+impl Rect {
+    /// A rectangle at the origin.
+    pub fn sized(w: f32, h: f32) -> Rect {
+        Rect {
+            x: 0.0,
+            y: 0.0,
+            w,
+            h,
+        }
+    }
+}
+
+/// A tab stack placed at an absolute rectangle.
+#[derive(Clone, Debug, PartialEq)]
+pub struct StackRect {
+    /// Depth-first index of the stack.
+    pub stack: usize,
+    /// Where it is.
+    pub rect: Rect,
+    /// Its panels.
+    pub tabs: Vec<PanelId>,
+    /// Visible tab.
+    pub active: usize,
+}
+
+/// A splitter handle between child `index` and `index + 1` of a split.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Handle {
+    /// Child indices from the root to the split.
+    pub path: Vec<usize>,
+    /// Index of the child before the handle.
+    pub index: usize,
+    /// Direction of the split.
+    pub axis: Axis,
+    /// Where the handle is.
+    pub rect: Rect,
+    /// Length of the split along its axis, minus handles.
+    pub extent: f32,
+}
+
+/// A window's layout as absolute rectangles, for toolkits without recursive components.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Flat {
+    /// Tab stacks in depth-first order.
+    pub stacks: Vec<StackRect>,
+    /// Splitter handles.
+    pub handles: Vec<Handle>,
+}
+
+impl Node {
+    /// An empty window (every panel closed).
+    pub fn empty() -> Node {
+        Node::Tabs(Tabs {
+            tabs: Vec::new(),
+            active: 0,
+        })
+    }
+
+    /// A tab stack.
+    pub fn tabs(tabs: Vec<PanelId>) -> Node {
+        Node::Tabs(Tabs { tabs, active: 0 })
+    }
+
+    /// A split with the given shares (normalised to sum to 1).
+    pub fn split(axis: Axis, parts: Vec<(f32, Node)>) -> Node {
+        let sum: f32 = parts.iter().map(|(r, _)| *r).sum();
+        let (ratios, children) = parts.into_iter().map(|(r, n)| (r / sum, n)).unzip();
+        Node::Split(Split {
+            axis,
+            ratios,
+            children,
+        })
+    }
+
+    /// True when no panel is in this tree.
+    pub fn is_empty(&self) -> bool {
+        match self {
+            Node::Tabs(t) => t.tabs.is_empty(),
+            Node::Split(s) => s.children.iter().all(Node::is_empty),
+        }
+    }
+
+    /// Depth of the deepest split (a tab stack has depth 0).
+    pub fn depth(&self) -> usize {
+        match self {
+            Node::Tabs(_) => 0,
+            Node::Split(s) => 1 + s.children.iter().map(Node::depth).max().unwrap_or(0),
+        }
+    }
+
+    /// Every panel in the tree, depth first.
+    pub fn panels(&self) -> Vec<&PanelId> {
+        let mut out = Vec::new();
+        self.visit_stacks(&mut |t| out.extend(t.tabs.iter()));
+        out
+    }
+
+    /// The active panel of every stack, depth first.
+    pub fn visible(&self) -> Vec<&PanelId> {
+        let mut out = Vec::new();
+        self.visit_stacks(&mut |t| out.extend(t.tabs.get(t.active)));
+        out
+    }
+
+    /// Number of tab stacks.
+    pub fn stack_count(&self) -> usize {
+        let mut n = 0;
+        self.visit_stacks(&mut |_| n += 1);
+        n
+    }
+
+    fn visit_stacks<'a>(&'a self, f: &mut impl FnMut(&'a Tabs)) {
+        match self {
+            Node::Tabs(t) => f(t),
+            Node::Split(s) => s.children.iter().for_each(|c| c.visit_stacks(f)),
+        }
+    }
+
+    /// The stack at depth-first index `index`.
+    pub fn stack(&self, index: usize) -> Option<&Tabs> {
+        let mut i = 0;
+        let mut found = None;
+        self.visit_stacks(&mut |t| {
+            if i == index {
+                found = Some(t);
+            }
+            i += 1;
+        });
+        found
+    }
+
+    /// The stack at depth-first index `index`, mutably.
+    pub fn stack_mut(&mut self, index: usize) -> Option<&mut Tabs> {
+        fn go<'a>(n: &'a mut Node, index: usize, i: &mut usize) -> Option<&'a mut Tabs> {
+            match n {
+                Node::Tabs(t) => {
+                    let me = *i;
+                    *i += 1;
+                    (me == index).then_some(t)
+                }
+                Node::Split(s) => s.children.iter_mut().find_map(|c| go(c, index, i)),
+            }
+        }
+        go(self, index, &mut 0)
+    }
+
+    /// Stack index and tab index of panel `id`.
+    pub fn find(&self, id: &PanelId) -> Option<(usize, usize)> {
+        let mut i = 0;
+        let mut found = None;
+        self.visit_stacks(&mut |t| {
+            if found.is_none() {
+                if let Some(tab) = t.tabs.iter().position(|p| p == id) {
+                    found = Some((i, tab));
+                }
+            }
+            i += 1;
+        });
+        found
+    }
+
+    /// Remove panel `id`; empty stacks are removed and single-child splits collapse.
+    /// Returns whether the panel was here.
+    pub fn remove(&mut self, id: &PanelId) -> bool {
+        let Some((stack, tab)) = self.find(id) else {
+            return false;
+        };
+        if let Some(t) = self.stack_mut(stack) {
+            t.tabs.remove(tab);
+            if t.active > tab || t.active >= t.tabs.len() {
+                t.active = t.active.saturating_sub(1);
+            }
+        }
+        self.prune();
+        true
+    }
+
+    /// Add `id` as the active tab of stack `stack`, at `position` or at the end.
+    /// Returns false when there is no such stack.
+    pub fn insert_into_stack(
+        &mut self,
+        stack: usize,
+        id: PanelId,
+        position: Option<usize>,
+    ) -> bool {
+        let Some(t) = self.stack_mut(stack) else {
+            return false;
+        };
+        let at = position.unwrap_or(t.tabs.len()).min(t.tabs.len());
+        t.tabs.insert(at, id);
+        t.active = at;
+        true
+    }
+
+    /// Add `id` in a new stack along `edge` of the whole tree, taking [`EDGE_SHARE`].
+    pub fn insert_at_edge(&mut self, id: PanelId, edge: Edge) {
+        let new = Node::tabs(vec![id]);
+        if self.is_empty() {
+            *self = new;
+            return;
+        }
+        let (axis, first) = match edge {
+            Edge::Left => (Axis::Horizontal, true),
+            Edge::Right => (Axis::Horizontal, false),
+            Edge::Top => (Axis::Vertical, true),
+            Edge::Bottom => (Axis::Vertical, false),
+        };
+        match self {
+            Node::Split(s) if s.axis == axis => {
+                s.ratios.iter_mut().for_each(|r| *r *= 1.0 - EDGE_SHARE);
+                if first {
+                    s.ratios.insert(0, EDGE_SHARE);
+                    s.children.insert(0, new);
+                } else {
+                    s.ratios.push(EDGE_SHARE);
+                    s.children.push(new);
+                }
+            }
+            _ => {
+                let old = std::mem::replace(self, Node::empty());
+                let parts = if first {
+                    vec![(EDGE_SHARE, new), (1.0 - EDGE_SHARE, old)]
+                } else {
+                    vec![(1.0 - EDGE_SHARE, old), (EDGE_SHARE, new)]
+                };
+                *self = Node::split(axis, parts);
+            }
+        }
+    }
+
+    /// Make tab `tab` of stack `stack` visible. Returns false when out of range.
+    pub fn activate(&mut self, stack: usize, tab: usize) -> bool {
+        match self.stack_mut(stack) {
+            Some(t) if tab < t.tabs.len() => {
+                t.active = tab;
+                true
+            }
+            _ => false,
+        }
+    }
+
+    /// Remove empty children, collapse single-child splits and renormalise ratios.
+    pub fn prune(&mut self) {
+        let Node::Split(s) = self else {
+            return;
+        };
+        s.children.iter_mut().for_each(Node::prune);
+        let mut ratios = Vec::with_capacity(s.ratios.len());
+        let mut children = Vec::with_capacity(s.children.len());
+        for (c, r) in s.children.drain(..).zip(s.ratios.drain(..)) {
+            if !c.is_empty() {
+                children.push(c);
+                ratios.push(r);
+            }
+        }
+        match children.len() {
+            0 => *self = Node::empty(),
+            1 => {
+                if let Some(only) = children.pop() {
+                    *self = only;
+                }
+            }
+            _ => {
+                let sum: f32 = ratios.iter().sum();
+                ratios.iter_mut().for_each(|r| *r /= sum);
+                s.ratios = ratios;
+                s.children = children;
+            }
+        }
+    }
+
+    /// Place the tree in `rect`: absolute stack rectangles and splitter handles.
+    pub fn flatten(&self, rect: Rect) -> Flat {
+        let mut flat = Flat::default();
+        let mut path = Vec::new();
+        flatten_node(self, rect, &mut path, &mut flat);
+        flat
+    }
+
+    /// Move the splitter `handle` (from [`Node::flatten`]) by `delta` logical
+    /// pixels. Neither neighbour gets smaller than [`MIN_PANE`] where the split
+    /// is big enough. Returns false when the handle no longer matches the tree.
+    pub fn resize(&mut self, handle: &Handle, delta: f32) -> bool {
+        let mut node = self;
+        for &i in &handle.path {
+            match node {
+                Node::Split(s) if i < s.children.len() => node = &mut s.children[i],
+                _ => return false,
+            }
+        }
+        let Node::Split(s) = node else {
+            return false;
+        };
+        let i = handle.index;
+        if s.axis != handle.axis || i + 1 >= s.ratios.len() || handle.extent <= 0.0 {
+            return false;
+        }
+        let pair = s.ratios[i] + s.ratios[i + 1];
+        let min = (MIN_PANE / handle.extent).min(pair / 2.0);
+        let a = (s.ratios[i] + delta / handle.extent).clamp(min, pair - min);
+        s.ratios[i] = a;
+        s.ratios[i + 1] = pair - a;
+        true
+    }
+}
+
+fn flatten_node(node: &Node, r: Rect, path: &mut Vec<usize>, out: &mut Flat) {
+    match node {
+        Node::Tabs(t) => out.stacks.push(StackRect {
+            stack: out.stacks.len(),
+            rect: r,
+            tabs: t.tabs.clone(),
+            active: t.active,
+        }),
+        Node::Split(s) => {
+            let n = s.children.len();
+            let length = match s.axis {
+                Axis::Horizontal => r.w,
+                Axis::Vertical => r.h,
+            };
+            let usable = (length - HANDLE_THICKNESS * n.saturating_sub(1) as f32).max(0.0);
+            let mut pos = 0.0;
+            for (i, child) in s.children.iter().enumerate() {
+                let len = usable * s.ratios.get(i).copied().unwrap_or(0.0);
+                let along = |at: f32, len: f32| match s.axis {
+                    Axis::Horizontal => Rect {
+                        x: r.x + at,
+                        y: r.y,
+                        w: len,
+                        h: r.h,
+                    },
+                    Axis::Vertical => Rect {
+                        x: r.x,
+                        y: r.y + at,
+                        w: r.w,
+                        h: len,
+                    },
+                };
+                path.push(i);
+                flatten_node(child, along(pos, len), path, out);
+                path.pop();
+                pos += len;
+                if i + 1 < n {
+                    out.handles.push(Handle {
+                        path: path.clone(),
+                        index: i,
+                        axis: s.axis,
+                        rect: along(pos, HANDLE_THICKNESS),
+                        extent: usable,
+                    });
+                    pos += HANDLE_THICKNESS;
+                }
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)] // Tests fail by panicking.
+mod tests {
+    use super::*;
+    use crate::panel::id;
+
+    fn sample() -> Node {
+        Node::split(
+            Axis::Vertical,
+            vec![
+                (
+                    0.7,
+                    Node::split(
+                        Axis::Horizontal,
+                        vec![
+                            (0.25, Node::tabs(vec![id("rbs.scenes"), id("rbs.sources")])),
+                            (0.75, Node::tabs(vec![id("rbs.program")])),
+                        ],
+                    ),
+                ),
+                (0.3, Node::tabs(vec![id("rbs.mixer")])),
+            ],
+        )
+    }
+
+    #[test]
+    fn find_remove_and_prune() {
+        let mut n = sample();
+        assert_eq!(n.stack_count(), 3);
+        assert_eq!(n.find(&id("rbs.sources")), Some((0, 1)));
+        assert!(n.remove(&id("rbs.program")));
+        assert!(!n.remove(&id("rbs.program")));
+        // The horizontal split collapsed into its remaining stack.
+        assert_eq!(n.stack_count(), 2);
+        assert_eq!(n.depth(), 1);
+        assert!(n.remove(&id("rbs.mixer")));
+        assert!(matches!(n, Node::Tabs(_)));
+        assert!(n.remove(&id("rbs.scenes")));
+        assert!(n.remove(&id("rbs.sources")));
+        assert!(n.is_empty());
+    }
+
+    #[test]
+    fn active_tab_follows_removal() {
+        let mut n = Node::tabs(vec![id("rbs.scenes"), id("rbs.sources"), id("rbs.stats")]);
+        assert!(n.activate(0, 2));
+        n.remove(&id("rbs.scenes"));
+        assert_eq!(n.visible(), vec![&id("rbs.stats")]);
+        n.remove(&id("rbs.stats"));
+        assert_eq!(n.visible(), vec![&id("rbs.sources")]);
+        assert!(!n.activate(0, 5));
+    }
+
+    #[test]
+    fn edge_insert_wraps_or_extends() {
+        let mut n = sample();
+        n.insert_at_edge(id("rbs.stats"), Edge::Bottom);
+        let Node::Split(s) = &n else { panic!() };
+        assert_eq!(s.children.len(), 3);
+        assert!((s.ratios.iter().sum::<f32>() - 1.0).abs() < 1e-5);
+        assert_eq!(s.ratios[2], EDGE_SHARE);
+        n.insert_at_edge(id("rbs.outputs"), Edge::Left);
+        let Node::Split(s) = &n else { panic!() };
+        assert_eq!(s.axis, Axis::Horizontal);
+        assert_eq!(n.find(&id("rbs.outputs")), Some((0, 0)));
+        let mut e = Node::empty();
+        e.insert_at_edge(id("rbs.mixer"), Edge::Top);
+        assert_eq!(e, Node::tabs(vec![id("rbs.mixer")]));
+    }
+
+    #[test]
+    fn flatten_tiles_the_rect() {
+        let flat = sample().flatten(Rect::sized(1006.0, 806.0));
+        assert_eq!(flat.stacks.len(), 3);
+        assert_eq!(flat.handles.len(), 2);
+        let area: f32 = flat.stacks.iter().map(|s| s.rect.w * s.rect.h).sum::<f32>()
+            + flat
+                .handles
+                .iter()
+                .map(|h| h.rect.w * h.rect.h)
+                .sum::<f32>();
+        assert!((area - 1006.0 * 806.0).abs() < 1.0, "{area}");
+        assert_eq!(flat.stacks[2].rect.y, 0.7 * 800.0 + HANDLE_THICKNESS);
+    }
+
+    #[test]
+    fn resize_clamps_and_keeps_sum() {
+        let mut n = sample();
+        let flat = n.flatten(Rect::sized(800.0, 606.0));
+        let h = flat
+            .handles
+            .iter()
+            .find(|h| h.axis == Axis::Vertical)
+            .unwrap()
+            .clone();
+        assert!(n.resize(&h, -60.0));
+        let Node::Split(s) = &n else { panic!() };
+        assert!((s.ratios[0] - 0.6).abs() < 1e-4, "{:?}", s.ratios);
+        assert!(n.resize(&h, 10_000.0));
+        let Node::Split(s) = &n else { panic!() };
+        assert!((s.ratios[1] - MIN_PANE / 600.0).abs() < 1e-4);
+        assert!((s.ratios.iter().sum::<f32>() - 1.0).abs() < 1e-5);
+        let mut stale = h.clone();
+        stale.path = vec![7];
+        assert!(!n.resize(&stale, 1.0));
+    }
+
+    #[test]
+    fn file_shape_round_trips_and_validates() {
+        #[derive(Serialize, Deserialize, PartialEq, Debug)]
+        struct W {
+            layout: Node,
+        }
+        let w = W { layout: sample() };
+        let s = toml::to_string(&w).unwrap();
+        assert_eq!(toml::from_str::<W>(&s).unwrap(), w, "{s}");
+        for bad in [
+            "layout = { split = \"vertical\", ratios = [1.0], children = [{ tabs = [\"rbs.a\"] }] }",
+            "layout = { split = \"vertical\", ratios = [0.5, 0.2], children = [{ tabs = [\"rbs.a\"] }, { tabs = [\"rbs.b\"] }] }",
+            "layout = { split = \"vertical\", ratios = [1.5, -0.5], children = [{ tabs = [\"rbs.a\"] }, { tabs = [\"rbs.b\"] }] }",
+            "layout = { tabs = [\"rbs.a\"], active = 1 }",
+            "layout = { tabs = [\"rbs.a\"], split = \"vertical\" }",
+            "layout = { tabs = [\"rbs.a\"], colour = 1 }",
+            "layout = { tabs = [\"Not An Id\"] }",
+        ] {
+            assert!(toml::from_str::<W>(bad).is_err(), "{bad}");
+        }
+    }
+}
