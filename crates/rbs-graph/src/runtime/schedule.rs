@@ -85,6 +85,9 @@ pub(crate) struct Entry<X: Runtime> {
     pub(crate) health: NodeHealth,
     /// `warm` succeeded and `cool` has not run since; only such nodes are cooled.
     pub(crate) warmed: bool,
+    /// The instance's epoch (bumped by the controller on each `prepare`), or `None`
+    /// for a node held in the plan without an instance while it waits for a restart.
+    pub(crate) epoch: Option<u64>,
 }
 
 /// A compiled plan, sent from the controller to the executor and back.

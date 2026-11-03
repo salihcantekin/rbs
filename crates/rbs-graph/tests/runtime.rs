@@ -432,7 +432,9 @@ fn a_panic_is_caught_and_bypasses_only_that_node() {
 }
 
 #[test]
-fn failed_prepare_leaves_the_node_idle_and_replans_without_it() {
+fn failed_prepare_holds_the_node_without_an_instance_and_keeps_its_dependants() {
+    // ADR-0024 (superseding the replan of ADR-0020 for failures): a failed node stays
+    // in the plan without an instance, so its dependants keep running (P7).
     let mut rig = Rig::new();
     let mut probe = Probe::new("cam", Role::Source, &rig.log);
     probe.fail_prepare = true;
@@ -447,14 +449,18 @@ fn failed_prepare_leaves_the_node_idle_and_replans_without_it() {
     let report = rig.apply();
     assert_eq!(report.failed.len(), 1);
     assert_eq!(report.failed[0].0, cam);
-    // The filter lost its only producer, so it is not scheduled; it was prepared in
-    // the first round and released again.
-    assert!(!report.plan.order.contains(&filter));
-    assert!(rig.ctl.is_idle(cam) && rig.ctl.is_idle(filter));
+    assert!(report.plan.order.contains(&filter));
+    assert!(report.plan.order.contains(&cam));
+    assert!(rig.ctl.is_idle(cam) && !rig.ctl.is_running(cam));
+    assert!(rig.ctl.is_running(filter));
     let log = rig.log.take();
     assert!(log.contains(&"release cam".to_string()));
-    assert!(log.contains(&"release filter".to_string()));
-    // The description still wants cam Active; only the effective state changed.
+    assert!(!log.contains(&"release filter".to_string()));
+    // The filter runs with no input frame; the description still wants cam Active.
+    rig.tick();
+    rig.ctl.collect().unwrap();
+    rig.tick();
+    assert!(rig.exec.health(filter).is_some_and(|h| h.processed >= 1));
     assert_eq!(rig.graph.node(cam).unwrap().state, Lifecycle::Active);
 }
 
