@@ -101,6 +101,7 @@ impl Pacing {
 pub struct WorkerStats {
     ticks: AtomicU64,
     late: AtomicU64,
+    caught_up: AtomicU64,
     starts: AtomicU64,
     stops: AtomicU64,
     /// The last worker's grant: 0 no policy, else `grant_code`.
@@ -127,6 +128,12 @@ impl WorkerStats {
     /// Cadence ticks skipped because the worker was late (a dropped frame each).
     pub fn late(&self) -> u64 {
         self.late.load(Ordering::Relaxed)
+    }
+
+    /// Ticks run behind their time while catching up (`Pacing::stream`): not lost,
+    /// but a sign the worker fell behind.
+    pub fn caught_up(&self) -> u64 {
+        self.caught_up.load(Ordering::Relaxed)
     }
 
     /// How many times a worker thread was started for the partition.
@@ -456,6 +463,9 @@ pub(crate) fn run<X: Runtime>(
                 // otherwise run the newest due tick only, so timestamps stay on cadence.
                 let newest = index_due(now).unwrap_or(next).max(next);
                 let run = if newest - next <= u64::from(catch_up) {
+                    if newest > next {
+                        stats.caught_up.fetch_add(1, Ordering::Relaxed);
+                    }
                     next
                 } else {
                     stats.late.fetch_add(newest - next, Ordering::Relaxed);
@@ -799,6 +809,7 @@ mod tests {
         assert_eq!(run.ticks.load(Ordering::Relaxed), 30);
         assert_eq!(run.indices_ok.load(Ordering::Relaxed), 30);
         assert_eq!(run.stats.late(), 0);
+        assert!(run.stats.caught_up() > 0, "the worker never fell behind");
     }
 
     #[test]

@@ -26,7 +26,8 @@
 //!   queue holds a fixed number of pre-allocated block buffers that travel between a
 //!   *free* and a *full* channel, so nothing allocates per block. With no free buffer
 //!   the writer loses that block and counts it in [`QueueStats::overflows`]; the
-//!   consumer sees a gap in timestamps (audio encoders handle gaps). The writer rings
+//!   reader fills the gap with silent blocks (up to one second, counted in
+//!   [`QueueStats::filled`]) so the consumer sees contiguous time. The writer rings
 //!   the consumer partition's [`Doorbell`]; the reader passes one block per tick and
 //!   rings its own doorbell while more are queued.
 //!
@@ -102,9 +103,10 @@ impl QueueStats {
     }
 
     /// Packets lost because the packet queue was full, or audio blocks lost because
-    /// the audio queue had no free buffer (or the block did not fit one). Each loss starts a resync: the
-    /// writer drops packets until the next keyframe. An encoder may compare this with
-    /// the value it saw last and make a keyframe early.
+    /// the audio queue had no free buffer (or the block did not fit one). For packets,
+    /// each loss starts a resync: the writer drops packets until the next keyframe, and
+    /// an encoder may compare this with the value it saw last and make a keyframe
+    /// early. For audio, the reader fills the gap with silence instead.
     pub fn overflows(&self) -> u64 {
         self.overflows.load(Ordering::Relaxed)
     }

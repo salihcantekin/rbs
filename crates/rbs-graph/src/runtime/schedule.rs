@@ -203,6 +203,8 @@ pub enum OutputError {
         /// Frames per channel the pin holds.
         capacity: usize,
     },
+    /// An audio block's samples are in a layout this version cannot copy.
+    UnsupportedSamples(usize),
 }
 
 impl fmt::Display for OutputError {
@@ -218,6 +220,9 @@ impl fmt::Display for OutputError {
                     f,
                     "audio block too large for output pin {pin} ({capacity} frames)"
                 )
+            }
+            OutputError::UnsupportedSamples(p) => {
+                write!(f, "unsupported audio sample layout for output pin {p}")
             }
         }
     }
@@ -548,7 +553,7 @@ impl AudioOut<'_> {
                     }
                 }
             }
-            _ => {}
+            _ => return Err(OutputError::UnsupportedSamples(self.pin)),
         }
         self.commit(format, block.timestamp(), frames)
     }

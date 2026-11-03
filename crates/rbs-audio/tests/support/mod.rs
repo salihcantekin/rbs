@@ -40,8 +40,9 @@ pub struct Script {
     pub delay: Duration,
     /// Device frame ranges `(first, len)` never delivered (the next run is flagged).
     pub gaps: Vec<(u64, u64)>,
-    /// Packets from this device frame on are delivered `late_by` later.
-    pub late_from: Option<(u64, Duration)>,
+    /// Packets from device frame `.0` up to (not including) `.1` are delivered `.2`
+    /// later.
+    pub late: Option<(u64, u64, Duration)>,
 }
 
 impl Default for Script {
@@ -54,7 +55,7 @@ impl Default for Script {
             packet: 480,
             delay: Duration::from_millis(1),
             gaps: Vec::new(),
-            late_from: None,
+            late: None,
         }
     }
 }
@@ -125,8 +126,8 @@ impl AudioInputStream for Device {
         let packet = self.script.packet as u64;
         let packet_end = (self.next / packet + 1) * packet;
         let mut delay = self.script.delay.as_secs_f64();
-        if let Some((from, late)) = self.script.late_from {
-            if self.next >= from {
+        if let Some((from, until, late)) = self.script.late {
+            if self.next >= from && self.next < until {
                 delay += late.as_secs_f64();
             }
         }

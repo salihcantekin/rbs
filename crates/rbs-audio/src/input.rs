@@ -95,7 +95,8 @@ pub struct InputStats {
 pub struct InputCounters {
     /// Frames read from the stream.
     pub frames_in: u64,
-    /// Times the resampler's position jumped instead of slewing (start-up excluded).
+    /// Times the resampler's position jumped instead of slewing, in either direction,
+    /// including the new lock after a map restart (the first lock is excluded).
     pub resyncs: u64,
     /// Output frames that were silence because the source's audio had not arrived (or
     /// never will: it is older than what the FIFO holds).
@@ -104,7 +105,8 @@ pub struct InputCounters {
     pub discarded_frames: u64,
     /// Silent frames inserted where a run had a gap.
     pub gaps_filled: u64,
-    /// Source frames dropped because a run overlapped audio already in the FIFO.
+    /// Source frames dropped because a run overlapped audio already in the FIFO, or
+    /// arrived after the position had passed their time (late audio).
     pub overlaps_dropped: u64,
     /// Failed reads.
     pub read_errors: u64,
@@ -151,7 +153,8 @@ pub(crate) fn matrix(
     }
     match (from, to) {
         (ChannelLayout::Mono, _) => {
-            // Mono feeds every front channel (L and R; C for layouts with one).
+            // Mono feeds the front left and right channels; the centre stays silent so
+            // a mono source is not louder in surround layouts than in stereo.
             m[0][0] = 1.0;
             if n_out >= 2 {
                 m[1][0] = 1.0;
@@ -216,6 +219,11 @@ struct State {
     /// Resampler position in FIFO frames, and whether it is locked to the wanted time.
     p: f64,
     locked: bool,
+    /// The position ran past the FIFO and `head` was moved to it: the next run may be
+    /// older than the map's end, and is then dropped up to the head, not mapped.
+    ahead: bool,
+    /// The map restarted while locked: the next lock is counted as a resync.
+    relock: bool,
     /// Source frames per graph frame, nominal.
     nominal: f64,
     kernel: Kernel,
@@ -241,6 +249,8 @@ impl State {
             map_n: 0,
             p: 0.0,
             locked: false,
+            ahead: false,
+            relock: false,
             nominal: rate / f64::from(config.format.sample_rate.hz()),
             kernel: Kernel::new(src.sample_rate, config.format.sample_rate),
             matrix: matrix(src.channels, config.format.channels),
@@ -286,24 +296,32 @@ impl State {
             self.head = 0.0;
             self.mapped = true;
             self.locked = false;
+            self.map_err = 0.0;
+            self.map_n = 0;
             return;
         }
         let expected = self.head + self.len as f64 * self.dt;
         let diff = self.rel(ts) - expected;
         let tol = MAP_TOLERANCE.as_nanos() as f64;
-        if diff.abs() <= tol && (!discontinuity || diff.abs() < self.dt) {
+        let ahead = std::mem::replace(&mut self.ahead, false);
+        // In tolerance: continuous, and the error steers the map. Not for a flagged
+        // discontinuity a frame or more off (placed by its timestamp), nor for a run
+        // behind a head the position moved (late audio: what the position passed is
+        // dropped below, not mapped).
+        let behind = ahead && diff <= -0.5 * self.dt;
+        if diff.abs() <= tol && !behind && (!discontinuity || diff.abs() < self.dt) {
             self.map_err += diff;
             self.map_n += 1;
             self.len += n;
             return;
         }
-        if diff.abs() <= tol {
-            // A flagged discontinuity that lands where the map expects: continuous.
-            self.len += n;
-            return;
-        }
         if diff > 0.0 {
             let gap = (diff / self.dt).round() as usize;
+            if self.len + gap + n > self.cap && self.locked {
+                // Make room by forgetting what no later output frame can reach.
+                let reach = (self.p.floor() - BEFORE as f64).max(0.0) as usize;
+                self.drop_front(reach.min(self.len));
+            }
             if self.len + gap + n <= self.cap {
                 self.shift(self.len, n, self.len + gap);
                 for c in 0..self.src_channels {
@@ -330,7 +348,10 @@ impl State {
         self.len = n;
         self.base = ts.as_nanos();
         self.head = 0.0;
+        self.relock |= self.locked;
         self.locked = false;
+        self.map_err = 0.0;
+        self.map_n = 0;
     }
 }
 
@@ -502,6 +523,9 @@ impl<X: Runtime> Node<X> for InputNode {
         if !st.locked {
             st.p = wanted_p;
             st.locked = true;
+            if std::mem::replace(&mut st.relock, false) {
+                stats.resyncs.fetch_add(1, Ordering::Relaxed);
+            }
         } else {
             let err = st.head + st.p * st.dt - want;
             if err.abs() > RESYNC_THRESHOLD.as_nanos() as f64 {
@@ -563,6 +587,7 @@ impl<X: Runtime> Node<X> for InputNode {
                 let extra = keep_from as usize - n;
                 st.head += extra as f64 * st.dt;
                 st.p -= extra as f64;
+                st.ahead = true;
             }
         }
         out.commit(format, block_time, frames)?;

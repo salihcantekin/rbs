@@ -493,3 +493,27 @@ fn the_audio_path_does_not_allocate_per_tick() {
     assert_eq!(counts.count_total, 0);
     assert_eq!(rig.stats.received(), 1_001);
 }
+
+#[test]
+fn a_writer_whose_reader_is_gone_keeps_its_buffer_instead_of_freeing_it() {
+    let Split {
+        mut audio,
+        encoder,
+        stats,
+        ..
+    } = split(4);
+    let c = cadence();
+    audio.1.run_tick(Tick::of(&c, 0));
+    // The encoder side goes away with its reader (and the queued block).
+    drop(encoder);
+    let counts = allocation_counter::measure(|| {
+        for i in 1..20 {
+            audio.1.run_tick(Tick::of(&c, i));
+        }
+    });
+    // Nothing allocated or freed on the audio thread: the buffer taken from the free
+    // list is kept as a spare and reused.
+    assert_eq!(counts.count_total, 0);
+    assert_eq!(counts.count_current, 0);
+    assert_eq!(stats.sent(), 1);
+}

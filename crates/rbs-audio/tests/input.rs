@@ -135,16 +135,51 @@ fn a_gap_inside_a_run_is_filled_and_keeps_alignment() {
 #[test]
 fn late_audio_is_silence_and_sync_is_kept() {
     let mut r = rig(Script {
-        // From 2 s on the device delivers 40 ms later: 1 ms + 40 ms + 10 ms packet
-        // exceeds the 50 ms latency.
-        late_from: Some((96_000, Duration::from_millis(40))),
+        // From 2 s to 3 s the device delivers 40 ms later: 1 ms + 40 ms + 10 ms packet
+        // exceeds the 50 ms latency, so every block in that second is late.
+        late: Some((96_000, 144_000, Duration::from_millis(40))),
         ..Script::default()
     });
     r.run(500);
     let c = r.stats.read();
     assert!(c.late_frames > 0);
-    // Whatever audio is heard is still in sync.
-    assert!(r.max_error_after(Duration::from_millis(100)) < 50e-6);
+    // Audio the position passed is dropped, not played late.
+    assert!(c.overlaps_dropped > 0);
+    assert_eq!(c.resyncs, 0);
+    // Once audio arrives in time again it is in sync, with no further silence.
+    assert!(r.silent_blocks_after(Duration::from_millis(3_200)) == 0);
+    assert!(r.max_error_after(Duration::from_millis(3_200)) < 50e-6);
+}
+
+#[test]
+fn audio_late_by_less_than_the_look_ahead_is_silence_without_losing_sync() {
+    let mut r = rig(Script {
+        // 39 ms later: each packet arrives inside the resampler's look-ahead (32 frames,
+        // about 0.67 ms) of its block's end, so the last frames of each block are silent.
+        late: Some((96_000, 144_000, Duration::from_millis(39))),
+        ..Script::default()
+    });
+    r.run(500);
+    let c = r.stats.read();
+    assert!(c.late_frames > 0);
+    assert_eq!(c.resyncs, 0);
+    assert_eq!(c.discarded_frames, 0);
+    assert!(r.silent_blocks_after(Duration::from_millis(3_200)) == 0);
+    assert!(r.max_error_after(Duration::from_millis(2_000)) < 50e-6);
+}
+
+#[test]
+fn a_flagged_gap_shorter_than_the_tolerance_is_filled() {
+    let mut r = rig(Script {
+        // 1.5 ms (72 frames) missing after 2 s: inside the map tolerance, but flagged.
+        gaps: vec![(96_000, 72)],
+        ..Script::default()
+    });
+    r.run(300);
+    let c = r.stats.read();
+    assert_eq!(c.gaps_filled, 72);
+    assert_eq!(c.resyncs, 0);
+    assert!(r.max_error_after(Duration::from_millis(2_100)) < 50e-6);
 }
 
 #[test]
