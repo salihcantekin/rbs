@@ -29,7 +29,7 @@ fn fs_preview(in: VsOut) -> @location(0) vec4<f32> {
 }
 
 // For targets without an sRGB format (the Windows preview surfaces, `R8G8B8A8_UNORM`,
-// ADR-0035): the same result with the sRGB encoding applied here.
+// ADR-0036): the same result with the sRGB encoding applied here.
 fn srgb_encode(c: vec3<f32>) -> vec3<f32> {
     let lo = c * 12.92;
     let hi = 1.055 * pow(c, vec3<f32>(1.0 / 2.4)) - 0.055;

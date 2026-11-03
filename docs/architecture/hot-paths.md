@@ -18,7 +18,7 @@ Keep this list current. When a new crate or module lands on one of these paths, 
 | Capture frame hand-off: `CaptureSession::latest_frame` and the adapter code it calls | Every frame per Active capture source | `crates/rbs-capture`, adapters in `crates/rbs-capture-*` |
 | Frame, texture and audio buffer pools | Every frame or block | `crates/rbs-gpu`, `crates/rbs-audio` |
 | Colour conversion to encoder formats (NV12, P010) and YUV source decode | Every frame per encoder or YUV source | `crates/rbs-gpu` |
-| Preview export to the UI process: `PreviewPublisher::publish` and `tick` (one non-blocking Mach send per frame, ADR-0028; one overlapped pipe write on Windows, ADR-0035) | Every frame per subscribed preview | `crates/rbs-gpu/src/share` (publisher, mach; `win/publisher.rs`, `win/pipe.rs`; the UI-side `layer.rs` files are not on the engine's hot path) |
+| Preview export to the UI process: `PreviewPublisher::publish` and `tick` (one non-blocking Mach send per frame, ADR-0028; one overlapped pipe write on Windows, ADR-0036) | Every frame per subscribed preview | `crates/rbs-gpu/src/share` (publisher, mach; `win/publisher.rs`, `win/pipe.rs`; the UI-side `layer.rs` files are not on the engine's hot path) |
 | Encoder submit/drain and packet fan-out | Every frame per encoder | `crates/rbs-codec*`, `crates/rbs-graph` |
 | Muxers and transport send loops | Every packet | `crates/rbs-mux*`, `crates/rbs-transport*` |
 | Bitstream conversion (Annex B / length-prefixed, FLV tag bodies) | Every packet per converting output | `crates/rbs-media-format` |

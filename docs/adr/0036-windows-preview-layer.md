@@ -1,4 +1,4 @@
-# ADR-0035: Cross-process preview on Windows: shared D3D12 textures, a named pipe and a composition swapchain layer
+# ADR-0036: Cross-process preview on Windows: shared D3D12 textures, a named pipe and a composition swapchain layer
 
 - Status: Proposed
 - Date: 2026-11-03

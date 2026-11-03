@@ -1,6 +1,6 @@
 //! UI side on Windows: shows the preview as a DirectComposition visual of the UI's window
 //! whose content is a composition swapchain surface fed with the engine's textures
-//! (ADR-0035).
+//! (ADR-0036).
 //!
 //! The engine's shared textures are the presentation buffers themselves, so a new frame
 //! costs one `SetBuffer` and one `Present` in the UI process: no redraw by the toolkit, no

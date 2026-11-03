@@ -1,5 +1,5 @@
 //! UI side of the cross-process preview on Windows: connects to the engine's pipe,
-//! receives the shared texture handles and then frames (ADR-0035).
+//! receives the shared texture handles and then frames (ADR-0036).
 
 use std::ffi::c_void;
 use std::sync::{Arc, Mutex};
@@ -32,7 +32,7 @@ pub const PREVIEW_TEXTURE_USAGE: wgpu::TextureUsages = wgpu::TextureUsages::TEXT
     .union(wgpu::TextureUsages::COPY_SRC);
 
 /// Format of the UI-side textures. The engine writes sRGB-encoded values into a
-/// `R8G8B8A8_UNORM` texture (ADR-0035): flip-model and composition presentation take no
+/// `R8G8B8A8_UNORM` texture (ADR-0036): flip-model and composition presentation take no
 /// sRGB formats.
 pub const PREVIEW_TEXTURE_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Unorm;
 

@@ -21,7 +21,7 @@ pollster = "0.4"
 [features]
 # UI-process code: shows the cross-process preview as a native layer of a window: a Core
 # Animation layer on macOS (ADR-0034), a DirectComposition visual with a composition
-# swapchain on Windows (ADR-0035). Off by default so engine binaries carry no window code
+# swapchain on Windows (ADR-0036). Off by default so engine binaries carry no window code
 # (P8); the UI (rbs-app) turns it on.
 preview-layer = [
     "dep:objc2",
@@ -56,7 +56,7 @@ required-features = ["preview-layer"]
 workspace = true
 
 # Native surface import on Windows goes through wgpu's D3D12 HAL; same `windows` version as wgpu-hal.
-# The cross-process preview (ADR-0035) adds named pipes, overlapped I/O, handle duplication
+# The cross-process preview (ADR-0036) adds named pipes, overlapped I/O, handle duplication
 # and the system CSPRNG for its token.
 [target.'cfg(windows)'.dependencies]
 windows = { version = "0.62", features = [

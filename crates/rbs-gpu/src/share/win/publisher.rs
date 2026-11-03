@@ -1,5 +1,5 @@
 //! Engine side of the cross-process preview on Windows: a ring of shared D3D12 textures
-//! and a named pipe (ADR-0035).
+//! and a named pipe (ADR-0036).
 
 use std::collections::VecDeque;
 use std::ffi::c_void;
@@ -82,7 +82,7 @@ enum Conn {
 }
 
 /// Shares scaled canvases with one UI process (spec "Preview export (cross-process)",
-/// ADR-0035). Owned by the render thread.
+/// ADR-0036). Owned by the render thread.
 ///
 /// Installed but unused costs nothing: a publisher exists only while a preview output is
 /// Active (P13), and while no UI is subscribed [`Self::publish`] does no GPU work.

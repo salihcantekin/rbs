@@ -1,5 +1,5 @@
 //! Cross-process preview (spec `gpu-compositor.md`, "Preview export (cross-process)",
-//! ADR-0028 on macOS, ADR-0035 on Windows).
+//! ADR-0028 on macOS, ADR-0036 on Windows).
 //!
 //! The main test publishes a canvas whose colour depends on the frame sequence and runs
 //! this test binary again as a child process (the "UI"). The child subscribes, aliases the

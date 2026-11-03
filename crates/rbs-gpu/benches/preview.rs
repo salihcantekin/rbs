@@ -123,5 +123,5 @@ criterion::criterion_main!(benches);
 
 #[cfg(not(any(target_vendor = "apple", windows)))]
 fn main() {
-    eprintln!("SKIPPED preview benchmarks: macOS and Windows only (ADR-0028, ADR-0035)");
+    eprintln!("SKIPPED preview benchmarks: macOS and Windows only (ADR-0028, ADR-0036)");
 }

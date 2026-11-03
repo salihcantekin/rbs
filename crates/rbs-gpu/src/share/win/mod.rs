@@ -1,4 +1,4 @@
-//! Windows backend of the cross-process preview (ADR-0035): shared D3D12 textures whose NT
+//! Windows backend of the cross-process preview (ADR-0036): shared D3D12 textures whose NT
 //! handles the engine duplicates into the UI process, the same four messages as on macOS
 //! over a message-mode named pipe, and the UI-side layer on the composition swapchain.
 

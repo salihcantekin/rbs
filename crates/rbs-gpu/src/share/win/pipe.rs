@@ -1,5 +1,5 @@
 //! Named-pipe messages and overlapped I/O of the Windows preview protocol (spec
-//! `gpu-compositor.md`, "Preview export (cross-process)", ADR-0035).
+//! `gpu-compositor.md`, "Preview export (cross-process)", ADR-0036).
 //!
 //! Marked low-level module (P11): every `unsafe` block states its invariant. Messages are
 //! fixed-size arrays of little-endian 32-bit words in a message-mode pipe, so one read

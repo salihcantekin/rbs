@@ -1,4 +1,4 @@
-//! Engine side of the cross-process preview demo (ADR-0028 on macOS, ADR-0035 on
+//! Engine side of the cross-process preview demo (ADR-0028 on macOS, ADR-0036 on
 //! Windows).
 //!
 //! Composites an animated canvas at 60 Hz and shares it through a `PreviewPublisher`.
@@ -21,7 +21,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 #[cfg(not(any(target_vendor = "apple", windows)))]
 fn main() {
     eprintln!(
-        "preview_engine: cross-process preview is implemented on macOS and Windows only (ADR-0028, ADR-0035)"
+        "preview_engine: cross-process preview is implemented on macOS and Windows only (ADR-0028, ADR-0036)"
     );
 }
 

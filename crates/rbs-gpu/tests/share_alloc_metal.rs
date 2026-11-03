@@ -1,6 +1,6 @@
 //! Heap allocations per preview frame (spec `gpu-compositor.md`, "Preview export
 //! (cross-process)"). Runs on macOS and Windows (the file name predates the Windows
-//! backend, ADR-0035).
+//! backend, ADR-0036).
 //!
 //! RBS code in `PreviewPublisher::publish` and `tick` does not allocate. The test runs a
 //! steady loop (publish, wait, tick sends the frame, the subscriber receives and drops it,

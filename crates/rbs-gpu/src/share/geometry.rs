@@ -1,4 +1,4 @@
-//! Platform-neutral arithmetic of the preview layers (ADR-0034, ADR-0035), kept apart so
+//! Platform-neutral arithmetic of the preview layers (ADR-0034, ADR-0036), kept apart so
 //! it is tested on every platform.
 
 use std::time::Duration;
@@ -66,7 +66,7 @@ mod tests {
         let f60 = Duration::from_nanos(16_666_667);
         // macOS: 34 ms retire time at 60 fps -> 3 retiring + 3 = 6 (ADR-0034).
         assert_eq!(ring_needed(f60, Duration::from_millis(34)), 6);
-        // Windows: one refresh plus the 4 ms poll -> 2 retiring + 3 = 5 (ADR-0035).
+        // Windows: one refresh plus the 4 ms poll -> 2 retiring + 3 = 5 (ADR-0036).
         assert_eq!(ring_needed(f60, f60 + Duration::from_millis(4)), 5);
         // Nothing held: shown, written, in flight.
         assert_eq!(ring_needed(f60, Duration::ZERO), 3);

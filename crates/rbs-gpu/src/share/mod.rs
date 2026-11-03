@@ -9,7 +9,7 @@
 //! boundary and nothing is copied: both processes use the same IOSurface memory.
 //!
 //! Backends: macOS (IOSurfaces over a Mach service, ADR-0028) and Windows (shared D3D12
-//! textures as NT handles over a named pipe, ADR-0035). The endpoint and descriptor types
+//! textures as NT handles over a named pipe, ADR-0036). The endpoint and descriptor types
 //! exist everywhere.
 //!
 //! This is a marked low-level module (principle P11): every `unsafe` block states its

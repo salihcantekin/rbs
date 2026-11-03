@@ -65,3 +65,4 @@ Every layer run showed 60.0 fps in the UI's 21 s measurement window; by the engi
 - Round 1 Mac runs then showed the retire time costs frames: 25 ms with a ring of 4 gave 30 fps, 34 ms with a ring of 6 gave 48-51 fps while retirement waited for the next frame. Response: a one-shot timer at `next_retire` (decision 3); final run 60 fps.
 - 2026-11-03, independent AI session (fresh context), round 2: changes requested (docs gave two timer rules; measurement wording; jitter and no-op tests; example input errors), then approved after commit be96f94. No hot-path code changed (P15 not triggered: `layer.rs` is UI-side).
 - Owner: under the early-phase ADR policy (2026-11-03) threads may mark an ADR Accepted after its independent review. Status: Accepted, 2026-11-03.
+- 2026-11-03: [ADR-0035](0035-meters-as-native-layers.md) supersedes decision 7 in part: on macOS the meters' moving parts are native layers too; the toolkit keeps their static parts and accessible elements.
