@@ -683,13 +683,12 @@ struct Capture {
 
 impl Capture {
     /// One IO cycle. **Real-time**: no allocation, locks, I/O or logging.
-    fn cycle(&mut self, now: &AudioTimeStamp, list: &AudioBufferList, time: &AudioTimeStamp) {
+    fn cycle(&mut self, _now: &AudioTimeStamp, list: &AudioBufferList, time: &AudioTimeStamp) {
         // The host clock and the master clock read back to back (the cycle's own
-        // `now` is when the HAL woke, earlier by the wake-up latency).
+        // `_now` is when the HAL woke, earlier by the wake-up latency).
         // SAFETY: plain host-time calls, no preconditions.
         let os_now = unsafe { AudioConvertHostTimeToNanos(AudioGetCurrentHostTime()) };
         self.packets.observe(os_now, self.clock.now());
-        let _ = now;
         let count = list.mNumberBuffers as usize;
         let first = match self.buffers {
             Buffers::All => 0,
@@ -1037,6 +1036,17 @@ impl CoreAudioStream {
                     || layout(channels) != Some(self.format.channels)
                 {
                     return Err(AudioIoError::FormatChanged);
+                }
+                if !input_is_float(device) {
+                    return Err(AudioIoError::FormatChanged);
+                }
+                // The permission may have been revoked since `open_input`.
+                match microphone() {
+                    Permission::Granted => {}
+                    Permission::NotDetermined => {
+                        return Err(AudioIoError::PermissionNotDetermined);
+                    }
+                    _ => return Err(AudioIoError::PermissionDenied),
                 }
                 (device, device, None, Buffers::All)
             }

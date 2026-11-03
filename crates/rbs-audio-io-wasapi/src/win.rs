@@ -17,8 +17,8 @@ use std::time::Duration;
 
 use windows::Wdk::System::SystemServices::RtlGetVersion;
 use windows::Win32::Foundation::{
-    CloseHandle, E_ACCESSDENIED, E_INVALIDARG, ERROR_NOT_FOUND, GetLastError, HANDLE, PROPERTYKEY,
-    STILL_ACTIVE, WAIT_TIMEOUT,
+    CloseHandle, E_ACCESSDENIED, E_FAIL, E_INVALIDARG, ERROR_NOT_FOUND, GetLastError, HANDLE,
+    PROPERTYKEY, STILL_ACTIVE, WAIT_TIMEOUT,
 };
 use windows::Win32::Media::Audio::{
     AUDCLNT_BUFFERFLAGS_DATA_DISCONTINUITY, AUDCLNT_BUFFERFLAGS_SILENT,
@@ -728,6 +728,8 @@ impl WasapiStream {
                 // The OS is slow to open the stream: give up within the port's budget.
                 // The thread sees the stop event or the closed channel and ends on
                 // its own; it is not joined here, which could block past the budget.
+                // Until it does, it may briefly still hold the device, its COM objects
+                // and its `owned_resources` count; a quick retry can overlap with it.
                 stop.set();
                 return Err(AudioIoError::Backend {
                     domain: ErrorDomain::HResult,
@@ -1185,7 +1187,11 @@ fn run(setup: &Setup, started: Started) {
             // WAIT_FAILED or an abandoned handle: never spin on it.
             _ => {
                 // SAFETY: no preconditions.
-                let code = unsafe { GetLastError() }.to_hresult();
+                let mut code = unsafe { GetLastError() }.to_hresult();
+                if code.is_ok() {
+                    // An abandoned handle sets no error code.
+                    code = E_FAIL;
+                }
                 setup.status.set(hresult(code));
                 break;
             }
