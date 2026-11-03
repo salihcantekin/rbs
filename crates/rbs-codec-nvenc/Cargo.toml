@@ -10,6 +10,7 @@ publish.workspace = true
 
 [dependencies]
 rbs-codec = { path = "../rbs-codec" }
+rbs-codec-hw = { path = "../rbs-codec-hw" }
 rbs-core = { path = "../rbs-core" }
 # H.273 colour code points for the VUI.
 rbs-media-format = { path = "../rbs-media-format" }

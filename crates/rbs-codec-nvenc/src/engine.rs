@@ -12,11 +12,13 @@ use std::ptr;
 use rbs_codec::CreateError;
 use rbs_core::media::{CodecId, PixelFormat, SystemFrame};
 
+use rbs_codec_hw::copy::{DstPlane, copy_420, plane_sizes};
+use rbs_codec_hw::device::{CodecCaps, DeviceCaps, Profiles};
+use rbs_codec_hw::plan::{Plan, Preset, Profile, Rc};
+use rbs_codec_hw::session::{Engine, EngineError, Output};
+
 use crate::FRAMES_IN_FLIGHT;
-use crate::device::{CodecCaps, DeviceCaps};
 use crate::loader::{Api, api};
-use crate::plan::{Plan, Profile, Rc, Tuning};
-use crate::session::{Engine, EngineError, Output};
 use crate::sys::{self, cuda};
 
 /// Returns the function pointer, or a typed error when the driver did not fill it.
@@ -325,17 +327,24 @@ pub(crate) fn probe(ordinal: c_int) -> Result<DeviceCaps, String> {
                 side(cap(sys::NV_ENC_CAPS_HEIGHT_MAX), 0),
             ),
             mb_per_sec: u64::try_from(cap(sys::NV_ENC_CAPS_MB_PER_SEC_MAX)).unwrap_or(0),
-            ten_bit: codec == CodecId::Hevc
-                && cap(sys::NV_ENC_CAPS_SUPPORT_10BIT_ENCODE) != 0
-                && formats.contains(&sys::NV_ENC_BUFFER_FORMAT_YUV420_10BIT),
+            profiles: if codec == CodecId::H264 {
+                Profiles::H264_ALL
+            } else if cap(sys::NV_ENC_CAPS_SUPPORT_10BIT_ENCODE) != 0
+                && formats.contains(&sys::NV_ENC_BUFFER_FORMAT_YUV420_10BIT)
+            {
+                Profiles::HEVC_ALL
+            } else {
+                Profiles::HEVC_MAIN
+            },
             // A zero mask means the driver does not report modes; every NVENC
-            // generation has CBR and VBR.
+            // generation has CBR and VBR. Constant quality is VBR with a target.
             cbr: modes == 0 || modes & i64::from(sys::NV_ENC_PARAMS_RC_CBR) != 0,
             vbr: modes == 0 || modes & i64::from(sys::NV_ENC_PARAMS_RC_VBR) != 0,
+            quality: modes == 0 || modes & i64::from(sys::NV_ENC_PARAMS_RC_VBR) != 0,
             dynamic_bitrate: cap(sys::NV_ENC_CAPS_SUPPORT_DYN_BITRATE_CHANGE) != 0,
         });
     }
-    codecs.retain(|c| c.width.1 >= c.width.0 && c.height.1 >= c.height.0);
+    codecs.retain(|c| c.usable());
     Ok(DeviceCaps {
         name: device.name(ordinal),
         codecs,
@@ -362,13 +371,14 @@ fn apply_rc(rc: &mut sys::NV_ENC_RC_PARAMS, plan: Rc) {
             rc.vbvInitialDelay = max;
             rc.targetQuality = 0;
         }
-        Rc::Quality { target } => {
+        Rc::Quality { level } => {
             rc.rateControlMode = sys::NV_ENC_PARAMS_RC_VBR;
             rc.averageBitRate = 0;
             rc.maxBitRate = 0;
             rc.vbvBufferSize = 0;
             rc.vbvInitialDelay = 0;
-            rc.targetQuality = target;
+            // NVENC reads 0 as "automatic", so level 0 (best) becomes 1.
+            rc.targetQuality = level.max(1);
             rc.targetQualityLSB = 0;
         }
     }
@@ -429,10 +439,16 @@ impl NvencEngine {
         let codec = codec_guid(plan.codec).ok_or_else(|| CreateError::Unsupported {
             what: format!("codec {}", plan.codec),
         })?;
-        let preset = sys::NV_ENC_PRESET_GUIDS[usize::from(plan.preset.clamp(1, 7) - 1)];
-        let tuning = match plan.tuning {
-            Tuning::HighQuality => sys::NV_ENC_TUNING_INFO_HIGH_QUALITY,
-            Tuning::LowLatency => sys::NV_ENC_TUNING_INFO_LOW_LATENCY,
+        // P1 (fastest) ..= P7 (best).
+        let preset = sys::NV_ENC_PRESET_GUIDS[match plan.preset {
+            Preset::Speed => 1,
+            Preset::Balanced => 3,
+            Preset::Quality => 4,
+        }];
+        let tuning = if plan.low_latency {
+            sys::NV_ENC_TUNING_INFO_LOW_LATENCY
+        } else {
+            sys::NV_ENC_TUNING_INFO_HIGH_QUALITY
         };
         let buffer_format = if plan.ten_bit {
             sys::NV_ENC_BUFFER_FORMAT_YUV420_10BIT
@@ -605,17 +621,7 @@ impl NvencEngine {
 
     /// Bytes per row and rows of each plane.
     fn planes(&self) -> [(usize, usize); 2] {
-        let mut planes = [(0, 0); 2];
-        for (i, p) in planes.iter_mut().enumerate() {
-            *p = (
-                self.pixel_format
-                    .min_row_bytes(i, self.width)
-                    .and_then(|r| usize::try_from(r).ok())
-                    .unwrap_or(0),
-                self.pixel_format.plane_rows(i, self.height).unwrap_or(0) as usize,
-            );
-        }
-        planes
+        plane_sizes(self.pixel_format, self.width, self.height).unwrap_or_default()
     }
 
     /// Reads back and unlocks the bitstream of `slot`.
@@ -679,6 +685,10 @@ impl NvencEngine {
 }
 
 impl Engine for NvencEngine {
+    fn slots(&self) -> usize {
+        FRAMES_IN_FLIGHT
+    }
+
     fn upload(&mut self, slot: usize, frame: &SystemFrame) -> Result<(), EngineError> {
         let funcs = &self.device.api.nvenc.0;
         let lock = f(funcs.nvEncLockInputBuffer, "nvEncLockInputBuffer")?;
@@ -697,35 +707,30 @@ impl Engine for NvencEngine {
         })?;
         let base = params.bufferDataPtr.cast::<u8>();
         let pitch = params.pitch as usize;
-        let mut copied = !base.is_null();
-        // The chroma plane follows `height` rows of luma at the same pitch.
-        let mut offset = 0usize;
-        for (plane, (row_bytes, rows)) in planes.iter().enumerate() {
-            if !copied {
-                break;
-            }
-            let Some((src, stride)) = frame.plane(plane) else {
-                copied = false;
-                break;
+        let [(_, luma_rows), (_, chroma_rows)] = planes;
+        let copied = !base.is_null() && {
+            // The chroma plane follows `height` rows of luma at the same pitch.
+            let luma_len = pitch * self.height as usize;
+            // SAFETY: while locked, the buffer holds `height` luma rows and then the
+            // chroma rows, `pitch` bytes each, and nothing else refers to it; the
+            // two slices do not overlap. `luma_rows == height` for 4:2:0.
+            let (luma, chroma) = unsafe {
+                (
+                    std::slice::from_raw_parts_mut(base, pitch * luma_rows),
+                    std::slice::from_raw_parts_mut(base.add(luma_len), pitch * chroma_rows),
+                )
             };
-            if pitch < *row_bytes || stride < *row_bytes {
-                copied = false;
-                break;
-            }
-            for y in 0..*rows {
-                let Some(row) = src.get(y * stride..y * stride + row_bytes) else {
-                    copied = false;
-                    break;
-                };
-                // SAFETY: the locked buffer holds `height` luma rows plus the chroma
-                // rows at `pitch >= row_bytes` bytes each; source and destination are
-                // different allocations.
-                unsafe {
-                    ptr::copy_nonoverlapping(row.as_ptr(), base.add(offset + y * pitch), *row_bytes)
-                };
-            }
-            offset += pitch * (self.height as usize);
-        }
+            copy_420(
+                frame,
+                [
+                    DstPlane { data: luma, pitch },
+                    DstPlane {
+                        data: chroma,
+                        pitch,
+                    },
+                ],
+            )
+        };
         // SAFETY: locked above.
         let s = unsafe { unlock(self.encoder(), self.inputs[slot]) };
         status("nvEncUnlockInputBuffer", s)?;

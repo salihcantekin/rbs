@@ -11,6 +11,10 @@
 //!
 //! # Sessions
 //!
+//! The session logic (ordering, keyframes, `Busy`, the capability set and the
+//! configuration checks) is shared with the other hardware adapters in
+//! `rbs-codec-hw`; this crate holds the loader, the bindings and the engine.
+//!
 //! Each session owns a CUDA context on device 0 and one NVENC session in synchronous
 //! mode with [`FRAMES_IN_FLIGHT`] NVENC-allocated input and bitstream buffers.
 //! `submit` copies the system-memory NV12 or P010 frame into the next input buffer and
@@ -43,43 +47,7 @@ pub const ADAPTER_ID: &str = "org.rbs.codec.nvenc";
 pub const FRAMES_IN_FLIGHT: usize = 8;
 
 /// Counters of one session, for metrics.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-#[non_exhaustive]
-pub struct SessionStats {
-    /// Frames handed to NVENC.
-    pub submitted: u64,
-    /// Packets moved out by `drain` or `flush`.
-    pub packets: u64,
-    /// System-memory frames copied into an NVENC input buffer.
-    pub copied: u64,
-}
-
-// The session logic is plain Rust and is unit-tested everywhere; outside the
-// supported platforms only the tests use it.
-#[cfg(any(
-    test,
-    all(
-        any(target_os = "windows", target_os = "linux"),
-        target_pointer_width = "64"
-    )
-))]
-mod device;
-#[cfg(any(
-    test,
-    all(
-        any(target_os = "windows", target_os = "linux"),
-        target_pointer_width = "64"
-    )
-))]
-mod plan;
-#[cfg(any(
-    test,
-    all(
-        any(target_os = "windows", target_os = "linux"),
-        target_pointer_width = "64"
-    )
-))]
-mod session;
+pub use rbs_codec_hw::SessionStats;
 
 #[cfg(all(
     any(target_os = "windows", target_os = "linux"),
@@ -109,10 +77,12 @@ mod platform {
     use rbs_core::media::{BitstreamFormat, Bytes, EncodedPacket, StreamDescriptor, StreamParams};
     use rbs_core::registry::{AdapterFactory, AdapterId, ProbeError};
 
-    use crate::device::{DeviceCaps, capability_set};
+    use rbs_codec_hw::device::{DeviceCaps, capability_set};
+    use rbs_codec_hw::plan;
+    use rbs_codec_hw::session::Session;
+
+    use crate::SessionStats;
     use crate::engine::{NvencEngine, probe};
-    use crate::session::Session;
-    use crate::{SessionStats, plan};
 
     /// The probed device, read once per process (opening CUDA and an NVENC session
     /// takes longer than the probe budget; later probes are free). Only definitive
