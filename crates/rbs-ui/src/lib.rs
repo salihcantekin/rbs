@@ -14,6 +14,7 @@
 //! - [`history`] and [`session`]: layout undo and the commands that change a layout.
 //! - [`live`]: the live indicator.
 //! - [`tokens`]: design tokens and their contrast checks.
+//! - [`meter`]: the audio meter's scale, peak hold and clip latch.
 //!
 //! Spec: `docs/specs/ui-design-system.md`. Rules: `docs/ui/principles.md`.
 
@@ -22,6 +23,7 @@ pub mod display;
 pub mod history;
 pub mod layout;
 pub mod live;
+pub mod meter;
 pub mod panel;
 pub mod session;
 pub mod store;

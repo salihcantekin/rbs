@@ -20,6 +20,14 @@ rbs-ui = { path = "../rbs-ui" }
 # ADR-0028); it must track rbs-gpu's wgpu major.
 slint = { version = "=1.18.1", default-features = false, features = ["std", "backend-winit", "renderer-skia", "accessibility", "compat-1-2", "unstable-wgpu-30"] }
 
+# Audio meters as Core Animation layers (src/native, ADR-0035). Same objc2 versions as
+# wgpu-hal, raw-window-metal and rbs-gpu's preview layer, so nothing new is built.
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = "0.6.3"
+objc2-quartz-core = { version = "0.3.2", default-features = false, features = ["std", "CALayer", "CATransaction", "objc2-core-foundation", "objc2-core-graphics"] }
+objc2-core-foundation = { version = "0.3.2", default-features = false, features = ["std", "CFCGTypes"] }
+objc2-core-graphics = { version = "0.3.2", default-features = false, features = ["std", "CGColor"] }
+
 [dev-dependencies]
 # The cross-process preview demo (examples/remote_preview.rs) imports engine surfaces.
 rbs-gpu = { path = "../rbs-gpu", features = ["preview-layer"] }
@@ -28,6 +36,10 @@ rbs-core = { path = "../rbs-core" }
 # the feature only reaches example and test builds.
 slint = { version = "=1.18.1", default-features = false, features = ["raw-window-handle-06"] }
 raw-window-handle = "0.6"
+
+[target.'cfg(target_os = "macos")'.dev-dependencies]
+# The meter layer test reads the bridge's sublayers.
+objc2-foundation = { version = "0.3.2", default-features = false, features = ["std", "NSArray"] }
 
 [target.'cfg(target_vendor = "apple")'.dev-dependencies]
 # The demo's self-measurement reads process CPU time (getrusage).

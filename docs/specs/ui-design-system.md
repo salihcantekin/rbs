@@ -78,6 +78,19 @@ One icon set, drawn by the library's `Icon` component as vector paths in a 16 x 
 - `Button` takes an optional trailing `icon`; its ink follows the button's text colour, including disabled.
 - `IconButton` is the icon-only button (ghost, dense, square). Its `name` must be set and becomes the accessible name (Slint cannot enforce required properties; an accessibility-tree check is a follow-up).
 
+### AudioMeter
+
+The meter of rule U16, used alone and inside AudioStrip. Logic in `rbs_ui::meter` (toolkit-neutral, tested without a window).
+
+- **Scale:** dBFS from -60 (floor; lower levels show an empty bar) to 0, linear in dB. Labelled marks at 0, -6, -12, -18, -24, -36 and -48 dBFS, drawn as static text and ticks.
+- **Zones:** the lit bar is `color.meter.low` below -18 dBFS, `color.meter.mid` from -18 to -6 and `color.meter.high` above -6. The zone marks are on the labelled scale, so a zone is never shown by colour alone (U7).
+- **Peak hold:** a 2 px line at the highest level of the last 1.5 s, then falling at 20 dB/s; never below the bar. It takes the colour of its zone.
+- **Clip indicator:** a box at the end of the bar, outlined while not clipped and filled with `color.meter.clip` once a level reaches 0 dBFS. It stays lit until the operator resets it (click, or the strip's reset command); filled versus outlined is the non-colour cue.
+- **Orientation:** vertical (grows upward) or horizontal (grows rightward).
+- **Rates:** levels update at 30 Hz while the meter is visible and its audio is active, not at all otherwise (P13, `UpdateRate` of the panel).
+- **Accessibility:** one element per meter with role progress indicator, the channel's name as its label and as its value the highest level since the last update in whole dBFS, updated at most once per second (screen readers do not need 30 updates per second). The level is rounded down, so it never reads higher than it was, and capped at +24 dBFS. Text: one Fluent message `meter-value` with variables `$db` (whole dBFS; absent below -60 dBFS) and `$clipped` (`yes` or `no`) and selectors on both, so each language orders the parts itself (English: "-12 dBFS", "silent", "-12 dBFS, clipped"). Messages are never concatenated. `rbs_ui::meter::Meter::take_report` gives the value, `AccessibleLevel::english` the English text until Fluent strings exist.
+- **Rendering:** the toolkit draws the static parts (bar background, scale, labels, the clip indicator's outline) and owns the accessible element. The moving parts (lit zones, peak line, filled clip indicator) are drawn by a native compositor layer where one exists (macOS: `rbs_app::native::MeterBridgeLayer`, [ADR-0035](../adr/0035-meters-as-native-layers.md)), so meter updates do not make the toolkit redraw the window; elsewhere the toolkit draws them too. Both paths take their geometry from `rbs_ui::meter::MeterView::frames` and their colours from the theme's tokens. Toolkit content drawn over a meter bridge (menus, popovers, dialogs) hides the layer while it overlaps, as for the preview layer.
+
 ## Main window structure
 
 ```
@@ -200,7 +213,7 @@ The native toolkit chosen under ADR-0016 (Slint, iced or Qt through `cxx-qt`; AD
 5. Idle CPU near zero when nothing changes on screen.
 6. A docking system with tabs, splits and floating windows across monitors (U21), or the ability to build one.
 7. A licence compatible with ADR-0010.
-8. Rich visualisations (meters, equalizer curves, spectrum, histogram, scopes): light graphics with the toolkit's vector primitives; dense or per-pixel graphics drawn on the GPU and shown as textures. Provisional until ADR-0022 is accepted.
+8. Rich visualisations (meters, equalizer curves, spectrum, histogram, scopes): light graphics with the toolkit's vector primitives; dense or per-pixel graphics drawn on the GPU and shown as textures. Graphics that move at the meter rate or faster are native compositor layers where the platform has a layer backend (ADR-0034 for the preview, ADR-0035 for meters), because the toolkit redraws the whole window for any change.
 
 The comparison prototype and its measurements are in [`prototypes/ui-toolkit`](../../prototypes/ui-toolkit/README.md); the choice is recorded in [ADR-0022](../adr/0022-native-ui-toolkit.md).
 
