@@ -313,11 +313,12 @@ fn record(a: &RecordArgs) -> Result<(), String> {
         );
     }
     println!(
-        "output: {} packets muxed, {} muxer drops, backlog peak {}, {} lost at finish; audio drops {} (queue) {} (encoder); late ticks render {} audio {}",
+        "output: {} packets muxed, {} muxer drops, backlog peak {}, {} lost at finish, {} lost in the video encoder; audio drops {} (queue) {} (encoder); late ticks render {} audio {}",
         p.packets_muxed(),
         p.mux_drops,
         p.backlog_peak,
         report.finish_lost,
+        report.flush_lost,
         p.audio_queue_drops,
         p.audio_packet_drops,
         p.late_render_ticks,

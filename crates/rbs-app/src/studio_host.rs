@@ -228,6 +228,8 @@ pub enum RecordingUpdate {
         frames: u64,
         /// Video frames dropped at the export or the encoder.
         dropped: u64,
+        /// Packets the video encoder still held after its final flush (normally 0).
+        flush_lost: u64,
     },
 }
 
@@ -594,10 +596,11 @@ impl Host {
             return;
         };
         let report = self.studio.stop_recording();
-        let (frames, dropped, failed) = report.map_or((0, 0, None), |r| {
+        let (frames, dropped, flush_lost, failed) = report.map_or((0, 0, 0, None), |r| {
             (
                 r.progress.frames_encoded,
                 r.progress.export_drops + r.progress.encoder_drops,
+                r.flush_lost,
                 r.failure,
             )
         });
@@ -606,6 +609,7 @@ impl Host {
             failure: failure.or(failed),
             frames,
             dropped,
+            flush_lost,
         }));
     }
 
