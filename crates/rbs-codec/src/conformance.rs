@@ -348,13 +348,26 @@ fn video_sequence(
                     }),
                     RateControl::ConstantQuality { .. } => None,
                 };
-                if let RateControl::CbrPadded { bitrate_bps } = config.rate_control {
-                    // Padding is part of the mode: a change to plain CBR is refused.
-                    let plain = EncoderChange::Bitrate(RateControl::Cbr { bitrate_bps });
-                    padding_case = match encoder.reconfigure(&plain) {
+                // Padding is part of the mode: a change between plain and padded CBR
+                // is refused either way.
+                let other = match config.rate_control {
+                    RateControl::CbrPadded { bitrate_bps } => {
+                        Some(RateControl::Cbr { bitrate_bps })
+                    }
+                    RateControl::Cbr { bitrate_bps } => {
+                        Some(RateControl::CbrPadded { bitrate_bps })
+                    }
+                    _ => None,
+                };
+                if let Some(other) = other {
+                    padding_case = match encoder.reconfigure(&EncoderChange::Bitrate(other)) {
                         Err(EncodeError::Unsupported) => Ok(()),
-                        Ok(()) => Err("a padded session took a change to plain CBR".into()),
-                        Err(e) => Err(format!("change to plain CBR failed with {e}")),
+                        Ok(()) => Err(format!(
+                            "a {} session took a change to {}",
+                            config.rate_control.name(),
+                            other.name()
+                        )),
+                        Err(e) => Err(format!("change to {} failed with {e}", other.name())),
                     };
                 }
                 if let Some(rc) = change {
@@ -419,8 +432,11 @@ fn video_sequence(
     }
     report.check(format!("{prefix}/request-keyframe"), keyframe_case);
     report.check(format!("{prefix}/reconfigure-bitrate"), bitrate_case);
-    if matches!(config.rate_control, RateControl::CbrPadded { .. }) {
-        report.check(format!("{prefix}/padding-kept"), padding_case);
+    if matches!(
+        config.rate_control,
+        RateControl::Cbr { .. } | RateControl::CbrPadded { .. }
+    ) {
+        report.check(format!("{prefix}/padding-unchanged"), padding_case);
     }
 }
 

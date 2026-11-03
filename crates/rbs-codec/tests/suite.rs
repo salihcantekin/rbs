@@ -214,9 +214,9 @@ fn correct_video_encoder_passes() {
     report.assert_ran(&["h264/cbr/packets", "hevc/constant_quality/request-keyframe"]);
     assert!(report.skipped().next().is_none(), "{report}");
     report.assert_ran(&["h264/cbr_padded-refused"]);
-    // probe + per codec: 2 rate controls x 5 cases + the undeclared-mode case + 2
-    // invalid-input cases.
-    assert_eq!(report.cases.len(), 1 + 2 * (2 * 5 + 1 + 2), "{report}");
+    // probe + per codec: 2 rate controls x 5 cases, padding-unchanged for CBR, the
+    // undeclared-mode case and 2 invalid-input cases.
+    assert_eq!(report.cases.len(), 1 + 2 * (2 * 5 + 1 + 1 + 2), "{report}");
 }
 
 #[test]
@@ -227,9 +227,13 @@ fn declared_cbr_padding_is_encoded() {
     };
     let report = conformance::video_encoder(&factory, &mut SystemFrameSource::new());
     report.assert_passed();
-    report.assert_ran(&["h264/cbr_padded/packets", "hevc/cbr_padded/padding-kept"]);
-    // A third mode (5 cases plus padding-kept) replaces the refusal case.
-    assert_eq!(report.cases.len(), 1 + 2 * (3 * 5 + 1 + 2), "{report}");
+    report.assert_ran(&[
+        "h264/cbr_padded/packets",
+        "hevc/cbr_padded/padding-unchanged",
+        "h264/cbr/padding-unchanged",
+    ]);
+    // A third mode (5 cases plus padding-unchanged) replaces the refusal case.
+    assert_eq!(report.cases.len(), 1 + 2 * (3 * 5 + 2 + 2), "{report}");
 }
 
 #[test]

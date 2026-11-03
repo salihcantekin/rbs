@@ -458,6 +458,13 @@ impl AmfEngine {
         for (name, value) in &properties {
             // SAFETY: a live, uninitialised component and a NUL-terminated name.
             let r = unsafe { set_property!(component, name, variant(*value)) }.map_err(missing)?;
+            if r != sys::AMF_OK && params::is_filler(plan.codec, name) {
+                // Declared for every encoder; one that lacks it refuses the mode
+                // like any mode it does not have.
+                return Err(CreateError::Unsupported {
+                    what: format!("cbr_padded (filler data refused: {r})"),
+                });
+            }
             if r != sys::AMF_OK && !params::optional(name) {
                 return Err(create_error(
                     &format!("SetProperty({})", wide_name(name)),
