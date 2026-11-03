@@ -221,6 +221,25 @@ impl Layout {
         }
     }
 
+    /// A `source_w` x `source_h` picture as large as fits in a `box_w` x `box_h` canvas
+    /// with its aspect ratio kept, centred (letterbox or pillarbox). An empty source
+    /// size fills the canvas.
+    pub fn fit(box_w: u32, box_h: u32, source_w: u32, source_h: u32) -> Self {
+        let (bw, bh) = (box_w as f32, box_h as f32);
+        if source_w == 0 || source_h == 0 {
+            return Self::new([0.0, 0.0], [bw, bh]);
+        }
+        let (sw, sh) = (source_w as f32, source_h as f32);
+        // The side that limits keeps the canvas size exactly.
+        let (w, h) =
+            if u64::from(source_w) * u64::from(box_h) >= u64::from(source_h) * u64::from(box_w) {
+                (bw, bw * sh / sw)
+            } else {
+                (bh * sw / sh, bh)
+            };
+        Self::new([(bw - w) / 2.0, (bh - h) / 2.0], [w, h])
+    }
+
     /// The same layout rotated by `degrees`.
     pub const fn with_rotation(mut self, degrees: f32) -> Self {
         self.rotation = degrees;
