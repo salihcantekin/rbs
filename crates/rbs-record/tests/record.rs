@@ -425,6 +425,7 @@ fn run_until(
     } else {
         &[RENDER, VIDEO_ENCODER, OUTPUT]
     };
+    let gpu = gpu().expect("run_until needs the GPU the recording runs on");
     let start = clock.now();
     let wall = Instant::now();
     // Each worker first runs the tick already due at the start, before the clock moves
@@ -453,6 +454,11 @@ fn run_until(
                 std::thread::yield_now();
             }
         }
+        // The render worker only polls the device without blocking; software adapters
+        // (WARP) may then leave readbacks pending indefinitely. Waiting here makes every
+        // readback submitted by this step complete before the next render tick, as in
+        // the rbs-nodes GPU pipeline tests.
+        gpu.wait_idle().unwrap();
         let serviced = recording.service();
         assert!(serviced.errors.is_empty(), "{:?}", serviced.errors);
         assert_eq!(recording.failure(), None);
