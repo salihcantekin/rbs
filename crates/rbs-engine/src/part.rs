@@ -54,6 +54,8 @@ pub(crate) trait Part: Send {
     fn wake(&self);
     fn stats(&self) -> Arc<WorkerStats>;
     fn stop_worker(&mut self);
+    /// From now on no worker starts; swaps without one run inline (shutdown).
+    fn close(&mut self);
 }
 
 /// Why an instance moved between partitions was not adopted.
@@ -90,6 +92,8 @@ pub(crate) struct Partition<X: Runtime> {
     next_tick: u64,
     /// The schedule last sent has no nodes.
     sent_empty: bool,
+    /// Shutting down: never start a worker again.
+    closing: bool,
 }
 
 impl<X: Runtime> Partition<X> {
@@ -114,6 +118,7 @@ impl<X: Runtime> Partition<X> {
             stats: Arc::new(WorkerStats::default()),
             next_tick: 0,
             sent_empty: true,
+            closing: false,
         }
     }
 
@@ -182,7 +187,7 @@ impl<X: Runtime> Part for Partition<X> {
         if !self.controller.in_flight() {
             return Ok(None);
         }
-        if self.worker.is_none() && !self.sent_empty {
+        if self.worker.is_none() && !self.sent_empty && !self.closing {
             self.start_worker().map_err(SettleError::Spawn)?;
         }
         let collected = match (&self.worker, self.parked.as_mut()) {
@@ -191,11 +196,11 @@ impl<X: Runtime> Part for Partition<X> {
                 self.controller.collect_timeout(timeout)?
             }
             (None, Some(executor)) => {
-                // No worker and an empty schedule on its way. Swap it here, between
-                // ticks and without running one (no `begin_tick` or `end_tick` on this
-                // thread, no tick index used). The running schedule is empty too,
-                // unless a drain timed out and the worker was joined since: then its
-                // nodes are cooled here and released by the collect.
+                // No worker and an empty schedule on its way (or shutting down). Swap
+                // it here, between ticks and without running one (no `begin_tick` or
+                // `end_tick` on this thread, no tick index used). Normally the running
+                // schedule is empty too. At shutdown, after a timed-out swap, this may
+                // warm or cool nodes on the control thread before they are released.
                 executor.swap_pending();
                 self.controller.collect()?
             }
@@ -287,6 +292,10 @@ impl<X: Runtime> Part for Partition<X> {
 
     fn stats(&self) -> Arc<WorkerStats> {
         Arc::clone(&self.stats)
+    }
+
+    fn close(&mut self) {
+        self.closing = true;
     }
 
     fn stop_worker(&mut self) {

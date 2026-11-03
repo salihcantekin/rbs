@@ -96,4 +96,5 @@ Thread rules: every `Engine` method runs on the control thread and may block up 
 - Thread priorities, real-time classes and high-resolution timers per platform.
 - Whether drains should run a final tick: today a cadence partition is drained between ticks (its last frame is not encoded) and an output drain passes at most one tick's packets (`PER_TICK_EVENTS`) before release.
 - An attach hook on `Runtime` for thread-affine resources when a worker thread changes.
+- A move overtaken by a second move of the same node before its first finished (A to B pending after a timeout, then B to C) is dropped and the second reports `MoveNotIdle`; the node is applied again on the next edit that touches it. Tracking where each instance actually is would close this.
 - A non-blocking `apply` state machine if a control-thread caller ever cannot wait.

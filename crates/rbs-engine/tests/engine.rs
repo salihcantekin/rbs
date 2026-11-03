@@ -624,3 +624,87 @@ fn an_idle_partition_swaps_without_running_a_tick() {
         "no tick ran on the control thread"
     );
 }
+
+#[test]
+fn a_move_out_of_a_partition_whose_part_was_not_sent_yet_still_happens() {
+    let gate = Arc::new(Gate::default());
+    let mut rig = Rig::build(None, None, Duration::from_millis(20));
+    // A second encoder in the encoder partition whose `cool` blocks.
+    let slow = TestNode::new(Role::Encoder, "slow").cooling_on(&gate);
+    let slow_sink = TestNode::new(Role::PacketSink, "slow-sink");
+    let e2 = add(&mut rig.graph, &slow, ENCODER);
+    let k2 = add(&mut rig.graph, &slow_sink, OUTPUT);
+    rig.graph.connect(rig.source, "out", e2, "in").unwrap();
+    rig.graph.connect(e2, "out", k2, "in").unwrap();
+    rig.engine.adopt::<()>(ENCODER, e2, Box::new(slow)).unwrap();
+    rig.engine
+        .adopt::<()>(OUTPUT, k2, Box::new(slow_sink))
+        .unwrap();
+    rig.engine.apply(&rig.graph).unwrap();
+    rig.frame();
+    // Edit 1: the slow encoder leaves; its partition does not swap in time.
+    rig.graph
+        .set_state(e2, rbs_core::lifecycle::Lifecycle::Standby)
+        .unwrap();
+    let applied = rig.engine.apply(&rig.graph).unwrap();
+    assert!(applied.errors.contains(&EngineError::SwapTimeout(ENCODER)));
+    // Edit 2, still blocked: the other encoder moves out, so its old part is not sent.
+    rig.graph.set_partition(rig.encoder, OUTPUT).unwrap();
+    let applied = rig.engine.apply(&rig.graph).unwrap();
+    assert!(applied.errors.contains(&EngineError::SwapTimeout(ENCODER)));
+    gate.open();
+    let probe = Arc::clone(&rig.encoder_probe);
+    let before = probe.ticks.load(Ordering::Relaxed);
+    assert!(serve_until(&mut rig, |rig| {
+        rig.engine.wake(OUTPUT);
+        probe.ticks.load(Ordering::Relaxed) > before + 2
+    }));
+    assert!(
+        rig.engine
+            .take::<()>(ENCODER, rig.encoder)
+            .unwrap()
+            .is_none()
+    );
+}
+
+#[test]
+fn shutdown_after_a_timed_out_swap_leaves_no_worker() {
+    // `cool` waits at most 200 ms for a gate nobody opens: the shutdown's first wait
+    // (20 ms) times out while a schedule with nodes is in flight.
+    let gate = Arc::new(Gate::holding(Duration::from_millis(200)));
+    let mut engine = Engine::with_clock(
+        Arc::new(TestClock::new()),
+        EngineConfig::default().swap_timeout(Duration::from_millis(20)),
+    );
+    engine
+        .add_partition::<()>(RENDER, Arc::new(()), (), cadence())
+        .unwrap();
+    let log: ReleaseLog = Arc::new(Mutex::new(Vec::new()));
+    let mut graph = GraphDescription::new();
+    let source = TestNode::new(Role::Source, "source").logging(&log);
+    let a = TestNode::new(Role::VideoSink, "a")
+        .cooling_on(&gate)
+        .logging(&log);
+    let b = TestNode::new(Role::VideoSink, "b").logging(&log);
+    let s = add(&mut graph, &source, RENDER);
+    let ka = add(&mut graph, &a, RENDER);
+    let kb = add(&mut graph, &b, RENDER);
+    graph.connect(s, "out", ka, "in").unwrap();
+    graph.connect(s, "out", kb, "in").unwrap();
+    engine.adopt::<()>(RENDER, s, Box::new(source)).unwrap();
+    engine.adopt::<()>(RENDER, ka, Box::new(a)).unwrap();
+    engine.adopt::<()>(RENDER, kb, Box::new(b)).unwrap();
+    engine.apply(&graph).unwrap();
+    // `a` leaves; its `cool` blocks, so a schedule with `source` and `b` is in flight.
+    graph
+        .set_state(ka, rbs_core::lifecycle::Lifecycle::Standby)
+        .unwrap();
+    let applied = engine.apply(&graph).unwrap();
+    assert!(applied.errors.contains(&EngineError::SwapTimeout(RENDER)));
+    let report = engine.shutdown();
+    assert!(report.errors.contains(&EngineError::SwapTimeout(RENDER)));
+    assert_eq!(engine.workers(), 0, "no worker after shutdown");
+    let mut released = log.lock().unwrap().clone();
+    released.sort_unstable();
+    assert_eq!(released, vec!["a", "b", "source"], "every node released");
+}

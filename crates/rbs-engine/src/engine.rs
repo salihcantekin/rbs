@@ -531,13 +531,15 @@ impl Engine {
         to: PartitionId,
         errors: &mut Vec<EngineError>,
     ) -> Moved {
+        let unsent = self.dirty.contains(&from);
         let Some(source) = self.parts.get_mut(&from) else {
             return Moved::Failed;
         };
         let taken = match source.take_any(node) {
             Ok(Some(instance)) => instance,
-            // Still in the old schedule, which is in flight: try again after the swap.
-            Ok(None) | Err(ControlError::Running(_)) if source.in_flight() => {
+            // Still in the old schedule: its swap is in flight, or the part that lets it
+            // go is not sent yet. Try again after that.
+            Ok(None) | Err(ControlError::Running(_)) if source.in_flight() || unsent => {
                 return Moved::Wait;
             }
             Ok(None) | Err(_) => {
@@ -598,9 +600,17 @@ impl Engine {
                 Err(e) => out.errors.push(EngineError::settle(*p, e)),
             }
         }
-        // Work an earlier timeout left: moves, then parts not sent yet.
-        self.run_moves(&mut out.errors);
+        // Work an earlier timeout left: first the parts of partitions that pending moves
+        // leave, then the moves, then every other part not sent yet.
         let mut reports = BTreeMap::new();
+        let leaving: BTreeSet<PartitionId> = self.moves.iter().map(|m| m.1).collect();
+        for p in order.iter().filter(|p| leaving.contains(p)) {
+            let idle = self.parts.get(p).is_some_and(|part| !part.in_flight());
+            if idle && self.dirty.contains(p) {
+                self.send_current(*p, &mut reports, &mut out.events, &mut out.errors);
+            }
+        }
+        self.run_moves(&mut out.errors);
         for p in &order {
             let Some(part) = self.parts.get(p) else {
                 continue;
@@ -644,38 +654,40 @@ impl Engine {
         let timeout = self.config.swap_timeout;
         let empty = GraphDescription::new();
         out.order = self.pipeline_order();
-        for &p in &out.order {
+        for p in out.order.clone() {
             let Some(part) = self.parts.get_mut(&p) else {
                 continue;
             };
-            if part.in_flight() {
-                match part.settle(timeout) {
-                    Ok(c) => push_collected(p, c, &mut out.events),
-                    Err(e) => out.errors.push(EngineError::settle(p, e)),
+            // No new worker starts from here on; swaps without one happen inline.
+            part.close();
+            let settle = |part: &mut Box<dyn Part>, out: &mut Shutdown| {
+                if part.in_flight() {
+                    match part.settle(timeout) {
+                        Ok(c) => push_collected(p, c, &mut out.events),
+                        Err(e) => out.errors.push(EngineError::settle(p, e)),
+                    }
                 }
-            }
+                if part.in_flight() {
+                    // Timed out: join the worker (its current swap finishes first),
+                    // then swap on this thread.
+                    out.errors.push(EngineError::SwapTimeout(p));
+                    part.stop_worker();
+                    match part.settle(timeout) {
+                        Ok(c) => push_collected(p, c, &mut out.events),
+                        Err(e) => out.errors.push(EngineError::settle(p, e)),
+                    }
+                }
+            };
+            // Finish a swap still in flight, then drain.
+            settle(part, &mut out);
             if !part.in_flight() {
                 match part.apply(&empty) {
                     Ok(report) => out.events.extend(report.events.into_iter().map(|e| (p, e))),
                     Err(e) => out.errors.push(EngineError::Apply(p, e)),
                 }
-                match part.settle(timeout) {
-                    Ok(c) => push_collected(p, c, &mut out.events),
-                    Err(e) => out.errors.push(EngineError::settle(p, e)),
-                }
-            }
-            if part.in_flight() {
-                out.errors.push(EngineError::SwapTimeout(p));
+                settle(part, &mut out);
             }
             part.stop_worker();
-            // A drain that timed out: the worker is joined now, so the empty schedule is
-            // swapped here and the nodes it held are released, not just dropped.
-            if part.in_flight() {
-                match part.settle(timeout) {
-                    Ok(c) => push_collected(p, c, &mut out.events),
-                    Err(e) => out.errors.push(EngineError::settle(p, e)),
-                }
-            }
         }
         for c in std::mem::take(&mut self.crossings) {
             self.retiring.push((c.from, c.writer));

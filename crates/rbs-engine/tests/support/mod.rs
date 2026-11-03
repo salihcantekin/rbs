@@ -58,13 +58,31 @@ impl Probe {
 
 /// A gate a node's `cool` waits on, so a test can hold a swap past the engine's
 /// swap timeout. Waits at most `LIMIT` so a broken test cannot hang.
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct Gate {
     open: Mutex<bool>,
     changed: Condvar,
+    /// The longest a `cool` waits.
+    hold: Duration,
+}
+
+impl Default for Gate {
+    fn default() -> Self {
+        Self::holding(Duration::from_secs(30))
+    }
 }
 
 impl Gate {
+    /// A gate that lets `cool` through after `hold` even if never opened (for tests
+    /// where the thread that would open it is blocked in the engine call).
+    pub fn holding(hold: Duration) -> Self {
+        Self {
+            open: Mutex::new(false),
+            changed: Condvar::new(),
+            hold,
+        }
+    }
+
     pub fn open(&self) {
         *self.open.lock().unwrap() = true;
         self.changed.notify_all();
@@ -74,7 +92,7 @@ impl Gate {
         let open = self.open.lock().unwrap();
         let _ = self
             .changed
-            .wait_timeout_while(open, Duration::from_secs(30), |open| !*open)
+            .wait_timeout_while(open, self.hold, |open| !*open)
             .unwrap();
     }
 }
