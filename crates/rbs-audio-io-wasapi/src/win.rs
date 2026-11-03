@@ -13,7 +13,7 @@ use std::sync::atomic::{AtomicI64, AtomicU8, AtomicU64, Ordering};
 use std::sync::mpsc::{self, SyncSender};
 use std::sync::{Arc, Once};
 use std::thread::JoinHandle;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use windows::Wdk::System::SystemServices::RtlGetVersion;
 use windows::Win32::Foundation::{
@@ -30,11 +30,11 @@ use windows::Win32::Media::Audio::{
     AUDIOCLIENT_ACTIVATION_TYPE_PROCESS_LOOPBACK, AUDIOCLIENT_PROCESS_LOOPBACK_PARAMS,
     ActivateAudioInterfaceAsync, AudioSessionStateExpired, DEVICE_STATE_ACTIVE, EDataFlow,
     IActivateAudioInterfaceAsyncOperation, IActivateAudioInterfaceCompletionHandler,
-    IActivateAudioInterfaceCompletionHandler_Impl, IAudioCaptureClient, IAudioClient, IAudioClock,
-    IAudioRenderClient, IAudioSessionControl2, IAudioSessionManager2, IMMDevice,
-    IMMDeviceEnumerator, IMMEndpoint, MMDeviceEnumerator,
-    PROCESS_LOOPBACK_MODE_INCLUDE_TARGET_PROCESS_TREE, VIRTUAL_AUDIO_DEVICE_PROCESS_LOOPBACK,
-    WAVEFORMATEX, WAVEFORMATEXTENSIBLE, eCapture, eConsole, eRender,
+    IActivateAudioInterfaceCompletionHandler_Impl, IAudioCaptureClient, IAudioClient,
+    IAudioSessionControl2, IAudioSessionManager2, IMMDevice, IMMDeviceEnumerator, IMMEndpoint,
+    MMDeviceEnumerator, PROCESS_LOOPBACK_MODE_INCLUDE_TARGET_PROCESS_TREE,
+    VIRTUAL_AUDIO_DEVICE_PROCESS_LOOPBACK, WAVEFORMATEX, WAVEFORMATEXTENSIBLE, eCapture, eConsole,
+    eRender,
 };
 use windows::Win32::System::Com::StructuredStorage::{
     PROPVARIANT, PropVariantClear, PropVariantToStringAlloc,
@@ -571,7 +571,6 @@ impl AudioBackend for WasapiAudioBackend {
             last_end: Arc::new(AtomicU64::new(0)),
             active: None,
             totals: InputStats::default(),
-            presentation: None,
         }))
     }
 }
@@ -686,9 +685,6 @@ struct WasapiStream {
     active: Option<Active>,
     /// Counters of rings closed by `stop`.
     totals: InputStats,
-    /// The render endpoint's output latency measured at the last `start` (loopback
-    /// kinds only).
-    presentation: Option<Duration>,
 }
 
 /// What the capture thread needs.
@@ -706,35 +702,6 @@ type Started = SyncSender<Result<RingConsumer, AudioIoError>>;
 
 impl WasapiStream {
     fn activate(&mut self) -> Result<Active, AudioIoError> {
-        let begun = Instant::now();
-        // Loopback kinds: measure the render endpoint's output latency on a helper
-        // thread while the capture thread opens the stream (ADR-0042). A process's
-        // audio is measured on the default render endpoint, where it usually plays.
-        let render = match &self.target {
-            Target::Device {
-                loopback: false, ..
-            } => None,
-            Target::Device { id, loopback: true } => Some(Some(id.clone())),
-            Target::Process(_) => Some(None),
-        };
-        let measured = render.and_then(|id| {
-            let (tx, rx) = mpsc::sync_channel(1);
-            std::thread::Builder::new()
-                .name("rbs-wasapi-latency".into())
-                .spawn(move || {
-                    let _ = tx.send(render_latency(id.as_deref()));
-                })
-                .ok()
-                .map(|_| rx)
-        });
-        let active = self.open_capture()?;
-        // Within the port's start budget; without a result, no compensation.
-        let left = START_TIMEOUT.saturating_sub(begun.elapsed());
-        self.presentation = measured.and_then(|rx| rx.recv_timeout(left).ok().flatten());
-        Ok(active)
-    }
-
-    fn open_capture(&mut self) -> Result<Active, AudioIoError> {
         let stop = Arc::new(Event::new()?);
         let status = Arc::new(Status::default());
         let setup = Setup {
@@ -803,7 +770,6 @@ impl AudioInputStream for WasapiStream {
     }
 
     fn stop(&mut self) {
-        self.presentation = None;
         let Some(mut active) = self.active.take() else {
             return;
         };
@@ -830,10 +796,6 @@ impl AudioInputStream for WasapiStream {
 
     fn available(&self) -> usize {
         self.active.as_ref().map_or(0, |a| a.consumer.available())
-    }
-
-    fn presentation_latency(&self) -> Option<Duration> {
-        self.active.as_ref().and(self.presentation)
     }
 
     fn stats(&self) -> InputStats {
@@ -1253,96 +1215,4 @@ fn run(setup: &Setup, started: Started) {
     }
     // SAFETY: plain COM call on a live client.
     let _ = unsafe { opened.client.Stop() };
-}
-
-// ---------------------------------------------------------------------------------
-// Render latency (ADR-0042)
-
-/// How long the measurement stream runs, and how much of its start is left out.
-const LATENCY_RUN: Duration = Duration::from_millis(150);
-const LATENCY_WARMUP: Duration = Duration::from_millis(40);
-/// Largest plausible output latency; a larger result is treated as a failed measure.
-const LATENCY_MAX: Duration = Duration::from_millis(500);
-
-/// The render endpoint's output latency: how long a frame waits between the audio
-/// engine taking it from a shared-mode stream (when loopback capture sees it) and the
-/// device playing it (`IAudioClock`'s position, extrapolated from its QPC stamp).
-/// Measured with a short shared render stream fed with silence on endpoint `id`, or
-/// the default render endpoint; the mean over the run, after a warm-up. `None` if any
-/// step fails. Runs on its own thread (implicit MTA) during `start`, never on the
-/// capture or audio thread; plays only silence.
-fn render_latency(id: Option<&str>) -> Option<Duration> {
-    let enumerator = enumerator().ok()?;
-    let device = match id {
-        Some(id) => device(&enumerator, EndpointKind::OutputLoopback, id).ok()?,
-        // SAFETY: plain COM call on a live enumerator.
-        None => unsafe { enumerator.GetDefaultAudioEndpoint(eRender, eConsole) }.ok()?,
-    };
-    let _owned = Owned::new();
-    let client = activate_client(&device).ok()?;
-    // SAFETY: plain COM calls on a live client and its services. The mix format is a
-    // CoTaskMemAlloc'ed WAVEFORMATEX, read and passed to Initialize while alive, then
-    // freed. Every buffer from GetBuffer is released with the same frame count before
-    // the next call, and written only through `ReleaseBuffer`'s silent flag (never
-    // touched directly).
-    unsafe {
-        let mix = client.GetMixFormat().ok()?;
-        let rate = f64::from((*mix).nSamplesPerSec);
-        let init = client.Initialize(AUDCLNT_SHAREMODE_SHARED, 0, 0, 0, mix, None);
-        CoTaskMemFree(Some(mix as _));
-        init.ok()?;
-        let size = client.GetBufferSize().ok()?;
-        let render = client.GetService::<IAudioRenderClient>().ok()?;
-        let clock = client.GetService::<IAudioClock>().ok()?;
-        let frequency = clock.GetFrequency().ok()? as f64;
-        if rate <= 0.0 || frequency <= 0.0 {
-            return None;
-        }
-        let silence = |frames: u32| -> Option<()> {
-            if frames > 0 {
-                render.GetBuffer(frames).ok()?;
-                render
-                    .ReleaseBuffer(frames, AUDCLNT_BUFFERFLAGS_SILENT.0 as u32)
-                    .ok()?;
-            }
-            Some(())
-        };
-        silence(size)?;
-        let mut written = u64::from(size);
-        client.Start().ok()?;
-        let begun = Instant::now();
-        let mut sum = 0.0_f64;
-        let mut n = 0_u32;
-        let result = loop {
-            std::thread::sleep(Duration::from_millis(2));
-            let Ok(padding) = client.GetCurrentPadding() else {
-                break None;
-            };
-            // Frames the engine has taken from the stream.
-            let accepted = (written - u64::from(padding)) as f64;
-            let mut position = 0_u64;
-            let mut qpc = 0_u64;
-            if clock.GetPosition(&mut position, Some(&mut qpc)).is_err() {
-                break None;
-            }
-            // The position was sampled at `qpc` (100 ns units); move it to now.
-            let since = (qpc_nanos() as f64 - qpc as f64 * 100.0).max(0.0) * 1e-9;
-            let played = position as f64 / frequency * rate + since * rate;
-            if begun.elapsed() >= LATENCY_WARMUP {
-                sum += (accepted - played) / rate;
-                n += 1;
-            }
-            if silence(size - padding).is_none() {
-                break None;
-            }
-            written += u64::from(size - padding);
-            if begun.elapsed() >= LATENCY_RUN {
-                break (n > 0).then(|| sum / f64::from(n));
-            }
-        };
-        let _ = client.Stop();
-        let seconds = result?;
-        (seconds >= 0.0 && seconds <= LATENCY_MAX.as_secs_f64())
-            .then(|| Duration::from_secs_f64(seconds))
-    }
 }

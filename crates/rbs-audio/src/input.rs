@@ -87,7 +87,6 @@ pub struct InputStats {
     overlaps_dropped: AtomicU64,
     read_errors: AtomicU64,
     error_ppm: AtomicU64,
-    presentation_ns: AtomicU64,
 }
 
 /// A snapshot of [`InputStats`]. All counts only grow.
@@ -113,9 +112,6 @@ pub struct InputCounters {
     pub read_errors: u64,
     /// The last block's rate correction in ppm, as two's complement bits of an `i64`.
     pub correction_ppm: i64,
-    /// The stream's presentation latency added to the sync offset since the last
-    /// start, in ns (0 when the stream reports none; ADR-0042).
-    pub presentation_latency_ns: u64,
 }
 
 impl InputStats {
@@ -131,7 +127,6 @@ impl InputStats {
             overlaps_dropped: l(&self.overlaps_dropped),
             read_errors: l(&self.read_errors),
             correction_ppm: l(&self.error_ppm) as i64,
-            presentation_latency_ns: l(&self.presentation_ns),
         }
     }
 
@@ -367,9 +362,6 @@ pub struct InputNode {
     config: AudioGraphConfig,
     max_offset: Duration,
     params: ParamReceiver<InputParams>,
-    /// The stream's presentation latency in ns, read once after each `start` and added
-    /// to the sync offset (ADR-0042).
-    presentation_ns: i64,
     stats: Arc<InputStats>,
     state: Option<State>,
 }
@@ -401,7 +393,6 @@ impl InputNode {
                 config,
                 max_offset,
                 params: rx,
-                presentation_ns: 0,
                 stats: Arc::clone(&stats),
                 state: None,
             },
@@ -410,8 +401,7 @@ impl InputNode {
         )
     }
 
-    /// The offset in ns (the sync offset plus the stream's presentation latency),
-    /// clamped to what the FIFO and the latency allow.
+    /// The offset in ns, clamped to what the FIFO and the latency allow.
     fn offset(&self) -> f64 {
         let max = i64::try_from(self.max_offset.as_nanos()).unwrap_or(i64::MAX);
         let advance = self
@@ -419,11 +409,7 @@ impl InputNode {
             .latency
             .saturating_sub(self.config.period() + ADVANCE_MARGIN);
         let min = -i64::try_from(advance.as_nanos()).unwrap_or(i64::MAX);
-        self.params
-            .get()
-            .offset_ns
-            .saturating_add(self.presentation_ns)
-            .clamp(min, max) as f64
+        self.params.get().offset_ns.clamp(min, max) as f64
     }
 }
 
@@ -449,16 +435,7 @@ impl<X: Runtime> Node<X> for InputNode {
             &self.config,
             self.max_offset,
         ));
-        self.stream.start().map_err(start_error)?;
-        // Loopback audio is stamped when the OS mixes it; delay it by the time the
-        // device takes to play it, so it lines up with what was on screen (ADR-0042).
-        let latency = self.stream.presentation_latency().unwrap_or(Duration::ZERO);
-        self.presentation_ns = i64::try_from(latency.as_nanos()).unwrap_or(i64::MAX);
-        self.stats.presentation_ns.store(
-            latency.as_nanos().try_into().unwrap_or(u64::MAX),
-            Ordering::Relaxed,
-        );
-        Ok(())
+        self.stream.start().map_err(start_error)
     }
 
     fn release(&mut self, _: &mut PrepareCtx<'_, X>) {

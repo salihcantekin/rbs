@@ -1,51 +1,62 @@
 # ADR-0042: Loopback audio is delayed by the render endpoint's measured output latency
 
-- Status: Proposed
+- Status: Rejected
 - Date: 2026-11-03
 - Deciders: Salih (owner)
 
 ## Context
 
-The first Windows recordings (ADR-0040, `docs/specs/recording.md`) had system audio ahead of the picture. Measurements on SC-PC (RTX 4090, 3440x1440 at 120 Hz, output to the monitor over NVIDIA HDMI/DP audio, 2026-11-03), with a clip that flashes white and beeps at the same instant every second, played full screen while recording the display and system audio:
+The first Windows recordings (ADR-0040, `docs/specs/recording.md`) had system audio ahead of the picture. Measurements on SC-PC (RTX 4090, 3440x1440 at 120 Hz, output to the monitor over NVIDIA HDMI/DP audio, 2026-11-03) used a clip that flashes white and beeps at the same instant every second, played full screen while RBS recorded the display and system audio. The analysis (`avsync.py`) found the flash onset from per-frame luma and the beep onset with a matched filter. On the clip itself both onsets coincide.
 
-| Player | Audio relative to picture (mean, n) |
+| Player, build | Audio relative to picture (mean, n) |
 | --- | --- |
-| Windows Media Player (Media Foundation, presentation clock driven by the audio device position) | -26.3 ms (19 flashes, stdev 1.4) |
-| `ffplay` | -33.7 ms (24 flashes; its display rate dropped to about 52 fps) |
+| Windows Media Player (Media Foundation, presentation clock driven by the audio device position), main | -26.3 ms (19), repeat -29.5 ms (24, stdev 0.3) |
+| `ffplay`, main | -33.7 ms (24; its display rate dropped to about 52 fps) |
 
-Negative means the audio leads. The lead does not depend on the player, so it comes from the capture side. The parts:
+Negative means the audio leads. The lead does not depend on the player.
 
-1. **Video:** the frame age at each render tick (tick time minus the capture timestamp of the newest frame, `scene_sources` example) is 0.5 to 4 ms on average for the display. RBS's video path adds almost nothing. A 60 fps canvas shows an event at the first tick after it, on average half a frame (8.3 ms) late. That is inherent to sampling at 60 fps (ADR-0037 decision 11 allows up to one frame of skew).
-2. **Audio:** WASAPI loopback stamps a packet (`u64QPCPosition`) when the audio engine mixes it, not when the device plays it. A player that syncs to the audio clock shows the picture when the audio is *heard*. A probe on the same endpoint (a shared render stream fed with silence, frames the engine has taken against `IAudioClock`'s playing position) measured **14.8 to 14.9 ms** from mix to play (two runs, sawtooth 10 to 20 ms with the 10 ms engine period). `GetStreamLatency` reported 0, so drivers do not reliably report this value.
+- **Video side:** the frame age at each render tick (tick time minus the capture timestamp of the newest frame, `scene_sources` example) is 0.5 to 4 ms on average for the display. The canvas is stamped with the tick time, and export and encoder keep that timestamp. A 60 fps canvas shows an event at the first tick after it, on average half a frame (8.3 ms) late.
+- **Audio side:** a probe on the endpoint (a shared render stream fed with silence, frames the engine has taken against `IAudioClock`'s playing position) measured a 10 to 20 ms sawtooth, mean 14.8 ms. `GetStreamLatency` reported 0.
 
-So about 15 ms of the 26 ms is the endpoint's output latency, which loopback capture misses. The rest is frame sampling and display composition. The output latency depends on the device (HDMI, USB, Bluetooth and onboard codecs differ by tens of milliseconds), so a fixed constant would be wrong elsewhere. Microphones and cameras have the opposite problem: a camera's video is often later than its microphone, so a user-set per-source offset is needed regardless (ADR-0037 decision 6 already has the channel).
+The hypothesis was that WASAPI loopback stamps a packet (`u64QPCPosition`) when the engine mixes it, so its timestamps are earlier than the sound by that ~15 ms.
 
-Forces: P3 (no vendor or device branches), P6 and P15 (no new work on the audio thread beyond what the offset already costs), P13 (nothing runs while a loopback source is not Active), the audio input port's invariant 2 (a read never ends after the master time at which it was made, so the port cannot simply stamp loopback audio in the future).
+## Proposed decision
 
-## Decision
+1. `AudioInputStream::presentation_latency() -> Option<Duration>`, default `None`. For loopback streams it is the render endpoint's output latency, measured at `start`.
+2. `InputNode` adds it to the source's sync offset.
+3. WASAPI measures it at `start` with a short silent render stream.
+4. Manual per-source offsets stay available for what software cannot see.
 
-1. **The port reports, the graph compensates.** `AudioInputStream` gets `fn presentation_latency(&self) -> Option<Duration>` with a default of `None` (a minor, non-breaking addition, as the port spec foresees for "a latency query"). For `OutputLoopback` and `Application` streams it is how long after their timestamps the audio is presented at the render endpoint, as measured at the last `start`. It is `None` for inputs, in Standby, and when the adapter cannot measure it. Timestamps keep their meaning (the OS time of the audio, never in the future), so the port's invariants are unchanged.
-2. **`InputNode` adds it to the sync offset.** After `start` in `prepare`, the node reads the latency once and adds it to the offset from its parameter channel. The sum is clamped as before, to `max_offset` (200 ms by default). The value is applied before the first block, so the resampler's position starts at the compensated time and there is no resync. `InputCounters::presentation_latency_ns` reports it. Per block this costs one saturating add.
-3. **WASAPI measures it at `start`.** For a loopback stream the adapter measures the render endpoint's mix-to-play latency on a helper thread while the capture thread opens the stream: a shared-mode render stream on the same endpoint (process loopback: the default render endpoint), fed with silence for 150 ms. It takes the mean of frames taken by the engine minus `IAudioClock`'s playing position (extrapolated from its QPC stamp) after a 40 ms warm-up. The result counts if it arrives within the `start` budget (450 ms in total) and lies in 0 to 500 ms; otherwise there is no compensation. Only silence is played, and nothing runs once `start` returns. Input streams do not measure.
-4. **Other adapters report `None` until they measure.** CoreAudio can use the device's `kAudioDevicePropertyLatency` plus safety offset and stream latency, and PipeWire the sink's node latency. Each is a follow-up with its own hardware check.
-5. **Manual per-source offsets stay the user's tool** for what software cannot see: monitor-internal audio delay, camera and microphone latency, Bluetooth. The composition roots expose the existing offset channel per audio source (`rbs-cli record` flags; the desktop app's strip settings). This is planned as a follow-up PR after the studio work (PR #91) lands in `rbs-record`, to avoid overlapping changes there.
+A first implementation (PR #92, commit fa63634) moved the WMP result from -29.5 ms to -18 / -12 ms (two runs) and the `ffplay` result from about -30 to -11.5 ms (the usual value).
+
+## Why it was rejected
+
+The premise is false. A click experiment measured directly what a loopback timestamp means, on SC-PC 2026-11-03:
+
+- A shared render stream and a loopback capture ran on the same idle HDMI endpoint (NVIDIA HDMI audio, 10 ms period, the same driver as the default endpoint).
+- A one-sample click at -60 dB was written every 500 ms at a known frame of the render stream.
+- Play time: when the render stream's `IAudioClock` position reaches that frame.
+- Loopback time: the click's position in the loopback data, from its packet's `u64QPCPosition`.
+- Over 2 x 18 clicks, play time minus loopback time was **0.19 ms and 0.21 ms** (stdev 0.007 ms).
+- In the same runs, the sawtooth read 11 to 21 ms (mean 16.1 ms).
+- Loopback packets were all 480 frames, stamped one engine period apart (±20 µs).
+
+So loopback timestamps are already the device's play time on the clock that players sync to. The sawtooth measures how long frames wait in the engine before that clock reaches them, a wait that loopback stamps have already removed. Delaying loopback audio by it would put the audio about 15 ms after its true time. The improvement seen with PR #92 only offset part of some other difference.
+
+Both sides of RBS's capture timestamp honestly: audio at play time, video at composition time with a frame age of a few milliseconds. The remaining lead is about 8 ms of 60 fps sampling, which ADR-0037 decision 11 allows, plus a difference between the player's audio clock and when its picture is composed. That second part is likely present and display latency that players do not compensate. This is an inference that was not measured. It belongs to the playback system, so a viewer of the screen hears and sees the same offset. Correcting it in RBS would record what the player intended, not what the screen showed.
 
 ## Consequences
 
-- On SC-PC, system audio should lead the picture by about 11 ms instead of 26 ms (the remaining frame sampling and composition), within one frame at 60 fps. To be re-measured with the flash and beep clip.
-- A loopback stream's `start` takes up to about 150 ms longer, and plays 150 ms of silence on the endpoint once per start. Starting a recording is not a hot path.
-- The latency is measured once per start. A device change later in the session (for example Bluetooth headphones connected while recording) is not followed until the next start. Following it would need a render stream running the whole time.
-- Audio that the device delays after `IAudioClock`'s position (inside an HDMI sink, a TV's audio processing) stays invisible. The manual offset covers it.
-- Hot paths touched: `InputNode::process` reads one more field (P15 numbers and sign-off). The WASAPI capture loop is unchanged.
+- No port, graph or adapter change. PR #92's code is dropped.
+- The measurements and the click method are recorded here and in the recording spec, for future A/V questions.
+- Per-source manual sync offsets (the existing ADR-0037 channel) are exposed in the composition roots for device latencies software cannot see (cameras, microphones, Bluetooth). That is a separate change in `rbs-cli` after the studio work (PR #91).
 
 ## Alternatives considered
 
-- **Stamp loopback audio at play time in the adapter.** This breaks the port invariant that a read never ends after the time it was read, which the audio graph and the conformance suite rely on.
-- **A fixed default offset for loopback (for example 15 ms).** Correct only for this endpoint. Device latencies differ by tens of milliseconds, and P3 rules out per-device tables.
-- **Shift video packets earlier instead (stamp video at tick time minus a latency).** The skew is on the audio side and depends on the audio device, not on the canvas. Video timestamps stay on the canvas cadence (recording spec rule 3).
-- **`IAudioClient::GetStreamLatency` on the endpoint.** It reported 0 on the test device, so it is not reliable.
-- **Keep a silent render stream for the stream's lifetime and follow the latency continuously.** It costs a render stream for as long as the source is Active and changes the capture thread. Kept in reserve in case device changes during recordings matter.
+- A fixed default delay for system audio, to match typical players: device- and player-dependent, and not principled.
+- Following the endpoint's latency continuously: moot, since there is nothing to compensate.
 
 ## Review
 
-Pending: independent review per ADR-0014.
+- Independent AI session, 2026-11-03, on the proposal and PR #92 (given the ADR, specs and diff only): changes requested, 14 items. The central item questioned what the loopback stamp refers to and asked for that to be verified before acceptance (the reviewer expected the lower envelope, about 10 ms, rather than the mean). The click experiment above showed that neither was right: the stamp is already play time. The remaining items concerned the implementation and are moot with its removal.
+- Owner decision: see the thread record of 2026-11-03.

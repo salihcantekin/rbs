@@ -46,8 +46,6 @@ pub struct Script {
     /// Packets starting at device frames `.0...1` report timestamps `.2` seconds off
     /// (a stray timestamp); their audio and delivery time are unchanged.
     pub stray: Option<(u64, u64, f64)>,
-    /// What `presentation_latency` reports once started (a loopback stream).
-    pub presentation_latency: Option<Duration>,
 }
 
 impl Default for Script {
@@ -62,7 +60,6 @@ impl Default for Script {
             gaps: Vec::new(),
             late: None,
             stray: None,
-            presentation_latency: None,
         }
     }
 }
@@ -176,9 +173,6 @@ impl AudioInputStream for Device {
     fn stats(&self) -> InputStats {
         InputStats::default()
     }
-    fn presentation_latency(&self) -> Option<Duration> {
-        self.started.and(self.script.presentation_latency)
-    }
 }
 
 /// One measured block: its time, the tone's time error (output content time minus
@@ -264,15 +258,11 @@ pub struct Rig {
 impl Rig {
     pub fn new(script: Script, config: AudioGraphConfig, offset: InputParams) -> Self {
         let clock = TestClock::new();
-        // The node delays the source by its presentation latency on top of the offset.
-        let presented = script
-            .presentation_latency
-            .map_or(0, |d| i64::try_from(d.as_nanos()).unwrap());
         let device = Device::new(script, clock.clone());
         let (node, mut params, stats) =
             InputNode::new(Box::new(device), config, Duration::from_millis(200));
         params.send(offset);
-        let probe = Probe::new(offset.offset_ns + presented);
+        let probe = Probe::new(offset.offset_ns);
         let seen = Arc::clone(&probe.seen);
         let (mut ctl, exec) = channel::<()>(Arc::new(()), ());
         ctl.set_audio_block_frames(config.block_frames);

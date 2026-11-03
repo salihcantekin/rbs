@@ -93,26 +93,6 @@ fn a_delay_offset_plays_the_source_later() {
 }
 
 #[test]
-fn a_loopback_stream_is_delayed_by_its_presentation_latency() {
-    // A loopback stream stamps audio when the OS mixes it; the node delays it by the
-    // time the device takes to play it (ADR-0042), on top of the sync offset.
-    let mut r = Rig::new(
-        Script {
-            presentation_latency: Some(Duration::from_millis(15)),
-            ..Script::default()
-        },
-        AudioGraphConfig::default(),
-        InputParams::delayed(Duration::from_millis(10)),
-    );
-    r.run(300);
-    // The probe measures against `block time - (offset + presentation latency)`.
-    assert!(r.max_error_after(Duration::from_millis(200)) < 50e-6);
-    let c = r.stats.read();
-    assert_eq!(c.presentation_latency_ns, 15_000_000);
-    assert_eq!(c.resyncs, 0);
-}
-
-#[test]
 fn an_advance_offset_plays_the_source_earlier() {
     let mut r = Rig::new(
         Script::default(),
