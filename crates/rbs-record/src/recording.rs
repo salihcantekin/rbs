@@ -1,6 +1,6 @@
 //! The recording: graph assembly, start, progress and finish.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -206,6 +206,9 @@ pub struct RecordSettings {
     pub audio_graph: AudioGraphConfig,
     /// Partition ids.
     pub partitions: Partitions,
+    /// Sync offset in ns of each audio source: positive delays it, negative advances
+    /// it ([`StudioSettings::audio_offsets`]).
+    pub audio_offsets: BTreeMap<SourceId, i64>,
 }
 
 impl RecordSettings {
@@ -219,16 +222,18 @@ impl RecordSettings {
             audio: Some(AudioSettings::default()),
             audio_graph: AudioGraphConfig::default(),
             partitions: Partitions::default(),
+            audio_offsets: BTreeMap::new(),
         }
     }
 
-    /// The studio part: canvas, audio (when audio is recorded), graph and partitions,
-    /// no preview.
+    /// The studio part: canvas, audio (when audio is recorded), graph, partitions and
+    /// audio offsets, no preview.
     pub fn studio(&self) -> StudioSettings {
         let mut s = StudioSettings::new(self.canvas);
         s.audio = self.audio.is_some();
         s.audio_graph = self.audio_graph;
         s.partitions = self.partitions;
+        s.audio_offsets = self.audio_offsets.clone();
         s
     }
 

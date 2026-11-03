@@ -4,8 +4,12 @@
 
 use rbs_core::timing::FrameRate;
 use rbs_graph::node::NodeTypeId;
+use std::collections::BTreeMap;
+
 use rbs_scene::SceneCollection;
-use rbs_scene::model::{CanvasId, ItemContent, Layout, SceneScope, SettingValue, Settings};
+use rbs_scene::model::{
+    CanvasId, ItemContent, Layout, SceneScope, SettingValue, Settings, SourceId,
+};
 use rbs_sources::types::{self, keys};
 use rbs_sources::{SourceTarget, SourceTypes};
 
@@ -23,6 +27,8 @@ pub struct BuiltScene {
     pub canvas: CanvasId,
     /// Sources left out, and why.
     pub skipped: Vec<String>,
+    /// Sync offsets in ns of the audio sources that have one (positive delays).
+    pub audio_offsets: BTreeMap<SourceId, i64>,
 }
 
 fn targets(types: &SourceTypes, type_id: &'static str) -> Vec<SourceTarget> {
@@ -93,14 +99,15 @@ pub fn build(types: &SourceTypes, args: &RecordArgs) -> Result<BuiltScene, Strin
                type_id: &'static str,
                settings: Settings,
                layout: Layout|
-     -> Result<(), String> {
+     -> Result<SourceId, String> {
         let (id, _) = col
             .add_source(name, rbs_graph_type(type_id), settings)
             .map_err(|e| format!("{name}: {e:?}"))?;
         col.add_item(scene, ItemContent::Source(id), layout, None)
             .map_err(|e| format!("{name}: {e:?}"))?;
-        Ok(())
+        Ok(id)
     };
+    let mut audio_offsets = BTreeMap::new();
 
     let displays = targets(types, types::DISPLAY_SOURCE);
     let display = pick(&displays, args.display, "display")?
@@ -138,18 +145,20 @@ pub fn build(types: &SourceTypes, args: &RecordArgs) -> Result<BuiltScene, Strin
         }
     }
 
-    for (name, type_id, off, why) in [
+    for (name, type_id, off, why, offset_ms) in [
         (
             "Microphone",
             types::AUDIO_INPUT_SOURCE,
             args.no_mic || args.no_audio,
             "--no-mic",
+            args.mic_offset_ms,
         ),
         (
             "System audio",
             types::AUDIO_OUTPUT_SOURCE,
             args.no_system_audio || args.no_audio,
             "--no-system-audio",
+            args.system_audio_offset_ms,
         ),
     ] {
         if off {
@@ -158,13 +167,18 @@ pub fn build(types: &SourceTypes, args: &RecordArgs) -> Result<BuiltScene, Strin
         }
         let list = targets(types, type_id);
         match pick(&list, None, name)? {
-            Some(t) => add(
-                &mut col,
-                name,
-                type_id,
-                target_settings(t),
-                Layout::new([0.0, 0.0], [1.0, 1.0]),
-            )?,
+            Some(t) => {
+                let id = add(
+                    &mut col,
+                    name,
+                    type_id,
+                    target_settings(t),
+                    Layout::new([0.0, 0.0], [1.0, 1.0]),
+                )?;
+                if offset_ms != 0 {
+                    audio_offsets.insert(id, i64::from(offset_ms) * 1_000_000);
+                }
+            }
             None => skipped.push(format!("{name}: none found")),
         }
     }
@@ -174,6 +188,7 @@ pub fn build(types: &SourceTypes, args: &RecordArgs) -> Result<BuiltScene, Strin
         collection: col,
         canvas,
         skipped,
+        audio_offsets,
     })
 }
 
@@ -216,6 +231,7 @@ mod tests {
         n.sort();
         assert_eq!(n, ["Camera", "Display", "Microphone", "System audio"]);
         assert!(b.skipped.is_empty());
+        assert!(b.audio_offsets.is_empty());
         let cam = b.collection.sources().find(|s| s.name == "Camera").unwrap();
         assert_eq!(cam.settings[keys::WIDTH], SettingValue::Int(1280));
     }
@@ -229,6 +245,26 @@ mod tests {
         assert!(err.contains("no display 99"), "{err}");
         let empty = SourceTypes::new();
         assert!(build(&empty, &args(&[])).is_err());
+    }
+
+    #[test]
+    fn audio_offsets_are_kept_per_source_in_nanoseconds() {
+        let b = build(
+            &types(),
+            &args(&["--mic-offset", "-30", "--system-audio-offset", "25"]),
+        )
+        .unwrap();
+        let id = |name: &str| b.collection.sources().find(|s| s.name == name).unwrap().id;
+        let want = BTreeMap::from([
+            (id("Microphone"), -30_000_000),
+            (id("System audio"), 25_000_000),
+        ]);
+        assert_eq!(b.audio_offsets, want);
+        let b = build(&types(), &args(&["--no-mic", "--mic-offset", "10"])).unwrap();
+        assert!(
+            b.audio_offsets.is_empty(),
+            "no offset for a source left out"
+        );
     }
 
     #[test]

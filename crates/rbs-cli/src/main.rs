@@ -202,6 +202,15 @@ fn record(a: &RecordArgs) -> Result<(), String> {
         audio.bitrate_bps = a.audio_bitrate;
         audio
     });
+    settings.audio_offsets = built.audio_offsets.clone();
+    for (name, ms) in [
+        ("microphone", a.mic_offset_ms),
+        ("system audio", a.system_audio_offset_ms),
+    ] {
+        if ms != 0 {
+            println!("{name} sync offset: {ms} ms");
+        }
+    }
 
     let gpu = Arc::new(
         GpuContext::new(&GpuRequest::default()).map_err(|e| format!("no usable GPU: {e}"))?,
