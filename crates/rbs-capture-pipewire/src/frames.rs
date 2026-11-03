@@ -79,6 +79,22 @@ impl Shared {
         // `Sync` impl).
         self.slots.get(slot).map(|cell| unsafe { &mut *cell.get() })
     }
+
+    /// Bytes held by slots that hold system copies.
+    ///
+    /// # Safety
+    ///
+    /// No slot is being written: the stream thread has ended.
+    pub(crate) unsafe fn held_bytes(&self) -> u64 {
+        self.slots
+            .iter()
+            // SAFETY: no writer by the caller's contract; readers only read.
+            .map(|cell| match unsafe { &(*cell.get()).picture } {
+                Picture::System { data, .. } => data.len() as u64,
+                _ => 0,
+            })
+            .sum()
+    }
 }
 
 // SAFETY: delegates to `Ring`, whose counting is exact when its calling protocol is

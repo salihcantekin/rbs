@@ -19,7 +19,7 @@ use pw::spa;
 use pw::spa::pod::{ChoiceValue, Object, Pod, PropertyFlags, Value, serialize::PodSerializer};
 use pw::spa::utils::{Choice, ChoiceEnum, ChoiceFlags, Fraction, Id, Rectangle, SpaTypes};
 
-use rbs_capture::handoff::FrameMeta;
+use rbs_capture::handoff::{FrameMeta, Grave, Graveyard};
 use rbs_capture::{
     CaptureChange, CaptureError, CaptureFactory, CaptureRequest, CaptureSession, CaptureStats,
     CaptureTarget, ErrorDomain, GpuDeviceId, Permission, SyncKind, TargetId, TargetKind, caps,
@@ -37,8 +37,11 @@ use crate::{ADAPTER_ID, Consumer, FRAMES_IN_FLIGHT, Picture, RING_SLOTS, STREAM_
 /// Highest frame rate offered in the stream negotiation.
 const MAX_RATE: u32 = 240;
 
-/// Longest wait for the PipeWire daemon on the control thread.
+/// Longest wait for the PipeWire daemon in `open` and `start`.
 const DAEMON_TIMEOUT: Duration = Duration::from_millis(500);
+
+/// Longest wait for the PipeWire daemon in `enumerate` (the port's 100 ms budget).
+const ENUMERATE_TIMEOUT: Duration = Duration::from_millis(100);
 
 const NODE_PREFIX: &str = "node:";
 
@@ -56,6 +59,30 @@ const DRM_AB24: u32 = u32::from_le_bytes(*b"AB24");
 const DRM_XB24: u32 = u32::from_le_bytes(*b"XB24");
 
 static INIT: Once = Once::new();
+
+/// Rings of stopped sessions that frames still refer to. Its janitor thread drops them
+/// once idle, so the last lease never closes fds or frees memory on the render thread.
+/// Importers duplicate DMA-BUF fds, so a short grace is enough.
+static GRAVEYARD: Graveyard = Graveyard::new(
+    "rbs-pipewire-janitor",
+    Duration::from_millis(100),
+    Duration::from_millis(100),
+);
+
+/// The pictures of a stopped session, kept while frames refer to them.
+struct RingGrave {
+    shared: Arc<Shared>,
+    bytes: u64,
+}
+
+impl Grave for RingGrave {
+    fn is_idle(&self) -> bool {
+        self.shared.ring.is_idle()
+    }
+    fn bytes(&self) -> u64 {
+        self.bytes
+    }
+}
 
 fn init() {
     INIT.call_once(pw::init);
@@ -139,7 +166,7 @@ struct Node {
 
 /// Lists video source nodes with one round trip to the daemon (control thread only).
 fn video_sources() -> Result<Vec<Node>, CaptureError> {
-    Ok(query(None)?.0)
+    Ok(query(None, ENUMERATE_TIMEOUT)?.0)
 }
 
 /// A format a node offers: a deliverable wire format in shared memory or as DMA-BUF.
@@ -151,7 +178,10 @@ struct NodeFormat {
 
 /// The `Video/Source` nodes, and the formats of the node named `formats_of` (`None`
 /// when no such node exists). One round trip, plus one more to read the formats.
-fn query(formats_of: Option<&str>) -> Result<(Vec<Node>, Option<Vec<NodeFormat>>), CaptureError> {
+fn query(
+    formats_of: Option<&str>,
+    timeout: Duration,
+) -> Result<(Vec<Node>, Option<Vec<NodeFormat>>), CaptureError> {
     init();
     let mainloop = pw::main_loop::MainLoopRc::new(None).map_err(pw_error)?;
     let context = pw::context::ContextRc::new(&mainloop, None).map_err(pw_error)?;
@@ -244,7 +274,7 @@ fn query(formats_of: Option<&str>) -> Result<(Vec<Node>, Option<Vec<NodeFormat>>
         let mainloop = mainloop.clone();
         move |_| mainloop.quit()
     });
-    let _ = timer.update_timer(Some(DAEMON_TIMEOUT), None);
+    let _ = timer.update_timer(Some(timeout), None);
     mainloop.run();
     if !done.get() {
         return Err(backend(i64::from(libc::ETIMEDOUT)));
@@ -490,7 +520,7 @@ impl CaptureFactory for PipeWireCaptureFactory {
     fn open(&self, request: &CaptureRequest) -> Result<Box<dyn CaptureSession>, CaptureError> {
         let name = parse(&request.target).ok_or(CaptureError::TargetNotFound)?;
         let offer = accept(request)?;
-        let Some(available) = query(Some(name))?.1 else {
+        let Some(available) = query(Some(name), DAEMON_TIMEOUT)?.1 else {
             return Err(CaptureError::TargetNotFound);
         };
         let offer = narrow(&offer, &available).ok_or(CaptureError::FormatUnsupported)?;
@@ -504,10 +534,10 @@ impl CaptureFactory for PipeWireCaptureFactory {
             clock: Arc::clone(&request.clock),
             format: VideoFormat::new(Size::new(0, 0), pixel_format, ColorSpace::SRGB),
             active: None,
-            retired: None,
             next_sequence: 0,
             last_timestamp: None,
             base: CaptureStats::default(),
+            retired: None,
         }))
     }
 
@@ -613,23 +643,18 @@ fn enum_format(wire: Wire, modifiers: Option<&[i64]>, rate: Option<FrameRate>) -
     }))
 }
 
-/// The `EnumFormat` params of an offer, in preference order. With `fixed`, the DMA-BUF
-/// entry of that format carries only that modifier (the second negotiation step).
-fn enum_formats(offer: &Offer, fixed: Option<(Wire, u64)>) -> Vec<Vec<u8>> {
+/// The `EnumFormat` params of an offer, in preference order. DMA-BUF entries carry the
+/// importer's modifiers; with more than one, the source fixes the modifier.
+fn enum_formats(offer: &Offer) -> Vec<Vec<u8>> {
     let mut params = Vec::new();
     for memory in &offer.memory {
         for wire in &offer.wires {
             let pod = match memory {
-                MemoryKind::DmaBuf => match fixed {
-                    Some((w, modifier)) if w == *wire => {
-                        enum_format(*wire, Some(&[modifier as i64]), offer.frame_rate)
-                    }
-                    _ => enum_format(
-                        *wire,
-                        Some(&offer.modifiers_for(wire.fourcc)),
-                        offer.frame_rate,
-                    ),
-                },
+                MemoryKind::DmaBuf => enum_format(
+                    *wire,
+                    Some(&offer.modifiers_for(wire.fourcc)),
+                    offer.frame_rate,
+                ),
                 _ => enum_format(*wire, None, offer.frame_rate),
             };
             params.extend(pod);
@@ -724,7 +749,6 @@ fn monotonic_nanos() -> u64 {
 struct Status {
     lost: AtomicBool,
     copied: AtomicU64,
-    failed: AtomicU64,
 }
 
 /// State of the stream thread. Lives on that thread only.
@@ -761,6 +785,17 @@ impl Producer {
         }
     }
 
+    /// PipeWire frees `buffer` (renegotiation or disconnect). A slot that kept it
+    /// dequeued forgets it, so it is never queued again; frames still referring to the
+    /// slot keep the memory alive through the slot's duplicated fd.
+    fn on_remove_buffer(&mut self, buffer: *mut pw::sys::pw_buffer) {
+        for held in &mut self.held {
+            if *held == buffer {
+                *held = std::ptr::null_mut();
+            }
+        }
+    }
+
     fn on_param(&mut self, stream: &pw::stream::Stream, id: u32, param: Option<&Pod>) {
         let Some(param) = param else {
             return;
@@ -783,11 +818,8 @@ impl Producer {
         let dmabuf = modifier_prop.is_some();
         if let Some(prop) = modifier_prop {
             if prop.flags().contains(spa::pod::PodPropFlags::DONT_FIXATE) {
-                // The source left the modifier open: fix it to its first choice and
-                // negotiate again (PipeWire DMA-BUF negotiation).
-                let fixed = enum_formats(&self.offer, Some((wire, info.modifier())));
-                let mut params = pods(&fixed);
-                let _ = stream.update_params(&mut params);
+                // The modifier is still open: the source, which allocates, fixes it
+                // and sends the final format (PipeWire DMA-BUF negotiation). Wait.
                 return;
             }
         }
@@ -841,7 +873,7 @@ impl Producer {
         if newest.is_null() {
             return;
         }
-        let keep = self.deliver(newest);
+        let keep = self.deliver(stream, newest);
         if !keep {
             // SAFETY: dequeued above; not kept by a slot.
             unsafe { stream.queue_raw_buffer(newest) };
@@ -849,7 +881,7 @@ impl Producer {
     }
 
     /// Publishes `buffer` into a ring slot. Returns whether the slot keeps it dequeued.
-    fn deliver(&mut self, buffer: *mut pw::sys::pw_buffer) -> bool {
+    fn deliver(&mut self, stream: &pw::stream::Stream, buffer: *mut pw::sys::pw_buffer) -> bool {
         let arrived = self.clock.now();
         let host = monotonic_nanos();
         let Some(negotiated) = self.negotiated else {
@@ -900,6 +932,17 @@ impl Producer {
             self.sequence += 1;
             return false;
         };
+        // The slot may have come free after `return_free` ran: its old buffer is no
+        // longer referenced (the claim proves it), so give it back before reusing the
+        // slot.
+        if let Some(held) = self.held.get_mut(slot) {
+            if !held.is_null() {
+                // SAFETY: a buffer this stream dequeued and has not queued since; the
+                // claim shows no frame refers to it.
+                unsafe { stream.queue_raw_buffer(*held) };
+                *held = std::ptr::null_mut();
+            }
+        }
         // SAFETY: `slot` was just claimed by this thread and is not published.
         let Some(contents) = (unsafe { self.shared.slot_mut(slot) }) else {
             self.shared.ring.abandon(slot);
@@ -1084,6 +1127,21 @@ fn run_stream(node: String, producer: Producer, stop: pw::channel::Receiver<()>)
             }
         })
         .register();
+    // The node may have gone between `open` and `start`: if the first registry round
+    // trip did not list it, the target is lost (invariant 7) rather than silent.
+    let listed = core.sync(0).ok();
+    let _core_listener = core
+        .add_listener_local()
+        .done({
+            let target_id = Rc::clone(&target_id);
+            let producer = Rc::clone(&producer);
+            move |id, seq| {
+                if id == pw::core::PW_ID_CORE && Some(seq) == listed && target_id.get().is_none() {
+                    producer.borrow().status.lost.store(true, Ordering::Release);
+                }
+            }
+        })
+        .register();
 
     let props = pw::properties::properties! {
         *pw::keys::MEDIA_TYPE => "Video",
@@ -1091,6 +1149,8 @@ fn run_stream(node: String, producer: Producer, stop: pw::channel::Receiver<()>)
         *pw::keys::MEDIA_ROLE => "Camera",
         "target.object" => node.as_str(),
         *pw::keys::NODE_NAME => "rbs-capture",
+        // Never link to another source (a different camera) when the target is gone.
+        "node.dont-fallback" => "true",
     };
     let Ok(stream) = pw::stream::StreamRc::new(core.clone(), "rbs-capture", props) else {
         fail(&producer);
@@ -1103,12 +1163,13 @@ fn run_stream(node: String, producer: Producer, stop: pw::channel::Receiver<()>)
             producer.borrow_mut().on_param(stream, id, param);
         })
         .process(|stream, producer| producer.borrow_mut().on_process(stream))
+        .remove_buffer(|_, producer, buffer| producer.borrow_mut().on_remove_buffer(buffer))
         .register();
     let Ok(_listener) = listener else {
         fail(&producer);
         return fallback;
     };
-    let params = enum_formats(&producer.borrow().offer, None);
+    let params = enum_formats(&producer.borrow().offer);
     let mut params = pods(&params);
     if stream
         .connect(
@@ -1146,14 +1207,13 @@ struct PipeWireSession {
     clock: Arc<dyn Clock>,
     format: VideoFormat,
     active: Option<Active>,
-    /// A stopped session's ring that frames still referenced at `stop`. Kept until the
-    /// next `start` or the drop, so the last lease, dropped on the render thread, never
-    /// frees pictures there.
-    retired: Option<Arc<Shared>>,
     next_sequence: u64,
     last_timestamp: Option<Timestamp>,
     /// Counters of earlier Active periods.
     base: CaptureStats,
+    /// The ring of the last Active period while frames still referred to it at
+    /// `stop`; see [`PipeWireSession::retire`].
+    retired: Option<Arc<Shared>>,
 }
 
 /// Lets a `Producer` cross to the stream thread before any PipeWire object exists.
@@ -1165,6 +1225,20 @@ struct SendProducer(Producer);
 unsafe impl Send for SendProducer {}
 
 impl PipeWireSession {
+    /// Lets go of the retired ring on the control thread: dropped here when no frame
+    /// refers to it any more, otherwise buried, so the last lease never closes fds or
+    /// frees memory on the render thread.
+    fn retire(&mut self) {
+        let Some(shared) = self.retired.take() else {
+            return;
+        };
+        if !shared.ring.is_idle() {
+            // SAFETY: the stream thread has ended, so no slot is being written.
+            let bytes = unsafe { shared.held_bytes() };
+            GRAVEYARD.bury(Box::new(RingGrave { shared, bytes }));
+        }
+    }
+
     fn activate(&mut self) -> Result<Active, CaptureError> {
         init();
         let shared = Arc::new(Shared::new());
@@ -1223,7 +1297,7 @@ impl CaptureSession for PipeWireSession {
         if self.active.is_some() {
             return Ok(());
         }
-        self.retired = None;
+        self.retire();
         let active = self.activate()?;
         self.active = Some(active);
         Ok(())
@@ -1257,10 +1331,6 @@ impl CaptureSession for PipeWireSession {
         if active.status.lost.load(Ordering::Acquire) {
             return Err(CaptureError::TargetLost);
         }
-        let code = active.status.failed.load(Ordering::Acquire);
-        if code != 0 {
-            return Err(backend(code as i64));
-        }
         Ok(active.consumer.next())
     }
 
@@ -1289,6 +1359,7 @@ impl CaptureSession for PipeWireSession {
 impl Drop for PipeWireSession {
     fn drop(&mut self) {
         self.stop();
+        self.retire();
     }
 }
 
@@ -1322,7 +1393,7 @@ mod tests {
             modifiers: vec![(DRM_AR24, 7), (DRM_AR24, 9)],
             frame_rate: None,
         };
-        let params = enum_formats(&offer, None);
+        let params = enum_formats(&offer);
         assert_eq!(params.len(), 4);
         assert!(params.iter().all(|p| Pod::from_bytes(p).is_some()));
         assert_eq!(offer.modifiers_for(DRM_AR24), vec![7, 9]);

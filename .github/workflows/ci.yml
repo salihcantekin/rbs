@@ -57,7 +57,11 @@ jobs:
           export XDG_RUNTIME_DIR="$dir"
           nohup pipewire > "$RUNNER_TEMP/pipewire.log" 2>&1 &
           for _ in $(seq 50); do [ -S "$dir/pipewire-0" ] && break; sleep 0.1; done
+          [ -S "$dir/pipewire-0" ] || { cat "$RUNNER_TEMP/pipewire.log"; exit 1; }
           nohup dbus-run-session -- wireplumber > "$RUNNER_TEMP/wireplumber.log" 2>&1 &
+          # WirePlumber is ready once it shows up as a client of the daemon.
+          for _ in $(seq 100); do pw-cli ls Client 2>/dev/null | grep -qi wireplumber && break; sleep 0.1; done
+          pw-cli ls Client | grep -qi wireplumber || { cat "$RUNNER_TEMP/wireplumber.log"; exit 1; }
       - run: cargo clippy --workspace --all-targets -- -D warnings
       - run: cargo test --workspace
         env:

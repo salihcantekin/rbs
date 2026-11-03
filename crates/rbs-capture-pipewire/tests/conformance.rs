@@ -8,8 +8,9 @@
 //! socket it only checks probing and reports the rest skipped, unless
 //! `RBS_REQUIRE_PIPEWIRE` is set (CI starts both and sets it).
 //!
-//! Run it with `--test-threads=1` so the process thread count check is exact; the file
-//! holds a single test for that reason.
+//! The source runs in a child process (this binary, `test_source_process`), so the
+//! adapter's threads and fds are counted alone. The file holds a single test that runs
+//! by default, so the process thread count check is exact.
 
 /// Allocations plus frees made by `f` on this thread.
 fn measure(f: &mut dyn FnMut()) -> u64 {
@@ -22,9 +23,10 @@ mod source {
     //! A PipeWire `Video/Source` node driven by a timer, on its own thread.
 
     use std::cell::Cell;
+    use std::io::{BufRead, BufReader, Write};
+    use std::process::{Child, Command, Stdio};
     use std::rc::Rc;
     use std::sync::Mutex;
-    use std::thread::JoinHandle;
     use std::time::Duration;
 
     use pipewire as pw;
@@ -36,15 +38,14 @@ mod source {
     pub const NODE_NAME: &str = "rbs-test-source";
     const RATE: u32 = 60;
 
-    enum Command {
+    enum Message {
         Resize(u32, u32),
         Quit,
     }
 
     /// The running source. Dropping it removes the node.
     pub struct TestSource {
-        commands: Mutex<Option<pw::channel::Sender<Command>>>,
-        thread: Mutex<Option<JoinHandle<()>>>,
+        child: Mutex<Option<Child>>,
     }
 
     fn serialize(value: Value) -> Vec<u8> {
@@ -151,47 +152,76 @@ mod source {
         frame: Cell<u32>,
     }
 
+    /// Environment variable that turns the test binary into the source process.
+    pub const SERVE: &str = "RBS_PIPEWIRE_TEST_SOURCE";
+
     impl TestSource {
-        /// Publishes the node and waits until the stream is connected.
+        /// Publishes the node from a child process (this test binary running
+        /// [`serve`]) and waits until its stream is connected. A separate process keeps
+        /// the source's threads and fds out of the adapter's resource counts.
         pub fn start(width: u32, height: u32) -> Self {
-            let (commands, receiver) = pw::channel::channel();
-            let (ready_tx, ready_rx) = std::sync::mpsc::channel();
-            let thread = std::thread::Builder::new()
-                .name("test-source".into())
-                .spawn(move || run(width, height, receiver, ready_tx));
-            let thread = match thread {
-                Ok(t) => t,
-                Err(e) => panic!("spawn: {e}"),
+            let exe = match std::env::current_exe() {
+                Ok(exe) => exe,
+                Err(e) => panic!("current_exe: {e}"),
             };
-            if let Err(e) = ready_rx.recv_timeout(Duration::from_secs(5)) {
-                panic!("test source did not start: {e}");
+            let child = Command::new(exe)
+                .args(["--exact", "test_source_process", "--ignored", "--nocapture"])
+                .arg("--test-threads=1")
+                .env(SERVE, format!("{width}x{height}"))
+                .stdin(Stdio::piped())
+                .stdout(Stdio::piped())
+                .spawn();
+            let mut child = match child {
+                Ok(child) => child,
+                Err(e) => panic!("spawn the test source: {e}"),
+            };
+            let Some(stdout) = child.stdout.take() else {
+                panic!("no stdout")
+            };
+            // The child prints `ready` once connected (test harness lines come first).
+            let mut ready = false;
+            for line in BufReader::new(stdout).lines() {
+                match line {
+                    Ok(line) if line.trim_end().ends_with("ready") => {
+                        ready = true;
+                        break;
+                    }
+                    Ok(_) => {}
+                    Err(_) => break,
+                }
+            }
+            if !ready {
+                let _ = child.kill();
+                panic!("test source did not start");
             }
             Self {
-                commands: Mutex::new(Some(commands)),
-                thread: Mutex::new(Some(thread)),
+                child: Mutex::new(Some(child)),
             }
         }
 
-        fn send(&self, command: Command) -> bool {
-            match self.commands.lock() {
-                Ok(guard) => guard.as_ref().is_some_and(|s| s.send(command).is_ok()),
-                Err(_) => false,
-            }
+        fn send(&self, line: &str) -> bool {
+            let Ok(mut guard) = self.child.lock() else {
+                return false;
+            };
+            let Some(stdin) = guard.as_mut().and_then(|c| c.stdin.as_mut()) else {
+                return false;
+            };
+            writeln!(stdin, "{line}")
+                .and_then(|()| stdin.flush())
+                .is_ok()
         }
 
         pub fn resize(&self, width: u32, height: u32) -> bool {
-            self.send(Command::Resize(width, height))
+            self.send(&format!("resize {width} {height}"))
         }
 
-        /// Removes the node and waits for its thread.
+        /// Removes the node and waits for the source process to exit.
         pub fn remove(&self) -> bool {
-            let sent = self.send(Command::Quit);
-            if let Ok(mut guard) = self.commands.lock() {
-                guard.take();
-            }
-            let thread = self.thread.lock().ok().and_then(|mut t| t.take());
-            if let Some(thread) = thread {
-                let _ = thread.join();
+            let sent = self.send("quit");
+            let child = self.child.lock().ok().and_then(|mut c| c.take());
+            if let Some(mut child) = child {
+                drop(child.stdin.take());
+                let _ = child.wait();
             }
             sent
         }
@@ -203,11 +233,42 @@ mod source {
         }
     }
 
+    /// The source process: runs the node until `quit` or the end of stdin.
+    pub fn serve(size: &str) {
+        let (width, height) = size
+            .split_once('x')
+            .and_then(|(w, h)| Some((w.parse().ok()?, h.parse().ok()?)))
+            .unwrap_or((320, 240));
+        let (commands, receiver) = pw::channel::channel();
+        std::thread::spawn(move || {
+            for line in std::io::stdin().lock().lines() {
+                let Ok(line) = line else { break };
+                let words: Vec<&str> = line.split_whitespace().collect();
+                let command = match words.as_slice() {
+                    ["resize", w, h] => match (w.parse(), h.parse()) {
+                        (Ok(w), Ok(h)) => Message::Resize(w, h),
+                        _ => continue,
+                    },
+                    ["quit"] => break,
+                    _ => continue,
+                };
+                if commands.send(command).is_err() {
+                    return;
+                }
+            }
+            let _ = commands.send(Message::Quit);
+        });
+        run(width, height, receiver, || {
+            println!("ready");
+            let _ = std::io::stdout().flush();
+        });
+    }
+
     fn run(
         width: u32,
         height: u32,
-        commands: pw::channel::Receiver<Command>,
-        ready: std::sync::mpsc::Sender<()>,
+        commands: pw::channel::Receiver<Message>,
+        ready: impl FnOnce() + 'static,
     ) {
         pw::init();
         let fail = |what: &str| -> ! { panic!("test source: {what}") };
@@ -237,6 +298,17 @@ mod source {
         });
         let listener = stream
             .add_local_listener_with_user_data(Rc::clone(&state))
+            .state_changed({
+                // Ready once the node is exported (Paused), so consumers can find it.
+                let ready = std::cell::RefCell::new(Some(ready));
+                move |_, _, _, new| {
+                    if matches!(new, pw::stream::StreamState::Paused) {
+                        if let Some(ready) = ready.borrow_mut().take() {
+                            ready();
+                        }
+                    }
+                }
+            })
             .param_changed(|stream, state, id, param| {
                 let Some(param) = param else { return };
                 if id != spa::param::ParamType::Format.as_raw() {
@@ -310,16 +382,25 @@ mod source {
             let mainloop = mainloop.clone();
             let stream = stream.clone();
             move |command| match command {
-                Command::Resize(w, h) => {
+                Message::Resize(w, h) => {
                     let params = [format(w, h)];
                     let _ = stream.update_params(&mut pods(&params));
                 }
-                Command::Quit => mainloop.quit(),
+                Message::Quit => mainloop.quit(),
             }
         });
-        let _ = ready.send(());
         mainloop.run();
         let _ = stream.disconnect();
+    }
+}
+
+/// The test source process started by `source::TestSource`; does nothing on its own.
+#[test]
+#[ignore = "started by passes_conformance as the test source process"]
+fn test_source_process() {
+    #[cfg(target_os = "linux")]
+    if let Some(size) = std::env::var_os(source::SERVE) {
+        source::serve(&size.to_string_lossy());
     }
 }
 
@@ -445,6 +526,22 @@ impl rbs_capture::conformance::TestHooks for Hooks {
 
     fn remove(&self, target: &rbs_capture::TargetId) -> bool {
         is_test_source(target) && self.0.remove()
+    }
+
+    /// Open file descriptors of the process other than shared-memory buffers: daemon
+    /// connections, event and timer fds, DMA-BUFs. The test source in this process
+    /// reallocates its memfd buffers on every link, so those are not counted. Threads
+    /// are counted separately by the suite.
+    fn resources(&self) -> Option<u64> {
+        let entries = std::fs::read_dir("/proc/self/fd").ok()?;
+        let count = entries
+            .filter_map(Result::ok)
+            .filter(|entry| {
+                std::fs::read_link(entry.path())
+                    .is_ok_and(|target| !target.to_string_lossy().starts_with("/memfd:"))
+            })
+            .count();
+        Some(count as u64)
     }
 }
 

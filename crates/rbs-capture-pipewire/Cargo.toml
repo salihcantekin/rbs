@@ -17,7 +17,7 @@ rbs-core = { path = "../rbs-core" }
 [target.'cfg(target_os = "linux")'.dependencies]
 bytes = "1.9"
 libc = "0.2"
-pipewire = { version = "0.10", features = ["v0_3_33"] }
+pipewire = { version = "0.10", features = ["v0_3_34"] }
 
 [dev-dependencies]
 allocation-counter = "0.8"

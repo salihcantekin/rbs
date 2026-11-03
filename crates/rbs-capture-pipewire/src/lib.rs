@@ -17,7 +17,8 @@
 //! - `start` runs a PipeWire main loop on its own thread with one input stream linked
 //!   to the node. The stream offers that format, as DMA-BUF with exactly the importer's
 //!   modifiers or in shared memory.
-//! - On each buffer the stream thread claims a free slot of the lock-free [`Ring`]:
+//! - On each buffer the stream thread claims a free slot of the lock-free
+//!   [`Ring`](rbs_capture::handoff::Ring):
 //!   - DMA-BUF: it duplicates the buffer's fd into the slot and keeps the PipeWire
 //!     buffer dequeued while the slot is referenced, so the source cannot write into
 //!     it while a frame refers to it. The buffer goes back to PipeWire once the slot is
