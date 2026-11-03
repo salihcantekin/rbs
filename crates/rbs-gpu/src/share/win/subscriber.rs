@@ -89,7 +89,7 @@ impl Drop for Link {
 
 /// One frame of the engine's preview. Dropping it tells the engine that the UI no longer
 /// reads its surface: drop it only after every read of the surface has completed (the
-/// UI's own GPU work, or the desktop compositor's for a [`super::PreviewLayer`]).
+/// UI's own GPU work, or the desktop compositor's for a `PreviewLayer`).
 pub struct PreviewFrame {
     link: Arc<Link>,
     slot: u32,
@@ -304,7 +304,7 @@ impl PreviewSubscriber {
     }
 
     /// NT handle of surface `slot` in this process (diagnostics and
-    /// [`super::PreviewLayer`]); stays owned by the subscriber.
+    /// `PreviewLayer`); stays owned by the subscriber.
     pub fn surface_handle(&self, slot: usize) -> Option<u64> {
         self.surfaces.get(slot).map(|h| h.raw().0 as usize as u64)
     }
