@@ -8,7 +8,7 @@ Keep this list current. When a new crate or module lands on one of these paths, 
 
 | Path | Runs | Location (current or planned) |
 | --- | --- | --- |
-| Audio thread: device callbacks, audio graph, audio filters | Every block (10 ms) | `crates/rbs-audio` (`input.rs`, `resample.rs`, `mixer.rs`, `meter.rs`; `encoder.rs` on the encoder worker), audio adapters in `crates/rbs-audio-io-*` |
+| Audio thread: device callbacks, audio graph, audio filters | Every block (10 ms) | `crates/rbs-audio` (`input.rs`, `resample.rs`, `mixer.rs`, `meter.rs`, `sink.rs`; `encoder.rs` on the encoder worker), audio adapters in `crates/rbs-audio-io-*` |
 | Audio input hand-off: `AudioInputStream::read`, the sample ring (`RingProducer` pushes in OS callbacks, `RingConsumer::read`) and `EdgeClock` | Every OS packet and every block per Active audio input | `crates/rbs-audio-io/src/ring.rs`, `crates/rbs-audio-io/src/edge.rs`, adapters in `crates/rbs-audio-io-*` |
 | Render loop: compositor, GPU filters, transitions | Every frame per canvas | `crates/rbs-graph/src/runtime` (executor tick and swap), `crates/rbs-gpu` |
 | `Node::process` of every node type | Every frame or block | Wherever nodes are implemented |
@@ -20,7 +20,7 @@ Keep this list current. When a new crate or module lands on one of these paths, 
 | Frame, texture and audio buffer pools | Every frame or block | `crates/rbs-gpu`, `crates/rbs-audio` |
 | Colour conversion to encoder formats (NV12, P010) and YUV source decode | Every frame per encoder or YUV source | `crates/rbs-gpu` |
 | Capture, export, encoder and output nodes: `process` of the built-in port nodes, system-memory upload of source frames and the non-blocking NV12 download for encoders (ADR-0038) | Every frame or packet per Active source, encoder and output | `crates/rbs-nodes`, `crates/rbs-gpu/src/upload.rs`, `crates/rbs-gpu/src/download.rs` |
-| Preview export to the UI process: `PreviewPublisher::publish` and `tick` (one non-blocking Mach send per frame, ADR-0028; one overlapped pipe write on Windows, ADR-0036) | Every frame per subscribed preview | `crates/rbs-gpu/src/share` (publisher, mach; `win/publisher.rs`, `win/pipe.rs`; the UI-side `layer.rs` files are not on the engine's hot path) |
+| Preview export to the UI process: `PreviewPublisher::publish` and `tick` (one non-blocking Mach send per frame, ADR-0028; one overlapped pipe write on Windows, ADR-0036), called from the preview node's `process` (ADR-0041) | Every frame per subscribed preview | `crates/rbs-gpu/src/share` (publisher, mach; `win/publisher.rs`, `win/pipe.rs`; the UI-side `layer.rs` files are not on the engine's hot path), `crates/rbs-nodes/src/preview.rs` |
 | Encoder submit/drain and packet fan-out | Every frame per encoder | `crates/rbs-codec*`, `crates/rbs-graph` |
 | Muxers and transport send loops | Every packet | `crates/rbs-mux*`, `crates/rbs-transport*` |
 | Bitstream conversion (Annex B / length-prefixed, FLV tag bodies) | Every packet per converting output | `crates/rbs-media-format` |
@@ -38,3 +38,4 @@ Not hot: start-up, probing, configuration, the control API, UI, scene editing (t
 | --- | --- | --- |
 | 2026-11-03 | Salih | Worker thread setup ([ADR-0030](../adr/0030-worker-thread-setup.md)); hardware encoder session (`rbs-codec-hw`, [ADR-0031](../adr/0031-adapter-support-crates.md), PR #56); audio input port and adapters ([ADR-0033](../adr/0033-audio-input-port.md): PipeWire #71, WASAPI #72, CoreAudio #74); Windows preview publisher ([ADR-0036](../adr/0036-windows-preview-layer.md), #75); Media Foundation AAC encoder (#79); capture, export, encoder and output nodes with the GPU-to-CPU readback exception ([ADR-0038](../adr/0038-io-graph-nodes.md), #81); the PipeWire portal's 60 s stream-hold exception (#62). The audio graph (ADR-0037, #82) was signed off earlier. |
 | 2026-11-03 | Salih | Fragmented MP4 media time origin at the earliest sample, no edit list (`rbs-mux-fmp4`, #90). |
+| 2026-11-03 | Salih | Preview node and meter sink, and the once-per-start base store in the engine worker ([ADR-0041](../adr/0041-studio-recording-on-a-running-engine.md), #91); the SC-PC numbers follow with the desktop app's hardware run. |

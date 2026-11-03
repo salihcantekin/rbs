@@ -10,6 +10,7 @@
 //!   and feeds lock-free [`LevelMeter`]s the UI reads at its own rate.
 //! - [`EncoderNode`] hands mixed blocks to an [`AudioEncoder`](rbs_codec::AudioEncoder)
 //!   on an encoder partition, behind an audio queue.
+//! - [`MeterSinkNode`] keeps a mixer scheduled for its meters while nothing records.
 //!
 //! Every block of a partition has the graph's format and length and the timestamp
 //! [`AudioGraphConfig::block_time`], so video and audio meet in the muxer by master time.
@@ -20,6 +21,7 @@ mod input;
 mod meter;
 mod mixer;
 pub mod resample;
+mod sink;
 
 pub use config::{AudioGraphConfig, AudioGraphError, DEFAULT_LATENCY, MAX_LATENCY, MIN_LATENCY};
 pub use encoder::{ENCODER_NODE_TYPE, EncoderNode, encoder_descriptor};
@@ -31,3 +33,4 @@ pub use meter::{LevelMeter, Levels};
 pub use mixer::{
     DEFAULT_RAMP, MIXER_NODE_TYPE, MixerNode, MixerParams, MixerStats, Strip, mixer_descriptor,
 };
+pub use sink::{METER_SINK_NODE_TYPE, MeterSinkNode, meter_sink_descriptor};

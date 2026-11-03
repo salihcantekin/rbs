@@ -104,6 +104,10 @@ pub struct WorkerStats {
     caught_up: AtomicU64,
     starts: AtomicU64,
     stops: AtomicU64,
+    /// `next index - (ticks + late)` of the running worker, set when it starts: a
+    /// worker's ticks and skipped ticks move its next index by one each, so this only
+    /// changes when a worker starts after a pause.
+    base: AtomicU64,
     /// The last worker's grant: 0 no policy, else `grant_code`.
     grant: AtomicU8,
     policy_errors: AtomicU64,
@@ -134,6 +138,22 @@ impl WorkerStats {
     /// but a sign the worker fell behind.
     pub fn caught_up(&self) -> u64 {
         self.caught_up.load(Ordering::Relaxed)
+    }
+
+    /// The index of the next tick the worker runs: every lower index ran, was skipped
+    /// late, or passed while no worker ran. 0 before the first worker starts. For tests
+    /// that wait until a worker reached a tick (ADR-0032).
+    pub fn next_index(&self) -> u64 {
+        self.base
+            .load(Ordering::Relaxed)
+            .wrapping_add(self.ticks())
+            .wrapping_add(self.late())
+    }
+
+    /// Notes the next index a starting worker begins at (once per start, not per tick).
+    fn started_at(&self, next: u64) {
+        let done = self.ticks().wrapping_add(self.late());
+        self.base.store(next.wrapping_sub(done), Ordering::Relaxed);
     }
 
     /// How many times a worker thread was started for the partition.
@@ -425,6 +445,7 @@ pub(crate) fn run<X: Runtime>(
             if let Some(now_index) = index_due(clock.now()) {
                 next = next.max(now_index);
             }
+            stats.started_at(next);
             loop {
                 match signals.get() {
                     mode::RUN => {}
@@ -487,6 +508,7 @@ pub(crate) fn run<X: Runtime>(
                     &own
                 }
             };
+            stats.started_at(next);
             let mut tick = |executor: &mut Executor<X>| {
                 executor.run_tick(Tick::new(next, clock.now()));
                 stats.ticks.fetch_add(1, Ordering::Relaxed);

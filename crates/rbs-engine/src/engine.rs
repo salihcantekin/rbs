@@ -211,6 +211,10 @@ pub struct Engine {
     moves: Vec<(NodeId, PartitionId, PartitionId)>,
     /// Raises worker threads' scheduling class (ADR-0030); none by default.
     thread_policy: Option<Arc<dyn ThreadPolicy>>,
+    /// Partitions emptied by [`Engine::apply_draining`] whose empty part is not sent
+    /// yet: they run their final tick(s) right before it is, also when that happens later
+    /// in [`Engine::service`] (a swap still in flight).
+    draining: BTreeSet<PartitionId>,
     shut_down: bool,
 }
 
@@ -251,6 +255,7 @@ impl Engine {
             dirty: BTreeSet::new(),
             moves: Vec::new(),
             thread_policy: None,
+            draining: BTreeSet::new(),
             shut_down: false,
         }
     }
@@ -405,6 +410,32 @@ impl Engine {
     ///
     /// Every node's partition must have been added; otherwise nothing is applied.
     pub fn apply(&mut self, logical: &GraphDescription) -> Result<Applied, EngineError> {
+        self.apply_inner(logical, false)
+    }
+
+    /// Applies the logical graph like [`Engine::apply`], but a partition whose worker
+    /// runs and whose new schedule is empty first runs its final tick(s) on its old
+    /// schedule, as at [`Engine::shutdown`] (ADR-0029, ADR-0041): one tick on a cadence,
+    /// so an encoder encodes the last frame its queue holds; on a doorbell, ticks until
+    /// no reader has packets left, so an output writes what reached it before it is
+    /// released. Partitions are sent in pipeline order over the queues before and after
+    /// the edit, so a partition drains after the partitions that fed it.
+    ///
+    /// This is how a branch of the graph (a recording's encoders and output) is removed
+    /// while the rest keeps running. A partition whose earlier swap is still in flight
+    /// drains when [`Engine::service`] sends its part, unless an `apply` before that gives
+    /// it nodes again. A drain that times out is reported as
+    /// [`EngineError::DrainTimeout`]; the worker is then joined and the part swapped on
+    /// the control thread.
+    pub fn apply_draining(&mut self, logical: &GraphDescription) -> Result<Applied, EngineError> {
+        self.apply_inner(logical, true)
+    }
+
+    fn apply_inner(
+        &mut self,
+        logical: &GraphDescription,
+        drain: bool,
+    ) -> Result<Applied, EngineError> {
         if self.shut_down {
             return Err(EngineError::ShutDown);
         }
@@ -442,8 +473,39 @@ impl Engine {
                 }
             }
         }
+        let order = if drain {
+            // Queues being retired still order their ends: the partitions that fed a
+            // drained partition are sent (and stop feeding it) first.
+            let both: Vec<Crossing> = self
+                .crossings
+                .iter()
+                .chain(&lowered.crossings)
+                .cloned()
+                .collect();
+            pipeline_order(self.parts.keys().copied(), &both)
+        } else {
+            pipeline_order(self.parts.keys().copied(), &lowered.crossings)
+        };
         self.crossings = lowered.crossings.clone();
-        let order = self.pipeline_order();
+        // A drain still pending from an earlier call holds only while the partition's
+        // newest part stays empty.
+        self.draining.retain(|p| {
+            lowered
+                .parts
+                .get(p)
+                .is_none_or(|part| part.nodes().is_empty())
+        });
+        if drain {
+            let emptied: Vec<PartitionId> = lowered
+                .parts
+                .iter()
+                .filter(|(p, part)| {
+                    part.nodes().is_empty() && self.parts.get(p).is_some_and(|x| x.has_worker())
+                })
+                .map(|(p, _)| *p)
+                .collect();
+            self.draining.extend(emptied);
+        }
         let leaving: BTreeSet<PartitionId> = lowered.moved.iter().map(|m| m.1).collect();
         for (p, part) in std::mem::take(&mut lowered.parts) {
             self.current.insert(p, part);
@@ -505,6 +567,12 @@ impl Engine {
             }
         }
         self.dirty.remove(&p);
+        if self.draining.remove(&p) && !handle.drain(timeout) {
+            // As at shutdown: most likely a node hung in `process`. Join the worker; the
+            // swap below then runs on this thread.
+            errors.push(EngineError::DrainTimeout(p));
+            handle.stop_worker();
+        }
         let part = self.current.get(&p).unwrap_or(&empty);
         match handle.apply(part) {
             Ok(report) => {
