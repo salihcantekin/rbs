@@ -120,6 +120,19 @@ impl<X: Runtime> Executor<X> {
         self.maintain();
     }
 
+    /// Applies a schedule the controller sent, now, without running a tick: the same
+    /// swap `run_tick` does after its nodes ran (`cool` for nodes that leave, `warm`
+    /// for nodes that join), and it also hands back a retired schedule the controller
+    /// could not take yet. Does nothing if nothing is pending.
+    ///
+    /// For workers that wait between ticks (frame cadence): when the control thread
+    /// wakes them after an `apply`, the swap does not have to wait for the next tick.
+    /// Same rules as the swap in `run_tick`: no allocation besides what `warm` and
+    /// `cool` choose to do, no blocking, no lock.
+    pub fn swap_pending(&mut self) {
+        self.maintain();
+    }
+
     fn process_all(&mut self, tick: Tick) {
         let schedule = &mut self.current;
         let shared: &X::Shared = &self.shared;

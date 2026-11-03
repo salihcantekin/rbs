@@ -897,6 +897,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "rbs-engine"
+version = "0.0.1"
+dependencies = [
+ "rbs-core",
+ "rbs-graph",
+]
+
+[[package]]
 name = "rbs-gpu"
 version = "0.0.1"
 dependencies = [
