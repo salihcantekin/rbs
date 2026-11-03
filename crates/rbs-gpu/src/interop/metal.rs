@@ -59,67 +59,19 @@ pub(super) fn open(ctx: &GpuContext, surface: usize) -> Result<Opened, GpuError>
         return Err(GpuError::InvalidSize { width, height });
     }
 
-    // SAFETY: the HAL device is only borrowed to create one texture; wgpu state is not
-    // changed and the guard is dropped at the end of this function.
-    let hal = unsafe { ctx.device().as_hal::<Metal>() }
-        .ok_or(GpuError::Unsupported("render device is not Metal"))?;
-    // SAFETY: plain descriptor constructor; the format and sizes are valid (checked above).
-    let desc = unsafe {
-        MTLTextureDescriptor::texture2DDescriptorWithPixelFormat_width_height_mipmapped(
-            mtl_format,
-            width as usize,
-            height as usize,
-            false,
-        )
-    };
-    desc.setUsage(MTLTextureUsage::ShaderRead);
-    let raw = hal
-        .raw_device()
-        .newTextureWithDescriptor_iosurface_plane(&desc, io, 0)
-        .ok_or_else(|| GpuError::Import("newTextureWithDescriptor:iosurface: failed".into()))?;
-    drop(hal);
-
-    let size = wgpu::Extent3d {
-        width,
-        height,
-        depth_or_array_layers: 1,
-    };
-    // SAFETY: `raw` is a single-mip 2D texture of `format` and `size`, created on this
-    // device just above.
-    let hal_texture = unsafe {
-        wgpu::hal::metal::Device::texture_from_raw(
-            raw,
+    let texture = alias_plane(
+        ctx,
+        io,
+        0,
+        PlaneTexture {
             format,
-            MTLTextureType::Type2D,
-            1,
-            1,
-            wgpu::hal::CopyExtent {
-                width,
-                height,
-                depth: 1,
-            },
-            None,
-        )
-    };
-    // SAFETY: the HAL texture belongs to this device and matches the descriptor. The
-    // surface holds the producer's pixels; Metal has no layouts, so any initialized state
-    // is correct and PRESENT keeps the hand-back path shared with D3D12.
-    let texture = unsafe {
-        ctx.device().create_texture_from_hal::<Metal>(
-            hal_texture,
-            &wgpu::TextureDescriptor {
-                label: Some("rbs-gpu imported"),
-                size,
-                mip_level_count: 1,
-                sample_count: 1,
-                dimension: wgpu::TextureDimension::D2,
-                format,
-                usage: USAGE,
-                view_formats: &[],
-            },
-            wgpu::TextureUses::PRESENT,
-        )
-    };
+            mtl_format,
+            width,
+            height,
+            mtl_usage: MTLTextureUsage::ShaderRead,
+            usage: USAGE,
+        },
+    )?;
     Ok(Opened {
         texture,
         desc: TextureDesc {
@@ -129,6 +81,96 @@ pub(super) fn open(ctx: &GpuContext, surface: usize) -> Result<Opened, GpuError>
             usage: USAGE,
         },
     })
+}
+
+/// How one IOSurface plane is aliased: its formats, size and usage.
+pub(crate) struct PlaneTexture {
+    /// The wgpu format of the wrapper.
+    pub format: wgpu::TextureFormat,
+    /// The matching Metal format; its texel size equals the plane's bytes per element.
+    pub mtl_format: MTLPixelFormat,
+    /// Plane width in texels.
+    pub width: u32,
+    /// Plane height in texels.
+    pub height: u32,
+    /// Metal usage of the aliasing texture.
+    pub mtl_usage: MTLTextureUsage,
+    /// wgpu usage of the wrapper; must be covered by `mtl_usage`.
+    pub usage: wgpu::TextureUsages,
+}
+
+/// Wraps plane `plane` of `io` as a wgpu texture on the render device, without a copy.
+///
+/// Opening is not a per-frame call: it allocates (Metal and wgpu objects).
+pub(crate) fn alias_plane(
+    ctx: &GpuContext,
+    io: &IOSurfaceRef,
+    plane: usize,
+    p: PlaneTexture,
+) -> Result<wgpu::Texture, GpuError> {
+    // SAFETY: the HAL device is only borrowed to create one texture; wgpu state is not
+    // changed and the guard is dropped at the end of this function.
+    let hal = unsafe { ctx.device().as_hal::<Metal>() }
+        .ok_or(GpuError::Unsupported("render device is not Metal"))?;
+    // SAFETY: plain descriptor constructor; the caller checked the format and sizes
+    // against the device limits.
+    let desc = unsafe {
+        MTLTextureDescriptor::texture2DDescriptorWithPixelFormat_width_height_mipmapped(
+            p.mtl_format,
+            p.width as usize,
+            p.height as usize,
+            false,
+        )
+    };
+    desc.setUsage(p.mtl_usage);
+    let raw = hal
+        .raw_device()
+        .newTextureWithDescriptor_iosurface_plane(&desc, io, plane)
+        .ok_or_else(|| GpuError::Import("newTextureWithDescriptor:iosurface: failed".into()))?;
+    drop(hal);
+
+    let size = wgpu::Extent3d {
+        width: p.width,
+        height: p.height,
+        depth_or_array_layers: 1,
+    };
+    // SAFETY: `raw` is a single-mip 2D texture of `p.format` and `size`, created on this
+    // device just above.
+    let hal_texture = unsafe {
+        wgpu::hal::metal::Device::texture_from_raw(
+            raw,
+            p.format,
+            MTLTextureType::Type2D,
+            1,
+            1,
+            wgpu::hal::CopyExtent {
+                width: p.width,
+                height: p.height,
+                depth: 1,
+            },
+            None,
+        )
+    };
+    // SAFETY: the HAL texture belongs to this device and matches the descriptor; its Metal
+    // usage covers `p.usage`. Metal has no layouts, so any initial state is correct and
+    // PRESENT keeps the hand-back path shared with D3D12.
+    let texture = unsafe {
+        ctx.device().create_texture_from_hal::<Metal>(
+            hal_texture,
+            &wgpu::TextureDescriptor {
+                label: Some("rbs-gpu iosurface"),
+                size,
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format: p.format,
+                usage: p.usage,
+                view_formats: &[],
+            },
+            wgpu::TextureUses::PRESENT,
+        )
+    };
+    Ok(texture)
 }
 
 fn map_format(fourcc: u32) -> Result<(wgpu::TextureFormat, MTLPixelFormat), GpuError> {

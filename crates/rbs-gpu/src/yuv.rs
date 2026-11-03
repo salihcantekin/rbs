@@ -317,7 +317,9 @@ impl YuvConverter {
         self.format
     }
 
-    /// Writes the planes of `canvas` into `luma` and `chroma`.
+    /// Writes the planes of `canvas` into `luma` and `chroma` and returns the submission,
+    /// so a caller can tell when the planes are complete (for example before a native
+    /// encoder reads them).
     ///
     /// Hot path. The planes must match [`luma_desc`] and [`chroma_desc`] for this size.
     pub fn convert(
@@ -327,20 +329,18 @@ impl YuvConverter {
         canvas: TextureId,
         luma: TextureId,
         chroma: TextureId,
-    ) -> Result<(), GpuError> {
-        let source = self.source(pool, canvas)?;
+    ) -> Result<wgpu::SubmissionIndex, GpuError> {
         let luma_tex = plane(pool, luma, &luma_desc(self.format, self.width, self.height))?;
         let chroma_tex = plane(
             pool,
             chroma,
             &chroma_desc(self.format, self.width, self.height),
         )?;
-        let encoder = self.record(ctx, source, luma_tex, chroma_tex);
-        ctx.queue().submit(Some(encoder.finish()));
-        Ok(())
+        self.convert_views(ctx, pool, canvas, luma_tex, chroma_tex)
     }
 
-    /// Writes both planes of `canvas` into the single multi-planar texture `surface`.
+    /// Writes both planes of `canvas` into the single multi-planar texture `surface` and
+    /// returns the submission.
     ///
     /// Hot path. `surface` must match [`surface_desc`] for this format and size; without
     /// the surface capability such a texture cannot be created and [`Self::convert`] is used.
@@ -350,7 +350,7 @@ impl YuvConverter {
         pool: &TexturePool,
         canvas: TextureId,
         surface: TextureId,
-    ) -> Result<(), GpuError> {
+    ) -> Result<wgpu::SubmissionIndex, GpuError> {
         let source = self.source(pool, canvas)?;
         let tex = pool.get(surface).ok_or(GpuError::StaleTexture(surface))?;
         let expected = surface_desc(self.format, self.width, self.height);
@@ -373,8 +373,23 @@ impl YuvConverter {
                 encoder
             }
         };
-        ctx.queue().submit(Some(encoder.finish()));
-        Ok(())
+        Ok(ctx.queue().submit(Some(encoder.finish())))
+    }
+
+    /// Writes the planes of `canvas` into two views the caller created for this format
+    /// and size (luma and chroma render targets, for example aliased native surfaces).
+    /// The views are not checked. Hot path.
+    pub(crate) fn convert_views(
+        &mut self,
+        ctx: &GpuContext,
+        pool: &TexturePool,
+        canvas: TextureId,
+        luma: &wgpu::TextureView,
+        chroma: &wgpu::TextureView,
+    ) -> Result<wgpu::SubmissionIndex, GpuError> {
+        let source = self.source(pool, canvas)?;
+        let encoder = self.record(ctx, source, luma, chroma);
+        Ok(ctx.queue().submit(Some(encoder.finish())))
     }
 
     fn source<'p>(

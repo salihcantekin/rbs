@@ -60,12 +60,12 @@ Encoders and muxers convert master time to container ticks with `Timebase::ticks
 ### Native surfaces
 
 - `VideoFrame::native` is `unsafe`: its caller guarantees every handle refers to a live object of the described kind and format, on the adapter it names (`adapter_luid` for Direct3D, `device_registry_id` for Metal), valid and not written by the producer until the lease is released.
-- A native frame has exactly one consumer: the `rbs-gpu` importer in the source node wrapper. It is not shareable (`share()` returns `None`); the importer takes it apart with `into_native()`.
+- A native frame has exactly one consumer. For a capture surface that is the `rbs-gpu` importer in the source node wrapper, which takes it apart with `into_native()`. For a surface exported by `rbs-gpu` for an encoder ([ADR-0025](../adr/0025-encoder-surface-export.md)) it is that encoder adapter. It is not shareable (`share()` returns `None`).
 - The importer waits on `SurfaceSync` (`Ready`, `KeyedMutex`, `TimelineFence`, `SyncFile`) before its GPU work. A keyed mutex is therefore acquired and released by one consumer only.
 - An import either **copies** the surface into a pool texture, and drops the native lease only after that copy has completed on the GPU (its own fence); or **aliases** it (wraps the surface zero-copy as a pool texture), and then moves the native lease into the resulting `Texture` frame's pool slot, so the producer's surface lives as long as that slot is referenced by any frame or queued GPU work. Either way the producer never reuses a surface the GPU may still read.
 - The `rbs-gpu` import API takes the `VideoFrame` by value. Any function that takes the separate `(NativeSurface, SurfaceSync, Lease)` parts is `unsafe`, because a `Copy` surface could otherwise be paired with an unrelated lease.
 - Native payloads never travel on graph links: the source node wrapper imports them before the frame enters the graph.
-- Downstream nodes, encoders and outputs only ever see `Texture` or `System` payloads. An encoder that needs a native texture gets it from `rbs-gpu` export, not from a capture surface.
+- Downstream nodes and outputs only ever see `Texture` or `System` payloads. An encoder that takes native memory (`input.memory` other than `gpu` and `system`) receives a native frame from an `rbs-gpu` exporter, through its worker's input queue, never a capture surface. Exported frames use `SurfaceSync::Ready` (the exporter hands them out only after its GPU work completed) unless the exporter's spec names a fence; the encoder drops the frame once its API has finished reading the surface, and the exporter does not write the surface before that.
 - Surface kinds without a producer yet (Vulkan images, CUDA memory) are not defined; they are added as new non-exhaustive variants with full import information when a producer needs them.
 
 ### Lifetime
