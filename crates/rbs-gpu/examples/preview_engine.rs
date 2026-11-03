@@ -1,4 +1,5 @@
-//! Engine side of the cross-process preview demo (ADR-0028).
+//! Engine side of the cross-process preview demo (ADR-0028 on macOS, ADR-0036 on
+//! Windows).
 //!
 //! Composites an animated canvas at 60 Hz and shares it through a `PreviewPublisher`.
 //! Prints the endpoint (`service#token`) as its first line on stdout, then a status line
@@ -12,17 +13,19 @@
 //!
 //! The UI side is `cargo run -p rbs-app --release --example remote_preview`.
 
-#[cfg(target_vendor = "apple")]
+#[cfg(any(target_vendor = "apple", windows))]
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     demo::run()
 }
 
-#[cfg(not(target_vendor = "apple"))]
+#[cfg(not(any(target_vendor = "apple", windows)))]
 fn main() {
-    eprintln!("preview_engine: cross-process preview is implemented on macOS only (ADR-0028)");
+    eprintln!(
+        "preview_engine: cross-process preview is implemented on macOS and Windows only (ADR-0028, ADR-0036)"
+    );
 }
 
-#[cfg(target_vendor = "apple")]
+#[cfg(any(target_vendor = "apple", windows))]
 mod demo {
     use std::io::{Read, Write};
     use std::sync::Arc;
@@ -96,8 +99,8 @@ mod demo {
                 width,
                 height,
                 // What the UI's preview layer needs at 60 fps (`PreviewLayer::surfaces_needed`):
-                // one shown, up to three retiring for 34 ms, one being rendered, one in
-                // flight. Slint's texture path needs four of them. `RBS_PREVIEW_SURFACES`
+                // on macOS one shown, up to three retiring for 34 ms, one being rendered, one
+                // in flight; Windows needs five. Slint's texture path needs four of them. `RBS_PREVIEW_SURFACES`
                 // overrides it; the publisher rejects a size outside its range.
                 surfaces: match std::env::var("RBS_PREVIEW_SURFACES") {
                     Ok(v) => v
@@ -109,11 +112,14 @@ mod demo {
         )?;
         println!("{}", publisher.endpoint());
         std::io::stdout().flush()?;
+        #[cfg(target_vendor = "apple")]
+        let surfaces = format!("{:?}", publisher.surface_ids().collect::<Vec<_>>());
+        #[cfg(windows)]
+        let surfaces = "shared D3D12 textures";
         eprintln!(
-            "preview_engine: {} on {}, surfaces {:?}",
+            "preview_engine: {} on {}, surfaces {surfaces}",
             publisher.endpoint().service,
             ctx.adapter_name(),
-            publisher.surface_ids().collect::<Vec<_>>()
         );
 
         // Stops when stdin closes, so the engine never outlives the UI that started it.

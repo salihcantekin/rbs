@@ -2,19 +2,20 @@
 #![allow(clippy::expect_used)] // A benchmark that cannot set up should stop loudly.
 
 //! Cross-process preview benchmarks (spec docs/specs/gpu-compositor.md, "Preview export
-//! (cross-process)"). macOS only; elsewhere it prints a skip message.
+//! (cross-process)"). macOS and Windows; elsewhere it prints a skip message.
 //!
 //! - `preview/publish_cpu`: CPU time of `publish` (record and submit the scale pass).
 //! - `preview/tick_cpu`: CPU time of `tick` with one completed frame to send and one
-//!   release to receive (two Mach calls plus a non-blocking poll), and the subscriber's
+//!   release to receive (two Mach calls, or on Windows one overlapped write and read
+//!   collection, plus a non-blocking poll), and the subscriber's
 //!   receive and release.
 //! - `preview/frame_gpu`: publish and wait for the GPU, the frame time of the pass.
 //!
-//! The subscriber runs in the same process here; the Mach calls are the same as across
+//! The subscriber runs in the same process here; the Mach and pipe calls are the same as across
 //! processes.
 
-#[cfg(target_vendor = "apple")]
-mod apple {
+#[cfg(any(target_vendor = "apple", windows))]
+mod shared {
     use std::thread;
     use std::time::{Duration, Instant};
 
@@ -56,6 +57,11 @@ mod apple {
             thread::yield_now();
         }
         let mut sub = handle.join().expect("join").expect("subscribe");
+        // On Windows the engine sees the UI's `ACCEPT` at a later tick.
+        while !publisher.subscribed() {
+            publisher.tick(&ctx).expect("tick");
+            thread::yield_now();
+        }
 
         let mut g = c.benchmark_group("preview");
         let mut seq = 0u64;
@@ -110,12 +116,12 @@ mod apple {
     }
 }
 
-#[cfg(target_vendor = "apple")]
-criterion::criterion_group!(benches, apple::bench);
-#[cfg(target_vendor = "apple")]
+#[cfg(any(target_vendor = "apple", windows))]
+criterion::criterion_group!(benches, shared::bench);
+#[cfg(any(target_vendor = "apple", windows))]
 criterion::criterion_main!(benches);
 
-#[cfg(not(target_vendor = "apple"))]
+#[cfg(not(any(target_vendor = "apple", windows)))]
 fn main() {
-    eprintln!("SKIPPED preview benchmarks: macOS only (ADR-0028)");
+    eprintln!("SKIPPED preview benchmarks: macOS and Windows only (ADR-0028, ADR-0036)");
 }

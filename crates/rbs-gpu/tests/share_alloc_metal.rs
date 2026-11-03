@@ -1,12 +1,13 @@
 //! Heap allocations per preview frame (spec `gpu-compositor.md`, "Preview export
-//! (cross-process)").
+//! (cross-process)"). Runs on macOS and Windows (the file name predates the Windows
+//! backend, ADR-0036).
 //!
 //! RBS code in `PreviewPublisher::publish` and `tick` does not allocate. The test runs a
 //! steady loop (publish, wait, tick sends the frame, the subscriber receives and drops it,
 //! the next tick takes the release) and compares it with an NV12 conversion into pool
 //! planes, which records more GPU work: the preview may add only a small constant (wgpu's
 //! poll bookkeeping), and nothing may grow over time.
-#![cfg(target_vendor = "apple")]
+#![cfg(any(target_vendor = "apple", windows))]
 #![allow(clippy::unwrap_used, clippy::expect_used)] // Tests fail by panicking.
 
 mod common;
@@ -119,6 +120,17 @@ fn preview_allocations_are_bounded() {
         thread::yield_now();
     }
     let mut sub = handle.join().unwrap().unwrap();
+    // On Windows `connect` returns once its `ACCEPT` is written; the engine reads it at a
+    // later tick. Wait for the condition (the bound is a hang guard only).
+    let start = std::time::Instant::now();
+    while !publisher.subscribed() {
+        assert!(
+            start.elapsed() < Duration::from_secs(5),
+            "subscription not seen"
+        );
+        publisher.tick(ctx).unwrap();
+        thread::yield_now();
+    }
 
     let mut preview = |i| {
         publisher

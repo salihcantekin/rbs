@@ -8,14 +8,22 @@
 //! receives one small message per frame. No pixels cross the process
 //! boundary and nothing is copied: both processes use the same IOSurface memory.
 //!
-//! Only macOS has a backend so far; the endpoint and descriptor types exist everywhere.
+//! Backends: macOS (IOSurfaces over a Mach service, ADR-0028) and Windows (shared D3D12
+//! textures as NT handles over a named pipe, ADR-0036). The endpoint and descriptor types
+//! exist everywhere.
 //!
 //! This is a marked low-level module (principle P11): every `unsafe` block states its
 //! invariant.
 //!
 //! Hot path: `PreviewPublisher::publish` and `PreviewPublisher::tick` do not allocate in
-//! RBS code and never wait: every Mach call on the engine side uses a zero timeout.
+//! RBS code and never wait: every Mach call on the engine side uses a zero timeout, and
+//! every pipe operation on Windows is overlapped and only polled.
 
+#[cfg(any(
+    test,
+    all(any(windows, target_os = "macos"), feature = "preview-layer")
+))]
+mod geometry;
 #[cfg(all(target_os = "macos", feature = "preview-layer"))]
 mod layer;
 #[cfg(target_vendor = "apple")]
@@ -24,6 +32,8 @@ mod mach;
 mod publisher;
 #[cfg(target_vendor = "apple")]
 mod subscriber;
+#[cfg(windows)]
+mod win;
 
 use std::fmt;
 use std::str::FromStr;
@@ -35,6 +45,13 @@ pub use publisher::PreviewPublisher;
 #[cfg(target_vendor = "apple")]
 pub use subscriber::{
     PREVIEW_TEXTURE_FORMAT, PREVIEW_TEXTURE_USAGE, PreviewFrame, PreviewSubscriber,
+};
+#[cfg(all(windows, feature = "preview-layer"))]
+pub use win::{DEFAULT_RETIRE_POLL, LayerRect, PreviewLayer};
+#[cfg(windows)]
+pub use win::{
+    PREVIEW_TEXTURE_FORMAT, PREVIEW_TEXTURE_USAGE, PreviewFrame, PreviewPublisher,
+    PreviewSubscriber,
 };
 
 /// Most surfaces one publisher shares.
@@ -56,12 +73,13 @@ pub struct PreviewDesc {
     pub surfaces: usize,
 }
 
-/// What a UI needs to connect to a publisher: the Mach service name and the token.
+/// What a UI needs to connect to a publisher: the service name (a Mach service on macOS,
+/// a named pipe under `\\.\pipe\` on Windows) and the token.
 ///
 /// Written as `service#token` (token in hex) on command lines and in the control API.
 #[derive(Clone, PartialEq, Eq)]
 pub struct PreviewEndpoint {
-    /// Mach service name, `org.rbs.preview.<pid>.<n>`.
+    /// Service name, `org.rbs.preview.<pid>.<n>.<nonce>`.
     pub service: String,
     /// Random token the subscriber must present.
     pub token: u64,
@@ -115,6 +133,89 @@ pub struct PreviewStats {
     pub subscribes: u64,
     /// Ignored messages (wrong token or version, unknown messages).
     pub rejected: u64,
+}
+
+/// The render pipeline that scales a canvas into a preview surface of `format`;
+/// `entry` is `fs_preview` for sRGB targets and `fs_preview_encode` for UNORM ones.
+#[cfg(any(target_vendor = "apple", windows))]
+fn preview_pipeline(
+    ctx: &crate::GpuContext,
+    format: wgpu::TextureFormat,
+    entry: &str,
+) -> wgpu::RenderPipeline {
+    let device = ctx.device();
+    let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+        label: Some("rbs-gpu preview"),
+        source: wgpu::ShaderSource::Wgsl(include_str!("../shaders/preview.wgsl").into()),
+    });
+    let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+        label: Some("rbs-gpu preview"),
+        bind_group_layouts: &[Some(&ctx.sampled_layout)],
+        immediate_size: 0,
+    });
+    device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+        label: Some("rbs-gpu preview"),
+        layout: Some(&layout),
+        vertex: wgpu::VertexState {
+            module: &module,
+            entry_point: Some("vs_fullscreen"),
+            compilation_options: Default::default(),
+            buffers: &[],
+        },
+        primitive: wgpu::PrimitiveState::default(),
+        depth_stencil: None,
+        multisample: wgpu::MultisampleState::default(),
+        fragment: Some(wgpu::FragmentState {
+            module: &module,
+            entry_point: Some(entry),
+            compilation_options: Default::default(),
+            targets: &[Some(wgpu::ColorTargetState {
+                format,
+                blend: None,
+                write_mask: wgpu::ColorWrites::ALL,
+            })],
+        }),
+        multiview_mask: None,
+        cache: None,
+    })
+}
+
+/// One pass: `source` (a canvas bind group) scaled into `target`, submitted. Hot path;
+/// allocates nothing in RBS code.
+#[cfg(any(target_vendor = "apple", windows))]
+fn render_preview(
+    ctx: &crate::GpuContext,
+    pipeline: &wgpu::RenderPipeline,
+    source: &wgpu::BindGroup,
+    target: &wgpu::TextureView,
+) -> wgpu::SubmissionIndex {
+    let mut encoder = ctx
+        .device()
+        .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("rbs-gpu preview"),
+        });
+    {
+        let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some("rbs-gpu preview"),
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                view: target,
+                depth_slice: None,
+                resolve_target: None,
+                ops: wgpu::Operations {
+                    load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+                    store: wgpu::StoreOp::Store,
+                },
+            })],
+            depth_stencil_attachment: None,
+            timestamp_writes: None,
+            occlusion_query_set: None,
+            multiview_mask: None,
+        });
+        pass.set_pipeline(pipeline);
+        pass.set_bind_group(0, source, &[]);
+        pass.draw(0..3, 0..1);
+    }
+    ctx.queue().submit(Some(encoder.finish()))
 }
 
 #[cfg(test)]

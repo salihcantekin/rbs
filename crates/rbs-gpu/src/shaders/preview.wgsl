@@ -27,3 +27,17 @@ fn fs_preview(in: VsOut) -> @location(0) vec4<f32> {
     // Premultiplied over black: the colour channels are already the result.
     return vec4<f32>(clamp(c.rgb, vec3<f32>(0.0), vec3<f32>(1.0)), 1.0);
 }
+
+// For targets without an sRGB format (the Windows preview surfaces, `R8G8B8A8_UNORM`,
+// ADR-0036): the same result with the sRGB encoding applied here.
+fn srgb_encode(c: vec3<f32>) -> vec3<f32> {
+    let lo = c * 12.92;
+    let hi = 1.055 * pow(c, vec3<f32>(1.0 / 2.4)) - 0.055;
+    return select(hi, lo, c <= vec3<f32>(0.0031308));
+}
+
+@fragment
+fn fs_preview_encode(in: VsOut) -> @location(0) vec4<f32> {
+    let c = textureSample(canvas, linear_clamp, in.uv);
+    return vec4<f32>(srgb_encode(clamp(c.rgb, vec3<f32>(0.0), vec3<f32>(1.0))), 1.0);
+}

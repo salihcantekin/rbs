@@ -63,6 +63,8 @@ The desktop UI (`rbs-app`) owns this budget (ADR-0022, owner decision 2026-11-02
 
 Measured 2026-11-03 on the reference Mac (`remote_preview` with `RBS_DEMO_SECONDS`, ADR-0034): 1080p preview and 16 meters at 30 Hz, 9.2 % (one run; 720p: 8.3-8.8 % over two), 60 fps, 1 to 4 preview frames skipped by the engine per 20 s; 720p preview alone 2.0 %. Before ADR-0034, with Slint drawing the preview at 720p: 15.3 % with meters and 12.2 % without. With the meters' moving parts as native layers too ([ADR-0035](../adr/0035-meters-as-native-layers.md)): 2.4-2.7 % at 720p (four runs) and 2.5 % at 1080p (one run), against 8.4-9.2 % with Slint drawing them in the same sitting, 60 fps; with 128 meters 3.0-3.1 % against 13.5-13.7 %. The budget is met with a wide margin. WindowServer's share is not separated yet (its baseline on the measuring desktop is about 49 %).
 
+Measured 2026-11-03 on the reference Windows PC (RTX 4090, physical console, `remote_preview`, 720p preview, [ADR-0036](../adr/0036-windows-preview-layer.md)): preview as a composition swapchain layer 1.3 %, with 16 meters 7.6 % (the meters are still drawn by Slint on Windows); Slint drawing the preview 5.0 %, with meters 9.5-10.2 %. 60 fps, 0 late frames. Native meter layers on Windows are the next gain.
+
 How it is reached: the preview and the meters' moving parts as native layers that the toolkit never redraws ([ADR-0034](../adr/0034-preview-as-native-layer.md), [ADR-0035](../adr/0035-meters-as-native-layers.md); Slint's GPU path cannot redraw only dirty regions), meters at 30 Hz and the live duration and stats at 1 Hz (rates are declared per panel in the [design system](ui-design-system.md#panel-model)), and no timer at all when nothing animates.
 
 ## Regression policy

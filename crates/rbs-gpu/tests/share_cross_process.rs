@@ -1,12 +1,12 @@
 //! Cross-process preview (spec `gpu-compositor.md`, "Preview export (cross-process)",
-//! ADR-0028).
+//! ADR-0028 on macOS, ADR-0036 on Windows).
 //!
 //! The main test publishes a canvas whose colour depends on the frame sequence and runs
 //! this test binary again as a child process (the "UI"). The child subscribes, aliases the
-//! surfaces on its own device, reads every frame back and checks its colour. Both sides
-//! compare global IOSurface IDs, which shows that the child reads the engine's memory and
-//! nothing was copied.
-#![cfg(target_vendor = "apple")]
+//! surfaces on its own device, reads every frame back and checks its colour: the API has
+//! no path that copies pixels, so the colours reach the child only through the shared
+//! memory. On macOS both sides also compare global IOSurface IDs.
+#![cfg(any(target_vendor = "apple", windows))]
 #![allow(clippy::unwrap_used, clippy::expect_used)] // Tests fail by panicking.
 
 mod common;
@@ -27,7 +27,7 @@ use rbs_gpu::{
 
 /// Set in the child: the endpoint to subscribe to.
 const CHILD_ENDPOINT: &str = "RBS_PREVIEW_CHILD_ENDPOINT";
-/// Set in the child: the engine's IOSurface IDs, comma separated, in slot order.
+/// Set in the child: the engine's IOSurface IDs, comma separated, in slot order (macOS).
 const CHILD_IDS: &str = "RBS_PREVIEW_CHILD_IDS";
 /// Set in the child: `check` (read frames back, drop them, exit) or `hold` (keep every
 /// surface and exit without releasing any).
@@ -119,7 +119,8 @@ impl Engine {
     }
 }
 
-/// A publisher, or `None` (skip) on devices without unified memory.
+/// A publisher, or `None` (skip) on devices without unified memory (macOS) or not on
+/// D3D12 (Windows).
 fn publisher(ctx: &GpuContext) -> Option<PreviewPublisher> {
     match PreviewPublisher::new(
         ctx,
@@ -187,7 +188,10 @@ fn run_child(
     mode: &str,
     sequence: &mut u64,
 ) -> String {
+    #[cfg(target_vendor = "apple")]
     let ids: Vec<String> = publisher.surface_ids().map(|i| i.to_string()).collect();
+    #[cfg(not(target_vendor = "apple"))]
+    let ids: Vec<String> = Vec::new();
     let mut child = Command::new(std::env::current_exe().unwrap())
         .args([
             "--exact",
@@ -299,11 +303,19 @@ fn ui_that_exits_holding_every_surface_frees_them() {
         out.contains("preview child holding"),
         "child did not run:\n{out}"
     );
-    // No frame can be sent (every surface is held), so only the kernel's no-senders
-    // notice can tell the engine that the UI is gone.
+    // No frame can be sent (every surface is held), so only the kernel (no-senders notice
+    // on macOS, broken pipe on Windows) can tell the engine that the UI is gone.
     assert_unsubscribed(ctx, &mut publisher, &mut engine, &mut sequence);
-    // And a new UI can subscribe again.
     assert_eq!(publisher.stats().subscribes, 1);
+    // And a new UI can subscribe again and gets every frame right (on Windows this
+    // listens again after a connection that ended with writes of its own still queued).
+    let out = run_child(ctx, &mut publisher, &mut engine, "check", &mut sequence);
+    assert!(
+        out.contains("preview child ok"),
+        "second child did not run:\n{out}"
+    );
+    assert_eq!(publisher.stats().subscribes, 2);
+    assert_unsubscribed(ctx, &mut publisher, &mut engine, &mut sequence);
 }
 
 /// The "UI" process. Run by the tests above; ignored in normal runs.
@@ -319,12 +331,16 @@ fn preview_child() {
     assert_eq!(sub.size(), (PREVIEW_W, PREVIEW_H));
 
     // Same IOSurfaces as the engine's ring: same memory, nothing copied.
-    let ids = std::env::var(CHILD_IDS).unwrap();
-    let ids: Vec<u32> = ids.split(',').map(|s| s.parse().unwrap()).collect();
-    assert_eq!(sub.surfaces(), ids.len());
-    for (slot, id) in ids.iter().enumerate() {
-        assert_eq!(sub.surface_id(slot), Some(*id), "slot {slot}");
+    #[cfg(target_vendor = "apple")]
+    {
+        let ids = std::env::var(CHILD_IDS).unwrap();
+        let ids: Vec<u32> = ids.split(',').map(|s| s.parse().unwrap()).collect();
+        assert_eq!(sub.surfaces(), ids.len());
+        for (slot, id) in ids.iter().enumerate() {
+            assert_eq!(sub.surface_id(slot), Some(*id), "slot {slot}");
+        }
     }
+    assert_eq!(sub.surfaces(), 3);
 
     if std::env::var(CHILD_MODE).as_deref() == Ok("hold") {
         let mut held = Vec::new();
@@ -332,7 +348,7 @@ fn preview_child() {
             held.push(sub.recv(Duration::from_secs(10)).unwrap().expect("frame"));
         }
         println!("preview child holding");
-        // Exit without dropping anything: the kernel cleans up the rights.
+        // Exit without dropping anything: the kernel cleans up the rights and handles.
         std::process::exit(0);
     }
     let textures = sub.textures(ctx).unwrap();
@@ -369,7 +385,9 @@ fn preview_child() {
     println!("preview child ok");
 }
 
-/// Runs `connect` on another thread while this thread ticks the publisher.
+/// Runs `connect` on another thread while this thread ticks the publisher. On success it
+/// also ticks until the engine has seen the subscription: on Windows `connect` returns
+/// once its `ACCEPT` is written, and the engine reads it at a later tick.
 fn connect_in_process(
     ctx: &GpuContext,
     publisher: &mut PreviewPublisher,
@@ -381,7 +399,18 @@ fn connect_in_process(
         publisher.tick(ctx).unwrap();
         thread::yield_now();
     }
-    handle.join().unwrap()
+    let sub = handle.join().unwrap()?;
+    let start = Instant::now();
+    while !publisher.subscribed() {
+        // Hang guard only; the loop ends on the condition.
+        assert!(
+            start.elapsed() < Duration::from_secs(5),
+            "subscription not seen"
+        );
+        publisher.tick(ctx).unwrap();
+        thread::yield_now();
+    }
+    Ok(sub)
 }
 
 #[test]
@@ -446,8 +475,17 @@ fn wrong_token_gets_no_surfaces_and_idle_publish_does_no_work() {
 
     // Releasing frees the surfaces again.
     held.clear();
-    publisher.tick(ctx).unwrap();
-    assert_eq!(publisher.held(), 0);
+    // Mach delivers at once; a pipe read's completion may land a moment after the
+    // write returned (it is posted to the engine thread), so tick until it is seen.
+    let start = Instant::now();
+    while publisher.held() > 0 {
+        assert!(
+            start.elapsed() < Duration::from_secs(5),
+            "releases not seen"
+        );
+        publisher.tick(ctx).unwrap();
+        thread::yield_now();
+    }
     engine.publish(ctx, &mut publisher, 20);
     ctx.wait_idle().unwrap();
     publisher.tick(ctx).unwrap();

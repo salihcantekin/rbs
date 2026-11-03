@@ -45,6 +45,11 @@ objc2-foundation = { version = "0.3.2", default-features = false, features = ["s
 # The demo's self-measurement reads process CPU time (getrusage).
 libc = "0.2.180"
 
+[target.'cfg(windows)'.dev-dependencies]
+# The demo's self-measurement reads process CPU time and peak working set; the version
+# rbs-gpu and wgpu-hal already build.
+windows = { version = "0.62", features = ["Win32_Foundation", "Win32_System_ProcessStatus", "Win32_System_Threading"] }
+
 [build-dependencies]
 rbs-ui = { path = "../rbs-ui" }
 slint-build = "=1.18.1"

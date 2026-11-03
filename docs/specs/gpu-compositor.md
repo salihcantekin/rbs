@@ -46,6 +46,7 @@ impl GpuContext {
 ```
 
 - Adapter choice uses capabilities only. Vendor or device names are reported for diagnostics and never branched on (P3).
+- Among adapters of the same kind, the backend whose native interop RBS implements comes first: on Windows D3D12 before Vulkan (every shared surface there is a D3D12 object).
 - Reported capability keys: `gpu.software` (bool), `gpu.max_texture_dimension` (int), `gpu.timestamp_query` (bool), `gpu.import.dmabuf` (bool: the importer accepts Linux DMA-BUFs), `gpu.import.sync_file` (bool: the importer accepts `SurfaceSync::SyncFile` with DMA-BUFs, see [Native import](#native-import-interop)), `gpu.nv12_surface` (bool: the device creates multi-planar NV12 textures), `gpu.p010` (bool: `R16Unorm` and `Rg16Unorm` are render targets, needed for P010 planes; the 16-bit normalized feature alone guarantees only storage use, so the device also enables wgpu's adapter-specific format features and checks the adapter's format usages), `gpu.p010_surface` (bool: the device creates multi-planar P010 textures). Each optional feature is enabled on the device only when the adapter has it.
 - A Vulkan device whose adapter supports `VK_KHR_external_semaphore_fd` with `SYNC_FD` semaphore import (Vulkan 1.1 instance and device), and on which DMA-BUF import is enabled, is opened through wgpu's HAL (`open_with_callback`, then `create_device_from_hal`) with the same features, limits and memory hints, so the importer can add that extension, which wgpu does not enable. This path skips wgpu-core's request-time checks, including the `WGPU_STRICT_WEBGPU_COMPLIANCE` filtering, which RBS does not use. `gpu.import.sync_file` is reported only for such devices. Every other device uses `request_device`, so CI (lavapipe) never takes the HAL path.
 - Only the primary backends are used (Vulkan, Metal, D3D12); the adapter must support storage buffers in the vertex stage.
@@ -205,7 +206,7 @@ impl SurfaceExporter {
 
 ### Preview export (cross-process)
 
-Implements [ADR-0028](../adr/0028-cross-process-preview-surfaces.md) and the export side required by [ADR-0022](../adr/0022-native-ui-toolkit.md), decision 2: the engine shares program, preview and projector images with a UI in another process as native surfaces, never as pixels. Lives in `rbs_gpu::share`, a marked low-level module (P11). macOS only so far; Linux (DMA-BUF over a Unix socket) and Windows (NT handles) follow with the same messages.
+Implements [ADR-0028](../adr/0028-cross-process-preview-surfaces.md) and the export side required by [ADR-0022](../adr/0022-native-ui-toolkit.md), decision 2: the engine shares program, preview and projector images with a UI in another process as native surfaces, never as pixels. Lives in `rbs_gpu::share`, a marked low-level module (P11). Backends: macOS (IOSurfaces over Mach, below) and Windows (shared D3D12 textures over a named pipe, [ADR-0036](../adr/0036-windows-preview-layer.md), see [Windows](#windows-backend-adr-0036)); Linux (DMA-BUF over a Unix socket) follows with the same messages.
 
 Engine side, owned by the render executor:
 
@@ -311,6 +312,55 @@ impl PreviewLayer {                       // not Send: the UI's main thread
 - **Installed but unused costs nothing (P13).** A publisher exists only while a preview output is Active. While nobody is subscribed, `publish` returns at once without GPU work and `tick` makes one non-blocking receive call. The UI side starts its receive thread only while a preview panel is visible.
 - **Layer placement and overlap (ADR-0034).** The UI sets the layer's rectangle before every toolkit redraw (layout changes always redraw). The layer is above the toolkit's content: while toolkit content (menus, popups, toasts, dialogs) intersects the preview area, the UI hides the layer. Showing a frame costs one Core Animation transaction on the UI thread and no toolkit redraw.
 - **Same device, other process.** IOSurfaces are not tied to a device. The UI aliases them on its own Metal device with the same `interop::metal` code as the importer. Unified memory only, as for the encoder export.
+
+#### Windows backend (ADR-0036)
+
+Same types and semantics as above; the differences:
+
+```rust
+// Engine side: as on macOS, without `surface_ids`.
+impl PreviewSubscriber {
+    pub fn adapter_luid(&self) -> u64;                   // the surfaces open only on this adapter
+    pub fn surface_handle(&self, slot: usize) -> Option<u64>; // NT handle in this process, owned by the subscriber
+    /// Opens every surface on the UI's D3D12 device (same LUID, else `WrongAdapter`) as
+    /// `Rgba8Unorm` holding sRGB-encoded values, `TEXTURE_BINDING | RENDER_ATTACHMENT | COPY_SRC`.
+    pub fn textures(&self, ctx: &GpuContext) -> Result<Vec<wgpu::Texture>, GpuError>;
+}
+
+pub struct LayerRect { pub x: f64, pub y: f64, pub width: f64, pub height: f64 } // physical pixels, top-left origin
+pub const DEFAULT_RETIRE_POLL: Duration;  // 4 ms
+
+impl PreviewLayer {                       // not Send: the window's thread
+    /// D3D11 device on the engine's adapter, the shared textures as composition swapchain
+    /// buffers, a DirectComposition visual showing them. `Unsupported` without a
+    /// composition swapchain (WARP) or in a remote desktop session (`SM_REMOTESESSION`: the factory claims support there but nothing shows): use `textures` instead.
+    pub fn new(subscriber: &PreviewSubscriber) -> Result<PreviewLayer, GpuError>;
+    pub fn surfaces(&self) -> usize;
+    pub fn surfaces_needed(&self, frame_interval: Duration) -> usize; // shown + retiring + written + in flight; 5 at 60 fps
+    /// Topmost composition target of the window, above the toolkit's swapchain.
+    pub unsafe fn attach_to_hwnd(&mut self, hwnd: NonZeroIsize) -> Result<(), GpuError>;
+    pub fn detach(&mut self, now: Timestamp);
+    pub fn set_rect(&mut self, rect: LayerRect);   // aspect fit; no-op when unchanged
+    pub fn set_hidden(&self, hidden: bool);
+    pub fn set_retire_poll(&mut self, poll: Duration);
+    /// `SetBuffer` + `Present` of the frame's buffer. Never waits or allocates.
+    pub fn show(&mut self, frame: PreviewFrame, now: Timestamp);
+    /// Gives back replaced frames whose buffer `IsAvailable`. Returns how many wait.
+    pub fn retire(&mut self, now: Timestamp) -> usize;
+    pub fn next_retire(&self) -> Option<Timestamp>; // last check + poll, while a frame waits
+    pub fn retiring(&self) -> usize;
+    pub fn lost(&self) -> bool;                     // presentation manager lost: recreate or fall back
+}
+```
+
+- **Surfaces.** Committed `R8G8B8A8_UNORM` textures on the render device's D3D12 device, `D3D12_HEAP_FLAG_SHARED`, `ALLOW_RENDER_TARGET | ALLOW_SIMULTANEOUS_ACCESS`, one unnamed NT handle each. The preview pass encodes sRGB in the shader (`fs_preview_encode`), since flip-model and composition presentation take no sRGB formats; the bytes equal the macOS surfaces'. The render device must be D3D12 (`GpuContext` prefers D3D12 on Windows), else `new` returns `Unsupported`.
+- **Transport.** A message-mode named pipe `\\.\pipe\org.rbs.preview.<pid>.<n>.<nonce>`: one instance, created with `FILE_FLAG_FIRST_PIPE_INSTANCE`, remote clients rejected, a protected DACL granting only the engine process's user and a medium mandatory label without read, write or execute up (`D:P(A;;GA;;;<user SID>)S:(ML;;NWNRNX;;;ME)`; the engine runs at medium integrity or above). Token from `BCryptGenRandom`. The UI opens it with identification-level impersonation and checks that the server's process id is the pid in the name.
+- **Messages.** Little-endian 32-bit words, version 1: `SUBSCRIBE` (id, version, token: 4 words), `SURFACES` (id, version, generation, width, height, count, adapter LUID, then 8 handle values of 2 words: 24 words), `FRAME` (id, generation, slot, sequence, timestamp: 7 words), `RELEASE` (id, generation, slot: 3 words), and `ACCEPT` (UI to engine after `SURFACES`, id `0x52425005`, generation: 2 words). Ids as on macOS. The first message on a connection must be a valid `SUBSCRIBE`, else the engine disconnects. On `SUBSCRIBE` the engine duplicates every surface handle into the client process (`OpenProcess(PROCESS_DUP_HANDLE)` on the pid the pipe reports, `DuplicateHandle`) and sends `SURFACES`. The duplicates stay the engine's until `ACCEPT`: a UI that has not written `ACCEPT` never closes them, and the engine closes them in the UI process (`DUPLICATE_CLOSE_SOURCE`) only when the connection ends before `ACCEPT` on a decisive signal (the engine's read finds the UI's end closed, or `SURFACES` could not be sent); an engine-side end while offered (publisher dropped, unexpected message) leaves them to the client, a bounded leak until it exits. After `ACCEPT` the UI owns and closes them. Frames are sent only after `ACCEPT`. Undecodable or over-long messages (`ERROR_MORE_DATA`) are counted in `rejected` and do not end a subscription.
+- **Never block the render thread.** The connect, one read and ring size + 2 writes are overlapped operations with their own boxed `OVERLAPPED`, buffer and event; completion is checked by reading `OVERLAPPED::Internal` and collected without waiting. At most ring size + 1 messages are read per tick. A `FRAME` without a free write buffer is dropped (`dropped`), its surface stays free.
+- **End of a subscription.** The engine's read fails once the UI's end is closed (subscriber and every frame dropped, or the process exited, also while holding every surface), or a write finds the pipe closed: every surface is free and the next tick listens again. The UI's read fails once the engine is gone (`Disconnected`).
+- **Lifetime with the layer.** A replaced frame is released when its presentation buffer reports `IsAvailable` (the desktop compositor no longer reads it): a completion signal, so no torn frame from early release. Checked on every `show` and, while a frame waits, by a one-shot timer at `next_retire`. `detach` removes the visual and waits for commit completion; the last shown frame is kept until a later `show` replaces it (it then retires by `IsAvailable`) or the layer is lost or dropped. A frame shown while not attached goes back at once, unpresented. After `attach` the visual is added only at the first `show`; since presentation and the commit are separate channels, the old, complete frame can appear for one compositor frame at worst. A lost presentation manager (lost event checked per `show`, or a failed `Present`) releases every frame at once; `lost()` tells the UI to recreate the layer or fall back. Dropping the layer waits for commit completion, then releases everything.
+- **Fallback.** Without a composition swapchain the UI uses `textures` (ADR-0028 path); the toolkit must treat the `Rgba8Unorm` values as sRGB-encoded.
+- **Placement and overlap.** As on macOS, but in physical pixels (the toolkit's logical rectangle times its scale factor); the visual is in a topmost target, so the UI hides it while toolkit content overlaps the preview.
 
 ### Native import (interop)
 
@@ -435,6 +485,9 @@ Run on any adapter, including software adapters in CI (lavapipe on Linux, WARP o
 - Export (macOS CI, the runner's Metal device): NV12 and P010 (where `gpu.p010`) surface bytes, read through the IOSurface API with its plane strides, equal the two-plane output byte for byte on a two-colour canvas; the frame is an `IoSurface` frame with `Ready` sync, the right pixel format, time and sequence; the surface wraps as a `CVPixelBuffer` of the same format, size and plane count; held surfaces are not reused and a full ring returns `ExportBusy`; frames come out in order, and frames dropped on another thread free their surfaces; a frame stays valid and unchanged after both the exporter and the pool are dropped; odd sizes and ring sizes outside 2..=32 are rejected; a steady export loop allocates at most 4 more per frame than the same conversion into pool planes and does not grow.
 
 - Preview export (macOS CI): a child process subscribes, aliases the surfaces on its own device and reads back each frame; colours match the canvas of the frame's sequence (sRGB encoded, within ±1), the IOSurface IDs it sees equal the engine's (same memory, no copy), frames arrive in order, and a held surface is not reused. A wrong token gets no surfaces; nothing is converted while nobody is subscribed; when the child exits the engine ends the subscription and frees every surface; the steady publish loop allocates at most a small constant per frame more than the conversion alone and does not grow.
+- Preview export (Windows CI on WARP, ADR-0036, `tests/share_cross_process.rs`, `tests/share_alloc_metal.rs`): the same child-process checks without IOSurface IDs (the colours reach the child only through the shared textures); a second UI is refused while one is alive; after a UI exits holding every surface, a new UI subscribes and gets correct frames; the steady loop's allocations as above.
+- Layer arithmetic (every platform, `share::geometry`): aspect fit (letterbox, pillarbox, exact, degenerate sizes) and ring size (6 at 60 fps with the macOS 34 ms rule, 5 with the Windows one-refresh-plus-poll rule).
+- Preview layer on Windows: no CI coverage (WARP has no composition swapchain, so `PreviewLayer::new` returns `Unsupported` there). Manual run of `remote_preview` on the owner's Windows machine: frames on screen at 60 fps, placement and DPI, `IsAvailable` releases (engine `busy` stays near 0 with a ring of 6), the Slint fallback's colours, CPU. Passed 2026-11-03 on the physical console (Desktop Duplication capture: layer pixels equal the Slint path's, same placement after move and resize; `busy` 0); over remote desktop the layer is refused and Slint draws.
 - Preview layer (macOS CI, ADR-0034, `tests/share_layer_metal.rs`): the layer's contents are the engine's surface of each shown frame (same IOSurface ID); with fake time at an ideal 60 fps and a ring of `surfaces_needed`, the engine never finds every surface busy and the UI holds the shown frame plus at most three; with jittered frame times and retirement at `next_retire` the UI still holds at most `surfaces_needed - 2`; a replaced frame is released at its retire time, not before; `detach` retires the shown frame by the same rule; a ring of 3 reports `engine_may_starve` and recovers after the retire time; placement converts the top-left rectangle for flipped and unflipped superlayers, follows a height change and is a no-op for an unchanged rectangle. The on-screen check (placement, colours, no tearing, CPU) is a manual run of `remote_preview` on a Mac.
 ## Open questions
 
