@@ -104,6 +104,21 @@ impl<X: Runtime> Executor<X> {
             .map(|e| e.health)
     }
 
+    /// Binds the executor to the calling thread: calls [`Runtime::attach`]. Call it on a
+    /// thread before it ticks or swaps, and [`Executor::detach`] on the same thread
+    /// before the executor moves to another one. A panic in the hook is caught.
+    pub fn attach(&mut self) {
+        let (shared, local) = (&*self.shared, &mut self.local);
+        let _ = catch_unwind(AssertUnwindSafe(|| X::attach(shared, local)));
+    }
+
+    /// Unbinds the executor from the calling thread: calls [`Runtime::detach`]. A panic
+    /// in the hook is caught.
+    pub fn detach(&mut self) {
+        let (shared, local) = (&*self.shared, &mut self.local);
+        let _ = catch_unwind(AssertUnwindSafe(|| X::detach(shared, local)));
+    }
+
     /// Runs one tick, then applies a pending schedule so the next tick runs it.
     ///
     /// Order: `Runtime::begin_tick`, `process` of every scheduled node in dependency

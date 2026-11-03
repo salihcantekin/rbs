@@ -13,6 +13,7 @@ use std::sync::{Arc, Mutex, PoisonError};
 use std::thread::{self, JoinHandle, Thread};
 use std::time::Duration;
 
+use rbs_core::thread::{ThreadClass, ThreadGrant, ThreadPolicy, ThreadRequest};
 use rbs_core::time::{Clock, Timestamp};
 use rbs_core::timing::Cadence;
 use rbs_graph::runtime::queue::Doorbell;
@@ -81,6 +82,19 @@ pub struct WorkerStats {
     ticks: AtomicU64,
     late: AtomicU64,
     starts: AtomicU64,
+    /// The last worker's grant: 0 no policy, else `grant_code`.
+    grant: AtomicU8,
+    policy_errors: AtomicU64,
+}
+
+fn grant_code(grant: ThreadGrant) -> u8 {
+    match grant {
+        ThreadGrant::Unchanged => 1,
+        ThreadGrant::Raised => 2,
+        ThreadGrant::RealTime => 3,
+        // A grant added later counts as raised.
+        _ => 2,
+    }
 }
 
 impl WorkerStats {
@@ -97,6 +111,60 @@ impl WorkerStats {
     /// How many times a worker thread was started for the partition.
     pub fn starts(&self) -> u64 {
         self.starts.load(Ordering::Relaxed)
+    }
+
+    /// What the thread policy obtained for the latest worker thread: `None` if no policy
+    /// was set or it failed ([`WorkerStats::policy_errors`]); ADR-0030.
+    pub fn thread_grant(&self) -> Option<ThreadGrant> {
+        match self.grant.load(Ordering::Relaxed) {
+            1 => Some(ThreadGrant::Unchanged),
+            2 => Some(ThreadGrant::Raised),
+            3 => Some(ThreadGrant::RealTime),
+            _ => None,
+        }
+    }
+
+    /// Worker threads for which the thread policy returned an error (they ran at the
+    /// default class).
+    pub fn policy_errors(&self) -> u64 {
+        self.policy_errors.load(Ordering::Relaxed)
+    }
+}
+
+impl Pacing {
+    /// The thread class a worker with this pacing asks for (ADR-0030).
+    fn thread_class(&self) -> ThreadClass {
+        match self {
+            Pacing::Cadence { cadence, .. } => ThreadClass::Periodic {
+                period: cadence.time_of(1).saturating_since(cadence.time_of(0)),
+            },
+            Pacing::Doorbell { .. } => ThreadClass::Responsive,
+        }
+    }
+}
+
+/// Asks `policy` for the calling worker thread's class and records the outcome.
+fn enter_policy(
+    policy: Option<&dyn ThreadPolicy>,
+    pacing: &Pacing,
+    stats: &WorkerStats,
+) -> Option<rbs_core::thread::ThreadGuard> {
+    let policy = policy?;
+    let me = thread::current();
+    let request = ThreadRequest::new(me.name().unwrap_or("rbs-worker"), pacing.thread_class());
+    // The policy is the composition root's code; a panic must not lose the executor.
+    match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| policy.enter(&request))) {
+        Ok(Ok(guard)) => {
+            stats
+                .grant
+                .store(grant_code(guard.grant()), Ordering::Relaxed);
+            Some(guard)
+        }
+        Ok(Err(_)) | Err(_) => {
+            stats.grant.store(0, Ordering::Relaxed);
+            stats.policy_errors.fetch_add(1, Ordering::Relaxed);
+            None
+        }
     }
 }
 
@@ -170,6 +238,8 @@ pub(crate) struct WorkerSpec {
     pub(crate) stats: Arc<WorkerStats>,
     /// The first tick index the worker may use (ticks never repeat an index).
     pub(crate) next: u64,
+    /// Raises the thread's class before its first tick (ADR-0030).
+    pub(crate) policy: Option<Arc<dyn ThreadPolicy>>,
 }
 
 impl<X: Runtime> Worker<X> {
@@ -194,6 +264,7 @@ impl<X: Runtime> Worker<X> {
             bell,
             stats,
             next,
+            policy,
         } = spec;
         let thread_bell = bell.clone();
         let spawned = thread::Builder::new().name(name).spawn(move || {
@@ -203,8 +274,12 @@ impl<X: Runtime> Worker<X> {
                 .take();
             // The slot is filled before the thread starts and only emptied here or
             // after a failed spawn, so it always holds the executor.
-            executor.map(|executor| {
-                run(
+            executor.map(|mut executor| {
+                // Thread class first, then the runtime's thread-bound resources; undone
+                // in reverse order on this thread (ADR-0030).
+                let guard = enter_policy(policy.as_deref(), &pacing, &stats);
+                executor.attach();
+                let (mut executor, next) = run(
                     executor,
                     pacing,
                     &*clock,
@@ -212,7 +287,10 @@ impl<X: Runtime> Worker<X> {
                     &thread_signals,
                     &stats,
                     next,
-                )
+                );
+                executor.detach();
+                drop(guard);
+                (executor, next)
             })
         });
         match spawned {

@@ -15,6 +15,9 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use rbs_core::lifecycle::Lifecycle;
+use rbs_core::thread::{
+    ThreadClass, ThreadGrant, ThreadGuard, ThreadPolicy, ThreadPolicyError, ThreadRequest,
+};
 use rbs_core::time::{Clock, TestClock, Timestamp};
 use rbs_core::timing::{Cadence, FrameRate};
 use rbs_engine::{Engine, EngineConfig, EngineError, EngineEvent, EngineHandle, Pacing};
@@ -874,4 +877,180 @@ fn shutdown_after_a_timed_out_swap_leaves_no_worker() {
     let mut released = log.lock().unwrap().clone();
     released.sort_unstable();
     assert_eq!(released, vec!["a", "b", "source"], "every node released");
+}
+
+/// A runtime whose `Local` is bound to the thread that attached it (ADR-0030).
+struct Affine;
+
+#[derive(Default)]
+struct AffineLocal {
+    attached: Option<std::thread::ThreadId>,
+    log: Arc<AffineLog>,
+}
+
+#[derive(Default)]
+struct AffineLog {
+    attaches: AtomicU64,
+    detaches: AtomicU64,
+    /// Ticks or detaches on a thread that had not attached.
+    wrong_thread: AtomicU64,
+}
+
+impl Runtime for Affine {
+    type Shared = ();
+    type Local = AffineLocal;
+
+    fn attach(_: &(), local: &mut AffineLocal) {
+        if local.attached.is_some() {
+            local.log.wrong_thread.fetch_add(1, Ordering::Relaxed);
+        }
+        local.attached = Some(std::thread::current().id());
+        local.log.attaches.fetch_add(1, Ordering::Relaxed);
+    }
+
+    fn detach(_: &(), local: &mut AffineLocal) {
+        if local.attached != Some(std::thread::current().id()) {
+            local.log.wrong_thread.fetch_add(1, Ordering::Relaxed);
+        }
+        local.attached = None;
+        local.log.detaches.fetch_add(1, Ordering::Relaxed);
+    }
+
+    fn begin_tick(_: &(), local: &mut AffineLocal, _: rbs_graph::runtime::Tick) {
+        if local.attached != Some(std::thread::current().id()) {
+            local.log.wrong_thread.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+}
+
+/// Records each request and checks that its guard is dropped on the same thread.
+#[derive(Default)]
+struct RecordingPolicy {
+    requests: Mutex<Vec<(String, ThreadClass)>>,
+    restored: Arc<AtomicU64>,
+    restored_elsewhere: Arc<AtomicU64>,
+}
+
+impl ThreadPolicy for RecordingPolicy {
+    fn enter(&self, request: &ThreadRequest<'_>) -> Result<ThreadGuard, ThreadPolicyError> {
+        self.requests
+            .lock()
+            .unwrap()
+            .push((request.name.to_owned(), request.class));
+        if request.class == ThreadClass::Responsive {
+            return Err(ThreadPolicyError::Denied("test"));
+        }
+        let me = std::thread::current().id();
+        let (restored, elsewhere) = (
+            Arc::clone(&self.restored),
+            Arc::clone(&self.restored_elsewhere),
+        );
+        Ok(ThreadGuard::restoring(ThreadGrant::RealTime, move || {
+            restored.fetch_add(1, Ordering::Relaxed);
+            if std::thread::current().id() != me {
+                elsewhere.fetch_add(1, Ordering::Relaxed);
+            }
+        }))
+    }
+}
+
+#[test]
+fn workers_enter_the_thread_policy_and_attach_the_runtime_on_every_thread() {
+    let clock = TestClock::new();
+    let mut engine = Engine::with_clock(Arc::new(clock.clone()), EngineConfig::default());
+    let policy = Arc::new(RecordingPolicy::default());
+    engine.set_thread_policy(Some(Arc::clone(&policy) as Arc<dyn ThreadPolicy>));
+    let log = Arc::new(AffineLog::default());
+    let local = AffineLocal {
+        attached: None,
+        log: Arc::clone(&log),
+    };
+    engine
+        .add_partition::<Affine>(RENDER, Arc::new(()), local, cadence())
+        .unwrap();
+    engine
+        .add_partition::<()>(
+            OUTPUT,
+            Arc::new(()),
+            (),
+            Pacing::doorbell(Duration::from_millis(1)),
+        )
+        .unwrap();
+    let mut graph = GraphDescription::new();
+    let source = TestNode::new(Role::Source, "source");
+    let sink = TestNode::new(Role::VideoSink, "sink");
+    let ids = (
+        add(&mut graph, &source, RENDER),
+        add(&mut graph, &sink, RENDER),
+    );
+    graph.connect(ids.0, "out", ids.1, "in").unwrap();
+    engine
+        .adopt::<Affine>(RENDER, ids.0, Box::new(source))
+        .unwrap();
+    engine
+        .adopt::<Affine>(RENDER, ids.1, Box::new(sink))
+        .unwrap();
+    let (out_source, out_sink) = (
+        TestNode::new(Role::Source, "out-source"),
+        TestNode::new(Role::VideoSink, "out-sink"),
+    );
+    let out = (
+        add(&mut graph, &out_source, OUTPUT),
+        add(&mut graph, &out_sink, OUTPUT),
+    );
+    graph.connect(out.0, "out", out.1, "in").unwrap();
+    engine
+        .adopt::<()>(OUTPUT, out.0, Box::new(out_source))
+        .unwrap();
+    engine
+        .adopt::<()>(OUTPUT, out.1, Box::new(out_sink))
+        .unwrap();
+
+    let render = engine.worker_stats(RENDER).unwrap();
+    let output = engine.worker_stats(OUTPUT).unwrap();
+    for round in 1..=2 {
+        engine.apply(&graph).unwrap();
+        assert_eq!(render.starts(), round);
+        let before = render.ticks();
+        clock.advance(FRAME);
+        engine.wake(RENDER);
+        assert!(eventually(LIMIT, || render.ticks() > before));
+        // The render worker stops (its sink goes Standby) and restarts on a new thread.
+        graph.set_state(ids.1, Lifecycle::Standby).unwrap();
+        engine.apply(&graph).unwrap();
+        assert!(!engine.has_worker(RENDER));
+        graph.set_state(ids.1, Lifecycle::Active).unwrap();
+    }
+    // A denied policy leaves the worker at its default class; it still ticks.
+    assert!(eventually(LIMIT, || output.ticks() >= 3));
+    assert_eq!(output.thread_grant(), None);
+    assert_eq!(output.policy_errors(), 1);
+    assert_eq!(render.thread_grant(), Some(ThreadGrant::RealTime));
+    let report = engine.shutdown();
+    assert!(report.errors.is_empty(), "{:?}", report.errors);
+
+    let requests = policy.requests.lock().unwrap().clone();
+    let render_requests: Vec<_> = requests.iter().filter(|(n, _)| n == "rbs-render").collect();
+    assert_eq!(render_requests.len(), 2, "{requests:?}");
+    for (_, class) in render_requests {
+        match class {
+            ThreadClass::Periodic { period } => {
+                assert!(
+                    period.abs_diff(FRAME) < Duration::from_micros(1),
+                    "{class:?}"
+                );
+            }
+            other => panic!("render asked for {other:?}"),
+        }
+    }
+    assert!(requests.contains(&("rbs-partition-3".to_owned(), ThreadClass::Responsive)));
+    // Each granted guard was undone once, on its own thread.
+    assert_eq!(policy.restored.load(Ordering::Relaxed), 2);
+    assert_eq!(policy.restored_elsewhere.load(Ordering::Relaxed), 0);
+    // Every thread that ran the render executor attached it first and detached it
+    // after; nothing ran it unattached.
+    let attaches = log.attaches.load(Ordering::Relaxed);
+    assert!(attaches >= 2, "{attaches}");
+    assert_eq!(attaches, log.detaches.load(Ordering::Relaxed));
+    assert_eq!(log.wrong_thread.load(Ordering::Relaxed), 0);
 }

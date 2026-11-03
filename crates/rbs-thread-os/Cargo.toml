@@ -1,0 +1,36 @@
+[package]
+name = "rbs-thread-os"
+description = "OS adapter for the RBS thread policy port: MMCSS and timer resolution on Windows, time-constraint policy on macOS, SCHED_FIFO or rtkit and timer slack on Linux."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+rbs-core = { path = "../rbs-core" }
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+# rtkit over the system D-Bus (pure Rust, MIT); already in the workspace through the
+# desktop shell's accessibility stack.
+[target.'cfg(target_os = "linux")'.dependencies]
+zbus = { version = "5", optional = true, default-features = false, features = ["blocking-api", "async-io"] }
+
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.62", features = [
+    "Win32_Foundation",
+    "Win32_Media",
+    "Win32_System_Threading",
+] }
+
+[features]
+default = ["rtkit"]
+# Linux: ask rtkit (org.freedesktop.RealtimeKit1) for SCHED_RR when the process may
+# not set a real-time class itself.
+rtkit = ["dep:zbus"]
+
+[lints]
+workspace = true

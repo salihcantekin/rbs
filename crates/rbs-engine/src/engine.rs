@@ -5,6 +5,7 @@ use std::fmt;
 use std::sync::Arc;
 use std::time::Duration;
 
+use rbs_core::thread::ThreadPolicy;
 use rbs_core::time::{Clock, MonotonicClock};
 use rbs_graph::description::{GraphDescription, Link, NodeId, PartitionId};
 use rbs_graph::partition::{Crossing, LowerProblem, Lowering};
@@ -208,6 +209,8 @@ pub struct Engine {
     dirty: BTreeSet<PartitionId>,
     /// Moves whose instance was not idle yet: `(node, from, to)`.
     moves: Vec<(NodeId, PartitionId, PartitionId)>,
+    /// Raises worker threads' scheduling class (ADR-0030); none by default.
+    thread_policy: Option<Arc<dyn ThreadPolicy>>,
     shut_down: bool,
 }
 
@@ -247,6 +250,7 @@ impl Engine {
             retiring: Vec::new(),
             dirty: BTreeSet::new(),
             moves: Vec::new(),
+            thread_policy: None,
             shut_down: false,
         }
     }
@@ -280,9 +284,24 @@ impl Engine {
             Pacing::Doorbell { .. } => Some(self.lowering.doorbell(id)),
             Pacing::Cadence { .. } => None,
         };
-        let part = Partition::<X>::new(id, shared, local, pacing, Arc::clone(&self.clock), bell);
+        let mut part =
+            Partition::<X>::new(id, shared, local, pacing, Arc::clone(&self.clock), bell);
+        part.set_thread_policy(self.thread_policy.clone());
         self.parts.insert(id, Box::new(part));
         Ok(())
+    }
+
+    /// Sets the policy that raises each worker thread's scheduling class (ADR-0030):
+    /// called on the worker thread before its first tick, with
+    /// [`ThreadClass::Periodic`](rbs_core::thread::ThreadClass::Periodic) for cadence
+    /// partitions and [`ThreadClass::Responsive`](rbs_core::thread::ThreadClass::Responsive)
+    /// for doorbell partitions, and undone on that thread after its last tick. Applies
+    /// to workers started from now on; `None` (the default) calls nothing.
+    pub fn set_thread_policy(&mut self, policy: Option<Arc<dyn ThreadPolicy>>) {
+        for part in self.parts.values_mut() {
+            part.set_thread_policy(policy.clone());
+        }
+        self.thread_policy = policy;
     }
 
     fn typed<X: Runtime>(&mut self, p: PartitionId) -> Result<&mut Partition<X>, EngineError> {

@@ -2,7 +2,7 @@
 
 - Status: Draft
 - Owner crate(s): `rbs-engine`
-- Related ADRs: [0013](../adr/0013-zero-cost-when-unused.md), [0020](../adr/0020-node-contract-and-schedule-swap.md), [0024](../adr/0024-node-restart-with-back-off.md), [0026](../adr/0026-partitions-and-queues.md), [0027](../adr/0027-engine-loop.md), [0029](../adr/0029-final-ticks-on-drain.md)
+- Related ADRs: [0013](../adr/0013-zero-cost-when-unused.md), [0020](../adr/0020-node-contract-and-schedule-swap.md), [0024](../adr/0024-node-restart-with-back-off.md), [0026](../adr/0026-partitions-and-queues.md), [0027](../adr/0027-engine-loop.md), [0029](../adr/0029-final-ticks-on-drain.md), [0030](../adr/0030-worker-thread-setup.md)
 
 ## Purpose
 
@@ -12,7 +12,7 @@ Runs a logical media graph split into partitions, each partition's executor on i
 
 In scope: worker threads, pacing, applying lowered descriptions to partitions (including node moves), the restart control loop, shutdown, a non-blocking handle for UI threads.
 
-Out of scope (later): thread priorities and real-time classes, high-resolution timers, CPU affinity, audio partitions, the control API (`rbs-api`).
+Out of scope (later): CPU affinity, waitable high-resolution timers, audio partitions, the control API (`rbs-api`).
 
 ## Contract
 
@@ -40,6 +40,7 @@ impl Engine {
     pub fn workers(&self) -> usize;
     pub fn wake(&self, p: PartitionId);
     pub fn set_packet_capacity(&mut self, packets: usize);
+    pub fn set_thread_policy(&mut self, policy: Option<Arc<dyn ThreadPolicy>>); // ADR-0030
 }
 
 pub enum Pacing {
@@ -71,6 +72,7 @@ Invariants (tested in `crates/rbs-engine/tests/engine.rs` unless noted):
 7. **Restarts.** A node bypassed on a worker is reported (`RuntimeEvent::Failed`) by a later `service` and, after its back-off, prepared again (`Restarted`) without any edit.
 8. **Shutdown order.** Partitions drain in pipeline order (topological along queues, ties and cycles by id): every node of a producer partition is released before any node of the partitions it feeds. All workers are joined afterwards; later calls return `EngineError::ShutDown`.
 8a. **Final ticks.** Before its empty schedule is swapped in, each running partition runs its final tick(s) on its own worker, on the old schedule: a `Cadence` worker one tick at once (the next free index, which may be up to one period ahead of its time), so an encoder encodes the last frame render wrote; a `Doorbell` worker one tick, then one more for each ring a `PacketReader` left because packets were still queued (at most `MAX_DRAIN_TICKS` = 4096), so every packet in the queue when the output drains is passed on (best effort in a cycle of partitions). Afterwards the worker runs no tick; the empty schedule is swapped (and nodes cooled) on the same worker thread. If the final ticks miss `swap_timeout`, the worker is joined instead and the partition drained on the control thread.
+8b. **Thread setup** (ADR-0030). With a `ThreadPolicy` set, each worker calls `enter` on its own thread before its first tick (`Periodic { period }` for `Cadence`, `Responsive` for `Doorbell`) and drops the guard on that thread after its last tick; an error or panic leaves the worker at the default class (`WorkerStats::policy_errors`, `thread_grant() == None`). Without a policy nothing is called. Every thread that ticks or swaps an executor calls `Executor::attach` first and `Executor::detach` before the executor leaves it (workers, and the control thread around a swap without a worker).
 9. **Runtime types** are checked: typed calls on a partition of another runtime return `WrongRuntime`.
 
 Thread rules: every `Engine` method runs on the control thread and may block up to `EngineConfig::swap_timeout` per wait for a worker (`shutdown` waits up to twice per partition: final ticks, then the swap), plus as long as a node hung in `process` takes to return. `EngineHandle` methods never block (they queue a command); its `EventSink` runs on the control thread and must not block. Dropping an `EngineHandle` shuts down and joins.
@@ -81,7 +83,7 @@ Thread rules: every `Engine` method runs on the control thread and may block up 
 - Final ticks that do not finish within `swap_timeout` are reported (`DrainTimeout`); the worker is joined (waiting for a node still in `process`) and the partition is drained on the control thread.
 - A swap that does not complete within `swap_timeout` is reported (`SwapTimeout`); `service` collects it and finishes what waited for it (unsent parts, moves, retired endpoints). A worker thread that cannot start is reported (`Spawn`) and tried again on the next apply. A drain that times out at shutdown is finished after the worker is joined: the nodes are cooled on the control thread and released.
 - `EngineHandle`: a panicking `run` job is reported (`EngineError::JobPanicked`) and the engine keeps running; a panicking `EventSink` ends the control thread. A node hung in `process` blocks shutdown (and so `EngineHandle`'s drop) until it returns.
-- `X::Local` and node instances move to a new OS thread whenever a partition's worker is stopped and started again (ADR-0013), so they must not be thread-affine. A runtime that needs a thread-bound context (COM apartment, CUDA current context) creates it per tick or holds it outside `Local` until an attach hook exists.
+- `X::Local` and node instances move to a new OS thread whenever a partition's worker is stopped and started again (ADR-0013). A runtime that needs a thread-bound context (COM apartment, CUDA current context) binds it in `Runtime::attach` and unbinds it in `Runtime::detach`, which run on each thread before it ticks or swaps and before the executor leaves it (ADR-0030). Node instances themselves must not be thread-affine.
 - Node failures are contained by the executor and controller (ADR-0020, ADR-0024); the worker loop itself never panics on node errors.
 
 ## Performance requirements
@@ -96,8 +98,5 @@ Thread rules: every `Engine` method runs on the control thread and may block up 
 ## Open questions
 
 - An end-of-stream flush for encoders that hold frames back (B-frames, lookahead): the final tick hands them the last frame, but nothing asks them to emit what they still hold before `cool` and `release`.
-
-- Thread priorities, real-time classes and high-resolution timers per platform.
-- An attach hook on `Runtime` for thread-affine resources when a worker thread changes.
 - A move overtaken by a second move of the same node before its first finished (A to B pending after a timeout, then B to C) is dropped and the second reports `MoveNotIdle`; the node is applied again on the next edit that touches it. Tracking where each instance actually is would close this.
 - A non-blocking `apply` state machine if a control-thread caller ever cannot wait.
