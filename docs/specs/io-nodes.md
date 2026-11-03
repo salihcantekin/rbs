@@ -2,7 +2,7 @@
 
 - Status: Draft
 - Owner crate(s): `rbs-nodes`, `rbs-gpu` (`upload`, `download`)
-- Related ADRs: [0013](../adr/0013-zero-cost-when-unused.md), [0020](../adr/0020-node-contract-and-schedule-swap.md), [0024](../adr/0024-node-restart-with-back-off.md), [0025](../adr/0025-encoder-surface-export.md), [0026](../adr/0026-partitions-and-queues.md), [0038](../adr/0038-io-graph-nodes.md)
+- Related ADRs: [0013](../adr/0013-zero-cost-when-unused.md), [0028](../adr/0028-cross-process-preview-surfaces.md), [0036](../adr/0036-windows-preview-layer.md), [0041](../adr/0041-studio-recording-on-a-running-engine.md), [0020](../adr/0020-node-contract-and-schedule-swap.md), [0024](../adr/0024-node-restart-with-back-off.md), [0025](../adr/0025-encoder-surface-export.md), [0026](../adr/0026-partitions-and-queues.md), [0038](../adr/0038-io-graph-nodes.md)
 - Builds on: [media graph](media-graph.md) (node contract, partitions), [capture port](capture-port.md), [output ports](output-ports.md), [GPU compositor](gpu-compositor.md)
 
 ## Purpose
@@ -142,13 +142,39 @@ Invariants:
 5. Muxer and transport creation errors and `begin` errors are permanent; a `start` error is retried only when `TransportError::is_recoverable`.
 6. The first permanent failure's cause (for example `muxer: invalid packet: ...`) is kept in `failure`; the string is built only on that path.
 
+### Preview node (ADR-0041)
+
+```rust
+// rbs_nodes::preview
+pub const PREVIEW_NODE_TYPE: &str = "org.rbs.preview";
+pub fn preview_descriptor() -> NodeDescriptor;       // Output, input "canvas" (Video), no outputs
+impl PreviewNode {
+    pub fn new(desc: PreviewDesc) -> Self;            // configuration only (Installed)
+    pub fn stats(&self) -> Arc<PreviewNodeStats>;
+}
+impl PreviewNodeStats {                               // relaxed atomics, endpoint behind a mutex
+    pub fn endpoint(&self) -> Option<PreviewEndpoint>; // Some while prepared
+    pub subscribed: AtomicBool, pub published: AtomicU64, pub busy: AtomicU64, pub errors: AtomicU64,
+}
+```
+
+Render partition, `GpuRuntime`. An `Output`, so a canvas that nothing records stays scheduled while a UI shows it.
+
+| Call | Does |
+| --- | --- |
+| `prepare` | Creates a `PreviewPublisher` (`rbs_gpu::share`, ADR-0028 on macOS, ADR-0036 on Windows) on the render device and stores its endpoint in the stats (control thread). On other platforms fails with `Permanent` |
+| `process` | For a canvas frame not seen before (by timestamp and sequence): `publish` it (nothing is converted while no UI is subscribed; `ExportBusy` when the UI holds every surface is counted in `busy`, the frame dropped). Then `tick` the publisher every tick (accepts a UI, reads releases, sends finished frames). A lost device is `Backend`; other publish or tick errors are counted in `errors` |
+| `release` | Drops the publisher (the UI's connection ends) and clears the endpoint |
+
+Invariants: no CPU readback (P4); `process` does not allocate in RBS code and never waits (the publisher's hot-path rules); the endpoint is written only on the control thread; a restart creates a new endpoint (the UI reconnects).
+
 ## Errors and failure behaviour
 
 Nodes report through `NodeError` (ADR-0020): `Permanent` for what retrying cannot fix (permissions, missing targets, unsupported formats, a changed encoder stream, a failed output), `Backend`/`Failed` for what may recover (a lost capture target, a busy device), which the controller restarts with back-off (ADR-0024).
 
 ## Performance requirements
 
-- Hot paths ([hot-paths.md](../architecture/hot-paths.md)): every `process` above, `SourceUpload::upload`, `YuvDownload::submit` and `take_ready`.
+- Hot paths ([hot-paths.md](../architecture/hot-paths.md)): every `process` above (the preview node's is `PreviewPublisher::publish` and `tick` plus a key comparison), `SourceUpload::upload`, `YuvDownload::submit` and `take_ready`.
 - Encoder and output `process` allocate nothing in steady state (test `steady_state_ticks_do_not_allocate`). The GPU nodes allocate nothing in RBS code for a format and size they have seen; wgpu allocates internally while recording command buffers and for the map callback.
 - The export's CPU copy is one `memcpy` of the frame (about 3 MB at 1080p NV12) per delivered frame on the render thread; measured in the PR that adds it.
 

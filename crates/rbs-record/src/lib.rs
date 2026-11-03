@@ -19,6 +19,7 @@
 
 mod recording;
 mod select;
+mod studio;
 
 pub use recording::{
     AUDIO, AUDIO_ENCODER, AudioSettings, FinishReport, OUTPUT, Partitions, Port, Progress, RENDER,
@@ -26,3 +27,4 @@ pub use recording::{
     StartFailure, StartReport, VIDEO_ENCODER, VideoSettings,
 };
 pub use select::{Chosen, scheme_of};
+pub use studio::{MAX_LAYERS, OutputSettings, Studio, StudioSettings, Updated};

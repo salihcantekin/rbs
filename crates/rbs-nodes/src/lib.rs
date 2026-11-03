@@ -6,6 +6,7 @@
 //! | [`export::VideoExportNode`] | `org.rbs.video-export` | VideoFilter | render | `GpuRuntime` |
 //! | [`encode::VideoEncoderNode`] | `org.rbs.video-encoder` | Encoder | one per encoder | any |
 //! | [`output::OutputNode`] | `org.rbs.output` | Output | one per output | any |
+//! | [`preview::PreviewNode`] | `org.rbs.preview` | Output | render | `GpuRuntime` |
 //!
 //! A recording is `capture -> compositor -> video export ==queue==> video encoder
 //! ==queue==> output`, where `==queue==>` is a partition crossing (ADR-0026). The nodes
@@ -22,8 +23,10 @@ pub mod capture;
 pub mod encode;
 pub mod export;
 pub mod output;
+pub mod preview;
 
 pub use capture::{CAPTURE_NODE_TYPE, CaptureSourceNode, capture_descriptor};
 pub use encode::{VIDEO_ENCODER_NODE_TYPE, VideoEncoderNode, video_encoder_descriptor};
 pub use export::{VIDEO_EXPORT_NODE_TYPE, VideoExportNode, video_export_descriptor};
 pub use output::{OUTPUT_NODE_TYPE, OutputNode, output_descriptor};
+pub use preview::{PREVIEW_NODE_TYPE, PreviewNode, PreviewNodeStats, preview_descriptor};
