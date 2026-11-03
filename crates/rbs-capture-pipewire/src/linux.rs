@@ -10,9 +10,9 @@ use std::collections::HashMap;
 use std::os::fd::{FromRawFd, OwnedFd};
 use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, MutexGuard, Once, PoisonError, mpsc};
+use std::sync::{Arc, Condvar, Mutex, MutexGuard, Once, PoisonError, mpsc};
 use std::thread::JoinHandle;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use bytes::BytesMut;
 use pipewire as pw;
@@ -58,6 +58,10 @@ const LIVE_PREFIX: &str = "live-";
 
 /// Picks without a restore token kept at once; the oldest is closed first.
 const MAX_LIVE: usize = 4;
+
+/// How long a pick without a restore token is kept for a session to start it. Expired
+/// casts are closed at the factory's next portal call.
+const LIVE_EXPIRY: Duration = Duration::from_secs(60);
 
 /// Longest wait for the portal to restore a choice at `start`. A valid token restores
 /// without a dialog in well under this; a portal that shows its dialog instead (the
@@ -416,22 +420,48 @@ fn portal_id(kind: TargetKind, key: &str) -> TargetId {
     TargetId::new(format!("{PORTAL_PREFIX}{}:{key}", kind.as_str()))
 }
 
-/// The portal choices of one factory, shared with its sessions.
+/// The portal choices of one factory, shared with its sessions. Control threads only.
+#[derive(Debug, Default)]
+struct Choices {
+    picks: Mutex<Picks>,
+    /// Signalled when a restore ends.
+    restored: Condvar,
+}
+
 #[derive(Debug, Default)]
 struct Picks {
     /// Every key and restore token seen, by choice (an index into `newest`). Restore
     /// tokens are single use, so all ids that ever named a choice map to it.
     choices: HashMap<String, usize>,
-    /// The newest restore token per choice; `None` once a start returned no new token,
-    /// so the choice cannot be restored any more.
+    /// The newest restore token per choice; `None` once the portal used the last one
+    /// without handing out another, so the choice cannot be restored any more.
     newest: Vec<Option<String>>,
-    /// Casts picked without a restore token, until a session starts them.
-    live: Vec<(String, Cast)>,
+    /// Whether a session is restoring the choice now; restores of one choice run one
+    /// after the other, each with the token the previous one received.
+    restoring: Vec<bool>,
+    /// Casts picked without a restore token, until a session starts them or they
+    /// expire.
+    live: Vec<Live>,
     next_live: u64,
 }
 
-fn lock(picks: &Mutex<Picks>) -> MutexGuard<'_, Picks> {
-    picks.lock().unwrap_or_else(PoisonError::into_inner)
+/// A cast picked without a restore token.
+#[derive(Debug)]
+struct Live {
+    key: String,
+    cast: Cast,
+    picked: Instant,
+}
+
+fn lock(choices: &Choices) -> MutexGuard<'_, Picks> {
+    choices.picks.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
+/// Closes casts outside the lock: each close is a D-Bus round trip.
+fn close_all(casts: Vec<Cast>) {
+    for mut cast in casts {
+        cast.close();
+    }
 }
 
 impl Picks {
@@ -442,34 +472,51 @@ impl Picks {
             return *choice;
         }
         self.newest.push(Some(key.to_owned()));
+        self.restoring.push(false);
         let choice = self.newest.len() - 1;
         self.choices.insert(key.to_owned(), choice);
         choice
     }
 
-    /// The newest token of the choice `key` names: `None` if it cannot be restored.
-    fn newest(&mut self, key: &str) -> Option<String> {
-        let choice = self.choice(key);
-        self.newest.get(choice).cloned().flatten()
+    /// The newest token of the choice `key` names, without recording an unknown key:
+    /// `None` if unknown, `Some(None)` if it cannot be restored any more.
+    fn peek(&self, key: &str) -> Option<Option<&str>> {
+        let choice = *self.choices.get(key)?;
+        self.newest.get(choice).map(Option::as_deref)
     }
 
-    /// Records `token` as the newest of the choice `key` names (`None`: no token left).
-    fn advance(&mut self, key: &str, token: Option<String>) {
-        let choice = self.choice(key);
-        if let Some(token) = &token {
+    /// Records `next` as the newest token of `choice` if `used` is still the newest
+    /// (`None`: no token left). A restore that lost a race never overwrites a newer
+    /// token.
+    fn advance(&mut self, choice: usize, used: &str, next: Option<String>) {
+        if let Some(token) = &next {
             self.choices.insert(token.clone(), choice);
         }
         if let Some(newest) = self.newest.get_mut(choice) {
-            *newest = token;
+            if newest.as_deref() == Some(used) {
+                *newest = next;
+            }
         }
+    }
+
+    /// Takes out live casts older than [`LIVE_EXPIRY`], to be closed outside the lock.
+    fn expire(&mut self) -> Vec<Cast> {
+        let (old, keep): (Vec<Live>, Vec<Live>) = std::mem::take(&mut self.live)
+            .into_iter()
+            .partition(|live| live.picked.elapsed() >= LIVE_EXPIRY);
+        self.live = keep;
+        old.into_iter().map(|live| live.cast).collect()
     }
 }
 
 impl Drop for Picks {
     fn drop(&mut self) {
-        for (_, cast) in &mut self.live {
-            cast.close();
-        }
+        close_all(
+            std::mem::take(&mut self.live)
+                .into_iter()
+                .map(|l| l.cast)
+                .collect(),
+        );
     }
 }
 
@@ -543,14 +590,14 @@ fn accept(request: &CaptureRequest) -> Result<Offer, CaptureError> {
 /// Factory of the PipeWire adapter.
 #[derive(Debug)]
 pub struct PipeWireCaptureFactory {
-    picks: Arc<Mutex<Picks>>,
+    choices: Arc<Choices>,
     restore_timeout: Duration,
 }
 
 impl Default for PipeWireCaptureFactory {
     fn default() -> Self {
         Self {
-            picks: Arc::default(),
+            choices: Arc::default(),
             restore_timeout: RESTORE_TIMEOUT,
         }
     }
@@ -654,13 +701,16 @@ impl CaptureFactory for PipeWireCaptureFactory {
                 (Source::Node(name.to_owned()), offer)
             }
             Target::Portal { kind, key } => {
-                let mut picks = lock(&self.picks);
-                let known = if key.starts_with(LIVE_PREFIX) {
-                    picks.live.iter().any(|(k, _)| k == key)
-                } else {
-                    picks.newest(key).is_some()
-                };
+                let mut picks = lock(&self.choices);
+                let expired = picks.expire();
+                let known = picks.live.iter().any(|live| live.key == key)
+                    || match picks.peek(key) {
+                        Some(newest) => newest.is_some(),
+                        // An id stored by an earlier run carries its own token.
+                        None => !key.starts_with(LIVE_PREFIX),
+                    };
                 drop(picks);
+                close_all(expired);
                 if !known {
                     return Err(CaptureError::TargetNotFound);
                 }
@@ -668,9 +718,8 @@ impl CaptureFactory for PipeWireCaptureFactory {
                 let source = Source::Portal(PortalSource {
                     kind,
                     key: key.to_owned(),
-                    token: None,
                     cursor: request.cursor,
-                    picks: Arc::clone(&self.picks),
+                    choices: Arc::clone(&self.choices),
                     restore_timeout: self.restore_timeout,
                 });
                 (source, offer)
@@ -703,37 +752,42 @@ impl CaptureFactory for PipeWireCaptureFactory {
             ));
         }
         // Waits for the user; the cursor is embedded so a live pick (below) shows it.
-        let mut cast = Cast::start(&CastRequest {
+        let cast = Cast::start(&CastRequest {
             kind,
             cursor: true,
             restore_token: None,
             timeout: None,
         })?;
         let size = cast.stream.size;
-        let mut picks = lock(&self.picks);
+        let mut close = Vec::new();
         let key = match cast.stream.restore_token.clone() {
             Some(token) => {
                 // A session restores the choice with the token at `start`; nothing is
                 // kept meanwhile (Standby, P13).
-                cast.close();
-                drop(cast);
-                picks.advance(&token, Some(token.clone()));
+                close.push(cast);
+                lock(&self.choices).choice(&token);
                 token
             }
             None => {
                 // The portal cannot restore this choice (no persistence, or the user
-                // declined it): keep the started cast for the session that opens it.
+                // declined it): keep the started cast for a session to start, for at
+                // most `LIVE_EXPIRY` (an exception to invariant 1, see the spec).
+                let mut picks = lock(&self.choices);
+                close.extend(picks.expire());
                 picks.next_live += 1;
                 let key = format!("{LIVE_PREFIX}{}", picks.next_live);
-                picks.live.push((key.clone(), cast));
+                picks.live.push(Live {
+                    key: key.clone(),
+                    cast,
+                    picked: Instant::now(),
+                });
                 if picks.live.len() > MAX_LIVE {
-                    let (_, mut oldest) = picks.live.remove(0);
-                    oldest.close();
+                    close.push(picks.live.remove(0).cast);
                 }
                 key
             }
         };
-        drop(picks);
+        close_all(close);
         let name = match kind {
             TargetKind::Display => "Picked display",
             _ => "Picked window",
@@ -756,8 +810,10 @@ impl CaptureFactory for PipeWireCaptureFactory {
 
 /// The offer for a portal screen cast. Compositors deliver screens and windows in
 /// BGRA or BGRx (mutter, KWin, wlroots); RGB orders are not offered, so `format()` is
-/// exact before `start`. Memory kinds stay in request order: whether the compositor
-/// can share DMA-BUFs with the importer's modifiers is only known once linked.
+/// exact before `start`. Only the first memory kind the adapter supports is offered
+/// (invariant 4): whether a compositor can share DMA-BUFs with the importer's
+/// modifiers is only known when the stream links, and a link that cannot deliver it
+/// fails `start` rather than falling back.
 fn portal_offer(offer: Offer) -> Option<Offer> {
     if offer.wires.first()?.pixel_format != PixelFormat::Bgra8 {
         // The first requested format the adapter supports must win (invariant 4);
@@ -769,7 +825,12 @@ fn portal_offer(offer: Offer) -> Option<Offer> {
         .into_iter()
         .filter(|w| w.pixel_format == PixelFormat::Bgra8)
         .collect();
-    Some(Offer { wires, ..offer })
+    let memory = vec![*offer.memory.first()?];
+    Some(Offer {
+        wires,
+        memory,
+        ..offer
+    })
 }
 
 fn serialize(value: Value) -> Option<Vec<u8>> {
@@ -1462,67 +1523,99 @@ struct PortalSource {
     kind: TargetKind,
     /// The key of the id the session was opened with.
     key: String,
-    /// The newest restore token this session knows of.
-    token: Option<String>,
     cursor: bool,
-    picks: Arc<Mutex<Picks>>,
+    choices: Arc<Choices>,
     restore_timeout: Duration,
 }
 
 impl PortalSource {
     /// Starts the cast: the live pick if this key has one, otherwise restores the
-    /// choice with the newest token, without a dialog.
+    /// choice with its newest token, without a dialog.
     fn start(&mut self) -> Result<Cast, CaptureError> {
-        let token = {
-            let mut picks = lock(&self.picks);
-            if let Some(index) = picks.live.iter().position(|(k, _)| *k == self.key) {
-                let (_, cast) = picks.live.remove(index);
-                // Started once; it cannot be restored after it stops.
-                picks.advance(&self.key, None);
-                self.token = None;
-                return Ok(cast);
-            }
-            if self.key.starts_with(LIVE_PREFIX) && !picks.choices.contains_key(&self.key) {
-                return Err(CaptureError::TargetNotFound);
-            }
-            // An unknown key is a token stored in a scene by an earlier run.
-            picks
-                .newest(&self.key)
-                .ok_or(CaptureError::TargetNotFound)?
+        let mut picks = lock(&self.choices);
+        let expired = picks.expire();
+        if let Some(index) = picks.live.iter().position(|live| live.key == self.key) {
+            let cast = picks.live.remove(index).cast;
+            // Started once; it cannot be restored after it stops.
+            let choice = picks.choice(&self.key);
+            picks.advance(choice, &self.key, None);
+            drop(picks);
+            close_all(expired);
+            return Ok(cast);
+        }
+        if self.key.starts_with(LIVE_PREFIX) && !picks.choices.contains_key(&self.key) {
+            drop(picks);
+            close_all(expired);
+            return Err(CaptureError::TargetNotFound);
+        }
+        // An unknown key is a token stored in a scene by an earlier run.
+        let choice = picks.choice(&self.key);
+        // One restore per choice at a time: the next one needs the token this one
+        // receives. Each waits at most for one bounded `Cast::start`.
+        while picks.restoring.get(choice).copied().unwrap_or(false) {
+            picks = self
+                .choices
+                .restored
+                .wait(picks)
+                .unwrap_or_else(PoisonError::into_inner);
+        }
+        let Some(token) = picks.newest.get(choice).cloned().flatten() else {
+            drop(picks);
+            close_all(expired);
+            return Err(CaptureError::TargetNotFound);
         };
+        if let Some(flag) = picks.restoring.get_mut(choice) {
+            *flag = true;
+        }
+        drop(picks);
+        close_all(expired);
+
         let result = Cast::start(&CastRequest {
             kind: self.kind,
             cursor: self.cursor,
             restore_token: Some(&token),
             timeout: Some(self.restore_timeout),
         });
-        // Once the portal tried to restore, the token is used up: the new one (if any)
-        // replaces it. A failure before that (no bus, a failed call) keeps it.
+        // Once the portal tried to restore (it answered `Start`, or its dialog came up
+        // instead), the token is used up and the new one (if any) replaces it. A
+        // failure before that (no bus, a failed or slow setup call) keeps it.
         let used = match &result {
             Ok(_) | Err(CaptureError::Cancelled | CaptureError::PermissionDenied) => true,
             Err(CaptureError::Backend {
                 domain: ErrorDomain::Library,
                 code,
                 ..
-            }) => *code == portal::code::TIMEOUT || *code == portal::code::NO_STREAM,
+            }) => *code == portal::code::DIALOG_TIMEOUT || *code == portal::code::NO_STREAM,
             Err(_) => false,
         };
+        let mut picks = lock(&self.choices);
         if used {
             let next = result
                 .as_ref()
                 .ok()
                 .and_then(|cast| cast.stream.restore_token.clone());
-            lock(&self.picks).advance(&self.key, next.clone());
-            self.token = next;
+            picks.advance(choice, &token, next);
         }
+        if let Some(flag) = picks.restoring.get_mut(choice) {
+            *flag = false;
+        }
+        drop(picks);
+        self.choices.restored.notify_all();
         match result {
             Err(CaptureError::Backend {
                 domain: ErrorDomain::Library,
-                code: portal::code::TIMEOUT,
+                code: portal::code::DIALOG_TIMEOUT,
                 ..
             }) => Err(CaptureError::TargetNotFound),
             other => other,
         }
+    }
+
+    /// The id with the choice's newest token, when it differs from the opened one.
+    fn target_to_store(&self) -> Option<TargetId> {
+        let picks = lock(&self.choices);
+        let newest = picks.peek(&self.key)??;
+        (newest != self.key).then(|| portal_id(self.kind, newest))
     }
 }
 
@@ -1722,13 +1815,9 @@ impl CaptureSession for PipeWireSession {
         }
     }
 
-    fn current_target(&self) -> Option<TargetId> {
+    fn target_to_store(&self) -> Option<TargetId> {
         match &self.source {
-            Source::Portal(source) => source
-                .token
-                .as_deref()
-                .filter(|token| *token != source.key)
-                .map(|token| portal_id(source.kind, token)),
+            Source::Portal(source) => source.target_to_store(),
             Source::Node(_) => None,
         }
     }
@@ -1789,8 +1878,9 @@ mod tests {
         let bgra_first = portal_offer(offer(WIRES.to_vec())).map(|o| o.wires);
         assert_eq!(bgra_first, Some(vec![WIRES[0], WIRES[1]]));
         assert!(portal_offer(offer(vec![WIRES[2], WIRES[0]])).is_none());
+        // Only the first memory kind: a fallback would break invariant 4.
         let kept = portal_offer(offer(vec![WIRES[1]])).map(|o| o.memory);
-        assert_eq!(kept, Some(vec![MemoryKind::DmaBuf, MemoryKind::System]));
+        assert_eq!(kept, Some(vec![MemoryKind::DmaBuf]));
     }
 
     #[test]

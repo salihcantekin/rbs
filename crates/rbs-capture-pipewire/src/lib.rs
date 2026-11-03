@@ -11,7 +11,7 @@
 //!   (`pick`, ScreenCast interface). Their ids are `portal:display:<token>` or
 //!   `portal:window:<token>`, where the token restores the choice without a dialog.
 //!   Restore tokens are single use: after each `start` the session's
-//!   `current_target` names the id to store from then on.
+//!   `target_to_store` names the id to store from then on.
 //!
 //! # How frames travel
 //!

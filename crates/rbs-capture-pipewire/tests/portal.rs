@@ -306,8 +306,11 @@ mod linux {
         ));
 
         restores_with_rotating_tokens(&portal, &factory);
+        two_sessions_share_a_choice(&portal, &factory);
         reports_the_users_answer(&portal, &factory);
+        tells_unsupported_from_unanswered(&portal, &factory);
         keeps_a_pick_without_token_for_one_start(&portal, &factory);
+        keeps_at_most_four_live_picks(&portal);
         refuses_a_used_token_without_waiting_for_the_user(&portal);
         refuses_rgba(&factory);
         passes_conformance(&portal);
@@ -324,11 +327,21 @@ mod linux {
             assert!(target.id.as_str().starts_with(&prefix), "{}", target.id);
             // The pick's own cast is closed: nothing runs in Standby.
             assert_eq!(portal.counts().0, 0, "pick left a session open");
+            // One source of the kind, persistent, cursor embedded for the pick.
+            let types = if kind == TargetKind::Display { 1 } else { 2 };
+            assert_eq!(
+                portal.ask("select"),
+                format!("types={types} multiple=0 persist=2 cursor=2 restore=0")
+            );
 
             let mut session = started(factory, &target.id);
             assert_eq!(first_frame(session.as_mut()), (320, 240));
             assert_eq!(portal.counts().0, 1);
-            let first = session.current_target();
+            assert_eq!(
+                portal.ask("select"),
+                format!("types={types} multiple=0 persist=2 cursor=2 restore=1")
+            );
+            let first = session.target_to_store();
             let Some(first) = first else {
                 panic!("no new id after start")
             };
@@ -340,7 +353,7 @@ mod linux {
                 panic!("restart: {e}");
             }
             first_frame(session.as_mut());
-            let second = session.current_target();
+            let second = session.target_to_store();
             assert!(second.is_some() && second != Some(first.clone()));
             drop(session);
             assert_eq!(portal.counts().0, 0, "drop left the cast open");
@@ -351,7 +364,71 @@ mod linux {
                 let mut session = started(factory, id);
                 first_frame(session.as_mut());
             }
+            // Without the cursor in the request, the restore hides it.
+            let hidden = request(&target.id).with_cursor(false);
+            let Ok(mut session) = factory.open(&hidden) else {
+                panic!("open without cursor")
+            };
+            assert!(session.start().is_ok());
+            assert_eq!(
+                portal.ask("select"),
+                format!("types={types} multiple=0 persist=2 cursor=1 restore=1")
+            );
         }
+    }
+
+    /// Two sessions on one choice restore one after the other; both then name the
+    /// choice's newest id, which opens.
+    fn two_sessions_share_a_choice(portal: &Portal, factory: &PipeWireCaptureFactory) {
+        let target = pick(factory, TargetKind::Display);
+        let mut a = started(factory, &target.id);
+        let mut b = started(factory, &target.id);
+        first_frame(a.as_mut());
+        first_frame(b.as_mut());
+        assert_eq!(portal.counts().0, 2);
+        let newest = b.target_to_store();
+        assert!(newest.is_some());
+        assert_eq!(a.target_to_store(), newest, "a stale id would not restore");
+        drop((a, b));
+        let Some(newest) = newest else { return };
+        first_frame(started(factory, &newest).as_mut());
+    }
+
+    /// A portal that cannot cast the kind is `Unsupported`; one that does not answer is
+    /// a recoverable backend error, not `Unsupported`.
+    fn tells_unsupported_from_unanswered(portal: &Portal, factory: &PipeWireCaptureFactory) {
+        assert_eq!(portal.ask("types 2"), "ok");
+        assert!(matches!(
+            factory.pick(TargetKind::Display),
+            Err(CaptureError::Unsupported(_))
+        ));
+        assert_eq!(portal.ask("types 3"), "ok");
+        assert_eq!(portal.ask("props fail"), "ok");
+        let failed = factory.pick(TargetKind::Display);
+        assert!(
+            matches!(&failed, Err(e @ CaptureError::Backend { .. }) if e.is_recoverable()),
+            "{failed:?}"
+        );
+        assert_eq!(portal.ask("props ok"), "ok");
+    }
+
+    /// Picks without a token are kept up to four; the oldest is closed first, and
+    /// dropping the factory closes the rest.
+    fn keeps_at_most_four_live_picks(portal: &Portal) {
+        let factory = PipeWireCaptureFactory::new();
+        let mut ids = Vec::new();
+        for _ in 0..5 {
+            assert_eq!(portal.ask("next notoken"), "ok");
+            ids.push(pick(&factory, TargetKind::Window).id);
+        }
+        assert_eq!(portal.counts().0, 4);
+        assert!(matches!(
+            factory.open(&request(&ids[0])),
+            Err(CaptureError::TargetNotFound)
+        ));
+        assert!(factory.open(&request(&ids[4])).is_ok());
+        drop(factory);
+        assert_eq!(portal.counts().0, 0, "dropping the factory left casts open");
     }
 
     /// Cancel and deny in the dialog.
@@ -380,7 +457,7 @@ mod linux {
         let mut session = started(factory, &target.id);
         first_frame(session.as_mut());
         assert_eq!(portal.counts().2, starts, "start asked the portal again");
-        assert_eq!(session.current_target(), None);
+        assert_eq!(session.target_to_store(), None);
         session.stop();
         assert_eq!(portal.counts().0, 0);
         assert!(matches!(session.start(), Err(CaptureError::TargetNotFound)));
@@ -408,14 +485,17 @@ mod linux {
         };
         let begun = Instant::now();
         assert!(matches!(session.start(), Err(CaptureError::TargetNotFound)));
-        assert!(begun.elapsed() < LIMIT * 5, "start waited too long");
-        let (open, closed_after, _) = portal.counts();
+        // A hang guard, not the expected time (about LIMIT).
+        assert!(
+            begun.elapsed() < Duration::from_secs(2),
+            "start waited too long"
+        );
+        let (open, closed_after, starts) = portal.counts();
         assert_eq!(closed_after, closed + 1, "the dialog was not closed");
         assert_eq!(open, 0, "the failed restore left a session open");
-        // The used token is known to be dead now: no second wait.
-        let begun = Instant::now();
+        // The used token is known to be dead now: the portal is not asked again.
         assert!(matches!(session.start(), Err(CaptureError::TargetNotFound)));
-        assert!(begun.elapsed() < LIMIT, "the dead token was tried again");
+        assert_eq!(portal.counts().2, starts, "the dead token was tried again");
     }
 
     fn refuses_rgba(factory: &PipeWireCaptureFactory) {
@@ -435,7 +515,7 @@ mod linux {
         let options = Options {
             measure_allocations: Some(measure),
             hooks: Some(&hooks),
-            process_threads: Some(conformance::process_thread_count),
+            process_threads: Some(conformance::process_thread_ids),
             ..Options::default()
         };
         match conformance::run(&picked, &mut RealTimePacer::new(), &options) {
@@ -594,6 +674,12 @@ mod mock {
         next_answer: Answer,
         closed_requests: u64,
         starts: u64,
+        /// `AvailableSourceTypes`.
+        types: u32,
+        /// Property reads fail, like a portal that does not answer.
+        fail_props: bool,
+        /// The options of the last `SelectSources`.
+        last_select: String,
     }
 
     fn variant<T: RefArg + 'static>(value: T) -> Variant<Box<dyn RefArg>> {
@@ -646,13 +732,17 @@ mod mock {
                 .unwrap_or_default();
             let member = message.member().map(|m| m.to_string()).unwrap_or_default();
             match (interface.as_str(), member.as_str()) {
+                ("org.freedesktop.DBus.Properties", "Get") if self.fail_props => {
+                    let error = message.error(&"org.freedesktop.DBus.Error.Failed".into(), c"down");
+                    let _ = conn.channel().send(error);
+                }
                 ("org.freedesktop.DBus.Properties", "Get") => {
                     let name: String = message
                         .read2::<String, String>()
                         .map(|(_, n)| n)
                         .unwrap_or_default();
                     let value: u32 = match name.as_str() {
-                        "AvailableSourceTypes" => 3,
+                        "AvailableSourceTypes" => self.types,
                         "AvailableCursorModes" => 3,
                         "version" => 5,
                         _ => 0,
@@ -686,6 +776,20 @@ mod mock {
                         "{OBJECT}/request/{}/{}",
                         sender_part(message),
                         token_of(&options, "handle_token").unwrap_or_default()
+                    );
+                    let number = |key: &str| {
+                        options
+                            .get(key)
+                            .and_then(|v| v.0.as_u64())
+                            .map_or_else(|| "-".to_owned(), |n| n.to_string())
+                    };
+                    self.last_select = format!(
+                        "types={} multiple={} persist={} cursor={} restore={}",
+                        number("types"),
+                        number("multiple"),
+                        number("persist_mode"),
+                        number("cursor_mode"),
+                        u8::from(options.contains_key("restore_token"))
                     );
                     if let Some(s) = self.sessions.get_mut(&session.to_string()) {
                         s.restore = token_of(&options, "restore_token");
@@ -783,6 +887,11 @@ mod mock {
                 "next cancel" => self.next_answer = Answer::Cancel,
                 "next deny" => self.next_answer = Answer::Deny,
                 "next notoken" => self.next_answer = Answer::NoToken,
+                "types 2" => self.types = 2,
+                "types 3" => self.types = 3,
+                "props fail" => self.fail_props = true,
+                "props ok" => self.fail_props = false,
+                "select" => return say(&self.last_select),
                 "count" => {
                     return say(&format!(
                         "{} {} {}",
@@ -848,6 +957,9 @@ mod mock {
             next_answer: Answer::Approve,
             closed_requests: 0,
             starts: 0,
+            types: 3,
+            fail_props: false,
+            last_select: String::new(),
         };
         say("ready");
         let mut removed = false;

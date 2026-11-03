@@ -146,17 +146,17 @@ fn follows_renegotiated_size(factory: &rbs_capture_pipewire::PipeWireCaptureFact
 /// The process thread count, logging the thread names so a mismatch shows which
 /// thread is left.
 #[cfg(target_os = "linux")]
-fn thread_count() -> Option<u64> {
-    let names: Vec<String> = std::fs::read_dir("/proc/self/task")
-        .ok()?
-        .filter_map(Result::ok)
-        .map(|task| {
-            std::fs::read_to_string(task.path().join("comm"))
+fn thread_count() -> Option<Vec<u64>> {
+    let ids = rbs_capture::conformance::process_thread_ids()?;
+    let names: Vec<String> = ids
+        .iter()
+        .map(|id| {
+            std::fs::read_to_string(format!("/proc/self/task/{id}/comm"))
                 .map_or_else(|_| "?".to_owned(), |name| name.trim().to_owned())
         })
         .collect();
     eprintln!("threads: {names:?}");
-    Some(names.len() as u64)
+    Some(ids)
 }
 
 #[cfg(target_os = "linux")]

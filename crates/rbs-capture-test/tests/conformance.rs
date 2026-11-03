@@ -14,9 +14,9 @@ fn options(factory: &TestCaptureFactory) -> Options<'_> {
         measure_allocations: Some(measure),
         hooks: Some(factory),
         strict: true,
-        // This binary runs a single test, so the process thread count is stable.
+        // This binary runs a single test, so the process's threads are its own.
         process_threads: cfg!(target_os = "linux")
-            .then_some(conformance::process_thread_count as fn() -> Option<u64>),
+            .then_some(conformance::process_thread_ids as fn() -> Option<Vec<u64>>),
         ..Options::default()
     }
 }
