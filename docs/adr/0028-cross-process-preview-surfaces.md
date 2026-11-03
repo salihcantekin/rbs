@@ -36,6 +36,7 @@ Only macOS has both a GPU export path and a GPU-backed CI runner today. DMA-BUF 
 - The preview costs one extra render pass per frame at preview size while a UI is subscribed. At 1080p preview size that is one 8 MiB write per frame on the GPU.
 - The hot-path list gains the preview publish path, with a non-blocking IPC call per frame recorded as an exception in this ADR.
 - Same-user processes can find the service name; the token keeps them from subscribing. A process that can read the engine's memory or control API is already trusted.
+- A process of the same user can delay a subscription by flooding the service port (at most two service messages are read per tick) and a refused subscriber learns it only at its timeout. Same-user denial of service is out of scope.
 - One subscriber per publisher. Several UI windows in one process share it. A second UI process needs a second publisher or a later fan-out.
 - Engine and UI must share a bootstrap namespace (one login session). An engine started over ssh or as a LaunchDaemon cannot be reached, and a sandboxed or notarised UI needs a mach-lookup exception or an app-group name prefix. Handing a port over at spawn (`posix_spawnattr` special port) or through the control API is the fallback for those set-ups.
 - A UI that reconnects (for example after a crash) can subscribe again once the kernel's no-senders notice has ended the old subscription.
@@ -62,4 +63,8 @@ Only macOS has both a GPU export path and a GPU-backed CI runner today. DMA-BUF 
   7. Low: weak token source. Fixed: `arc4random_buf`; the spec states the control API is the product path for the token.
   8. Low: surface ports leaked when `new` failed. Fixed: each slot drops its own port.
   9. Low: spec drift and sleeps in tests. Fixed: spec matches the code; tests spin with `yield_now` under a time bound.
+- Re-review by the same session after the fixes, 2026-11-03: approve. Remaining items and resolution:
+  1. Any send error other than a dead UI port also ended the subscription. Fixed: only `MACH_SEND_INVALID_DEST` ends it; other errors drop the frame.
+  2. A timed-out `SUBSCRIBE` leaked its reply right (`mach_msg_destroy` skips `msgh_local_port`). Fixed: `send` also drops the pseudo-received reply right.
+  3. A refused or flood-delayed subscriber learns it only at its timeout. Accepted for version 1: same-user denial of service is out of scope (Consequences); a `REFUSED` reply can be added with a version bump.
 - Hot path: benchmark table in the PR; owner approval per the early-phase policy (2026-11-03).

@@ -348,9 +348,18 @@ pub(super) unsafe fn send<T>(msg: &mut T, timeout_ms: u32) -> mach_msg_return_t 
         )
     };
     if ret == MACH_SEND_TIMED_OUT || ret == MACH_SEND_INTERRUPTED {
-        // SAFETY: on these two errors the buffer holds the message in received form with
-        // the pseudo-received rights; destroying it releases exactly those.
-        unsafe { mach_msg_destroy(header) };
+        // SAFETY: on these two errors the buffer holds the message with pseudo-received
+        // rights: the destination in `msgh_remote_port`, the reply right in
+        // `msgh_local_port` and the descriptors. `mach_msg_destroy` releases the
+        // destination and the descriptors but not the reply right, which is dropped here.
+        unsafe {
+            let local = (*header).msgh_local_port;
+            let local_bits = ((*header).msgh_bits >> 8) & 0x1f;
+            mach_msg_destroy(header);
+            if local_bits != 0 {
+                deallocate(local);
+            }
+        }
     }
     ret
 }

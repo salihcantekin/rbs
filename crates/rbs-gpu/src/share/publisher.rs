@@ -8,8 +8,8 @@ use std::time::Duration;
 
 use mach2::message::{
     MACH_MSG_TYPE_COPY_SEND, MACH_MSG_TYPE_MAKE_SEND, MACH_MSG_TYPE_MOVE_SEND,
-    MACH_MSGH_BITS_COMPLEX, MACH_SEND_TIMED_OUT, mach_msg_body_t, mach_msg_header_t,
-    mach_msg_port_descriptor_t,
+    MACH_MSGH_BITS_COMPLEX, MACH_SEND_INVALID_DEST, MACH_SEND_TIMED_OUT, mach_msg_body_t,
+    mach_msg_header_t, mach_msg_port_descriptor_t,
 };
 use mach2::port::{MACH_PORT_NULL, mach_port_t};
 use objc2_core_foundation::{CFDictionary, CFNumber, CFRetained, CFString, CFType};
@@ -349,11 +349,15 @@ impl PreviewPublisher {
             // The UI's queue is full (it holds at most one frame per surface, so this takes
             // a UI that stopped receiving): drop this frame; its surface stays free.
             self.stats.dropped += 1;
-        } else {
-            // `MACH_SEND_INVALID_DEST`: the UI's port is gone. Its port lives as long as
-            // any of its frames, so it holds no surface any more.
+        } else if ret == MACH_SEND_INVALID_DEST {
+            // The UI's port is gone. Its port lives as long as any of its frames, so it
+            // holds no surface any more.
             self.stats.dropped += 1;
             self.unsubscribe();
+        } else {
+            // Any other failure (for example no kernel buffer): the UI may be alive and
+            // holding surfaces, so only this frame is dropped.
+            self.stats.dropped += 1;
         }
     }
 
