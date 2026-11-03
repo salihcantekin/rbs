@@ -17,6 +17,11 @@ pub const CAP_TIMESTAMP_QUERY: CapabilityKey = CapabilityKey::new_static("gpu.ti
 
 /// `gpu.nv12_surface`: the converter can write one multi-planar NV12 texture for encoders.
 pub const CAP_NV12_SURFACE: CapabilityKey = CapabilityKey::new_static("gpu.nv12_surface");
+/// `gpu.p010`: `R16Unorm` and `Rg16Unorm` render targets, so the converter can write P010
+/// planes.
+pub const CAP_P010: CapabilityKey = CapabilityKey::new_static("gpu.p010");
+/// `gpu.p010_surface`: the converter can write one multi-planar P010 texture for encoders.
+pub const CAP_P010_SURFACE: CapabilityKey = CapabilityKey::new_static("gpu.p010_surface");
 
 /// `gpu.import.dmabuf`: the importer can alias Linux DMA-BUFs (Vulkan external memory with
 /// DRM format modifiers).
@@ -126,7 +131,24 @@ impl GpuContext {
         // Optional features that cost nothing until used.
         let features = adapter.features()
             & (wgpu::Features::TEXTURE_FORMAT_NV12
+                | wgpu::Features::TEXTURE_FORMAT_16BIT_NORM
+                | wgpu::Features::TEXTURE_FORMAT_P010
+                | wgpu::Features::TEXTURE_ADAPTER_SPECIFIC_FORMAT_FEATURES
                 | wgpu::Features::VULKAN_EXTERNAL_MEMORY_DMA_BUF);
+        // P010 planes are rendered as `R16Unorm` / `Rg16Unorm`. The 16-bit normalized feature
+        // alone guarantees only storage use; render targets come from the adapter's own
+        // format features, which validation honours only with the adapter-specific feature.
+        let renderable = |format| {
+            adapter
+                .get_texture_format_features(format)
+                .allowed_usages
+                .contains(wgpu::TextureUsages::RENDER_ATTACHMENT)
+        };
+        let norm16 = features.contains(
+            wgpu::Features::TEXTURE_FORMAT_16BIT_NORM
+                | wgpu::Features::TEXTURE_ADAPTER_SPECIFIC_FORMAT_FEATURES,
+        ) && renderable(wgpu::TextureFormat::R16Unorm)
+            && renderable(wgpu::TextureFormat::Rg16Unorm);
         let limits = adapter.limits();
         let capabilities = CapabilitySet::new()
             .with(CAP_SOFTWARE, CapabilityValue::Flag(is_software(&info)))
@@ -147,6 +169,14 @@ impl GpuContext {
             .with(
                 CAP_NV12_SURFACE,
                 CapabilityValue::Flag(features.contains(wgpu::Features::TEXTURE_FORMAT_NV12)),
+            )
+            .with(CAP_P010, CapabilityValue::Flag(norm16))
+            .with(
+                CAP_P010_SURFACE,
+                // The plane views of a P010 texture are 16-bit normalized formats.
+                CapabilityValue::Flag(
+                    norm16 && features.contains(wgpu::Features::TEXTURE_FORMAT_P010),
+                ),
             );
 
         let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {

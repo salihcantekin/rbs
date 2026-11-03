@@ -1,6 +1,16 @@
-// Canvas (linear Rgba16Float, premultiplied, composited over black) to NV12 planes.
+// Canvas (linear Rgba16Float, premultiplied, composited over black) to NV12 or P010 planes.
 // BT.709 OETF and matrix, limited range, chroma averaged over each 2x2 block.
-// Spec: docs/specs/gpu-compositor.md, "Encoder conversion (NV12)".
+// Spec: docs/specs/gpu-compositor.md, "Encoder conversion (NV12, P010)".
+
+// Code levels of the output format, set per pipeline (defaults: 8-bit NV12).
+// Limited-range luma is `y_black + y_range * Y'`, chroma `c_mid + c_range * C`.
+override y_black: f32 = 16.0;
+override y_range: f32 = 219.0;
+override c_mid: f32 = 128.0;
+override c_range: f32 = 224.0;
+// Maps a whole code to the normalized value the render target stores:
+// 1/255 for 8-bit; 64/65535 for P010 (10-bit code in the high bits of a 16-bit word).
+override code_scale: f32 = 0.00392156862745098;
 
 @group(0) @binding(0) var canvas: texture_2d<f32>;
 @group(0) @binding(1) var unused_sampler: sampler;
@@ -31,7 +41,8 @@ fn load_prime(x: i32, y: i32) -> vec3<f32> {
 @fragment
 fn fs_luma(@builtin(position) pos: vec4<f32>) -> @location(0) f32 {
     let p = load_prime(i32(pos.x), i32(pos.y));
-    return (16.0 + 219.0 * luma(p)) / 255.0;
+    // Rounded to a whole code first, so P010's low six bits stay zero.
+    return round(y_black + y_range * luma(p)) * code_scale;
 }
 
 @fragment
@@ -42,5 +53,5 @@ fn fs_chroma(@builtin(position) pos: vec4<f32>) -> @location(0) vec2<f32> {
     let yp = luma(p);
     let cb = (p.b - yp) / 1.8556;
     let cr = (p.r - yp) / 1.5748;
-    return (vec2<f32>(128.0) + 224.0 * vec2<f32>(cb, cr)) / 255.0;
+    return round(vec2<f32>(c_mid) + c_range * vec2<f32>(cb, cr)) * code_scale;
 }

@@ -1,7 +1,7 @@
 #![allow(missing_docs)] // criterion_group! generates undocumented items.
 #![allow(clippy::expect_used)] // A benchmark that cannot set up should stop loudly.
 
-//! Compositor and NV12 benchmarks (spec docs/specs/gpu-compositor.md).
+//! Compositor, NV12 and P010 benchmarks (spec docs/specs/gpu-compositor.md).
 //!
 //! Each iteration renders one 1080p frame, converts it to NV12 and waits for the GPU,
 //! so the numbers are frame time on the adapter in use. On software adapters (CI)
@@ -10,8 +10,8 @@
 
 use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
 use rbs_gpu::{
-    CanvasDesc, Compositor, GpuContext, GpuRequest, Layer, Nv12Converter, TextureDesc, TexturePool,
-    nv12, readback,
+    CanvasDesc, Compositor, GpuContext, GpuRequest, Layer, TextureDesc, TexturePool, YuvConverter,
+    YuvFormat, readback, yuv,
 };
 
 const W: u32 = 1920;
@@ -33,9 +33,11 @@ fn bench(c: &mut Criterion) {
     let canvas = pool
         .acquire(&ctx, &TextureDesc::canvas(W, H))
         .expect("canvas");
-    let luma = pool.acquire(&ctx, &nv12::luma_desc(W, H)).expect("luma");
+    let luma = pool
+        .acquire(&ctx, &yuv::luma_desc(YuvFormat::Nv12, W, H))
+        .expect("luma");
     let chroma = pool
-        .acquire(&ctx, &nv12::chroma_desc(W, H))
+        .acquire(&ctx, &yuv::chroma_desc(YuvFormat::Nv12, W, H))
         .expect("chroma");
     let src = pool
         .acquire(
@@ -56,7 +58,7 @@ fn bench(c: &mut Criterion) {
         32,
     )
     .expect("compositor");
-    let mut conv = Nv12Converter::new(&ctx, W, H).expect("nv12");
+    let mut conv = YuvConverter::new(&ctx, YuvFormat::Nv12, W, H).expect("nv12");
 
     let mut group = c.benchmark_group("frame_1080p");
     group.sample_size(20);
@@ -106,7 +108,7 @@ fn bench(c: &mut Criterion) {
             ctx.wait_idle().expect("wait");
         });
     });
-    if let Ok(surface) = pool.acquire(&ctx, &nv12::surface_desc(W, H)) {
+    if let Ok(surface) = pool.acquire(&ctx, &yuv::surface_desc(YuvFormat::Nv12, W, H)) {
         group.bench_function("nv12_surface", |b| {
             b.iter(|| {
                 conv.convert_to_surface(&ctx, &pool, canvas, surface)
@@ -114,6 +116,38 @@ fn bench(c: &mut Criterion) {
                 ctx.wait_idle().expect("wait");
             });
         });
+    }
+    // P010 conversion alone, where the device has 16-bit normalized targets.
+    let has = |key: &rbs_core::capability::CapabilityKey| {
+        ctx.capabilities().get(key) == Some(&rbs_core::capability::CapabilityValue::Flag(true))
+    };
+    if has(&rbs_gpu::context::CAP_P010) {
+        let mut p010 = YuvConverter::new(&ctx, YuvFormat::P010, W, H).expect("p010");
+        let luma = pool
+            .acquire(&ctx, &yuv::luma_desc(YuvFormat::P010, W, H))
+            .expect("p010 luma");
+        let chroma = pool
+            .acquire(&ctx, &yuv::chroma_desc(YuvFormat::P010, W, H))
+            .expect("p010 chroma");
+        group.bench_function("p010_planes", |b| {
+            b.iter(|| {
+                p010.convert(&ctx, &pool, canvas, luma, chroma)
+                    .expect("convert");
+                ctx.wait_idle().expect("wait");
+            });
+        });
+        if has(&rbs_gpu::context::CAP_P010_SURFACE) {
+            let surface = pool
+                .acquire(&ctx, &yuv::surface_desc(YuvFormat::P010, W, H))
+                .expect("p010 surface");
+            group.bench_function("p010_surface", |b| {
+                b.iter(|| {
+                    p010.convert_to_surface(&ctx, &pool, canvas, surface)
+                        .expect("convert");
+                    ctx.wait_idle().expect("wait");
+                });
+            });
+        }
     }
     group.finish();
 
