@@ -42,6 +42,8 @@ use crate::recording::{
 };
 use crate::select::{self, Chosen};
 
+/// Why a scheduled source has no instance yet: the one it replaces did not close.
+const WAITING: &str = "waiting for the source it replaces to close";
 /// Audio ticks a late audio worker still runs in order (ADR-0037).
 const AUDIO_CATCH_UP: u32 = 4;
 /// Packets the audio encoder node holds while its output queue is full.
@@ -267,6 +269,11 @@ pub struct Studio {
     recording: Option<Attached>,
     render_worker: Option<Arc<WorkerStats>>,
     audio_worker: Option<Arc<WorkerStats>>,
+    /// Retired instances whose take failed (their partition's swap was still in
+    /// flight), with the source they belonged to; [`Studio::service`] retries them.
+    pending_takes: Vec<(Added, Option<SourceId>)>,
+    /// The mixer's strips last sent: producer and meter.
+    strips: Vec<(NodeId, Option<Arc<LevelMeter>>)>,
 }
 
 impl fmt::Debug for Studio {
@@ -314,9 +321,14 @@ impl Studio {
             sources,
             settings,
             Strictness::Lenient,
+            None,
         )
     }
 
+    /// [`Studio::start`] with a strictness and, for [`Recording`](crate::Recording), a
+    /// recording added to the graph before anything is instantiated: with `Strict`, every
+    /// source the recording schedules is instantiated before the first apply opens any
+    /// device.
     pub(crate) fn start_with(
         mut engine: Engine,
         gpu: Arc<GpuContext>,
@@ -324,6 +336,7 @@ impl Studio {
         sources: &SourceTypes,
         settings: &StudioSettings,
         strictness: Strictness,
+        recording: Option<Prepared>,
     ) -> Result<Self, RecordError> {
         let canvas_id = settings.canvas;
         let canvas = collection
@@ -464,16 +477,29 @@ impl Studio {
             recording: None,
             render_worker,
             audio_worker,
+            pending_takes: Vec::new(),
+            strips: Vec::new(),
         };
+        if let Some(p) = recording
+            && let Err(e) = studio.add_recording(p)
+        {
+            let _ = studio.engine.shutdown();
+            return Err(e);
+        }
         match studio.reconcile(sources, Some(report), strictness) {
             Ok((failed, _)) => {
                 let fatal: Vec<StartFailure> =
                     failed.into_iter().filter(|f| f.node != "source").collect();
-                if fatal.is_empty() {
-                    Ok(studio)
-                } else {
-                    Err(studio.fail(fatal))
+                if !fatal.is_empty() {
+                    return Err(studio.fail(fatal));
                 }
+                let sources = studio.sources();
+                let problems = studio.problems.clone();
+                if let Some(r) = studio.recording.as_mut() {
+                    r.report.sources = sources;
+                    r.report.problems = problems;
+                }
+                Ok(studio)
             }
             Err(e) => {
                 let _ = studio.engine.shutdown();
@@ -509,6 +535,11 @@ impl Studio {
         if (canvas.size.width, canvas.size.height) != self.size || canvas.frame_rate != self.fps {
             return Err(RecordError::NotBound("canvas of the same size and rate"));
         }
+        // Checked before anything changes: without a program scene the binder would
+        // retire the compositor the studio runs.
+        if canvas.program.is_none() {
+            return Err(RecordError::NoProgram(self.settings.canvas));
+        }
         let report = self
             .binder
             .sync(collection, &mut self.graph)
@@ -538,6 +569,9 @@ impl Studio {
                     .as_ref()
                     .is_some_and(|m| report.retired_mixers.contains(&m.node))
             {
+                // `update` checks the canvas first, so the binder should never do this;
+                // the graph no longer matches the engine, so the studio cannot go on.
+                self.failure = Some("the program compositor or mixer was retired".to_owned());
                 return Err(RecordError::NotBound("program compositor"));
             }
             self.problems = report.problems.clone();
@@ -582,7 +616,12 @@ impl Studio {
                 let applied = self.engine.apply(&first)?;
                 failed.extend(engine_failures(&applied));
                 for e in gone.iter_mut() {
-                    take_instance(&mut self.engine, e);
+                    if !take_instance(&mut self.engine, e, &mut self.pending_takes) {
+                        failed.push(StartFailure {
+                            node: "source".to_owned(),
+                            reason: format!("{}: did not close yet", e.state.name),
+                        });
+                    }
                 }
             }
         }
@@ -596,11 +635,23 @@ impl Studio {
             if !entry.scheduled || entry.instance.is_some() {
                 continue;
             }
+            // Break before make: the instance it replaces still holds the device.
+            if self
+                .pending_takes
+                .iter()
+                .any(|(_, s)| *s == Some(entry.source))
+            {
+                entry.state.failed = Some(WAITING.to_owned());
+                continue;
+            }
             let Some(source) = collection.source(entry.source) else {
                 continue;
             };
             let instance = match sources.instantiate(source, &ctx) {
-                Ok(i) => i,
+                Ok(i) => {
+                    entry.state.failed = None;
+                    i
+                }
                 Err(error) if strictness == Strictness::Strict => {
                     return Err(RecordError::Source {
                         name: entry.state.name.clone(),
@@ -654,26 +705,37 @@ impl Studio {
 
         // Layers in link order of the final plan, strips per mixer input.
         let _ = self.layers.send(node_layers(&self.bound, &plan));
+        // Strips: until the swap, the old schedule may still feed inputs that leave, so
+        // the strips sent before the apply cover the old and the new inputs; the ones of
+        // inputs that left go after it.
+        let mut trimmed = None;
         if let (Some(mixer), Some(bound)) = (&mut self.mixer, &self.bound_mixer) {
             let live: BTreeSet<SourceId> = self.entries.iter().map(|e| e.source).collect();
             self.meters.retain(|s, _| live.contains(s));
-            let strips = bound
+            let new: Vec<(NodeId, Option<Arc<LevelMeter>>)> = bound
                 .inputs
                 .iter()
-                .map(|i| {
-                    let strip = Strip::new(i.producer, 1.0);
-                    match self.meters.get(&i.source) {
-                        Some(m) => strip.with_meter(Arc::clone(m)),
-                        None => strip,
-                    }
-                })
+                .map(|i| (i.producer, self.meters.get(&i.source).cloned()))
                 .collect();
-            let _ = mixer
-                .params
-                .send(MixerParams::new(strips).with_master_meter(Arc::clone(&mixer.master)));
+            let mut union = new.clone();
+            union.extend(
+                self.strips
+                    .iter()
+                    .filter(|(p, _)| !new.iter().any(|(n, _)| n == p))
+                    .cloned(),
+            );
+            let _ = mixer.params.send(mixer_params(&union, &mixer.master));
+            if union.len() != new.len() {
+                trimmed = Some(mixer_params(&new, &mixer.master));
+            }
+            self.strips = new;
         }
 
-        let applied = self.engine.apply(&self.graph)?;
+        let applied = self.engine.apply(&self.graph);
+        if let (Some(params), Some(mixer)) = (trimmed, &mut self.mixer) {
+            let _ = mixer.params.send(params);
+        }
+        let applied = applied?;
         failed.extend(engine_failures(&applied));
         for report in applied.reports.values() {
             for (node, why) in &report.failed {
@@ -688,16 +750,20 @@ impl Studio {
                         reason: why.to_string(),
                     });
                 } else if let Some(e) = self.entries.iter_mut().find(|e| e.state.node == *node) {
-                    e.state.failed = Some(why.to_string());
-                    failed.push(StartFailure {
-                        node: "source".to_owned(),
-                        reason: format!("{}: {why}", e.state.name),
-                    });
+                    // The first reason stays: a source without an instance is reported
+                    // again on every apply as having none.
+                    if e.state.failed.is_none() {
+                        e.state.failed = Some(why.to_string());
+                        failed.push(StartFailure {
+                            node: "source".to_owned(),
+                            reason: format!("{}: {why}", e.state.name),
+                        });
+                    }
                 }
             }
         }
         for e in gone.iter_mut() {
-            take_instance(&mut self.engine, e);
+            take_instance(&mut self.engine, e, &mut self.pending_takes);
         }
         Ok((failed, self.problems.clone()))
     }
@@ -710,6 +776,13 @@ impl Studio {
             .filter(|e| e.scheduled)
             .map(|e| e.state.clone())
             .collect()
+    }
+
+    /// True while a source waits for the instance it replaces to close (its partition's
+    /// swap was still in flight). [`Studio::service`] takes such instances back; once
+    /// this is false, an `update` with the same collection opens the waiting sources.
+    pub fn waiting(&self) -> bool {
+        self.pending_takes.iter().any(|(_, s)| s.is_some())
     }
 
     /// Binder problems of the last start or update.
@@ -778,6 +851,10 @@ impl Studio {
     /// Call it again after `wait` (at most about 100 ms).
     pub fn service(&mut self) -> Serviced {
         let serviced = self.engine.service();
+        if !self.pending_takes.is_empty() {
+            let engine = &mut self.engine;
+            self.pending_takes.retain(|(a, _)| !take(engine, *a));
+        }
         for (_, event) in &serviced.events {
             match event {
                 RuntimeEvent::Failed {
@@ -865,95 +942,106 @@ impl Studio {
             self.fps,
             self.settings.audio_graph,
         )?;
-        self.attach(prepared, &adapters.sources)
+        self.attach(prepared, &adapters.sources, Strictness::Lenient)
     }
 
-    /// Adds a prepared recording to the graph and applies it.
-    pub(crate) fn attach(
-        &mut self,
-        p: Prepared,
-        sources: &SourceTypes,
-    ) -> Result<&StartReport, RecordError> {
+    /// Adds a prepared recording's nodes to the graph and adopts their instances; applies
+    /// nothing. All or nothing: on an error the graph and the partitions are as before.
+    fn add_recording(&mut self, p: Prepared) -> Result<(), RecordError> {
         let parts = self.settings.partitions;
+        let mut graph = self.graph.clone();
         let mut nodes = Vec::new();
         let mut essential = BTreeMap::new();
         let export_stats = p.export.stats();
         let export_id = add_active(
-            &mut self.graph,
+            &mut graph,
             Node::<GpuRuntime>::descriptor(&p.export),
             RENDER,
         )?;
-        nodes.push(Added {
-            node: export_id,
-            partition: RENDER,
-            gpu: true,
-        });
-        essential.insert(export_id, "video export");
         let encoder_stats = p.video_encoder.stats();
         let encoder_id = add_active(
-            &mut self.graph,
+            &mut graph,
             Node::<()>::descriptor(&p.video_encoder),
             parts.video_encoder,
         )?;
-        nodes.push(Added {
-            node: encoder_id,
-            partition: parts.video_encoder,
-            gpu: false,
-        });
-        essential.insert(encoder_id, "video encoder");
         let output_stats = p.output.stats();
-        let output_id = add_active(
-            &mut self.graph,
-            Node::<()>::descriptor(&p.output),
-            parts.output,
-        )?;
-        nodes.push(Added {
-            node: output_id,
-            partition: parts.output,
-            gpu: false,
-        });
-        essential.insert(output_id, "output");
-        self.graph
-            .connect(self.compositor, "canvas", export_id, "canvas")?;
-        self.graph
-            .connect(export_id, "video", encoder_id, "video")?;
-        self.graph.connect(encoder_id, "packets", output_id, "s0")?;
-        let mut audio_dropped = None;
-        let mut audio_chosen = None;
-        let mut audio_node = None;
+        let output_id = add_active(&mut graph, Node::<()>::descriptor(&p.output), parts.output)?;
+        for (node, partition, gpu, role) in [
+            (export_id, RENDER, true, "video export"),
+            (encoder_id, parts.video_encoder, false, "video encoder"),
+            (output_id, parts.output, false, "output"),
+        ] {
+            nodes.push(Added {
+                node,
+                partition,
+                gpu,
+            });
+            essential.insert(node, role);
+        }
+        graph.connect(self.compositor, "canvas", export_id, "canvas")?;
+        graph.connect(export_id, "video", encoder_id, "video")?;
+        graph.connect(encoder_id, "packets", output_id, "s0")?;
+        let mut audio = None;
         if let Some((node, chosen)) = p.audio {
             let mixer = self
                 .mixer
                 .as_ref()
                 .map(|m| m.node)
                 .ok_or(RecordError::NotBound("mixer"))?;
-            audio_dropped = Some(node.dropped());
             let id = add_active(
-                &mut self.graph,
+                &mut graph,
                 Node::<()>::descriptor(&node),
                 parts.audio_encoder,
             )?;
+            graph.connect(mixer, "main", id, "in")?;
+            graph.connect(id, "packets", output_id, "s1")?;
             nodes.push(Added {
                 node: id,
                 partition: parts.audio_encoder,
                 gpu: false,
             });
             essential.insert(id, "audio encoder");
-            self.graph.connect(mixer, "main", id, "in")?;
-            self.graph.connect(id, "packets", output_id, "s1")?;
+            audio = Some((id, node, chosen));
+        }
+
+        // Instances last; one that is refused takes the adopted ones back.
+        let audio_dropped = audio.as_ref().map(|(_, node, _)| node.dropped());
+        let mut adopted = Vec::new();
+        let mut adopt =
+            |engine: &mut Engine, a: Added, r: Result<(), rbs_engine::EngineError>| match r {
+                Ok(()) => {
+                    adopted.push(a);
+                    Ok(())
+                }
+                Err(e) => {
+                    for a in adopted.drain(..) {
+                        take(engine, a);
+                    }
+                    Err(RecordError::from(e))
+                }
+            };
+        let r = self
+            .engine
+            .adopt::<GpuRuntime>(RENDER, export_id, Box::new(p.export));
+        adopt(&mut self.engine, nodes[0], r)?;
+        let r = self
+            .engine
+            .adopt::<()>(parts.video_encoder, encoder_id, Box::new(p.video_encoder));
+        adopt(&mut self.engine, nodes[1], r)?;
+        let r = self
+            .engine
+            .adopt::<()>(parts.output, output_id, Box::new(p.output));
+        adopt(&mut self.engine, nodes[2], r)?;
+        let mut audio_chosen = None;
+        if let Some((id, node, chosen)) = audio {
+            let r = self
+                .engine
+                .adopt::<()>(parts.audio_encoder, id, Box::new(node));
+            adopt(&mut self.engine, nodes[3], r)?;
             audio_chosen = Some(chosen);
-            audio_node = Some((id, node));
         }
-        self.engine
-            .adopt::<GpuRuntime>(RENDER, export_id, Box::new(p.export))?;
-        self.engine
-            .adopt::<()>(parts.video_encoder, encoder_id, Box::new(p.video_encoder))?;
-        self.engine
-            .adopt::<()>(parts.output, output_id, Box::new(p.output))?;
-        if let Some((id, node)) = audio_node {
-            self.engine
-                .adopt::<()>(parts.audio_encoder, id, Box::new(node))?;
-        }
+
+        self.graph = graph;
         self.recording = Some(Attached {
             report: StartReport {
                 video_encoder: p.video_chosen,
@@ -971,9 +1059,27 @@ impl Studio {
             audio_dropped,
             output: output_stats,
         });
+        Ok(())
+    }
 
+    /// Adds a prepared recording to the running graph and applies it. If a node of the
+    /// recording, the engine or a link fails, or (`Strict`) a source cannot be
+    /// instantiated, the recording is removed again and the call fails.
+    pub(crate) fn attach(
+        &mut self,
+        p: Prepared,
+        sources: &SourceTypes,
+        strictness: Strictness,
+    ) -> Result<&StartReport, RecordError> {
+        self.add_recording(p)?;
         // Sources scheduled only now (no preview) are opened; then one apply.
-        let (failed, _) = self.reconcile(sources, None, Strictness::Lenient)?;
+        let failed = match self.reconcile(sources, None, strictness) {
+            Ok((failed, _)) => failed,
+            Err(e) => {
+                let _ = self.detach(false);
+                return Err(e);
+            }
+        };
         let recording_essential = self
             .recording
             .as_ref()
@@ -1029,7 +1135,9 @@ impl Studio {
             Err(e) => vec![e.to_string()],
         };
         for n in nodes {
-            take(&mut self.engine, n);
+            if !take(&mut self.engine, n) {
+                self.pending_takes.push((n, None));
+            }
         }
         // The plan without the recording may leave sources unscheduled (no preview);
         // the layer hints follow the new plan.
@@ -1164,27 +1272,55 @@ fn engine_failures(applied: &Applied) -> Vec<StartFailure> {
     out
 }
 
-/// Takes a retired source's instance back from its partition (it is dropped here).
-fn take_instance(engine: &mut Engine, entry: &mut Entry) {
-    if let Some(i) = entry.instance.take() {
-        take(
-            engine,
-            Added {
-                node: entry.state.node,
-                partition: i.partition,
-                gpu: i.gpu,
-            },
-        );
+/// Takes a retired source's instance back from its partition (it is dropped here). A
+/// take that fails is queued in `pending` with the source; returns whether it was taken.
+fn take_instance(
+    engine: &mut Engine,
+    entry: &mut Entry,
+    pending: &mut Vec<(Added, Option<SourceId>)>,
+) -> bool {
+    let Some(i) = entry.instance.take() else {
+        return true;
+    };
+    let a = Added {
+        node: entry.state.node,
+        partition: i.partition,
+        gpu: i.gpu,
+    };
+    if take(engine, a) {
+        true
+    } else {
+        pending.push((a, Some(entry.source)));
+        false
     }
 }
 
-/// Takes an idle instance back from its partition and drops it.
-fn take(engine: &mut Engine, a: Added) {
-    let _ = if a.gpu {
-        engine
-            .take::<GpuRuntime>(a.partition, a.node)
-            .map(|n| n.is_some())
+/// Takes an idle instance back from its partition and drops it. False when the
+/// partition still runs it (its swap is in flight): try again later. An instance that
+/// is not there any more counts as taken.
+fn take(engine: &mut Engine, a: Added) -> bool {
+    let r = if a.gpu {
+        engine.take::<GpuRuntime>(a.partition, a.node).map(drop)
     } else {
-        engine.take::<()>(a.partition, a.node).map(|n| n.is_some())
+        engine.take::<()>(a.partition, a.node).map(drop)
     };
+    r.is_ok()
+}
+
+/// The mixer's parameters for `strips` (gain 1) and the master meter.
+fn mixer_params(
+    strips: &[(NodeId, Option<Arc<LevelMeter>>)],
+    master: &Arc<LevelMeter>,
+) -> MixerParams {
+    let strips = strips
+        .iter()
+        .map(|(producer, meter)| {
+            let strip = Strip::new(*producer, 1.0);
+            match meter {
+                Some(m) => strip.with_meter(Arc::clone(m)),
+                None => strip,
+            }
+        })
+        .collect();
+    MixerParams::new(strips).with_master_meter(Arc::clone(master))
 }

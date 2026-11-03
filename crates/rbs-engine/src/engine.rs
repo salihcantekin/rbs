@@ -211,8 +211,9 @@ pub struct Engine {
     moves: Vec<(NodeId, PartitionId, PartitionId)>,
     /// Raises worker threads' scheduling class (ADR-0030); none by default.
     thread_policy: Option<Arc<dyn ThreadPolicy>>,
-    /// During [`Engine::apply_draining`]: partitions that run their final tick(s)
-    /// before their (empty) new part is sent.
+    /// Partitions emptied by [`Engine::apply_draining`] whose empty part is not sent
+    /// yet: they run their final tick(s) right before it is, also when that happens later
+    /// in [`Engine::service`] (a swap still in flight).
     draining: BTreeSet<PartitionId>,
     shut_down: bool,
 }
@@ -421,9 +422,9 @@ impl Engine {
     /// the edit, so a partition drains after the partitions that fed it.
     ///
     /// This is how a branch of the graph (a recording's encoders and output) is removed
-    /// while the rest keeps running. Only partitions whose new part is sent during this
-    /// call drain; one whose swap times out is sent later by [`Engine::service`] without
-    /// a final tick. A drain that times out is reported as
+    /// while the rest keeps running. A partition whose earlier swap is still in flight
+    /// drains when [`Engine::service`] sends its part, unless an `apply` before that gives
+    /// it nodes again. A drain that times out is reported as
     /// [`EngineError::DrainTimeout`]; the worker is then joined and the part swapped on
     /// the control thread.
     pub fn apply_draining(&mut self, logical: &GraphDescription) -> Result<Applied, EngineError> {
@@ -486,8 +487,16 @@ impl Engine {
             pipeline_order(self.parts.keys().copied(), &lowered.crossings)
         };
         self.crossings = lowered.crossings.clone();
+        // A drain still pending from an earlier call holds only while the partition's
+        // newest part stays empty.
+        self.draining.retain(|p| {
+            lowered
+                .parts
+                .get(p)
+                .is_none_or(|part| part.nodes().is_empty())
+        });
         if drain {
-            self.draining = lowered
+            let emptied: Vec<PartitionId> = lowered
                 .parts
                 .iter()
                 .filter(|(p, part)| {
@@ -495,6 +504,7 @@ impl Engine {
                 })
                 .map(|(p, _)| *p)
                 .collect();
+            self.draining.extend(emptied);
         }
         let leaving: BTreeSet<PartitionId> = lowered.moved.iter().map(|m| m.1).collect();
         for (p, part) in std::mem::take(&mut lowered.parts) {
@@ -528,7 +538,6 @@ impl Engine {
             self.retiring.push((c.to, c.reader));
         }
         self.drop_retired();
-        self.draining.clear();
         Ok(out)
     }
 

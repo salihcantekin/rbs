@@ -578,21 +578,13 @@ impl Recording {
             &adapters.sources,
             &settings.studio(),
             Strictness::Strict,
+            Some(prepared),
         )?;
-        let started = match studio.attach(prepared, &adapters.sources) {
-            Ok(r) => r.clone(),
-            Err(e) => {
-                let (_, errors) = studio.shutdown();
-                return Err(match e {
-                    RecordError::Start(mut failed) => {
-                        failed.extend(errors.into_iter().map(|reason| StartFailure {
-                            node: "shutdown".to_owned(),
-                            reason,
-                        }));
-                        RecordError::Start(failed)
-                    }
-                    other => other,
-                });
+        let started = match studio.recording() {
+            Some(r) => r.clone(),
+            None => {
+                let _ = studio.shutdown();
+                return Err(RecordError::NotBound("recording"));
             }
         };
         Ok(Self { studio, started })

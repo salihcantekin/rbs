@@ -677,11 +677,14 @@ fn tick_indices_never_repeat_across_worker_restarts() {
         assert!(engine.has_worker(RENDER));
         assert_eq!(stats.starts(), round);
         frames(&engine, 3);
+        // The worker's next index is the runtime's: the tick it ran last, plus one.
+        assert_eq!(stats.next_index(), log.next());
         // Standby: the schedule is empty and the worker stops. The clock does not
         // move, so the restarted worker finds the tick it last ran still current.
         graph.set_state(ids.1, Lifecycle::Standby).unwrap();
         engine.apply(&graph).unwrap();
         assert!(!engine.has_worker(RENDER));
+        assert_eq!(stats.next_index(), log.next());
         graph.set_state(ids.1, Lifecycle::Active).unwrap();
     }
     assert_eq!(probe.ticks.load(Ordering::Relaxed), 9);
@@ -884,6 +887,88 @@ fn a_move_held_up_by_a_swap_timeout_finishes_from_the_control_loop() {
             .unwrap()
             .is_none()
     );
+}
+
+#[test]
+fn a_drain_held_up_by_a_swap_timeout_runs_when_the_control_loop_sends_the_part() {
+    // A packet sink on the encoder partition stalls in its first `process`, so a swap
+    // of that partition stays in flight past the swap timeout.
+    let stall = Arc::new(Gate::default());
+    let mut rig = Rig::build(None, None, None, EXPECTED_TIMEOUT);
+    let staller = TestNode::new(Role::PacketSink, "staller").processing_on(&stall);
+    let staller_probe = Arc::clone(&staller.probe);
+    let staller_id = add(&mut rig.graph, &staller, ENCODER);
+    rig.graph
+        .connect(rig.encoder, "out", staller_id, "in")
+        .unwrap();
+    rig.engine
+        .adopt::<Ticks>(ENCODER, staller_id, Box::new(staller))
+        .unwrap();
+    let setup = rig.engine.apply(&rig.graph).unwrap();
+    assert!(setup.errors.is_empty(), "{:?}", setup.errors);
+    // Encoder tick 0 becomes due; the staller is inside it.
+    rig.clock.advance(FRAME);
+    rig.engine.wake(ENCODER);
+    assert!(eventually(LIMIT, || staller_probe
+        .ticks
+        .load(Ordering::Relaxed)
+        == 1));
+    // An edit that keeps the partition's nodes: its swap waits for the stalled tick.
+    let extra = TestNode::new(Role::PacketSink, "extra");
+    let extra_id = add(&mut rig.graph, &extra, ENCODER);
+    rig.graph
+        .connect(rig.encoder, "out", extra_id, "in")
+        .unwrap();
+    rig.engine
+        .adopt::<Ticks>(ENCODER, extra_id, Box::new(extra))
+        .unwrap();
+    let applied = rig.engine.apply(&rig.graph).unwrap();
+    assert!(
+        applied.errors.contains(&EngineError::SwapTimeout(ENCODER)),
+        "{:?}",
+        applied.errors
+    );
+    // Removing the branch cannot send the partition's empty part now either.
+    let mut without = rig.graph.clone();
+    for id in [rig.encoder, rig.sink, staller_id, extra_id] {
+        remove(&mut without, id);
+    }
+    let applied = rig.engine.apply_draining(&without).unwrap();
+    assert!(
+        applied.errors.contains(&EngineError::SwapTimeout(ENCODER)),
+        "{:?}",
+        applied.errors
+    );
+    // The clock stands still from here: tick 1 is not due, so only a final tick (run at
+    // once, ahead of its time) can follow the stalled tick 0.
+    stall.open();
+    let start = std::time::Instant::now();
+    while rig.engine.has_worker(ENCODER) && start.elapsed() < LIMIT {
+        let serviced = rig.engine.service();
+        assert!(
+            serviced
+                .errors
+                .iter()
+                .all(|e| matches!(e, EngineError::SwapTimeout(_))),
+            "{:?}",
+            serviced.errors
+        );
+        std::thread::yield_now();
+    }
+    assert!(!rig.engine.has_worker(ENCODER));
+    assert_eq!(
+        rig.logs[1].next(),
+        2,
+        "the encoder ran its final tick before its empty part was sent"
+    );
+    let stats = rig.engine.worker_stats(ENCODER).unwrap();
+    assert_eq!(
+        stats.next_index(),
+        2,
+        "the final tick counts like any other"
+    );
+    let report = rig.engine.shutdown();
+    assert!(report.errors.is_empty(), "{:?}", report.errors);
 }
 
 #[test]

@@ -4,7 +4,6 @@
 
 #![allow(dead_code, clippy::unwrap_used, clippy::expect_used)] // Each test binary uses a part.
 
-use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
@@ -446,11 +445,11 @@ fn cadences() -> [(PartitionId, Cadence, Duration); 3] {
 }
 
 /// Moves the clock in `STEP`s, waking every worker, until `done` or the hang guard.
-/// After each step it waits until every cadence worker that runs has run (or skipped)
-/// each tick that became due in the step, so no worker falls behind the test clock (one
-/// that did would skip ticks, which is right in real time but not what these tests
-/// check). A worker already running at the start first runs its first tick; one that
-/// starts during the run is followed from the step after the one it was first seen in.
+/// Before `done` is first checked and after each step it waits until every cadence
+/// worker that runs has reached the tick due now: its next index is past it (the tick
+/// ran, was skipped late, or a drained worker's final tick already took it), so no
+/// worker falls behind the test clock (one that did would skip ticks, which is right in
+/// real time but not what these tests check).
 pub fn run_until<T: Driven>(
     driven: &mut T,
     clock: &TestClock,
@@ -459,59 +458,30 @@ pub fn run_until<T: Driven>(
     let all = [RENDER, AUDIO, VIDEO_ENCODER, AUDIO_ENCODER, OUTPUT];
     let gpu = gpu().expect("run_until needs the GPU the studio runs on");
     let wall = Instant::now();
-    // (ticks run or skipped, due ticks at that point, worker starts)
-    let mut seen: BTreeMap<PartitionId, (u64, u64, u64)> = BTreeMap::new();
-    let now = clock.now();
-    for (p, cadence, offset) in cadences() {
-        if !driven.engine().has_worker(p) {
-            continue;
+    let catch_up = |driven: &T| {
+        let now = clock.now();
+        for (p, cadence, offset) in cadences() {
+            if !driven.engine().has_worker(p) {
+                continue;
+            }
+            let stats = driven.engine().worker_stats(p).unwrap();
+            let want = due(&cadence, offset, now);
+            while stats.next_index() < want && wall.elapsed() < LIMIT {
+                driven.engine().wake(p);
+                std::thread::yield_now();
+            }
         }
-        let stats = driven.engine().worker_stats(p).unwrap();
-        // A worker's first tick is the one already due when it starts.
-        while stats.ticks() == 0 && wall.elapsed() < LIMIT {
-            driven.engine().wake(p);
-            std::thread::yield_now();
-        }
-        seen.insert(
-            p,
-            (
-                stats.ticks() + stats.late(),
-                due(&cadence, offset, now),
-                stats.starts(),
-            ),
-        );
-    }
+    };
+    catch_up(driven);
     while wall.elapsed() < LIMIT {
         if done(driven) {
             return true;
         }
         clock.advance(STEP);
-        let now = clock.now();
         for p in all {
             driven.engine().wake(p);
         }
-        for (p, cadence, offset) in cadences() {
-            if !driven.engine().has_worker(p) {
-                seen.remove(&p);
-                continue;
-            }
-            let stats = driven.engine().worker_stats(p).unwrap();
-            let due_now = due(&cadence, offset, now);
-            if let Some((count, due_then, starts)) = seen.get(&p).copied()
-                && starts == stats.starts()
-            {
-                // A worker that was stopped after its drain (ADR-0029) ran that final
-                // tick at once, ahead of its time, and skips that index when it starts
-                // again: it may stay one tick short of the due count for good.
-                let ahead = u64::from(stats.starts() > 1);
-                let want = (count + due_now.saturating_sub(due_then)).saturating_sub(ahead);
-                while stats.ticks() + stats.late() < want && wall.elapsed() < LIMIT {
-                    driven.engine().wake(p);
-                    std::thread::yield_now();
-                }
-            }
-            seen.insert(p, (stats.ticks() + stats.late(), due_now, stats.starts()));
-        }
+        catch_up(driven);
         // The render worker only polls the device without blocking; software adapters
         // (WARP) may then leave readbacks pending indefinitely. Waiting here makes every
         // readback submitted by this step complete before the next render tick, as in

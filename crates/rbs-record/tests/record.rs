@@ -20,7 +20,8 @@ use rbs_core::timing::{Cadence, SampleRate};
 use rbs_graph::node::NodeTypeId;
 use rbs_record::{AUDIO, Port, RecordError, RecordSettings, Recording};
 use rbs_scene::SceneCollection;
-use rbs_scene::model::{ItemContent, Layout, SceneScope, Settings};
+use rbs_scene::model::{ItemContent, Layout, SceneScope, SettingValue, Settings};
+use rbs_sources::types::keys;
 use support::*;
 
 #[test]
@@ -250,4 +251,27 @@ fn an_unknown_canvas_or_a_missing_encoder_fails_before_anything_runs() {
     );
     assert_eq!(r.capture.live_buffers(), 0);
     assert_eq!(r.audio.active_streams(), 0);
+}
+
+#[test]
+fn a_video_source_that_cannot_be_instantiated_fails_the_start_before_any_device_opens() {
+    let Some(gpu) = gpu() else { return };
+    let (mut col, canvas) = scene();
+    // A camera asked for 0 frames per second is refused when it is instantiated.
+    let camera = col.sources().find(|s| s.name == "Camera").unwrap().id;
+    let mut settings = Settings::new();
+    settings.insert(keys::FPS.into(), SettingValue::Int(0));
+    col.set_source_settings(camera, settings).unwrap();
+    let r = rig();
+    let (engine, _) = engine_at_start();
+    let record = RecordSettings::new(canvas, "mem://x", ContainerId::Matroska);
+    let err = Recording::start(engine, gpu, &col, &r.adapters, &record).unwrap_err();
+    assert!(
+        matches!(&err, RecordError::Source { name, .. } if name == "Camera"),
+        "{err}"
+    );
+    // Nothing was opened: no audio stream ran, no frame was captured.
+    assert_eq!(r.audio.active_streams(), 0);
+    assert_eq!(r.capture.live_buffers(), 0);
+    assert!(r.log.packets.lock().unwrap().is_empty());
 }
