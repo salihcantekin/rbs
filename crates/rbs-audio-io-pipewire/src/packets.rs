@@ -79,6 +79,7 @@ impl Packets {
 
     /// A buffer of `frames` frames that could not be read (an unexpected layout):
     /// counted as lost, and the next packet starts a new run.
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
     pub(crate) fn lose(&mut self, frames: u64) {
         self.producer.lost(frames);
         self.pacing.break_run();
