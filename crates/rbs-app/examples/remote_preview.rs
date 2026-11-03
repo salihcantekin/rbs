@@ -20,8 +20,13 @@
 //! - `RBS_PREVIEW_MODE=slint`: the surfaces are aliased as `wgpu` textures and drawn by
 //!   Slint's renderer as an `Image` (ADR-0028's first path). Every frame redraws the
 //!   window.
-//! - `RBS_DEMO_METERS=1`: adds a strip of 16 audio-style meters that Slint animates at
-//!   30 Hz (the budget scenario of `docs/specs/performance-budgets.md`, "Desktop UI").
+//! - `RBS_DEMO_METERS=1`: adds a strip of 16 audio meters (scale, peak hold, clip
+//!   indicator per `rbs_ui::meter`) updated at 30 Hz, with their accessible values at
+//!   1 Hz (the budget scenario of `docs/specs/performance-budgets.md`, "Desktop UI").
+//! - `RBS_METER_MODE=layer` (default with the layer preview): the meters' moving parts
+//!   are Core Animation layers (ADR-0035); Slint draws only their static parts.
+//!   `RBS_METER_MODE=slint` (default with `RBS_PREVIEW_MODE=slint`): Slint draws them, so
+//!   every update redraws the window.
 //! - `RBS_DEMO_SECONDS=<n>`: after 3 s of warm-up, measures `n` seconds, prints one
 //!   `MEASURE` line (shown frames per second, late frames, process CPU, resident memory)
 //!   and exits.
@@ -49,15 +54,27 @@ mod demo {
     use std::time::{Duration, Instant};
 
     use raw_window_handle::{HasWindowHandle, RawWindowHandle};
+    use rbs_app::native::{MeterBridgeLayer, MeterColors, MeterGeometry};
     use rbs_core::time::{Clock, MonotonicClock};
     use rbs_gpu::share::{
         LayerRect, PreviewEndpoint, PreviewFrame, PreviewLayer, PreviewSubscriber,
     };
     use rbs_gpu::{GpuContext, GpuRequest};
+    use rbs_ui::layout::Rect;
+    use rbs_ui::meter::{Meter, MeterView, Orientation};
     use slint::wgpu_30::{WGPUConfiguration, wgpu};
     use slint::{ComponentHandle, Model, VecModel};
 
+    /// Meter strip layout, shared by the Slint markup and the layer geometry.
+    const METERS: usize = 16;
+    const STRIP_HEIGHT: f32 = 56.0;
+    const STRIP_PAD: f32 = 8.0;
+    const METER_GAP: f32 = 4.0;
+    const CLIP_HEIGHT: f32 = 6.0;
+    const CLIP_GAP: f32 = 2.0;
+
     slint::slint! {
+        export struct MeterData { level: float, peak: float, clipped: bool }
         export component PreviewWindow inherits Window {
             title: "RBS remote preview";
             preferred-width: 1280px;
@@ -68,12 +85,19 @@ mod demo {
             in property <bool> draw-frame;
             in property <string> status;
             in property <bool> meters;
-            in property <[float]> levels;
+            // Slint draws the meters' moving parts (meter mode `slint`).
+            in property <bool> draw-meters;
+            in property <[MeterData]> levels;
+            in property <[string]> meter-values;
             // Where the preview layer goes, in window coordinates.
             out property <length> area-x: area.absolute-position.x;
             out property <length> area-y: area.absolute-position.y;
             out property <length> area-width: area.width;
             out property <length> area-height: area.height;
+            out property <length> strip-x: strip.absolute-position.x;
+            out property <length> strip-y: strip.absolute-position.y;
+            out property <length> strip-width: strip.width;
+            out property <length> strip-height: strip.height;
             VerticalLayout {
                 area := Rectangle {
                     background: #000000;
@@ -86,16 +110,72 @@ mod demo {
                         image-fit: contain;
                     }
                 }
-                if root.meters: HorizontalLayout {
-                    height: 56px;
-                    padding: 8px;
-                    spacing: 4px;
-                    for level in root.levels: Rectangle {
-                        background: #1c2028;
+                strip := Rectangle {
+                    height: root.meters ? 56px : 0px;
+                    visible: root.meters;
+                    property <length> pad: 8px;
+                    property <length> gap: 4px;
+                    property <length> clip-h: 6px;
+                    property <length> clip-gap: 2px;
+                    property <length> meter-w: (self.width - 2 * pad - 15 * gap) / 16;
+                    property <length> bar-y: pad + clip-h + clip-gap;
+                    property <length> bar-h: self.height - bar-y - pad;
+                    // Static parts, drawn once: clip indicator outline and bar background.
+                    for value[i] in root.meter-values: Rectangle {
+                        x: pad + i * (meter-w + gap);
+                        y: 0;
+                        width: meter-w;
+                        height: parent.height;
+                        accessible-role: progress-indicator;
+                        accessible-label: "Meter " + (i + 1);
+                        accessible-value: value;
                         Rectangle {
-                            y: parent.height * (1 - level);
-                            height: parent.height * level;
-                            background: level > 0.85 ? #e5534b : #3fb950;
+                            y: pad;
+                            height: clip-h;
+                            border-width: 1px;
+                            border-color: #c38bf0;
+                        }
+                        Rectangle {
+                            y: bar-y;
+                            height: bar-h;
+                            background: #161a22;
+                        }
+                    }
+                    // Moving parts when Slint draws them (zones at -18 and -6 dBFS).
+                    if root.draw-meters: Rectangle {
+                        for m[i] in root.levels: Rectangle {
+                            x: pad + i * (meter-w + gap);
+                            width: meter-w;
+                            property <float> low: min(m.level, 0.7);
+                            property <float> mid: max(min(m.level, 0.9) - 0.7, 0);
+                            property <float> high: max(m.level - 0.9, 0);
+                            Rectangle {
+                                y: pad;
+                                height: clip-h;
+                                visible: m.clipped;
+                                background: #c38bf0;
+                            }
+                            Rectangle {
+                                y: bar-y + bar-h * (1 - low);
+                                height: bar-h * low;
+                                background: #3fb950;
+                            }
+                            Rectangle {
+                                y: bar-y + bar-h * (1 - 0.7 - mid);
+                                height: bar-h * mid;
+                                background: #e3b341;
+                            }
+                            Rectangle {
+                                y: bar-y + bar-h * (1 - 0.9 - high);
+                                height: bar-h * high;
+                                background: #f0883e;
+                            }
+                            Rectangle {
+                                visible: m.peak > 0;
+                                y: bar-y + min(bar-h * (1 - m.peak), bar-h - 2px);
+                                height: 2px;
+                                background: m.peak >= 0.9 ? #f0883e : m.peak >= 0.7 ? #e3b341 : #3fb950;
+                            }
                         }
                     }
                 }
@@ -152,6 +232,9 @@ mod demo {
         /// (slint).
         timer: slint::Timer,
         clock: MonotonicClock,
+        /// Meter mode `layer`: the meters' moving parts, attached at the first redraw.
+        bridge: Option<MeterBridgeLayer>,
+        bridge_attached: bool,
     }
 
     /// Mode `slint`: frames are wgpu textures that Slint draws.
@@ -226,6 +309,12 @@ mod demo {
             Ok(other) => return Err(format!("unknown RBS_PREVIEW_MODE {other}").into()),
         };
         let meters = std::env::var("RBS_DEMO_METERS").is_ok_and(|v| v == "1");
+        let meter_mode = match std::env::var("RBS_METER_MODE").as_deref() {
+            Ok("slint") => Mode::Slint,
+            Ok("layer") => Mode::Layer,
+            Err(_) => mode,
+            Ok(other) => return Err(format!("unknown RBS_METER_MODE {other}").into()),
+        };
         let measure = std::env::var("RBS_DEMO_SECONDS")
             .ok()
             .map(|v| v.parse::<u64>())
@@ -268,6 +357,15 @@ mod demo {
         let window = PreviewWindow::new()?;
         window.set_draw_frame(mode == Mode::Slint);
         window.set_meters(meters);
+        window.set_draw_meters(meters && meter_mode == Mode::Slint);
+        let bridge = if meters && meter_mode == Mode::Layer {
+            let tokens = rbs_ui::tokens::Tokens::built_in()?;
+            let colors =
+                MeterColors::from_tokens(&tokens, "dark").ok_or("no meter colours in tokens")?;
+            Some(MeterBridgeLayer::new(&colors))
+        } else {
+            None
+        };
         let slint_path = match mode {
             Mode::Slint => {
                 let images = sub
@@ -317,6 +415,8 @@ mod demo {
                 slint: slint_path,
                 timer: slint::Timer::default(),
                 clock: MonotonicClock::new(),
+                bridge,
+                bridge_attached: false,
             });
         });
 
@@ -328,26 +428,69 @@ mod demo {
                 return;
             };
             match state {
-                slint::RenderingState::BeforeRendering => place_layer(&window, &attached),
+                slint::RenderingState::BeforeRendering => {
+                    place_layer(&window, &attached);
+                    place_meters(&window);
+                }
                 slint::RenderingState::AfterRendering => after_rendering(&queue),
                 _ => {}
             }
         })?;
 
-        // Meters: 16 bars that move at 30 Hz, only when asked for.
-        let levels = Rc::new(VecModel::from(vec![0.0f32; 16]));
+        // Meters: 16 meters updated at 30 Hz, accessible values at 1 Hz, only when asked
+        // for. Levels are a made-up signal from -48 to +2 dBFS (so the clip latches).
+        let silent = MeterData {
+            level: 0.0,
+            peak: 0.0,
+            clipped: false,
+        };
+        let levels = Rc::new(VecModel::from(vec![silent; METERS]));
+        let values = Rc::new(VecModel::from(vec![
+            slint::SharedString::from("silent");
+            if meters { METERS } else { 0 }
+        ]));
         window.set_levels(levels.clone().into());
+        window.set_meter_values(values.clone().into());
         let meter_timer = slint::Timer::default();
         if meters {
             let mut tick = 0u32;
+            let start = Instant::now();
+            let mut ballistics = [Meter::new(); METERS];
+            let mut views = [MeterView::SILENT; METERS];
             meter_timer.start(
                 slint::TimerMode::Repeated,
                 Duration::from_millis(33),
                 move || {
                     tick = tick.wrapping_add(1);
-                    for i in 0..levels.row_count() {
+                    let now = start.elapsed();
+                    for (i, (m, v)) in ballistics.iter_mut().zip(&mut views).enumerate() {
                         let phase = (tick as f32) * 0.21 + (i as f32) * 0.7;
-                        levels.set_row_data(i, 0.5 + 0.45 * phase.sin());
+                        m.update(-23.0 + 25.0 * phase.sin(), now);
+                        *v = m.view(now);
+                    }
+                    let drawn = STATE.with(|s| {
+                        s.borrow_mut()
+                            .as_mut()
+                            .and_then(|st| st.bridge.as_mut())
+                            .map(|b| b.show(&views))
+                            .is_some()
+                    });
+                    if !drawn {
+                        for (i, v) in views.iter().enumerate() {
+                            levels.set_row_data(
+                                i,
+                                MeterData {
+                                    level: v.level,
+                                    peak: v.peak,
+                                    clipped: v.clipped,
+                                },
+                            );
+                        }
+                    }
+                    if tick.is_multiple_of(30) {
+                        for (i, m) in ballistics.iter().enumerate() {
+                            values.set_row_data(i, format!("{:.0} dBFS", m.level_db()).into());
+                        }
                     }
                 },
             );
@@ -470,6 +613,68 @@ mod demo {
                 width: f64::from(window.get_area_width()),
                 height: f64::from(window.get_area_height()),
             });
+        });
+    }
+
+    /// Meter mode `layer`: attaches the meter bridge once the view exists and keeps it
+    /// over the strip, with each meter where the Slint markup draws its static parts.
+    fn place_meters(window: &PreviewWindow) {
+        STATE.with(|s| {
+            let mut s = s.borrow_mut();
+            let Some(st) = s.as_mut() else {
+                return;
+            };
+            let Some(bridge) = st.bridge.as_mut() else {
+                return;
+            };
+            if !st.bridge_attached {
+                let handle = window.window().window_handle();
+                let Ok(handle) = handle.window_handle() else {
+                    return;
+                };
+                let RawWindowHandle::AppKit(appkit) = handle.as_raw() else {
+                    return;
+                };
+                // SAFETY: as in `place_layer`.
+                if let Err(e) = unsafe { bridge.attach_to_ns_view(appkit.ns_view) } {
+                    eprintln!("remote_preview: cannot attach the meter layer: {e}");
+                    return;
+                }
+                st.bridge_attached = true;
+            }
+            let width = window.get_strip_width();
+            bridge.set_rect(Rect {
+                x: window.get_strip_x(),
+                y: window.get_strip_y(),
+                w: width,
+                h: window.get_strip_height(),
+            });
+            // Same arithmetic as the markup; set_meters does nothing when unchanged.
+            let meter_w =
+                (width - 2.0 * STRIP_PAD - (METERS as f32 - 1.0) * METER_GAP) / METERS as f32;
+            let bar_y = STRIP_PAD + CLIP_HEIGHT + CLIP_GAP;
+            let bar_h = STRIP_HEIGHT - bar_y - STRIP_PAD;
+            let mut geometry = [MeterGeometry {
+                bar: Rect::default(),
+                clip: Rect::default(),
+                orientation: Orientation::Vertical,
+            }; METERS];
+            for (i, g) in geometry.iter_mut().enumerate() {
+                let x = STRIP_PAD + i as f32 * (meter_w + METER_GAP);
+                g.bar = Rect {
+                    x,
+                    y: bar_y,
+                    w: meter_w,
+                    h: bar_h,
+                };
+                g.clip = Rect {
+                    x,
+                    y: STRIP_PAD,
+                    w: meter_w,
+                    h: CLIP_HEIGHT,
+                };
+            }
+            bridge.set_meters(&geometry);
         });
     }
 
