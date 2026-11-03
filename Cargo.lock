@@ -3995,6 +3995,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "rbs-audio-io-pipewire"
+version = "0.0.1"
+dependencies = [
+ "allocation-counter",
+ "criterion 0.8.2",
+ "libc",
+ "pipewire",
+ "rbs-audio-io",
+ "rbs-core",
+]
+
+[[package]]
 name = "rbs-audio-io-test"
 version = "0.0.1"
 dependencies = [

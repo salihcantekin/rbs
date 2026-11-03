@@ -518,32 +518,42 @@ impl<B: AudioBackend + ?Sized> Suite<'_, '_, B> {
         // No allocation or free in `read`, `available` and `stats`.
         match self.options.measure_allocations {
             Some(measure) => {
-                self.pacer.wait(self.options.poll_interval * 2);
-                let mut slices: Vec<&mut [f32]> = buffers
-                    .channels
-                    .iter_mut()
-                    .map(|c| c.as_mut_slice())
-                    .collect();
+                // Measured reads are repeated until one returns audio: OS packets can
+                // be longer than the poll interval (a PipeWire quantum of 1024 frames
+                // is 21 ms), so a fixed wait may find nothing new. Every attempt,
+                // empty or not, must neither allocate nor free.
+                let deadline = clock.now() + self.options.audio_timeout;
+                let mut allocations = 0;
                 let mut result = Ok(AudioRead::EMPTY);
-                let mut available = 0;
-                let count = measure(&mut || {
-                    result = stream.read(&mut slices);
-                    available = stream.available();
-                    let _ = stream.stats();
-                });
-                drop(slices);
+                loop {
+                    self.pacer.wait(self.options.poll_interval);
+                    let mut slices: Vec<&mut [f32]> = buffers
+                        .channels
+                        .iter_mut()
+                        .map(|c| c.as_mut_slice())
+                        .collect();
+                    allocations += measure(&mut || {
+                        result = stream.read(&mut slices);
+                        let _ = stream.available();
+                        let _ = stream.stats();
+                    });
+                    drop(slices);
+                    let empty = matches!(result, Ok(read) if read.frames == 0);
+                    if !empty || clock.now() > deadline {
+                        break;
+                    }
+                }
                 if let Ok(read) = result {
                     reads.record(read, clock.now(), rate, tolerance);
                 }
                 self.report.check(
                     "no allocation",
-                    match (count, result) {
+                    match (allocations, result) {
                         (0, Ok(read)) if read.frames > 0 => Ok(()),
                         (0, other) => Err(format!("{id}: read returned {other:?}")),
                         (n, _) => Err(format!("{id}: read allocated or freed {n} times")),
                     },
                 );
-                let _ = available;
             }
             None => self.skip("no allocation", "no allocation counter"),
         }
