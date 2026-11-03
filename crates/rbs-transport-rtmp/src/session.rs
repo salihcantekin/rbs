@@ -215,7 +215,15 @@ impl Running {
             self.thread.thread().unpark();
             let grace = deadline.saturating_duration_since(Instant::now());
             if self.done.recv_timeout(grace).is_err() {
+                // The thread is detached (inside DNS or `connect`): what it has not
+                // finished is lost, and the final counters must not show it as still
+                // queued.
                 self.staging_dropped();
+                self.retire();
+                let done = self.shared.progress.done_items.load(Ordering::Acquire);
+                self.items_dropped += self.pushed.saturating_sub(done);
+                self.committed.clear();
+                self.committed_bytes = 0;
                 return (Err(TransportError::Timeout), self.stats());
             }
         }
