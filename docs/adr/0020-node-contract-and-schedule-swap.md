@@ -83,3 +83,5 @@ Independent AI session per ADR-0014, 2026-11-02 (got only the proposal, specs an
 10. Slab-plus-commands alternative added with the reason it was rejected.
 
 Owner approval: Salih, 2026-11-02 (early-phase merge policy: merge once CI is green; large reviews later).
+
+- Record, 2026-11-03: audio links refused by this executor and a separate audio executor are superseded by [ADR-0037](0037-audio-graph.md): audio runs on this executor in block-cadence partitions, with audio value slots.

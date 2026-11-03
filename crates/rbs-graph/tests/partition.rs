@@ -347,33 +347,6 @@ fn moving_a_node_retires_its_queues_and_reports_the_move() {
 }
 
 #[test]
-fn audio_links_cannot_cross() {
-    use rbs_graph::node::{LinkKind, NodeDescriptor, NodeTypeId, Pin};
-    let mut g = GraphDescription::new();
-    let mic = g
-        .add_node(Arc::new(NodeDescriptor::new(
-            NodeTypeId::new("org.rbs.test.mic"),
-            NodeKind::Source,
-            vec![],
-            vec![Pin::one("out", LinkKind::Audio)],
-        )))
-        .unwrap();
-    let enc = g
-        .add_node(Arc::new(NodeDescriptor::new(
-            NodeTypeId::new("org.rbs.test.aac"),
-            NodeKind::Encoder,
-            vec![Pin::one("in", LinkKind::Audio)],
-            vec![Pin::one("out", LinkKind::Packets)],
-        )))
-        .unwrap();
-    g.connect(mic, "out", enc, "in").unwrap();
-    g.set_partition(enc, ENCODER).unwrap();
-    let lowered = Lowering::new().lower(&g);
-    assert_eq!(lowered.problems.len(), 1);
-    assert!(lowered.crossings.is_empty());
-}
-
-#[test]
 fn a_doorbell_wakes_a_parked_worker() {
     let bell = Arc::new(Doorbell::new());
     assert!(

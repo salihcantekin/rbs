@@ -91,3 +91,4 @@ Forces:
 
   Non-blocking findings taken: checked reserved-id arithmetic (`LowerProblem::IdsExhausted`), doorbell re-registers a new worker thread and has a single-ring test, parts documented as incomplete while `problems` is not empty, stats hand-over after a move, idle cost stated. Deferred: a property test over random graphs that the union of the parts' plans equals the logical plan (to come with the engine loop in `rbs-app`).
 - Owner approval: Salih, 2026-11-03 (early-phase policy: threads may accept ADRs and merge on green CI).
+- Record, 2026-11-03: "audio cannot cross" and "audio has its own executor" are superseded by [ADR-0037](0037-audio-graph.md): audio links cross through audio queues (decision 9 there).
