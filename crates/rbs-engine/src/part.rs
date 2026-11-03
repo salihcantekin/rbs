@@ -54,6 +54,9 @@ pub(crate) trait Part: Send {
     fn wake(&self);
     fn stats(&self) -> Arc<WorkerStats>;
     fn stop_worker(&mut self);
+    /// Runs the worker's final tick(s) (see `Worker::drain`); true if the worker
+    /// drained within `timeout` or there is no worker.
+    fn drain(&mut self, timeout: Duration) -> bool;
     /// From now on no worker starts; swaps without one run inline (shutdown).
     fn close(&mut self);
 }
@@ -296,6 +299,10 @@ impl<X: Runtime> Part for Partition<X> {
 
     fn close(&mut self) {
         self.closing = true;
+    }
+
+    fn drain(&mut self, timeout: Duration) -> bool {
+        self.worker.as_ref().is_none_or(|w| w.drain(timeout))
     }
 
     fn stop_worker(&mut self) {
