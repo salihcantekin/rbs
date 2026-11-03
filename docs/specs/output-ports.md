@@ -153,6 +153,8 @@ pub trait AudioEncoder: Send {
 | `codec.audio.sample_rates` | Set | e.g. `44100`, `48000` |
 | `codec.audio.channels.max` | Int | |
 
+Native input memory (`metal`, `d3d11`, `d3d12`, `vulkan`, `dmabuf`): the encoder receives native frames exported by `rbs-gpu` ([ADR-0025](../adr/0025-encoder-surface-export.md); `metal` is a `NativeSurface::IoSurface` with `SurfaceSync::Ready`, NV12 `'420v'` or P010 `'x420'`). Encoder adapters read the handle from the payload and do not depend on `rbs-gpu`. They keep the frame (and with it the lease) until the encoder API has finished reading the surface, then drop it; holding frames longer starves the exporter's fixed ring, which then drops frames.
+
 ## `rbs-mux`
 
 ```rust
@@ -329,6 +331,5 @@ The three port crates and the container types in `rbs-core` are Draft and pre-1.
 - `TransportError::QueueFull` retry: there is no "space available" signal yet; the output worker retries on its next packet or `poll_events` tick. An event may be added if measurements show it matters.
 - `Secret` is not zeroized on drop; a zeroizing type can replace it when a dependency for that is justified.
 - WHIP/WebRTC: codec and profile are negotiated in SDP, possibly after the encoder exists. The first WHIP adapter decides whether the transport offers only what `start` received, or the output builder negotiates before creating the encoder.
-- Hardware encoders that take native surfaces (D3D11, Vulkan, IOSurface, DMA-BUF) receive `FramePayload::Texture` ids today and need the `rbs-gpu` export path to get native handles; whether encoder adapters may depend on `rbs-gpu` or receive exported handles through a port-level type is decided with the GPU interop work.
 - Multi-pass or look-ahead tuning beyond `EncoderTuning` is left to `adapter_options` until a second adapter needs it.
 - HLS/DASH segmenting: a muxer that emits segment boundaries, or a transport that segments; decided when the first HLS adapter is written.

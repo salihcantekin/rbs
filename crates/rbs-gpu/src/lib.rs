@@ -6,17 +6,22 @@
 //! - [`yuv`]: converts a canvas to NV12 or P010 (two planes, or one multi-planar texture)
 //!   for encoders.
 //! - [`interop`]: imports native producer surfaces zero-copy as pool textures.
+//! - `export` (macOS): converts canvases into IOSurfaces that VideoToolbox encodes
+//!   without a copy.
 //! - [`node`]: the render executor's graph runtime and the compositor node.
 //! - [`readback`]: explicit, counted CPU readback (fallback and tests only).
 //!
 //! `Compositor::render`, `YuvConverter::convert` / `convert_to_surface` and the pool
 //! are hot paths (`docs/architecture/hot-paths.md`): RBS code in them does not allocate.
 //! `unsafe` appears only in [`pool`] (the lease contract of `rbs_core::media`) and
-//! [`interop`] (native surface import), both marked low-level modules (P11).
+//! [`interop`] (native surface import) and `export` (native surface export), all marked
+//! low-level modules (P11).
 
 pub mod compositor;
 pub mod context;
 pub mod error;
+#[cfg(target_vendor = "apple")]
+pub mod export;
 pub mod interop;
 pub mod math;
 pub mod node;

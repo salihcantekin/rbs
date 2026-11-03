@@ -41,7 +41,9 @@ windows = { version = "0.62", features = ["Win32_Foundation", "Win32_Security", 
 # Native surface import on macOS goes through wgpu's Metal HAL; same objc2 versions as wgpu-hal.
 [target.'cfg(target_vendor = "apple")'.dependencies]
 objc2-metal = { version = "0.3.2", default-features = false, features = ["std", "MTLAllocation", "MTLDevice", "MTLPixelFormat", "MTLResource", "MTLTexture", "objc2-io-surface"] }
-objc2-io-surface = { version = "0.3.2", default-features = false, features = ["std", "IOSurfaceRef", "IOSurfaceTypes"] }
+objc2-io-surface = { version = "0.3.2", default-features = false, features = ["std", "IOSurfaceRef", "IOSurfaceTypes", "objc2-core-foundation"] }
+# Property dictionaries for creating the bi-planar IOSurfaces of the encoder export.
+objc2-core-foundation = { version = "0.3.2", default-features = false, features = ["std", "CFArray", "CFDictionary", "CFNumber", "CFString"] }
 
 [target.'cfg(target_vendor = "apple")'.dev-dependencies]
 # Test-only IOSurface producer for the import conformance test.

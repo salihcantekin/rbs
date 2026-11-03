@@ -17,11 +17,12 @@ In scope:
 - Texture pool with allocation-free reuse, stale-id detection and leases for consumers on other threads.
 - Compositor: one per canvas; draws layers with a 2D affine transform, source crop, opacity and premultiplied alpha blending, in linear light on `Rgba16Float`.
 - Conversion of a canvas to NV12 or P010 (two planes, or one multi-planar texture; BT.709) on the GPU.
+- Native export of converted frames to encoders (IOSurface for VideoToolbox) and native import of producer surfaces, both below.
 - Explicit, counted CPU readback (fallback and tests only).
 
 Out of scope (later specs or PRs):
 
-- Sharing an exported surface with an encoder API (NT handle, exportable memory fd, CVPixelBuffer); import is specified below.
+- Export on D3D12 (NT handle) and Vulkan (exportable memory, DMA-BUF); same frame shape as the macOS exporter (ADR-0025).
 - Scene tree evaluation (groups, nesting, animation): `rbs-scene` flattens a scene into the layer list below.
 - Filters, masks, blend modes other than "normal", transitions and HDR output (PQ, HLG, BT.2020).
 
@@ -114,11 +115,12 @@ pub enum YuvFormat { Nv12, P010 }
 impl YuvConverter {
     /// P010 needs `gpu.p010`; otherwise `GpuError::Unsupported`.
     pub fn new(ctx: &GpuContext, format: YuvFormat, width: u32, height: u32) -> Result<YuvConverter, GpuError>;
+    /// Both return the submission of their GPU work, so callers can tell when it completed.
     pub fn convert(&mut self, ctx: &GpuContext, pool: &TexturePool, canvas: TextureId, luma: TextureId, chroma: TextureId)
-        -> Result<(), GpuError>;
+        -> Result<wgpu::SubmissionIndex, GpuError>;
     /// Needs `gpu.nv12_surface` (NV12) or `gpu.p010_surface` (P010).
     pub fn convert_to_surface(&mut self, ctx: &GpuContext, pool: &TexturePool, canvas: TextureId, surface: TextureId)
-        -> Result<(), GpuError>;
+        -> Result<wgpu::SubmissionIndex, GpuError>;
 }
 pub fn luma_desc(format: YuvFormat, width: u32, height: u32) -> TextureDesc;    // R8Unorm / R16Unorm, w x h
 pub fn chroma_desc(format: YuvFormat, width: u32, height: u32) -> TextureDesc;  // Rg8Unorm / Rg16Unorm, w/2 x h/2
@@ -134,10 +136,41 @@ pub fn surface_desc(format: YuvFormat, width: u32, height: u32) -> TextureDesc; 
 - Hand-off target: hardware encoders (NVENC, AMF, QSV, VideoToolbox, VA-API, Vulkan Video) consume one multi-planar NV12 or P010 surface. Where the device has `gpu.nv12_surface` or `gpu.p010_surface` (D3D12 and Vulkan), `convert_to_surface` writes a single pool texture of `surface_desc`.
   - Hardware adapters render straight into its two plane views.
   - Software adapters (`gpu.software`) render into converter-owned plane textures, then copy them into the multi-planar texture through one GPU buffer. Rendering into plane views is not reliable there: lavapipe writes plane 1 over plane 0. wgpu has no texture-to-texture copy into planes. The staged path costs about 7% more than the plain planes on lavapipe at 1080p (24.3 ms against 22.7 ms, `frame_1080p/nv12_surface` against `nv12_planes`). It never reaches the CPU.
-  - Without the surface capability (Metal), encoders take the two plane textures from `convert`. A CVPixelBuffer export for VideoToolbox is a follow-up.
-  - Sharing the surface with an encoder API (an NT handle on D3D12, an exportable memory fd on Vulkan) is the encoder adapter's job, through the HAL.
+  - Without the surface capability (Metal), the planes are rendered into an IOSurface that VideoToolbox reads; see [Native export](#native-export).
+  - Encoders receive the platform surface as a native frame from an exporter ([ADR-0025](../adr/0025-encoder-surface-export.md)). D3D12 (NT handle) and Vulkan (exportable memory, DMA-BUF) exporters are follow-ups with the same frame shape.
 - Lease: an exported frame holds a pool lease. The encoder releases it after it has finished reading (fence or semaphore signal, or an explicit release), and the pool never reuses a texture while a lease on it is open.
 - CPU fallback for software encoders: on request per output, the converted planes are copied into a mapped staging buffer (NV12 or I420 with per-plane strides). It is opt-in, counted in `frames_cpu_copied`, and never on the default path. Encoders advertise what they accept with the `input.memory` and `input.pixel_format` capabilities of `rbs-codec`.
+
+### Native export
+
+Implements [ADR-0025](../adr/0025-encoder-surface-export.md): encoders get the converted frame as a native frame they are the only consumer of, and never depend on `rbs-gpu`. Lives in `rbs_gpu::export`, a marked low-level module (P11). macOS only so far.
+
+```rust
+impl SurfaceExporter {
+    /// Creates `surfaces` (2..=MAX_EXPORT_SURFACES = 32) IOSurfaces and aliases their planes in `pool`.
+    /// Non-real-time. P010 needs `gpu.p010`; width and height must be even.
+    pub fn new(ctx: &GpuContext, pool: &mut TexturePool, format: YuvFormat, width: u32, height: u32, surfaces: usize)
+        -> Result<SurfaceExporter, GpuError>;
+    /// Converts `canvas` into the next free surface. `GpuError::ExportBusy` when every surface is
+    /// pending or held by the encoder: the caller drops the frame.
+    pub fn export(&mut self, ctx: &GpuContext, pool: &TexturePool, canvas: TextureId, timestamp: Timestamp, sequence: u64)
+        -> Result<(), GpuError>;
+    /// The oldest converted frame whose GPU work completed, or `None`. Never blocks.
+    pub fn take_ready(&mut self, ctx: &GpuContext, pool: &TexturePool) -> Result<Option<VideoFrame>, GpuError>;
+    /// Releases the pool slots; frames already handed out stay valid until dropped.
+    pub fn close(self, pool: &mut TexturePool);
+    pub fn format(&self) -> &VideoFormat;   // NV12 or P010, ColorSpace::BT709_LIMITED
+    pub fn stats(&self) -> ExportStats;     // converted, delivered, busy
+}
+```
+
+- Surfaces: bi-planar IOSurfaces, `'420v'` (`kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange`, NV12) or `'x420'` (`kCVPixelFormatType_420YpCbCr10BiPlanarVideoRange`, P010), limited range. Row pitch is aligned to IOSurface's row alignment and Metal's minimum linear texture alignment for the plane format; plane offsets are page aligned (4096).
+- Each plane is aliased as a Metal texture (`R8Unorm`/`RG8Unorm`, or `R16Unorm`/`RG16Unorm`) of `luma_desc`/`chroma_desc`, inserted into the pool as an external texture. `convert` renders into them, so there is no copy and no CPU readback.
+- All surfaces are created in `new`; the ring never grows. A surface is written only when it is not pending and its luma slot has no lease.
+- `take_ready` polls the conversion's submission without waiting. When it has completed, the frame is `VideoFrame::native(format, t, NativeSurface::io_surface(ptr), SurfaceSync::Ready, lease)` with the exporter's sequence number, and `lease` is a pool lease on the luma slot. The slot's Metal texture retains the IOSurface, so the pointer stays valid while the lease lives, including after `close`.
+- Frames come out in conversion order. Call `take_ready` until `None` once per render tick; a frame is normally ready on the tick after its conversion.
+- Consumer rules (encoder adapters): wrap the surface with `CVPixelBufferCreateWithIOSurface` (cache the wrapper per surface address: the ring reuses a small set), set the colour attachments from the frame's `ColorSpace`, and drop the frame only after VideoToolbox has finished with it (its output callback). The frame is not shareable.
+- Installed but unused costs nothing: an exporter exists only while an encoder that takes Metal memory is Active (P13). Dropping it without `close` keeps its pool slots until the pool is dropped.
 
 ### Native import (interop)
 
@@ -234,13 +267,13 @@ impl CompositorNode {
 
 ## Errors and failure behaviour
 
-All fallible calls return `GpuError` (no panics, no `unwrap` in library code). Variants: `NoAdapter`, `DeviceRequest`, `StaleTexture`, `UnknownTexture`, `TargetMismatch`, `TooManyLayers`, `PoolFull`, `InvalidSize`, `Readback`. Errors on the render path carry only `Copy` data so building them does not allocate.
+All fallible calls return `GpuError` (no panics, no `unwrap` in library code). Variants: `NoAdapter`, `DeviceRequest`, `StaleTexture`, `UnknownTexture`, `TargetMismatch`, `TooManyLayers`, `Unsupported`, `WrongAdapter`, `Import`, `ExportBusy`, `Export`, `PoolFull`, `InvalidSize`, `Readback`. Errors on the render path carry only `Copy` data so building them does not allocate.
 
 Device loss is reported by wgpu through the device-lost callback and surfaced as a metric; recovery (recreate context, re-warm sources) is a graph-level concern for a later spec.
 
 ## Performance requirements
 
-- `Compositor::render`, `YuvConverter::convert`, `YuvConverter::convert_to_surface` and the pool's `acquire` (reuse), `release` and `get` are hot paths ([hot-paths.md](../architecture/hot-paths.md)). RBS code inside them does not allocate. wgpu allocates internally while recording and submitting command buffers (about 130 allocations per frame for render + NV12 in the first measurement); the `alloc_per_frame` test asserts this does not grow over time and adds at most a small constant per layer. Reducing it (for example re-recorded render bundles) is follow-up work with its own measurements.
+- `Compositor::render`, `YuvConverter::convert`, `YuvConverter::convert_to_surface`, `SurfaceExporter::export` and `take_ready`, and the pool's `acquire` (reuse), `release` and `get` are hot paths ([hot-paths.md](../architecture/hot-paths.md)). RBS code inside them does not allocate. wgpu allocates internally while recording and submitting command buffers (about 130 allocations per frame for render + NV12 in the first measurement); the `alloc_per_frame` test asserts this does not grow over time and adds at most a small constant per layer. Reducing it (for example re-recorded render bundles) is follow-up work with its own measurements.
 - No CPU readback on the default path (P4).
 - Installed but unused: a `GpuContext` is created only when the first canvas becomes Active. A compositor or converter that is not Active is dropped, releasing its GPU objects (P13).
 - Benchmarks: `benches/compositor.rs` measures 1080p frame time (render, render + NV12, waiting for the GPU) with 1, 8 and 32 layers, and the CPU cost of recording and submitting 32 layers.
@@ -256,6 +289,7 @@ Run on any adapter, including software adapters in CI (lavapipe on Linux, WARP o
 - NV12 and P010 surfaces (where `gpu.nv12_surface` / `gpu.p010_surface`; required on Linux CI): both planes of `convert_to_surface` equal the two-plane output byte for byte on a two-colour canvas; a texture of another format is rejected.
 - Allocations per frame do not grow over time and grow by at most a small constant per layer.
 - Readback increments `frames_cpu_copied`.
+- Export (macOS CI, the runner's Metal device): NV12 and P010 (where `gpu.p010`) surface bytes, read through the IOSurface API with its plane strides, equal the two-plane output byte for byte on a two-colour canvas; the frame is an `IoSurface` frame with `Ready` sync, the right pixel format, time and sequence; held surfaces are not reused and a full ring returns `ExportBusy`; frames stay valid and unchanged after `close`; odd sizes and ring sizes outside 2..=32 are rejected; a steady export loop allocates at most 4 more per frame than the same conversion into pool planes and does not grow.
 
 ## Open questions
 

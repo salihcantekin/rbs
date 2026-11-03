@@ -317,7 +317,9 @@ impl YuvConverter {
         self.format
     }
 
-    /// Writes the planes of `canvas` into `luma` and `chroma`.
+    /// Writes the planes of `canvas` into `luma` and `chroma` and returns the submission,
+    /// so a caller can tell when the planes are complete (for example before a native
+    /// encoder reads them).
     ///
     /// Hot path. The planes must match [`luma_desc`] and [`chroma_desc`] for this size.
     pub fn convert(
@@ -327,7 +329,7 @@ impl YuvConverter {
         canvas: TextureId,
         luma: TextureId,
         chroma: TextureId,
-    ) -> Result<(), GpuError> {
+    ) -> Result<wgpu::SubmissionIndex, GpuError> {
         let source = self.source(pool, canvas)?;
         let luma_tex = plane(pool, luma, &luma_desc(self.format, self.width, self.height))?;
         let chroma_tex = plane(
@@ -336,11 +338,11 @@ impl YuvConverter {
             &chroma_desc(self.format, self.width, self.height),
         )?;
         let encoder = self.record(ctx, source, luma_tex, chroma_tex);
-        ctx.queue().submit(Some(encoder.finish()));
-        Ok(())
+        Ok(ctx.queue().submit(Some(encoder.finish())))
     }
 
-    /// Writes both planes of `canvas` into the single multi-planar texture `surface`.
+    /// Writes both planes of `canvas` into the single multi-planar texture `surface` and
+    /// returns the submission.
     ///
     /// Hot path. `surface` must match [`surface_desc`] for this format and size; without
     /// the surface capability such a texture cannot be created and [`Self::convert`] is used.
@@ -350,7 +352,7 @@ impl YuvConverter {
         pool: &TexturePool,
         canvas: TextureId,
         surface: TextureId,
-    ) -> Result<(), GpuError> {
+    ) -> Result<wgpu::SubmissionIndex, GpuError> {
         let source = self.source(pool, canvas)?;
         let tex = pool.get(surface).ok_or(GpuError::StaleTexture(surface))?;
         let expected = surface_desc(self.format, self.width, self.height);
@@ -373,8 +375,7 @@ impl YuvConverter {
                 encoder
             }
         };
-        ctx.queue().submit(Some(encoder.finish()));
-        Ok(())
+        Ok(ctx.queue().submit(Some(encoder.finish())))
     }
 
     fn source<'p>(

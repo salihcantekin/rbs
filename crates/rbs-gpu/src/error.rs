@@ -33,6 +33,13 @@ pub enum GpuError {
     WrongAdapter,
     /// Opening a native surface or fence failed (first sight only, not per frame).
     Import(String),
+    /// Every surface of an exporter is still pending or held by its encoder.
+    ExportBusy {
+        /// Surfaces in the exporter's ring.
+        surfaces: u32,
+    },
+    /// Creating a native export surface failed (at creation only, not per frame).
+    Export(&'static str),
     /// The pool has no free slot for a new texture.
     PoolFull {
         /// Slots the pool was created with.
@@ -66,6 +73,10 @@ impl fmt::Display for GpuError {
             Self::Unsupported(what) => write!(f, "unsupported for native import: {what}"),
             Self::WrongAdapter => f.write_str("native surface is on another adapter"),
             Self::Import(msg) => write!(f, "native import failed: {msg}"),
+            Self::ExportBusy { surfaces } => {
+                write!(f, "all {surfaces} export surfaces are in use")
+            }
+            Self::Export(msg) => write!(f, "native export failed: {msg}"),
             Self::PoolFull { capacity } => write!(f, "texture pool full ({capacity} slots)"),
             Self::InvalidSize { width, height } => write!(f, "invalid size {width}x{height}"),
             Self::Readback(msg) => write!(f, "readback failed: {msg}"),
