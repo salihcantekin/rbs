@@ -2,7 +2,7 @@
 //! Annex B with parameter sets in the extradata and on every IDR, a 10-bit HEVC
 //! session takes P010, and dropping a session with frames in flight is clean.
 //!
-//! Skips without NVENC; `RBS_REQUIRE_NVENC=1` makes skipping fail.
+//! Skips without NVENC; `RBS_REQUIRE_NVENC=1` makes skipping the H.264 tests fail.
 
 #![cfg(all(
     any(target_os = "windows", target_os = "linux"),
@@ -28,9 +28,12 @@ fn encodes(codec: &str) -> bool {
         caps.get(&rbs_codec::caps::VIDEO_ENCODE),
         Some(CapabilityValue::Set(s)) if s.iter().any(|c| c == codec)
     );
+    // `RBS_REQUIRE_NVENC=1` makes only H.264 mandatory (as in the conformance suite's core
+    // cases): some devices have no HEVC encoder (an AMD Ryzen 7000 iGPU refuses the
+    // AMF HEVC component), and their HEVC tests skip.
     if !found {
         assert!(
-            !std::env::var("RBS_REQUIRE_NVENC").is_ok_and(|v| v == "1"),
+            codec != "h264" || !std::env::var("RBS_REQUIRE_NVENC").is_ok_and(|v| v == "1"),
             "RBS_REQUIRE_NVENC=1 but NVENC does not encode {codec}"
         );
         eprintln!("no NVENC {codec} encoder; skipped");

@@ -12,9 +12,9 @@
 //! # Sessions
 //!
 //! Each session opens an AMF context on the default device (Direct3D 11 on
-//! Windows, Vulkan on Linux) and one encoder component, with [`FRAMES_IN_FLIGHT`]
-//! host-memory input surfaces. `submit` copies the NV12 or P010 frame into the next
-//! free surface and submits it; `drain` takes the encoded data in submission order;
+//! Windows, Vulkan on Linux) and one encoder component. `submit` copies the NV12 or
+//! P010 frame into a new host-memory surface from the context and submits it (AMF
+//! converts a submitted host surface in place, so surfaces are never reused); `drain` takes the encoded data in submission order;
 //! `flush` drains the encoder. The session logic (ordering, keyframes, `Busy`,
 //! capabilities, configuration checks) is shared with the other hardware adapters
 //! in `rbs-codec-hw`.
@@ -43,8 +43,7 @@
 pub const ADAPTER_ID: &str = "org.rbs.codec.amf";
 
 /// Frames a session accepts before `submit` returns `Busy`: frames the encoder is
-/// still encoding plus pictures not yet drained. Also the number of input surfaces
-/// per session.
+/// still encoding plus pictures not yet drained.
 pub const FRAMES_IN_FLIGHT: usize = 4;
 
 /// Counters of one session, for metrics.
