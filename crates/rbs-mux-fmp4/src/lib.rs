@@ -19,13 +19,18 @@
 //! - At most one video stream: a keyframe chunk must be an entry point for every
 //!   stream, which two independent GOP structures would rarely give.
 //! - A failed `write` emits nothing and changes nothing.
-//! - Media time starts one interleaving bound before the first dts, so streams that
-//!   arrive slightly out of order keep their timestamps; a dts earlier than that is
-//!   refused. An edit list per track maps that lead away, so presentation starts at
-//!   0. Video uses a 90 kHz timescale, audio its sample rate. Positions are rounded
-//!   to the nearest tick and durations are differences of positions: a sample lasts
-//!   until the next one of its track (the last of a fragment until the packet that
-//!   ended it, or for its packet duration or the nominal frame interval).
+//! - Media time 0 is the earliest sample of the first fragment, so the file starts at
+//!   0 without an edit list (FFmpeg reads a positive edit media time on an AAC track as
+//!   encoder priming and drops that much audio). The origin is chosen when the first
+//!   fragment is emitted; if that fragment spans less than the interleaving bound
+//!   (a GOP shorter than `fragment_duration`), the origin is one bound before the
+//!   newest packet so far instead, and the file starts that much after 0. Until then a
+//!   dts more than one bound before the first packet is refused, and afterwards one
+//!   before the origin. Video uses a 90 kHz timescale, audio its sample rate.
+//!   Positions are rounded to the nearest tick and durations are differences of
+//!   positions: a sample lasts until the next one of its track (the last of a fragment
+//!   until the packet that ended it, or for its packet duration or the nominal frame
+//!   interval).
 //!   Composition offsets use `trun` version 1; pts may trail dts by at most 60 s.
 //! - Length-prefixed H.264 is copied as is; Annex B input is converted to 4-byte
 //!   lengths without AUD, SPS and PPS, which live in the sample entry. Annex B input

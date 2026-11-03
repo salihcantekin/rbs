@@ -210,17 +210,9 @@ fn header_is_ftyp_and_moov_with_sample_entries() {
         .collect();
     assert_eq!(trex, [1, 2]);
 
-    // Edit lists start presentation after the 1 s lead, in each track's timescale.
-    let edits: Vec<(u64, u64)> = traks
-        .iter()
-        .map(|t| {
-            let elst = t.child(b"edts").child(b"elst");
-            assert_eq!(elst.payload[0], 1, "version 1");
-            assert_eq!(elst.u32_at(4), 1, "one entry");
-            (elst.u64_at(8), elst.u64_at(16))
-        })
-        .collect();
-    assert_eq!(edits, [(0, 90_000), (0, 48_000)]);
+    // No edit lists: media time 0 is the file's earliest sample. (FFmpeg reads an AAC
+    // track's edit media time as encoder priming and skips that much audio.)
+    assert!(traks.iter().all(|t| t.all(b"edts").next().is_none()));
 
     let mdia = traks[0].child(b"mdia");
     assert_eq!(mdia.child(b"mdhd").u32_at(12), 90_000, "video timescale");
@@ -289,9 +281,11 @@ fn fragments_start_at_keyframes_with_times_and_offsets() {
     assert_eq!(runs.len(), 2);
     let (v, a) = (&runs[0], &runs[1]);
     assert_eq!((v.track, a.track), (1, 2));
-    // Media time starts one interleaving bound (1 s) before the first dts.
-    assert_eq!(v.base, 90_000);
-    assert_eq!(a.base, 1021 * 48);
+    // The first fragment ended at 66 ms, less than the interleaving bound (1 s) after
+    // the first dts: media time 0 is 1 s before that newest dts, so a packet arriving
+    // within the bound still fits.
+    assert_eq!(v.base, 934 * 90);
+    assert_eq!(a.base, 955 * 48);
     assert_eq!(
         v.samples,
         [
@@ -311,9 +305,65 @@ fn fragments_start_at_keyframes_with_times_and_offsets() {
     let (sequence, runs, mdat) = fragment(&chunks[2].data);
     assert_eq!(sequence, 2);
     assert_eq!(runs.len(), 1, "a track without samples has no traf");
-    assert_eq!(runs[0].base, (1000 + 66) * 90);
+    assert_eq!(runs[0].base, (934 + 66) * 90);
     assert_eq!(runs[0].samples, [(3000, 6, 0x0200_0000, 100 * 90)]);
     assert_eq!(mdat, [0, 0, 0, 2, 0x65, 7]);
+}
+
+#[test]
+fn media_time_starts_at_the_earliest_sample_when_the_first_fragment_is_full() {
+    let config = MuxerConfig::new(MP4, vec![h264_stream(), aac_stream()]);
+    let mut muxer = Fmp4MuxerFactory.create(&config).unwrap();
+    let mut chunks = Vec::new();
+    muxer.begin(&mut chunks).unwrap();
+    // Audio first, at 10 ms; video from 30 ms, one keyframe (a 2 s GOP).
+    let mut ms_audio = 10;
+    for i in 0..40u64 {
+        let ms = 30 + i * 1000 / 30;
+        while ms_audio <= ms {
+            muxer
+                .write(StreamIndex(1), &audio(ms_audio), &mut chunks)
+                .unwrap();
+            ms_audio += 21;
+        }
+        let data = vec![0, 0, 0, 2, if i == 0 { 0x65 } else { 0x41 }, i as u8];
+        muxer
+            .write(
+                StreamIndex(0),
+                &video(ms, ms, i == 0, data, LP4),
+                &mut chunks,
+            )
+            .unwrap();
+    }
+    muxer.finish(&mut chunks).unwrap();
+    let (_, runs, _) = fragment(&chunks[1].data);
+    let v = runs.iter().find(|r| r.track == 1).unwrap();
+    let a = runs.iter().find(|r| r.track == 2).unwrap();
+    assert_eq!(a.base, 0, "the earliest sample is at media time 0");
+    assert_eq!(v.base, 20 * 90, "video starts 20 ms after audio");
+}
+
+#[test]
+fn packets_before_the_start_are_refused_once_the_first_fragment_is_out() {
+    let config = MuxerConfig::new(MP4, vec![h264_stream(), aac_stream()]);
+    let mut muxer = Fmp4MuxerFactory.create(&config).unwrap();
+    let mut chunks = Vec::new();
+    muxer.begin(&mut chunks).unwrap();
+    for ms in (100..1200).step_by(21) {
+        muxer
+            .write(StreamIndex(1), &audio(ms), &mut chunks)
+            .unwrap();
+    }
+    assert_eq!(chunks.len(), 2, "the first fragment is out");
+    let (_, runs, _) = fragment(&chunks[1].data);
+    assert_eq!(runs[0].base, 0);
+    let early = video(50, 50, true, vec![0, 0, 0, 2, 0x65, 1], LP4);
+    assert!(matches!(
+        muxer.write(StreamIndex(0), &early, &mut chunks),
+        Err(MuxError::InvalidPacket(_))
+    ));
+    let on_time = video(100, 100, true, vec![0, 0, 0, 2, 0x65, 1], LP4);
+    muxer.write(StreamIndex(0), &on_time, &mut chunks).unwrap();
 }
 
 #[test]
@@ -372,7 +422,8 @@ fn streams_arriving_out_of_order_keep_their_timestamps() {
     );
     let (_, runs, _) = fragment(&chunks[1].data);
     let v = runs.iter().find(|r| r.track == 1).unwrap();
-    // Origin is the first dts (audio at 100 ms) minus 1 s.
+    // The only fragment spans less than 1 s: media time 0 is 1 s before the newest dts
+    // (100 ms).
     assert_eq!(v.base, 934 * 90);
     let cts: Vec<i32> = v.samples.iter().map(|s| s.3).collect();
     assert_eq!(cts, [66 * 90, 133 * 90, 33 * 90]);
