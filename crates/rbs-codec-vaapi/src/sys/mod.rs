@@ -98,6 +98,8 @@ pub(crate) type EndPictureFn = unsafe extern "C" fn(VADisplay, VAContextID) -> V
 pub(crate) type SyncSurfaceFn = unsafe extern "C" fn(VADisplay, VASurfaceID) -> VAStatus;
 /// `vaSyncSurface2` (libva 2.15): with a timeout in nanoseconds.
 pub(crate) type SyncSurface2Fn = unsafe extern "C" fn(VADisplay, VASurfaceID, u64) -> VAStatus;
+/// `vaSyncBuffer` (libva 2.9): waits for a coded buffer, timeout in nanoseconds.
+pub(crate) type SyncBufferFn = unsafe extern "C" fn(VADisplay, VABufferID, u64) -> VAStatus;
 pub(crate) type QuerySurfaceStatusFn =
     unsafe extern "C" fn(VADisplay, VASurfaceID, *mut VASurfaceStatus) -> VAStatus;
 pub(crate) type QueryImageFormatsFn =

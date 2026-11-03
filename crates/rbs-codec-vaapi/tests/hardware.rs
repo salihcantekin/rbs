@@ -109,9 +109,25 @@ fn h264_is_annex_b_with_parameter_sets() {
             .map(|h| h & 0x1f)
             .collect();
         assert_eq!(p.keyframe(), i % 30 == 0, "packet {i}: {types:?}");
+        assert!(
+            !types.contains(&9),
+            "packet {i} has an access unit delimiter"
+        );
         if p.keyframe() {
             assert!(
                 types.contains(&7) && types.contains(&5),
+                "IDR {i}: {types:?}"
+            );
+            // The driver must pass the adapter's own SPS and PPS through unchanged,
+            // once, so the slices agree with the extradata.
+            let extradata = &stream.extradata[..];
+            assert!(
+                p.data().windows(extradata.len()).any(|w| w == extradata),
+                "IDR {i} does not carry the extradata parameter sets"
+            );
+            assert_eq!(
+                types.iter().filter(|t| **t == 7).count(),
+                1,
                 "IDR {i}: {types:?}"
             );
         } else {

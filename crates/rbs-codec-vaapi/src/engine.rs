@@ -170,6 +170,8 @@ struct EncodeConfig {
     entrypoint: sys::VAEntrypoint,
     /// `VA_RC_*` bits.
     rate_controls: u32,
+    /// `VA_ENC_PACKED_HEADER_*` bits.
+    packed_headers: u32,
     max_width: u32,
     max_height: u32,
 }
@@ -227,6 +229,7 @@ fn encode_config(display: &Display, profile: Profile) -> Option<EncodeConfig> {
             usable.then_some(EncodeConfig {
                 entrypoint,
                 rate_controls: rc,
+                packed_headers: packed,
                 max_width: side(width),
                 max_height: side(height),
             })
@@ -235,15 +238,24 @@ fn encode_config(display: &Display, profile: Profile) -> Option<EncodeConfig> {
 
 /// What the H.264 encoder of `display` can do, or `None` when it is absent.
 fn h264_caps(display: &Display) -> Option<CodecCaps> {
+    // What every declared profile can do: the common rate controls and sizes.
     let mut profiles = Profiles::NONE;
-    let mut best = None;
+    let mut common: Option<EncodeConfig> = None;
     for profile in [Profile::H264Baseline, Profile::H264Main, Profile::H264High] {
         if let Some(c) = encode_config(display, profile) {
             profiles = profiles.with(profile);
-            best = Some(c);
+            common = Some(match common {
+                None => c,
+                Some(a) => EncodeConfig {
+                    rate_controls: a.rate_controls & c.rate_controls,
+                    max_width: a.max_width.min(c.max_width),
+                    max_height: a.max_height.min(c.max_height),
+                    ..a
+                },
+            });
         }
     }
-    let c = best?;
+    let c = common?;
     let cbr = c.rate_controls & sys::VA_RC_CBR != 0;
     let vbr = c.rate_controls & sys::VA_RC_VBR != 0;
     let caps = CodecCaps {
@@ -353,6 +365,8 @@ pub(crate) struct VaapiEngine {
     rc: Rc,
     /// The rate control changed: send it with the next picture.
     rc_changed: bool,
+    /// The driver takes packed slice headers: the adapter writes them.
+    packed_slice: bool,
     gop: u32,
     /// Pictures encoded, for the reconstructed surface ring.
     pictures: u64,
@@ -363,8 +377,6 @@ pub(crate) struct VaapiEngine {
     /// The previous picture's reconstructed surface and frame number.
     reference: Option<(sys::VASurfaceID, u32, u32)>,
     rows: [usize; 2],
-    width: u32,
-    height: u32,
     // Declared last: destroyed after every object above (see `Drop`).
     display: Display,
 }
@@ -415,6 +427,7 @@ impl VaapiEngine {
             seq,
             rc: plan.rc,
             rc_changed: false,
+            packed_slice: encode.packed_headers & sys::VA_ENC_PACKED_HEADER_SLICE != 0,
             gop: plan.gop.max(1),
             pictures: 0,
             since_idr: 0,
@@ -422,8 +435,6 @@ impl VaapiEngine {
             idr_pic_id: 0,
             reference: None,
             rows: [plan.height as usize, plan.height.div_ceil(2) as usize],
-            width: plan.width,
-            height: plan.height,
             display,
         };
         let dpy = engine.display.dpy;
@@ -438,7 +449,8 @@ impl VaapiEngine {
             },
             sys::VAConfigAttrib {
                 type_: sys::VAConfigAttribEncPackedHeaders,
-                value: sys::VA_ENC_PACKED_HEADER_SEQUENCE,
+                value: sys::VA_ENC_PACKED_HEADER_SEQUENCE
+                    | (encode.packed_headers & sys::VA_ENC_PACKED_HEADER_SLICE),
             },
         ];
         // SAFETY: an initialised display, three attributes and a valid out-pointer.
@@ -534,6 +546,14 @@ impl VaapiEngine {
                     return Err(e);
                 }
             };
+            if let Err(e) = engine.zero(&image) {
+                // SAFETY: objects just created, not in use.
+                unsafe {
+                    (api.destroy_image)(dpy, image.image_id);
+                    (api.destroy_buffer)(dpy, coded);
+                }
+                return Err(e);
+            }
             engine.slots.push(Slot {
                 surface,
                 image,
@@ -618,6 +638,30 @@ impl VaapiEngine {
         Ok((image, false))
     }
 
+    /// Zeroes `image`, so the rows and columns between the picture and the
+    /// macroblock-aligned surface (never written by `upload`) are constant
+    /// rather than stale memory.
+    fn zero(&self, image: &sys::VAImage) -> Result<(), CreateError> {
+        let api = self.display.api;
+        let dpy = self.display.dpy;
+        let mut base: *mut c_void = ptr::null_mut();
+        // SAFETY: a live image buffer not in use; a valid out-pointer.
+        let status = unsafe { (api.map_buffer)(dpy, image.buf, &mut base) };
+        if !ok(status) {
+            return Err(create_error(api, "vaMapBuffer(image)", status));
+        }
+        if !base.is_null() {
+            // SAFETY: the mapped image holds `data_size` bytes.
+            unsafe { ptr::write_bytes(base.cast::<u8>(), 0, image.data_size as usize) };
+        }
+        // SAFETY: the buffer mapped above.
+        let status = unsafe { (api.unmap_buffer)(dpy, image.buf) };
+        if !ok(status) {
+            return Err(create_error(api, "vaUnmapBuffer(image)", status));
+        }
+        Ok(())
+    }
+
     /// Creates a parameter buffer holding `data`.
     fn buffer<T>(
         &self,
@@ -688,7 +732,7 @@ impl VaapiEngine {
             Rc::Vbr { average, max } => (average, max),
             Rc::Quality { .. } => return Ok(()),
         };
-        let rc = sys::VAEncMiscParameterRateControl {
+        let mut rc = sys::VAEncMiscParameterRateControl {
             bits_per_second: peak,
             target_percentage: u32::try_from(u64::from(average) * 100 / u64::from(peak.max(1)))
                 .unwrap_or(100)
@@ -696,6 +740,9 @@ impl VaapiEngine {
             window_size: 1000,
             ..Default::default()
         };
+        // A skipped picture would be an empty packet, which ends the session.
+        // SAFETY: writing the bitfield view of a plain-integer union.
+        unsafe { rc.rc_flags.bits.set_disable_frame_skip(1) };
         out.push(self.misc(sys::VAEncMiscParameterTypeRateControl, &rc)?);
         let hrd = sys::VAEncMiscParameterHRD {
             buffer_size: peak,
@@ -871,6 +918,22 @@ impl VaapiEngine {
         if let Some(r) = ref_picture {
             slice.RefPicList0[0] = r;
         }
+        if self.packed_slice {
+            let (header, bits) = self.seq.slice_header(idr, self.frame_num, self.idr_pic_id);
+            let packed = sys::VAEncPackedHeaderParameterBuffer {
+                type_: sys::VAEncPackedHeaderSlice,
+                bit_length: bits,
+                // Written without emulation prevention; the driver adds it.
+                has_emulation_bytes: 0,
+                ..Default::default()
+            };
+            buffers.push(self.buffer(sys::VAEncPackedHeaderParameterBufferType, &packed)?);
+            buffers.push(self.raw_buffer(
+                sys::VAEncPackedHeaderDataBufferType,
+                header.as_ptr().cast(),
+                header.len(),
+            )?);
+        }
         buffers.push(self.buffer(sys::VAEncSliceParameterBufferType, &slice)?);
         Ok(())
     }
@@ -892,8 +955,8 @@ impl VaapiEngine {
                 buffers.len() as c_int,
             )
         };
-        // SAFETY: a picture begun above; ending it also after a failed render keeps
-        // the context usable.
+        // SAFETY: a picture begun above. It is ended also after a failed render (a
+        // driver may then encode a partial picture; the session ends on the error).
         let end = unsafe { (api.end_picture)(dpy, self.context) };
         if !ok(status) {
             return Err(failed("vaRenderPicture", status));
@@ -911,6 +974,30 @@ impl VaapiEngine {
         let dpy = self.display.dpy;
         let surface = self.slots[slot].surface;
         let timeout = if wait { WAIT.as_nanos() as u64 } else { 0 };
+        let timed_out = || {
+            if wait {
+                Err(EngineError::Broken(
+                    "VA-API did not finish a picture within 10 s",
+                ))
+            } else {
+                Ok(false)
+            }
+        };
+        // The coded buffer is what the output needs: its completion also covers a
+        // bitstream write-back that may finish after the input surface is idle.
+        if let Some(sync_buffer) = api.sync_buffer {
+            // SAFETY: a live coded buffer of this display.
+            let status = unsafe { sync_buffer(dpy, self.slots[slot].coded, timeout) };
+            if ok(status) {
+                return Ok(true);
+            }
+            if status == sys::VA_STATUS_ERROR_TIMEDOUT as sys::VAStatus {
+                return timed_out();
+            }
+            if status != sys::VA_STATUS_ERROR_UNIMPLEMENTED as sys::VAStatus {
+                return Err(failed("vaSyncBuffer", status));
+            }
+        }
         if let Some(sync2) = api.sync_surface2 {
             // SAFETY: a live surface of this display.
             let status = unsafe { sync2(dpy, surface, timeout) };
@@ -918,13 +1005,7 @@ impl VaapiEngine {
                 return Ok(true);
             }
             if status == sys::VA_STATUS_ERROR_TIMEDOUT as sys::VAStatus {
-                return if wait {
-                    Err(EngineError::Broken(
-                        "VA-API did not finish a picture within 10 s",
-                    ))
-                } else {
-                    Ok(false)
-                };
+                return timed_out();
             }
             if status != sys::VA_STATUS_ERROR_UNIMPLEMENTED as sys::VAStatus {
                 return Err(failed("vaSyncSurface2", status));
@@ -963,9 +1044,14 @@ impl VaapiEngine {
         let mut data = Vec::new();
         let mut seg = segment.cast::<sys::VACodedBufferSegment>();
         let mut segments = 0;
+        let mut overflow = false;
         while !seg.is_null() && segments < 1024 {
             // SAFETY: a segment of the mapped coded buffer list.
             let s = unsafe { &*seg };
+            overflow |= s.status
+                & (sys::VA_CODED_BUF_STATUS_SLICE_OVERFLOW_MASK
+                    | sys::VA_CODED_BUF_STATUS_FRAME_SIZE_OVERFLOW)
+                != 0;
             if !s.buf.is_null() && s.size > 0 {
                 // SAFETY: `size` bytes at `buf`, mapped until `vaUnmapBuffer`.
                 data.extend_from_slice(unsafe {
@@ -979,6 +1065,11 @@ impl VaapiEngine {
         let status = unsafe { (api.unmap_buffer)(dpy, coded) };
         if !ok(status) {
             return Err(failed("vaUnmapBuffer", status));
+        }
+        if overflow {
+            return Err(EngineError::Broken(
+                "VA-API picture overflowed its coded buffer",
+            ));
         }
         if data.is_empty() {
             return Err(EngineError::Broken("VA-API returned an empty picture"));
@@ -1057,23 +1148,11 @@ impl Engine for VaapiEngine {
             return Err(failed("vaUnmapBuffer(image)", status));
         }
         if !s.derived {
-            // SAFETY: a live surface and image of this display, both at least
-            // `width` x `height`.
-            let status = unsafe {
-                (api.put_image)(
-                    dpy,
-                    s.surface,
-                    image.image_id,
-                    0,
-                    0,
-                    self.width,
-                    self.height,
-                    0,
-                    0,
-                    self.width,
-                    self.height,
-                )
-            };
+            // The whole aligned image, so its padding (zeroed at open) is put too.
+            let (w, h) = (self.seq.width_mbs * 16, self.seq.height_mbs * 16);
+            // SAFETY: a live surface and image of this display, both `w` x `h`.
+            let status =
+                unsafe { (api.put_image)(dpy, s.surface, image.image_id, 0, 0, w, h, 0, 0, w, h) };
             if !ok(status) {
                 return Err(failed("vaPutImage", status));
             }
@@ -1124,6 +1203,13 @@ impl Engine for VaapiEngine {
 
     fn set_rate_control(&mut self, rc: Rc) -> Result<(), EngineError> {
         self.rc = rc;
+        // The sequence parameters of the next IDR carry the new peak too.
+        // `level_idc` stays: a peak above the level's limit is not refused.
+        self.seq.peak_bps = match rc {
+            Rc::Cbr { bitrate } => bitrate,
+            Rc::Vbr { max, .. } => max,
+            Rc::Quality { .. } => 0,
+        };
         self.rc_changed = true;
         Ok(())
     }
@@ -1135,8 +1221,13 @@ impl Drop for VaapiEngine {
         let dpy = self.display.dpy;
         // Pictures still encoding finish before their objects go.
         for s in &self.slots {
-            // SAFETY: a live surface of this display.
-            unsafe { (api.sync_surface)(dpy, s.surface) };
+            // SAFETY: a live surface of this display; bounded when libva allows.
+            unsafe {
+                match api.sync_surface2 {
+                    Some(sync2) => sync2(dpy, s.surface, WAIT.as_nanos() as u64),
+                    None => (api.sync_surface)(dpy, s.surface),
+                }
+            };
         }
         for s in &self.slots {
             // SAFETY: objects created by this engine, no longer in use.

@@ -56,6 +56,16 @@ impl BitWriter {
         }
     }
 
+    /// Bits written.
+    pub(crate) fn bits(&self) -> u32 {
+        let full = self.bytes.len() as u32 * 8;
+        if self.used == 0 {
+            full
+        } else {
+            full - 8 + u32::from(self.used)
+        }
+    }
+
     /// The bytes written; the last one is padded with zeros.
     pub(crate) fn into_bytes(self) -> Vec<u8> {
         self.bytes

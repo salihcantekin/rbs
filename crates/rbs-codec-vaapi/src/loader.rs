@@ -3,7 +3,8 @@
 //! `libva.so.2` and `libva-drm.so.2` through the dynamic loader. libva picks the
 //! driver of each render node (`iHD` and `i965` for Intel, `radeonsi` for AMD,
 //! `nouveau` has no encoder). A missing library or symbol makes the adapter
-//! unavailable; it never panics. `vaSyncSurface2` (libva 2.15) is optional.
+//! unavailable; it never panics. `vaSyncBuffer` (libva 2.9) and `vaSyncSurface2`
+//! (libva 2.15) are optional.
 
 use std::ffi::CStr;
 use std::sync::OnceLock;
@@ -40,6 +41,7 @@ pub(crate) struct Api {
     pub end_picture: sys::EndPictureFn,
     pub sync_surface: sys::SyncSurfaceFn,
     pub sync_surface2: Option<sys::SyncSurface2Fn>,
+    pub sync_buffer: Option<sys::SyncBufferFn>,
     pub query_surface_status: sys::QuerySurfaceStatusFn,
     pub query_image_formats: sys::QueryImageFormatsFn,
     pub create_image: sys::CreateImageFn,
@@ -103,6 +105,7 @@ fn load() -> Result<Api, String> {
             end_picture: symbol(&va, b"vaEndPicture\0")?,
             sync_surface: symbol(&va, b"vaSyncSurface\0")?,
             sync_surface2: symbol(&va, b"vaSyncSurface2\0").ok(),
+            sync_buffer: symbol(&va, b"vaSyncBuffer\0").ok(),
             query_surface_status: symbol(&va, b"vaQuerySurfaceStatus\0")?,
             query_image_formats: symbol(&va, b"vaQueryImageFormats\0")?,
             create_image: symbol(&va, b"vaCreateImage\0")?,

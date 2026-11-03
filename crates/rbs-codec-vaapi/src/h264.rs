@@ -198,8 +198,8 @@ impl Sequence {
         w.flag(false); // pic_struct_present_flag
         w.flag(true); // bitstream_restriction_flag
         w.flag(true); // motion_vectors_over_pic_boundaries_flag
-        w.ue(2); // max_bytes_per_pic_denom
-        w.ue(1); // max_bits_per_mb_denom
+        w.ue(0); // max_bytes_per_pic_denom: no limit
+        w.ue(0); // max_bits_per_mb_denom: no limit
         w.ue(15); // log2_max_mv_length_horizontal
         w.ue(15); // log2_max_mv_length_vertical
         w.ue(0); // max_num_reorder_frames
@@ -231,6 +231,50 @@ impl Sequence {
         }
         w.trailing();
         w.into_bytes()
+    }
+
+    /// The slice header of a picture's single slice, as a NAL unit prefix: a
+    /// four-byte start code, the NAL header and the header fields, without
+    /// emulation prevention (the driver adds it). Returns the bytes (the last one
+    /// padded with zeros) and the length in bits.
+    pub(crate) fn slice_header(
+        &self,
+        idr: bool,
+        frame_num: u32,
+        idr_pic_id: u16,
+    ) -> (Vec<u8>, u32) {
+        let mut w = BitWriter::new();
+        w.u(32, 1); // start code
+        // nal_ref_idc 3; IDR (5) or non-IDR (1) slice.
+        w.u(8, if idr { 0x65 } else { 0x61 });
+        w.ue(0); // first_mb_in_slice
+        w.ue(if idr { 7 } else { 5 }); // slice_type: all I / all P
+        w.ue(0); // pic_parameter_set_id
+        w.u(LOG2_MAX_FRAME_NUM_MINUS4 as u8 + 4, frame_num);
+        if idr {
+            w.ue(u32::from(idr_pic_id));
+        }
+        // pic_order_cnt_type 2: no POC fields.
+        if !idr {
+            w.flag(false); // num_ref_idx_active_override_flag
+            w.flag(false); // ref_pic_list_modification_flag_l0
+        }
+        // dec_ref_pic_marking (nal_ref_idc != 0)
+        if idr {
+            w.flag(false); // no_output_of_prior_pics_flag
+            w.flag(false); // long_term_reference_flag
+        } else {
+            w.flag(false); // adaptive_ref_pic_marking_mode_flag
+        }
+        if self.cabac && !idr {
+            w.ue(0); // cabac_init_idc
+        }
+        w.se(0); // slice_qp_delta
+        w.ue(0); // disable_deblocking_filter_idc
+        w.se(0); // slice_alpha_c0_offset_div2
+        w.se(0); // slice_beta_offset_div2
+        let bits = w.bits();
+        (w.into_bytes(), bits)
     }
 
     /// SPS and PPS as Annex B, with emulation prevention: the extradata and the
@@ -315,7 +359,7 @@ mod tests {
     }
 
     // Golden bytes checked with FFmpeg 6.1 (`-bsf:v trace_headers`): every field
-    // parses back to the value written above.
+    // parses back to the value written above (also for `slice_headers`).
     #[test]
     fn headers_1080p_high_cbr() {
         let h = golden(
@@ -329,7 +373,7 @@ mod tests {
             [
                 0x00, 0x00, 0x00, 0x01, 0x67, 0x64, 0x00, 0x2a, 0xac, 0x2b, 0x40, 0x3c, 0x01, 0x13,
                 0xf2, 0xe0, 0x2d, 0xc0, 0x40, 0x40, 0x50, 0x00, 0x00, 0x3e, 0x90, 0x00, 0x1d, 0x4c,
-                0x08, 0xda, 0x08, 0x04, 0x2a, 0x00, 0x00, 0x00, 0x01, 0x68, 0xee, 0x3c, 0xb0,
+                0x08, 0xf0, 0x80, 0x42, 0xa0, 0x00, 0x00, 0x00, 0x01, 0x68, 0xee, 0x3c, 0xb0,
             ]
         );
     }
@@ -342,8 +386,32 @@ mod tests {
             [
                 0x00, 0x00, 0x00, 0x01, 0x67, 0x42, 0xc0, 0x1f, 0x95, 0xa0, 0x29, 0x0b, 0xf8, 0x89,
                 0x30, 0x16, 0xe0, 0x20, 0x20, 0x28, 0x00, 0x00, 0x1f, 0x48, 0x00, 0x0e, 0xa6, 0x04,
-                0x6d, 0x04, 0x02, 0x15, 0x00, 0x00, 0x00, 0x01, 0x68, 0xce, 0x04, 0x72,
+                0x78, 0x40, 0x21, 0x50, 0x00, 0x00, 0x00, 0x01, 0x68, 0xce, 0x04, 0x72,
             ]
+        );
+    }
+
+    #[test]
+    fn slice_headers() {
+        let p = |profile| {
+            let mut p = plan(1920, 1080, profile, Rc::Cbr { bitrate: 6_000_000 });
+            p.fps = (60000, 1001);
+            Sequence::new(&p)
+        };
+        let high = p(Profile::H264High);
+        assert_eq!(
+            high.slice_header(true, 0, 3),
+            (vec![0, 0, 0, 1, 0x65, 0x88, 0x80, 0x10, 0xf0], 68)
+        );
+        assert_eq!(
+            high.slice_header(false, 255, 3),
+            (vec![0, 0, 0, 1, 0x61, 0x9b, 0xfe, 0x3e], 63)
+        );
+        // CAVLC: no cabac_init_idc.
+        let base = p(Profile::H264Baseline);
+        assert_eq!(
+            base.slice_header(false, 1, 3),
+            (vec![0, 0, 0, 1, 0x61, 0x9a, 0x02, 0x3c], 62)
         );
     }
 }
