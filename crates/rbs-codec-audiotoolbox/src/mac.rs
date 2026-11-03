@@ -578,6 +578,8 @@ impl AudioEncoder for AacSession {
 
     fn flush(&mut self, out: &mut Vec<EncodedPacket>) -> Result<(), EncodeError> {
         self.finish_timeline()?;
+        // A flush ends the stream: what follows is a new stream on its own time base.
+        self.last_end = None;
         self.drain(out)
     }
 }

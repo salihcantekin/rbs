@@ -197,6 +197,14 @@ fn a_short_gap_or_an_overlap_never_moves_time_backwards() {
         s.flush(&mut out).unwrap();
         assert!(out.len() >= 6);
         assert_monotonic(&out);
+        // At most one restart (none when the new timeline continues the tail):
+        // every other step is one codec frame.
+        let frame = rate.duration_of(1024).as_nanos() as u64;
+        let jumps = out
+            .windows(2)
+            .filter(|w| (w[1].pts().as_nanos() - w[0].pts().as_nanos()).abs_diff(frame) > 1_000)
+            .count();
+        assert!(jumps <= 1, "{jumps} restarts");
     }
 }
 
