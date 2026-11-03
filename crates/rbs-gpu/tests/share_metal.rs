@@ -29,6 +29,9 @@ use rbs_gpu::{
 const CHILD_ENDPOINT: &str = "RBS_PREVIEW_CHILD_ENDPOINT";
 /// Set in the child: the engine's IOSurface IDs, comma separated, in slot order.
 const CHILD_IDS: &str = "RBS_PREVIEW_CHILD_IDS";
+/// Set in the child: `check` (read frames back, drop them, exit) or `hold` (keep every
+/// surface and exit without releasing any).
+const CHILD_MODE: &str = "RBS_PREVIEW_CHILD_MODE";
 
 const CANVAS_W: u32 = 128;
 const CANVAS_H: u32 = 64;
@@ -175,16 +178,15 @@ fn close(a: [u8; 4], b: [u8; 4]) -> bool {
     a.iter().zip(b).all(|(&x, y)| x.abs_diff(y) <= 1)
 }
 
-#[test]
-fn preview_reaches_another_process_without_copies() {
-    if std::env::var_os(CHILD_ENDPOINT).is_some() {
-        return; // This process is the child; it runs `preview_child` only.
-    }
-    let Some(ctx) = common::gpu() else { return };
-    let Some(mut publisher) = publisher(ctx) else {
-        return;
-    };
-    let mut engine = Engine::new(ctx);
+/// Runs this test binary again as the "UI" child in `mode` and drives the engine's render
+/// loop until the child exits. Returns the child's output.
+fn run_child(
+    ctx: &GpuContext,
+    publisher: &mut PreviewPublisher,
+    engine: &mut Engine,
+    mode: &str,
+    sequence: &mut u64,
+) -> String {
     let ids: Vec<String> = publisher.surface_ids().map(|i| i.to_string()).collect();
     let mut child = Command::new(std::env::current_exe().unwrap())
         .args([
@@ -196,14 +198,12 @@ fn preview_reaches_another_process_without_copies() {
         ])
         .env(CHILD_ENDPOINT, publisher.endpoint().to_string())
         .env(CHILD_IDS, ids.join(","))
+        .env(CHILD_MODE, mode)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
         .unwrap();
-
-    // The engine's render loop: publish and tick until the child is done.
     let start = Instant::now();
-    let mut sequence = 0;
     let status = loop {
         if let Some(status) = child.try_wait().unwrap() {
             break status;
@@ -212,11 +212,10 @@ fn preview_reaches_another_process_without_copies() {
             start.elapsed() < Duration::from_secs(60),
             "child did not finish"
         );
-        sequence += 1;
-        engine.publish(ctx, &mut publisher, sequence);
+        *sequence += 1;
+        engine.publish(ctx, publisher, *sequence);
         publisher.tick(ctx).unwrap();
-        // Paces the loop only; nothing here depends on timing.
-        thread::sleep(Duration::from_millis(2));
+        thread::yield_now();
     };
     let mut out = String::new();
     child
@@ -232,36 +231,84 @@ fn preview_reaches_another_process_without_copies() {
         .read_to_string(&mut out)
         .unwrap();
     assert!(status.success(), "child failed:\n{out}");
-    assert!(
-        out.contains("preview child ok"),
-        "child did not run:\n{out}"
-    );
+    out
+}
 
-    let stats = publisher.stats();
-    assert_eq!(stats.subscribes, 1);
-    assert!(stats.sent >= FRAMES, "{stats:?}");
-
-    // The child is gone: the next frame ends the subscription and frees every surface.
-    for _ in 0..20 {
-        sequence += 1;
-        engine.publish(ctx, &mut publisher, sequence);
-        ctx.wait_idle().unwrap();
+/// Ticks until the engine notices the child is gone (bounded), then checks that every
+/// surface is free and nothing is converted any more.
+fn assert_unsubscribed(
+    ctx: &GpuContext,
+    publisher: &mut PreviewPublisher,
+    engine: &mut Engine,
+    sequence: &mut u64,
+) {
+    let start = Instant::now();
+    while publisher.subscribed() {
+        assert!(
+            start.elapsed() < Duration::from_secs(10),
+            "the engine did not notice the UI exit"
+        );
+        *sequence += 1;
+        engine.publish(ctx, publisher, *sequence);
         publisher.tick(ctx).unwrap();
-        if !publisher.subscribed() {
-            break;
-        }
+        thread::yield_now();
     }
-    assert!(!publisher.subscribed());
     assert_eq!(publisher.held(), 0);
     let before = publisher.stats();
-    engine.publish(ctx, &mut publisher, sequence + 1);
+    engine.publish(ctx, publisher, *sequence + 1);
     assert_eq!(publisher.stats().converted, before.converted);
     assert_eq!(publisher.stats().skipped, before.skipped + 1);
 }
 
-/// The "UI" process. Run by the test above; ignored in normal runs.
 #[test]
-#[ignore = "child process of preview_reaches_another_process_without_copies"]
+fn preview_reaches_another_process_without_copies() {
+    if std::env::var_os(CHILD_ENDPOINT).is_some() {
+        return; // This process is the child; it runs `preview_child` only.
+    }
+    let Some(ctx) = common::gpu() else { return };
+    let Some(mut publisher) = publisher(ctx) else {
+        return;
+    };
+    let mut engine = Engine::new(ctx);
+    let mut sequence = 0;
+    let out = run_child(ctx, &mut publisher, &mut engine, "check", &mut sequence);
+    assert!(
+        out.contains("preview child ok"),
+        "child did not run:\n{out}"
+    );
+    let stats = publisher.stats();
+    assert_eq!(stats.subscribes, 1);
+    assert!(stats.sent >= FRAMES, "{stats:?}");
+    // The child dropped everything and exited: the subscription ends.
+    assert_unsubscribed(ctx, &mut publisher, &mut engine, &mut sequence);
+}
+
+#[test]
+fn ui_that_exits_holding_every_surface_frees_them() {
+    if std::env::var_os(CHILD_ENDPOINT).is_some() {
+        return;
+    }
+    let Some(ctx) = common::gpu() else { return };
+    let Some(mut publisher) = publisher(ctx) else {
+        return;
+    };
+    let mut engine = Engine::new(ctx);
+    let mut sequence = 0;
+    let out = run_child(ctx, &mut publisher, &mut engine, "hold", &mut sequence);
+    assert!(
+        out.contains("preview child holding"),
+        "child did not run:\n{out}"
+    );
+    // No frame can be sent (every surface is held), so only the kernel's no-senders
+    // notice can tell the engine that the UI is gone.
+    assert_unsubscribed(ctx, &mut publisher, &mut engine, &mut sequence);
+    // And a new UI can subscribe again.
+    assert_eq!(publisher.stats().subscribes, 1);
+}
+
+/// The "UI" process. Run by the tests above; ignored in normal runs.
+#[test]
+#[ignore = "child process of the cross-process tests"]
 fn preview_child() {
     let Some(endpoint) = std::env::var_os(CHILD_ENDPOINT) else {
         return;
@@ -279,6 +326,15 @@ fn preview_child() {
         assert_eq!(sub.surface_id(slot), Some(*id), "slot {slot}");
     }
 
+    if std::env::var(CHILD_MODE).as_deref() == Ok("hold") {
+        let mut held = Vec::new();
+        while held.len() < sub.surfaces() {
+            held.push(sub.recv(Duration::from_secs(10)).unwrap().expect("frame"));
+        }
+        println!("preview child holding");
+        // Exit without dropping anything: the kernel cleans up the rights.
+        std::process::exit(0);
+    }
     let textures = sub.textures(ctx).unwrap();
     // The first frame stays held to the end: its surface must not be written again.
     let first = sub.recv(Duration::from_secs(10)).unwrap().expect("frame");
@@ -323,7 +379,7 @@ fn connect_in_process(
     let handle = thread::spawn(move || PreviewSubscriber::connect(&endpoint, timeout));
     while !handle.is_finished() {
         publisher.tick(ctx).unwrap();
-        thread::sleep(Duration::from_millis(1));
+        thread::yield_now();
     }
     handle.join().unwrap()
 }
@@ -382,6 +438,12 @@ fn wrong_token_gets_no_surfaces_and_idle_publish_does_no_work() {
     assert_eq!(publisher.held(), 3);
     assert!(publisher.stats().busy > 0);
 
+    // A second UI is refused while the first one is alive.
+    let endpoint = publisher.endpoint().clone();
+    let second = connect_in_process(ctx, &mut publisher, endpoint, Duration::from_millis(300));
+    assert!(second.is_err(), "a second subscriber must be refused");
+    assert_eq!(publisher.held(), 3);
+
     // Releasing frees the surfaces again.
     held.clear();
     publisher.tick(ctx).unwrap();
@@ -395,8 +457,25 @@ fn wrong_token_gets_no_surfaces_and_idle_publish_does_no_work() {
         .expect("frame after release");
     assert_eq!(f.sequence(), 20);
 
-    // The engine goes away: the subscriber learns it.
+    // The UI drops its subscriber and frames: the engine ends the subscription, and a
+    // new UI can subscribe.
     drop(f);
+    drop(sub);
+    let start = Instant::now();
+    while publisher.subscribed() {
+        assert!(
+            start.elapsed() < Duration::from_secs(5),
+            "no-senders not seen"
+        );
+        publisher.tick(ctx).unwrap();
+        thread::yield_now();
+    }
+    let endpoint = publisher.endpoint().clone();
+    let mut sub =
+        connect_in_process(ctx, &mut publisher, endpoint, Duration::from_secs(5)).unwrap();
+    assert_eq!(publisher.stats().subscribes, 2);
+
+    // The engine goes away: the subscriber learns it.
     drop(publisher);
     assert!(matches!(
         sub.recv(Duration::from_secs(1)),

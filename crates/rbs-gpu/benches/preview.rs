@@ -53,7 +53,7 @@ mod apple {
             thread::spawn(move || PreviewSubscriber::connect(&endpoint, Duration::from_secs(5)));
         while !handle.is_finished() {
             publisher.tick(&ctx).expect("tick");
-            thread::sleep(Duration::from_millis(1));
+            thread::yield_now();
         }
         let mut sub = handle.join().expect("join").expect("subscribe");
 

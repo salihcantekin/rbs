@@ -36,6 +36,9 @@ struct Link {
     service: mach_port_t,
     /// Our receive right (frames, surfaces, dead-name notification).
     port: mach_port_t,
+    /// Send right to the engine's session port for this subscription; releases go here.
+    /// The engine sees "no senders" once it is dropped, which ends the subscription.
+    session: mach_port_t,
     generation: u32,
 }
 
@@ -45,7 +48,7 @@ impl Link {
             header: mach_msg_header_t {
                 msgh_bits: mach::bits(MACH_MSG_TYPE_COPY_SEND, 0),
                 msgh_size: size_of::<mach::Release>() as u32,
-                msgh_remote_port: self.service,
+                msgh_remote_port: self.session,
                 msgh_local_port: MACH_PORT_NULL,
                 msgh_voucher_port: MACH_PORT_NULL,
                 msgh_id: mach::ID_RELEASE,
@@ -53,15 +56,17 @@ impl Link {
             generation: self.generation,
             slot,
         };
-        // SAFETY: a filled `Release` of its own size; the service send right is copied.
-        // Zero timeout: the engine's queue limit is the maximum and holds at most one
-        // release per surface, so it is never full; a dead engine fails at once.
+        // SAFETY: a filled `Release` of its own size; the session send right is copied.
+        // Zero timeout: only this UI can send to the session port, it sends at most one
+        // release per surface, and the port's queue limit is the maximum, so the queue is
+        // never full; a dead engine fails at once (nothing to release then).
         let _ = unsafe { mach::send(&mut msg, 0) };
     }
 }
 
 impl Drop for Link {
     fn drop(&mut self) {
+        mach::deallocate(self.session);
         mach::deallocate(self.service);
         mach::destroy_receive(self.port);
     }
@@ -147,6 +152,7 @@ impl PreviewSubscriber {
         let mut link = Link {
             service,
             port,
+            session: MACH_PORT_NULL,
             generation: 0,
         };
         mach::notify_dead_name(service, port)?;
@@ -191,11 +197,16 @@ impl PreviewSubscriber {
                 buf.destroy();
                 continue;
             };
-            let surfaces = take_surfaces(&s);
+            // Takes every received right first, so an error below leaks none.
+            let (session, surfaces) = take_rights(&s);
+            link.session = session;
             if s.version != mach::VERSION {
                 return Err(GpuError::Disconnected("preview protocol version mismatch"));
             }
             let surfaces = surfaces?;
+            if link.session == MACH_PORT_NULL {
+                return Err(GpuError::Disconnected("preview session port missing"));
+            }
             link.generation = s.generation;
             return Ok(Self {
                 link: Arc::new(link),
@@ -291,12 +302,25 @@ fn dead_name(buf: &mut RecvBuf) {
     }
 }
 
+/// Takes the session send right of a `SURFACES` message (or null), looks up its surfaces
+/// and drops the surfaces' received send rights.
+fn take_rights(s: &mach::Surfaces) -> (mach_port_t, Result<Vec<SharedSurface>, GpuError>) {
+    let d = s.ports[0];
+    let session = if u32::from(d.disposition) == MACH_MSG_TYPE_MOVE_SEND {
+        d.name
+    } else {
+        mach::deallocate(d.name);
+        MACH_PORT_NULL
+    };
+    (session, take_surfaces(s))
+}
+
 /// Looks up the surfaces of a `SURFACES` message and drops the received send rights.
 fn take_surfaces(s: &mach::Surfaces) -> Result<Vec<SharedSurface>, GpuError> {
     let count = s.count as usize;
     let mut out = Vec::with_capacity(count.min(mach::MAX_SURFACES));
     let mut failed = false;
-    for (i, d) in s.ports.iter().enumerate() {
+    for (i, d) in s.ports[1..].iter().enumerate() {
         let name = d.name;
         if name == MACH_PORT_NULL {
             continue;

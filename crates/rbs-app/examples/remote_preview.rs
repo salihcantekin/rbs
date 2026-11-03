@@ -74,6 +74,10 @@ mod demo {
         replaced: Vec<PreviewFrame>,
         /// Replaced frames and the submission after their last draw.
         retiring: VecDeque<(PreviewFrame, wgpu::SubmissionIndex)>,
+        /// Polls `retiring` while it is not empty, so frames go back even when nothing
+        /// redraws (no new frame can arrive while every surface is held).
+        timer: slint::Timer,
+        device: wgpu::Device,
         frames: u64,
         since: Instant,
         fps: f64,
@@ -148,6 +152,8 @@ mod demo {
                 shown: None,
                 replaced: Vec::new(),
                 retiring: VecDeque::new(),
+                timer: slint::Timer::default(),
+                device: ctx.device().clone(),
                 frames: 0,
                 since: Instant::now(),
                 fps: 0.0,
@@ -157,7 +163,6 @@ mod demo {
 
         // After each render, the frames replaced before it can go back once its GPU work
         // is done: an empty submission marks the end of that render on the queue.
-        let device = ctx.device().clone();
         let queue = ctx.queue().clone();
         window.window().set_rendering_notifier(move |state, _| {
             if !matches!(state, slint::RenderingState::AfterRendering) {
@@ -173,21 +178,19 @@ mod demo {
                     }
                 }
             });
-            retire(&device);
+            retire();
         })?;
 
         // Receives frames off the UI thread; only the latest is shown.
         let weak = window.as_weak();
-        let poll_device = ctx.device().clone();
         let receiver = std::thread::spawn(move || {
             loop {
                 match sub.recv(Duration::from_millis(250)) {
                     Ok(Some(frame)) => {
                         let weak = weak.clone();
-                        let device = poll_device.clone();
                         let ok = slint::invoke_from_event_loop(move || {
                             show(&weak, frame);
-                            retire(&device);
+                            retire();
                         });
                         if ok.is_err() {
                             break;
@@ -208,6 +211,8 @@ mod demo {
         });
 
         window.run()?;
+        // The last draws must be done before the frames go back.
+        ctx.wait_idle()?;
         // Frames must go back before the subscriber's thread ends; dropping the state
         // releases them.
         STATE.with(|s| s.borrow_mut().take());
@@ -251,14 +256,15 @@ mod demo {
     }
 
     /// Releases replaced frames whose last draw has completed on the GPU. Never waits.
-    fn retire(device: &wgpu::Device) {
+    fn retire() {
         STATE.with(|s| {
             let mut s = s.borrow_mut();
             let Some(st) = s.as_mut() else {
                 return;
             };
             while let Some((_, index)) = st.retiring.front() {
-                let done = device
+                let done = st
+                    .device
                     .poll(wgpu::PollType::Wait {
                         submission_index: Some(index.clone()),
                         timeout: Some(Duration::ZERO),
@@ -269,6 +275,12 @@ mod demo {
                 }
                 // Dropping the frame sends its release to the engine.
                 st.retiring.pop_front();
+            }
+            if st.retiring.is_empty() {
+                st.timer.stop();
+            } else if !st.timer.running() {
+                st.timer
+                    .start(slint::TimerMode::Repeated, Duration::from_millis(2), retire);
             }
         });
     }

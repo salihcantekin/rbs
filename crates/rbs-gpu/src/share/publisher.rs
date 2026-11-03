@@ -7,8 +7,9 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::Duration;
 
 use mach2::message::{
-    MACH_MSG_TYPE_COPY_SEND, MACH_MSG_TYPE_MOVE_SEND, MACH_MSGH_BITS_COMPLEX, MACH_SEND_TIMED_OUT,
-    mach_msg_body_t, mach_msg_header_t, mach_msg_port_descriptor_t,
+    MACH_MSG_TYPE_COPY_SEND, MACH_MSG_TYPE_MAKE_SEND, MACH_MSG_TYPE_MOVE_SEND,
+    MACH_MSGH_BITS_COMPLEX, MACH_SEND_TIMED_OUT, mach_msg_body_t, mach_msg_header_t,
+    mach_msg_port_descriptor_t,
 };
 use mach2::port::{MACH_PORT_NULL, mach_port_t};
 use objc2_core_foundation::{CFDictionary, CFNumber, CFRetained, CFString, CFType};
@@ -46,6 +47,12 @@ struct Slot {
     held: bool,
 }
 
+impl Drop for Slot {
+    fn drop(&mut self) {
+        mach::deallocate(self.port);
+    }
+}
+
 struct Pending {
     slot: usize,
     submission: wgpu::SubmissionIndex,
@@ -68,6 +75,10 @@ pub struct PreviewPublisher {
     service_send: mach_port_t,
     /// Send right to the subscriber's port.
     client: mach_port_t,
+    /// Receive right of the current subscription's session port: releases arrive here,
+    /// and the kernel's no-senders notice when the UI is gone. Only the subscribed UI
+    /// holds a send right to it, so nobody else can release a surface.
+    session: mach_port_t,
     generation: u32,
     pipeline: wgpu::RenderPipeline,
     slots: Vec<Slot>,
@@ -114,6 +125,7 @@ impl PreviewPublisher {
             ));
         }
 
+        // A slot drops its surface port itself, so an error here leaks nothing.
         let mut slots = Vec::with_capacity(desc.surfaces);
         for _ in 0..desc.surfaces {
             slots.push(create_slot(ctx, w, h)?);
@@ -121,19 +133,20 @@ impl PreviewPublisher {
         let pipeline = pipeline(ctx);
 
         let n = PUBLISHERS.fetch_add(1, Ordering::Relaxed);
-        let service = format!("org.rbs.preview.{}.{n}", std::process::id());
-        let token = random_token();
+        let mut random = [0u8; 16];
+        mach::random_bytes(&mut random);
+        let [token, nonce] = [&random[..8], &random[8..]]
+            .map(|b| u64::from_le_bytes(b.try_into().unwrap_or_default()));
+        // The random part keeps a stale name from being registered again by someone else
+        // and mistaken for this engine.
+        let service = format!(
+            "org.rbs.preview.{}.{n}.{:08x}",
+            std::process::id(),
+            nonce as u32
+        );
         let name = CString::new(service.clone())
             .map_err(|_| GpuError::Export("service name contains NUL"))?;
-        let (port, service_send) = match mach::check_in(&name) {
-            Ok(p) => p,
-            Err(e) => {
-                for s in &slots {
-                    mach::deallocate(s.port);
-                }
-                return Err(e);
-            }
-        };
+        let (port, service_send) = mach::check_in(&name)?;
         Ok(Self {
             endpoint: PreviewEndpoint { service, token },
             width: w,
@@ -141,6 +154,7 @@ impl PreviewPublisher {
             service: port,
             service_send,
             client: MACH_PORT_NULL,
+            session: MACH_PORT_NULL,
             generation: 0,
             pipeline,
             pending: VecDeque::with_capacity(slots.len()),
@@ -254,19 +268,29 @@ impl PreviewPublisher {
         Ok(())
     }
 
-    /// Handles `SUBSCRIBE` and `RELEASE` messages and sends every converted frame whose GPU
-    /// work has completed. Call once per render tick. Never blocks; hot path, does not
-    /// allocate in RBS code.
+    /// Handles `SUBSCRIBE`, `RELEASE` and the UI's end, and sends every converted frame
+    /// whose GPU work has completed. Call once per render tick. Never blocks; hot path,
+    /// does not allocate in RBS code.
     ///
     /// Returns `GpuError::DeviceLost` once the device is lost; frames converted on a lost
     /// device are never sent.
     pub fn tick(&mut self, ctx: &GpuContext) -> Result<(), GpuError> {
-        // Bounded: two messages per surface (a release and a resubscribe) per tick.
-        for _ in 0..(2 * self.slots.len() + 2) {
+        // Bounded: one release per surface plus the no-senders notice; a UI holds at most
+        // one release per surface, so this drains the session port.
+        for _ in 0..=self.slots.len() {
+            if self.session == MACH_PORT_NULL
+                || !mach::ok(mach::receive(self.session, &mut self.buf, 0))
+            {
+                break;
+            }
+            self.handle_session_message();
+        }
+        // At most two service messages per tick: strangers cannot make the tick longer.
+        for _ in 0..2 {
             if !mach::ok(mach::receive(self.service, &mut self.buf, 0)) {
                 break;
             }
-            self.handle_message();
+            self.handle_service_message();
         }
         while let Some(front) = self.pending.front() {
             match ctx.device().poll(wgpu::PollType::Wait {
@@ -315,51 +339,42 @@ impl PreviewPublisher {
             timestamp: mach::split(p.timestamp.as_nanos()),
         };
         // SAFETY: a filled `Frame` of its own size; `client` is a send right we hold and it
-        // is copied, not moved. The message carries no other rights.
+        // is copied, not moved. The message carries no other rights; `send` destroys the
+        // returned reference if the send times out.
         let ret = unsafe { mach::send(&mut msg, 0) };
         if mach::ok(ret) {
             self.slots[p.slot].held = true;
             self.stats.sent += 1;
         } else if ret == MACH_SEND_TIMED_OUT {
-            // The UI's queue is full: it is behind. Drop this frame.
+            // The UI's queue is full (it holds at most one frame per surface, so this takes
+            // a UI that stopped receiving): drop this frame; its surface stays free.
             self.stats.dropped += 1;
         } else {
-            // `MACH_SEND_INVALID_DEST` (the UI is gone) or any other failure.
+            // `MACH_SEND_INVALID_DEST`: the UI's port is gone. Its port lives as long as
+            // any of its frames, so it holds no surface any more.
             self.stats.dropped += 1;
             self.unsubscribe();
         }
     }
 
-    fn handle_message(&mut self) {
+    /// A message on the session port: from the subscribed UI or the kernel.
+    fn handle_session_message(&mut self) {
         let header = self.buf.header();
+        let simple = header.msgh_bits & MACH_MSGH_BITS_COMPLEX == 0;
         match header.msgh_id {
-            mach::ID_RELEASE if header.msgh_bits & MACH_MSGH_BITS_COMPLEX == 0 => {
+            mach::ID_RELEASE if simple => {
                 if let Some(r) = self.buf.read::<mach::Release>()
                     && r.generation == self.generation
                     && let Some(slot) = self.slots.get_mut(r.slot as usize)
                 {
                     slot.held = false;
                 }
-                // A release carries no rights, but a stranger's message might.
                 self.buf.destroy();
             }
-            mach::ID_SUBSCRIBE if header.msgh_bits & MACH_MSGH_BITS_COMPLEX == 0 => {
-                let valid = self.buf.read::<mach::Subscribe>().is_some_and(|s| {
-                    s.version == mach::VERSION && mach::join(s.token) == self.endpoint.token
-                });
-                // The reply right arrives as a moved send right in the remote field.
-                let reply = header.msgh_remote_port;
-                let moved_send = header.msgh_bits & 0x1f == MACH_MSG_TYPE_MOVE_SEND;
-                if !valid || !moved_send || reply == MACH_PORT_NULL {
-                    self.stats.rejected += 1;
-                    self.buf.destroy();
-                    return;
-                }
+            mach::ID_NO_SENDERS if simple => {
+                // The UI dropped its subscriber and all its frames, or exited.
+                self.buf.destroy();
                 self.unsubscribe();
-                self.client = reply;
-                self.generation = self.generation.wrapping_add(1);
-                self.stats.subscribes += 1;
-                self.send_surfaces();
             }
             _ => {
                 self.stats.rejected += 1;
@@ -368,10 +383,50 @@ impl PreviewPublisher {
         }
     }
 
+    /// A message on the service port: anyone of the same user can send here.
+    fn handle_service_message(&mut self) {
+        let header = self.buf.header();
+        let valid = header.msgh_id == mach::ID_SUBSCRIBE
+            && header.msgh_bits & MACH_MSGH_BITS_COMPLEX == 0
+            && self.buf.read::<mach::Subscribe>().is_some_and(|s| {
+                s.version == mach::VERSION && mach::join(s.token) == self.endpoint.token
+            });
+        // The reply right arrives as a moved send right in the remote field.
+        let reply = header.msgh_remote_port;
+        let moved_send = header.msgh_bits & 0x1f == MACH_MSG_TYPE_MOVE_SEND;
+        // One UI at a time: a second subscription is refused while the first is alive, so
+        // surfaces the first UI holds are never freed behind its back.
+        if !valid || !moved_send || reply == MACH_PORT_NULL || self.subscribed() {
+            self.stats.rejected += 1;
+            self.buf.destroy();
+            return;
+        }
+        let session = match mach::new_receive() {
+            Ok(p) => p,
+            Err(_) => {
+                self.stats.rejected += 1;
+                self.buf.destroy();
+                return;
+            }
+        };
+        if mach::notify_no_senders(session).is_err() {
+            mach::destroy_receive(session);
+            self.stats.rejected += 1;
+            self.buf.destroy();
+            return;
+        }
+        self.client = reply;
+        self.session = session;
+        self.generation = self.generation.wrapping_add(1);
+        self.stats.subscribes += 1;
+        self.send_surfaces();
+    }
+
     fn send_surfaces(&mut self) {
         let mut ports = [mach_msg_port_descriptor_t::new(MACH_PORT_NULL, MACH_MSG_TYPE_COPY_SEND);
-            mach::MAX_SURFACES];
-        for (d, s) in ports.iter_mut().zip(&self.slots) {
+            mach::MAX_SURFACES + 1];
+        ports[0] = mach_msg_port_descriptor_t::new(self.session, MACH_MSG_TYPE_MAKE_SEND);
+        for (d, s) in ports[1..].iter_mut().zip(&self.slots) {
             *d = mach_msg_port_descriptor_t::new(s.port, MACH_MSG_TYPE_COPY_SEND);
         }
         let mut msg = mach::Surfaces {
@@ -384,7 +439,7 @@ impl PreviewPublisher {
                 msgh_id: mach::ID_SURFACES,
             },
             body: mach_msg_body_t {
-                msgh_descriptor_count: mach::MAX_SURFACES as u32,
+                msgh_descriptor_count: mach::MAX_SURFACES as u32 + 1,
             },
             ports,
             version: mach::VERSION,
@@ -393,19 +448,23 @@ impl PreviewPublisher {
             height: self.height,
             count: self.slots.len() as u32,
         };
-        // SAFETY: a filled `Surfaces` of its own size; every right in it is copied (the
-        // client's send right and our surface send rights), so we still own all of them
-        // whether or not the send succeeds. Unused descriptors are null.
+        // SAFETY: a filled `Surfaces` of its own size. The client's send right and our
+        // surface send rights are copied; a send right to the session is made for the UI.
+        // Unused descriptors are null. On a timeout `send` destroys the returned rights.
         let ret = unsafe { mach::send(&mut msg, 0) };
         if !mach::ok(ret) {
             self.unsubscribe();
         }
     }
 
-    /// Ends the subscription; every surface is free again.
+    /// Ends the subscription; every surface is free again. Called only once the UI holds
+    /// no surface: its session send right is gone (no senders), its port is dead, or the
+    /// surfaces never reached it.
     fn unsubscribe(&mut self) {
         mach::deallocate(self.client);
         self.client = MACH_PORT_NULL;
+        mach::destroy_receive(self.session);
+        self.session = MACH_PORT_NULL;
         for s in &mut self.slots {
             s.held = false;
         }
@@ -415,9 +474,6 @@ impl PreviewPublisher {
 impl Drop for PreviewPublisher {
     fn drop(&mut self) {
         self.unsubscribe();
-        for s in &self.slots {
-            mach::deallocate(s.port);
-        }
         mach::deallocate(self.service_send);
         mach::destroy_receive(self.service);
     }
@@ -522,15 +578,4 @@ fn pipeline(ctx: &GpuContext) -> wgpu::RenderPipeline {
         multiview_mask: None,
         cache: None,
     })
-}
-
-/// 64 random bits from the standard library's OS-seeded hasher keys.
-fn random_token() -> u64 {
-    use std::hash::{BuildHasher, Hasher};
-    let mut h = std::collections::hash_map::RandomState::new().build_hasher();
-    h.write_u32(std::process::id());
-    let a = h.finish();
-    let mut h = std::collections::hash_map::RandomState::new().build_hasher();
-    h.write_u64(a);
-    a ^ h.finish().rotate_left(32)
 }

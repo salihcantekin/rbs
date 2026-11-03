@@ -16,10 +16,11 @@ use mach2::mach_port::{
 };
 use mach2::message::{
     MACH_MSG_SUCCESS, MACH_MSG_TYPE_MAKE_SEND, MACH_MSG_TYPE_MAKE_SEND_ONCE, MACH_RCV_MSG,
-    MACH_RCV_TIMEOUT, MACH_SEND_MSG, MACH_SEND_TIMEOUT, mach_msg, mach_msg_body_t,
-    mach_msg_destroy, mach_msg_header_t, mach_msg_port_descriptor_t, mach_msg_return_t,
+    MACH_RCV_TIMEOUT, MACH_SEND_INTERRUPTED, MACH_SEND_MSG, MACH_SEND_TIMED_OUT, MACH_SEND_TIMEOUT,
+    mach_msg, mach_msg_body_t, mach_msg_destroy, mach_msg_header_t, mach_msg_port_descriptor_t,
+    mach_msg_return_t,
 };
-use mach2::notify::MACH_NOTIFY_DEAD_NAME;
+use mach2::notify::{MACH_NOTIFY_DEAD_NAME, MACH_NOTIFY_NO_SENDERS};
 use mach2::port::{
     MACH_PORT_LIMITS_INFO, MACH_PORT_LIMITS_INFO_COUNT, MACH_PORT_NULL, MACH_PORT_QLIMIT_MAX,
     MACH_PORT_RIGHT_RECEIVE, mach_port_limits_t, mach_port_t,
@@ -38,8 +39,11 @@ pub(super) const ID_SUBSCRIBE: i32 = 0x5242_5001;
 pub(super) const ID_SURFACES: i32 = 0x5242_5002;
 pub(super) const ID_FRAME: i32 = 0x5242_5003;
 pub(super) const ID_RELEASE: i32 = 0x5242_5004;
-/// Sent by the kernel when the engine's service port dies.
+/// Sent by the kernel to the UI when the engine's service port dies.
 pub(super) const ID_DEAD_NAME: i32 = MACH_NOTIFY_DEAD_NAME;
+/// Sent by the kernel to the engine's session port when the UI's last send right to it is
+/// gone (the UI dropped its subscriber and every frame, or exited).
+pub(super) const ID_NO_SENDERS: i32 = MACH_NOTIFY_NO_SENDERS;
 
 /// UI to engine: version, token, and a send right to the UI's port in the header.
 #[repr(C)]
@@ -50,13 +54,15 @@ pub(super) struct Subscribe {
     pub token: [u32; 2],
 }
 
-/// Engine to UI: one copied send right per surface (null for unused descriptors).
+/// Engine to UI: a send right to the subscription's session port (descriptor 0, where
+/// the UI sends its releases), then one copied send right per surface (null for unused
+/// descriptors).
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub(super) struct Surfaces {
     pub header: mach_msg_header_t,
     pub body: mach_msg_body_t,
-    pub ports: [mach_msg_port_descriptor_t; MAX_SURFACES],
+    pub ports: [mach_msg_port_descriptor_t; MAX_SURFACES + 1],
     pub version: u32,
     pub generation: u32,
     pub width: u32,
@@ -75,7 +81,7 @@ pub(super) struct Frame {
     pub timestamp: [u32; 2],
 }
 
-/// UI to engine: the UI no longer reads surface `slot`.
+/// UI to engine, on the session port: the UI no longer reads surface `slot`.
 #[repr(C)]
 #[derive(Clone, Copy, Default)]
 pub(super) struct Release {
@@ -258,6 +264,38 @@ pub(super) fn look_up(name: &CStr) -> Result<mach_port_t, GpuError> {
     }
 }
 
+/// Asks the kernel to send `ID_NO_SENDERS` to `port` once a send right to it has existed
+/// and none is left.
+pub(super) fn notify_no_senders(port: mach_port_t) -> Result<(), GpuError> {
+    let mut previous = MACH_PORT_NULL;
+    // SAFETY: `port` is a receive right of this task. `sync = 1` arms the notification
+    // only after the first send right is made (the one sent in `SURFACES`). The kernel
+    // makes a send-once right to `port` for it; send-once rights do not count as senders.
+    let kr = unsafe {
+        mach_port_request_notification(
+            task(),
+            port,
+            MACH_NOTIFY_NO_SENDERS,
+            1,
+            port,
+            MACH_MSG_TYPE_MAKE_SEND_ONCE,
+            &mut previous,
+        )
+    };
+    deallocate(previous);
+    check(kr, "no-senders notification request failed")
+}
+
+/// Fills `buf` with random bytes from the system CSPRNG.
+pub(super) fn random_bytes(buf: &mut [u8]) {
+    unsafe extern "C" {
+        fn arc4random_buf(buf: *mut std::ffi::c_void, nbytes: usize);
+    }
+    // SAFETY: `buf` is valid for writes of `buf.len()` bytes; `arc4random_buf` (libSystem)
+    // writes exactly that many and cannot fail.
+    unsafe { arc4random_buf(buf.as_mut_ptr().cast(), buf.len()) }
+}
+
 /// Asks the kernel to send `ID_DEAD_NAME` to `notify` when `name` dies.
 pub(super) fn notify_dead_name(name: mach_port_t, notify: mach_port_t) -> Result<(), GpuError> {
     let mut previous = MACH_PORT_NULL;
@@ -286,15 +324,21 @@ pub(super) fn notify_dead_name(name: mach_port_t, notify: mach_port_t) -> Result
 
 /// Sends `msg`, waiting at most `timeout_ms` (0: never waits).
 ///
+/// When the send times out or is interrupted after the kernel copied the message in, the
+/// kernel returns its rights to this task (pseudo-receive); they are destroyed here, so a
+/// failed send never leaks references. On other errors the rights were not copied in and
+/// stay as they were.
+///
 /// # Safety
 ///
 /// `msg` must be one of the message structs above with a filled header whose size is
 /// `size_of::<T>()`, and its port names and dispositions must be rights this task holds.
 pub(super) unsafe fn send<T>(msg: &mut T, timeout_ms: u32) -> mach_msg_return_t {
+    let header: *mut mach_msg_header_t = std::ptr::from_mut(msg).cast();
     // SAFETY: the caller upholds the message contract; the size matches the struct.
-    unsafe {
+    let ret = unsafe {
         mach_msg(
-            std::ptr::from_mut(msg).cast(),
+            header,
             MACH_SEND_MSG | MACH_SEND_TIMEOUT,
             size_of::<T>() as u32,
             0,
@@ -302,7 +346,13 @@ pub(super) unsafe fn send<T>(msg: &mut T, timeout_ms: u32) -> mach_msg_return_t 
             timeout_ms,
             MACH_PORT_NULL,
         )
+    };
+    if ret == MACH_SEND_TIMED_OUT || ret == MACH_SEND_INTERRUPTED {
+        // SAFETY: on these two errors the buffer holds the message in received form with
+        // the pseudo-received rights; destroying it releases exactly those.
+        unsafe { mach_msg_destroy(header) };
     }
+    ret
 }
 
 /// Receives one message on `port` into `buf`, waiting at most `timeout_ms`.
