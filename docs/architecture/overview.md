@@ -28,7 +28,7 @@ RBS is a headless engine built around a **media graph**: a set of nodes (sources
 | Format helpers | `rbs-media-format` (H.264/HEVC Annex B and length-prefixed conversion, parameter-set parsing, FLV tag bodies, ADTS; pure functions shared by muxer and transport adapters, ADR-0019) | Foundation only |
 | Engine | `rbs-graph`, `rbs-scene`, `rbs-gpu`, `rbs-audio`, `rbs-engine` (engine loop: a worker thread per partition, control loop, shutdown; ADR-0027) | Foundation, ports, `wgpu`; `rbs-engine` only `rbs-core` and `rbs-graph` |
 | Ports | `rbs-capture`, `rbs-audio-io`, `rbs-codec`, `rbs-mux`, `rbs-transport` | Foundation only |
-| Adapter support | `rbs-codec-hw` (vendor-neutral session logic shared by the hardware video encoder adapters: slot ring, port contract, capability set, configuration checks) | Its port, Foundation, format helpers; never a vendor library or an adapter |
+| Adapter support | `rbs-codec-hw` (vendor-neutral session logic shared by the hardware video encoder adapters: slot ring, port contract, capability set, configuration checks; ADR-0031) | Its port, Foundation, format helpers; never a vendor library or an adapter |
 | Adapters | `rbs-capture-wgc`, `rbs-capture-sck`, `rbs-capture-pipewire`, `rbs-codec-ffmpeg`, `rbs-codec-nvenc`, `rbs-codec-videotoolbox`, `rbs-mux-mpegts`, `rbs-mux-flv`, `rbs-mux-fmp4`, `rbs-mux-matroska`, `rbs-transport-file`, `rbs-transport-rtmp`, `rbs-transport-srt`, `rbs-transport-whip`, `rbs-thread-os` (thread policy port in `rbs-core`, ADR-0030), ... | Their port, Foundation, format helpers, adapter support crates of their port, vendor crates |
 | Plugins | `rbs-plugin-sdk`, `rbs-plugin-host` | Foundation, ports |
 | Control | `rbs-api` (schema + server) | Engine, Foundation |

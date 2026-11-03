@@ -17,12 +17,21 @@
 //! runner, with no GPU (see `docs/specs/output-ports.md`, "Hardware encoder sessions").
 //!
 //! This crate depends on the encoder port and format helpers only, never on an
-//! adapter or vendor library.
+//! adapter or vendor library (ADR-0031). Its API is internal to the encoder
+//! adapters of this workspace and may change with them; it is not a stable
+//! contract for third parties.
+//!
+//! Limits shared by every hardware adapter for now: H.264 and HEVC only (AV1 needs
+//! its profiles here first), system-memory input only (native surfaces come with
+//! the `rbs-gpu` exporters, ADR-0025), no B-frames.
 
 pub mod copy;
 pub mod device;
 pub mod plan;
 pub mod session;
+
+#[cfg(any(test, feature = "testing"))]
+pub mod testing;
 
 /// Counters of one session, for metrics.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -32,6 +41,7 @@ pub struct SessionStats {
     pub submitted: u64,
     /// Packets moved out by `drain` or `flush`.
     pub packets: u64,
-    /// System-memory frames copied into an encoder input buffer.
+    /// System-memory frames copied into an encoder input buffer. A frame the
+    /// encoder refused with `Busy` and that is submitted again counts each time.
     pub copied: u64,
 }

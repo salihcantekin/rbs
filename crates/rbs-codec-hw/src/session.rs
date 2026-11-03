@@ -3,7 +3,7 @@
 //! (ordering, keyframes, `Busy`, refusals, errors) is tested with a fake engine on
 //! machines without the hardware.
 //!
-//! Each submitted frame takes the next of [`Engine::SLOTS`] slots (for example one
+//! Each submitted frame takes the next of [`Engine::slots`] slots (for example one
 //! input buffer and one bitstream buffer). Slots are used and drained strictly in
 //! submission order, which is the output order while no frames are reordered (no
 //! B-frames).
@@ -64,10 +64,22 @@ pub struct Output {
     pub token: u64,
 }
 
-/// What the session needs from an encoder device. Slots are `0..SLOTS`.
+/// What the session needs from an encoder device. Slots are `0..slots()`.
+///
+/// The session calls `upload` then `encode` for slot `n`, and `output` for slots in
+/// the same order, never touching a slot again before its output was taken. An
+/// engine whose driver holds its own queue (AMF `SubmitInput`/`QueryOutput`, QSV
+/// sync points) may use the slot only for its input buffer and return the next
+/// picture of its queue from `output`: the session checks the token, so a picture
+/// out of order ends the session instead of being mislabelled. `encode` returning
+/// [`EngineError::Busy`] while slots are free leaves the frame unconsumed; the
+/// caller drains (which polls, it waits only when every slot is in flight) and
+/// submits again.
 pub trait Engine: Send {
-    /// Frames in flight before `submit` returns `Busy`.
-    const SLOTS: usize;
+    /// Frames in flight before `submit` returns `Busy`, at least 1. Read once when
+    /// the session is created, so an engine may pick it at run time (for example
+    /// the queue depth the driver accepted).
+    fn slots(&self) -> usize;
 
     /// Copies `frame` into the input buffer of `slot`. Not called for a slot that is
     /// in flight.
@@ -126,6 +138,7 @@ impl<E: Engine> Session<E> {
         dynamic_bitrate: bool,
         stream: StreamDescriptor,
     ) -> Self {
+        let slots = vec![Slot::default(); engine.slots().max(1)].into_boxed_slice();
         Self {
             engine,
             stream,
@@ -133,7 +146,7 @@ impl<E: Engine> Session<E> {
             format,
             rate_control,
             dynamic_bitrate,
-            slots: vec![Slot::default(); E::SLOTS.max(1)].into_boxed_slice(),
+            slots,
             head: 0,
             in_flight: 0,
             next_token: 0,
@@ -152,6 +165,15 @@ impl<E: Engine> Session<E> {
     /// The engine.
     pub fn engine(&self) -> &E {
         &self.engine
+    }
+
+    /// `index` (below twice the slot count) wrapped into the ring, without a division.
+    fn wrap(&self, index: usize) -> usize {
+        if index >= self.slots.len() {
+            index - self.slots.len()
+        } else {
+            index
+        }
     }
 
     fn check(&self) -> Result<(), EncodeError> {
@@ -193,7 +215,7 @@ impl<E: Engine> Session<E> {
             // session does not support.
             return Err(self.fail(EngineError::Broken("encoder output out of order")));
         }
-        self.head = (self.head + 1) % self.slots.len();
+        self.head = self.wrap(self.head + 1);
         self.in_flight -= 1;
         let packet = EncodedPacket::new(
             self.codec,
@@ -236,7 +258,7 @@ impl<E: Engine> VideoEncoder for Session<E> {
         if self.in_flight == self.slots.len() {
             return Err(EncodeError::Busy);
         }
-        let slot = (self.head + self.in_flight) % self.slots.len();
+        let slot = self.wrap(self.head + self.in_flight);
         if let Err(e) = self.engine.upload(slot, system) {
             return Err(self.fail(e));
         }
@@ -301,6 +323,9 @@ impl<E: Engine> VideoEncoder for Session<E> {
 
     fn flush(&mut self, out: &mut Vec<EncodedPacket>) -> Result<(), EncodeError> {
         self.check()?;
+        // The stream may go on after a flush; start it again with an IDR so it is
+        // decodable from there.
+        self.keyframe_pending = true;
         if self.in_flight == 0 {
             return Ok(());
         }
@@ -310,9 +335,6 @@ impl<E: Engine> VideoEncoder for Session<E> {
         while self.in_flight > 0 {
             self.take_one(out, true)?;
         }
-        // The stream may go on after end-of-stream; start it again with an IDR so it
-        // is decodable from there.
-        self.keyframe_pending = true;
         Ok(())
     }
 }
@@ -379,7 +401,9 @@ mod fake {
     pub(crate) const FAKE_SLOTS: usize = 8;
 
     impl Engine for FakeEngine {
-        const SLOTS: usize = FAKE_SLOTS;
+        fn slots(&self) -> usize {
+            FAKE_SLOTS
+        }
 
         fn upload(&mut self, slot: usize, frame: &SystemFrame) -> Result<(), EngineError> {
             assert!(!self.slots[slot].busy, "upload into a slot in flight");
@@ -456,8 +480,8 @@ mod tests {
     use super::fake::FAKE_SLOTS as FRAMES_IN_FLIGHT;
     use super::fake::{FakeEngine, Script};
     use super::*;
-    use crate::device::testing::discrete_gpu as geforce;
     use crate::device::{DeviceCaps, capability_set};
+    use crate::testing::discrete_gpu as geforce;
     use rbs_codec::conformance::{self, SystemFrameSource};
     use rbs_codec::{CreateError, VideoEncoderConfig, VideoEncoderFactory};
     use rbs_core::capability::CapabilitySet;

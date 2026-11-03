@@ -26,17 +26,13 @@ pub struct DstPlane<'a> {
     pub pitch: usize,
 }
 
-/// Copies both planes of `frame` (whose format is `format`, `width` x `height`) into
-/// `dst`, row by row. Returns `false`, having copied an unspecified part, when the
-/// frame is not bi-planar 4:2:0 or a source or destination plane is too small.
-pub fn copy_420(
-    frame: &SystemFrame,
-    format: PixelFormat,
-    width: u32,
-    height: u32,
-    dst: [DstPlane<'_>; 2],
-) -> bool {
-    let Some(planes) = plane_sizes(format, width, height) else {
+/// Copies both planes of `frame` into `dst`, row by row, at the frame's own format
+/// and size. Returns `false`, having copied an unspecified part, when the frame is
+/// not bi-planar 4:2:0 or a source or destination plane is too small.
+pub fn copy_420(frame: &SystemFrame, dst: [DstPlane<'_>; 2]) -> bool {
+    let format = frame.format();
+    let Some(planes) = plane_sizes(format.pixel_format, format.size.width, format.size.height)
+    else {
         return false;
     };
     for (plane, ((row_bytes, rows), dst)) in planes.into_iter().zip(dst).enumerate() {
@@ -84,9 +80,6 @@ mod tests {
         let mut chroma = vec![0u8; 80 * 16];
         assert!(copy_420(
             system,
-            PixelFormat::Nv12,
-            64,
-            32,
             [
                 DstPlane {
                     data: &mut luma,
@@ -113,9 +106,6 @@ mod tests {
         let mut chroma = vec![0u8; 80 * 16];
         assert!(!copy_420(
             system,
-            PixelFormat::Nv12,
-            64,
-            32,
             [
                 DstPlane {
                     data: &mut short,

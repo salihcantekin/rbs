@@ -257,7 +257,7 @@ pub fn plan(config: &VideoEncoderConfig, device: &DeviceCaps) -> Result<Plan, Cr
 mod tests {
     use super::*;
     use crate::device::Profiles;
-    use crate::device::testing::discrete_gpu;
+    use crate::testing::discrete_gpu;
     use rbs_codec::{EncoderTuning, KeyframeInterval};
     use rbs_core::media::{ColorSpace, Size, VideoFormat};
     use rbs_core::timing::FrameRate;

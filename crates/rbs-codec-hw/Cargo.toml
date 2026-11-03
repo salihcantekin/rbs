@@ -14,8 +14,18 @@ rbs-core = { path = "../rbs-core" }
 # H.273 colour code points for the VUI.
 rbs-media-format = { path = "../rbs-media-format" }
 
+[features]
+# Test devices for the tests of adapters.
+testing = []
+
 [dev-dependencies]
 rbs-codec = { path = "../rbs-codec", features = ["conformance"] }
+# Micro-benchmark of the session hand-off (measure-performance skill, ADR-0009).
+criterion = { version = "0.8", default-features = false, features = ["cargo_bench_support"] }
+
+[[bench]]
+name = "session"
+harness = false
 
 [lints]
 workspace = true

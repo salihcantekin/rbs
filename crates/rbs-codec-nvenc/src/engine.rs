@@ -12,6 +12,7 @@ use std::ptr;
 use rbs_codec::CreateError;
 use rbs_core::media::{CodecId, PixelFormat, SystemFrame};
 
+use rbs_codec_hw::copy::{DstPlane, copy_420, plane_sizes};
 use rbs_codec_hw::device::{CodecCaps, DeviceCaps, Profiles};
 use rbs_codec_hw::plan::{Plan, Preset, Profile, Rc};
 use rbs_codec_hw::session::{Engine, EngineError, Output};
@@ -620,17 +621,7 @@ impl NvencEngine {
 
     /// Bytes per row and rows of each plane.
     fn planes(&self) -> [(usize, usize); 2] {
-        let mut planes = [(0, 0); 2];
-        for (i, p) in planes.iter_mut().enumerate() {
-            *p = (
-                self.pixel_format
-                    .min_row_bytes(i, self.width)
-                    .and_then(|r| usize::try_from(r).ok())
-                    .unwrap_or(0),
-                self.pixel_format.plane_rows(i, self.height).unwrap_or(0) as usize,
-            );
-        }
-        planes
+        plane_sizes(self.pixel_format, self.width, self.height).unwrap_or_default()
     }
 
     /// Reads back and unlocks the bitstream of `slot`.
@@ -694,7 +685,9 @@ impl NvencEngine {
 }
 
 impl Engine for NvencEngine {
-    const SLOTS: usize = FRAMES_IN_FLIGHT;
+    fn slots(&self) -> usize {
+        FRAMES_IN_FLIGHT
+    }
 
     fn upload(&mut self, slot: usize, frame: &SystemFrame) -> Result<(), EngineError> {
         let funcs = &self.device.api.nvenc.0;
@@ -714,35 +707,30 @@ impl Engine for NvencEngine {
         })?;
         let base = params.bufferDataPtr.cast::<u8>();
         let pitch = params.pitch as usize;
-        let mut copied = !base.is_null();
-        // The chroma plane follows `height` rows of luma at the same pitch.
-        let mut offset = 0usize;
-        for (plane, (row_bytes, rows)) in planes.iter().enumerate() {
-            if !copied {
-                break;
-            }
-            let Some((src, stride)) = frame.plane(plane) else {
-                copied = false;
-                break;
+        let [(_, luma_rows), (_, chroma_rows)] = planes;
+        let copied = !base.is_null() && {
+            // The chroma plane follows `height` rows of luma at the same pitch.
+            let luma_len = pitch * self.height as usize;
+            // SAFETY: while locked, the buffer holds `height` luma rows and then the
+            // chroma rows, `pitch` bytes each, and nothing else refers to it; the
+            // two slices do not overlap. `luma_rows == height` for 4:2:0.
+            let (luma, chroma) = unsafe {
+                (
+                    std::slice::from_raw_parts_mut(base, pitch * luma_rows),
+                    std::slice::from_raw_parts_mut(base.add(luma_len), pitch * chroma_rows),
+                )
             };
-            if pitch < *row_bytes || stride < *row_bytes {
-                copied = false;
-                break;
-            }
-            for y in 0..*rows {
-                let Some(row) = src.get(y * stride..y * stride + row_bytes) else {
-                    copied = false;
-                    break;
-                };
-                // SAFETY: the locked buffer holds `height` luma rows plus the chroma
-                // rows at `pitch >= row_bytes` bytes each; source and destination are
-                // different allocations.
-                unsafe {
-                    ptr::copy_nonoverlapping(row.as_ptr(), base.add(offset + y * pitch), *row_bytes)
-                };
-            }
-            offset += pitch * (self.height as usize);
-        }
+            copy_420(
+                frame,
+                [
+                    DstPlane { data: luma, pitch },
+                    DstPlane {
+                        data: chroma,
+                        pitch,
+                    },
+                ],
+            )
+        };
         // SAFETY: locked above.
         let s = unsafe { unlock(self.encoder(), self.inputs[slot]) };
         status("nvEncUnlockInputBuffer", s)?;

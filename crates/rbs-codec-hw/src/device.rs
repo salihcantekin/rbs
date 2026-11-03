@@ -10,7 +10,7 @@ use crate::plan::Profile;
 
 /// A set of [`Profile`]s.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
-pub struct Profiles(u8);
+pub struct Profiles(u32);
 
 impl Profiles {
     /// No profile.
@@ -25,8 +25,8 @@ impl Profiles {
     /// HEVC Main and Main 10.
     pub const HEVC_ALL: Profiles = Profiles::HEVC_MAIN.with(Profile::HevcMain10);
 
-    const fn bit(p: Profile) -> u8 {
-        1 << (p as u8)
+    const fn bit(p: Profile) -> u32 {
+        1 << (p as u32)
     }
 
     /// This set plus `p`.
@@ -226,48 +226,10 @@ pub fn capability_set(device: &DeviceCaps) -> CapabilitySet {
     set_
 }
 
-/// Test devices, shared by the tests of this crate and of adapters.
-#[doc(hidden)]
-pub mod testing {
-    use super::*;
-
-    /// A device like a current discrete GPU: H.264 to 4096 (8 bits), HEVC to 8192
-    /// with Main 10, every rate-control mode and bitrate changes.
-    pub fn discrete_gpu() -> DeviceCaps {
-        DeviceCaps {
-            name: "Test GPU".into(),
-            codecs: vec![
-                CodecCaps {
-                    codec: CodecId::H264,
-                    width: (145, 4096),
-                    height: (49, 4096),
-                    mb_per_sec: 4096 / 16 * 4096 / 16 * 60,
-                    profiles: Profiles::H264_ALL,
-                    cbr: true,
-                    vbr: true,
-                    quality: true,
-                    dynamic_bitrate: true,
-                },
-                CodecCaps {
-                    codec: CodecId::Hevc,
-                    width: (129, 8192),
-                    height: (33, 8192),
-                    mb_per_sec: 8192 / 16 * 8192 / 16 * 30,
-                    profiles: Profiles::HEVC_ALL,
-                    cbr: true,
-                    vbr: true,
-                    quality: true,
-                    dynamic_bitrate: true,
-                },
-            ],
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
-    use super::testing::discrete_gpu;
     use super::*;
+    use crate::testing::discrete_gpu;
 
     fn values(set: &CapabilitySet, key: &rbs_core::capability::CapabilityKey) -> Vec<String> {
         match set.get(key) {
