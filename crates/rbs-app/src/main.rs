@@ -3,9 +3,9 @@
 //!
 //! This first shell has the window frame (live indicator, workspace menu,
 //! Panels menu), dockable panels with tabs, splitters, edge moves, floating
-//! windows and workspaces (rule U21). The Program (or Preview), Sources and Mixer
-//! panels run the studio in this process on its own control thread (ADR-0041 decision
-//! 7); the other panels show placeholders until they are connected.
+//! windows and workspaces (rule U21). The Program (or Preview), Sources, Mixer, Live
+//! controls and Outputs panels run the studio in this process on its own control thread
+//! (ADR-0041 decision 7); the other panels show placeholders until they are connected.
 //!
 //! Options: `--demo-live` shows a made-up live and recording state, to check
 //! the live indicator without an engine. `RBS_THEME=dark|light|high-contrast`
@@ -304,6 +304,8 @@ struct Ctx {
     /// Dismisses the "deleted" toast after [`TOAST_TIME`].
     deleted_timer: Rc<slint::Timer>,
     deleted_shown: Rc<Cell<u64>>,
+    /// Ticks the live duration once a second while live or recording.
+    live_timer: Rc<slint::Timer>,
 }
 
 thread_local! {
@@ -345,9 +347,13 @@ impl Ctx {
         let Ok(mut app) = self.app.try_borrow_mut() else {
             return;
         };
-        let Some(since) = app.demo_since else { return };
+        let elapsed = match (app.demo_since, app.studio.recording_for()) {
+            (Some(since), _) => since.elapsed(),
+            (None, Some((d, _))) => d,
+            (None, None) => return,
+        };
         let mut live = app.session.live().clone();
-        live.elapsed_secs = since.elapsed().as_secs();
+        live.elapsed_secs = elapsed.as_secs();
         let text: slint::SharedString = live.duration_text().into();
         app.session.set_live(live);
         app.main.global::<Shell>().set_live_duration(text.clone());
@@ -395,6 +401,39 @@ impl Ctx {
 
     /// Where the studio's panels are and what they show; starts and stops the meter
     /// timer and places the preview layer.
+    /// The live status from the studio, and the 1 Hz duration tick while live or
+    /// recording.
+    fn sync_live(&self, app: &mut App) {
+        // The live indicator follows the recording (no streaming outputs yet).
+        if app.demo_since.is_none() {
+            let live = match app.studio.recording_for() {
+                Some((d, file)) => LiveStatus {
+                    live: false,
+                    recording: true,
+                    elapsed_secs: d.as_secs(),
+                    outputs: vec![file],
+                },
+                None => LiveStatus::default(),
+            };
+            if *app.session.live() != live {
+                app.session.set_live(live);
+            }
+        }
+        // One tick a second while live or recording, none otherwise (ADR-0013).
+        if app.session.live().is_active() {
+            if !self.live_timer.running() {
+                let ctx = self.clone();
+                self.live_timer.start(
+                    slint::TimerMode::Repeated,
+                    Duration::from_secs(1),
+                    move || ctx.live_tick(),
+                );
+            }
+        } else {
+            self.live_timer.stop();
+        }
+    }
+
     fn sync_studio(&self, app: &App) {
         let t = app.main.global::<Tokens>();
         let bar = t.get_size_control_md() + 2.0 * t.get_space_1();
@@ -478,6 +517,7 @@ impl Ctx {
         if app.exiting {
             return;
         }
+        self.sync_live(&mut app);
 
         // Main window.
         let (stacks, handles) = view::window_view(0, app.session.workspace().main(), app.area(0));
@@ -847,6 +887,27 @@ fn install_studio(g: &Studio<'_>, ctx: &Ctx) {
     on!(on_reset_clip, |app, i: i32| {
         app.studio.reset_clip(i);
     });
+    on!(on_record, |app| {
+        app.studio.record();
+    });
+    on!(on_stop_recording, |app| {
+        app.studio.stop_recording();
+    });
+    on!(on_set_folder, |app, text: slint::SharedString| {
+        app.studio.set_folder(&text);
+    });
+    on!(on_set_format, |app, i: i32| {
+        app.studio.set_format(i);
+    });
+    on!(on_set_encoder, |app, i: i32| {
+        app.studio.set_encoder(i);
+    });
+    on!(on_set_video_rate, |app, i: i32| {
+        app.studio.set_video_rate(i);
+    });
+    on!(on_set_audio_rate, |app, i: i32| {
+        app.studio.set_audio_rate(i);
+    });
     // A popup opened or closed: the preview layer hides or shows at once.
     #[cfg(any(target_os = "macos", windows))]
     {
@@ -867,6 +928,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .select()?;
 
     let config = config::config_dir();
+    let studio_config = config.clone();
     let store = WorkspaceStore::new(config::workspace_dir(&config));
     let name = config::last_workspace(&config).unwrap_or_else(|| "Edit".to_owned());
     let mut error = None;
@@ -912,7 +974,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             save_due: false,
             exiting: false,
             demo_since: demo_live.then(Instant::now),
-            studio: studio_ui::StudioUi::new(),
+            studio: studio_ui::StudioUi::new(&studio_config),
         })),
         queue: Rc::new(RefCell::new(Vec::new())),
         pending: Rc::new(Cell::new(false)),
@@ -922,6 +984,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         meter_timer: Rc::new(slint::Timer::default()),
         deleted_timer: Rc::new(slint::Timer::default()),
         deleted_shown: Rc::new(Cell::new(0)),
+        live_timer: Rc::new(slint::Timer::default()),
     };
     install(&main.global::<Shell>(), &ctx);
     install_studio(&main.global::<Studio>(), &ctx);
@@ -978,19 +1041,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         });
     }
 
-    // The live duration needs one update a second while live or recording, and
-    // nothing otherwise (ADR-0013). Panels have no animated content yet.
-    let live_timer = slint::Timer::default();
-    if demo_live {
-        let c = ctx.clone();
-        live_timer.start(
-            slint::TimerMode::Repeated,
-            Duration::from_secs(1),
-            move || {
-                c.live_tick();
-            },
-        );
-    }
     main.run()?;
     // The layer's frames go back before the studio and its publisher stop.
     #[cfg(any(target_os = "macos", windows))]

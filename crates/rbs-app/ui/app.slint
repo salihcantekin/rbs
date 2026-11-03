@@ -3,7 +3,7 @@
 // layout tree into tab stacks and splitter handles with absolute positions.
 import { Theme, Tokens } from "tokens.slint";
 import { Button, IconButton, Icon, IconName, MenuItem, MenuSurface, EmptyState } from "components.slint";
-import { Studio, SourceData, KindData, TargetData, MeterRow, ScaleMark, ProgramPanel, SourcesPanel, MixerPanel } from "studio.slint";
+import { Studio, SourceData, KindData, TargetData, MeterRow, ScaleMark, ProgramPanel, SourcesPanel, MixerPanel, LiveControlsPanel, OutputsPanel } from "studio.slint";
 
 export { Theme, Tokens, Studio, SourceData, KindData, TargetData, MeterRow, ScaleMark }
 
@@ -107,7 +107,7 @@ component LiveIndicator inherits Rectangle {
 // A panel's content: the panels connected to the studio, a placeholder for the others.
 component PanelContent inherits Rectangle {
     in property <TabData> tab;
-    property <bool> connected: tab.id == "rbs.program" || tab.id == "rbs.sources" || tab.id == "rbs.mixer" || tab.id == "rbs.preview";
+    property <bool> connected: tab.id == "rbs.program" || tab.id == "rbs.sources" || tab.id == "rbs.mixer" || tab.id == "rbs.preview" || tab.id == "rbs.live-controls" || tab.id == "rbs.outputs";
     background: Theme.surface-raised;
     if tab.id == "rbs.program" || tab.id == "rbs.preview": ProgramPanel {
         width: parent.width;
@@ -120,6 +120,14 @@ component PanelContent inherits Rectangle {
         height: parent.height;
     }
     if tab.id == "rbs.mixer": MixerPanel {
+        width: parent.width;
+        height: parent.height;
+    }
+    if tab.id == "rbs.live-controls": LiveControlsPanel {
+        width: parent.width;
+        height: parent.height;
+    }
+    if tab.id == "rbs.outputs": OutputsPanel {
         width: parent.width;
         height: parent.height;
     }

@@ -1,8 +1,9 @@
-// Panels connected to the studio (ADR-0041 decision 7): Program, Sources and Mixer.
+// Panels connected to the studio (ADR-0041 decision 7): Program, Sources, Mixer, Live
+// controls and Outputs.
 // Rust pushes state into the `Studio` global of every window and handles its callbacks
 // by sending commands to the studio's control thread.
 import { Theme, Tokens } from "tokens.slint";
-import { Button, IconButton, IconName, MenuItem, MenuSurface, EmptyState } from "components.slint";
+import { Button, IconButton, IconName, MenuItem, MenuSurface, EmptyState, Select, SegmentedControl, TextField } from "components.slint";
 
 export struct SourceData { id: int, name: string, kind: string, status: string, ok: bool }
 export struct KindData { code: int, label: string }
@@ -48,6 +49,38 @@ export global Studio {
     callback reset-clip(int /* meter */);
     // `overlays` changed (Rust hides or shows the preview layer).
     callback overlays-changed();
+
+    // Recording: 0 off, 1 starting, 2 recording, 3 stopping.
+    in property <int> rec-state;
+    // The file being recorded (name only).
+    in property <string> rec-file;
+    // The last recording's outcome or why one did not start; `rec-note-bad` marks a problem.
+    in property <string> rec-note;
+    in property <bool> rec-note-bad;
+    // Why this system cannot record; empty when it can.
+    in property <string> rec-unavailable;
+    callback record();
+    callback stop-recording();
+
+    // Output settings of the next recording.
+    in-out property <string> out-folder;
+    // Bumped by Rust when `out-folder` is set from outside the field.
+    in-out property <int> out-folder-serial;
+    in property <[string]> out-formats;
+    in property <int> out-format;
+    in property <[string]> out-encoders;
+    in property <int> out-encoder;
+    in property <[string]> out-video-rates;
+    in property <int> out-video-rate;
+    in property <[string]> out-audio-rates;
+    in property <int> out-audio-rate;
+    // A problem with the settings or their file; empty when none.
+    in property <string> out-note;
+    callback set-folder(string);
+    callback set-format(int);
+    callback set-encoder(int);
+    callback set-video-rate(int);
+    callback set-audio-rate(int);
 }
 
 // The add-source picker: a kind, then what it captures. Keyboard: arrows are not
@@ -320,4 +353,145 @@ export component MixerPanel inherits Rectangle {
         x: Tokens.space-2;
         y: Tokens.space-2;
     }
+}
+
+// Live controls: Record and Stop recording (Go live comes with streaming outputs).
+export component LiveControlsPanel inherits Rectangle {
+    background: Theme.surface-raised;
+    property <bool> recording: Studio.rec-state == 2;
+    VerticalLayout {
+        padding: Tokens.space-3;
+        spacing: Tokens.space-2;
+        alignment: start;
+        HorizontalLayout {
+            alignment: start;
+            Button {
+                text: recording ? @tr("Stop recording") : @tr("Record");
+                kind: recording ? "live" : "primary";
+                enabled: Studio.state == 1 && Studio.rec-unavailable == "" && (Studio.rec-state == 0 || recording);
+                clicked => {
+                    if recording { Studio.stop-recording(); } else { Studio.record(); }
+                }
+            }
+        }
+        Text {
+            // State in words (U4, U9); the live indicator shows it everywhere too.
+            text: Studio.rec-state == 1 ? @tr("Starting the recording…")
+                : Studio.rec-state == 2 ? @tr("Recording to {}", Studio.rec-file)
+                : Studio.rec-state == 3 ? @tr("Stopping the recording and closing the file…")
+                : Studio.rec-unavailable != "" ? Studio.rec-unavailable
+                : Studio.rec-note;
+            color: Studio.rec-state == 0 && (Studio.rec-unavailable != "" || Studio.rec-note-bad) ? Theme.state-error : Theme.text-secondary;
+            font-size: Tokens.type-body-size;
+            wrap: word-wrap;
+        }
+        if Studio.rec-state == 2 && Studio.rec-note != "": Text {
+            text: Studio.rec-note;
+            color: Theme.text-secondary;
+            font-size: Tokens.type-caption-size;
+            wrap: word-wrap;
+        }
+    }
+}
+
+component Field inherits VerticalLayout {
+    in property <string> label;
+    spacing: Tokens.space-1;
+    Text {
+        text: root.label;
+        color: Theme.text-secondary;
+        font-size: Tokens.type-caption-size;
+        accessible-role: none;
+    }
+    @children
+}
+
+// Outputs: the recording's settings (glossary: output profile). They apply to the next
+// recording and are saved at once.
+export component OutputsPanel inherits Rectangle {
+    background: Theme.surface-raised;
+    property <bool> idle: Studio.rec-state == 0;
+    Flickable {
+        width: parent.width;
+        height: parent.height;
+        content-height: form.preferred-height;
+        form := VerticalLayout {
+            padding: Tokens.space-3;
+            spacing: Tokens.space-3;
+            alignment: start;
+            Text {
+                text: @tr("Recording");
+                color: Theme.text-primary;
+                font-size: Tokens.type-title-size;
+                font-weight: Tokens.type-title-weight;
+                accessible-role: none;
+            }
+            if !idle: Text {
+                text: @tr("Changes apply to the next recording.");
+                color: Theme.text-secondary;
+                font-size: Tokens.type-body-size;
+                wrap: word-wrap;
+            }
+            Field {
+                label: @tr("Folder");
+                folder := TextField {
+                    label: @tr("Folder");
+                    text: Studio.out-folder;
+                    enabled: idle;
+                    accepted(t) => { Studio.set-folder(t); }
+                }
+            }
+            Field {
+                label: @tr("Format");
+                SegmentedControl {
+                    label: @tr("Format");
+                    options: Studio.out-formats;
+                    index: Studio.out-format;
+                    enabled: idle;
+                    selected(i) => { Studio.set-format(i); }
+                }
+            }
+            Field {
+                label: @tr("Video encoder");
+                encoder := Select {
+                    label: @tr("Video encoder");
+                    options: Studio.out-encoders;
+                    index: Studio.out-encoder;
+                    enabled: idle;
+                    selected(i) => { Studio.set-encoder(i); }
+                }
+            }
+            Field {
+                label: @tr("Video bitrate");
+                video := Select {
+                    label: @tr("Video bitrate");
+                    options: Studio.out-video-rates;
+                    index: Studio.out-video-rate;
+                    enabled: idle;
+                    selected(i) => { Studio.set-video-rate(i); }
+                }
+            }
+            Field {
+                label: @tr("Audio bitrate");
+                audio := Select {
+                    label: @tr("Audio bitrate");
+                    options: Studio.out-audio-rates;
+                    index: Studio.out-audio-rate;
+                    enabled: idle;
+                    selected(i) => { Studio.set-audio-rate(i); }
+                }
+            }
+            if Studio.out-note != "": Text {
+                text: Studio.out-note;
+                color: Theme.state-error;
+                font-size: Tokens.type-body-size;
+                wrap: word-wrap;
+            }
+        }
+    }
+    // The field shows what Rust set last; typing in it is never overwritten by a sync.
+    property <int> folder-serial: Studio.out-folder-serial;
+    changed folder-serial => { folder.text = Studio.out-folder; }
+    property <bool> menu-open: encoder.open || video.open || audio.open;
+    changed menu-open => { Studio.overlays += menu-open ? 1 : -1; Studio.overlays-changed(); }
 }

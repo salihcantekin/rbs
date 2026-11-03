@@ -5,19 +5,23 @@
 //!
 //! Toolkit-free, so it is tested without a window (`tests/studio_host.rs`).
 
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
 use std::thread::JoinHandle;
 use std::time::Duration;
 
 use rbs_audio::LevelMeter;
-use rbs_core::media::Size;
+use rbs_codec::RateControl;
+use rbs_core::capability::Requirement;
+use rbs_core::media::{ContainerId, Size};
+use rbs_core::registry::{AdapterFactory, Registry};
 use rbs_core::timing::FrameRate;
 use rbs_engine::Engine;
 use rbs_gpu::GpuContext;
 use rbs_gpu::share::{PreviewDesc, PreviewEndpoint};
 use rbs_graph::node::NodeTypeId;
-use rbs_record::{RecordAdapters, Studio, StudioSettings};
+use rbs_record::{AudioSettings, OutputSettings, RecordAdapters, Studio, StudioSettings};
 use rbs_scene::SceneCollection;
 use rbs_scene::Undo;
 use rbs_scene::model::{
@@ -169,6 +173,62 @@ pub enum Command {
     DeleteSource(SourceId),
     /// Undo the last delete.
     UndoDelete,
+    /// Start recording the program ([`Update::Recording`] says how it went).
+    StartRecording(RecordRequest),
+    /// Stop the running recording; the file is complete when
+    /// [`RecordingUpdate::Stopped`] arrives.
+    StopRecording,
+}
+
+/// A video encoder the user can pick.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EncoderInfo {
+    /// Its adapter id.
+    pub id: String,
+    /// Its name in the UI.
+    pub name: String,
+}
+
+/// Where and how to record.
+#[derive(Debug, Clone, PartialEq)]
+pub struct RecordRequest {
+    /// The file, absolute. Its folder is created; an existing file is not replaced.
+    pub path: PathBuf,
+    /// The container.
+    pub container: ContainerId,
+    /// The video encoder's adapter id: only this one is used. `None`: the best one.
+    pub encoder: Option<String>,
+    /// Video bitrate (constant) in bit/s.
+    pub video_bitrate_bps: u64,
+    /// Audio bitrate in bit/s.
+    pub audio_bitrate_bps: u64,
+}
+
+/// What happened to the recording.
+#[derive(Debug, Clone, PartialEq)]
+pub enum RecordingUpdate {
+    /// It runs.
+    Started {
+        /// The file.
+        path: PathBuf,
+        /// The video encoder's name.
+        video_encoder: String,
+        /// The audio encoder's name, when audio is recorded.
+        audio_encoder: Option<String>,
+    },
+    /// It could not start, in words; nothing records.
+    NotStarted(String),
+    /// It stopped, asked to or because it failed; the file is closed.
+    Stopped {
+        /// The file.
+        path: PathBuf,
+        /// Why it stopped on its own, if it did.
+        failure: Option<String>,
+        /// Video frames encoded.
+        frames: u64,
+        /// Video frames dropped at the export or the encoder.
+        dropped: u64,
+    },
 }
 
 /// What the studio tells the UI.
@@ -183,6 +243,10 @@ pub enum Update {
         kinds: Vec<SourceKind>,
         /// Adapters that could not be registered or the GPU's name, for the log.
         notes: Vec<String>,
+        /// Video encoders the user can pick, best first.
+        encoders: Vec<EncoderInfo>,
+        /// Why this system cannot record, or `None` when it can.
+        cannot_record: Option<String>,
     },
     /// The studio cannot run (no GPU, or a studio node failed for good).
     Failed(String),
@@ -194,6 +258,8 @@ pub enum Update {
     Deleted(String),
     /// A command did not work, in words for a toast.
     Error(String),
+    /// The recording started, did not start or stopped.
+    Recording(RecordingUpdate),
 }
 
 /// How the studio starts.
@@ -279,6 +345,8 @@ struct Host {
     rows: Vec<SourceRow>,
     undo: Option<Undo>,
     waiting: bool,
+    /// The running recording's file.
+    recording: Option<PathBuf>,
 }
 
 fn run(
@@ -331,6 +399,11 @@ fn run(
             host.apply(notify);
         }
         host.waiting = waiting;
+        if host.recording.is_some()
+            && let Some(why) = host.studio.recording_failure()
+        {
+            host.stop_recording(Some(why), notify);
+        }
         host.publish(notify);
     }
     let _ = host.studio.shutdown();
@@ -365,10 +438,28 @@ fn start(
         .into_iter()
         .filter(|k| installed.contains(&k.type_id()))
         .collect();
+    let encoders: Vec<EncoderInfo> = adapters
+        .video_encoders
+        .select(&Requirement::new())
+        .candidates
+        .iter()
+        .map(|f| EncoderInfo {
+            id: f.id().as_str().to_owned(),
+            name: f.display_name().to_owned(),
+        })
+        .collect();
+    let cannot_record = encoders.is_empty().then(|| {
+        format!(
+            "Recording is not available on {} yet: this system has no video encoder RBS can use.",
+            os_name()
+        )
+    });
     let update = Update::Started {
         preview: studio.preview(),
         kinds,
         notes,
+        encoders,
+        cannot_record,
     };
     Ok((
         Host {
@@ -380,6 +471,7 @@ fn start(
             rows: Vec::new(),
             undo: None,
             waiting: false,
+            recording: None,
         },
         update,
     ))
@@ -427,7 +519,94 @@ impl Host {
                     }
                 }
             }
+            Command::StartRecording(r) => {
+                let update = match self.start_recording(&r) {
+                    Ok(update) => update,
+                    Err(why) => RecordingUpdate::NotStarted(why),
+                };
+                notify(Update::Recording(update));
+                self.publish(notify);
+            }
+            Command::StopRecording => {
+                self.stop_recording(None, notify);
+                self.publish(notify);
+            }
         }
+    }
+
+    /// Starts recording to `r.path`; the file's folder is made first.
+    fn start_recording(&mut self, r: &RecordRequest) -> Result<RecordingUpdate, String> {
+        if self.recording.is_some() {
+            return Err("A recording is already running.".into());
+        }
+        if !r.path.is_absolute() {
+            return Err(format!("{} is not a full path.", r.path.display()));
+        }
+        if let Some(folder) = r.path.parent() {
+            std::fs::create_dir_all(folder)
+                .map_err(|e| format!("Cannot make the folder {}: {e}", folder.display()))?;
+        }
+        if r.path.exists() {
+            return Err(format!("{} already exists.", r.path.display()));
+        }
+        let mut out = OutputSettings::new(rbs_transport_file::file_url(&r.path), r.container);
+        out.video.rate_control = RateControl::Cbr {
+            bitrate_bps: r.video_bitrate_bps,
+        };
+        out.audio = self.adapters.audio_encoders.ids().next().map(|_| {
+            let mut a = AudioSettings::default();
+            a.bitrate_bps = r.audio_bitrate_bps;
+            a
+        });
+        // A picked encoder is the only one tried: if it cannot open, the recording
+        // fails rather than quietly using another one.
+        let all = match &r.encoder {
+            None => None,
+            Some(id) => {
+                let only = only_encoder(&self.adapters.video_encoders, id)?;
+                Some(std::mem::replace(&mut self.adapters.video_encoders, only))
+            }
+        };
+        let started = self
+            .studio
+            .start_recording(&self.adapters, &out)
+            .map(|report| RecordingUpdate::Started {
+                path: r.path.clone(),
+                video_encoder: report.video_encoder.name.clone(),
+                audio_encoder: report.audio_encoder.as_ref().map(|c| c.name.clone()),
+            })
+            .map_err(|e| e.to_string());
+        if let Some(all) = all {
+            self.adapters.video_encoders = all;
+        }
+        if started.is_ok() {
+            self.recording = Some(r.path.clone());
+        } else if std::fs::metadata(&r.path).is_ok_and(|m| m.len() == 0) {
+            // The output may have made the file before a later node failed.
+            let _ = std::fs::remove_file(&r.path);
+        }
+        started
+    }
+
+    /// Stops the recording, if one runs, and says so.
+    fn stop_recording(&mut self, failure: Option<String>, notify: &dyn Fn(Update)) {
+        let Some(path) = self.recording.take() else {
+            return;
+        };
+        let report = self.studio.stop_recording();
+        let (frames, dropped, failed) = report.map_or((0, 0, None), |r| {
+            (
+                r.progress.frames_encoded,
+                r.progress.export_drops + r.progress.encoder_drops,
+                r.failure,
+            )
+        });
+        notify(Update::Recording(RecordingUpdate::Stopped {
+            path,
+            failure: failure.or(failed),
+            frames,
+            dropped,
+        }));
     }
 
     /// Adds a source of `kind` for `target` to the program scene, on top.
@@ -535,6 +714,32 @@ impl Host {
                 }
             })
             .collect()
+    }
+}
+
+/// A registry with only the encoder `id` of `all`, probed.
+fn only_encoder<F: ?Sized + AdapterFactory>(
+    all: &Registry<F>,
+    id: &str,
+) -> Result<Registry<F>, String> {
+    let factory = all
+        .select(&Requirement::new())
+        .candidates
+        .into_iter()
+        .find(|f| f.id().as_str() == id)
+        .ok_or_else(|| format!("The encoder {id} is not available on this system."))?;
+    let mut only = Registry::new();
+    only.register(factory).map_err(|e| e.to_string())?;
+    only.probe_all();
+    Ok(only)
+}
+
+fn os_name() -> &'static str {
+    match std::env::consts::OS {
+        "macos" => "macOS",
+        "windows" => "Windows",
+        "linux" => "Linux",
+        other => other,
     }
 }
 

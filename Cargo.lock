@@ -3981,6 +3981,7 @@ dependencies = [
 name = "rbs-app"
 version = "0.0.1"
 dependencies = [
+ "chrono",
  "libc",
  "objc2 0.6.5",
  "objc2-core-foundation",
@@ -4005,6 +4006,7 @@ dependencies = [
  "rbs-engine",
  "rbs-gpu",
  "rbs-graph",
+ "rbs-mux",
  "rbs-mux-fmp4",
  "rbs-mux-matroska",
  "rbs-record",
@@ -4013,8 +4015,10 @@ dependencies = [
  "rbs-thread-os",
  "rbs-transport-file",
  "rbs-ui",
+ "serde",
  "slint",
  "slint-build",
+ "toml 0.9.12+spec-1.1.0",
  "windows",
 ]
 
