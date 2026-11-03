@@ -3,8 +3,9 @@
 //!
 //! This first shell has the window frame (live indicator, workspace menu,
 //! Panels menu), dockable panels with tabs, splitters, edge moves, floating
-//! windows and workspaces (rule U21). Panels show placeholders until the app
-//! talks to the engine through the control API (ADR-0008).
+//! windows and workspaces (rule U21). The Program (or Preview), Sources and Mixer
+//! panels run the studio in this process on its own control thread (ADR-0041 decision
+//! 7); the other panels show placeholders until they are connected.
 //!
 //! Options: `--demo-live` shows a made-up live and recording state, to check
 //! the live indicator without an engine. `RBS_THEME=dark|light|high-contrast`
@@ -12,6 +13,9 @@
 #![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
 
 mod config;
+#[cfg(any(target_os = "macos", windows))]
+mod preview;
+mod studio_ui;
 mod view;
 
 use std::cell::{Cell, RefCell};
@@ -19,6 +23,7 @@ use std::path::PathBuf;
 use std::rc::Rc;
 use std::time::{Duration, Instant};
 
+use rbs_app::studio_host;
 use rbs_ui::layout::{Axis, Edge, Rect};
 use rbs_ui::session::CommandError;
 use rbs_ui::store::{StoreError, WorkspaceStore};
@@ -126,6 +131,7 @@ struct App {
     save_due: bool,
     exiting: bool,
     demo_since: Option<Instant>,
+    studio: studio_ui::StudioUi,
 }
 
 impl App {
@@ -293,6 +299,27 @@ struct Ctx {
     toast_shown: Rc<Cell<u64>>,
     /// Writes the layout [`SAVE_DELAY`] after the last change.
     save_timer: Rc<slint::Timer>,
+    /// Refreshes the meters; runs only while the Mixer shows audio sources (U5, U16).
+    meter_timer: Rc<slint::Timer>,
+    /// Dismisses the "deleted" toast after [`TOAST_TIME`].
+    deleted_timer: Rc<slint::Timer>,
+    deleted_shown: Rc<Cell<u64>>,
+}
+
+thread_local! {
+    /// The shell's context, for updates the studio's control thread hands to the UI
+    /// thread (`slint::invoke_from_event_loop` takes only `Send` closures).
+    static CTX: RefCell<Option<Ctx>> = const { RefCell::new(None) };
+}
+
+/// Hands an update from the studio's control thread to the UI thread.
+fn deliver(u: studio_host::Update) {
+    let _ = slint::invoke_from_event_loop(move || {
+        let ctx = CTX.with(|c| c.borrow().clone());
+        if let Some(ctx) = ctx {
+            ctx.studio_update(u);
+        }
+    });
 }
 
 impl Ctx {
@@ -326,6 +353,117 @@ impl Ctx {
         app.main.global::<Shell>().set_live_duration(text.clone());
         for f in &app.floats {
             f.window.global::<Shell>().set_live_duration(text.clone());
+        }
+    }
+
+    /// Applies an update from the studio.
+    fn studio_update(&self, u: studio_host::Update) {
+        let ctx = self.clone();
+        self.update(move |app| {
+            let applied = app.studio.apply(u);
+            if let Some(e) = applied.error {
+                app.error = Some(UiError::Other(e));
+            }
+            if let Some(endpoint) = applied.preview {
+                ctx.connect_preview(endpoint);
+            }
+        });
+    }
+
+    #[cfg(any(target_os = "macos", windows))]
+    fn connect_preview(&self, endpoint: rbs_gpu::share::PreviewEndpoint) {
+        preview::connect(endpoint, |ok| {
+            let ctx = CTX.with(|c| c.borrow().clone());
+            if let Some(ctx) = ctx {
+                ctx.update(move |app| {
+                    app.studio.preview_ready = ok;
+                    app.studio.preview_failed = !ok;
+                });
+            }
+        });
+    }
+
+    #[cfg(not(any(target_os = "macos", windows)))]
+    fn connect_preview(&self, _endpoint: rbs_gpu::share::PreviewEndpoint) {}
+
+    /// One meter refresh (the timer runs only while the Mixer shows meters).
+    fn meter_tick(&self) {
+        if let Ok(mut app) = self.app.try_borrow_mut() {
+            app.studio.tick_meters();
+        }
+    }
+
+    /// Where the studio's panels are and what they show; starts and stops the meter
+    /// timer and places the preview layer.
+    fn sync_studio(&self, app: &App) {
+        let t = app.main.global::<Tokens>();
+        let bar = t.get_size_control_md() + 2.0 * t.get_space_1();
+        let border = t.get_size_border();
+        let frame = t.get_size_control_md() + 2.0 * t.get_space_2();
+        let in_main = |id: &str| {
+            studio_ui::active_content(&app.main_models.stacks, id, bar, border)
+                .map(|[x, y, w, h]| [x, y + frame, w, h])
+        };
+        let float_has = |id: &str| {
+            app.floats
+                .iter()
+                .any(|f| studio_ui::active_content(&f.models.stacks, id, bar, border).is_some())
+        };
+        // Without studio mode Program and Preview both show the scene on air; the picture
+        // goes to Program when it is shown, else to Preview.
+        let panel = if in_main("rbs.program").is_some() || float_has("rbs.program") {
+            "rbs.program"
+        } else {
+            "rbs.preview"
+        };
+        let picture_main = in_main(panel);
+        let mixer_shown = in_main("rbs.mixer").is_some() || float_has("rbs.mixer");
+        use studio_ui::preview_state as ps;
+        let s = &app.studio;
+        let state = match s.state {
+            0 => ps::STARTING,
+            2 => ps::STOPPED,
+            _ if !s.preview_offered => ps::NO_PLATFORM,
+            _ if s.preview_failed => ps::NO_SESSION,
+            _ if picture_main.is_none() && float_has(panel) => ps::OTHER_WINDOW,
+            _ if s.preview_ready => ps::SHOWN,
+            _ => ps::STARTING,
+        };
+        s.push(&app.main.global::<Studio>(), state, panel);
+        for f in &app.floats {
+            s.push(&f.window.global::<Studio>(), state, panel);
+        }
+
+        if mixer_shown && s.has_meters() {
+            if !self.meter_timer.running() {
+                let ctx = self.clone();
+                self.meter_timer.start(
+                    slint::TimerMode::Repeated,
+                    studio_ui::METER_PERIOD,
+                    move || ctx.meter_tick(),
+                );
+            }
+        } else {
+            self.meter_timer.stop();
+        }
+
+        if !s.deleted.is_empty() {
+            if self.deleted_shown.get() != s.deleted_serial || !self.deleted_timer.running() {
+                self.deleted_shown.set(s.deleted_serial);
+                let ctx = self.clone();
+                self.deleted_timer
+                    .start(slint::TimerMode::SingleShot, TOAST_TIME, move || {
+                        ctx.update(|app| app.studio.deleted.clear());
+                    });
+            }
+        } else {
+            self.deleted_timer.stop();
+        }
+
+        #[cfg(any(target_os = "macos", windows))]
+        {
+            preview::set_area(picture_main);
+            preview::place(&app.main);
         }
     }
 
@@ -401,6 +539,7 @@ impl Ctx {
         } else {
             self.toast_timer.stop();
         }
+        self.sync_studio(&app);
         if app.save_due {
             let ctx = self.clone();
             self.save_timer
@@ -480,6 +619,7 @@ impl Ctx {
     fn new_float(&self) -> Option<FloatSlot> {
         let fw = FloatWindow::new().ok()?;
         install(&fw.global::<Shell>(), self);
+        install_studio(&fw.global::<Studio>(), self);
         apply_theme(&fw.global::<Theme>());
         let models = DockModels::new();
         fw.set_stacks(ModelRc::from(models.stacks.clone()));
@@ -678,6 +818,47 @@ fn install(g: &Shell<'_>, ctx: &Ctx) {
     });
 }
 
+/// Connect one window's `Studio` callbacks to the studio and give it the shared models.
+fn install_studio(g: &Studio<'_>, ctx: &Ctx) {
+    if let Ok(app) = ctx.app.try_borrow() {
+        app.studio.attach_models(g);
+    }
+    macro_rules! on {
+        ($name:ident, |$app:ident $(, $arg:ident : $ty:ty)*| $body:block) => {{
+            let ctx = ctx.clone();
+            g.$name(move |$($arg: $ty),*| ctx.update(move |$app: &mut App| $body));
+        }};
+    }
+    on!(on_list_targets, |app, kind: i32| {
+        app.studio.list_targets(kind);
+    });
+    on!(on_add_source, |app, kind: i32, target: i32| {
+        app.studio.add_source(kind, target);
+    });
+    on!(on_delete_source, |app, id: i32| {
+        app.studio.delete_source(id);
+    });
+    on!(on_undo_delete, |app| {
+        app.studio.undo_delete();
+    });
+    on!(on_dismiss_deleted, |app| {
+        app.studio.deleted.clear();
+    });
+    on!(on_reset_clip, |app, i: i32| {
+        app.studio.reset_clip(i);
+    });
+    // A popup opened or closed: the preview layer hides or shows at once.
+    #[cfg(any(target_os = "macos", windows))]
+    {
+        let ctx = ctx.clone();
+        g.on_overlays_changed(move || {
+            if let Ok(app) = ctx.app.try_borrow() {
+                preview::place(&app.main);
+            }
+        });
+    }
+}
+
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let demo_live = std::env::args().any(|a| a == "--demo-live");
     slint::BackendSelector::new()
@@ -731,14 +912,54 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             save_due: false,
             exiting: false,
             demo_since: demo_live.then(Instant::now),
+            studio: studio_ui::StudioUi::new(),
         })),
         queue: Rc::new(RefCell::new(Vec::new())),
         pending: Rc::new(Cell::new(false)),
         toast_timer: Rc::new(slint::Timer::default()),
         toast_shown: Rc::new(Cell::new(0)),
         save_timer: Rc::new(slint::Timer::default()),
+        meter_timer: Rc::new(slint::Timer::default()),
+        deleted_timer: Rc::new(slint::Timer::default()),
+        deleted_shown: Rc::new(Cell::new(0)),
     };
     install(&main.global::<Shell>(), &ctx);
+    install_studio(&main.global::<Studio>(), &ctx);
+    CTX.with(|c| *c.borrow_mut() = Some(ctx.clone()));
+    // The studio: its own control thread (ADR-0041 decision 7).
+    match studio_host::StudioHost::spawn(
+        studio_host::HostConfig::desktop(),
+        rbs_app::platform::adapters,
+        || {
+            // A hardware adapter, else a software one (a virtual machine, for example):
+            // slow, but the app still works.
+            let ctx = match rbs_gpu::GpuContext::new(&rbs_gpu::GpuRequest::default()) {
+                Err(rbs_gpu::GpuError::NoAdapter) => {
+                    rbs_gpu::GpuContext::new(&rbs_gpu::GpuRequest {
+                        allow_software: true,
+                        ..rbs_gpu::GpuRequest::default()
+                    })
+                }
+                other => other,
+            };
+            ctx.map(std::sync::Arc::new)
+                .map_err(|e| format!("no usable GPU: {e}"))
+        },
+        || {
+            let mut engine = rbs_engine::Engine::new();
+            engine.set_thread_policy(Some(std::sync::Arc::new(
+                rbs_thread_os::OsThreadPolicy::new(),
+            )));
+            engine
+        },
+        deliver,
+    ) {
+        Ok(host) => ctx.update(move |app| app.studio.host = Some(host)),
+        Err(e) => ctx.update(move |app| {
+            app.studio.state = 2;
+            app.studio.failure = e.to_string();
+        }),
+    }
     ctx.update(App::refresh_list);
 
     // Closing the main window ends the app: floating windows close with it and
@@ -771,10 +992,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         );
     }
     main.run()?;
-    if let Ok(mut app) = ctx.app.try_borrow_mut()
-        && app.save_due
-    {
-        app.persist_now();
+    // The layer's frames go back before the studio and its publisher stop.
+    #[cfg(any(target_os = "macos", windows))]
+    preview::close();
+    if let Ok(mut app) = ctx.app.try_borrow_mut() {
+        if app.save_due {
+            app.persist_now();
+        }
+        // Stops the studio and joins its thread.
+        app.studio.host = None;
     }
+    CTX.with(|c| c.borrow_mut().take());
     Ok(())
 }

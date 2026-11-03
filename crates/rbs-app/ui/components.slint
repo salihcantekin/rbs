@@ -190,6 +190,8 @@ export component MenuItem inherits Rectangle {
             color: root.enabled ? Theme.text-primary : Theme.text-disabled;
             font-size: Tokens.type-body-size;
             vertical-alignment: center;
+            // A long device name is cut with an ellipsis; the accessible label keeps it.
+            overflow: elide;
         }
     }
     focus := FocusScope {
@@ -219,6 +221,9 @@ export component MenuSurface inherits Rectangle {
 export component EmptyState inherits Rectangle {
     in property <string> title;
     in property <string> message;
+    // The next action as a button (rule U10); none when empty.
+    in property <string> action;
+    callback act();
     VerticalLayout {
         alignment: center;
         spacing: Tokens.space-2;
@@ -237,6 +242,10 @@ export component EmptyState inherits Rectangle {
             font-size: Tokens.type-body-size;
             horizontal-alignment: center;
             wrap: word-wrap;
+        }
+        if root.action != "": HorizontalLayout {
+            alignment: center;
+            Button { text: root.action; kind: "primary"; clicked => { root.act(); } }
         }
     }
 }

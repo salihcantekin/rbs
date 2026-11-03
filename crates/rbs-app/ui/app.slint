@@ -3,8 +3,9 @@
 // layout tree into tab stacks and splitter handles with absolute positions.
 import { Theme, Tokens } from "tokens.slint";
 import { Button, IconButton, Icon, IconName, MenuItem, MenuSurface, EmptyState } from "components.slint";
+import { Studio, SourceData, KindData, TargetData, MeterRow, ScaleMark, ProgramPanel, SourcesPanel, MixerPanel } from "studio.slint";
 
-export { Theme, Tokens }
+export { Theme, Tokens, Studio, SourceData, KindData, TargetData, MeterRow, ScaleMark }
 
 export struct TabData { id: string, title: string, known: bool }
 export struct StackData { window: int, stack: int, x: length, y: length, w: length, h: length, tabs: [TabData], active: int }
@@ -103,11 +104,26 @@ component LiveIndicator inherits Rectangle {
     }
 }
 
-// What a panel shows until it is connected to the engine.
+// A panel's content: the panels connected to the studio, a placeholder for the others.
 component PanelContent inherits Rectangle {
     in property <TabData> tab;
+    property <bool> connected: tab.id == "rbs.program" || tab.id == "rbs.sources" || tab.id == "rbs.mixer" || tab.id == "rbs.preview";
     background: Theme.surface-raised;
-    if tab.known: EmptyState {
+    if tab.id == "rbs.program" || tab.id == "rbs.preview": ProgramPanel {
+        width: parent.width;
+        height: parent.height;
+        panel: tab.id;
+        title: tab.title;
+    }
+    if tab.id == "rbs.sources": SourcesPanel {
+        width: parent.width;
+        height: parent.height;
+    }
+    if tab.id == "rbs.mixer": MixerPanel {
+        width: parent.width;
+        height: parent.height;
+    }
+    if tab.known && !connected: EmptyState {
         width: parent.width;
         height: parent.height;
         title: tab.title;
@@ -240,6 +256,8 @@ component StackView inherits Rectangle {
         height: max(0px, parent.height - bar - 2 * Tokens.size-border);
         tab: data.tabs[data.active];
     }
+    property <bool> menu-open: menu.is-open;
+    changed menu-open => { Studio.overlays += menu-open ? 1 : -1; Studio.overlays-changed(); }
     menu := PanelMenu {
         x: Tokens.space-2;
         y: bar;
@@ -414,6 +432,10 @@ component FrameBar inherits Rectangle {
             vertical-alignment: center;
         }
     }
+    property <bool> ws-open: ws-menu.is-open;
+    changed ws-open => { Studio.overlays += ws-open ? 1 : -1; Studio.overlays-changed(); }
+    property <bool> panels-open: panels-menu.is-open;
+    changed panels-open => { Studio.overlays += panels-open ? 1 : -1; Studio.overlays-changed(); }
     ws-menu := WorkspaceMenu {
         x: ws-button.x;
         y: parent.height;
@@ -477,6 +499,14 @@ export component MainWindow inherits Window {
         action: @tr("Undo");
         act => { Shell.toast-undo(); }
         dismiss => { Shell.toast-dismiss(); }
+    }
+    if Studio.deleted != "" && Shell.toast-kind == 0: Toast {
+        x: (parent.width - self.width) / 2;
+        y: parent.height - self.height - Tokens.space-6;
+        text: @tr("{} deleted.", Studio.deleted);
+        action: @tr("Undo");
+        act => { Studio.undo-delete(); }
+        dismiss => { Studio.dismiss-deleted(); }
     }
     if Shell.error-kind != 0: Toast {
         x: (parent.width - self.width) / 2;
