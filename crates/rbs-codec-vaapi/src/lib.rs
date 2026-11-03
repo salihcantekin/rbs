@@ -1,30 +1,33 @@
 //! VA-API adapter for the RBS encoder port (`docs/specs/output-ports.md`): H.264
-//! on Linux, on any GPU whose VA driver encodes (Intel `iHD`/`i965`, AMD
-//! `radeonsi`).
+//! and HEVC (Main, Main 10) on Linux, on any GPU whose VA driver encodes (Intel
+//! `iHD`/`i965`, AMD `radeonsi`).
 //!
 //! # Loading
 //!
 //! `libva.so.2` and `libva-drm.so.2` are opened at run time, so building needs no
 //! SDK and a machine without them or without an encoding VA driver probes to an
 //! empty set. The probe opens each DRM render node (`/dev/dri/renderD*`) in order
-//! and keeps the first whose driver encodes H.264 the way this adapter needs: 4:2:0
-//! input, a packed sequence header and CBR, VBR or constant QP.
+//! and keeps the first whose driver encodes H.264 or HEVC the way this adapter
+//! needs: 4:2:0 input (10-bit for Main 10), a packed sequence header and CBR, VBR
+//! or constant QP.
 //!
 //! # Sessions
 //!
 //! Each session opens its own VA display on that node, an encode context with
 //! [`FRAMES_IN_FLIGHT`] input surfaces (written through a derived or a separate
 //! image) and coded buffers, and `FRAMES_IN_FLIGHT + 1` reconstructed surfaces.
-//! The adapter writes the SPS and PPS itself and sends them as a packed header with
-//! every IDR picture; the driver writes the slices. Every other picture is a P
-//! picture referencing the previous one, so output is in input order with one
-//! packet per frame. The session logic (ordering, keyframes, `Busy`, capabilities,
+//! The adapter writes the parameter sets itself (H.264 SPS and PPS; HEVC VPS, SPS
+//! and PPS, with the block sizes and coding tools the driver reports) and sends
+//! them as a packed header with every IDR picture; the driver writes the slices.
+//! Every other picture is a P picture referencing the previous one (HEVC drivers
+//! without P slices get a B slice whose two lists hold that picture), so output is
+//! in input order with one packet per frame. The session logic (ordering, keyframes, `Busy`, capabilities,
 //! configuration checks) is shared with the other hardware adapters in
 //! `rbs-codec-hw`.
 //!
 //! Input is system memory only for now: VA surfaces from DMA-BUF wait for the
 //! `rbs-gpu` exporters (ADR-0025). The copy is counted in
-//! [`SessionStats::copied`]. HEVC follows in a later change.
+//! [`SessionStats::copied`].
 //!
 //! Licence: the drivers are their vendors'; the generated bindings come from the
 //! libva headers (MIT), the loader is `libloading` (ISC).
@@ -61,6 +64,11 @@ mod engine;
     any(target_arch = "x86_64", target_arch = "aarch64")
 ))]
 mod h264;
+#[cfg(all(
+    target_os = "linux",
+    any(target_arch = "x86_64", target_arch = "aarch64")
+))]
+mod hevc;
 #[cfg(all(
     target_os = "linux",
     any(target_arch = "x86_64", target_arch = "aarch64")

@@ -1,7 +1,8 @@
 //! Behaviour on real VA-API hardware beyond the conformance suite: the bitstream is
-//! Annex B with parameter sets in the extradata and on every IDR, a cropped
-//! Constrained Baseline session at constant QP encodes, a bitrate change applies
-//! while running, and dropping a session with frames in flight is clean.
+//! Annex B with parameter sets in the extradata and on every IDR (H.264 and HEVC),
+//! HEVC Main 10 encodes from P010, a cropped Constrained Baseline session at
+//! constant QP encodes, a bitrate change applies while running, and dropping a
+//! session with frames in flight is clean.
 //!
 //! Skips without VA-API; `RBS_REQUIRE_VAAPI=1` makes skipping fail.
 
@@ -32,8 +33,9 @@ fn encodes(codec: &str) -> bool {
         Some(CapabilityValue::Set(s)) if s.iter().any(|c| c == codec)
     );
     if !found {
+        // Every qualifying driver encodes H.264; HEVC is optional hardware.
         assert!(
-            !std::env::var("RBS_REQUIRE_VAAPI").is_ok_and(|v| v == "1"),
+            codec != "h264" || !std::env::var("RBS_REQUIRE_VAAPI").is_ok_and(|v| v == "1"),
             "RBS_REQUIRE_VAAPI=1 but VA-API does not encode {codec}"
         );
         eprintln!("no VA-API {codec} encoder; skipped");
@@ -136,6 +138,75 @@ fn h264_is_annex_b_with_parameter_sets() {
     }
     let stats = session.stats();
     assert_eq!((stats.submitted, stats.packets, stats.copied), (90, 90, 90));
+}
+
+/// HEVC NAL unit types of an Annex B stream.
+fn hevc_types(data: &[u8]) -> Vec<u8> {
+    nal::annexb_unit_headers(data)
+        .map(|h| (h >> 1) & 0x3f)
+        .collect()
+}
+
+fn hevc_annex_b_with_parameter_sets(pixel_format: PixelFormat) {
+    let config = config(CodecId::Hevc, pixel_format);
+    let mut session = VaapiFactory::new().create_session(&config).unwrap();
+    let stream = session.stream().clone();
+    assert_eq!(stream.bitstream, BitstreamFormat::AnnexB);
+    assert_eq!(hevc_types(&stream.extradata), vec![32, 33, 34]);
+
+    let packets = encode(&mut session, &config.format, 90);
+    assert_eq!(packets.len(), 90);
+    for (i, p) in packets.iter().enumerate() {
+        let types = hevc_types(p.data());
+        assert_eq!(p.keyframe(), i % 30 == 0, "packet {i}: {types:?}");
+        assert!(
+            !types.contains(&35),
+            "packet {i} has an access unit delimiter"
+        );
+        if p.keyframe() {
+            assert!(types.contains(&19), "IDR {i}: {types:?}");
+            // The driver must pass the adapter's own VPS, SPS and PPS through
+            // unchanged, once.
+            let extradata = &stream.extradata[..];
+            assert!(
+                p.data().windows(extradata.len()).any(|w| w == extradata),
+                "IDR {i} does not carry the extradata parameter sets"
+            );
+            assert_eq!(
+                types.iter().filter(|t| **t == 33).count(),
+                1,
+                "IDR {i}: {types:?}"
+            );
+        } else {
+            assert!(types.contains(&1), "P frame {i}: {types:?}");
+        }
+    }
+    let stats = session.stats();
+    assert_eq!((stats.submitted, stats.packets, stats.copied), (90, 90, 90));
+}
+
+#[test]
+fn hevc_is_annex_b_with_parameter_sets() {
+    if !encodes("hevc") {
+        return;
+    }
+    hevc_annex_b_with_parameter_sets(PixelFormat::Nv12);
+}
+
+#[test]
+fn hevc_main10_from_p010() {
+    if !encodes("hevc") {
+        return;
+    }
+    let caps = VaapiFactory::new().probe().unwrap();
+    if !matches!(
+        caps.get(&rbs_codec::caps::VIDEO_PROFILES),
+        Some(CapabilityValue::Set(s)) if s.iter().any(|c| c == "hevc.main10")
+    ) {
+        eprintln!("no HEVC Main 10; skipped");
+        return;
+    }
+    hevc_annex_b_with_parameter_sets(PixelFormat::P010);
 }
 
 #[test]

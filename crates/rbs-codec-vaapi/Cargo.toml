@@ -1,6 +1,6 @@
 [package]
 name = "rbs-codec-vaapi"
-description = "VA-API adapter for the RBS encoder port: H.264 on Linux, loaded at run time."
+description = "VA-API adapter for the RBS encoder port: H.264 and HEVC on Linux, loaded at run time."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
