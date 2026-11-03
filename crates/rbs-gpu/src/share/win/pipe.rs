@@ -359,7 +359,7 @@ pub(crate) struct UserOnly {
 }
 
 impl UserOnly {
-    /// Builds `D:P(A;;GA;;;<user SID>)S:(ML;;NWNR;;;ME)` for the process token's user:
+    /// Builds `D:P(A;;GA;;;<user SID>)S:(ML;;NWNRNX;;;ME)` for the process token's user:
     /// only that user, and only at medium integrity or above (a low-integrity sandbox of
     /// the same user can neither read nor write the pipe, so it cannot occupy it). Not for
     /// real-time threads.
@@ -398,8 +398,8 @@ impl UserOnly {
             return Err(GpuError::Export("empty user SID"));
         }
         // Protected DACL (no inherited entries), generic all for the user only; mandatory
-        // label medium, no read up and no write up.
-        let sddl: Vec<u16> = format!("D:P(A;;GA;;;{sid_text})S:(ML;;NWNR;;;ME)")
+        // label medium, no read up, no write up and no execute up.
+        let sddl: Vec<u16> = format!("D:P(A;;GA;;;{sid_text})S:(ML;;NWNRNX;;;ME)")
             .encode_utf16()
             .chain(Some(0))
             .collect();

@@ -357,8 +357,16 @@ impl PreviewLayer {
 
     /// Shows `frame` from `now` (any monotonic clock, the same one for every call). The
     /// replaced frame goes back to the engine once the compositor no longer reads it
-    /// ([`PreviewLayer::retire`]). Never waits, never allocates.
+    /// ([`PreviewLayer::retire`]). Never waits, never allocates. While the layer is not
+    /// in a window (before `attach_to_hwnd` or after `detach`) the frame goes back at
+    /// once and nothing is presented, so no frame waits on a surface the compositor does
+    /// not show.
     pub fn show(&mut self, frame: PreviewFrame, now: Timestamp) {
+        if self.target.is_none() {
+            drop(frame);
+            self.retire(now);
+            return;
+        }
         if !self.lost {
             // SAFETY: a zero-timeout check of the manager's own event.
             let signalled = unsafe { WaitForSingleObject(self.lost_event, 0) } == WAIT_OBJECT_0;
@@ -463,8 +471,8 @@ impl Drop for PreviewLayer {
         // The frames drop after this and go back to the engine at once, after the
         // compositor has applied the removal. If the window stays open and the compositor
         // scans a buffer out directly, it may show it until the next refresh, so the
-        // engine could write a surface still on screen (one torn preview frame at worst);
-        // `detach` and waiting for `retiring() == 0` first avoids that.
+        // engine could write a surface still on screen (one torn preview frame at worst).
+        // The frame kept since `detach` goes back here too, so the same holds after it.
         self.leave_window();
     }
 }
