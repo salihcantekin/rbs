@@ -14,6 +14,7 @@
 //! runs the real checks in a child (`portal_checks`) that sees the private bus.
 
 /// Environment variable naming the private bus for `portal_checks`.
+#[cfg(target_os = "linux")]
 const INNER: &str = "RBS_PORTAL_TEST_INNER";
 
 #[test]
