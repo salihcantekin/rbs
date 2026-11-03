@@ -3238,6 +3238,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "objc2-video-toolbox"
+version = "0.3.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "05bf9a3c14831a7d9641b0d81d87dd913ee238a012b2fde27db5a84b56f5df3e"
+dependencies = [
+ "bitflags 2.13.2",
+ "objc2-core-foundation",
+ "objc2-core-media",
+ "objc2-core-video",
+]
+
+[[package]]
 name = "once_cell"
 version = "1.21.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3772,6 +3784,22 @@ version = "0.0.1"
 dependencies = [
  "rbs-codec",
  "rbs-core",
+]
+
+[[package]]
+name = "rbs-codec-videotoolbox"
+version = "0.0.1"
+dependencies = [
+ "criterion 0.8.2",
+ "objc2-core-foundation",
+ "objc2-core-media",
+ "objc2-core-video",
+ "objc2-io-surface",
+ "objc2-video-toolbox",
+ "rbs-codec",
+ "rbs-core",
+ "rbs-media-format",
+ "rtrb",
 ]
 
 [[package]]
