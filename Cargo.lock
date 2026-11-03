@@ -2902,6 +2902,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "objc2-audio-toolbox"
+version = "0.3.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6948501a91121d6399b79abaa33a8aa4ea7857fe019f341b8c23ad6e81b79b08"
+dependencies = [
+ "bitflags 2.13.2",
+ "objc2 0.6.5",
+ "objc2-core-audio-types",
+ "objc2-foundation 0.3.2",
+]
+
+[[package]]
 name = "objc2-cloud-kit"
 version = "0.2.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3784,6 +3796,18 @@ version = "0.0.1"
 dependencies = [
  "rbs-codec",
  "rbs-core",
+]
+
+[[package]]
+name = "rbs-codec-audiotoolbox"
+version = "0.0.1"
+dependencies = [
+ "criterion 0.8.2",
+ "objc2-audio-toolbox",
+ "objc2-core-audio-types",
+ "rbs-codec",
+ "rbs-core",
+ "rbs-media-format",
 ]
 
 [[package]]

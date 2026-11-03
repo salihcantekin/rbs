@@ -166,6 +166,17 @@ Native input memory (`metal`, `d3d11`, `d3d12`, `vulkan`, `dmabuf`): the encoder
 - Off macOS the factories probe to an empty set and refuse sessions.
 - Not yet: frame reordering (B-frames), low-latency rate control, `MTLSharedEvent` sync, the multi-GPU encoder choice of Intel Macs.
 
+### AudioToolbox AAC encoder (`rbs-codec-audiotoolbox`)
+
+- One adapter, `org.rbs.codec.audiotoolbox`: AAC-LC through Apple's `AudioConverter` (`'aac '`), a software encoder that is part of every supported macOS (`adapter.hardware = false`). It declares `codec.audio.encode = {aac}`, sample rates 44100 and 48000, at most 2 channels (mono, stereo). Rate control is CBR only: `bitrate_bps` from 16 kbit/s to 160 kbit/s per channel; `codec.reconfigure` accepts a CBR bitrate change and `RequestKeyframe` (a no-op: every AAC packet is a sync sample); anything else is `Unsupported`.
+- Input: `f32` blocks of any length, planar or interleaved, matching the session format (else `InvalidInput`). Samples go into a pre-allocated planar staging frame of 1024 samples per channel; each full frame is handed to the converter synchronously on the calling thread. The session starts no threads and gets no callbacks on other threads. The converter's input callback hands over the staged frame and then returns a private "need more" status, so the converter keeps its state between `submit` calls.
+- Output: raw AAC-LC access units (`BitstreamFormat::Raw`), `frame_size = 1024`, extradata a two-byte `AudioSpecificConfig`. Packet `pts = dts` = the timeline origin (first block's timestamp) plus 1024 samples per packet (invariant 8); every packet is a keyframe and lasts 1024 samples. Each packet is one exact-size `Vec` copied from a pre-allocated output buffer of the converter's maximum packet size. Packets wait in a queue for `drain`.
+- Encoder delay: the converter's priming (`AudioConverterPrimeInfo::leadingFrames`, 2112 samples on current macOS) is not signalled yet, so decoded audio is late by that delay (see the open question on encoder delay). `AacSession::priming` reports it.
+- Discontinuities: a block whose timestamp is one codec frame or more away from the running sample timeline ends the timeline. The partial frame is padded with silence, the converter is drained to its end and reset, and a new timeline starts at the block. `flush` does the same without starting a new timeline.
+- Errors: a converter error is unrecoverable `Failed`; the callback never unwinds into AudioToolbox (panics are caught and reported as no input).
+- Off macOS the factory probes to an empty set and refuses sessions.
+- Not yet: HE-AAC, more than two channels, signalled priming (edit lists / `iTunSMPB`), other sample rates.
+
 ## `rbs-mux`
 
 ```rust
