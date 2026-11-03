@@ -1,6 +1,6 @@
 # ADR-0027: Engine loop: a worker thread per partition in a headless rbs-engine crate
 
-- Status: Proposed
+- Status: Accepted
 - Date: 2026-11-03
 - Deciders: Salih (owner)
 - Amends: [ADR-0026](0026-partitions-and-queues.md) Decision 9 and [ADR-0024](0024-node-restart-with-back-off.md) Consequences, which place the engine loop in `rbs-app`; it lives in `rbs-engine` instead.
@@ -67,4 +67,15 @@ Forces:
 
 ## Review
 
-Independent review per ADR-0014: pending.
+- 2026-11-03, independent AI session (fresh context; proposal, specs and code only), per ADR-0014. Three rounds.
+  - Round 1, changes requested. Blocking findings and their resolution:
+    1. A partition that both lost and gained a moved node in one edit was sent its part only before the move, so the gained node stayed `NoInstance`. Every partition that gains an instance is now sent again after the moves; test `nodes_swapping_partitions_in_one_edit_both_run`.
+    2. Work held up by a swap timeout was dropped (unsent parts recorded as current, moves reported `MoveNotIdle`). Unsent parts and waiting moves are kept and finished by `service`; test `a_move_held_up_by_a_swap_timeout_finishes_from_the_control_loop`.
+    3. Retired endpoints still inside a timed-out executor were forgotten. They stay listed while their partition is in flight; test `retired_endpoints_are_dropped_after_a_swap_timeout`.
+    4. The inline swap of an idle partition ran a full off-cadence tick (`begin_tick` and `end_tick` on the control thread). It uses `Executor::swap_pending`; test `an_idle_partition_swaps_without_running_a_tick`.
+  - Round 2, changes requested:
+    1. A move out of a partition whose part was not sent yet was still dropped. Moves wait while the source part is unsent, and `service` sends those parts first; test `a_move_out_of_a_partition_whose_part_was_not_sent_yet_still_happens`.
+    2. Shutdown after a timed-out swap with nodes started a new worker. Partitions are closed at shutdown (no worker starts) and a timed-out swap is finished inline after the join; test `shutdown_after_a_timed_out_swap_leaves_no_worker`.
+  - Non-blocking findings taken: doorbell lock wording, thread affinity of `Local`, the ADR-0026/0024 amendment, `ControlThread` and `JobPanicked` errors with a caught job panic, the idle control thread's cost, the bench's sample-ring index, the spurious `MoveNotIdle` after `MoveWrongRuntime`, an allocation guard on the reader's ring, and rbs-graph numbers from a clean rebuild (the first numbers shared a target directory with main).
+  - Round 3: approve. Open, accepted for now and listed in the engine spec: a move overtaken by a second move of the same node; no allocation-guard test for the worker loop itself and no tests for the doorbell heartbeat without a ring or tick indices across worker restarts; a node hung in `process` blocks shutdown and `EngineHandle`'s drop; drains run no final tick.
+- Owner approval: Salih, 2026-11-03 (early-phase policy: threads may accept ADRs and merge on green CI; P15 hot-path review by a human is deferred to his later review).
