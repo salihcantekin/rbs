@@ -156,6 +156,8 @@ Hot path (audio thread, every 10 ms): no allocation, blocking, I/O or locks in `
 
 `crates/rbs-audio/tests/` (`input.rs`, `mixer.rs`, `pipeline.rs`: two reference-adapter inputs with a drifting device clock, one at 44.1 kHz, through mixer and audio queue to an encoder node, contiguous 10 ms blocks on the grid with no resync, queue overflow or fill, and no allocation per block on either partition), unit tests in `config.rs`, `meter.rs` and `resample.rs`; `crates/rbs-graph/tests/audio.rs`; `crates/rbs-engine/src/worker.rs` (`a_stream_worker_*`).
 
+Hardware check (`cargo run --release -p rbs-app --example audio_graph -- <seconds>`): the default microphone and system loopback through input nodes, mixer, audio queue and the platform AAC encoder on the real engine workers. Windows (WASAPI + Media Foundation AAC, Shure MV7+ and NVIDIA HDMI loopback, 2026-11-03): 30 s idle and 60 s with all 32 cores busy both pass with no resync, read error, queue overflow, late audio tick or irregular packet, packet counts as expected, thread grant `RealTime`. Late frames occur only in the first second (before the first packets arrive). Under full load the loopback had 483 gap frames filled and the microphone's correction peaked at 409 ppm, settling within seconds.
+
 ## Open questions
 
 - Adaptive graph latency, and a low-latency monitoring path once the port has audio output.
