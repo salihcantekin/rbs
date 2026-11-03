@@ -34,7 +34,9 @@ pub use controller::{
 };
 pub use executor::{DEFAULT_FAILURE_LIMIT, Executor, NodeHealth};
 pub use restart::{FaultCause, FaultStatus, RestartPolicy, RuntimeEvent};
-pub use schedule::{Inputs, OutputError, Outputs, PER_TICK_EVENTS, Rejected};
+pub use schedule::{
+    AudioOut, Inputs, MAX_BLOCK_FRAMES, OutputError, Outputs, PER_TICK_EVENTS, Rejected,
+};
 
 use crate::description::NodeId;
 use crate::node::NodeDescriptor;

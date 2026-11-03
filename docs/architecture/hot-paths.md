@@ -8,12 +8,13 @@ Keep this list current. When a new crate or module lands on one of these paths, 
 
 | Path | Runs | Location (current or planned) |
 | --- | --- | --- |
-| Audio thread: device callbacks, audio graph, audio filters | Every block (10 ms) | `crates/rbs-audio`, audio adapters in `crates/rbs-audio-io-*` |
+| Audio thread: device callbacks, audio graph, audio filters | Every block (10 ms) | `crates/rbs-audio` (`input.rs`, `resample.rs`, `mixer.rs`, `meter.rs`; `encoder.rs` on the encoder worker), audio adapters in `crates/rbs-audio-io-*` |
 | Audio input hand-off: `AudioInputStream::read`, the sample ring (`RingProducer` pushes in OS callbacks, `RingConsumer::read`) and `EdgeClock` | Every OS packet and every block per Active audio input | `crates/rbs-audio-io/src/ring.rs`, `crates/rbs-audio-io/src/edge.rs`, adapters in `crates/rbs-audio-io-*` |
 | Render loop: compositor, GPU filters, transitions | Every frame per canvas | `crates/rbs-graph/src/runtime` (executor tick and swap), `crates/rbs-gpu` |
 | `Node::process` of every node type | Every frame or block | Wherever nodes are implemented |
 | Parameter reads by running nodes: `ParamReceiver::update` | Every frame or block per node with parameters | `crates/rbs-graph/src/runtime/param.rs` |
-| Queue endpoints between partitions | Every frame or packet per crossing link | `crates/rbs-graph/src/runtime/queue.rs` |
+| Queue endpoints between partitions | Every frame, block or packet per crossing link | `crates/rbs-graph/src/runtime/queue.rs` (video, packet and audio queues) |
+| Audio values on links: audio slots, `AudioOut`, `Inputs::audio` | Every block per audio pin | `crates/rbs-graph/src/runtime/schedule.rs` |
 | Engine worker loop: pacing, doorbell wait, the call into `Executor::run_tick` and `swap_pending` | Every tick per partition | `crates/rbs-engine/src/worker.rs` |
 | Capture frame hand-off: `CaptureSession::latest_frame` and the adapter code it calls | Every frame per Active capture source | `crates/rbs-capture`, adapters in `crates/rbs-capture-*` |
 | Frame, texture and audio buffer pools | Every frame or block | `crates/rbs-gpu`, `crates/rbs-audio` |

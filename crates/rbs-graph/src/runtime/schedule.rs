@@ -7,7 +7,10 @@
 
 use std::fmt;
 
-use rbs_core::media::{Bytes, EncodedPacket, VideoFrame};
+use rbs_core::media::{
+    AudioBlock, AudioFormat, AudioSamples, Bytes, EncodedPacket, MAX_CHANNELS, VideoFrame,
+};
+use rbs_core::time::Timestamp;
 
 use crate::description::NodeId;
 use crate::node::LinkKind;
@@ -19,6 +22,56 @@ use super::executor::NodeHealth;
 /// How many packets or byte chunks one output pin can carry per tick. The buffers are
 /// allocated when the schedule is built; a push beyond this is refused with the value.
 pub const PER_TICK_EVENTS: usize = 16;
+
+/// The largest audio block an audio output pin can carry, in frames per channel.
+pub const MAX_BLOCK_FRAMES: u32 = 8192;
+
+/// The buffer of one audio output pin: planar, `MAX_CHANNELS` channels of `capacity`
+/// frames each, allocated when the schedule is built. `frames == 0` means no block this
+/// tick.
+pub(crate) struct AudioSlot {
+    samples: Box<[f32]>,
+    capacity: usize,
+    format: AudioFormat,
+    timestamp: Timestamp,
+    frames: usize,
+}
+
+impl AudioSlot {
+    pub(crate) fn new(capacity: u32) -> Self {
+        let capacity = capacity.clamp(1, MAX_BLOCK_FRAMES) as usize;
+        Self {
+            samples: vec![0.0; capacity * MAX_CHANNELS].into_boxed_slice(),
+            capacity,
+            format: AudioFormat::STEREO_48K,
+            timestamp: Timestamp::ZERO,
+            frames: 0,
+        }
+    }
+
+    fn block(&self) -> Option<AudioBlock<'_>> {
+        if self.frames == 0 {
+            return None;
+        }
+        let n = self.format.channels.channels();
+        let mut channels: [&[f32]; MAX_CHANNELS] = [&[]; MAX_CHANNELS];
+        for (c, chunk) in self.samples.chunks_exact(self.capacity).take(n).enumerate() {
+            channels[c] = &chunk[..self.frames];
+        }
+        AudioBlock::planar(self.format, self.timestamp, &channels[..n]).ok()
+    }
+}
+
+impl fmt::Debug for AudioSlot {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("AudioSlot")
+            .field("capacity", &self.capacity)
+            .field("format", &self.format)
+            .field("timestamp", &self.timestamp)
+            .field("frames", &self.frames)
+            .finish_non_exhaustive()
+    }
+}
 
 /// A half-open range of indices.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -47,15 +100,17 @@ pub(crate) enum Slot {
     Video(Option<VideoFrame>),
     Packets(Vec<EncodedPacket>),
     Bytes(Vec<Bytes>),
+    Audio(AudioSlot),
     /// Data pins (event-driven, outside the tick) and kinds this executor does not
     /// carry; nothing can be written or read.
     Inert,
 }
 
 impl Slot {
-    pub(crate) fn for_kind(kind: LinkKind) -> Slot {
+    pub(crate) fn for_kind(kind: LinkKind, audio_frames: u32) -> Slot {
         match kind {
             LinkKind::Video => Slot::Video(None),
+            LinkKind::Audio => Slot::Audio(AudioSlot::new(audio_frames)),
             LinkKind::Packets => Slot::Packets(Vec::with_capacity(PER_TICK_EVENTS)),
             LinkKind::Bytes => Slot::Bytes(Vec::with_capacity(PER_TICK_EVENTS)),
             _ => Slot::Inert,
@@ -67,6 +122,7 @@ impl Slot {
         match self {
             Slot::Packets(v) => v.clear(),
             Slot::Bytes(v) => v.clear(),
+            Slot::Audio(a) => a.frames = 0,
             Slot::Video(_) | Slot::Inert => {}
         }
     }
@@ -139,6 +195,14 @@ pub enum OutputError {
     },
     /// The pin already holds [`PER_TICK_EVENTS`] values this tick.
     Full(usize),
+    /// An audio block does not fit the pin's buffer: more frames than its capacity, or
+    /// more than `MAX_CHANNELS` channels.
+    AudioTooLarge {
+        /// The pin.
+        pin: usize,
+        /// Frames per channel the pin holds.
+        capacity: usize,
+    },
 }
 
 impl fmt::Display for OutputError {
@@ -149,6 +213,12 @@ impl fmt::Display for OutputError {
                 write!(f, "output pin {pin} carries {expected}")
             }
             OutputError::Full(p) => write!(f, "output pin {p} is full this tick"),
+            OutputError::AudioTooLarge { pin, capacity } => {
+                write!(
+                    f,
+                    "audio block too large for output pin {pin} ({capacity} frames)"
+                )
+            }
         }
     }
 }
@@ -245,6 +315,28 @@ impl<'a> Inputs<'a> {
             })
     }
 
+    /// The audio block committed this tick on link `link` of audio input `pin`, planar.
+    /// `None` when the producer committed none (consumers treat that as silence).
+    pub fn audio(&self, pin: usize, link: usize) -> Option<AudioBlock<'a>> {
+        let index = *self.link_slots(pin).get(link)?;
+        match self.slot(index) {
+            Slot::Audio(a) => a.block(),
+            _ => None,
+        }
+    }
+
+    /// The audio blocks on every link of audio input `pin`, in link order; `None` where
+    /// the producer committed none this tick.
+    pub fn audios(&self, pin: usize) -> impl Iterator<Item = Option<AudioBlock<'a>>> + 'a {
+        let this = *self;
+        this.link_slots(pin)
+            .iter()
+            .map(move |&index| match this.slot(index) {
+                Slot::Audio(a) => a.block(),
+                _ => None,
+            })
+    }
+
     /// The byte chunks produced this tick on every link of bytes input `pin`.
     pub fn bytes(&self, pin: usize) -> impl Iterator<Item = &'a Bytes> + 'a {
         let this = *self;
@@ -295,6 +387,17 @@ impl Outputs<'_> {
         match self.slots.get(pin) {
             Some(Slot::Video(frame)) => frame.as_ref(),
             _ => None,
+        }
+    }
+
+    /// The buffer of audio output `pin`, to write this tick's block into.
+    pub fn audio(&mut self, pin: usize) -> Result<AudioOut<'_>, OutputError> {
+        match self.slot(pin)? {
+            Slot::Audio(slot) => Ok(AudioOut { pin, slot }),
+            _ => Err(OutputError::WrongKind {
+                pin,
+                expected: LinkKind::Audio,
+            }),
         }
     }
 
@@ -360,5 +463,93 @@ impl Outputs<'_> {
                 value: chunk,
             }),
         }
+    }
+}
+
+/// The buffer of one audio output pin for this tick (from [`Outputs::audio`]).
+///
+/// Write samples into the channels, then [`commit`](AudioOut::commit) the block's
+/// format, timestamp and length. Nothing is published without a commit; a later commit
+/// in the same tick replaces the earlier one.
+pub struct AudioOut<'s> {
+    pin: usize,
+    slot: &'s mut AudioSlot,
+}
+
+impl AudioOut<'_> {
+    /// Frames per channel the buffer holds.
+    pub fn capacity(&self) -> usize {
+        self.slot.capacity
+    }
+
+    /// Channel `channel` (`< MAX_CHANNELS`), `capacity()` frames long, or `None`.
+    pub fn channel_mut(&mut self, channel: usize) -> Option<&mut [f32]> {
+        if channel >= MAX_CHANNELS {
+            return None;
+        }
+        let cap = self.slot.capacity;
+        self.slot
+            .samples
+            .get_mut(channel * cap..(channel + 1) * cap)
+    }
+
+    /// The first `channels` channels (at most `MAX_CHANNELS`), each `capacity()` frames
+    /// long, in order.
+    pub fn channels_mut(&mut self, channels: usize) -> impl Iterator<Item = &mut [f32]> {
+        let cap = self.slot.capacity;
+        self.slot
+            .samples
+            .chunks_exact_mut(cap)
+            .take(channels.min(MAX_CHANNELS))
+    }
+
+    /// Publishes the first `frames` frames of each of `format`'s channels as this tick's
+    /// block at `timestamp`. `frames == 0` publishes nothing.
+    pub fn commit(
+        &mut self,
+        format: AudioFormat,
+        timestamp: Timestamp,
+        frames: usize,
+    ) -> Result<(), OutputError> {
+        if frames > self.slot.capacity || format.channels.channels() > MAX_CHANNELS {
+            return Err(OutputError::AudioTooLarge {
+                pin: self.pin,
+                capacity: self.slot.capacity,
+            });
+        }
+        self.slot.format = format;
+        self.slot.timestamp = timestamp;
+        self.slot.frames = frames;
+        Ok(())
+    }
+
+    /// Copies `block` (planar or interleaved) into the buffer and commits it.
+    pub fn write(&mut self, block: &AudioBlock<'_>) -> Result<(), OutputError> {
+        let frames = block.frames();
+        let format = block.format();
+        let n = format.channels.channels();
+        if frames > self.slot.capacity || n > MAX_CHANNELS {
+            return Err(OutputError::AudioTooLarge {
+                pin: self.pin,
+                capacity: self.slot.capacity,
+            });
+        }
+        let cap = self.slot.capacity;
+        match block.samples() {
+            AudioSamples::Planar(planar) => {
+                for (c, src) in planar.iter().enumerate() {
+                    self.slot.samples[c * cap..c * cap + frames].copy_from_slice(src);
+                }
+            }
+            AudioSamples::Interleaved(samples) => {
+                for (c, dst) in self.slot.samples.chunks_exact_mut(cap).take(n).enumerate() {
+                    for (f, d) in dst[..frames].iter_mut().enumerate() {
+                        *d = samples[f * n + c];
+                    }
+                }
+            }
+            _ => {}
+        }
+        self.commit(format, block.timestamp(), frames)
     }
 }

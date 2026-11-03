@@ -10,6 +10,7 @@ use std::sync::mpsc::{Receiver, RecvTimeoutError, SyncSender, TryRecvError, sync
 use std::time::Duration;
 
 use rbs_core::lifecycle::Lifecycle;
+use rbs_core::media::DEFAULT_BLOCK_FRAMES;
 use rbs_core::time::{Clock, MonotonicClock, Timestamp};
 
 use crate::description::{GraphDescription, Link, NodeId, SchedulePlan};
@@ -17,7 +18,7 @@ use crate::node::LinkKind;
 
 use super::executor::{Executor, NodeHealth};
 use super::restart::{FaultCause, FaultStatus, Faults, Gate, RestartPolicy, RuntimeEvent};
-use super::schedule::{Entry, Schedule, Slot, Span};
+use super::schedule::{Entry, MAX_BLOCK_FRAMES, Schedule, Slot, Span};
 use super::{Node, NodeError, PrepareCtx, Runtime};
 
 /// Creates a connected controller (for the control thread) and executor (for the
@@ -32,6 +33,7 @@ pub fn channel<X: Runtime>(
     let controller = Controller {
         bypasses: Arc::clone(&bypasses),
         bypasses_seen: 0,
+        audio_frames: DEFAULT_BLOCK_FRAMES,
         shared: Arc::clone(&shared),
         idle: HashMap::new(),
         placed: HashMap::new(),
@@ -139,9 +141,6 @@ pub enum ApplyError {
     Busy,
     /// The executor is gone.
     ExecutorGone,
-    /// The plan links a kind this executor does not carry (audio runs on the audio
-    /// executor). Nothing was sent and no node was prepared.
-    UnsupportedLink(Link),
 }
 
 impl fmt::Display for ApplyError {
@@ -149,9 +148,6 @@ impl fmt::Display for ApplyError {
         match self {
             ApplyError::Busy => f.write_str("previous schedule not taken up yet"),
             ApplyError::ExecutorGone => f.write_str("executor is gone"),
-            ApplyError::UnsupportedLink(l) => {
-                write!(f, "{} link not carried by this executor", l.kind)
-            }
         }
     }
 }
@@ -217,6 +213,8 @@ pub struct Controller<X: Runtime> {
     bypasses: Arc<AtomicU64>,
     /// The counter value whose bypasses have been collected.
     bypasses_seen: u64,
+    /// Frames per channel of each audio output pin's buffer in schedules built next.
+    audio_frames: u32,
 }
 
 impl<X: Runtime> Controller<X> {
@@ -267,6 +265,18 @@ impl<X: Runtime> Controller<X> {
     /// True if node `id` has an idle instance here.
     pub fn is_idle(&self, id: NodeId) -> bool {
         self.idle.contains_key(&id)
+    }
+
+    /// Sets the buffer size of every audio output pin in schedules built from now on,
+    /// in frames per channel (clamped to `1..=MAX_BLOCK_FRAMES`; default
+    /// `DEFAULT_BLOCK_FRAMES`). An audio partition sets its graph's block size here.
+    pub fn set_audio_block_frames(&mut self, frames: u32) {
+        self.audio_frames = frames.clamp(1, MAX_BLOCK_FRAMES);
+    }
+
+    /// Frames per channel of each audio output pin's buffer.
+    pub fn audio_block_frames(&self) -> u32 {
+        self.audio_frames
     }
 
     /// Replaces the clock used for restart back-off (tests use `TestClock`).
@@ -405,11 +415,6 @@ impl<X: Runtime> Controller<X> {
         let mut prepared: HashMap<NodeId, Box<dyn Node<X>>> = HashMap::new();
         let plan = loop {
             let plan = working.as_ref().unwrap_or(description).plan();
-            if let Some(link) = plan.links.iter().find(|l| l.kind == LinkKind::Audio) {
-                let link = *link;
-                self.release_all(prepared);
-                return Err(ApplyError::UnsupportedLink(link));
-            }
             let mut newly_failed = Vec::new();
             for &id in &plan.order {
                 if hollow.contains(&id) || self.is_running(id) || prepared.contains_key(&id) {
@@ -624,12 +629,6 @@ impl<X: Runtime> Controller<X> {
         self.idle.insert(id, node);
     }
 
-    fn release_all(&mut self, prepared: HashMap<NodeId, Box<dyn Node<X>>>) {
-        for (id, node) in prepared {
-            self.release_one(id, node);
-        }
-    }
-
     fn reclaim(&mut self, schedule: Schedule<X>) {
         for entry in schedule.nodes {
             if let Some(node) = entry.node {
@@ -662,7 +661,9 @@ impl<X: Runtime> Controller<X> {
             let descriptor = &entry.descriptor;
             let start = schedule.slots.len() as u32;
             for pin in &descriptor.outputs {
-                schedule.slots.push(Slot::for_kind(pin.kind));
+                schedule
+                    .slots
+                    .push(Slot::for_kind(pin.kind, self.audio_frames));
             }
             let outputs = Span {
                 start,

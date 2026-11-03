@@ -25,3 +25,9 @@ undocumented_unsafe_blocks = "deny"
 lto = "thin"
 codegen-units = 1
 debug = "line-tables-only"
+
+# The audio graph's tests resample minutes of simulated audio; unoptimised they take
+# seconds (ADR-0032 wants milliseconds). Optimising this one crate in test builds keeps
+# them fast without changing any other crate's debug build.
+[profile.dev.package.rbs-audio]
+opt-level = 2

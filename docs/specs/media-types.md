@@ -91,7 +91,7 @@ The plugin SDK spec owns these mirrors; this spec only requires that every field
 - Inside the engine, samples are `f32`. Device formats are converted at the edge by audio adapters.
 - `AudioFormat { sample_rate, channels: ChannelLayout }`; at most `MAX_CHANNELS = 8` channels; default graph block `DEFAULT_BLOCK_FRAMES = 480` at 48 kHz (10 ms).
 - `AudioBlock<'a>`: a borrowed view with `format`, `timestamp` (master time of the first sample frame), `frames`, and `AudioSamples::Planar(PlanarChannels)` (one slice per channel, the graph's layout) or `AudioSamples::Interleaved`. `PlanarChannels` hides its fixed array, so `MAX_CHANNELS` can grow without breaking users. Constructors check channel count and lengths and never allocate.
-- Owned, queued audio storage (ring buffers, pools) belongs to `rbs-audio`.
+- Owned audio storage: each audio output pin of a schedule owns a pre-allocated planar block buffer, and audio queues between partitions own pre-allocated block buffers (`rbs-graph`, [audio graph spec](audio-graph.md)); input FIFOs belong to `rbs-audio`. No owned block type is needed in core.
 
 ### Packets (`rbs_core::media::packet`)
 
@@ -134,6 +134,5 @@ Unit tests in `rbs-core` check: cadence consistency over random times and rates 
 ## Open questions
 
 - Whether HDR metadata (mastering display, content light level) belongs in `VideoFormat` or in `StreamDescriptor` only.
-- Whether audio needs an owned, pooled block type in core for cross-thread hand-off, or whether `rbs-audio` ring buffers are enough.
 - Vulkan and CUDA surface variants, with the full import information (memory handle, layout, queue family, context, plane offsets), once a producer needs them.
 - Whether `bytes` stays in the public API or is wrapped in a newtype before the plugin SDK 1.0 freeze.

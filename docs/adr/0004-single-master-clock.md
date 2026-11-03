@@ -23,3 +23,7 @@ Audio/video drift and "audio buffering" issues are among the most reported OBS p
 
 - Audio clock as master (common in players): breaks with several unrelated audio devices.
 - Per-output clocks: makes multi-output sync impossible to reason about.
+
+## Review
+
+- Record, 2026-11-03: the per-device drift estimator of the decision is superseded in part by [ADR-0037](0037-audio-graph.md) decision 5: adapters already deliver master-clock timestamps, and the audio graph steers its resampler against them instead. Drift is still corrected by small-ratio resampling against the master clock.

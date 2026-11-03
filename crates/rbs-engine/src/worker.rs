@@ -29,12 +29,17 @@ pub enum Pacing {
     /// encoder on the render cadence uses an offset (a quarter frame is a good start),
     /// so it reads the frame the render tick just wrote instead of the one before. A
     /// worker that is late runs the newest due tick only and counts the ones it
-    /// skipped ([`WorkerStats::late`]).
+    /// skipped ([`WorkerStats::late`]), unless `catch_up` allows it to run them.
     Cadence {
         /// The ticks.
         cadence: Cadence,
         /// How long after each tick's time the worker runs it.
         offset: Duration,
+        /// How many due ticks a late worker still runs one after another, in order,
+        /// instead of skipping them: 0 for video (only the newest frame matters), a few
+        /// for audio, where every block counts (ADR-0037). A worker further behind
+        /// skips to the newest due tick and counts the skipped ones as `late`.
+        catch_up: u32,
     },
     /// Tick when one of the partition's packet queues rings its doorbell, or after
     /// `timer` without a ring (output workers: the timer is their low-rate
@@ -54,12 +59,27 @@ impl Pacing {
         Pacing::Cadence {
             cadence,
             offset: Duration::ZERO,
+            catch_up: 0,
         }
     }
 
     /// Ticks on `cadence`, `offset` after each tick's time (encoders after render).
     pub const fn cadence_after(cadence: Cadence, offset: Duration) -> Self {
-        Pacing::Cadence { cadence, offset }
+        Pacing::Cadence {
+            cadence,
+            offset,
+            catch_up: 0,
+        }
+    }
+
+    /// Ticks on `cadence` and runs every tick in order while at most `catch_up` ticks
+    /// behind (audio partitions: a skipped tick is a lost block, ADR-0037).
+    pub const fn stream(cadence: Cadence, catch_up: u32) -> Self {
+        Pacing::Cadence {
+            cadence,
+            offset: Duration::ZERO,
+            catch_up,
+        }
     }
 
     /// Ticks on doorbell rings, or after `timer`.
@@ -387,7 +407,11 @@ pub(crate) fn run<X: Runtime>(
 ) -> (Executor<X>, u64) {
     stats.starts.fetch_add(1, Ordering::Relaxed);
     match pacing {
-        Pacing::Cadence { cadence, offset } => {
+        Pacing::Cadence {
+            cadence,
+            offset,
+            catch_up,
+        } => {
             // The cadence time a tick that is due at `t` carries.
             let index_due = |t: Timestamp| cadence.index_at_or_before(t - offset);
             // Start at the current tick, or later if an earlier worker got further.
@@ -427,14 +451,19 @@ pub(crate) fn run<X: Runtime>(
                     executor.swap_pending();
                     continue;
                 }
-                // Late: run the newest due tick only, so timestamps stay on cadence.
+                // Late: run the next tick if catching up is allowed and the worker is
+                // not too far behind (the loop comes back at once for the rest);
+                // otherwise run the newest due tick only, so timestamps stay on cadence.
                 let newest = index_due(now).unwrap_or(next).max(next);
-                if newest > next {
+                let run = if newest - next <= u64::from(catch_up) {
+                    next
+                } else {
                     stats.late.fetch_add(newest - next, Ordering::Relaxed);
-                }
-                executor.run_tick(Tick::of(&cadence, newest));
+                    newest
+                };
+                executor.run_tick(Tick::of(&cadence, run));
                 stats.ticks.fetch_add(1, Ordering::Relaxed);
-                next = newest.saturating_add(1);
+                next = run.saturating_add(1);
             }
         }
         Pacing::Doorbell { timer } => {
@@ -521,6 +550,10 @@ mod tests {
         drain_at: Option<u64>,
         signals: Arc<Signals>,
         clock: Option<TestClock>,
+        /// Moves the clock this much on the first tick and every `step_every` ticks
+        /// after it (one frame per tick unless a test says otherwise).
+        step: Duration,
+        step_every: u64,
         bell: Option<Arc<Doorbell>>,
     }
 
@@ -541,7 +574,9 @@ mod tests {
             }
             self.last = Some(index);
             if let Some(clock) = &self.clock {
-                clock.advance(FRAME);
+                if (n - 1).is_multiple_of(self.step_every) {
+                    clock.advance(self.step);
+                }
             }
             if let Some(bell) = &self.bell {
                 if n.is_multiple_of(2) {
@@ -610,6 +645,19 @@ mod tests {
         bell: Option<Arc<Doorbell>>,
         end: End,
     ) -> Run {
+        run_stepping(pacing, clock, advance, (FRAME, 1), bell, end)
+    }
+
+    /// [`run_on_this_thread`] with the driver moving the clock `step.0` every `step.1`
+    /// ticks.
+    fn run_stepping(
+        pacing: Pacing,
+        clock: Arc<dyn Clock>,
+        advance: Option<TestClock>,
+        step: (Duration, u64),
+        bell: Option<Arc<Doorbell>>,
+        end: End,
+    ) -> Run {
         let (signals, _drained) = Signals::new();
         let signals = Arc::new(signals);
         let ticks = Arc::new(AtomicU64::new(0));
@@ -635,6 +683,8 @@ mod tests {
             },
             signals: Arc::clone(&signals),
             clock: advance,
+            step: step.0,
+            step_every: step.1.max(1),
             bell: bell.clone(),
         };
         let (mut controller, mut executor) = channel::<()>(Arc::new(()), ());
@@ -728,6 +778,48 @@ mod tests {
         assert_eq!(run.indices_ok.load(Ordering::Relaxed), TICKS);
         assert_eq!(run.stats.ticks(), TICKS);
         assert_eq!(run.stats.late(), 0);
+    }
+
+    #[test]
+    fn a_stream_worker_runs_every_due_tick_in_order_while_catching_up() {
+        let cadence = Cadence::frames(Timestamp::ZERO, FrameRate::FPS_60);
+        // Every third tick moves the clock three frames on, so the worker falls up to
+        // two ticks behind and catches up: within `catch_up` every tick runs, in
+        // order, none is skipped.
+        let clock = TestClock::new();
+        let run = run_stepping(
+            Pacing::stream(cadence, 2),
+            Arc::new(clock.clone()),
+            Some(clock),
+            (FRAME * 3, 3),
+            None,
+            End::StopAfter(30),
+        );
+        assert_eq!(run.allocations, 0, "the catch-up path allocated");
+        assert_eq!(run.ticks.load(Ordering::Relaxed), 30);
+        assert_eq!(run.indices_ok.load(Ordering::Relaxed), 30);
+        assert_eq!(run.stats.late(), 0);
+    }
+
+    #[test]
+    fn a_stream_worker_further_behind_than_catch_up_skips_and_counts() {
+        let cadence = Cadence::frames(Timestamp::ZERO, FrameRate::FPS_60);
+        // Four frames per tick with a catch-up of two: the backlog grows past it, so
+        // the worker skips to the newest due tick and counts the skipped ones.
+        let clock = TestClock::new();
+        let run = run_stepping(
+            Pacing::stream(cadence, 2),
+            Arc::new(clock.clone()),
+            Some(clock),
+            (FRAME * 4, 1),
+            None,
+            End::StopAfter(30),
+        );
+        assert_eq!(run.ticks.load(Ordering::Relaxed), 30);
+        assert_eq!(run.indices_ok.load(Ordering::Relaxed), 30);
+        assert!(run.stats.late() > 0);
+        // Every tick moved time 4 frames; the ticks run plus the skipped ones cover it.
+        assert!(run.stats.late() + 30 <= 4 * 30 + 1);
     }
 
     #[test]

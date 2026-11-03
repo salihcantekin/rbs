@@ -22,7 +22,15 @@
 //!   stalled output never holds back the encoder or other outputs. The writer rings
 //!   the consumer partition's [`Doorbell`].
 //!
-//! Packet queues are `std::sync::mpsc::sync_channel`s: bounded and preallocated;
+//! - **Audio** (audio partition to an audio encoder): every block once, in order. The
+//!   queue holds a fixed number of pre-allocated block buffers that travel between a
+//!   *free* and a *full* channel, so nothing allocates per block. With no free buffer
+//!   the writer loses that block and counts it in [`QueueStats::overflows`]; the
+//!   consumer sees a gap in timestamps (audio encoders handle gaps). The writer rings
+//!   the consumer partition's [`Doorbell`]; the reader passes one block per tick and
+//!   rings its own doorbell while more are queued.
+//!
+//! Packet and audio queues are `std::sync::mpsc::sync_channel`s: bounded and preallocated;
 //! `try_send` and `try_recv` never allocate and never wait for the other side (they
 //! may spin briefly, and in rare cases yield, when both ends touch the same slot at
 //! once; packet endpoints never run on the render thread). A value dropped by a
@@ -35,7 +43,8 @@ use std::sync::{Arc, Mutex, TryLockError};
 use std::thread::Thread;
 use std::time::Duration;
 
-use rbs_core::media::{EncodedPacket, VideoFrame};
+use rbs_core::media::{AudioBlock, AudioFormat, EncodedPacket, MAX_CHANNELS, VideoFrame};
+use rbs_core::time::Timestamp;
 
 use crate::node::{LinkKind, NodeDescriptor, NodeKind, NodeTypeId, Pin};
 
@@ -43,6 +52,9 @@ use super::{Node, NodeError, PrepareCtx, ProcessCtx, Runtime};
 
 /// Default capacity of a packet queue, in packets (about four seconds of 60 fps video).
 pub const PACKET_QUEUE_PACKETS: usize = 256;
+
+/// Default capacity of an audio queue, in blocks (500 ms of 10 ms blocks).
+pub const AUDIO_QUEUE_BLOCKS: usize = 50;
 
 /// Counters of one queue, shared by both endpoints and readable by the consumer node
 /// and the engine. All counters only grow.
@@ -54,6 +66,9 @@ pub struct QueueStats {
     unshareable: AtomicU64,
     overflows: AtomicU64,
     resync_drops: AtomicU64,
+    filled: AtomicU64,
+    /// Audio blocks in the queue now (sent, not yet taken or discarded).
+    queued: AtomicU64,
 }
 
 impl QueueStats {
@@ -68,7 +83,8 @@ impl QueueStats {
     }
 
     /// Video frames that never reached the consumer because a newer frame replaced
-    /// them, or because an endpoint was released while holding them.
+    /// them, or because an endpoint was released while holding them; audio blocks
+    /// discarded when the reader was released.
     pub fn skipped(&self) -> u64 {
         self.skipped.load(Ordering::Relaxed)
     }
@@ -85,11 +101,18 @@ impl QueueStats {
         self.skipped() + self.unshareable()
     }
 
-    /// Packets lost because the packet queue was full. Each loss starts a resync: the
+    /// Packets lost because the packet queue was full, or audio blocks lost because
+    /// the audio queue had no free buffer (or the block did not fit one). Each loss starts a resync: the
     /// writer drops packets until the next keyframe. An encoder may compare this with
     /// the value it saw last and make a keyframe early.
     pub fn overflows(&self) -> u64 {
         self.overflows.load(Ordering::Relaxed)
+    }
+
+    /// Blocks of silence an audio reader passed on in place of lost blocks, so the
+    /// consumer's timeline has no gap (ADR-0037).
+    pub fn filled(&self) -> u64 {
+        self.filled.load(Ordering::Relaxed)
     }
 
     /// Packets dropped while waiting for a keyframe, after an overflow or when an
@@ -159,6 +182,7 @@ impl Doorbell {
 fn descriptor(name: &'static str, kind: LinkKind, writer: bool) -> NodeDescriptor {
     let kind_name = match kind {
         LinkKind::Video => "video",
+        LinkKind::Audio => "audio",
         _ => "packets",
     };
     if writer {
@@ -178,12 +202,12 @@ fn descriptor(name: &'static str, kind: LinkKind, writer: bool) -> NodeDescripto
     }
 }
 
-/// The descriptor of a queue writer for links of `kind` (video or packets).
+/// The descriptor of a queue writer for links of `kind` (video, audio or packets).
 pub fn writer_descriptor(kind: LinkKind) -> NodeDescriptor {
     descriptor("in", kind, true)
 }
 
-/// The descriptor of a queue reader for links of `kind` (video or packets).
+/// The descriptor of a queue reader for links of `kind` (video, audio or packets).
 pub fn reader_descriptor(kind: LinkKind) -> NodeDescriptor {
     descriptor("out", kind, false)
 }
@@ -485,5 +509,245 @@ impl<X: Runtime> Node<X> for PacketReader {
             }
         }
         Ok(())
+    }
+}
+
+/// One pre-allocated audio block buffer travelling through an audio queue.
+struct AudioBuffer {
+    samples: Box<[f32]>,
+    capacity: usize,
+    format: AudioFormat,
+    timestamp: Timestamp,
+    frames: usize,
+}
+
+impl AudioBuffer {
+    fn new(frames: u32) -> Self {
+        let capacity = frames.clamp(1, super::MAX_BLOCK_FRAMES) as usize;
+        Self {
+            samples: vec![0.0; capacity * MAX_CHANNELS].into_boxed_slice(),
+            capacity,
+            format: AudioFormat::STEREO_48K,
+            timestamp: Timestamp::ZERO,
+            frames: 0,
+        }
+    }
+
+    /// Copies `block` in. The caller checked that it fits (`frames <= capacity`).
+    fn fill(&mut self, block: &AudioBlock<'_>) {
+        let frames = block.frames().min(self.capacity);
+        let n = block.format().channels.channels().min(MAX_CHANNELS);
+        let cap = self.capacity;
+        for (c, dst) in self.samples.chunks_exact_mut(cap).take(n).enumerate() {
+            match block.channel(c) {
+                Some(src) => dst[..frames].copy_from_slice(&src[..frames]),
+                // Interleaved blocks have no channel slices.
+                None => {
+                    if let rbs_core::media::AudioSamples::Interleaved(s) = block.samples() {
+                        for (f, d) in dst[..frames].iter_mut().enumerate() {
+                            *d = s[f * n + c];
+                        }
+                    }
+                }
+            }
+        }
+        self.format = block.format();
+        self.timestamp = block.timestamp();
+        self.frames = frames;
+    }
+}
+
+/// Creates an audio queue of `blocks` pre-allocated buffers (at least 1) of `frames`
+/// frames per channel (clamped to `1..=MAX_BLOCK_FRAMES`) that rings `doorbell`.
+pub fn audio(
+    blocks: usize,
+    frames: u32,
+    doorbell: Arc<Doorbell>,
+) -> (AudioWriter, AudioReader, Arc<QueueStats>) {
+    let blocks = blocks.max(1);
+    let (full_tx, full_rx) = sync_channel(blocks);
+    let (free_tx, free_rx) = sync_channel(blocks);
+    for _ in 0..blocks {
+        // Room for every buffer: the channel's capacity is `blocks`.
+        let _ = free_tx.try_send(AudioBuffer::new(frames));
+    }
+    let stats = Arc::new(QueueStats::default());
+    (
+        AudioWriter {
+            desc: writer_descriptor(LinkKind::Audio),
+            capacity: frames.clamp(1, super::MAX_BLOCK_FRAMES) as usize,
+            full: full_tx,
+            free: free_rx,
+            spare: None,
+            doorbell: Arc::clone(&doorbell),
+            stats: Arc::clone(&stats),
+        },
+        AudioReader {
+            desc: reader_descriptor(LinkKind::Audio),
+            full: full_rx,
+            free: free_tx,
+            pending: None,
+            expected: None,
+            doorbell,
+            stats: Arc::clone(&stats),
+        },
+        stats,
+    )
+}
+
+/// Sends each audio block of its input into an audio queue and rings the consumer's
+/// doorbell. Runs in the producer's partition (the audio thread): copying into a free
+/// buffer and the two channel operations neither allocate nor wait.
+pub struct AudioWriter {
+    desc: NodeDescriptor,
+    /// Frames per channel each buffer holds.
+    capacity: usize,
+    full: SyncSender<AudioBuffer>,
+    free: Receiver<AudioBuffer>,
+    /// A buffer kept because the reader was gone, so it is never freed on this thread.
+    spare: Option<AudioBuffer>,
+    doorbell: Arc<Doorbell>,
+    stats: Arc<QueueStats>,
+}
+
+impl<X: Runtime> Node<X> for AudioWriter {
+    fn descriptor(&self) -> &NodeDescriptor {
+        &self.desc
+    }
+
+    fn prepare(&mut self, _: &mut PrepareCtx<'_, X>) -> Result<(), NodeError> {
+        Ok(())
+    }
+
+    fn release(&mut self, _: &mut PrepareCtx<'_, X>) {}
+
+    fn process(&mut self, ctx: &mut ProcessCtx<'_, X>) -> Result<(), NodeError> {
+        let Some(block) = ctx.inputs().audio(0, 0) else {
+            return Ok(());
+        };
+        // Checked before a buffer is taken, so `fill` below always fits (blocks never
+        // have more than `MAX_CHANNELS` channels).
+        if block.frames() > self.capacity {
+            self.stats.overflows.fetch_add(1, Ordering::Relaxed);
+            return Ok(());
+        }
+        let Some(mut buffer) = self.spare.take().or_else(|| self.free.try_recv().ok()) else {
+            self.stats.overflows.fetch_add(1, Ordering::Relaxed);
+            return Ok(());
+        };
+        buffer.fill(&block);
+        // Counted before the send, so the reader never sees more blocks than `queued`.
+        self.stats.queued.fetch_add(1, Ordering::AcqRel);
+        match self.full.try_send(buffer) {
+            Ok(()) => {
+                self.stats.sent.fetch_add(1, Ordering::Relaxed);
+                self.doorbell.ring();
+            }
+            // There are only as many buffers as the channel holds, so it is never full.
+            // With the reader gone the buffer is kept, not freed on this thread.
+            Err(TrySendError::Full(b) | TrySendError::Disconnected(b)) => {
+                self.stats.queued.fetch_sub(1, Ordering::AcqRel);
+                self.spare = Some(b);
+            }
+        }
+        Ok(())
+    }
+}
+
+/// Longest run of lost audio a reader fills with silence; a longer gap is passed on as
+/// a gap (the encoder starts a new timeline).
+pub const AUDIO_FILL_LIMIT: Duration = Duration::from_secs(1);
+
+/// Passes on one queued audio block per tick; while more wait it rings its own
+/// partition's doorbell so the next tick comes at once. Where blocks were lost (a full
+/// queue, a bypassed producer) it passes on blocks of silence at the missing times
+/// first, up to [`AUDIO_FILL_LIMIT`], so the consumer's timeline stays continuous.
+pub struct AudioReader {
+    desc: NodeDescriptor,
+    full: Receiver<AudioBuffer>,
+    free: SyncSender<AudioBuffer>,
+    /// A block taken from the queue that waits while silence fills the gap before it.
+    pending: Option<AudioBuffer>,
+    /// Timestamp the next block should have, after the last one passed on.
+    expected: Option<Timestamp>,
+    doorbell: Arc<Doorbell>,
+    stats: Arc<QueueStats>,
+}
+
+impl AudioReader {
+    fn take(&mut self) -> Option<AudioBuffer> {
+        if let Some(b) = self.pending.take() {
+            return Some(b);
+        }
+        let b = self.full.try_recv().ok()?;
+        self.stats.queued.fetch_sub(1, Ordering::AcqRel);
+        Some(b)
+    }
+}
+
+impl<X: Runtime> Node<X> for AudioReader {
+    fn descriptor(&self) -> &NodeDescriptor {
+        &self.desc
+    }
+
+    fn prepare(&mut self, _: &mut PrepareCtx<'_, X>) -> Result<(), NodeError> {
+        Ok(())
+    }
+
+    fn release(&mut self, _: &mut PrepareCtx<'_, X>) {
+        self.expected = None;
+        while let Some(buffer) = self.take() {
+            self.stats.skipped.fetch_add(1, Ordering::Relaxed);
+            let _ = self.free.try_send(buffer);
+        }
+    }
+
+    fn process(&mut self, ctx: &mut ProcessCtx<'_, X>) -> Result<(), NodeError> {
+        let Some(buffer) = self.take() else {
+            return Ok(());
+        };
+        let duration = buffer.format.sample_rate.duration_of(buffer.frames as u64);
+        let mut out = ctx.outputs().audio(0)?;
+        let n = buffer.format.channels.channels();
+        if buffer.frames > out.capacity() {
+            self.stats.skipped.fetch_add(1, Ordering::Relaxed);
+            let _ = self.free.try_send(buffer);
+            return Err(NodeError::Output(super::OutputError::AudioTooLarge {
+                pin: 0,
+                capacity: out.capacity(),
+            }));
+        }
+        let gap = self
+            .expected
+            .map(|e| buffer.timestamp.saturating_since(e))
+            .unwrap_or_default();
+        let result = if gap > duration / 2 && gap <= AUDIO_FILL_LIMIT {
+            // Lost blocks before this one: silence at the expected time first.
+            let at = self.expected.unwrap_or(buffer.timestamp);
+            for dst in out.channels_mut(n) {
+                dst[..buffer.frames].fill(0.0);
+            }
+            let r = out.commit(buffer.format, at, buffer.frames);
+            self.expected = Some(at + duration);
+            self.stats.filled.fetch_add(1, Ordering::Relaxed);
+            self.pending = Some(buffer);
+            self.doorbell.ring();
+            return r.map_err(NodeError::from);
+        } else {
+            let cap = buffer.capacity;
+            for (c, dst) in out.channels_mut(n).enumerate() {
+                let src = &buffer.samples[c * cap..c * cap + buffer.frames];
+                dst[..buffer.frames].copy_from_slice(src);
+            }
+            out.commit(buffer.format, buffer.timestamp, buffer.frames)
+        };
+        self.expected = Some(buffer.timestamp + duration);
+        self.stats.received.fetch_add(1, Ordering::Relaxed);
+        // The free channel has room for every buffer of this queue.
+        let _ = self.free.try_send(buffer);
+        if self.stats.queued.load(Ordering::Acquire) > 0 {
+            self.doorbell.ring();
+        }
+        result.map_err(NodeError::from)
     }
 }

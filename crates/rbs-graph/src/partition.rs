@@ -20,9 +20,11 @@ use rbs_core::lifecycle::Lifecycle;
 
 use crate::description::{GraphDescription, Link, NodeEntry, NodeId, PartitionId, PinRef};
 use crate::node::{LinkKind, NodeDescriptor};
+use rbs_core::media::DEFAULT_BLOCK_FRAMES;
+
 use crate::runtime::queue::{
-    self, Doorbell, PACKET_QUEUE_PACKETS, PacketReader, PacketWriter, QueueStats, VideoReader,
-    VideoWriter,
+    self, AUDIO_QUEUE_BLOCKS, AudioReader, AudioWriter, Doorbell, PACKET_QUEUE_PACKETS,
+    PacketReader, PacketWriter, QueueStats, VideoReader, VideoWriter,
 };
 use crate::runtime::{Node, Runtime};
 
@@ -52,6 +54,8 @@ pub enum QueueEnds {
     Video(VideoWriter, VideoReader),
     /// A packet queue (never drops silently; rings the consumer's doorbell).
     Packets(PacketWriter, PacketReader),
+    /// An audio queue (every block once; rings the consumer's doorbell).
+    Audio(AudioWriter, AudioReader),
 }
 
 impl QueueEnds {
@@ -60,6 +64,7 @@ impl QueueEnds {
         match self {
             QueueEnds::Video(w, r) => (Box::new(w), QueueReaderEnd::Video(r)),
             QueueEnds::Packets(w, r) => (Box::new(w), QueueReaderEnd::Packets(r)),
+            QueueEnds::Audio(w, r) => (Box::new(w), QueueReaderEnd::Audio(r)),
         }
     }
 }
@@ -69,6 +74,7 @@ impl fmt::Debug for QueueEnds {
         match self {
             QueueEnds::Video(..) => f.write_str("QueueEnds::Video"),
             QueueEnds::Packets(..) => f.write_str("QueueEnds::Packets"),
+            QueueEnds::Audio(..) => f.write_str("QueueEnds::Audio"),
         }
     }
 }
@@ -79,6 +85,8 @@ pub enum QueueReaderEnd {
     Video(VideoReader),
     /// A packet reader.
     Packets(PacketReader),
+    /// An audio reader.
+    Audio(AudioReader),
 }
 
 impl QueueReaderEnd {
@@ -87,6 +95,7 @@ impl QueueReaderEnd {
         match self {
             QueueReaderEnd::Video(r) => Box::new(r),
             QueueReaderEnd::Packets(r) => Box::new(r),
+            QueueReaderEnd::Audio(r) => Box::new(r),
         }
     }
 }
@@ -106,8 +115,8 @@ pub struct NewQueue {
 #[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LowerProblem {
-    /// Only video and packet links can cross partitions; audio runs on the audio
-    /// executor and bytes and data links are not carried by queues yet.
+    /// Only video, audio and packet links can cross partitions; bytes and data links
+    /// are not carried by queues yet.
     UnsupportedKind(LinkKind),
     /// The reserved id range for queue endpoints is used up (about 134 million
     /// queues created by one lowering).
@@ -156,10 +165,14 @@ pub struct Lowering {
     partitions: BTreeSet<PartitionId>,
     assigned: HashMap<NodeId, PartitionId>,
     packet_capacity: usize,
+    audio_blocks: usize,
+    audio_frames: u32,
     video_writer: Arc<NodeDescriptor>,
     video_reader: Arc<NodeDescriptor>,
     packet_writer: Arc<NodeDescriptor>,
     packet_reader: Arc<NodeDescriptor>,
+    audio_writer: Arc<NodeDescriptor>,
+    audio_reader: Arc<NodeDescriptor>,
 }
 
 impl fmt::Debug for Lowering {
@@ -187,10 +200,14 @@ impl Lowering {
             partitions: BTreeSet::new(),
             assigned: HashMap::new(),
             packet_capacity: PACKET_QUEUE_PACKETS,
+            audio_blocks: AUDIO_QUEUE_BLOCKS,
+            audio_frames: DEFAULT_BLOCK_FRAMES,
             video_writer: Arc::new(queue::writer_descriptor(LinkKind::Video)),
             video_reader: Arc::new(queue::reader_descriptor(LinkKind::Video)),
             packet_writer: Arc::new(queue::writer_descriptor(LinkKind::Packets)),
             packet_reader: Arc::new(queue::reader_descriptor(LinkKind::Packets)),
+            audio_writer: Arc::new(queue::writer_descriptor(LinkKind::Audio)),
+            audio_reader: Arc::new(queue::reader_descriptor(LinkKind::Audio)),
         }
     }
 
@@ -200,7 +217,15 @@ impl Lowering {
         self.packet_capacity = packets.max(1);
     }
 
-    /// The doorbell that packet queues into `partition` ring; its worker waits on it.
+    /// Size of audio queues created from now on: `blocks` buffers (at least 1) of
+    /// `frames` frames per channel (the audio graph's block size; clamped to
+    /// `1..=MAX_BLOCK_FRAMES`). Defaults: `AUDIO_QUEUE_BLOCKS`, `DEFAULT_BLOCK_FRAMES`.
+    pub fn set_audio_queue(&mut self, blocks: usize, frames: u32) {
+        self.audio_blocks = blocks.max(1);
+        self.audio_frames = frames;
+    }
+
+    /// The doorbell that packet and audio queues into `partition` ring; its worker waits on it.
     pub fn doorbell(&mut self, partition: PartitionId) -> Arc<Doorbell> {
         Arc::clone(self.doorbells.entry(partition).or_default())
     }
@@ -251,6 +276,7 @@ impl Lowering {
             let (writer_desc, reader_desc) = match link.kind {
                 LinkKind::Video => (&self.video_writer, &self.video_reader),
                 LinkKind::Packets => (&self.packet_writer, &self.packet_reader),
+                LinkKind::Audio => (&self.audio_writer, &self.audio_reader),
                 other => {
                     out.problems
                         .push((*link, LowerProblem::UnsupportedKind(other)));
@@ -275,6 +301,12 @@ impl Lowering {
                         LinkKind::Video => {
                             let (w, r, s) = queue::video();
                             (QueueEnds::Video(w, r), s)
+                        }
+                        LinkKind::Audio => {
+                            let bell = Arc::clone(self.doorbells.entry(to).or_default());
+                            let (w, r, s) =
+                                queue::audio(self.audio_blocks, self.audio_frames, bell);
+                            (QueueEnds::Audio(w, r), s)
                         }
                         _ => {
                             let bell = Arc::clone(self.doorbells.entry(to).or_default());
