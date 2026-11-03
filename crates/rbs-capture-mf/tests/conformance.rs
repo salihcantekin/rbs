@@ -13,6 +13,17 @@
 use rbs_capture::conformance::{self, Options, RealTimePacer};
 use rbs_capture_mf::MfCaptureFactory;
 
+/// Both tests open the connected camera, which serves one reader at a time: they take
+/// this lock so `cargo test` (threads) cannot run them at once. nextest runs them in
+/// separate processes in the serial `gpu` group.
+static CAMERA: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+fn camera_lock() -> std::sync::MutexGuard<'static, ()> {
+    CAMERA
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
 /// Allocations plus frees made by `f` on this thread.
 fn measure(f: &mut dyn FnMut()) -> u64 {
     let info = allocation_counter::measure(f);
@@ -21,6 +32,7 @@ fn measure(f: &mut dyn FnMut()) -> u64 {
 
 #[test]
 fn passes_conformance() {
+    let _camera = camera_lock();
     #[cfg(windows)]
     let factory = Connected(MfCaptureFactory::new());
     #[cfg(not(windows))]
@@ -51,6 +63,7 @@ fn hardware_session_passes_conformance() {
         eprintln!("skipped: set RBS_CAPTURE_HW=1 on a Windows machine with a camera");
         return;
     }
+    let _camera = camera_lock();
     let factory = Connected(MfCaptureFactory::new());
     let options = Options {
         measure_allocations: Some(measure),
