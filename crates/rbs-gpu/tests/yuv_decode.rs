@@ -206,3 +206,43 @@ fn wrong_targets_and_colour_spaces_are_rejected() {
         Err(GpuError::TargetMismatch(_))
     ));
 }
+
+#[test]
+fn released_planes_leave_the_cache() {
+    let Some(ctx) = common::gpu() else { return };
+    let mut pool = TexturePool::new();
+    let mut dec = YuvDecoder::new(ctx);
+    let out = pool.acquire(ctx, &decoded_desc(W, H)).unwrap();
+    let planes = |pool: &mut TexturePool| {
+        let luma = pool
+            .acquire(ctx, &yuv::luma_desc(YuvFormat::Nv12, W, H))
+            .unwrap();
+        let chroma = pool
+            .acquire(ctx, &yuv::chroma_desc(YuvFormat::Nv12, W, H))
+            .unwrap();
+        (luma, chroma)
+    };
+    let decode = |dec: &mut YuvDecoder, pool: &TexturePool, luma, chroma| {
+        dec.decode(
+            ctx,
+            pool,
+            YuvSource::Planes { luma, chroma },
+            ColorSpace::BT709_LIMITED,
+            out,
+        )
+        .unwrap();
+    };
+    // `forget` drops the entry at once.
+    let (luma, chroma) = planes(&mut pool);
+    decode(&mut dec, &pool, luma, chroma);
+    assert_eq!(dec.cached_sources(), 1);
+    dec.forget(chroma);
+    assert_eq!(dec.cached_sources(), 0);
+    // Planes released without `forget` are dropped on the next miss.
+    decode(&mut dec, &pool, luma, chroma);
+    pool.release(luma).unwrap();
+    pool.release(chroma).unwrap();
+    let (luma2, chroma2) = planes(&mut pool);
+    decode(&mut dec, &pool, luma2, chroma2);
+    assert_eq!(dec.cached_sources(), 1, "the stale source was dropped");
+}

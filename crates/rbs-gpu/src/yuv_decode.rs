@@ -9,6 +9,8 @@
 //! Hot path: one render pass with one full-screen triangle, submitted once per frame. Bind
 //! groups and the per-source uniform are cached by plane ids, so steady-state decoding does
 //! not allocate in RBS code; the uniform is rewritten only when the colour space changes.
+//! Callers keep a source's plane slots stable across frames (as the importer does); new
+//! plane ids every frame would create a bind group every frame.
 
 use rbs_core::media::{ColorRange, ColorSpace, MatrixCoefficients, TextureId, TransferFunction};
 
@@ -177,7 +179,7 @@ impl YuvDecoder {
         }
         let params = params(color, bits)?;
         self.tick += 1;
-        let index = self.cached(ctx, source, luma, chroma, bits, color, params);
+        let index = self.cached(ctx, pool, source, (luma, chroma), bits, color, params);
         let bind_group = &self.cache[index].bind_group;
 
         let mut encoder = ctx
@@ -209,6 +211,16 @@ impl YuvDecoder {
         Ok(ctx.queue().submit(Some(encoder.finish())))
     }
 
+    /// Drops the cache entries that reference pool slot `id` (as luma, chroma or surface).
+    /// Call when a source's planes are released, so the cached bind group does not keep
+    /// their textures (and any native surface behind them) alive. Not a per-frame call.
+    pub fn forget(&mut self, id: TextureId) {
+        self.cache.retain(|c| match c.source {
+            YuvSource::Planes { luma, chroma } => luma != id && chroma != id,
+            YuvSource::Surface(s) => s != id,
+        });
+    }
+
     /// Sources whose bind groups are cached.
     pub fn cached_sources(&self) -> usize {
         self.cache.len()
@@ -220,9 +232,9 @@ impl YuvDecoder {
     fn cached(
         &mut self,
         ctx: &GpuContext,
+        pool: &TexturePool,
         source: YuvSource,
-        luma: &crate::pool::PooledTexture,
-        chroma: &wgpu::TextureView,
+        (luma, chroma): (&crate::pool::PooledTexture, &wgpu::TextureView),
         bits: u32,
         color: ColorSpace,
         params: Params,
@@ -239,7 +251,14 @@ impl YuvDecoder {
             }
             return i;
         }
-        // First sight of this source: allocates (buffer, bind group).
+        // First sight of this source: allocates (buffer, bind group). Entries whose planes
+        // are gone from the pool are dropped first, so they do not keep textures alive.
+        self.cache.retain(|c| match c.source {
+            YuvSource::Planes { luma, chroma } => {
+                pool.get(luma).is_some() && pool.get(chroma).is_some()
+            }
+            YuvSource::Surface(s) => pool.get(s).is_some(),
+        });
         let buffer = ctx.device().create_buffer(&wgpu::BufferDescriptor {
             label: Some("rbs-gpu yuv decode params"),
             size: std::mem::size_of::<Params>() as u64,
@@ -377,7 +396,8 @@ fn params(color: ColorSpace, bits: u32) -> Result<Params, GpuError> {
     let max = f64::from((1u32 << bits) - 1);
     let (y_black, y_range, c_mid, c_range) = match color.range {
         ColorRange::Limited => (16.0 * k, 219.0 * k, 128.0 * k, 224.0 * k),
-        _ => (0.0, max, 128.0 * k, max),
+        ColorRange::Full => (0.0, max, 128.0 * k, max),
+        _ => return Err(GpuError::Unsupported("YUV range (limited or full)")),
     };
     // Y' = ay * v + by and C = ac * v + bc on the stored value v.
     let (ay, by) = (1.0 / (code_scale * y_range), -y_black / y_range);
@@ -405,6 +425,11 @@ fn params(color: ColorSpace, bits: u32) -> Result<Params, GpuError> {
         rows: [row(m[0]), row(m[1]), row(m[2])],
         transfer: [transfer, 0, 0, 0],
     })
+}
+
+/// Checks that `color` can be decoded at `bits` per sample (8 or 10), without GPU work.
+pub fn check_color(color: ColorSpace, bits: u32) -> Result<(), GpuError> {
+    params(color, bits).map(|_| ())
 }
 
 /// The colour space of a decoded frame: linear light with the source's primaries.

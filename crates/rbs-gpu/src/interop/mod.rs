@@ -19,7 +19,7 @@ use rbs_core::time::Timestamp;
 use crate::context::GpuContext;
 use crate::error::GpuError;
 use crate::pool::{TextureDesc, TexturePool};
-use crate::yuv_decode::{YuvDecoder, YuvSource, decoded_color, decoded_desc};
+use crate::yuv_decode::{YuvDecoder, YuvSource, check_color, decoded_color, decoded_desc};
 
 #[cfg(windows)]
 mod d3d12;
@@ -117,6 +117,12 @@ impl Importer {
         };
 
         // Validate and wait first: nothing is opened for a frame that is rejected.
+        // 4:2:0 frames: reject colour spaces the decode cannot handle before anything opens.
+        match format.pixel_format {
+            PixelFormat::Nv12 => check_color(format.color, 8)?,
+            PixelFormat::P010 => check_color(format.color, 10)?,
+            _ => {}
+        }
         let key = self.prepare(ctx, &surface, sync)?;
         let size = (format.size.width, format.size.height);
         let cached = self.entries.iter().position(|e| e.key == key);
@@ -144,6 +150,16 @@ impl Importer {
                 // 4:2:0: decode into a fresh slot that the returned frame alone holds. The
                 // decode's submission reads the planes, so `retire` hands the lease back
                 // only after it.
+                // The surface's bit depth must match the frame's pixel format.
+                let expected = match pool.get(id).map(|t| t.desc().format) {
+                    Some(wgpu::TextureFormat::R16Unorm) => PixelFormat::P010,
+                    _ => PixelFormat::Nv12,
+                };
+                if format.pixel_format != expected {
+                    return Err(GpuError::Unsupported(
+                        "4:2:0 surface whose bit depth differs from the frame's pixel format",
+                    ));
+                }
                 let decoder = self.decoder.get_or_insert_with(|| YuvDecoder::new(ctx));
                 let (w, h) = (format.size.width, format.size.height);
                 let target = pool.acquire(ctx, &decoded_desc(w, h))?;
@@ -278,6 +294,11 @@ impl Importer {
         let _ = pool.release(e.id);
         if let Some(c) = e.chroma {
             let _ = pool.release(c);
+            // The decoder's bind group would otherwise keep the planes (and the producer's
+            // surface) alive.
+            if let Some(decoder) = &mut self.decoder {
+                decoder.forget(e.id);
+            }
         }
     }
 
@@ -348,14 +369,16 @@ impl Importer {
                         label: Some("rbs-gpu import hand-back"),
                     })
             });
-            enc.transition_resources(
-                std::iter::empty(),
-                std::iter::once(wgpu::TextureTransition {
-                    texture: texture.texture(),
-                    selector: None,
-                    state: wgpu::TextureUses::PRESENT,
-                }),
-            );
+            let chroma = e.chroma.and_then(|c| pool.get(c));
+            let transitions =
+                std::iter::once(texture)
+                    .chain(chroma)
+                    .map(|t| wgpu::TextureTransition {
+                        texture: t.texture(),
+                        selector: None,
+                        state: wgpu::TextureUses::PRESENT,
+                    });
+            enc.transition_resources(std::iter::empty(), transitions);
         }
         if let Some(enc) = encoder {
             let index = ctx.queue().submit(Some(enc.finish()));
