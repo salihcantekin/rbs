@@ -385,7 +385,9 @@ fn preview_child() {
     println!("preview child ok");
 }
 
-/// Runs `connect` on another thread while this thread ticks the publisher.
+/// Runs `connect` on another thread while this thread ticks the publisher. On success it
+/// also ticks until the engine has seen the subscription: on Windows `connect` returns
+/// once its `ACCEPT` is written, and the engine reads it at a later tick.
 fn connect_in_process(
     ctx: &GpuContext,
     publisher: &mut PreviewPublisher,
@@ -397,7 +399,18 @@ fn connect_in_process(
         publisher.tick(ctx).unwrap();
         thread::yield_now();
     }
-    handle.join().unwrap()
+    let sub = handle.join().unwrap()?;
+    let start = Instant::now();
+    while !publisher.subscribed() {
+        // Hang guard only; the loop ends on the condition.
+        assert!(
+            start.elapsed() < Duration::from_secs(5),
+            "subscription not seen"
+        );
+        publisher.tick(ctx).unwrap();
+        thread::yield_now();
+    }
+    Ok(sub)
 }
 
 #[test]
