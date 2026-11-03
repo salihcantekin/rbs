@@ -209,7 +209,7 @@ Windows result (SC-PC, RTX 4090 + AMD iGPU, 2026-11-03), PASS: `rbs-cli record` 
 ## Open questions
 
 - End of stream: the video encoder's held frames and the AAC encoder's last frames are lost at shutdown until the engine has a drain hook (engine spec).
-- Capture latency: video content at tick `t` is each source's newest frame, so video lags audio by the source's latency (about 44 ms end to end for a display on Windows, measured above); per-source sync offsets (a video offset in the scene model, the audio input's offset parameter) are the follow-up.
+- A/V sync, measured on SC-PC 2026-11-03 (ADR-0042, Rejected): with Windows Media Player the system audio leads the picture by 26 to 30 ms (`ffplay` 34 ms; the 44 ms above included `ffplay`'s frame drops). Both capture timestamps are honest: a click test showed WASAPI loopback timestamps equal the device's play time (`IAudioClock`) within 0.2 ms, and the display's frame age at render ticks is 0.5 to 4 ms. About 8 ms is the 60 fps sampling; the rest is likely the player's own uncompensated present latency (not measured). Per-source manual sync offsets in `rbs-cli` (the audio input's offset channel) are the follow-up, after PR #91.
 - Starting and stopping a recording while the engine keeps running (preview in the desktop app): the `attach`/`detach` entry point of ADR-0040 decision 6.
 - Several outputs per canvas (record and stream with one encoder) share the encoders through many-output packet pins.
 - Ctrl+C in `rbs-cli` ends the process without a trailer (Matroska stays playable, without duration and cues); a console control handler that stops cleanly is a follow-up.

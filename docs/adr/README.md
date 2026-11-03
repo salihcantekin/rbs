@@ -54,3 +54,4 @@ An ADR records one decision that is hard to reverse or affects more than one cra
 | [0039](0039-scene-source-types.md) | Scene source types map to port nodes through a registry; the binder routes audio to a mixer per canvas | Accepted |
 | [0040](0040-recording-composition.md) | A recording of a canvas is assembled by an engine crate; `rbs-cli record` is the first composition root that runs it | Accepted |
 | [0041](0041-studio-recording-on-a-running-engine.md) | A studio keeps a canvas running for preview and meters; recordings start and stop on the running engine | Accepted |
+| [0042](0042-loopback-presentation-latency.md) | Loopback audio is delayed by the render endpoint's measured output latency | Rejected |
