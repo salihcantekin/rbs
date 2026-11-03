@@ -1,6 +1,6 @@
 [package]
 name = "rbs-media-format"
-description = "Bitstream and framing helpers shared by RBS muxer and transport adapters: Annex B and length-prefixed NAL conversion, avcC, AudioSpecificConfig and ADTS."
+description = "Bitstream and framing helpers shared by RBS muxer and transport adapters: Annex B and length-prefixed NAL conversion, avcC, AudioSpecificConfig and ADTS, AMF0, FLV tag bodies."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
