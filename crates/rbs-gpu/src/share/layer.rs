@@ -39,6 +39,10 @@ pub struct LayerRect {
 pub struct PreviewLayer {
     layer: Retained<CALayer>,
     surfaces: Vec<CFRetained<IOSurfaceRef>>,
+    /// Lowest use count seen per surface: the uses that are not the window server's
+    /// (for example `wgpu` aliases in either process). A surface whose count is above it
+    /// is still read by the window server.
+    idle_use: Vec<i32>,
     /// The frame whose surface is the layer's contents.
     shown: Option<PreviewFrame>,
     /// Replaced frames the window server may still read. Capacity: the ring size.
@@ -59,10 +63,12 @@ impl PreviewLayer {
         // Above the toolkit's layer even when the toolkit recreates its own.
         layer.setZPosition(1.0);
         let surfaces = subscriber.io_surfaces();
+        let idle_use = surfaces.iter().map(|s| s.use_count()).collect();
         let retiring = Vec::with_capacity(surfaces.len());
         Self {
             layer,
             surfaces,
+            idle_use,
             shown: None,
             retiring,
             rect: None,
@@ -153,9 +159,26 @@ impl PreviewLayer {
     /// how many still wait. Never waits.
     pub fn retire(&mut self) -> usize {
         let surfaces = &self.surfaces;
-        self.retiring
-            .retain(|f| surfaces.get(f.slot()).is_some_and(|s| s.is_in_use()));
+        let idle_use = &mut self.idle_use;
+        self.retiring.retain(|f| {
+            let slot = f.slot();
+            let (Some(s), Some(idle)) = (surfaces.get(slot), idle_use.get_mut(slot)) else {
+                return false;
+            };
+            let count = s.use_count();
+            *idle = (*idle).min(count);
+            count > *idle
+        });
         self.retiring.len()
+    }
+
+    /// Use count of surface `slot` now and the idle level it is compared with
+    /// (diagnostics and tests).
+    pub fn use_counts(&self, slot: usize) -> Option<(i32, i32)> {
+        Some((
+            self.surfaces.get(slot)?.use_count(),
+            *self.idle_use.get(slot)?,
+        ))
     }
 
     /// Replaced frames still waiting for the window server.

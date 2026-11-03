@@ -541,7 +541,14 @@ fn layer_shows_engine_surfaces_and_releases_replaced_frames() {
             .expect("a frame per publish while only one is held");
         assert_eq!(frame.sequence(), seq);
         let id = ids[frame.slot()];
+        let slot = frame.slot();
         layer.show(frame);
+        for s in 0..ids.len() {
+            eprintln!(
+                "seq {seq} shown slot {slot}: slot {s} (use count, idle level) {:?}",
+                layer.use_counts(s)
+            );
+        }
         assert_eq!(
             contents_id(&layer),
             Some(id),
