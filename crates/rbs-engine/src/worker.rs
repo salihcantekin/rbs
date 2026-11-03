@@ -568,8 +568,14 @@ mod tests {
         executor.swap_pending();
         controller.collect().unwrap().unwrap();
         assert_eq!(executor.scheduled().count(), 2);
-        // Registers this thread's handle once (as a worker's first wait does).
+        // One-time set-up a worker does on its first wait, outside the measurement: this
+        // thread's handle, its parker, and the doorbell's lock (std's mutex on macOS is
+        // allocated on first use). Registers this thread with the doorbell, too.
         let _ = std::thread::current();
+        std::thread::park_timeout(Duration::ZERO);
+        if let Some(bell) = &bell {
+            let _ = bell.wait(Duration::ZERO);
+        }
         let stats = WorkerStats::default();
         // Stops a held worker (its allocations are not counted: another thread).
         let stopper = matches!(end, End::DrainAt(_)).then(|| {
