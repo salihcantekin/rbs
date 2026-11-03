@@ -1,24 +1,17 @@
-//! Cost of the lock-free hand-off between the WGC callback thread and the render
+//! Cost of the lock-free hand-off between an OS capture callback thread and the render
 //! thread: publishing a slot (producer side) and taking plus releasing it (render side).
-//! Runs on every platform; the Windows-only parts (texture copy, fence signal) are GPU
-//! work outside this measurement.
+//! The OS-specific parts (GPU copy, fence signal, OS callbacks) are outside this
+//! measurement.
 
 use std::hint::black_box;
 
 use criterion::{Criterion, criterion_group, criterion_main};
-use rbs_capture_wgc::handoff::{FrameMeta, Ring};
+use rbs_capture::handoff::{FrameMeta, Ring};
 
 fn handoff(c: &mut Criterion) {
     let ring = Ring::new(&[1, 2, 3, 4, 5]);
-    let meta = FrameMeta {
-        timestamp: 1,
-        sequence: 1,
-        source_time: 1,
-        fence_value: 1,
-        width: 1920,
-        height: 1080,
-    };
-    c.bench_function("wgc/publish+take+release", |b| {
+    let meta = FrameMeta::new(1, 1, 1, 1920, 1080).with_sync_value(1);
+    c.bench_function("handoff/publish+take+release", |b| {
         b.iter(|| {
             if let Some(slot) = ring.claim() {
                 ring.publish(slot, black_box(meta));
@@ -29,7 +22,7 @@ fn handoff(c: &mut Criterion) {
             }
         })
     });
-    c.bench_function("wgc/take_none", |b| b.iter(|| black_box(ring.take())));
+    c.bench_function("handoff/take_none", |b| b.iter(|| black_box(ring.take())));
 }
 
 criterion_group!(benches, handoff);

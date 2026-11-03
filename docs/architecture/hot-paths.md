@@ -11,6 +11,7 @@ Keep this list current. When a new crate or module lands on one of these paths, 
 | Audio thread: device callbacks, audio graph, audio filters | Every block (10 ms) | `crates/rbs-audio`, audio adapters in `crates/rbs-audio-io-*` |
 | Render loop: compositor, GPU filters, transitions | Every frame per canvas | `crates/rbs-graph/src/runtime` (executor tick and swap), `crates/rbs-gpu` |
 | `Node::process` of every node type | Every frame or block | Wherever nodes are implemented |
+| Parameter reads by running nodes: `ParamReceiver::update` | Every frame or block per node with parameters | `crates/rbs-graph/src/runtime/param.rs` |
 | Capture frame hand-off: `CaptureSession::latest_frame` and the adapter code it calls | Every frame per Active capture source | `crates/rbs-capture`, adapters in `crates/rbs-capture-*` |
 | Frame, texture and audio buffer pools | Every frame or block | `crates/rbs-gpu`, `crates/rbs-audio` |
 | Colour conversion to encoder formats (NV12, P010) | Every frame per encoder | `crates/rbs-gpu` |
@@ -20,5 +21,7 @@ Keep this list current. When a new crate or module lands on one of these paths, 
 | Clock reads, timestamp mapping, rates, cadences, timebases, drift estimation | Everywhere above | `crates/rbs-core/src/time.rs`, `crates/rbs-core/src/timing.rs` |
 | Media value types: frame and block construction, lease retain/release | Every frame, block or packet | `crates/rbs-core/src/media/` |
 | Plugin call boundaries (native vtable, WASM, IPC) | Every frame or block for active plugins | `crates/rbs-plugin-host` |
+
+Locks on these paths: P6 rules out waiting on a lock. The only accepted exception is a `try_lock` that never waits and falls back to the previous value, with the reasoning written in an ADR (so far only the parameter exchange, [ADR-0023](../adr/0023-node-parameter-channels.md)). Calling `lock()` on a hot path is never allowed.
 
 Not hot: start-up, probing, configuration, the control API, UI, scene editing (these must still not block hot paths).

@@ -40,11 +40,6 @@ windows = { version = "0.62", features = [
 
 [dev-dependencies]
 allocation-counter = "0.8"
-criterion = { version = "0.8", default-features = false, features = ["cargo_bench_support"] }
-
-[[bench]]
-name = "handoff"
-harness = false
 
 [lints]
 workspace = true

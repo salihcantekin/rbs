@@ -1,10 +1,9 @@
-//! Lock-free hand-off of captured surfaces from the capture callback thread to the
-//! render thread.
+//! The lock-free latest-frame ring.
 //!
-//! Platform independent so it is tested and benchmarked on every CI runner. The ring
-//! holds a fixed number of slots; each slot names one shared surface by its handle
-//! value. The producer may replace a slot's surface (after a resize) only while it has
-//! the slot claimed, so consumers never see a handle change under them. A slot's reference count says who uses it:
+//! The ring holds a fixed number of slots; each slot names one surface by a `u64`
+//! value (an NT handle, an `IOSurfaceRef`, a DMA-BUF index). The producer may replace a
+//! slot's surface (after a resize) only while it has the slot claimed, so consumers
+//! never see a value change under them. A slot's reference count says who uses it:
 //!
 //! - `0`: free; the producer may claim it and write into its surface.
 //! - `1` while claimed by the producer, then owned by `latest` once published.
@@ -13,13 +12,28 @@
 //!
 //! `latest` holds the newest published slot (index + 1, or 0 for none). Publishing a
 //! slot over an unconsumed one releases the older slot and counts it as dropped.
-//! Taking the latest slot moves its reference to the consumer. No call allocates,
-//! frees, locks or blocks.
+//! Taking the latest slot moves its reference to the consumer. No call except
+//! [`Ring::new`] allocates, frees, locks or blocks.
+//!
+//! # Calling protocol
+//!
+//! Every method is safe Rust and never causes undefined behaviour in the ring itself.
+//! But an adapter's `unsafe impl LeaseOwner` that delegates to the ring is only sound
+//! when the adapter follows this protocol; breaking it voids those promises (a surface
+//! could be written while a consumer reads it):
+//!
+//! - [`Ring::set_handle`], [`Ring::publish`] and [`Ring::abandon`] only on a slot
+//!   returned by [`Ring::claim`] and not yet published or abandoned, each slot once.
+//! - [`Ring::release`] exactly once per reference obtained from [`Ring::take`] or
+//!   [`Ring::retain`]. An unmatched release is refused (the count never goes below
+//!   zero) and counted in [`Ring::misuses`], so it shows up in tests.
 
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 
 /// Metadata of one published frame, written by the producer before publishing.
+/// Built with [`FrameMeta::new`], so fields can be added in a minor version.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[non_exhaustive]
 pub struct FrameMeta {
     /// Master-clock timestamp in nanoseconds.
     pub timestamp: u64,
@@ -27,12 +41,39 @@ pub struct FrameMeta {
     pub sequence: u64,
     /// The OS timestamp in nanoseconds, for diagnostics.
     pub source_time: u64,
-    /// Fence value signalled after the copy into the slot's surface.
-    pub fence_value: u64,
+    /// Value of the producer's timeline fence to wait for before reading, or 0 when the
+    /// surface is ready on delivery.
+    pub sync_value: u64,
     /// Picture width in pixels.
     pub width: u32,
     /// Picture height in pixels.
     pub height: u32,
+}
+
+impl FrameMeta {
+    /// Metadata of a frame that is ready on delivery (`sync_value` 0).
+    pub const fn new(
+        timestamp: u64,
+        sequence: u64,
+        source_time: u64,
+        width: u32,
+        height: u32,
+    ) -> Self {
+        Self {
+            timestamp,
+            sequence,
+            source_time,
+            sync_value: 0,
+            width,
+            height,
+        }
+    }
+
+    /// The same metadata with the fence value a reader waits for.
+    pub const fn with_sync_value(mut self, sync_value: u64) -> Self {
+        self.sync_value = sync_value;
+        self
+    }
 }
 
 #[derive(Default)]
@@ -45,7 +86,7 @@ struct Slot {
     timestamp: AtomicU64,
     sequence: AtomicU64,
     source_time: AtomicU64,
-    fence_value: AtomicU64,
+    sync_value: AtomicU64,
     size: AtomicU64,
 }
 
@@ -54,10 +95,12 @@ pub struct Ring {
     slots: Box<[Slot]>,
     latest: AtomicU64,
     dropped: AtomicU64,
+    misuses: AtomicU64,
 }
 
 impl Ring {
-    /// A ring over the given surface handles, one slot per handle.
+    /// A ring over the given surface handles, one slot per handle. Allocates; call it
+    /// when a session starts, not per frame.
     pub fn new(handles: &[u64]) -> Self {
         Self {
             slots: handles
@@ -69,6 +112,7 @@ impl Ring {
                 .collect(),
             latest: AtomicU64::new(0),
             dropped: AtomicU64::new(0),
+            misuses: AtomicU64::new(0),
         }
     }
 
@@ -89,7 +133,9 @@ impl Ring {
             .map(|s| s.handle.load(Ordering::Acquire))
     }
 
-    /// Producer: replaces the surface of a slot it has claimed (after a resize).
+    /// Producer: replaces the surface of a slot it has claimed (after a resize) and
+    /// resets [`Ring::handed_out`]. Only on a claimed, unpublished slot (see the
+    /// calling protocol).
     pub fn set_handle(&self, slot: usize, handle: u64) {
         if let Some(s) = self.slots.get(slot) {
             s.handed_out.store(false, Ordering::Relaxed);
@@ -116,14 +162,14 @@ impl Ring {
         })
     }
 
-    /// Producer: gives up a claimed slot without publishing it.
+    /// Producer: gives up a claimed, unpublished slot without publishing it.
     pub fn abandon(&self, slot: usize) {
         self.release(slot as u64);
     }
 
     /// Producer: publishes a claimed slot as the newest frame. Its reference moves to
     /// `latest`. An older slot still waiting in `latest` is released and counted as
-    /// dropped.
+    /// dropped. Only on a claimed, unpublished slot (see the calling protocol).
     pub fn publish(&self, slot: usize, meta: FrameMeta) {
         let Some(s) = self.slots.get(slot) else {
             return;
@@ -131,7 +177,7 @@ impl Ring {
         s.timestamp.store(meta.timestamp, Ordering::Relaxed);
         s.sequence.store(meta.sequence, Ordering::Relaxed);
         s.source_time.store(meta.source_time, Ordering::Relaxed);
-        s.fence_value.store(meta.fence_value, Ordering::Relaxed);
+        s.sync_value.store(meta.sync_value, Ordering::Relaxed);
         s.size.store(
             (u64::from(meta.width) << 32) | u64::from(meta.height),
             Ordering::Relaxed,
@@ -163,7 +209,7 @@ impl Ring {
                 timestamp: s.timestamp.load(Ordering::Relaxed),
                 sequence: s.sequence.load(Ordering::Relaxed),
                 source_time: s.source_time.load(Ordering::Relaxed),
-                fence_value: s.fence_value.load(Ordering::Relaxed),
+                sync_value: s.sync_value.load(Ordering::Relaxed),
                 width: (size >> 32) as u32,
                 height: size as u32,
             },
@@ -187,17 +233,38 @@ impl Ring {
         }
     }
 
-    /// Removes a reference from `slot`. Unknown slots are ignored.
+    /// Removes a reference from `slot`. Unknown slots are ignored. A release of a slot
+    /// with no reference is refused and counted in [`Ring::misuses`]; it never panics,
+    /// because it runs inside `Lease::drop`.
     ///
     /// The ring only counts; it owns no surfaces. The adapter's lease owner wraps it
     /// together with the surfaces and is the one that makes the `LeaseOwner` promises.
     pub fn release(&self, slot: u64) {
         if let Some(s) = self.slots.get(slot as usize) {
             // Release pairs with the Acquire in `claim`: the consumer's GPU-side reads
-            // are ordered by the importer before it drops the lease.
-            let previous = s.refs.fetch_sub(1, Ordering::Release);
-            debug_assert!(previous > 0, "released slot {slot} with no reference");
+            // are ordered by the importer before it drops the lease. Every decrement is
+            // a read-modify-write, so it stays in the release sequence.
+            let mut refs = s.refs.load(Ordering::Relaxed);
+            loop {
+                let Some(next) = refs.checked_sub(1) else {
+                    self.misuses.fetch_add(1, Ordering::Relaxed);
+                    return;
+                };
+                match s
+                    .refs
+                    .compare_exchange_weak(refs, next, Ordering::Release, Ordering::Relaxed)
+                {
+                    Ok(_) => return,
+                    Err(current) => refs = current,
+                }
+            }
         }
+    }
+
+    /// Releases refused because the slot had no reference: a protocol violation by the
+    /// adapter. Always 0 in a correct adapter; conformance and unit tests check it.
+    pub fn misuses(&self) -> u64 {
+        self.misuses.load(Ordering::Relaxed)
     }
 
     /// Whether a frame of the slot's current handle was ever taken by a consumer. A
@@ -238,14 +305,22 @@ mod tests {
     }
 
     fn meta(sequence: u64) -> FrameMeta {
-        FrameMeta {
-            timestamp: sequence * 10,
-            sequence,
-            source_time: sequence * 7,
-            fence_value: sequence + 1,
-            width: 1920,
-            height: 1080,
-        }
+        FrameMeta::new(sequence * 10, sequence, sequence * 7, 1920, 1080)
+            .with_sync_value(sequence + 1)
+    }
+
+    #[test]
+    fn unmatched_release_is_refused_and_counted() {
+        let ring = Ring::new(&[1, 2]);
+        ring.release(0);
+        assert_eq!(ring.misuses(), 1);
+        assert!(ring.is_idle(), "the count did not wrap");
+        let slot = some(ring.claim());
+        ring.publish(slot, meta(0));
+        let (taken, _) = some(ring.take());
+        ring.release(taken as u64);
+        assert!(ring.is_idle());
+        assert_eq!(ring.misuses(), 1);
     }
 
     #[test]
@@ -347,6 +422,7 @@ mod tests {
             ring.release(slot as u64);
         }
         assert!(ring.is_idle());
+        assert_eq!(ring.misuses(), 0);
         assert_eq!(produced + skipped, 20_000);
         assert_eq!(
             taken + ring.dropped(),

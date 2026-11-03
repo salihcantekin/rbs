@@ -251,6 +251,7 @@ Threading: `send` runs on the output worker; delivery runs on a thread or runtim
 - A **staging queue** owned by the producer side (the session object, touched only in `send`, `poll_events` and `finish`) holds queued items as shared `Bytes` plus metadata (size, timestamp, keyframe, GOP number). All drop decisions are made here, so dropping "the oldest" items needs no synchronisation.
 - A short bounded **single-producer single-consumer hand-off** (a few items, at most about 100 ms of media) carries items from staging to the I/O side. Items in the hand-off are committed and are no longer dropped.
 - `send` and `poll_events` move items from staging into the hand-off while it has room. The byte and duration limits apply to staging plus hand-off, so `QueueLimits` bounds memory even when the I/O side is stalled. The I/O side reports progress (bytes sent, connection state) through atomics only (P6).
+- Transports that never drop (files) make no drop decisions, so they may skip staging: the whole queue is the hand-off, bounded by `QueueLimits` and the hand-off size, and a full queue returns `QueueFull`.
 
 Drop policy for network transports, when a queue limit is reached:
 
@@ -269,12 +270,20 @@ Invariants:
 1. `send` before `start` returns `TransportError::NotStarted`; an item of the wrong kind for `input` returns `TransportError::InvalidInput`.
 2. `send` returns in bounded time regardless of network or disk state (checked by the suite against a destination that accepts nothing).
 3. Byte-exact delivery for container input: a loopback destination receives exactly the `Header` and `Media` bytes in order (and applies `Patch` chunks when seekable).
-4. After `finish` or `Drop`, no thread, socket or file handle owned by the session is left.
+4. After `finish` or `Drop`, no thread, socket or file handle owned by the session is left. One exception: a thread blocked inside an OS call that cannot be interrupted (a write to a hung network drive or a stalled pipe) is detached when the `finish` timeout or the `Drop` grace period runs out, so the caller is never blocked; it releases its handles as soon as that call returns. `finish(timeout)` never blocks longer than `timeout`.
 5. Reconnect: with a policy set, a lost connection produces `Reconnecting` and, after recovery, resumes at the next keyframe with headers resent. Packet transports rebuild their headers from the stream descriptors given to `start`; container transports keep the `Header` chunks they received, resend them first, and resume at the next `Media` chunk marked `keyframe`, discarding staged chunks before it.
 6. The secret never appears in `Debug` output, events or errors, including in failure and stall paths.
 7. After a drop, delivered video resumes at a keyframe and headers are intact (checked by adapter tests that can read the destination; see Conformance tests).
 
 Capability keys: `transport.schemes` (Set: `rtmp`, `rtmps`, `srt`, `file`, ...), `transport.input` (Set: `packets`, `container.mpegts`, ...), `transport.codecs` (Set, for `packets` input), `transport.reconnect` (Flag), `transport.bandwidth_estimate` (Flag), `transport.seekable` (Flag: applies patch chunks).
+
+### File transport (`rbs-transport-file`)
+
+- URLs (RFC 8089): `file:///absolute/path` and `file://localhost/absolute/path`; on Windows also `file:///C:/path`, `file://C:\path` and `file://host/share/path` (a UNC path). Percent-escapes are decoded. Relative paths, malformed escapes and (outside Windows) remote hosts are `CreateError::InvalidConfig`. Adapter options are refused (there are none); a secret and a reconnect policy are ignored.
+- An existing file is truncated when the session starts. (A "never overwrite" option is a candidate for a later change.)
+- `Patch` chunks are applied by seeking back; a patch that reaches past the bytes written so far, or any patch on a target that cannot seek (a pipe or device), fails the recording with `TransportError::Io`. Only regular files are synced to disk at `finish`.
+- The duration limit counts from the last chunk written (or the first queued, before any write) to the chunk being sent, one chunk interval stricter than counting from the oldest queued chunk.
+- A write error is reported once as `Disconnected`, returned once by `send`, and later `send` calls return `Closed`. `stats()` keeps its final counters after `finish`.
 
 ## `rbs-media-format` (format helpers)
 
