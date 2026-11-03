@@ -41,6 +41,9 @@ const MAX_RATE: u32 = 240;
 
 /// Longest wait for the PipeWire daemon in `open` and `start`.
 const DAEMON_TIMEOUT: Duration = Duration::from_millis(500);
+/// How long a portal link may take to agree on a format before `start` reports
+/// [`CaptureError::FormatUnsupported`]. The compositor allocates and offers first.
+const NEGOTIATE_TIMEOUT: Duration = Duration::from_secs(2);
 
 /// Longest wait for the PipeWire daemon in `enumerate` (the port's 100 ms budget).
 const ENUMERATE_TIMEOUT: Duration = Duration::from_millis(100);
@@ -1036,6 +1039,24 @@ struct Status {
     copied: AtomicU64,
 }
 
+/// Ends a restore of one choice: clears its `restoring` flag and wakes the sessions
+/// waiting for it.
+struct Restoring<'a> {
+    choices: &'a Choices,
+    choice: usize,
+}
+
+impl Drop for Restoring<'_> {
+    fn drop(&mut self) {
+        let mut picks = lock(self.choices);
+        if let Some(flag) = picks.restoring.get_mut(self.choice) {
+            *flag = false;
+        }
+        drop(picks);
+        self.choices.restored.notify_all();
+    }
+}
+
 /// State of the stream thread. Lives on that thread only.
 struct Producer {
     shared: Arc<Shared>,
@@ -1049,6 +1070,10 @@ struct Producer {
     drift: DriftEstimator,
     last_timestamp: Option<Timestamp>,
     started: Option<mpsc::SyncSender<Result<(), CaptureError>>>,
+    /// Report a successful start only once a format is accepted, not at `Paused`.
+    /// Portal links: the screen-cast source may offer only what this stream cannot
+    /// take (for example DMA-BUF only), which fails at negotiation, after `Paused`.
+    start_on_format: bool,
 }
 
 impl Producer {
@@ -1119,15 +1144,27 @@ impl Producer {
         let params = buffer_params(dmabuf);
         let mut params = pods(&params);
         let _ = stream.update_params(&mut params);
+        if self.start_on_format {
+            self.report_start(Ok(()));
+        }
     }
 
     fn on_state(&mut self, new: &pw::stream::StreamState) {
         match new {
             pw::stream::StreamState::Paused | pw::stream::StreamState::Streaming => {
-                self.report_start(Ok(()));
+                if !self.start_on_format {
+                    self.report_start(Ok(()));
+                }
             }
             pw::stream::StreamState::Error(_) => {
-                self.report_start(Err(backend(i64::from(libc::EIO))));
+                // Before a format was accepted on a portal link, the error is the
+                // failed negotiation.
+                let error = if self.start_on_format {
+                    CaptureError::FormatUnsupported
+                } else {
+                    backend(i64::from(libc::EIO))
+                };
+                self.report_start(Err(error));
                 self.status.lost.store(true, Ordering::Release);
             }
             pw::stream::StreamState::Unconnected => {
@@ -1568,6 +1605,12 @@ impl PortalSource {
             *flag = true;
         }
         drop(picks);
+        // Clears the flag and wakes waiting restores however this call ends, unwinding
+        // included, so no other session of the choice waits forever.
+        let _restoring = Restoring {
+            choices: &self.choices,
+            choice,
+        };
         close_all(expired);
 
         let result = Cast::start(&CastRequest {
@@ -1596,11 +1639,7 @@ impl PortalSource {
                 .and_then(|cast| cast.stream.restore_token.clone());
             picks.advance(choice, &token, next);
         }
-        if let Some(flag) = picks.restoring.get_mut(choice) {
-            *flag = false;
-        }
         drop(picks);
-        self.choices.restored.notify_all();
         match result {
             Err(CaptureError::Backend {
                 domain: ErrorDomain::Library,
@@ -1673,6 +1712,7 @@ impl PipeWireSession {
             drift: DriftEstimator::new(Duration::from_millis(100)),
             last_timestamp: self.last_timestamp,
             started: Some(started_tx),
+            start_on_format: matches!(self.source, Source::Portal(_)),
         });
         let (link, mut cast) = match &mut self.source {
             Source::Node(name) => (Link::Node(name.clone()), None),
@@ -1698,6 +1738,12 @@ impl PipeWireSession {
                 cast.close();
             }
         };
+        let portal = matches!(link, Link::Portal { .. });
+        let start_timeout = if portal {
+            NEGOTIATE_TIMEOUT
+        } else {
+            DAEMON_TIMEOUT
+        };
         let (stop_tx, stop_rx) = pw::channel::channel();
         let spawned = std::thread::Builder::new()
             .name("rbs-pipewire".into())
@@ -1712,9 +1758,12 @@ impl PipeWireSession {
                 return Err(backend(i64::from(e.raw_os_error().unwrap_or(libc::EAGAIN))));
             }
         };
-        let started = started_rx
-            .recv_timeout(DAEMON_TIMEOUT)
-            .unwrap_or_else(|_| Err(backend(i64::from(libc::ETIMEDOUT))));
+        let started = match started_rx.recv_timeout(start_timeout) {
+            Ok(result) => result,
+            // A portal stream that never settles on a format: nothing it offers fits.
+            Err(_) if portal => Err(CaptureError::FormatUnsupported),
+            Err(_) => Err(backend(i64::from(libc::ETIMEDOUT))),
+        };
         if let Err(e) = started {
             let _ = stop_tx.send(());
             let _ = thread.join();
