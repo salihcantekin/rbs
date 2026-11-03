@@ -3988,6 +3988,7 @@ dependencies = [
  "rbs-ui",
  "slint",
  "slint-build",
+ "windows",
 ]
 
 [[package]]
@@ -4275,6 +4276,7 @@ dependencies = [
  "rbs-graph",
  "wgpu",
  "windows",
+ "windows-numerics",
 ]
 
 [[package]]

@@ -130,7 +130,10 @@ impl GpuContext {
                     .flags
                     .contains(wgpu::DownlevelFlags::VERTEX_STORAGE)
             })
-            .min_by_key(|a| rank(&a.get_info(), request.power))
+            .min_by_key(|a| {
+                let info = a.get_info();
+                (rank(&info, request.power), backend_rank(info.backend))
+            })
             .ok_or(GpuError::NoAdapter)?;
 
         let info = adapter.get_info();
@@ -332,6 +335,16 @@ fn request_device(
 
 fn is_software(info: &wgpu::AdapterInfo) -> bool {
     info.device_type == wgpu::DeviceType::Cpu
+}
+
+/// Among adapters of the same rank, the backend whose native interop RBS implements comes
+/// first: on Windows every shared surface (import, encoder export, cross-process preview)
+/// is a D3D12 object, so D3D12 wins over Vulkan on the same GPU.
+fn backend_rank(backend: wgpu::Backend) -> u8 {
+    match backend {
+        wgpu::Backend::Dx12 if cfg!(windows) => 0,
+        _ => 1,
+    }
 }
 
 fn rank(info: &wgpu::AdapterInfo, power: PowerPreference) -> u8 {

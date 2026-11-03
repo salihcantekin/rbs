@@ -130,7 +130,7 @@ impl PreviewPublisher {
         for _ in 0..desc.surfaces {
             slots.push(create_slot(ctx, w, h)?);
         }
-        let pipeline = pipeline(ctx);
+        let pipeline = super::preview_pipeline(ctx, TARGET_FORMAT, "fs_preview");
 
         let n = PUBLISHERS.fetch_add(1, Ordering::Relaxed);
         let mut random = [0u8; 16];
@@ -228,33 +228,7 @@ impl PreviewPublisher {
             self.stats.busy += 1;
             return Err(GpuError::ExportBusy { surfaces: n as u32 });
         };
-        let mut encoder = ctx
-            .device()
-            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                label: Some("rbs-gpu preview"),
-            });
-        {
-            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("rbs-gpu preview"),
-                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: &self.slots[i].view,
-                    depth_slice: None,
-                    resolve_target: None,
-                    ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
-                        store: wgpu::StoreOp::Store,
-                    },
-                })],
-                depth_stencil_attachment: None,
-                timestamp_writes: None,
-                occlusion_query_set: None,
-                multiview_mask: None,
-            });
-            pass.set_pipeline(&self.pipeline);
-            pass.set_bind_group(0, source, &[]);
-            pass.draw(0..3, 0..1);
-        }
-        let submission = ctx.queue().submit(Some(encoder.finish()));
+        let submission = super::render_preview(ctx, &self.pipeline, source, &self.slots[i].view);
         self.slots[i].pending = true;
         self.next = (i + 1) % n;
         self.stats.converted += 1;
@@ -544,42 +518,4 @@ fn rgba_surface(w: u32, h: u32) -> Result<CFRetained<IOSurfaceRef>, GpuError> {
         return Err(GpuError::Export("IOSurface has an unexpected layout"));
     }
     Ok(io)
-}
-
-fn pipeline(ctx: &GpuContext) -> wgpu::RenderPipeline {
-    let device = ctx.device();
-    let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-        label: Some("rbs-gpu preview"),
-        source: wgpu::ShaderSource::Wgsl(include_str!("../shaders/preview.wgsl").into()),
-    });
-    let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-        label: Some("rbs-gpu preview"),
-        bind_group_layouts: &[Some(&ctx.sampled_layout)],
-        immediate_size: 0,
-    });
-    device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-        label: Some("rbs-gpu preview"),
-        layout: Some(&layout),
-        vertex: wgpu::VertexState {
-            module: &module,
-            entry_point: Some("vs_fullscreen"),
-            compilation_options: Default::default(),
-            buffers: &[],
-        },
-        primitive: wgpu::PrimitiveState::default(),
-        depth_stencil: None,
-        multisample: wgpu::MultisampleState::default(),
-        fragment: Some(wgpu::FragmentState {
-            module: &module,
-            entry_point: Some("fs_preview"),
-            compilation_options: Default::default(),
-            targets: &[Some(wgpu::ColorTargetState {
-                format: TARGET_FORMAT,
-                blend: None,
-                write_mask: wgpu::ColorWrites::ALL,
-            })],
-        }),
-        multiview_mask: None,
-        cache: None,
-    })
 }

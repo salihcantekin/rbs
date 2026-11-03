@@ -39,6 +39,17 @@ pub const MAX_SURFACES: usize = 64;
 /// forgotten before the producer may close it and the OS may reuse it.
 pub const SURFACE_IDLE: Duration = Duration::from_secs(8);
 
+/// Opens an NT shared texture handle of another process on `ctx`'s D3D12 device without
+/// a copy (the cross-process preview's UI side). The handle stays the caller's.
+#[cfg(windows)]
+pub(crate) fn open_d3d12_shared(
+    ctx: &GpuContext,
+    handle: u64,
+    usage: wgpu::TextureUsages,
+) -> Result<wgpu::Texture, GpuError> {
+    d3d12::open_with_usage(ctx, handle, usage).map(|o| o.texture)
+}
+
 /// Usage of aliased surfaces: sampled by the compositor, copyable for readback and tests.
 const USAGE: wgpu::TextureUsages =
     wgpu::TextureUsages::TEXTURE_BINDING.union(wgpu::TextureUsages::COPY_SRC);

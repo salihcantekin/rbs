@@ -1,7 +1,8 @@
-//! UI side of the cross-process preview demo (ADR-0028, ADR-0034).
+//! UI side of the cross-process preview demo (ADR-0028, ADR-0034, ADR-0035).
 //!
 //! Shows the engine's preview in a Slint window without copying pixels: the engine
-//! process renders into IOSurfaces and this process displays the same IOSurfaces.
+//! process renders into IOSurfaces (macOS) or shared D3D12 textures (Windows) and this
+//! process displays the same memory.
 //!
 //! ```sh
 //! cargo build -p rbs-gpu --release --example preview_engine
@@ -15,8 +16,11 @@
 //! Environment:
 //!
 //! - `RBS_PREVIEW_MODE=layer` (default): the surfaces are the contents of a Core
-//!   Animation layer over the preview area (ADR-0034). A new frame changes one layer
-//!   property; Slint does not redraw.
+//!   Animation layer (macOS, ADR-0034) or the buffers of a composition swapchain in a
+//!   DirectComposition visual (Windows, ADR-0035) over the preview area. A new frame
+//!   changes one layer property or presents one buffer; Slint does not redraw. Where the
+//!   layer cannot be made (Windows without a composition swapchain, for example over
+//!   remote desktop) the demo says so and falls back to `slint`.
 //! - `RBS_PREVIEW_MODE=slint`: the surfaces are aliased as `wgpu` textures and drawn by
 //!   Slint's renderer as an `Image` (ADR-0028's first path). Every frame redraws the
 //!   window.
@@ -29,17 +33,19 @@
 //! This is a demo, not the product's Program/Preview panel: wiring the panel to the
 //! engine is follow-up work in the shell.
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", windows))]
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     demo::run()
 }
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(not(any(target_os = "macos", windows)))]
 fn main() {
-    eprintln!("remote_preview: cross-process preview is implemented on macOS only (ADR-0028)");
+    eprintln!(
+        "remote_preview: cross-process preview is implemented on macOS and Windows only (ADR-0028, ADR-0035)"
+    );
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", windows))]
 mod demo {
     use std::cell::RefCell;
     use std::collections::VecDeque;
@@ -175,7 +181,7 @@ mod demo {
         let exe = std::env::current_exe()?;
         let engine = exe
             .parent()
-            .map(|d| d.join("preview_engine"))
+            .map(|d| d.join(format!("preview_engine{}", std::env::consts::EXE_SUFFIX)))
             .ok_or("no example directory")?;
         let mut child = Command::new(&engine)
             .stdin(Stdio::piped())
@@ -195,6 +201,46 @@ mod demo {
     }
 
     /// Process CPU time (user + system) so far.
+    #[cfg(windows)]
+    fn cpu_time() -> Duration {
+        use windows::Win32::Foundation::FILETIME;
+        use windows::Win32::System::Threading::{GetCurrentProcess, GetProcessTimes};
+        let mut t = [FILETIME::default(); 4];
+        // SAFETY: GetProcessTimes fills the four FILETIMEs it is given for our own process.
+        let ok = unsafe {
+            let [create, exit, kernel, user] = &mut t;
+            GetProcessTimes(GetCurrentProcess(), create, exit, kernel, user).is_ok()
+        };
+        if !ok {
+            return Duration::ZERO;
+        }
+        // 100 ns units.
+        let ft = |f: FILETIME| (u64::from(f.dwHighDateTime) << 32) | u64::from(f.dwLowDateTime);
+        Duration::from_nanos((ft(t[2]) + ft(t[3])) * 100)
+    }
+
+    /// Peak working set in MiB.
+    #[cfg(windows)]
+    fn peak_rss_mib() -> f64 {
+        use windows::Win32::System::ProcessStatus::{
+            GetProcessMemoryInfo, PROCESS_MEMORY_COUNTERS,
+        };
+        use windows::Win32::System::Threading::GetCurrentProcess;
+        let mut c = PROCESS_MEMORY_COUNTERS {
+            cb: std::mem::size_of::<PROCESS_MEMORY_COUNTERS>() as u32,
+            ..Default::default()
+        };
+        // SAFETY: fills the counters struct of the given size for our own process.
+        let ok = unsafe { GetProcessMemoryInfo(GetCurrentProcess(), &mut c, c.cb).is_ok() };
+        if ok {
+            c.PeakWorkingSetSize as f64 / (1024.0 * 1024.0)
+        } else {
+            0.0
+        }
+    }
+
+    /// Process CPU time (user + system) so far.
+    #[cfg(target_os = "macos")]
     fn cpu_time() -> Duration {
         // SAFETY: getrusage fills the zeroed struct it is given; RUSAGE_SELF is valid.
         let usage = unsafe {
@@ -209,6 +255,7 @@ mod demo {
     }
 
     /// Peak resident memory in MiB (macOS reports bytes).
+    #[cfg(target_os = "macos")]
     fn peak_rss_mib() -> f64 {
         // SAFETY: as in `cpu_time`.
         let usage = unsafe {
@@ -252,13 +299,52 @@ mod demo {
             .select()?;
 
         let mut sub = PreviewSubscriber::connect(&endpoint, Duration::from_secs(5))?;
-        let ids = (0..sub.surfaces())
-            .filter_map(|s| sub.surface_id(s))
-            .map(|id| id.to_string())
-            .collect::<Vec<_>>()
-            .join(", ");
+        #[cfg(target_os = "macos")]
+        let ids = format!(
+            "IOSurfaces {}",
+            (0..sub.surfaces())
+                .filter_map(|s| sub.surface_id(s))
+                .map(|id| id.to_string())
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
+        #[cfg(windows)]
+        let ids = format!("{} D3D12 textures", sub.surfaces());
+
+        // The layer needs the subscriber's surfaces; the receiver thread needs the
+        // subscriber. A second subscriber is not allowed, so the layer is made here and
+        // attached at the first redraw.
+        let mut mode = mode;
+        let layer = match mode {
+            Mode::Layer => {
+                #[cfg(target_os = "macos")]
+                let made: Result<PreviewLayer, rbs_gpu::GpuError> = Ok(PreviewLayer::new(&sub));
+                #[cfg(windows)]
+                let made = PreviewLayer::new(&sub);
+                match made {
+                    Ok(layer) => {
+                        let needed = layer.surfaces_needed(Duration::from_nanos(16_666_667));
+                        if layer.surfaces() < needed {
+                            eprintln!(
+                                "remote_preview: the engine's ring has {} surfaces, the layer needs {needed} at 60 fps; frames will be dropped",
+                                layer.surfaces()
+                            );
+                        }
+                        Some(layer)
+                    }
+                    Err(e) => {
+                        eprintln!(
+                            "remote_preview: no preview layer ({e}); Slint draws the preview"
+                        );
+                        mode = Mode::Slint;
+                        None
+                    }
+                }
+            }
+            Mode::Slint => None,
+        };
         eprintln!(
-            "remote_preview: shared IOSurfaces {ids} (no copies), mode {}",
+            "remote_preview: shared {ids} (no copies), mode {}",
             match mode {
                 Mode::Layer => "layer",
                 Mode::Slint => "slint",
@@ -284,23 +370,6 @@ mod demo {
                 })
             }
             Mode::Layer => None,
-        };
-        // The layer needs the subscriber's surfaces; the receiver thread needs the
-        // subscriber. A second subscriber is not allowed, so the layer is made here and
-        // attached at the first redraw.
-        let layer = match mode {
-            Mode::Layer => {
-                let layer = PreviewLayer::new(&sub);
-                let needed = layer.surfaces_needed(Duration::from_nanos(16_666_667));
-                if layer.surfaces() < needed {
-                    eprintln!(
-                        "remote_preview: the engine's ring has {} surfaces, the layer needs {needed} at 60 fps; frames will be dropped",
-                        layer.surfaces()
-                    );
-                }
-                Some(layer)
-            }
-            Mode::Slint => None,
         };
         STATE.with(|s| {
             *s.borrow_mut() = Some(State {
@@ -453,22 +522,41 @@ mod demo {
                 let Ok(handle) = handle.window_handle() else {
                     return;
                 };
-                let RawWindowHandle::AppKit(appkit) = handle.as_raw() else {
-                    return;
+                #[cfg(target_os = "macos")]
+                let attach = {
+                    let RawWindowHandle::AppKit(appkit) = handle.as_raw() else {
+                        return;
+                    };
+                    // SAFETY: the handle is the live NSView of this window, which the Metal
+                    // renderer made layer-backed; rendering notifiers run on the main thread.
+                    unsafe { layer.attach_to_ns_view(appkit.ns_view) }
                 };
-                // SAFETY: the handle is the live NSView of this window, which the Metal
-                // renderer made layer-backed; rendering notifiers run on the main thread.
-                if let Err(e) = unsafe { layer.attach_to_ns_view(appkit.ns_view) } {
+                #[cfg(windows)]
+                let attach = {
+                    let RawWindowHandle::Win32(win32) = handle.as_raw() else {
+                        return;
+                    };
+                    // SAFETY: the handle is the live top-level window of this process;
+                    // rendering notifiers run on the thread that owns it.
+                    unsafe { layer.attach_to_hwnd(win32.hwnd) }
+                };
+                if let Err(e) = attach {
                     eprintln!("remote_preview: cannot attach the preview layer: {e}");
                     return;
                 }
                 attached.set(true);
             }
+            // Core Animation places in points (Slint's logical pixels); DirectComposition
+            // in physical pixels.
+            #[cfg(target_os = "macos")]
+            let scale = 1.0;
+            #[cfg(windows)]
+            let scale = f64::from(window.window().scale_factor());
             layer.set_rect(LayerRect {
-                x: f64::from(window.get_area_x()),
-                y: f64::from(window.get_area_y()),
-                width: f64::from(window.get_area_width()),
-                height: f64::from(window.get_area_height()),
+                x: f64::from(window.get_area_x()) * scale,
+                y: f64::from(window.get_area_y()) * scale,
+                width: f64::from(window.get_area_width()) * scale,
+                height: f64::from(window.get_area_height()) * scale,
             });
         });
     }
@@ -524,7 +612,7 @@ mod demo {
                 st.counters.since = Instant::now();
                 window.set_status(
                     format!(
-                        "Preview from engine process: {fps:.0} fps, IOSurfaces {} shared, no copies",
+                        "Preview from engine process: {fps:.0} fps, {} shared, no copies",
                         st.ids
                     )
                     .into(),

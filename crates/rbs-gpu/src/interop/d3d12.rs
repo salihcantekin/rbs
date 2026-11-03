@@ -88,6 +88,16 @@ impl Fences {
 
 /// Opens an NT shared texture handle on the render device and wraps it without a copy.
 pub(super) fn open(ctx: &GpuContext, handle: u64) -> Result<Opened, GpuError> {
+    open_with_usage(ctx, handle, USAGE)
+}
+
+/// As [`open`] with the wrapper's usage chosen by the caller (the cross-process preview
+/// also renders into or presents the texture).
+pub(crate) fn open_with_usage(
+    ctx: &GpuContext,
+    handle: u64,
+    usage: wgpu::TextureUsages,
+) -> Result<Opened, GpuError> {
     let resource: ID3D12Resource = open_shared(ctx, handle)?;
     // SAFETY: `resource` is a live ID3D12Resource; GetDesc only reads it.
     let desc = unsafe { resource.GetDesc() };
@@ -133,7 +143,7 @@ pub(super) fn open(ctx: &GpuContext, handle: u64) -> Result<Opened, GpuError> {
                 sample_count: 1,
                 dimension: wgpu::TextureDimension::D2,
                 format,
-                usage: USAGE,
+                usage,
                 view_formats: &[],
             },
             wgpu::TextureUses::PRESENT,
@@ -146,7 +156,7 @@ pub(super) fn open(ctx: &GpuContext, handle: u64) -> Result<Opened, GpuError> {
             width,
             height: desc.Height,
             format,
-            usage: USAGE,
+            usage,
         },
     })
 }
