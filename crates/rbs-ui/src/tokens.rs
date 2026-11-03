@@ -423,7 +423,9 @@ mod tests {
 
     #[test]
     fn checks_fail_loudly() {
-        let low_contrast = BUILT_IN.replacen(
+        // Git may check the file out with CRLF line ends (Windows).
+        let base = BUILT_IN.replace("\r\n", "\n");
+        let low_contrast = base.replacen(
             "\"color.text.secondary\" = \"#a8afbb\"",
             "\"color.text.secondary\" = \"#30343a\"",
             1,
@@ -431,14 +433,14 @@ mod tests {
         let e = Tokens::parse(&low_contrast).unwrap_err().0;
         assert!(e.contains("color.text.secondary"), "{e}");
 
-        let red_error = BUILT_IN.replacen(
+        let red_error = base.replacen(
             "\"color.state.error\" = \"#c38bf0\"",
             "\"color.state.error\" = \"#ff5555\"",
             1,
         );
         assert!(Tokens::parse(&red_error).unwrap_err().0.contains("hue"));
 
-        let live_in_theme = BUILT_IN.replacen(
+        let live_in_theme = base.replacen(
             "[themes.light]\n",
             "[themes.light]\n\"color.state.live\" = \"#00ff00\"\n",
             1,
@@ -450,13 +452,13 @@ mod tests {
                 .contains("unknown colour")
         );
 
-        let other_live = BUILT_IN.replacen("#c4262e", "#ff0000", 1);
+        let other_live = base.replacen("#c4262e", "#ff0000", 1);
         assert!(Tokens::parse(&other_live).unwrap_err().0.contains("fixed"));
 
-        let alpha = BUILT_IN.replacen("\"#121417\"", "\"#12141780\"", 1);
+        let alpha = base.replacen("\"#121417\"", "\"#12141780\"", 1);
         assert!(Tokens::parse(&alpha).unwrap_err().0.contains("#rrggbb"));
 
-        let no_motion = BUILT_IN.replacen("\"motion.fast\" = 120\n", "", 1);
+        let no_motion = base.replacen("\"motion.fast\" = 120\n", "", 1);
         assert!(
             Tokens::parse(&no_motion)
                 .unwrap_err()
@@ -464,7 +466,7 @@ mod tests {
                 .contains("motion.fast")
         );
 
-        let missing = BUILT_IN.replacen("\"color.meter.clip\" = \"#e9a6ff\"\n", "", 1);
+        let missing = base.replacen("\"color.meter.clip\" = \"#e9a6ff\"\n", "", 1);
         assert!(
             Tokens::parse(&missing)
                 .unwrap_err()
@@ -472,7 +474,7 @@ mod tests {
                 .contains("missing color.meter.clip")
         );
 
-        let bad_name = BUILT_IN.replacen("\"space.1\" = 4", "\"space.1\" = 4\n\"Space 1\" = 4", 1);
+        let bad_name = base.replacen("\"space.1\" = 4", "\"space.1\" = 4\n\"Space 1\" = 4", 1);
         assert!(
             Tokens::parse(&bad_name)
                 .unwrap_err()

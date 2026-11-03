@@ -304,6 +304,16 @@ impl LayoutSession {
         self.history.undo(&mut self.workspace)
     }
 
+    /// Is there a layout change to undo?
+    pub fn can_undo(&self) -> bool {
+        self.history.can_undo()
+    }
+
+    /// Is there an undone layout change to redo?
+    pub fn can_redo(&self) -> bool {
+        self.history.can_redo()
+    }
+
     /// Redo the last undone layout change.
     pub fn redo(&mut self) -> bool {
         self.history.redo(&mut self.workspace)
