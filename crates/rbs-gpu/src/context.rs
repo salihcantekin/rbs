@@ -26,6 +26,10 @@ pub const CAP_P010_SURFACE: CapabilityKey = CapabilityKey::new_static("gpu.p010_
 /// `gpu.import.dmabuf`: the importer can alias Linux DMA-BUFs (Vulkan external memory with
 /// DRM format modifiers).
 pub const CAP_IMPORT_DMABUF: CapabilityKey = CapabilityKey::new_static("gpu.import.dmabuf");
+/// `gpu.import.sync_file`: the importer can make the GPU wait on a Linux sync file
+/// (`SurfaceSync::SyncFile`) before reading a DMA-BUF (Vulkan `VK_KHR_external_semaphore_fd`
+/// with `SYNC_FD` import).
+pub const CAP_IMPORT_SYNC_FILE: CapabilityKey = CapabilityKey::new_static("gpu.import.sync_file");
 
 /// Which kind of adapter to prefer when several satisfy the request.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -150,6 +154,13 @@ impl GpuContext {
         ) && renderable(wgpu::TextureFormat::R16Unorm)
             && renderable(wgpu::TextureFormat::Rg16Unorm);
         let limits = adapter.limits();
+        let device_desc = wgpu::DeviceDescriptor {
+            label: Some("rbs-gpu"),
+            required_features: features,
+            required_limits: limits.clone(),
+            ..Default::default()
+        };
+        let (device, queue, sync_file) = request_device(&adapter, &device_desc)?;
         let capabilities = CapabilitySet::new()
             .with(CAP_SOFTWARE, CapabilityValue::Flag(is_software(&info)))
             .with(
@@ -167,6 +178,12 @@ impl GpuContext {
                 ),
             )
             .with(
+                CAP_IMPORT_SYNC_FILE,
+                CapabilityValue::Flag(
+                    sync_file && features.contains(wgpu::Features::VULKAN_EXTERNAL_MEMORY_DMA_BUF),
+                ),
+            )
+            .with(
                 CAP_NV12_SURFACE,
                 CapabilityValue::Flag(features.contains(wgpu::Features::TEXTURE_FORMAT_NV12)),
             )
@@ -178,14 +195,6 @@ impl GpuContext {
                     norm16 && features.contains(wgpu::Features::TEXTURE_FORMAT_P010),
                 ),
             );
-
-        let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
-            label: Some("rbs-gpu"),
-            required_features: features,
-            required_limits: limits,
-            ..Default::default()
-        }))
-        .map_err(|e| GpuError::DeviceRequest(e.to_string()))?;
 
         let metrics = Arc::new(GpuMetrics::default());
         let lost = Arc::clone(&metrics);
@@ -288,6 +297,21 @@ impl GpuContext {
     pub(crate) fn max_texture_dimension(&self) -> u32 {
         self.device.limits().max_texture_dimension_2d
     }
+}
+
+/// Creates the device. Vulkan devices that can wait on sync files are opened through the
+/// HAL so that extension can be enabled; the flag says whether it was.
+fn request_device(
+    adapter: &wgpu::Adapter,
+    desc: &wgpu::DeviceDescriptor<'_>,
+) -> Result<(wgpu::Device, wgpu::Queue, bool), GpuError> {
+    #[cfg(target_os = "linux")]
+    if let Some(opened) = crate::interop::vulkan_request_device(adapter, desc) {
+        return opened;
+    }
+    let (device, queue) = pollster::block_on(adapter.request_device(desc))
+        .map_err(|e| GpuError::DeviceRequest(e.to_string()))?;
+    Ok((device, queue, false))
 }
 
 fn is_software(info: &wgpu::AdapterInfo) -> bool {
