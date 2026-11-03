@@ -162,3 +162,81 @@ fn checks_input_and_changes() {
             .is_err()
     );
 }
+
+fn assert_monotonic(out: &[EncodedPacket]) {
+    for pair in out.windows(2) {
+        assert!(
+            pair[1].dts() >= pair[0].dts() + pair[0].duration().unwrap_or_default(),
+            "packets overlap: {:?} then {:?}",
+            pair[0].dts(),
+            pair[1].dts()
+        );
+    }
+}
+
+#[test]
+fn a_short_gap_or_an_overlap_never_moves_time_backwards() {
+    let rate = AudioFormat::STEREO_48K.sample_rate;
+    let left = tone(2048, 0);
+    // 1.5 frames of gap: the old tail (with the encoder delay) reaches past the block.
+    // And an overlap of two frames.
+    for next in [
+        ORIGIN + rate.duration_of(2048 + 1536),
+        ORIGIN + rate.duration_of(0),
+    ] {
+        let mut s = session();
+        let mut out = Vec::new();
+        s.submit(&AudioBlock::planar(AudioFormat::STEREO_48K, ORIGIN, &[&left, &left]).unwrap())
+            .unwrap();
+        s.submit(&AudioBlock::planar(AudioFormat::STEREO_48K, next, &[&left, &left]).unwrap())
+            .unwrap();
+        // The timeline continues from the new block: no further restart.
+        let after = next + rate.duration_of(2048);
+        s.submit(&AudioBlock::planar(AudioFormat::STEREO_48K, after, &[&left, &left]).unwrap())
+            .unwrap();
+        s.flush(&mut out).unwrap();
+        assert!(out.len() >= 6);
+        assert_monotonic(&out);
+    }
+}
+
+#[test]
+fn bitrate_changes_mid_stream() {
+    let mut s = session();
+    let mut out = Vec::new();
+    let left = tone(48_000, 0);
+    let rate = AudioFormat::STEREO_48K.sample_rate;
+    s.submit(&AudioBlock::planar(AudioFormat::STEREO_48K, ORIGIN, &[&left, &left]).unwrap())
+        .unwrap();
+    s.drain(&mut out).unwrap();
+    let before = out.len();
+    assert!(before > 0);
+    s.reconfigure(&EncoderChange::Bitrate(RateControl::Cbr {
+        bitrate_bps: 64_000,
+    }))
+    .unwrap();
+    let next = ORIGIN + rate.duration_of(48_000);
+    s.submit(&AudioBlock::planar(AudioFormat::STEREO_48K, next, &[&left, &left]).unwrap())
+        .unwrap();
+    s.flush(&mut out).unwrap();
+    assert!(out.len() >= before + 46, "packets keep coming");
+    assert_monotonic(&out);
+}
+
+#[test]
+fn probe_declares_runtime_changes() {
+    use rbs_core::capability::CapabilityValue;
+    use rbs_core::registry::AdapterFactory;
+    let caps = AacFactory::new().probe().unwrap();
+    let Some(CapabilityValue::Set(set)) = caps.get(&rbs_codec::caps::RECONFIGURE) else {
+        panic!("codec.reconfigure missing");
+    };
+    assert!(
+        set.iter()
+            .any(|v| v == rbs_codec::caps::RECONFIGURE_BITRATE)
+    );
+    assert!(
+        set.iter()
+            .any(|v| v == rbs_codec::caps::RECONFIGURE_KEYFRAME)
+    );
+}

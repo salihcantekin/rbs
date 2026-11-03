@@ -42,6 +42,10 @@ const MAX_CHANNELS: usize = 2;
 /// keeps its state.
 const NEED_MORE: i32 = i32::from_be_bytes(*b"more");
 
+/// Status the input callback returns when the converter asks for a buffer layout the
+/// session did not set up (or the callback panicked). `fill` turns it into a failure.
+const BAD_INPUT: i32 = i32::from_be_bytes(*b"bad!");
+
 /// Bitrates AudioToolbox's AAC-LC encoder accepts, per channel.
 const MIN_BPS_PER_CHANNEL: u64 = 16_000;
 const MAX_BPS_PER_CHANNEL: u64 = 160_000;
@@ -89,6 +93,13 @@ impl AdapterFactory for AacFactory {
             .with(
                 caps::AUDIO_CHANNELS_MAX,
                 CapabilityValue::Int(MAX_CHANNELS as i64),
+            )
+            .with(
+                caps::RECONFIGURE,
+                CapabilityValue::Set(vec![
+                    caps::RECONFIGURE_BITRATE.to_owned(),
+                    caps::RECONFIGURE_KEYFRAME.to_owned(),
+                ]),
             ))
     }
 }
@@ -136,7 +147,7 @@ unsafe extern "C-unwind" fn input_proc(
         if count != input.channels {
             // SAFETY: valid in/out count.
             unsafe { packets.write(0) };
-            return NEED_MORE;
+            return BAD_INPUT;
         }
         for c in 0..count {
             // SAFETY: `c < mNumberBuffers`; the staging area outlives the fill call and
@@ -157,7 +168,7 @@ unsafe extern "C-unwind" fn input_proc(
     catch_unwind(AssertUnwindSafe(run)).unwrap_or_else(|_| {
         // SAFETY: valid in/out count.
         unsafe { packets.write(0) };
-        NEED_MORE
+        BAD_INPUT
     })
 }
 
@@ -171,12 +182,17 @@ pub struct AacSession {
     staged: usize,
     output: Box<[u8]>,
     pending: Vec<EncodedPacket>,
-    /// Timeline start and samples submitted / packets emitted since.
+    /// Timeline start as the input sees it (the first block's timestamp), for the
+    /// continuity check.
     origin: Option<Timestamp>,
+    /// Timeline start of the packets: `origin`, or the end of the previous timeline's
+    /// last packet if that is later (invariant 4 after a discontinuity).
+    packet_origin: Timestamp,
+    /// End (`pts + duration`) of the last packet emitted, on any timeline.
+    last_end: Option<Timestamp>,
     samples_in: u64,
     packets_out: u64,
     priming: u32,
-    bitrate_bps: u64,
 }
 
 // SAFETY: an AudioConverter has no thread affinity; the session (and with it the
@@ -299,10 +315,11 @@ impl AacSession {
             output: Box::new([]),
             pending: Vec::with_capacity(PENDING),
             origin: None,
+            packet_origin: Timestamp::from_nanos(0),
+            last_end: None,
             samples_in: 0,
             packets_out: 0,
             priming: 0,
-            bitrate_bps: config.bitrate_bps,
         };
         let status = set_bitrate(converter, config.bitrate_bps);
         if status != 0 {
@@ -350,8 +367,7 @@ impl AacSession {
     }
 
     fn timestamp_of(&self, packet: u64) -> Timestamp {
-        let origin = self.origin.unwrap_or(Timestamp::from_nanos(0));
-        origin
+        self.packet_origin
             + self
                 .format
                 .sample_rate
@@ -394,6 +410,12 @@ impl AacSession {
                     &mut description,
                 )
             };
+            if status == BAD_INPUT {
+                return Err(EncodeError::Failed {
+                    reason: "AudioConverter asked for an unexpected input layout".into(),
+                    recoverable: false,
+                });
+            }
             if status != 0 && status != NEED_MORE {
                 return Err(EncodeError::Failed {
                     reason: format!("AudioConverterFillComplexBuffer failed with {status}"),
@@ -404,10 +426,18 @@ impl AacSession {
                 return Ok(());
             }
             let len = (list.mBuffers[0].mDataByteSize as usize).min(self.output.len());
-            if len > 0 {
+            if len == 0 {
+                // A packet without bytes would shift every later timestamp.
+                return Err(EncodeError::Failed {
+                    reason: "AudioConverter returned an empty packet".into(),
+                    recoverable: false,
+                });
+            }
+            {
                 let mut data = Vec::with_capacity(len);
                 data.extend_from_slice(&self.output[..len]);
                 let pts = self.timestamp_of(self.packets_out);
+                let duration = self.format.sample_rate.duration_of(u64::from(FRAME_SIZE));
                 let packet = EncodedPacket::new(
                     CodecId::Aac,
                     BitstreamFormat::Raw,
@@ -420,9 +450,10 @@ impl AacSession {
                     reason: e.to_string(),
                     recoverable: false,
                 })?
-                .with_duration(self.format.sample_rate.duration_of(u64::from(FRAME_SIZE)));
+                .with_duration(duration);
                 self.pending.push(packet);
                 self.packets_out += 1;
+                self.last_end = Some(pts + duration);
             }
             if status == NEED_MORE && input.frames == 0 && !end {
                 return Ok(());
@@ -443,7 +474,13 @@ impl AacSession {
         if self.origin.is_some() {
             self.fill(0, true)?;
             // SAFETY: valid converter.
-            unsafe { AudioConverterReset(self.converter) };
+            let status = unsafe { AudioConverterReset(self.converter) };
+            if status != 0 {
+                return Err(EncodeError::Failed {
+                    reason: format!("AudioConverterReset failed with {status}"),
+                    recoverable: false,
+                });
+            }
         }
         self.origin = None;
         self.samples_in = 0;
@@ -476,7 +513,11 @@ impl AudioEncoder for AacSession {
             }
         }
         if self.origin.is_none() {
-            self.origin = Some(block.timestamp());
+            let start = block.timestamp();
+            self.origin = Some(start);
+            // The encoder delay pushes a drained timeline's tail past its last sample;
+            // the next timeline never starts before that tail ends (invariant 4).
+            self.packet_origin = self.last_end.map_or(start, |end| end.max(start));
         }
         let frames = block.frames();
         let samples = block.samples();
@@ -526,7 +567,6 @@ impl AudioEncoder for AacSession {
             EncoderChange::Bitrate(RateControl::Cbr { bitrate_bps }) => {
                 check_bitrate(*bitrate_bps, self.channels).map_err(EncodeError::InvalidInput)?;
                 if set_bitrate(self.converter, *bitrate_bps) == 0 {
-                    self.bitrate_bps = *bitrate_bps;
                     Ok(())
                 } else {
                     Err(EncodeError::Unsupported)
