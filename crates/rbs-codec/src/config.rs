@@ -14,6 +14,14 @@ pub enum RateControl {
         /// Target bits per second.
         bitrate_bps: u64,
     },
+    /// Constant bitrate padded with filler data, so that every second carries the full
+    /// bitrate even when the picture needs fewer bits (some ingest servers and players
+    /// expect it). Only adapters that list `cbr_padded` in `codec.video.rate_control`
+    /// take it.
+    CbrPadded {
+        /// Target bits per second, reached with filler data when needed.
+        bitrate_bps: u64,
+    },
     /// Variable bitrate with a ceiling.
     Vbr {
         /// Average bits per second.
@@ -34,6 +42,7 @@ impl RateControl {
     pub const fn name(&self) -> &'static str {
         match self {
             RateControl::Cbr { .. } => "cbr",
+            RateControl::CbrPadded { .. } => "cbr_padded",
             RateControl::Vbr { .. } => "vbr",
             RateControl::ConstantQuality { .. } => "constant_quality",
         }
@@ -112,12 +121,6 @@ pub struct VideoEncoderConfig {
     pub profile: Option<String>,
     /// Speed and latency tuning.
     pub tuning: EncoderTuning,
-    /// With [`RateControl::Cbr`], pad the stream with filler data so that every second
-    /// carries the full bitrate even when the picture needs fewer bits. Off by default.
-    /// Only adapters that declare `codec.video.cbr_padding` honour it; the others
-    /// refuse it as `Unsupported`, and any adapter refuses it with another rate-control
-    /// mode as `InvalidConfig`.
-    pub cbr_padding: bool,
     /// Opaque adapter-specific options. The engine never reads them (principle P3).
     pub adapter_options: Vec<(String, String)>,
 }
@@ -139,7 +142,7 @@ pub struct AudioEncoderConfig {
 
 impl VideoEncoderConfig {
     /// A configuration with a 2 s keyframe interval, no B-frames, no profile, default
-    /// tuning, no CBR padding and no adapter options.
+    /// tuning and no adapter options.
     pub fn new(
         codec: CodecId,
         format: VideoFormat,
@@ -157,7 +160,6 @@ impl VideoEncoderConfig {
             max_b_frames: 0,
             profile: None,
             tuning: EncoderTuning::default(),
-            cbr_padding: false,
             adapter_options: Vec::new(),
         }
     }
@@ -186,28 +188,10 @@ impl VideoEncoderConfig {
         self
     }
 
-    /// Turns CBR filler-data padding on or off ([`VideoEncoderConfig::cbr_padding`]).
-    pub fn with_cbr_padding(mut self, on: bool) -> Self {
-        self.cbr_padding = on;
-        self
-    }
-
     /// Adds an opaque adapter-specific option.
     pub fn with_adapter_option(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {
         self.adapter_options.push((key.into(), value.into()));
         self
-    }
-
-    /// `Err` with the reason when `cbr_padding` is set with a rate-control mode other
-    /// than CBR. Adapters call it from `create` and map the reason to `InvalidConfig`.
-    pub fn check_cbr_padding(&self) -> Result<(), String> {
-        if self.cbr_padding && !matches!(self.rate_control, RateControl::Cbr { .. }) {
-            return Err(format!(
-                "CBR padding needs constant bitrate, not {}",
-                self.rate_control.name()
-            ));
-        }
-        Ok(())
     }
 }
 
@@ -260,6 +244,7 @@ mod tests {
     fn rate_control_names_match_capability_values() {
         let modes = [
             RateControl::Cbr { bitrate_bps: 1 },
+            RateControl::CbrPadded { bitrate_bps: 1 },
             RateControl::Vbr {
                 target_bps: 1,
                 max_bps: 2,

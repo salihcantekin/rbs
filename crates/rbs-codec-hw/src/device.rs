@@ -126,6 +126,12 @@ fn set<'a>(values: impl IntoIterator<Item = &'a str>) -> CapabilityValue {
     CapabilityValue::Set(values.into_iter().map(str::to_owned).collect())
 }
 
+/// True when every codec of `device` has CBR with filler data: only then is
+/// `cbr_padded` declared, and [`crate::plan::plan`] takes it on the same rule.
+pub fn padded_everywhere(device: &DeviceCaps) -> bool {
+    !device.codecs.is_empty() && device.codecs.iter().all(|c| c.cbr && c.cbr_padding)
+}
+
 /// The capabilities an adapter declares for `device` (`adapter.hardware`, system
 /// memory input, no B-frames). Empty when the device encodes nothing. Width and
 /// height are the range every declared codec supports, so a size in range works with
@@ -159,9 +165,13 @@ pub fn capability_set(device: &DeviceCaps) -> CapabilitySet {
         }
         ten_bit |= c.ten_bit();
     }
+    let cbr_padding = padded_everywhere(device);
     let mut rate_controls = Vec::new();
     if all(|c| c.cbr) {
         rate_controls.push("cbr");
+    }
+    if cbr_padding {
+        rate_controls.push("cbr_padded");
     }
     if all(|c| c.vbr) {
         rate_controls.push("vbr");
@@ -169,7 +179,6 @@ pub fn capability_set(device: &DeviceCaps) -> CapabilitySet {
     if all(|c| c.quality) {
         rate_controls.push("constant_quality");
     }
-    let cbr_padding = all(|c| c.cbr && c.cbr_padding);
     let mut reconfigure = vec![caps::RECONFIGURE_KEYFRAME];
     if all(|c| c.dynamic_bitrate) {
         reconfigure.insert(0, caps::RECONFIGURE_BITRATE);
@@ -210,7 +219,6 @@ pub fn capability_set(device: &DeviceCaps) -> CapabilitySet {
         // Frame reordering stays off until its depth is measured on hardware.
         .with(caps::VIDEO_B_FRAMES_MAX, CapabilityValue::Int(0))
         .with(caps::RECONFIGURE, set(reconfigure))
-        .with(caps::VIDEO_CBR_PADDING, CapabilityValue::Flag(cbr_padding))
         .with(caps::INPUT_MEMORY, set(["system"]))
         .with(
             caps::INPUT_PIXEL_FORMAT,
@@ -275,14 +283,10 @@ mod tests {
         );
         assert_eq!(
             values(&set, &caps::VIDEO_RATE_CONTROL),
-            ["cbr", "constant_quality", "vbr"]
+            ["cbr", "cbr_padded", "constant_quality", "vbr"]
         );
         assert_eq!(values(&set, &caps::RECONFIGURE), ["bitrate", "keyframe"]);
         assert_eq!(set.get(&caps::HARDWARE), Some(&CapabilityValue::Flag(true)));
-        assert_eq!(
-            set.get(&caps::VIDEO_CBR_PADDING),
-            Some(&CapabilityValue::Flag(true))
-        );
     }
 
     #[test]
@@ -291,8 +295,8 @@ mod tests {
         device.codecs[1].cbr_padding = false;
         let set = capability_set(&device);
         assert_eq!(
-            set.get(&caps::VIDEO_CBR_PADDING),
-            Some(&CapabilityValue::Flag(false))
+            values(&set, &caps::VIDEO_RATE_CONTROL),
+            ["cbr", "constant_quality", "vbr"]
         );
     }
 
@@ -307,7 +311,10 @@ mod tests {
         assert_eq!(values(&set, &caps::VIDEO_BIT_DEPTH), ["8"]);
         assert_eq!(values(&set, &caps::INPUT_PIXEL_FORMAT), ["nv12"]);
         assert_eq!(values(&set, &caps::RECONFIGURE), ["keyframe"]);
-        assert_eq!(values(&set, &caps::VIDEO_RATE_CONTROL), ["cbr", "vbr"]);
+        assert_eq!(
+            values(&set, &caps::VIDEO_RATE_CONTROL),
+            ["cbr", "cbr_padded", "vbr"]
+        );
         assert_eq!(set.get(&caps::VIDEO_FPS_MAX), None);
     }
 

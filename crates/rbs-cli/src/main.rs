@@ -202,7 +202,6 @@ fn record(a: &RecordArgs) -> Result<(), String> {
     settings.video.max_b_frames = a.b_frames;
     settings.video.profile = a.profile.clone();
     settings.video.preset = a.preset;
-    settings.video.cbr_padding = a.cbr_padding;
     settings.audio = (!a.no_audio).then(|| {
         let mut audio = AudioSettings::default();
         audio.bitrate_bps = a.audio_bitrate;

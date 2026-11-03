@@ -219,25 +219,29 @@ fn every_video_quality_setting_reaches_the_encoder() {
     assert_eq!(config.max_b_frames, 2);
     assert_eq!(config.profile.as_deref(), Some("main"));
     assert_eq!(config.tuning.preset, EncoderPreset::Quality);
-    assert!(!config.cbr_padding);
     let report = recording.finish();
     assert!(report.shutdown_errors.is_empty(), "{report:?}");
 }
 
 #[test]
-fn cbr_padding_skips_encoders_that_do_not_declare_it() {
+fn a_rate_control_no_encoder_takes_fails_with_each_reason() {
     let Some(gpu) = gpu() else { return };
     let r = rig();
     let (col, canvas) = scene();
     let (engine, _) = engine_at_start();
     let mut settings = RecordSettings::new(canvas, "mem://padded", ContainerId::Matroska);
-    settings.video.cbr_padding = true;
+    settings.video.rate_control = RateControl::CbrPadded {
+        bitrate_bps: 8_000_000,
+    };
     let err = Recording::start(engine, gpu, &col, &r.adapters, &settings).unwrap_err();
     match &err {
         RecordError::NoAdapter {
             port: Port::VideoEncoder,
             tried,
-        } => assert_eq!(tried.len(), 2, "both fakes rejected by capability: {err}"),
+        } => {
+            assert_eq!(tried.len(), 2, "{err}");
+            assert!(tried[1].1.contains("cbr_padded"), "{err}");
+        }
         other => panic!("{other}"),
     }
     assert!(

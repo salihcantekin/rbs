@@ -191,8 +191,7 @@ impl Prepared {
             let mut tuning = EncoderTuning::default();
             tuning.preset = out.video.preset;
             tuning
-        })
-        .with_cbr_padding(out.video.cbr_padding);
+        });
         let video_config = match &out.video.profile {
             Some(profile) => video_config.with_profile(profile.clone()),
             None => video_config,

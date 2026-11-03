@@ -25,9 +25,6 @@ pub const VIDEO_FPS_MAX: CapabilityKey = CapabilityKey::new_static("codec.video.
 pub const VIDEO_RATE_CONTROL: CapabilityKey = CapabilityKey::new_static("codec.video.rate_control");
 /// Int: most B-frames between references; 0 when not supported.
 pub const VIDEO_B_FRAMES_MAX: CapabilityKey = CapabilityKey::new_static("codec.video.b_frames.max");
-/// Flag: honours `VideoEncoderConfig::cbr_padding` (filler data that keeps a CBR
-/// stream at its full bitrate). Absent or false means padding is refused.
-pub const VIDEO_CBR_PADDING: CapabilityKey = CapabilityKey::new_static("codec.video.cbr_padding");
 /// Set: runtime changes honoured, see [`RECONFIGURE_BITRATE`] and [`RECONFIGURE_KEYFRAME`].
 pub const RECONFIGURE: CapabilityKey = CapabilityKey::new_static("codec.reconfigure");
 /// Int: concurrent sessions; absent means unlimited.
@@ -47,4 +44,4 @@ pub const RECONFIGURE_BITRATE: &str = "bitrate";
 pub const RECONFIGURE_KEYFRAME: &str = "keyframe";
 
 /// Values of [`VIDEO_RATE_CONTROL`], matching [`crate::RateControl::name`].
-pub const RATE_CONTROL_NAMES: [&str; 3] = ["cbr", "vbr", "constant_quality"];
+pub const RATE_CONTROL_NAMES: [&str; 4] = ["cbr", "cbr_padded", "vbr", "constant_quality"];

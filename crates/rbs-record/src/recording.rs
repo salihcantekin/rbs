@@ -123,7 +123,8 @@ impl fmt::Debug for RecordAdapters {
 pub struct VideoSettings {
     /// Codec.
     pub codec: CodecId,
-    /// Rate control: CBR, VBR or constant quality, with its bitrates or level.
+    /// Rate control: CBR (padded with filler data or not), VBR or constant quality,
+    /// with its bitrates or level.
     pub rate_control: RateControl,
     /// Keyframe interval.
     pub keyframe_interval: KeyframeInterval,
@@ -134,15 +135,12 @@ pub struct VideoSettings {
     pub profile: Option<String>,
     /// Speed versus quality.
     pub preset: EncoderPreset,
-    /// Pad a CBR stream with filler data to its full bitrate. Only with CBR; only
-    /// encoders that declare `codec.video.cbr_padding` are chosen when it is on.
-    pub cbr_padding: bool,
     /// The export's pixel format (NV12, or P010 for 10-bit).
     pub format: YuvFormat,
 }
 
 impl Default for VideoSettings {
-    /// H.264, CBR 12 Mbit/s without padding, a keyframe every 2 s, no B-frames, the
+    /// H.264, CBR 12 Mbit/s (not padded), a keyframe every 2 s, no B-frames, the
     /// encoder's default profile, the balanced preset, NV12.
     fn default() -> Self {
         Self {
@@ -154,7 +152,6 @@ impl Default for VideoSettings {
             max_b_frames: 0,
             profile: None,
             preset: EncoderPreset::Balanced,
-            cbr_padding: false,
             format: YuvFormat::Nv12,
         }
     }

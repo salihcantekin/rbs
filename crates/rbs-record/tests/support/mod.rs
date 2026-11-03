@@ -12,8 +12,8 @@ use rbs_audio::AudioGraphConfig;
 use rbs_audio_io_test::TestAudioBackend;
 use rbs_capture_test::TestCaptureFactory;
 use rbs_codec::{
-    CreateError, EncodeError, EncoderChange, VideoEncoder, VideoEncoderConfig, VideoEncoderFactory,
-    caps as codec_caps,
+    CreateError, EncodeError, EncoderChange, RateControl, VideoEncoder, VideoEncoderConfig,
+    VideoEncoderFactory, caps as codec_caps,
 };
 use rbs_codec_mf::testing::FakeAacFactory;
 use rbs_core::capability::{CapabilitySet, CapabilityValue};
@@ -110,8 +110,11 @@ impl VideoEncoderFactory for FakeVideoFactory {
                 what: "no device (test)".into(),
             });
         }
-        // Not declared, so selection never offers a padded configuration.
-        assert!(!config.cbr_padding, "undeclared CBR padding reached create");
+        if matches!(config.rate_control, RateControl::CbrPadded { .. }) {
+            return Err(CreateError::Unsupported {
+                what: "cbr_padded (test)".into(),
+            });
+        }
         *self.configs.lock().unwrap() = Some(config.clone());
         Ok(Box::new(FakeVideo {
             stream: StreamDescriptor::new(

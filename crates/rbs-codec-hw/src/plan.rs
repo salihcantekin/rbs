@@ -6,7 +6,7 @@ use rbs_codec::{CreateError, EncoderPreset, RateControl, VideoEncoderConfig};
 use rbs_core::media::{CodecId, MemoryKind, PixelFormat};
 use rbs_media_format::h273::ColorCodes;
 
-use crate::device::DeviceCaps;
+use crate::device::{DeviceCaps, padded_everywhere};
 
 /// Codec profile.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -101,8 +101,8 @@ pub struct Plan {
     pub profile: Profile,
     /// Rate control.
     pub rc: Rc,
-    /// Pad the CBR stream with filler data to its full bitrate (only with
-    /// [`Rc::Cbr`]).
+    /// Pad the CBR stream with filler data to its full bitrate (`cbr_padded`; `rc` is
+    /// then [`Rc::Cbr`]).
     pub cbr_padding: bool,
     /// Frames between IDR pictures (the GOP length; P frames only).
     pub gop: u32,
@@ -137,7 +137,9 @@ pub fn rate_control(rc: &RateControl) -> Result<Rc, String> {
         }
     };
     match *rc {
-        RateControl::Cbr { bitrate_bps } => Ok(Rc::Cbr {
+        // Padding is not part of `Rc`: the plan carries it (`Plan::cbr_padding`), and
+        // engines keep it through rate changes.
+        RateControl::Cbr { bitrate_bps } | RateControl::CbrPadded { bitrate_bps } => Ok(Rc::Cbr {
             bitrate: bps(bitrate_bps, "bitrate")?,
         }),
         RateControl::Vbr {
@@ -164,9 +166,9 @@ pub fn rate_control(rc: &RateControl) -> Result<Rc, String> {
 /// Refused as `Unsupported`: a codec the device does not encode, input memory other
 /// than system, a pixel format other than NV12 (or P010 with 10-bit HEVC), odd or
 /// out-of-range sizes, a profile the device does not have, a rate-control mode the
-/// device does not have, CBR padding the device does not have, and colours without
-/// H.273 code points. Refused as `InvalidConfig`: invalid bitrates or quality levels,
-/// CBR padding with another mode than CBR, and a zero frame rate. The
+/// device does not have (`cbr_padded` needs it on every codec, as declared), and
+/// colours without H.273 code points. Refused as `InvalidConfig`: invalid bitrates or
+/// quality levels and a zero frame rate. The
 /// default profile is H.264 High (else Main, else Baseline) and HEVC Main or Main 10
 /// by pixel format.
 pub fn plan(config: &VideoEncoderConfig, device: &DeviceCaps) -> Result<Plan, CreateError> {
@@ -217,7 +219,10 @@ pub fn plan(config: &VideoEncoderConfig, device: &DeviceCaps) -> Result<Plan, Cr
         ))
     })?;
     let rc = rate_control(&config.rate_control).map_err(CreateError::InvalidConfig)?;
+    let cbr_padding = matches!(config.rate_control, RateControl::CbrPadded { .. });
     let mode_supported = match rc {
+        // Device-wide, as declared: a codec alone with filler data is not enough.
+        Rc::Cbr { .. } if cbr_padding => padded_everywhere(device),
         Rc::Cbr { .. } => caps.cbr,
         Rc::Vbr { .. } => caps.vbr,
         Rc::Quality { .. } => caps.quality,
@@ -226,15 +231,6 @@ pub fn plan(config: &VideoEncoderConfig, device: &DeviceCaps) -> Result<Plan, Cr
         return Err(unsupported(format!(
             "rate control {} on {}",
             config.rate_control.name(),
-            device.name
-        )));
-    }
-    config
-        .check_cbr_padding()
-        .map_err(CreateError::InvalidConfig)?;
-    if config.cbr_padding && !caps.cbr_padding {
-        return Err(unsupported(format!(
-            "CBR padding for {codec} on {}",
             device.name
         )));
     }
@@ -260,7 +256,7 @@ pub fn plan(config: &VideoEncoderConfig, device: &DeviceCaps) -> Result<Plan, Cr
         low_latency: config.tuning.low_latency,
         profile,
         rc,
-        cbr_padding: config.cbr_padding,
+        cbr_padding,
         gop: config.keyframe_interval.frames_at(config.frame_rate).max(1),
         color,
     })
@@ -384,27 +380,28 @@ mod tests {
     #[test]
     fn cbr_padding() {
         let device = discrete_gpu();
-        let padded = config(CodecId::H264, PixelFormat::Nv12).with_cbr_padding(true);
-        assert!(plan(&padded, &device).unwrap().cbr_padding);
-
-        let mut vbr = padded.clone();
-        vbr.rate_control = RateControl::Vbr {
-            target_bps: 1_000_000,
-            max_bps: 2_000_000,
+        let mut padded = config(CodecId::H264, PixelFormat::Nv12);
+        padded.rate_control = RateControl::CbrPadded {
+            bitrate_bps: 6_000_000,
         };
-        assert!(matches!(
-            plan(&vbr, &device),
-            Err(CreateError::InvalidConfig(_))
-        ));
+        let p = plan(&padded, &device).unwrap();
+        assert!(p.cbr_padding);
+        assert_eq!(p.rc, Rc::Cbr { bitrate: 6_000_000 });
 
-        let mut no_padding = discrete_gpu();
-        no_padding.codecs[0].cbr_padding = false;
+        // HEVC without filler data: the device does not declare `cbr_padded`, so H.264
+        // is refused too.
+        let mut partial = discrete_gpu();
+        partial.codecs[1].cbr_padding = false;
         assert!(matches!(
-            plan(&padded, &no_padding),
+            plan(&padded, &partial),
             Err(CreateError::Unsupported { .. })
         ));
-        // Without padding the device is fine.
-        assert!(plan(&config(CodecId::H264, PixelFormat::Nv12), &no_padding).is_ok());
+        // Plain CBR is fine there.
+        assert!(
+            !plan(&config(CodecId::H264, PixelFormat::Nv12), &partial)
+                .unwrap()
+                .cbr_padding
+        );
     }
 
     #[test]

@@ -42,8 +42,6 @@ pub struct RecordArgs {
     pub profile: Option<String>,
     /// Encoder speed versus quality.
     pub preset: EncoderPreset,
-    /// Pad CBR video with filler data to its full bitrate.
-    pub cbr_padding: bool,
     /// Audio bitrate in bit/s.
     pub audio_bitrate: u64,
     /// Video encoder adapter id, or its last dotted part (`nvenc`): only this one is used.
@@ -148,6 +146,7 @@ struct RateFlags {
     bitrate_bps: Option<u64>,
     max_bps: Option<u64>,
     quality: Option<u8>,
+    padded: bool,
 }
 
 impl RateFlags {
@@ -160,7 +159,13 @@ impl RateFlags {
         if mode != "cq" && self.quality.is_some() {
             return Err("--quality needs --rate-control cq".into());
         }
+        if mode != "cbr" && self.padded {
+            return Err("--cbr-padding needs --rate-control cbr".into());
+        }
         match mode {
+            "cbr" if self.padded => Ok(RateControl::CbrPadded {
+                bitrate_bps: bitrate,
+            }),
             "cbr" => Ok(RateControl::Cbr {
                 bitrate_bps: bitrate,
             }),
@@ -217,11 +222,10 @@ fn size(text: &str) -> Result<Size, String> {
 /// 2 s, 0 B-frames, profile auto, preset balanced`.
 pub fn describe_video(a: &RecordArgs) -> String {
     let rate = match a.rate_control {
-        RateControl::Cbr { bitrate_bps } => format!(
-            "cbr {} kbit/s{}",
-            bitrate_bps / 1000,
-            if a.cbr_padding { " padded" } else { "" }
-        ),
+        RateControl::Cbr { bitrate_bps } => format!("cbr {} kbit/s", bitrate_bps / 1000),
+        RateControl::CbrPadded { bitrate_bps } => {
+            format!("cbr {} kbit/s padded", bitrate_bps / 1000)
+        }
         RateControl::Vbr {
             target_bps,
             max_bps,
@@ -292,7 +296,6 @@ fn record<'a>(mut it: impl Iterator<Item = &'a str>) -> Result<RecordArgs, Strin
         b_frames: 0,
         profile: None,
         preset: EncoderPreset::Balanced,
-        cbr_padding: false,
         audio_bitrate: 160_000,
         encoder: None,
         display: None,
@@ -342,7 +345,7 @@ fn record<'a>(mut it: impl Iterator<Item = &'a str>) -> Result<RecordArgs, Strin
                 a.profile = Some(name);
             }
             "--preset" => a.preset = preset(value(&mut it, arg)?)?,
-            "--cbr-padding" => a.cbr_padding = true,
+            "--cbr-padding" => rate.padded = true,
             "--audio-bitrate" => a.audio_bitrate = kbps(value(&mut it, arg)?, arg)?,
             "--encoder" => a.encoder = Some(value(&mut it, arg)?.to_owned()),
             "--display" => a.display = Some(number(value(&mut it, arg)?, arg)?),
@@ -364,9 +367,6 @@ fn record<'a>(mut it: impl Iterator<Item = &'a str>) -> Result<RecordArgs, Strin
     a.out = out.ok_or("record: the output file is missing")?;
     a.container = container_of(&a.out)?;
     a.rate_control = rate.rate_control()?;
-    if a.cbr_padding && !matches!(a.rate_control, RateControl::Cbr { .. }) {
-        return Err("--cbr-padding needs --rate-control cbr".into());
-    }
     Ok(a)
 }
 
@@ -436,8 +436,8 @@ mod tests {
     fn video_quality_options() {
         let a = parse_record(&["a.mkv"]).unwrap();
         assert_eq!(
-            (a.b_frames, a.profile.as_deref(), a.preset, a.cbr_padding),
-            (0, None, EncoderPreset::Balanced, false)
+            (a.b_frames, a.profile.as_deref(), a.preset),
+            (0, None, EncoderPreset::Balanced)
         );
         assert_eq!(
             a.keyframe_interval,
@@ -457,7 +457,12 @@ mod tests {
             "quality",
         ])
         .unwrap();
-        assert!(a.cbr_padding);
+        assert_eq!(
+            a.rate_control,
+            RateControl::CbrPadded {
+                bitrate_bps: 12_000_000
+            }
+        );
         assert_eq!(
             a.keyframe_interval,
             KeyframeInterval::Duration(Duration::from_secs(4))
