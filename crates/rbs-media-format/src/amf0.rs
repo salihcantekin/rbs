@@ -2,7 +2,14 @@
 //!
 //! Writers append to a caller-owned `Vec<u8>`. [`decode`] reads one value into an
 //! owned [`Decoded`] tree; it allocates and is meant for control messages (RTMP
-//! command replies), not for per-packet work. Nesting is bounded by [`MAX_DEPTH`].
+//! command replies), not for per-packet work, and takes inputs the caller has already
+//! bounded in size (one RTMP message). Nesting is bounded by [`MAX_DEPTH`], and no
+//! allocation is sized from a count read off the wire.
+//!
+//! Decoded markers: number, boolean, string, long string, XML document (as a string),
+//! object, typed object (class name dropped), ECMA array, strict array, date, null,
+//! undefined and unsupported (as undefined). References (0x07) and the AMF3 switch
+//! (0x11) are refused: an RTMP client asks for AMF0 with `objectEncoding: 0`.
 
 use crate::FormatError;
 
@@ -17,6 +24,9 @@ const OBJECT_END: u8 = 0x09;
 const STRICT_ARRAY: u8 = 0x0a;
 const DATE: u8 = 0x0b;
 const LONG_STRING: u8 = 0x0c;
+const UNSUPPORTED: u8 = 0x0d;
+const XML_DOCUMENT: u8 = 0x0f;
+const TYPED_OBJECT: u8 = 0x10;
 
 /// Deepest nesting of objects and arrays that [`decode`] accepts.
 pub const MAX_DEPTH: usize = 16;
@@ -64,7 +74,8 @@ pub fn string(out: &mut Vec<u8>, value: &str) {
 }
 
 /// Appends an object or ECMA-array key: a 16-bit length and UTF-8 bytes. Keys longer
-/// than 65 535 bytes are cut at a character boundary.
+/// than 65 535 bytes are cut at a character boundary. An empty key reads back as the
+/// object end, so property names must not be empty.
 pub fn key(out: &mut Vec<u8>, value: &str) {
     let mut end = value.len().min(usize::from(u16::MAX));
     while !value.is_char_boundary(end) {
@@ -233,11 +244,16 @@ impl<'a> Reader<'a> {
                 let len = self.u16()?;
                 Decoded::String(self.text(len)?)
             }
-            LONG_STRING => {
+            LONG_STRING | XML_DOCUMENT => {
                 let len = self.u32()?;
                 Decoded::String(self.text(len)?)
             }
             OBJECT => Decoded::Object(self.properties(depth)?),
+            TYPED_OBJECT => {
+                let len = self.u16()?;
+                self.take(len)?;
+                Decoded::Object(self.properties(depth)?)
+            }
             ECMA_ARRAY => {
                 // The count is a hint only; the end marker terminates the array.
                 self.u32()?;
@@ -245,8 +261,9 @@ impl<'a> Reader<'a> {
             }
             STRICT_ARRAY => {
                 let count = self.u32()?;
-                // Every element takes at least one byte: bound the capacity by the input.
-                let mut items = Vec::with_capacity(count.min(self.data.len() - self.pos));
+                // The count comes off the wire: grow as elements decode, never reserve
+                // for it (nested arrays would multiply any reservation).
+                let mut items = Vec::new();
                 for _ in 0..count {
                     items.push(self.value(depth + 1)?);
                 }
@@ -258,7 +275,7 @@ impl<'a> Reader<'a> {
                 Decoded::Date(ms)
             }
             NULL => Decoded::Null,
-            UNDEFINED => Decoded::Undefined,
+            UNDEFINED | UNSUPPORTED => Decoded::Undefined,
             _ => return Err(FormatError::Unsupported("AMF0 type marker")),
         })
     }
@@ -372,6 +389,22 @@ mod tests {
     }
 
     #[test]
+    fn decodes_typed_objects_xml_and_unsupported() {
+        let mut out = vec![TYPED_OBJECT, 0, 2, b'C', b'x'];
+        out.extend_from_slice(&[0, 1, b'a', NULL, 0, 0, OBJECT_END]);
+        out.extend_from_slice(&[XML_DOCUMENT, 0, 0, 0, 1, b'<', UNSUPPORTED]);
+        let values = decode_all(&out).unwrap();
+        assert_eq!(
+            values,
+            [
+                Decoded::Object(vec![("a".into(), Decoded::Null)]),
+                Decoded::String("<".into()),
+                Decoded::Undefined
+            ]
+        );
+    }
+
+    #[test]
     fn refuses_bad_input() {
         // Every proper prefix of a valid value is truncated.
         let mut out = Vec::new();
@@ -380,7 +413,7 @@ mod tests {
             assert!(decode(&out[..end]).is_err(), "prefix {end}");
         }
         assert_eq!(
-            decode(&[0x0d]),
+            decode(&[0x07, 0, 1]),
             Err(FormatError::Unsupported("AMF0 type marker"))
         );
         assert_eq!(

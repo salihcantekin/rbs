@@ -348,7 +348,7 @@ impl FlvTracks {
         true
     }
 
-    /// hot. Checks a packet for stream `index` and gives its exact body size. Reads
+    /// Hot path. Checks a packet for stream `index` and gives its exact body size. Reads
     /// the NAL unit lengths of H.264 packets; never allocates.
     pub fn plan(&self, index: usize, packet: &EncodedPacket) -> Result<BodyPlan, PacketError> {
         let kind = self.kind(index).ok_or(PacketError::UnknownStream)?;
@@ -406,10 +406,11 @@ impl FlvTracks {
         })
     }
 
-    /// hot. Appends the body of a packet that [`plan`](Self::plan) accepted, exactly
+    /// Hot path. Appends the body of a packet that [`plan`](Self::plan) accepted, exactly
     /// `plan.data_size` bytes. `cts_ms` is the composition offset (pts minus dts) in
     /// milliseconds, clamped to signed 24 bits; audio ignores it. Allocates only if
-    /// `out` lacks capacity.
+    /// `out` lacks capacity. `plan` must come from this packet; a plan from another
+    /// packet gives a body whose size differs from `plan.data_size`.
     pub fn write_body(
         &self,
         plan: BodyPlan,
@@ -418,6 +419,7 @@ impl FlvTracks {
         out: &mut Vec<u8>,
     ) {
         let data = packet.data().as_ref();
+        let start = out.len();
         match (plan.kind, &self.video) {
             (TrackKind::Video, Some(video)) => {
                 let cts = cts_ms.clamp(-0x80_0000, 0x7f_ffff) as i32;
@@ -449,6 +451,11 @@ impl FlvTracks {
                 out.extend_from_slice(data);
             }
         }
+        debug_assert_eq!(
+            out.len() - start,
+            plan.data_size,
+            "plan from another packet"
+        );
     }
 }
 
