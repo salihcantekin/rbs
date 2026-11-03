@@ -1,0 +1,323 @@
+// Panels connected to the studio (ADR-0041 decision 7): Program, Sources and Mixer.
+// Rust pushes state into the `Studio` global of every window and handles its callbacks
+// by sending commands to the studio's control thread.
+import { Theme, Tokens } from "tokens.slint";
+import { Button, IconButton, IconName, MenuItem, MenuSurface, EmptyState } from "components.slint";
+
+export struct SourceData { id: int, name: string, kind: string, status: string, ok: bool }
+export struct KindData { code: int, label: string }
+export struct TargetData { name: string, is-default: bool }
+// One meter's moving parts as fractions of the bar (rbs_ui::meter::MeterView::zones),
+// its peak-hold position and zone, the clip latch and the accessible value (U16).
+export struct MeterRow {
+    name: string,
+    lo-from: float, lo-to: float, mi-from: float, mi-to: float, hi-from: float, hi-to: float,
+    peak: float, peak-zone: int, clipped: bool, value: string,
+}
+export struct ScaleMark { label: string, at: float }
+
+export global Studio {
+    // 0 starting, 1 running, 2 failed (`failure` says why).
+    in property <int> state;
+    in property <string> failure;
+    in property <[SourceData]> sources;
+    in property <[KindData]> kinds;
+    in property <[TargetData]> targets;
+    // The kind `targets` lists; -1 while a list is being made.
+    in property <int> targets-kind: -1;
+    in property <[MeterRow]> meters;
+    in property <[ScaleMark]> scale;
+    // 0 shown, 1 starting, 2 not on this platform yet, 3 not in this session (remote
+    // desktop), 4 shown only in the main window, 5 the studio is not running.
+    in property <int> preview-state: 1;
+    // Name of the source just deleted (an undo toast shows while it is set).
+    in property <string> deleted;
+    // The add-source picker's chosen kind; -1 shows the list of types.
+    in-out property <int> picker-kind: -1;
+    // The panel the picture shows in: "rbs.program", else "rbs.preview" (without studio
+    // mode both show the scene on air); the other one says where it is.
+    in property <string> picture-panel: "rbs.program";
+    // In-window popups open now. The preview is a native layer above everything Slint
+    // draws, so it is hidden while one is open (ADR-0036).
+    in-out property <int> overlays;
+    callback list-targets(int /* kind */);
+    callback add-source(int /* kind */, int /* target */);
+    callback delete-source(int /* id */);
+    callback undo-delete();
+    callback dismiss-deleted();
+    callback reset-clip(int /* meter */);
+    // `overlays` changed (Rust hides or shows the preview layer).
+    callback overlays-changed();
+}
+
+// The add-source picker: a kind, then what it captures. Keyboard: arrows are not
+// needed; Tab moves through the items, Return picks, Escape closes.
+export component AddSourceMenu inherits PopupWindow {
+    close-policy: close-on-click-outside;
+    width: Tokens.size-menu-sm;
+    property <string> kind-label;
+    MenuSurface {
+        width: Tokens.size-menu-sm;
+        accessible-role: list;
+        accessible-label: Studio.picker-kind < 0 ? @tr("Add source: choose a type") : @tr("Add {}: choose what it captures", kind-label);
+        VerticalLayout {
+            padding: Tokens.space-2;
+            spacing: Tokens.space-1;
+            if Studio.picker-kind < 0: VerticalLayout {
+                spacing: Tokens.space-1;
+                for k[i] in Studio.kinds: MenuItem {
+                    autofocus: i == 0;
+                    text: k.label;
+                    activated => {
+                        Studio.picker-kind = k.code;
+                        kind-label = k.label;
+                        Studio.list-targets(k.code);
+                    }
+                }
+                if Studio.kinds.length == 0: Text {
+                    text: Studio.state == 0 ? @tr("The studio is starting.") : @tr("No source types are available on this system.");
+                    color: Theme.text-secondary;
+                    font-size: Tokens.type-body-size;
+                    wrap: word-wrap;
+                }
+            }
+            if Studio.picker-kind >= 0: VerticalLayout {
+                spacing: Tokens.space-1;
+                MenuItem {
+                    autofocus: Studio.targets-kind != Studio.picker-kind || Studio.targets.length == 0;
+                    text: @tr("Back to source types");
+                    activated => { Studio.picker-kind = -1; }
+                }
+                Rectangle { height: Tokens.size-border; background: Theme.border-subtle; }
+                if Studio.targets-kind != Studio.picker-kind: Text {
+                    text: @tr("Looking for devices…");
+                    color: Theme.text-secondary;
+                    font-size: Tokens.type-body-size;
+                }
+                if Studio.targets-kind == Studio.picker-kind && Studio.targets.length == 0: Text {
+                    text: @tr("Nothing of this type was found.");
+                    color: Theme.text-secondary;
+                    font-size: Tokens.type-body-size;
+                    wrap: word-wrap;
+                }
+                if Studio.targets-kind == Studio.picker-kind: VerticalLayout {
+                    spacing: Tokens.space-1;
+                    for t[i] in Studio.targets: MenuItem {
+                        autofocus: i == 0;
+                        text: t.is-default ? @tr("{} (default)", t.name) : t.name;
+                        activated => {
+                            Studio.add-source(Studio.picker-kind, i);
+                            root.close();
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+// The canvas as the viewers see it. The picture is a native layer the app places over
+// this rectangle; Slint draws only the background and the letterbox bars.
+export component ProgramPanel inherits Rectangle {
+    // "rbs.program" or "rbs.preview".
+    in property <string> panel;
+    in property <string> title;
+    property <bool> here: Studio.picture-panel == panel;
+    property <int> shown: here ? Studio.preview-state : 6;
+    background: Theme.surface-sunken;
+    accessible-role: image;
+    accessible-label: title;
+    accessible-description: shown == 0 ? @tr("The live picture of the scene on air") : note.text;
+    note := Text {
+        visible: shown != 0;
+        width: parent.width - 2 * Tokens.space-4;
+        text: shown == 1 ? @tr("The program is starting.")
+            : shown == 2 ? @tr("The program picture is not available on this platform yet.")
+            : shown == 3 ? @tr("The program picture cannot be shown in this session, for example over remote desktop.")
+            : shown == 4 ? @tr("The program picture shows in the main window. Dock this panel back to see it here.")
+            : shown == 6 ? @tr("Studio mode is off, so the scene on air shows in the Program panel.")
+            : @tr("The studio is not running: {}", Studio.failure);
+        color: Theme.text-secondary;
+        font-size: Tokens.type-body-size;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+        wrap: word-wrap;
+    }
+}
+
+component SourceRowView inherits Rectangle {
+    in property <SourceData> data;
+    height: Tokens.size-control-lg + Tokens.space-2;
+    border-radius: Tokens.radius-sm;
+    background: touch.has-hover ? Theme.surface-overlay : transparent;
+    accessible-role: list-item;
+    accessible-label: @tr("{}, {}, {}", data.name, data.kind, data.status);
+    touch := TouchArea { }
+    HorizontalLayout {
+        padding-left: Tokens.space-2;
+        spacing: Tokens.space-2;
+        VerticalLayout {
+            alignment: center;
+            Text {
+                text: data.name;
+                color: Theme.text-primary;
+                font-size: Tokens.type-label-size;
+                font-weight: Tokens.type-label-weight;
+                overflow: elide;
+            }
+            Text {
+                // State in words, never colour alone (U7).
+                text: @tr("{} · {}", data.kind, data.status);
+                color: data.ok ? Theme.text-secondary : Theme.state-error;
+                font-size: Tokens.type-caption-size;
+                overflow: elide;
+            }
+        }
+        VerticalLayout {
+            alignment: center;
+            IconButton {
+                icon: IconName.close;
+                name: @tr("Delete source {}", data.name);
+                clicked => { Studio.delete-source(data.id); }
+            }
+        }
+    }
+}
+
+export component SourcesPanel inherits Rectangle {
+    background: Theme.surface-raised;
+    property <length> header: Tokens.size-control-md + 2 * Tokens.space-2;
+    HorizontalLayout {
+        y: 0;
+        height: header;
+        padding: Tokens.space-2;
+        alignment: start;
+        add-button := Button {
+            text: @tr("Add source");
+            icon: IconName.chevron-down;
+            enabled: Studio.state == 1;
+            clicked => { Studio.picker-kind = -1; add-menu.show(); }
+        }
+    }
+    if Studio.sources.length == 0: EmptyState {
+        y: header;
+        width: parent.width;
+        height: parent.height - header;
+        title: @tr("No sources yet");
+        message: @tr("Add a screen, window, camera or audio device to the scene.");
+        action: Studio.state == 1 ? @tr("Add source") : "";
+        act => { Studio.picker-kind = -1; add-menu.show(); }
+    }
+    if Studio.sources.length > 0: Flickable {
+        y: header;
+        width: parent.width;
+        height: parent.height - header;
+        content-height: rows.preferred-height;
+        rows := VerticalLayout {
+            padding-left: Tokens.space-1;
+            padding-right: Tokens.space-1;
+            spacing: Tokens.space-1;
+            alignment: start;
+            for s in Studio.sources: SourceRowView { data: s; }
+        }
+    }
+    property <bool> menu-open: add-menu.is-open;
+    changed menu-open => { Studio.overlays += menu-open ? 1 : -1; Studio.overlays-changed(); }
+    add-menu := AddSourceMenu {
+        x: Tokens.space-2;
+        y: header;
+    }
+}
+
+// One horizontal meter (AudioMeter, U16): bar with three zones, peak-hold line, clip
+// box (outlined, filled once clipped), labelled scale under the strip.
+component MeterView inherits Rectangle {
+    in property <MeterRow> data;
+    callback reset();
+    height: Tokens.size-control-sm;
+    accessible-role: progress-indicator;
+    accessible-label: data.name;
+    accessible-value: data.value;
+    HorizontalLayout {
+        spacing: Tokens.space-2;
+        Text {
+            width: 30%;
+            text: data.name;
+            color: Theme.text-primary;
+            font-size: Tokens.type-caption-size;
+            vertical-alignment: center;
+            overflow: elide;
+        }
+        bar := Rectangle {
+            background: Theme.surface-sunken;
+            border-radius: Tokens.radius-sm;
+            clip: true;
+            Rectangle { x: parent.width * data.lo-from; width: parent.width * (data.lo-to - data.lo-from); background: Theme.meter-low; }
+            Rectangle { x: parent.width * data.mi-from; width: parent.width * (data.mi-to - data.mi-from); background: Theme.meter-mid; }
+            Rectangle { x: parent.width * data.hi-from; width: parent.width * (data.hi-to - data.hi-from); background: Theme.meter-high; }
+            if data.peak > 0: Rectangle {
+                x: max(0px, parent.width * data.peak - 2px);
+                width: 2px;
+                background: data.peak-zone == 2 ? Theme.meter-high : data.peak-zone == 1 ? Theme.meter-mid : Theme.meter-low;
+            }
+        }
+        clip-box := Rectangle {
+            width: Tokens.size-icon-box;
+            border-width: Tokens.size-border;
+            border-color: Theme.border-strong;
+            border-radius: Tokens.radius-sm;
+            background: data.clipped ? Theme.meter-clip : transparent;
+            accessible-role: button;
+            accessible-label: data.clipped ? @tr("Clipped. Reset the clip indicator of {}", data.name) : @tr("Not clipped: {}", data.name);
+            accessible-action-default => { root.reset(); }
+            TouchArea { clicked => { root.reset(); } }
+        }
+    }
+}
+
+export component MixerPanel inherits Rectangle {
+    background: Theme.surface-raised;
+    if Studio.meters.length == 0: EmptyState {
+        width: parent.width;
+        height: parent.height;
+        title: @tr("No audio sources");
+        message: @tr("Add an audio input, system audio or application audio to see its levels here.");
+        action: Studio.state == 1 ? @tr("Add source") : "";
+        act => { Studio.picker-kind = -1; add-menu.show(); }
+    }
+    if Studio.meters.length > 0: Flickable {
+        width: parent.width;
+        height: parent.height;
+        content-height: strips.preferred-height;
+        strips := VerticalLayout {
+            padding: Tokens.space-2;
+            spacing: Tokens.space-1;
+            alignment: start;
+            for m[i] in Studio.meters: MeterView {
+                data: m;
+                reset => { Studio.reset-clip(i); }
+            }
+            // The labelled scale (dBFS) under the bars, aligned with them.
+            HorizontalLayout {
+                spacing: Tokens.space-2;
+                height: Tokens.type-caption-line;
+                Rectangle { width: 30%; }
+                scale-row := Rectangle {
+                    for mark in Studio.scale: Text {
+                        x: parent.width * mark.at - self.width / 2;
+                        text: mark.label;
+                        color: Theme.text-secondary;
+                        font-size: Tokens.type-caption-size;
+                    }
+                }
+                Rectangle { width: Tokens.size-icon-box; }
+            }
+        }
+    }
+    property <bool> menu-open: add-menu.is-open;
+    changed menu-open => { Studio.overlays += menu-open ? 1 : -1; Studio.overlays-changed(); }
+    add-menu := AddSourceMenu {
+        x: Tokens.space-2;
+        y: Tokens.space-2;
+    }
+}

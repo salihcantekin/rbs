@@ -13,12 +13,46 @@ publish.workspace = true
 name = "rbs"
 path = "src/main.rs"
 
+[features]
+# `RBS_DEMO_SOURCES=1` adds the deterministic reference adapters (synthetic displays,
+# cameras and audio), for screenshots and UI checks on machines without devices. Off
+# in normal builds.
+demo-sources = ["dep:rbs-capture-test", "dep:rbs-audio-io-test"]
+
 [dependencies]
 rbs-ui = { path = "../rbs-ui" }
 # Exact pin (ADR-0022, decision 5). Skia renderer (decision 1). `unstable-wgpu-30`
 # lets the preview display engine surfaces imported on rbs-gpu's device (decision 2,
 # ADR-0028); it must track rbs-gpu's wgpu major.
-slint = { version = "=1.18.1", default-features = false, features = ["std", "backend-winit", "renderer-skia", "accessibility", "compat-1-2", "unstable-wgpu-30"] }
+slint = { version = "=1.18.1", default-features = false, features = ["std", "backend-winit", "renderer-skia", "accessibility", "compat-1-2", "unstable-wgpu-30", "raw-window-handle-06"] }
+# The Program panel attaches the preview layer to the window (ADR-0034, ADR-0036).
+raw-window-handle = "0.6"
+
+# Application layer: a composition root (ADR-0041 decision 7). The studio runs in this
+# process on its own control thread; with rbs-cli, this is the only place that names
+# adapters (P1, src/platform.rs).
+rbs-core = { path = "../rbs-core" }
+rbs-engine = { path = "../rbs-engine" }
+rbs-graph = { path = "../rbs-graph" }
+rbs-gpu = { path = "../rbs-gpu", features = ["preview-layer"] }
+rbs-audio = { path = "../rbs-audio" }
+rbs-scene = { path = "../rbs-scene" }
+rbs-sources = { path = "../rbs-sources" }
+rbs-record = { path = "../rbs-record" }
+rbs-thread-os = { path = "../rbs-thread-os" }
+rbs-mux-matroska = { path = "../rbs-mux-matroska" }
+rbs-mux-fmp4 = { path = "../rbs-mux-fmp4" }
+rbs-transport-file = { path = "../rbs-transport-file" }
+rbs-capture-test = { path = "../rbs-capture-test", optional = true }
+rbs-audio-io-test = { path = "../rbs-audio-io-test", optional = true }
+
+[target.'cfg(windows)'.dependencies]
+rbs-capture-wgc = { path = "../rbs-capture-wgc" }
+rbs-capture-mf = { path = "../rbs-capture-mf" }
+rbs-audio-io-wasapi = { path = "../rbs-audio-io-wasapi" }
+rbs-codec-nvenc = { path = "../rbs-codec-nvenc" }
+rbs-codec-amf = { path = "../rbs-codec-amf" }
+rbs-codec-mf = { path = "../rbs-codec-mf" }
 
 # Audio meters as Core Animation layers (src/native, ADR-0035). Same objc2 versions as
 # wgpu-hal, raw-window-metal and rbs-gpu's preview layer, so nothing new is built.
@@ -29,25 +63,17 @@ objc2-core-foundation = { version = "0.3.2", default-features = false, features 
 objc2-core-graphics = { version = "0.3.2", default-features = false, features = ["std", "CGColor"] }
 
 [dev-dependencies]
-# The cross-process preview demo (examples/remote_preview.rs) imports engine surfaces.
-rbs-gpu = { path = "../rbs-gpu", features = ["preview-layer"] }
-rbs-core = { path = "../rbs-core" }
-# The demo attaches the preview layer to the window's view (ADR-0034). Same pin as above;
-# the feature only reaches example and test builds.
-slint = { version = "=1.18.1", default-features = false, features = ["raw-window-handle-06"] }
-raw-window-handle = "0.6"
+# Reference adapters for the studio host tests (deterministic, no devices).
+rbs-capture-test = { path = "../rbs-capture-test" }
+rbs-audio-io-test = { path = "../rbs-audio-io-test" }
 # The audio graph check (examples/audio_graph.rs) is a composition root: it wires the
 # platform's audio and AAC adapters into the engine. Every one builds on every platform.
-rbs-audio = { path = "../rbs-audio" }
 rbs-audio-io = { path = "../rbs-audio-io" }
 rbs-audio-io-coreaudio = { path = "../rbs-audio-io-coreaudio" }
 rbs-audio-io-wasapi = { path = "../rbs-audio-io-wasapi" }
 rbs-codec = { path = "../rbs-codec" }
 rbs-codec-audiotoolbox = { path = "../rbs-codec-audiotoolbox" }
 rbs-codec-mf = { path = "../rbs-codec-mf" }
-rbs-engine = { path = "../rbs-engine" }
-rbs-graph = { path = "../rbs-graph" }
-rbs-thread-os = { path = "../rbs-thread-os" }
 
 [target.'cfg(target_os = "macos")'.dev-dependencies]
 # The meter layer test reads the bridge's sublayers.
