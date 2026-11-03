@@ -10,21 +10,29 @@
 //! The binder owns the nodes and links it creates and touches nothing else. Outputs
 //! (stream, recording, preview panels, projectors) are attached by the application to
 //! [`SceneBinder::compositor`]; a compositor without one is not scheduled.
+//!
+//! With [`SceneBinder::with_audio`], sources with an audio output are also linked to
+//! one mixer node (ADR-0039): the audio of every source visible in a program scene.
+//! The application attaches the audio encoder to [`SceneBinder::mixer`].
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::sync::Arc;
 
 use rbs_core::lifecycle::Lifecycle;
-use rbs_graph::description::{GraphDescription, GraphError, Link, NodeId, SchedulePlan};
+use rbs_graph::description::{
+    GraphDescription, GraphError, Link, NodeId, PartitionId, SchedulePlan,
+};
 use rbs_graph::node::{LinkKind, NodeDescriptor, NodeKind, NodeTypeId};
 
 use crate::collection::{SceneCollection, SceneError};
 use crate::flatten::Affine2;
-use crate::model::{CanvasId, Crop, FilterId, ItemId, SceneId, SourceId};
+use crate::model::{CanvasId, Crop, FilterId, ItemId, SceneId, Settings, SourceId};
 
 /// Node type id of the canvas compositor.
 pub const COMPOSITOR_TYPE: &str = "org.rbs.compositor";
+/// Node type id of the audio mixer (ADR-0037), bound when audio is enabled.
+pub const MIXER_TYPE: &str = "org.rbs.audio.mixer";
 
 /// Looks up the descriptor of a node type (from the adapter registry or plugin
 /// manifests). Any `Fn(&NodeTypeId) -> Option<Arc<NodeDescriptor>>` works.
@@ -86,6 +94,29 @@ pub struct BoundCompositor {
     pub created: bool,
 }
 
+/// One input of the mixer.
+#[non_exhaustive]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct BoundAudio {
+    /// The source.
+    pub source: SourceId,
+    /// The node whose audio the mixer hears (the source's node).
+    pub producer: NodeId,
+}
+
+/// The bound mixer and what it mixes.
+#[non_exhaustive]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BoundMixer {
+    /// Its node.
+    pub node: NodeId,
+    /// Its inputs, in source id order. The mixer does not hear an input without a
+    /// strip (ADR-0037), so the application gives each one a strip.
+    pub inputs: Vec<BoundAudio>,
+    /// True if this sync created the node (attach the audio encoder to it).
+    pub created: bool,
+}
+
 /// Something the binder could not represent; the rest of the graph is still bound.
 #[non_exhaustive]
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -94,12 +125,15 @@ pub enum BindProblem {
     UnknownSourceType(SourceId, NodeTypeId),
     /// No node type with this id is installed; the filter is skipped.
     UnknownFilterType(FilterId, NodeTypeId),
-    /// The source's node type is not a `Source` with a video output; it is left out.
-    /// (Audio sources are bound with the mixer, later.)
+    /// The source's node type is not a `Source` with a video output, nor (with audio
+    /// enabled) with an audio output; it is left out.
     NoVideoOutput(SourceId),
     /// The filter's node type is not a `VideoFilter` with video input and output; it
     /// is skipped.
     NoVideoPins(FilterId),
+    /// The filter belongs to a source without a video output; audio filters are not
+    /// bound yet, so it is skipped.
+    FilterOnAudioSource(FilterId),
 }
 
 /// What [`SceneBinder::sync`] produced.
@@ -113,6 +147,17 @@ pub struct BindReport {
     pub retired_compositors: Vec<NodeId>,
     /// Parts of the collection that could not be bound.
     pub problems: Vec<BindProblem>,
+    /// Source nodes this sync created: the application adopts an instance for each
+    /// into the node's partition (a source whose settings changed gets a new node).
+    pub created_sources: Vec<(SourceId, NodeId)>,
+    /// Source nodes this sync removed: the application takes their instances back.
+    pub retired_sources: Vec<NodeId>,
+    /// Filter nodes this sync created.
+    pub created_filters: Vec<(FilterId, NodeId)>,
+    /// Filter nodes this sync removed.
+    pub retired_filters: Vec<NodeId>,
+    /// The mixer, when audio is enabled.
+    pub mixer: Option<BoundMixer>,
 }
 
 /// Why binding failed. The graph and the binder are unchanged.
@@ -122,6 +167,9 @@ pub enum BindError {
     /// The compositor node type is not installed, is not a `Compositor`, or lacks a
     /// many-input video pin or a video output.
     NoCompositor,
+    /// Audio is enabled but the mixer node type is not installed, is not an
+    /// `AudioMixer`, or lacks a many-input audio pin or an audio output.
+    NoMixer,
     /// A graph edit was refused.
     Graph(GraphError),
     /// The collection could not be flattened (cannot happen for a validated
@@ -133,6 +181,7 @@ impl fmt::Display for BindError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             BindError::NoCompositor => write!(f, "no usable {COMPOSITOR_TYPE} node type"),
+            BindError::NoMixer => write!(f, "no usable {MIXER_TYPE} node type"),
             BindError::Graph(e) => write!(f, "graph edit refused: {e}"),
             BindError::Scene(e) => write!(f, "scene error: {e}"),
         }
@@ -152,22 +201,32 @@ impl From<GraphError> for BindError {
 struct Pins {
     input: Option<(usize, String)>,
     output: Option<String>,
+    /// First audio output.
+    audio: Option<String>,
 }
 
-fn video_pins(descriptor: &NodeDescriptor, many_input: bool) -> Pins {
+fn pins_of(descriptor: &NodeDescriptor, kind: LinkKind, many_input: bool) -> Pins {
+    let first_output = |kind: LinkKind| {
+        descriptor
+            .outputs
+            .iter()
+            .find(|p| p.kind == kind)
+            .map(|p| p.name.to_string())
+    };
     Pins {
         input: descriptor
             .inputs
             .iter()
             .enumerate()
-            .find(|(_, p)| p.kind == LinkKind::Video && (p.many || !many_input))
+            .find(|(_, p)| p.kind == kind && (p.many || !many_input))
             .map(|(i, p)| (i, p.name.to_string())),
-        output: descriptor
-            .outputs
-            .iter()
-            .find(|p| p.kind == LinkKind::Video)
-            .map(|p| p.name.to_string()),
+        output: first_output(kind),
+        audio: first_output(LinkKind::Audio),
     }
+}
+
+fn video_pins(descriptor: &NodeDescriptor, many_input: bool) -> Pins {
+    pins_of(descriptor, LinkKind::Video, many_input)
 }
 
 #[derive(Debug, Clone)]
@@ -179,6 +238,8 @@ struct BoundNode {
 #[derive(Debug, Clone)]
 struct BoundSource {
     source: BoundNode,
+    /// The settings the node was made for; other settings get a new node.
+    settings: Settings,
     filters: BTreeMap<FilterId, BoundNode>,
     /// Enabled, bound filters in chain order.
     chain: Vec<FilterId>,
@@ -193,10 +254,6 @@ impl BoundSource {
             .and_then(|f| self.filters.get(f))
             .unwrap_or(&self.source)
     }
-
-    fn nodes(&self) -> impl Iterator<Item = NodeId> + '_ {
-        std::iter::once(self.source.node).chain(self.filters.values().map(|b| b.node))
-    }
 }
 
 #[derive(Debug, Clone)]
@@ -206,10 +263,20 @@ struct BoundComp {
     links: Vec<Link>,
 }
 
+#[derive(Debug, Clone)]
+struct BoundMix {
+    node: BoundNode,
+    /// Links this binder made into the mixer's input pin.
+    links: Vec<Link>,
+}
+
 /// Keeps a graph description in step with a scene collection (scene model spec,
 /// "Graph binding").
 pub struct SceneBinder {
     types: Box<dyn NodeTypes + Send>,
+    /// The partition of the mixer and of audio-only sources; `None`: audio is not
+    /// bound.
+    audio: Option<PartitionId>,
     state: State,
 }
 
@@ -217,6 +284,7 @@ pub struct SceneBinder {
 struct State {
     sources: BTreeMap<SourceId, BoundSource>,
     compositors: BTreeMap<(CanvasId, Role), BoundComp>,
+    mixer: Option<BoundMix>,
 }
 
 impl fmt::Debug for SceneBinder {
@@ -273,8 +341,22 @@ impl SceneBinder {
     pub fn new(types: impl NodeTypes + Send + 'static) -> Self {
         Self {
             types: Box::new(types),
+            audio: None,
             state: State::default(),
         }
+    }
+
+    /// Also binds audio (ADR-0039): one mixer node and audio-only source nodes in
+    /// `partition` (an audio partition, ADR-0037), and links into the mixer from every
+    /// source with an audio output that is visible in a program scene.
+    pub fn with_audio(mut self, partition: PartitionId) -> Self {
+        self.audio = Some(partition);
+        self
+    }
+
+    /// The mixer node, when audio is bound. The audio encoder connects to its output.
+    pub fn mixer(&self) -> Option<NodeId> {
+        self.state.mixer.as_ref().map(|m| m.node.node)
     }
 
     /// The node of a bound source.
@@ -310,7 +392,7 @@ impl SceneBinder {
     ) -> Result<BindReport, BindError> {
         let mut draft_graph = graph.clone();
         let mut draft = self.state.clone();
-        let report = draft.sync(&*self.types, collection, &mut draft_graph)?;
+        let report = draft.sync(&*self.types, self.audio, collection, &mut draft_graph)?;
         *graph = draft_graph;
         self.state = draft;
         Ok(report)
@@ -320,7 +402,11 @@ impl SceneBinder {
 impl State {
     /// Forgets bindings whose nodes were removed from the graph by someone else, so
     /// they are bound again instead of failing forever.
-    fn heal(&mut self, graph: &mut GraphDescription) -> Result<(), GraphError> {
+    fn heal(
+        &mut self,
+        graph: &mut GraphDescription,
+        report: &mut BindReport,
+    ) -> Result<(), GraphError> {
         let lost: Vec<SourceId> = self
             .sources
             .iter()
@@ -333,6 +419,7 @@ impl State {
                 // again from scratch.
                 for f in b.filters.values() {
                     retire(graph, f.node)?;
+                    report.retired_filters.push(f.node);
                 }
             }
         }
@@ -353,17 +440,28 @@ impl State {
         for c in self.compositors.values_mut() {
             c.links.retain(|l| graph.links().contains(l));
         }
+        if self
+            .mixer
+            .as_ref()
+            .is_some_and(|m| graph.node(m.node.node).is_none())
+        {
+            self.mixer = None;
+        }
+        if let Some(m) = &mut self.mixer {
+            m.links.retain(|l| graph.links().contains(l));
+        }
         Ok(())
     }
 
     fn sync(
         &mut self,
         types: &dyn NodeTypes,
+        audio: Option<PartitionId>,
         collection: &SceneCollection,
         graph: &mut GraphDescription,
     ) -> Result<BindReport, BindError> {
-        self.heal(graph)?;
         let mut report = BindReport::default();
+        self.heal(graph, &mut report)?;
         let compositor_desc = types
             .descriptor(&NodeTypeId::new(COMPOSITOR_TYPE))
             .filter(|d| d.kind == NodeKind::Compositor)
@@ -375,18 +473,40 @@ impl State {
         if compositor_pins.output.is_none() {
             return Err(BindError::NoCompositor);
         }
+        let mixer_desc = match audio {
+            None => None,
+            Some(_) => {
+                let desc = types
+                    .descriptor(&NodeTypeId::new(MIXER_TYPE))
+                    .filter(|d| d.kind == NodeKind::AudioMixer)
+                    .ok_or(BindError::NoMixer)?;
+                let pins = pins_of(&desc, LinkKind::Audio, true);
+                if pins.input.is_none() || pins.output.is_none() {
+                    return Err(BindError::NoMixer);
+                }
+                Some((desc, pins))
+            }
+        };
 
-        // Sources that are gone.
+        // Sources that are gone, or whose settings changed (a new node is made for
+        // them below, so the application creates an instance for the new settings).
         let gone: Vec<SourceId> = self
             .sources
-            .keys()
-            .copied()
-            .filter(|id| collection.source(*id).is_none())
+            .iter()
+            .filter(|(id, b)| {
+                collection
+                    .source(**id)
+                    .is_none_or(|s| s.settings != b.settings)
+            })
+            .map(|(id, _)| *id)
             .collect();
         for id in gone {
             if let Some(bound) = self.sources.remove(&id) {
-                for node in bound.nodes().collect::<Vec<_>>() {
-                    retire(graph, node)?;
+                retire(graph, bound.source.node)?;
+                report.retired_sources.push(bound.source.node);
+                for f in bound.filters.values() {
+                    retire(graph, f.node)?;
+                    report.retired_filters.push(f.node);
                 }
             }
         }
@@ -403,13 +523,20 @@ impl State {
                     continue;
                 };
                 let pins = video_pins(&descriptor, false);
-                if descriptor.kind != NodeKind::Source || pins.output.is_none() {
+                let audio_only = pins.output.is_none() && pins.audio.is_some();
+                let usable = pins.output.is_some() || (audio.is_some() && audio_only);
+                if descriptor.kind != NodeKind::Source || !usable {
                     report.problems.push(BindProblem::NoVideoOutput(source.id));
                     continue;
                 }
                 let node = add_node(graph, descriptor)?;
+                if let (true, Some(partition)) = (audio_only, audio) {
+                    graph.set_partition(node, partition)?;
+                }
+                report.created_sources.push((source.id, node));
                 slot.insert(BoundSource {
                     source: BoundNode { node, pins },
+                    settings: source.settings.clone(),
                     filters: BTreeMap::new(),
                     chain: Vec::new(),
                     chain_links: Vec::new(),
@@ -428,10 +555,18 @@ impl State {
             for f in removed {
                 if let Some(b) = bound.filters.remove(&f) {
                     retire(graph, b.node)?;
+                    report.retired_filters.push(b.node);
                 }
             }
+            let has_video = bound.source.pins.output.is_some();
             for filter in &source.filters {
                 if bound.filters.contains_key(&filter.id) {
+                    continue;
+                }
+                if !has_video {
+                    report
+                        .problems
+                        .push(BindProblem::FilterOnAudioSource(filter.id));
                     continue;
                 }
                 let Some(descriptor) = types.descriptor(&filter.type_id) else {
@@ -450,6 +585,7 @@ impl State {
                     continue;
                 }
                 let node = add_node(graph, descriptor)?;
+                report.created_filters.push((filter.id, node));
                 bound.filters.insert(filter.id, BoundNode { node, pins });
             }
             let chain: Vec<FilterId> = source
@@ -522,7 +658,11 @@ impl State {
                 .map_err(BindError::Scene)?;
             let mut layers = Vec::with_capacity(flat.len());
             for layer in flat {
-                if let Some(bound) = self.sources.get(&layer.source) {
+                if let Some(bound) = self
+                    .sources
+                    .get(&layer.source)
+                    .filter(|b| b.source.pins.output.is_some())
+                {
                     layers.push(BoundLayer {
                         producer: bound.tail().node,
                         source: layer.source,
@@ -544,7 +684,11 @@ impl State {
                 .map(|l| l.source)
                 .chain(visible.iter().copied());
             for source in ordered {
-                if let Some(bound) = self.sources.get(&source) {
+                if let Some(bound) = self
+                    .sources
+                    .get(&source)
+                    .filter(|b| b.source.pins.output.is_some())
+                {
                     let tail = bound.tail();
                     if !producers.iter().any(|p| p.node == tail.node) {
                         producers.push(tail.clone());
@@ -579,6 +723,73 @@ impl State {
             );
         }
 
+        // The mixer and its inputs: every source with an audio output visible in a
+        // program scene.
+        if let (Some((desc, pins)), Some(partition)) = (mixer_desc, audio) {
+            let mut created = false;
+            let mix = match &mut self.mixer {
+                Some(m) => m,
+                slot @ None => {
+                    created = true;
+                    let node = add_node(graph, desc)?;
+                    graph.set_partition(node, partition)?;
+                    slot.insert(BoundMix {
+                        node: BoundNode { node, pins },
+                        links: Vec::new(),
+                    })
+                }
+            };
+            let mut heard: BTreeSet<SourceId> = BTreeSet::new();
+            for canvas in collection.canvases() {
+                if let Some(scene) = canvas.program {
+                    heard.extend(
+                        collection
+                            .visible_sources(canvas.id, scene)
+                            .map_err(BindError::Scene)?,
+                    );
+                }
+            }
+            let mut inputs = Vec::new();
+            for id in &heard {
+                let bound = self
+                    .sources
+                    .get(id)
+                    .filter(|b| b.source.pins.audio.is_some());
+                if let Some(bound) = bound {
+                    inputs.push(BoundAudio {
+                        source: *id,
+                        producer: bound.source.node,
+                    });
+                }
+            }
+            let wanted: BTreeSet<NodeId> = inputs.iter().map(|i| i.producer).collect();
+            mix.links.retain(|link| {
+                let keep = wanted.contains(&link.from.node);
+                if !keep {
+                    graph.disconnect(*link);
+                }
+                keep
+            });
+            let linked: BTreeSet<NodeId> = mix.links.iter().map(|l| l.from.node).collect();
+            if let Some((_, input)) = &mix.node.pins.input {
+                for i in inputs.iter().filter(|i| !linked.contains(&i.producer)) {
+                    let out = self
+                        .sources
+                        .get(&i.source)
+                        .and_then(|b| b.source.pins.audio.as_deref());
+                    if let Some(out) = out {
+                        let link = graph.connect(i.producer, out, mix.node.node, input)?;
+                        mix.links.push(link);
+                    }
+                }
+            }
+            report.mixer = Some(BoundMixer {
+                node: mix.node.node,
+                inputs,
+                created,
+            });
+        }
+
         // Wanted states.
         let wanted = collection.wanted_sources();
         for (id, bound) in &self.sources {
@@ -599,6 +810,9 @@ impl State {
         }
         for b in self.compositors.values() {
             set_state(graph, b.node.node, Lifecycle::Active)?;
+        }
+        if let Some(m) = &self.mixer {
+            set_state(graph, m.node.node, Lifecycle::Active)?;
         }
         Ok(report)
     }
