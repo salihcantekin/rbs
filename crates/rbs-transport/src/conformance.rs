@@ -88,12 +88,24 @@ impl Destination for TempFileDestination {
     }
 }
 
+/// H.264 parameter sets (x264, 320x240, constrained baseline) as Annex B extradata,
+/// so packet transports can build their codec headers from the descriptors.
+const H264_EXTRADATA: &[u8] = &[
+    0, 0, 0, 1, 0x67, 0x42, 0xc0, 0x0d, 0xd9, 0x01, 0x41, 0xfb, 0x01, 0x10, 0x00, 0x00, 0x03, 0x00,
+    0x10, 0x00, 0x00, 0x03, 0x03, 0xc0, 0xf1, 0x42, 0xa4, 0x80, 0, 0, 0, 1, 0x68, 0xcb, 0x83, 0xcb,
+    0x20,
+];
+/// AudioSpecificConfig of AAC-LC, 48 kHz, stereo.
+const AAC_EXTRADATA: &[u8] = &[0x11, 0x90];
+
+/// The output's streams: valid H.264 (Annex B, parameter sets in the extradata) and
+/// AAC (raw frames, AudioSpecificConfig), as an encoder would describe them.
 fn streams() -> Vec<StreamDescriptor> {
     vec![
         StreamDescriptor::new(
             CodecId::H264,
             BitstreamFormat::AnnexB,
-            Bytes::new(),
+            Bytes::from_static(H264_EXTRADATA),
             StreamParams::video(
                 VideoFormat::new(
                     Size::new(320, 240),
@@ -105,8 +117,8 @@ fn streams() -> Vec<StreamDescriptor> {
         ),
         StreamDescriptor::new(
             CodecId::Aac,
-            BitstreamFormat::Adts,
-            Bytes::new(),
+            BitstreamFormat::Raw,
+            Bytes::from_static(AAC_EXTRADATA),
             StreamParams::audio(AudioFormat::STEREO_48K, 1024),
         ),
     ]
