@@ -35,6 +35,10 @@ const ENCODER: PartitionId = PartitionId(7);
 const OUTPUT: PartitionId = PartitionId(3);
 const LIMIT: Duration = Duration::from_secs(10);
 const FRAME: Duration = Duration::from_nanos(16_666_667);
+/// Swap timeout for tests that expect a timeout. The side that must time out is held by
+/// a gate, so the timeout always fires; the setup steps that must not time out get at
+/// least the 250 ms hang-guard floor of ADR-0032 rule 4.
+const EXPECTED_TIMEOUT: Duration = Duration::from_millis(250);
 
 /// Another runtime, to check that partitions keep their runtime types apart.
 struct Other;
@@ -245,8 +249,8 @@ fn frames_and_packets_cross_three_worker_threads() {
     for _ in 0..20 {
         rig.frame();
     }
-    // Render and encoder tick on the same cadence in either order, so the encoder
-    // may find a frame replaced now and then (counted); most frames get through.
+    // The encoder ticks half a frame after render, so every frame from the second on
+    // gets through.
     assert!(
         eventually(LIMIT, || rig.seen() >= 10),
         "seen {}",
@@ -471,10 +475,11 @@ fn a_drain_that_times_out_is_reported_and_still_releases_everything() {
     // starts while it does: the output's final ticks miss the timeout.
     let log: ReleaseLog = Arc::new(Mutex::new(Vec::new()));
     let stall = Arc::new(Gate::holding(LIMIT));
-    let mut rig = Rig::build(Some(&log), None, Some(&stall), Duration::from_millis(100));
-    rig.engine.apply(&rig.graph).unwrap();
-    // The encoder may read a frame only on the next frame (same cadence, either order);
-    // the output ticks on its first packet.
+    let mut rig = Rig::build(Some(&log), None, Some(&stall), EXPECTED_TIMEOUT);
+    let setup = rig.engine.apply(&rig.graph).unwrap();
+    assert!(setup.errors.is_empty(), "{:?}", setup.errors);
+    // The encoder ticks after render (half a frame later), so it reads a frame from the
+    // second frame on; the output ticks on its first packet.
     for _ in 0..20 {
         rig.frame();
         if rig.encoder_probe.seen.load(Ordering::Relaxed) > 0 {
@@ -761,8 +766,9 @@ fn nodes_swapping_partitions_in_one_edit_both_run() {
 #[test]
 fn a_move_held_up_by_a_swap_timeout_finishes_from_the_control_loop() {
     let gate = Arc::new(Gate::default());
-    let mut rig = Rig::build(None, Some(&gate), None, Duration::from_millis(20));
-    rig.engine.apply(&rig.graph).unwrap();
+    let mut rig = Rig::build(None, Some(&gate), None, EXPECTED_TIMEOUT);
+    let setup = rig.engine.apply(&rig.graph).unwrap();
+    assert!(setup.errors.is_empty(), "{:?}", setup.errors);
     rig.frame();
     // The encoder's `cool` blocks, so its old partition does not swap in time.
     rig.graph.set_partition(rig.encoder, OUTPUT).unwrap();
@@ -800,8 +806,9 @@ fn a_move_held_up_by_a_swap_timeout_finishes_from_the_control_loop() {
 #[test]
 fn retired_endpoints_are_dropped_after_a_swap_timeout() {
     let gate = Arc::new(Gate::default());
-    let mut rig = Rig::build(None, Some(&gate), None, Duration::from_millis(20));
-    rig.engine.apply(&rig.graph).unwrap();
+    let mut rig = Rig::build(None, Some(&gate), None, EXPECTED_TIMEOUT);
+    let setup = rig.engine.apply(&rig.graph).unwrap();
+    assert!(setup.errors.is_empty(), "{:?}", setup.errors);
     rig.frame();
     let packets = rig.engine.crossings()[1].clone();
     // Dropping the encoder -> sink link retires its queue and starves the sink, whose
@@ -883,7 +890,7 @@ fn an_idle_partition_swaps_without_running_a_tick() {
 #[test]
 fn a_move_out_of_a_partition_whose_part_was_not_sent_yet_still_happens() {
     let gate = Arc::new(Gate::default());
-    let mut rig = Rig::build(None, None, None, Duration::from_millis(20));
+    let mut rig = Rig::build(None, None, None, EXPECTED_TIMEOUT);
     // A second encoder in the encoder partition whose `cool` blocks.
     let slow = TestNode::new(Role::Encoder, "slow").cooling_on(&gate);
     let slow_sink = TestNode::new(Role::PacketSink, "slow-sink");
@@ -897,7 +904,8 @@ fn a_move_out_of_a_partition_whose_part_was_not_sent_yet_still_happens() {
     rig.engine
         .adopt::<Ticks>(OUTPUT, k2, Box::new(slow_sink))
         .unwrap();
-    rig.engine.apply(&rig.graph).unwrap();
+    let setup = rig.engine.apply(&rig.graph).unwrap();
+    assert!(setup.errors.is_empty(), "{:?}", setup.errors);
     rig.frame();
     // Edit 1: the slow encoder leaves; its partition does not swap in time.
     rig.graph
@@ -927,11 +935,11 @@ fn a_move_out_of_a_partition_whose_part_was_not_sent_yet_still_happens() {
 #[test]
 fn shutdown_after_a_timed_out_swap_leaves_no_worker() {
     // `cool` waits for a gate that opens only once shutdown stops the worker: the
-    // shutdown's first wait (20 ms) times out while a schedule with nodes is in flight.
+    // shutdown's first wait times out while a schedule with nodes is in flight.
     let gate = Arc::new(Gate::holding(LIMIT));
     let mut engine = Engine::with_clock(
         Arc::new(TestClock::new()),
-        EngineConfig::default().swap_timeout(Duration::from_millis(20)),
+        EngineConfig::default().swap_timeout(EXPECTED_TIMEOUT),
     );
     engine
         .add_partition::<()>(RENDER, Arc::new(()), (), cadence())
@@ -951,7 +959,8 @@ fn shutdown_after_a_timed_out_swap_leaves_no_worker() {
     engine.adopt::<()>(RENDER, s, Box::new(source)).unwrap();
     engine.adopt::<()>(RENDER, ka, Box::new(a)).unwrap();
     engine.adopt::<()>(RENDER, kb, Box::new(b)).unwrap();
-    engine.apply(&graph).unwrap();
+    let setup = engine.apply(&graph).unwrap();
+    assert!(setup.errors.is_empty(), "{:?}", setup.errors);
     // `a` leaves; its `cool` blocks, so a schedule with `source` and `b` is in flight.
     graph
         .set_state(ka, rbs_core::lifecycle::Lifecycle::Standby)

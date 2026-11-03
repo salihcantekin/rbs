@@ -47,6 +47,8 @@ Measured on reference machines that will be listed here. Each target is compared
 | Glass-to-encoder latency, display capture | Latency | < 2 frame intervals |
 | Glass-to-delivery latency, display capture (OS capture to `latest_frame`) | Latency | <= 1 frame interval |
 | Cold start to first preview frame | Time | < 1.5 s |
+| Capture adapter `probe` (fastest of three calls) | Time | <= 50 ms (open: needs a probe benchmark; conformance only guards against a hang, ADR-0032) |
+| Capture `latest_frame` while every frame is held | Time | does not wait for a frame release (open: needs a non-timing check or a benchmark; conformance guards at 500 ms, ADR-0032) |
 
 ## Desktop UI
 
