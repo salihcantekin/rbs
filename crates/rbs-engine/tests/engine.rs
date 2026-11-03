@@ -618,9 +618,12 @@ fn a_handle_never_blocks_and_reports_through_its_callback() {
     let _ = clock.now();
 }
 
-/// Runs `service` (and frames) until `cond` holds.
+/// Runs the control loop (and frames) until `cond` holds or `LIMIT` real time passed.
+/// Bounded by time, not rounds: a round can take microseconds while the workers it
+/// waits for are not scheduled for milliseconds on a loaded machine.
 fn serve_until(rig: &mut Rig, mut cond: impl FnMut(&mut Rig) -> bool) -> bool {
-    for _ in 0..200 {
+    let start = std::time::Instant::now();
+    while start.elapsed() < LIMIT {
         let serviced = rig.engine.service();
         assert!(
             serviced
@@ -634,6 +637,7 @@ fn serve_until(rig: &mut Rig, mut cond: impl FnMut(&mut Rig) -> bool) -> bool {
             return true;
         }
         rig.frame();
+        std::thread::yield_now();
     }
     false
 }
