@@ -1,8 +1,10 @@
 //! Runs the capture port conformance suite against the Media Foundation camera adapter.
 //!
 //! CI runners have no camera: the suite checks probing, enumeration (an empty list), the
-//! pick and unknown-target rules; session checks have no target to run on. On other
-//! platforms the probe fails and the suite reports everything skipped.
+//! pick and unknown-target rules; session checks have no target to run on. On a machine
+//! with a camera they run too, against the declaration narrowed to that camera (see
+//! `Connected`). On other platforms the probe fails and the suite reports everything
+//! skipped.
 //!
 //! With `RBS_CAPTURE_HW=1` on a Windows machine with a camera that desktop apps may use
 //! (Settings, Privacy, Camera), `hardware_session_passes_conformance` opens real
@@ -19,6 +21,9 @@ fn measure(f: &mut dyn FnMut()) -> u64 {
 
 #[test]
 fn passes_conformance() {
+    #[cfg(windows)]
+    let factory = Connected(MfCaptureFactory::new());
+    #[cfg(not(windows))]
     let factory = MfCaptureFactory::new();
     let options = Options {
         measure_allocations: Some(measure),
