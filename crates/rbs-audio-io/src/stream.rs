@@ -202,6 +202,17 @@ pub trait AudioInputStream: Send {
 
     /// Stream counters. Cheap enough for every block.
     fn stats(&self) -> InputStats;
+
+    /// How long after its timestamps the stream's audio is presented (heard) at the
+    /// endpoint, as measured by the adapter at the last `start`: for `OutputLoopback`
+    /// and `Application` streams, the render endpoint's output latency (the OS stamps
+    /// loopback audio when it mixes it, before the device plays it). `None` for input
+    /// streams, in Standby, and when the adapter cannot measure it. The audio graph adds
+    /// it to the source's sync offset so loopback audio lines up with what was seen
+    /// (ADR-0042). Not real-time: read it after `start`, not per block.
+    fn presentation_latency(&self) -> Option<Duration> {
+        None
+    }
 }
 
 /// The factory every audio I/O adapter implements.
