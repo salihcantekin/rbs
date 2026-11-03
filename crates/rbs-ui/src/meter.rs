@@ -24,6 +24,8 @@ pub const PEAK_HOLD: Duration = Duration::from_millis(1500);
 pub const PEAK_FALL_DB_PER_S: f32 = 20.0;
 /// Thickness of the peak-hold line in logical pixels.
 pub const PEAK_LINE: f32 = 2.0;
+/// Highest level an accessible value reports (dBFS); higher input is clamped.
+pub const MAX_REPORT_DB: f32 = 24.0;
 /// Labelled scale marks in dBFS, top to bottom.
 pub const SCALE_MARKS_DB: [f32; 7] = [0.0, -6.0, -12.0, -18.0, -24.0, -36.0, -48.0];
 
@@ -140,10 +142,11 @@ pub struct MeterFrames {
     pub peak_zone: usize,
 }
 
-/// A meter's accessible value (spec "AudioMeter", Accessibility). Its text comes from
-/// the Fluent messages `meter-value-silent`, `meter-value-db` (variable `$db`) and
-/// `meter-value-clipped`; [`AccessibleLevel::english`] is the built-in English text until
-/// the UI has Fluent strings.
+/// A meter's accessible value (spec "AudioMeter", Accessibility). Its text comes from one
+/// Fluent message, `meter-value`, with the variables `$db` (a number, or absent when
+/// silent) and `$clipped` (`"yes"` or `"no"`) and selectors on both, so each language
+/// orders the parts itself; [`AccessibleLevel::english`] is the built-in English text
+/// until the UI has Fluent strings.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct AccessibleLevel {
     /// Highest level of the period in whole dBFS; `None` below the scale's floor.
@@ -246,8 +249,10 @@ impl Meter {
         let level = if db < FLOOR_DB {
             None
         } else {
-            // Whole dB; the scale tops out at 0 dBFS but a level above it is reported.
-            Some(db.round() as i32)
+            // Whole dB, rounded down so a level never reads higher than it was (-0.4 dBFS
+            // must not read as 0 dBFS without "clipped"). Levels above the scale are
+            // reported up to MAX_REPORT_DB; anything higher (or infinite) is a bad input.
+            Some(db.min(MAX_REPORT_DB).floor() as i32)
         };
         AccessibleLevel {
             level,
@@ -536,7 +541,7 @@ mod tests {
         assert_eq!(
             m.take_report(),
             AccessibleLevel {
-                level: Some(-12),
+                level: Some(-13),
                 clipped: false
             }
         );
@@ -548,6 +553,22 @@ mod tests {
         assert_eq!(m.take_report().english(), "0 dBFS, clipped");
         m.update(f32::NEG_INFINITY, ms(500));
         assert_eq!(m.take_report().english(), "silent, clipped");
+    }
+
+    #[test]
+    fn accessible_value_never_reads_higher_than_the_level() {
+        let mut m = Meter::new();
+        m.update(-0.4, ms(0));
+        assert_eq!(m.take_report().english(), "-1 dBFS");
+        m.update(-12.9, ms(10));
+        assert_eq!(m.take_report().level, Some(-13));
+    }
+
+    #[test]
+    fn accessible_value_clamps_bad_high_input() {
+        let mut m = Meter::new();
+        m.update(f32::INFINITY, ms(0));
+        assert_eq!(m.take_report().level, Some(MAX_REPORT_DB as i32));
     }
 
     #[test]
