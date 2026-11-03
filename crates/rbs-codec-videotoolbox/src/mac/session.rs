@@ -4,7 +4,7 @@ use std::cell::UnsafeCell;
 use std::ffi::c_void;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::ptr::NonNull;
-use std::sync::atomic::{AtomicI64, AtomicU8, AtomicU32, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicI64, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
@@ -26,8 +26,8 @@ use objc2_core_video::{
     kCVImageBufferTransferFunctionKey, kCVImageBufferYCbCrMatrix_ITU_R_601_4,
     kCVImageBufferYCbCrMatrix_ITU_R_709_2, kCVImageBufferYCbCrMatrix_ITU_R_2020,
     kCVImageBufferYCbCrMatrixKey, kCVPixelBufferHeightKey, kCVPixelBufferIOSurfacePropertiesKey,
-    kCVPixelBufferPixelFormatTypeKey, kCVPixelBufferWidthKey,
-    kCVReturnWouldExceedAllocationThreshold,
+    kCVPixelBufferPixelFormatTypeKey, kCVPixelBufferPoolAllocationThresholdKey,
+    kCVPixelBufferWidthKey, kCVReturnWouldExceedAllocationThreshold,
 };
 use objc2_io_surface::IOSurfaceRef;
 use objc2_video_toolbox::{
@@ -82,14 +82,22 @@ const FOURCC_NV12_FULL: u32 = u32::from_be_bytes(*b"420f");
 const FOURCC_P010_VIDEO: u32 = u32::from_be_bytes(*b"x420");
 const FOURCC_P010_FULL: u32 = u32::from_be_bytes(*b"xf20");
 
-/// Slot states. `FREE`: owned by the encoder thread. `IN_FLIGHT`: handed to
-/// VideoToolbox. `COMPLETING`: claimed by whoever won the exchange from `IN_FLIGHT`
-/// (the output callback, or `submit` after a refused frame). `DONE`: the outcome is
-/// written and owned by the encoder thread again.
-const FREE: u8 = 0;
-const IN_FLIGHT: u8 = 1;
-const COMPLETING: u8 = 2;
-const DONE: u8 = 3;
+/// Slot states, in the low 8 bits of [`Slot::word`]. `FREE`: owned by the encoder
+/// thread. `IN_FLIGHT`: handed to VideoToolbox. `COMPLETING`: claimed by whoever won
+/// the exchange from `IN_FLIGHT` (the output callback, or `submit` after a refused
+/// frame). `DONE`: the outcome is written and owned by the encoder thread again.
+const FREE: u32 = 0;
+const IN_FLIGHT: u32 = 1;
+const COMPLETING: u32 = 2;
+const DONE: u32 = 3;
+const STATE_MASK: u32 = 0xff;
+/// Generations are 24 bits: the upper bits of [`Slot::word`] and of the frame refcon.
+const GENERATION_MASK: u32 = 0x00ff_ffff;
+
+/// A slot word: generation and state, changed together in one atomic step.
+const fn word(generation: u32, state: u32) -> u32 {
+    (generation << 8) | state
+}
 
 /// What became of a frame.
 enum Outcome {
@@ -97,7 +105,8 @@ enum Outcome {
     Empty,
     /// The encoded packet.
     Packet(EncodedPacket),
-    /// VideoToolbox dropped the frame, or failed it (the failure is recorded).
+    /// VideoToolbox dropped or failed the frame; a session-ending failure is also
+    /// recorded in [`Shared::failure`].
     Lost,
 }
 
@@ -106,22 +115,27 @@ enum Outcome {
 /// submission order, so the output order never depends on which thread or in which
 /// order VideoToolbox runs its callbacks, and no lock is needed.
 struct Slot {
-    state: AtomicU8,
-    /// Bumped by `submit` each time the slot is reused; part of the frame refcon, so a
-    /// late or repeated callback for an earlier use cannot complete the current one.
-    generation: AtomicU32,
+    /// [`word`]`(generation, state)`. The generation is bumped by `submit` each time
+    /// the slot is reused and is part of the frame refcon; checking it and changing the
+    /// state in one compare-exchange means a late or repeated callback for an earlier
+    /// use can never complete the current one.
+    word: AtomicU32,
     lease: UnsafeCell<Option<Lease>>,
     outcome: UnsafeCell<Outcome>,
 }
 
-/// A retained CoreFoundation object that is only read after creation.
+/// A retained immutable CoreFoundation object (only the types below).
 struct Frozen<T: ?Sized>(CFRetained<T>);
 
 // SAFETY: format descriptions and strings are immutable CoreFoundation objects;
 // retain and release are atomic, and these are only read.
-unsafe impl<T: ?Sized> Send for Frozen<T> {}
-// SAFETY: see `Send`.
-unsafe impl<T: ?Sized> Sync for Frozen<T> {}
+unsafe impl Send for Frozen<CMFormatDescription> {}
+// SAFETY: see above.
+unsafe impl Sync for Frozen<CMFormatDescription> {}
+// SAFETY: see above.
+unsafe impl Send for Frozen<CFString> {}
+// SAFETY: see above.
+unsafe impl Sync for Frozen<CFString> {}
 
 /// Set once by `create` (the priming frame), read by the callback afterwards.
 struct Primed {
@@ -180,11 +194,13 @@ impl Shared {
     /// `DONE` or `FREE`.
     fn claim(&self, index: usize, generation: u32) -> Option<&Slot> {
         let slot = self.slots.get(index)?;
-        if slot.generation.load(Ordering::Acquire) != generation {
-            return None;
-        }
-        slot.state
-            .compare_exchange(IN_FLIGHT, COMPLETING, Ordering::AcqRel, Ordering::Acquire)
+        slot.word
+            .compare_exchange(
+                word(generation, IN_FLIGHT),
+                word(generation, COMPLETING),
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            )
             .ok()
             .map(|_| slot)
     }
@@ -202,7 +218,7 @@ impl Shared {
             return;
         }
         let index = (frame_refcon & 0xff) - 1;
-        let generation = (frame_refcon >> 8) as u32;
+        let generation = (frame_refcon >> 8) as u32 & GENERATION_MASK;
         let Some(slot) = self.claim(index, generation) else {
             return;
         };
@@ -210,7 +226,10 @@ impl Shared {
         // SAFETY: this caller won the claim and owns the slot (see `Sync`).
         drop(unsafe { (*slot.lease.get()).take() });
         let outcome = if status != 0 {
-            self.fail(FAIL_STATUS, status);
+            // A failed frame is lost; only a broken session ends the session.
+            if is_fatal(status) {
+                self.fail(FAIL_STATUS, status);
+            }
             Outcome::Lost
         } else {
             match sample.filter(|_| !flags.contains(VTEncodeInfoFlags::FrameDropped)) {
@@ -226,7 +245,7 @@ impl Shared {
         };
         // SAFETY: as above.
         unsafe { *slot.outcome.get() = outcome };
-        slot.state.store(DONE, Ordering::Release);
+        slot.word.store(word(generation, DONE), Ordering::Release);
     }
 
     fn on_priming(&self, status: Status, sample: Option<&CMSampleBuffer>) {
@@ -419,6 +438,8 @@ pub struct VideoToolboxSession {
     native_cbr: bool,
     frame_duration: CMTime,
     force_keyframe: CFRetained<CFDictionary<CFString, CFType>>,
+    /// Aux attributes for pool buffers (the allocation threshold).
+    pool_limit: CFRetained<CFDictionary<CFString, CFType>>,
     keyframe_next: bool,
     last_pts: Option<u64>,
     cache: Vec<CacheEntry>,
@@ -469,9 +490,14 @@ fn failure_error(kind: u32, status: Status) -> EncodeError {
     }
 }
 
+/// True for statuses that mean the session itself is lost or broken.
+fn is_fatal(status: Status) -> bool {
+    status == kVTInvalidSessionErr || status == kVTVideoEncoderMalfunctionErr
+}
+
 /// The error for an OSStatus. A lost or broken session is `DeviceLost`.
 fn status_error(status: Status, recoverable: bool) -> EncodeError {
-    if status == kVTInvalidSessionErr || status == kVTVideoEncoderMalfunctionErr {
+    if is_fatal(status) {
         return EncodeError::DeviceLost;
     }
     EncodeError::Failed {
@@ -546,8 +572,7 @@ impl VideoToolboxSession {
             frame_duration,
             slots: (0..FRAMES_IN_FLIGHT)
                 .map(|_| Slot {
-                    state: AtomicU8::new(FREE),
-                    generation: AtomicU32::new(0),
+                    word: AtomicU32::new(word(0, FREE)),
                     lease: UnsafeCell::new(None),
                     outcome: UnsafeCell::new(Outcome::Empty),
                 })
@@ -673,7 +698,15 @@ impl VideoToolboxSession {
                 &[CFBoolean::new(true)],
             )
         };
-        let extradata = prime(&handle, &shared, &format, frame_duration, config.codec)?;
+        let pool_limit = pool_limit();
+        let extradata = prime(
+            &handle,
+            &shared,
+            &pool_limit,
+            &format,
+            frame_duration,
+            config.codec,
+        )?;
         let stream = StreamDescriptor::new(
             config.codec,
             shared.bitstream,
@@ -696,6 +729,7 @@ impl VideoToolboxSession {
             native_cbr,
             frame_duration: vt_time(u64::try_from(frame_duration.as_nanos()).unwrap_or(u64::MAX)),
             force_keyframe,
+            pool_limit,
             keyframe_next: true,
             last_pts: None,
             cache: Vec::with_capacity(SURFACE_CACHE),
@@ -727,12 +761,13 @@ impl VideoToolboxSession {
     }
 
     /// State of the oldest frame in flight, if any.
-    fn head_state(&self) -> Option<u8> {
+    fn head_state(&self) -> Option<u32> {
         (self.order_len > 0).then(|| {
             let (index, _) = self.order[self.order_head];
             self.shared.slots[usize::from(index)]
-                .state
+                .word
                 .load(Ordering::Acquire)
+                & STATE_MASK
         })
     }
 
@@ -814,7 +849,7 @@ impl VideoToolboxSession {
                 "frame is not in system memory".into(),
             ));
         };
-        let buffer = pool_buffer(&self.handle.0)?;
+        let buffer = pool_buffer(&self.handle.0, &self.pool_limit)?;
         let planes = self.format.pixel_format.plane_count();
         let width = self.format.size.width;
         let mut row_bytes = [0usize; 2];
@@ -864,7 +899,7 @@ impl VideoToolboxSession {
         self.shared
             .slots
             .iter()
-            .position(|s| s.state.load(Ordering::Acquire) == FREE)
+            .position(|s| s.word.load(Ordering::Acquire) & STATE_MASK == FREE)
     }
 
     fn push_order(&mut self, index: usize, forced: bool) {
@@ -882,22 +917,42 @@ impl VideoToolboxSession {
 
 const _: () = assert!(FRAMES_IN_FLIGHT <= u8::MAX as usize);
 
-/// A fresh buffer from the session's pixel buffer pool.
-fn pool_buffer(session: &VTCompressionSession) -> Result<CFRetained<CVPixelBuffer>, EncodeError> {
+/// Pool buffers a session may hold at once: every slot plus the priming frame. Past it
+/// the pool says `kCVReturnWouldExceedAllocationThreshold` and `submit` is `Busy`.
+const POOL_THRESHOLD: i64 = FRAMES_IN_FLIGHT as i64 + 1;
+
+/// The aux attributes that apply [`POOL_THRESHOLD`]. Created once per session.
+fn pool_limit() -> CFRetained<CFDictionary<CFString, CFType>> {
+    let threshold = objc2_core_foundation::CFNumber::new_i64(POOL_THRESHOLD);
+    // SAFETY: the key is a CoreVideo constant that lives for the process.
+    unsafe { cf::dictionary(&[kCVPixelBufferPoolAllocationThresholdKey], &[&threshold]) }
+}
+
+/// A fresh buffer from the session's pixel buffer pool, within `limit`.
+fn pool_buffer(
+    session: &VTCompressionSession,
+    limit: &CFDictionary<CFString, CFType>,
+) -> Result<CFRetained<CVPixelBuffer>, EncodeError> {
     // SAFETY: the session is valid; the getter returns a retained pool.
     let pool: CFRetained<CVPixelBufferPool> =
         unsafe { session.pixel_buffer_pool() }.ok_or(EncodeError::DeviceLost)?;
     let mut raw: *mut CVPixelBuffer = std::ptr::null_mut();
     // SAFETY: `pool` is valid; `raw` receives a +1 reference on success.
-    let status =
-        unsafe { CVPixelBufferPool::create_pixel_buffer(None, &pool, NonNull::from(&mut raw)) };
+    let status = unsafe {
+        CVPixelBufferPool::create_pixel_buffer_with_aux_attributes(
+            None,
+            &pool,
+            Some(limit.as_opaque()),
+            NonNull::from(&mut raw),
+        )
+    };
     match (status, NonNull::new(raw)) {
         // SAFETY: a successful create hands over a +1 reference.
         (0, Some(raw)) => Ok(unsafe { CFRetained::from_raw(raw) }),
         // The pool is at its limit: try again after a drain.
         (s, _) if s == kCVReturnWouldExceedAllocationThreshold => Err(EncodeError::Busy),
         (s, _) => Err(EncodeError::Failed {
-            reason: format!("CVPixelBufferPoolCreatePixelBuffer failed with {s}"),
+            reason: format!("CVPixelBufferPoolCreatePixelBufferWithAuxAttributes failed with {s}"),
             recoverable: true,
         }),
     }
@@ -940,13 +995,14 @@ fn with_locked(
 fn prime(
     handle: &Handle,
     shared: &Shared,
+    limit: &CFDictionary<CFString, CFType>,
     format: &VideoFormat,
     frame_duration: Duration,
     codec: CodecId,
 ) -> Result<Vec<u8>, CreateError> {
     let session = &*handle.0;
-    let buffer =
-        pool_buffer(session).map_err(|e| CreateError::Device(format!("pixel buffer pool: {e}")))?;
+    let buffer = pool_buffer(session, limit)
+        .map_err(|e| CreateError::Device(format!("pixel buffer pool: {e}")))?;
     let ten_bit = format.pixel_format == PixelFormat::P010;
     let (black, grey): (u16, u16) = match (ten_bit, format.color.range) {
         (false, ColorRange::Full) => (0, 128),
@@ -1198,14 +1254,22 @@ impl VideoEncoder for VideoToolboxSession {
         };
         self.check_room()?;
         let (buffer, lease) = match surface {
-            Some(surface) => (self.wrap_surface(surface)?, frame.lease().cloned()),
+            Some(surface) => {
+                // The lease is what keeps the exporter from writing the surface while
+                // VideoToolbox reads it.
+                let lease = frame.lease().cloned().ok_or_else(|| {
+                    EncodeError::InvalidInput("IOSurface frames must carry a lease".into())
+                })?;
+                (self.wrap_surface(surface)?, Some(lease))
+            }
             None => (self.copy_system(frame)?, None),
         };
         let index = self.free_slot().ok_or(EncodeError::Busy)?;
 
         // The VideoToolbox timeline starts one frame before the first real frame, so the
         // priming frame (time 0) always precedes it and times stay small and positive.
-        let first = *self.first_ns.get_or_insert(ns);
+        // Fixed once the first frame is accepted (below), not before.
+        let first = self.first_ns.unwrap_or(ns);
         let frame_ns = self.frame_duration.value;
         let base = i64::try_from(first)
             .unwrap_or(i64::MAX)
@@ -1216,15 +1280,15 @@ impl VideoEncoder for VideoToolboxSession {
 
         let forced = self.keyframe_next;
         let slot = &self.shared.slots[index];
-        let generation = slot.generation.load(Ordering::Relaxed).wrapping_add(1) & 0x00ff_ffff;
-        slot.generation.store(generation, Ordering::Relaxed);
+        let generation = ((slot.word.load(Ordering::Relaxed) >> 8) + 1) & GENERATION_MASK;
         // SAFETY: the slot is `FREE`, so this thread owns it (see `Shared`'s `Sync`).
         unsafe {
             *slot.lease.get() = lease;
             *slot.outcome.get() = Outcome::Empty;
         }
-        // Publishes the generation, lease and outcome to the callback.
-        slot.state.store(IN_FLIGHT, Ordering::Release);
+        // Publishes the generation, lease and outcome to the callback in one store.
+        slot.word
+            .store(word(generation, IN_FLIGHT), Ordering::Release);
         self.push_order(index, forced);
 
         let properties = forced.then(|| self.force_keyframe.as_opaque());
@@ -1247,12 +1311,13 @@ impl VideoEncoder for VideoToolboxSession {
             if let Some(slot) = self.shared.claim(index, generation) {
                 // SAFETY: this thread won the claim and owns the slot.
                 drop(unsafe { (*slot.lease.get()).take() });
-                slot.state.store(FREE, Ordering::Release);
+                slot.word.store(word(generation, FREE), Ordering::Release);
                 // The slot was pushed last; nothing was pushed after it.
                 self.order_len -= 1;
             }
             return Err(status_error(status, true));
         }
+        self.first_ns = Some(first);
         self.keyframe_next = false;
         self.last_pts = Some(ns);
         self.submitted += 1;
@@ -1263,6 +1328,7 @@ impl VideoEncoder for VideoToolboxSession {
         while self.head_state() == Some(DONE) {
             let (index, forced) = self.order[self.order_head];
             let slot = &self.shared.slots[usize::from(index)];
+            let generation = slot.word.load(Ordering::Acquire) >> 8;
             // SAFETY: the slot is `DONE`, so this thread owns it again.
             let outcome = unsafe { std::mem::replace(&mut *slot.outcome.get(), Outcome::Empty) };
             match outcome {
@@ -1271,6 +1337,10 @@ impl VideoEncoder for VideoToolboxSession {
                     self.packets += 1;
                 }
                 Outcome::Lost | Outcome::Empty => {
+                    debug_assert!(
+                        !matches!(outcome, Outcome::Empty),
+                        "a done slot always holds an outcome"
+                    );
                     self.dropped += 1;
                     // A drop never takes a pending keyframe with it (invariant 3).
                     if forced {
@@ -1278,7 +1348,7 @@ impl VideoEncoder for VideoToolboxSession {
                     }
                 }
             }
-            slot.state.store(FREE, Ordering::Release);
+            slot.word.store(word(generation, FREE), Ordering::Release);
             self.pop_order();
         }
         self.failure()
@@ -1417,8 +1487,7 @@ mod tests {
     #[test]
     fn a_slot_is_claimed_once_per_use() {
         let slot = Slot {
-            state: AtomicU8::new(IN_FLIGHT),
-            generation: AtomicU32::new(7),
+            word: AtomicU32::new(word(7, IN_FLIGHT)),
             lease: UnsafeCell::new(None),
             outcome: UnsafeCell::new(Outcome::Empty),
         };
@@ -1435,6 +1504,58 @@ mod tests {
         assert!(shared.claim(0, 6).is_none(), "stale generation");
         assert!(shared.claim(0, 7).is_some());
         assert!(shared.claim(0, 7).is_none(), "already claimed");
+        let slot = &shared.slots[0];
+        // Done, drained and reused as generation 8: a late callback for use 7 (or a
+        // repeated one) must not complete use 8, whatever it loaded before.
+        slot.word.store(word(7, FREE), Ordering::Release);
+        slot.word.store(word(8, IN_FLIGHT), Ordering::Release);
+        assert!(shared.claim(0, 7).is_none(), "stale claim after reuse");
+        assert!(shared.claim(0, 8).is_some());
+    }
+
+    #[test]
+    fn a_failed_frame_is_lost_and_only_a_broken_session_is_fatal() {
+        let slots: Box<[Slot]> = (1..=2u32)
+            .map(|g| Slot {
+                word: AtomicU32::new(word(g, IN_FLIGHT)),
+                lease: UnsafeCell::new(None),
+                outcome: UnsafeCell::new(Outcome::Empty),
+            })
+            .collect();
+        let shared = Shared {
+            codec: CodecId::H264,
+            bitstream: BitstreamFormat::LengthPrefixed { length_size: 4 },
+            frame_duration: Duration::from_millis(33),
+            slots,
+            failure: AtomicU64::new(0),
+            base_ns: AtomicI64::new(0),
+            atom: Frozen(CFString::from_str("avcC")),
+            primed: OnceLock::new(),
+        };
+        // Slot 0, generation 1: an ordinary per-frame error.
+        shared.on_output((1 << 8) | 1, -12_902, VTEncodeInfoFlags::empty(), None);
+        assert_eq!(shared.slots[0].word.load(Ordering::Acquire), word(1, DONE));
+        // SAFETY: the slot is DONE; the test owns it.
+        let outcome = unsafe { &*shared.slots[0].outcome.get() };
+        assert!(matches!(outcome, Outcome::Lost));
+        assert_eq!(
+            shared.failure(),
+            None,
+            "one bad frame does not end the session"
+        );
+        // A repeated callback for the same use is ignored.
+        shared.on_output((1 << 8) | 1, 0, VTEncodeInfoFlags::empty(), None);
+        assert_eq!(shared.slots[0].word.load(Ordering::Acquire), word(1, DONE));
+        // Slot 1, generation 2: the session is gone.
+        shared.on_output(
+            (2 << 8) | 2,
+            kVTInvalidSessionErr,
+            VTEncodeInfoFlags::empty(),
+            None,
+        );
+        assert_eq!(shared.failure(), Some((FAIL_STATUS, kVTInvalidSessionErr)));
+        // A dropped frame (no sample) is lost without a failure.
+        assert_eq!(shared.slots[1].word.load(Ordering::Acquire), word(2, DONE));
     }
 
     #[test]
