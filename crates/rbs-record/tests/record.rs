@@ -102,19 +102,15 @@ fn a_scene_records_video_and_audio_in_sync_on_the_master_clock() {
         video[0]
     );
 
-    // Audio: the first packet is the first mixed block, which carries the time of its
-    // first sample, the tick time minus the graph latency (ADR-0037), not the tick time
-    // itself. The audio cadence starts at `START`, where the worker runs its first tick;
-    // the input may need one more block before it delivers.
-    let graph = settings.audio_graph;
-    let ticks = graph.cadence(START);
-    let first_tick = audio[0] + graph.latency;
-    assert!(
-        first_tick == ticks.time_of(0) || first_tick == ticks.time_of(1),
-        "first audio pts {:?} is not a block time of the first audio ticks",
-        audio[0]
-    );
+    // Audio: the output starts at the first video packet (aligned start, io-nodes
+    // spec), so the first audio packet is the one that spans the first video pts.
     let aac = SampleRate::HZ_48000.duration_of(1024);
+    assert!(
+        audio[0].saturating_since(video[0]) < aac && video[0].saturating_since(audio[0]) < aac,
+        "first audio pts {:?} does not span the first video pts {:?}",
+        audio[0],
+        video[0]
+    );
     for pair in audio.windows(2) {
         let step = pair[1].saturating_since(pair[0]);
         assert!(

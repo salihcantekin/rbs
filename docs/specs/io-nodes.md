@@ -59,7 +59,7 @@ impl OutputNode {                                             // Node<X> for eve
     pub fn with_finish_timeout(self, timeout: Duration) -> Self; // default 5 s
     pub fn with_wait_clock(self, clock: Arc<dyn WaitClock>) -> Self; // default SystemWaitClock
     pub fn stats(&self) -> Arc<OutputNodeStats>;              // packets, sent, transport_drops, mux_drops,
-                                                              // backlog_peak, keyframe_requests, finish_lost,
+                                                              // backlog_peak, keyframe_requests, finish_lost, start_drops,
                                                               // failure: OnceLock<String>
 }
 /// Time source of the blocking waits in `prepare` and `release` (control thread).
@@ -130,8 +130,8 @@ Invariants:
 | Call | Does |
 | --- | --- |
 | `prepare` | Refuses permanently once the node wrote media (a restart would truncate the destination). Creates the muxer (required exactly when the transport's input is `Container(c)`, and only for that `c`) and the transport, `start(streams)`, `begin`, and sends the header, waiting up to the finish timeout for queue room on the wait clock |
-| `process` | Sends the backlog first; then for each stream `i` in order, each packet of pin `s{i}`: muxed into chunks, or forwarded as a packet item. `QueueFull` appends to the backlog. Polls transport events |
-| `release` | Delivers the backlog and the muxer's `finish` chunks within the finish timeout, then `Transport::finish` with the time left |
+| `process` | Sends the backlog first; then for each stream `i` in order, each packet of pin `s{i}`: muxed into chunks, or forwarded as a packet item (after the aligned start below). `QueueFull` appends to the backlog. Polls transport events |
+| `release` | Writes packets still held for the aligned start (no video packet ever came), then delivers the backlog and the muxer's `finish` chunks within the finish timeout, then `Transport::finish` with the time left |
 
 Invariants:
 
@@ -141,6 +141,7 @@ Invariants:
 4. After `release` the transport has been finished; undelivered items are counted (`finish_lost`).
 5. Muxer and transport creation errors and `begin` errors are permanent; a `start` error is retried only when `TransportError::is_recoverable`.
 6. The first permanent failure's cause (for example `muxer: invalid packet: ...`) is kept in `failure`; the string is built only on that path.
+7. **Aligned start.** An output with a video stream and other streams starts at the first video packet's pts: packets of other streams that end at or before it (pts plus duration, or pts when the packet has no duration) are dropped and counted (`start_drops`); packets that arrive before the first video packet are held (at most `START_HOLD` = 256, preallocated in `prepare`; past it the oldest are dropped and counted) and written when it arrives, in arrival order. So a recording never begins with audio before the first picture (video started 143 ms after audio on SC-PC, 3440x1440 NVENC,). Outputs with only video or no video pass every packet.
 
 ### Preview node (ADR-0041)
 

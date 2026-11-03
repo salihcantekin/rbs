@@ -6,7 +6,9 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
-use rbs_core::media::{ContainerId, EncodedPacket, MuxChunk, StreamDescriptor, StreamIndex};
+use rbs_core::media::{
+    ContainerId, EncodedPacket, MuxChunk, StreamDescriptor, StreamIndex, StreamParams,
+};
 use rbs_core::time::{Clock, MonotonicClock, Timestamp};
 use rbs_graph::node::{LinkKind, NodeDescriptor, NodeKind, NodeTypeId, Pin};
 use rbs_graph::runtime::{Node, NodeError, PrepareCtx, ProcessCtx, Runtime};
@@ -23,6 +25,10 @@ pub const OUTPUT_NODE_TYPE: &str = "org.rbs.output";
 pub const DEFAULT_BACKLOG: usize = 4096;
 /// Default time `release` waits to deliver the tail and close the transport.
 pub const DEFAULT_FINISH_TIMEOUT: Duration = Duration::from_secs(5);
+/// Packets of the other streams an output with video keeps while it waits for the
+/// first video packet (aligned start); past it the oldest are dropped (`start_drops`).
+/// About 5 s of AAC at 48 kHz.
+pub const START_HOLD: usize = 256;
 /// How often `release` retries a full queue while it delivers the tail.
 const FINISH_RETRY: Duration = Duration::from_millis(5);
 
@@ -56,6 +62,9 @@ pub struct OutputNodeStats {
     pub keyframe_requests: AtomicU64,
     /// Items still undelivered when `release` gave up.
     pub finish_lost: AtomicU64,
+    /// Packets of other streams dropped because they end before the first video
+    /// packet (aligned start), or because the hold before it was full.
+    pub start_drops: AtomicU64,
     /// Why the output stopped for good, set once at the first permanent failure.
     pub failure: OnceLock<String>,
 }
@@ -106,6 +115,25 @@ impl Item {
     }
 }
 
+/// Where the output's media starts (aligned start, spec `io-nodes.md`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Start {
+    /// No video stream, or video only: every packet goes out.
+    Open,
+    /// Waiting for the first packet of the video stream; others are held.
+    Waiting,
+    /// From the first video packet's pts: earlier packets of other streams are dropped.
+    From(Timestamp),
+}
+
+/// Whether `packet` ends at or before `start` (its pts when it has no duration).
+fn ends_before(packet: &EncodedPacket, start: Timestamp) -> bool {
+    match packet.duration() {
+        Some(d) => packet.pts() + d <= start,
+        None => packet.pts() < start,
+    }
+}
+
 struct MuxerSetup {
     factory: Arc<dyn MuxerFactory>,
     container: ContainerId,
@@ -130,6 +158,10 @@ pub struct OutputNode {
     backlog: VecDeque<Item>,
     chunks: Vec<MuxChunk>,
     events: Vec<TransportEvent>,
+    /// The video stream's index, if the output has one and other streams too.
+    video: Option<usize>,
+    start: Start,
+    held: VecDeque<(usize, EncodedPacket)>,
     stats: Arc<OutputNodeStats>,
 }
 
@@ -141,8 +173,15 @@ impl OutputNode {
         factory: Arc<dyn TransportFactory>,
         config: TransportConfig,
     ) -> Self {
+        let video = streams
+            .iter()
+            .position(|s| matches!(s.params, StreamParams::Video { .. }))
+            .filter(|_| streams.len() > 1);
         Self {
             descriptor: output_descriptor(streams.len()),
+            video,
+            start: Start::Open,
+            held: VecDeque::new(),
             streams,
             transport_factory: factory,
             transport_config: config,
@@ -273,6 +312,43 @@ impl OutputNode {
         count(&self.stats, outcome);
     }
 
+    /// Takes one packet of stream `stream` in: the output starts at the first video
+    /// packet, so packets of other streams that end before it are dropped and packets
+    /// that come first are held until it arrives. Real-time: the hold is preallocated
+    /// and a packet clone shares its payload.
+    fn accept(&mut self, stream: usize, packet: &EncodedPacket) -> Result<(), NodeError> {
+        match self.start {
+            Start::Open => self.write(stream, packet),
+            Start::From(start) => {
+                if Some(stream) != self.video && ends_before(packet, start) {
+                    add(&self.stats.start_drops, 1);
+                    return Ok(());
+                }
+                self.write(stream, packet)
+            }
+            Start::Waiting if Some(stream) == self.video => {
+                let start = packet.pts();
+                self.start = Start::From(start);
+                while let Some((s, held)) = self.held.pop_front() {
+                    if ends_before(&held, start) {
+                        add(&self.stats.start_drops, 1);
+                    } else {
+                        self.write(s, &held)?;
+                    }
+                }
+                self.write(stream, packet)
+            }
+            Start::Waiting => {
+                if self.held.len() >= START_HOLD {
+                    self.held.pop_front();
+                    add(&self.stats.start_drops, 1);
+                }
+                self.held.push_back((stream, packet.clone()));
+                Ok(())
+            }
+        }
+    }
+
     /// Muxes or forwards one packet of stream `stream`.
     fn write(&mut self, stream: usize, packet: &EncodedPacket) -> Result<(), NodeError> {
         add(&self.stats.packets, 1);
@@ -392,6 +468,10 @@ impl<X: Runtime> Node<X> for OutputNode {
             .map_err(|e| self.transport_error("transport start", e))?;
         self.transport = Some(transport);
         self.backlog = VecDeque::with_capacity(self.backlog_limit);
+        if self.video.is_some() {
+            self.start = Start::Waiting;
+            self.held = VecDeque::with_capacity(START_HOLD);
+        }
         self.chunks = Vec::with_capacity(16);
         self.events = Vec::with_capacity(16);
         if let Some(mut muxer) = muxer {
@@ -418,7 +498,7 @@ impl<X: Runtime> Node<X> for OutputNode {
         self.drain_backlog()?;
         for stream in 0..self.streams.len() {
             for packet in inputs.packets(stream) {
-                self.write(stream, packet)?;
+                self.accept(stream, packet)?;
             }
         }
         let transport = self.transport.as_mut().ok_or(NodeError::NotReady)?;
@@ -443,6 +523,14 @@ impl<X: Runtime> Node<X> for OutputNode {
     }
 
     fn release(&mut self, _ctx: &mut PrepareCtx<'_, X>) {
+        // No video packet ever came: the held packets are all the output has.
+        self.start = Start::Open;
+        let held = std::mem::take(&mut self.held);
+        for (stream, packet) in held {
+            if self.transport.is_some() && self.write(stream, &packet).is_err() {
+                break;
+            }
+        }
         let deadline = self.clock.now() + self.finish_timeout;
         let mut delivered = self.transport.is_some() && self.drain_until(deadline);
         if let Some(mut muxer) = self.muxer.take() {
