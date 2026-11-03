@@ -181,6 +181,24 @@ impl StudioUi {
                 .unwrap_or(0) as i32,
         );
         g.set_out_note(self.profile_note.as_str().into());
+        let encoder = match self.encoder_index() {
+            0 => "best encoder".to_owned(),
+            i => self
+                .encoders
+                .get(i - 1)
+                .map_or_else(String::new, |e| e.name.clone()),
+        };
+        g.set_out_summary(
+            format!(
+                "{} · {} · video {} kbit/s · audio {} kbit/s · {}",
+                p.format.label(),
+                encoder,
+                p.video_kbps,
+                p.audio_kbps,
+                p.folder.display()
+            )
+            .into(),
+        );
         if g.get_out_folder_serial() != self.folder_serial as i32 {
             g.set_out_folder(self.profile.folder.display().to_string().into());
             g.set_out_folder_serial(self.folder_serial as i32);

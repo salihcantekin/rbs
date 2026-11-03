@@ -84,6 +84,9 @@ pub struct SourceTarget {
     pub name: String,
     /// The OS default of its kind (audio endpoints only; capture has no default).
     pub is_default: bool,
+    /// Native size in pixels when the adapter knows it (displays and windows), so a
+    /// picker can place the source with its aspect ratio.
+    pub size: Option<(u32, u32)>,
 }
 
 /// What [`SourceTypes::instantiate`] needs besides the source.
@@ -395,6 +398,7 @@ impl SourceTypes {
                             target: t.id.as_str().to_owned(),
                             name: t.name,
                             is_default: false,
+                            size: t.size,
                         });
                     }
                 }
@@ -407,6 +411,7 @@ impl SourceTypes {
                             target: e.id.as_str().to_owned(),
                             name: e.name,
                             is_default: e.is_default,
+                            size: None,
                         });
                     }
                 }

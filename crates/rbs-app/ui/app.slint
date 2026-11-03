@@ -3,7 +3,7 @@
 // layout tree into tab stacks and splitter handles with absolute positions.
 import { Theme, Tokens } from "tokens.slint";
 import { Button, IconButton, Icon, IconName, MenuItem, MenuSurface, EmptyState } from "components.slint";
-import { Studio, SourceData, KindData, TargetData, MeterRow, ScaleMark, ProgramPanel, SourcesPanel, MixerPanel, LiveControlsPanel, OutputsPanel } from "studio.slint";
+import { Studio, SourceData, KindData, TargetData, MeterRow, ScaleMark, ProgramPanel, SourcesPanel, MixerPanel, LiveControlsPanel, OutputsPanel, RecordingSettings } from "studio.slint";
 
 export { Theme, Tokens, Studio, SourceData, KindData, TargetData, MeterRow, ScaleMark }
 
@@ -555,6 +555,46 @@ export component FloatWindow inherits Window {
             stacks: root.stacks;
             handles: root.handles;
             floating: true;
+        }
+    }
+}
+
+// The Settings window (U17): a list of sections and the chosen one. For now the only
+// section is Recording; search comes when there are more.
+export component SettingsWindow inherits Window {
+    title: @tr("RBS settings");
+    preferred-width: Tokens.size-floating-w;
+    preferred-height: Tokens.size-floating-h;
+    min-width: Tokens.size-menu-md * 2;
+    background: Theme.surface-raised;
+    default-font-size: Tokens.type-body-size;
+    HorizontalLayout {
+        Rectangle {
+            width: Tokens.size-menu-sm;
+            background: Theme.surface-base;
+            VerticalLayout {
+                padding: Tokens.space-2;
+                alignment: start;
+                accessible-role: list;
+                accessible-label: @tr("Settings sections");
+                MenuItem { text: @tr("Recording"); checked: true; }
+            }
+        }
+        Flickable {
+            content-height: section.preferred-height;
+            section := VerticalLayout {
+                padding: Tokens.space-4;
+                spacing: Tokens.space-3;
+                alignment: start;
+                Text {
+                    text: @tr("Recording");
+                    color: Theme.text-primary;
+                    font-size: Tokens.type-heading-size;
+                    font-weight: Tokens.type-heading-weight;
+                    accessible-role: none;
+                }
+                RecordingSettings { }
+            }
         }
     }
 }

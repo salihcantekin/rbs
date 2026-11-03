@@ -45,6 +45,7 @@ impl SourceTypes {
     pub fn instantiate(&self, source: &Source, ctx: &InstanceContext)
         -> Result<SourceInstance, SourceError>;
 }
+pub struct SourceTarget { adapter, target, name, is_default, size: Option<(u32, u32)> }  // size: displays and windows, when known
 pub struct InstanceContext { clock, audio: AudioGraphConfig, max_audio_offset }  // new(), with_max_audio_offset()
 pub enum SourceInstance {
     Video(VideoSource { node: CaptureSourceNode, stats, adapter, target }),

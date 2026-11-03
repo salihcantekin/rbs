@@ -132,6 +132,8 @@ struct App {
     exiting: bool,
     demo_since: Option<Instant>,
     studio: studio_ui::StudioUi,
+    /// The Settings window while it is open (U17).
+    settings: Option<SettingsWindow>,
 }
 
 impl App {
@@ -392,6 +394,32 @@ impl Ctx {
     #[cfg(not(any(target_os = "macos", windows)))]
     fn connect_preview(&self, _endpoint: rbs_gpu::share::PreviewEndpoint) {}
 
+    /// Shows the Settings window, made on first use and kept until it is closed.
+    fn open_settings(&self) {
+        let ctx = self.clone();
+        self.update(move |app| {
+            if let Some(w) = &app.settings {
+                let _ = w.show();
+                return;
+            }
+            let Ok(w) = SettingsWindow::new() else {
+                app.error = Some(UiError::Other(
+                    "The settings window cannot be opened.".into(),
+                ));
+                return;
+            };
+            apply_theme(&w.global::<Theme>());
+            install_studio(&w.global::<Studio>(), &ctx);
+            let c = ctx.clone();
+            w.window().on_close_requested(move || {
+                c.update(|app| app.settings = None);
+                slint::CloseRequestResponse::HideWindow
+            });
+            let _ = w.show();
+            app.settings = Some(w);
+        });
+    }
+
     /// One meter refresh (the timer runs only while the Mixer shows meters).
     fn meter_tick(&self) {
         if let Ok(mut app) = self.app.try_borrow_mut() {
@@ -471,6 +499,9 @@ impl Ctx {
         s.push(&app.main.global::<Studio>(), state, panel);
         for f in &app.floats {
             s.push(&f.window.global::<Studio>(), state, panel);
+        }
+        if let Some(w) = &app.settings {
+            s.push(&w.global::<Studio>(), state, panel);
         }
 
         if mixer_shown && s.has_meters() {
@@ -887,6 +918,10 @@ fn install_studio(g: &Studio<'_>, ctx: &Ctx) {
     on!(on_reset_clip, |app, i: i32| {
         app.studio.reset_clip(i);
     });
+    {
+        let ctx = ctx.clone();
+        g.on_open_settings(move || ctx.open_settings());
+    }
     on!(on_record, |app| {
         app.studio.record();
     });
@@ -973,6 +1008,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             error,
             save_due: false,
             exiting: false,
+            settings: None,
             demo_since: demo_live.then(Instant::now),
             studio: studio_ui::StudioUi::new(&studio_config),
         })),
