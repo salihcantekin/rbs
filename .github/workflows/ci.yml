@@ -42,8 +42,22 @@ jobs:
           components: clippy
       - uses: Swatinem/rust-cache@v2
       # Software Vulkan (lavapipe) so rbs-gpu golden image tests run instead of skipping.
+      # PipeWire headers build rbs-capture-pipewire; the daemon and WirePlumber let its
+      # conformance test link a test source to a capture stream.
       - if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y mesa-vulkan-drivers
+        run: >-
+          sudo apt-get update && sudo apt-get install -y mesa-vulkan-drivers
+          libpipewire-0.3-dev pipewire wireplumber dbus-daemon
+      - if: runner.os == 'Linux'
+        name: start a private PipeWire daemon
+        run: |
+          dir="$RUNNER_TEMP/pipewire"
+          mkdir -m 700 -p "$dir"
+          echo "XDG_RUNTIME_DIR=$dir" >> "$GITHUB_ENV"
+          export XDG_RUNTIME_DIR="$dir"
+          nohup pipewire > "$RUNNER_TEMP/pipewire.log" 2>&1 &
+          for _ in $(seq 50); do [ -S "$dir/pipewire-0" ] && break; sleep 0.1; done
+          nohup dbus-run-session -- wireplumber > "$RUNNER_TEMP/wireplumber.log" 2>&1 &
       - run: cargo clippy --workspace --all-targets -- -D warnings
       - run: cargo test --workspace
         env:
@@ -51,6 +65,7 @@ jobs:
           RBS_REQUIRE_GPU: "1"
           RBS_REQUIRE_D3D12: ${{ runner.os == 'Windows' && '1' || '' }}
           RBS_REQUIRE_NV12_SURFACE: ${{ runner.os == 'Linux' && '1' || '' }}
+          RBS_REQUIRE_PIPEWIRE: ${{ runner.os == 'Linux' && '1' || '' }}
       - run: cargo doc --workspace --no-deps
         env:
           RUSTDOCFLAGS: -D warnings
