@@ -97,11 +97,13 @@ fn set_rows<T: Clone + PartialEq + 'static>(model: &VecModel<T>, rows: Vec<T>) {
     }
 }
 
-/// One floating OS window. `key` is a panel it showed at the last sync, which
-/// identifies its workspace window across index changes (dock, undo, switch).
+/// One floating OS window. `panels` are the panels it showed at the last sync,
+/// which identify its workspace window across index changes (dock, undo,
+/// switch); `index` is that workspace window's index at the last sync.
 struct FloatSlot {
     window: FloatWindow,
-    key: Option<PanelId>,
+    panels: Vec<PanelId>,
+    index: Option<usize>,
     models: DockModels,
 }
 
@@ -179,13 +181,17 @@ impl App {
     }
 
     fn command(&mut self, c: LayoutCommand, origin: Origin) {
-        let before = self.session.workspace().windows.len();
+        // Leaving a workspace: write its pending changes first, because the
+        // debounced save only ever writes the current workspace.
+        if self.save_due && matches!(c, LayoutCommand::Switch(_)) {
+            self.persist_now();
+        }
         match self.session.apply(c, origin) {
             Ok(toast) => {
                 // A toast's undo always means the latest change, so any later
                 // change replaces or removes it.
                 self.set_toast(toast);
-                self.changed(before);
+                self.changed();
             }
             Err(CommandError::Locked) => self.error = Some(UiError::Locked),
             Err(e) => self.error = Some(UiError::Other(e.to_string())),
@@ -199,27 +205,23 @@ impl App {
         self.toast = toast;
     }
 
-    /// After any layout change: forget sizes of windows that moved, save soon.
-    fn changed(&mut self, windows_before: usize) {
-        if self.session.workspace().windows.len() != windows_before {
-            self.areas.retain(|(w, _)| *w == 0);
-        }
+    /// After any layout change: save soon. Window sizes are re-keyed in
+    /// `sync_floats`, which knows which OS window shows which workspace window.
+    fn changed(&mut self) {
         self.save_due = true;
     }
 
     fn undo(&mut self) {
-        let before = self.session.workspace().windows.len();
         if self.session.undo() {
             self.toast = None;
-            self.changed(before);
+            self.changed();
         }
     }
 
     fn redo(&mut self) {
-        let before = self.session.workspace().windows.len();
         if self.session.redo() {
             self.toast = None;
-            self.changed(before);
+            self.changed();
         }
     }
 
@@ -398,45 +400,69 @@ impl Ctx {
         }
     }
 
-    /// One OS window per floating workspace window, matched by the panels it shows.
+    /// One OS window per floating workspace window. An OS window keeps showing
+    /// the workspace window that shares a panel with it, so its position, size
+    /// and focus survive docks, moves and undo; leftover OS windows are reused
+    /// in order before a new one is created.
     fn sync_floats(&self, app: &mut App) {
-        let floating: Vec<usize> = app
-            .session
-            .workspace()
+        let ws = app.session.workspace();
+        let wanted: Vec<(usize, Vec<PanelId>)> = ws
             .windows
             .iter()
             .enumerate()
             .filter(|(_, w)| matches!(w.content, WindowContent::Floating(_)))
-            .map(|(i, _)| i)
+            .filter_map(|(i, w)| {
+                w.layout()
+                    .map(|l| (i, l.panels().into_iter().cloned().collect()))
+            })
             .collect();
-        let mut old: Vec<FloatSlot> = std::mem::take(&mut app.floats);
-        let mut slots = Vec::with_capacity(floating.len());
-        for &w in &floating {
-            let Some(layout) = app.session.workspace().windows[w].layout() else {
+        let mut old: Vec<Option<FloatSlot>> = std::mem::take(&mut app.floats)
+            .into_iter()
+            .map(Some)
+            .collect();
+        let mut chosen: Vec<Option<FloatSlot>> = wanted
+            .iter()
+            .map(|(_, panels)| {
+                old.iter_mut()
+                    .find(|s| {
+                        s.as_ref()
+                            .is_some_and(|s| s.panels.iter().any(|p| panels.contains(p)))
+                    })
+                    .and_then(Option::take)
+            })
+            .collect();
+        let mut leftover = old.into_iter().flatten();
+        for c in chosen.iter_mut().filter(|c| c.is_none()) {
+            *c = leftover.next();
+        }
+        for s in leftover {
+            let _ = s.window.hide();
+        }
+
+        // Sizes follow their OS window to its new workspace window index.
+        let old_areas = std::mem::take(&mut app.areas);
+        let area_of = |i: usize| old_areas.iter().find(|(w, _)| *w == i).map(|(_, r)| *r);
+        app.areas.extend(area_of(0).map(|r| (0, r)));
+        let mut slots = Vec::with_capacity(wanted.len());
+        for ((w, panels), slot) in wanted.into_iter().zip(chosen) {
+            let Some(slot) = slot.or_else(|| self.new_float()) else {
                 continue;
             };
-            let panels = layout.panels();
-            let found = old
-                .iter()
-                .position(|s| s.key.as_ref().is_some_and(|k| panels.contains(&k)));
-            let slot = match found {
-                Some(i) => old.remove(i),
-                None => match self.new_float() {
-                    Some(s) => s,
-                    None => continue,
-                },
+            if let Some(r) = slot.index.and_then(area_of) {
+                app.areas.push((w, r));
+            }
+            let Some(layout) = app.session.workspace().windows[w].layout() else {
+                continue;
             };
             let (stacks, handles) = view::window_view(w, layout, app.area(w));
             slot.models.update(stacks, handles);
             slot.window.set_window(w as i32);
             slot.window.set_panel_names(view::panel_names(layout));
             slots.push(FloatSlot {
-                key: panels.first().map(|p| (*p).clone()),
+                panels,
+                index: Some(w),
                 ..slot
             });
-        }
-        for s in old {
-            let _ = s.window.hide();
         }
         app.floats = slots;
     }
@@ -464,7 +490,8 @@ impl Ctx {
         let _ = fw.show();
         Some(FloatSlot {
             window: fw,
-            key: None,
+            panels: Vec::new(),
+            index: None,
             models,
         })
     }
