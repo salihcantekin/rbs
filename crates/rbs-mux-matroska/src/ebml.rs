@@ -41,6 +41,14 @@ pub fn float(out: &mut Vec<u8>, element: u32, value: f64) {
     out.extend_from_slice(&value.to_bits().to_be_bytes());
 }
 
+/// A `Void` element of exactly `total` bytes (2 to 128): id, 1-byte size, zeros.
+pub fn void(out: &mut Vec<u8>, total: usize) {
+    debug_assert!((2..=128).contains(&total));
+    out.push(0xec);
+    size1(out, (total - 2) as u8);
+    out.resize(out.len() + total - 2, 0);
+}
+
 /// String or binary element.
 pub fn bytes(out: &mut Vec<u8>, element: u32, value: &[u8]) {
     id(out, element);

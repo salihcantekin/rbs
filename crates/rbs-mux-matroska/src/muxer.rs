@@ -28,6 +28,7 @@ const INFO: u32 = 0x1549_a966;
 const TIMESTAMP_SCALE: u32 = 0x2a_d7b1;
 const MUXING_APP: u32 = 0x4d80;
 const WRITING_APP: u32 = 0x5741;
+const DURATION: u32 = 0x4489;
 const TRACKS: u32 = 0x1654_ae6b;
 const TRACK_ENTRY: u32 = 0xae;
 const TRACK_NUMBER: u32 = 0xd7;
@@ -66,6 +67,9 @@ const MAX_CLUSTER_SPAN: Duration = Duration::from_secs(20);
 const MAX_COMPOSITION_DELAY: Duration = Duration::from_secs(10);
 /// Track numbers are written as one-byte variable-length integers.
 const MAX_TRACKS: usize = 126;
+/// A `Duration` element: id (2) + size (1) + 8-byte float. The header reserves this
+/// many bytes as a `Void` element, which `finish` patches into the duration.
+const DURATION_BYTES: usize = 2 + 1 + 8;
 
 enum Kind {
     /// H.264; `length_size` is `None` for Annex B input, converted to 4-byte lengths.
@@ -73,6 +77,16 @@ enum Kind {
         length_size: Option<u8>,
     },
     Audio,
+}
+
+/// Byte offsets in the output of the header fields `finish` patches.
+struct PatchPoints {
+    /// The Segment's 8-byte size field (unknown while live).
+    segment_size: usize,
+    /// Where the Segment's payload starts.
+    segment_data: usize,
+    /// The `Void` element in `Info` that becomes the `Duration`.
+    duration: usize,
 }
 
 enum Payload {
@@ -103,6 +117,9 @@ struct Track {
     last_dts: Option<Timestamp>,
     /// Whether this track has a block in the cluster being collected.
     in_cluster: bool,
+    /// How long a block lasts for the Segment duration: the frame interval (video) or
+    /// the samples per packet (audio).
+    default_duration: Duration,
 }
 
 pub(crate) struct MatroskaMuxer {
@@ -130,6 +147,12 @@ pub(crate) struct MatroskaMuxer {
     cluster_bytes: usize,
     seq: u32,
     last_chunk: Option<Timestamp>,
+    /// Latest presentation end (pts plus duration) of any block, in master-clock
+    /// nanoseconds: the Segment `Duration` written at `finish`.
+    end: Option<i128>,
+    /// Bytes emitted so far (offset of the next chunk in the byte stream).
+    emitted: u64,
+    patch_points: PatchPoints,
     began: bool,
     finished: bool,
 }
@@ -218,10 +241,17 @@ impl MatroskaMuxer {
         ebml::close(&mut header, ebml_header);
         // Live: the Segment's size is unknown, so the file is valid at every Cluster
         // boundary (`mux.live`).
+        // `finish` patches the size in on seekable outputs.
         ebml::id(&mut header, SEGMENT);
+        let segment_size = header.len();
         header.extend_from_slice(&ebml::UNKNOWN_SIZE);
+        let segment_data = header.len();
         let info = ebml::open(&mut header, INFO);
         ebml::uint(&mut header, TIMESTAMP_SCALE, SCALE_NS);
+        // Room for the Duration, known only at `finish`: readers skip a Void element,
+        // so the file stays valid when the patch is never applied.
+        let duration = header.len();
+        ebml::void(&mut header, DURATION_BYTES);
         ebml::bytes(&mut header, MUXING_APP, b"RBS");
         ebml::bytes(&mut header, WRITING_APP, b"RBS");
         ebml::close(&mut header, info);
@@ -276,9 +306,15 @@ impl MatroskaMuxer {
                         parameter_sets,
                         last_dts: None,
                         in_cluster: false,
+                        default_duration: frame_rate.frame_duration(),
                     });
                 }
-                (CodecId::Aac, StreamParams::Audio { format, .. }) => {
+                (
+                    CodecId::Aac,
+                    StreamParams::Audio {
+                        format, frame_size, ..
+                    },
+                ) => {
                     if stream.bitstream != BitstreamFormat::Raw {
                         return Err(CreateError::InvalidConfig(format!(
                             "AAC in {:?} framing",
@@ -305,6 +341,10 @@ impl MatroskaMuxer {
                         parameter_sets: Vec::new(),
                         last_dts: None,
                         in_cluster: false,
+                        default_duration: Duration::from_nanos(
+                            u64::from(frame_size) * 1_000_000_000
+                                / u64::from(format.sample_rate.hz().max(1)),
+                        ),
                     });
                 }
                 (CodecId::H264 | CodecId::Aac, _) => {
@@ -342,6 +382,13 @@ impl MatroskaMuxer {
             cluster_bytes: 0,
             seq: 0,
             last_chunk: None,
+            end: None,
+            emitted: 0,
+            patch_points: PatchPoints {
+                segment_size,
+                segment_data,
+                duration,
+            },
             began: false,
             finished: false,
         })
@@ -371,6 +418,12 @@ impl MatroskaMuxer {
             .map(|b| self.millis(b.pts))
             .min()
             .unwrap_or(0);
+        // Once per cluster, not per packet: the latest presentation end so far.
+        for b in &self.blocks {
+            let lasts = self.tracks[usize::from(b.track) - 1].default_duration;
+            let end = nanos(b.pts) + i128::try_from(lasts.as_nanos()).unwrap_or(0);
+            self.end = Some(self.end.map_or(end, |e| e.max(end)));
+        }
         let size = CLUSTER_FIXED
             + self
                 .blocks
@@ -436,6 +489,7 @@ impl MatroskaMuxer {
         // before when a stream arrives late (within the interleaving bound).
         let timestamp = self.last_chunk.map_or(start, |last| last.max(start));
         self.last_chunk = Some(timestamp);
+        self.emitted += chunk.len() as u64;
         out.push(MuxChunk::new(
             ChunkKind::Media {
                 keyframe,
@@ -452,6 +506,7 @@ impl Muxer for MatroskaMuxer {
             return Err(MuxError::InvalidState("begin called twice"));
         }
         self.began = true;
+        self.emitted = self.header.len() as u64;
         out.push(MuxChunk::new(
             ChunkKind::Header,
             Bytes::from(std::mem::take(&mut self.header)),
@@ -625,6 +680,31 @@ impl Muxer for MatroskaMuxer {
         }
         self.flush(out);
         self.finished = true;
+        // Seekable outputs get the Duration and the Segment size (players show and
+        // seek with them); others keep a valid live file without them.
+        if let (Some(end), Some(origin)) = (self.end, self.origin) {
+            let millis = (end - origin) as f64 / SCALE_NS as f64;
+            let mut duration = Vec::with_capacity(DURATION_BYTES);
+            ebml::float(&mut duration, DURATION, millis.max(0.0));
+            debug_assert_eq!(duration.len(), DURATION_BYTES);
+            out.push(MuxChunk::new(
+                ChunkKind::Patch {
+                    offset: self.patch_points.duration as u64,
+                },
+                Bytes::from(duration),
+            ));
+            let mut size = Vec::with_capacity(8);
+            ebml::size8(
+                &mut size,
+                self.emitted - self.patch_points.segment_data as u64,
+            );
+            out.push(MuxChunk::new(
+                ChunkKind::Patch {
+                    offset: self.patch_points.segment_size as u64,
+                },
+                Bytes::from(size),
+            ));
+        }
         Ok(())
     }
 }
