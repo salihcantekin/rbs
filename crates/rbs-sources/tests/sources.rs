@@ -106,6 +106,82 @@ fn types_are_installed_only_by_probed_adapters_that_capture_their_kind() {
 }
 
 #[test]
+fn the_binder_type_ids_match_the_node_crates() {
+    assert_eq!(
+        rbs_scene::binder::COMPOSITOR_TYPE,
+        rbs_gpu::node::COMPOSITOR_NODE_TYPE
+    );
+    assert_eq!(rbs_scene::binder::MIXER_TYPE, rbs_audio::MIXER_NODE_TYPE);
+}
+
+/// Lists nothing but ranks first (hardware), so it is the best adapter.
+struct Unlisted(TestCaptureFactory);
+
+impl rbs_core::registry::AdapterFactory for Unlisted {
+    fn id(&self) -> rbs_core::registry::AdapterId {
+        rbs_core::registry::AdapterId::new("org.example.unlisted")
+    }
+    fn display_name(&self) -> &str {
+        "Unlisted"
+    }
+    fn probe(&self) -> Result<rbs_core::capability::CapabilitySet, rbs_core::registry::ProbeError> {
+        let mut caps = self.0.probe()?;
+        caps.insert(
+            rbs_core::registry::HARDWARE,
+            rbs_core::capability::CapabilityValue::Flag(true),
+        );
+        Ok(caps)
+    }
+}
+
+impl rbs_capture::CaptureFactory for Unlisted {
+    fn enumerate(
+        &self,
+        _: rbs_capture::TargetKind,
+    ) -> Result<Vec<rbs_capture::CaptureTarget>, rbs_capture::CaptureError> {
+        Ok(Vec::new())
+    }
+    fn open(
+        &self,
+        request: &rbs_capture::CaptureRequest,
+    ) -> Result<Box<dyn rbs_capture::CaptureSession>, rbs_capture::CaptureError> {
+        self.0.open(request)
+    }
+}
+
+#[test]
+fn a_target_goes_to_the_adapter_that_lists_it() {
+    let mut reg = SourceTypes::new();
+    reg.register_capture(Arc::new(Unlisted(TestCaptureFactory::new())))
+        .unwrap();
+    reg.register_capture(Arc::new(TestCaptureFactory::new()))
+        .unwrap();
+    reg.probe();
+    for settings in [
+        Settings::new(),
+        settings(&[(keys::TARGET, text("test-camera-0"))]),
+    ] {
+        let cam = video(
+            reg.instantiate(&source(types::CAMERA_SOURCE, settings), &ctx())
+                .unwrap(),
+        );
+        assert_eq!(cam.adapter.as_str(), rbs_capture_test::ADAPTER_ID);
+    }
+    // A target nobody lists (a picker-only id) goes to the best adapter.
+    let picked = video(
+        reg.instantiate(
+            &source(
+                types::CAMERA_SOURCE,
+                settings(&[(keys::TARGET, text("restore-token"))]),
+            ),
+            &ctx(),
+        )
+        .unwrap(),
+    );
+    assert_eq!(picked.adapter.as_str(), "org.example.unlisted");
+}
+
+#[test]
 fn an_empty_registry_still_has_the_compositor_and_the_mixer() {
     let table = SourceTypes::new().node_types();
     let ids: Vec<&str> = table.ids().map(NodeTypeId::as_str).collect();
@@ -387,15 +463,17 @@ fn a_bound_scene_instantiates_into_the_right_partitions() {
         }
     }
     assert_eq!(audio_nodes, [binder.source_node(mic).unwrap()]);
-    assert_eq!(
-        report.mixer.as_ref().unwrap().inputs[0].producer,
-        audio_nodes[0]
-    );
+    assert_eq!(report.mixers[&canvas].inputs[0].producer, audio_nodes[0]);
 
     // Outputs on the canvas and the mix make the plan schedule everything.
     let comp = binder.compositor(canvas, Role::Program).unwrap();
     attach(&mut graph, comp, "canvas", LinkKind::Video);
-    attach(&mut graph, binder.mixer().unwrap(), "main", LinkKind::Audio);
+    attach(
+        &mut graph,
+        binder.mixer(canvas).unwrap(),
+        "main",
+        LinkKind::Audio,
+    );
     let plan = graph.plan();
     let bound = &report.compositors[&(canvas, Role::Program)];
     let layers = node_layers(bound, &plan);

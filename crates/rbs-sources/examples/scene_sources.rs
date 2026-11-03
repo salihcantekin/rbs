@@ -223,7 +223,7 @@ mod windows_check {
         let mut stats: Vec<(&str, Stats)> = Vec::new();
         let mut video_nodes: Vec<(NodeId, Box<dyn Node<GpuRuntime>>)> = Vec::new();
         let mut audio_nodes: Vec<(NodeId, Box<dyn Node<()>>)> = Vec::new();
-        let mut strips = Vec::new();
+        let mut meters = std::collections::BTreeMap::new();
         for (source, node) in &report.created_sources {
             let name = wanted
                 .iter()
@@ -250,7 +250,7 @@ mod windows_check {
                     );
                     assert_eq!(partition, AUDIO);
                     let meter = Arc::new(LevelMeter::new(2));
-                    strips.push(Strip::new(*node, 1.0).with_meter(Arc::clone(&meter)));
+                    meters.insert(*source, Arc::clone(&meter));
                     stats.push((name, Stats::Audio(Arc::clone(&a.stats), meter)));
                     audio_nodes.push((*node, Box::new(a.node)));
                 }
@@ -261,7 +261,20 @@ mod windows_check {
         // The compositor and the mixer the binder made, plus sinks so the plan
         // schedules them (the record command attaches encoders here instead).
         let comp_id = binder.compositor(canvas, Role::Program).unwrap();
-        let mixer_id = binder.mixer().unwrap();
+        let mixer_id = binder.mixer(canvas).unwrap();
+        // Strips are kept per source and rebuilt from the mixer's inputs after every
+        // sync (a source whose settings change gets a new node id).
+        let strips: Vec<Strip> = report.mixers[&canvas]
+            .inputs
+            .iter()
+            .map(|i| {
+                let strip = Strip::new(i.producer, 1.0);
+                match meters.get(&i.source) {
+                    Some(m) => strip.with_meter(Arc::clone(m)),
+                    None => strip,
+                }
+            })
+            .collect();
         let (video_sink_id, video_sink, canvas_frames) = add_sink::<GpuRuntime>(
             &mut graph,
             comp_id,

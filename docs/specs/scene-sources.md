@@ -68,8 +68,8 @@ Unknown keys are ignored. A wrong value type or value is `InvalidSetting`.
 ### Invariants
 
 1. A type is installed exactly when a probed adapter declares its kind: `capture.target.kinds` includes the `TargetKind`, or `audio.input.kinds` includes the `EndpointKind`. Nothing is installed before `probe`.
-2. `node_types()` holds the compositor (`rbs_gpu::node::compositor_descriptor`), the mixer (`rbs_audio::mixer_descriptor`) and each installed source type: capture types with `rbs_nodes::capture_descriptor`, audio types with `rbs_audio::input_descriptor`. An instance's descriptor equals its type's descriptor in the table, which the controller requires.
-3. Default target, when `target` is missing: the first display or camera an adapter lists; the audio endpoint marked default, else the first one; windows have none (`NoTarget`). Without `adapter`, candidates are tried best first until one lists a default; with `adapter`, only that one.
+2. `node_types()` holds the compositor (`rbs_gpu::node::compositor_descriptor`), the mixer (`rbs_audio::mixer_descriptor`) and each installed source type: capture types with `rbs_nodes::capture_descriptor`, audio types with `rbs_audio::input_descriptor`. An instance's descriptor equals its type's descriptor in the table, which the controller requires. So graph nodes carry the node crates' type ids (`org.rbs.capture`, `org.rbs.audio.input`), not the scene source type id; the binder maps sources to nodes. `rbs_scene::binder::COMPOSITOR_TYPE` and `MIXER_TYPE` equal the node crates' ids (test).
+3. A `target` without `adapter` goes to the first adapter, best first, that lists it, else to the best adapter (picker-only ids are never listed). Default target, when `target` is missing: the first display or camera an adapter lists; the audio endpoint marked default, else the first one; windows have none (`NoTarget`). Without `adapter`, candidates are tried best first until one lists a default; with `adapter`, only that one.
 4. A `Video` instance opens nothing until `prepare` (ADR-0038). An `Audio` instance holds a stream opened in Standby: the port guarantees no device activity before `start` (audio input port spec).
 5. `instantiate` and `targets` run on the control thread and may enumerate (up to 100 ms per adapter); they never prompt.
 6. `node_layers` returns the bound layers whose producer `plan` schedules, bottom first, each with the index of its link among the compositor's scheduled links (scene model spec, `resolve`), the transform, crop and opacity unchanged.
@@ -78,8 +78,10 @@ Unknown keys are ignored. A wrong value type or value is `InvalidSetting`.
 
 1. Register the platform's capture and audio adapters, `probe`.
 2. `SceneBinder::new(types.node_types()).with_audio(AUDIO)`; `sync`.
-3. For each `report.created_sources`, `instantiate` and adopt the instance into the node's partition (`Video` into the render partition, `Audio` into the audio partition); take back `retired_sources`.
-4. Create the compositor (`node_layers`) and mixer (strips for `report.mixer.inputs`) instances, attach encoders to `compositor(canvas, Program)` and `mixer()`, apply.
+3. For each `report.created_sources`, `instantiate` and adopt the instance into the node's partition (`Video` into the render partition, `Audio` into the audio partition).
+4. Create the compositor (`node_layers`) and mixer instances, attach each canvas's encoders to `compositor(canvas, Program)` and `mixer(canvas)`. Mixer strips are kept per `SourceId` and rebuilt from `report.mixers[canvas].inputs` after every sync.
+5. Apply and collect. Only then take back the instances of `retired_sources` and `retired_filters`: `Controller::take` returns idle instances only.
+6. Break-before-make for `report.replaced_sources`: an exclusive device (most cameras) cannot start the new instance while the old one runs. Apply first a copy of the graph with each replacing node moved to Standby, collect (the old instance is released), then apply the graph itself.
 
 ## Errors and failure behaviour
 
@@ -95,9 +97,12 @@ Control thread only, user-paced; nothing here runs per frame or per block.
 
 Hardware (manual): `cargo run -p rbs-sources --example scene_sources --release -- 15` on Windows (WGC, Media Foundation camera, WASAPI microphone and system audio through the binder, the compositor and the mixer on the engine workers).
 
+Windows result (SC-PC, RTX 4090, 2026-11-03), PASS: every type installed with WGC, Media Foundation and WASAPI (2 displays, 7 windows, 2 cameras, 3 inputs, 2 loopbacks, 6 applications listed). Over 15 s: display 825 frames, all imported zero copy; Cam Link 4K 871 frames, all uploaded; Shure MV7+ microphone and system loopback 722,400 frames each with 0 resyncs and drift correction within -17..+33 ppm; canvas 904 frames, mix 1505 blocks; 0 GPU errors, 0 invalid or unknown mixer inputs.
+
 ## Open questions
 
 - A settings schema per type (with the plugin SDK and control API): which keys apply live without a new node.
 - Plugin source types: descriptor and factory from the plugin manifest, added to the table.
-- Cameras with built-in microphones as one source with video and audio outputs (the binder supports it; no node type does yet).
+- Sources with video and audio (cameras with microphones): the binder needs the partition queue's reader as the mixer producer (`AudioOnVideoSource` until then).
+- Audio that does not depend on the scene (a global microphone or system audio in every scene).
 - Restore tokens for picker-only targets (PipeWire portal): the application stores `CaptureSession::target_to_store` back into the `target` setting, which today makes a new node.

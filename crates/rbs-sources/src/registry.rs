@@ -419,7 +419,8 @@ impl SourceTypes {
     /// up to 100 ms per adapter).
     ///
     /// - Adapter: the `adapter` setting, else the best probed adapter for the kind.
-    /// - Target: the `target` setting; else the first display or camera the adapter
+    /// - Target: the `target` setting (without an `adapter` setting, from the first
+    ///   adapter, best first, that lists it, else the best adapter); else the first display or camera the adapter
     ///   lists, or the OS default audio endpoint (the first one if none is marked).
     ///   Windows have no default ([`SourceError::NoTarget`]). Without an `adapter`
     ///   setting, adapters are tried best first until one lists a default.
@@ -459,7 +460,18 @@ impl SourceTypes {
                 };
                 let candidates = choose(&self.capture_candidates(kind), named, type_id)?;
                 let (factory, target) = match target {
-                    Some(t) => (Arc::clone(&candidates[0]), TargetId::new(t)),
+                    Some(t) => {
+                        // Ids are adapter-defined: the adapter that lists the target,
+                        // else the best one (picker-only targets are never listed).
+                        let owner = candidates
+                            .iter()
+                            .find(|f| {
+                                f.enumerate(kind)
+                                    .is_ok_and(|l| l.iter().any(|x| x.id.as_str() == t))
+                            })
+                            .unwrap_or(&candidates[0]);
+                        (Arc::clone(owner), TargetId::new(t))
+                    }
                     None => default_capture_target(&candidates, kind)
                         .ok_or_else(|| SourceError::NoTarget(type_id.clone()))?,
                 };
@@ -484,7 +496,16 @@ impl SourceTypes {
             SourceClass::Audio(kind) => {
                 let candidates = choose(&self.audio_candidates(kind), named, type_id)?;
                 let (backend, endpoint) = match target {
-                    Some(t) => (Arc::clone(&candidates[0]), EndpointId::new(t)),
+                    Some(t) => {
+                        let owner = candidates
+                            .iter()
+                            .find(|b| {
+                                b.enumerate(kind)
+                                    .is_ok_and(|l| l.iter().any(|x| x.id.as_str() == t))
+                            })
+                            .unwrap_or(&candidates[0]);
+                        (Arc::clone(owner), EndpointId::new(t))
+                    }
                     None => default_endpoint(&candidates, kind)
                         .ok_or_else(|| SourceError::NoTarget(type_id.clone()))?,
                 };
