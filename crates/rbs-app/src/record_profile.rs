@@ -60,7 +60,7 @@ impl Format {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct RecordProfile {
-    /// File format version ([`FORMAT`]).
+    /// File format version (1).
     pub format_version: u32,
     /// Where recordings are written.
     pub folder: PathBuf,
