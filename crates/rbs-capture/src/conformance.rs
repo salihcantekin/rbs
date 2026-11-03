@@ -327,11 +327,19 @@ struct Suite<'a> {
     in_flight: u64,
 }
 
-/// Largest allowed probe time (capture-port.md, Conformance tests).
-const PROBE_BUDGET: Duration = Duration::from_millis(50);
+/// Longest a probe may take before the suite calls it hung (capture-port.md,
+/// Conformance tests). A hang guard, not the 50 ms performance budget: a pass/fail
+/// test must not depend on how fast the runner is (ADR-0032); the budget is measured
+/// with benchmarks.
+const PROBE_GUARD: Duration = Duration::from_secs(1);
 
-/// Probe calls the suite times; the fastest must be within [`PROBE_BUDGET`].
+/// Probe calls the suite times; the fastest must be within [`PROBE_GUARD`].
 const PROBE_ATTEMPTS: u32 = 3;
+
+/// Longest a `latest_frame` may take while every frame is held before the suite calls
+/// it blocking: a hang guard, far above a non-blocking call, so scheduling delays on a
+/// loaded runner never fail the suite (ADR-0032).
+const LATEST_FRAME_GUARD: Duration = Duration::from_millis(500);
 
 /// Runs the capture conformance suite against `factory`.
 pub fn run(
@@ -339,9 +347,8 @@ pub fn run(
     pacer: &mut dyn Pacer,
     options: &Options<'_>,
 ) -> Result<Report, Failure> {
-    // The fastest of a few calls: the 50 ms budget is the adapter's own work, not
-    // one-time process costs (loading system frameworks on the first call) or a
-    // descheduled CI runner. A probe that is slow every time still fails.
+    // The fastest of a few calls, so one-time process costs (loading system frameworks
+    // on the first call) do not count. A probe that hangs every time still fails.
     let mut probe_time = Duration::MAX;
     let mut probed = None;
     for _ in 0..PROBE_ATTEMPTS {
@@ -349,12 +356,14 @@ pub fn run(
         let result = factory.probe();
         probe_time = probe_time.min(started.elapsed());
         probed = Some(result);
-        if probe_time < PROBE_BUDGET {
+        if probe_time < PROBE_GUARD {
             break;
         }
     }
-    ensure("probe", probe_time < PROBE_BUDGET, || {
-        format!("probe took at least {probe_time:?} in {PROBE_ATTEMPTS} calls, limit is 50 ms")
+    ensure("probe", probe_time < PROBE_GUARD, || {
+        format!(
+            "probe took at least {probe_time:?} in {PROBE_ATTEMPTS} calls, limit is {PROBE_GUARD:?}"
+        )
     })?;
     let Some(probed) = probed else {
         return fail("probe", "probe was not called".to_owned());
@@ -1018,7 +1027,7 @@ impl Suite<'_> {
             let started = Instant::now();
             let result = session.latest_frame();
             let took = started.elapsed();
-            ensure(CHECK, took < Duration::from_millis(20), || {
+            ensure(CHECK, took < LATEST_FRAME_GUARD, || {
                 format!("{id}: latest_frame took {took:?} while every frame was held")
             })?;
             match result {

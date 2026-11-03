@@ -15,7 +15,7 @@ use rbs_core::media::{
 use rbs_core::time::{Clock, Timestamp};
 use rbs_graph::description::{GraphDescription, NodeId, PartitionId};
 use rbs_graph::node::{LinkKind, NodeDescriptor, NodeKind, NodeTypeId, Pin};
-use rbs_graph::runtime::{Node, NodeError, PrepareCtx, ProcessCtx, Runtime, WarmCtx};
+use rbs_graph::runtime::{Node, NodeError, PrepareCtx, ProcessCtx, Runtime, Tick, WarmCtx};
 
 /// The role of a test node.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -62,8 +62,10 @@ impl Probe {
     }
 }
 
-/// A gate a node's `cool` waits on, so a test can hold a swap past the engine's
-/// swap timeout. Waits at most `LIMIT` so a broken test cannot hang.
+/// A gate a node's `cool` (or `process`) waits on, so a test can hold a swap or a tick
+/// past the engine's timeout. The test opens it, directly or with [`open_when`] once
+/// the engine took the step it waits for; `hold` only bounds the wait so a broken test
+/// cannot hang (ADR-0032), it is never the expected duration.
 #[derive(Debug)]
 pub struct Gate {
     open: Mutex<bool>,
@@ -79,8 +81,9 @@ impl Default for Gate {
 }
 
 impl Gate {
-    /// A gate that lets `cool` through after `hold` even if never opened (for tests
-    /// where the thread that would open it is blocked in the engine call).
+    /// A gate that lets `cool` through after `hold` even if never opened: a hang guard
+    /// only. A test whose own thread is blocked in the engine call opens the gate with
+    /// [`open_when`] instead of relying on `hold`.
     pub fn holding(hold: Duration) -> Self {
         Self {
             open: Mutex::new(false),
@@ -332,4 +335,48 @@ pub fn eventually(limit: Duration, mut cond: impl FnMut() -> bool) -> bool {
         std::thread::yield_now();
     }
     cond()
+}
+
+/// Opens `gate` from a helper thread as soon as `cond` holds (checked while yielding).
+/// For a test whose own thread is blocked inside an engine call: the gate opens on an
+/// engine step the test can observe (a counter, a tick index), never after a duration.
+/// Gives up after `limit` (a hang guard) and opens the gate anyway.
+pub fn open_when(
+    gate: &Arc<Gate>,
+    limit: Duration,
+    cond: impl FnMut() -> bool + Send + 'static,
+) -> std::thread::JoinHandle<bool> {
+    let gate = Arc::clone(gate);
+    std::thread::spawn(move || {
+        let held = eventually(limit, cond);
+        gate.open();
+        held
+    })
+}
+
+/// Runtime for tests that wait for a tick by its index: `end_tick` records the index,
+/// so a test advances the clock to a tick's time and waits until that tick ran, with
+/// no race against counters a worker updates after its tick (ADR-0032).
+pub struct Ticks;
+
+/// The `Shared` of [`Ticks`]: one more than the index of the last tick (0: none yet).
+#[derive(Debug, Default)]
+pub struct TickLog {
+    next: AtomicU64,
+}
+
+impl TickLog {
+    /// One more than the index of the last tick that ran (0: none yet).
+    pub fn next(&self) -> u64 {
+        self.next.load(Ordering::Acquire)
+    }
+}
+
+impl Runtime for Ticks {
+    type Shared = TickLog;
+    type Local = ();
+
+    fn end_tick(shared: &TickLog, _: &mut (), tick: Tick) {
+        shared.next.store(tick.index + 1, Ordering::Release);
+    }
 }

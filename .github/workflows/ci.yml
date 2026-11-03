@@ -35,12 +35,18 @@ jobs:
       matrix:
         os: [ubuntu-latest, windows-latest, macos-latest]
     runs-on: ${{ matrix.os }}
+    # A hung test is killed by nextest after 60 s; this bounds everything else.
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy
       - uses: Swatinem/rust-cache@v2
+      # Per-test timeouts, no retries and per-test timings (ADR-0032, .config/nextest.toml).
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-nextest
       # Software Vulkan (lavapipe) so rbs-gpu golden image tests run instead of skipping.
       # rbs-app (Slint, Skia renderer) links fontconfig and loads xkbcommon on Linux.
       # PipeWire and libdbus headers build rbs-capture-pipewire; the daemon and
@@ -66,7 +72,11 @@ jobs:
           for _ in $(seq 100); do pw-cli ls Client 2>/dev/null | grep -qi wireplumber && break; sleep 0.1; done
           pw-cli ls Client | grep -qi wireplumber || { cat "$RUNNER_TEMP/wireplumber.log"; exit 1; }
       - run: cargo clippy --workspace --all-targets -- -D warnings
-      - run: cargo test --workspace
+      - name: fast tests
+        run: |
+          cargo nextest run --workspace --profile ci --no-tests=pass
+          cp target/nextest/ci/junit.xml fast-junit.xml
+        shell: bash
         env:
           # Every runner has a GPU adapter (lavapipe, WARP, Metal); GPU tests must not skip.
           RBS_REQUIRE_GPU: "1"
@@ -74,6 +84,26 @@ jobs:
           RBS_REQUIRE_NV12_SURFACE: ${{ runner.os == 'Linux' && '1' || '' }}
           RBS_REQUIRE_PIPEWIRE: ${{ runner.os == 'Linux' && '1' || '' }}
           RBS_REQUIRE_VIDEOTOOLBOX: ${{ runner.os == 'macOS' && '1' || '' }}
+      # The slow tier: `#[ignore = "slow: ..."]` tests named `slow_*`. Other ignored tests
+      # (child-process helpers, tool-dependent `ffmpeg_interop`) are not selected.
+      - name: slow tests
+        shell: bash
+        run: >-
+          cargo nextest run --workspace --profile ci --run-ignored only --no-tests=pass
+          -E 'test(/^slow_/)'
+        env:
+          RBS_REQUIRE_GPU: "1"
+          RBS_REQUIRE_D3D12: ${{ runner.os == 'Windows' && '1' || '' }}
+          RBS_REQUIRE_NV12_SURFACE: ${{ runner.os == 'Linux' && '1' || '' }}
+          RBS_REQUIRE_PIPEWIRE: ${{ runner.os == 'Linux' && '1' || '' }}
+          RBS_REQUIRE_VIDEOTOOLBOX: ${{ runner.os == 'macOS' && '1' || '' }}
+      - run: cargo test --workspace --doc
+      - name: test timings
+        if: always()
+        shell: bash
+        run: >-
+          python3 .github/scripts/slowest-tests.py "Slowest tests (${{ runner.os }})"
+          fast-junit.xml target/nextest/ci/junit.xml
       - run: cargo doc --workspace --no-deps
         env:
           RUSTDOCFLAGS: -D warnings

@@ -82,6 +82,7 @@ pub struct WorkerStats {
     ticks: AtomicU64,
     late: AtomicU64,
     starts: AtomicU64,
+    stops: AtomicU64,
     /// The last worker's grant: 0 no policy, else `grant_code`.
     grant: AtomicU8,
     policy_errors: AtomicU64,
@@ -111,6 +112,14 @@ impl WorkerStats {
     /// How many times a worker thread was started for the partition.
     pub fn starts(&self) -> u64 {
         self.starts.load(Ordering::Relaxed)
+    }
+
+    /// How many times the control thread asked a worker thread of the partition to
+    /// stop. Counted on the control thread before it joins the worker, so a test can
+    /// let a node it holds return exactly when the engine gives up on it (a timed-out
+    /// swap or drain), without timing anything.
+    pub fn stops(&self) -> u64 {
+        self.stops.load(Ordering::Relaxed)
     }
 
     /// What the thread policy obtained for the latest worker thread: `None` if no policy
@@ -227,6 +236,7 @@ pub(crate) struct Worker<X: Runtime> {
     signals: Arc<Signals>,
     drained: Receiver<()>,
     bell: Option<Arc<Doorbell>>,
+    stats: Arc<WorkerStats>,
 }
 
 /// What a worker needs besides its executor.
@@ -267,6 +277,7 @@ impl<X: Runtime> Worker<X> {
             policy,
         } = spec;
         let thread_bell = bell.clone();
+        let thread_stats = Arc::clone(&stats);
         let spawned = thread::Builder::new().name(name).spawn(move || {
             let executor = thread_slot
                 .lock()
@@ -277,7 +288,7 @@ impl<X: Runtime> Worker<X> {
             executor.map(|mut executor| {
                 // Thread class first, then the runtime's thread-bound resources; undone
                 // in reverse order on this thread (ADR-0030).
-                let guard = enter_policy(policy.as_deref(), &pacing, &stats);
+                let guard = enter_policy(policy.as_deref(), &pacing, &thread_stats);
                 executor.attach();
                 let (mut executor, next) = run(
                     executor,
@@ -285,7 +296,7 @@ impl<X: Runtime> Worker<X> {
                     &*clock,
                     thread_bell.as_deref(),
                     &thread_signals,
-                    &stats,
+                    &thread_stats,
                     next,
                 );
                 executor.detach();
@@ -302,6 +313,7 @@ impl<X: Runtime> Worker<X> {
                 signals,
                 drained,
                 bell,
+                stats,
             }),
             // The thread did not start, so the slot still holds the executor.
             Err(e) => {
@@ -352,6 +364,7 @@ impl<X: Runtime> Worker<X> {
     /// free tick index. `None` if the thread panicked outside the executor's own
     /// catch (the executor is then lost).
     pub(crate) fn stop(self) -> Option<(Executor<X>, u64)> {
+        self.stats.stops.fetch_add(1, Ordering::Relaxed);
         self.signals.mode.store(mode::STOP, Ordering::Release);
         if let Some(bell) = &self.bell {
             bell.ring();
