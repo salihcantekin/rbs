@@ -484,6 +484,11 @@ export component MainWindow inherits Window {
     default-font-size: Tokens.type-body-size;
     in property <[StackData]> stacks;
     in property <[HandleData]> handles;
+    // The window's scale factor. Moving to a display with another scale changes it
+    // without a resize; the preview layer is placed in physical pixels on Windows, so
+    // it is placed again.
+    property <float> scale: 1px / 1phx;
+    changed scale => { Studio.overlays-changed(); }
     VerticalLayout {
         frame := FrameBar { }
         DockArea {
