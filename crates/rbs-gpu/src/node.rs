@@ -1,9 +1,14 @@
 //! The render executor's runtime and the compositor node of the media graph
 //! (spec `docs/specs/gpu-compositor.md`, "Graph runtime and compositor node"; ADR-0020).
 
+use std::time::Duration;
+
 use rbs_core::media::{ColorSpace, FramePayload, PixelFormat, Size, TransferFunction, VideoFormat};
+use rbs_core::time::Timestamp;
+use rbs_graph::description::NodeId;
 use rbs_graph::node::{LinkKind, NodeDescriptor, NodeKind, NodeTypeId, Pin};
-use rbs_graph::runtime::{Node, NodeError, PrepareCtx, ProcessCtx, Runtime, Tick, WarmCtx};
+use rbs_graph::runtime::param::{self, ParamReceiver, ParamSender};
+use rbs_graph::runtime::{Inputs, Node, NodeError, PrepareCtx, ProcessCtx, Runtime, Tick, WarmCtx};
 
 use crate::compositor::{CanvasDesc, Compositor, Layer, Transfer};
 use crate::context::GpuContext;
@@ -67,31 +72,79 @@ pub struct PixelCrop {
     pub bottom: u32,
 }
 
+/// A linear opacity animation, evaluated by the node against tick time (ADR-0023,
+/// decision 7): `from` before `start`, the layer's `opacity` after `start + duration`.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Fade {
+    /// Opacity at and before `start`.
+    pub from: f32,
+    /// Engine time the fade starts.
+    pub start: Timestamp,
+    /// Length of the fade; zero jumps to the end value at `start`.
+    pub duration: Duration,
+}
+
+impl Fade {
+    /// The opacity at `now` for a fade ending at `to`.
+    pub fn at(&self, to: f32, now: Timestamp) -> f32 {
+        if now <= self.start {
+            return self.from;
+        }
+        let elapsed = now.saturating_since(self.start);
+        if elapsed >= self.duration {
+            return to;
+        }
+        let t = elapsed.as_secs_f64() / self.duration.as_secs_f64();
+        self.from + (to - self.from) * t as f32
+    }
+}
+
 /// One layer of a compositor node, bottom first.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct NodeLayer {
-    /// Index of the link on the "layers" pin (connection order).
+    /// The graph node whose video this layer draws.
+    pub producer: NodeId,
+    /// Hint: index of the producer's link on the "layers" pin when the list was made.
+    /// Checked against the schedule every tick; a stale hint costs one lookup.
     pub link: usize,
     /// Maps the unit square of the cropped source to canvas pixels.
     pub transform: Affine2,
     /// Crop in source pixels.
     pub crop: PixelCrop,
-    /// 0.0..=1.0.
+    /// 0.0..=1.0; the value a fade ends at.
     pub opacity: f32,
+    /// Animates the opacity.
+    pub fade: Option<Fade>,
     /// Ignore the source's alpha (XRGB sources).
     pub opaque: bool,
 }
 
 impl NodeLayer {
-    /// An uncropped, opaque layer of link `link` filling `rect` (x, y, w, h).
-    pub fn new(link: usize, x: f32, y: f32, w: f32, h: f32) -> Self {
+    /// An uncropped, fully opaque layer of `producer` (link hint `link`) filling `rect`
+    /// (x, y, w, h).
+    pub fn new(producer: NodeId, link: usize, x: f32, y: f32, w: f32, h: f32) -> Self {
         Self {
+            producer,
             link,
             transform: Affine2::rect(x, y, w, h),
             crop: PixelCrop::default(),
             opacity: 1.0,
+            fade: None,
             opaque: false,
         }
+    }
+}
+
+/// The control-thread end of a compositor node's layer list.
+pub type LayerSender = ParamSender<Vec<NodeLayer>>;
+
+/// The link of `layer` on the layers pin: the hint if it still names the producer,
+/// otherwise a lookup.
+fn link_of(inputs: &Inputs<'_>, layer: &NodeLayer) -> Option<usize> {
+    if inputs.source(LAYERS_PIN, layer.link) == Some(layer.producer) {
+        Some(layer.link)
+    } else {
+        inputs.find(LAYERS_PIN, layer.producer)
     }
 }
 
@@ -99,29 +152,33 @@ impl NodeLayer {
 pub struct CompositorNode {
     descriptor: NodeDescriptor,
     canvas: CanvasDesc,
-    layers: Vec<NodeLayer>,
+    capacity: u32,
+    layers: ParamReceiver<Vec<NodeLayer>>,
     /// Built in `prepare`, dropped in `release`.
     compositor: Option<Compositor>,
-    /// Reused every tick; capacity reserved for `layers`.
+    /// Reused every tick; room for `capacity` layers.
     scratch: Vec<Layer>,
 }
 
 impl CompositorNode {
-    /// A compositor for `canvas` drawing `layers`.
-    pub fn new(canvas: CanvasDesc, layers: Vec<NodeLayer>) -> Self {
-        Self {
+    /// A compositor for `canvas` drawing at most `capacity` layers, starting with `layers`.
+    /// The sender replaces the list while the node runs (latest list wins).
+    pub fn new(canvas: CanvasDesc, capacity: u32, layers: Vec<NodeLayer>) -> (Self, LayerSender) {
+        let (sender, receiver) = param::channel(layers);
+        let node = Self {
             descriptor: compositor_descriptor(),
             canvas,
-            layers,
+            capacity: capacity.max(1),
+            layers: receiver,
             compositor: None,
             scratch: Vec::new(),
-        }
+        };
+        (node, sender)
     }
 
-    /// Replaces the layer list. Only while the node is idle (control thread); a running
-    /// node gets its list through the graph runtime's parameter channel.
-    pub fn set_layers(&mut self, layers: Vec<NodeLayer>) {
-        self.layers = layers;
+    /// The most layers this node draws.
+    pub fn capacity(&self) -> u32 {
+        self.capacity
     }
 
     fn canvas_desc(&self) -> TextureDesc {
@@ -156,12 +213,10 @@ impl Node<GpuRuntime> for CompositorNode {
     }
 
     fn prepare(&mut self, ctx: &mut PrepareCtx<'_, GpuRuntime>) -> Result<(), NodeError> {
-        let max = u32::try_from(self.layers.len().max(1))
-            .map_err(|_| NodeError::Failed("too many layers".into()))?;
-        let compositor = Compositor::new(ctx.shared, self.canvas, max)
+        let compositor = Compositor::new(ctx.shared, self.canvas, self.capacity)
             .map_err(|e| NodeError::Failed(e.to_string()))?;
         self.compositor = Some(compositor);
-        self.scratch = Vec::with_capacity(self.layers.len());
+        self.scratch = Vec::with_capacity(self.capacity as usize);
         Ok(())
     }
 
@@ -184,9 +239,13 @@ impl Node<GpuRuntime> for CompositorNode {
         let compositor = self.compositor.as_mut().ok_or(NodeError::NotReady)?;
         let (inputs, outputs, local) = ctx.parts();
 
+        self.layers.update();
         self.scratch.clear();
-        for spec in &self.layers {
-            let Some(frame) = inputs.video(LAYERS_PIN, spec.link) else {
+        for spec in self.layers.get().iter().take(self.capacity as usize) {
+            let Some(link) = link_of(&inputs, spec) else {
+                continue;
+            };
+            let Some(frame) = inputs.video(LAYERS_PIN, link) else {
                 continue;
             };
             let FramePayload::Texture(id) = *frame.payload() else {
@@ -202,12 +261,16 @@ impl Node<GpuRuntime> for CompositorNode {
                 } else {
                     Transfer::Linear
                 };
-            // Capacity was reserved in `prepare`, so this push does not allocate.
+            // Room for `capacity` layers was reserved in `prepare`, so this push does not
+            // allocate.
             self.scratch.push(Layer {
                 texture: id,
                 transform: spec.transform,
                 crop: uv(spec.crop, d.width, d.height),
-                opacity: spec.opacity,
+                opacity: match &spec.fade {
+                    Some(fade) => fade.at(spec.opacity, tick.time),
+                    None => spec.opacity,
+                },
                 source_transfer,
                 opaque: spec.opaque,
             });
@@ -233,5 +296,39 @@ impl Node<GpuRuntime> for CompositorNode {
     fn release(&mut self, _ctx: &mut PrepareCtx<'_, GpuRuntime>) {
         self.compositor = None;
         self.scratch = Vec::new();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn ms(v: u64) -> Timestamp {
+        Timestamp::from_nanos(v * 1_000_000)
+    }
+
+    #[test]
+    fn fade_is_linear_between_start_and_end() {
+        let fade = Fade {
+            from: 0.2,
+            start: ms(100),
+            duration: Duration::from_millis(200),
+        };
+        assert_eq!(fade.at(1.0, ms(0)), 0.2);
+        assert_eq!(fade.at(1.0, ms(100)), 0.2);
+        assert!((fade.at(1.0, ms(200)) - 0.6).abs() < 1e-6);
+        assert_eq!(fade.at(1.0, ms(300)), 1.0);
+        assert_eq!(fade.at(1.0, ms(10_000)), 1.0);
+    }
+
+    #[test]
+    fn zero_length_fade_jumps_at_start() {
+        let fade = Fade {
+            from: 1.0,
+            start: ms(50),
+            duration: Duration::ZERO,
+        };
+        assert_eq!(fade.at(0.0, ms(50)), 1.0);
+        assert_eq!(fade.at(0.0, ms(51)), 0.0);
     }
 }
