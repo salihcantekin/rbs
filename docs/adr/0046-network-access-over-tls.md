@@ -1,6 +1,6 @@
 # ADR-0046: Network access to the control API: TLS on the remote control port, a generated key the client pins
 
-- Status: Proposed
+- Status: Accepted
 - Date: 2026-11-04
 - Deciders: Salih (owner)
 
@@ -48,10 +48,12 @@ Forces:
    - `deny.toml` bans `aws-lc-sys` and `openssl-sys`.
    - Licences: rustls is Apache-2.0, ISC or MIT; ring is Apache-2.0 AND ISC; rcgen and socket2 are MIT or Apache-2.0. All are already allowed.
    - `ring` needs only the C compiler the workspace needs anyway. On `aarch64-pc-windows-msvc` that is clang.
-   - TLS 1.2 and 1.3 with rustls' default suites, and ALPN `http/1.1`.
+   - TLS 1.2 and 1.3 with rustls' default suites, and ALPN `http/1.1`. No TLS 1.3 session tickets (`send_tls13_tickets = 0`) and no session cache: there are few clients, and the server keeps less state.
    - The I/O loop must handle two sans-I/O cases:
      - It drains plaintext that rustls already decrypted (`reader()`) before it sleeps. This applies above all when a paused connection resumes, because buffered plaintext raises no readiness event.
-     - It registers writable interest whenever `wants_write()` is true. TLS 1.3 session tickets, alerts and the handshake write without any WebSocket output.
+     - It registers writable interest whenever `wants_write()` is true. Alerts and the handshake write without any WebSocket output.
+     - A paused connection stops calling `read_tls`, not only draining, because `read_tls` fails once rustls' plaintext buffer is full.
+     - Every write goes through the TLS session: the upgrade answer, refusals, WebSocket frames and closes. `send_close_notify` comes before the write shutdown.
 
 2. **One port, the protocol detected per connection, and remote traffic accounted separately.**
    - The first byte of a connection decides its protocol. `0x16` (a TLS handshake record) starts TLS. Anything else is plain HTTP, and plain HTTP is accepted only from a loopback peer.
@@ -61,7 +63,7 @@ Forces:
    - In the transport, connections that are still upgrading (TLS handshake or HTTP upgrade) and sockets are counted per class, loopback and remote:
      - Remote connections still upgrading have their own cap (16).
      - A per-address cap (8 per address, IPv6 per /64) applies at accept, before any TLS work.
-     - A share of the socket cap is reserved for loopback.
+     - 32 of the 128 sockets are reserved for loopback.
    - So a remote flood, even one renewed every upgrade deadline, cannot lock out local clients. This mirrors the reserve `rbs-api` keeps for local sessions.
 
 3. **Listening addresses.** With network access on, the transport listens on one dual-stack socket, `[::]` with `IPV6_V6ONLY` off. The flag is set through `socket2`, because std cannot set it before bind, and Windows defaults to v6-only. Where IPv6 is unavailable, it listens on `0.0.0.0`. With network access off it binds `127.0.0.1` and `::1` as today.
@@ -79,10 +81,12 @@ Forces:
    - **Storage.** `rbs-api-ws` generates the key and certificate and computes both fingerprints (module `tls`). `rbs-remote-settings` stores them as PEM next to `remote-control.toml`, in `remote-control-cert.pem` and `remote-control-key.pem`, without any crypto dependency.
      - The key file is created with mode 0600 on Unix. It is not created first and changed after.
      - On Windows, the files go in the per-user application data folder, which is user-only.
-     - The pair is written atomically, under the settings lock.
+     - Under the settings lock, the key is written first and the certificate second, each by an atomic rename. At load, a key that does not match the certificate is reported like a missing file.
+     - The certificate's expiry date is stored in `remote-control.toml`, so renewal needs no certificate parser.
      - A key file that others can read or write is refused (Unix).
+   - **Renewal.** At renewal the certificate fingerprint changes, but the key pin does not. Settings marks the certificate fingerprint as renewed, the renewal is logged, and the text recommends the key pin.
    - **Never regenerated silently.** If the key or certificate is missing or unreadable while network access is on, network access does not start, and Settings says so. It offers "New key" and warns that clients must pin again. So a changed fingerprint is always something the user did.
-   - **The user's own.** Settings can point to a PEM certificate chain and key instead, for example from a CA the user runs. RBS reads them each time network access starts, never copies them, and on Unix refuses a key others can read.
+   - **The user's own.** Settings can point to a PEM certificate chain and key instead, for example from a CA the user runs. RBS reads them each time network access starts, never copies them, and on Unix refuses a key others can read. They are not watched while network access runs. A certificate that expires within 30 days, read at start, is shown in Settings and logged.
    - **Browser panels.** A browser on another device cannot pin, so it needs a certificate that device already trusts: the user's own. RBS does not offer to install its generated certificate on other devices in this version. Settings says browser panels need the user's own certificate.
    - **Clients.** ADR-0044 decision 9 applies: a client sends its token only after the pin or the CA verified the certificate, and never after a mismatch. No RBS client library exists yet. When one is written (TypeScript first, for Stream Deck plugins), it must take the `sha256//` pin and report a mismatch as its own error, never as an authentication failure.
    - `rbs-cli remote fingerprint` prints both fingerprints from the stored certificate, for headless setups. It reads the files and opens no connection.
@@ -98,7 +102,11 @@ Forces:
    - `PeerInfo` gains `secure` (TLS). `rbs-api` refuses a non-loopback WebSocket peer that is not secure. This is defence in depth, so a transport bug cannot open a plain remote session.
    - `Origin` and `Host` checks run after TLS and before the upgrade completes, unchanged. The TLS handshake is part of the upgrade deadline (10 s).
 
-6. **Memory, stated honestly.** rustls holds up to about 16 KiB of received records and up to about 16 KiB of decrypted plaintext per connection. The 4 KiB pre-authentication limit stays at the WebSocket layer, where messages are skipped as they arrive. So a socket that has not authenticated costs about 40 KiB: TLS buffers plus the WebSocket reader. The transport's socket cap (128) bounds the total to about 5 MiB.
+6. **Memory, stated honestly.**
+   - Before authentication, queued output is capped at 16 KiB, so pongs a peer never reads cannot grow it. The rustls buffer limit is set to 16 KiB (`set_buffer_limit`).
+   - During the handshake, rustls may buffer handshake messages of up to about 64 KiB.
+   - The 4 KiB pre-authentication message limit stays at the WebSocket layer, where messages are skipped as they arrive.
+   - The bound is about 100 KiB per socket, about 13 MiB at the 128-socket cap. After authentication the existing per-connection output bound (1 MiB) applies as today.
 
 7. **Settings, visibility and logging.**
    - "Allow access from other computers" sits under Remote control. It is off by default and needs remote control on.
@@ -129,6 +137,12 @@ Forces:
 - `rbs-api-ws` gains `rustls`, `ring` (through rustls), `rcgen` and `socket2`. It becomes the workspace's only TLS stack.
 - `rbs-api` gains `PeerInfo::secure` and a local-address argument on `UpgradePolicy::check`.
 - `rbs-remote-settings` gains PEM file storage. `rbs-cli` gains `remote fingerprint`.
+- `docs/specs/control-api.md` is updated with the implementation:
+  - the `Host` rule (the local address of the accepted socket);
+  - the TLS dependency row;
+  - the transport caps and the loopback reserve;
+  - `PeerInfo::secure`;
+  - the network access settings.
 - Tests:
   - The transport conformance suite runs a second time over TLS.
   - A plain request from a remote peer gets 426.
@@ -144,6 +158,7 @@ Forces:
   - "Off builds no TLS configuration".
   - Renewal keeps the pin.
   - A client with the wrong pin never sends its token (test client).
+  - A refused upgrade over TLS returns a readable 403.
   - `rbs-api` refuses an insecure remote WebSocket peer.
 - Users pin once per client, and again after "New key". The Settings text and the docs explain it.
 - No mutual TLS. Tokens remain the client credential (ADR-0044); mTLS stays a later option.
@@ -160,6 +175,7 @@ Forces:
 - **`native-tls` / OpenSSL / SChannel / Secure Transport.** Three stacks with different behaviour, and OpenSSL is a system dependency on Linux.
 - **The `aws-lc-rs` provider** (rustls' default). It needs CMake, and NASM on Windows.
 - **An async runtime with tokio-rustls.** It adds threads and dependencies the sans-I/O API makes unnecessary.
+- **Choosing which interfaces to listen on.** This would help a laptop that moves to an untrusted Wi-Fi network. But interfaces and their addresses change while RBS runs, and a per-interface list is hard to explain. The persistent indicator and the trusted-network warning serve that case for now; it can be added later.
 - **ACME certificates.** They need a public domain name pointing at the studio network.
 
 ## Review
@@ -183,3 +199,15 @@ Independent review per ADR-0014:
   - `rbs-cli` and client libraries: decision 4.
   - Exposure UX and logging: decision 7.
   - The 426 body: decision 2.
+- **Round 2, independent AI session** (fresh subagent, same caveat), 2026-11-04. Verdict: approve with changes. All round-1 concerns were found resolved. Each new concern and how it was resolved:
+  - The memory bound was too low: decision 6, with an output cap before authentication.
+  - Renewal changes the certificate fingerprint: decision 4, "Renewal".
+  - Spec sync: Consequences.
+  - The loopback reserve was not a number: decision 2.
+  - Two files cannot be written atomically as a pair: decision 4, "Storage".
+  - The expiry date for renewal: decision 4, "Storage".
+  - Every write must go through TLS: decision 1.
+  - No session tickets: decision 1.
+  - The user's own certificate is not re-read: decision 4.
+  - No interface selection: Alternatives.
+- Status set to Accepted by the thread under the project's ADR policy, after Salih chose the approach (generated certificate, client pins, own certificate optional) on 2026-11-04.

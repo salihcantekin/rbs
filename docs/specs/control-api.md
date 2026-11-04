@@ -238,4 +238,4 @@ An OBS WebSocket (v5) compatibility layer (subset) is a separate optional adapte
 
 - Preview transport for remote clients: UI rule U5 requires a reduced-rate encoded preview for remote panels; WebRTC from the engine is the candidate.
 - Stable addressing for layout commands. `rbs_ui::LayoutCommand` addresses windows and tab stacks by index, which shifts after each change; it is internal to the desktop shell. The `ui.*` commands for remote callers address panels by panel id (open, close, float, dock, move to an edge) and need stable window ids before they can target a window or stack.
-- TLS certificates for network access: proposed in [ADR-0046](../adr/0046-network-access-over-tls.md) (a generated key the client pins, or the user's own certificate; one port with TLS detected per connection); channel binding (RFC 9266) if pinning proves insufficient.
+- TLS certificates for network access: decided in [ADR-0046](../adr/0046-network-access-over-tls.md) (a generated key the client pins, or the user's own certificate; one port with TLS detected per connection); channel binding (RFC 9266) if pinning proves insufficient.
