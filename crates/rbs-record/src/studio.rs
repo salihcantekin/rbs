@@ -33,7 +33,7 @@ use rbs_scene::SceneCollection;
 use rbs_scene::binder::{BindProblem, BindReport, BoundCompositor, BoundMixer, Role, SceneBinder};
 use rbs_scene::model::{CanvasId, SourceId};
 use rbs_sources::{InstanceContext, SourceInstance, SourceTypes, node_layers};
-use rbs_transport::{TransportConfig, TransportInput};
+use rbs_transport::{ReconnectPolicy, Secret, TransportConfig, TransportInput};
 
 use crate::recording::{
     AudioSettings, FinishReport, Partitions, Progress, RENDER, RecordAdapters, RecordError,
@@ -88,14 +88,24 @@ impl StudioSettings {
     }
 }
 
-/// Where and how a recording is written.
+/// Where and how a recording or a live stream is written.
 #[non_exhaustive]
 #[derive(Debug, Clone, PartialEq)]
 pub struct OutputSettings {
-    /// Destination URL, for example `file:///C:/Videos/rec.mkv`.
+    /// Destination URL, for example `file:///C:/Videos/rec.mkv`, `rtmp://host/app` or
+    /// `srt://host:port`. Never holds the secret.
     pub url: String,
-    /// Container.
-    pub container: ContainerId,
+    /// What the transport takes: the chunks of a muxer writing a container (files,
+    /// SRT with MPEG-TS), or encoded packets it frames itself (RTMP); no muxer is
+    /// chosen for packets.
+    pub input: TransportInput,
+    /// Stream key or stream id, passed to the transport only (never in the URL, logs
+    /// or reports).
+    pub secret: Option<Secret>,
+    /// What the transport does when the connection drops.
+    pub reconnect: ReconnectPolicy,
+    /// Opaque transport options (`latency_ms` for SRT), passed through unread.
+    pub transport_options: Vec<(String, String)>,
     /// Video encoding.
     pub video: VideoSettings,
     /// Audio encoding; `None` records video only.
@@ -103,14 +113,50 @@ pub struct OutputSettings {
 }
 
 impl OutputSettings {
-    /// `url` in `container` with the default video and audio settings.
+    /// `url` in `container` with the default video and audio settings, no secret, no
+    /// reconnect.
     pub fn new(url: impl Into<String>, container: ContainerId) -> Self {
+        Self::with_input(url, TransportInput::Container(container))
+    }
+
+    /// Encoded packets to `url` (a transport that frames them itself, such as RTMP),
+    /// with the default video and audio settings, no secret, no reconnect.
+    pub fn packets(url: impl Into<String>) -> Self {
+        Self::with_input(url, TransportInput::Packets)
+    }
+
+    fn with_input(url: impl Into<String>, input: TransportInput) -> Self {
         Self {
             url: url.into(),
-            container,
+            input,
+            secret: None,
+            reconnect: ReconnectPolicy::Off,
+            transport_options: Vec::new(),
             video: VideoSettings::default(),
             audio: Some(AudioSettings::default()),
         }
+    }
+
+    /// The container the muxer writes, `None` for packet input.
+    pub fn container(&self) -> Option<ContainerId> {
+        match self.input {
+            TransportInput::Container(c) => Some(c),
+            _ => None,
+        }
+    }
+
+    /// The transport configuration: URL, input, secret, reconnect and options, default
+    /// queue limits.
+    pub(crate) fn transport_config(&self) -> TransportConfig {
+        let mut config =
+            TransportConfig::new(self.url.clone(), self.input).with_reconnect(self.reconnect);
+        if let Some(secret) = &self.secret {
+            config = config.with_secret(secret.clone());
+        }
+        for (key, value) in &self.transport_options {
+            config = config.with_adapter_option(key.clone(), value.clone());
+        }
+        config
     }
 }
 
@@ -162,7 +208,7 @@ pub(crate) struct Prepared {
     video_chosen: Chosen,
     audio: Option<(EncoderNode, Chosen)>,
     output: OutputNode,
-    muxer: Chosen,
+    muxer: Option<Chosen>,
     transport: Chosen,
 }
 
@@ -209,15 +255,20 @@ impl Prepared {
             }
             None => None,
         };
-        let (muxer_factory, muxer) = select::muxer(&adapters.muxers, out.container)?;
+        let muxer = match out.container() {
+            Some(container) => Some((select::muxer(&adapters.muxers, container)?, container)),
+            None => None,
+        };
         let (transport_factory, transport) =
-            select::transport(&adapters.transports, &out.url, out.container)?;
-        let output = OutputNode::new(
-            streams,
-            transport_factory,
-            TransportConfig::new(out.url.clone(), TransportInput::Container(out.container)),
-        )
-        .with_muxer(muxer_factory, out.container, None);
+            select::transport(&adapters.transports, &out.url, out.input)?;
+        let mut output = OutputNode::new(streams, transport_factory, out.transport_config());
+        let muxer = match muxer {
+            Some(((factory, chosen), container)) => {
+                output = output.with_muxer(factory, container, None);
+                Some(chosen)
+            }
+            None => None,
+        };
         Ok(Self {
             export,
             video_encoder,

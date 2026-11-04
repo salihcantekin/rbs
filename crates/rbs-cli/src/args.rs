@@ -7,11 +7,12 @@ use rbs_codec::{EncoderPreset, KeyframeInterval, RateControl};
 use rbs_core::media::{ContainerId, Size};
 use rbs_core::timing::FrameRate;
 use rbs_remote_settings::Access;
+use rbs_transport::TransportInput;
 
 /// What the user asked for.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Command {
-    /// `rbs-cli record ...`
+    /// `rbs-cli record ...`, or `rbs-cli stream ...` (with [`RecordArgs::stream`] set).
     Record(Box<RecordArgs>),
     /// `rbs-cli devices`: list adapters and capture targets.
     Devices,
@@ -44,12 +45,53 @@ pub enum TokenCommand {
     },
 }
 
-/// Options of `record`.
+/// Where `stream` sends the program: the URL and its transport settings. The stream key
+/// is read from an environment variable when the stream starts, never from the command
+/// line (which other users and the shell history can see).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StreamTarget {
+    /// `rtmp://host[:port]/app` or `srt://host:port`.
+    pub url: String,
+    /// Packets for RTMP, MPEG-TS chunks for SRT.
+    pub input: TransportInput,
+    /// The environment variable holding the stream key (RTMP) or stream id (SRT).
+    pub key_env: String,
+    /// SRT latency in ms (`latency_ms` transport option); `None`: the transport's default.
+    pub srt_latency_ms: Option<u16>,
+    /// Reconnect when the connection drops.
+    pub reconnect: bool,
+}
+
+/// Environment variable read for the stream key unless `--key-env` names another.
+pub const DEFAULT_KEY_ENV: &str = "RBS_STREAM_KEY";
+
+/// Default video bitrate of `stream` in kbit/s: what streaming services take for
+/// 1080p60 H.264 (`record` defaults to 12000).
+pub const DEFAULT_STREAM_KBPS: u64 = 6000;
+
+/// The transport input a stream URL needs: packets for `rtmp://`, MPEG-TS for `srt://`.
+pub fn stream_input(url: &str) -> Result<TransportInput, String> {
+    let scheme = url
+        .split_once("://")
+        .map(|(s, _)| s.to_ascii_lowercase())
+        .unwrap_or_default();
+    match scheme.as_str() {
+        "rtmp" => Ok(TransportInput::Packets),
+        "srt" => Ok(TransportInput::Container(ContainerId::MpegTs)),
+        _ => Err(format!(
+            "{url}: a stream URL starts with rtmp:// or srt:// (rtmps is not supported yet)"
+        )),
+    }
+}
+
+/// Options of `record` and `stream`.
 #[derive(Debug, Clone, PartialEq)]
 pub struct RecordArgs {
-    /// The file written.
+    /// The file written (`record`); empty for `stream`.
     pub out: PathBuf,
-    /// The container, from the file's extension.
+    /// `stream`: where the program goes instead of a file.
+    pub stream: Option<StreamTarget>,
+    /// The container, from the file's extension (`record`), or MPEG-TS for SRT.
     pub container: ContainerId,
     /// Stop after this long; `None` records until Enter is pressed.
     pub duration: Option<Duration>,
@@ -96,6 +138,7 @@ pub struct RecordArgs {
 pub const USAGE: &str = "\
 usage:
   rbs-cli record <file.mkv|file.mp4> [options]
+  rbs-cli stream <rtmp://host/app|srt://host:port> [stream options] [options]
   rbs-cli devices
   rbs-cli token list
   rbs-cli token create <name> [--access view|control|full]
@@ -131,7 +174,16 @@ record options:
                        earlier, by 35 ms at most)
   --system-audio-offset MS
                        the same for the system audio
-  --overwrite          replace the file if it exists
+  --overwrite          replace the file if it exists (record only)
+
+stream options (the record options above apply too, except --overwrite; the
+default video bitrate is 6000 kbit/s):
+  --key-env NAME       read the stream key (RTMP) or stream id (SRT) from the
+                       environment variable NAME (default RBS_STREAM_KEY); it is
+                       never taken on the command line
+  --srt-latency MS     SRT latency in ms, 0 to 65535 (default 120)
+  --no-reconnect       stop when the connection drops (default: reconnect, up
+                       to 10 tries, 1 s to 30 s apart)
 
 token commands (access tokens for apps that control RBS, as in Settings, Remote
 control; the token is printed once, keep it):
@@ -179,6 +231,7 @@ pub const DEFAULT_QUALITY: u8 = 23;
 /// The video rate-control flags, combined once every flag is read.
 #[derive(Default)]
 struct RateFlags {
+    default_bps: u64,
     mode: Option<String>,
     bitrate_bps: Option<u64>,
     max_bps: Option<u64>,
@@ -188,7 +241,7 @@ struct RateFlags {
 
 impl RateFlags {
     fn rate_control(self) -> Result<RateControl, String> {
-        let bitrate = self.bitrate_bps.unwrap_or(12_000_000);
+        let bitrate = self.bitrate_bps.unwrap_or(self.default_bps);
         let mode = self.mode.as_deref().unwrap_or("cbr");
         if mode != "vbr" && self.max_bps.is_some() {
             return Err("--max-bitrate needs --rate-control vbr".into());
@@ -312,7 +365,8 @@ pub fn parse<'a>(args: impl IntoIterator<Item = &'a str>) -> Result<Command, Str
             None => Ok(Command::Devices),
             Some(extra) => Err(format!("devices: unexpected {extra:?}")),
         },
-        Some("record") => record(it).map(|a| Command::Record(Box::new(a))),
+        Some("record") => record(it, false).map(|a| Command::Record(Box::new(a))),
+        Some("stream") => record(it, true).map(|a| Command::Record(Box::new(a))),
         Some("token") => token(it).map(Command::Token),
         Some("remote") => match (it.next(), it.next()) {
             (Some("fingerprint"), None) => Ok(Command::RemoteFingerprint),
@@ -365,11 +419,22 @@ fn token<'a>(mut it: impl Iterator<Item = &'a str>) -> Result<TokenCommand, Stri
     }
 }
 
-fn record<'a>(mut it: impl Iterator<Item = &'a str>) -> Result<RecordArgs, String> {
+fn record<'a>(mut it: impl Iterator<Item = &'a str>, stream: bool) -> Result<RecordArgs, String> {
     let mut out = None;
-    let mut rate = RateFlags::default();
+    let mut rate = RateFlags {
+        default_bps: if stream {
+            DEFAULT_STREAM_KBPS * 1000
+        } else {
+            12_000_000
+        },
+        ..RateFlags::default()
+    };
+    let mut key_env = None;
+    let mut srt_latency_ms = None;
+    let mut reconnect = true;
     let mut a = RecordArgs {
         out: PathBuf::new(),
+        stream: None,
         container: ContainerId::Matroska,
         duration: None,
         size: Size::new(1920, 1080),
@@ -443,15 +508,47 @@ fn record<'a>(mut it: impl Iterator<Item = &'a str>) -> Result<RecordArgs, Strin
             "--system-audio-offset" => {
                 a.system_audio_offset_ms = offset(value(&mut it, arg)?, arg)?;
             }
-            "--overwrite" => a.overwrite = true,
-            flag if flag.starts_with("--") => return Err(format!("unknown option {flag}")),
-            path if out.is_none() => out = Some(PathBuf::from(path)),
+            "--overwrite" if !stream => a.overwrite = true,
+            "--key-env" if stream => {
+                let name = value(&mut it, arg)?;
+                if name.is_empty() || name.contains('=') {
+                    return Err(format!("{arg}: {name:?} is not a variable name"));
+                }
+                key_env = Some(name.to_owned());
+            }
+            "--srt-latency" if stream => {
+                srt_latency_ms = Some(number::<u16>(value(&mut it, arg)?, arg)?);
+            }
+            "--no-reconnect" if stream => reconnect = false,
+            flag if flag.starts_with("--") => {
+                let command = if stream { "stream" } else { "record" };
+                return Err(format!("{command}: unknown option {flag}"));
+            }
+            path if out.is_none() => out = Some(path),
             extra => return Err(format!("unexpected argument {extra:?}")),
         }
     }
-    a.out = out.ok_or("record: the output file is missing")?;
-    a.container = container_of(&a.out)?;
     a.rate_control = rate.rate_control()?;
+    if stream {
+        let url = out.ok_or("stream: the URL is missing (rtmp://host/app or srt://host:port)")?;
+        let input = stream_input(url)?;
+        if srt_latency_ms.is_some() && input == TransportInput::Packets {
+            return Err("--srt-latency applies to srt:// URLs only".into());
+        }
+        if let TransportInput::Container(c) = input {
+            a.container = c;
+        }
+        a.stream = Some(StreamTarget {
+            url: url.to_owned(),
+            input,
+            key_env: key_env.unwrap_or_else(|| DEFAULT_KEY_ENV.to_owned()),
+            srt_latency_ms,
+            reconnect,
+        });
+    } else {
+        a.out = PathBuf::from(out.ok_or("record: the output file is missing")?);
+        a.container = container_of(&a.out)?;
+    }
     Ok(a)
 }
 
@@ -646,6 +743,100 @@ mod tests {
         assert!(parse(["play"]).is_err());
         assert_eq!(parse([]).unwrap(), Command::Help);
         assert_eq!(parse(["devices"]).unwrap(), Command::Devices);
+    }
+
+    fn parse_stream(args: &[&str]) -> Result<RecordArgs, String> {
+        match parse(std::iter::once("stream").chain(args.iter().copied()))? {
+            Command::Record(r) => Ok(*r),
+            other => panic!("{other:?}"),
+        }
+    }
+
+    #[test]
+    fn stream_defaults_and_options() {
+        let a = parse_stream(&["rtmp://live.example.com/app"]).unwrap();
+        assert_eq!(a.out, PathBuf::new());
+        assert_eq!(
+            a.stream,
+            Some(StreamTarget {
+                url: "rtmp://live.example.com/app".into(),
+                input: TransportInput::Packets,
+                key_env: DEFAULT_KEY_ENV.into(),
+                srt_latency_ms: None,
+                reconnect: true,
+            })
+        );
+        assert_eq!(
+            a.rate_control,
+            RateControl::Cbr {
+                bitrate_bps: 6_000_000
+            }
+        );
+        assert_eq!(
+            a.keyframe_interval,
+            KeyframeInterval::Duration(Duration::from_secs(2))
+        );
+
+        let a = parse_stream(&[
+            "SRT://10.0.0.2:9000",
+            "--key-env",
+            "MY_ID",
+            "--srt-latency",
+            "400",
+            "--no-reconnect",
+            "--bitrate",
+            "4500",
+            "--seconds",
+            "10",
+            "--no-camera",
+        ])
+        .unwrap();
+        let s = a.stream.clone().unwrap();
+        assert_eq!(s.input, TransportInput::Container(ContainerId::MpegTs));
+        assert_eq!(a.container, ContainerId::MpegTs);
+        assert_eq!(
+            (s.key_env.as_str(), s.srt_latency_ms, s.reconnect),
+            ("MY_ID", Some(400), false)
+        );
+        assert_eq!(
+            a.rate_control,
+            RateControl::Cbr {
+                bitrate_bps: 4_500_000
+            }
+        );
+        assert_eq!(a.duration, Some(Duration::from_secs(10)));
+        assert!(a.no_camera);
+        // `record` keeps its own default bitrate.
+        assert_eq!(
+            parse_record(&["a.mkv"]).unwrap().rate_control,
+            RateControl::Cbr {
+                bitrate_bps: 12_000_000
+            }
+        );
+    }
+
+    #[test]
+    fn bad_stream_arguments_are_refused_with_a_reason() {
+        for (args, want) in [
+            (&[][..], "URL is missing"),
+            (&["a.mkv"][..], "rtmp:// or srt://"),
+            (&["rtmps://x/app"][..], "rtmp:// or srt://"),
+            (&["rtmp://x/app", "--overwrite"][..], "unknown option"),
+            (
+                &["rtmp://x/app", "--srt-latency", "100"][..],
+                "srt:// URLs only",
+            ),
+            (&["srt://x:1", "--srt-latency", "70000"][..], "not a number"),
+            (&["rtmp://x/app", "--key-env", "A=B"][..], "not a variable"),
+            (&["rtmp://x/app", "--key"][..], "unknown option"),
+            (&["rtmp://x/app", "rtmp://y/app"][..], "unexpected argument"),
+        ] {
+            let err = parse_stream(args).unwrap_err();
+            assert!(err.contains(want), "{args:?}: {err}");
+        }
+        // Stream options are not record options.
+        let err = parse_record(&["a.mkv", "--no-reconnect"]).unwrap_err();
+        assert!(err.contains("unknown option"), "{err}");
     }
 
     #[test]

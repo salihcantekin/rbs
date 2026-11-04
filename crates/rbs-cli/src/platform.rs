@@ -22,8 +22,20 @@ pub fn adapters() -> (RecordAdapters, Vec<String>) {
     );
     note(a.muxers.register(Arc::new(rbs_mux_fmp4::Fmp4MuxerFactory)));
     note(
+        a.muxers
+            .register(Arc::new(rbs_mux_mpegts::MpegTsMuxerFactory)),
+    );
+    note(
         a.transports
             .register(Arc::new(rbs_transport_file::FileTransportFactory)),
+    );
+    note(
+        a.transports
+            .register(Arc::new(rbs_transport_rtmp::RtmpTransportFactory)),
+    );
+    note(
+        a.transports
+            .register(Arc::new(rbs_transport_srt::SrtTransportFactory)),
     );
     #[cfg(windows)]
     {
