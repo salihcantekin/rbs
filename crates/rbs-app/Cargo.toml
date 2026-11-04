@@ -50,6 +50,12 @@ rbs-thread-os = { path = "../rbs-thread-os" }
 rbs-mux-matroska = { path = "../rbs-mux-matroska" }
 rbs-mux-fmp4 = { path = "../rbs-mux-fmp4" }
 rbs-transport-file = { path = "../rbs-transport-file" }
+# Go live (src/stream_profile.rs): the stream's URL, secret and reconnect policy, and
+# the pure-Rust stream adapters every platform registers, as `rbs-cli stream` does.
+rbs-transport = { path = "../rbs-transport" }
+rbs-transport-rtmp = { path = "../rbs-transport-rtmp" }
+rbs-transport-srt = { path = "../rbs-transport-srt" }
+rbs-mux-mpegts = { path = "../rbs-mux-mpegts" }
 rbs-codec = { path = "../rbs-codec" }
 # The control API (ADR-0044): the control thread serves its requests.
 rbs-api = { path = "../rbs-api" }
@@ -63,6 +69,8 @@ rbs-capture-test = { path = "../rbs-capture-test", optional = true }
 rbs-audio-io-test = { path = "../rbs-audio-io-test", optional = true }
 
 [target.'cfg(windows)'.dependencies]
+# The stream key in the Windows Credential Manager (src/stream_key.rs).
+keyring = { version = "3.6.3", default-features = false, features = ["windows-native"] }
 rbs-capture-wgc = { path = "../rbs-capture-wgc" }
 rbs-capture-mf = { path = "../rbs-capture-mf" }
 rbs-audio-io-wasapi = { path = "../rbs-audio-io-wasapi" }
@@ -82,6 +90,8 @@ rbs-codec-ffmpeg = { path = "../rbs-codec-ffmpeg" }
 # Audio meters as Core Animation layers (src/native, ADR-0035). Same objc2 versions as
 # wgpu-hal, raw-window-metal and rbs-gpu's preview layer, so nothing new is built.
 [target.'cfg(target_os = "macos")'.dependencies]
+# The stream key in the macOS Keychain (src/stream_key.rs).
+keyring = { version = "3.6.3", default-features = false, features = ["apple-native"] }
 objc2 = "0.6.3"
 objc2-quartz-core = { version = "0.3.2", default-features = false, features = ["std", "CALayer", "CATransaction", "objc2-core-foundation", "objc2-core-graphics"] }
 objc2-core-foundation = { version = "0.3.2", default-features = false, features = ["std", "CFCGTypes"] }

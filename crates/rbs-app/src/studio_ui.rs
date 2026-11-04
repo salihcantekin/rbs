@@ -1,6 +1,7 @@
 //! The window's side of the studio (ADR-0041 decision 7): state shown in the `Studio`
 //! global, commands to the control thread, the meters' 30 Hz refresh while the Mixer is
-//! visible, the Program panel's preview layer, and recording with its output settings.
+//! visible, the Program panel's preview layer, recording and streaming with their
+//! output settings.
 
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
@@ -10,20 +11,26 @@ use std::time::{Duration, Instant};
 use rbs_app::canvas_profile::{self, CanvasProfile, RATES, SIZES};
 use rbs_app::encoder_form::{Choices, EncoderForm};
 use rbs_app::network_access::{self, Source};
-use rbs_app::record_profile::{self, AUDIO_KBPS, Format, RateMode, RecordProfile, VIDEO_KBPS};
+use rbs_app::record_profile::{
+    self, AUDIO_KBPS, Encoding, Format, RateMode, RecordProfile, VIDEO_KBPS,
+};
 use rbs_app::remote_control::{NetworkOptions, RemoteOptions, RemoteServer};
+use rbs_app::stream_key::{self, KeyStore};
+use rbs_app::stream_profile::{self, SRT_DEFAULT_LATENCY_MS, SRT_LATENCIES_MS, StreamProfile};
 use rbs_app::studio_host::{
     Command, EncoderInfo, EncoderOptions, RecordRequest, RecordingUpdate, SourceKind, SourceRow,
-    SourceStatus, StudioHost, Target, Update,
+    SourceStatus, StreamRequest, StreamUpdate, StudioHost, Target, Update,
 };
 use rbs_audio::LevelMeter;
+use rbs_record::Link;
 use rbs_remote_settings::{self as remote_profile, Access, RemoteProfile};
 use rbs_scene::model::SourceId;
+use rbs_transport::Secret;
 use rbs_ui::meter::{self, Meter, SCALE_MARKS_DB};
 use slint::{Model, ModelRc, SharedString, VecModel};
 
 use crate::ui::{
-    KindData, MeterRow, ScaleMark, SourceData, StackData, Studio, TargetData, TokenRow,
+    EncoderData, KindData, MeterRow, ScaleMark, SourceData, StackData, Studio, TargetData, TokenRow,
 };
 
 /// Meter refresh while the Mixer is visible (U16: 30 Hz).
@@ -37,6 +44,35 @@ pub mod rec_state {
     pub const STARTING: i32 = 1;
     pub const RECORDING: i32 = 2;
     pub const STOPPING: i32 = 3;
+}
+
+/// Codes of `Studio.st-state`.
+pub mod st_state {
+    pub const OFF: i32 = 0;
+    pub const STARTING: i32 = 1;
+    pub const LIVE: i32 = 2;
+    pub const ENDING: i32 = 3;
+}
+
+/// Outputs of `Studio.set-encoding`.
+pub mod output {
+    pub const RECORDING: i32 = 0;
+    pub const STREAM: i32 = 1;
+}
+
+/// Field codes of `Studio.set-encoding` (the `EncoderFields` component in studio.slint).
+pub mod enc_field {
+    pub const ENCODER: i32 = 0;
+    pub const VIDEO_RATE: i32 = 1;
+    pub const AUDIO_RATE: i32 = 2;
+    pub const RATE_MODE: i32 = 3;
+    pub const PEAK: i32 = 4;
+    pub const QUALITY: i32 = 5;
+    pub const PADDING: i32 = 6;
+    pub const KEYFRAME: i32 = 7;
+    pub const PRESET: i32 = 8;
+    pub const PROFILE: i32 = 9;
+    pub const B_FRAMES: i32 = 10;
 }
 
 /// Codes of `Studio.preview-state`.
@@ -131,6 +167,25 @@ pub struct StudioUi {
     network_failure: Option<String>,
     /// A problem with a network access change (own files, new key, busy settings).
     network_note: String,
+    /// The stream's settings (Settings, Stream), as saved.
+    pub stream: StreamProfile,
+    /// A problem with the stream settings, the key or their file.
+    stream_note: String,
+    /// The server field shows the saved server; bumped when Rust sets it.
+    server_serial: u64,
+    /// Bumped when a key was saved or removed: the key field is emptied.
+    key_serial: u64,
+    /// The key field's hint: where keys are kept.
+    key_hint: String,
+    /// [`st_state`].
+    pub st_state: i32,
+    /// The running stream's server host and when it went live.
+    st_live: Option<(String, Instant)>,
+    /// The stream's connection, as reported last.
+    st_link: Link,
+    /// The last stream's outcome, or why one did not start; `st_bad` marks a problem.
+    st_note: String,
+    st_bad: bool,
 }
 
 /// What the Remote control section shows while other computers can connect.
@@ -147,8 +202,11 @@ struct NetworkShown {
 struct Busy;
 
 impl StudioUi {
-    pub fn new(config: &Path) -> Self {
+    pub fn new(config: &Path, keys: &dyn KeyStore) -> Self {
         let (profile, why) = record_profile::load(config);
+        let (mut stream, stream_why) = stream_profile::load(config);
+        // A key kept only in memory is gone after a restart.
+        stream.key_saved &= keys.persistent();
         let (canvas, canvas_why) = canvas_profile::load(config);
         // Without the lock: `rbs-cli` replaces the file in one rename, so this reads
         // either version whole; a bad file it moves aside is never one `rbs-cli` wrote.
@@ -213,6 +271,18 @@ impl StudioUi {
             network: None,
             network_failure: None,
             network_note: String::new(),
+            stream,
+            stream_note: stream_why
+                .map(|w| format!("The saved stream settings were not used: {w}"))
+                .unwrap_or_default(),
+            server_serial: 1,
+            key_serial: 0,
+            key_hint: stream_key::hint(keys),
+            st_state: st_state::OFF,
+            st_live: None,
+            st_link: Link::default(),
+            st_note: String::new(),
+            st_bad: false,
         };
         ui.refresh_tokens();
         ui
@@ -244,71 +314,14 @@ impl StudioUi {
         let p = &self.profile;
         g.set_out_format(Format::ALL.iter().position(|f| *f == p.format).unwrap_or(0) as i32);
         g.set_out_formats(strings(Format::ALL.iter().map(|f| f.label().to_owned())));
-        let mut encoders = vec!["Automatic (best available)".to_owned()];
-        encoders.extend(self.encoders.iter().map(|e| e.name.clone()));
-        g.set_out_encoders(strings(encoders));
-        g.set_out_encoder(self.encoder_index() as i32);
-        let video = self.video_options();
-        g.set_out_video_rates(strings(video.iter().map(|k| kbps(*k))));
-        g.set_out_video_rate(video.iter().position(|k| *k == p.video_kbps).unwrap_or(0) as i32);
-        g.set_out_audio_rates(strings(AUDIO_KBPS.iter().map(|k| kbps(*k))));
-        g.set_out_audio_rate(
-            AUDIO_KBPS
-                .iter()
-                .position(|k| *k == p.audio_kbps)
-                .unwrap_or(0) as i32,
-        );
-        let form = self.form();
-        g.set_out_rate_kind(match p.rate_control {
-            RateMode::Cbr => 0,
-            RateMode::Vbr => 1,
-            RateMode::ConstantQuality => 2,
-        });
-        let (o, i) = choices(&form.rate_modes);
-        g.set_out_rate_modes(o);
-        g.set_out_rate_mode(i);
-        g.set_out_bitrate_label(form.bitrate_label.into());
-        let (o, i) = choices(&form.peaks);
-        g.set_out_peaks(o);
-        g.set_out_peak(i);
-        let (o, i) = choices(&form.qualities);
-        g.set_out_qualities(o);
-        g.set_out_quality(i);
-        let (o, i) = choices(&form.keyframes);
-        g.set_out_keyframes(o);
-        g.set_out_keyframe(i);
-        let (o, i) = choices(&form.presets);
-        g.set_out_presets(o);
-        g.set_out_preset(i);
-        let (o, i) = choices(&form.profiles);
-        g.set_out_profiles(o);
-        g.set_out_profile(i);
-        let (o, i) = choices(&form.b_frames);
-        g.set_out_b_frames(o);
-        g.set_out_b_frame(i);
-        g.set_out_b_frames_note(form.b_frames_note.unwrap_or_default().into());
-        g.set_out_padding(p.cbr_padding);
-        g.set_out_padding_available(form.padding_available);
+        g.set_out_enc(self.encoder_data(output::RECORDING));
         g.set_out_note(self.profile_note.as_str().into());
-        let encoder = match self.encoder_index() {
-            0 => "best encoder".to_owned(),
-            i => self
-                .encoders
-                .get(i - 1)
-                .map_or_else(String::new, |e| e.name.clone()),
-        };
-        let video = match p.rate_control {
-            RateMode::Cbr if p.cbr_padding => format!("video {} kbit/s padded", p.video_kbps),
-            RateMode::Cbr => format!("video {} kbit/s", p.video_kbps),
-            RateMode::Vbr => format!("video VBR {} kbit/s, up to {}", p.video_kbps, p.peak_kbps()),
-            RateMode::ConstantQuality => format!("video quality {}", p.quality),
-        };
         g.set_out_summary(
             format!(
                 "{} · {} · {} · audio {} kbit/s · {}",
                 p.format.label(),
-                encoder,
-                video,
+                self.encoder_name(&p.encoding()),
+                p.encoding().video_summary(),
                 p.audio_kbps,
                 p.folder.display()
             )
@@ -336,6 +349,7 @@ impl StudioUi {
         g.set_canvas_restarting(self.canvas_restarting);
         g.set_canvas_note(self.canvas_note.as_str().into());
         self.push_remote(g);
+        self.push_stream(g);
         g.set_picture_panel(picture_panel.into());
         g.set_state(self.state);
         g.set_failure(self.failure.as_str().into());
@@ -995,19 +1009,46 @@ impl StudioUi {
         self.send(Command::UndoDelete);
     }
 
+    /// The encoder settings of an [`output`].
+    fn encoding_of(&self, out: i32) -> Encoding {
+        if out == output::STREAM {
+            self.stream.encoding.clone()
+        } else {
+            self.profile.encoding()
+        }
+    }
+
     /// The picked encoder's place in the list (0: automatic, also when the saved one is
     /// not on this system).
-    fn encoder_index(&self) -> usize {
-        self.profile
-            .encoder
+    fn encoder_index(&self, e: &Encoding) -> usize {
+        e.encoder
             .as_ref()
-            .and_then(|id| self.encoders.iter().position(|e| e.id == *id))
+            .and_then(|id| self.encoders.iter().position(|x| x.id == *id))
             .map_or(0, |i| i + 1)
     }
 
+    /// The encoder's name in summaries.
+    fn encoder_name(&self, e: &Encoding) -> String {
+        match self.encoder_index(e) {
+            0 => "best encoder".to_owned(),
+            i => self
+                .encoders
+                .get(i - 1)
+                .map_or_else(String::new, |x| x.name.clone()),
+        }
+    }
+
+    /// The picked encoder's adapter id, `None` for automatic.
+    fn encoder_id(&self, e: &Encoding) -> Option<String> {
+        match self.encoder_index(e) {
+            0 => None,
+            i => self.encoders.get(i - 1).map(|x| x.id.clone()),
+        }
+    }
+
     /// What the picked encoder can do; with automatic choice, what any encoder can do.
-    fn options(&self) -> EncoderOptions {
-        match self.encoder_index() {
+    fn options(&self, e: &Encoding) -> EncoderOptions {
+        match self.encoder_index(e) {
             0 => EncoderOptions::union(self.encoders.iter().map(|e| &e.options)),
             i => self
                 .encoders
@@ -1017,24 +1058,144 @@ impl StudioUi {
         }
     }
 
-    /// The encoder fields of the form, for the profile and the picked encoder.
-    fn form(&self) -> EncoderForm {
-        EncoderForm::new(&self.profile, &self.options())
+    /// The encoder fields of an [`output`]'s form, for its settings and encoder.
+    fn form(&self, out: i32) -> EncoderForm {
+        let e = self.encoding_of(out);
+        if out == output::STREAM {
+            EncoderForm::for_stream(&e, &self.options(&e))
+        } else {
+            EncoderForm::new(&e, &self.options(&e))
+        }
     }
 
     /// The video bitrates offered: the presets, and the saved one if it is not one.
-    fn video_options(&self) -> Vec<u32> {
+    fn video_options(e: &Encoding) -> Vec<u32> {
         let mut v = VIDEO_KBPS.to_vec();
-        if !v.contains(&self.profile.video_kbps) {
-            v.push(self.profile.video_kbps);
+        if !v.contains(&e.video_kbps) {
+            v.push(e.video_kbps);
             v.sort_unstable();
         }
         v
     }
 
+    /// What the `EncoderFields` of an [`output`] show.
+    fn encoder_data(&self, out: i32) -> EncoderData {
+        let e = self.encoding_of(out);
+        let form = self.form(out);
+        let mut encoders = vec!["Automatic (best available)".to_owned()];
+        encoders.extend(self.encoders.iter().map(|e| e.name.clone()));
+        let video = Self::video_options(&e);
+        let (rate_modes, rate_mode) = choices(&form.rate_modes);
+        let (peaks, peak) = choices(&form.peaks);
+        let (qualities, quality) = choices(&form.qualities);
+        let (keyframes, keyframe) = choices(&form.keyframes);
+        let (presets, preset) = choices(&form.presets);
+        let (profiles, profile) = choices(&form.profiles);
+        let (b_frames, b_frame) = choices(&form.b_frames);
+        EncoderData {
+            encoders: strings(encoders),
+            encoder: self.encoder_index(&e) as i32,
+            video_rates: strings(video.iter().map(|k| kbps(*k))),
+            video_rate: video.iter().position(|k| *k == e.video_kbps).unwrap_or(0) as i32,
+            audio_rates: strings(AUDIO_KBPS.iter().map(|k| kbps(*k))),
+            audio_rate: AUDIO_KBPS
+                .iter()
+                .position(|k| *k == e.audio_kbps)
+                .unwrap_or(0) as i32,
+            rate_modes,
+            rate_mode,
+            rate_kind: match e.rate_control {
+                RateMode::Cbr => 0,
+                RateMode::Vbr => 1,
+                RateMode::ConstantQuality => 2,
+            },
+            bitrate_label: form.bitrate_label.into(),
+            peaks,
+            peak,
+            qualities,
+            quality,
+            padding: e.cbr_padding,
+            padding_available: form.padding_available,
+            keyframes,
+            keyframe,
+            presets,
+            preset,
+            profiles,
+            profile,
+            b_frames,
+            b_frame,
+            b_frames_note: form.b_frames_note.unwrap_or_default().into(),
+        }
+    }
+
+    /// An encoder field of an [`output`] was picked ([`enc_field`] codes); the
+    /// setting is saved at once.
+    pub fn set_encoding(&mut self, out: i32, field: i32, value: i32) {
+        let mut e = self.encoding_of(out);
+        let form = self.form(out);
+        let changed = match field {
+            enc_field::ENCODER => match value {
+                0 => {
+                    e.encoder = None;
+                    true
+                }
+                i => match self.encoders.get(i as usize - 1) {
+                    Some(x) => {
+                        e.encoder = Some(x.id.clone());
+                        true
+                    }
+                    None => false,
+                },
+            },
+            enc_field::VIDEO_RATE => Self::video_options(&e)
+                .get(value as usize)
+                .copied()
+                .map(|k| e.video_kbps = k)
+                .is_some(),
+            enc_field::AUDIO_RATE => AUDIO_KBPS
+                .get(value as usize)
+                .map(|k| e.audio_kbps = *k)
+                .is_some(),
+            enc_field::RATE_MODE => form
+                .rate_modes
+                .get(value)
+                .map(|m| e.rate_control = m)
+                .is_some(),
+            enc_field::PEAK => form
+                .peaks
+                .get(value)
+                .map(|k| e.max_video_kbps = k)
+                .is_some(),
+            enc_field::QUALITY => form.qualities.get(value).map(|q| e.quality = q).is_some(),
+            enc_field::PADDING => {
+                e.cbr_padding = value != 0;
+                true
+            }
+            enc_field::KEYFRAME => form
+                .keyframes
+                .get(value)
+                .map(|s| e.keyframe_seconds = s)
+                .is_some(),
+            enc_field::PRESET => form.presets.get(value).map(|p| e.preset = p).is_some(),
+            enc_field::PROFILE => form.profiles.get(value).map(|p| e.profile = p).is_some(),
+            enc_field::B_FRAMES => form.b_frames.get(value).map(|n| e.b_frames = n).is_some(),
+            _ => false,
+        };
+        if !changed {
+            return;
+        }
+        if out == output::STREAM {
+            self.stream.encoding = e;
+            self.save_stream();
+        } else {
+            self.profile.set_encoding(e);
+            self.save_profile();
+        }
+    }
+
     /// Starts recording with the output settings.
     pub fn record(&mut self) {
-        if self.rec_state != rec_state::OFF {
+        if self.rec_state != rec_state::OFF || self.st_state != st_state::OFF {
             return;
         }
         if let Some(why) = &self.cannot_record {
@@ -1046,10 +1207,7 @@ impl StudioUi {
             self.set_note(why, true);
             return;
         }
-        let encoder = match self.encoder_index() {
-            0 => None,
-            i => self.encoders.get(i - 1).map(|e| e.id.clone()),
-        };
+        let encoder = self.encoder_id(&p.encoding());
         let request = RecordRequest {
             path: p.file_for(chrono::Local::now().naive_local()),
             container: p.format.container(),
@@ -1094,82 +1252,289 @@ impl StudioUi {
         }
     }
 
-    pub fn set_encoder(&mut self, i: i32) {
-        self.profile.encoder = match i {
-            0 => None,
-            i => match self.encoders.get(i as usize - 1) {
-                Some(e) => Some(e.id.clone()),
-                None => return,
-            },
+    /// Goes live with the stream settings: the host reads the key from the store.
+    pub fn go_live(&mut self) {
+        if self.st_state != st_state::OFF || self.rec_state != rec_state::OFF {
+            return;
+        }
+        let fail = |ui: &mut Self, why: String| {
+            ui.st_note = why;
+            ui.st_bad = true;
         };
-        self.save_profile();
+        if let Some(why) = &self.cannot_record {
+            let why = why.replace("Recording is", "Streaming is");
+            return fail(self, why);
+        }
+        if let Some(why) = self.stream.missing() {
+            return fail(self, why.to_owned());
+        }
+        if let Some(why) = self.stream.problem() {
+            return fail(self, why);
+        }
+        let Some(server) = self.stream.parsed() else {
+            return fail(self, "Enter the server in Settings, Stream.".to_owned());
+        };
+        let e = &self.stream.encoding;
+        let request = StreamRequest {
+            url: self.stream.server.clone(),
+            input: server.protocol.input(),
+            needs_key: server.protocol.needs_key(),
+            reconnect: self.stream.reconnect_policy(),
+            transport_options: self.stream.transport_options(),
+            encoder: self.encoder_id(e),
+            video: e.video_settings(),
+            audio_bitrate_bps: e.audio_bps(),
+        };
+        self.st_state = st_state::STARTING;
+        self.st_live = Some((server.host, Instant::now()));
+        self.st_link = Link::default();
+        self.st_note.clear();
+        self.st_bad = false;
+        self.send(Command::StartStream(request));
     }
 
-    pub fn set_video_rate(&mut self, i: i32) {
-        if let Some(k) = self.video_options().get(i as usize) {
-            self.profile.video_kbps = *k;
-            self.save_profile();
+    /// Ends the stream (the panel asked first).
+    pub fn end_stream(&mut self) {
+        if self.st_state == st_state::LIVE || self.st_state == st_state::STARTING {
+            self.st_state = st_state::ENDING;
+            self.send(Command::EndStream);
         }
     }
 
-    pub fn set_audio_rate(&mut self, i: i32) {
-        if let Some(k) = AUDIO_KBPS.get(i as usize) {
-            self.profile.audio_kbps = *k;
-            self.save_profile();
+    /// The server field was confirmed.
+    pub fn set_server(&mut self, text: &str) {
+        let url = text.trim();
+        if url == self.stream.server {
+            return;
+        }
+        if !url.is_empty()
+            && let Err(why) = stream_profile::parse_server(url)
+        {
+            self.stream_note = why;
+            // The field shows the server in use.
+            self.server_serial += 1;
+            return;
+        }
+        self.stream.server = url.to_owned();
+        self.server_serial += 1;
+        self.save_stream();
+    }
+
+    /// The key field was confirmed: the host saves it in the store.
+    pub fn save_key(&mut self, text: &str) {
+        let key = text.trim();
+        if key.is_empty() || self.st_state != st_state::OFF {
+            return;
+        }
+        self.send(Command::SaveStreamKey(Some(Secret::new(key))));
+    }
+
+    /// "Remove key".
+    pub fn remove_key(&mut self) {
+        if self.st_state == st_state::OFF {
+            self.send(Command::SaveStreamKey(None));
         }
     }
 
-    pub fn set_rate_mode(&mut self, i: i32) {
-        if let Some(m) = self.form().rate_modes.get(i) {
-            self.profile.rate_control = m;
-            self.save_profile();
+    pub fn set_reconnect(&mut self, on: bool) {
+        self.stream.reconnect = on;
+        self.save_stream();
+    }
+
+    /// The SRT latencies offered: the default, the presets and a saved other one.
+    fn latencies(&self) -> Vec<Option<u16>> {
+        let mut v: Vec<Option<u16>> = std::iter::once(None)
+            .chain(SRT_LATENCIES_MS.iter().map(|ms| Some(*ms)))
+            .collect();
+        if !v.contains(&self.stream.srt_latency_ms) {
+            v.push(self.stream.srt_latency_ms);
+        }
+        v
+    }
+
+    pub fn set_latency(&mut self, i: i32) {
+        if let Some(ms) = self.latencies().get(i as usize) {
+            self.stream.srt_latency_ms = *ms;
+            self.save_stream();
         }
     }
 
-    pub fn set_peak(&mut self, i: i32) {
-        if let Some(k) = self.form().peaks.get(i) {
-            self.profile.max_video_kbps = k;
-            self.save_profile();
+    fn save_stream(&mut self) {
+        self.stream_note = match stream_profile::save(&self.config, &self.stream) {
+            Ok(()) => String::new(),
+            Err(e) => format!("The stream settings could not be saved: {e}"),
+        };
+    }
+
+    /// The stream's duration so far and its server's host, while one runs.
+    pub fn streaming_for(&self) -> Option<(Duration, String, bool)> {
+        if self.st_state == st_state::OFF {
+            return None;
+        }
+        self.st_live
+            .as_ref()
+            .map(|(host, since)| (since.elapsed(), host.clone(), self.st_link.connected))
+    }
+
+    /// The stream's state in words for Live controls.
+    fn stream_text(&self) -> String {
+        let host = self
+            .st_live
+            .as_ref()
+            .map(|(h, _)| h.clone())
+            .unwrap_or_default();
+        match self.st_state {
+            st_state::STARTING => format!("Connecting to {host}…"),
+            st_state::LIVE if self.st_link.connected => format!("Live on {host}"),
+            st_state::LIVE if self.st_link.reconnect_attempts > 0 => format!(
+                "Not connected to {host}, trying again (attempt {})",
+                self.st_link.reconnect_attempts
+            ),
+            st_state::LIVE => format!("Connecting to {host}…"),
+            st_state::ENDING => "Ending the stream…".to_owned(),
+            _ if self.rec_state != rec_state::OFF => "Stop the recording to go live.".to_owned(),
+            _ => self.st_note.clone(),
         }
     }
 
-    pub fn set_quality(&mut self, i: i32) {
-        if let Some(q) = self.form().qualities.get(i) {
-            self.profile.quality = q;
-            self.save_profile();
+    fn push_stream(&self, g: &Studio<'_>) {
+        let st = &self.stream;
+        g.set_st_state(self.st_state);
+        g.set_st_text(self.stream_text().into());
+        g.set_st_bad(
+            self.st_state == st_state::OFF && self.rec_state == rec_state::OFF && self.st_bad,
+        );
+        g.set_st_needs_setup(st.missing().is_some());
+        if g.get_st_server_serial() != self.server_serial as i32 {
+            g.set_st_server(st.server.as_str().into());
+            g.set_st_server_serial(self.server_serial as i32);
         }
+        g.set_st_key_saved(st.key_saved);
+        g.set_st_key_place(self.key_hint.as_str().into());
+        g.set_st_key_serial(self.key_serial as i32);
+        g.set_st_reconnect(st.reconnect);
+        let parsed = st.parsed();
+        g.set_st_srt(
+            parsed
+                .as_ref()
+                .is_some_and(|s| s.protocol == stream_profile::Protocol::Srt),
+        );
+        let latencies = self.latencies();
+        g.set_st_latencies(strings(latencies.iter().map(|ms| match ms {
+            None => format!("Default ({SRT_DEFAULT_LATENCY_MS} ms)"),
+            Some(ms) => format!("{ms} ms"),
+        })));
+        g.set_st_latency(
+            latencies
+                .iter()
+                .position(|ms| *ms == st.srt_latency_ms)
+                .unwrap_or(0) as i32,
+        );
+        g.set_st_enc(self.encoder_data(output::STREAM));
+        g.set_st_note(self.stream_note.as_str().into());
+        let summary = match &parsed {
+            None => "No server yet".to_owned(),
+            Some(server) => format!(
+                "{} · {} · {} · {} · audio {} kbit/s",
+                server.protocol.label(),
+                st.server,
+                self.encoder_name(&st.encoding),
+                st.encoding.video_summary(),
+                st.encoding.audio_kbps
+            ),
+        };
+        g.set_st_summary(summary.into());
     }
 
-    pub fn set_padding(&mut self, on: bool) {
-        self.profile.cbr_padding = on;
-        self.save_profile();
-    }
-
-    pub fn set_keyframe(&mut self, i: i32) {
-        if let Some(s) = self.form().keyframes.get(i) {
-            self.profile.keyframe_seconds = s;
-            self.save_profile();
-        }
-    }
-
-    pub fn set_preset(&mut self, i: i32) {
-        if let Some(p) = self.form().presets.get(i) {
-            self.profile.preset = p;
-            self.save_profile();
-        }
-    }
-
-    pub fn set_profile(&mut self, i: i32) {
-        if let Some(p) = self.form().profiles.get(i) {
-            self.profile.profile = p;
-            self.save_profile();
-        }
-    }
-
-    pub fn set_b_frames(&mut self, i: i32) {
-        if let Some(n) = self.form().b_frames.get(i) {
-            self.profile.b_frames = n;
-            self.save_profile();
+    fn stream_update(&mut self, u: StreamUpdate, out: &mut Applied) {
+        match u {
+            StreamUpdate::Started {
+                url,
+                video_encoder,
+                audio_encoder,
+            } => {
+                log(&format!(
+                    "streaming to {url} (video: {video_encoder}, audio: {})",
+                    audio_encoder.as_deref().unwrap_or("none")
+                ));
+                self.st_state = st_state::LIVE;
+                if let Some((_, since)) = &mut self.st_live {
+                    *since = Instant::now();
+                }
+            }
+            StreamUpdate::NotStarted(why) => {
+                self.st_state = st_state::OFF;
+                self.st_live = None;
+                if why.contains("No stream key is saved") {
+                    // The store has none (removed elsewhere): say so in the settings.
+                    self.stream.key_saved = false;
+                    self.save_stream();
+                }
+                self.st_note = format!("The stream did not start: {why}");
+                self.st_bad = true;
+            }
+            StreamUpdate::Link(link) => {
+                if link.connected != self.st_link.connected {
+                    log(&format!(
+                        "stream {} (connected {} times, {} reconnect attempts)",
+                        if link.connected {
+                            "connected"
+                        } else {
+                            "not connected"
+                        },
+                        link.connects,
+                        link.reconnect_attempts
+                    ));
+                }
+                self.st_link = link;
+            }
+            StreamUpdate::Ended {
+                failure,
+                frames,
+                dropped,
+                connects,
+            } => {
+                let duration = self
+                    .st_live
+                    .take()
+                    .map(|(_, since)| since.elapsed())
+                    .unwrap_or_default();
+                self.st_state = st_state::OFF;
+                self.st_link = Link::default();
+                log(&format!(
+                    "stream ended: {frames} frames, {dropped} dropped, {connects} connections, failure: {failure:?}"
+                ));
+                let secs = duration.as_secs();
+                let time = if secs >= 3600 {
+                    format!("{}:{:02}:{:02}", secs / 3600, secs / 60 % 60, secs % 60)
+                } else {
+                    format!("{}:{:02}", secs / 60, secs % 60)
+                };
+                match failure {
+                    None if connects == 0 => {
+                        self.st_note = "The stream ended without ever reaching the server.".into();
+                        self.st_bad = true;
+                    }
+                    None => {
+                        let mut note = format!("The stream ended after {time}.");
+                        if dropped > 0 {
+                            note.push_str(&format!(" {dropped} frames or packets were dropped."));
+                        }
+                        self.st_note = note;
+                        self.st_bad = false;
+                    }
+                    Some(why) => {
+                        let text = if connects == 0 {
+                            format!("The stream never reached the server: {why}")
+                        } else {
+                            format!("The stream stopped after {time}: {why}")
+                        };
+                        out.error = Some(text.clone());
+                        self.st_note = text;
+                        self.st_bad = true;
+                    }
+                }
+            }
         }
     }
 
@@ -1239,6 +1604,10 @@ impl StudioUi {
         }
         if self.rec_state != rec_state::OFF {
             self.canvas_note = "Stop the recording before changing the canvas.".into();
+            return;
+        }
+        if self.st_state != st_state::OFF {
+            self.canvas_note = "End the stream before changing the canvas.".into();
             return;
         }
         if let Some(why) = next.problem() {
@@ -1353,6 +1722,13 @@ impl StudioUi {
                         );
                     }
                 }
+                if self.st_state != st_state::OFF {
+                    self.st_state = st_state::OFF;
+                    self.st_live = None;
+                    self.st_link = Link::default();
+                    self.st_note = format!("The stream stopped: {why}");
+                    self.st_bad = true;
+                }
                 self.failure = why.clone();
                 out.error = Some(format!("The studio stopped: {why}"));
             }
@@ -1378,6 +1754,15 @@ impl StudioUi {
             }
             Update::Error(e) => out.error = Some(e),
             Update::Recording(r) => self.recording(r, &mut out),
+            Update::Stream(u) => self.stream_update(u, &mut out),
+            Update::StreamKey(r) => match r {
+                Ok(saved) => {
+                    self.stream.key_saved = saved;
+                    self.key_serial += 1;
+                    self.save_stream();
+                }
+                Err(why) => self.stream_note = why,
+            },
             Update::Profile(p) => {
                 // A control API client changed the settings: show and save them.
                 self.profile = p;

@@ -149,6 +149,161 @@ impl Format {
     }
 }
 
+/// The encoder settings of one output, a recording or a stream: the encoder and every
+/// setting that changes the output's quality. `stream.toml` keeps them as its
+/// `[encoding]` table; `recording.toml` keeps the same fields at its top level.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Encoding {
+    /// The video encoder's adapter id, or `None` for the best one this system has.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub encoder: Option<String>,
+    /// How the encoder spends bits.
+    #[serde(default)]
+    pub rate_control: RateMode,
+    /// Video bitrate in kbit/s: the CBR rate, or the VBR target.
+    pub video_kbps: u32,
+    /// VBR peak in kbit/s; `None` is 1.5 times the target.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_video_kbps: Option<u32>,
+    /// Constant-quality level, 0 (best) ..= 51.
+    #[serde(default = "default_quality")]
+    pub quality: u8,
+    /// Seconds between keyframes.
+    #[serde(default = "default_keyframe_seconds")]
+    pub keyframe_seconds: u32,
+    /// Codec profile (`high`, `main`, `baseline`); `None` lets the encoder pick.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub profile: Option<String>,
+    /// Speed versus quality.
+    #[serde(default)]
+    pub preset: Preset,
+    /// Most B-frames; encoders with fewer use fewer.
+    #[serde(default)]
+    pub b_frames: u32,
+    /// With CBR, pad the video to its full bitrate (filler data).
+    #[serde(default)]
+    pub cbr_padding: bool,
+    /// Audio bitrate in kbit/s, one of [`AUDIO_KBPS`].
+    pub audio_kbps: u32,
+}
+
+impl Encoding {
+    /// The best encoder, CBR at `video_kbps` without padding, a keyframe every 2 s, the
+    /// encoder's profile, the balanced preset, no B-frames and 160 kbit/s audio.
+    pub fn new(video_kbps: u32) -> Self {
+        Self {
+            encoder: None,
+            rate_control: RateMode::Cbr,
+            video_kbps,
+            max_video_kbps: None,
+            quality: default_quality(),
+            keyframe_seconds: default_keyframe_seconds(),
+            profile: None,
+            preset: Preset::Balanced,
+            b_frames: 0,
+            cbr_padding: false,
+            audio_kbps: 160,
+        }
+    }
+
+    /// The VBR peak in kbit/s: the saved one, or 1.5 times the target.
+    pub fn peak_kbps(&self) -> u32 {
+        self.max_video_kbps
+            .unwrap_or(self.video_kbps.saturating_mul(3) / 2)
+    }
+
+    /// The video encoding these settings ask for. Padding makes CBR `cbr_padded`; it
+    /// stays saved while another mode is picked and does nothing there.
+    pub fn video_settings(&self) -> VideoSettings {
+        let mut v = VideoSettings::default();
+        let bps = |kbps: u32| u64::from(kbps) * 1000;
+        v.rate_control = match self.rate_control {
+            RateMode::Cbr if self.cbr_padding => RateControl::CbrPadded {
+                bitrate_bps: bps(self.video_kbps),
+            },
+            RateMode::Cbr => RateControl::Cbr {
+                bitrate_bps: bps(self.video_kbps),
+            },
+            RateMode::Vbr => RateControl::Vbr {
+                target_bps: bps(self.video_kbps),
+                max_bps: bps(self.peak_kbps()),
+            },
+            RateMode::ConstantQuality => RateControl::ConstantQuality {
+                level: self.quality,
+            },
+        };
+        v.keyframe_interval =
+            KeyframeInterval::Duration(Duration::from_secs(u64::from(self.keyframe_seconds)));
+        v.max_b_frames = self.b_frames;
+        v.profile = self.profile.clone();
+        v.preset = self.preset.encoder();
+        v
+    }
+
+    /// The audio bitrate in bit/s.
+    pub fn audio_bps(&self) -> u64 {
+        u64::from(self.audio_kbps) * 1000
+    }
+
+    /// The summary's video part: "video 12000 kbit/s", "video 12000 kbit/s padded",
+    /// "video VBR 12000 kbit/s, up to 18000" or "video quality 23".
+    pub fn video_summary(&self) -> String {
+        match self.rate_control {
+            RateMode::Cbr if self.cbr_padding => format!("video {} kbit/s padded", self.video_kbps),
+            RateMode::Cbr => format!("video {} kbit/s", self.video_kbps),
+            RateMode::Vbr => format!(
+                "video VBR {} kbit/s, up to {}",
+                self.video_kbps,
+                self.peak_kbps()
+            ),
+            RateMode::ConstantQuality => format!("video quality {}", self.quality),
+        }
+    }
+
+    /// Why these settings cannot be used, in words, or `None`.
+    pub fn problem(&self) -> Option<String> {
+        if !AUDIO_KBPS.contains(&self.audio_kbps) {
+            return Some(format!(
+                "Audio bitrate {} kbit/s is not supported; use 96, 128, 160 or 192.",
+                self.audio_kbps
+            ));
+        }
+        if !(500..=200_000).contains(&self.video_kbps) {
+            return Some(format!(
+                "Video bitrate {} kbit/s is outside 500 to 200000.",
+                self.video_kbps
+            ));
+        }
+        if self.rate_control == RateMode::Vbr && self.peak_kbps() < self.video_kbps {
+            return Some(format!(
+                "The maximum bitrate {} kbit/s is below the bitrate {} kbit/s.",
+                self.peak_kbps(),
+                self.video_kbps
+            ));
+        }
+        if self.quality > 51 {
+            return Some(format!(
+                "Quality level {} is outside 0 (best) to 51.",
+                self.quality
+            ));
+        }
+        if !(1..=60).contains(&self.keyframe_seconds) {
+            return Some(format!(
+                "A keyframe every {} s is outside 1 to 60 s.",
+                self.keyframe_seconds
+            ));
+        }
+        if self.b_frames > MAX_B_FRAMES {
+            return Some(format!(
+                "{} B-frames is more than {MAX_B_FRAMES}.",
+                self.b_frames
+            ));
+        }
+        None
+    }
+}
+
 /// What the next recording uses.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -198,56 +353,79 @@ impl RecordProfile {
     /// padding, a keyframe every 2 s, the encoder's profile, the balanced preset, no
     /// B-frames and 160 kbit/s audio.
     pub fn new() -> Self {
-        Self {
+        let mut p = Self {
             format_version: FORMAT,
             folder: default_folder(),
             format: Format::Mkv,
             encoder: None,
             rate_control: RateMode::Cbr,
-            video_kbps: 12_000,
+            video_kbps: 0,
             max_video_kbps: None,
-            quality: default_quality(),
-            keyframe_seconds: default_keyframe_seconds(),
+            quality: 0,
+            keyframe_seconds: 0,
             profile: None,
             preset: Preset::Balanced,
             b_frames: 0,
             cbr_padding: false,
-            audio_kbps: 160,
+            audio_kbps: 0,
+        };
+        p.set_encoding(Encoding::new(12_000));
+        p
+    }
+
+    /// The encoder settings.
+    pub fn encoding(&self) -> Encoding {
+        Encoding {
+            encoder: self.encoder.clone(),
+            rate_control: self.rate_control,
+            video_kbps: self.video_kbps,
+            max_video_kbps: self.max_video_kbps,
+            quality: self.quality,
+            keyframe_seconds: self.keyframe_seconds,
+            profile: self.profile.clone(),
+            preset: self.preset,
+            b_frames: self.b_frames,
+            cbr_padding: self.cbr_padding,
+            audio_kbps: self.audio_kbps,
         }
+    }
+
+    /// Replaces the encoder settings.
+    pub fn set_encoding(&mut self, e: Encoding) {
+        let Encoding {
+            encoder,
+            rate_control,
+            video_kbps,
+            max_video_kbps,
+            quality,
+            keyframe_seconds,
+            profile,
+            preset,
+            b_frames,
+            cbr_padding,
+            audio_kbps,
+        } = e;
+        self.encoder = encoder;
+        self.rate_control = rate_control;
+        self.video_kbps = video_kbps;
+        self.max_video_kbps = max_video_kbps;
+        self.quality = quality;
+        self.keyframe_seconds = keyframe_seconds;
+        self.profile = profile;
+        self.preset = preset;
+        self.b_frames = b_frames;
+        self.cbr_padding = cbr_padding;
+        self.audio_kbps = audio_kbps;
     }
 
     /// The VBR peak in kbit/s: the saved one, or 1.5 times the target.
     pub fn peak_kbps(&self) -> u32 {
-        self.max_video_kbps
-            .unwrap_or(self.video_kbps.saturating_mul(3) / 2)
+        self.encoding().peak_kbps()
     }
 
-    /// The video encoding these settings ask for. Padding makes CBR `cbr_padded`; it
-    /// stays saved while another mode is picked and does nothing there.
+    /// The video encoding these settings ask for (see [`Encoding::video_settings`]).
     pub fn video_settings(&self) -> VideoSettings {
-        let mut v = VideoSettings::default();
-        let bps = |kbps: u32| u64::from(kbps) * 1000;
-        v.rate_control = match self.rate_control {
-            RateMode::Cbr if self.cbr_padding => RateControl::CbrPadded {
-                bitrate_bps: bps(self.video_kbps),
-            },
-            RateMode::Cbr => RateControl::Cbr {
-                bitrate_bps: bps(self.video_kbps),
-            },
-            RateMode::Vbr => RateControl::Vbr {
-                target_bps: bps(self.video_kbps),
-                max_bps: bps(self.peak_kbps()),
-            },
-            RateMode::ConstantQuality => RateControl::ConstantQuality {
-                level: self.quality,
-            },
-        };
-        v.keyframe_interval =
-            KeyframeInterval::Duration(Duration::from_secs(u64::from(self.keyframe_seconds)));
-        v.max_b_frames = self.b_frames;
-        v.profile = self.profile.clone();
-        v.preset = self.preset.encoder();
-        v
+        self.encoding().video_settings()
     }
 
     /// Why this profile cannot be used, in words, or `None`.
@@ -261,44 +439,7 @@ impl RecordProfile {
         if !self.folder.is_absolute() {
             return Some("The folder must be a full path, for example C:\\Videos.".into());
         }
-        if !AUDIO_KBPS.contains(&self.audio_kbps) {
-            return Some(format!(
-                "Audio bitrate {} kbit/s is not supported; use 96, 128, 160 or 192.",
-                self.audio_kbps
-            ));
-        }
-        if !(500..=200_000).contains(&self.video_kbps) {
-            return Some(format!(
-                "Video bitrate {} kbit/s is outside 500 to 200000.",
-                self.video_kbps
-            ));
-        }
-        if self.rate_control == RateMode::Vbr && self.peak_kbps() < self.video_kbps {
-            return Some(format!(
-                "The maximum bitrate {} kbit/s is below the bitrate {} kbit/s.",
-                self.peak_kbps(),
-                self.video_kbps
-            ));
-        }
-        if self.quality > 51 {
-            return Some(format!(
-                "Quality level {} is outside 0 (best) to 51.",
-                self.quality
-            ));
-        }
-        if !(1..=60).contains(&self.keyframe_seconds) {
-            return Some(format!(
-                "A keyframe every {} s is outside 1 to 60 s.",
-                self.keyframe_seconds
-            ));
-        }
-        if self.b_frames > MAX_B_FRAMES {
-            return Some(format!(
-                "{} B-frames is more than {MAX_B_FRAMES}.",
-                self.b_frames
-            ));
-        }
-        None
+        self.encoding().problem()
     }
 
     /// The file a recording started at `now` (local time) is written to:

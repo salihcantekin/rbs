@@ -35,7 +35,7 @@ use rbs_gpu::GpuContext;
 use rbs_gpu::share::{PreviewDesc, PreviewEndpoint};
 use rbs_graph::node::NodeTypeId;
 use rbs_record::{
-    AudioSettings, OutputSettings, RecordAdapters, Studio, StudioSettings, VideoSettings,
+    AudioSettings, Link, OutputSettings, RecordAdapters, Studio, StudioSettings, VideoSettings,
 };
 use rbs_scene::SceneCollection;
 use rbs_scene::Undo;
@@ -44,10 +44,12 @@ use rbs_scene::model::{
 };
 use rbs_sources::types::{self, keys};
 use rbs_sources::{SourceError, SourceTarget};
+use rbs_transport::{ReconnectPolicy, Secret, TransportInput};
 
 use crate::canvas_profile::CanvasProfile;
 use crate::record_profile::{API_PROFILE_ID, RecordProfile};
 use crate::remote_control::ApiTokens;
+use crate::stream_key::{KeyStore, MemoryKeyStore};
 
 /// The longest the control thread sleeps between two rounds of the engine's control
 /// loop (the studio asks for at most about 100 ms).
@@ -218,6 +220,14 @@ pub enum Command {
     /// The recording settings as saved: what `record.start` uses for control API
     /// clients and `settings.get` shows. Sent at start and after each change.
     SetProfile(RecordProfile),
+    /// Go live: stream the program ([`Update::Stream`] says how it went). The stream key
+    /// is read from the host's key store now, never earlier.
+    StartStream(StreamRequest),
+    /// End the running stream ([`StreamUpdate::Ended`] when it has).
+    EndStream,
+    /// Save the stream key in the key store (`None` removes it); answered with
+    /// [`Update::StreamKey`].
+    SaveStreamKey(Option<Secret>),
 }
 
 /// A video encoder the user can pick.
@@ -334,6 +344,57 @@ pub enum RecordingUpdate {
     },
 }
 
+/// Where and how to stream.
+#[derive(Debug, Clone, PartialEq)]
+pub struct StreamRequest {
+    /// The server URL (`rtmp://host/app`, `srt://host:port`); never holds the key.
+    pub url: String,
+    /// Packets (RTMP) or the chunks of a container (SRT: MPEG-TS).
+    pub input: TransportInput,
+    /// The server needs a key (RTMP): without a saved one nothing opens.
+    pub needs_key: bool,
+    /// What the transport does when the connection drops.
+    pub reconnect: ReconnectPolicy,
+    /// Opaque transport options (SRT `latency_ms`).
+    pub transport_options: Vec<(String, String)>,
+    /// The video encoder's adapter id: only this one is used. `None`: the best one.
+    pub encoder: Option<String>,
+    /// Video encoding.
+    pub video: VideoSettings,
+    /// Audio bitrate in bit/s.
+    pub audio_bitrate_bps: u64,
+}
+
+/// What happened to the stream.
+#[derive(Debug, Clone, PartialEq)]
+pub enum StreamUpdate {
+    /// It runs and connects in the background ([`StreamUpdate::Link`] follows).
+    Started {
+        /// The server URL.
+        url: String,
+        /// The video encoder's name.
+        video_encoder: String,
+        /// The audio encoder's name, when audio is sent.
+        audio_encoder: Option<String>,
+    },
+    /// It could not start, in words; nothing streams.
+    NotStarted(String),
+    /// The connection changed: connected, lost, another attempt.
+    Link(Link),
+    /// It ended, asked to or because it failed for good.
+    Ended {
+        /// Why it ended on its own, if it did.
+        failure: Option<String>,
+        /// Video frames encoded.
+        frames: u64,
+        /// Video frames dropped at the export or the encoder, and items the transport
+        /// dropped while the connection was slow or down.
+        dropped: u64,
+        /// Times the stream connected (0: it never reached the server).
+        connects: u64,
+    },
+}
+
 /// What the studio tells the UI.
 #[derive(Debug, Clone)]
 pub enum Update {
@@ -381,6 +442,11 @@ pub enum Update {
     Error(String),
     /// The recording started, did not start or stopped.
     Recording(RecordingUpdate),
+    /// The stream started, did not start, changed its connection or ended.
+    Stream(StreamUpdate),
+    /// [`Command::SaveStreamKey`] done: `Ok(true)` a key is saved, `Ok(false)` none is,
+    /// `Err` why the store refused.
+    StreamKey(Result<bool, String>),
     /// A control API client changed the recording settings; the UI shows and saves
     /// them.
     Profile(RecordProfile),
@@ -409,6 +475,9 @@ pub struct HostConfig {
     pub fps: FrameRate,
     /// The preview's size and ring, or `None` for no preview.
     pub preview: Option<PreviewDesc>,
+    /// Where the stream key is kept: read when a stream starts, written when it is
+    /// saved, on the control thread only. Memory by default.
+    pub keys: Arc<dyn KeyStore>,
 }
 
 impl HostConfig {
@@ -423,7 +492,12 @@ impl HostConfig {
     pub fn canvas(size: Size, fps: FrameRate) -> Self {
         let preview =
             cfg!(any(target_os = "macos", windows)).then(|| preview_desc(size, PREVIEW_SURFACES));
-        Self { size, fps, preview }
+        Self {
+            size,
+            fps,
+            preview,
+            keys: Arc::new(MemoryKeyStore::new()),
+        }
     }
 }
 
@@ -610,6 +684,10 @@ struct Host {
     waiting: bool,
     /// The running recording's file.
     recording: Option<PathBuf>,
+    /// The running stream: its URL and the connection last reported.
+    streaming: Option<(String, Link)>,
+    /// Where the stream key is kept.
+    keys: Arc<dyn KeyStore>,
     /// Makes an engine for a restart.
     engine: Box<dyn Fn() -> Engine>,
     gpu: Arc<GpuContext>,
@@ -701,6 +779,7 @@ fn run(
             && let Some(why) = host.dead.take()
         {
             host.stop_recording(Some(why.clone()), notify);
+            host.end_stream(Some(why.clone()), notify);
             failed = Some(why.clone());
             notify(Update::Failed(why));
         }
@@ -721,6 +800,7 @@ fn run(
         if let Some(why) = host.studio.failure() {
             // Clients see the recording end with the failure instead of a stale state.
             host.stop_recording(Some(why.clone()), notify);
+            host.end_stream(Some(why.clone()), notify);
             failed = Some(why.clone());
             notify(Update::Failed(why));
             continue;
@@ -736,8 +816,16 @@ fn run(
         {
             host.stop_recording(Some(why), notify);
         }
+        if host.streaming.is_some() {
+            if let Some(why) = host.studio.recording_failure() {
+                host.end_stream(Some(why), notify);
+            } else {
+                host.report_link(notify);
+            }
+        }
         host.publish(notify);
     }
+    host.end_stream(None, notify);
     let _ = host.studio.shutdown();
 }
 
@@ -747,6 +835,7 @@ fn start(
     gpu: impl FnOnce() -> Result<Arc<GpuContext>, String>,
     engine: impl Fn() -> Engine + 'static,
 ) -> Result<(Host, Update), String> {
+    let keys = Arc::clone(&config.keys);
     let (mut adapters, mut notes) = adapters();
     adapters.probe();
     let gpu = gpu()?;
@@ -840,6 +929,8 @@ fn start(
             undo: None,
             waiting: false,
             recording: None,
+            streaming: None,
+            keys,
             engine: Box::new(engine),
             gpu,
             preview_surfaces: config.preview.map(|p| p.surfaces),
@@ -910,6 +1001,27 @@ impl Host {
                     self.profile = profile;
                     self.settings_changed();
                 }
+            }
+            Command::StartStream(r) => {
+                let update = match self.start_stream(&r) {
+                    Ok(update) => update,
+                    Err(why) => StreamUpdate::NotStarted(why),
+                };
+                notify(Update::Stream(update));
+                self.publish(notify);
+            }
+            Command::EndStream => {
+                self.end_stream(None, notify);
+                self.publish(notify);
+            }
+            Command::SaveStreamKey(key) => {
+                let result = match &key {
+                    Some(k) => self.keys.write(k).map(|()| true),
+                    None => self.keys.remove().map(|()| false),
+                };
+                notify(Update::StreamKey(result.map_err(|e| {
+                    format!("{} refused the stream key: {e}", self.keys.place())
+                })));
             }
         }
     }
@@ -1082,6 +1194,9 @@ impl Host {
         if self.recording.is_some() {
             return Err("Stop the recording before changing the canvas.".into());
         }
+        if self.streaming.is_some() {
+            return Err("End the stream before changing the canvas.".into());
+        }
         let canvas = self
             .collection
             .canvas(self.canvas)
@@ -1158,6 +1273,9 @@ impl Host {
         if self.recording.is_some() {
             return Err("A recording is already running.".into());
         }
+        if self.streaming.is_some() {
+            return Err("End the stream to record: one output runs at a time for now.".into());
+        }
         if !r.path.is_absolute() {
             return Err(format!("{} is not a full path.", r.path.display()));
         }
@@ -1175,27 +1293,13 @@ impl Host {
             a.bitrate_bps = r.audio_bitrate_bps;
             a
         });
-        // A picked encoder is the only one tried: if it cannot open, the recording
-        // fails rather than quietly using another one.
-        let all = match &r.encoder {
-            None => None,
-            Some(id) => {
-                let only = only_encoder(&self.adapters.video_encoders, id)?;
-                Some(std::mem::replace(&mut self.adapters.video_encoders, only))
-            }
-        };
-        let started = self
-            .studio
-            .start_recording(&self.adapters, &out)
-            .map(|report| RecordingUpdate::Started {
-                path: r.path.clone(),
-                video_encoder: report.video_encoder.name.clone(),
-                audio_encoder: report.audio_encoder.as_ref().map(|c| c.name.clone()),
-            })
-            .map_err(|e| e.to_string());
-        if let Some(all) = all {
-            self.adapters.video_encoders = all;
-        }
+        let started =
+            self.start_output(&out, r.encoder.as_deref())
+                .map(|(video_encoder, audio_encoder)| RecordingUpdate::Started {
+                    path: r.path.clone(),
+                    video_encoder,
+                    audio_encoder,
+                });
         if let Ok(RecordingUpdate::Started {
             video_encoder,
             audio_encoder,
@@ -1243,6 +1347,118 @@ impl Host {
             frames,
             dropped,
             flush_lost,
+        }));
+    }
+
+    /// Goes live: reads the key (RTMP: required) from the key store, then attaches the
+    /// stream's encoders and output to the running studio. The connection is made in
+    /// the background; [`Host::report_link`] tells the UI how it goes.
+    fn start_stream(&mut self, r: &StreamRequest) -> Result<StreamUpdate, String> {
+        if self.streaming.is_some() {
+            return Err("A stream is already running.".into());
+        }
+        if self.recording.is_some() {
+            return Err("Stop the recording to go live: one output runs at a time for now.".into());
+        }
+        if let Some(why) = &self.cannot_record {
+            return Err(why.replace("Recording is", "Streaming is"));
+        }
+        let key = self.keys.read().map_err(|e| {
+            format!(
+                "The stream key could not be read from {}: {e}",
+                self.keys.place()
+            )
+        })?;
+        if r.needs_key && key.is_none() {
+            return Err("No stream key is saved: enter it in Settings, Stream.".into());
+        }
+        let mut out = match r.input {
+            TransportInput::Container(c) => OutputSettings::new(r.url.clone(), c),
+            _ => OutputSettings::packets(r.url.clone()),
+        };
+        out.secret = key;
+        out.reconnect = r.reconnect;
+        out.transport_options = r.transport_options.clone();
+        out.video = r.video.clone();
+        out.audio = self.adapters.audio_encoders.ids().next().map(|_| {
+            let mut a = AudioSettings::default();
+            a.bitrate_bps = r.audio_bitrate_bps;
+            a
+        });
+        let (video_encoder, audio_encoder) = self.start_output(&out, r.encoder.as_deref())?;
+        self.streaming = Some((r.url.clone(), Link::default()));
+        Ok(StreamUpdate::Started {
+            url: r.url.clone(),
+            video_encoder,
+            audio_encoder,
+        })
+    }
+
+    /// Attaches `out` to the studio with the picked encoder only, or the best one;
+    /// returns the encoders' names.
+    fn start_output(
+        &mut self,
+        out: &OutputSettings,
+        encoder: Option<&str>,
+    ) -> Result<(String, Option<String>), String> {
+        // A picked encoder is the only one tried: if it cannot open, the output fails
+        // rather than quietly using another one.
+        let all = match encoder {
+            None => None,
+            Some(id) => {
+                let only = only_encoder(&self.adapters.video_encoders, id)?;
+                Some(std::mem::replace(&mut self.adapters.video_encoders, only))
+            }
+        };
+        let started = self
+            .studio
+            .start_recording(&self.adapters, out)
+            .map(|report| {
+                (
+                    report.video_encoder.name.clone(),
+                    report.audio_encoder.as_ref().map(|c| c.name.clone()),
+                )
+            })
+            .map_err(|e| e.to_string());
+        if let Some(all) = all {
+            self.adapters.video_encoders = all;
+        }
+        started
+    }
+
+    /// Tells the UI when the stream's connection changed.
+    fn report_link(&mut self, notify: &dyn Fn(Update)) {
+        let Some((_, last)) = &mut self.streaming else {
+            return;
+        };
+        if let Some(link) = self.studio.link()
+            && link != *last
+        {
+            *last = link;
+            notify(Update::Stream(StreamUpdate::Link(link)));
+        }
+    }
+
+    /// Ends the stream, if one runs, and says so.
+    fn end_stream(&mut self, failure: Option<String>, notify: &dyn Fn(Update)) {
+        if self.streaming.take().is_none() {
+            return;
+        }
+        let report = self.studio.stop_recording();
+        let (frames, dropped, connects, failed) = report.map_or((0, 0, 0, None), |r| {
+            let p = &r.progress;
+            (
+                p.frames_encoded,
+                p.export_drops + p.encoder_skipped + p.encoder_drops + p.transport_drops,
+                p.connects,
+                r.failure,
+            )
+        });
+        notify(Update::Stream(StreamUpdate::Ended {
+            failure: failure.or(failed),
+            frames,
+            dropped,
+            connects,
         }));
     }
 
@@ -1567,6 +1783,12 @@ impl ApiTarget<'_> {
                                 "stop the recording before changing the canvas",
                             ));
                         }
+                        if host.streaming.is_some() {
+                            return Err(ApiError::new(
+                                ErrorKind::Conflict,
+                                "end the stream before changing the canvas",
+                            ));
+                        }
                         host.change_canvas(c.size(), c.frame_rate(), notify)
                             .map_err(failed)?;
                     }
@@ -1615,6 +1837,12 @@ impl ApiTarget<'_> {
             return Err(ApiError::new(
                 ErrorKind::Conflict,
                 "a recording is already running",
+            ));
+        }
+        if host.streaming.is_some() {
+            return Err(ApiError::new(
+                ErrorKind::Conflict,
+                "a stream is running; one output runs at a time for now",
             ));
         }
         let p = &host.profile;

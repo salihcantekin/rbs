@@ -53,10 +53,12 @@ fn recordings_start_and_stop_while_the_studio_keeps_running() {
 
     for (round, url) in ["mem://first", "mem://second"].into_iter().enumerate() {
         let out = OutputSettings::new(url, ContainerId::Matroska);
+        assert_eq!(studio.link(), None, "no output, no link");
         let started = studio.start_recording(&r.adapters, &out).unwrap().clone();
         assert_eq!(started.sources.len(), 4, "{started:?}");
         assert!(started.sources.iter().all(|s| s.failed.is_none()));
         assert!(studio.is_recording());
+        assert!(studio.link().is_some());
         assert!(matches!(
             studio.start_recording(&r.adapters, &out),
             Err(RecordError::AlreadyRecording)
@@ -91,6 +93,7 @@ fn recordings_start_and_stop_while_the_studio_keeps_running() {
         );
         assert!(!studio.is_recording());
         assert!(studio.stop_recording().is_none());
+        assert_eq!(studio.link(), None);
 
         // The recording's partitions stopped; the audio kept running; video sources
         // are closed again (nothing shows them).

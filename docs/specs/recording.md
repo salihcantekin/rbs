@@ -106,6 +106,8 @@ impl OutputSettings {
 }
 impl RecordSettings { pub fn studio(&self) -> StudioSettings; pub fn output(&self) -> OutputSettings; }
 #[non_exhaustive] pub struct Updated { pub problems: Vec<BindProblem>, pub failed: Vec<StartFailure> }
+#[non_exhaustive] #[derive(Clone, Copy, Default, PartialEq, Eq)]
+pub struct Link { pub connected: bool, pub connects: u64, pub reconnect_attempts: u64, pub transport_drops: u64 }
 
 impl Studio {
     pub fn start(engine: Engine, gpu: Arc<GpuContext>, collection: &SceneCollection,
@@ -124,6 +126,7 @@ impl Studio {
     pub fn problems(&self) -> &[BindProblem];
     pub fn waiting(&self) -> bool;                  // a replacement waits for its predecessor to close
     pub fn progress(&self) -> Progress;               // sources always; recording counters while one runs
+    pub fn link(&self) -> Option<Link>;               // the running output's connection; reads no meter
     pub fn preview(&self) -> Option<PreviewEndpoint>; // once the preview node is prepared
     pub fn preview_stats(&self) -> Option<&Arc<PreviewNodeStats>>;
     pub fn meter(&self, source: SourceId) -> Option<&Arc<LevelMeter>>;
