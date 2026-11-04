@@ -158,10 +158,12 @@ fn db(peak: Option<f32>) -> String {
 
 fn line(elapsed: Duration, p: &Progress) -> String {
     let mut s = format!(
-        "{:>4}s  video {} frames ({} dropped)",
+        "{:>4}s  video {} exported, {} encoded ({} dropped, {} skipped)",
         elapsed.as_secs(),
+        p.frames_exported,
         p.frames_encoded,
         p.export_drops + p.encoder_drops,
+        p.encoder_skipped,
     );
     for src in &p.sources {
         match src.peak_db {
@@ -347,8 +349,8 @@ fn record(a: &RecordArgs) -> Result<(), String> {
     let p = &report.progress;
     println!("--- {:.1} s recorded", elapsed.as_secs_f64());
     println!(
-        "video: {} frames exported, {} encoded, {} dropped at export, {} at the encoder",
-        p.frames_exported, p.frames_encoded, p.export_drops, p.encoder_drops
+        "video: {} frames exported, {} encoded, {} dropped at export, {} skipped before the encoder, {} dropped at the encoder",
+        p.frames_exported, p.frames_encoded, p.export_drops, p.encoder_skipped, p.encoder_drops
     );
     for s in &p.sources {
         println!(

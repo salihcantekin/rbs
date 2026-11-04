@@ -31,8 +31,10 @@
 //!   port's clock edge from its host time and pushes the samples into the port's sample
 //!   ring ([`rbs_audio_io::ring`]). `read` on the audio thread only reads that ring.
 //!   The adapter starts no threads of its own.
-//! - Aggregate devices run continuously, so loopback and application streams deliver
-//!   timed silence while nothing plays, as the port requires.
+//! - Aggregate devices are created with tap auto-start off, so they run from
+//!   `AudioDeviceStart` on and loopback and application streams deliver timed silence
+//!   while nothing plays, as the port requires. (With auto-start on, macOS 26 does not
+//!   call the IO proc until the tapped audio plays.)
 //! - A device that disappears (`kAudioDevicePropertyDeviceIsAlive`) or a captured
 //!   process that exits (it leaves the HAL's process list) makes `read` return
 //!   `EndpointLost`; a nominal rate change makes it return `FormatChanged`.
