@@ -1,6 +1,6 @@
 # ADR-0047: Several outputs per canvas: record and stream at once, encoders shared when their settings match
 
-- Status: Proposed
+- Status: Accepted (independent review resolved, owner's standing ADR rule, 2026-11-04; see Review)
 - Date: 2026-11-04
 - Deciders: Salih (owner)
 - Amends: [ADR-0041](0041-studio-recording-on-a-running-engine.md) decision 3 ("one recording at a time")
@@ -69,3 +69,4 @@ Forces:
   9. (minor) Test method. Stated in Consequences.
   10. (process) Code was written while the ADR was Proposed. The ADR is updated before the change merges and stays Proposed until the review is resolved and the owner approves (the owner's standing rule of 2026-11-03 lets project threads record that approval once the review is resolved).
 - 2026-11-04, the same independent session re-checked the fixes: findings 1-9 resolved; two left. (a) The "free partition" invariant was stated without the pending-take rule, and such a start reported `TooManyOutputs`. Fixed: invariant restated, new `RecordError::OutputFinishing`. A test that forces a pending take needs a stuck swap, which the rig cannot make deterministically; the rule is a plain filter over `pending_takes`. (b) Item 10 wording. Fixed above. Optional notes taken: `shutdown` now stops every output in one draining apply, so a shared encoder is flushed for all of them; the app reads no `output_progress` while running (each call takes the meter peaks, documented). Not added: a test of a shared encoder failing for good (the mapping is `users()`, reviewed).
+- 2026-11-04: Accepted by the implementing thread under the owner's standing ADR rule (2026-11-03), after both review rounds were resolved. Mac hardware run (M4 Pro, VideoToolbox + AudioToolbox): a 30 s stream with a 22 s recording, both with separate and with shared encoders, 0 frames dropped, every file decodes cleanly, the stream went on after the recording stopped (PR #128). CPU numbers from live display capture vary 2-3x between runs; a fixed test source for a solid comparison is a follow-up.
