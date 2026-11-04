@@ -9,6 +9,9 @@ import { Button, Checkbox, FocusRing, IconButton, IconName, MenuItem, MenuSurfac
 // pixels). `can-up` / `can-down`: another source with a picture is above / below it.
 export struct SourceData { id: int, name: string, kind: string, status: string, ok: bool, picture: bool, x: float, y: float, w: float, h: float, can-up: bool, can-down: bool }
 export struct KindData { code: int, label: string }
+// A filled rectangle of the selection on the preview (outline or handle), in the
+// panel's coordinates; kind 0 outline, 1 handle border, 2 handle inside.
+export struct MarkData { x: length, y: length, w: length, h: length, kind: int }
 export struct TargetData { name: string, is-default: bool }
 // One meter's moving parts as fractions of the bar (rbs_ui::meter::MeterView::zones),
 // its peak-hold position and zone, the clip latch and the accessible value (U16).
@@ -71,6 +74,19 @@ export global Studio {
     callback move-source(int /* id */, bool /* up */);
     // A video source's box on the canvas, in canvas pixels.
     callback set-source-box(int /* id */, float /* x */, float /* y */, float /* w */, float /* h */);
+    // The selection drawn by the toolkit where no preview layer shows the picture (the
+    // layer draws it itself otherwise, ADR-0048).
+    in property <[MarkData]> marks;
+    // Pointer on the picture panel (panel coordinates, logical pixels; `w`, `h` the
+    // panel's size). Shift: free resize at corners; Ctrl or Cmd: no snapping.
+    callback preview-press(float /* x */, float /* y */, float /* w */, float /* h */, bool /* shift */, bool /* no-snap */);
+    callback preview-drag(float /* x */, float /* y */);
+    callback preview-release();
+    // Arrow keys on the picture panel: move the selected source by this many canvas
+    // pixels.
+    callback preview-nudge(int /* dx */, int /* dy */);
+    // Escape on the picture panel.
+    callback preview-deselect();
     callback undo-delete();
     callback dismiss-deleted();
     callback reset-clip(int /* meter */);
@@ -310,6 +326,50 @@ export component ProgramPanel inherits Rectangle {
         horizontal-alignment: center;
         vertical-alignment: center;
         wrap: word-wrap;
+    }
+    // Selecting, moving and resizing sources on the picture (ADR-0048). Arrow keys move
+    // the selected source by 1 canvas pixel, with Shift by 10; Escape clears the
+    // selection.
+    property <bool> editable: here && Studio.state == 1;
+    keys := FocusScope {
+        enabled: editable;
+        key-pressed(e) => {
+            if Studio.selected-source < 0 { return reject; }
+            let step = e.modifiers.shift ? 10 : 1;
+            if e.text == Key.LeftArrow { Studio.preview-nudge(-step, 0); return accept; }
+            if e.text == Key.RightArrow { Studio.preview-nudge(step, 0); return accept; }
+            if e.text == Key.UpArrow { Studio.preview-nudge(0, -step); return accept; }
+            if e.text == Key.DownArrow { Studio.preview-nudge(0, step); return accept; }
+            if e.text == Key.Escape { Studio.preview-deselect(); return accept; }
+            reject
+        }
+    }
+    touch := TouchArea {
+        enabled: editable;
+        pointer-event(e) => {
+            if e.kind == PointerEventKind.cancel { Studio.preview-release(); return; }
+            if e.button != PointerEventButton.left { return; }
+            if e.kind == PointerEventKind.down {
+                keys.focus();
+                Studio.preview-press(self.mouse-x / 1px, self.mouse-y / 1px, self.width / 1px, self.height / 1px, e.modifiers.shift, e.modifiers.control || e.modifiers.meta);
+            }
+            if e.kind == PointerEventKind.up { Studio.preview-release(); }
+        }
+        moved => {
+            if self.pressed { Studio.preview-drag(self.mouse-x / 1px, self.mouse-y / 1px); }
+        }
+    }
+    // Where no layer shows the picture, the toolkit draws the selection itself, clipped
+    // to the panel like the layer's marks.
+    if shown != 0: Rectangle {
+        clip: true;
+        for m in Studio.marks: Rectangle {
+            x: m.x;
+            y: m.y;
+            width: m.w;
+            height: m.h;
+            background: m.kind == 2 ? Theme.surface-raised : Theme.accent;
+        }
     }
 }
 

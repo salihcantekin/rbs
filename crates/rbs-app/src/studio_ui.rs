@@ -27,10 +27,13 @@ use rbs_remote_settings::{self as remote_profile, Access, RemoteProfile};
 use rbs_scene::model::SourceId;
 use rbs_transport::Secret;
 use rbs_ui::meter::{self, Meter, SCALE_MARKS_DB};
+use rbs_ui::transform::{DragKeys, MAX_MARKS, Mark, MarkKind, SourceBox};
 use slint::{Model, ModelRc, SharedString, VecModel};
 
+use crate::preview_edit::{Effect, Placed, PreviewEdit};
 use crate::ui::{
-    EncoderData, KindData, MeterRow, ScaleMark, SourceData, StackData, Studio, TargetData, TokenRow,
+    EncoderData, KindData, MarkData, MeterRow, ScaleMark, SourceData, StackData, Studio,
+    TargetData, TokenRow,
 };
 
 /// Meter refresh while the Mixer is visible (U16: 30 Hz).
@@ -103,6 +106,11 @@ pub struct StudioUi {
     pub selected: i32,
     /// An Add source is on its way: the next new source is selected.
     adding: bool,
+    /// Moving and resizing on the picture panel (ADR-0048).
+    edit: PreviewEdit,
+    /// The selection as marks, panel coordinates; and as the toolkit draws them.
+    mark_buf: Vec<Mark>,
+    marks: Rc<VecModel<MarkData>>,
     kind_list: Vec<SourceKind>,
     kinds: Rc<VecModel<KindData>>,
     target_list: Vec<Target>,
@@ -234,6 +242,9 @@ impl StudioUi {
             sources: Rc::new(VecModel::default()),
             selected: -1,
             adding: false,
+            edit: PreviewEdit::default(),
+            mark_buf: Vec::with_capacity(MAX_MARKS),
+            marks: Rc::new(VecModel::default()),
             kind_list: Vec::new(),
             kinds: Rc::new(VecModel::default()),
             target_list: Vec::new(),
@@ -303,6 +314,7 @@ impl StudioUi {
     /// Gives a window's `Studio` global the shared models (once per window).
     pub fn attach_models(&self, g: &Studio<'_>) {
         g.set_sources(ModelRc::from(self.sources.clone()));
+        g.set_marks(ModelRc::from(self.marks.clone()));
         g.set_kinds(ModelRc::from(self.kinds.clone()));
         g.set_targets(ModelRc::from(self.targets.clone()));
         g.set_meters(ModelRc::from(self.meters.clone()));
@@ -1027,13 +1039,124 @@ impl StudioUi {
         });
     }
 
-    /// A video source's box on the canvas, in canvas pixels.
+    /// A video source's box on the canvas, in canvas pixels (the Properties fields;
+    /// the picture panel's drags go through [`PreviewEdit`], numbered).
     pub fn set_source_box(&mut self, id: i32, x: f32, y: f32, w: f32, h: f32) {
+        self.send_box(0, id, SourceBox::new([x, y], [w, h]));
+    }
+
+    fn send_box(&mut self, seq: u64, id: i32, b: SourceBox) {
+        if self.host.is_none() {
+            // Nothing will answer: forget what the picture panel has on its way.
+            self.edit.reset();
+            return;
+        }
+        let (position, size) = (b.position, b.size);
         self.send(Command::SetSourceBox {
+            seq,
             id: SourceId::from_raw(id as u32),
-            position: [x, y],
-            size: [w, h],
+            position,
+            size,
         });
+    }
+
+    /// The video sources as the picture panel places them, bottom first.
+    fn placed(&self) -> Vec<Placed> {
+        let mut v: Vec<Placed> = self
+            .sources
+            .iter()
+            .filter(|d| d.picture)
+            .map(|d| Placed {
+                id: d.id,
+                at: SourceBox::new([d.x, d.y], [d.w, d.h]),
+            })
+            .collect();
+        v.reverse();
+        v
+    }
+
+    fn canvas_px(&self) -> [f32; 2] {
+        [self.canvas.width as f32, self.canvas.height as f32]
+    }
+
+    fn run(&mut self, effect: Effect) {
+        match effect {
+            Effect::None => {}
+            Effect::Select(id) => self.selected = id,
+            Effect::Send(seq, id, b) => self.send_box(seq, id, b),
+        }
+        self.refresh_marks();
+    }
+
+    /// A press on the picture panel (panel coordinates, its size `size`).
+    pub fn preview_press(&mut self, at: [f32; 2], size: [f32; 2], shift: bool, no_snap: bool) {
+        self.edit.set_panel(size[0], size[1]);
+        let keys = DragKeys {
+            free: shift,
+            no_snap,
+        };
+        let placed = self.placed();
+        let e = self
+            .edit
+            .press(at, self.canvas_px(), &placed, self.selected, keys);
+        self.run(e);
+    }
+
+    pub fn preview_drag(&mut self, at: [f32; 2]) {
+        let e = self.edit.drag_to(at, self.canvas_px());
+        self.run(e);
+    }
+
+    pub fn preview_release(&mut self) {
+        self.edit.release();
+    }
+
+    pub fn preview_nudge(&mut self, dx: f32, dy: f32) {
+        let placed = self.placed();
+        let e = self.edit.nudge(&placed, self.selected, dx, dy);
+        self.run(e);
+    }
+
+    /// The picture panel's size in the main window, from the layout.
+    pub fn set_picture_size(&mut self, w: f32, h: f32) {
+        self.edit.set_panel(w, h);
+        self.refresh_marks();
+    }
+
+    /// The selection as marks in the picture panel's coordinates.
+    #[cfg_attr(
+        not(any(target_os = "macos", windows)),
+        allow(
+            dead_code,
+            reason = "no preview layer here; the toolkit draws the marks"
+        )
+    )]
+    pub fn marks(&self) -> &[Mark] {
+        &self.mark_buf
+    }
+
+    /// Works out the selection's marks again (selection, rows, drag or panel changed).
+    pub fn refresh_marks(&mut self) {
+        let placed = self.placed();
+        let mut buf = std::mem::take(&mut self.mark_buf);
+        self.edit
+            .marks(self.canvas_px(), &placed, self.selected, &mut buf);
+        let data: Vec<MarkData> = buf
+            .iter()
+            .map(|m| MarkData {
+                x: m.rect.x,
+                y: m.rect.y,
+                w: m.rect.w,
+                h: m.rect.h,
+                kind: match m.kind {
+                    MarkKind::Outline => 0,
+                    MarkKind::HandleBorder => 1,
+                    MarkKind::HandleFill => 2,
+                },
+            })
+            .collect();
+        self.mark_buf = buf;
+        set_rows(&self.marks, data);
     }
 
     pub fn undo_delete(&mut self) {
@@ -1730,7 +1853,18 @@ impl StudioUi {
     /// and the preview endpoint when it arrives.
     pub fn apply(&mut self, u: Update) -> Applied {
         let mut out = Applied::default();
+        // A studio that starts, stops or restarts answers nothing sent before.
+        if matches!(
+            u,
+            Update::Started { .. } | Update::Failed(_) | Update::Canvas { .. }
+        ) {
+            self.edit.reset();
+        }
         match u {
+            Update::BoxPlaced { seq, ok } => {
+                let next = self.edit.answered(seq, ok);
+                self.run(next);
+            }
             Update::Started {
                 preview,
                 kinds,
@@ -1807,7 +1941,10 @@ impl StudioUi {
                 self.failure = why.clone();
                 out.error = Some(format!("The studio stopped: {why}"));
             }
-            Update::Sources(rows) => self.set_rows(rows),
+            Update::Sources(rows) => {
+                self.set_rows(rows);
+                self.refresh_marks();
+            }
             Update::Targets(kind, list) => {
                 self.targets_kind = SourceKind::ALL
                     .iter()
