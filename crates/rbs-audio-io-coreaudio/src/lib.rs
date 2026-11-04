@@ -72,6 +72,10 @@ pub const PROCESS_TAP_VERSION: (isize, isize) = (14, 4);
 
 pub use platform::CoreAudioBackend;
 
+#[cfg(target_os = "macos")]
+#[doc(hidden)]
+pub use mac::DIAG;
+
 /// IO procs, process taps and aggregate devices the adapter owns right now, for the
 /// conformance suite's resource checks.
 #[doc(hidden)]

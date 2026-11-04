@@ -662,6 +662,10 @@ impl Status {
     }
 }
 
+/// TEMPORARY diagnostics for #109: calls, buffers, tap channels, tap bytes, tap
+/// null, skipped cycles, pushed cycles, time flags.
+pub static DIAG: [AtomicU64; 8] = [const { AtomicU64::new(0) }; 8];
+
 /// Which input buffers of a cycle hold the stream's channels.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Buffers {
@@ -690,6 +694,18 @@ impl Capture {
         let os_now = unsafe { AudioConvertHostTimeToNanos(AudioGetCurrentHostTime()) };
         self.packets.observe(os_now, self.clock.now());
         let count = list.mNumberBuffers as usize;
+        DIAG[0].fetch_add(1, Ordering::Relaxed);
+        DIAG[1].store(count as u64, Ordering::Relaxed);
+        DIAG[7].store(u64::from(time.mFlags.0), Ordering::Relaxed);
+        if let Buffers::Tap(index) = self.buffers
+            && index < count
+        {
+            // SAFETY: diagnostic, index < count.
+            let b = unsafe { *(&raw const list.mBuffers).cast::<AudioBuffer>().add(index) };
+            DIAG[2].store(u64::from(b.mNumberChannels), Ordering::Relaxed);
+            DIAG[3].store(u64::from(b.mDataByteSize), Ordering::Relaxed);
+            DIAG[4].store(u64::from(b.mData.is_null()), Ordering::Relaxed);
+        }
         let first = match self.buffers {
             Buffers::All => 0,
             Buffers::Tap(index) => index,
@@ -723,8 +739,10 @@ impl Capture {
             channels += n;
         }
         if used == 0 || frames == 0 || frames == usize::MAX {
+            DIAG[5].fetch_add(1, Ordering::Relaxed);
             return;
         }
+        DIAG[6].fetch_add(1, Ordering::Relaxed);
         let host_nanos = time
             .mFlags
             .contains(AudioTimeStampFlags::HostTimeValid)
