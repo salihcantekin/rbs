@@ -51,6 +51,30 @@ struct Shared {
     rounds: AtomicU64,
 }
 
+/// Replaces the token store of a running [`ApiServer`] ([`ApiServer::token_handle`]).
+/// The API thread takes a new store at the start of a round, before it reads input,
+/// and writes the control thread's replies after reading input. So when the control
+/// thread sets the store before it replies, every message any client sends after that
+/// reply arrived is checked against the new store, and the sessions of revoked tokens
+/// are closed before such a message is read. Setting it after the server stopped does
+/// nothing.
+#[derive(Clone)]
+pub struct TokenHandle(Arc<Shared>);
+
+impl TokenHandle {
+    /// Replaces the token store.
+    pub fn set(&self, tokens: TokenStore) {
+        *self.0.tokens.lock().unwrap_or_else(PoisonError::into_inner) = Some(tokens);
+        self.0.wake.signal();
+    }
+}
+
+impl std::fmt::Debug for TokenHandle {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("TokenHandle")
+    }
+}
+
 /// A running control API server. Dropping it stops the transports, closes every
 /// session and joins the API thread.
 pub struct ApiServer {
@@ -173,12 +197,13 @@ impl ApiServer {
 
     /// Replaces the token store; sessions of revoked tokens are closed.
     pub fn set_tokens(&self, tokens: TokenStore) {
-        *self
-            .shared
-            .tokens
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner) = Some(tokens);
-        self.shared.wake.signal();
+        self.token_handle().set(tokens);
+    }
+
+    /// A handle that replaces the token store from another thread, such as the
+    /// control thread answering `tokens.*`.
+    pub fn token_handle(&self) -> TokenHandle {
+        TokenHandle(self.shared.clone())
     }
 
     /// The inbox, for transports started outside [`ApiServer::start`] and for tests.

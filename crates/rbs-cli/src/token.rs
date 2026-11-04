@@ -5,22 +5,147 @@
 //! Remote control, through the same code (`rbs-remote-settings`), so a token made here
 //! shows there and the other way round. Only the token's hash is stored; the token
 //! itself is printed once, alone on standard output, so a script can capture it.
+//!
+//! While RBS runs with remote control on, `create` and `revoke` go to it over local
+//! IPC (`tokens.create`, `tokens.revoke`): it changes the same file and the change is
+//! in effect at once. Otherwise they change the file here, and a running RBS takes the
+//! change later.
 
 use std::io::Write;
 use std::path::Path;
 
+use rbs_api_ipc::Endpoint;
 use rbs_remote_settings::{self as settings, Access, RemoteProfile};
+use serde_json::json;
 
 use crate::args::TokenCommand;
+use crate::control::{Reach, RunningApp};
 
-/// What a running app does with a change made here (until the app takes changes
-/// over local IPC).
+/// What a running app does with a change made in the file.
 const APPLIES: &str =
-    "A running RBS takes this change when its Settings window is opened next, or when it starts.";
+    "RBS uses this change the next time remote control starts or its Settings window opens.";
 
-/// Runs `command` on the settings in `config`. The token text goes to `out`, notes to
-/// `notes`.
+/// Runs `command` on the settings in `config`, through the RBS serving `ipc` when one
+/// does. The token text goes to `out`, notes to `notes`.
 pub fn run(
+    config: &Path,
+    ipc: Option<&Endpoint>,
+    command: &TokenCommand,
+    out: &mut dyn Write,
+    notes: &mut dyn Write,
+) -> Result<(), String> {
+    if !matches!(command, TokenCommand::List)
+        && let Some(endpoint) = ipc
+    {
+        match RunningApp::connect(endpoint) {
+            Reach::Connected(app) => return live(app, endpoint, command, out, notes),
+            Reach::NotRunning => {}
+            // A revoke made only in the file would leave the token working in the
+            // running RBS: refused, so a script does not take it as done.
+            Reach::Unusable(why) if matches!(command, TokenCommand::Revoke { .. }) => {
+                return Err(format!(
+                    "RBS is running but could not be reached ({why}), so nothing was revoked. Try again."
+                ));
+            }
+            Reach::Unusable(why) => {
+                writeln!(
+                    notes,
+                    "The running RBS could not be reached ({why}), so the settings file is changed instead."
+                )
+                .map_err(|e| e.to_string())?;
+            }
+        }
+    }
+    in_file(config, command, out, notes)
+}
+
+/// After `tokens.create` got no answer: revokes the token by name if RBS made it, and
+/// says what happened.
+fn unanswered_create(endpoint: &Endpoint, name: &str, why: &str) -> String {
+    let undone = match RunningApp::connect(endpoint) {
+        Reach::Connected(mut app) => match app.call("tokens.revoke", json!({ "name": name })) {
+            Ok(_) => Ok(()),
+            Err(e) if e.kind.as_deref() == Some("not_found") => Ok(()),
+            Err(e) => Err(e.message),
+        },
+        Reach::NotRunning => Err("RBS is no longer running".to_owned()),
+        Reach::Unusable(w) => Err(w),
+    };
+    match undone {
+        Ok(()) => format!("{why}, so \"{name}\" was not kept. Try again."),
+        Err(e) => format!(
+            "{why}. RBS may have made \"{name}\" without showing it, and it could not be revoked ({e}). Check with: rbs-cli token list, and revoke it with: rbs-cli token revoke \"{name}\""
+        ),
+    }
+}
+
+/// Makes the change in the running RBS.
+fn live(
+    mut app: RunningApp,
+    endpoint: &Endpoint,
+    command: &TokenCommand,
+    out: &mut dyn Write,
+    notes: &mut dyn Write,
+) -> Result<(), String> {
+    let written = |e: std::io::Error| e.to_string();
+    let refused = |e: crate::control::CallError| match e.kind.as_deref() {
+        Some("not_found") => format!("{} `rbs-cli token list` shows them.", e.message),
+        _ => e.message,
+    };
+    match command {
+        TokenCommand::List => Ok(()),
+        TokenCommand::Create { name, access } => {
+            let r = match app.call(
+                "tokens.create",
+                json!({"name": name, "scopes": access.scopes()}),
+            ) {
+                Ok(r) => r,
+                // No answer (timeout, connection lost): RBS may have made the token
+                // all the same, and nobody saw it. Revoke it on a new connection.
+                Err(e) if e.kind.is_none() => {
+                    drop(app);
+                    return Err(unanswered_create(endpoint, name.trim(), &e.message));
+                }
+                Err(e) => return Err(refused(e)),
+            };
+            let (Some(token), Some(name)) = (r["token"].as_str(), r["name"].as_str()) else {
+                return Err("RBS answered without a token.".into());
+            };
+            if let Err(e) = writeln!(out, "{token}").and_then(|()| out.flush()) {
+                // Nobody saw the token: a token nobody has must not stay valid.
+                app.call("tokens.revoke", json!({ "name": name }))
+                    .map_err(|r| {
+                        format!(
+                            "The token could not be printed ({e}) and \"{name}\" could not be revoked: {}. Revoke it with: rbs-cli token revoke \"{name}\"",
+                            r.message
+                        )
+                    })?;
+                return Err(format!(
+                    "The token could not be printed ({e}), so \"{name}\" was not kept. Try again."
+                ));
+            }
+            writeln!(
+                notes,
+                "Access token \"{name}\" ({}) created. It is shown only now: copy it into the app that will control RBS. RBS accepts it now.",
+                access.label()
+            )
+            .map_err(written)
+        }
+        TokenCommand::Revoke { name } => {
+            app.call("tokens.revoke", json!({ "name": name.trim() }))
+                .map_err(refused)?;
+            writeln!(
+                notes,
+                "Access token \"{}\" revoked: apps using it were disconnected and cannot connect with it again.",
+                name.trim()
+            )
+            .map_err(written)
+        }
+    }
+}
+
+/// Makes the change in the settings file.
+fn in_file(
     config: &Path,
     command: &TokenCommand,
     out: &mut dyn Write,
@@ -149,7 +274,7 @@ mod tests {
 
     fn run_text(config: &Path, command: TokenCommand) -> Result<(String, String), String> {
         let (mut out, mut notes) = (Vec::new(), Vec::new());
-        run(config, &command, &mut out, &mut notes)?;
+        run(config, None, &command, &mut out, &mut notes)?;
         Ok((
             String::from_utf8(out).unwrap(),
             String::from_utf8(notes).unwrap(),
@@ -246,7 +371,7 @@ mod tests {
             name: "Deck".into(),
             access: Access::View,
         };
-        let err = run(&d, &command, &mut Broken, &mut Vec::new()).unwrap_err();
+        let err = run(&d, None, &command, &mut Broken, &mut Vec::new()).unwrap_err();
         assert!(err.contains("was not kept"), "{err}");
         assert!(settings::load(&d).0.tokens.is_empty());
         let _ = std::fs::remove_dir_all(&d);
@@ -284,6 +409,169 @@ mod tests {
             std::fs::read_to_string(settings::file(&d)).unwrap(),
             "enabled = yes"
         );
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// A fresh IPC endpoint per test; Unix socket paths are short.
+    fn endpoint(name: &str) -> Endpoint {
+        let id = format!("{name}-{}", std::process::id());
+        if cfg!(windows) {
+            Endpoint(format!(r"\\.\pipe\rbs-cli-test-{id}").into())
+        } else {
+            let dir = std::env::temp_dir().join(format!("rbs-cli-ipc-{id}"));
+            let _ = std::fs::remove_dir_all(&dir);
+            Endpoint(dir.join("c.sock"))
+        }
+    }
+
+    /// A running "RBS": the API thread, local IPC, and a control thread that answers
+    /// `tokens.*` from the settings in `config` as the app does.
+    struct App {
+        ipc: rbs_api_ipc::IpcTransport,
+        api: Option<rbs_api::ApiServer>,
+        wake: std::sync::mpsc::Sender<bool>,
+        control: Option<std::thread::JoinHandle<()>>,
+    }
+
+    impl App {
+        fn start(config: &Path, endpoint: &Endpoint) -> App {
+            use rbs_api::request::ClientInfo;
+            use rbs_api::{
+                ApiError, ApiOptions, ApiServer, Command, ControlTarget, ControlTransport,
+                EventPublisher, ServerConfig, TokenHandle, TokenStore,
+            };
+
+            struct Tokens(PathBuf, TokenHandle);
+            impl ControlTarget for Tokens {
+                fn handle(
+                    &mut self,
+                    command: Command,
+                    _: &mut EventPublisher,
+                ) -> Result<rbs_api::Response, ApiError> {
+                    match settings::token_command(&self.0, &command, |s| self.1.set(s)) {
+                        Some(answer) => answer.map(|a| a.response),
+                        None => Err(rbs_api::control::unsupported(&command)),
+                    }
+                }
+            }
+
+            let (wake, woken) = std::sync::mpsc::channel();
+            let waker = std::sync::Mutex::new(wake.clone());
+            let (api, control_end) = ApiServer::start(
+                ServerConfig::new(ClientInfo::new("RBS", "test")).unwrap(),
+                TokenStore::new(),
+                ApiOptions::new(move || {
+                    let _ = waker.lock().unwrap().send(true);
+                }),
+            )
+            .unwrap();
+            let mut target = Tokens(config.to_owned(), api.token_handle());
+            let control = std::thread::spawn(move || {
+                let mut events = EventPublisher::new();
+                while let Ok(true) = woken.recv() {
+                    while control_end.serve_one(&mut target, &mut events) {}
+                }
+            });
+            let mut ipc =
+                rbs_api_ipc::IpcTransport::new(rbs_api_ipc::IpcConfig::new(endpoint.clone()));
+            ipc.start(api.inbox()).unwrap();
+            App {
+                ipc,
+                api: Some(api),
+                wake,
+                control: Some(control),
+            }
+        }
+    }
+
+    impl Drop for App {
+        fn drop(&mut self) {
+            use rbs_api::ControlTransport;
+            self.ipc.stop();
+            self.api.take();
+            let _ = self.wake.send(false);
+            if let Some(c) = self.control.take() {
+                let _ = c.join();
+            }
+            if !cfg!(windows) {
+                let _ = std::fs::remove_dir_all(self.ipc.endpoint().0.parent().unwrap());
+            }
+        }
+    }
+
+    fn run_with(
+        config: &Path,
+        ipc: &Endpoint,
+        command: TokenCommand,
+    ) -> Result<(String, String), String> {
+        let (mut out, mut notes) = (Vec::new(), Vec::new());
+        run(config, Some(ipc), &command, &mut out, &mut notes)?;
+        Ok((
+            String::from_utf8(out).unwrap(),
+            String::from_utf8(notes).unwrap(),
+        ))
+    }
+
+    #[test]
+    fn with_rbs_running_changes_go_to_it_and_take_effect_at_once() {
+        let d = dir("live");
+        let e = endpoint("live");
+        let _app = App::start(&d, &e);
+        let (out, notes) = run_with(
+            &d,
+            &e,
+            TokenCommand::Create {
+                name: "Deck".into(),
+                access: Access::Full,
+            },
+        )
+        .unwrap();
+        let token = out.trim_end();
+        assert!(token.starts_with("rbs1_"), "{out}");
+        assert!(notes.contains("RBS accepts it now"), "{notes}");
+        let saved = settings::read(&d).unwrap().unwrap();
+        assert_eq!(
+            saved.store().verify(token).unwrap().scopes,
+            Access::Full.scopes()
+        );
+
+        let err = run_with(
+            &d,
+            &e,
+            TokenCommand::Revoke {
+                name: "Nope".into(),
+            },
+        )
+        .unwrap_err();
+        assert!(err.contains("`rbs-cli token list`"), "{err}");
+        let (_, notes) = run_with(
+            &d,
+            &e,
+            TokenCommand::Revoke {
+                name: " Deck ".into(),
+            },
+        )
+        .unwrap();
+        assert!(notes.contains("were disconnected"), "{notes}");
+        assert!(settings::read(&d).unwrap().unwrap().tokens.is_empty());
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn without_rbs_running_the_file_is_changed() {
+        let d = dir("norbs");
+        let e = endpoint("norbs");
+        let (_, notes) = run_with(
+            &d,
+            &e,
+            TokenCommand::Create {
+                name: "Deck".into(),
+                access: Access::View,
+            },
+        )
+        .unwrap();
+        assert!(notes.contains("Settings window"), "{notes}");
+        assert_eq!(settings::read(&d).unwrap().unwrap().tokens.len(), 1);
         let _ = std::fs::remove_dir_all(&d);
     }
 }

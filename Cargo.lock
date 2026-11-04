@@ -4077,6 +4077,7 @@ dependencies = [
  "objc2-quartz-core 0.3.2",
  "raw-window-handle",
  "rbs-api",
+ "rbs-api-ipc",
  "rbs-api-ws",
  "rbs-audio",
  "rbs-audio-io",
@@ -4288,6 +4289,7 @@ name = "rbs-cli"
 version = "0.0.1"
 dependencies = [
  "rbs-api",
+ "rbs-api-ipc",
  "rbs-audio-io",
  "rbs-audio-io-coreaudio",
  "rbs-audio-io-test",
@@ -4317,6 +4319,7 @@ dependencies = [
  "rbs-thread-os",
  "rbs-transport",
  "rbs-transport-file",
+ "serde_json",
 ]
 
 [[package]]

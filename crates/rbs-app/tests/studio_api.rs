@@ -147,7 +147,7 @@ fn a_control_api_client_drives_the_studio() {
     let server = ServerConfig::new(ClientInfo::new("rbs", "test")).unwrap();
     let (api, endpoint) =
         ApiServer::start(server, TokenStore::new(), ApiOptions::new(host.api_waker())).unwrap();
-    host.attach_api(endpoint);
+    host.attach_api(endpoint, None);
 
     let (out_tx, out_rx) = mpsc::channel();
     let handle = api

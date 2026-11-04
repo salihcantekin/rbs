@@ -45,6 +45,7 @@ use rbs_sources::types::{self, keys};
 
 use crate::canvas_profile::CanvasProfile;
 use crate::record_profile::{API_PROFILE_ID, RecordProfile};
+use crate::remote_control::ApiTokens;
 
 /// The longest the control thread sleeps between two rounds of the engine's control
 /// loop (the studio asks for at most about 100 ms).
@@ -377,12 +378,15 @@ pub enum Update {
     /// A control API client changed the recording settings; the UI shows and saves
     /// them.
     Profile(RecordProfile),
+    /// A control API client (`rbs-cli token` over local IPC) made or revoked an access
+    /// token: it is saved and in effect; the UI reads the token list again.
+    TokensChanged,
 }
 
 /// What the control thread receives.
 enum Msg {
     Ui(Command),
-    AttachApi(Box<ControlEndpoint>),
+    AttachApi(Box<Api>),
     DetachApi,
     /// A control API request is waiting.
     ApiWake,
@@ -465,8 +469,10 @@ impl StudioHost {
 
     /// Serves the control API on the control thread from now on: `endpoint` comes from
     /// `rbs_api::ApiServer::start`, whose control waker is [`StudioHost::api_waker`].
-    pub fn attach_api(&self, endpoint: ControlEndpoint) {
-        self.post(Msg::AttachApi(Box::new(endpoint)));
+    /// With `tokens`, `tokens.*` requests are answered (local peers only, by scope);
+    /// without, they fail.
+    pub fn attach_api(&self, endpoint: ControlEndpoint, tokens: Option<ApiTokens>) {
+        self.post(Msg::AttachApi(Box::new(Api { endpoint, tokens })));
     }
 
     /// Stops serving the control API (remote control turned off).
@@ -503,6 +509,54 @@ impl Drop for StudioHost {
     }
 }
 
+/// The control API while it is attached.
+struct Api {
+    endpoint: ControlEndpoint,
+    tokens: Option<ApiTokens>,
+}
+
+impl Api {
+    /// Serves one request: `tokens.*` from the settings, everything else by `target`.
+    fn serve_one(
+        &self,
+        target: &mut dyn ControlTarget,
+        events: &mut EventPublisher,
+        notify: &dyn Fn(Update),
+    ) -> bool {
+        let mut with_tokens = WithTokens {
+            inner: target,
+            tokens: self.tokens.as_ref(),
+            notify,
+        };
+        self.endpoint.serve_one(&mut with_tokens, events)
+    }
+}
+
+/// Answers `tokens.*` (they do not touch the studio, so they work also after it
+/// failed), and passes everything else on.
+struct WithTokens<'a> {
+    inner: &'a mut dyn ControlTarget,
+    tokens: Option<&'a ApiTokens>,
+    notify: &'a dyn Fn(Update),
+}
+
+impl ControlTarget for WithTokens<'_> {
+    fn handle(
+        &mut self,
+        command: rbs_api::Command,
+        events: &mut EventPublisher,
+    ) -> Result<Response, ApiError> {
+        if let Some(answer) = self.tokens.and_then(|t| t.answer(&command)) {
+            let (response, changed) = answer?;
+            if changed {
+                (self.notify)(Update::TokensChanged);
+            }
+            return Ok(response);
+        }
+        self.inner.handle(command, events)
+    }
+}
+
 /// The studio and the scene it runs.
 struct Host {
     studio: Studio,
@@ -525,7 +579,7 @@ struct Host {
     /// Counts `seq` per state key and publishes events to control API clients.
     events: EventPublisher,
     /// The control API, while remote control is on.
-    api: Option<ControlEndpoint>,
+    api: Option<Api>,
     /// The recording settings as the UI saved them.
     profile: RecordProfile,
     /// Kinds the adapters can add.
@@ -555,15 +609,16 @@ fn run(
             notify(Update::Failed(e.clone()));
             // Keep answering until the UI goes away, so it never waits on a dead thread;
             // control API requests get the reason.
-            let mut api: Option<ControlEndpoint> = None;
+            let mut api: Option<Api> = None;
             while let Ok(m) = rx.recv() {
                 match m {
-                    Msg::AttachApi(e) => api = Some(*e),
+                    Msg::AttachApi(a) => api = Some(*a),
                     Msg::DetachApi => api = None,
                     Msg::Ui(_) | Msg::ApiWake => {}
                 }
                 if let Some(api) = &api {
-                    while api.serve_one(&mut Refuse(e.clone()), &mut EventPublisher::new()) {}
+                    let mut events = EventPublisher::new();
+                    while api.serve_one(&mut Refuse(e.clone()), &mut events, notify) {}
                 }
             }
             return;
@@ -579,9 +634,9 @@ fn run(
                     host.command(c, notify);
                 }
             }
-            Ok(Msg::AttachApi(endpoint)) => {
-                host.events.attach(endpoint.event_link());
-                host.api = Some(*endpoint);
+            Ok(Msg::AttachApi(api)) => {
+                host.events.attach(api.endpoint.event_link());
+                host.api = Some(*api);
             }
             Ok(Msg::DetachApi) => {
                 host.events.detach();
@@ -594,10 +649,9 @@ fn run(
         // next `recv_timeout` first, so the local user always goes first (decision 5).
         let served_api = match &failed {
             None => host.serve_api(notify),
-            Some(why) => host
-                .api
-                .as_ref()
-                .is_some_and(|api| api.serve_one(&mut Refuse(why.clone()), &mut host.events)),
+            Some(why) => host.api.as_ref().is_some_and(|api| {
+                api.serve_one(&mut Refuse(why.clone()), &mut host.events, notify)
+            }),
         };
         if failed.is_none()
             && let Some(why) = host.dead.take()
@@ -906,7 +960,7 @@ impl Host {
         // the target publishes through `self.events`: the publisher moves out for the
         // call and `ApiTarget` swaps it back in while a command runs.
         let mut events = std::mem::take(&mut self.events);
-        let served = api.serve_one(&mut ApiTarget { host: self, notify }, &mut events);
+        let served = api.serve_one(&mut ApiTarget { host: self, notify }, &mut events, notify);
         self.events = events;
         self.api = Some(api);
         served
@@ -1421,7 +1475,11 @@ impl ApiTarget<'_> {
                 }))
             }
             // Answered by the endpoint; never reaches a target.
-            C::EventsSubscribe(_) => Err(rbs_api::control::unsupported(&command)),
+            // `tokens.*` are answered before (`WithTokens`) when the API was attached
+            // with the settings.
+            C::EventsSubscribe(_) | C::TokensList | C::TokensCreate(_) | C::TokensRevoke(_) => {
+                Err(rbs_api::control::unsupported(&command))
+            }
         }
     }
 

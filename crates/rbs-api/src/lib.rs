@@ -44,7 +44,7 @@ pub use scope::{Scope, ScopeSet};
 pub use session::{
     Action, AuditEvent, Input, Limits, PROTOCOL_VERSION, Sampler, Server, ServerConfig,
 };
-pub use thread::{ApiOptions, ApiServer};
+pub use thread::{ApiOptions, ApiServer, TokenHandle};
 pub use token::{Token, TokenEntry, TokenHash, TokenStore};
 pub use transport::{
     CloseReason, ConnectionHandle, ConnectionId, ConnectionSender, ControlTransport, MessageLimit,

@@ -109,6 +109,14 @@ fn every_request() -> Vec<Request> {
             topics: vec![Topic::RecordState, Topic::AudioLevels],
             rates: BTreeMap::from([(Topic::AudioLevels, 20)]),
         })),
+        c(Command::TokensList),
+        c(Command::TokensCreate(CreateToken {
+            name: "Stream Deck".into(),
+            scopes: ScopeSet::PANEL,
+        })),
+        c(Command::TokensRevoke(TokenRef {
+            name: "Stream Deck".into(),
+        })),
     ]
 }
 
@@ -195,6 +203,19 @@ fn every_result_and_event_type_round_trips() {
         }],
     });
     round_trip(&SourceAdded { source: 9 });
+    round_trip(&TokenList {
+        tokens: vec![TokenInfo {
+            name: "Stream Deck".into(),
+            scopes: ScopeSet::PANEL,
+        }],
+    });
+    let created = TokenCreated {
+        name: "Stream Deck".into(),
+        scopes: ScopeSet::PANEL,
+        token: format!("rbs1_{}", "0".repeat(64)),
+    };
+    round_trip(&created);
+    assert!(!format!("{created:?}").contains("rbs1_"));
     round_trip(&ProfileList {
         profiles: vec![OutputProfile {
             id: "default".into(),

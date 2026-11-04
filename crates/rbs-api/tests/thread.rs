@@ -284,3 +284,118 @@ fn remote_peers_cannot_take_the_local_reserve() {
     assert_eq!(budget.open(), 3);
     assert!(connect(PeerInfo::loopback_websocket()).is_err());
 }
+
+/// A control thread that keeps the tokens itself, as an app answering `tokens.*` does.
+struct TokenKeeper {
+    store: TokenStore,
+    handle: rbs_api::TokenHandle,
+}
+
+impl ControlTarget for TokenKeeper {
+    fn handle(
+        &mut self,
+        command: Command,
+        _events: &mut EventPublisher,
+    ) -> Result<Response, ApiError> {
+        use rbs_api::request::{TokenCreated, TokenRef};
+        match command {
+            Command::TokensCreate(p) => {
+                let token = Token::from_bytes(&[7; 32]);
+                self.store.insert(TokenEntry {
+                    name: p.name.clone(),
+                    scopes: p.scopes,
+                    hash: token.hash(),
+                });
+                // Set before the reply: the token works for anything sent after it.
+                self.handle.set(self.store.clone());
+                Ok(Response::TokenCreated(TokenCreated {
+                    name: p.name,
+                    scopes: p.scopes,
+                    token: token.expose().to_owned(),
+                }))
+            }
+            Command::TokensRevoke(TokenRef { name }) => {
+                self.store.revoke(&name);
+                self.handle.set(self.store.clone());
+                Ok(Response::Done(Empty {}))
+            }
+            _ => Ok(Response::Done(Empty {})),
+        }
+    }
+}
+
+#[test]
+fn a_token_set_before_the_reply_works_for_the_next_message_and_revoking_closes_its_sessions() {
+    let config = ServerConfig::new(ClientInfo::new("rbs", "test")).unwrap();
+    let transport = MemoryTransport::default();
+    let (ctl_tx, ctl_rx) = mpsc::channel();
+    let waker = Mutex::new(ctl_tx.clone());
+    let mut options = ApiOptions::new(move || {
+        let _ = waker.lock().unwrap().send(Ctl::Wake);
+    });
+    options.transports.push(Box::new(transport.clone()));
+    let (api, endpoint) = ApiServer::start(config, TokenStore::new(), options).unwrap();
+    let handle = api.token_handle();
+    let control = std::thread::spawn(move || {
+        let mut keeper = TokenKeeper {
+            store: TokenStore::new(),
+            handle,
+        };
+        let mut events = EventPublisher::new();
+        while let Ok(Ctl::Wake) = ctl_rx.recv() {
+            while endpoint.serve_one(&mut keeper, &mut events) {}
+        }
+    });
+
+    // A same-user IPC peer: authenticated by hello, with the `tokens` scope.
+    let inbox = transport.inbox.lock().unwrap().clone().unwrap();
+    let (tx, rx) = mpsc::channel();
+    let handle = inbox
+        .connect(
+            PeerInfo::same_user_ipc(),
+            Box::new(ChannelSender(tx)),
+            Box::new(|| {}),
+        )
+        .unwrap();
+    let mut cli = Client {
+        handle,
+        rx,
+        next: 1,
+    };
+    cli.call(
+        "session.hello",
+        json!({"protocols": ["1.0"], "client": {"name": "cli", "version": "1"}}),
+    );
+    assert!(
+        cli.text()["result"]["scopes"]
+            .as_array()
+            .unwrap()
+            .contains(&json!("tokens"))
+    );
+    cli.call(
+        "tokens.create",
+        json!({"name": "Deck", "scopes": ["read", "control"]}),
+    );
+    let created = cli.text();
+    let token = created["result"]["token"].as_str().unwrap().to_owned();
+
+    let mut deck = Client::connect(&transport);
+    deck.call(
+        "session.hello",
+        json!({"protocols": ["1.0"], "client": {"name": "deck", "version": "1"}}),
+    );
+    deck.text();
+    deck.call("session.authenticate", json!({ "token": token }));
+    assert_eq!(deck.text()["result"]["scopes"], json!(["read", "control"]));
+    // A panel token cannot manage tokens.
+    deck.call("tokens.list", json!({}));
+    assert_eq!(deck.text()["error"]["data"]["kind"], "scope_denied");
+
+    cli.call("tokens.revoke", json!({"name": "Deck"}));
+    assert_eq!(cli.text()["result"], json!({}));
+    assert!(matches!(deck.recv(), Out::Closed(CloseReason::Revoked)));
+
+    drop(api);
+    ctl_tx.send(Ctl::Stop).unwrap();
+    control.join().unwrap();
+}

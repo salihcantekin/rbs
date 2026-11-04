@@ -53,6 +53,8 @@ rbs-codec = { path = "../rbs-codec" }
 rbs-api = { path = "../rbs-api" }
 # Remote control: the control API over WebSocket on loopback (src/remote_control.rs).
 rbs-api-ws = { path = "../rbs-api-ws" }
+# Remote control for programs of the same user, such as `rbs-cli token`: local IPC.
+rbs-api-ipc = { path = "../rbs-api-ipc" }
 # Remote control settings and the config directory, shared with rbs-cli.
 rbs-remote-settings = { path = "../rbs-remote-settings" }
 rbs-capture-test = { path = "../rbs-capture-test", optional = true }

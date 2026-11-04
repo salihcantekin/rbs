@@ -130,6 +130,23 @@ pub struct Unsubscribe {
     pub topics: Vec<Topic>,
 }
 
+/// `tokens.create`: a named access token for apps (ADR-0044 decision 9).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CreateToken {
+    /// Its name, unique; surrounding spaces are dropped.
+    pub name: String,
+    /// What it allows: `["read"]`, `["read", "control"]` or `["read", "control",
+    /// "admin"]` (the access levels the desktop app offers).
+    pub scopes: ScopeSet,
+}
+
+/// `tokens.revoke`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TokenRef {
+    /// The token's name.
+    pub name: String,
+}
+
 /// A request the control thread carries out.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Command {
@@ -164,6 +181,12 @@ pub enum Command {
     /// `events.subscribe`: answered on the control thread with the `seq` of the topics'
     /// state keys, read after the subscriber mask was set. The target never sees it.
     EventsSubscribe(Subscribe),
+    /// `tokens.list`.
+    TokensList,
+    /// `tokens.create`.
+    TokensCreate(CreateToken),
+    /// `tokens.revoke`.
+    TokensRevoke(TokenRef),
 }
 
 impl Command {
@@ -185,6 +208,9 @@ impl Command {
             Command::SettingsGet => "settings.get",
             Command::SettingsSet(_) => "settings.set",
             Command::EventsSubscribe(_) => "events.subscribe",
+            Command::TokensList => "tokens.list",
+            Command::TokensCreate(_) => "tokens.create",
+            Command::TokensRevoke(_) => "tokens.revoke",
         }
     }
 }
@@ -253,6 +279,9 @@ pub const METHODS: &[MethodInfo] = &[
     m("settings.set", Some(Scope::Admin)),
     m("events.subscribe", Some(Scope::Read)),
     m("events.unsubscribe", Some(Scope::Read)),
+    m("tokens.list", Some(Scope::Tokens)),
+    m("tokens.create", Some(Scope::Tokens)),
+    m("tokens.revoke", Some(Scope::Tokens)),
 ];
 
 const fn m(name: &'static str, scope: Option<Scope>) -> MethodInfo {
@@ -316,6 +345,12 @@ enum WireRequest {
     EventsSubscribe(Subscribe),
     #[serde(rename = "events.unsubscribe")]
     EventsUnsubscribe(Unsubscribe),
+    #[serde(rename = "tokens.list")]
+    TokensList(Empty),
+    #[serde(rename = "tokens.create")]
+    TokensCreate(CreateToken),
+    #[serde(rename = "tokens.revoke")]
+    TokensRevoke(TokenRef),
 }
 
 impl From<WireRequest> for Request {
@@ -341,6 +376,9 @@ impl From<WireRequest> for Request {
             WireRequest::SettingsGet(_) => Request::Command(C::SettingsGet),
             WireRequest::SettingsSet(p) => Request::Command(C::SettingsSet(p)),
             WireRequest::EventsSubscribe(p) => Request::Command(C::EventsSubscribe(p)),
+            WireRequest::TokensList(_) => Request::Command(C::TokensList),
+            WireRequest::TokensCreate(p) => Request::Command(C::TokensCreate(p)),
+            WireRequest::TokensRevoke(p) => Request::Command(C::TokensRevoke(p)),
         }
     }
 }
@@ -369,6 +407,9 @@ impl From<Request> for WireRequest {
                 C::SettingsGet => WireRequest::SettingsGet(Empty {}),
                 C::SettingsSet(p) => WireRequest::SettingsSet(p),
                 C::EventsSubscribe(p) => WireRequest::EventsSubscribe(p),
+                C::TokensList => WireRequest::TokensList(Empty {}),
+                C::TokensCreate(p) => WireRequest::TokensCreate(p),
+                C::TokensRevoke(p) => WireRequest::TokensRevoke(p),
             },
         }
     }
@@ -455,6 +496,43 @@ pub struct Subscribed {
     pub seq: SeqMap,
 }
 
+/// An access token as `tokens.list` shows it: never the token or its hash.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TokenInfo {
+    /// Its name.
+    pub name: String,
+    /// What it allows.
+    pub scopes: ScopeSet,
+}
+
+/// `tokens.list`' answer.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TokenList {
+    /// The tokens, oldest first.
+    pub tokens: Vec<TokenInfo>,
+}
+
+/// `tokens.create`'s answer: the only time the token exists in readable form.
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TokenCreated {
+    /// Its name as kept (trimmed).
+    pub name: String,
+    /// What it allows.
+    pub scopes: ScopeSet,
+    /// The token's text (`rbs1_` and 64 hex digits).
+    pub token: String,
+}
+
+impl std::fmt::Debug for TokenCreated {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("TokenCreated")
+            .field("name", &self.name)
+            .field("scopes", &self.scopes)
+            .field("token", &"<redacted>")
+            .finish()
+    }
+}
+
 /// A successful answer. Serialized as the JSON-RPC `result`; a client knows its type
 /// from the method it called, so each result type deserializes on its own.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -484,7 +562,11 @@ pub enum Response {
     Settings(Snapshot<Settings>),
     /// `events.subscribe`.
     Subscribed(Subscribed),
+    /// `tokens.list`.
+    Tokens(TokenList),
+    /// `tokens.create`.
+    TokenCreated(TokenCreated),
     /// Methods with nothing to return: `source.delete`, `edit.undo`, `edit.redo`,
-    /// `record.stop`, `events.unsubscribe`.
+    /// `record.stop`, `events.unsubscribe`, `tokens.revoke`.
     Done(Empty),
 }
