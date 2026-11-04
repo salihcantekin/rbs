@@ -532,8 +532,10 @@ export component LiveControlsPanel inherits Rectangle {
                 HorizontalLayout {
                     spacing: Tokens.space-2;
                     alignment: start;
+                    // Its own name, so assistive technology never confuses it with
+                    // the (disabled) End stream button above.
                     Button {
-                        text: @tr("End stream");
+                        text: @tr("Yes, end the stream");
                         kind: "live";
                         clicked => {
                             confirming = false;
