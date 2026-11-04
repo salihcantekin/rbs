@@ -341,10 +341,7 @@ fn streams_take_the_key_from_the_store_and_report_their_connection() {
 
     // RTMP without a saved key: nothing opens.
     host.send(Command::StartStream(request()));
-    match stream(&rx) {
-        StreamUpdate::NotStarted(why) => assert!(why.contains("No stream key"), "{why}"),
-        other => panic!("{other:?}"),
-    }
+    assert_eq!(stream(&rx), StreamUpdate::NoKey);
     assert!(server.sessions.lock().unwrap().is_empty());
 
     host.send(Command::SaveStreamKey(Some(rbs_transport::Secret::new(

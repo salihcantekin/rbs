@@ -162,7 +162,7 @@ fn main() -> ExitCode {
             Ok(Update::Stream(u)) => {
                 println!("{:.1} s: {u:?}", start.elapsed().as_secs_f64());
                 match u {
-                    StreamUpdate::NotStarted(_) => {
+                    StreamUpdate::NotStarted(_) | StreamUpdate::NoKey => {
                         ended = true;
                     }
                     StreamUpdate::Ended {

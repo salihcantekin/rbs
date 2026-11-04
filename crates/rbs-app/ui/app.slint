@@ -41,6 +41,10 @@ export global Shell {
     // 0 none, 1 layout locked, 2 other error with <error-detail>.
     in property <int> error-kind;
     in property <string> error-detail;
+    // The main window was closed while a stream runs: the frame asks first (U4).
+    in property <bool> quit-confirm;
+    callback quit-end-stream();
+    callback quit-keep();
 
     callback relayout(int /* window */, length, length);
     callback activate-tab(int /* window */, int /* stack */, int /* tab */);
@@ -432,6 +436,28 @@ component FrameBar inherits Rectangle {
             text: @tr("Panels");
             icon: IconName.chevron-down;
             clicked => { panels-menu.show(); }
+        }
+        // Closing while live ends the stream: asked first, in the frame (U4).
+        if Shell.quit-confirm: HorizontalLayout {
+            spacing: Tokens.space-2;
+            accessible-role: groupbox;
+            accessible-label: @tr("End the stream and quit?");
+            init => { keep-live.focus(); }
+            Text {
+                text: @tr("End the stream and quit?");
+                color: Theme.text-primary;
+                font-size: Tokens.type-body-size;
+                vertical-alignment: center;
+            }
+            Button {
+                text: @tr("End stream and quit");
+                kind: "live";
+                clicked => { Shell.quit-end-stream(); }
+            }
+            keep-live := Button {
+                text: @tr("Keep streaming");
+                clicked => { Shell.quit-keep(); }
+            }
         }
         // Network access (ADR-0046 decision 7): shown in every workspace while other
         // computers can connect, in words.

@@ -94,7 +94,14 @@ pub fn parse_server(url: &str) -> Result<Server, String> {
         Some((a, p)) => (a, p),
         None => (rest, ""),
     };
-    let authority = authority.split_once('?').map_or(authority, |(a, _)| a);
+    if rest.contains('?') {
+        // `?streamid=` or `?passphrase=` would put a secret in the URL, the settings
+        // file and the log: secrets go in the Stream key field only.
+        return Err(format!(
+            "{}: an address cannot have options after ?. Put the stream key or stream id in the Stream key field.",
+            url.split_once('?').map_or(url, |(u, _)| u)
+        ));
+    }
     let (host, port) = match authority.strip_prefix('[') {
         // An IPv6 address: `[::1]:port`.
         Some(v6) => match v6.split_once(']') {
@@ -312,7 +319,7 @@ mod tests {
                 Protocol::Srt,
                 "ingest.example.com",
             ),
-            ("srt://[::1]:9000?mode=caller", Protocol::Srt, "::1"),
+            ("srt://[::1]:9000", Protocol::Srt, "::1"),
         ];
         for (url, protocol, host) in ok {
             assert_eq!(
@@ -334,10 +341,16 @@ mod tests {
             ("rtmp://x:99999/app", "not a port"),
             ("srt://ingest.example.com", "no port"),
             ("srt://[::1:9000", "not closed"),
+            ("srt://x:9000?streamid=secret", "Stream key field"),
+            ("rtmp://x/app?key=secret", "Stream key field"),
         ];
         for (url, why) in bad {
             let e = parse_server(url).unwrap_err();
             assert!(e.contains(why), "{url}: {e}");
+            assert!(
+                !e.contains("secret"),
+                "the refusal never repeats a secret: {e}"
+            );
         }
     }
 

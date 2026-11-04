@@ -1261,9 +1261,9 @@ impl StudioUi {
             ui.st_note = why;
             ui.st_bad = true;
         };
-        if let Some(why) = &self.cannot_record {
-            let why = why.replace("Recording is", "Streaming is");
-            return fail(self, why);
+        if self.cannot_record.is_some() {
+            // Live controls already say why (the button is disabled).
+            return;
         }
         if let Some(why) = self.stream.missing() {
             return fail(self, why.to_owned());
@@ -1400,6 +1400,7 @@ impl StudioUi {
     fn push_stream(&self, g: &Studio<'_>) {
         let st = &self.stream;
         g.set_st_state(self.st_state);
+        g.set_st_connected(self.st_state == st_state::LIVE && self.st_link.connected);
         g.set_st_text(self.stream_text().into());
         g.set_st_bad(
             self.st_state == st_state::OFF && self.rec_state == rec_state::OFF && self.st_bad,
@@ -1465,12 +1466,18 @@ impl StudioUi {
             StreamUpdate::NotStarted(why) => {
                 self.st_state = st_state::OFF;
                 self.st_live = None;
-                if why.contains("No stream key is saved") {
-                    // The store has none (removed elsewhere): say so in the settings.
-                    self.stream.key_saved = false;
-                    self.save_stream();
-                }
                 self.st_note = format!("The stream did not start: {why}");
+                self.st_bad = true;
+            }
+            StreamUpdate::NoKey => {
+                self.st_state = st_state::OFF;
+                self.st_live = None;
+                // The store has none (removed outside RBS): the settings say so too.
+                self.stream.key_saved = false;
+                self.save_stream();
+                self.st_note =
+                    "The stream did not start: no stream key is saved. Enter it in Settings, Stream."
+                        .into();
                 self.st_bad = true;
             }
             StreamUpdate::Link(link) => {
@@ -1499,6 +1506,8 @@ impl StudioUi {
                     .take()
                     .map(|(_, since)| since.elapsed())
                     .unwrap_or_default();
+                // The user ended it (not the server or a failure).
+                let asked = self.st_state == st_state::ENDING;
                 self.st_state = st_state::OFF;
                 self.st_link = Link::default();
                 log(&format!(
@@ -1511,6 +1520,10 @@ impl StudioUi {
                     format!("{}:{:02}", secs / 60, secs % 60)
                 };
                 match failure {
+                    None if connects == 0 && asked => {
+                        self.st_note = "The stream ended before it reached the server.".into();
+                        self.st_bad = false;
+                    }
                     None if connects == 0 => {
                         self.st_note = "The stream ended without ever reaching the server.".into();
                         self.st_bad = true;

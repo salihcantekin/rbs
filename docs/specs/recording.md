@@ -106,7 +106,7 @@ impl OutputSettings {
 }
 impl RecordSettings { pub fn studio(&self) -> StudioSettings; pub fn output(&self) -> OutputSettings; }
 #[non_exhaustive] pub struct Updated { pub problems: Vec<BindProblem>, pub failed: Vec<StartFailure> }
-#[non_exhaustive] #[derive(Clone, Copy, Default, PartialEq, Eq)]
+#[non_exhaustive] #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct Link { pub connected: bool, pub connects: u64, pub reconnect_attempts: u64, pub transport_drops: u64 }
 
 impl Studio {

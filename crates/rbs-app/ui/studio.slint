@@ -101,6 +101,8 @@ export global Studio {
 
     // Streaming (Live controls, Settings > Stream): 0 off, 1 starting, 2 live, 3 ending.
     in property <int> st-state;
+    // Live and connected: the program reaches the server.
+    in property <bool> st-connected;
     // The stream's state or last outcome in words, for Live controls; `st-bad` marks a
     // problem.
     in property <string> st-text;
@@ -512,8 +514,12 @@ export component LiveControlsPanel inherits Rectangle {
         }
         if confirming: Rectangle {
             border-width: Tokens.size-border;
-            border-color: Theme.border-subtle;
+            border-color: Theme.border-strong;
             border-radius: Tokens.radius-sm;
+            accessible-role: groupbox;
+            accessible-label: @tr("End the stream?");
+            // Keep streaming, the safe answer, has the focus.
+            init => { keep.focus(); }
             VerticalLayout {
                 padding: Tokens.space-2;
                 spacing: Tokens.space-2;
@@ -534,7 +540,7 @@ export component LiveControlsPanel inherits Rectangle {
                             Studio.end-stream();
                         }
                     }
-                    Button {
+                    keep := Button {
                         text: @tr("Keep streaming");
                         clicked => { confirming = false; }
                     }
@@ -1397,7 +1403,8 @@ export component OutputsPanel inherits Rectangle {
                     padding-top: Tokens.space-2;
                     spacing: Tokens.space-1;
                     Text {
-                        text: Studio.st-state == 2 ? @tr("Stream · live now") : @tr("Stream");
+                        text: Studio.st-connected ? @tr("Stream · live now")
+                            : Studio.st-state != 0 ? @tr("Stream · connecting") : @tr("Stream");
                         color: Theme.text-primary;
                         font-size: Tokens.type-label-size;
                         font-weight: Tokens.type-label-weight;

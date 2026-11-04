@@ -379,6 +379,8 @@ pub enum StreamUpdate {
     },
     /// It could not start, in words; nothing streams.
     NotStarted(String),
+    /// The server needs a key and the key store has none; nothing streams.
+    NoKey,
     /// The connection changed: connected, lost, another attempt.
     Link(Link),
     /// It ended, asked to or because it failed for good.
@@ -1360,8 +1362,11 @@ impl Host {
         if self.recording.is_some() {
             return Err("Stop the recording to go live: one output runs at a time for now.".into());
         }
-        if let Some(why) = &self.cannot_record {
-            return Err(why.replace("Recording is", "Streaming is"));
+        if self.cannot_record.is_some() {
+            return Err(format!(
+                "Streaming is not available on {} yet: this system has no video encoder RBS can use.",
+                os_name()
+            ));
         }
         let key = self.keys.read().map_err(|e| {
             format!(
@@ -1370,7 +1375,7 @@ impl Host {
             )
         })?;
         if r.needs_key && key.is_none() {
-            return Err("No stream key is saved: enter it in Settings, Stream.".into());
+            return Ok(StreamUpdate::NoKey);
         }
         let mut out = match r.input {
             TransportInput::Container(c) => OutputSettings::new(r.url.clone(), c),
@@ -1431,8 +1436,10 @@ impl Host {
         let Some((_, last)) = &mut self.streaming else {
             return;
         };
+        // Only what the UI shows: a change of transport drops alone sends nothing.
+        let shown = |l: &Link| (l.connected, l.connects, l.reconnect_attempts);
         if let Some(link) = self.studio.link()
-            && link != *last
+            && shown(&link) != shown(last)
         {
             *last = link;
             notify(Update::Stream(StreamUpdate::Link(link)));

@@ -1179,6 +1179,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let ctx = ctx.clone();
         main.window().on_close_requested(move || {
             if let Ok(mut app) = ctx.app.try_borrow_mut() {
+                // Ending a stream cannot be undone: the frame asks first (U4).
+                if app.studio.st_state != studio_ui::st_state::OFF {
+                    app.main.global::<Shell>().set_quit_confirm(true);
+                    return slint::CloseRequestResponse::KeepWindowShown;
+                }
                 app.exiting = true;
                 if app.save_due {
                     app.persist_now();
@@ -1186,6 +1191,28 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
             let _ = slint::quit_event_loop();
             slint::CloseRequestResponse::HideWindow
+        });
+    }
+    {
+        let ctx = ctx.clone();
+        main.global::<Shell>().on_quit_keep(move || {
+            if let Ok(app) = ctx.app.try_borrow() {
+                app.main.global::<Shell>().set_quit_confirm(false);
+            }
+        });
+    }
+    {
+        // Quitting ends the stream: the studio host's shutdown ends it cleanly.
+        let ctx = ctx.clone();
+        main.global::<Shell>().on_quit_end_stream(move || {
+            if let Ok(mut app) = ctx.app.try_borrow_mut() {
+                app.exiting = true;
+                if app.save_due {
+                    app.persist_now();
+                }
+                let _ = app.main.hide();
+            }
+            let _ = slint::quit_event_loop();
         });
     }
 
