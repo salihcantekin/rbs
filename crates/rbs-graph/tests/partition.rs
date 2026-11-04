@@ -819,6 +819,10 @@ fn a_consumer_added_to_a_running_producer_starts_at_a_keyframe() {
         .unwrap();
     apply(&graph, &mut parts, &mut tick);
     run(&mut parts, &mut tick);
+    // The recorders' own mutexes: on macOS a std mutex allocates its pthread mutex on
+    // first use, which the second recorder's first packet would otherwise count.
+    drop(first.lock().unwrap());
+    drop(second.lock().unwrap());
     let info = allocation_counter::measure(|| {
         for _ in 0..20 {
             run(&mut parts, &mut tick);
