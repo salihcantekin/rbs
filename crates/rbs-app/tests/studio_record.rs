@@ -18,8 +18,8 @@ use rbs_app::studio_host::{
 use rbs_audio_io_test::TestAudioBackend;
 use rbs_capture_test::TestCaptureFactory;
 use rbs_codec::{
-    CreateError, EncodeError, EncoderChange, VideoEncoder, VideoEncoderConfig, VideoEncoderFactory,
-    caps as codec_caps,
+    CreateError, EncodeError, EncoderChange, RateControl, VideoEncoder, VideoEncoderConfig,
+    VideoEncoderFactory, caps as codec_caps,
 };
 use rbs_codec_mf::testing::FakeAacFactory;
 use rbs_core::capability::{CapabilitySet, CapabilityValue};
@@ -32,7 +32,7 @@ use rbs_core::time::TestClock;
 use rbs_engine::{Engine, EngineConfig};
 use rbs_gpu::{GpuContext, GpuError, GpuRequest};
 use rbs_mux::{Muxer, MuxerConfig, MuxerFactory, caps as mux_caps};
-use rbs_record::RecordAdapters;
+use rbs_record::{RecordAdapters, VideoSettings};
 
 /// Hang guard only: every wait ends as soon as its update arrives.
 const LIMIT: Duration = Duration::from_secs(20);
@@ -262,11 +262,15 @@ fn rows_where(rx: &Receiver<Update>, mut ok: impl FnMut(&[SourceRow]) -> bool) -
 }
 
 fn request(path: PathBuf, encoder: Option<&str>) -> RecordRequest {
+    let mut video = VideoSettings::default();
+    video.rate_control = RateControl::Cbr {
+        bitrate_bps: 6_000_000,
+    };
     RecordRequest {
         path,
         container: ContainerId::Matroska,
         encoder: encoder.map(str::to_owned),
-        video_bitrate_bps: 6_000_000,
+        video,
         audio_bitrate_bps: 128_000,
     }
 }

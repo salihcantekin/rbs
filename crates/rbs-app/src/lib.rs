@@ -5,10 +5,12 @@
 //! - [`platform`]: the platform's adapters (the composition root's list, P1).
 //! - [`canvas_profile`]: the canvas size and frame rate and their file.
 //! - [`record_profile`]: the recording's output settings and their file.
+//! - [`encoder_form`]: the encoder settings' choices, from the encoders' capabilities.
 //! - `native::MeterBridgeLayer` (macOS): audio meters as Core Animation layers, so meter
 //!   updates do not make the toolkit redraw the window (ADR-0035).
 
 pub mod canvas_profile;
+pub mod encoder_form;
 #[cfg(target_os = "macos")]
 pub mod native;
 pub mod platform;
