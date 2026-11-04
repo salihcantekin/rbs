@@ -1,6 +1,6 @@
 # ADR-0043: Final ticks are marked, and the video encoder flushes on them
 
-- Status: Proposed
+- Status: Accepted
 - Date: 2026-11-03
 - Deciders: Salih (owner)
 - Amends: [ADR-0029](0029-final-ticks-on-drain.md) (closes its "not an encoder end-of-stream flush" consequence)
@@ -25,7 +25,7 @@ Forces: `Node::process` is a hot path (P6, P15); P13 forbids per-iteration check
 
 - The last frame (and any frame held back) reaches the file at stop and at shutdown. Tests: `the_final_tick_flushes_frames_the_encoder_held_back`, `without_a_final_tick_held_frames_are_counted_as_lost` (rbs-nodes, a fake encoder that holds two frames), and the engine tests `shutdown_encodes_the_last_frame_render_wrote` and `a_branch_removed_with_apply_draining_drains_while_render_keeps_running` now check that exactly the final ticks are marked.
 - `Tick` grows from 16 to 24 bytes; it is built once per tick per partition and copied out of the context by the nodes that read it. Measured on the cloud container (Intel Xeon 2.8 GHz, 4 vCPU, Linux), `main` vs this change, alternating runs: `executor_tick` 6/20/68 nodes 151/562/1924 ns vs 152/565/2019 ns, 171/667/2350 vs 146/573/2024, 154/553/1917 vs 156/563/1923 (noise in both directions); `cross_thread` doorbell wake p50 59.1 vs 60.4 us, render to output at 60 fps with a quarter-frame offset mean 4471 vs 4495 us. No change beyond noise.
-- Hardware run still to do: a desktop-app recording on SC-PC must show `flush_lost = 0` and the last frame in the file.
+- Hardware (SC-PC, 2026-11-04, commit 31aeab4): NVENC and AMF MKV, NVENC MP4 and a desktop-app recording all report 0 packets lost in the video encoder.
 - Test `a_flush_past_the_per_tick_limit_counts_what_one_final_tick_cannot_pass` pins the limit of Decision 3: what one final tick cannot pass is counted, never silently dropped.
 - Node authors get one documented way to see the end of a stream without a new trait method.
 
@@ -50,3 +50,5 @@ Concerns:
 6. P15 sign-off missing -> `hot-path-review` checklist in the PR; the owner's sign-off and the SC-PC run are recorded before the status changes.
 7. `drain_with_final_tick` ignored `collect()` -> it asserts the swap completed.
 8. `Tick` equality changed -> stated in Decision 2.
+
+Owner sign-off (P15): Salih, 2026-11-04, after the SC-PC run. Accepted.
