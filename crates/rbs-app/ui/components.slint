@@ -384,7 +384,14 @@ export component TextField inherits Rectangle {
     in property <string> label;
     in-out property <string> text;
     in property <bool> enabled: true;
+    // Shows text the user can select and copy but not change (a secret shown once).
+    in property <bool> read-only: false;
     callback accepted(string);
+    // Puts the whole text on the clipboard.
+    public function copy-all() {
+        input.select-all();
+        input.copy();
+    }
     height: Tokens.size-control-md;
     border-radius: Tokens.radius-sm;
     border-width: Tokens.size-border;
@@ -397,6 +404,7 @@ export component TextField inherits Rectangle {
         height: parent.height;
         text <=> root.text;
         enabled: root.enabled;
+        read-only: root.read-only;
         single-line: true;
         vertical-alignment: center;
         color: root.enabled ? Theme.text-primary : Theme.text-disabled;
@@ -407,5 +415,5 @@ export component TextField inherits Rectangle {
         accepted => { root.accepted(self.text); }
     }
     property <bool> focused: input.has-focus;
-    changed focused => { if !focused { root.accepted(root.text); } }
+    changed focused => { if !focused && !root.read-only { root.accepted(root.text); } }
 }

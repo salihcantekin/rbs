@@ -10,6 +10,8 @@ use std::time::{Duration, Instant};
 use rbs_app::canvas_profile::{self, CanvasProfile, RATES, SIZES};
 use rbs_app::encoder_form::{Choices, EncoderForm};
 use rbs_app::record_profile::{self, AUDIO_KBPS, Format, RateMode, RecordProfile, VIDEO_KBPS};
+use rbs_app::remote_control::{RemoteOptions, RemoteServer};
+use rbs_app::remote_profile::{self, Access, RemoteProfile};
 use rbs_app::studio_host::{
     Command, EncoderInfo, EncoderOptions, RecordRequest, RecordingUpdate, SourceKind, SourceRow,
     SourceStatus, StudioHost, Target, Update,
@@ -19,7 +21,9 @@ use rbs_scene::model::SourceId;
 use rbs_ui::meter::{self, Meter, SCALE_MARKS_DB};
 use slint::{Model, ModelRc, SharedString, VecModel};
 
-use crate::ui::{KindData, MeterRow, ScaleMark, SourceData, StackData, Studio, TargetData};
+use crate::ui::{
+    KindData, MeterRow, ScaleMark, SourceData, StackData, Studio, TargetData, TokenRow,
+};
 
 /// Meter refresh while the Mixer is visible (U16: 30 Hz).
 pub const METER_PERIOD: Duration = Duration::from_millis(33);
@@ -103,12 +107,28 @@ pub struct StudioUi {
     canvas_restarting: bool,
     /// Why the canvas could not be saved, loaded or changed.
     canvas_note: String,
+    /// Remote control settings (Settings, Remote control), as saved.
+    remote: RemoteProfile,
+    /// The control API server while remote control is on and running; `None` otherwise,
+    /// so nothing of it exists while off (ADR-0013).
+    remote_server: Option<RemoteServer>,
+    /// Why remote control is not running although on.
+    remote_failure: Option<String>,
+    /// A problem with a token or the settings file.
+    remote_note: String,
+    /// The port field shows `remote_port_text`; bumped when Rust sets it.
+    remote_port_serial: u64,
+    remote_port_text: String,
+    /// A token just made, and its name: shown once, until dismissed.
+    new_token: Option<(String, rbs_api::Token)>,
+    tokens: Rc<VecModel<TokenRow>>,
 }
 
 impl StudioUi {
     pub fn new(config: &Path) -> Self {
         let (profile, why) = record_profile::load(config);
         let (canvas, canvas_why) = canvas_profile::load(config);
+        let (remote, remote_why) = remote_profile::load(config);
         let scale = SCALE_MARKS_DB
             .iter()
             .map(|db| ScaleMark {
@@ -116,7 +136,7 @@ impl StudioUi {
                 at: meter::position(*db),
             })
             .collect::<Vec<_>>();
-        Self {
+        let ui = Self {
             host: None,
             state: 0,
             failure: String::new(),
@@ -155,7 +175,19 @@ impl StudioUi {
             canvas_note: canvas_why
                 .map(|w| format!("The saved canvas was not used: {w}"))
                 .unwrap_or_default(),
-        }
+            remote_port_text: remote.port.to_string(),
+            remote,
+            remote_server: None,
+            remote_failure: None,
+            remote_note: remote_why
+                .map(|w| format!("The saved remote control settings were not used, so remote control is off: {w}"))
+                .unwrap_or_default(),
+            remote_port_serial: 1,
+            new_token: None,
+            tokens: Rc::new(VecModel::default()),
+        };
+        ui.refresh_tokens();
+        ui
     }
 
     /// Gives a window's `Studio` global the shared models (once per window).
@@ -165,6 +197,7 @@ impl StudioUi {
         g.set_targets(ModelRc::from(self.targets.clone()));
         g.set_meters(ModelRc::from(self.meters.clone()));
         g.set_scale(ModelRc::from(self.scale.clone()));
+        g.set_rc_tokens(ModelRc::from(self.tokens.clone()));
     }
 
     /// Pushes the scalar state into a window's `Studio` global.
@@ -274,12 +307,220 @@ impl StudioUi {
         );
         g.set_canvas_restarting(self.canvas_restarting);
         g.set_canvas_note(self.canvas_note.as_str().into());
+        self.push_remote(g);
         g.set_picture_panel(picture_panel.into());
         g.set_state(self.state);
         g.set_failure(self.failure.as_str().into());
         g.set_targets_kind(self.targets_kind);
         g.set_preview_state(preview_state);
         g.set_deleted(self.deleted.as_str().into());
+    }
+
+    fn push_remote(&self, g: &Studio<'_>) {
+        let r = &self.remote;
+        g.set_rc_enabled(r.enabled);
+        if g.get_rc_port_serial() != self.remote_port_serial as i32 {
+            g.set_rc_port(self.remote_port_text.as_str().into());
+            g.set_rc_port_serial(self.remote_port_serial as i32);
+        }
+        let (status, bad) = self.remote_status();
+        g.set_rc_status(status.into());
+        g.set_rc_status_bad(bad);
+        g.set_rc_accesses(strings(Access::ALL.iter().map(|a| a.label().to_owned())));
+        g.set_rc_access_hints(strings(Access::ALL.iter().map(|a| a.hint().to_owned())));
+        let (name, token) = self
+            .new_token
+            .as_ref()
+            .map(|(n, t)| (n.as_str(), t.expose()))
+            .unwrap_or_default();
+        g.set_rc_new_token(token.into());
+        g.set_rc_new_token_name(name.into());
+        g.set_rc_note(self.remote_note.as_str().into());
+    }
+
+    /// What the Remote control section says about the server, and whether it is a
+    /// problem.
+    fn remote_status(&self) -> (String, bool) {
+        if !self.remote.enabled {
+            return (String::new(), false);
+        }
+        if let Some(why) = &self.remote_failure {
+            return (
+                format!(
+                    "Remote control is not running: {why} Choose another port, or turn remote control off."
+                ),
+                true,
+            );
+        }
+        if self.remote_server.is_none() {
+            return ("Remote control starts with the studio.".into(), false);
+        }
+        let status = if self.remote.tokens.is_empty() {
+            format!(
+                "On. Apps on this computer connect at {}. Create an access token below for each app.",
+                self.remote.address()
+            )
+        } else {
+            format!(
+                "On. Apps on this computer connect at {}. Other computers cannot connect.",
+                self.remote.address()
+            )
+        };
+        (status, false)
+    }
+
+    /// Starts or stops the control API server to match the settings: on while remote
+    /// control is on and the studio's control thread runs, nothing at all otherwise.
+    pub fn sync_remote(&mut self) {
+        let want = self.remote.enabled && self.host.is_some();
+        if !want {
+            self.stop_remote();
+            self.remote_failure = None;
+            return;
+        }
+        if self.remote_server.is_some() {
+            return;
+        }
+        let Some(host) = &self.host else {
+            return;
+        };
+        let options = RemoteOptions {
+            control_waker: Box::new(host.api_waker()),
+            audit: Box::new(|a| log(&format!("remote control: {a:?}"))),
+        };
+        match RemoteServer::start_on_port(self.remote.port, self.remote.store(), options) {
+            Ok((server, endpoint)) => {
+                host.attach_api(endpoint);
+                log(&format!("remote control on at {}", self.remote.address()));
+                self.remote_server = Some(server);
+                self.remote_failure = None;
+            }
+            Err(e) => {
+                log(&format!("remote control did not start: {e}"));
+                self.remote_failure = Some(format!("{e}."));
+            }
+        }
+    }
+
+    /// Stops the control API server, if it runs: connected apps are disconnected.
+    pub fn stop_remote(&mut self) {
+        if let Some(server) = self.remote_server.take() {
+            if let Some(h) = &self.host {
+                h.detach_api();
+            }
+            drop(server);
+            log("remote control off");
+        }
+    }
+
+    pub fn set_remote_enabled(&mut self, on: bool) {
+        if self.remote.enabled == on {
+            return;
+        }
+        self.remote.enabled = on;
+        self.save_remote();
+        self.sync_remote();
+    }
+
+    pub fn set_remote_port(&mut self, text: &str) {
+        match remote_profile::parse_port(text) {
+            Ok(port) => {
+                self.remote_port_text = port.to_string();
+                if port != self.remote.port {
+                    self.remote.port = port;
+                    self.save_remote();
+                    // Listen on the new port: connected apps reconnect there.
+                    self.stop_remote();
+                    self.remote_failure = None;
+                    self.sync_remote();
+                }
+            }
+            Err(why) => {
+                self.remote_note = format!("Port \"{}\" was not used. {why}", text.trim());
+                self.remote_port_text = self.remote.port.to_string();
+            }
+        }
+        // The field shows the port in use, also after a refused one.
+        self.remote_port_serial += 1;
+    }
+
+    pub fn create_token(&mut self, name: &str, access: i32) {
+        let access = Access::ALL
+            .get(access as usize)
+            .copied()
+            .unwrap_or(Access::Control);
+        match self.remote.create_token(name, access) {
+            Ok(token) => {
+                let name = self
+                    .remote
+                    .tokens
+                    .last()
+                    .map(|t| t.name.clone())
+                    .unwrap_or_default();
+                self.new_token = Some((name, token));
+                self.save_remote();
+                self.tokens_changed();
+            }
+            Err(why) => self.remote_note = why,
+        }
+    }
+
+    pub fn revoke_token(&mut self, i: i32) {
+        let Ok(i) = usize::try_from(i) else {
+            return;
+        };
+        if let Some(name) = self.remote.revoke(i) {
+            if self.new_token.as_ref().is_some_and(|(n, _)| *n == name) {
+                self.new_token = None;
+            }
+            self.save_remote();
+            self.tokens_changed();
+        }
+    }
+
+    pub fn dismiss_new_token(&mut self) {
+        self.new_token = None;
+    }
+
+    /// The token list changed: the server accepts the new set (apps using a removed
+    /// token are disconnected) and the list shows it.
+    fn tokens_changed(&mut self) {
+        if let Some(server) = &self.remote_server {
+            server.set_tokens(self.remote.store());
+        }
+        self.refresh_tokens();
+    }
+
+    /// Fills the token list from the settings.
+    pub fn refresh_tokens(&self) {
+        let rows = self
+            .remote
+            .tokens
+            .iter()
+            .map(|t| TokenRow {
+                name: t.name.as_str().into(),
+                access: Access::of(t.scopes)
+                    .map_or_else(
+                        || {
+                            t.scopes
+                                .iter()
+                                .map(|s| s.name())
+                                .collect::<Vec<_>>()
+                                .join(", ")
+                        },
+                        |a| a.label().to_owned(),
+                    )
+                    .into(),
+            })
+            .collect();
+        set_rows(&self.tokens, rows);
+    }
+
+    fn save_remote(&mut self) {
+        self.remote_note = match remote_profile::save(&self.config, &self.remote) {
+            Ok(()) => String::new(),
+            Err(e) => format!("The remote control settings could not be saved: {e}"),
+        };
     }
 
     fn send(&self, c: Command) {

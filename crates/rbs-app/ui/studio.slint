@@ -16,6 +16,8 @@ export struct MeterRow {
     peak: float, peak-zone: int, clipped: bool, value: string,
 }
 export struct ScaleMark { label: string, at: float }
+// One access token in the Remote control section: its name and what it allows.
+export struct TokenRow { name: string, access: string }
 
 export global Studio {
     // 0 starting, 1 running, 2 failed (`failure` says why).
@@ -127,6 +129,32 @@ export global Studio {
     in property <string> canvas-note;
     callback set-canvas-size(int);
     callback set-canvas-rate(int);
+
+    // Remote control (Settings, Remote control): other apps control RBS through the
+    // control API. Off by default.
+    in property <bool> rc-enabled;
+    // The port field's text; set by Rust on load and when a typed port is refused.
+    in property <string> rc-port;
+    // Bumped by Rust when `rc-port` is set from outside the field.
+    in property <int> rc-port-serial;
+    // Where apps connect, or why remote control is not running; `rc-status-bad` marks a
+    // problem.
+    in property <string> rc-status;
+    in property <bool> rc-status-bad;
+    in property <[TokenRow]> rc-tokens;
+    // Access choices and the one-line explanation of each.
+    in property <[string]> rc-accesses;
+    in property <[string]> rc-access-hints;
+    // A token just made: shown once, until dismissed. Empty when none.
+    in property <string> rc-new-token;
+    in property <string> rc-new-token-name;
+    // A problem with a token or the settings file; empty when none.
+    in property <string> rc-note;
+    callback set-rc-enabled(bool);
+    callback set-rc-port(string);
+    callback create-token(string /* name */, int /* access */);
+    callback revoke-token(int);
+    callback dismiss-new-token();
 }
 
 // The add-source picker: a kind, then what it captures. Keyboard: arrows are not
@@ -733,6 +761,158 @@ export component VideoSettings inherits Rectangle {
     }
     preferred-height: form.preferred-height;
     min-height: form.min-height;
+}
+
+// Remote control (glossary): the Remote control section of the Settings window (U17).
+// Apps on this computer, such as Stream Deck or the user's scripts, control RBS through
+// the control API with an access token each. Changes apply at once.
+export component RemoteControlSettings inherits Rectangle {
+    // The access picked for the next token: 1 Control, the default.
+    property <int> access: 1;
+    form := VerticalLayout {
+        spacing: Tokens.space-3;
+        alignment: start;
+        VerticalLayout {
+            spacing: Tokens.space-1;
+            Checkbox {
+                text: @tr("Allow remote control");
+                checked: Studio.rc-enabled;
+                toggled(on) => { Studio.set-rc-enabled(on); }
+            }
+            Hint { text: @tr("Lets apps on this computer, such as Stream Deck or your own scripts, control RBS. Off by default."); }
+        }
+        if Studio.rc-status != "": Text {
+            text: Studio.rc-status;
+            color: Studio.rc-status-bad ? Theme.state-error : Theme.text-secondary;
+            font-size: Tokens.type-body-size;
+            wrap: word-wrap;
+        }
+        Field {
+            label: @tr("Port");
+            port := TextField {
+                label: @tr("Port");
+                text: Studio.rc-port;
+                accepted(t) => { Studio.set-rc-port(t); }
+            }
+            Hint { text: @tr("The port apps connect to. Changing it disconnects connected apps. 4456 is the default."); }
+        }
+        Rectangle { height: Tokens.size-border; background: Theme.border-subtle; }
+        Text {
+            text: @tr("Access tokens");
+            color: Theme.text-primary;
+            font-size: Tokens.type-label-size;
+            font-weight: Tokens.type-label-weight;
+        }
+        Hint { text: @tr("Each app needs an access token. Make one per app, so you can revoke it alone. A token is shown only once."); }
+        if Studio.rc-new-token != "": Rectangle {
+            border-radius: Tokens.radius-sm;
+            border-width: Tokens.size-border;
+            border-color: Theme.border-focus;
+            accessible-role: groupbox;
+            accessible-label: @tr("New access token for {}", Studio.rc-new-token-name);
+            created := VerticalLayout {
+                padding: Tokens.space-3;
+                spacing: Tokens.space-2;
+                Text {
+                    text: @tr("Access token for {}. Copy it into the app now: it is not shown again.", Studio.rc-new-token-name);
+                    color: Theme.text-primary;
+                    font-size: Tokens.type-body-size;
+                    wrap: word-wrap;
+                }
+                secret := TextField {
+                    label: @tr("Access token for {}", Studio.rc-new-token-name);
+                    text: Studio.rc-new-token;
+                    read-only: true;
+                }
+                HorizontalLayout {
+                    spacing: Tokens.space-2;
+                    alignment: start;
+                    Button {
+                        text: @tr("Copy");
+                        kind: "primary";
+                        clicked => { secret.copy-all(); }
+                    }
+                    Button {
+                        text: @tr("Done");
+                        clicked => { Studio.dismiss-new-token(); }
+                    }
+                }
+            }
+        }
+        Field {
+            label: @tr("Name");
+            name := TextField {
+                label: @tr("Name");
+            }
+        }
+        Field {
+            label: @tr("Access");
+            SegmentedControl {
+                label: @tr("Access");
+                options: Studio.rc-accesses;
+                index: root.access;
+                selected(i) => { root.access = i; }
+            }
+            Hint { text: Studio.rc-access-hints[root.access]; }
+        }
+        HorizontalLayout {
+            alignment: start;
+            Button {
+                text: @tr("Create access token");
+                clicked => { Studio.create-token(name.text, root.access); }
+            }
+        }
+        if Studio.rc-note != "": Text {
+            text: Studio.rc-note;
+            color: Theme.state-error;
+            font-size: Tokens.type-body-size;
+            wrap: word-wrap;
+        }
+        VerticalLayout {
+            spacing: Tokens.space-2;
+            accessible-role: list;
+            accessible-label: @tr("Access tokens");
+            if Studio.rc-tokens.length == 0: Text {
+                text: @tr("No access tokens yet.");
+                color: Theme.text-secondary;
+                font-size: Tokens.type-body-size;
+            }
+            for t[i] in Studio.rc-tokens: HorizontalLayout {
+                spacing: Tokens.space-2;
+                accessible-role: list-item;
+                accessible-label: @tr("{}, {}", t.name, t.access);
+                VerticalLayout {
+                    alignment: center;
+                    horizontal-stretch: 1;
+                    Text {
+                        text: t.name;
+                        color: Theme.text-primary;
+                        font-size: Tokens.type-body-size;
+                        overflow: elide;
+                    }
+                    Text {
+                        text: t.access;
+                        color: Theme.text-secondary;
+                        font-size: Tokens.type-caption-size;
+                    }
+                }
+                Button {
+                    horizontal-stretch: 0;
+                    text: @tr("Revoke");
+                    accessible-name: @tr("Revoke {}", t.name);
+                    clicked => { Studio.revoke-token(i); }
+                }
+            }
+        }
+    }
+    preferred-height: form.preferred-height;
+    min-height: form.min-height;
+    // The field shows what Rust set last; typing in it is never overwritten by a sync.
+    property <int> port-serial: Studio.rc-port-serial;
+    changed port-serial => { port.text = Studio.rc-port; }
+    // A token was made: the name field is ready for the next one.
+    property <string> made: Studio.rc-new-token;
+    changed made => { if made != "" { name.text = ""; } }
 }
 
 // Outputs: what each output will do, in one line each, and the way to its settings.

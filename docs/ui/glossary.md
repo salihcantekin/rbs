@@ -24,3 +24,5 @@ UI text uses these terms and no synonyms (rule U13). Code may use different inte
 | Shortcut | A key combination for a command; "global shortcut" when it works outside RBS | Hotkey | - |
 | Stinger | A transition that plays a video over the change | Video transition | Stinger transition node |
 | Output profile | A saved set of output settings (service, encoder, bitrate, recording format). It holds no scenes and no panel layout | Profile, workspace | Output configuration |
+| Remote control | Letting other apps (Stream Deck, panels, scripts) control and watch RBS through the control API. Off by default | API server, WebSocket server | Control API server (`rbs-api`, `rbs-api-ws`) |
+| Access token | A secret one app uses for remote control, with a name and an access level (View only, Control, Full control). Shown once; can be revoked | Password, key, API key | `rbs_api::Token` with its scopes |
