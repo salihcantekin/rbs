@@ -10,6 +10,8 @@
 //! - [`control`]: the control-thread side: [`ControlTarget`], [`ControlEndpoint`],
 //!   [`EventPublisher`].
 //! - [`transport`]: the [`ControlTransport`] port and the bounded [`TransportInbox`].
+//! - `conformance` (feature `conformance`): the transport conformance suite every
+//!   adapter runs.
 //! - [`thread`]: the API thread ([`ApiServer`]), which exists only while remote control
 //!   is on.
 //!
@@ -17,6 +19,8 @@
 //! (principle P1). When remote control is off nothing here runs (ADR-0013).
 
 pub mod codec;
+#[cfg(feature = "conformance")]
+pub mod conformance;
 pub mod control;
 pub mod error;
 pub mod event;
