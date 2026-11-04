@@ -272,7 +272,7 @@ fn frames_and_packets_cross_three_worker_threads() {
 }
 
 #[test]
-fn no_worker_starts_before_every_part_of_an_apply_is_prepared() {
+fn an_apply_starts_consumers_before_the_partitions_feeding_them() {
     // A slow device open in a downstream partition (a cold microphone, an encoder
     // session) must not leave render exporting into a queue nobody takes yet.
     let clock = TestClock::new();
@@ -322,12 +322,85 @@ fn no_worker_starts_before_every_part_of_an_apply_is_prepared() {
 
     let applied = engine.apply(&graph).unwrap();
     assert!(applied.errors.is_empty(), "{:?}", applied.errors);
-    // Prepared in pipeline order, and no worker ran while any of them prepared.
+    // Consumers first: each partition prepared while every partition it feeds already
+    // ran its new schedule, and none that feeds it did.
     assert_eq!(
         *seen.lock().unwrap(),
-        vec![("source", 0), ("encoder", 0), ("sink", 0)]
+        vec![("sink", 0), ("encoder", 1), ("source", 2)]
     );
     // Every partition runs its new schedule once `apply` returns (invariant 4).
+    assert_eq!(engine.workers(), 3);
+    let _ = engine.shutdown();
+}
+
+#[test]
+fn a_branch_added_to_a_running_render_starts_downstream_first() {
+    // The studio case: render already runs (preview); a recording adds an export in
+    // render and an encoder and an output. Render's worker swaps its new schedule as
+    // soon as it is sent, so it must be sent last.
+    let clock = TestClock::new();
+    let mut engine = Engine::with_clock(Arc::new(clock), EngineConfig::default());
+    let logs: [Arc<TickLog>; 3] = Default::default();
+    engine
+        .add_partition::<Ticks>(RENDER, Arc::clone(&logs[0]), (), cadence())
+        .unwrap();
+    engine
+        .add_partition::<Ticks>(
+            ENCODER,
+            Arc::clone(&logs[1]),
+            (),
+            Pacing::cadence_after(frames(), ENCODER_OFFSET),
+        )
+        .unwrap();
+    engine
+        .add_partition::<Ticks>(OUTPUT, Arc::clone(&logs[2]), (), Pacing::output())
+        .unwrap();
+    let mut graph = GraphDescription::new();
+    let canvas = TestNode::new(Role::Source, "canvas");
+    let preview = TestNode::new(Role::VideoSink, "preview");
+    let canvas_id = add(&mut graph, &canvas, RENDER);
+    let preview_id = add(&mut graph, &preview, RENDER);
+    graph.connect(canvas_id, "out", preview_id, "in").unwrap();
+    engine
+        .adopt::<Ticks>(RENDER, canvas_id, Box::new(canvas))
+        .unwrap();
+    engine
+        .adopt::<Ticks>(RENDER, preview_id, Box::new(preview))
+        .unwrap();
+    let applied = engine.apply(&graph).unwrap();
+    assert!(applied.errors.is_empty(), "{:?}", applied.errors);
+    assert_eq!(engine.workers(), 1);
+
+    let downstream: Vec<_> = [ENCODER, OUTPUT]
+        .iter()
+        .map(|p| engine.worker_stats(*p).unwrap())
+        .collect();
+    let seen = Arc::new(AtomicU64::new(u64::MAX));
+    let hook = {
+        let seen = Arc::clone(&seen);
+        move || {
+            let starts: u64 = downstream.iter().map(|s| s.starts()).sum();
+            seen.store(starts, Ordering::Relaxed);
+        }
+    };
+    let export = TestNode::new(Role::Source, "export").preparing_with(hook);
+    let encoder = TestNode::new(Role::Encoder, "encoder");
+    let sink = TestNode::new(Role::PacketSink, "sink");
+    let ids = (
+        add(&mut graph, &export, RENDER),
+        add(&mut graph, &encoder, ENCODER),
+        add(&mut graph, &sink, OUTPUT),
+    );
+    graph.connect(ids.0, "out", ids.1, "in").unwrap();
+    graph.connect(ids.1, "out", ids.2, "in").unwrap();
+    engine.adopt::<Ticks>(RENDER, ids.0, Box::new(export)).unwrap();
+    engine.adopt::<Ticks>(ENCODER, ids.1, Box::new(encoder)).unwrap();
+    engine.adopt::<Ticks>(OUTPUT, ids.2, Box::new(sink)).unwrap();
+    let applied = engine.apply(&graph).unwrap();
+    assert!(applied.errors.is_empty(), "{:?}", applied.errors);
+    // When render prepared its part (and before its worker could swap it in), the
+    // encoder's and the output's workers ran already.
+    assert_eq!(seen.load(Ordering::Relaxed), 2);
     assert_eq!(engine.workers(), 3);
     let _ = engine.shutdown();
 }
