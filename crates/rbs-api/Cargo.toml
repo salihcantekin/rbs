@@ -23,5 +23,10 @@ subtle = "2.6"
 # OS randomness for tokens and the server instance id.
 getrandom = "0.3"
 
+[features]
+# The transport conformance suite (`rbs_api::conformance`); adapter crates enable it in
+# their dev-dependencies.
+conformance = []
+
 [lints]
 workspace = true

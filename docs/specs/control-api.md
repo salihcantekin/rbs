@@ -1,7 +1,7 @@
 # Spec: Control API
 
 - Status: Draft
-- Owner crate(s): `rbs-api` (first slice implemented, see "Implementation status"), `rbs-api-ws` (planned adapter), `rbs-api-ipc` (planned adapter)
+- Owner crate(s): `rbs-api` (first slice implemented, see "Implementation status"), `rbs-api-ws` (loopback WebSocket adapter implemented; TLS planned), `rbs-api-ipc` (planned adapter)
 - Related ADRs: [0008](../adr/0008-ui-as-api-client.md), [0013](../adr/0013-zero-cost-when-unused.md), [0021](../adr/0021-scene-collection-model.md), [0035](../adr/0035-meters-as-native-layers.md), [0044](../adr/0044-control-api-protocol-and-security.md)
 
 ## Purpose
@@ -21,12 +21,12 @@ The single way to control and observe the engine, used by the desktop UI, remote
 | Part | Crate | Depends on |
 | --- | --- | --- |
 | Types, JSON codec (behind `Codec`), session state machine, scopes, subscriptions, limits, `ControlTarget` and `ControlTransport` traits, API thread | `rbs-api` | `rbs-core`, `serde`, `serde_json`, `sha2`, `subtle`, `getrandom`; `schemars` only with the `schema` feature. No engine, adapter, network, IPC, async-runtime or UI crate |
-| WebSocket transport, TLS | `rbs-api-ws` | `rbs-api`, WebSocket and TLS crates, optionally an async runtime |
+| WebSocket transport, TLS | `rbs-api-ws` | `rbs-api`, `polling` (readiness), `httparse` (upgrade request), `sha1` (`Sec-WebSocket-Accept`); a TLS crate when network access lands. Framing is its own (RFC 6455 server side), so a message over the limit can be skipped without buffering it and the connection kept; no async runtime |
 | Local IPC transport (Unix domain socket, named pipe) | `rbs-api-ipc` | `rbs-api`, OS IPC crates |
 | In-process path for the desktop app | `rbs-api` (channel, no serialization) | - |
 | Which transports run; the `ControlTarget` implementation | `rbs-app`, `rbs-cli` | everything |
 
-`ControlTransport` adapters accept connections, exchange whole UTF-8 messages and report the peer: transport kind, loopback or not, `Origin` and `Host` headers when present, OS user for IPC. They run their own I/O and push `Connected`, `Message` and `Closed` events into a bounded inbox owned by `rbs-api`; `rbs-api` sends through a per-connection handle. Every adapter passes the transport conformance suite.
+`ControlTransport` adapters accept connections, exchange whole UTF-8 messages and report the peer: transport kind, loopback or not, `Origin` and `Host` headers when present, OS user for IPC. They run their own I/O and push `Connected`, `Message` and `Closed` events into a bounded inbox owned by `rbs-api`; `rbs-api` sends through a per-connection handle. Every adapter passes the transport conformance suite (`rbs_api::conformance`, feature `conformance`).
 
 ## Threads
 
@@ -46,7 +46,9 @@ The single way to control and observe the engine, used by the desktop UI, remote
 
 ## Wire protocol
 
-JSON-RPC 2.0 over UTF-8 JSON text messages. WebSocket subprotocol: `rbs.v<major>` (version 1: `rbs.v1`).
+JSON-RPC 2.0 over UTF-8 JSON text messages. WebSocket subprotocol: `rbs.v<major>` (version 1: `rbs.v1`). A client that offers subprotocols must offer `rbs.v1` (the upgrade is refused otherwise); a client that offers none speaks version 1. Binary messages close the connection with 1003.
+
+WebSocket close codes: 1001 when the server stops, 1009 for a message before authentication over the limit, and in the private range `handshake_timeout` 4001, `auth_failed` 4002, `unsupported_protocol` 4003, `too_many_connections` 4004, `revoked` 4005, `too_slow` 4006. The close frame's reason text is that name. Protocol violations close with 1002 (1007 for text that is not UTF-8).
 
 - **Request:** `{"jsonrpc":"2.0","id":7,"method":"record.start","params":{...}}`. Method names are `namespace.verb`.
 - **Response:** `{"jsonrpc":"2.0","id":7,"result":{...}}` or `{"jsonrpc":"2.0","id":7,"error":{"code":-32010,"message":"...","data":{"kind":"scope_denied", ...}}}`. `data.kind` is the stable machine-readable error; `message` is for logs.
@@ -209,8 +211,9 @@ An OBS WebSocket (v5) compatibility layer (subset) is a separate optional adapte
 
 - `rbs-api` implements the types and JSON codec of the first slice, tokens and the token store, scopes, the session state machine (`Server`), the control-thread side (`ControlTarget`, `ControlEndpoint`, `EventPublisher` with `seq` per state key and the event slots), the `ControlTransport` port with the bounded `TransportInbox`, the shared `Origin`/`Host` check for WebSocket adapters (`UpgradePolicy`), and the API thread (`ApiServer`).
 - `rbs-app` serves the API from its control thread (`StudioHost`): an `ApiTarget` implements `ControlTarget` for studio, source, edit, output, record and settings commands and publishes `source.changed`, `canvas.changed`, `settings.changed` and `record.state` events through one `EventPublisher`. API requests are drained after the UI's own commands. The control thread holds the authoritative copy of the recording profile; the UI sends it each change, and an API `settings.set` comes back to the UI, which still writes the settings files. Nothing in `main.rs` starts an `ApiServer` yet, so the API stays off (no settings switch until a transport exists).
-- Not yet: `edit.redo` (answers `failed` until the scene collection keeps a redo stack); concurrent settings edits from the UI and an API client are last-writer-wins, and an in-progress UI edit is replaced without notice;
-  the `schema` feature with the generated JSON Schema, its snapshot test and difference classifier (`api.describe` lists methods, scopes and topics until then); the transport conformance suite (lands with the first adapter, `rbs-api-ws`); `stats` sampling; `ui.*` routing; the U20 test, which needs the UI's own commands on `rbs-api` too; the idle-cost check by thread count (by construction today: off constructs nothing; on without a session sets no deadline, tested).
+- `rbs-api-ws` serves the API over WebSocket on loopback: one I/O thread on the OS readiness poller (no periodic wake-up), the HTTP upgrade completed only after the `Origin`/`Host` check, its own RFC 6455 framing that skips a message over the connection's limit as it arrives, bounded output per connection (`Full`, then `Writable`; a connection whose output is backed up is not read, so pings from a peer that never reads cannot grow it), an upgrade deadline (10 s), a cap on connections still sending their upgrade (16) and on sockets in any state (128), refusals answered before the socket closes, and accepting paused briefly after an accept error such as running out of file descriptors. A non-loopback address is refused at start until TLS lands. It passes the transport conformance suite in `rbs_api::conformance`. Nothing in `rbs-app` or `rbs-cli` starts it yet.
+- Not yet: TLS and network access; `edit.redo` (answers `failed` until the scene collection keeps a redo stack); concurrent settings edits from the UI and an API client are last-writer-wins, and an in-progress UI edit is replaced without notice;
+  the `schema` feature with the generated JSON Schema, its snapshot test and difference classifier (`api.describe` lists methods, scopes and topics until then); `stats` sampling; `ui.*` routing; the U20 test, which needs the UI's own commands on `rbs-api` too; the idle-cost check by thread count (by construction today: off constructs nothing; on without a session sets no deadline, tested).
 
 ## Open questions
 
@@ -218,4 +221,3 @@ An OBS WebSocket (v5) compatibility layer (subset) is a separate optional adapte
 - Stable addressing for layout commands. `rbs_ui::LayoutCommand` addresses windows and tab stacks by index, which shifts after each change; it is internal to the desktop shell. The `ui.*` commands for remote callers address panels by panel id (open, close, float, dock, move to an edge) and need stable window ids before they can target a window or stack.
 - Where the token store lives (settings file with user-only permissions, or the OS credential store).
 - TLS certificates for network access: a generated self-signed certificate with a fingerprint the user pins, or a user-supplied one; channel binding (RFC 9266) if pinning proves insufficient.
-- Which WebSocket crate and runtime `rbs-api-ws` uses (adapter choice, decided in its PR).

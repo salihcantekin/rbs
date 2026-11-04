@@ -1,0 +1,27 @@
+[package]
+name = "rbs-api-ws"
+description = "WebSocket transport adapter for the RBS control API (ADR-0044): loopback, RFC 6455 framing, Origin and Host checks before the upgrade, one I/O thread."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+rbs-api = { path = "../rbs-api" }
+# Readiness polling (epoll, kqueue, IOCP) for the one I/O thread, with a waker for the
+# API thread. MIT or Apache-2.0; already in the workspace's lock file through the UI.
+polling = "3"
+# Parses the HTTP upgrade request. MIT or Apache-2.0, no dependencies.
+httparse = "1"
+# SHA-1 for `Sec-WebSocket-Accept` (RFC 6455 section 4.2.2); RustCrypto, the same
+# family as `sha2` in rbs-api.
+sha1 = "0.10"
+
+[dev-dependencies]
+rbs-api = { path = "../rbs-api", features = ["conformance"] }
+serde_json = "1"
+
+[lints]
+workspace = true

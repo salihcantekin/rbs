@@ -691,7 +691,14 @@ fn tick_indices_never_repeat_across_worker_restarts() {
         assert_eq!(stats.starts(), round);
         frames(&engine, 3);
         // The worker's next index is the runtime's: the tick it ran last, plus one.
-        assert_eq!(stats.next_index(), log.next());
+        // `stats` counts a tick after it ran and the log during it, so wait for the
+        // count instead of reading it once.
+        assert!(
+            eventually(LIMIT, || stats.next_index() == log.next()),
+            "next index {} after the tick logged {}",
+            stats.next_index(),
+            log.next()
+        );
         // Standby: the schedule is empty and the worker stops. The clock does not
         // move, so the restarted worker finds the tick it last ran still current.
         graph.set_state(ids.1, Lifecycle::Standby).unwrap();
