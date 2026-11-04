@@ -41,7 +41,7 @@ use objc2_core_audio::{
     kAudioObjectPropertyScopeInput, kAudioObjectPropertyScopeOutput, kAudioObjectSystemObject,
     kAudioProcessPropertyBundleID, kAudioProcessPropertyIsRunningOutput, kAudioProcessPropertyPID,
     kAudioStreamPropertyVirtualFormat, kAudioSubDeviceUIDKey, kAudioSubTapDriftCompensationKey,
-    kAudioSubTapUIDKey,
+    kAudioSubTapUIDKey, kAudioDevicePropertyDeviceIsRunning,
 };
 use objc2_core_audio_types::{
     AudioBuffer, AudioBufferList, AudioStreamBasicDescription, AudioTimeStamp, AudioTimeStampFlags,
@@ -786,6 +786,30 @@ unsafe extern "C-unwind" fn io_proc(
     0
 }
 
+/// TEMPORARY #109 diagnostics: an output IO proc that plays silence.
+unsafe extern "C-unwind" fn silent_proc(
+    _device: AudioObjectID,
+    _now: NonNull<AudioTimeStamp>,
+    _input: NonNull<AudioBufferList>,
+    _input_time: NonNull<AudioTimeStamp>,
+    output: NonNull<AudioBufferList>,
+    _output_time: NonNull<AudioTimeStamp>,
+    _client: *mut c_void,
+) -> i32 {
+    // SAFETY: the HAL's output list is valid for this call.
+    let list = unsafe { output.as_ref() };
+    let base = (&raw const list.mBuffers).cast::<AudioBuffer>();
+    for i in 0..list.mNumberBuffers as usize {
+        // SAFETY: `mNumberBuffers` buffers follow.
+        let b = unsafe { *base.add(i) };
+        if !b.mData.is_null() {
+            // SAFETY: the buffer holds `mDataByteSize` writable bytes.
+            unsafe { std::ptr::write_bytes(b.mData.cast::<u8>(), 0, b.mDataByteSize as usize) };
+        }
+    }
+    0
+}
+
 /// What the property listener watches.
 struct Watch {
     status: Arc<Status>,
@@ -1007,7 +1031,9 @@ fn create_aggregate(output: &str, tap_uid: &str) -> Result<AudioObjectID, AudioI
         key(kAudioAggregateDeviceSubDeviceListKey),
         key(kAudioAggregateDeviceTapListKey),
     ];
-    let values: [&AnyObject; 7] = [&name, &uid, &output, &yes, &yes, &sub_devices, &taps];
+    // TEMPORARY #109 diagnostics: RBS_DIAG_AUTOSTART=0 turns tap auto-start off.
+    let autostart = NSNumber::new_bool(std::env::var("RBS_DIAG_AUTOSTART").as_deref() != Ok("0"));
+    let values: [&AnyObject; 7] = [&name, &uid, &output, &yes, &autostart, &sub_devices, &taps];
     let keys: Vec<&NSString> = keys.iter().map(|k| &**k).collect();
     let description = NSDictionary::from_slices(&keys, &values);
     // SAFETY: NSDictionary is toll-free bridged to CFDictionary.
@@ -1165,6 +1191,33 @@ impl CoreAudioStream {
         // SAFETY: the proc was created on this device above.
         check(unsafe { AudioDeviceStart(io_device, proc_id) })?;
         session.started = true;
+        // TEMPORARY #109 diagnostics.
+        if matches!(buffers, Buffers::Tap(_)) {
+            if std::env::var("RBS_DIAG_KEEPALIVE").as_deref() == Ok("1") {
+                let mut keep: AudioDeviceIOProcID = None;
+                // SAFETY: diagnostics; a no-op proc on a live device, leaked.
+                let r = unsafe {
+                    AudioDeviceCreateIOProcID(
+                        watched,
+                        Some(silent_proc),
+                        std::ptr::null_mut(),
+                        NonNull::from(&mut keep),
+                    )
+                };
+                // SAFETY: as above.
+                let r2 = unsafe { AudioDeviceStart(watched, keep) };
+                eprintln!("diag: keepalive proc on {watched}: create {r}, start {r2}");
+            }
+            for wait in [0, 300] {
+                std::thread::sleep(Duration::from_millis(wait));
+                let running = |d| get::<u32>(d, kAudioDevicePropertyDeviceIsRunning, kAudioObjectPropertyScopeGlobal);
+                eprintln!(
+                    "diag: after {wait} ms aggregate running {:?}, output running {:?}",
+                    running(io_device),
+                    running(watched)
+                );
+            }
+        }
         Ok(Active {
             session,
             consumer,
