@@ -3,7 +3,8 @@ name = "rbs-cli"
 description = "The headless RBS command line: records a scene to a file with the platform's adapters (ADR-0040)."
 version.workspace = true
 edition.workspace = true
-rust-version.workspace = true
+# rbs-remote-settings needs 1.89 (`File::lock`).
+rust-version = "1.89"
 repository.workspace = true
 license.workspace = true
 publish.workspace = true

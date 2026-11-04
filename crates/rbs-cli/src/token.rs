@@ -26,6 +26,16 @@ pub fn run(
     out: &mut dyn Write,
     notes: &mut dyn Write,
 ) -> Result<(), String> {
+    // Held from the read to the save: the app may change the settings meanwhile.
+    let _lock = match command {
+        TokenCommand::List => None,
+        _ => Some(settings::lock(config).map_err(|e| {
+            format!(
+                "The remote control settings in {} could not be locked: {e}",
+                config.display()
+            )
+        })?),
+    };
     let mut profile = current(config)?;
     let written = |e: std::io::Error| e.to_string();
     match command {
@@ -50,8 +60,19 @@ pub fn run(
         TokenCommand::Create { name, access } => {
             let token = profile.create_token(name, *access)?;
             save(config, &profile)?;
-            writeln!(out, "{}", token.expose()).map_err(written)?;
-            let name = profile.tokens.last().map(|t| t.name.as_str()).unwrap_or("");
+            let name = profile
+                .tokens
+                .last()
+                .map(|t| t.name.clone())
+                .unwrap_or_default();
+            if let Err(e) = writeln!(out, "{}", token.expose()).and_then(|()| out.flush()) {
+                // Nobody saw the token: a token nobody has must not stay valid.
+                profile.revoke(profile.tokens.len() - 1);
+                save(config, &profile)?;
+                return Err(format!(
+                    "The token could not be printed ({e}), so \"{name}\" was not kept. Try again."
+                ));
+            }
             writeln!(
                 notes,
                 "Access token \"{name}\" ({}) created. It is shown only now: copy it into the app that will control RBS. {APPLIES}",
@@ -71,7 +92,7 @@ pub fn run(
             let name = entry.map(|e| e.name).unwrap_or_default();
             writeln!(
                 notes,
-                "Access token \"{name}\" revoked: apps using it can no longer connect. {APPLIES}"
+                "Access token \"{name}\" revoked: apps using it stop working once RBS reads the change. {APPLIES}"
             )
             .map_err(written)?;
         }
@@ -194,6 +215,28 @@ mod tests {
             "{list}"
         );
         assert!(list.contains("Script\tView only"), "{list}");
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn a_token_that_could_not_be_printed_is_not_kept() {
+        struct Broken;
+        impl Write for Broken {
+            fn write(&mut self, _: &[u8]) -> std::io::Result<usize> {
+                Err(std::io::ErrorKind::BrokenPipe.into())
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+        let d = dir("broken");
+        let command = TokenCommand::Create {
+            name: "Deck".into(),
+            access: Access::View,
+        };
+        let err = run(&d, &command, &mut Broken, &mut Vec::new()).unwrap_err();
+        assert!(err.contains("was not kept"), "{err}");
+        assert!(settings::load(&d).0.tokens.is_empty());
         let _ = std::fs::remove_dir_all(&d);
     }
 

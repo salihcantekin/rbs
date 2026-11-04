@@ -11,6 +11,7 @@
 //! a token of their own.
 
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use rbs_api::scope::{Scope, ScopeSet};
 use rbs_api::{Token, TokenEntry, TokenStore};
@@ -291,6 +292,10 @@ fn name_problem(name: &str) -> Option<String> {
     if name.chars().count() > MAX_NAME {
         return Some(format!("Use a name of at most {MAX_NAME} characters."));
     }
+    // Names are listed one per line (`rbs-cli token list`, the log).
+    if name.chars().any(char::is_control) {
+        return Some("Use a name without tabs, line breaks or other control characters.".into());
+    }
     None
 }
 
@@ -387,8 +392,11 @@ pub fn save(config: &Path, profile: &RemoteProfile) -> std::io::Result<()> {
     std::fs::create_dir_all(config)?;
     let text = toml::to_string(profile).map_err(std::io::Error::other)?;
     let path = file(config);
-    let tmp = path.with_extension("toml.tmp");
-    let _ = std::fs::remove_file(&tmp);
+    // A name of its own, so two saves at once (the app and `rbs-cli`, which also
+    // take [`lock`]) never write into each other's file.
+    static SAVES: AtomicU64 = AtomicU64::new(0);
+    let n = SAVES.fetch_add(1, Ordering::Relaxed);
+    let tmp = path.with_extension(format!("toml.{}-{n}.tmp", std::process::id()));
     let mut options = std::fs::OpenOptions::new();
     options.write(true).create_new(true);
     #[cfg(unix)]
@@ -397,10 +405,35 @@ pub fn save(config: &Path, profile: &RemoteProfile) -> std::io::Result<()> {
         options.mode(0o600);
     }
     let mut f = options.open(&tmp)?;
-    f.write_all(text.as_bytes())?;
-    f.sync_all()?;
+    let written = f.write_all(text.as_bytes()).and_then(|()| f.sync_all());
     drop(f);
-    std::fs::rename(&tmp, &path)
+    let done = written.and_then(|()| std::fs::rename(&tmp, &path));
+    if done.is_err() {
+        let _ = std::fs::remove_file(&tmp);
+    }
+    done
+}
+
+/// Held while a program reads, changes and saves the settings, so changes the app and
+/// `rbs-cli` make at the same time are applied one after the other instead of one
+/// silently replacing the other. Released when dropped.
+#[derive(Debug)]
+pub struct SettingsLock(#[allow(dead_code)] std::fs::File);
+
+/// Waits until no other program changes the settings in `config` and holds them
+/// ([`SettingsLock`]): an advisory lock on `remote-control.lock` beside the file.
+pub fn lock(config: &Path) -> std::io::Result<SettingsLock> {
+    std::fs::create_dir_all(config)?;
+    let mut options = std::fs::OpenOptions::new();
+    options.read(true).write(true).create(true).truncate(false);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    let f = options.open(config.join("remote-control.lock"))?;
+    f.lock()?;
+    Ok(SettingsLock(f))
 }
 
 #[cfg(test)]
@@ -493,6 +526,8 @@ mod tests {
         assert!(p.create_token(&"x".repeat(65), Access::View).is_err());
         p.create_token("Deck", Access::View).unwrap();
         assert!(p.create_token("Deck", Access::Full).is_err());
+        assert!(p.create_token("Deck\tFull control", Access::View).is_err());
+        assert!(p.create_token("Two\nlines", Access::View).is_err());
         assert_eq!(p.tokens.len(), 1);
     }
 
@@ -548,6 +583,22 @@ mod tests {
         let (got, why) = load(&d);
         assert_eq!(got, RemoteProfile::new());
         assert!(why.unwrap().contains("other users"));
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn saves_under_the_lock_leave_no_temporary_files() {
+        let d = dir("lock");
+        let held = lock(&d).unwrap();
+        save(&d, &RemoteProfile::new()).unwrap();
+        drop(held);
+        let _again = lock(&d).unwrap();
+        let mut names: Vec<_> = std::fs::read_dir(&d)
+            .unwrap()
+            .map(|e| e.unwrap().file_name().into_string().unwrap())
+            .collect();
+        names.sort();
+        assert_eq!(names, ["remote-control.lock", "remote-control.toml"]);
         let _ = std::fs::remove_dir_all(&d);
     }
 

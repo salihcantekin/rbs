@@ -441,6 +441,7 @@ impl StudioUi {
         if self.remote.enabled == on {
             return;
         }
+        let _lock = self.lock_remote();
         self.reload_tokens();
         self.remote.enabled = on;
         self.save_remote();
@@ -453,6 +454,7 @@ impl StudioUi {
                 self.remote_note.clear();
                 self.remote_port_text = port.to_string();
                 if port != self.remote.port {
+                    let _lock = self.lock_remote();
                     self.reload_tokens();
                     self.remote.port = port;
                     self.save_remote();
@@ -476,6 +478,7 @@ impl StudioUi {
             .get(access as usize)
             .copied()
             .unwrap_or(Access::Control);
+        let _lock = self.lock_remote();
         self.reload_tokens();
         match self.remote.create_token(name, access) {
             Ok(token) => {
@@ -504,6 +507,7 @@ impl StudioUi {
         else {
             return;
         };
+        let _lock = self.lock_remote();
         self.reload_tokens();
         let Some(i) = self.remote.index_of(&name) else {
             return;
@@ -527,6 +531,7 @@ impl StudioUi {
         let Some((i, entry)) = self.revoked.take() else {
             return;
         };
+        let _lock = self.lock_remote();
         self.reload_tokens();
         match self.remote.restore(i, entry) {
             Ok(()) => {
@@ -541,6 +546,15 @@ impl StudioUi {
     /// changes `rbs-cli token` made while the app ran.
     pub fn settings_opened(&mut self) {
         self.reload_tokens();
+    }
+
+    /// Holds the settings file while this window reads, changes and saves it, so a
+    /// change `rbs-cli token` makes at the same time is not lost. `None` (logged) when
+    /// the lock cannot be taken; the change is still made.
+    fn lock_remote(&self) -> Option<remote_profile::SettingsLock> {
+        remote_profile::lock(&self.config)
+            .map_err(|e| log(&format!("remote control settings not locked: {e}")))
+            .ok()
     }
 
     /// Takes the access tokens as saved now: another program (`rbs-cli token`) may have
@@ -562,7 +576,13 @@ impl StudioUi {
                     self.tokens_changed();
                 }
             }
-            Ok(None) => {}
+            // Deleted: no tokens (the next change writes the file again).
+            Ok(None) => {
+                if self.remote.take_tokens(RemoteProfile::new()) {
+                    self.new_token = None;
+                    self.tokens_changed();
+                }
+            }
             Err(why) => {
                 log(&format!("remote control settings not read again: {why}"));
             }
@@ -597,18 +617,7 @@ impl StudioUi {
             .iter()
             .map(|t| TokenRow {
                 name: t.name.as_str().into(),
-                access: Access::of(t.scopes)
-                    .map_or_else(
-                        || {
-                            t.scopes
-                                .iter()
-                                .map(|s| s.name())
-                                .collect::<Vec<_>>()
-                                .join(", ")
-                        },
-                        |a| a.label().to_owned(),
-                    )
-                    .into(),
+                access: Access::describe(t.scopes).into(),
             })
             .collect();
         set_rows(&self.tokens, rows);

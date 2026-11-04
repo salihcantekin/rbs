@@ -3,7 +3,10 @@ name = "rbs-remote-settings"
 description = "Remote control settings shared by the RBS composition roots: the config directory and remote-control.toml (on or off, port, access token hashes; ADR-0044)."
 version.workspace = true
 edition.workspace = true
-rust-version.workspace = true
+# `File::lock` (1.89) serializes changes from the app and rbs-cli without another
+# dependency. Application layer only (rbs-app needs 1.92 already); engine and port
+# crates keep the workspace minimum.
+rust-version = "1.89"
 repository.workspace = true
 license.workspace = true
 publish.workspace = true
