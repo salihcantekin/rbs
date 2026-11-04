@@ -126,10 +126,15 @@ pub struct StudioUi {
     tokens: Rc<VecModel<TokenRow>>,
 }
 
+/// The remote control settings are locked by another program.
+struct Busy;
+
 impl StudioUi {
     pub fn new(config: &Path) -> Self {
         let (profile, why) = record_profile::load(config);
         let (canvas, canvas_why) = canvas_profile::load(config);
+        // Without the lock: `rbs-cli` replaces the file in one rename, so this reads
+        // either version whole; a bad file it moves aside is never one `rbs-cli` wrote.
         let (remote, remote_why) = remote_profile::load(config);
         let scale = SCALE_MARKS_DB
             .iter()
@@ -441,7 +446,9 @@ impl StudioUi {
         if self.remote.enabled == on {
             return;
         }
-        let _lock = self.lock_remote();
+        let Ok(_lock) = self.lock_remote() else {
+            return;
+        };
         self.reload_tokens();
         self.remote.enabled = on;
         self.save_remote();
@@ -453,8 +460,10 @@ impl StudioUi {
             Ok(port) => {
                 self.remote_note.clear();
                 self.remote_port_text = port.to_string();
-                if port != self.remote.port {
-                    let _lock = self.lock_remote();
+                let lock = (port != self.remote.port).then(|| self.lock_remote());
+                if let Some(Err(Busy)) = lock {
+                    self.remote_port_text = self.remote.port.to_string();
+                } else if port != self.remote.port {
                     self.reload_tokens();
                     self.remote.port = port;
                     self.save_remote();
@@ -478,7 +487,9 @@ impl StudioUi {
             .get(access as usize)
             .copied()
             .unwrap_or(Access::Control);
-        let _lock = self.lock_remote();
+        let Ok(_lock) = self.lock_remote() else {
+            return;
+        };
         self.reload_tokens();
         match self.remote.create_token(name, access) {
             Ok(token) => {
@@ -507,7 +518,9 @@ impl StudioUi {
         else {
             return;
         };
-        let _lock = self.lock_remote();
+        let Ok(_lock) = self.lock_remote() else {
+            return;
+        };
         self.reload_tokens();
         let Some(i) = self.remote.index_of(&name) else {
             return;
@@ -531,7 +544,9 @@ impl StudioUi {
         let Some((i, entry)) = self.revoked.take() else {
             return;
         };
-        let _lock = self.lock_remote();
+        let Ok(_lock) = self.lock_remote() else {
+            return;
+        };
         self.reload_tokens();
         match self.remote.restore(i, entry) {
             Ok(()) => {
@@ -549,12 +564,24 @@ impl StudioUi {
     }
 
     /// Holds the settings file while this window reads, changes and saves it, so a
-    /// change `rbs-cli token` makes at the same time is not lost. `None` (logged) when
-    /// the lock cannot be taken; the change is still made.
-    fn lock_remote(&self) -> Option<remote_profile::SettingsLock> {
-        remote_profile::lock(&self.config)
-            .map_err(|e| log(&format!("remote control settings not locked: {e}")))
-            .ok()
+    /// change `rbs-cli token` makes at the same time is not lost. `Ok(None)` (logged)
+    /// when the lock file cannot be used; the change is still made.
+    /// The window never waits for the lock: while `rbs-cli` holds it, the change is
+    /// not made and the section says why (`Busy`).
+    fn lock_remote(&mut self) -> Result<Option<remote_profile::SettingsLock>, Busy> {
+        match remote_profile::try_lock(&self.config) {
+            Ok(Some(lock)) => Ok(Some(lock)),
+            Ok(None) => {
+                self.remote_note =
+                    "Another program (rbs-cli) is changing the remote control settings. Try again."
+                        .into();
+                Err(Busy)
+            }
+            Err(e) => {
+                log(&format!("remote control settings not locked: {e}"));
+                Ok(None)
+            }
+        }
     }
 
     /// Takes the access tokens as saved now: another program (`rbs-cli token`) may have

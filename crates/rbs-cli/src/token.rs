@@ -27,14 +27,11 @@ pub fn run(
     notes: &mut dyn Write,
 ) -> Result<(), String> {
     // Held from the read to the save: the app may change the settings meanwhile.
-    let _lock = match command {
+    // Held from the read to the save only, not while printing (output may stall, and
+    // the app does not wait for it).
+    let lock = match command {
         TokenCommand::List => None,
-        _ => Some(settings::lock(config).map_err(|e| {
-            format!(
-                "The remote control settings in {} could not be locked: {e}",
-                config.display()
-            )
-        })?),
+        _ => Some(take_lock(config)?),
     };
     let mut profile = current(config)?;
     let written = |e: std::io::Error| e.to_string();
@@ -60,6 +57,7 @@ pub fn run(
         TokenCommand::Create { name, access } => {
             let token = profile.create_token(name, *access)?;
             save(config, &profile)?;
+            drop(lock);
             let name = profile
                 .tokens
                 .last()
@@ -67,8 +65,12 @@ pub fn run(
                 .unwrap_or_default();
             if let Err(e) = writeln!(out, "{}", token.expose()).and_then(|()| out.flush()) {
                 // Nobody saw the token: a token nobody has must not stay valid.
-                profile.revoke(profile.tokens.len() - 1);
-                save(config, &profile)?;
+                let _lock = take_lock(config)?;
+                let mut now = current(config)?;
+                if let Some(i) = now.index_of(&name) {
+                    now.revoke(i);
+                    save(config, &now)?;
+                }
                 return Err(format!(
                     "The token could not be printed ({e}), so \"{name}\" was not kept. Try again."
                 ));
@@ -89,6 +91,7 @@ pub fn run(
             })?;
             let entry = profile.revoke(i);
             save(config, &profile)?;
+            drop(lock);
             let name = entry.map(|e| e.name).unwrap_or_default();
             writeln!(
                 notes,
@@ -100,13 +103,22 @@ pub fn run(
     Ok(())
 }
 
+fn take_lock(config: &Path) -> Result<settings::SettingsLock, String> {
+    settings::lock(config).map_err(|e| {
+        format!(
+            "The remote control settings in {} could not be locked: {e}",
+            config.display()
+        )
+    })
+}
+
 /// The settings as saved. A file that cannot be used is an error, not the defaults:
 /// writing the defaults would drop the tokens and settings in it.
 fn current(config: &Path) -> Result<RemoteProfile, String> {
     match settings::read(config) {
         Ok(p) => Ok(p.unwrap_or_default()),
         Err(why) => Err(format!(
-            "The remote control settings cannot be used: {why}. Fix or remove the file, or let RBS set it aside by starting it."
+            "The remote control settings cannot be used: {why}. Fix or remove the file. RBS sets such a file aside when it starts, not while it runs."
         )),
     }
 }

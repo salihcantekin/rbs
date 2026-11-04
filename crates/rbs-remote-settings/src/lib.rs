@@ -423,6 +423,23 @@ pub struct SettingsLock(#[allow(dead_code)] std::fs::File);
 /// Waits until no other program changes the settings in `config` and holds them
 /// ([`SettingsLock`]): an advisory lock on `remote-control.lock` beside the file.
 pub fn lock(config: &Path) -> std::io::Result<SettingsLock> {
+    let f = lock_file(config)?;
+    f.lock()?;
+    Ok(SettingsLock(f))
+}
+
+/// [`lock`] without waiting: `None` while another program holds it. For the app's
+/// window, which must not freeze.
+pub fn try_lock(config: &Path) -> std::io::Result<Option<SettingsLock>> {
+    let f = lock_file(config)?;
+    match f.try_lock() {
+        Ok(()) => Ok(Some(SettingsLock(f))),
+        Err(std::fs::TryLockError::WouldBlock) => Ok(None),
+        Err(std::fs::TryLockError::Error(e)) => Err(e),
+    }
+}
+
+fn lock_file(config: &Path) -> std::io::Result<std::fs::File> {
     std::fs::create_dir_all(config)?;
     let mut options = std::fs::OpenOptions::new();
     options.read(true).write(true).create(true).truncate(false);
@@ -431,9 +448,7 @@ pub fn lock(config: &Path) -> std::io::Result<SettingsLock> {
         use std::os::unix::fs::OpenOptionsExt;
         options.mode(0o600);
     }
-    let f = options.open(config.join("remote-control.lock"))?;
-    f.lock()?;
-    Ok(SettingsLock(f))
+    options.open(config.join("remote-control.lock"))
 }
 
 #[cfg(test)]
@@ -590,8 +605,13 @@ mod tests {
     fn saves_under_the_lock_leave_no_temporary_files() {
         let d = dir("lock");
         let held = lock(&d).unwrap();
+        assert!(
+            try_lock(&d).unwrap().is_none(),
+            "a second holder got the lock"
+        );
         save(&d, &RemoteProfile::new()).unwrap();
         drop(held);
+        assert!(try_lock(&d).unwrap().is_some());
         let _again = lock(&d).unwrap();
         let mut names: Vec<_> = std::fs::read_dir(&d)
             .unwrap()
