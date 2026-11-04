@@ -177,6 +177,8 @@ pub struct StudioUi {
     stream_note: String,
     /// The server field shows the saved server; bumped when Rust sets it.
     server_serial: u64,
+    /// The server field's text while it is changed and not confirmed yet.
+    server_draft: Option<String>,
     /// Bumped when a key was saved or removed: the key field is emptied.
     key_serial: u64,
     /// The key field's hint: where keys are kept.
@@ -190,6 +192,8 @@ pub struct StudioUi {
     /// The last stream's outcome, or why one did not start; `st_bad` marks a problem.
     st_note: String,
     st_bad: bool,
+    /// `st_note` asks for a missing setting (server, key): hidden once it is set.
+    st_setup_note: bool,
 }
 
 /// What the Remote control section shows while other computers can connect.
@@ -282,6 +286,7 @@ impl StudioUi {
                 .map(|w| format!("The saved stream settings were not used: {w}"))
                 .unwrap_or_default(),
             server_serial: 1,
+            server_draft: None,
             key_serial: 0,
             key_hint: stream_key::hint(keys),
             st_state: st_state::OFF,
@@ -289,6 +294,7 @@ impl StudioUi {
             st_link: Link::default(),
             st_note: String::new(),
             st_bad: false,
+            st_setup_note: false,
         };
         ui.refresh_tokens();
         ui
@@ -938,6 +944,7 @@ impl StudioUi {
     /// The Settings window closed: a token shown once is not shown again, and the
     /// revoke can no longer be undone there.
     pub fn settings_closed(&mut self) {
+        self.commit_server();
         self.new_token = None;
         self.revoked = None;
     }
@@ -1282,6 +1289,7 @@ impl StudioUi {
         if self.st_state != st_state::OFF || self.rec_state != rec_state::OFF {
             return;
         }
+        self.commit_server();
         let fail = |ui: &mut Self, why: String| {
             ui.st_note = why;
             ui.st_bad = true;
@@ -1291,8 +1299,11 @@ impl StudioUi {
             return;
         }
         if let Some(why) = self.stream.missing() {
-            return fail(self, why.to_owned());
+            fail(self, why.to_owned());
+            self.st_setup_note = true;
+            return;
         }
+        self.st_setup_note = false;
         if let Some(why) = self.stream.problem() {
             return fail(self, why);
         }
@@ -1328,6 +1339,7 @@ impl StudioUi {
 
     /// The server field was confirmed.
     pub fn set_server(&mut self, text: &str) {
+        self.server_draft = None;
         let url = text.trim();
         if url == self.stream.server {
             return;
@@ -1343,6 +1355,19 @@ impl StudioUi {
         self.stream.server = url.to_owned();
         self.server_serial += 1;
         self.save_stream();
+    }
+
+    /// The server field changed without being confirmed (Return, leaving the field).
+    pub fn server_edited(&mut self, text: &str) {
+        self.server_draft = Some(text.to_owned());
+    }
+
+    /// Confirms a server typed but not confirmed: closing Settings or pressing Go live
+    /// keeps what the field shows.
+    fn commit_server(&mut self) {
+        if let Some(text) = self.server_draft.take() {
+            self.set_server(&text);
+        }
     }
 
     /// The key field was confirmed: the host saves it in the store.
@@ -1418,8 +1443,16 @@ impl StudioUi {
             st_state::LIVE => format!("Connecting to {host}…"),
             st_state::ENDING => "Ending the stream…".to_owned(),
             _ if self.rec_state != rec_state::OFF => "Stop the recording to go live.".to_owned(),
+            // What is still missing, nothing once all is set.
+            _ if self.st_setup_note => self.stream.missing().unwrap_or_default().to_owned(),
             _ => self.st_note.clone(),
         }
+    }
+
+    /// The note asked for settings that are all set now (Live controls then show
+    /// neither a note nor "Stream settings").
+    fn setup_note_stale(&self) -> bool {
+        self.st_setup_note && self.stream.missing().is_none()
     }
 
     fn push_stream(&self, g: &Studio<'_>) {
@@ -1428,7 +1461,10 @@ impl StudioUi {
         g.set_st_connected(self.st_state == st_state::LIVE && self.st_link.connected);
         g.set_st_text(self.stream_text().into());
         g.set_st_bad(
-            self.st_state == st_state::OFF && self.rec_state == rec_state::OFF && self.st_bad,
+            self.st_state == st_state::OFF
+                && self.rec_state == rec_state::OFF
+                && self.st_bad
+                && !self.setup_note_stale(),
         );
         g.set_st_needs_setup(st.missing().is_some());
         if g.get_st_server_serial() != self.server_serial as i32 {
@@ -1504,6 +1540,7 @@ impl StudioUi {
                     "The stream did not start: no stream key is saved. Enter it in Settings, Stream."
                         .into();
                 self.st_bad = true;
+                self.st_setup_note = true;
             }
             StreamUpdate::Link(link) => {
                 if link.connected != self.st_link.connected {
@@ -2071,4 +2108,59 @@ pub fn log(line: &str) {
 fn whole_fps(rate: rbs_core::timing::FrameRate) -> u32 {
     let r = rate.per_second();
     r.num().div_ceil(r.den().max(1))
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)] // Tests fail by panicking.
+mod tests {
+    use super::*;
+    use rbs_app::stream_key::MemoryKeyStore;
+
+    fn ui(name: &str) -> (StudioUi, std::path::PathBuf) {
+        let d = std::env::temp_dir().join(format!("rbs-app-ui-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        let mut ui = StudioUi::new(&d, &MemoryKeyStore::new());
+        // As after `Update::Started`: Go live is possible.
+        ui.cannot_record = None;
+        (ui, d)
+    }
+
+    #[test]
+    fn a_server_typed_but_not_confirmed_is_kept() {
+        let (mut ui, d) = ui("server-draft");
+        ui.server_edited("rtmp://127.0.0.1/li");
+        ui.server_edited("rtmp://127.0.0.1/live");
+        ui.settings_closed();
+        assert_eq!(ui.stream.server, "rtmp://127.0.0.1/live");
+        assert_eq!(stream_profile::load(&d).0.server, "rtmp://127.0.0.1/live");
+
+        // Go live confirms it too; a bad one is refused and the one in use stays.
+        ui.server_edited("http://example.com");
+        ui.go_live();
+        assert_eq!(ui.stream.server, "rtmp://127.0.0.1/live");
+        // Confirmed with Return: closing Settings later changes nothing.
+        ui.server_edited("srt://127.0.0.1:9000");
+        ui.set_server("srt://127.0.0.1:9000");
+        ui.settings_closed();
+        assert_eq!(ui.stream.server, "srt://127.0.0.1:9000");
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn a_note_asking_for_a_setting_goes_once_it_is_set() {
+        let (mut ui, d) = ui("setup-note");
+        ui.go_live();
+        assert_eq!(ui.st_state, st_state::OFF);
+        assert!(ui.stream_text().contains("Enter the server"));
+        ui.set_server("rtmp://127.0.0.1/live");
+        assert!(
+            ui.stream_text().contains("Enter the stream key"),
+            "still missing: the key"
+        );
+        ui.stream.key_saved = true;
+        assert!(ui.setup_note_stale());
+        assert_eq!(ui.stream_text(), "");
+        let _ = std::fs::remove_dir_all(&d);
+    }
 }

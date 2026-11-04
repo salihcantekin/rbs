@@ -1001,6 +1001,9 @@ fn install_studio(g: &Studio<'_>, ctx: &Ctx) {
     on!(on_set_server, |app, text: slint::SharedString| {
         app.studio.set_server(&text);
     });
+    on!(on_server_edited, |app, text: slint::SharedString| {
+        app.studio.server_edited(&text);
+    });
     on!(on_save_key, |app, text: slint::SharedString| {
         app.studio.save_key(&text);
     });
