@@ -168,6 +168,7 @@ fn ending_first_keeps_every_frame_up_to_the_end_and_the_audio_tail() {
     assert_eq!(report.flush_lost, 0);
     let p = &report.progress;
     assert_eq!((p.export_drops, p.encoder_drops, p.mux_drops), (0, 0, 0));
+    assert_eq!((p.audio_flushes, p.audio_tail_lost), (1, 0), "{p:?}");
 
     // Video: every canvas the export took is in the file, up to the last render tick
     // at or before the end, and none after it.
@@ -178,9 +179,9 @@ fn ending_first_keeps_every_frame_up_to_the_end_and_the_audio_tail() {
     assert_eq!(p.frames_exported, p.frames_encoded);
     assert_eq!(video.len() as u64, p.frames_encoded);
 
-    // Audio: the encoder was flushed on its last final tick, so the packets cover
-    // every sample it got (the last frame padded with silence), the codec's delay
-    // included.
+    // Audio: the encoder was flushed on its last final tick (above), so the packets
+    // cover every sample it got before the end was asked for (the last frame padded,
+    // the codec's delay included); blocks queued later are covered too.
     let audio = pts_of(log, 1);
     let aac = SampleRate::HZ_48000.duration_of(1024);
     for pair in audio.windows(2) {

@@ -36,8 +36,12 @@ pub struct ExportNodeStats {
     pub frames: AtomicU64,
     /// Canvas frames not converted because every readback was in flight.
     pub busy: AtomicU64,
-    /// Converted frames lost before delivery (stale, no free buffer, map failure).
+    /// Converted frames lost before delivery (stale, no free buffer, map failure, or
+    /// still in flight when the node was released).
     pub lost: AtomicU64,
+    /// Timestamp in nanoseconds plus one of the last frame put on "video"; 0 before
+    /// the first (ADR-0045: the studio compares it with the encoder's).
+    pub last_frame: AtomicU64,
 }
 
 /// Ends a video export's input at a master-clock time (ADR-0045); shared between the
@@ -158,6 +162,7 @@ impl Node<GpuRuntime> for VideoExportNode {
     }
 
     fn process(&mut self, ctx: &mut ProcessCtx<'_, GpuRuntime>) -> Result<(), NodeError> {
+        let ctx_time = ctx.tick().time.as_nanos();
         let gpu = ctx.shared();
         let (inputs, outputs, local) = ctx.parts();
         let download = self.download.as_mut().ok_or(NodeError::NotReady)?;
@@ -175,8 +180,10 @@ impl Node<GpuRuntime> for VideoExportNode {
         match ready {
             Ok(Some(frame)) => {
                 // Dropping the previous frame hands its buffer back for reuse.
+                let at = frame.timestamp().as_nanos().saturating_add(1);
                 drop(outputs.set_video(VIDEO_PIN, Some(frame))?);
                 self.stats.frames.fetch_add(1, Ordering::Relaxed);
+                self.stats.last_frame.store(at, Ordering::Relaxed);
             }
             Ok(None) => {}
             Err(_) => result = Err(NodeError::Backend("video export readback failed")),
@@ -191,9 +198,10 @@ impl Node<GpuRuntime> for VideoExportNode {
                 }
             }
         }
-        // Ending (ADR-0045): done once nothing taken is still being read back. Readbacks
-        // that fail are counted in `lost` like on the run path.
-        if end != u64::MAX && download.in_flight() == 0 && !self.end.ended() {
+        // Ending (ADR-0045): done on a tick past the end once nothing taken is still
+        // being read back (a tick at or before the end may still bring a canvas).
+        // Readbacks that fail, are busy or find no buffer are counted as on the run path.
+        if end != u64::MAX && ctx_time > end && download.in_flight() == 0 && !self.end.ended() {
             self.end.ended.store(true, Ordering::Release);
         }
 
@@ -210,6 +218,12 @@ impl Node<GpuRuntime> for VideoExportNode {
     }
 
     fn release(&mut self, _ctx: &mut PrepareCtx<'_, GpuRuntime>) {
-        self.download = None;
+        // Readbacks still in flight never reach the encoder (a stop without
+        // `ExportEnd`, or past the studio's tail limit): counted, never silent.
+        if let Some(download) = self.download.take() {
+            self.stats
+                .lost
+                .fetch_add(download.in_flight() as u64, Ordering::Relaxed);
+        }
     }
 }

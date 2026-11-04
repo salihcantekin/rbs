@@ -431,6 +431,11 @@ pub struct Progress {
     pub encoder_drops: u64,
     /// Audio packets the audio encoder node lost (its carry-over was full).
     pub audio_packet_drops: u64,
+    /// End-of-stream flushes of the audio encoder: 1 after a drained stop (ADR-0045).
+    pub audio_flushes: u64,
+    /// Audio packets or blocks lost at the end of the stream (ADR-0045): packets the
+    /// output's queue refused on the last final tick, blocks after the flush.
+    pub audio_tail_lost: u64,
     /// Audio blocks lost at the queue between the mixer and the audio encoder.
     pub audio_queue_drops: u64,
     /// Packets the output took, all streams, including those the muxer dropped.
@@ -470,7 +475,7 @@ pub struct FinishReport {
     /// Packets the video encoder still held when it left without a final tick (a drain
     /// that timed out), lost. Frames still read back at the export when the recording
     /// stopped without [`Recording::end`] (or past [`crate::END_TAIL_LIMIT`]) are lost
-    /// too and not counted.
+    /// too and counted in [`Progress::export_drops`].
     pub flush_lost: u64,
     /// Output items not delivered when the output finished.
     pub finish_lost: u64,

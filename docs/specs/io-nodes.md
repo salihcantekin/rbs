@@ -108,14 +108,14 @@ Invariants:
 | --- | --- |
 | `prepare` | Creates a `YuvDownload` for the size and format (converter, plane textures, staging ring, frame buffers) |
 | `prepare` (again) | Clears `ExportEnd::ended`; the end time stays |
-| `process` | Not ending: 1. `take_ready`: the newest completed readback, if any, goes on "video". 2. A canvas frame not seen before (timestamp, sequence) is submitted. Ending (`ExportEnd::end_at`, ADR-0045): 1. `take_oldest`: the oldest completed readback goes on "video" (none is dropped as stale). 2. Only a canvas at or before the end time is submitted. 3. With no readback in flight, `ended` is set |
-| `release` | Drops the download |
+| `process` | Not ending: 1. `take_ready`: the newest completed readback, if any, goes on "video". 2. A canvas frame not seen before (timestamp, sequence) is submitted. Ending (`ExportEnd::end_at`, ADR-0045): 1. `take_oldest`: the oldest completed readback goes on "video" (none is dropped as stale). 2. Only a canvas at or before the end time is submitted. 3. On a tick past the end with no readback in flight, `ended` is set. Every delivered frame's time is stored in `ExportNodeStats::last_frame` |
+| `release` | Counts readbacks still in flight in `lost`, then drops the download |
 
 Invariants:
 
 1. Frames on "video" have `frame_format()`: canvas size, NV12 or P010, `ColorSpace::BT709_LIMITED`; the canvas frame's timestamp and sequence; system memory.
 2. Never waits for the GPU. A frame submitted on tick `i` appears on tick `i + 1` at the earliest; a full staging ring drops the new canvas frame (`busy`).
-3. Once ended, every canvas the export took up to the end time is on "video" in order (one per tick), and no later canvas is taken. The run path costs one relaxed atomic load and a compare per tick.
+3. Once ended, every canvas the export took up to the end time is on "video" in order (one per tick), and no later canvas is taken. Canvases dropped as on the run path (`busy`, no free buffer, a failed readback) are counted in `busy` or `lost`. Whether the encoder took the last one is the studio's check (`EncoderNodeStats::last_frame`, recording spec 5a). The run path costs one relaxed atomic load and a compare per tick.
 
 ### Video encoder node
 

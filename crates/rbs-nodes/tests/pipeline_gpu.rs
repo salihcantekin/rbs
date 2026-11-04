@@ -99,14 +99,13 @@ impl Rig {
 
     /// One render tick at 30 fps without waiting for the GPU: its readback may still
     /// be in flight on later ticks.
-    fn tick_without_waiting(&mut self) -> Timestamp {
+    fn tick_without_waiting(&mut self) {
         let cadence = Cadence::frames(Timestamp::ZERO, FrameRate::FPS_30);
         let tick = Tick::of(&cadence, self.tick);
         self.clock.set(tick.time);
         self.exec.run_tick(tick);
         self.tick += 1;
         let _ = self.ctl.collect();
-        tick.time
     }
 
     /// One render tick at 30 fps with the capture clock at the tick's time; the GPU is
@@ -278,23 +277,25 @@ fn an_ended_export_passes_on_every_canvas_up_to_the_end_and_none_after() {
     for _ in 0..3 {
         rig.tick();
     }
-    // Without waiting, readbacks may still be in flight when the end is asked for, and
-    // several may complete in the same poll (on the run path the older ones would be
-    // stale; `take_oldest` is checked on its own in rbs-gpu). Three stay within the
-    // ring, so none is refused as busy.
-    let mut last = Timestamp::ZERO;
-    for _ in 0..3 {
-        last = rig.tick_without_waiting();
-    }
+    // End at the time of tick 5 before ticks 3 to 5 run, so the export is ending (and
+    // passes frames oldest first) while they do. They run without waiting for the GPU,
+    // so readbacks may still be in flight at the end and several may complete in the
+    // same poll (on the run path the older ones would be dropped as stale; `take_oldest`
+    // is checked on its own in rbs-gpu). Three stay within the ring: none is busy.
+    let cadence = Cadence::frames(Timestamp::ZERO, FrameRate::FPS_30);
+    let last = cadence.time_of(5);
     end.end_at(last);
     assert_eq!(end.requested(), Some(last));
+    for _ in 0..3 {
+        rig.tick_without_waiting();
+    }
+    assert!(!end.ended(), "no tick past the end ran yet");
     let mut ticks = 0;
     while !end.ended() {
         assert!(ticks < 8, "the export never ended");
         rig.tick();
         ticks += 1;
     }
-    let cadence = Cadence::frames(Timestamp::ZERO, FrameRate::FPS_30);
     let delivered: Vec<Timestamp> = frames
         .lock()
         .unwrap()

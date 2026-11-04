@@ -244,6 +244,8 @@ struct Attached {
     end: Arc<ExportEnd>,
     encoder: Arc<EncoderNodeStats>,
     audio_dropped: Option<Arc<AtomicU64>>,
+    /// The audio encoder's end-of-stream flushes and tail losses (ADR-0045).
+    audio_tail: Option<(Arc<AtomicU64>, Arc<AtomicU64>)>,
     output: Arc<OutputNodeStats>,
 }
 
@@ -1056,6 +1058,9 @@ impl Studio {
 
         // Instances last; one that is refused takes the adopted ones back.
         let audio_dropped = audio.as_ref().map(|(_, node, _)| node.dropped());
+        let audio_tail = audio
+            .as_ref()
+            .map(|(_, node, _)| (node.flushes(), node.tail_lost()));
         let mut adopted = Vec::new();
         let mut adopt =
             |engine: &mut Engine, a: Added, r: Result<(), rbs_engine::EngineError>| match r {
@@ -1108,6 +1113,7 @@ impl Studio {
             end: export_end,
             encoder: encoder_stats,
             audio_dropped,
+            audio_tail,
             output: output_stats,
         });
         Ok(())
@@ -1216,8 +1222,9 @@ impl Studio {
     }
 
     /// True when [`Studio::stop_recording`] loses no video frame up to the end: after
-    /// [`Studio::end_recording`], once the export has passed on every canvas up to the
-    /// end, or once [`END_TAIL_LIMIT`] has passed on the master clock. True when nothing
+    /// [`Studio::end_recording`], once the export has passed on every canvas it took up
+    /// to the end and the video encoder has taken the last of them, or once
+    /// [`END_TAIL_LIMIT`] has passed on the master clock. True when nothing
     /// records; false while a recording runs that was not ended.
     pub fn recording_tail_done(&self) -> bool {
         let Some(r) = self.recording.as_ref() else {
@@ -1225,7 +1232,14 @@ impl Studio {
         };
         match r.end.requested() {
             None => false,
-            Some(at) => r.end.ended() || self.engine.clock().now() >= at + END_TAIL_LIMIT,
+            Some(at) => {
+                // End to end: the export passed on its last frame, and the encoder took
+                // it (the queue between them keeps only the newest frame).
+                let delivered = r.end.ended()
+                    && r.encoder.last_frame.load(Ordering::Relaxed)
+                        >= r.export.last_frame.load(Ordering::Relaxed);
+                delivered || self.engine.clock().now() >= at + END_TAIL_LIMIT
+            }
         }
     }
 
@@ -1311,6 +1325,10 @@ impl Studio {
                 .audio_dropped
                 .as_ref()
                 .map_or(0, |d| d.load(Ordering::Relaxed));
+            if let Some((flushes, lost)) = &r.audio_tail {
+                p.audio_flushes = flushes.load(Ordering::Relaxed);
+                p.audio_tail_lost = lost.load(Ordering::Relaxed);
+            }
             p.packets_taken = r.output.packets.load(Ordering::Relaxed);
             p.mux_drops = r.output.mux_drops.load(Ordering::Relaxed);
             p.start_drops = r.output.start_drops.load(Ordering::Relaxed);

@@ -31,6 +31,7 @@ pub struct EncoderNode {
     /// The session was flushed on a final tick: it takes no more blocks.
     ended: bool,
     flushes: Arc<AtomicU64>,
+    tail_lost: Arc<AtomicU64>,
 }
 
 /// The descriptor of audio encoder nodes.
@@ -57,6 +58,7 @@ impl EncoderNode {
             dropped: Arc::default(),
             ended: false,
             flushes: Arc::default(),
+            tail_lost: Arc::default(),
         }
     }
 
@@ -68,6 +70,13 @@ impl EncoderNode {
     /// Final ticks on which the session was flushed into the graph (ADR-0045).
     pub fn flushes(&self) -> Arc<AtomicU64> {
         Arc::clone(&self.flushes)
+    }
+
+    /// End-of-stream losses (ADR-0045): packets still waiting when the node is released
+    /// after its flush (the packet queue refused them on the last final tick), and
+    /// blocks that arrived after the flush.
+    pub fn tail_lost(&self) -> Arc<AtomicU64> {
+        Arc::clone(&self.tail_lost)
     }
 }
 
@@ -84,6 +93,10 @@ impl<X: Runtime> Node<X> for EncoderNode {
     fn release(&mut self, _: &mut PrepareCtx<'_, X>) {
         // Without a final tick that ended the input (a live edit, a drain that timed
         // out) the tail the codec still holds is dropped here.
+        if self.ended {
+            self.tail_lost
+                .fetch_add(self.waiting.len() as u64, Ordering::Relaxed);
+        }
         self.drained.clear();
         let _ = self.encoder.flush(&mut self.drained);
         self.drained.clear();
@@ -92,10 +105,14 @@ impl<X: Runtime> Node<X> for EncoderNode {
 
     fn process(&mut self, ctx: &mut ProcessCtx<'_, X>) -> Result<(), NodeError> {
         let draining = ctx.tick().draining;
+        let block = ctx.inputs().audio(0, 0);
         let block = if self.ended {
+            if block.is_some() {
+                self.tail_lost.fetch_add(1, Ordering::Relaxed);
+            }
             None
         } else {
-            ctx.inputs().audio(0, 0)
+            block
         };
         let ended = match block {
             Some(block) => {

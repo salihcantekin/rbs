@@ -720,6 +720,11 @@ impl<X: Runtime> Node<X> for AudioReader {
         if buffer.frames > out.capacity() {
             self.stats.skipped.fetch_add(1, Ordering::Relaxed);
             let _ = self.free.try_send(buffer);
+            // A final tick that drops a block still rings, so the consumer does not
+            // take this tick for the end of its input (ADR-0045).
+            if draining || self.stats.queued.load(Ordering::Acquire) > 0 {
+                self.doorbell.ring();
+            }
             return Err(NodeError::Output(super::OutputError::AudioTooLarge {
                 pin: 0,
                 capacity: out.capacity(),
