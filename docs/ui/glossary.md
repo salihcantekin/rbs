@@ -26,3 +26,5 @@ UI text uses these terms and no synonyms (rule U13). Code may use different inte
 | Output profile | A saved set of output settings (service, encoder, bitrate, recording format). It holds no scenes and no panel layout | Profile, workspace | Output configuration |
 | Remote control | Letting other apps (Stream Deck, panels, scripts) control and watch RBS through the control API. Off by default | API server, WebSocket server | Control API server (`rbs-api`, `rbs-api-ws`) |
 | Access token | A secret one app uses for remote control, with a name and an access level (View only, Control, Full control). Shown once; can be revoked | Password, key, API key | `rbs_api::Token` with its scopes |
+| Access from other computers | Remote control by apps on other computers on the network, over an encrypted connection. Off by default | Network mode, LAN access, remote access | Network access, TLS (`WsConfig::network`, ADR-0046) |
+| Key pin | What apps on other computers check before they send an access token: `sha256//` and the hash of RBS's public key. Stays the same when the certificate is renewed | Fingerprint, thumbprint | SPKI SHA-256 pin (`TlsIdentity::key_pin`) |

@@ -14,6 +14,7 @@ pub mod canvas_profile;
 pub mod encoder_form;
 #[cfg(target_os = "macos")]
 pub mod native;
+pub mod network_access;
 pub mod platform;
 pub mod record_profile;
 pub mod remote_control;

@@ -19,7 +19,7 @@ use rbs_api::{
     ServerConfig, TokenHandle, TokenStore,
 };
 use rbs_api_ipc::{Endpoint, IpcConfig, IpcTransport};
-use rbs_api_ws::{WsConfig, WsTransport};
+use rbs_api_ws::{TlsIdentity, WsConfig, WsTransport};
 
 /// A running remote control server. Dropping it stops the transport (connected apps
 /// are told the server is going away), then the API thread.
@@ -61,6 +61,17 @@ pub struct RemoteOptions {
     pub ipc: Option<Endpoint>,
 }
 
+/// Network access (ADR-0046): other computers connect over TLS.
+pub struct NetworkOptions {
+    /// What the server presents (`crate::network_access::prepare`).
+    pub identity: TlsIdentity,
+    /// Names clients may use in `Host` besides addresses: this computer's name and
+    /// `<name>.local` (`crate::network_access::host_names`).
+    pub host_names: Vec<String>,
+    /// "Allow remote admin": sessions from other computers keep `admin`.
+    pub allow_remote_admin: bool,
+}
+
 impl RemoteServer {
     /// Starts the API thread and listens on `addresses`, which must be loopback. The
     /// returned endpoint goes to the control thread. On failure nothing keeps running.
@@ -69,18 +80,42 @@ impl RemoteServer {
         tokens: TokenStore,
         options: RemoteOptions,
     ) -> Result<(RemoteServer, ControlEndpoint), StartError> {
-        let config =
-            ServerConfig::new(ClientInfo::new("RBS", env!("CARGO_PKG_VERSION"))).map_err(|e| {
+        Self::start_with(WsConfig::on(addresses), false, tokens, options)
+    }
+
+    /// Network access at `port`: every interface, TLS for other computers, plain
+    /// WebSocket still for apps on this computer.
+    pub fn start_network(
+        port: u16,
+        network: NetworkOptions,
+        tokens: TokenStore,
+        options: RemoteOptions,
+    ) -> Result<(RemoteServer, ControlEndpoint), StartError> {
+        let mut ws = WsConfig::network(port, network.identity);
+        ws.policy.host_names = network.host_names;
+        Self::start_with(ws, network.allow_remote_admin, tokens, options)
+    }
+
+    fn start_with(
+        ws: WsConfig,
+        allow_remote_admin: bool,
+        tokens: TokenStore,
+        options: RemoteOptions,
+    ) -> Result<(RemoteServer, ControlEndpoint), StartError> {
+        let addresses = ws.addresses.clone();
+        let mut config = ServerConfig::new(ClientInfo::new("RBS", env!("CARGO_PKG_VERSION")))
+            .map_err(|e| {
                 StartError::Other(format!(
                     "the system could not make a random server id ({e})"
                 ))
             })?;
+        config.allow_remote_admin = allow_remote_admin;
         let mut api_options = ApiOptions::new(options.control_waker);
         api_options.audit = options.audit;
         let (api, endpoint) = ApiServer::start(config, tokens, api_options)
             .map_err(|e| StartError::Other(e.to_string()))?;
         // Started here, not by `ApiServer::start`, so the bound addresses can be read.
-        let mut transport = WsTransport::new(WsConfig::on(addresses.clone()));
+        let mut transport = WsTransport::new(ws);
         if let Err(e) = transport.start(api.inbox()) {
             // The transport's error is text; the port being taken is the one case the
             // user can fix, so it is told apart by trying the addresses again.

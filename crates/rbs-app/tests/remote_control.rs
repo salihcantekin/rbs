@@ -370,3 +370,36 @@ fn tokens_changed_over_local_ipc_take_effect_at_once() {
         let _ = std::fs::remove_dir_all(endpoint.0.parent().unwrap());
     }
 }
+
+#[test]
+fn with_network_access_apps_on_this_computer_still_connect_without_tls() {
+    let mut profile = RemoteProfile::new();
+    let deck = profile.create_token("Stream Deck", Access::Full).unwrap();
+    let g = rbs_api_ws::tls::generate(&["localhost".into()], &[], 1_800_000_000).unwrap();
+    let identity = rbs_api_ws::TlsIdentity::from_pem(&g.cert_pem, &g.key_pem).unwrap();
+    let (server, _endpoint) = RemoteServer::start_network(
+        0,
+        rbs_app::remote_control::NetworkOptions {
+            identity,
+            host_names: vec!["studio.local".into()],
+            allow_remote_admin: false,
+        },
+        profile.store(),
+        RemoteOptions {
+            control_waker: Box::new(|| {}),
+            audit: Box::new(|_| {}),
+            ipc: None,
+        },
+    )
+    .unwrap();
+    let bound = server.local_addrs()[0];
+    assert!(bound.ip().is_unspecified(), "{bound}");
+    let mut c = Client::open(SocketAddr::from(([127, 0, 0, 1], bound.port())));
+    let auth = c.login(deck.expose());
+    // Loopback keeps `admin`; "Allow remote admin" only matters for other computers.
+    assert_eq!(
+        auth["result"]["scopes"],
+        json!(["read", "control", "admin"]),
+        "{auth}"
+    );
+}
