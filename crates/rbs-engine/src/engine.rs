@@ -525,11 +525,27 @@ impl Engine {
         // Move the idle instances; each partition that gains one is sent again below,
         // also one that was sent in phase 1.
         self.run_moves(&mut out.errors);
-        // Phase 2: every partition with a part not sent yet, in pipeline order.
+        // Phase 2: every partition with a part not sent yet, in pipeline order. All parts
+        // are sent (their nodes prepared on this thread, which may block on a device)
+        // before any of them is settled, so a producer's new schedule never starts while
+        // a partition it feeds is still preparing (invariant 4a). A partition that drains
+        // first has the partitions sent before it settled, so they stop feeding it.
+        let mut sent: Vec<PartitionId> = Vec::new();
         for p in &order {
-            if self.dirty.contains(p) {
-                self.send_current(*p, &mut out.reports, &mut out.events, &mut out.errors);
+            if !self.dirty.contains(p) {
+                continue;
             }
+            if self.draining.contains(p) {
+                for q in sent.drain(..) {
+                    self.settle_sent(q, &mut out.events, &mut out.errors);
+                }
+            }
+            if self.send_part(*p, &mut out.reports, &mut out.events, &mut out.errors) {
+                sent.push(*p);
+            }
+        }
+        for q in sent {
+            self.settle_sent(q, &mut out.events, &mut out.errors);
         }
 
         // Retired queues: their endpoints left with the swaps above.
@@ -551,10 +567,27 @@ impl Engine {
         events: &mut Vec<(PartitionId, RuntimeEvent)>,
         errors: &mut Vec<EngineError>,
     ) {
+        if self.send_part(p, reports, events, errors) {
+            self.settle_sent(p, events, errors);
+        }
+    }
+
+    /// Sends partition `p`'s current part (its new nodes are prepared on this thread)
+    /// without settling the swap. A swap still in flight is collected first; if it does
+    /// not come back in time, the part stays unsent and [`Engine::service`] sends it
+    /// later. Returns true when the part was sent: then [`Engine::settle_sent`] must
+    /// follow.
+    fn send_part(
+        &mut self,
+        p: PartitionId,
+        reports: &mut BTreeMap<PartitionId, ApplyReport>,
+        events: &mut Vec<(PartitionId, RuntimeEvent)>,
+        errors: &mut Vec<EngineError>,
+    ) -> bool {
         let timeout = self.config.swap_timeout;
         let empty = GraphDescription::new();
         let Some(handle) = self.parts.get_mut(&p) else {
-            return;
+            return false;
         };
         if handle.in_flight() {
             match handle.settle(timeout) {
@@ -563,7 +596,7 @@ impl Engine {
             }
             if handle.in_flight() {
                 errors.push(EngineError::SwapTimeout(p));
-                return;
+                return false;
             }
         }
         self.dirty.remove(&p);
@@ -574,25 +607,31 @@ impl Engine {
             handle.stop_worker();
         }
         let part = self.current.get(&p).unwrap_or(&empty);
-        let diag_t0 = std::time::Instant::now();
-        let diag_ms = |t: std::time::SystemTime| {
-            t.duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_millis() % 100_000)
-        };
-        eprintln!("[diag {}] partition {} apply start (nodes {})", diag_ms(std::time::SystemTime::now()), p.0, part.nodes().len());
-        let diag_applied = handle.apply(part);
-        eprintln!("[diag {}] partition {} prepared in {:?}", diag_ms(std::time::SystemTime::now()), p.0, diag_t0.elapsed());
-        let diag_t1 = std::time::Instant::now();
-        let _diag_guard = DiagSettle(p.0, diag_t1);
-        match diag_applied {
+        match handle.apply(part) {
             Ok(report) => {
                 events.extend(report.events.iter().cloned().map(|e| (p, e)));
                 reports.insert(p, report);
+                true
             }
             Err(e) => {
                 errors.push(EngineError::Apply(p, e));
-                return;
+                false
             }
         }
+    }
+
+    /// Settles the swap of a part [`Engine::send_part`] sent: starts the partition's
+    /// worker if it has none and waits for the swap.
+    fn settle_sent(
+        &mut self,
+        p: PartitionId,
+        events: &mut Vec<(PartitionId, RuntimeEvent)>,
+        errors: &mut Vec<EngineError>,
+    ) {
+        let timeout = self.config.swap_timeout;
+        let Some(handle) = self.parts.get_mut(&p) else {
+            return;
+        };
         match handle.settle(timeout) {
             Ok(c) => push_collected(p, c, events),
             Err(e) => errors.push(EngineError::settle(p, e)),
