@@ -129,6 +129,8 @@ pub struct StudioUi {
     network: Option<NetworkShown>,
     /// Why other computers cannot connect although network access is on.
     network_failure: Option<String>,
+    /// A problem with a network access change (own files, new key, busy settings).
+    network_note: String,
 }
 
 /// What the Remote control section shows while other computers can connect.
@@ -137,6 +139,8 @@ struct NetworkShown {
     fingerprint: String,
     /// Where the certificate came from, and whether it was just renewed.
     note: String,
+    /// The name other computers may use, worked out once when the server started.
+    host: Option<String>,
 }
 
 /// The remote control settings are locked by another program.
@@ -208,6 +212,7 @@ impl StudioUi {
             tokens: Rc::new(VecModel::default()),
             network: None,
             network_failure: None,
+            network_note: String::new(),
         };
         ui.refresh_tokens();
         ui
@@ -396,6 +401,7 @@ impl StudioUi {
         g.set_rc_cert_note(shown.map(|n| n.note.as_str()).unwrap_or_default().into());
         let (status, bad) = self.network_status();
         g.set_rc_network_status(status.into());
+        g.set_rc_network_note(self.network_note.as_str().into());
         g.set_rc_network_status_bad(bad);
     }
 
@@ -407,9 +413,10 @@ impl StudioUi {
         if let Some(why) = &self.network_failure {
             return (format!("Other computers cannot connect: {why}."), true);
         }
-        let name = network_access::host_names()
-            .into_iter()
-            .next()
+        let name = self
+            .network
+            .as_ref()
+            .and_then(|n| n.host.clone())
             .unwrap_or_else(|| "<this computer's address>".into());
         (
             format!(
@@ -429,7 +436,12 @@ impl StudioUi {
         if let Some(why) = &self.remote_failure {
             return (
                 format!(
-                    "Remote control is not running: {why}. Choose another port, or turn remote control off."
+                    "Remote control is not running: {why}. Choose another port, or turn remote control off{}.",
+                    if self.remote.network {
+                        " (or turn off access from other computers)"
+                    } else {
+                        ""
+                    }
                 ),
                 true,
             );
@@ -552,9 +564,13 @@ impl StudioUi {
                 None
             }
         };
+        // Under the lock: making or renewing the certificate saves the whole settings
+        // file, so it must hold the tokens as saved now (`rbs-cli` may have changed them).
+        self.reload_tokens();
         let prepared =
             network_access::prepare(&self.config, &mut self.remote, network_access::now());
         drop(lock);
+        let host_names = network_access::host_names();
         match prepared {
             Ok(p) => {
                 let note = match &p.source {
@@ -571,10 +587,14 @@ impl StudioUi {
                     }
                     Source::Generated { .. } => "Made by RBS.".into(),
                 };
+                let note = format!(
+                    "{note} For apps that can only compare the certificate itself: it changes when the certificate is renewed, so prefer the key pin."
+                );
                 self.network = Some(NetworkShown {
                     key_pin: p.identity.key_pin().to_owned(),
                     fingerprint: p.identity.fingerprint().to_owned(),
                     note,
+                    host: host_names.first().cloned(),
                 });
                 log(&format!(
                     "remote control: network access on, key pin {}{}",
@@ -587,7 +607,7 @@ impl StudioUi {
                 ));
                 Some(NetworkOptions {
                     identity: p.identity,
-                    host_names: network_access::host_names(),
+                    host_names,
                     allow_remote_admin: self.remote.remote_admin,
                 })
             }
@@ -634,13 +654,14 @@ impl StudioUi {
             key: PathBuf::from(key.trim()),
         };
         if let Some(why) = own.problem() {
-            self.remote_note = why;
+            self.network_note = why;
             return;
         }
         if let Err(why) = remote_profile::read_own(&own).and_then(|pem| {
             rbs_api_ws::TlsIdentity::from_pem(&pem.certificate, &pem.key).map(|_| ())
         }) {
-            self.remote_note = format!("These files were not used: {why}.");
+            self.network_note =
+                format!("These files were not used: {why}. Pick other files, or use Made by RBS.");
             return;
         }
         self.change_network(|r| {
@@ -659,6 +680,7 @@ impl StudioUi {
     /// disconnected.
     pub fn new_key(&mut self) {
         let Ok(lock) = self.lock_remote() else {
+            self.network_note = std::mem::take(&mut self.remote_note);
             return;
         };
         self.reload_tokens();
@@ -667,10 +689,10 @@ impl StudioUi {
         match made {
             Ok(()) => {
                 log("remote control: made a new key; clients must pin it again");
-                self.remote_note.clear();
+                self.network_note.clear();
                 self.restart_remote();
             }
-            Err(why) => self.remote_note = format!("No new key was made: {why}."),
+            Err(why) => self.network_note = format!("No new key was made: {why}. Try again."),
         }
     }
 
@@ -678,8 +700,10 @@ impl StudioUi {
     /// server when `f` changed something.
     fn change_network(&mut self, f: impl FnOnce(&mut RemoteProfile) -> bool) {
         let Ok(lock) = self.lock_remote() else {
+            self.network_note = std::mem::take(&mut self.remote_note);
             return;
         };
+        self.network_note.clear();
         self.reload_tokens();
         if !f(&mut self.remote) {
             return;

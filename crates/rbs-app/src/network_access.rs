@@ -77,7 +77,7 @@ fn computer_name() -> Option<String> {
     if cfg!(windows) {
         return std::env::var("COMPUTERNAME").ok();
     }
-    // `hostname` exists on every Unix; it runs once, when network access starts.
+    // `hostname` exists on every Unix. Called when the server starts, not per frame.
     let out = std::process::Command::new("hostname").output().ok()?;
     out.status
         .success()
@@ -118,12 +118,12 @@ pub fn prepare(config: &Path, profile: &mut RemoteProfile, now: i64) -> Result<P
             Ok(p)
         }
         None => Err(format!(
-            "the key RBS made for network access is missing from {}. Make a new key; every client must then pin it again",
+            "the key RBS made for access from other computers is missing from {}. Make a new key; every app on another computer must then check the new key pin",
             config.display()
         )),
         Some(pem) => {
             let mut identity = TlsIdentity::from_pem(&pem.certificate, &pem.key).map_err(|why| {
-                format!("the stored key and certificate cannot be used ({why}). Make a new key; every client must then pin it again")
+                format!("the stored key and certificate cannot be used ({why}). Make a new key; every app on another computer must then check the new key pin")
             })?;
             let renewed = profile
                 .certificate_expires

@@ -173,6 +173,8 @@ export global Studio {
     in property <string> rc-fingerprint;
     // Where the certificate came from, and whether it was just renewed.
     in property <string> rc-cert-note;
+    // A problem with a network access change (files, new key); empty when none.
+    in property <string> rc-network-note;
     // The user's own certificate is used, and its files.
     in property <bool> rc-own;
     in property <string> rc-own-cert;
@@ -798,7 +800,11 @@ export component RemoteControlSettings inherits Rectangle {
     property <int> access: 1;
     // Network access certificate: 0 the one RBS made, 1 the user's own (picked, maybe
     // not yet in use).
-    property <int> cert-source: Studio.rc-own ? 1 : 0;
+    property <bool> own-in-use: Studio.rc-own;
+    // "Your own" picked, its files not yet in use.
+    property <bool> picking-own;
+    property <int> cert-source: (own-in-use || picking-own) ? 1 : 0;
+    changed own-in-use => { picking-own = false; }
     // "New key" asks first: every client must pin the new key.
     property <bool> confirming;
     form := VerticalLayout {
@@ -839,7 +845,7 @@ export component RemoteControlSettings inherits Rectangle {
                 enabled: Studio.rc-enabled;
                 toggled(on) => { Studio.set-rc-network(on); }
             }
-            Hint { text: @tr("Lets apps on other computers on your network connect, over an encrypted connection. Turn it on only on networks you trust. Windows and macOS ask to allow RBS through the firewall the first time; if that is refused, other computers cannot connect and RBS is not told."); }
+            Hint { text: @tr("Lets apps on other computers on your network connect over an encrypted connection. Turn it on only on networks you trust. Changing it disconnects connected apps. Windows and macOS ask to allow RBS through the firewall the first time; if that is refused, other computers cannot connect and RBS is not told."); }
         }
         if Studio.rc-network-status != "": Text {
             text: Studio.rc-network-status;
@@ -851,11 +857,23 @@ export component RemoteControlSettings inherits Rectangle {
             label: @tr("Key pin");
             HorizontalLayout {
                 spacing: Tokens.space-2;
+                Text {
+                    text: Studio.rc-key-pin;
+                    color: Theme.text-primary;
+                    font-size: Tokens.type-body-size;
+                    wrap: char-wrap;
+                    vertical-alignment: center;
+                    horizontal-stretch: 1;
+                    accessible-role: AccessibleRole.text;
+                    accessible-label: @tr("Key pin: {}", Studio.rc-key-pin);
+                }
                 pin := TextField {
+                    // Holds the value for Copy only; the text beside it shows it whole.
+                    visible: false;
+                    width: 0px;
                     label: @tr("Key pin");
                     text: Studio.rc-key-pin;
                     read-only: true;
-                    horizontal-stretch: 1;
                 }
                 Button {
                     horizontal-stretch: 0;
@@ -870,11 +888,22 @@ export component RemoteControlSettings inherits Rectangle {
             label: @tr("Certificate fingerprint (SHA-256)");
             HorizontalLayout {
                 spacing: Tokens.space-2;
+                Text {
+                    text: Studio.rc-fingerprint;
+                    color: Theme.text-primary;
+                    font-size: Tokens.type-body-size;
+                    wrap: char-wrap;
+                    vertical-alignment: center;
+                    horizontal-stretch: 1;
+                    accessible-role: AccessibleRole.text;
+                    accessible-label: @tr("Certificate fingerprint: {}", Studio.rc-fingerprint);
+                }
                 print := TextField {
+                    visible: false;
+                    width: 0px;
                     label: @tr("Certificate fingerprint (SHA-256)");
                     text: Studio.rc-fingerprint;
                     read-only: true;
-                    horizontal-stretch: 1;
                 }
                 Button {
                     horizontal-stretch: 0;
@@ -883,7 +912,7 @@ export component RemoteControlSettings inherits Rectangle {
                     clicked => { print.copy-all(); }
                 }
             }
-            Hint { text: Studio.rc-cert-note + " " + @tr("For apps that can only compare the certificate itself; it changes when the certificate is renewed, so prefer the key pin."); }
+            Hint { text: Studio.rc-cert-note; }
         }
         if Studio.rc-network: VerticalLayout {
             spacing: Tokens.space-1;
@@ -901,13 +930,13 @@ export component RemoteControlSettings inherits Rectangle {
                 options: [@tr("Made by RBS"), @tr("Your own")];
                 index: root.cert-source;
                 selected(i) => {
-                    root.cert-source = i;
+                    root.picking-own = i == 1;
                     if i == 0 { Studio.rc-use-generated(); }
                 }
             }
             Hint { text: root.cert-source == 0
                 ? @tr("RBS made a key and a certificate for this computer. Browser panels on other devices cannot check a key pin: they need your own certificate, one those devices already trust.")
-                : @tr("A certificate chain and its key, as PEM files, for example from your own certificate authority. RBS reads them each time network access starts and never copies them."); }
+                : @tr("A certificate chain and its key, as PEM files, for example from your own certificate authority. RBS reads them each time it starts and never copies them. Using other files disconnects connected apps."); }
         }
         if Studio.rc-network && root.cert-source == 1: VerticalLayout {
             spacing: Tokens.space-3;
@@ -933,6 +962,12 @@ export component RemoteControlSettings inherits Rectangle {
                     clicked => { Studio.rc-use-own(own-cert.text, own-key.text); }
                 }
             }
+        }
+        if Studio.rc-network && Studio.rc-network-note != "": Text {
+            text: Studio.rc-network-note;
+            color: Theme.state-error;
+            font-size: Tokens.type-body-size;
+            wrap: word-wrap;
         }
         if Studio.rc-network && root.cert-source == 0 && !root.confirming: VerticalLayout {
             spacing: Tokens.space-1;
