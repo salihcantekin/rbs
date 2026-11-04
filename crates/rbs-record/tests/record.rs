@@ -195,9 +195,17 @@ fn a_stream_sends_packets_without_a_muxer_with_its_secret_and_reconnect_policy()
         r.log.count(0) >= 6 && r.log.count(1) >= 10
     });
     assert!(reached, "packets: {:?}", recording.progress());
+    let live = recording.progress();
+    assert_eq!((live.connects, live.connected), (1, true), "{live:?}");
     let report = recording.finish();
     assert!(report.shutdown_errors.is_empty(), "{report:?}");
     assert_eq!(report.failure, None);
+    let p = &report.progress;
+    assert_eq!(
+        (p.connects, p.reconnect_attempts, p.connected),
+        (1, 0, false),
+        "the count survives the stop; no longer connected"
+    );
     // The transport got the encoders' streams, video then audio, and no chunk.
     let codecs: Vec<CodecId> = r
         .log

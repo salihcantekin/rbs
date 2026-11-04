@@ -97,6 +97,9 @@ pub struct Behaviour {
     /// After answering `publish`, stop reading until the test also waits on this
     /// barrier (a stall in the middle of a stream).
     pub pause: Option<Arc<std::sync::Barrier>>,
+    /// Accept no connection before the test also waits on this barrier (a server
+    /// that comes up after the client started: the client's handshake waits).
+    pub accept_gate: Option<Arc<std::sync::Barrier>>,
 }
 
 pub struct TestServer {
@@ -112,6 +115,9 @@ impl TestServer {
         let stop = Arc::new(AtomicBool::new(false));
         let flag = Arc::clone(&stop);
         let thread = std::thread::spawn(move || {
+            if let Some(gate) = &behaviour.accept_gate {
+                gate.wait();
+            }
             let mut sessions = Vec::new();
             for (n, conn) in listener.incoming().enumerate() {
                 if flag.load(Ordering::SeqCst) {

@@ -40,6 +40,9 @@ pub struct Behaviour {
     pub latency_ms: u16,
     /// Never answer handshakes.
     pub silent: bool,
+    /// Read nothing before the test also waits on this barrier (a listener that
+    /// comes up after the caller started: its handshake waits).
+    pub accept_gate: Option<Arc<std::sync::Barrier>>,
 }
 
 impl Default for Behaviour {
@@ -53,6 +56,7 @@ impl Default for Behaviour {
             close_after: None,
             latency_ms: 120,
             silent: false,
+            accept_gate: None,
         }
     }
 }
@@ -188,6 +192,9 @@ fn serve(socket: &UdpSocket, b: &Behaviour, stop: &AtomicBool, sessions: &Mutex<
     let mut out = Vec::with_capacity(2048);
     let mut next_id = 1000_u32;
     let mut ever_connected = 0_usize;
+    if let Some(gate) = &b.accept_gate {
+        gate.wait();
+    }
     loop {
         // Once stopped, the packets already received are still read (a client's last
         // shutdown may be queued when `finish` is called); the loop ends at the first

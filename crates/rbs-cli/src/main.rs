@@ -359,6 +359,7 @@ fn record(a: &RecordArgs) -> Result<(), String> {
     let start = Instant::now();
     let mut next = Duration::from_secs(1);
     let mut failure = None;
+    let mut link = Link::default();
     while !stop.load(Ordering::Relaxed) && a.duration.is_none_or(|d| start.elapsed() < d) {
         let serviced = recording.service();
         for (_, event) in &serviced.events {
@@ -371,9 +372,23 @@ fn record(a: &RecordArgs) -> Result<(), String> {
             failure = Some(why);
             break;
         }
+        let progress = recording.progress();
+        if let Some(target) = &a.stream {
+            for change in link.update(&progress) {
+                println!("{}", change.describe(&target.url));
+            }
+        }
         if start.elapsed() >= next {
             next += Duration::from_secs(1);
-            println!("{}", line(start.elapsed(), &recording.progress()));
+            let mut text = line(start.elapsed(), &progress);
+            if a.stream.is_some() {
+                text.push_str(if progress.connected {
+                    " | live"
+                } else {
+                    " | not connected"
+                });
+            }
+            println!("{text}");
         }
         let wait = serviced.wait.unwrap_or(Duration::from_millis(50));
         std::thread::sleep(wait.min(Duration::from_millis(50)));
@@ -413,6 +428,12 @@ fn record(a: &RecordArgs) -> Result<(), String> {
         p.late_render_ticks,
         p.late_audio_ticks
     );
+    if a.stream.is_some() {
+        println!(
+            "stream: connected {} times, {} reconnect attempts, {} items dropped by the transport",
+            p.connects, p.reconnect_attempts, p.transport_drops
+        );
+    }
     if let Some(out) = &file {
         let size = std::fs::metadata(out).map(|m| m.len()).unwrap_or(0);
         println!("file: {} ({size} bytes)", out.display());
@@ -421,8 +442,14 @@ fn record(a: &RecordArgs) -> Result<(), String> {
         println!("shutdown error: {e}");
     }
     let failure = failure.or(report.failure);
+    let url = a.stream.as_ref().map_or("", |t| t.url.as_str());
     match failure {
+        // The stream failed before it ever reached the server.
+        Some(why) if a.stream.is_some() && p.connects == 0 => {
+            Err(format!("never connected to {url}: {why}"))
+        }
         Some(why) => Err(why),
+        None if a.stream.is_some() && p.connects == 0 => Err(format!("never connected to {url}")),
         None if p.packets_muxed() == 0 => Err(format!(
             "no packet reached the {}",
             if a.stream.is_some() { "stream" } else { "file" }
@@ -484,4 +511,72 @@ fn stream_settings(
         settings.transport_options = vec![("latency_ms".to_owned(), ms.to_string())];
     }
     settings
+}
+
+/// A change of a stream's connection, printed when it happens.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum LinkChange {
+    /// Connected, for the `n`th time.
+    Connected(u64),
+    /// Connection attempts after a failure: total so far.
+    Reconnecting(u64),
+}
+
+impl LinkChange {
+    fn describe(self, url: &str) -> String {
+        match self {
+            LinkChange::Connected(1) => format!("connected to {url}"),
+            LinkChange::Connected(n) => format!("connected to {url} again ({n} times)"),
+            LinkChange::Reconnecting(n) => format!("not connected, trying again (attempt {n})"),
+        }
+    }
+}
+
+/// The connection counters seen last, to print each change once.
+#[derive(Debug, Default)]
+struct Link {
+    connects: u64,
+    attempts: u64,
+}
+
+impl Link {
+    fn update(&mut self, p: &Progress) -> Vec<LinkChange> {
+        let mut changes = Vec::new();
+        if p.reconnect_attempts > self.attempts {
+            self.attempts = p.reconnect_attempts;
+            changes.push(LinkChange::Reconnecting(p.reconnect_attempts));
+        }
+        if p.connects > self.connects {
+            self.connects = p.connects;
+            changes.push(LinkChange::Connected(p.connects));
+        }
+        changes
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn connection_changes_are_printed_once_each() {
+        let mut link = Link::default();
+        let mut p = Progress::default();
+        assert!(link.update(&p).is_empty());
+        p.connects = 1;
+        assert_eq!(link.update(&p), [LinkChange::Connected(1)]);
+        assert!(link.update(&p).is_empty(), "nothing new");
+        p.reconnect_attempts = 2;
+        assert_eq!(link.update(&p), [LinkChange::Reconnecting(2)]);
+        p.connects = 2;
+        assert_eq!(link.update(&p), [LinkChange::Connected(2)]);
+        assert_eq!(
+            LinkChange::Connected(1).describe("rtmp://h/app"),
+            "connected to rtmp://h/app"
+        );
+        assert_eq!(
+            LinkChange::Reconnecting(3).describe("x"),
+            "not connected, trying again (attempt 3)"
+        );
+    }
 }

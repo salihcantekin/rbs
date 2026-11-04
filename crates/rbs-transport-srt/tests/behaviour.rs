@@ -446,3 +446,58 @@ fn send_checks_the_session_state_and_item_kind() {
         Err(TransportError::Closed)
     );
 }
+
+#[test]
+fn a_late_listener_gets_recent_media_not_what_waited_in_the_hand_off() {
+    // The listener answers only after 6 s of media (a keyframe every second) was sent:
+    // the first chunks were committed to the hand-off long before the connection.
+    let gate = Arc::new(std::sync::Barrier::new(2));
+    let server = TestServer::start(Behaviour {
+        accept_gate: Some(Arc::clone(&gate)),
+        ..Behaviour::default()
+    });
+    let config = config(&server.url())
+        .with_queue(QueueLimits::new(64 * 1024 * 1024, Duration::from_secs(3)));
+    let mut t = SrtTransportFactory.create(&config).unwrap();
+    t.start(&[]).unwrap();
+    let head = header();
+    send(&mut t, &head);
+    let mut i = 0;
+    let mut send_chunk = |t: &mut Box<dyn Transport>| {
+        send(t, &chunk(i, i % 30 == 0, 500));
+        i += 1;
+    };
+    for _ in 0..180 {
+        send_chunk(&mut t);
+    }
+    gate.wait();
+    let mut events = Vec::new();
+    wait_for(&mut t, &mut events, |e| *e == TransportEvent::Connected);
+    // What was queued goes out before live media goes on, as it would in real time
+    // (a frame every 33 ms); polling moves staged items to the I/O thread.
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while t.stats().queued_bytes > 0 {
+        assert!(Instant::now() < deadline, "the queue never drained");
+        t.poll_events(&mut events);
+        std::thread::yield_now();
+    }
+    for _ in 0..60 {
+        send_chunk(&mut t);
+    }
+    t.finish(Duration::from_secs(5)).unwrap();
+    let sessions = server.finish();
+    assert_eq!(sessions.len(), 1);
+    let got = delivered(&sessions[0].payload, head.data.len());
+    // The newest chunk before the connection is 179: nothing older than the 3 s
+    // queue limit before it (90 chunks at 30 per second) goes out, and the stream
+    // starts at a keyframe and is continuous from there.
+    assert!(
+        got.first().is_some_and(|c| c.1),
+        "starts at a keyframe: {got:?}"
+    );
+    assert!(got[0].0 + 90 >= 179, "stale first chunk {}", got[0].0);
+    for pair in got.windows(2) {
+        assert_eq!(pair[1].0, pair[0].0 + 1, "{got:?}");
+    }
+    assert_eq!(got.last().map(|c| c.0), Some(239));
+}

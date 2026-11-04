@@ -672,3 +672,72 @@ fn after_a_stall_video_resumes_at_a_keyframe_with_intact_gops() {
         }
     }
 }
+
+#[test]
+fn a_late_server_gets_recent_media_not_what_waited_in_the_hand_off() {
+    // The server accepts only after 6 s of media (a keyframe every second) was sent:
+    // the first packets were committed to the hand-off long before the connection.
+    let gate = std::sync::Arc::new(std::sync::Barrier::new(2));
+    let server = TestServer::start(Behaviour {
+        accept_gate: Some(std::sync::Arc::clone(&gate)),
+        ..Behaviour::default()
+    });
+    let config = config(&server.url())
+        .with_queue(QueueLimits::new(64 * 1024 * 1024, Duration::from_secs(3)));
+    let mut t = RtmpTransportFactory.create(&config).unwrap();
+    t.start(&streams()).unwrap();
+    let mut i = 0;
+    let mut send_frame = |t: &mut Box<dyn Transport>| {
+        send(t, VIDEO, &video(1000 + i * 33, i % 30 == 0, 200));
+        send(t, AUDIO, &audio(1000 + i * 33));
+        i += 1;
+    };
+    for _ in 0..180 {
+        send_frame(&mut t);
+    }
+    gate.wait();
+    let mut events = Vec::new();
+    wait_for(&mut t, &mut events, |e| *e == TransportEvent::Connected);
+    // What was queued goes out before live media goes on, as it would in real time
+    // (a frame every 33 ms); polling moves staged items to the I/O thread.
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while t.stats().queued_bytes > 0 {
+        assert!(Instant::now() < deadline, "the queue never drained");
+        t.poll_events(&mut events);
+        std::thread::yield_now();
+    }
+    for _ in 0..60 {
+        send_frame(&mut t);
+    }
+    t.finish(Duration::from_secs(5)).unwrap();
+    let sessions = server.finish();
+    let media = sessions[0].media();
+    assert_eq!(
+        media.iter().map(|m| m.type_id).take(3).collect::<Vec<_>>(),
+        [18, 9, 8]
+    );
+    // RTMP time is the packet's time plus the 1 s lead: the newest packet before the
+    // connection is at 179 * 33 + 1000 ms. Nothing older than the 3 s queue limit
+    // before it goes out, and video starts at a keyframe.
+    let connected_at = 179 * 33 + 1000;
+    let first = &media[3];
+    assert_eq!(first.type_id, 9, "video first: {first:?}");
+    assert_eq!(first.body[0], 0x17, "starts at a keyframe");
+    for m in &media[3..] {
+        assert!(
+            u64::from(m.timestamp) + 3000 >= connected_at,
+            "stale packet at {} ms",
+            m.timestamp
+        );
+    }
+    // From there the stream is continuous: no gap of more than a frame.
+    let video: Vec<u64> = media[3..]
+        .iter()
+        .filter(|m| m.type_id == 9)
+        .map(|m| u64::from(m.timestamp))
+        .collect();
+    assert!(video.len() >= 30, "{video:?}");
+    for pair in video.windows(2) {
+        assert_eq!(pair[1] - pair[0], 33, "{video:?}");
+    }
+}

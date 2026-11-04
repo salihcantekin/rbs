@@ -17,6 +17,7 @@ use rbs_graph::runtime::{JoinError, PER_TICK_EVENTS, Tick};
 use rbs_nodes::encode::CARRY_PACKETS;
 use rbs_nodes::output::WaitClock;
 use rbs_nodes::{OutputNode, VideoEncoderNode};
+use rbs_transport::TransportEvent;
 use std::time::Duration;
 use support::{
     EncoderState, FakeEncoderFactory, FakeMuxerFactory, FakeTransportFactory, FrameSource, Got,
@@ -112,6 +113,64 @@ fn each_new_frame_is_encoded_once_and_the_file_gets_header_media_trailer() {
     );
     assert_eq!(c.tx_state.finished.load(Ordering::Relaxed), 1);
     assert_eq!(c.enc_stats.refused.load(Ordering::Relaxed), 0);
+}
+
+#[test]
+fn connection_events_are_counted_and_the_state_follows_them() {
+    let mut c = chain(1, 1, 64, TransportState::logging());
+    let push = |c: &Chain, events: Vec<TransportEvent>| {
+        c.tx_state.events.lock().unwrap().extend(events);
+    };
+    let state = |c: &Chain| {
+        (
+            c.out_stats.connects.load(Ordering::Relaxed),
+            c.out_stats.reconnect_attempts.load(Ordering::Relaxed),
+            c.out_stats.connected.load(Ordering::Relaxed),
+        )
+    };
+    c.rig.ticks(1);
+    assert_eq!(
+        state(&c),
+        (0, 0, false),
+        "not connected before the transport says so"
+    );
+    push(&c, vec![TransportEvent::Connected]);
+    c.rig.ticks(1);
+    assert_eq!(state(&c), (1, 0, true));
+    push(
+        &c,
+        vec![
+            TransportEvent::Reconnecting { attempt: 1 },
+            TransportEvent::Reconnecting { attempt: 2 },
+        ],
+    );
+    c.rig.ticks(1);
+    assert_eq!(state(&c), (1, 2, false));
+    push(&c, vec![TransportEvent::Connected]);
+    c.rig.ticks(1);
+    assert_eq!(state(&c), (2, 2, true));
+    c.rig.drain();
+    assert_eq!(state(&c), (2, 2, false), "released: no longer connected");
+}
+
+#[test]
+fn a_disconnect_fails_the_output_with_the_transports_error() {
+    let mut c = chain(1, 1, 64, TransportState::logging());
+    c.rig.ticks(1);
+    c.tx_state
+        .events
+        .lock()
+        .unwrap()
+        .push(TransportEvent::Disconnected {
+            error: rbs_transport::TransportError::Connection("refused (test)".into()),
+        });
+    c.rig.ticks(2);
+    let cause = c.out_stats.failure.get().cloned().unwrap_or_default();
+    assert!(
+        cause.starts_with("transport disconnected: ") && cause.contains("refused (test)"),
+        "{cause}"
+    );
+    assert!(!c.out_stats.connected.load(Ordering::Relaxed));
 }
 
 #[test]
