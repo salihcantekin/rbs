@@ -294,7 +294,15 @@ fn a_control_api_client_drives_the_studio() {
     assert_eq!(none["error"]["data"]["kind"], "conflict", "{none}");
 
     // The host goes first while the server still holds its waker: the control thread
-    // must end anyway (the drop would hang otherwise).
-    drop(host);
+    // must end anyway. The drop runs on a helper thread so a regression fails the test
+    // instead of hanging it.
+    let (done_tx, done_rx) = mpsc::channel();
+    std::thread::spawn(move || {
+        drop(host);
+        let _ = done_tx.send(());
+    });
+    done_rx
+        .recv_timeout(LIMIT)
+        .expect("the host stopped while the server held its waker");
     drop(api);
 }
