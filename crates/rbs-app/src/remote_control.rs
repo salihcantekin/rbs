@@ -1,7 +1,9 @@
-//! Remote control while it is on: the control API's thread (`rbs_api::ApiServer`) and
-//! its WebSocket transport on loopback (`rbs_api_ws`), wired together here because the
-//! app is a composition root (P1, ADR-0044 decision 4). The caller attaches the returned
-//! endpoint to the studio's control thread (`StudioHost::attach_api`).
+//! Remote control while it is on: the control API's thread (`rbs_api::ApiServer`), its
+//! WebSocket transport on loopback (`rbs_api_ws`) and its local IPC transport
+//! (`rbs_api_ipc`, for `rbs-cli` and other programs of the same user), wired together
+//! here because the app is a composition root (P1, ADR-0044 decision 4). The caller
+//! attaches the returned endpoint to the studio's control thread
+//! (`StudioHost::attach_api`), with [`ApiTokens`] so it answers `tokens.*`.
 //!
 //! Nothing here exists while remote control is off (ADR-0013): the settings hold no
 //! server, so no thread, socket or event buffer. On with no app connected, the API
@@ -9,18 +11,24 @@
 
 use std::fmt;
 use std::net::{SocketAddr, TcpListener};
+use std::path::PathBuf;
 
-use rbs_api::request::ClientInfo;
+use rbs_api::request::{ClientInfo, Response};
 use rbs_api::{
-    ApiOptions, ApiServer, AuditEvent, ControlEndpoint, ControlTransport, ServerConfig, TokenStore,
+    ApiError, ApiOptions, ApiServer, AuditEvent, Command, ControlEndpoint, ControlTransport,
+    ServerConfig, TokenHandle, TokenStore,
 };
+use rbs_api_ipc::{Endpoint, IpcConfig, IpcTransport};
 use rbs_api_ws::{WsConfig, WsTransport};
 
 /// A running remote control server. Dropping it stops the transport (connected apps
 /// are told the server is going away), then the API thread.
 pub struct RemoteServer {
-    // Field order is drop order: the transport stops before the API thread.
+    // Field order is drop order: the transports stop before the API thread.
     transport: WsTransport,
+    ipc: Option<IpcTransport>,
+    /// Why local IPC is not served, when it is not.
+    ipc_problem: Option<String>,
     api: ApiServer,
 }
 
@@ -48,6 +56,9 @@ pub struct RemoteOptions {
     pub control_waker: Box<dyn Fn() + Send + Sync>,
     /// Logs connections, authentication and privileged calls (never a token).
     pub audit: Box<dyn FnMut(AuditEvent) + Send>,
+    /// The local IPC endpoint to serve as well (`Endpoint::for_current_user`), or
+    /// `None` for none. Not serving it is not fatal: `RemoteServer::ipc_problem`.
+    pub ipc: Option<Endpoint>,
 }
 
 impl RemoteServer {
@@ -81,7 +92,25 @@ impl RemoteServer {
                 None => StartError::Other(e.to_string()),
             });
         }
-        Ok((RemoteServer { transport, api }, endpoint))
+        let (ipc, ipc_problem) = match options.ipc {
+            None => (None, None),
+            Some(e) => {
+                let mut ipc = IpcTransport::new(IpcConfig::new(e));
+                match ipc.start(api.inbox()) {
+                    Ok(()) => (Some(ipc), None),
+                    Err(e) => (None, Some(e.to_string())),
+                }
+            }
+        };
+        Ok((
+            RemoteServer {
+                transport,
+                ipc,
+                ipc_problem,
+                api,
+            },
+            endpoint,
+        ))
     }
 
     /// Listens on `127.0.0.1` and `::1` at `port`.
@@ -99,6 +128,25 @@ impl RemoteServer {
         self.api.set_tokens(tokens);
     }
 
+    /// What the control thread needs to answer `tokens.*` on the settings in `config`.
+    pub fn api_tokens(&self, config: PathBuf) -> ApiTokens {
+        ApiTokens {
+            config,
+            handle: self.api.token_handle(),
+        }
+    }
+
+    /// The local IPC endpoint it serves, if it does.
+    pub fn ipc_endpoint(&self) -> Option<&Endpoint> {
+        self.ipc.as_ref().map(IpcTransport::endpoint)
+    }
+
+    /// Why local IPC is not served although asked for (another RBS serves it, or the
+    /// endpoint's directory cannot be used), or `None`.
+    pub fn ipc_problem(&self) -> Option<&str> {
+        self.ipc_problem.as_deref()
+    }
+
     /// The addresses it listens on.
     pub fn local_addrs(&self) -> &[SocketAddr] {
         self.transport.local_addrs()
@@ -107,5 +155,25 @@ impl RemoteServer {
     /// Rounds the API thread has run (idle-cost check).
     pub fn rounds(&self) -> u64 {
         self.api.rounds()
+    }
+}
+
+/// The control API's `tokens.*` methods for the control thread: the settings in
+/// `config` (`rbs_remote_settings::token_command`) and the running server's tokens.
+#[derive(Debug, Clone)]
+pub struct ApiTokens {
+    config: PathBuf,
+    handle: TokenHandle,
+}
+
+impl ApiTokens {
+    /// Answers `command` if it is a `tokens.*` command, `None` otherwise. A change is
+    /// saved and the server takes the new tokens (under the settings lock) before this
+    /// returns, so a new token works, or a revoked token's apps are disconnected,
+    /// before the reply is sent. `true` with the reply when the tokens changed.
+    pub fn answer(&self, command: &Command) -> Option<Result<(Response, bool), ApiError>> {
+        let answer =
+            rbs_remote_settings::token_command(&self.config, command, |s| self.handle.set(s))?;
+        Some(answer.map(|a| (a.response, a.changed)))
     }
 }

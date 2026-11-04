@@ -10,12 +10,16 @@
 //! readable and writable by the current user only, because whoever can write it can add
 //! a token of their own.
 
+mod api;
+
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use rbs_api::scope::{Scope, ScopeSet};
 use rbs_api::{Token, TokenEntry, TokenStore};
 use serde::{Deserialize, Serialize};
+
+pub use api::{TokenAnswer, token_command};
 
 /// The RBS configuration directory: `RBS_CONFIG_DIR` if set, else the platform's
 /// per-user configuration directory plus `RBS` (or `rbs` on Linux).

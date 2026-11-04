@@ -126,6 +126,7 @@ fn start(profile: &RemoteProfile) -> RemoteServer {
         RemoteOptions {
             control_waker: Box::new(|| {}),
             audit: Box::new(|_| {}),
+            ipc: None,
         },
     )
     .unwrap();
@@ -213,6 +214,7 @@ fn a_taken_port_fails_the_start_with_a_reason() {
         RemoteOptions {
             control_waker: Box::new(|| {}),
             audit: Box::new(|_| {}),
+            ipc: None,
         },
     );
     let Err(why) = result else {
@@ -223,4 +225,148 @@ fn a_taken_port_fails_the_start_with_a_reason() {
         why.to_string(),
         format!("another app is using port {}", taken.port())
     );
+}
+
+/// A fresh IPC endpoint per test: tests run in parallel. Unix socket paths are short.
+fn ipc_endpoint(name: &str) -> rbs_api_ipc::Endpoint {
+    let id = format!("{name}-{}", std::process::id());
+    if cfg!(windows) {
+        rbs_api_ipc::Endpoint(format!(r"\\.\pipe\rbs-app-test-{id}").into())
+    } else {
+        let dir = std::env::temp_dir().join(format!("rbs-app-{id}"));
+        let _ = std::fs::remove_dir_all(&dir);
+        rbs_api_ipc::Endpoint(dir.join("c.sock"))
+    }
+}
+
+/// `rbs-cli token` over local IPC: the studio's control thread answers `tokens.*` from
+/// the settings file, a new token works at once over WebSocket, the UI is told, and a
+/// revoke disconnects the app using it. The studio itself failed to start here (no
+/// GPU needed): token management does not depend on it.
+#[test]
+fn tokens_changed_over_local_ipc_take_effect_at_once() {
+    use rbs_api_ipc::{IpcClient, Received};
+    use rbs_app::studio_host::{HostConfig, StudioHost, Update};
+
+    let config = std::env::temp_dir().join(format!("rbs-app-config-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&config);
+    let profile = RemoteProfile {
+        enabled: true,
+        ..RemoteProfile::new()
+    };
+    rbs_remote_settings::save(&config, &profile).unwrap();
+
+    let (tx, updates) = std::sync::mpsc::channel();
+    let host = StudioHost::spawn(
+        HostConfig::desktop(),
+        || (rbs_record::RecordAdapters::new(), Vec::new()),
+        || Err("no GPU in this test".into()),
+        rbs_engine::Engine::new,
+        move |u| {
+            let _ = tx.send(u);
+        },
+    )
+    .unwrap();
+    let next = |want: fn(&Update) -> bool| loop {
+        let u = updates.recv_timeout(LIMIT).expect("the host answered");
+        if want(&u) {
+            return u;
+        }
+    };
+    next(|u| matches!(u, Update::Failed(_)));
+
+    let endpoint = ipc_endpoint("tokens");
+    let (server, api) = RemoteServer::start(
+        vec![SocketAddr::from(([127, 0, 0, 1], 0))],
+        profile.store(),
+        RemoteOptions {
+            control_waker: Box::new(host.api_waker()),
+            audit: Box::new(|_| {}),
+            ipc: Some(endpoint.clone()),
+        },
+    )
+    .unwrap();
+    assert_eq!(server.ipc_problem(), None);
+    host.attach_api(api, Some(server.api_tokens(config.clone())));
+
+    let mut cli = IpcClient::connect(&endpoint, LIMIT).unwrap();
+    let mut call = |id: u32, method: &str, params: Value| -> Value {
+        cli.send(
+            &json!({"jsonrpc": "2.0", "id": id, "method": method, "params": params}).to_string(),
+        )
+        .unwrap();
+        match cli.recv(LIMIT).unwrap() {
+            Some(Received::Message(m)) => serde_json::from_str(&m).unwrap(),
+            other => panic!("no answer: {other:?}"),
+        }
+    };
+    let hello = call(
+        1,
+        "session.hello",
+        json!({"protocols": ["1.0"], "client": {"name": "rbs-cli", "version": "1"}}),
+    );
+    assert!(
+        hello["result"]["scopes"]
+            .as_array()
+            .unwrap()
+            .contains(&json!("tokens")),
+        "{hello}"
+    );
+    let created = call(
+        2,
+        "tokens.create",
+        json!({"name": "Deck", "scopes": ["read", "control"]}),
+    );
+    let token = created["result"]["token"].as_str().unwrap().to_owned();
+    next(|u| matches!(u, Update::TokensChanged));
+    let saved = rbs_remote_settings::read(&config).unwrap().unwrap();
+    assert!(saved.enabled, "other settings are kept");
+    assert!(saved.store().verify(&token).is_some());
+
+    // Works at once over WebSocket, without the settings window.
+    let mut deck = Client::open(server.local_addrs()[0]);
+    let auth = deck.login(&token);
+    assert_eq!(
+        auth["result"]["scopes"],
+        json!(["read", "control"]),
+        "{auth}"
+    );
+    // A panel token cannot manage tokens, and loopback WebSocket never gets `tokens`.
+    let denied = deck.call(json!({"jsonrpc": "2.0", "id": 3, "method": "tokens.list"}));
+    assert_eq!(denied["error"]["data"]["kind"], "scope_denied", "{denied}");
+
+    let list = call(3, "tokens.list", json!({}));
+    assert_eq!(
+        list["result"]["tokens"],
+        json!([{"name": "Deck", "scopes": ["read", "control"]}])
+    );
+    let taken = call(
+        4,
+        "tokens.create",
+        json!({"name": "Deck", "scopes": ["read"]}),
+    );
+    assert_eq!(taken["error"]["data"]["kind"], "conflict", "{taken}");
+
+    let revoked = call(5, "tokens.revoke", json!({"name": "Deck"}));
+    assert_eq!(revoked["result"], json!({}), "{revoked}");
+    assert_eq!(
+        deck.closed(),
+        Some(close_code(rbs_api::CloseReason::Revoked))
+    );
+    next(|u| matches!(u, Update::TokensChanged));
+    assert!(
+        rbs_remote_settings::read(&config)
+            .unwrap()
+            .unwrap()
+            .tokens
+            .is_empty()
+    );
+
+    host.detach_api();
+    drop(server);
+    drop(host);
+    let _ = std::fs::remove_dir_all(&config);
+    if !cfg!(windows) {
+        let _ = std::fs::remove_dir_all(endpoint.0.parent().unwrap());
+    }
 }

@@ -13,6 +13,7 @@
 #![allow(clippy::print_stdout, clippy::print_stderr)] // A command-line program prints.
 
 mod args;
+mod control;
 mod permissions;
 mod platform;
 mod scene;
@@ -42,8 +43,14 @@ fn main() -> ExitCode {
         Ok(Command::Devices) => devices(),
         Ok(Command::Token(t)) => {
             let config = rbs_remote_settings::config_dir();
+            // A running RBS serves its own config directory: with another one chosen
+            // here, only the file is changed.
+            let ipc = std::env::var_os("RBS_CONFIG_DIR")
+                .is_none()
+                .then(|| rbs_api_ipc::Endpoint::for_current_user().ok())
+                .flatten();
             let (mut out, mut notes) = (std::io::stdout(), std::io::stderr());
-            match token::run(&config, &t, &mut out, &mut notes) {
+            match token::run(&config, ipc.as_ref(), &t, &mut out, &mut notes) {
                 Ok(()) => ExitCode::SUCCESS,
                 Err(e) => {
                     eprintln!("token: {e}");

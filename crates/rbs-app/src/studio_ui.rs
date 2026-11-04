@@ -409,14 +409,28 @@ impl StudioUi {
         let Some(host) = &self.host else {
             return;
         };
+        // Local IPC too, so `rbs-cli token` changes reach this app at once.
+        let ipc = match rbs_api_ipc::Endpoint::for_current_user() {
+            Ok(e) => Some(e),
+            Err(why) => {
+                log(&format!("remote control: no local IPC endpoint: {why}"));
+                None
+            }
+        };
         let options = RemoteOptions {
             control_waker: Box::new(host.api_waker()),
             audit: Box::new(|a| log(&format!("remote control: {a:?}"))),
+            ipc,
         };
         match RemoteServer::start_on_port(self.remote.port, self.remote.store(), options) {
             Ok((server, endpoint)) => {
-                host.attach_api(endpoint);
+                host.attach_api(endpoint, Some(server.api_tokens(self.config.clone())));
                 log(&format!("remote control on at {}", self.remote.address()));
+                match (server.ipc_endpoint(), server.ipc_problem()) {
+                    (Some(e), _) => log(&format!("remote control: local IPC at {e}")),
+                    (None, Some(why)) => log(&format!("remote control: no local IPC: {why}")),
+                    (None, None) => {}
+                }
                 self.remote_server = Some(server);
                 self.remote_failure = None;
             }
@@ -1078,6 +1092,12 @@ impl StudioUi {
                 self.folder_serial += 1;
                 self.save_profile();
             }
+            // `rbs-cli token` over local IPC made or revoked a token; the server has
+            // it already. Show the list as saved. Reading it again also sets it in the
+            // server: if this window read the file without the lock (opening Settings,
+            // starting remote control) just before the change and set that older list
+            // after it, this puts the newer one back.
+            Update::TokensChanged => self.reload_tokens(),
         }
         out
     }

@@ -665,6 +665,8 @@ impl Server {
                     if matches!(scope, Some(Scope::Admin | Scope::Plugins | Scope::Tokens)) {
                         let detail = match command {
                             Command::RecordStartToFile(p) => Some(p.path.clone()),
+                            Command::TokensCreate(p) => Some(p.name.clone()),
+                            Command::TokensRevoke(p) => Some(p.name.clone()),
                             _ => None,
                         };
                         self.actions
