@@ -4275,9 +4275,11 @@ dependencies = [
 name = "rbs-cli"
 version = "0.0.1"
 dependencies = [
+ "rbs-audio-io",
  "rbs-audio-io-coreaudio",
  "rbs-audio-io-test",
  "rbs-audio-io-wasapi",
+ "rbs-capture",
  "rbs-capture-avf",
  "rbs-capture-mf",
  "rbs-capture-sck",
