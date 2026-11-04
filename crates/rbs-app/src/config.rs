@@ -2,28 +2,9 @@
 
 use std::path::{Path, PathBuf};
 
-/// The app's configuration directory: `RBS_CONFIG_DIR` if set, else the
-/// platform's per-user configuration directory plus `RBS` (or `rbs` on Linux).
-pub fn config_dir() -> PathBuf {
-    if let Some(d) = std::env::var_os("RBS_CONFIG_DIR") {
-        return PathBuf::from(d);
-    }
-    let home = || std::env::var_os("HOME").map(PathBuf::from);
-    if cfg!(windows) {
-        if let Some(d) = std::env::var_os("APPDATA") {
-            return PathBuf::from(d).join("RBS");
-        }
-    } else if cfg!(target_os = "macos") {
-        if let Some(h) = home() {
-            return h.join("Library").join("Application Support").join("RBS");
-        }
-    } else if let Some(d) = std::env::var_os("XDG_CONFIG_HOME").filter(|d| !d.is_empty()) {
-        return PathBuf::from(d).join("rbs");
-    } else if let Some(h) = home() {
-        return h.join(".config").join("rbs");
-    }
-    std::env::temp_dir().join("rbs")
-}
+/// The app's configuration directory (shared with `rbs-cli`, which manages access
+/// tokens in the same place).
+pub use rbs_remote_settings::config_dir;
 
 /// Directory of workspace files.
 pub fn workspace_dir(config: &Path) -> PathBuf {

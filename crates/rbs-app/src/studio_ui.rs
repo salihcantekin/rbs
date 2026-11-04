@@ -11,12 +11,12 @@ use rbs_app::canvas_profile::{self, CanvasProfile, RATES, SIZES};
 use rbs_app::encoder_form::{Choices, EncoderForm};
 use rbs_app::record_profile::{self, AUDIO_KBPS, Format, RateMode, RecordProfile, VIDEO_KBPS};
 use rbs_app::remote_control::{RemoteOptions, RemoteServer};
-use rbs_app::remote_profile::{self, Access, RemoteProfile};
 use rbs_app::studio_host::{
     Command, EncoderInfo, EncoderOptions, RecordRequest, RecordingUpdate, SourceKind, SourceRow,
     SourceStatus, StudioHost, Target, Update,
 };
 use rbs_audio::LevelMeter;
+use rbs_remote_settings::{self as remote_profile, Access, RemoteProfile};
 use rbs_scene::model::SourceId;
 use rbs_ui::meter::{self, Meter, SCALE_MARKS_DB};
 use slint::{Model, ModelRc, SharedString, VecModel};
@@ -126,10 +126,15 @@ pub struct StudioUi {
     tokens: Rc<VecModel<TokenRow>>,
 }
 
+/// The remote control settings are locked by another program.
+struct Busy;
+
 impl StudioUi {
     pub fn new(config: &Path) -> Self {
         let (profile, why) = record_profile::load(config);
         let (canvas, canvas_why) = canvas_profile::load(config);
+        // Without the lock: `rbs-cli` replaces the file in one rename, so this reads
+        // either version whole; a bad file it moves aside is never one `rbs-cli` wrote.
         let (remote, remote_why) = remote_profile::load(config);
         let scale = SCALE_MARKS_DB
             .iter()
@@ -397,6 +402,10 @@ impl StudioUi {
         if self.remote_server.is_some() {
             return;
         }
+        if self.host.is_none() {
+            return;
+        }
+        self.reload_tokens();
         let Some(host) = &self.host else {
             return;
         };
@@ -437,6 +446,10 @@ impl StudioUi {
         if self.remote.enabled == on {
             return;
         }
+        let Ok(_lock) = self.lock_remote() else {
+            return;
+        };
+        self.reload_tokens();
         self.remote.enabled = on;
         self.save_remote();
         self.sync_remote();
@@ -447,7 +460,11 @@ impl StudioUi {
             Ok(port) => {
                 self.remote_note.clear();
                 self.remote_port_text = port.to_string();
-                if port != self.remote.port {
+                let lock = (port != self.remote.port).then(|| self.lock_remote());
+                if let Some(Err(Busy)) = lock {
+                    self.remote_port_text = self.remote.port.to_string();
+                } else if port != self.remote.port {
+                    self.reload_tokens();
                     self.remote.port = port;
                     self.save_remote();
                     // Listen on the new port: connected apps reconnect there.
@@ -470,6 +487,10 @@ impl StudioUi {
             .get(access as usize)
             .copied()
             .unwrap_or(Access::Control);
+        let Ok(_lock) = self.lock_remote() else {
+            return;
+        };
+        self.reload_tokens();
         match self.remote.create_token(name, access) {
             Ok(token) => {
                 self.revoked = None;
@@ -488,7 +509,20 @@ impl StudioUi {
     }
 
     pub fn revoke_token(&mut self, i: i32) {
-        let Ok(i) = usize::try_from(i) else {
+        // The row the user picked, by name: the list may have changed on disk since it
+        // was shown.
+        let Some(name) = usize::try_from(i)
+            .ok()
+            .and_then(|i| self.remote.tokens.get(i))
+            .map(|t| t.name.clone())
+        else {
+            return;
+        };
+        let Ok(_lock) = self.lock_remote() else {
+            return;
+        };
+        self.reload_tokens();
+        let Some(i) = self.remote.index_of(&name) else {
             return;
         };
         if let Some(entry) = self.remote.revoke(i) {
@@ -510,12 +544,75 @@ impl StudioUi {
         let Some((i, entry)) = self.revoked.take() else {
             return;
         };
+        let Ok(_lock) = self.lock_remote() else {
+            return;
+        };
+        self.reload_tokens();
         match self.remote.restore(i, entry) {
             Ok(()) => {
                 self.save_remote();
                 self.tokens_changed();
             }
             Err(why) => self.remote_note = why,
+        }
+    }
+
+    /// The Settings window opened: it shows the access tokens as saved now, including
+    /// changes `rbs-cli token` made while the app ran.
+    pub fn settings_opened(&mut self) {
+        self.reload_tokens();
+    }
+
+    /// Holds the settings file while this window reads, changes and saves it, so a
+    /// change `rbs-cli token` makes at the same time is not lost. `Ok(None)` (logged)
+    /// when the lock file cannot be used; the change is still made.
+    /// The window never waits for the lock: while `rbs-cli` holds it, the change is
+    /// not made and the section says why (`Busy`).
+    fn lock_remote(&mut self) -> Result<Option<remote_profile::SettingsLock>, Busy> {
+        match remote_profile::try_lock(&self.config) {
+            Ok(Some(lock)) => Ok(Some(lock)),
+            Ok(None) => {
+                self.remote_note =
+                    "Another program (rbs-cli) is changing the remote control settings. Try again."
+                        .into();
+                Err(Busy)
+            }
+            Err(e) => {
+                log(&format!("remote control settings not locked: {e}"));
+                Ok(None)
+            }
+        }
+    }
+
+    /// Takes the access tokens as saved now: another program (`rbs-cli token`) may have
+    /// added or revoked some since the file was read. Called before every change made
+    /// here, so saving does not undo theirs, and a token revoked there stops working
+    /// (its apps are disconnected). A file that cannot be used now is left alone and
+    /// the tokens held are kept; the next change writes them back.
+    fn reload_tokens(&mut self) {
+        match remote_profile::read(&self.config) {
+            Ok(Some(saved)) => {
+                if self.remote.take_tokens(saved) {
+                    if self
+                        .new_token
+                        .as_ref()
+                        .is_some_and(|(n, _)| self.remote.index_of(n).is_none())
+                    {
+                        self.new_token = None;
+                    }
+                    self.tokens_changed();
+                }
+            }
+            // Deleted: no tokens (the next change writes the file again).
+            Ok(None) => {
+                if self.remote.take_tokens(RemoteProfile::new()) {
+                    self.new_token = None;
+                    self.tokens_changed();
+                }
+            }
+            Err(why) => {
+                log(&format!("remote control settings not read again: {why}"));
+            }
         }
     }
 
@@ -547,18 +644,7 @@ impl StudioUi {
             .iter()
             .map(|t| TokenRow {
                 name: t.name.as_str().into(),
-                access: Access::of(t.scopes)
-                    .map_or_else(
-                        || {
-                            t.scopes
-                                .iter()
-                                .map(|s| s.name())
-                                .collect::<Vec<_>>()
-                                .join(", ")
-                        },
-                        |a| a.label().to_owned(),
-                    )
-                    .into(),
+                access: Access::describe(t.scopes).into(),
             })
             .collect();
         set_rows(&self.tokens, rows);

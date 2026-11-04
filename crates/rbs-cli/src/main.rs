@@ -3,6 +3,7 @@
 //! ```text
 //! rbs-cli record C:\Videos\rec.mkv --seconds 60
 //! rbs-cli devices
+//! rbs-cli token create "Stream Deck"
 //! ```
 //!
 //! `record` captures the main display with the first camera in the bottom-right corner,
@@ -15,6 +16,7 @@ mod args;
 mod permissions;
 mod platform;
 mod scene;
+mod token;
 
 use std::io::{BufRead, IsTerminal};
 use std::process::ExitCode;
@@ -38,6 +40,17 @@ fn main() -> ExitCode {
             ExitCode::SUCCESS
         }
         Ok(Command::Devices) => devices(),
+        Ok(Command::Token(t)) => {
+            let config = rbs_remote_settings::config_dir();
+            let (mut out, mut notes) = (std::io::stdout(), std::io::stderr());
+            match token::run(&config, &t, &mut out, &mut notes) {
+                Ok(()) => ExitCode::SUCCESS,
+                Err(e) => {
+                    eprintln!("token: {e}");
+                    ExitCode::FAILURE
+                }
+            }
+        }
         Ok(Command::Record(a)) => match record(&a) {
             Ok(()) => ExitCode::SUCCESS,
             Err(e) => {

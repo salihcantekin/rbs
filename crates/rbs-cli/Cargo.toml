@@ -3,7 +3,8 @@ name = "rbs-cli"
 description = "The headless RBS command line: records a scene to a file with the platform's adapters (ADR-0040)."
 version.workspace = true
 edition.workspace = true
-rust-version.workspace = true
+# rbs-remote-settings needs 1.89 (`File::lock`).
+rust-version = "1.89"
 repository.workspace = true
 license.workspace = true
 publish.workspace = true
@@ -30,6 +31,8 @@ rbs-thread-os = { path = "../rbs-thread-os" }
 rbs-mux-matroska = { path = "../rbs-mux-matroska" }
 rbs-mux-fmp4 = { path = "../rbs-mux-fmp4" }
 rbs-transport-file = { path = "../rbs-transport-file" }
+# `token`: the remote control settings file, shared with rbs-app.
+rbs-remote-settings = { path = "../rbs-remote-settings" }
 
 [target.'cfg(windows)'.dependencies]
 rbs-capture-wgc = { path = "../rbs-capture-wgc" }
@@ -47,6 +50,8 @@ rbs-codec-videotoolbox = { path = "../rbs-codec-videotoolbox" }
 rbs-codec-audiotoolbox = { path = "../rbs-codec-audiotoolbox" }
 
 [dev-dependencies]
+# The token tests check the saved store.
+rbs-api = { path = "../rbs-api" }
 # Reference adapters for the scene-building tests (deterministic, no devices).
 rbs-capture-test = { path = "../rbs-capture-test" }
 rbs-audio-io-test = { path = "../rbs-audio-io-test" }

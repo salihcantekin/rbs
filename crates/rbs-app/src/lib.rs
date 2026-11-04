@@ -6,7 +6,6 @@
 //! - [`canvas_profile`]: the canvas size and frame rate and their file.
 //! - [`record_profile`]: the recording's output settings and their file.
 //! - [`encoder_form`]: the encoder settings' choices, from the encoders' capabilities.
-//! - [`remote_profile`]: remote control settings and access tokens, and their file.
 //! - [`remote_control`]: the control API server while remote control is on.
 //! - `native::MeterBridgeLayer` (macOS): audio meters as Core Animation layers, so meter
 //!   updates do not make the toolkit redraw the window (ADR-0035).
@@ -18,5 +17,4 @@ pub mod native;
 pub mod platform;
 pub mod record_profile;
 pub mod remote_control;
-pub mod remote_profile;
 pub mod studio_host;
