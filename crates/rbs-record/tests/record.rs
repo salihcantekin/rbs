@@ -66,6 +66,14 @@ fn a_scene_records_video_and_audio_in_sync_on_the_master_clock() {
     for s in &p.sources {
         assert!(s.frames > 0, "{} delivered nothing: {report:?}", s.name);
     }
+    // Every exported frame is accounted for: encoded, skipped on the way to the
+    // encoder, or dropped there (#110). The queue's counters survive the stop.
+    assert!(p.frames_encoded > 0, "{report:?}");
+    assert_eq!(
+        p.frames_exported,
+        p.frames_encoded + p.encoder_skipped + p.encoder_drops,
+        "{report:?}"
+    );
 
     // Streams: video then audio, as the output declared them.
     let streams = log.streams.lock().unwrap().clone();

@@ -233,6 +233,7 @@ mod hardware {
             Permission::Granted,
             "grant the microphone permission to the terminal running the test"
         );
+        silent_loopback_delivers(&backend);
         let child = start_fixture();
         let app = fixture_endpoint(&backend, child.id());
         delivers_the_tone(&backend, &app);
@@ -271,6 +272,42 @@ mod hardware {
             "endpoint lost",
         ]);
         assert_eq!(owned_resources(), 0);
+    }
+
+    /// The default output's loopback delivers (silence) before anything in this test
+    /// plays: the aggregate must run without tapped audio (#109). Run with nothing
+    /// else playing to check the silent case.
+    fn silent_loopback_delivers(backend: &CoreAudioBackend) {
+        let endpoints = backend.enumerate(EndpointKind::OutputLoopback);
+        let Some(endpoint) = endpoints.ok().and_then(|e| e.into_iter().next()) else {
+            panic!("no output loopback endpoint");
+        };
+        let clock = Arc::new(MonotonicClock::new());
+        let stream = backend.open_input(&InputRequest::new(endpoint.id, clock));
+        let Ok(mut stream) = stream else {
+            panic!("cannot open the loopback: {:?}", stream.err());
+        };
+        let started = stream.start();
+        assert!(started.is_ok(), "{started:?}");
+        let rate = stream.format().sample_rate.hz() as usize;
+        let want = rate / 10;
+        let mut buffers: Vec<Vec<f32>> = vec![vec![0.0; rate]; stream.format().channels.channels()];
+        let mut got = 0;
+        // A hang guard: 100 ms of audio is due well within it.
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while got < want && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(10));
+            let mut out: Vec<&mut [f32]> = buffers.iter_mut().map(|b| &mut b[..]).collect();
+            if let Ok(read) = stream.read(&mut out) {
+                got += read.frames;
+            }
+        }
+        stream.stop();
+        eprintln!("output loopback before playback: {got} frames");
+        assert!(
+            got >= want,
+            "the output loopback delivered {got} frames while silent"
+        );
     }
 
     /// The application tap delivers what the fixture plays: a 440 Hz tone.

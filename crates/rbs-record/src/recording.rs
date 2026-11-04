@@ -427,6 +427,11 @@ pub struct Progress {
     pub export_drops: u64,
     /// Frames the video encoder took.
     pub frames_encoded: u64,
+    /// Exported frames that never reached the video encoder: a newer frame replaced
+    /// them in the queue into the encoder's partition before the encoder took them
+    /// (the encoder fell behind or had not started yet), or they were still queued at
+    /// stop.
+    pub encoder_skipped: u64,
     /// Video frames dropped or refused at the encoder, and packets lost in its carry-over.
     pub encoder_drops: u64,
     /// Audio packets the audio encoder node lost (its carry-over was full).

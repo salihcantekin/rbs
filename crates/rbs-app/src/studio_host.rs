@@ -1224,7 +1224,7 @@ impl Host {
         let (frames, dropped, flush_lost, failed) = report.map_or((0, 0, 0, None), |r| {
             (
                 r.progress.frames_encoded,
-                r.progress.export_drops + r.progress.encoder_drops,
+                r.progress.export_drops + r.progress.encoder_skipped + r.progress.encoder_drops,
                 r.flush_lost,
                 r.failure,
             )

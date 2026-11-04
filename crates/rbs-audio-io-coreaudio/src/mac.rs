@@ -41,7 +41,7 @@ use objc2_core_audio::{
     kAudioObjectPropertyScopeInput, kAudioObjectPropertyScopeOutput, kAudioObjectSystemObject,
     kAudioProcessPropertyBundleID, kAudioProcessPropertyIsRunningOutput, kAudioProcessPropertyPID,
     kAudioStreamPropertyVirtualFormat, kAudioSubDeviceUIDKey, kAudioSubTapDriftCompensationKey,
-    kAudioSubTapUIDKey, kAudioDevicePropertyDeviceIsRunning,
+    kAudioSubTapUIDKey,
 };
 use objc2_core_audio_types::{
     AudioBuffer, AudioBufferList, AudioStreamBasicDescription, AudioTimeStamp, AudioTimeStampFlags,
@@ -662,10 +662,6 @@ impl Status {
     }
 }
 
-/// TEMPORARY diagnostics for #109: calls, buffers, tap channels, tap bytes, tap
-/// null, skipped cycles, pushed cycles, time flags.
-pub static DIAG: [AtomicU64; 8] = [const { AtomicU64::new(0) }; 8];
-
 /// Which input buffers of a cycle hold the stream's channels.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Buffers {
@@ -694,18 +690,6 @@ impl Capture {
         let os_now = unsafe { AudioConvertHostTimeToNanos(AudioGetCurrentHostTime()) };
         self.packets.observe(os_now, self.clock.now());
         let count = list.mNumberBuffers as usize;
-        DIAG[0].fetch_add(1, Ordering::Relaxed);
-        DIAG[1].store(count as u64, Ordering::Relaxed);
-        DIAG[7].store(u64::from(time.mFlags.0), Ordering::Relaxed);
-        if let Buffers::Tap(index) = self.buffers
-            && index < count
-        {
-            // SAFETY: diagnostic, index < count.
-            let b = unsafe { *(&raw const list.mBuffers).cast::<AudioBuffer>().add(index) };
-            DIAG[2].store(u64::from(b.mNumberChannels), Ordering::Relaxed);
-            DIAG[3].store(u64::from(b.mDataByteSize), Ordering::Relaxed);
-            DIAG[4].store(u64::from(b.mData.is_null()), Ordering::Relaxed);
-        }
         let first = match self.buffers {
             Buffers::All => 0,
             Buffers::Tap(index) => index,
@@ -739,10 +723,8 @@ impl Capture {
             channels += n;
         }
         if used == 0 || frames == 0 || frames == usize::MAX {
-            DIAG[5].fetch_add(1, Ordering::Relaxed);
             return;
         }
-        DIAG[6].fetch_add(1, Ordering::Relaxed);
         let host_nanos = time
             .mFlags
             .contains(AudioTimeStampFlags::HostTimeValid)
@@ -783,30 +765,6 @@ unsafe extern "C-unwind" fn io_proc(
     let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         capture.cycle(now, input, input_time);
     }));
-    0
-}
-
-/// TEMPORARY #109 diagnostics: an output IO proc that plays silence.
-unsafe extern "C-unwind" fn silent_proc(
-    _device: AudioObjectID,
-    _now: NonNull<AudioTimeStamp>,
-    _input: NonNull<AudioBufferList>,
-    _input_time: NonNull<AudioTimeStamp>,
-    output: NonNull<AudioBufferList>,
-    _output_time: NonNull<AudioTimeStamp>,
-    _client: *mut c_void,
-) -> i32 {
-    // SAFETY: the HAL's output list is valid for this call.
-    let list = unsafe { output.as_ref() };
-    let base = (&raw const list.mBuffers).cast::<AudioBuffer>();
-    for i in 0..list.mNumberBuffers as usize {
-        // SAFETY: `mNumberBuffers` buffers follow.
-        let b = unsafe { *base.add(i) };
-        if !b.mData.is_null() {
-            // SAFETY: the buffer holds `mDataByteSize` writable bytes.
-            unsafe { std::ptr::write_bytes(b.mData.cast::<u8>(), 0, b.mDataByteSize as usize) };
-        }
-    }
     0
 }
 
@@ -1031,9 +989,12 @@ fn create_aggregate(output: &str, tap_uid: &str) -> Result<AudioObjectID, AudioI
         key(kAudioAggregateDeviceSubDeviceListKey),
         key(kAudioAggregateDeviceTapListKey),
     ];
-    // TEMPORARY #109 diagnostics: RBS_DIAG_AUTOSTART=0 turns tap auto-start off.
-    let autostart = NSNumber::new_bool(std::env::var("RBS_DIAG_AUTOSTART").as_deref() != Ok("0"));
-    let values: [&AnyObject; 7] = [&name, &uid, &output, &yes, &autostart, &sub_devices, &taps];
+    // Tap auto-start off: with it on, the HAL does not run the aggregate (its IO proc
+    // is never called) until the tapped audio plays, so a silent machine delivered
+    // nothing (macOS 26, #109). Off, the aggregate runs from `AudioDeviceStart` and
+    // delivers silence too, without starting the output device itself.
+    let no = NSNumber::new_bool(false);
+    let values: [&AnyObject; 7] = [&name, &uid, &output, &yes, &no, &sub_devices, &taps];
     let keys: Vec<&NSString> = keys.iter().map(|k| &**k).collect();
     let description = NSDictionary::from_slices(&keys, &values);
     // SAFETY: NSDictionary is toll-free bridged to CFDictionary.
@@ -1191,33 +1152,6 @@ impl CoreAudioStream {
         // SAFETY: the proc was created on this device above.
         check(unsafe { AudioDeviceStart(io_device, proc_id) })?;
         session.started = true;
-        // TEMPORARY #109 diagnostics.
-        if matches!(buffers, Buffers::Tap(_)) {
-            if std::env::var("RBS_DIAG_KEEPALIVE").as_deref() == Ok("1") {
-                let mut keep: AudioDeviceIOProcID = None;
-                // SAFETY: diagnostics; a no-op proc on a live device, leaked.
-                let r = unsafe {
-                    AudioDeviceCreateIOProcID(
-                        watched,
-                        Some(silent_proc),
-                        std::ptr::null_mut(),
-                        NonNull::from(&mut keep),
-                    )
-                };
-                // SAFETY: as above.
-                let r2 = unsafe { AudioDeviceStart(watched, keep) };
-                eprintln!("diag: keepalive proc on {watched}: create {r}, start {r2}");
-            }
-            for wait in [0, 300] {
-                std::thread::sleep(Duration::from_millis(wait));
-                let running = |d| get::<u32>(d, kAudioDevicePropertyDeviceIsRunning, kAudioObjectPropertyScopeGlobal);
-                eprintln!(
-                    "diag: after {wait} ms aggregate running {:?}, output running {:?}",
-                    running(io_device),
-                    running(watched)
-                );
-            }
-        }
         Ok(Active {
             session,
             consumer,

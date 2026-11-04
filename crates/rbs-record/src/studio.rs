@@ -22,6 +22,7 @@ use rbs_gpu::share::{PreviewDesc, PreviewEndpoint};
 use rbs_gpu::{CanvasDesc, GpuContext};
 use rbs_graph::description::{GraphDescription, NodeId, PartitionId};
 use rbs_graph::runtime::param::ParamSender;
+use rbs_graph::runtime::queue::QueueStats;
 use rbs_graph::runtime::{Node, RuntimeEvent};
 use rbs_nodes::capture::CaptureNodeStats;
 use rbs_nodes::encode::EncoderNodeStats;
@@ -239,6 +240,17 @@ struct Attached {
     encoder: Arc<EncoderNodeStats>,
     audio_dropped: Option<Arc<AtomicU64>>,
     output: Arc<OutputNodeStats>,
+    /// The queues into the video and audio encoders' partitions, found after the
+    /// apply that scheduled them and kept, so the final counters survive the draining
+    /// apply that removes them.
+    queues: Queues,
+}
+
+/// The cross-partition queues feeding a recording's encoders.
+#[derive(Default)]
+struct Queues {
+    video: Option<Arc<QueueStats>>,
+    audio: Option<Arc<QueueStats>>,
 }
 
 /// The mixer of the canvas and what the studio keeps of it.
@@ -1101,6 +1113,7 @@ impl Studio {
             encoder: encoder_stats,
             audio_dropped,
             output: output_stats,
+            queues: Queues::default(),
         });
         Ok(())
     }
@@ -1153,6 +1166,19 @@ impl Studio {
             .as_mut()
             .ok_or(RecordError::NotBound("recording"))?;
         r.report.sources = sources;
+        // The encoders' inputs cross partitions; their queues exist from this apply on.
+        let queue_to = |node: Option<&Added>| {
+            let node = node?.node;
+            self.engine
+                .crossings()
+                .iter()
+                .find(|c| c.link.to.node == node)
+                .map(|c| Arc::clone(&c.stats))
+        };
+        r.queues = Queues {
+            video: queue_to(r.nodes.get(1)),
+            audio: queue_to(r.nodes.get(3)),
+        };
         Ok(&r.report)
     }
 
@@ -1249,17 +1275,8 @@ impl Studio {
                 }
             })
             .collect();
-        let parts = self.settings.partitions;
-        let audio_queue_drops = self
-            .engine
-            .crossings()
-            .iter()
-            .filter(|c| c.from == parts.audio && c.to == parts.audio_encoder)
-            .map(|c| c.stats.overflows())
-            .sum();
         let mut p = Progress {
             sources,
-            audio_queue_drops,
             late_render_ticks: self.render_worker.as_ref().map_or(0, |w| w.late()),
             late_audio_ticks: self.audio_worker.as_ref().map_or(0, |w| w.late()),
             master_peak_db: self.mixer.as_ref().map(|m| peak_db(&m.master)),
@@ -1271,6 +1288,8 @@ impl Studio {
             p.export_drops = sum(&[&r.export.busy, &r.export.lost]);
             p.frames_encoded = e.submitted.load(Ordering::Relaxed);
             p.encoder_drops = sum(&[&e.busy_drops, &e.refused, &e.overflow_drops]);
+            p.encoder_skipped = r.queues.video.as_ref().map_or(0, |q| q.video_drops());
+            p.audio_queue_drops = r.queues.audio.as_ref().map_or(0, |q| q.overflows());
             p.audio_packet_drops = r
                 .audio_dropped
                 .as_ref()
