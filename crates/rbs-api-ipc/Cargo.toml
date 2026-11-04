@@ -1,0 +1,39 @@
+[package]
+name = "rbs-api-ipc"
+description = "Local IPC transport for the RBS control API (ADR-0044): a user-private Unix domain socket or a current-user named pipe, peers identified by the OS."
+version.workspace = true
+edition.workspace = true
+# `File::try_lock` (1.89) keeps a second server off the socket file. Used only by the
+# composition roots (rbs-app 1.92, rbs-cli 1.89).
+rust-version = "1.89"
+repository.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+rbs-api = { path = "../rbs-api" }
+
+# The peer's user (`SO_PEERCRED`, `getpeereid`) and the effective user id. MIT or
+# Apache-2.0; already in the workspace.
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+# Named pipes with a current-user DACL, overlapped I/O, and the peer process's user.
+# MIT or Apache-2.0; the version the other Windows adapters use.
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.62", features = [
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_Security_Authorization",
+    "Win32_Storage_FileSystem",
+    "Win32_System_IO",
+    "Win32_System_Pipes",
+    "Win32_System_Threading",
+] }
+
+[dev-dependencies]
+rbs-api = { path = "../rbs-api", features = ["conformance"] }
+serde_json = "1"
+
+[lints]
+workspace = true
