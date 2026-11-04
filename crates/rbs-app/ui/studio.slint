@@ -567,7 +567,7 @@ export component RecordingSettings inherits Rectangle {
             alignment: start;
             Button {
                 text: root.advanced ? @tr("Hide advanced settings") : @tr("Show advanced settings");
-                kind: "ghost";
+                kind: "secondary";
                 // The text says the state; the chevron shows only while closed.
                 icon: root.advanced ? IconName.none : IconName.chevron-down;
                 clicked => { root.advanced = !root.advanced; }
