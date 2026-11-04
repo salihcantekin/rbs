@@ -33,12 +33,15 @@ The single way to control and observe the engine, used by the desktop UI, remote
 | Thread | Exists | Does |
 | --- | --- | --- |
 | Adapter I/O | While its transport is on | Accept, read, write; pushes into the API inbox |
-| API thread | While remote control is on | Owns all sessions; handshake, auth, scopes, limits, queues; serializes each event once; blocks on its inbox with a deadline from an injected `rbs-core` clock, no periodic wake-up |
-| Sampling timer (on the API thread's deadline) | While a session subscribes to a latest-value topic | Reads published levels and statistics at the requested rate |
-| Control thread | Always (existing) | Applies requests; reads the UI channel before the API channel; sends responses and events to the API inbox tagged with session and request ids |
+| API thread | While remote control is on | Owns all sessions; handshake, auth, scopes, limits, queues; serializes each event once; blocks on its inbox until the session state machine's next deadline, no periodic wake-up |
+| Sampling (on the API thread's deadline) | While a session subscribes to a latest-value topic | Reads levels and statistics at the requested rate from read-only, lock-free handles the composition root provides; never wakes the control thread |
+| Control thread | Always (existing) | Applies requests from two queues (local UI, API) behind one wake-up, UI first; sends responses and events tagged with session and request ids into an output channel it never blocks on |
 
+- The session logic is a pure state machine, `handle(event, now)` and `next_deadline()`, that tests drive directly with `TestClock` (ADR-0032); the API thread only wraps it.
+- Adapters apply back-pressure per connection: a connection that has used its queue quota is not read until it drains, so one client cannot fill the shared inbox.
 - Each session has at most one request in flight to the control thread and a bounded queue behind it; the API thread forwards from sessions in round-robin order. Responses on one connection come in request order, so a long command (for example `canvas.set`, which restarts the studio) delays only that connection's later requests. A dispatched command is never cancelled.
-- The control thread learns which topics have subscribers from an atomic topic mask the API thread maintains, and produces events only for those topics, when the state changes.
+- Output from the control thread never blocks it: responses are bounded by the one-in-flight rule; events are coalesced per topic, and a session that falls behind gets `events.lost`.
+- Every state topic has a change counter `seq` that the control thread increments on every change of that state, subscribed or not. It builds event payloads only for topics in a subscriber mask. The in-process UI is a permanent subscriber registered on the control thread and gets the same event types and `seq`. The API thread sets its sessions' mask bits before it forwards `events.subscribe`; the control thread answers with the `seq` read after that.
 - The desktop UI's level meters and preview do not go through `rbs-api`: the local UI gets the shared meters (ADR-0035) and the preview endpoint as local-only attachments.
 
 ## Wire protocol
@@ -57,7 +60,7 @@ JSON-RPC 2.0 over UTF-8 JSON text messages. WebSocket subprotocol: `rbs.v<major>
 3. Client: `session.authenticate {token}`.
 4. Server: `{scopes, server: {name, version}}`, or `auth_failed` and close.
 
-Before step 4 succeeds every other method returns `not_authenticated`. A connection that has not authenticated within the handshake timeout is closed. `auth_failed` is the same for an unknown and a wrong token.
+On IPC, a peer the OS identifies as the same user is authenticated by step 2, which then also returns its scopes. Before authentication every other method returns `not_authenticated`. A connection that has not authenticated within the handshake timeout is closed. `auth_failed` is the same for an unknown and a wrong token.
 
 **Tokens.** Text `rbs1_` followed by 64 lowercase hex digits (32 bytes of OS randomness). The server stores `SHA-256` of the token's UTF-8 bytes, as lowercase hex, and compares in constant time. Each token has a user-given name and scopes, is shown once at creation (UI or `rbs-cli token create`), and can be revoked; revoking closes its sessions.
 
@@ -70,12 +73,12 @@ Test vector: token `rbs1_000102030405060708090a0b0c0d0e0f101112131415161718191a1
 | Scope | Allows | From |
 | --- | --- | --- |
 | `read` | Queries, `api.describe`, event subscriptions | Any authenticated peer |
-| `control` | Scene and source changes, capture-target lists, mute and volume, transitions, program switch, record and stream start/stop with configured profiles and destinations, undo, `ui.*` | Any authenticated peer |
-| `admin` | Settings, explicit file paths and destinations | Loopback and IPC; remote only with the separate "Allow remote admin" setting |
+| `control` | Scene and source changes, capture-target lists, mute and volume, transitions, program switch, record and stream start/stop with configured profiles and destinations, undo and redo, `ui.*` | Any authenticated peer |
+| `admin` | Settings, explicit file paths and destinations (an explicit file is never overwritten; its path is logged) | Loopback and IPC; remote only with the separate "Allow remote admin" setting |
 | `plugins` | Plugin management | Loopback and IPC only |
 | `tokens` | Token management | Loopback and IPC only |
 
-Every method declares its scope in the schema; a call outside the session's scopes returns `scope_denied`. A hardware panel token is `read` + `control`. The in-process UI and same-user IPC peers have all scopes.
+Every method declares one scope in the schema; where a parameter would need a different scope it is a separate method; a call outside the session's scopes returns `scope_denied`. A hardware panel token is `read` + `control`. The in-process UI and same-user IPC peers have all scopes.
 
 ### Subscriptions and events
 
@@ -92,9 +95,9 @@ Protocol version `major.minor`, independent of the `rbs-api` crate's semver. Min
 
 - Off by default. When off, no server exists: no thread, socket, timer or event buffer (ADR-0013 rule 1).
 - On: WebSocket binds to loopback. Network access is a separate setting; the app shows when RBS is reachable from the network. Non-loopback connections require TLS.
-- Before the WebSocket upgrade completes: a request with an `Origin` header (including `Origin: null`) is refused unless the origin is on the user's allow list; the `Host` header must be a loopback name or address, a configured host name, or an address of a bound interface.
+- Before the WebSocket upgrade completes: a request with an `Origin` header (including `Origin: null`) is refused unless the origin is on the user's allow list (`null` can never be added to it); the `Host` header must be a loopback name or address, a configured host name, or an address of a bound interface.
 - IPC endpoint: current user only. Unix: socket mode 0600 in a user-private directory. Windows: named pipe with a DACL for the current user's SID and `PIPE_REJECT_REMOTE_CLIENTS`.
-- Caps: total connections, pending handshakes, connections per peer address. Pre-authentication messages are small (4 KiB). Repeated `auth_failed` from a peer address delays its next attempts with growing back-off.
+- Caps: total connections, pending handshakes, connections per peer address (not applied on loopback, where every client shares one address). Pre-authentication messages are small (4 KiB). Repeated `auth_failed` delays further attempts with growing back-off: per connection on loopback, per peer address otherwise.
 - Per session: maximum message size, request rate, queue length (`busy` when full).
 - Connections, authentication failures and `admin`, `plugins` and `tokens` calls are logged with the token name.
 
@@ -117,10 +120,10 @@ The first slice covers what the desktop app does today; the full catalogue follo
 | `studio.get` | `read` | Canvas size and rate, encoders, whether recording is possible |
 | `source.list` | `read` | Program scene sources |
 | `source.targets` | `control` | Capture targets of a kind (window titles can be private) |
-| `source.add`, `source.delete`, `edit.undo` | `control` | Edit the program scene |
-| `output.profiles` | `read` | Recording profiles (container, encoder, bitrates; folder shown only to `admin`) |
+| `source.add`, `source.delete`, `edit.undo`, `edit.redo` | `control` | Edit the program scene |
+| `output.profiles` | `read` | Recording profiles: id, name, container, encoder, bitrates (folders only through `settings.get`) |
 | `record.start {profile}`, `record.stop` | `control` | Record with a configured profile into its folder |
-| `record.start {profile, path}` | `admin` | Record to an explicit file |
+| `record.start_to_file {profile, path}` | `admin` | Record to an explicit file; refused if it exists |
 | `record.status` | `read` | Recording state |
 | `settings.get`, `settings.set` | `admin` | Recording profiles, canvas size and rate |
 | `events.subscribe`, `events.unsubscribe` | `read` | Topics `source.changed`, `record.state`, `canvas.changed`, `settings.changed`, `audio.levels` |
@@ -139,12 +142,12 @@ One user undo stack for the scene collection, shared by all clients. `edit.undo`
 
 ## Compatibility
 
-An OBS WebSocket (v5) compatibility layer (subset) is a separate optional adapter crate that speaks that protocol on its own endpoint and turns its calls into `rbs-api` requests in process, under a token's scopes, so existing Stream Deck and remote tools can work with RBS. Packaging it as a plugin waits for a plugin SDK host call that submits requests (plugin SDK spec, own review).
+An OBS WebSocket (v5) compatibility layer (subset) is a separate optional adapter crate that speaks that protocol on its own endpoint and turns its calls into `rbs-api` requests in process, under a token's scopes, so existing Stream Deck and remote tools can work with RBS. It follows the same channel rules. obs-websocket authenticates with a salted password challenge, which the token store cannot answer, so the adapter keeps its own secret store; how is decided in its own review. Packaging it as a plugin waits for a plugin SDK host call that submits requests (plugin SDK spec, own review).
 
 ## Tests
 
 - Transport conformance suite: framing, size limits, close reasons, peer information, Origin and Host cases (`null`, allow list, IP literals), upgrade refused before completion.
-- Session tests on `TestClock`: handshake timeout, auth success, uniform failure, token test vector, scopes, remote refusal of `admin`/`plugins`/`tokens`, connection and handshake caps, back-off, pre-auth size, rate limit, `busy`, round-robin fairness, UI priority, overflow and `events.lost`, `seq` and instance id.
+- Session state machine tests on `TestClock`: handshake timeout, IPC same-user handshake, auth success, uniform failure, token test vector, scopes, remote refusal of `admin`/`plugins`/`tokens`, connection and handshake caps, back-off, pre-auth size, rate limit, `busy`, round-robin fairness, UI priority, per-connection back-pressure, control thread never blocked by API output, `seq` across subscribe, overflow and `events.lost`, `seq` and instance id.
 - JSON round-trip test of every request, response and event type.
 - Schema snapshot test with difference classification.
 - U20 test: every desktop UI command maps to a control API method.
