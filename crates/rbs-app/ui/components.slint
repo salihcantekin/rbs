@@ -4,7 +4,7 @@
 import { Theme, Tokens } from "tokens.slint";
 
 // Focus ring drawn around a focused control.
-component FocusRing inherits Rectangle {
+export component FocusRing inherits Rectangle {
     in property <bool> show;
     border-width: show ? Tokens.size-focus-ring : 0px;
     border-color: Theme.border-focus;
@@ -12,7 +12,7 @@ component FocusRing inherits Rectangle {
 }
 
 // The icon set (docs/specs/ui-design-system.md, "Icons").
-export enum IconName { none, more, chevron-down, check, close, dot, ring }
+export enum IconName { none, more, chevron-down, chevron-up, check, close, dot, ring }
 
 // Vector icon. Icons are paths, not font glyphs, so they look the same on every OS
 // (a glyph missing from the system font shows as an empty box). Drawn in a 16 x 16
@@ -39,6 +39,15 @@ export component Icon inherits Rectangle {
         stroke: root.ink;
         stroke-width: Tokens.size-icon-stroke;
         commands: "M 4 6 L 8 10 L 12 6";
+    }
+    if name == IconName.chevron-up: Path {
+        width: 100%;
+        height: 100%;
+        viewbox-width: 16;
+        viewbox-height: 16;
+        stroke: root.ink;
+        stroke-width: Tokens.size-icon-stroke;
+        commands: "M 4 10 L 8 6 L 12 10";
     }
     if name == IconName.check: Path {
         width: 100%;
@@ -419,4 +428,68 @@ export component TextField inherits Rectangle {
     }
     property <bool> focused: input.has-focus;
     changed focused => { if !focused && !root.read-only && !root.password { root.accepted(root.text); } }
+}
+
+// A number the user types (NumberField). Enter or leaving the field commits it through
+// `edited`; text that is not a number goes back to `value`. Up and Down arrows step by
+// `step` (Shift: ten steps) and commit at once. Shows whole numbers.
+export component NumberField inherits Rectangle {
+    in property <string> label;
+    in property <float> value;
+    in property <float> step: 1;
+    in property <bool> enabled: true;
+    callback edited(float);
+    function shown(v: float) -> string {
+        return round(v);
+    }
+    // Commits typed text that differs from what the field showed; anything else goes
+    // back to the current value (an accepted edit then arrives as a new `value`, a
+    // refused one leaves the field showing the value that stands).
+    function commit() {
+        if input.text.is-float() && input.text != shown(root.value) {
+            root.edited(input.text.to-float());
+        }
+        input.text = shown(root.value);
+    }
+    // Up and Down step from what is typed, if it is a number.
+    function step-by(n: float) {
+        if root.enabled {
+            root.edited((input.text.is-float() ? input.text.to-float() : root.value) + n * root.step);
+        }
+    }
+    changed value => { input.text = shown(root.value); }
+    height: Tokens.size-control-md;
+    border-radius: Tokens.radius-sm;
+    border-width: Tokens.size-border;
+    border-color: input.has-focus ? Theme.border-focus : Theme.border-subtle;
+    background: enabled ? Theme.surface-sunken : transparent;
+    forward-focus: input;
+    accessible-role: spinbox;
+    accessible-label: label;
+    accessible-value: shown(value);
+    accessible-enabled: enabled;
+    accessible-action-increment => { step-by(1); }
+    accessible-action-decrement => { step-by(-1); }
+    input := TextInput {
+        x: Tokens.space-2;
+        width: parent.width - 2 * Tokens.space-2;
+        height: parent.height;
+        text: shown(root.value);
+        enabled: root.enabled;
+        single-line: true;
+        vertical-alignment: center;
+        color: root.enabled ? Theme.text-primary : Theme.text-disabled;
+        font-size: Tokens.type-body-size;
+        selection-background-color: Theme.accent-subtle;
+        selection-foreground-color: Theme.text-primary;
+        accessible-role: none;
+        key-pressed(e) => {
+            if e.text == Key.UpArrow { step-by(e.modifiers.shift ? 10 : 1); return accept; }
+            if e.text == Key.DownArrow { step-by(e.modifiers.shift ? -10 : -1); return accept; }
+            reject
+        }
+        accepted => { root.commit(); }
+    }
+    property <bool> focused: input.has-focus;
+    changed focused => { if !focused { root.commit(); } }
 }
