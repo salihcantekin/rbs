@@ -743,6 +743,7 @@ fn a_consumer_added_to_a_running_producer_starts_at_a_keyframe() {
     let a = add(&mut graph, &rec_a.desc, OUTPUT);
     graph.connect(g, "out", a, "in").unwrap();
     let mut lowering = Lowering::new();
+    let bells = [ENCODER, OUTPUT, SECOND].map(|p| lowering.doorbell(p));
     let mut parts: BTreeMap<PartitionId, (Controller<()>, Executor<()>)> =
         [ENCODER, OUTPUT, SECOND]
             .into_iter()
@@ -819,10 +820,15 @@ fn a_consumer_added_to_a_running_producer_starts_at_a_keyframe() {
         .unwrap();
     apply(&graph, &mut parts, &mut tick);
     run(&mut parts, &mut tick);
-    // The recorders' own mutexes: on macOS a std mutex allocates its pthread mutex on
-    // first use, which the second recorder's first packet would otherwise count.
+    // On macOS a std mutex allocates its pthread mutex on first use (lock or
+    // try_lock): the recorders' own, and each doorbell's worker slot, which a queue
+    // touches the first time it rings (here the second consumer's first keyframe; an
+    // engine worker registers itself long before). Touch them all once first.
     drop(first.lock().unwrap());
     drop(second.lock().unwrap());
+    for bell in &bells {
+        bell.ring();
+    }
     let info = allocation_counter::measure(|| {
         for _ in 0..20 {
             run(&mut parts, &mut tick);
