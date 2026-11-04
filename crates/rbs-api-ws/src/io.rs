@@ -222,6 +222,9 @@ pub(crate) struct Io {
     scratch: Vec<u8>,
     /// Accepting resumes at this time after an accept error.
     accept_paused: Option<Instant>,
+    /// A connection may read plaintext rustls already decrypted, which raises no
+    /// readiness event: the next wait does not sleep.
+    ready: bool,
 }
 
 impl Io {
@@ -251,6 +254,7 @@ impl Io {
             settings,
             scratch: vec![0; CHUNK],
             accept_paused: None,
+            ready: false,
         })
     }
 
@@ -261,9 +265,12 @@ impl Io {
             if self.stop.load(Ordering::Acquire) {
                 break;
             }
-            let timeout = self
-                .next_deadline()
-                .map(|d| d.saturating_duration_since(Instant::now()));
+            let timeout = if std::mem::take(&mut self.ready) {
+                Some(Duration::ZERO)
+            } else {
+                self.next_deadline()
+                    .map(|d| d.saturating_duration_since(Instant::now()))
+            };
             events.clear();
             if let Err(e) = self.poller.wait(&mut events, timeout)
                 && e.kind() != ErrorKind::Interrupted
@@ -427,6 +434,17 @@ impl Io {
                     tls_out || shared.as_ref().is_some_and(|s| !s.lock().buf.is_empty()),
                 ),
             };
+            // TLS: plaintext rustls holds (more than one wake's reads, or left when the
+            // output cap stopped reading) is read on the next pass, not when the peer
+            // happens to send more.
+            if want.0
+                && let Wire::Tls(tls) = &mut conn.wire
+                && tls
+                    .process_new_packets()
+                    .is_ok_and(|s| s.plaintext_bytes_to_read() > 0)
+            {
+                self.ready = true;
+            }
             if conn.armed != Some(want) {
                 if self
                     .poller
@@ -880,7 +898,10 @@ fn linger(conn: &mut Conn, readable: bool, now: Instant, scratch: &mut [u8]) -> 
             }
         }
     }
-    true
+    // Records rustls queued after the write side was shut (an alert answering what the
+    // peer still sent) can never go out; waiting for them would spin on a socket that
+    // is always writable.
+    !(*write_shut && wants_write(&conn.wire))
 }
 
 /// Answers a refused upgrade and lingers, so the peer reads the answer before the

@@ -147,7 +147,7 @@ fn loopback_may_use_tls_too_and_is_then_secure() {
 
 #[test]
 fn plain_http_from_another_computer_is_told_to_use_tls() {
-    let Some(ip) = remote_address() else { return };
+    let Some(ip) = remote() else { return };
     let rig = Rig::start(|_| {});
     let addr = rig.at(ip);
     let answer = exchange(
@@ -163,7 +163,7 @@ fn plain_http_from_another_computer_is_told_to_use_tls() {
 
 #[test]
 fn another_computer_connects_over_tls_and_is_secure_and_not_loopback() {
-    let Some(ip) = remote_address() else { return };
+    let Some(ip) = remote() else { return };
     let rig = Rig::start(|_| {});
     let mut c = WsClient::open(rig.at(ip), &ConnectOptions::default(), Some(&rig.tls())).unwrap();
     let mut peer = rig.peer();
@@ -180,7 +180,7 @@ fn another_computer_connects_over_tls_and_is_secure_and_not_loopback() {
 
 #[test]
 fn a_host_naming_another_address_is_refused_with_a_readable_answer_over_tls() {
-    let Some(ip) = remote_address() else { return };
+    let Some(ip) = remote() else { return };
     let rig = Rig::start(|_| {});
     let addr = rig.at(ip);
     let options = ConnectOptions {
@@ -247,9 +247,11 @@ fn a_stalled_tls_handshake_is_closed_at_the_deadline() {
 }
 
 #[test]
-fn messages_decrypted_together_are_all_delivered_after_a_pause() {
+fn a_burst_over_tls_is_delivered_whole_across_pauses() {
     const QUOTA: usize = 2;
-    const SENT: usize = 7;
+    // About 120 KiB in one write: several TLS records and several read passes, with
+    // the connection paused on its quota again and again.
+    const SENT: usize = 200;
     let rig = Rig::start_with(4, QUOTA, |_| {});
     let mut c = WsClient::open(
         rig.at([127, 0, 0, 1]),
@@ -258,40 +260,77 @@ fn messages_decrypted_together_are_all_delivered_after_a_pause() {
     )
     .unwrap();
     let _ = rig.peer();
-    // One write: one TLS record that rustls decrypts at once, more than the quota.
+    let text = |i: usize| format!("m{i:04}{}", "x".repeat(600));
     let mut out = Vec::new();
     for i in 0..SENT {
-        WsClient::encode(true, 0x1, format!("m{i}").as_bytes(), &mut out);
+        WsClient::encode(true, 0x1, text(i).as_bytes(), &mut out);
     }
     c.write(&out);
     for i in 0..SENT {
-        // The rest stay in rustls' plaintext buffer, with no socket event to come:
-        // reading the inbox resumes the connection, which must read them from there.
+        // Reading the inbox resumes the connection; what rustls or the frame reader
+        // already holds raises no socket event and must be read from there.
         match rig.next() {
-            TransportEvent::Message { text, .. } => assert_eq!(&*text, format!("m{i}")),
+            TransportEvent::Message { text: t, .. } => assert_eq!(t, text(i)),
             other => panic!("expected Message, got {other:?}"),
         }
     }
 }
 
-/// Opens TCP connections from this machine's non-loopback address until one is closed
-/// at accept; returns how many stayed.
-fn remote_until_refused(rig: &Rig, ip: IpAddr, most: usize) -> (Vec<TcpStream>, bool) {
+/// Opens `count` TCP connections from this machine's non-loopback address, each
+/// starting a TLS handshake it never finishes, so an admitted one stays upgrading
+/// (the deadline is far away). Returns the first `count - 1` and whether the last was
+/// closed at accept: closed without a byte. The earlier ones must still be open:
+/// the server accepts in order, so it has seen them by the time it closed the last.
+fn remote_until_refused(rig: &Rig, ip: IpAddr, count: usize) -> (Vec<TcpStream>, bool) {
     let mut kept = Vec::new();
-    for _ in 0..most {
+    for _ in 0..count {
         let mut s = TcpStream::connect(rig.at(ip)).unwrap();
-        // A refused socket is closed at accept, before anything is read; an admitted
-        // one waits for its upgrade (the deadline is far away).
-        let _ = s.write_all(b"GET");
+        let _ = s.write_all(&[0x16, 0x03, 0x01]);
         kept.push(s);
     }
     let mut last = kept.pop().unwrap();
-    (kept, hung_up(&mut last))
+    let refused = closed_without_answer(&mut last);
+    if refused {
+        for s in &mut kept {
+            s.set_nonblocking(true).unwrap();
+            let mut b = [0u8; 1];
+            match s.read(&mut b) {
+                Err(e) if e.kind() == ErrorKind::WouldBlock => {}
+                other => panic!("an admitted socket was closed or answered: {other:?}"),
+            }
+        }
+    }
+    (kept, refused)
+}
+
+/// The server closed `s` without sending anything; false when it answered or kept
+/// it open.
+fn closed_without_answer(s: &mut TcpStream) -> bool {
+    // macOS refuses socket options (EINVAL) once the peer has reset the connection.
+    if s.set_read_timeout(Some(LIMIT)).is_err() {
+        return true;
+    }
+    let mut b = [0u8; 64];
+    match s.read(&mut b) {
+        Ok(0) => true,
+        Ok(_) => false,
+        Err(e) => !matches!(e.kind(), ErrorKind::WouldBlock | ErrorKind::TimedOut),
+    }
+}
+
+/// This machine's non-loopback address, or `None` with a note: the test then has
+/// nothing to connect from.
+fn remote() -> Option<IpAddr> {
+    let ip = remote_address();
+    if ip.is_none() {
+        eprintln!("skipped: this machine has no non-loopback address to connect from");
+    }
+    ip
 }
 
 #[test]
 fn remote_peers_cannot_lock_out_loopback() {
-    let Some(ip) = remote_address() else { return };
+    let Some(ip) = remote() else { return };
     // Room for 4 sockets, 2 of them for loopback only.
     let rig = Rig::start(|c| {
         c.max_sockets = 4;
@@ -308,7 +347,7 @@ fn remote_peers_cannot_lock_out_loopback() {
 
 #[test]
 fn remote_peers_are_capped_per_address_and_while_upgrading() {
-    let Some(ip) = remote_address() else { return };
+    let Some(ip) = remote() else { return };
     let rig = Rig::start(|c| c.max_per_address = 2);
     let (_held, refused) = remote_until_refused(&rig, ip, 3);
     assert!(refused, "a third socket from one address was taken");
