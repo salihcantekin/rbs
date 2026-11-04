@@ -511,8 +511,9 @@ impl<X: Runtime> Node<X> for OutputNode {
         let transport = self.transport.as_mut().ok_or(NodeError::NotReady)?;
         self.events.clear();
         transport.poll_events(&mut self.events);
-        let mut disconnected = false;
-        for event in &self.events {
+        // Index of the `Disconnected` event, whose error is the failure's cause.
+        let mut disconnected = None;
+        for (i, event) in self.events.iter().enumerate() {
             match event {
                 TransportEvent::KeyframeRequested => add(&self.stats.keyframe_requests, 1),
                 TransportEvent::Connected => {
@@ -525,17 +526,20 @@ impl<X: Runtime> Node<X> for OutputNode {
                 }
                 TransportEvent::Disconnected { .. } => {
                     self.stats.connected.store(false, Ordering::Relaxed);
-                    disconnected = true;
+                    disconnected = Some(i);
                 }
                 _ => {}
             }
         }
-        if disconnected {
-            return Err(
-                self.fail(NodeError::Permanent("transport disconnected"), || {
-                    "transport disconnected".into()
-                }),
-            );
+        if let Some(i) = disconnected {
+            // Built once, on this failure path only.
+            let cause = match &self.events[i] {
+                TransportEvent::Disconnected { error } => {
+                    format!("transport disconnected: {error}")
+                }
+                _ => "transport disconnected".to_owned(),
+            };
+            return Err(self.fail(NodeError::Permanent("transport disconnected"), || cause));
         }
         Ok(())
     }

@@ -154,6 +154,26 @@ fn connection_events_are_counted_and_the_state_follows_them() {
 }
 
 #[test]
+fn a_disconnect_fails_the_output_with_the_transports_error() {
+    let mut c = chain(1, 1, 64, TransportState::logging());
+    c.rig.ticks(1);
+    c.tx_state
+        .events
+        .lock()
+        .unwrap()
+        .push(TransportEvent::Disconnected {
+            error: rbs_transport::TransportError::Connection("refused (test)".into()),
+        });
+    c.rig.ticks(2);
+    let cause = c.out_stats.failure.get().cloned().unwrap_or_default();
+    assert!(
+        cause.starts_with("transport disconnected: ") && cause.contains("refused (test)"),
+        "{cause}"
+    );
+    assert!(!c.out_stats.connected.load(Ordering::Relaxed));
+}
+
+#[test]
 fn a_full_transport_queue_is_backlogged_and_delivered_in_order() {
     let mut c = chain(1, 1, 64, TransportState::logging());
     c.rig.ticks(3);

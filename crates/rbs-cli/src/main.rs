@@ -442,12 +442,14 @@ fn record(a: &RecordArgs) -> Result<(), String> {
         println!("shutdown error: {e}");
     }
     let failure = failure.or(report.failure);
+    let url = a.stream.as_ref().map_or("", |t| t.url.as_str());
     match failure {
+        // The stream failed before it ever reached the server.
+        Some(why) if a.stream.is_some() && p.connects == 0 => {
+            Err(format!("never connected to {url}: {why}"))
+        }
         Some(why) => Err(why),
-        None if a.stream.is_some() && p.connects == 0 => Err(format!(
-            "never connected to {}",
-            a.stream.as_ref().map_or("", |t| t.url.as_str())
-        )),
+        None if a.stream.is_some() && p.connects == 0 => Err(format!("never connected to {url}")),
         None if p.packets_muxed() == 0 => Err(format!(
             "no packet reached the {}",
             if a.stream.is_some() { "stream" } else { "file" }
