@@ -139,8 +139,10 @@ pub fn connect(
     tls: Option<&Tls>,
 ) -> Result<(Box<dyn Stream>, TcpStream), String> {
     let tcp = TcpStream::connect(addr).map_err(|e| e.to_string())?;
-    tcp.set_read_timeout(Some(LIMIT)).unwrap();
-    tcp.set_nodelay(true).unwrap();
+    // macOS refuses socket options (EINVAL) once the server has reset the connection.
+    tcp.set_read_timeout(Some(LIMIT))
+        .and_then(|()| tcp.set_nodelay(true))
+        .map_err(|e| e.to_string())?;
     let raw = tcp.try_clone().unwrap();
     let stream: Box<dyn Stream> = match tls {
         None => Box::new(tcp),
@@ -308,7 +310,10 @@ impl Client for WsClient {
     }
 
     fn recv(&mut self, timeout: Duration) -> Option<ClientEvent> {
-        self.raw.set_read_timeout(Some(timeout)).unwrap();
+        if self.raw.set_read_timeout(Some(timeout)).is_err() {
+            // macOS: the server reset the connection.
+            return Some(ClientEvent::Closed(None));
+        }
         loop {
             match self.read_frame() {
                 Ok((0x1, payload)) => {

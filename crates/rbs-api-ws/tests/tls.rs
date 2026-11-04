@@ -93,7 +93,10 @@ impl Rig {
 
 /// The server hung up: end of stream or a reset, never a timeout.
 fn hung_up(s: &mut TcpStream) -> bool {
-    s.set_read_timeout(Some(LIMIT)).unwrap();
+    // macOS refuses socket options (EINVAL) once the peer has reset the connection.
+    if s.set_read_timeout(Some(LIMIT)).is_err() {
+        return true;
+    }
     let mut b = [0u8; 64];
     loop {
         match s.read(&mut b) {
@@ -279,7 +282,6 @@ fn remote_until_refused(rig: &Rig, ip: IpAddr, most: usize) -> (Vec<TcpStream>, 
         let mut s = TcpStream::connect(rig.at(ip)).unwrap();
         // A refused socket is closed at accept, before anything is read; an admitted
         // one waits for its upgrade (the deadline is far away).
-        s.set_read_timeout(Some(Duration::from_millis(1))).unwrap();
         let _ = s.write_all(b"GET");
         kept.push(s);
     }
