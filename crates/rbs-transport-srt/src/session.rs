@@ -106,7 +106,23 @@ impl Running {
         Committed {
             bytes: self.committed_bytes,
             // Headers and trailers have no media time; they are few.
-            oldest_ts: self.committed.iter().find_map(|(ts, _)| *ts),
+            // While no connection takes them, committed chunks are discarded or skipped
+            // to a keyframe when one comes (I/O thread): they must not make the
+            // duration limit refuse newer media.
+            oldest_ts: if self.shared.linked.load(Ordering::Relaxed) {
+                self.committed.iter().find_map(|(ts, _)| *ts)
+            } else {
+                None
+            },
+        }
+    }
+
+    /// Moves staged items to the hand-off while a connection takes them. While none
+    /// does (connecting, reconnecting), they stay staged, where the drop policy keeps
+    /// the newest GOPs within the queue limits.
+    fn pump_linked(&mut self) {
+        if self.shared.linked.load(Ordering::Acquire) {
+            self.pump(HANDOFF_ITEMS);
         }
     }
 
@@ -272,6 +288,12 @@ impl Transport for SrtTransport {
                 stream_id: self.settings.stream_id.clone(),
                 latency_ms: self.settings.latency_ms,
                 reconnect: self.settings.reconnect,
+                stale_ns: self
+                    .settings
+                    .limits
+                    .max_duration
+                    .as_nanos()
+                    .min(u128::from(u64::MAX)) as u64,
             },
             Arc::clone(&shared),
             consumer,
@@ -343,8 +365,14 @@ impl Transport for SrtTransport {
                 data: chunk.data.clone(),
                 kind,
                 at: Instant::now(),
+                ts,
             },
         };
+        if matches!(kind, Kind::Key | Kind::Inter) {
+            // Before the chunk can reach the hand-off (I/O thread: stale check at the
+            // start of a connection).
+            running.shared.newest.0.store(ts, Ordering::Relaxed);
+        }
         running.retire();
         let limits = running.limits(self.settings.limits);
         let Admitted {
@@ -356,7 +384,7 @@ impl Transport for SrtTransport {
         running.items_dropped += u64::from(lost);
         running.unreported_drops = running.unreported_drops.saturating_add(lost);
         running.keyframe_wanted |= cut;
-        running.pump(HANDOFF_ITEMS);
+        running.pump_linked();
         Ok(match (queued, dropped) {
             (false, _) => SendOutcome::Dropped {
                 reason: DropReason::QueueFull,
@@ -373,7 +401,7 @@ impl Transport for SrtTransport {
         let State::Running(running) = &mut self.state else {
             return;
         };
-        running.pump(HANDOFF_ITEMS);
+        running.pump_linked();
         let progress = &running.shared.progress;
         let attempts = progress.attempts.load(Ordering::Acquire);
         if attempts != running.seen_attempts {

@@ -311,6 +311,8 @@ pub struct TransportState {
     /// When false, nothing is logged (allocation tests); `sent` still counts.
     pub log_enabled: AtomicBool,
     pub log: Mutex<Vec<Got>>,
+    /// Events `poll_events` hands out next (connection state tests).
+    pub events: Mutex<Vec<TransportEvent>>,
     pub sent: AtomicU64,
     pub started: AtomicU64,
     pub finished: AtomicU64,
@@ -383,7 +385,11 @@ impl Transport for FakeTransport {
         }
         Ok(SendOutcome::Queued)
     }
-    fn poll_events(&mut self, _out: &mut Vec<TransportEvent>) {}
+    fn poll_events(&mut self, out: &mut Vec<TransportEvent>) {
+        if let Ok(mut events) = self.0.events.try_lock() {
+            out.append(&mut events);
+        }
+    }
     fn stats(&self) -> TransportStats {
         TransportStats::default()
     }

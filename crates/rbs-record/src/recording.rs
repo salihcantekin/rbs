@@ -473,6 +473,16 @@ pub struct Progress {
     pub mux_drops: u64,
     /// Largest output backlog (transport queue full).
     pub backlog_peak: u64,
+    /// Items the transport dropped by its drop policy (a network transport whose
+    /// queue filled while the connection was slow or down).
+    pub transport_drops: u64,
+    /// Times the transport reached its destination (a file opened, a stream
+    /// published), reconnections included; 0 means nothing was ever delivered.
+    pub connects: u64,
+    /// Connection attempts after a failure or a lost connection.
+    pub reconnect_attempts: u64,
+    /// The transport is connected now.
+    pub connected: bool,
     /// Render ticks skipped by a late render worker.
     pub late_render_ticks: u64,
     /// Audio ticks skipped by a late audio worker.

@@ -111,7 +111,9 @@ impl<T> Staging<T> {
     /// Stages `entry`, applying the drop policy when a limit would be passed:
     ///
     /// 1. Drop whole GOPs of staged video from the oldest, keyframe included, while a
-    ///    later keyframe is staged or `entry` is one.
+    ///    later keyframe is staged or `entry` is one. If still over, drop the audio
+    ///    older than the first video kept: it only holds the queue's front back in
+    ///    time, and keeping it would make rule 2 cut a GOP that fits.
     /// 2. When only the current GOP is left, drop its staged inter frames, refuse
     ///    `entry` if it is one, and refuse the rest of the GOP until a keyframe.
     /// 3. Only then drop staged audio, oldest first.
@@ -139,6 +141,17 @@ impl<T> Staging<T> {
             // Rule 1: whole GOPs, oldest first.
             if let Some(end) = self.old_gops_end(&entry, limits, committed) {
                 result.dropped += self.drop_video(..end, |_| true);
+            }
+            if self.over(&entry, limits, committed) {
+                let first_video = self
+                    .queue
+                    .iter()
+                    .find(|e| e.class.is_video())
+                    .map(|e| e.ts)
+                    .or((entry.class == Class::Key).then_some(entry.ts));
+                if let Some(ts) = first_video {
+                    result.dropped += self.drop_audio_before(ts, &entry, limits, committed);
+                }
             }
             // Rule 2: cut the current GOP.
             if entry.class != Class::Key && self.over(&entry, limits, committed) {
@@ -187,30 +200,60 @@ impl<T> Staging<T> {
     ) -> Option<usize> {
         let mut video_bytes = 0;
         let mut seen_video = false;
-        let mut first_audio: Option<u64> = None;
         let mut last = None;
         for (i, e) in self.queue.iter().enumerate() {
             if e.class == Class::Key && seen_video {
                 last = Some(i);
-                let front = first_audio.or(Some(e.ts));
+                // Audio older than the boundary goes too if the limits still fail
+                // (rule 1, second step): only its time span counts here.
+                let front = self.front_kept(e.ts);
                 if !over_with(self.bytes - video_bytes, front, entry, limits, committed) {
                     return last;
                 }
             }
-            match e.class {
-                Class::Audio => {
-                    first_audio.get_or_insert(e.ts);
-                }
-                _ => {
-                    seen_video = true;
-                    video_bytes += e.bytes;
-                }
+            if e.class != Class::Audio {
+                seen_video = true;
+                video_bytes += e.bytes;
             }
         }
         if entry.class == Class::Key && seen_video {
             return Some(self.queue.len());
         }
         last
+    }
+
+    /// The front timestamp once the video before the keyframe at `ts` and the audio
+    /// older than it are dropped: the oldest staged audio from `ts` on, or `ts`.
+    fn front_kept(&self, ts: u64) -> Option<u64> {
+        let audio = self
+            .queue
+            .iter()
+            .filter(|e| e.class == Class::Audio && e.ts >= ts)
+            .map(|e| e.ts)
+            .min();
+        Some(audio.map_or(ts, |a| a.min(ts)))
+    }
+
+    /// Drops the audio at the front of the queue that is older than `ts`, oldest
+    /// first, until the limits hold; returns how many.
+    fn drop_audio_before(
+        &mut self,
+        ts: u64,
+        entry: &Entry<T>,
+        limits: Limits,
+        committed: Committed,
+    ) -> u32 {
+        let mut count = 0;
+        while let Some(front) = self.queue.front() {
+            if front.class != Class::Audio || front.ts >= ts || !self.over(entry, limits, committed)
+            {
+                break;
+            }
+            self.bytes -= front.bytes;
+            self.queue.pop_front();
+            count += 1;
+        }
+        count
     }
 
     /// Rule 3 in one pass: drops the oldest audio until the limits hold (or no audio
@@ -330,6 +373,30 @@ mod tests {
         let r = s.admit(entry(5, Class::Inter, 10), limits(50), none);
         assert_eq!((r.queued, r.dropped, r.cut), (true, 2, false));
         assert_eq!(items(&s), vec![2, 3, 4, 5], "GOP A video gone, audio kept");
+    }
+
+    #[test]
+    fn old_audio_goes_before_the_current_gop_is_cut() {
+        // 30 ms limit; entry n is at n * 10 ms. Audio 0, GOP 1-2, audio 3, GOP 4-5.
+        let mut s = Staging::with_capacity(16);
+        let none = Committed::default();
+        let limits = Limits {
+            max_bytes: u64::MAX,
+            max_duration_ns: 30 * MS,
+        };
+        for (n, c) in [(0, Class::Audio), (1, Class::Key), (2, Class::Inter)] {
+            assert!(s.admit(entry(n, c, 1), limits, none).queued);
+        }
+        // 4 is a keyframe: GOP 1-2 goes, and audio 0 with it (only it held the front
+        // back); audio 3 stays.
+        assert!(s.admit(entry(3, Class::Audio, 1), limits, none).queued);
+        let r = s.admit(entry(4, Class::Key, 1), limits, none);
+        assert_eq!((r.queued, r.dropped, r.cut), (true, 3, false));
+        assert_eq!(items(&s), vec![3, 4]);
+        // Inter frames of the new GOP are not cut while it fits.
+        let r = s.admit(entry(5, Class::Inter, 1), limits, none);
+        assert_eq!((r.queued, r.dropped, r.cut), (true, 0, false));
+        assert!(!s.is_refusing());
     }
 
     #[test]

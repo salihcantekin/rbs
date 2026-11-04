@@ -345,11 +345,11 @@ impl TransportFactory for PacketTransportFactory {
         config: &TransportConfig,
     ) -> Result<Box<dyn Transport>, rbs_transport::CreateError> {
         *self.0.packet_config.lock().unwrap() = Some(config.clone());
-        Ok(Box::new(PacketTransport(Arc::clone(&self.0))))
+        Ok(Box::new(PacketTransport(Arc::clone(&self.0), false)))
     }
 }
 
-pub struct PacketTransport(Arc<Log>);
+pub struct PacketTransport(Arc<Log>, bool);
 
 impl Transport for PacketTransport {
     fn start(&mut self, streams: &[StreamDescriptor]) -> Result<(), TransportError> {
@@ -371,7 +371,13 @@ impl Transport for PacketTransport {
             )),
         }
     }
-    fn poll_events(&mut self, _: &mut Vec<TransportEvent>) {}
+    fn poll_events(&mut self, out: &mut Vec<TransportEvent>) {
+        // Connects once, on the first look after `start`.
+        if !self.1 {
+            self.1 = true;
+            out.push(TransportEvent::Connected);
+        }
+    }
     fn stats(&self) -> TransportStats {
         TransportStats::default()
     }

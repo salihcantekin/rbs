@@ -1348,6 +1348,10 @@ impl Studio {
             p.packets_taken = r.output.packets.load(Ordering::Relaxed);
             p.mux_drops = r.output.mux_drops.load(Ordering::Relaxed);
             p.backlog_peak = r.output.backlog_peak.load(Ordering::Relaxed);
+            p.transport_drops = r.output.transport_drops.load(Ordering::Relaxed);
+            p.connects = r.output.connects.load(Ordering::Relaxed);
+            p.reconnect_attempts = r.output.reconnect_attempts.load(Ordering::Relaxed);
+            p.connected = r.output.connected.load(Ordering::Relaxed);
         }
         p
     }

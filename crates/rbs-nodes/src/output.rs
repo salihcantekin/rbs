@@ -2,7 +2,7 @@
 //! its own partition (spec `docs/specs/io-nodes.md`, "Output node").
 
 use std::collections::VecDeque;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
@@ -60,6 +60,13 @@ pub struct OutputNodeStats {
     pub backlog_peak: AtomicU64,
     /// `KeyframeRequested` events from the transport (not forwarded yet).
     pub keyframe_requests: AtomicU64,
+    /// `Connected` events: the transport reached its destination (a file opened, a
+    /// stream published), counting every reconnection.
+    pub connects: AtomicU64,
+    /// `Reconnecting` events: connection attempts after a failure or a lost connection.
+    pub reconnect_attempts: AtomicU64,
+    /// Connected now: set by `Connected`, cleared by `Reconnecting` and `Disconnected`.
+    pub connected: AtomicBool,
     /// Items still undelivered when `release` gave up.
     pub finish_lost: AtomicU64,
     /// Packets of other streams dropped because they end before the first video
@@ -508,7 +515,18 @@ impl<X: Runtime> Node<X> for OutputNode {
         for event in &self.events {
             match event {
                 TransportEvent::KeyframeRequested => add(&self.stats.keyframe_requests, 1),
-                TransportEvent::Disconnected { .. } => disconnected = true,
+                TransportEvent::Connected => {
+                    add(&self.stats.connects, 1);
+                    self.stats.connected.store(true, Ordering::Relaxed);
+                }
+                TransportEvent::Reconnecting { .. } => {
+                    add(&self.stats.reconnect_attempts, 1);
+                    self.stats.connected.store(false, Ordering::Relaxed);
+                }
+                TransportEvent::Disconnected { .. } => {
+                    self.stats.connected.store(false, Ordering::Relaxed);
+                    disconnected = true;
+                }
                 _ => {}
             }
         }
@@ -547,6 +565,7 @@ impl<X: Runtime> Node<X> for OutputNode {
             let left = deadline.saturating_since(self.clock.now());
             let _ = transport.finish(left);
         }
+        self.stats.connected.store(false, Ordering::Relaxed);
         self.chunks = Vec::new();
         self.events = Vec::new();
     }
