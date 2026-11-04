@@ -8,10 +8,11 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use rbs_app::canvas_profile::{self, CanvasProfile, RATES, SIZES};
-use rbs_app::record_profile::{self, AUDIO_KBPS, Format, RecordProfile, VIDEO_KBPS};
+use rbs_app::encoder_form::{Choices, EncoderForm};
+use rbs_app::record_profile::{self, AUDIO_KBPS, Format, RateMode, RecordProfile, VIDEO_KBPS};
 use rbs_app::studio_host::{
-    Command, EncoderInfo, RecordRequest, RecordingUpdate, SourceKind, SourceRow, SourceStatus,
-    StudioHost, Target, Update,
+    Command, EncoderInfo, EncoderOptions, RecordRequest, RecordingUpdate, SourceKind, SourceRow,
+    SourceStatus, StudioHost, Target, Update,
 };
 use rbs_audio::LevelMeter;
 use rbs_scene::model::SourceId;
@@ -196,6 +197,37 @@ impl StudioUi {
                 .position(|k| *k == p.audio_kbps)
                 .unwrap_or(0) as i32,
         );
+        let form = self.form();
+        g.set_out_rate_kind(match p.rate_control {
+            RateMode::Cbr => 0,
+            RateMode::Vbr => 1,
+            RateMode::ConstantQuality => 2,
+        });
+        let (o, i) = choices(&form.rate_modes);
+        g.set_out_rate_modes(o);
+        g.set_out_rate_mode(i);
+        g.set_out_bitrate_label(form.bitrate_label.into());
+        let (o, i) = choices(&form.peaks);
+        g.set_out_peaks(o);
+        g.set_out_peak(i);
+        let (o, i) = choices(&form.qualities);
+        g.set_out_qualities(o);
+        g.set_out_quality(i);
+        let (o, i) = choices(&form.keyframes);
+        g.set_out_keyframes(o);
+        g.set_out_keyframe(i);
+        let (o, i) = choices(&form.presets);
+        g.set_out_presets(o);
+        g.set_out_preset(i);
+        let (o, i) = choices(&form.profiles);
+        g.set_out_profiles(o);
+        g.set_out_profile(i);
+        let (o, i) = choices(&form.b_frames);
+        g.set_out_b_frames(o);
+        g.set_out_b_frame(i);
+        g.set_out_b_frames_note(form.b_frames_note.unwrap_or_default().into());
+        g.set_out_padding(p.cbr_padding);
+        g.set_out_padding_available(form.padding_available);
         g.set_out_note(self.profile_note.as_str().into());
         let encoder = match self.encoder_index() {
             0 => "best encoder".to_owned(),
@@ -204,12 +236,18 @@ impl StudioUi {
                 .get(i - 1)
                 .map_or_else(String::new, |e| e.name.clone()),
         };
+        let video = match p.rate_control {
+            RateMode::Cbr if p.cbr_padding => format!("video {} kbit/s padded", p.video_kbps),
+            RateMode::Cbr => format!("video {} kbit/s", p.video_kbps),
+            RateMode::Vbr => format!("video VBR {} kbit/s, up to {}", p.video_kbps, p.peak_kbps()),
+            RateMode::ConstantQuality => format!("video quality {}", p.quality),
+        };
         g.set_out_summary(
             format!(
-                "{} · {} · video {} kbit/s · audio {} kbit/s · {}",
+                "{} · {} · {} · audio {} kbit/s · {}",
                 p.format.label(),
                 encoder,
-                p.video_kbps,
+                video,
                 p.audio_kbps,
                 p.folder.display()
             )
@@ -286,6 +324,23 @@ impl StudioUi {
             .map_or(0, |i| i + 1)
     }
 
+    /// What the picked encoder can do; with automatic choice, what any encoder can do.
+    fn options(&self) -> EncoderOptions {
+        match self.encoder_index() {
+            0 => EncoderOptions::union(self.encoders.iter().map(|e| &e.options)),
+            i => self
+                .encoders
+                .get(i - 1)
+                .map(|e| e.options.clone())
+                .unwrap_or_default(),
+        }
+    }
+
+    /// The encoder fields of the form, for the profile and the picked encoder.
+    fn form(&self) -> EncoderForm {
+        EncoderForm::new(&self.profile, &self.options())
+    }
+
     /// The video bitrates offered: the presets, and the saved one if it is not one.
     fn video_options(&self) -> Vec<u32> {
         let mut v = VIDEO_KBPS.to_vec();
@@ -318,7 +373,7 @@ impl StudioUi {
             path: p.file_for(chrono::Local::now().naive_local()),
             container: p.format.container(),
             encoder,
-            video_bitrate_bps: u64::from(p.video_kbps) * 1000,
+            video: p.video_settings(),
             audio_bitrate_bps: u64::from(p.audio_kbps) * 1000,
         };
         self.rec_state = rec_state::STARTING;
@@ -379,6 +434,60 @@ impl StudioUi {
     pub fn set_audio_rate(&mut self, i: i32) {
         if let Some(k) = AUDIO_KBPS.get(i as usize) {
             self.profile.audio_kbps = *k;
+            self.save_profile();
+        }
+    }
+
+    pub fn set_rate_mode(&mut self, i: i32) {
+        if let Some(m) = self.form().rate_modes.get(i) {
+            self.profile.rate_control = m;
+            self.save_profile();
+        }
+    }
+
+    pub fn set_peak(&mut self, i: i32) {
+        if let Some(k) = self.form().peaks.get(i) {
+            self.profile.max_video_kbps = k;
+            self.save_profile();
+        }
+    }
+
+    pub fn set_quality(&mut self, i: i32) {
+        if let Some(q) = self.form().qualities.get(i) {
+            self.profile.quality = q;
+            self.save_profile();
+        }
+    }
+
+    pub fn set_padding(&mut self, on: bool) {
+        self.profile.cbr_padding = on;
+        self.save_profile();
+    }
+
+    pub fn set_keyframe(&mut self, i: i32) {
+        if let Some(s) = self.form().keyframes.get(i) {
+            self.profile.keyframe_seconds = s;
+            self.save_profile();
+        }
+    }
+
+    pub fn set_preset(&mut self, i: i32) {
+        if let Some(p) = self.form().presets.get(i) {
+            self.profile.preset = p;
+            self.save_profile();
+        }
+    }
+
+    pub fn set_profile(&mut self, i: i32) {
+        if let Some(p) = self.form().profiles.get(i) {
+            self.profile.profile = p;
+            self.save_profile();
+        }
+    }
+
+    pub fn set_b_frames(&mut self, i: i32) {
+        if let Some(n) = self.form().b_frames.get(i) {
+            self.profile.b_frames = n;
             self.save_profile();
         }
     }
@@ -615,11 +724,12 @@ impl StudioUi {
                 failure,
                 frames,
                 dropped,
+                flush_lost,
             } => {
                 self.rec_state = rec_state::OFF;
                 self.rec_file = None;
                 log(&format!(
-                    "recording stopped: {frames} frames, {dropped} dropped, failure: {failure:?}"
+                    "recording stopped: {frames} frames, {dropped} dropped, {flush_lost} packets lost in the encoder, failure: {failure:?}"
                 ));
                 match failure {
                     None => {
@@ -752,6 +862,11 @@ fn file_name(p: &Path) -> String {
         || p.display().to_string(),
         |n| n.to_string_lossy().into_owned(),
     )
+}
+
+/// A field's labels and the index in use, for the window.
+fn choices<T: Clone + PartialEq>(c: &Choices<T>) -> (ModelRc<SharedString>, i32) {
+    (strings(c.labels()), c.index as i32)
 }
 
 fn kbps(k: u32) -> String {

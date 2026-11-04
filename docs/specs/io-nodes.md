@@ -44,7 +44,7 @@ impl VideoEncoderNode {                                       // Node<X> for eve
         -> Result<Self, CreateError>;                         // probes a session, then drops it
     pub fn stream(&self) -> &StreamDescriptor;
     pub fn stats(&self) -> Arc<EncoderNodeStats>;             // submitted, packets, busy_drops, refused,
-                                                              // overflow_drops, flush_lost
+                                                              // overflow_drops, flush_lost, flushes
 }
 
 // rbs_nodes::output
@@ -59,7 +59,7 @@ impl OutputNode {                                             // Node<X> for eve
     pub fn with_finish_timeout(self, timeout: Duration) -> Self; // default 5 s
     pub fn with_wait_clock(self, clock: Arc<dyn WaitClock>) -> Self; // default SystemWaitClock
     pub fn stats(&self) -> Arc<OutputNodeStats>;              // packets, sent, transport_drops, mux_drops,
-                                                              // backlog_peak, keyframe_requests, finish_lost,
+                                                              // backlog_peak, keyframe_requests, finish_lost, start_drops,
                                                               // failure: OnceLock<String>
 }
 /// Time source of the blocking waits in `prepare` and `release` (control thread).
@@ -115,8 +115,8 @@ Invariants:
 | --- | --- |
 | `open` | Creates a session (control thread), keeps its `stream()` and drops it: an installed node holds no encoder (P13) |
 | `prepare` | Creates the session; refuses with `NodeError::Permanent` if its `stream()` differs from the probed one, or if creation fails with anything but `ResourceExhausted`. Reserves the drain and carry-over buffers |
-| `process` | Passes carried packets first. Submits a frame not seen before (timestamp, sequence) once; on `Busy` drains and retries once, then drops it (`busy_drops`); a refused frame is dropped (`refused`). Drains and passes packets |
-| `release` | Flushes and drops the session; flushed and carried packets are lost and counted (`flush_lost`) |
+| `process` | Passes carried packets first. Submits a frame not seen before (timestamp, sequence) once; on `Busy` drains and retries once, then drops it (`busy_drops`); a refused frame is dropped (`refused`). Drains and passes packets. On a final tick (`Tick::draining`, ADR-0043) it flushes instead of draining, passes every packet (carrying what the queue cannot take now), counts `flushes` and submits nothing afterwards; the flush may wait for the encoder, bounded by the drain timeout |
+| `release` | Flushes and drops the session; packets flushed here (the node left without a final tick: a live edit or a timed-out drain) and carried packets are lost and counted (`flush_lost`) |
 
 Invariants:
 
@@ -130,8 +130,8 @@ Invariants:
 | Call | Does |
 | --- | --- |
 | `prepare` | Refuses permanently once the node wrote media (a restart would truncate the destination). Creates the muxer (required exactly when the transport's input is `Container(c)`, and only for that `c`) and the transport, `start(streams)`, `begin`, and sends the header, waiting up to the finish timeout for queue room on the wait clock |
-| `process` | Sends the backlog first; then for each stream `i` in order, each packet of pin `s{i}`: muxed into chunks, or forwarded as a packet item. `QueueFull` appends to the backlog. Polls transport events |
-| `release` | Delivers the backlog and the muxer's `finish` chunks within the finish timeout, then `Transport::finish` with the time left |
+| `process` | Sends the backlog first; then for each stream `i` in order, each packet of pin `s{i}`: muxed into chunks, or forwarded as a packet item (after the aligned start below). `QueueFull` appends to the backlog. Polls transport events |
+| `release` | Writes packets still held for the aligned start (no video packet ever came), then delivers the backlog and the muxer's `finish` chunks within the finish timeout, then `Transport::finish` with the time left |
 
 Invariants:
 
@@ -141,6 +141,7 @@ Invariants:
 4. After `release` the transport has been finished; undelivered items are counted (`finish_lost`).
 5. Muxer and transport creation errors and `begin` errors are permanent; a `start` error is retried only when `TransportError::is_recoverable`.
 6. The first permanent failure's cause (for example `muxer: invalid packet: ...`) is kept in `failure`; the string is built only on that path.
+7. **Aligned start.** An output with a video stream and other streams starts at the first video packet's pts: packets of other streams that end at or before it (pts plus duration, or pts when the packet has no duration) are dropped and counted (`start_drops`); packets that arrive before the first video packet are held (at most `START_HOLD` = 256, preallocated in `prepare`; past it the oldest are dropped and counted) and written when it arrives, in arrival order. So a recording never begins with audio before the first picture (video started 143 ms after audio on SC-PC, 3440x1440 NVENC,). Outputs with only video or no video pass every packet.
 
 ### Preview node (ADR-0041)
 
@@ -187,7 +188,8 @@ Nodes report through `NodeError` (ADR-0020): `Permanent` for what retrying canno
 
 ## Open questions
 
-- End of stream: frames an encoder holds back at `release` are lost; a final flush into the graph needs a drain hook in the engine (engine spec).
+- End of stream for the audio encoder node: its doorbell partition may run several final ticks while blocks are still queued, so it does not flush on `Tick::draining` yet; the AAC tail it holds (under one frame plus the codec's delay) is dropped at `release`. It needs a way to know its input queue is empty.
+- Encoders with deep look-ahead or B-frames flush more packets than one final tick on a cadence partition can pass (`PER_TICK_EVENTS`); the rest is counted in `flush_lost`. Today's hardware adapters hold at most their few slots (ADR-0043). More final ticks while a node has output pending would close this.
 - Transport feedback (`KeyframeRequested`, `BitrateHint`) to the encoder goes through the control plane; not wired yet.
 - Outputs that may restart safely (network transports) need a transport capability; until then every output that wrote media is single-use ([#84](https://github.com/salihcantekin/rbs/issues/84)).
 - Native export across the partition queue (move instead of share), D3D11/D3D12 input for NVENC and AMF, and a D3D12 exporter remove the readback; the export node then chooses by the encoder's memory kinds (ADR-0038, [#83](https://github.com/salihcantekin/rbs/issues/83)).

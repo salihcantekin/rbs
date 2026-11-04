@@ -161,7 +161,7 @@ Without audio (`audio: None`) the two audio partitions are not added: three work
 ### Running and stopping
 
 - `service` runs `Engine::service` and reads its events, matched to sources by `SourceState::node`: a `Failed` event of a source sets that source's `failed`, `Restarted` or `Recovered` clears it; a permanent failure (`retry_at: None`) of an essential node sets `failure`. `failure()` also returns the output's first permanent failure cause (`OutputNodeStats::failure`). The composition root stops when `failure()` is set.
-- `finish` shuts the engine down (sources first, the output last, which writes the container's trailer and finishes the transport) and returns the final `Progress`, `failure`, shutdown errors, `flush_lost` (packets the video encoder still held) and `finish_lost` (output items not delivered).
+- `finish` shuts the engine down (sources first, the output last, which writes the container's trailer and finishes the transport) and returns the final `Progress`, `failure`, shutdown errors, `flush_lost` (packets the video encoder still held after its final-tick flush, ADR-0043; normally 0) and `finish_lost` (output items not delivered).
 
 ### Studio (ADR-0041)
 

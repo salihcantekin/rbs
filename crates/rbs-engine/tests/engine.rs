@@ -423,8 +423,16 @@ fn shutdown_encodes_the_last_frame_render_wrote() {
         rig.frame();
     }
     let ran = rig.source_probe.last_frame_ns.load(Ordering::Relaxed);
+    for probe in [&rig.source_probe, &rig.encoder_probe, &rig.sink_probe] {
+        assert_eq!(probe.draining_ticks.load(Ordering::Relaxed), 0, "running");
+    }
     let report = rig.engine.shutdown();
     assert!(report.errors.is_empty(), "{:?}", report.errors);
+    // Final ticks are marked: exactly one on each cadence partition, at least one on
+    // the doorbell-paced output (ADR-0043).
+    assert_eq!(rig.source_probe.draining_ticks.load(Ordering::Relaxed), 1);
+    assert_eq!(rig.encoder_probe.draining_ticks.load(Ordering::Relaxed), 1);
+    assert!(rig.sink_probe.draining_ticks.load(Ordering::Relaxed) >= 1);
     // Render ran a final tick (the next index, at once), the encoder a final tick that
     // encoded its frame, and the output passed the packet on.
     let last = rig.source_probe.last_frame_ns.load(Ordering::Relaxed);
@@ -509,6 +517,11 @@ fn a_branch_removed_with_apply_draining_drains_while_render_keeps_running() {
     assert_eq!(*log.lock().unwrap(), vec!["encoder", "sink"]);
     assert_eq!(rig.seen(), rig.encoder_probe.seen.load(Ordering::Relaxed));
     assert!(rig.seen() >= encoded);
+    // Only the drained partitions' final ticks are marked; render keeps running.
+    assert_eq!(rig.encoder_probe.draining_ticks.load(Ordering::Relaxed), 1);
+    assert!(rig.sink_probe.draining_ticks.load(Ordering::Relaxed) >= 1);
+    assert_eq!(preview_probe.draining_ticks.load(Ordering::Relaxed), 0);
+    assert_eq!(rig.source_probe.draining_ticks.load(Ordering::Relaxed), 0);
     assert!(!rig.engine.has_worker(ENCODER));
     assert!(!rig.engine.has_worker(OUTPUT));
     assert!(rig.engine.crossings().is_empty());

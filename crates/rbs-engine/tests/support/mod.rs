@@ -48,6 +48,8 @@ pub struct Probe {
     pub next_index: AtomicU64,
     /// `process` calls whose tick index was not above the one before.
     pub repeated_indices: AtomicU64,
+    /// `process` calls on ticks marked `draining` (final ticks, ADR-0043).
+    pub draining_ticks: AtomicU64,
     /// Time, in ns, of the last frame a source wrote or an encoder encoded.
     pub last_frame_ns: AtomicU64,
 }
@@ -235,6 +237,9 @@ impl<X: Runtime> Node<X> for TestNode {
         let index = tick.index + 1;
         if self.probe.next_index.swap(index, Ordering::Relaxed) >= index {
             self.probe.repeated_indices.fetch_add(1, Ordering::Relaxed);
+        }
+        if tick.draining {
+            self.probe.draining_ticks.fetch_add(1, Ordering::Relaxed);
         }
         if let Some(gate) = self.process_gate.take() {
             gate.pass();
