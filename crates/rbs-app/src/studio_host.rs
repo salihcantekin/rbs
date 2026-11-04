@@ -1383,7 +1383,7 @@ impl Host {
         let to = if up {
             others.find(|i| *i > index)
         } else {
-            others.filter(|i| *i < index).last()
+            others.filter(|i| *i < index).next_back()
         };
         let Some(to) = to else { return Ok(false) };
         self.collection
