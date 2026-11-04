@@ -17,6 +17,9 @@ pub enum Command {
     Devices,
     /// `rbs-cli token ...`: manage remote control access tokens.
     Token(TokenCommand),
+    /// `rbs-cli remote fingerprint`: print the key pin and certificate fingerprint
+    /// clients on other computers check (ADR-0046).
+    RemoteFingerprint,
     /// `rbs-cli help` or `--help`.
     Help,
 }
@@ -97,6 +100,7 @@ usage:
   rbs-cli token list
   rbs-cli token create <name> [--access view|control|full]
   rbs-cli token revoke <name>
+  rbs-cli remote fingerprint
 
 record options:
   --seconds N          stop after N seconds (default: press Enter to stop)
@@ -310,6 +314,14 @@ pub fn parse<'a>(args: impl IntoIterator<Item = &'a str>) -> Result<Command, Str
         },
         Some("record") => record(it).map(|a| Command::Record(Box::new(a))),
         Some("token") => token(it).map(Command::Token),
+        Some("remote") => match (it.next(), it.next()) {
+            (Some("fingerprint"), None) => Ok(Command::RemoteFingerprint),
+            (Some("fingerprint"), Some(extra)) => {
+                Err(format!("remote fingerprint: unexpected {extra:?}"))
+            }
+            (Some(other), _) => Err(format!("remote: unknown command {other:?}")),
+            (None, _) => Err("remote needs fingerprint".into()),
+        },
         Some(other) => Err(format!("unknown command {other:?}")),
     }
 }
@@ -639,6 +651,10 @@ mod tests {
     #[test]
     fn token_commands_parse() {
         assert_eq!(
+            parse(["remote", "fingerprint"]).unwrap(),
+            Command::RemoteFingerprint
+        );
+        assert_eq!(
             parse(["token", "list"]).unwrap(),
             Command::Token(TokenCommand::List)
         );
@@ -664,6 +680,9 @@ mod tests {
         );
         for (args, want) in [
             (&["token"][..], "list, create or revoke"),
+            (&["remote"][..], "needs fingerprint"),
+            (&["remote", "pin"][..], "unknown command"),
+            (&["remote", "fingerprint", "x"][..], "unexpected"),
             (&["token", "show"][..], "unknown command"),
             (&["token", "create"][..], "needs a name"),
             (&["token", "create", "a", "b"][..], "unexpected"),

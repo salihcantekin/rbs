@@ -11,6 +11,7 @@
 //! a token of their own.
 
 mod api;
+mod identity;
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -20,6 +21,9 @@ use rbs_api::{Token, TokenEntry, TokenStore};
 use serde::{Deserialize, Serialize};
 
 pub use api::{TokenAnswer, token_command};
+pub use identity::{
+    OwnCertificate, Pem, cert_file, key_file, read_generated, read_own, save_generated,
+};
 
 /// The RBS configuration directory: `RBS_CONFIG_DIR` if set, else the platform's
 /// per-user configuration directory plus `RBS` (or `rbs` on Linux).
@@ -152,8 +156,21 @@ pub struct RemoteProfile {
     pub format_version: u32,
     /// Remote control is on. Off by default.
     pub enabled: bool,
-    /// The loopback port apps connect to.
+    /// The port apps connect to.
     pub port: u16,
+    /// Other computers may connect too, over TLS (ADR-0046). Off by default.
+    #[serde(default)]
+    pub network: bool,
+    /// Sessions from other computers may get `admin`. Off by default.
+    #[serde(default)]
+    pub remote_admin: bool,
+    /// When the generated certificate expires (seconds since the Unix epoch), so it is
+    /// renewed without parsing it; none until it is made.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub certificate_expires: Option<i64>,
+    /// The user's own certificate chain and key, used instead of the generated ones.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub own_certificate: Option<OwnCertificate>,
     /// The tokens apps may use; only their hashes.
     #[serde(default)]
     pub tokens: Vec<TokenEntry>,
@@ -166,6 +183,10 @@ impl RemoteProfile {
             format_version: FORMAT,
             enabled: false,
             port: DEFAULT_PORT,
+            network: false,
+            remote_admin: false,
+            certificate_expires: None,
+            own_certificate: None,
             tokens: Vec::new(),
         }
     }
@@ -179,6 +200,13 @@ impl RemoteProfile {
             ));
         }
         if let Some(why) = port_problem(self.port) {
+            return Some(why);
+        }
+        if let Some(why) = self
+            .own_certificate
+            .as_ref()
+            .and_then(OwnCertificate::problem)
+        {
             return Some(why);
         }
         for (i, t) in self.tokens.iter().enumerate() {
@@ -392,15 +420,23 @@ fn writable_by_others(_path: &Path) -> Option<String> {
 /// readable and writable by the current user only (mode 0600); on Windows the per-user
 /// application data folder already is.
 pub fn save(config: &Path, profile: &RemoteProfile) -> std::io::Result<()> {
-    use std::io::Write;
     std::fs::create_dir_all(config)?;
     let text = toml::to_string(profile).map_err(std::io::Error::other)?;
-    let path = file(config);
+    write_private(&file(config), text.as_bytes())
+}
+
+/// Replaces `path` with `bytes` in one step (a temporary file renamed over it), the
+/// new file readable and writable by the current user only on Unix: it never exists
+/// with other permissions, not even briefly.
+fn write_private(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    use std::io::Write;
     // A name of its own, so two saves at once (the app and `rbs-cli`, which also
     // take [`lock`]) never write into each other's file.
     static SAVES: AtomicU64 = AtomicU64::new(0);
     let n = SAVES.fetch_add(1, Ordering::Relaxed);
-    let tmp = path.with_extension(format!("toml.{}-{n}.tmp", std::process::id()));
+    let mut name = path.file_name().unwrap_or_default().to_owned();
+    name.push(format!(".{}-{n}.tmp", std::process::id()));
+    let tmp = path.with_file_name(name);
     let mut options = std::fs::OpenOptions::new();
     options.write(true).create_new(true);
     #[cfg(unix)]
@@ -409,9 +445,9 @@ pub fn save(config: &Path, profile: &RemoteProfile) -> std::io::Result<()> {
         options.mode(0o600);
     }
     let mut f = options.open(&tmp)?;
-    let written = f.write_all(text.as_bytes()).and_then(|()| f.sync_all());
+    let written = f.write_all(bytes).and_then(|()| f.sync_all());
     drop(f);
-    let done = written.and_then(|()| std::fs::rename(&tmp, &path));
+    let done = written.and_then(|()| std::fs::rename(&tmp, path));
     if done.is_err() {
         let _ = std::fs::remove_file(&tmp);
     }
@@ -465,6 +501,42 @@ mod tests {
             std::env::temp_dir().join(format!("rbs-remote-settings-{name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&d);
         d
+    }
+
+    #[test]
+    fn network_settings_save_and_a_file_without_them_still_loads() {
+        let d = dir("network");
+        std::fs::create_dir_all(&d).unwrap();
+        std::fs::write(
+            file(&d),
+            "format_version = 1\nenabled = true\nport = 4456\n",
+        )
+        .unwrap();
+        let old = read(&d).unwrap().unwrap();
+        assert!(!old.network && !old.remote_admin);
+        assert_eq!(
+            (old.certificate_expires, old.own_certificate.clone()),
+            (None, None)
+        );
+        let mut p = RemoteProfile {
+            network: true,
+            remote_admin: true,
+            certificate_expires: Some(1_900_000_000),
+            own_certificate: Some(OwnCertificate {
+                certificate: d.join("c.pem"),
+                key: d.join("k.pem"),
+            }),
+            ..old
+        };
+        p.create_token("Deck", Access::Control).unwrap();
+        save(&d, &p).unwrap();
+        assert_eq!(read(&d).unwrap(), Some(p.clone()));
+        p.own_certificate = Some(OwnCertificate {
+            certificate: "c.pem".into(),
+            key: d.join("k.pem"),
+        });
+        assert!(p.problem().is_some());
+        let _ = std::fs::remove_dir_all(&d);
     }
 
     #[test]

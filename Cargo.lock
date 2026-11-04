@@ -4430,6 +4430,7 @@ version = "0.0.1"
 dependencies = [
  "rbs-api",
  "rbs-api-ipc",
+ "rbs-api-ws",
  "rbs-audio-io",
  "rbs-audio-io-coreaudio",
  "rbs-audio-io-test",

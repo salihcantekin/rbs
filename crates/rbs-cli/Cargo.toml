@@ -36,6 +36,8 @@ rbs-remote-settings = { path = "../rbs-remote-settings" }
 # `token` changes go to a running RBS over local IPC (`tokens.*` requests).
 rbs-api = { path = "../rbs-api" }
 rbs-api-ipc = { path = "../rbs-api-ipc" }
+# `remote fingerprint`: reads the stored certificate and key (ADR-0046).
+rbs-api-ws = { path = "../rbs-api-ws" }
 serde_json = "1"
 
 [target.'cfg(windows)'.dependencies]
