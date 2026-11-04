@@ -30,7 +30,8 @@ use rbs_graph::description::PartitionId;
 use rbs_graph::node::NodeTypeId;
 use rbs_mux::{Muxer, MuxerConfig, MuxerFactory, caps as mux_caps};
 use rbs_record::{
-    AUDIO, AUDIO_ENCODER, OUTPUT, RENDER, RecordAdapters, Recording, Studio, VIDEO_ENCODER,
+    AUDIO, AUDIO_ENCODER, AUDIO_ENCODER_2, OUTPUT, OUTPUT_2, RENDER, RecordAdapters, Recording,
+    Studio, VIDEO_ENCODER, VIDEO_ENCODER_2,
 };
 use rbs_scene::SceneCollection;
 use rbs_scene::model::{CanvasId, ItemContent, Layout, SceneScope, Settings};
@@ -86,6 +87,8 @@ pub struct FakeVideoFactory {
     submitted: Arc<AtomicU64>,
     /// The configuration of the last session created.
     configs: Arc<Mutex<Option<VideoEncoderConfig>>>,
+    /// Sessions created.
+    sessions: Arc<AtomicU64>,
 }
 
 impl AdapterFactory for FakeVideoFactory {
@@ -116,6 +119,7 @@ impl VideoEncoderFactory for FakeVideoFactory {
             });
         }
         *self.configs.lock().unwrap() = Some(config.clone());
+        self.sessions.fetch_add(1, Ordering::Relaxed);
         Ok(Box::new(FakeVideo {
             stream: StreamDescriptor::new(
                 CodecId::H264,
@@ -181,6 +185,7 @@ pub struct Written {
     pub stream: u16,
     pub pts: Timestamp,
     pub codec: CodecId,
+    pub keyframe: bool,
 }
 
 #[derive(Default)]
@@ -244,6 +249,7 @@ impl Muxer for LogMuxer {
             stream: stream.0,
             pts: packet.pts(),
             codec: packet.codec(),
+            keyframe: packet.keyframe(),
         });
         out.push(MuxChunk::new(
             ChunkKind::Media {
@@ -363,6 +369,7 @@ impl Transport for PacketTransport {
                     stream: stream.0,
                     pts: packet.pts(),
                     codec: packet.codec(),
+                    keyframe: packet.keyframe(),
                 });
                 Ok(SendOutcome::Queued)
             }
@@ -395,13 +402,19 @@ pub struct Rig {
     pub capture: Arc<TestCaptureFactory>,
     pub audio: Arc<TestAudioBackend>,
     pub log: Arc<Log>,
+    /// What the packet transport (`stream://`) got, apart from the muxed outputs.
+    pub stream_log: Arc<Log>,
     pub submitted: Arc<AtomicU64>,
+    /// Video encoder sessions created.
+    pub video_sessions: Arc<AtomicU64>,
     /// The configuration of the last video encoder session created.
     pub video_config: Arc<Mutex<Option<VideoEncoderConfig>>>,
 }
 
 pub fn rig() -> Rig {
     let log = Arc::new(Log::default());
+    let stream_log = Arc::new(Log::default());
+    let video_sessions = Arc::new(AtomicU64::new(0));
     let submitted = Arc::new(AtomicU64::new(0));
     let video_config = Arc::new(Mutex::new(None));
     let capture = Arc::new(TestCaptureFactory::new());
@@ -416,6 +429,7 @@ pub fn rig() -> Rig {
                 broken,
                 submitted: Arc::clone(&submitted),
                 configs: Arc::clone(&video_config),
+                sessions: Arc::clone(&video_sessions),
             }))
             .unwrap();
     }
@@ -429,7 +443,7 @@ pub fn rig() -> Rig {
         .register(Arc::new(LogTransportFactory(Arc::clone(&log))))
         .unwrap();
     a.transports
-        .register(Arc::new(PacketTransportFactory(Arc::clone(&log))))
+        .register(Arc::new(PacketTransportFactory(Arc::clone(&stream_log))))
         .unwrap();
     a.probe();
     Rig {
@@ -437,7 +451,9 @@ pub fn rig() -> Rig {
         capture,
         audio,
         log,
+        stream_log,
         submitted,
+        video_sessions,
         video_config,
     }
 }
@@ -510,16 +526,21 @@ impl Driven for Studio {
         Studio::service(self)
     }
     fn failure(&self) -> Option<String> {
-        Studio::failure(self).or_else(|| self.recording_failure())
+        Studio::failure(self).or_else(|| {
+            self.outputs()
+                .into_iter()
+                .find_map(|id| self.output_failure(id))
+        })
     }
 }
 
 /// The cadence partitions: id, cadence, offset.
-fn cadences() -> [(PartitionId, Cadence, Duration); 3] {
+fn cadences() -> [(PartitionId, Cadence, Duration); 4] {
     let frames = Cadence::frames(Timestamp::ZERO, FPS);
     [
         (RENDER, frames, Duration::ZERO),
         (VIDEO_ENCODER, frames, FPS.frame_duration() / 4),
+        (VIDEO_ENCODER_2, frames, FPS.frame_duration() / 4),
         (
             AUDIO,
             AudioGraphConfig::default().cadence(START),
@@ -539,7 +560,16 @@ pub fn run_until<T: Driven>(
     clock: &TestClock,
     mut done: impl FnMut(&T) -> bool,
 ) -> bool {
-    let all = [RENDER, AUDIO, VIDEO_ENCODER, AUDIO_ENCODER, OUTPUT];
+    let all = [
+        RENDER,
+        AUDIO,
+        VIDEO_ENCODER,
+        AUDIO_ENCODER,
+        OUTPUT,
+        VIDEO_ENCODER_2,
+        AUDIO_ENCODER_2,
+        OUTPUT_2,
+    ];
     let gpu = gpu().expect("run_until needs the GPU the studio runs on");
     let wall = Instant::now();
     let catch_up = |driven: &T| {

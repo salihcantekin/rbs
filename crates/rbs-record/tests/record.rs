@@ -256,7 +256,7 @@ fn a_stream_sends_packets_without_a_muxer_with_its_secret_and_reconnect_policy()
         !format!("{started:?}{settings:?}").contains("key-123"),
         "the secret is never in Debug output"
     );
-    let config = r.log.packet_config.lock().unwrap().clone().unwrap();
+    let config = r.stream_log.packet_config.lock().unwrap().clone().unwrap();
     assert_eq!(config.url, "stream://live/app");
     assert_eq!(config.input, TransportInput::Packets);
     assert_eq!(config.secret.as_ref().map(Secret::expose), Some("key-123"));
@@ -267,7 +267,7 @@ fn a_stream_sends_packets_without_a_muxer_with_its_secret_and_reconnect_policy()
     );
 
     let reached = run_until(&mut recording, &clock, |_| {
-        r.log.count(0) >= 6 && r.log.count(1) >= 10
+        r.stream_log.count(0) >= 6 && r.stream_log.count(1) >= 10
     });
     assert!(reached, "packets: {:?}", recording.progress());
     let live = recording.progress();
@@ -283,7 +283,7 @@ fn a_stream_sends_packets_without_a_muxer_with_its_secret_and_reconnect_policy()
     );
     // The transport got the encoders' streams, video then audio, and no chunk.
     let codecs: Vec<CodecId> = r
-        .log
+        .stream_log
         .streams
         .lock()
         .unwrap()
@@ -292,7 +292,7 @@ fn a_stream_sends_packets_without_a_muxer_with_its_secret_and_reconnect_policy()
         .collect();
     assert_eq!(codecs, [CodecId::H264, CodecId::Aac]);
     assert_eq!(r.log.headers.load(Ordering::Relaxed), 0);
-    assert_eq!(r.log.finished.load(Ordering::Relaxed), 1);
+    assert_eq!(r.stream_log.finished.load(Ordering::Relaxed), 1);
     assert_eq!(report.progress.mux_drops, 0);
 }
 

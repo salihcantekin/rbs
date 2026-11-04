@@ -1,6 +1,6 @@
 //! Streaming through the studio host (Go live): the key read from the key store reaches
 //! the transport only, a missing key refuses before anything opens, connection changes
-//! reach the UI, one output runs at a time, and the stream ends cleanly or with the
+//! reach the UI, a recording runs alongside the stream, and the stream ends cleanly or with the
 //! server's reason. Reference sources, fake encoders and a fake RTMP transport whose
 //! events the test injects. The engine runs on a `TestClock` that never moves; the
 //! output worker's doorbell timer polls the transport. Waits are for the host's updates,
@@ -34,7 +34,7 @@ use rbs_core::registry::{AdapterFactory, AdapterId, ProbeError};
 use rbs_core::time::TestClock;
 use rbs_engine::{Engine, EngineConfig};
 use rbs_gpu::{GpuContext, GpuError, GpuRequest};
-use rbs_record::{RecordAdapters, VideoSettings};
+use rbs_record::{END_TAIL_LIMIT, RecordAdapters, VideoSettings};
 use rbs_transport::{
     ReconnectPolicy, SendOutcome, Transport, TransportConfig, TransportError, TransportEvent,
     TransportFactory, TransportInput, TransportItem, TransportStats, caps as transport_caps,
@@ -220,7 +220,9 @@ fn host(
     gpu: Arc<GpuContext>,
     keys: Arc<dyn KeyStore>,
     server: Arc<Server>,
+    clock: &TestClock,
 ) -> (StudioHost, Receiver<Update>) {
+    let clock = clock.clone();
     let (tx, rx) = mpsc::channel();
     let mut config = HostConfig::desktop();
     config.preview = None;
@@ -247,10 +249,15 @@ fn host(
             a.transports
                 .register(Arc::new(FakeRtmpFactory(server)))
                 .unwrap();
+            // A recording alongside the stream.
+            a.muxers.register(Arc::new(FakeMuxerFactory)).unwrap();
+            a.transports
+                .register(Arc::new(rbs_transport_file::FileTransportFactory))
+                .unwrap();
             (a, Vec::new())
         },
         move || Ok(gpu),
-        || Engine::with_clock(Arc::new(TestClock::new()), EngineConfig::default()),
+        move || Engine::with_clock(Arc::new(clock.clone()), EngineConfig::default()),
         move |u| {
             let _ = tx.send(u);
         },
@@ -271,6 +278,27 @@ fn next<T>(rx: &Receiver<Update>, mut pick: impl FnMut(Update) -> Option<T>) -> 
         let left = deadline.saturating_duration_since(std::time::Instant::now());
         let u = rx.recv_timeout(left).expect("the host answered");
         if let Some(t) = pick(u) {
+            return t;
+        }
+    }
+}
+
+/// Like [`next`], calling `step` between waits.
+fn next_while<T>(
+    rx: &Receiver<Update>,
+    mut step: impl FnMut(),
+    mut pick: impl FnMut(Update) -> Option<T>,
+) -> T {
+    let deadline = std::time::Instant::now() + LIMIT;
+    loop {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the host never answered"
+        );
+        step();
+        if let Ok(u) = rx.recv_timeout(Duration::from_millis(10))
+            && let Some(t) = pick(u)
+        {
             return t;
         }
     }
@@ -336,7 +364,8 @@ fn streams_take_the_key_from_the_store_and_report_their_connection() {
     let Some(gpu) = gpu() else { return };
     let keys = Arc::new(MemoryKeyStore::new());
     let server = Arc::new(Server::default());
-    let (host, rx) = host(gpu, keys.clone(), Arc::clone(&server));
+    let clock = TestClock::new();
+    let (host, rx) = host(gpu, keys.clone(), Arc::clone(&server), &clock);
     add_display(&host, &rx);
 
     // RTMP without a saved key: nothing opens.
@@ -371,21 +400,43 @@ fn streams_take_the_key_from_the_store_and_report_their_connection() {
     let l = link_where(&rx, |l| l.connected);
     assert_eq!((l.connects, l.reconnect_attempts), (1, 0));
 
-    // One output at a time, one stream at a time.
+    // A recording runs alongside the stream (ADR-0047) and stops on its own; one
+    // stream at a time.
+    let file = std::env::temp_dir().join(format!("rbs-app-stream-{}.mkv", std::process::id()));
+    let _ = std::fs::remove_file(&file);
     host.send(Command::StartRecording(RecordRequest {
-        path: std::env::temp_dir().join(format!("rbs-app-stream-{}.mkv", std::process::id())),
+        path: file.clone(),
         container: ContainerId::Matroska,
         encoder: None,
         video: VideoSettings::default(),
         audio_bitrate_bps: 128_000,
     }));
-    match next(&rx, |u| match u {
-        Update::Recording(r) => Some(r),
-        _ => None,
-    }) {
-        RecordingUpdate::NotStarted(why) => assert!(why.contains("End the stream"), "{why}"),
+    let recording = |rx: &_| {
+        next(rx, |u| match u {
+            Update::Recording(r) => Some(r),
+            _ => None,
+        })
+    };
+    match recording(&rx) {
+        RecordingUpdate::Started { path, .. } => assert_eq!(path, file),
         other => panic!("{other:?}"),
     }
+    // Stop waits for the video tail (ADR-0045); on the still clock that is
+    // `END_TAIL_LIMIT`, so the test moves the clock until the answer comes.
+    host.send(Command::StopRecording);
+    let stopped = next_while(
+        &rx,
+        || clock.advance(END_TAIL_LIMIT),
+        |u| match u {
+            Update::Recording(r) => Some(r),
+            _ => None,
+        },
+    );
+    match stopped {
+        RecordingUpdate::Stopped { failure, .. } => assert_eq!(failure, None),
+        other => panic!("{other:?}"),
+    }
+    let _ = std::fs::remove_file(&file);
     host.send(Command::StartStream(request()));
     match stream(&rx) {
         StreamUpdate::NotStarted(why) => assert!(why.contains("already"), "{why}"),
@@ -436,7 +487,7 @@ fn a_stream_the_server_refuses_ends_with_its_reason() {
     let keys = Arc::new(MemoryKeyStore::new());
     keys.write(&rbs_transport::Secret::new("wrong")).unwrap();
     let server = Arc::new(Server::default());
-    let (host, rx) = host(gpu, keys, Arc::clone(&server));
+    let (host, rx) = host(gpu, keys, Arc::clone(&server), &TestClock::new());
     host.send(Command::StartStream(request()));
     assert!(matches!(stream(&rx), StreamUpdate::Started { .. }));
     link_where(&rx, |l| l.connected);
@@ -460,4 +511,68 @@ fn a_stream_the_server_refuses_ends_with_its_reason() {
     host.send(Command::EndStream);
     assert!(matches!(stream(&rx), StreamUpdate::Ended { .. }));
     drop(host);
+}
+
+/// A muxer that writes the packets' bytes between a header and a trailer.
+struct FakeMuxerFactory;
+
+impl AdapterFactory for FakeMuxerFactory {
+    fn id(&self) -> AdapterId {
+        AdapterId::new("test.muxer")
+    }
+    fn display_name(&self) -> &str {
+        "test muxer"
+    }
+    fn probe(&self) -> Result<CapabilitySet, ProbeError> {
+        Ok(CapabilitySet::new().with(
+            rbs_mux::caps::CONTAINER,
+            CapabilityValue::Set(["matroska".to_owned()].into()),
+        ))
+    }
+}
+
+impl rbs_mux::MuxerFactory for FakeMuxerFactory {
+    fn create(
+        &self,
+        _: &rbs_mux::MuxerConfig,
+    ) -> Result<Box<dyn rbs_mux::Muxer>, rbs_mux::CreateError> {
+        Ok(Box::new(FakeMuxer))
+    }
+}
+
+struct FakeMuxer;
+
+impl rbs_mux::Muxer for FakeMuxer {
+    fn begin(&mut self, out: &mut Vec<rbs_core::media::MuxChunk>) -> Result<(), rbs_mux::MuxError> {
+        out.push(rbs_core::media::MuxChunk::new(
+            rbs_core::media::ChunkKind::Header,
+            Bytes::from_static(b"h"),
+        ));
+        Ok(())
+    }
+    fn write(
+        &mut self,
+        _: rbs_core::media::StreamIndex,
+        packet: &EncodedPacket,
+        out: &mut Vec<rbs_core::media::MuxChunk>,
+    ) -> Result<(), rbs_mux::MuxError> {
+        out.push(rbs_core::media::MuxChunk::new(
+            rbs_core::media::ChunkKind::Media {
+                keyframe: packet.keyframe(),
+                timestamp: packet.dts(),
+            },
+            packet.data().clone(),
+        ));
+        Ok(())
+    }
+    fn finish(
+        &mut self,
+        out: &mut Vec<rbs_core::media::MuxChunk>,
+    ) -> Result<(), rbs_mux::MuxError> {
+        out.push(rbs_core::media::MuxChunk::new(
+            rbs_core::media::ChunkKind::Trailer,
+            Bytes::from_static(b"t"),
+        ));
+        Ok(())
+    }
 }

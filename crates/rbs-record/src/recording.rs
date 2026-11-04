@@ -26,7 +26,9 @@ use rbs_sources::{SourceError, SourceTypes};
 use rbs_transport::{ReconnectPolicy, Secret, TransportFactory, TransportInput};
 
 use crate::select::Chosen;
-use crate::studio::{OutputSettings, Prepared, Strictness, Studio, StudioSettings};
+use crate::studio::{
+    Chains, OutputId, OutputSettings, Prepared, Strictness, Studio, StudioSettings,
+};
 
 /// The render partition: capture sources, the compositor and the video export. The
 /// scene binder places video sources here, so it is not configurable.
@@ -39,6 +41,12 @@ pub const VIDEO_ENCODER: PartitionId = PartitionId(2);
 pub const AUDIO_ENCODER: PartitionId = PartitionId(3);
 /// Default output partition (muxer and transport).
 pub const OUTPUT: PartitionId = PartitionId(4);
+/// Default video encoder partition of a studio's second output slot (ADR-0047).
+pub const VIDEO_ENCODER_2: PartitionId = PartitionId(5);
+/// Default audio encoder partition of a studio's second output slot.
+pub const AUDIO_ENCODER_2: PartitionId = PartitionId(6);
+/// Default output partition of a studio's second output slot.
+pub const OUTPUT_2: PartitionId = PartitionId(7);
 
 /// The ports a recording chooses adapters for.
 #[non_exhaustive]
@@ -190,6 +198,24 @@ pub struct Partitions {
     pub audio_encoder: PartitionId,
     /// The output.
     pub output: PartitionId,
+    /// The second output slot of a studio (ADR-0047): its encoders, when they are not
+    /// shared with the first output, and its output. The fields above are the first.
+    pub second: OutputPartitions,
+}
+
+impl Partitions {
+    /// The partitions of output slot `slot` (0 or 1; 1 for anything above).
+    pub(crate) fn slot(&self, slot: usize) -> OutputPartitions {
+        if slot == 0 {
+            OutputPartitions {
+                video_encoder: self.video_encoder,
+                audio_encoder: self.audio_encoder,
+                output: self.output,
+            }
+        } else {
+            self.second
+        }
+    }
 }
 
 impl Default for Partitions {
@@ -199,6 +225,30 @@ impl Default for Partitions {
             video_encoder: VIDEO_ENCODER,
             audio_encoder: AUDIO_ENCODER,
             output: OUTPUT,
+            second: OutputPartitions::default(),
+        }
+    }
+}
+
+/// The partitions of one output slot: a video encoder, an audio encoder and an output.
+#[non_exhaustive]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct OutputPartitions {
+    /// The video encoder (cadence, a quarter frame after render).
+    pub video_encoder: PartitionId,
+    /// The audio encoder (doorbell).
+    pub audio_encoder: PartitionId,
+    /// The output (muxer and transport).
+    pub output: PartitionId,
+}
+
+impl Default for OutputPartitions {
+    /// The second slot's defaults: [`VIDEO_ENCODER_2`], [`AUDIO_ENCODER_2`], [`OUTPUT_2`].
+    fn default() -> Self {
+        Self {
+            video_encoder: VIDEO_ENCODER_2,
+            audio_encoder: AUDIO_ENCODER_2,
+            output: OUTPUT_2,
         }
     }
 }
@@ -336,12 +386,16 @@ pub enum RecordError {
     /// The engine refused an edit (for example a partition id already in use).
     Engine(EngineError),
     /// Nodes the recording needs did not start; the engine was shut down. Shutdown
-    /// errors are listed with node `"shutdown"`. ([`Studio::start_recording`]: the
-    /// recording's nodes were removed and the studio runs on; errors of that removal are
+    /// errors are listed with node `"shutdown"`. ([`Studio::start_output`]: the
+    /// output's nodes were removed and the studio runs on; errors of that removal are
     /// listed with node `"rollback"`.)
     Start(Vec<StartFailure>),
-    /// A recording runs already ([`Studio::start_recording`]).
-    AlreadyRecording,
+    /// The studio runs [`MAX_OUTPUTS`](crate::MAX_OUTPUTS) outputs already
+    /// ([`Studio::start_output`]).
+    TooManyOutputs,
+    /// A partition the new output needs still finishes a stopped output (its swap or
+    /// drain is in flight); [`Studio::service`] completes it, then a start works.
+    OutputFinishing,
 }
 
 impl fmt::Display for RecordError {
@@ -366,7 +420,14 @@ impl fmt::Display for RecordError {
             }
             RecordError::Graph(e) => write!(f, "graph: {e}"),
             RecordError::Engine(e) => write!(f, "engine: {e}"),
-            RecordError::AlreadyRecording => f.write_str("a recording runs already"),
+            RecordError::OutputFinishing => {
+                f.write_str("an output stopped just now is still finishing; try again")
+            }
+            RecordError::TooManyOutputs => write!(
+                f,
+                "{} outputs run already, the most a studio runs at once",
+                crate::MAX_OUTPUTS
+            ),
             RecordError::Start(nodes) => {
                 write!(f, "the recording did not start")?;
                 for n in nodes {
@@ -426,6 +487,11 @@ pub struct StartReport {
     /// Binder problems that do not stop the recording: elsewhere in the collection,
     /// or not fatal (a skipped filter, the video of a source with audio).
     pub problems: Vec<BindProblem>,
+    /// The video encoder (and its export) was already running for another output and is
+    /// shared (ADR-0047); the output started at its next keyframe.
+    pub video_shared: bool,
+    /// The audio encoder was already running for another output and is shared.
+    pub audio_shared: bool,
 }
 
 /// Counters of one source.
@@ -599,6 +665,7 @@ pub(crate) fn is_fatal(
 /// it. It owns the engine; [`Recording::finish`] stops it.
 pub struct Recording {
     studio: Studio,
+    output: OutputId,
     started: StartReport,
 }
 
@@ -643,6 +710,7 @@ impl Recording {
             (canvas.size.width, canvas.size.height),
             canvas.frame_rate,
             settings.audio_graph,
+            &Chains::default(),
         )?;
         let mut studio = Studio::start_with(
             engine,
@@ -653,14 +721,18 @@ impl Recording {
             Strictness::Strict,
             Some(prepared),
         )?;
-        let started = match studio.recording() {
-            Some(r) => r.clone(),
-            None => {
-                let _ = studio.shutdown();
-                return Err(RecordError::NotBound("recording"));
-            }
+        let started = studio
+            .finish_first_attach()
+            .and_then(|id| Some((id, studio.output(id)?.clone())));
+        let Some((output, started)) = started else {
+            let _ = studio.shutdown();
+            return Err(RecordError::NotBound("recording"));
         };
-        Ok(Self { studio, started })
+        Ok(Self {
+            studio,
+            output,
+            started,
+        })
     }
 
     /// What was chosen and started, with each source's current state.
@@ -703,13 +775,15 @@ impl Recording {
     /// failure, or an essential node that failed for good.
     pub fn failure(&self) -> Option<String> {
         self.studio
-            .recording_failure()
+            .output_failure(self.output)
             .or_else(|| self.studio.failure())
     }
 
     /// The counters now. Peak levels are those since the previous call.
     pub fn progress(&self) -> Progress {
-        self.studio.progress()
+        self.studio
+            .output_progress(self.output)
+            .unwrap_or_else(|| self.studio.progress())
     }
 
     /// Mixer inputs that had no strip or an invalid block (both should stay 0).
@@ -718,16 +792,16 @@ impl Recording {
     }
 
     /// Ends the video at the master clock's now and keeps the frames still read back
-    /// (ADR-0045, [`Studio::end_recording`]). Keep calling [`Recording::service`] until
+    /// (ADR-0045, [`Studio::end_output`]). Keep calling [`Recording::service`] until
     /// [`Recording::tail_done`], then [`Recording::finish`].
     pub fn end(&mut self) {
-        self.studio.end_recording();
+        self.studio.end_output(self.output);
     }
 
     /// True once [`Recording::finish`] loses no video frame up to the end
-    /// ([`Studio::recording_tail_done`]): false before [`Recording::end`].
+    /// ([`Studio::output_tail_done`]): false before [`Recording::end`].
     pub fn tail_done(&self) -> bool {
-        self.studio.recording_tail_done()
+        self.studio.output_tail_done(self.output)
     }
 
     /// Stops the recording: drains its encoders and output (the output writes the
@@ -735,7 +809,8 @@ impl Recording {
     /// [`Recording::end`] first, frames still read back for the video are lost.
     pub fn finish(mut self) -> FinishReport {
         let studio_failure = self.studio.failure();
-        let (report, errors) = self.studio.shutdown();
+        let (reports, errors) = self.studio.shutdown();
+        let report = reports.into_iter().next().map(|(_, r)| r);
         let mut report = report.unwrap_or_else(|| FinishReport {
             progress: Progress::default(),
             failure: None,

@@ -22,11 +22,13 @@ mod select;
 mod studio;
 
 pub use recording::{
-    AUDIO, AUDIO_ENCODER, AudioSettings, FinishReport, OUTPUT, Partitions, Port, Progress, RENDER,
-    RecordAdapters, RecordError, RecordSettings, Recording, SourceProgress, SourceState,
-    StartFailure, StartReport, VIDEO_ENCODER, VideoSettings,
+    AUDIO, AUDIO_ENCODER, AUDIO_ENCODER_2, AudioSettings, FinishReport, OUTPUT, OUTPUT_2,
+    OutputPartitions, Partitions, Port, Progress, RENDER, RecordAdapters, RecordError,
+    RecordSettings, Recording, SourceProgress, SourceState, StartFailure, StartReport,
+    VIDEO_ENCODER, VIDEO_ENCODER_2, VideoSettings,
 };
 pub use select::{Chosen, scheme_of};
 pub use studio::{
-    END_TAIL_LIMIT, Link, MAX_LAYERS, OutputSettings, Studio, StudioSettings, Updated,
+    END_TAIL_LIMIT, Link, MAX_LAYERS, MAX_OUTPUTS, OutputId, OutputSettings, Studio,
+    StudioSettings, Updated,
 };

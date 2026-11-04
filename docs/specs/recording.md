@@ -2,20 +2,20 @@
 
 - Status: Draft
 - Owner crate(s): `rbs-record`, `rbs-cli`
-- Related ADRs: [0004](../adr/0004-single-master-clock.md), [0013](../adr/0013-zero-cost-when-unused.md), [0026](../adr/0026-partitions-and-queues.md), [0027](../adr/0027-engine-loop.md), [0037](../adr/0037-audio-graph.md), [0038](../adr/0038-io-graph-nodes.md), [0039](../adr/0039-scene-source-types.md), [0040](../adr/0040-recording-composition.md), [0041](../adr/0041-studio-recording-on-a-running-engine.md)
+- Related ADRs: [0004](../adr/0004-single-master-clock.md), [0013](../adr/0013-zero-cost-when-unused.md), [0026](../adr/0026-partitions-and-queues.md), [0027](../adr/0027-engine-loop.md), [0037](../adr/0037-audio-graph.md), [0038](../adr/0038-io-graph-nodes.md), [0039](../adr/0039-scene-source-types.md), [0040](../adr/0040-recording-composition.md), [0041](../adr/0041-studio-recording-on-a-running-engine.md), [0047](../adr/0047-several-outputs-per-canvas.md)
 - Builds on: [scene sources](scene-sources.md), [scene model](scene-model.md) (binder), [I/O nodes](io-nodes.md), [audio graph](audio-graph.md), [engine](engine.md), [output ports](output-ports.md)
 
 ## Purpose
 
-Records the program scene of one canvas of a scene collection to a file, or streams it live: the sources the scene shows and plays, composited, encoded (video and audio) and muxed (or handed as packets to a transport that frames them, such as RTMP), with every stream on the master clock. `rbs-record` assembles and runs it on the engine; `rbs-cli record` and `rbs-cli stream` are the headless commands that register the platform's adapters and build a fixed scene. A `Studio` keeps the canvas running for a UI (preview, meters, scene edits) and starts and stops recordings on the running engine (ADR-0041); `Recording` is a studio without a preview plus one recording.
+Records the program scene of one canvas of a scene collection to a file, or streams it live: the sources the scene shows and plays, composited, encoded (video and audio) and muxed (or handed as packets to a transport that frames them, such as RTMP), with every stream on the master clock. `rbs-record` assembles and runs it on the engine; `rbs-cli record` and `rbs-cli stream` are the headless commands that register the platform's adapters and build a fixed scene. A `Studio` keeps the canvas running for a UI (preview, meters, scene edits) and starts and stops outputs (recordings and live streams, up to two at once, ADR-0047) on the running engine (ADR-0041); `Recording` is a studio without a preview plus one recording.
 
 ## Scope
 
-In scope: what `Recording::start` builds and how it chooses adapters, the partitions, stream order and timestamps, start and run-time failures, progress counters, the `rbs-cli` commands; the `Studio`: preview, meters, scene edits and recordings started and stopped on a running engine.
+In scope: what `Recording::start` builds and how it chooses adapters, the partitions, stream order and timestamps, start and run-time failures, progress counters, the `rbs-cli` commands; the `Studio`: preview, meters, scene edits and outputs started and stopped on a running engine, several at once (recording and streaming), with encoders shared when their settings match.
 
 A live stream is the same graph with a network transport: the output's URL, transport input, secret and reconnect policy differ, nothing else.
 
-Out of scope: several outputs per canvas (recording and streaming at once), scene documents on disk, the control API, end-of-stream flushing of encoders (engine spec, open question).
+Out of scope: more than `MAX_OUTPUTS` outputs, recording and streaming at once from `rbs-cli`, scene documents on disk, the control API, end-of-stream flushing of encoders (engine spec, open question).
 
 ## Contract
 
@@ -26,6 +26,9 @@ pub const AUDIO: PartitionId;          // 1: audio inputs, mixer (default)
 pub const VIDEO_ENCODER: PartitionId;  // 2 (default)
 pub const AUDIO_ENCODER: PartitionId;  // 3 (default)
 pub const OUTPUT: PartitionId;         // 4: muxer + transport (default)
+pub const VIDEO_ENCODER_2: PartitionId; // 5: the second output slot's (ADR-0047)
+pub const AUDIO_ENCODER_2: PartitionId; // 6
+pub const OUTPUT_2: PartitionId;        // 7
 
 #[non_exhaustive] pub enum Port { VideoEncoder, AudioEncoder, Muxer, Transport } // Display
 
@@ -40,7 +43,11 @@ impl RecordAdapters { pub fn new() -> Self; pub fn probe(&mut self); }
 
 #[non_exhaustive] pub struct Partitions { // the non-render partition ids; defaults are the constants above
     pub audio: PartitionId, pub video_encoder: PartitionId,
-    pub audio_encoder: PartitionId, pub output: PartitionId,
+    pub audio_encoder: PartitionId, pub output: PartitionId, // the first output slot
+    pub second: OutputPartitions,        // the second slot: VIDEO_ENCODER_2, AUDIO_ENCODER_2, OUTPUT_2
+}
+#[non_exhaustive] pub struct OutputPartitions {
+    pub video_encoder: PartitionId, pub audio_encoder: PartitionId, pub output: PartitionId,
 }
 
 #[non_exhaustive] pub struct RecordSettings {
@@ -87,9 +94,11 @@ impl Recording {
 }
 pub fn scheme_of(url: &str) -> Option<&str>;
 
-// The studio (ADR-0041)
+// The studio (ADR-0041, ADR-0047)
 pub const MAX_LAYERS: usize = 64;      // layers and strips held without allocating
 pub const END_TAIL_LIMIT: Duration;    // 500 ms on the master clock (ADR-0045)
+pub const MAX_OUTPUTS: usize = 2;      // outputs running at once
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)] pub struct OutputId(/* private */);
 #[non_exhaustive] pub struct StudioSettings {
     pub canvas: CanvasId, pub audio: bool, pub audio_graph: AudioGraphConfig,
     pub partitions: Partitions, pub preview: Option<PreviewDesc>,
@@ -117,21 +126,22 @@ impl Studio {
         sources: &SourceTypes, settings: &StudioSettings) -> Result<Studio, RecordError>;
     pub fn update(&mut self, collection: &SceneCollection, sources: &SourceTypes)
         -> Result<Updated, RecordError>;
-    pub fn start_recording(&mut self, adapters: &RecordAdapters, out: &OutputSettings)
-        -> Result<&StartReport, RecordError>;
-    pub fn end_recording(&mut self) -> bool;          // ADR-0045; false when nothing records
-    pub fn recording_tail_done(&self) -> bool;        // true when nothing records
-    pub fn stop_recording(&mut self) -> Option<FinishReport>;
-    pub fn is_recording(&self) -> bool;
-    pub fn recording(&self) -> Option<&StartReport>;
-    pub fn recording_failure(&self) -> Option<String>;
+    pub fn start_output(&mut self, adapters: &RecordAdapters, out: &OutputSettings)
+        -> Result<OutputId, RecordError>;
+    pub fn end_output(&mut self, id: OutputId) -> bool;  // ADR-0045; false when id does not run
+    pub fn output_tail_done(&self, id: OutputId) -> bool; // true when id does not run
+    pub fn stop_output(&mut self, id: OutputId) -> Option<FinishReport>;
+    pub fn outputs(&self) -> Vec<OutputId>;           // running, in start order
+    pub fn output(&self, id: OutputId) -> Option<&StartReport>;
+    pub fn output_failure(&self, id: OutputId) -> Option<String>;
+    pub fn output_progress(&self, id: OutputId) -> Option<Progress>; // progress() plus its counters
     pub fn service(&mut self) -> Serviced;
     pub fn failure(&self) -> Option<String>;          // a studio node failed for good
     pub fn sources(&self) -> Vec<SourceState>;        // scheduled sources, binder order
     pub fn problems(&self) -> &[BindProblem];
     pub fn waiting(&self) -> bool;                  // a replacement waits for its predecessor to close
-    pub fn progress(&self) -> Progress;               // sources always; recording counters while one runs
-    pub fn link(&self) -> Option<Link>;               // the running output's connection; reads no meter
+    pub fn progress(&self) -> Progress;               // sources and workers only
+    pub fn link(&self, id: OutputId) -> Option<Link>; // an output's connection; reads no meter
     pub fn preview(&self) -> Option<PreviewEndpoint>; // once the preview node is prepared
     pub fn preview_stats(&self) -> Option<&Arc<PreviewNodeStats>>;
     pub fn meter(&self, source: SourceId) -> Option<&Arc<LevelMeter>>;
@@ -141,10 +151,11 @@ impl Studio {
     pub fn node_name(&self, node: NodeId) -> Option<&str>;
     pub fn settings(&self) -> &StudioSettings;
     pub fn engine(&self) -> &Engine;
-    pub fn shutdown(&mut self) -> (Option<FinishReport>, Vec<String>);
+    pub fn shutdown(&mut self) -> (Vec<(OutputId, FinishReport)>, Vec<String>);
 }
 impl Recording { pub fn studio(&self) -> &Studio; }
-// RecordError gains AlreadyRecording.
+// RecordError gains TooManyOutputs and OutputFinishing (ADR-0047; they replace ADR-0041's AlreadyRecording).
+// StartReport gains video_shared and audio_shared: the encoder ran already for another output.
 ```
 
 Settings and report types are `#[non_exhaustive]` (ADR-0040 decision 7): callers start from `new`/`default` and set fields.
@@ -194,12 +205,19 @@ Without audio (`audio: None`) the two audio partitions are not added: three work
 1. `Studio::start` checks the canvas (`UnknownCanvas`, `NoProgram`), binds the collection (`with_audio(partitions.audio)` when `settings.audio`), adds `RENDER` and the video encoder and output partitions, and with audio the audio and audio encoder partitions (pacing as in the table above), and adopts a compositor (`MAX_LAYERS` layers) and, with audio, the canvas's mixer (`MAX_LAYERS` strips, a master meter). With `settings.preview` a `PreviewNode` (I/O nodes spec) is linked to the compositor's `canvas` on `RENDER`; with audio a `MeterSinkNode` (audio graph spec) to the mixer's `main` on the audio partition. These are the studio's nodes: if one does not start, the engine is shut down and the start fails with `Start`.
 2. Sources: the sources the plan schedules are instantiated and adopted (video to `RENDER`, audio-only to the audio partition); a source that cannot be instantiated or does not start is reported in `sources()[i].failed` and the studio runs without it. Binder problems are reported in `problems()`, never fatal. Without a preview the compositor has no sink, so video sources are opened only while a recording runs; without audio no audio source is opened (P13). The compositor gets `node_layers` of the plan and the mixer one strip per input of `report.mixers[canvas]`, gain 1, each with a level meter (`meter(source)`), through their parameter channels.
 3. `update(collection, sources)`: the canvas must keep its size and rate (`NotBound`) and have a program scene (`NoProgram`), both checked before anything changes. The binder syncs; new sources get entries, retired ones are taken back from their partitions after the apply; a replaced source (settings changed) is applied break-before-make (one apply without the new node first). An instance whose take fails (its partition's swap still in flight) is kept and `service` retries it; a replacement is not instantiated while the instance it replaces is not taken back (`sources()[i].failed` says it waits, `waiting()` is true; an `update` with the same collection opens it once `waiting()` is false). Scheduled sources without an instance are instantiated (a source's first failure reason is kept), the layers are sent, and the graph is applied once. Strips: before the apply the mixer gets the strips of the old and the new inputs, after it only the new ones, so neither schedule feeds an input without a strip (`unknown_inputs` stays 0). Layers are sent before the apply: for up to one tick the old schedule may draw without a layer for a source that just left (skipped) and the new one without a layer for a source that just joined (not drawn yet); a producer is never drawn in the wrong place. Returns problems and the nodes that did not join.
-4. `start_recording(adapters, out)`: `AlreadyRecording` while one runs; `NotBound("mixer")` for audio on a studio without audio. Adapters are chosen as in `Recording::start` step 2 before anything is added. Then the export (`RENDER`), video encoder, audio encoder (with `out.audio`) and output are added Active and linked (output streams: video, then audio), sources only now scheduled are opened, layers are sent and the graph is applied once. The recording's nodes are added to a copy of the graph and adopted all or nothing, so a failure there leaves the studio as it was. If the export, an encoder or the output did not join, or the engine reported errors or links that could not cross partitions (in any partition), the recording's nodes are removed again (plain apply) and taken back, and the call fails with `Start` (removal errors listed with node `"rollback"`); the studio runs on. The output may have created the destination.
-5. `stop_recording()`: the recording's nodes are removed and the graph applied with `Engine::apply_draining`: the encoders run their final tick, the output drains its queue and writes the trailer in `release`, their partitions stop; render and audio keep running when the preview or the meter sink keeps them scheduled. Instances are taken back. Returns a `FinishReport` (its `shutdown_errors` are the apply's errors), or `None` when nothing records.
-5a. **Keeping the tail** (ADR-0045). `end_recording()` ends the export at the master clock's now (`ExportEnd::end_at`): it takes no later canvas and passes on every frame it still reads back. `recording_tail_done()` is true once the export reports `ended` and the video encoder accepted the export's last frame (`last_frame` of both), or `END_TAIL_LIMIT` after the end on the master clock, and while nothing records; false while a recording that was not ended runs. The composition root keeps calling `service` until then and calls `stop_recording`; the video encoder's final tick takes the last frame from the queue, and the audio encoder flushes on its last final tick (audio graph spec). Audio keeps flowing until the drain, so the file's audio may end a few frames after its last picture. `rbs-cli` (when the recording did not fail) and the desktop app's Stop and close do this; `stop_recording` alone loses the frames still read back.
-6. `service()` maps engine events as `Recording::service` does; a permanent failure of a studio node sets `failure()`, of a recording node `recording_failure()` (which also returns the output's first permanent failure). The composition root stops the recording when `recording_failure()` is set.
-7. `shutdown()` stops a running recording as `stop_recording`, then shuts the engine down. Every call runs on the control thread.
+4. `start_output(adapters, out)` (ADR-0047): `TooManyOutputs` while `MAX_OUTPUTS` run, before anything is chosen; `NotBound("mixer")` for audio on a studio without audio. Adapters are chosen as in `Recording::start` step 2 before anything is added, except that a running encoder is reused (see "Several outputs"). Then the export (`RENDER`) and video encoder, the audio encoder (with `out.audio`), each unless shared, and the output are added Active and linked (output streams: video, then audio), sources only now scheduled are opened, layers are sent and the graph is applied once. The new nodes are added to a copy of the graph and adopted all or nothing, so a failure there leaves the studio as it was. If one of the new nodes did not join, or the engine reported errors or links that could not cross partitions (in any partition), the new nodes are removed again (plain apply) and taken back, and the call fails with `Start` (removal errors listed with node `"rollback"`); the studio and the other output run on. The output may have created the destination.
+5. `stop_output(id)`: the output's node, and every encoder chain no other running output uses, are removed and the graph applied with `Engine::apply_draining`: the partitions this empties run their final ticks in pipeline order (an unshared encoder its final tick and flush, the output drains its queue and writes the trailer in `release`) and stop; a shared encoder keeps running for the other output untouched (its frames in flight at that moment do not reach the stopped output; `flush_lost` is 0). Render and audio keep running when the preview, the meter sink or the other output keeps them scheduled. Instances are taken back. Returns a `FinishReport` (its `shutdown_errors` are the apply's errors), or `None` when `id` does not run.
+5a. **Keeping the tail** (ADR-0045, per output). `end_output(id)` ends the output's video at the master clock's now. When its video chain is its alone, the export ends (`ExportEnd::end_at`): it takes no later canvas and passes on every frame it still reads back, and `output_tail_done(id)` is true once the export reports `ended` and the video encoder accepted the export's last frame (`last_frame` of both). A shared export keeps running for the other output, and `output_tail_done(id)` is true once the encoder accepted a frame at or after the end. Either way it is also true `END_TAIL_LIMIT` after the end on the master clock, and when `id` does not run; false while the output runs and was not ended. An export asked to end is not shared with an output started after that. The composition root keeps calling `service` until then and calls `stop_output`; an unshared video encoder's final tick takes the last frame from the queue, and an unshared audio encoder flushes on its last final tick (audio graph spec). Audio keeps flowing until the drain, so the file's audio may end a few frames after its last picture. `rbs-cli` (when the recording did not fail) and the desktop app's Stop and close do this for the recording; `stop_output` alone loses the frames still read back.
+6. `service()` maps engine events as `Recording::service` does; a permanent failure of a studio node sets `failure()`; of an output node, that output's `output_failure(id)` only; of an encoder chain's node (export, video encoder, audio encoder), `output_failure` of every output using it. `output_failure` also returns the output's first permanent failure (`OutputNodeStats::failure`). The composition root stops an output when its `output_failure` is set.
+7. `shutdown()` stops every output in one draining apply (as `stop_output` does for one, so a shared encoder is drained and flushed for all of them), then shuts the engine down; the reports are in start order. Every call runs on the control thread.
 8. Sync offsets: `settings.audio_offsets` holds a sync offset in ns per audio source (positive delays it, negative advances it; audio graph spec, "Offset", clamps it). An audio source's offset is sent on its input's offset channel before the node is adopted, so its first block already has it; this also holds for a source opened later or rebound after a settings change. `set_audio_offset(source, ns)` updates the setting (0 removes it) and sends it to a running input of that source (a change below 5 ms slews, a larger one resyncs once), returning whether one got it. `RecordSettings::audio_offsets` is passed to the studio by `studio()`.
+
+### Several outputs (ADR-0047)
+
+- **Partitions by role.** Each output's node gets its own output partition, so a transport that stalls or reconnects stalls only its own queue. Each video encoder chain (an export on `RENDER` plus a video encoder) gets a video encoder partition, each audio encoder an audio encoder partition. Partitions of each role are taken separately: the first of `partitions` (`video_encoder`, `audio_encoder`, `output`) or `partitions.second` that is free and has no instance whose take is still pending (its swap or drain in flight), so a stop followed at once by a start never cancels the stopped output's drain. With `MAX_OUTPUTS` outputs, each using at most one chain of each kind, a free partition of each role exists while fewer outputs run, once pending takes are done; until then `start_output` fails with `OutputFinishing` (try again after `service`). `Studio::start` adds every slot's partitions; they get a worker only while something is scheduled on them (P13).
+- **Sharing.** A running video encoder is reused when the new output's `VideoSettings` equal those it was opened with and its adapter is a candidate of the new output's selection (the output's registry holds it and it meets the codec, memory and pixel-format requirement; a registry narrowed to another encoder, the user's explicit choice, gets its own). The audio encoder likewise with `AudioSettings`. Video and audio are decided independently. A shared encoder's `packets` pin feeds both outputs, each link with its own packet queue; a shared encoder takes no request that would change one output's stream only (any such future feature, such as a per-output bitrate change, ends the sharing first). Different settings get a chain of their own: a second export (another readback) and a second encoder session (selection moves on to the next candidate when a hardware encoder refuses another session).
+- **Joining.** An output that joins a running encoder starts at its next keyframe (the packet queue endpoint's rule), at most a keyframe interval after `start_output`; the encoder is not asked for an early keyframe. Its audio before the first video packet is held and trimmed by the output's aligned start (I/O nodes spec, `START_HOLD`); one stopped before its first keyframe has no video (and possibly no media at all).
+- **Counters.** `output_progress(id)` counts from the output's start request: the shared chain's counters at that moment are its base. Packets the join's resync dropped (up to one GOP) are counted by the queue, not as loss.
 
 `Recording::start` is a studio without a preview, in a strict mode, with the recording's nodes added before the first apply: a binder problem that leaves out a source of the program scene fails the start (`Problems`) and a source the recording schedules (video and audio) that cannot be instantiated fails it (`Source`), both before any device opens (test `a_video_source_that_cannot_be_instantiated_fails_the_start_before_any_device_opens`). `finish` is `Studio::shutdown`; its `shutdown_errors` hold the draining apply's errors and the engine shutdown's.
 
@@ -209,7 +227,7 @@ Without audio (`audio: None`) the two audio partitions are not added: three work
 2. Nothing opens before `start` has chosen every adapter: a missing encoder, muxer or transport fails before any device or file is touched.
 3. Video packet `pts` is the canvas tick time that produced the frame (on the canvas cadence from time 0); audio packet `pts` starts at the first mixed block's time (tick time minus the graph latency, the time of its first sample) and advances by exactly one codec frame. Both are master-clock time, so streams are in sync by timestamp; the muxer maps them to one origin.
 4. Output stream 0 is video and stream 1 audio, in the order the output declares them to the muxer.
-5. A recording that is not started holds no thread, device or file; after `finish` every worker has stopped and the transport is finished (P13). After `stop_recording` the encoder and output partitions have no worker and the transport is finished; video sources are closed unless a preview shows them.
+5. A recording that is not started holds no thread, device or file; after `finish` every worker has stopped and the transport is finished (P13). After `stop_output` the partitions only that output used have no worker and its transport is finished; video sources are closed unless a preview shows them.
 6. `start` and `finish` run on the control thread. Nothing in `rbs-record` runs per frame or per block; the per-frame work is in the nodes ([I/O nodes](io-nodes.md), [audio graph](audio-graph.md)).
 
 ### `rbs-cli`
@@ -229,16 +247,21 @@ Without audio (`audio: None`) the two audio partitions are not added: three work
 
 ## Performance requirements
 
-Control-thread only; the graph's hot paths are the nodes' and keep their budgets. Five worker threads while recording (render, audio, two encoders, the output), three without audio. Every cadence partition gets the `Periodic` thread class from the engine's policy; the doorbell partitions get `Responsive`.
+Control-thread only; the graph's hot paths are the nodes' and keep their budgets. Five worker threads while recording (render, audio, two encoders, the output), three without audio. A second output adds one (its output) when it shares both encoders, up to three when it has its own. Every cadence partition gets the `Periodic` thread class from the engine's policy; the doorbell partitions get `Responsive`.
 
 ## Conformance tests
 
 - `crates/rbs-record/tests/studio.rs` (same rig and clock driver as `record.rs`, shared in `tests/support`):
-  - `recordings_start_and_stop_while_the_studio_keeps_running`: without a preview no render worker and no capture open while the meters run; two recordings in a row on one engine, each with its trailer and finished transport, the recording partitions stopped and video sources closed afterwards, `AlreadyRecording` while one runs.
+  - `recordings_start_and_stop_while_the_studio_keeps_running`: without a preview no render worker and no capture open while the meters run; two recordings in a row on one engine, each with its trailer and finished transport, the recording partitions stopped and video sources closed afterwards.
   - `a_recording_that_cannot_start_leaves_the_studio_running`: `NoAdapter` for a container without a muxer; an output that cannot open its destination fails with `Start` naming the output, nothing records, the studio runs, the next recording works.
   - `scene_edits_open_and_close_sources_while_it_runs`: a microphone and a camera added while recording are opened, metered and delivered; removed again, they are closed and the recording goes on.
   - `audio_sync_offsets_apply_from_the_start_and_while_it_runs`: a microphone offset in the settings is in force from its first block (sending the same value again does not resync it); a 10 ms change of the system audio while running resyncs that input exactly once and not the microphone; 0 removes a setting; a source without an audio input only keeps the setting.
   - `a_preview_where_the_platform_has_none_fails_the_start` (Linux): the preview node's permanent `prepare` failure fails `Studio::start` with nothing left open.
+- `crates/rbs-record/tests/outputs.rs` (same rig; recordings go to the logging muxer, streams to the packet transport's own log):
+  - `a_recording_and_a_stream_with_different_settings_run_on_their_own_encoders`: two video sessions, the AAC encoder shared; workers of both slots; a third output refused (`TooManyOutputs`) before any session opens; the recording stops with its trailer while the stream keeps delivering with no drops; then the stream stops and no encoder or output worker is left.
+  - `outputs_with_the_same_settings_share_the_encoders`: a recording joining a running stream with the same settings opens no session (`video_shared`, `audio_shared`), its first video packet is a keyframe no older than the join less 100 ms, it counts fewer frames than the stream; the stream stops first (no flush, `flush_lost` 0) and the recording goes on; a new stream takes the free output partition and shares the recording's chain; shutdown stops both.
+  - `an_output_that_cannot_start_leaves_the_running_one_alone`: a recording that would share the stream's encoders but cannot open its file fails with `Start` naming the output; the stream's partitions and delivery are unchanged.
+- `crates/rbs-graph/tests/partition.rs` `a_consumer_added_to_a_running_producer_starts_at_a_keyframe`: a second consumer link added mid-GOP to a running packet producer gets its own queue, starts at the next keyframe, the first consumer sees no gap, and the ticks after the swap allocate nothing.
 
 - `crates/rbs-record/tests/record.rs` (any GPU adapter, lavapipe on CI): a scene with the synthetic display, camera, microphone and loopback records through a fake H.264 encoder (after a candidate that fails to open), the Media Foundation AAC session over its fake engine and a logging muxer and transport, on a `TestClock` started off the frame grid (3.217 s) and moved in 5 ms steps, every cadence worker waited for by tick count and the GPU waited idle after each step, so readbacks complete before the next render tick on software adapters too (hang guard 20 s). Tests:
   - `a_scene_records_video_and_audio_in_sync_on_the_master_clock`: chosen adapters; every source delivers; streams are H.264 then AAC; header, trailer and transport finish once; video `pts` exactly on the canvas cadence, the first within four frames of the first tick; the first audio `pts` plus the graph latency exactly on the audio cadence at the start (index 0 or 1), every step one AAC frame (±1 µs); no muxer, queue or encoder drops; no late ticks.
@@ -255,9 +278,9 @@ Windows result (SC-PC, RTX 4090 + AMD iGPU, 2026-11-03), PASS: `rbs-cli record` 
 
 ## Open questions
 
-- After `end_recording`, audio keeps flowing until the drain, so the file's audio may end a few frames (at most `END_TAIL_LIMIT` plus the caller's loop latency) after its last picture; trimming audio at the end time is not done (ADR-0045).
+- After `end_output`, audio keeps flowing until the drain, so the file's audio may end a few frames (at most `END_TAIL_LIMIT` plus the caller's loop latency) after its last picture; trimming audio at the end time is not done (ADR-0045).
 - A/V sync, measured on SC-PC 2026-11-03 (ADR-0042, Rejected): with Windows Media Player the system audio leads the picture by 26 to 30 ms (`ffplay` 34 ms; the 44 ms above included `ffplay`'s frame drops). Both capture timestamps are honest: a click test showed WASAPI loopback timestamps equal the device's play time (`IAudioClock`) within 0.2 ms, and the display's frame age at render ticks is 0.5 to 4 ms. About 8 ms is the 60 fps sampling; the rest is likely the player's own uncompensated present latency (not measured). Per-source manual sync offsets are available for device latencies that software cannot see (see "Sync offsets").
 - Starting and stopping a recording while the engine keeps running (preview in the desktop app): the `attach`/`detach` entry point of ADR-0040 decision 6.
-- Several outputs per canvas (record and stream with one encoder) share the encoders through many-output packet pins.
+- Several outputs per canvas: one export for encoders with different settings (saves a readback, needs a larger readback buffer set in `rbs-gpu`), an early keyframe when an output joins a shared encoder, more than two outputs, and `rbs-cli` record and stream at once are follow-ups (ADR-0047).
 - `rtmps` (TLS) and enhanced RTMP (HEVC, AV1) wait for the RTMP transport.
 - Ctrl+C in `rbs-cli` ends the process without a trailer (Matroska stays playable, without duration and cues); a console control handler that stops cleanly is a follow-up.

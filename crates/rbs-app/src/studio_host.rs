@@ -35,7 +35,8 @@ use rbs_gpu::GpuContext;
 use rbs_gpu::share::{PreviewDesc, PreviewEndpoint};
 use rbs_graph::node::NodeTypeId;
 use rbs_record::{
-    AudioSettings, Link, OutputSettings, RecordAdapters, Studio, StudioSettings, VideoSettings,
+    AudioSettings, Link, OutputId, OutputSettings, RecordAdapters, Studio, StudioSettings,
+    VideoSettings,
 };
 use rbs_scene::SceneCollection;
 use rbs_scene::model::{
@@ -724,13 +725,14 @@ struct Host {
     rows: Vec<SourceRow>,
     undo: Option<Undo>,
     waiting: bool,
-    /// The running recording's file.
-    recording: Option<PathBuf>,
+    /// The running recording: its file and output (ADR-0047: it runs alongside a
+    /// stream).
+    recording: Option<(PathBuf, OutputId)>,
     /// Stop was asked for: the recording ended its video and stops once its tail is
     /// in (ADR-0045).
     ending: bool,
-    /// The running stream: its URL and the connection last reported.
-    streaming: Option<(String, Link)>,
+    /// The running stream: its URL, the connection last reported and its output.
+    streaming: Option<(String, Link, OutputId)>,
     /// Where the stream key is kept.
     keys: Arc<dyn KeyStore>,
     /// Makes an engine for a restart.
@@ -856,21 +858,23 @@ fn run(
             host.apply(notify);
         }
         host.waiting = waiting;
-        if host.recording.is_some()
-            && let Some(why) = host.studio.recording_failure()
+        if let Some((_, id)) = &host.recording
+            && let Some(why) = host.studio.output_failure(*id)
         {
             host.stop_recording(Some(why), notify);
         }
-        if host.ending {
-            if host.studio.recording_tail_done() {
+        if host.ending
+            && let Some((_, id)) = &host.recording
+        {
+            if host.studio.output_tail_done(*id) {
                 host.stop_recording(None, notify);
             } else {
                 // The tail takes a few frames; look again soon.
                 wait = wait.min(ENDING_WAIT);
             }
         }
-        if host.streaming.is_some() {
-            if let Some(why) = host.studio.recording_failure() {
+        if let Some((_, _, id)) = &host.streaming {
+            if let Some(why) = host.studio.output_failure(*id) {
                 host.end_stream(Some(why), notify);
             } else {
                 host.report_link(notify);
@@ -879,14 +883,17 @@ fn run(
         host.publish(notify);
     }
     // Closing while recording: keep the tail too, as Stop does.
-    if host.recording.is_some() && host.studio.end_recording() {
+    if let Some((_, id)) = host.recording.clone()
+        && host.studio.end_output(id)
+    {
         let started = std::time::Instant::now();
-        while !host.studio.recording_tail_done() && started.elapsed() < CLOSE_TAIL_GUARD {
+        while !host.studio.output_tail_done(id) && started.elapsed() < CLOSE_TAIL_GUARD {
             host.studio.service();
             std::thread::sleep(ENDING_WAIT);
         }
     }
     host.end_stream(None, notify);
+    host.stop_recording(None, notify);
     let _ = host.studio.shutdown();
 }
 
@@ -1076,7 +1083,9 @@ impl Host {
             Command::StopRecording => {
                 // Ends the video now; the loop stops the recording once the frames
                 // still read back are in (ADR-0045).
-                if self.recording.is_some() && self.studio.end_recording() {
+                if let Some((_, id)) = &self.recording
+                    && self.studio.end_output(*id)
+                {
                     self.ending = true;
                 } else {
                     self.stop_recording(None, notify);
@@ -1365,9 +1374,6 @@ impl Host {
         if self.recording.is_some() {
             return Err("A recording is already running.".into());
         }
-        if self.streaming.is_some() {
-            return Err("End the stream to record: one output runs at a time for now.".into());
-        }
         if !r.path.is_absolute() {
             return Err(format!("{} is not a full path.", r.path.display()));
         }
@@ -1385,20 +1391,28 @@ impl Host {
             a.bitrate_bps = r.audio_bitrate_bps;
             a
         });
-        let started =
-            self.start_output(&out, r.encoder.as_deref())
-                .map(|(video_encoder, audio_encoder)| RecordingUpdate::Started {
-                    path: r.path.clone(),
-                    video_encoder,
-                    audio_encoder,
-                });
-        if let Ok(RecordingUpdate::Started {
-            video_encoder,
-            audio_encoder,
-            ..
-        }) = &started
+        let started = self.start_output(&out, r.encoder.as_deref()).map(
+            |(id, video_encoder, audio_encoder)| {
+                (
+                    id,
+                    RecordingUpdate::Started {
+                        path: r.path.clone(),
+                        video_encoder,
+                        audio_encoder,
+                    },
+                )
+            },
+        );
+        if let Ok((
+            id,
+            RecordingUpdate::Started {
+                video_encoder,
+                audio_encoder,
+                ..
+            },
+        )) = &started
         {
-            self.recording = Some(r.path.clone());
+            self.recording = Some((r.path.clone(), *id));
             self.set_record_state(api::RecordState::Recording {
                 profile,
                 video_encoder: video_encoder.clone(),
@@ -1408,16 +1422,16 @@ impl Host {
             // The output may have made the file before a later node failed.
             let _ = std::fs::remove_file(&r.path);
         }
-        started
+        started.map(|(_, update)| update)
     }
 
     /// Stops the recording, if one runs, and says so.
     fn stop_recording(&mut self, failure: Option<String>, notify: &dyn Fn(Update)) {
         self.ending = false;
-        let Some(path) = self.recording.take() else {
+        let Some((path, id)) = self.recording.take() else {
             return;
         };
-        let report = self.studio.stop_recording();
+        let report = self.studio.stop_output(id);
         let (frames, dropped, flush_lost, failed) = report.map_or((0, 0, 0, None), |r| {
             (
                 r.progress.frames_encoded,
@@ -1450,9 +1464,6 @@ impl Host {
         if self.streaming.is_some() {
             return Err("A stream is already running.".into());
         }
-        if self.recording.is_some() {
-            return Err("Stop the recording to go live: one output runs at a time for now.".into());
-        }
         if self.cannot_record.is_some() {
             return Err(format!(
                 "Streaming is not available on {} yet: this system has no video encoder RBS can use.",
@@ -1481,8 +1492,8 @@ impl Host {
             a.bitrate_bps = r.audio_bitrate_bps;
             a
         });
-        let (video_encoder, audio_encoder) = self.start_output(&out, r.encoder.as_deref())?;
-        self.streaming = Some((r.url.clone(), Link::default()));
+        let (id, video_encoder, audio_encoder) = self.start_output(&out, r.encoder.as_deref())?;
+        self.streaming = Some((r.url.clone(), Link::default(), id));
         Ok(StreamUpdate::Started {
             url: r.url.clone(),
             video_encoder,
@@ -1490,13 +1501,14 @@ impl Host {
         })
     }
 
-    /// Attaches `out` to the studio with the picked encoder only, or the best one;
-    /// returns the encoders' names.
+    /// Attaches `out` to the studio with the picked encoder only, or the best one (a
+    /// running one when the settings match, ADR-0047); returns the output and the
+    /// encoders' names.
     fn start_output(
         &mut self,
         out: &OutputSettings,
         encoder: Option<&str>,
-    ) -> Result<(String, Option<String>), String> {
+    ) -> Result<(OutputId, String, Option<String>), String> {
         // A picked encoder is the only one tried: if it cannot open, the output fails
         // rather than quietly using another one.
         let all = match encoder {
@@ -1508,14 +1520,16 @@ impl Host {
         };
         let started = self
             .studio
-            .start_recording(&self.adapters, out)
-            .map(|report| {
-                (
+            .start_output(&self.adapters, out)
+            .map_err(|e| e.to_string())
+            .and_then(|id| {
+                let report = self.studio.output(id).ok_or("the output did not start")?;
+                Ok((
+                    id,
                     report.video_encoder.name.clone(),
                     report.audio_encoder.as_ref().map(|c| c.name.clone()),
-                )
-            })
-            .map_err(|e| e.to_string());
+                ))
+            });
         if let Some(all) = all {
             self.adapters.video_encoders = all;
         }
@@ -1524,12 +1538,12 @@ impl Host {
 
     /// Tells the UI when the stream's connection changed.
     fn report_link(&mut self, notify: &dyn Fn(Update)) {
-        let Some((_, last)) = &mut self.streaming else {
+        let Some((_, last, id)) = &mut self.streaming else {
             return;
         };
         // Only what the UI shows: a change of transport drops alone sends nothing.
         let shown = |l: &Link| (l.connected, l.connects, l.reconnect_attempts);
-        if let Some(link) = self.studio.link()
+        if let Some(link) = self.studio.link(*id)
             && shown(&link) != shown(last)
         {
             *last = link;
@@ -1539,10 +1553,10 @@ impl Host {
 
     /// Ends the stream, if one runs, and says so.
     fn end_stream(&mut self, failure: Option<String>, notify: &dyn Fn(Update)) {
-        if self.streaming.take().is_none() {
+        let Some((_, _, id)) = self.streaming.take() else {
             return;
-        }
-        let report = self.studio.stop_recording();
+        };
+        let report = self.studio.stop_output(id);
         let (frames, dropped, connects, failed) = report.map_or((0, 0, 0, None), |r| {
             let p = &r.progress;
             (
@@ -2033,12 +2047,6 @@ impl ApiTarget<'_> {
             return Err(ApiError::new(
                 ErrorKind::Conflict,
                 "a recording is already running",
-            ));
-        }
-        if host.streaming.is_some() {
-            return Err(ApiError::new(
-                ErrorKind::Conflict,
-                "a stream is running; one output runs at a time for now",
             ));
         }
         let p = &host.profile;

@@ -11,6 +11,12 @@
 //! With `RBS_STREAM_KEY` set, the key is saved in the store first (replacing a saved
 //! one) and removed at the end; without it, the saved key is used. Prints every update
 //! and exits with an error when the stream did not start or never connected.
+//!
+//! Record and stream at once (ADR-0047): with `RBS_ALSO_RECORD=/abs/path.mkv` a
+//! recording starts once the stream runs and stops a quarter of the time before the
+//! stream ends, while the stream goes on. It uses the recording defaults (12 Mbit/s,
+//! its own encoder) or, with `RBS_RECORD_SAME=1`, the stream's video settings (the
+//! encoders are shared).
 
 #![allow(clippy::print_stdout, clippy::print_stderr, clippy::expect_used)] // A demo: setup errors end it.
 
@@ -22,8 +28,11 @@ use std::time::{Duration, Instant};
 use rbs_app::stream_key;
 use rbs_app::stream_profile::{self, StreamProfile};
 use rbs_app::studio_host::{
-    Command, HostConfig, SourceKind, StreamRequest, StreamUpdate, StudioHost, Update,
+    Command, HostConfig, RecordRequest, RecordingUpdate, SourceKind, StreamRequest, StreamUpdate,
+    StudioHost, Update,
 };
+use rbs_core::media::ContainerId;
+use rbs_record::VideoSettings;
 use rbs_transport::Secret;
 
 fn main() -> ExitCode {
@@ -142,12 +151,29 @@ fn main() -> ExitCode {
         video: e.video_settings(),
         audio_bitrate_bps: e.audio_bps(),
     }));
+    let also_record = std::env::var_os("RBS_ALSO_RECORD").map(std::path::PathBuf::from);
+    let same = std::env::var_os("RBS_RECORD_SAME").is_some_and(|v| v == "1");
+    let record_video = if same {
+        e.video_settings()
+    } else {
+        VideoSettings::default()
+    };
+    let mut record_state = also_record.as_ref().map(|_| 0u8); // 0 not yet, 1 sent, 2 stop sent
+    let mut record_ok = also_record.is_none();
     let start = Instant::now();
     let mut ok = false;
     let mut ended = false;
     let mut sent_end = false;
     while !ended {
         let left = Duration::from_secs(seconds).saturating_sub(start.elapsed());
+        if record_state == Some(1) && left < Duration::from_secs(seconds) / 4 {
+            println!(
+                "{:.1} s: stopping the recording",
+                start.elapsed().as_secs_f64()
+            );
+            host.send(Command::StopRecording);
+            record_state = Some(2);
+        }
         if left.is_zero() && !sent_end {
             println!("{:.1} s: ending the stream", start.elapsed().as_secs_f64());
             host.send(Command::EndStream);
@@ -159,8 +185,31 @@ fn main() -> ExitCode {
             left.min(Duration::from_millis(500))
         };
         match rx.recv_timeout(timeout) {
+            Ok(Update::Recording(u)) => {
+                println!("{:.1} s: recording {u:?}", start.elapsed().as_secs_f64());
+                match u {
+                    RecordingUpdate::Stopped {
+                        failure, frames, ..
+                    } => record_ok = failure.is_none() && frames > 0,
+                    RecordingUpdate::NotStarted(_) => record_state = None,
+                    _ => {}
+                }
+            }
             Ok(Update::Stream(u)) => {
                 println!("{:.1} s: {u:?}", start.elapsed().as_secs_f64());
+                if let (StreamUpdate::Started { .. }, Some(0), Some(path)) =
+                    (&u, record_state, &also_record)
+                {
+                    println!("recording to {} as well", path.display());
+                    host.send(Command::StartRecording(RecordRequest {
+                        path: path.clone(),
+                        container: ContainerId::Matroska,
+                        encoder: None,
+                        video: record_video.clone(),
+                        audio_bitrate_bps: e.audio_bps(),
+                    }));
+                    record_state = Some(1);
+                }
                 match u {
                     StreamUpdate::NotStarted(_) | StreamUpdate::NoKey => {
                         ended = true;
@@ -199,7 +248,7 @@ fn main() -> ExitCode {
         }
     }
     drop(host);
-    if ok {
+    if ok && record_ok {
         ExitCode::SUCCESS
     } else {
         ExitCode::FAILURE
