@@ -112,6 +112,25 @@ fn a_recording_and_a_stream_with_different_settings_run_on_their_own_encoders() 
     assert!(reached, "the stream keeps delivering");
     let p = studio.output_progress(live).unwrap();
     assert_eq!((p.encoder_drops, p.mux_drops), (0, 0), "{p:?}");
+    // The counters without sources or meter peaks match (nothing ticks in between).
+    let c = studio.output_counters(live).unwrap();
+    assert!(c.sources.is_empty() && c.master_peak_db.is_none(), "{c:?}");
+    let p = studio.output_progress(live).unwrap();
+    assert_eq!(
+        (
+            c.frames_encoded,
+            c.packets_taken,
+            c.connects,
+            c.late_render_ticks
+        ),
+        (
+            p.frames_encoded,
+            p.packets_taken,
+            p.connects,
+            p.late_render_ticks
+        )
+    );
+    assert_eq!(studio.output_counters(rec), None, "stopped");
 
     let report = studio.stop_output(live).unwrap();
     assert!(report.shutdown_errors.is_empty(), "{report:?}");

@@ -135,6 +135,7 @@ impl Studio {
     pub fn output(&self, id: OutputId) -> Option<&StartReport>;
     pub fn output_failure(&self, id: OutputId) -> Option<String>;
     pub fn output_progress(&self, id: OutputId) -> Option<Progress>; // progress() plus its counters
+    pub fn output_counters(&self, id: OutputId) -> Option<Progress>; // its counters and late ticks only: no sources, takes no meter peak
     pub fn service(&mut self) -> Serviced;
     pub fn failure(&self) -> Option<String>;          // a studio node failed for good
     pub fn sources(&self) -> Vec<SourceState>;        // scheduled sources, binder order

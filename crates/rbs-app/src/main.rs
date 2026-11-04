@@ -438,7 +438,7 @@ impl Ctx {
             // keeps the window alive until the callback returns.
             let weak = w.as_weak();
             let c = ctx.clone();
-            w.on_close(move || {
+            w.on_dismiss(move || {
                 let Some(w) = weak.upgrade() else {
                     return;
                 };

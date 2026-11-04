@@ -29,14 +29,15 @@ use rbs_codec::caps as codec_caps;
 use rbs_core::capability::{CapabilitySet, CapabilityValue, Requirement};
 use rbs_core::media::{ContainerId, Size};
 use rbs_core::registry::{AdapterFactory, Registry};
+use rbs_core::time::{Clock, Timestamp};
 use rbs_core::timing::FrameRate;
 use rbs_engine::Engine;
 use rbs_gpu::GpuContext;
 use rbs_gpu::share::{PreviewDesc, PreviewEndpoint};
 use rbs_graph::node::NodeTypeId;
 use rbs_record::{
-    AudioSettings, Link, OutputId, OutputSettings, RecordAdapters, Studio, StudioSettings,
-    VideoSettings,
+    AudioSettings, Link, OutputId, OutputSettings, Progress, RecordAdapters, Studio,
+    StudioSettings, VideoSettings,
 };
 use rbs_scene::SceneCollection;
 use rbs_scene::model::{
@@ -55,6 +56,9 @@ use crate::stream_key::{KeyStore, MemoryKeyStore};
 /// The longest the control thread sleeps between two rounds of the engine's control
 /// loop (the studio asks for at most about 100 ms).
 const MAX_WAIT: Duration = Duration::from_millis(50);
+/// How often the Stats panel gets new counters while an output runs (its redraw rate,
+/// design system: `rbs.stats` 1 Hz).
+const STATS_INTERVAL: Duration = Duration::from_secs(1);
 /// Control-loop wait while a stopped recording's tail comes in.
 const ENDING_WAIT: Duration = Duration::from_millis(5);
 /// Hang guard for the tail when the app closes while recording (the studio itself
@@ -496,6 +500,66 @@ pub enum Update {
     /// A control API client (`rbs-cli token` over local IPC) made or revoked an access
     /// token: it is saved and in effect; the UI reads the token list again.
     TokensChanged,
+    /// The running outputs' counters for the Stats panel, once a second while any
+    /// output runs.
+    Stats(Stats),
+}
+
+/// Counters of one running output, for the Stats panel.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct OutputStats {
+    /// Frames the video encoder took.
+    pub frames: u64,
+    /// Frames lost before or at the encoder: dropped at export, replaced in the queue
+    /// into the encoder, or dropped by the encoder.
+    pub dropped: u64,
+    /// Packets the output took (all streams).
+    pub packets: u64,
+    /// The transport reaches its destination now (a stream is live).
+    pub connected: bool,
+    /// Connection attempts after a failure.
+    pub reconnect_attempts: u64,
+    /// Items the transport dropped while the connection was slow or down.
+    pub transport_drops: u64,
+}
+
+impl OutputStats {
+    fn of(p: &Progress) -> Self {
+        Self {
+            frames: p.frames_encoded,
+            dropped: p.export_drops + p.encoder_skipped + p.encoder_drops,
+            packets: p.packets_taken,
+            connected: p.connected,
+            reconnect_attempts: p.reconnect_attempts,
+            transport_drops: p.transport_drops,
+        }
+    }
+}
+
+/// What the Stats panel shows: the recording's and the stream's counters (when they
+/// run) and the engine's late ticks.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct Stats {
+    /// The running recording's counters.
+    pub recording: Option<OutputStats>,
+    /// The running stream's counters.
+    pub stream: Option<OutputStats>,
+    /// Render ticks skipped because the render worker was late.
+    pub late_render_ticks: u64,
+    /// Audio ticks skipped because the audio worker was late.
+    pub late_audio_ticks: u64,
+}
+
+impl Stats {
+    fn of(recording: Option<&Progress>, stream: Option<&Progress>) -> Self {
+        let any = recording.or(stream);
+        Self {
+            recording: recording.map(OutputStats::of),
+            stream: stream.map(OutputStats::of),
+            late_render_ticks: any.map_or(0, |p| p.late_render_ticks),
+            late_audio_ticks: any.map_or(0, |p| p.late_audio_ticks),
+        }
+    }
 }
 
 /// What the control thread receives.
@@ -756,6 +820,11 @@ struct Host {
     cannot_record: Option<String>,
     /// The running recording, as the control API reports it.
     record_state: api::RecordState,
+    /// When the Stats panel's counters go out next, on `clock`; `None` while no
+    /// output runs.
+    stats_due: Option<Timestamp>,
+    /// The studio's master clock (the engine's), for the stats interval.
+    clock: Arc<dyn Clock>,
 }
 
 fn run(
@@ -880,6 +949,10 @@ fn run(
                 host.report_link(notify);
             }
         }
+        let now = host.clock.now();
+        if let Some(left) = host.report_stats(now, notify) {
+            wait = wait.min(left);
+        }
         host.publish(notify);
     }
     // Closing while recording: keep the tail too, as Stop does.
@@ -920,8 +993,10 @@ fn start(
         .map_err(|e| format!("program: {e:?}"))?;
     let mut settings = StudioSettings::new(canvas);
     settings.preview = config.preview;
+    let first = engine();
+    let clock = first.clock();
     let studio = Studio::start(
-        engine(),
+        first,
         Arc::clone(&gpu),
         &collection,
         &adapters.sources,
@@ -998,6 +1073,8 @@ fn start(
             waiting: false,
             recording: None,
             ending: false,
+            stats_due: None,
+            clock,
             streaming: None,
             keys,
             engine: Box::new(engine),
@@ -1352,8 +1429,10 @@ impl Host {
             .ok_or("the canvas is gone")?;
         let mut settings = StudioSettings::new(self.canvas);
         settings.preview = self.preview_surfaces.map(|n| preview_desc(canvas.size, n));
+        let engine = (self.engine)();
+        let clock = engine.clock();
         let studio = Studio::start(
-            (self.engine)(),
+            engine,
             Arc::clone(&self.gpu),
             &self.collection,
             &self.adapters.sources,
@@ -1361,6 +1440,7 @@ impl Host {
         )
         .map_err(|e| e.to_string())?;
         self.studio = studio;
+        self.clock = clock;
         self.waiting = self.studio.waiting();
         Ok(())
     }
@@ -1534,6 +1614,33 @@ impl Host {
             self.adapters.video_encoders = all;
         }
         started
+    }
+
+    /// Sends the running outputs' counters to the Stats panel once every
+    /// [`STATS_INTERVAL`], the first at once, and empty counters once when the last
+    /// output stopped; nothing while no output runs (no timer: ADR-0013). Returns the
+    /// time until the next report.
+    fn report_stats(&mut self, now: Timestamp, notify: &dyn Fn(Update)) -> Option<Duration> {
+        let recording = self.recording.as_ref().map(|(_, id)| *id);
+        let stream = self.streaming.as_ref().map(|(_, _, id)| *id);
+        if recording.is_none() && stream.is_none() {
+            // The last output stopped: the panel empties once.
+            if self.stats_due.take().is_some() {
+                notify(Update::Stats(Stats::default()));
+            }
+            return None;
+        }
+        let due = *self.stats_due.get_or_insert(now);
+        if now < due {
+            return Some(due.saturating_since(now));
+        }
+        self.stats_due = Some(now + STATS_INTERVAL);
+        let counters = |id: Option<OutputId>| id.and_then(|id| self.studio.output_counters(id));
+        notify(Update::Stats(Stats::of(
+            counters(recording).as_ref(),
+            counters(stream).as_ref(),
+        )));
+        Some(STATS_INTERVAL)
     }
 
     /// Tells the UI when the stream's connection changed.
