@@ -85,6 +85,8 @@ pub(crate) struct Item {
     pub kind: Kind,
     /// When `send` took it: the source time of its packets (TSBPD).
     pub at: Instant,
+    /// Media time in ns of a `Media` chunk (its timestamp); 0 for others.
+    pub ts: u64,
 }
 
 /// Written by the I/O thread, read by the producer; on its own cache line.
@@ -108,6 +110,13 @@ pub(crate) struct Progress {
     pub rtt_us: AtomicU32,
 }
 
+/// The media time in ns of the newest media `send` took. Written by the producer on every
+/// `send`, read by the I/O thread only when a connection starts; on its own cache
+/// line, so the stores do not contend with the flags the I/O thread polls.
+#[derive(Default)]
+#[repr(align(128))]
+pub(crate) struct Newest(pub AtomicU64);
+
 /// State shared with the I/O thread: atomics and set-once cells only (P6).
 #[derive(Default)]
 pub(crate) struct Shared {
@@ -119,6 +128,11 @@ pub(crate) struct Shared {
     pub abort: AtomicBool,
     /// Ask the encoder for a keyframe (set when a connection is lost).
     pub keyframe_wanted: AtomicBool,
+    /// A connection is up and takes media: the producer moves staged items to the
+    /// hand-off only while this is set, so nothing waits there for a connection.
+    pub linked: AtomicBool,
+    /// Written by the producer on every `send`; on its own cache line.
+    pub newest: Newest,
     /// The error that ended the session for good.
     pub error: OnceLock<TransportError>,
     /// The I/O thread has ended: nothing will take items from the hand-off again.
@@ -140,6 +154,9 @@ pub(crate) struct IoConfig {
     pub stream_id: Option<Vec<u8>>,
     pub latency_ms: u16,
     pub reconnect: ReconnectPolicy,
+    /// The queue's duration limit in ns: at the start of a connection, committed media
+    /// chunks this much older than the newest queued one are discarded.
+    pub stale_ns: u64,
 }
 
 #[derive(Debug)]
@@ -547,6 +564,8 @@ pub(crate) struct Io {
     current: Option<Current>,
     /// A connection attempt or connection has failed in this session.
     failed_before: bool,
+    /// No media chunk was sent on this connection yet.
+    fresh_start: bool,
 }
 
 impl Io {
@@ -562,6 +581,7 @@ impl Io {
             headers: Vec::new(),
             current: None,
             failed_before: false,
+            fresh_start: true,
         }
     }
 
@@ -861,11 +881,29 @@ impl Io {
                     self.headers.push(item.data.clone());
                     *headers_sent = self.headers.len();
                 }
+                // Committed while no connection took it: older than the queue
+                // limit allows by now (the chunk of a keyframe included).
+                Kind::Key | Kind::Inter
+                    if self.fresh_start
+                        && self
+                            .shared
+                            .newest
+                            .0
+                            .load(Ordering::Relaxed)
+                            .saturating_sub(item.ts)
+                            > self.config.stale_ns =>
+                {
+                    self.finish_item(true);
+                    continue;
+                }
                 Kind::Inter if *waiting_for_key => {
                     self.finish_item(true);
                     continue;
                 }
-                Kind::Key => *waiting_for_key = false,
+                Kind::Key => {
+                    *waiting_for_key = false;
+                    self.fresh_start = false;
+                }
                 Kind::Inter | Kind::Trailer => {}
             }
             if item.data.is_empty() {
@@ -931,11 +969,22 @@ impl Io {
         Ok(())
     }
 
-    /// Sends queued chunks until the session stops or the connection fails.
+    /// Sends queued chunks until the session stops or the connection fails. The link
+    /// is set before the connection is counted, so a producer that sees `Connected`
+    /// also sees the link.
     fn stream(&mut self, conn: &mut Conn) -> Result<(), Fail> {
+        self.shared.linked.store(true, Ordering::Release);
+        let result = self.stream_linked(conn);
+        self.shared.linked.store(false, Ordering::Release);
+        result
+    }
+
+    fn stream_linked(&mut self, conn: &mut Conn) -> Result<(), Fail> {
         let shared = Arc::clone(&self.shared);
         shared.progress.connects.fetch_add(1, Ordering::Release);
-        // Each connection sends the saved headers first and starts at a keyframe.
+        // Each connection sends the saved headers first and starts at a keyframe, with
+        // nothing older than the queue's duration limit.
+        self.fresh_start = true;
         let mut headers_sent = 0;
         let mut waiting_for_key = true;
         loop {

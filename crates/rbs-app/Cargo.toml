@@ -43,16 +43,34 @@ rbs-gpu = { path = "../rbs-gpu", features = ["preview-layer"] }
 rbs-audio = { path = "../rbs-audio" }
 rbs-scene = { path = "../rbs-scene" }
 rbs-sources = { path = "../rbs-sources" }
+# CaptureError::Cancelled from OS pickers.
+rbs-capture = { path = "../rbs-capture" }
 rbs-record = { path = "../rbs-record" }
 rbs-thread-os = { path = "../rbs-thread-os" }
 rbs-mux-matroska = { path = "../rbs-mux-matroska" }
 rbs-mux-fmp4 = { path = "../rbs-mux-fmp4" }
 rbs-transport-file = { path = "../rbs-transport-file" }
+# Go live (src/stream_profile.rs): the stream's URL, secret and reconnect policy, and
+# the pure-Rust stream adapters every platform registers, as `rbs-cli stream` does.
+rbs-transport = { path = "../rbs-transport" }
+rbs-transport-rtmp = { path = "../rbs-transport-rtmp" }
+rbs-transport-srt = { path = "../rbs-transport-srt" }
+rbs-mux-mpegts = { path = "../rbs-mux-mpegts" }
 rbs-codec = { path = "../rbs-codec" }
+# The control API (ADR-0044): the control thread serves its requests.
+rbs-api = { path = "../rbs-api" }
+# Remote control: the control API over WebSocket on loopback (src/remote_control.rs).
+rbs-api-ws = { path = "../rbs-api-ws" }
+# Remote control for programs of the same user, such as `rbs-cli token`: local IPC.
+rbs-api-ipc = { path = "../rbs-api-ipc" }
+# Remote control settings and the config directory, shared with rbs-cli.
+rbs-remote-settings = { path = "../rbs-remote-settings" }
 rbs-capture-test = { path = "../rbs-capture-test", optional = true }
 rbs-audio-io-test = { path = "../rbs-audio-io-test", optional = true }
 
 [target.'cfg(windows)'.dependencies]
+# The stream key in the Windows Credential Manager (src/stream_key.rs).
+keyring = { version = "3.6.3", default-features = false, features = ["windows-native"] }
 rbs-capture-wgc = { path = "../rbs-capture-wgc" }
 rbs-capture-mf = { path = "../rbs-capture-mf" }
 rbs-audio-io-wasapi = { path = "../rbs-audio-io-wasapi" }
@@ -60,15 +78,34 @@ rbs-codec-nvenc = { path = "../rbs-codec-nvenc" }
 rbs-codec-amf = { path = "../rbs-codec-amf" }
 rbs-codec-mf = { path = "../rbs-codec-mf" }
 
+[target.'cfg(target_os = "linux")'.dependencies]
+rbs-capture-pipewire = { path = "../rbs-capture-pipewire" }
+rbs-audio-io-pipewire = { path = "../rbs-audio-io-pipewire" }
+rbs-codec-nvenc = { path = "../rbs-codec-nvenc" }
+rbs-codec-amf = { path = "../rbs-codec-amf" }
+rbs-codec-qsv = { path = "../rbs-codec-qsv" }
+rbs-codec-vaapi = { path = "../rbs-codec-vaapi" }
+rbs-codec-ffmpeg = { path = "../rbs-codec-ffmpeg" }
+
 # Audio meters as Core Animation layers (src/native, ADR-0035). Same objc2 versions as
 # wgpu-hal, raw-window-metal and rbs-gpu's preview layer, so nothing new is built.
 [target.'cfg(target_os = "macos")'.dependencies]
+# The stream key in the macOS Keychain (src/stream_key.rs).
+keyring = { version = "3.6.3", default-features = false, features = ["apple-native"] }
 objc2 = "0.6.3"
 objc2-quartz-core = { version = "0.3.2", default-features = false, features = ["std", "CALayer", "CATransaction", "objc2-core-foundation", "objc2-core-graphics"] }
 objc2-core-foundation = { version = "0.3.2", default-features = false, features = ["std", "CFCGTypes"] }
 objc2-core-graphics = { version = "0.3.2", default-features = false, features = ["std", "CGColor"] }
+# The platform's adapters (src/platform.rs).
+rbs-capture-sck = { path = "../rbs-capture-sck" }
+rbs-capture-avf = { path = "../rbs-capture-avf" }
+rbs-audio-io-coreaudio = { path = "../rbs-audio-io-coreaudio" }
+rbs-codec-videotoolbox = { path = "../rbs-codec-videotoolbox" }
+rbs-codec-audiotoolbox = { path = "../rbs-codec-audiotoolbox" }
 
 [dev-dependencies]
+# The control API test reads JSON-RPC answers (tests/studio_api.rs).
+serde_json = "1"
 # Reference adapters for the studio host tests (deterministic, no devices).
 rbs-capture-test = { path = "../rbs-capture-test" }
 rbs-audio-io-test = { path = "../rbs-audio-io-test" }

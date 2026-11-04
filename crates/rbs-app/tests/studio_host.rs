@@ -228,3 +228,150 @@ fn a_new_canvas_restarts_the_studio_with_the_sources() {
     });
     assert_eq!(again, Size::new(1280, 720));
 }
+
+/// Lists no screens and picks them with an OS picker, like the Linux portal: the first
+/// pick chooses the reference display, the second is cancelled, later ones fail.
+struct Picking {
+    inner: TestCaptureFactory,
+    picks: std::sync::atomic::AtomicU32,
+}
+
+impl rbs_core::registry::AdapterFactory for Picking {
+    fn id(&self) -> rbs_core::registry::AdapterId {
+        rbs_core::registry::AdapterId::new("org.example.picking")
+    }
+    fn display_name(&self) -> &str {
+        "Picking"
+    }
+    fn probe(&self) -> Result<rbs_core::capability::CapabilitySet, rbs_core::registry::ProbeError> {
+        let mut caps = self.inner.probe()?;
+        caps.insert(
+            rbs_capture::caps::TARGET_PICKER,
+            rbs_core::capability::CapabilityValue::Set(vec!["display".to_owned()]),
+        );
+        Ok(caps)
+    }
+}
+
+impl rbs_capture::CaptureFactory for Picking {
+    fn enumerate(
+        &self,
+        kind: rbs_capture::TargetKind,
+    ) -> Result<Vec<rbs_capture::CaptureTarget>, rbs_capture::CaptureError> {
+        match kind {
+            rbs_capture::TargetKind::Display => {
+                Err(rbs_capture::CaptureError::Unsupported("picker only"))
+            }
+            k => self.inner.enumerate(k),
+        }
+    }
+    fn open(
+        &self,
+        request: &rbs_capture::CaptureRequest,
+    ) -> Result<Box<dyn rbs_capture::CaptureSession>, rbs_capture::CaptureError> {
+        self.inner.open(request)
+    }
+    fn pick(
+        &self,
+        kind: rbs_capture::TargetKind,
+    ) -> Result<rbs_capture::CaptureTarget, rbs_capture::CaptureError> {
+        match self
+            .picks
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        {
+            0 => {
+                let mut t = self.inner.enumerate(kind)?.remove(0);
+                t.name = "Picked display".into();
+                Ok(t)
+            }
+            1 => Err(rbs_capture::CaptureError::Cancelled),
+            _ => Err(rbs_capture::CaptureError::PermissionDenied),
+        }
+    }
+}
+
+#[test]
+fn screens_only_an_os_picker_offers_are_added_through_it() {
+    let Some(gpu) = gpu() else { return };
+    let (tx, rx) = mpsc::channel();
+    let mut config = HostConfig::desktop();
+    config.preview = None;
+    let host = StudioHost::spawn(
+        config,
+        || {
+            let mut a = RecordAdapters::new();
+            a.sources
+                .register_capture(Arc::new(Picking {
+                    inner: TestCaptureFactory::new(),
+                    picks: Default::default(),
+                }))
+                .unwrap();
+            a.sources
+                .register_audio(Arc::new(TestAudioBackend::new()))
+                .unwrap();
+            (a, Vec::new())
+        },
+        move || Ok(gpu),
+        || Engine::with_clock(Arc::new(TestClock::new()), EngineConfig::default()),
+        move |u| {
+            let _ = tx.send(u);
+        },
+    )
+    .unwrap();
+    next(&rx, |u| match u {
+        Update::Started { .. } => Some(()),
+        Update::Failed(e) => panic!("{e}"),
+        _ => None,
+    });
+    let screens = targets(&host, &rx, SourceKind::Screen);
+    assert_eq!(screens.len(), 1, "{screens:?}");
+    assert!(screens[0].picker);
+    assert_eq!(screens[0].name, "Choose a screen…");
+    assert_eq!(screens[0].adapter, "org.example.picking");
+    assert!(
+        targets(&host, &rx, SourceKind::Camera)
+            .iter()
+            .all(|t| !t.picker)
+    );
+
+    // The choice is added like a listed screen, with the adapter that picked it.
+    host.send(Command::AddSource {
+        kind: SourceKind::Screen,
+        target: screens[0].clone(),
+    });
+    let rows = rows_where(&rx, |r| r.len() == 1);
+    assert_eq!(rows[0].kind, Some(SourceKind::Screen));
+    assert_eq!(rows[0].name, "Picked display");
+
+    // A closed dialog adds nothing and says nothing: the next row is the microphone.
+    host.send(Command::AddSource {
+        kind: SourceKind::Screen,
+        target: screens[0].clone(),
+    });
+    let inputs = targets(&host, &rx, SourceKind::AudioInput);
+    host.send(Command::AddSource {
+        kind: SourceKind::AudioInput,
+        target: inputs[0].clone(),
+    });
+    let rows = next(&rx, |u| match u {
+        Update::Error(e) => panic!("{e}"),
+        Update::Sources(rows) if rows.len() >= 2 => Some(rows),
+        _ => None,
+    });
+    assert_eq!(rows.len(), 2);
+    assert_eq!(rows[0].kind, Some(SourceKind::AudioInput));
+
+    // A refusal is shown.
+    host.send(Command::AddSource {
+        kind: SourceKind::Screen,
+        target: screens[0].clone(),
+    });
+    let error = next(&rx, |u| match u {
+        Update::Error(e) => Some(e),
+        _ => None,
+    });
+    assert!(
+        error.starts_with("The screen could not be chosen"),
+        "{error}"
+    );
+}

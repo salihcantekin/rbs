@@ -78,6 +78,13 @@ pub(crate) struct Progress {
     pub sleeping: AtomicBool,
 }
 
+/// The RTMP time in ms of the newest media `send` took. Written by the producer on every
+/// `send`, read by the I/O thread only when a connection starts; on its own cache
+/// line, so the stores do not contend with the flags the I/O thread polls.
+#[derive(Default)]
+#[repr(align(128))]
+pub(crate) struct Newest(pub AtomicU32);
+
 /// State shared with the I/O thread: atomics and set-once cells only (P6).
 #[derive(Default)]
 pub(crate) struct Shared {
@@ -89,6 +96,11 @@ pub(crate) struct Shared {
     pub abort: AtomicBool,
     /// Ask the encoder for a keyframe (set when a connection is lost).
     pub keyframe_wanted: AtomicBool,
+    /// A connection is up and takes media: the producer moves staged items to the
+    /// hand-off only while this is set, so nothing waits there for a connection.
+    pub linked: AtomicBool,
+    /// Written by the producer on every `send`; on its own cache line.
+    pub newest: Newest,
     /// The error that ended the session for good.
     pub error: OnceLock<TransportError>,
     /// The I/O thread has ended: nothing will take items from the hand-off again.
@@ -122,6 +134,9 @@ pub(crate) struct IoConfig {
     pub key: String,
     pub reconnect: ReconnectPolicy,
     pub tracks: FlvTracks,
+    /// The queue's duration limit in ms: at the start of a connection, committed
+    /// items this much older than the newest queued packet are discarded.
+    pub stale_ms: i32,
 }
 
 enum Fail {
@@ -697,17 +712,24 @@ impl Io {
     fn stream(&mut self, mut conn: Conn) -> Result<(), Fail> {
         let shared = Arc::clone(&self.shared);
         let progress = &shared.progress;
+        // Linked before the publish is counted, so a producer that sees `Connected`
+        // also sees the link.
+        shared.linked.store(true, Ordering::Release);
         progress.publishes.fetch_add(1, Ordering::Release);
         let key = std::mem::take(&mut self.config.key);
         let result = self.stream_loop(&mut conn, &shared, &key);
+        shared.linked.store(false, Ordering::Release);
         self.config.key = key;
         result
     }
 
     fn stream_loop(&mut self, conn: &mut Conn, shared: &Shared, key: &str) -> Result<(), Fail> {
         let progress = &shared.progress;
-        // Each connection starts at a keyframe, after the headers.
+        // Each connection starts at a keyframe, after the headers, and with nothing
+        // older than the queue's duration limit: items committed to the hand-off while
+        // a connection was being made can be far older than what is queued behind them.
         let mut waiting_for_key = self.config.tracks.has_video();
+        let mut fresh_start = true;
         let mut headers_sent = false;
         let mut next_read = Instant::now() + READ_INTERVAL;
         loop {
@@ -716,13 +738,20 @@ impl Io {
             }
             match self.consumer.pop() {
                 Ok(item) => {
-                    let skip = waiting_for_key
-                        && !(item.plan.kind == TrackKind::Video && item.packet.keyframe());
+                    let stale = fresh_start && {
+                        let newest = shared.newest.0.load(Ordering::Relaxed);
+                        // Signed: streams interleave, so an item may be a little newer.
+                        newest.wrapping_sub(item.ms) as i32 > self.config.stale_ms
+                    };
+                    let skip = stale
+                        || waiting_for_key
+                            && !(item.plan.kind == TrackKind::Video && item.packet.keyframe());
                     let result = if skip {
                         progress.discarded.fetch_add(1, Ordering::Relaxed);
                         Ok(())
                     } else {
                         waiting_for_key = false;
+                        fresh_start = false;
                         let sent = self.send_item(conn, &item, &mut headers_sent, shared);
                         if sent.is_err() {
                             // Its delivery is unknown: count it as lost.

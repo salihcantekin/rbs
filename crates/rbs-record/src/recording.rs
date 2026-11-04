@@ -23,7 +23,7 @@ use rbs_scene::binder::{BindError, BindProblem};
 use rbs_scene::model::{CanvasId, SourceId};
 use rbs_sources::types::{SourceClass, class_of};
 use rbs_sources::{SourceError, SourceTypes};
-use rbs_transport::TransportFactory;
+use rbs_transport::{ReconnectPolicy, Secret, TransportFactory, TransportInput};
 
 use crate::select::Chosen;
 use crate::studio::{OutputSettings, Prepared, Strictness, Studio, StudioSettings};
@@ -203,16 +203,24 @@ impl Default for Partitions {
     }
 }
 
-/// What to record and where.
+/// What to record or stream and where.
 #[non_exhaustive]
 #[derive(Debug, Clone, PartialEq)]
 pub struct RecordSettings {
     /// The canvas recorded (its program scene).
     pub canvas: CanvasId,
-    /// Destination URL, for example `file:///C:/Videos/rec.mkv`.
+    /// Destination URL, for example `file:///C:/Videos/rec.mkv` or `rtmp://host/app`.
+    /// Never holds the secret.
     pub url: String,
-    /// Container.
-    pub container: ContainerId,
+    /// What the transport takes: a container's chunks, or packets
+    /// ([`OutputSettings::input`]).
+    pub input: TransportInput,
+    /// Stream key or stream id ([`OutputSettings::secret`]).
+    pub secret: Option<Secret>,
+    /// What the transport does when the connection drops.
+    pub reconnect: ReconnectPolicy,
+    /// Opaque transport options ([`OutputSettings::transport_options`]).
+    pub transport_options: Vec<(String, String)>,
     /// Video encoding.
     pub video: VideoSettings,
     /// Audio encoding; `None` records video only.
@@ -227,14 +235,29 @@ pub struct RecordSettings {
 }
 
 impl RecordSettings {
-    /// `canvas` to `url` in `container` with the default video and audio settings.
+    /// `canvas` to `url` in `container` with the default video and audio settings, no
+    /// secret, no reconnect.
     pub fn new(canvas: CanvasId, url: impl Into<String>, container: ContainerId) -> Self {
+        Self::from_output(canvas, OutputSettings::new(url, container))
+    }
+
+    /// `canvas` as encoded packets to `url` (RTMP), with the default video and audio
+    /// settings, no secret, no reconnect.
+    pub fn packets(canvas: CanvasId, url: impl Into<String>) -> Self {
+        Self::from_output(canvas, OutputSettings::packets(url))
+    }
+
+    /// `canvas` written as `out` says.
+    pub fn from_output(canvas: CanvasId, out: OutputSettings) -> Self {
         Self {
             canvas,
-            url: url.into(),
-            container,
-            video: VideoSettings::default(),
-            audio: Some(AudioSettings::default()),
+            url: out.url,
+            input: out.input,
+            secret: out.secret,
+            reconnect: out.reconnect,
+            transport_options: out.transport_options,
+            video: out.video,
+            audio: out.audio,
             audio_graph: AudioGraphConfig::default(),
             partitions: Partitions::default(),
             audio_offsets: BTreeMap::new(),
@@ -252,12 +275,18 @@ impl RecordSettings {
         s
     }
 
-    /// The output part: URL, container, video and audio encoding.
+    /// The output part: URL, transport input, secret, reconnect, options, video and
+    /// audio encoding.
     pub fn output(&self) -> OutputSettings {
-        let mut o = OutputSettings::new(self.url.clone(), self.container);
-        o.video = self.video.clone();
-        o.audio = self.audio.clone();
-        o
+        OutputSettings {
+            url: self.url.clone(),
+            input: self.input,
+            secret: self.secret.clone(),
+            reconnect: self.reconnect,
+            transport_options: self.transport_options.clone(),
+            video: self.video.clone(),
+            audio: self.audio.clone(),
+        }
     }
 }
 
@@ -388,8 +417,8 @@ pub struct StartReport {
     pub video_encoder: Chosen,
     /// The audio encoder, when audio is recorded.
     pub audio_encoder: Option<Chosen>,
-    /// The muxer.
-    pub muxer: Chosen,
+    /// The muxer; `None` when the transport takes packets.
+    pub muxer: Option<Chosen>,
     /// The transport.
     pub transport: Chosen,
     /// The recorded sources (those the output's plan schedules), in binder order.
@@ -427,6 +456,11 @@ pub struct Progress {
     pub export_drops: u64,
     /// Frames the video encoder took.
     pub frames_encoded: u64,
+    /// Exported frames that never reached the video encoder: a newer frame replaced
+    /// them in the queue into the encoder's partition before the encoder took them
+    /// (the encoder fell behind or had not started yet), or they were still queued at
+    /// stop.
+    pub encoder_skipped: u64,
     /// Video frames dropped or refused at the encoder, and packets lost in its carry-over.
     pub encoder_drops: u64,
     /// Audio packets the audio encoder node lost (its carry-over was full).
@@ -447,6 +481,16 @@ pub struct Progress {
     pub start_drops: u64,
     /// Largest output backlog (transport queue full).
     pub backlog_peak: u64,
+    /// Items the transport dropped by its drop policy (a network transport whose
+    /// queue filled while the connection was slow or down).
+    pub transport_drops: u64,
+    /// Times the transport reached its destination (a file opened, a stream
+    /// published), reconnections included; 0 means nothing was ever delivered.
+    pub connects: u64,
+    /// Connection attempts after a failure or a lost connection.
+    pub reconnect_attempts: u64,
+    /// The transport is connected now.
+    pub connected: bool,
     /// Render ticks skipped by a late render worker.
     pub late_render_ticks: u64,
     /// Audio ticks skipped by a late audio worker.

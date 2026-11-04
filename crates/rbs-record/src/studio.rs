@@ -23,6 +23,7 @@ use rbs_gpu::share::{PreviewDesc, PreviewEndpoint};
 use rbs_gpu::{CanvasDesc, GpuContext};
 use rbs_graph::description::{GraphDescription, NodeId, PartitionId};
 use rbs_graph::runtime::param::ParamSender;
+use rbs_graph::runtime::queue::QueueStats;
 use rbs_graph::runtime::{Node, RuntimeEvent};
 use rbs_nodes::capture::CaptureNodeStats;
 use rbs_nodes::encode::EncoderNodeStats;
@@ -33,7 +34,7 @@ use rbs_scene::SceneCollection;
 use rbs_scene::binder::{BindProblem, BindReport, BoundCompositor, BoundMixer, Role, SceneBinder};
 use rbs_scene::model::{CanvasId, SourceId};
 use rbs_sources::{InstanceContext, SourceInstance, SourceTypes, node_layers};
-use rbs_transport::{TransportConfig, TransportInput};
+use rbs_transport::{ReconnectPolicy, Secret, TransportConfig, TransportInput};
 
 use crate::recording::{
     AudioSettings, FinishReport, Partitions, Progress, RENDER, RecordAdapters, RecordError,
@@ -92,14 +93,24 @@ impl StudioSettings {
     }
 }
 
-/// Where and how a recording is written.
+/// Where and how a recording or a live stream is written.
 #[non_exhaustive]
 #[derive(Debug, Clone, PartialEq)]
 pub struct OutputSettings {
-    /// Destination URL, for example `file:///C:/Videos/rec.mkv`.
+    /// Destination URL, for example `file:///C:/Videos/rec.mkv`, `rtmp://host/app` or
+    /// `srt://host:port`. Never holds the secret.
     pub url: String,
-    /// Container.
-    pub container: ContainerId,
+    /// What the transport takes: the chunks of a muxer writing a container (files,
+    /// SRT with MPEG-TS), or encoded packets it frames itself (RTMP); no muxer is
+    /// chosen for packets.
+    pub input: TransportInput,
+    /// Stream key or stream id, passed to the transport only (never in the URL, logs
+    /// or reports).
+    pub secret: Option<Secret>,
+    /// What the transport does when the connection drops.
+    pub reconnect: ReconnectPolicy,
+    /// Opaque transport options (`latency_ms` for SRT), passed through unread.
+    pub transport_options: Vec<(String, String)>,
     /// Video encoding.
     pub video: VideoSettings,
     /// Audio encoding; `None` records video only.
@@ -107,15 +118,66 @@ pub struct OutputSettings {
 }
 
 impl OutputSettings {
-    /// `url` in `container` with the default video and audio settings.
+    /// `url` in `container` with the default video and audio settings, no secret, no
+    /// reconnect.
     pub fn new(url: impl Into<String>, container: ContainerId) -> Self {
+        Self::with_input(url, TransportInput::Container(container))
+    }
+
+    /// Encoded packets to `url` (a transport that frames them itself, such as RTMP),
+    /// with the default video and audio settings, no secret, no reconnect.
+    pub fn packets(url: impl Into<String>) -> Self {
+        Self::with_input(url, TransportInput::Packets)
+    }
+
+    fn with_input(url: impl Into<String>, input: TransportInput) -> Self {
         Self {
             url: url.into(),
-            container,
+            input,
+            secret: None,
+            reconnect: ReconnectPolicy::Off,
+            transport_options: Vec::new(),
             video: VideoSettings::default(),
             audio: Some(AudioSettings::default()),
         }
     }
+
+    /// The container the muxer writes, `None` for packet input.
+    pub fn container(&self) -> Option<ContainerId> {
+        match self.input {
+            TransportInput::Container(c) => Some(c),
+            _ => None,
+        }
+    }
+
+    /// The transport configuration: URL, input, secret, reconnect and options, default
+    /// queue limits.
+    pub(crate) fn transport_config(&self) -> TransportConfig {
+        let mut config =
+            TransportConfig::new(self.url.clone(), self.input).with_reconnect(self.reconnect);
+        if let Some(secret) = &self.secret {
+            config = config.with_secret(secret.clone());
+        }
+        for (key, value) in &self.transport_options {
+            config = config.with_adapter_option(key.clone(), value.clone());
+        }
+        config
+    }
+}
+
+/// The running output's connection, for a UI that shows whether a stream is live.
+/// Read from the output's counters only: no meter peaks are taken.
+#[non_exhaustive]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Link {
+    /// The transport is connected now.
+    pub connected: bool,
+    /// Connections that reached the point of delivering, reconnections included.
+    pub connects: u64,
+    /// Connection attempts after a failure or a lost connection.
+    pub reconnect_attempts: u64,
+    /// Items the transport dropped (its queue filled while slow or down).
+    pub transport_drops: u64,
 }
 
 /// What [`Studio::update`] did.
@@ -166,7 +228,7 @@ pub(crate) struct Prepared {
     video_chosen: Chosen,
     audio: Option<(EncoderNode, Chosen)>,
     output: OutputNode,
-    muxer: Chosen,
+    muxer: Option<Chosen>,
     transport: Chosen,
 }
 
@@ -213,15 +275,20 @@ impl Prepared {
             }
             None => None,
         };
-        let (muxer_factory, muxer) = select::muxer(&adapters.muxers, out.container)?;
+        let muxer = match out.container() {
+            Some(container) => Some((select::muxer(&adapters.muxers, container)?, container)),
+            None => None,
+        };
         let (transport_factory, transport) =
-            select::transport(&adapters.transports, &out.url, out.container)?;
-        let output = OutputNode::new(
-            streams,
-            transport_factory,
-            TransportConfig::new(out.url.clone(), TransportInput::Container(out.container)),
-        )
-        .with_muxer(muxer_factory, out.container, None);
+            select::transport(&adapters.transports, &out.url, out.input)?;
+        let mut output = OutputNode::new(streams, transport_factory, out.transport_config());
+        let muxer = match muxer {
+            Some(((factory, chosen), container)) => {
+                output = output.with_muxer(factory, container, None);
+                Some(chosen)
+            }
+            None => None,
+        };
         Ok(Self {
             export,
             video_encoder,
@@ -247,6 +314,17 @@ struct Attached {
     /// The audio encoder's end-of-stream flushes and tail losses (ADR-0045).
     audio_tail: Option<(Arc<AtomicU64>, Arc<AtomicU64>)>,
     output: Arc<OutputNodeStats>,
+    /// The queues into the video and audio encoders' partitions, found after the
+    /// apply that scheduled them and kept, so the final counters survive the draining
+    /// apply that removes them.
+    queues: Queues,
+}
+
+/// The cross-partition queues feeding a recording's encoders.
+#[derive(Default)]
+struct Queues {
+    video: Option<Arc<QueueStats>>,
+    audio: Option<Arc<QueueStats>>,
 }
 
 /// The mixer of the canvas and what the studio keeps of it.
@@ -1115,6 +1193,7 @@ impl Studio {
             audio_dropped,
             audio_tail,
             output: output_stats,
+            queues: Queues::default(),
         });
         Ok(())
     }
@@ -1167,6 +1246,19 @@ impl Studio {
             .as_mut()
             .ok_or(RecordError::NotBound("recording"))?;
         r.report.sources = sources;
+        // The encoders' inputs cross partitions; their queues exist from this apply on.
+        let queue_to = |node: Option<&Added>| {
+            let node = node?.node;
+            self.engine
+                .crossings()
+                .iter()
+                .find(|c| c.link.to.node == node)
+                .map(|c| Arc::clone(&c.stats))
+        };
+        r.queues = Queues {
+            video: queue_to(r.nodes.get(1)),
+            audio: queue_to(r.nodes.get(3)),
+        };
         Ok(&r.report)
     }
 
@@ -1267,6 +1359,18 @@ impl Studio {
         })
     }
 
+    /// The running output's connection; `None` when nothing records or streams.
+    /// Cheap (a few atomic loads) and, unlike [`Studio::progress`], takes no meter peaks.
+    pub fn link(&self) -> Option<Link> {
+        let o = &self.recording.as_ref()?.output;
+        Some(Link {
+            connected: o.connected.load(Ordering::Relaxed),
+            connects: o.connects.load(Ordering::Relaxed),
+            reconnect_attempts: o.reconnect_attempts.load(Ordering::Relaxed),
+            transport_drops: o.transport_drops.load(Ordering::Relaxed),
+        })
+    }
+
     /// Counters now: sources, and the recording's when one runs. Peak levels are those
     /// since the previous call.
     pub fn progress(&self) -> Progress {
@@ -1299,17 +1403,8 @@ impl Studio {
                 }
             })
             .collect();
-        let parts = self.settings.partitions;
-        let audio_queue_drops = self
-            .engine
-            .crossings()
-            .iter()
-            .filter(|c| c.from == parts.audio && c.to == parts.audio_encoder)
-            .map(|c| c.stats.overflows())
-            .sum();
         let mut p = Progress {
             sources,
-            audio_queue_drops,
             late_render_ticks: self.render_worker.as_ref().map_or(0, |w| w.late()),
             late_audio_ticks: self.audio_worker.as_ref().map_or(0, |w| w.late()),
             master_peak_db: self.mixer.as_ref().map(|m| peak_db(&m.master)),
@@ -1321,6 +1416,8 @@ impl Studio {
             p.export_drops = sum(&[&r.export.busy, &r.export.lost]);
             p.frames_encoded = e.submitted.load(Ordering::Relaxed);
             p.encoder_drops = sum(&[&e.busy_drops, &e.refused, &e.overflow_drops]);
+            p.encoder_skipped = r.queues.video.as_ref().map_or(0, |q| q.video_drops());
+            p.audio_queue_drops = r.queues.audio.as_ref().map_or(0, |q| q.overflows());
             p.audio_packet_drops = r
                 .audio_dropped
                 .as_ref()
@@ -1333,6 +1430,10 @@ impl Studio {
             p.mux_drops = r.output.mux_drops.load(Ordering::Relaxed);
             p.start_drops = r.output.start_drops.load(Ordering::Relaxed);
             p.backlog_peak = r.output.backlog_peak.load(Ordering::Relaxed);
+            p.transport_drops = r.output.transport_drops.load(Ordering::Relaxed);
+            p.connects = r.output.connects.load(Ordering::Relaxed);
+            p.reconnect_attempts = r.output.reconnect_attempts.load(Ordering::Relaxed);
+            p.connected = r.output.connected.load(Ordering::Relaxed);
         }
         p
     }

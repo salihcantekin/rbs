@@ -111,7 +111,24 @@ impl Running {
     fn in_flight(&self) -> Committed {
         Committed {
             bytes: self.committed_bytes,
-            oldest_ts: self.committed.front().map(|(ts, _)| *ts),
+            // While no connection takes them, committed items are discarded or skipped
+            // to a keyframe when one comes (I/O thread): they must not make the
+            // duration limit refuse newer media.
+            oldest_ts: self
+                .shared
+                .linked
+                .load(Ordering::Relaxed)
+                .then(|| self.committed.front().map(|(ts, _)| *ts))
+                .flatten(),
+        }
+    }
+
+    /// Moves staged items to the hand-off while a connection takes them. While none
+    /// does (connecting, reconnecting), they stay staged, where the drop policy keeps
+    /// the newest GOPs within the queue limits.
+    fn pump_linked(&mut self) {
+        if self.shared.linked.load(Ordering::Acquire) {
+            self.pump(HANDOFF_ITEMS);
         }
     }
 
@@ -294,6 +311,12 @@ impl Transport for RtmpTransport {
                 key: self.settings.key.clone(),
                 reconnect: self.settings.reconnect,
                 tracks: tracks.clone(),
+                stale_ms: self
+                    .settings
+                    .limits
+                    .max_duration
+                    .as_millis()
+                    .min(i32::MAX as u128) as i32,
             },
             Arc::clone(&shared),
             consumer,
@@ -369,6 +392,13 @@ impl Transport for RtmpTransport {
                 cts,
             },
         };
+        // Before the item can reach the hand-off, so the I/O thread never sees an item
+        // newer than this (up to the interleaving of the streams).
+        running
+            .shared
+            .newest
+            .0
+            .store(dts_ms as u32, Ordering::Relaxed);
         running.retire();
         let limits = running.limits(self.settings.limits);
         let Admitted {
@@ -380,7 +410,7 @@ impl Transport for RtmpTransport {
         running.items_dropped += u64::from(lost);
         running.unreported_drops = running.unreported_drops.saturating_add(lost);
         running.keyframe_wanted |= cut;
-        running.pump(HANDOFF_ITEMS);
+        running.pump_linked();
         Ok(match (queued, dropped) {
             (false, _) => SendOutcome::Dropped {
                 reason: DropReason::QueueFull,
@@ -397,7 +427,7 @@ impl Transport for RtmpTransport {
         let State::Running(running) = &mut self.state else {
             return;
         };
-        running.pump(HANDOFF_ITEMS);
+        running.pump_linked();
         let progress = &running.shared.progress;
         let attempts = progress.attempts.load(Ordering::Acquire);
         if attempts != running.seen_attempts {

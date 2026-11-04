@@ -66,6 +66,7 @@ impl OutputNode {                                             // Node<X> for eve
     pub fn with_wait_clock(self, clock: Arc<dyn WaitClock>) -> Self; // default SystemWaitClock
     pub fn stats(&self) -> Arc<OutputNodeStats>;              // packets, sent, transport_drops, mux_drops,
                                                               // backlog_peak, keyframe_requests, finish_lost, start_drops,
+                                                              // connects, reconnect_attempts, connected: AtomicBool,
                                                               // failure: OnceLock<String>
 }
 /// Time source of the blocking waits in `prepare` and `release` (control thread).
@@ -147,6 +148,7 @@ Invariants:
 2. The backlog is preallocated; a full backlog fails the node permanently (no holes in a recording).
 3. Any transport error other than `QueueFull`, any muxer error other than `NonMonotonic` (dropped, counted) and a `Disconnected` event fail permanently, so a file output is never restarted (which would truncate it).
 4. After `release` the transport has been finished; undelivered items are counted (`finish_lost`).
+4a. Connection state: `Connected` events are counted in `connects` and set `connected`, `Reconnecting` events are counted in `reconnect_attempts` and clear it, `Disconnected` clears it (and fails the node, invariant 3, with the cause `transport disconnected: <the transport's error>`); `release` clears it. The events are read where they already were (`process`, once per tick), so the counters cost nothing per packet. `connects` stays 0 for a transport that never reached its destination.
 5. Muxer and transport creation errors and `begin` errors are permanent; a `start` error is retried only when `TransportError::is_recoverable`.
 6. The first permanent failure's cause (for example `muxer: invalid packet: ...`) is kept in `failure`; the string is built only on that path.
 7. **Aligned start.** An output with a video stream and other streams starts at the first video packet's pts: packets of other streams that end at or before it (pts plus duration, or pts when the packet has no duration) are dropped and counted (`start_drops`); packets that arrive before the first video packet are held (at most `START_HOLD` = 256, preallocated in `prepare`; past it the oldest are dropped and counted) and written when it arrives, in arrival order. So a recording never begins with audio before the first picture (video started 143 ms after audio on SC-PC, 3440x1440 NVENC,). Outputs with only video or no video pass every packet.

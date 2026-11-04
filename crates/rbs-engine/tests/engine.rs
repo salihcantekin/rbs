@@ -272,6 +272,152 @@ fn frames_and_packets_cross_three_worker_threads() {
 }
 
 #[test]
+fn an_apply_starts_consumers_before_the_partitions_feeding_them() {
+    // A slow device open in a downstream partition (a cold microphone, an encoder
+    // session) must not leave render exporting into a queue nobody takes yet.
+    let clock = TestClock::new();
+    let mut engine = Engine::with_clock(Arc::new(clock), EngineConfig::default());
+    let logs: [Arc<TickLog>; 3] = Default::default();
+    engine
+        .add_partition::<Ticks>(RENDER, Arc::clone(&logs[0]), (), cadence())
+        .unwrap();
+    engine
+        .add_partition::<Ticks>(
+            ENCODER,
+            Arc::clone(&logs[1]),
+            (),
+            Pacing::cadence_after(frames(), ENCODER_OFFSET),
+        )
+        .unwrap();
+    engine
+        .add_partition::<Ticks>(OUTPUT, Arc::clone(&logs[2]), (), Pacing::output())
+        .unwrap();
+    let stats: Vec<_> = [RENDER, ENCODER, OUTPUT]
+        .iter()
+        .map(|p| engine.worker_stats(*p).unwrap())
+        .collect();
+    // Worker starts seen by each prepare, all partitions summed.
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let watcher = |name: &'static str| {
+        let (stats, seen) = (stats.clone(), Arc::clone(&seen));
+        move || {
+            let starts: u64 = stats.iter().map(|s| s.starts()).sum();
+            seen.lock().unwrap().push((name, starts));
+        }
+    };
+    let source = TestNode::new(Role::Source, "source").preparing_with(watcher("source"));
+    let encoder = TestNode::new(Role::Encoder, "encoder").preparing_with(watcher("encoder"));
+    let sink = TestNode::new(Role::PacketSink, "sink").preparing_with(watcher("sink"));
+    let mut graph = GraphDescription::new();
+    let ids = (
+        add(&mut graph, &source, RENDER),
+        add(&mut graph, &encoder, ENCODER),
+        add(&mut graph, &sink, OUTPUT),
+    );
+    graph.connect(ids.0, "out", ids.1, "in").unwrap();
+    graph.connect(ids.1, "out", ids.2, "in").unwrap();
+    engine
+        .adopt::<Ticks>(RENDER, ids.0, Box::new(source))
+        .unwrap();
+    engine
+        .adopt::<Ticks>(ENCODER, ids.1, Box::new(encoder))
+        .unwrap();
+    engine
+        .adopt::<Ticks>(OUTPUT, ids.2, Box::new(sink))
+        .unwrap();
+
+    let applied = engine.apply(&graph).unwrap();
+    assert!(applied.errors.is_empty(), "{:?}", applied.errors);
+    // Consumers first: each partition prepared while every partition it feeds already
+    // ran its new schedule, and none that feeds it did.
+    assert_eq!(
+        *seen.lock().unwrap(),
+        vec![("sink", 0), ("encoder", 1), ("source", 2)]
+    );
+    // Every partition runs its new schedule once `apply` returns (invariant 4).
+    assert_eq!(engine.workers(), 3);
+    let _ = engine.shutdown();
+}
+
+#[test]
+fn a_branch_added_to_a_running_render_starts_downstream_first() {
+    // The studio case: render already runs (preview); a recording adds an export in
+    // render and an encoder and an output. Render's worker swaps its new schedule as
+    // soon as it is sent, so it must be sent last.
+    let clock = TestClock::new();
+    let mut engine = Engine::with_clock(Arc::new(clock), EngineConfig::default());
+    let logs: [Arc<TickLog>; 3] = Default::default();
+    engine
+        .add_partition::<Ticks>(RENDER, Arc::clone(&logs[0]), (), cadence())
+        .unwrap();
+    engine
+        .add_partition::<Ticks>(
+            ENCODER,
+            Arc::clone(&logs[1]),
+            (),
+            Pacing::cadence_after(frames(), ENCODER_OFFSET),
+        )
+        .unwrap();
+    engine
+        .add_partition::<Ticks>(OUTPUT, Arc::clone(&logs[2]), (), Pacing::output())
+        .unwrap();
+    let mut graph = GraphDescription::new();
+    let canvas = TestNode::new(Role::Source, "canvas");
+    let preview = TestNode::new(Role::VideoSink, "preview");
+    let canvas_id = add(&mut graph, &canvas, RENDER);
+    let preview_id = add(&mut graph, &preview, RENDER);
+    graph.connect(canvas_id, "out", preview_id, "in").unwrap();
+    engine
+        .adopt::<Ticks>(RENDER, canvas_id, Box::new(canvas))
+        .unwrap();
+    engine
+        .adopt::<Ticks>(RENDER, preview_id, Box::new(preview))
+        .unwrap();
+    let applied = engine.apply(&graph).unwrap();
+    assert!(applied.errors.is_empty(), "{:?}", applied.errors);
+    assert_eq!(engine.workers(), 1);
+
+    let downstream: Vec<_> = [ENCODER, OUTPUT]
+        .iter()
+        .map(|p| engine.worker_stats(*p).unwrap())
+        .collect();
+    let seen = Arc::new(AtomicU64::new(u64::MAX));
+    let hook = {
+        let seen = Arc::clone(&seen);
+        move || {
+            let starts: u64 = downstream.iter().map(|s| s.starts()).sum();
+            seen.store(starts, Ordering::Relaxed);
+        }
+    };
+    let export = TestNode::new(Role::Source, "export").preparing_with(hook);
+    let encoder = TestNode::new(Role::Encoder, "encoder");
+    let sink = TestNode::new(Role::PacketSink, "sink");
+    let ids = (
+        add(&mut graph, &export, RENDER),
+        add(&mut graph, &encoder, ENCODER),
+        add(&mut graph, &sink, OUTPUT),
+    );
+    graph.connect(ids.0, "out", ids.1, "in").unwrap();
+    graph.connect(ids.1, "out", ids.2, "in").unwrap();
+    engine
+        .adopt::<Ticks>(RENDER, ids.0, Box::new(export))
+        .unwrap();
+    engine
+        .adopt::<Ticks>(ENCODER, ids.1, Box::new(encoder))
+        .unwrap();
+    engine
+        .adopt::<Ticks>(OUTPUT, ids.2, Box::new(sink))
+        .unwrap();
+    let applied = engine.apply(&graph).unwrap();
+    assert!(applied.errors.is_empty(), "{:?}", applied.errors);
+    // When render prepared its part (and before its worker could swap it in), the
+    // encoder's and the output's workers ran already.
+    assert_eq!(seen.load(Ordering::Relaxed), 2);
+    assert_eq!(engine.workers(), 3);
+    let _ = engine.shutdown();
+}
+
+#[test]
 fn a_late_cadence_worker_runs_the_newest_tick_and_counts_the_skipped_ones() {
     let mut rig = Rig::new(None);
     rig.engine.apply(&rig.graph).unwrap();
@@ -547,8 +693,8 @@ fn a_branch_removed_with_apply_draining_drains_while_render_keeps_running() {
         rig.frame();
     }
     assert!(rig.engine.has_worker(ENCODER));
-    // `frame` waits for the render and encoder ticks only; the output ticks when its
-    // doorbell rings, on its own thread (under load it had not run yet).
+    // The output's worker runs on its doorbell, not on the frames the test steps:
+    // wait for it to pass a packet instead of assuming it already did.
     assert!(
         eventually(LIMIT, || rig.seen() > before),
         "the output runs again"
@@ -701,7 +847,14 @@ fn tick_indices_never_repeat_across_worker_restarts() {
         assert_eq!(stats.starts(), round);
         frames(&engine, 3);
         // The worker's next index is the runtime's: the tick it ran last, plus one.
-        assert_eq!(stats.next_index(), log.next());
+        // `stats` counts a tick after it ran and the log during it, so wait for the
+        // count instead of reading it once.
+        assert!(
+            eventually(LIMIT, || stats.next_index() == log.next()),
+            "next index {} after the tick logged {}",
+            stats.next_index(),
+            log.next()
+        );
         // Standby: the schedule is empty and the worker stops. The clock does not
         // move, so the restarted worker finds the tick it last ran still current.
         graph.set_state(ids.1, Lifecycle::Standby).unwrap();

@@ -31,9 +31,11 @@ RBS is a headless engine built around a **media graph**: a set of nodes (sources
 | Adapter support | `rbs-codec-hw` (vendor-neutral session logic shared by the hardware video encoder adapters: slot ring, port contract, capability set, configuration checks; ADR-0031) | Its port, Foundation, format helpers; never a vendor library or an adapter |
 | Adapters | `rbs-capture-wgc`, `rbs-capture-sck`, `rbs-capture-avf`, `rbs-capture-mf`, `rbs-capture-pipewire`, `rbs-codec-ffmpeg`, `rbs-codec-amf`, `rbs-codec-nvenc`, `rbs-codec-qsv`, `rbs-codec-vaapi`, `rbs-codec-videotoolbox`, `rbs-codec-audiotoolbox`, `rbs-codec-mf`, `rbs-mux-mpegts`, `rbs-mux-flv`, `rbs-mux-fmp4`, `rbs-mux-matroska`, `rbs-transport-file`, `rbs-transport-rtmp`, `rbs-transport-srt`, `rbs-transport-whip`, `rbs-thread-os` (thread policy port in `rbs-core`, ADR-0030), ... | Their port, Foundation, format helpers, adapter support crates of their port, vendor crates |
 | Plugins | `rbs-plugin-sdk`, `rbs-plugin-host` | Foundation, ports |
-| Control | `rbs-api` (schema + server) | Engine, Foundation |
+| Control | `rbs-api` (typed requests, events, session, scopes; `ControlTarget` and `ControlTransport` traits; ADR-0044) | Foundation, `serde`, `serde_json`, `sha2`, `subtle`, `getrandom` (`schemars` behind a feature); no engine, adapter, network or UI crate |
+| Control transports | `rbs-api-ws` (WebSocket), `rbs-api-ipc` (named pipe, Unix socket) | `rbs-api`, network and IPC crates |
 | UI model | `rbs-ui` (toolkit-neutral panels, layout, workspaces, layout undo, design tokens, live indicator; ADR-0022 decision 4) | std, `serde`, `toml`; no engine, port, adapter or UI toolkit crate |
-| Applications | `rbs-app` (desktop UI), `rbs-cli` (headless `record`; ADR-0040) | Everything; this is the composition root |
+| Application settings | `rbs-remote-settings` (remote control settings file and config directory, shared by `rbs-app` and `rbs-cli`; ADR-0044) | `rbs-api`, `serde`, `toml`; no toolkit, engine or adapter crate |
+| Applications | `rbs-app` (desktop UI), `rbs-cli` (headless `record`, `token`; ADR-0040) | Everything; this is the composition root |
 
 Arrows only point down or sideways into ports. Adapters never depend on each other; code several adapters share lives in an adapter support crate, which holds no vendor code. The engine never depends on an adapter.
 

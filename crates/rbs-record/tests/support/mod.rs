@@ -191,6 +191,8 @@ pub struct Log {
     pub media: AtomicU64,
     pub finished: AtomicU64,
     pub streams: Mutex<Vec<StreamDescriptor>>,
+    /// The configuration of the last packet transport session (`stream://`).
+    pub packet_config: Mutex<Option<TransportConfig>>,
 }
 
 impl Log {
@@ -319,6 +321,72 @@ impl Transport for LogTransport {
     }
 }
 
+/// A transport that takes encoded packets (as RTMP does) for `stream://` URLs and logs
+/// them with the configuration it was created with.
+pub struct PacketTransportFactory(Arc<Log>);
+
+impl AdapterFactory for PacketTransportFactory {
+    fn id(&self) -> AdapterId {
+        AdapterId::new("org.rbs.test.packet-transport")
+    }
+    fn display_name(&self) -> &str {
+        "packet transport"
+    }
+    fn probe(&self) -> Result<CapabilitySet, ProbeError> {
+        Ok(CapabilitySet::new()
+            .with(transport_caps::SCHEMES, set(&["stream"]))
+            .with(transport_caps::INPUT, set(&[transport_caps::INPUT_PACKETS])))
+    }
+}
+
+impl TransportFactory for PacketTransportFactory {
+    fn create(
+        &self,
+        config: &TransportConfig,
+    ) -> Result<Box<dyn Transport>, rbs_transport::CreateError> {
+        *self.0.packet_config.lock().unwrap() = Some(config.clone());
+        Ok(Box::new(PacketTransport(Arc::clone(&self.0), false)))
+    }
+}
+
+pub struct PacketTransport(Arc<Log>, bool);
+
+impl Transport for PacketTransport {
+    fn start(&mut self, streams: &[StreamDescriptor]) -> Result<(), TransportError> {
+        *self.0.streams.lock().unwrap() = streams.to_vec();
+        Ok(())
+    }
+    fn send(&mut self, item: TransportItem<'_>) -> Result<SendOutcome, TransportError> {
+        match item {
+            TransportItem::Packet { stream, packet } => {
+                self.0.packets.lock().unwrap().push(Written {
+                    stream: stream.0,
+                    pts: packet.pts(),
+                    codec: packet.codec(),
+                });
+                Ok(SendOutcome::Queued)
+            }
+            _ => Err(TransportError::InvalidInput(
+                "a chunk on packet input".into(),
+            )),
+        }
+    }
+    fn poll_events(&mut self, out: &mut Vec<TransportEvent>) {
+        // Connects once, on the first look after `start`.
+        if !self.1 {
+            self.1 = true;
+            out.push(TransportEvent::Connected);
+        }
+    }
+    fn stats(&self) -> TransportStats {
+        TransportStats::default()
+    }
+    fn finish(&mut self, _: Duration) -> Result<(), TransportError> {
+        self.0.finished.fetch_add(1, Ordering::Relaxed);
+        Ok(())
+    }
+}
+
 // ---- Rig -----------------------------------------------------------------------------
 
 /// The reference adapters, kept so a test can count what they opened.
@@ -359,6 +427,9 @@ pub fn rig() -> Rig {
         .unwrap();
     a.transports
         .register(Arc::new(LogTransportFactory(Arc::clone(&log))))
+        .unwrap();
+    a.transports
+        .register(Arc::new(PacketTransportFactory(Arc::clone(&log))))
         .unwrap();
     a.probe();
     Rig {

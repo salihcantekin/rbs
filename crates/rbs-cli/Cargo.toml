@@ -1,9 +1,10 @@
 [package]
 name = "rbs-cli"
-description = "The headless RBS command line: records a scene to a file with the platform's adapters (ADR-0040)."
+description = "The headless RBS command line: records a scene to a file or streams it with the platform's adapters (ADR-0040)."
 version.workspace = true
 edition.workspace = true
-rust-version.workspace = true
+# rbs-remote-settings needs 1.89 (`File::lock`).
+rust-version = "1.89"
 repository.workspace = true
 license.workspace = true
 publish.workspace = true
@@ -21,12 +22,28 @@ rbs-graph = { path = "../rbs-graph" }
 rbs-gpu = { path = "../rbs-gpu" }
 rbs-scene = { path = "../rbs-scene" }
 rbs-sources = { path = "../rbs-sources" }
+# Permission requests before a recording opens devices (src/permissions.rs).
+rbs-capture = { path = "../rbs-capture" }
+rbs-audio-io = { path = "../rbs-audio-io" }
 rbs-record = { path = "../rbs-record" }
 rbs-codec = { path = "../rbs-codec" }
 rbs-thread-os = { path = "../rbs-thread-os" }
 rbs-mux-matroska = { path = "../rbs-mux-matroska" }
 rbs-mux-fmp4 = { path = "../rbs-mux-fmp4" }
 rbs-transport-file = { path = "../rbs-transport-file" }
+# `stream`: RTMP (packets), and SRT carrying MPEG-TS.
+rbs-transport = { path = "../rbs-transport" }
+rbs-transport-rtmp = { path = "../rbs-transport-rtmp" }
+rbs-transport-srt = { path = "../rbs-transport-srt" }
+rbs-mux-mpegts = { path = "../rbs-mux-mpegts" }
+# `token`: the remote control settings file, shared with rbs-app.
+rbs-remote-settings = { path = "../rbs-remote-settings" }
+# `token` changes go to a running RBS over local IPC (`tokens.*` requests).
+rbs-api = { path = "../rbs-api" }
+rbs-api-ipc = { path = "../rbs-api-ipc" }
+# `remote fingerprint`: reads the stored certificate and key (ADR-0046).
+rbs-api-ws = { path = "../rbs-api-ws" }
+serde_json = "1"
 
 [target.'cfg(windows)'.dependencies]
 rbs-capture-wgc = { path = "../rbs-capture-wgc" }
@@ -36,12 +53,26 @@ rbs-codec-nvenc = { path = "../rbs-codec-nvenc" }
 rbs-codec-amf = { path = "../rbs-codec-amf" }
 rbs-codec-mf = { path = "../rbs-codec-mf" }
 
+[target.'cfg(target_os = "linux")'.dependencies]
+rbs-capture-pipewire = { path = "../rbs-capture-pipewire" }
+rbs-audio-io-pipewire = { path = "../rbs-audio-io-pipewire" }
+rbs-codec-nvenc = { path = "../rbs-codec-nvenc" }
+rbs-codec-amf = { path = "../rbs-codec-amf" }
+rbs-codec-qsv = { path = "../rbs-codec-qsv" }
+rbs-codec-vaapi = { path = "../rbs-codec-vaapi" }
+rbs-codec-ffmpeg = { path = "../rbs-codec-ffmpeg" }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+rbs-capture-sck = { path = "../rbs-capture-sck" }
+rbs-capture-avf = { path = "../rbs-capture-avf" }
+rbs-audio-io-coreaudio = { path = "../rbs-audio-io-coreaudio" }
+rbs-codec-videotoolbox = { path = "../rbs-codec-videotoolbox" }
+rbs-codec-audiotoolbox = { path = "../rbs-codec-audiotoolbox" }
+
 [dev-dependencies]
 # Reference adapters for the scene-building tests (deterministic, no devices).
 rbs-capture-test = { path = "../rbs-capture-test" }
 rbs-audio-io-test = { path = "../rbs-audio-io-test" }
-# The file URL test writes through the file transport.
-rbs-transport = { path = "../rbs-transport" }
 
 [lints]
 workspace = true

@@ -3,7 +3,7 @@
 // Rust pushes state into the `Studio` global of every window and handles its callbacks
 // by sending commands to the studio's control thread.
 import { Theme, Tokens } from "tokens.slint";
-import { Button, IconButton, IconName, MenuItem, MenuSurface, EmptyState, Select, SegmentedControl, TextField } from "components.slint";
+import { Button, Checkbox, IconButton, IconName, MenuItem, MenuSurface, EmptyState, Select, SegmentedControl, TextField } from "components.slint";
 
 export struct SourceData { id: int, name: string, kind: string, status: string, ok: bool }
 export struct KindData { code: int, label: string }
@@ -16,6 +16,23 @@ export struct MeterRow {
     peak: float, peak-zone: int, clipped: bool, value: string,
 }
 export struct ScaleMark { label: string, at: float }
+// The encoder fields of one output (a recording or a stream): the options offered and
+// the one in use (rbs_app::encoder_form). `rate-kind`: 0 CBR, 1 VBR, 2 constant quality.
+export struct EncoderData {
+    encoders: [string], encoder: int,
+    video-rates: [string], video-rate: int,
+    audio-rates: [string], audio-rate: int,
+    rate-modes: [string], rate-mode: int, rate-kind: int, bitrate-label: string,
+    peaks: [string], peak: int,
+    qualities: [string], quality: int,
+    padding: bool, padding-available: bool,
+    keyframes: [string], keyframe: int,
+    presets: [string], preset: int,
+    profiles: [string], profile: int,
+    b-frames: [string], b-frame: int, b-frames-note: string,
+}
+// One access token in the Remote control section: its name and what it allows.
+export struct TokenRow { name: string, access: string }
 
 export global Studio {
     // 0 starting, 1 running, 2 failed (`failure` says why).
@@ -68,23 +85,57 @@ export global Studio {
     in-out property <int> out-folder-serial;
     in property <[string]> out-formats;
     in property <int> out-format;
-    in property <[string]> out-encoders;
-    in property <int> out-encoder;
-    in property <[string]> out-video-rates;
-    in property <int> out-video-rate;
-    in property <[string]> out-audio-rates;
-    in property <int> out-audio-rate;
+    // The recording's encoder fields.
+    in property <EncoderData> out-enc;
     // A problem with the settings or their file; empty when none.
     in property <string> out-note;
     callback set-folder(string);
     callback set-format(int);
-    callback set-encoder(int);
-    callback set-video-rate(int);
-    callback set-audio-rate(int);
+    // An encoder field of an output (0 recording, 1 stream) was picked: `field` is an
+    // `EncoderFields` code, `value` the picked index (padding: 0 off, 1 on).
+    callback set-encoding(int /* output */, int /* field */, int /* value */);
     // One line: format, encoder, bitrates and folder of the next recording.
     in property <string> out-summary;
     // Opens the Settings window at its Recording section.
     callback open-settings();
+
+    // Streaming (Live controls, Settings > Stream): 0 off, 1 starting, 2 live, 3 ending.
+    in property <int> st-state;
+    // Live and connected: the program reaches the server.
+    in property <bool> st-connected;
+    // The stream's state or last outcome in words, for Live controls; `st-bad` marks a
+    // problem.
+    in property <string> st-text;
+    in property <bool> st-bad;
+    // No server or stream key yet: Live controls offer "Stream settings".
+    in property <bool> st-needs-setup;
+    callback go-live();
+    callback end-stream();
+    // Opens the Settings window at its Stream section.
+    callback open-stream-settings();
+    // Stream settings: the server URL field's text, bumped serial when Rust sets it.
+    in property <string> st-server;
+    in property <int> st-server-serial;
+    // Whether a key is saved, and where keys are kept (the hint).
+    in property <bool> st-key-saved;
+    in property <string> st-key-place;
+    // Bumped when a key was saved or removed: the key field is emptied.
+    in property <int> st-key-serial;
+    in property <bool> st-reconnect;
+    // The server is srt://: the latency field shows.
+    in property <bool> st-srt;
+    in property <[string]> st-latencies;
+    in property <int> st-latency;
+    in property <EncoderData> st-enc;
+    // A problem with the stream settings, the key or their file; empty when none.
+    in property <string> st-note;
+    // One line: protocol, server, encoder and bitrates of the next stream.
+    in property <string> st-summary;
+    callback set-server(string);
+    callback save-key(string);
+    callback remove-key();
+    callback set-reconnect(bool);
+    callback set-latency(int);
 
     // The canvas (Settings, Video): sizes and rates offered, the ones in use.
     in property <[string]> canvas-sizes;
@@ -97,6 +148,61 @@ export global Studio {
     in property <string> canvas-note;
     callback set-canvas-size(int);
     callback set-canvas-rate(int);
+
+    // Remote control (Settings, Remote control): other apps control RBS through the
+    // control API. Off by default.
+    in property <bool> rc-enabled;
+    // The port field's text; set by Rust on load and when a typed port is refused.
+    in property <string> rc-port;
+    // Bumped by Rust when `rc-port` is set from outside the field.
+    in property <int> rc-port-serial;
+    // Where apps connect, or why remote control is not running; `rc-status-bad` marks a
+    // problem.
+    in property <string> rc-status;
+    in property <bool> rc-status-bad;
+    in property <[TokenRow]> rc-tokens;
+    // Access choices and the one-line explanation of each.
+    in property <[string]> rc-accesses;
+    in property <[string]> rc-access-hints;
+    // A token just made: shown once, until dismissed. Empty when none.
+    in property <string> rc-new-token;
+    in property <string> rc-new-token-name;
+    // A problem with a token or the settings file; empty when none.
+    in property <string> rc-note;
+    callback set-rc-enabled(bool);
+    callback set-rc-port(string);
+    callback create-token(string /* name */, int /* access */);
+    callback revoke-token(int);
+    callback dismiss-new-token();
+    // The access token revoked last; empty when none. "Undo" puts it back.
+    in property <string> rc-revoked;
+    callback undo-revoke();
+
+    // Network access (ADR-0046): other computers connect over TLS. Off by default.
+    in property <bool> rc-network;
+    // "Allow remote admin": Full control tokens keep admin from other computers.
+    in property <bool> rc-remote-admin;
+    // Other computers can connect now: the frame shows it in every workspace.
+    in property <bool> rc-network-on;
+    // Where other computers connect, or why they cannot; `-bad` marks a problem.
+    in property <string> rc-network-status;
+    in property <bool> rc-network-status-bad;
+    // What clients check: the key pin, and the certificate fingerprint.
+    in property <string> rc-key-pin;
+    in property <string> rc-fingerprint;
+    // Where the certificate came from, and whether it was just renewed.
+    in property <string> rc-cert-note;
+    // A problem with a network access change (files, new key); empty when none.
+    in property <string> rc-network-note;
+    // The user's own certificate is used, and its files.
+    in property <bool> rc-own;
+    in property <string> rc-own-cert;
+    in property <string> rc-own-key;
+    callback set-rc-network(bool);
+    callback set-rc-remote-admin(bool);
+    callback rc-use-own(string /* certificate */, string /* key */);
+    callback rc-use-generated();
+    callback rc-new-key();
 }
 
 // The add-source picker: a kind, then what it captures. Keyboard: arrows are not
@@ -371,23 +477,90 @@ export component MixerPanel inherits Rectangle {
     }
 }
 
-// Live controls: Record and Stop recording (Go live comes with streaming outputs).
+// Live controls: Go live and End stream, Record and Stop recording. One output runs at a
+// time until several run per canvas. End stream asks first (U4: it cannot be undone).
 export component LiveControlsPanel inherits Rectangle {
     background: Theme.surface-raised;
     property <bool> recording: Studio.rec-state == 2;
+    property <bool> live: Studio.st-state == 2;
+    // "End stream" was pressed: the question shows until answered.
+    property <bool> confirming: false;
+    changed live => { if !live { confirming = false; } }
     VerticalLayout {
         padding: Tokens.space-3;
         spacing: Tokens.space-2;
         alignment: start;
         HorizontalLayout {
+            spacing: Tokens.space-2;
             alignment: start;
             Button {
+                text: live ? @tr("End stream") : @tr("Go live");
+                kind: live ? "live" : "primary";
+                enabled: Studio.state == 1 && !confirming
+                    && (live || (Studio.st-state == 0 && Studio.rec-state == 0 && Studio.rec-unavailable == ""));
+                clicked => {
+                    if live { confirming = true; } else { Studio.go-live(); }
+                }
+            }
+            Button {
                 text: recording ? @tr("Stop recording") : @tr("Record");
-                kind: recording ? "live" : "primary";
-                enabled: Studio.state == 1 && Studio.rec-unavailable == "" && (Studio.rec-state == 0 || recording);
+                kind: recording ? "live" : "secondary";
+                enabled: Studio.state == 1 && Studio.rec-unavailable == ""
+                    && (recording || (Studio.rec-state == 0 && Studio.st-state == 0));
                 clicked => {
                     if recording { Studio.stop-recording(); } else { Studio.record(); }
                 }
+            }
+        }
+        if confirming: Rectangle {
+            border-width: Tokens.size-border;
+            border-color: Theme.border-strong;
+            border-radius: Tokens.radius-sm;
+            accessible-role: groupbox;
+            accessible-label: @tr("End the stream?");
+            // Keep streaming, the safe answer, has the focus.
+            init => { keep.focus(); }
+            VerticalLayout {
+                padding: Tokens.space-2;
+                spacing: Tokens.space-2;
+                Text {
+                    text: @tr("End the stream? Viewers see it end.");
+                    color: Theme.text-primary;
+                    font-size: Tokens.type-body-size;
+                    wrap: word-wrap;
+                }
+                HorizontalLayout {
+                    spacing: Tokens.space-2;
+                    alignment: start;
+                    // Its own name, so assistive technology never confuses it with
+                    // the (disabled) End stream button above.
+                    Button {
+                        text: @tr("Yes, end the stream");
+                        kind: "live";
+                        clicked => {
+                            confirming = false;
+                            Studio.end-stream();
+                        }
+                    }
+                    keep := Button {
+                        text: @tr("Keep streaming");
+                        clicked => { confirming = false; }
+                    }
+                }
+            }
+        }
+        if Studio.st-text != "": Text {
+            // The stream's state in words (U4, U9); the live indicator shows it too.
+            text: Studio.st-text;
+            color: Studio.st-bad ? Theme.state-error : Theme.text-secondary;
+            font-size: Tokens.type-body-size;
+            wrap: word-wrap;
+        }
+        if Studio.st-needs-setup && Studio.st-state == 0: HorizontalLayout {
+            alignment: start;
+            Button {
+                text: @tr("Stream settings");
+                clicked => { Studio.open-stream-settings(); }
             }
         }
         Text {
@@ -396,8 +569,9 @@ export component LiveControlsPanel inherits Rectangle {
                 : Studio.rec-state == 2 ? @tr("Recording to {}", Studio.rec-file)
                 : Studio.rec-state == 3 ? @tr("Stopping the recording and closing the file…")
                 : Studio.rec-unavailable != "" ? Studio.rec-unavailable
+                : Studio.st-state != 0 ? @tr("End the stream to record.")
                 : Studio.rec-note;
-            color: Studio.rec-state == 0 && (Studio.rec-unavailable != "" || Studio.rec-note-bad) ? Theme.state-error : Theme.text-secondary;
+            color: Studio.rec-state == 0 && Studio.st-state == 0 && (Studio.rec-unavailable != "" || Studio.rec-note-bad) ? Theme.state-error : Theme.text-secondary;
             font-size: Tokens.type-body-size;
             wrap: word-wrap;
         }
@@ -408,6 +582,30 @@ export component LiveControlsPanel inherits Rectangle {
             wrap: word-wrap;
         }
     }
+}
+
+// Children shown only while `shown`; takes no room otherwise (layouts have no
+// `visible`, and an `if` would hide the popups' `open` from the form). The space
+// above (`lead`) is part of it, so a hidden one leaves no gap in a layout with no
+// spacing.
+component Shown inherits Rectangle {
+    in property <bool> shown;
+    in property <length> gap: Tokens.space-1;
+    in property <length> lead: 0;
+    visible: shown;
+    height: shown ? inner.preferred-height : 0;
+    inner := VerticalLayout {
+        padding-top: root.lead;
+        spacing: root.gap;
+        @children
+    }
+}
+
+// A one-line explanation under a field (U2: every option explains itself).
+component Hint inherits Text {
+    color: Theme.text-secondary;
+    font-size: Tokens.type-caption-size;
+    wrap: word-wrap;
 }
 
 component Field inherits VerticalLayout {
@@ -422,12 +620,197 @@ component Field inherits VerticalLayout {
     @children
 }
 
+// The encoder fields of one output, shared by the Recording and Stream sections: the
+// video encoder, its bitrate or quality level, the audio bitrate and, behind "Show
+// advanced settings" (U2), every other setting that changes the output's quality.
+// `set(field, value)` reports a pick; field codes (rbs-app `studio_ui::enc_field`):
+// 0 encoder, 1 video bitrate, 2 audio bitrate, 3 rate control, 4 maximum bitrate,
+// 5 quality level, 6 padding (value 0 or 1), 7 keyframe interval, 8 preset, 9 profile,
+// 10 B-frames.
+component EncoderFields inherits VerticalLayout {
+    in property <EncoderData> data;
+    // Not while the output runs.
+    in property <bool> idle;
+    // A stream: the hints speak of the stream instead of files.
+    in property <bool> stream;
+    callback set(int /* field */, int /* value */);
+    // Advanced settings (U2): shown with the toggle below, in the same place.
+    property <bool> advanced: false;
+    out property <bool> menu-open: encoder.open || video.open || audio.open || quality.open
+        || mode.open || peak.open || keyframe.open || profile.open || bframes.open;
+    spacing: Tokens.space-3;
+    Field {
+        label: @tr("Video encoder");
+        encoder := Select {
+            label: @tr("Video encoder");
+            options: root.data.encoders;
+            index: root.data.encoder;
+            enabled: root.idle;
+            selected(i) => { root.set(0, i); }
+        }
+    }
+    // The bitrate (CBR, VBR) or the quality level (constant quality): one slot.
+    VerticalLayout {
+        Shown {
+            shown: root.data.rate-kind != 2;
+            Field {
+                label: root.data.bitrate-label;
+                video := Select {
+                    label: root.data.bitrate-label;
+                    options: root.data.video-rates;
+                    index: root.data.video-rate;
+                    enabled: root.idle && root.data.rate-kind != 2;
+                    selected(i) => { root.set(1, i); }
+                }
+            }
+        }
+        Shown {
+            shown: root.data.rate-kind == 2;
+            Field {
+                label: @tr("Quality level");
+                quality := Select {
+                    label: @tr("Quality level");
+                    options: root.data.qualities;
+                    index: root.data.quality;
+                    enabled: root.idle && root.data.rate-kind == 2;
+                    selected(i) => { root.set(5, i); }
+                }
+                Hint { text: @tr("Lower is better quality and larger files."); }
+            }
+        }
+    }
+    Field {
+        label: @tr("Audio bitrate");
+        audio := Select {
+            label: @tr("Audio bitrate");
+            options: root.data.audio-rates;
+            index: root.data.audio-rate;
+            enabled: root.idle;
+            selected(i) => { root.set(2, i); }
+        }
+    }
+    HorizontalLayout {
+        alignment: start;
+        Button {
+            text: root.advanced ? @tr("Hide advanced settings") : @tr("Show advanced settings");
+            kind: "secondary";
+            // The text says the state; the chevron shows only while closed.
+            icon: root.advanced ? IconName.none : IconName.chevron-down;
+            clicked => { root.advanced = !root.advanced; }
+        }
+    }
+    // Advanced: every other setting that changes the output's quality.
+    Shown {
+        shown: root.advanced;
+        gap: Tokens.space-3;
+        // The rate control and the one setting that belongs to its mode.
+        VerticalLayout {
+            Field {
+                label: @tr("Rate control");
+                mode := Select {
+                    label: @tr("Rate control");
+                    options: root.data.rate-modes;
+                    index: root.data.rate-mode;
+                    enabled: root.idle && root.advanced;
+                    selected(i) => { root.set(3, i); }
+                }
+                Hint {
+                    text: root.data.rate-kind == 0 ? @tr("CBR: the same bitrate all the time. The default.")
+                        : root.data.rate-kind == 1 ? @tr("VBR: the bitrate follows the picture, up to the maximum. CBR is the default.")
+                        : @tr("Constant quality: the same quality all the time; file size varies. CBR is the default.");
+                }
+            }
+            Shown {
+                shown: root.data.rate-kind == 1;
+                lead: Tokens.space-3;
+                Field {
+                    label: @tr("Maximum bitrate");
+                    peak := Select {
+                        label: @tr("Maximum bitrate");
+                        options: root.data.peaks;
+                        index: root.data.peak;
+                        enabled: root.idle && root.advanced && root.data.rate-kind == 1;
+                        selected(i) => { root.set(4, i); }
+                    }
+                    Hint { text: @tr("The most VBR may use for a moment. Automatic is 1.5 x the target bitrate."); }
+                }
+            }
+            Shown {
+                shown: root.data.rate-kind == 0;
+                lead: Tokens.space-3;
+                Checkbox {
+                    text: @tr("Pad to the full bitrate");
+                    checked: root.data.padding;
+                    enabled: root.idle && root.advanced && root.data.rate-kind == 0 && root.data.padding-available;
+                    toggled(on) => { root.set(6, on ? 1 : 0); }
+                }
+                Hint {
+                    text: root.data.padding-available
+                        ? @tr("Adds filler data so a still picture still uses the whole bitrate. Off by default.")
+                        : @tr("This encoder cannot pad the bitrate.");
+                }
+            }
+        }
+        Field {
+            label: @tr("Keyframe interval");
+            keyframe := Select {
+                label: @tr("Keyframe interval");
+                options: root.data.keyframes;
+                index: root.data.keyframe;
+                enabled: root.idle && root.advanced;
+                selected(i) => { root.set(7, i); }
+            }
+            Hint {
+                text: root.stream
+                    ? @tr("How often a full picture is sent. Most streaming services require 2 s, the default.")
+                    : @tr("How often a full picture is stored. Shorter makes seeking faster and files larger.");
+            }
+        }
+        Field {
+            label: @tr("Encoder preset");
+            SegmentedControl {
+                label: @tr("Encoder preset");
+                options: root.data.presets;
+                index: root.data.preset;
+                enabled: root.idle && root.advanced;
+                selected(i) => { root.set(8, i); }
+            }
+            Hint { text: @tr("Quality uses more of the GPU's encoder; Speed uses less. Balanced is the default."); }
+        }
+        Field {
+            label: @tr("Profile");
+            profile := Select {
+                label: @tr("Profile");
+                options: root.data.profiles;
+                index: root.data.profile;
+                enabled: root.idle && root.advanced;
+                selected(i) => { root.set(9, i); }
+            }
+            Hint { text: @tr("Automatic lets the encoder pick, the default. Baseline plays on the oldest devices."); }
+        }
+        Field {
+            label: @tr("B-frames");
+            bframes := Select {
+                label: @tr("B-frames");
+                options: root.data.b-frames;
+                index: root.data.b-frame;
+                enabled: root.idle && root.advanced && root.data.b-frames-note == "";
+                selected(i) => { root.set(10, i); }
+            }
+            Hint {
+                text: root.data.b-frames-note != "" ? root.data.b-frames-note
+                    : @tr("More B-frames save bits and add a little delay. 0 is the default.");
+            }
+        }
+    }
+}
+
 // The recording's settings (glossary: output profile): the Recording section of the
 // Settings window (U17). They apply to the next recording and are saved at once. The
 // owner counts `menu-open` as an overlay where a preview layer is shown.
 export component RecordingSettings inherits Rectangle {
     property <bool> idle: Studio.rec-state == 0;
-    out property <bool> menu-open: encoder.open || video.open || audio.open;
+    out property <bool> menu-open: fields.menu-open;
     form := VerticalLayout {
         spacing: Tokens.space-3;
         alignment: start;
@@ -456,35 +839,10 @@ export component RecordingSettings inherits Rectangle {
                 selected(i) => { Studio.set-format(i); }
             }
         }
-        Field {
-            label: @tr("Video encoder");
-            encoder := Select {
-                label: @tr("Video encoder");
-                options: Studio.out-encoders;
-                index: Studio.out-encoder;
-                enabled: idle;
-                selected(i) => { Studio.set-encoder(i); }
-            }
-        }
-        Field {
-            label: @tr("Video bitrate");
-            video := Select {
-                label: @tr("Video bitrate");
-                options: Studio.out-video-rates;
-                index: Studio.out-video-rate;
-                enabled: idle;
-                selected(i) => { Studio.set-video-rate(i); }
-            }
-        }
-        Field {
-            label: @tr("Audio bitrate");
-            audio := Select {
-                label: @tr("Audio bitrate");
-                options: Studio.out-audio-rates;
-                index: Studio.out-audio-rate;
-                enabled: idle;
-                selected(i) => { Studio.set-audio-rate(i); }
-            }
+        fields := EncoderFields {
+            data: Studio.out-enc;
+            idle: idle;
+            set(field, value) => { Studio.set-encoding(0, field, value); }
         }
         if Studio.out-note != "": Text {
             text: Studio.out-note;
@@ -500,16 +858,122 @@ export component RecordingSettings inherits Rectangle {
     changed folder-serial => { folder.text = Studio.out-folder; }
 }
 
+// Where Go live sends the program and how it is encoded: the Stream section of the
+// Settings window (U17). Changes apply to the next stream and are saved at once. The
+// stream key is never shown: it goes to the system's credential store.
+export component StreamSettings inherits Rectangle {
+    property <bool> idle: Studio.st-state == 0;
+    out property <bool> menu-open: fields.menu-open || latency.open;
+    form := VerticalLayout {
+        spacing: Tokens.space-3;
+        alignment: start;
+        if !idle: Text {
+            text: @tr("Changes apply to the next stream.");
+            color: Theme.text-secondary;
+            font-size: Tokens.type-body-size;
+            wrap: word-wrap;
+        }
+        Field {
+            label: @tr("Server");
+            server := TextField {
+                label: @tr("Server");
+                text: Studio.st-server;
+                enabled: idle;
+                accepted(t) => { Studio.set-server(t); }
+            }
+            Hint { text: @tr("The address your streaming service gives you, starting with rtmp:// or srt://."); }
+        }
+        Field {
+            label: @tr("Stream key");
+            key := TextField {
+                label: @tr("Stream key");
+                password: true;
+                enabled: idle;
+                accepted(t) => { Studio.save-key(t); }
+            }
+            Hint { text: Studio.st-key-place; }
+            HorizontalLayout {
+                spacing: Tokens.space-2;
+                alignment: start;
+                Text {
+                    text: Studio.st-key-saved ? @tr("A stream key is saved.") : @tr("No stream key yet.");
+                    color: Theme.text-secondary;
+                    font-size: Tokens.type-body-size;
+                    vertical-alignment: center;
+                }
+                Button {
+                    text: @tr("Save key");
+                    kind: "secondary";
+                    enabled: idle && key.text != "";
+                    clicked => { Studio.save-key(key.text); }
+                }
+                if Studio.st-key-saved: Button {
+                    text: @tr("Remove key");
+                    kind: "ghost";
+                    enabled: idle;
+                    clicked => { Studio.remove-key(); }
+                }
+            }
+        }
+        VerticalLayout {
+            spacing: Tokens.space-1;
+            Checkbox {
+                text: @tr("Reconnect when the connection drops");
+                checked: Studio.st-reconnect;
+                enabled: idle;
+                toggled(on) => { Studio.set-reconnect(on); }
+            }
+            Hint { text: @tr("Tries up to 10 times, waiting longer each time. On by default."); }
+        }
+        Shown {
+            shown: Studio.st-srt;
+            Field {
+                label: @tr("SRT latency");
+                latency := Select {
+                    label: @tr("SRT latency");
+                    options: Studio.st-latencies;
+                    index: Studio.st-latency;
+                    enabled: idle && Studio.st-srt;
+                    selected(i) => { Studio.set-latency(i); }
+                }
+                Hint { text: @tr("More latency survives a worse network; viewers see the picture a little later."); }
+            }
+        }
+        fields := EncoderFields {
+            data: Studio.st-enc;
+            idle: idle;
+            stream: true;
+            set(field, value) => { Studio.set-encoding(1, field, value); }
+        }
+        if Studio.st-note != "": Text {
+            text: Studio.st-note;
+            color: Theme.state-error;
+            font-size: Tokens.type-body-size;
+            wrap: word-wrap;
+        }
+    }
+    preferred-height: form.preferred-height;
+    min-height: form.min-height;
+    // The fields show what Rust set last; typing is never overwritten by a sync.
+    property <int> server-serial: Studio.st-server-serial;
+    changed server-serial => { server.text = Studio.st-server; }
+    // A key was saved or removed: the field is emptied (the key is never shown).
+    property <int> key-serial: Studio.st-key-serial;
+    changed key-serial => { key.text = ""; }
+}
+
 // The canvas's size and frame rate: the Video section of the Settings window (U17).
 // A change restarts the studio with the new canvas; not while recording.
 export component VideoSettings inherits Rectangle {
-    property <bool> can-change: Studio.state == 1 && Studio.rec-state == 0 && !Studio.canvas-restarting;
+    property <bool> can-change: Studio.state == 1 && Studio.rec-state == 0 && Studio.st-state == 0 && !Studio.canvas-restarting;
     form := VerticalLayout {
         spacing: Tokens.space-3;
         alignment: start;
         Text {
             text: Studio.rec-state != 0
                 ? @tr("Stop the recording to change the canvas.")
+                : Studio.st-state != 0
+                ? @tr("End the stream to change the canvas.")
                 : Studio.canvas-restarting
                 ? @tr("The studio is restarting with the new canvas.")
                 : @tr("A change restarts the studio: the picture stops for a moment.");
@@ -548,6 +1012,361 @@ export component VideoSettings inherits Rectangle {
     min-height: form.min-height;
 }
 
+// Remote control (glossary): the Remote control section of the Settings window (U17).
+// Apps on this computer, such as Stream Deck or the user's scripts, control RBS through
+// the control API with an access token each. Changes apply at once.
+export component RemoteControlSettings inherits Rectangle {
+    // The access picked for the next token: 1 Control, the default.
+    property <int> access: 1;
+    // Network access certificate: 0 the one RBS made, 1 the user's own (picked, maybe
+    // not yet in use).
+    property <bool> own-in-use: Studio.rc-own;
+    // "Your own" picked, its files not yet in use.
+    property <bool> picking-own;
+    property <int> cert-source: (own-in-use || picking-own) ? 1 : 0;
+    changed own-in-use => { picking-own = false; }
+    // "New key" asks first: every client must pin the new key.
+    property <bool> confirming;
+    form := VerticalLayout {
+        spacing: Tokens.space-3;
+        alignment: start;
+        VerticalLayout {
+            spacing: Tokens.space-1;
+            Checkbox {
+                text: @tr("Allow remote control");
+                checked: Studio.rc-enabled;
+                toggled(on) => { Studio.set-rc-enabled(on); }
+            }
+            Hint { text: @tr("Lets apps on this computer, such as Stream Deck or your own scripts, control RBS. Off by default."); }
+        }
+        if Studio.rc-status != "": Text {
+            text: Studio.rc-status;
+            color: Studio.rc-status-bad ? Theme.state-error : Theme.text-secondary;
+            font-size: Tokens.type-body-size;
+            wrap: word-wrap;
+        }
+        Field {
+            label: @tr("Port");
+            port := TextField {
+                label: @tr("Port");
+                text: Studio.rc-port;
+                accepted(t) => { Studio.set-rc-port(t); }
+            }
+            Hint { text: @tr("The port apps connect to. Changing it disconnects connected apps. 4456 is the default."); }
+        }
+        Rectangle { height: Tokens.size-border; background: Theme.border-subtle; }
+        // Network access (ADR-0046): apps on other computers connect over TLS and
+        // check the key pin before they send a token.
+        VerticalLayout {
+            spacing: Tokens.space-1;
+            Checkbox {
+                text: @tr("Allow access from other computers");
+                checked: Studio.rc-network;
+                enabled: Studio.rc-enabled;
+                toggled(on) => { Studio.set-rc-network(on); }
+            }
+            Hint { text: @tr("Lets apps on other computers on your network connect over an encrypted connection. Turn it on only on networks you trust. Changing it disconnects connected apps. Windows and macOS ask to allow RBS through the firewall the first time; if that is refused, other computers cannot connect and RBS is not told."); }
+        }
+        if Studio.rc-network-status != "": Text {
+            text: Studio.rc-network-status;
+            color: Studio.rc-network-status-bad ? Theme.state-error : Theme.text-secondary;
+            font-size: Tokens.type-body-size;
+            wrap: word-wrap;
+        }
+        if Studio.rc-network && Studio.rc-key-pin != "": Field {
+            label: @tr("Key pin");
+            HorizontalLayout {
+                spacing: Tokens.space-2;
+                Text {
+                    text: Studio.rc-key-pin;
+                    color: Theme.text-primary;
+                    font-size: Tokens.type-body-size;
+                    wrap: char-wrap;
+                    vertical-alignment: center;
+                    horizontal-stretch: 1;
+                    accessible-role: AccessibleRole.text;
+                    accessible-label: @tr("Key pin: {}", Studio.rc-key-pin);
+                }
+                pin := TextField {
+                    // Holds the value for Copy only; the text beside it shows it whole.
+                    visible: false;
+                    width: 0px;
+                    label: @tr("Key pin");
+                    text: Studio.rc-key-pin;
+                    read-only: true;
+                }
+                Button {
+                    horizontal-stretch: 0;
+                    text: @tr("Copy");
+                    accessible-name: @tr("Copy key pin");
+                    clicked => { pin.copy-all(); }
+                }
+            }
+            Hint { text: @tr("Apps on other computers must check this before they send a token. It stays the same when the certificate is renewed."); }
+        }
+        if Studio.rc-network && Studio.rc-fingerprint != "": Field {
+            label: @tr("Certificate fingerprint (SHA-256)");
+            HorizontalLayout {
+                spacing: Tokens.space-2;
+                Text {
+                    text: Studio.rc-fingerprint;
+                    color: Theme.text-primary;
+                    font-size: Tokens.type-body-size;
+                    wrap: char-wrap;
+                    vertical-alignment: center;
+                    horizontal-stretch: 1;
+                    accessible-role: AccessibleRole.text;
+                    accessible-label: @tr("Certificate fingerprint: {}", Studio.rc-fingerprint);
+                }
+                print := TextField {
+                    visible: false;
+                    width: 0px;
+                    label: @tr("Certificate fingerprint (SHA-256)");
+                    text: Studio.rc-fingerprint;
+                    read-only: true;
+                }
+                Button {
+                    horizontal-stretch: 0;
+                    text: @tr("Copy");
+                    accessible-name: @tr("Copy certificate fingerprint");
+                    clicked => { print.copy-all(); }
+                }
+            }
+            Hint { text: Studio.rc-cert-note; }
+        }
+        if Studio.rc-network: VerticalLayout {
+            spacing: Tokens.space-1;
+            Checkbox {
+                text: @tr("Allow remote admin");
+                checked: Studio.rc-remote-admin;
+                toggled(on) => { Studio.set-rc-remote-admin(on); }
+            }
+            Hint { text: @tr("Lets Full control tokens change settings from other computers too. Off by default. Changing it disconnects connected apps."); }
+        }
+        if Studio.rc-network: Field {
+            label: @tr("Certificate");
+            SegmentedControl {
+                label: @tr("Certificate");
+                options: [@tr("Made by RBS"), @tr("Your own")];
+                index: root.cert-source;
+                selected(i) => {
+                    root.picking-own = i == 1;
+                    if i == 0 { Studio.rc-use-generated(); }
+                }
+            }
+            Hint { text: root.cert-source == 0
+                ? @tr("RBS made a key and a certificate for this computer. Browser panels on other devices cannot check a key pin: they need your own certificate, one those devices already trust.")
+                : @tr("A certificate chain and its key, as PEM files, for example from your own certificate authority. RBS reads them each time it starts and never copies them. Using other files disconnects connected apps."); }
+        }
+        if Studio.rc-network && root.cert-source == 1: VerticalLayout {
+            spacing: Tokens.space-3;
+            Field {
+                label: @tr("Certificate file");
+                own-cert := TextField {
+                    label: @tr("Certificate file");
+                    text: Studio.rc-own-cert;
+                }
+            }
+            Field {
+                label: @tr("Key file");
+                own-key := TextField {
+                    label: @tr("Key file");
+                    text: Studio.rc-own-key;
+                }
+                Hint { text: @tr("Full paths. On macOS and Linux the key file must be readable by you only."); }
+            }
+            HorizontalLayout {
+                alignment: start;
+                Button {
+                    text: @tr("Use these files");
+                    clicked => { Studio.rc-use-own(own-cert.text, own-key.text); }
+                }
+            }
+        }
+        if Studio.rc-network && Studio.rc-network-note != "": Text {
+            text: Studio.rc-network-note;
+            color: Theme.state-error;
+            font-size: Tokens.type-body-size;
+            wrap: word-wrap;
+        }
+        if Studio.rc-network && root.cert-source == 0 && !root.confirming: VerticalLayout {
+            spacing: Tokens.space-1;
+            HorizontalLayout {
+                alignment: start;
+                Button {
+                    text: @tr("New key…");
+                    clicked => { root.confirming = true; }
+                }
+            }
+            Hint { text: @tr("Makes a new key, for example if the key may have been copied. Every app on another computer must then check the new key pin."); }
+        }
+        if Studio.rc-network && root.cert-source == 0 && root.confirming: Rectangle {
+            border-radius: Tokens.radius-sm;
+            border-width: Tokens.size-border;
+            border-color: Theme.border-strong;
+            accessible-role: groupbox;
+            accessible-label: @tr("Make a new key");
+            VerticalLayout {
+                padding: Tokens.space-3;
+                spacing: Tokens.space-2;
+                Text {
+                    text: @tr("Make a new key? Apps on other computers are disconnected and connect again only after they check the new key pin. This cannot be undone.");
+                    color: Theme.text-primary;
+                    font-size: Tokens.type-body-size;
+                    wrap: word-wrap;
+                }
+                HorizontalLayout {
+                    spacing: Tokens.space-2;
+                    alignment: start;
+                    Button {
+                        text: @tr("Make new key");
+                        kind: "primary";
+                        clicked => { root.confirming = false; Studio.rc-new-key(); }
+                    }
+                    Button {
+                        text: @tr("Cancel");
+                        clicked => { root.confirming = false; }
+                    }
+                }
+            }
+        }
+
+        Rectangle { height: Tokens.size-border; background: Theme.border-subtle; }
+        Text {
+            text: @tr("Access tokens");
+            color: Theme.text-primary;
+            font-size: Tokens.type-label-size;
+            font-weight: Tokens.type-label-weight;
+        }
+        Hint { text: @tr("Each app needs an access token. Make one per app, so you can revoke it alone. A token is shown only once."); }
+        if Studio.rc-new-token != "": Rectangle {
+            border-radius: Tokens.radius-sm;
+            border-width: Tokens.size-border;
+            border-color: Theme.border-strong;
+            accessible-role: groupbox;
+            accessible-label: @tr("New access token for {}", Studio.rc-new-token-name);
+            created := VerticalLayout {
+                padding: Tokens.space-3;
+                spacing: Tokens.space-2;
+                Text {
+                    text: @tr("Access token for {}. Copy it into the app now: it is not shown again.", Studio.rc-new-token-name);
+                    color: Theme.text-primary;
+                    font-size: Tokens.type-body-size;
+                    wrap: word-wrap;
+                }
+                secret := TextField {
+                    label: @tr("Access token for {}", Studio.rc-new-token-name);
+                    text: Studio.rc-new-token;
+                    read-only: true;
+                }
+                HorizontalLayout {
+                    spacing: Tokens.space-2;
+                    alignment: start;
+                    Button {
+                        text: @tr("Copy");
+                        kind: "primary";
+                        clicked => { secret.copy-all(); }
+                    }
+                    Button {
+                        text: @tr("Done");
+                        clicked => { Studio.dismiss-new-token(); }
+                    }
+                }
+            }
+        }
+        Field {
+            label: @tr("Name");
+            name := TextField {
+                label: @tr("Name");
+            }
+        }
+        Field {
+            label: @tr("Access");
+            SegmentedControl {
+                label: @tr("Access");
+                options: Studio.rc-accesses;
+                index: root.access;
+                selected(i) => { root.access = i; }
+            }
+            Hint { text: Studio.rc-access-hints[root.access]; }
+        }
+        HorizontalLayout {
+            alignment: start;
+            Button {
+                text: @tr("Create access token");
+                clicked => { Studio.create-token(name.text, root.access); }
+            }
+        }
+        if Studio.rc-note != "": Text {
+            text: Studio.rc-note;
+            color: Theme.state-error;
+            font-size: Tokens.type-body-size;
+            wrap: word-wrap;
+        }
+        if Studio.rc-revoked != "": HorizontalLayout {
+            spacing: Tokens.space-2;
+            Text {
+                text: @tr("{} was revoked: apps using it were disconnected.", Studio.rc-revoked);
+                color: Theme.text-secondary;
+                font-size: Tokens.type-body-size;
+                vertical-alignment: center;
+                wrap: word-wrap;
+                horizontal-stretch: 1;
+            }
+            Button {
+                horizontal-stretch: 0;
+                text: @tr("Undo");
+                accessible-name: @tr("Undo revoking {}", Studio.rc-revoked);
+                clicked => { Studio.undo-revoke(); }
+            }
+        }
+        VerticalLayout {
+            spacing: Tokens.space-2;
+            accessible-role: list;
+            accessible-label: @tr("Access tokens");
+            if Studio.rc-tokens.length == 0: Text {
+                text: @tr("No access tokens yet.");
+                color: Theme.text-secondary;
+                font-size: Tokens.type-body-size;
+            }
+            for t[i] in Studio.rc-tokens: HorizontalLayout {
+                spacing: Tokens.space-2;
+                accessible-role: list-item;
+                accessible-label: @tr("{}, {}", t.name, t.access);
+                VerticalLayout {
+                    alignment: center;
+                    horizontal-stretch: 1;
+                    Text {
+                        text: t.name;
+                        color: Theme.text-primary;
+                        font-size: Tokens.type-body-size;
+                        overflow: elide;
+                    }
+                    Text {
+                        text: t.access;
+                        color: Theme.text-secondary;
+                        font-size: Tokens.type-caption-size;
+                    }
+                }
+                Button {
+                    horizontal-stretch: 0;
+                    text: @tr("Revoke");
+                    accessible-name: @tr("Revoke {}", t.name);
+                    clicked => { Studio.revoke-token(i); }
+                }
+            }
+        }
+    }
+    preferred-height: form.preferred-height;
+    min-height: form.min-height;
+    // The field shows what Rust set last; typing in it is never overwritten by a sync.
+    property <int> port-serial: Studio.rc-port-serial;
+    changed port-serial => { port.text = Studio.rc-port; }
+    // A token was made: the name field is ready for the next one.
+    property <string> made: Studio.rc-new-token;
+    changed made => { if made != "" { name.text = ""; } }
+}
+
 // Outputs: what each output will do, in one line each, and the way to its settings.
 // Settings live in the Settings window (U17), not in this panel.
 export component OutputsPanel inherits Rectangle {
@@ -579,12 +1398,38 @@ export component OutputsPanel inherits Rectangle {
                     }
                 }
             }
+            Rectangle {
+                accessible-role: list-item;
+                accessible-label: @tr("Stream, {}", stream-summary.text);
+                VerticalLayout {
+                    padding-top: Tokens.space-2;
+                    spacing: Tokens.space-1;
+                    Text {
+                        text: Studio.st-connected ? @tr("Stream · live now")
+                            : Studio.st-state != 0 ? @tr("Stream · connecting") : @tr("Stream");
+                        color: Theme.text-primary;
+                        font-size: Tokens.type-label-size;
+                        font-weight: Tokens.type-label-weight;
+                    }
+                    stream-summary := Text {
+                        text: Studio.st-summary;
+                        color: Theme.text-secondary;
+                        font-size: Tokens.type-caption-size;
+                        wrap: word-wrap;
+                    }
+                }
+            }
             HorizontalLayout {
                 padding-top: Tokens.space-1;
+                spacing: Tokens.space-2;
                 alignment: start;
                 Button {
                     text: @tr("Recording settings");
                     clicked => { Studio.open-settings(); }
+                }
+                Button {
+                    text: @tr("Stream settings");
+                    clicked => { Studio.open-stream-settings(); }
                 }
             }
         }

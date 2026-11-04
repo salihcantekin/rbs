@@ -11,7 +11,7 @@ use rbs_core::media::ContainerId;
 use rbs_core::registry::{AdapterFactory, AdapterId, Registry};
 use rbs_mux::{MuxerFactory, caps as mux_caps};
 use rbs_nodes::VideoEncoderNode;
-use rbs_transport::{TransportFactory, caps as transport_caps};
+use rbs_transport::{TransportFactory, TransportInput, caps as transport_caps};
 
 use crate::recording::{Port, RecordError};
 
@@ -128,12 +128,12 @@ pub(crate) fn muxer(
     }
 }
 
-/// The best transport that lists the URL's scheme and takes `container` chunks. It
-/// opens the destination in the output's `prepare`.
+/// The best transport that lists the URL's scheme and takes `input` (packets, or the
+/// chunks of a container). It opens the destination in the output's `prepare`.
 pub(crate) fn transport(
     registry: &Registry<dyn TransportFactory>,
     url: &str,
-    container: ContainerId,
+    input: TransportInput,
 ) -> Result<(Arc<dyn TransportFactory>, Chosen), RecordError> {
     let scheme = scheme_of(url).ok_or_else(|| RecordError::InvalidUrl(url.to_owned()))?;
     let requirement = Requirement::new()
@@ -143,7 +143,7 @@ pub(crate) fn transport(
         )
         .with(
             transport_caps::INPUT,
-            Constraint::Includes(container.transport_input().to_owned()),
+            Constraint::Includes(input.capability_value().to_owned()),
         );
     let selection = registry.select(&requirement);
     match selection.best() {

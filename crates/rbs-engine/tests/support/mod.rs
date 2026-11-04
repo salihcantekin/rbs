@@ -127,6 +127,8 @@ pub struct TestNode {
     cool_gate: Option<Arc<Gate>>,
     /// The first `process` waits for this gate.
     process_gate: Option<Arc<Gate>>,
+    /// Runs in `prepare`, on the control thread.
+    on_prepare: Option<Box<dyn FnMut() + Send>>,
 }
 
 fn format() -> VideoFormat {
@@ -173,6 +175,7 @@ impl TestNode {
             clock: None,
             cool_gate: None,
             process_gate: None,
+            on_prepare: None,
         }
     }
 
@@ -212,6 +215,12 @@ impl TestNode {
         self
     }
 
+    /// Runs `hook` in every `prepare` (on the control thread).
+    pub fn preparing_with(mut self, hook: impl FnMut() + Send + 'static) -> Self {
+        self.on_prepare = Some(Box::new(hook));
+        self
+    }
+
     pub fn descriptor_arc(&self) -> Arc<NodeDescriptor> {
         Arc::new(self.desc.clone())
     }
@@ -225,6 +234,9 @@ impl<X: Runtime> Node<X> for TestNode {
     fn prepare(&mut self, _ctx: &mut PrepareCtx<'_, X>) -> Result<(), NodeError> {
         self.probe.prepares.fetch_add(1, Ordering::Relaxed);
         self.last = None;
+        if let Some(hook) = self.on_prepare.as_mut() {
+            hook();
+        }
         Ok(())
     }
 

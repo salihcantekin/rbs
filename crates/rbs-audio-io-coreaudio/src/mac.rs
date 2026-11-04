@@ -989,7 +989,12 @@ fn create_aggregate(output: &str, tap_uid: &str) -> Result<AudioObjectID, AudioI
         key(kAudioAggregateDeviceSubDeviceListKey),
         key(kAudioAggregateDeviceTapListKey),
     ];
-    let values: [&AnyObject; 7] = [&name, &uid, &output, &yes, &yes, &sub_devices, &taps];
+    // Tap auto-start off: with it on, the HAL does not run the aggregate (its IO proc
+    // is never called) until the tapped audio plays, so a silent machine delivered
+    // nothing (macOS 26, #109). Off, the aggregate runs from `AudioDeviceStart` and
+    // delivers silence too, without starting the output device itself.
+    let no = NSNumber::new_bool(false);
+    let values: [&AnyObject; 7] = [&name, &uid, &output, &yes, &no, &sub_devices, &taps];
     let keys: Vec<&NSString> = keys.iter().map(|k| &**k).collect();
     let description = NSDictionary::from_slices(&keys, &values);
     // SAFETY: NSDictionary is toll-free bridged to CFDictionary.

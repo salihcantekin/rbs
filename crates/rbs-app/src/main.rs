@@ -310,6 +310,10 @@ struct Ctx {
     live_timer: Rc<slint::Timer>,
 }
 
+/// Sections of the Settings window (`SettingsWindow.section`).
+const SECTION_RECORDING: i32 = 1;
+const SECTION_STREAM: i32 = 2;
+
 thread_local! {
     /// The shell's context, for updates the studio's control thread hands to the UI
     /// thread (`slint::invoke_from_event_loop` takes only `Send` closures).
@@ -349,10 +353,15 @@ impl Ctx {
         let Ok(mut app) = self.app.try_borrow_mut() else {
             return;
         };
-        let elapsed = match (app.demo_since, app.studio.recording_for()) {
-            (Some(since), _) => since.elapsed(),
-            (None, Some((d, _))) => d,
-            (None, None) => return,
+        // Since going live while live, else since the recording started.
+        let elapsed = match (
+            app.demo_since,
+            app.studio.streaming_for(),
+            app.studio.recording_for(),
+        ) {
+            (Some(since), _, _) => since.elapsed(),
+            (None, Some((d, _, _)), _) | (None, None, Some((d, _))) => d,
+            (None, None, None) => return,
         };
         let mut live = app.session.live().clone();
         live.elapsed_secs = elapsed.as_secs();
@@ -394,11 +403,14 @@ impl Ctx {
     #[cfg(not(any(target_os = "macos", windows)))]
     fn connect_preview(&self, _endpoint: rbs_gpu::share::PreviewEndpoint) {}
 
-    /// Shows the Settings window, made on first use and kept until it is closed.
-    fn open_settings(&self) {
+    /// Shows the Settings window at `section`, made on first use and kept until it is
+    /// closed.
+    fn open_settings(&self, section: i32) {
         let ctx = self.clone();
         self.update(move |app| {
+            app.studio.settings_opened();
             if let Some(w) = &app.settings {
+                w.set_section(section);
                 let _ = w.show();
                 return;
             }
@@ -410,11 +422,18 @@ impl Ctx {
             };
             apply_theme(&w.global::<Theme>());
             install_studio(&w.global::<Studio>(), &ctx);
+            // `install_studio` cannot borrow the app here (this runs inside an update):
+            // the shared models (the access token list) are attached directly.
+            app.studio.attach_models(&w.global::<Studio>());
             let c = ctx.clone();
             w.window().on_close_requested(move || {
-                c.update(|app| app.settings = None);
+                c.update(|app| {
+                    app.settings = None;
+                    app.studio.settings_closed();
+                });
                 slint::CloseRequestResponse::HideWindow
             });
+            w.set_section(section);
             let _ = w.show();
             app.settings = Some(w);
         });
@@ -432,16 +451,28 @@ impl Ctx {
     /// The live status from the studio, and the 1 Hz duration tick while live or
     /// recording.
     fn sync_live(&self, app: &mut App) {
-        // The live indicator follows the recording (no streaming outputs yet).
+        // The live indicator follows the stream and the recording.
         if app.demo_since.is_none() {
-            let live = match app.studio.recording_for() {
-                Some((d, file)) => LiveStatus {
+            let live = match (app.studio.streaming_for(), app.studio.recording_for()) {
+                (Some((d, host, connected)), rec) => LiveStatus {
+                    live: true,
+                    recording: rec.is_some(),
+                    elapsed_secs: d.as_secs(),
+                    outputs: std::iter::once(if connected {
+                        host
+                    } else {
+                        format!("{host} not connected")
+                    })
+                    .chain(rec.map(|(_, file)| file))
+                    .collect(),
+                },
+                (None, Some((d, file))) => LiveStatus {
                     live: false,
                     recording: true,
                     elapsed_secs: d.as_secs(),
                     outputs: vec![file],
                 },
-                None => LiveStatus::default(),
+                (None, None) => LiveStatus::default(),
             };
             if *app.session.live() != live {
                 app.session.set_live(live);
@@ -926,7 +957,11 @@ fn install_studio(g: &Studio<'_>, ctx: &Ctx) {
     });
     {
         let ctx = ctx.clone();
-        g.on_open_settings(move || ctx.open_settings());
+        g.on_open_settings(move || ctx.open_settings(SECTION_RECORDING));
+    }
+    {
+        let ctx = ctx.clone();
+        g.on_open_stream_settings(move || ctx.open_settings(SECTION_STREAM));
     }
     on!(on_record, |app| {
         app.studio.record();
@@ -940,20 +975,73 @@ fn install_studio(g: &Studio<'_>, ctx: &Ctx) {
     on!(on_set_format, |app, i: i32| {
         app.studio.set_format(i);
     });
-    on!(on_set_encoder, |app, i: i32| {
-        app.studio.set_encoder(i);
+    on!(on_set_encoding, |app, out: i32, field: i32, value: i32| {
+        app.studio.set_encoding(out, field, value);
     });
-    on!(on_set_video_rate, |app, i: i32| {
-        app.studio.set_video_rate(i);
+    on!(on_go_live, |app| {
+        app.studio.go_live();
     });
-    on!(on_set_audio_rate, |app, i: i32| {
-        app.studio.set_audio_rate(i);
+    on!(on_end_stream, |app| {
+        app.studio.end_stream();
+    });
+    on!(on_set_server, |app, text: slint::SharedString| {
+        app.studio.set_server(&text);
+    });
+    on!(on_save_key, |app, text: slint::SharedString| {
+        app.studio.save_key(&text);
+    });
+    on!(on_remove_key, |app| {
+        app.studio.remove_key();
+    });
+    on!(on_set_reconnect, |app, on: bool| {
+        app.studio.set_reconnect(on);
+    });
+    on!(on_set_latency, |app, i: i32| {
+        app.studio.set_latency(i);
     });
     on!(on_set_canvas_size, |app, i: i32| {
         app.studio.set_canvas_size(i, close_preview);
     });
     on!(on_set_canvas_rate, |app, i: i32| {
         app.studio.set_canvas_rate(i, close_preview);
+    });
+    on!(on_set_rc_enabled, |app, on: bool| {
+        app.studio.set_remote_enabled(on);
+    });
+    on!(on_set_rc_port, |app, text: slint::SharedString| {
+        app.studio.set_remote_port(&text);
+    });
+    on!(on_create_token, |app,
+                          name: slint::SharedString,
+                          access: i32| {
+        app.studio.create_token(&name, access);
+    });
+    on!(on_revoke_token, |app, i: i32| {
+        app.studio.revoke_token(i);
+    });
+    on!(on_dismiss_new_token, |app| {
+        app.studio.dismiss_new_token();
+    });
+    on!(on_undo_revoke, |app| {
+        app.studio.undo_revoke();
+    });
+    on!(on_set_rc_network, |app, on: bool| {
+        app.studio.set_network(on);
+    });
+    on!(on_set_rc_remote_admin, |app, on: bool| {
+        app.studio.set_remote_admin(on);
+    });
+    on!(
+        on_rc_use_own,
+        |app, cert: slint::SharedString, key: slint::SharedString| {
+            app.studio.use_own_certificate(&cert, &key);
+        }
+    );
+    on!(on_rc_use_generated, |app| {
+        app.studio.use_generated_certificate();
+    });
+    on!(on_rc_new_key, |app| {
+        app.studio.new_key();
     });
     // A popup opened or closed: the preview layer hides or shows at once.
     #[cfg(any(target_os = "macos", windows))]
@@ -975,6 +1063,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .select()?;
 
     let config = config::config_dir();
+    // The stream key's store: read only when a stream starts (src/stream_key.rs).
+    let keys = rbs_app::stream_key::system();
     let studio_config = config.clone();
     let store = WorkspaceStore::new(config::workspace_dir(&config));
     let name = config::last_workspace(&config).unwrap_or_else(|| "Edit".to_owned());
@@ -1022,7 +1112,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             exiting: false,
             settings: None,
             demo_since: demo_live.then(Instant::now),
-            studio: studio_ui::StudioUi::new(&studio_config),
+            studio: studio_ui::StudioUi::new(&studio_config, keys.as_ref()),
         })),
         queue: Rc::new(RefCell::new(Vec::new())),
         pending: Rc::new(Cell::new(false)),
@@ -1040,7 +1130,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // The studio: its own control thread (ADR-0041 decision 7), on the saved canvas.
     let studio_canvas = {
         let c = ctx.app.borrow().studio.canvas;
-        studio_host::HostConfig::canvas(c.size(), c.frame_rate())
+        let mut config = studio_host::HostConfig::canvas(c.size(), c.frame_rate());
+        config.keys = keys;
+        config
     };
     match studio_host::StudioHost::spawn(
         studio_canvas,
@@ -1069,7 +1161,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         },
         deliver,
     ) {
-        Ok(host) => ctx.update(move |app| app.studio.host = Some(host)),
+        Ok(host) => ctx.update(move |app| {
+            app.studio.host = Some(host);
+            // Remote control, if the user turned it on (off by default: nothing starts).
+            app.studio.sync_remote();
+        }),
         Err(e) => ctx.update(move |app| {
             app.studio.state = 2;
             app.studio.failure = e.to_string();
@@ -1083,6 +1179,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let ctx = ctx.clone();
         main.window().on_close_requested(move || {
             if let Ok(mut app) = ctx.app.try_borrow_mut() {
+                // Ending a stream cannot be undone: the frame asks first (U4).
+                if app.studio.st_state != studio_ui::st_state::OFF {
+                    app.main.global::<Shell>().set_quit_confirm(true);
+                    return slint::CloseRequestResponse::KeepWindowShown;
+                }
                 app.exiting = true;
                 if app.save_due {
                     app.persist_now();
@@ -1090,6 +1191,28 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
             let _ = slint::quit_event_loop();
             slint::CloseRequestResponse::HideWindow
+        });
+    }
+    {
+        let ctx = ctx.clone();
+        main.global::<Shell>().on_quit_keep(move || {
+            if let Ok(app) = ctx.app.try_borrow() {
+                app.main.global::<Shell>().set_quit_confirm(false);
+            }
+        });
+    }
+    {
+        // Quitting ends the stream: the studio host's shutdown ends it cleanly.
+        let ctx = ctx.clone();
+        main.global::<Shell>().on_quit_end_stream(move || {
+            if let Ok(mut app) = ctx.app.try_borrow_mut() {
+                app.exiting = true;
+                if app.save_due {
+                    app.persist_now();
+                }
+                let _ = app.main.hide();
+            }
+            let _ = slint::quit_event_loop();
         });
     }
 
@@ -1101,7 +1224,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         if app.save_due {
             app.persist_now();
         }
-        // Stops the studio and joins its thread.
+        // Disconnects remote control apps, then stops the studio and joins its thread.
+        app.studio.stop_remote();
         app.studio.host = None;
     }
     CTX.with(|c| c.borrow_mut().take());

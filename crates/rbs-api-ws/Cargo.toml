@@ -1,0 +1,40 @@
+[package]
+name = "rbs-api-ws"
+description = "WebSocket transport adapter for the RBS control API (ADR-0044, ADR-0046): loopback, and TLS for network access; RFC 6455 framing, Origin and Host checks before the upgrade, one I/O thread."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+rbs-api = { path = "../rbs-api" }
+# Readiness polling (epoll, kqueue, IOCP) for the one I/O thread, with a waker for the
+# API thread. MIT or Apache-2.0; already in the workspace's lock file through the UI.
+polling = "3"
+# Parses the HTTP upgrade request. MIT or Apache-2.0, no dependencies.
+httparse = "1"
+# SHA-1 for `Sec-WebSocket-Accept` (RFC 6455 section 4.2.2); RustCrypto, the same
+# family as `sha2` in rbs-api.
+sha1 = "0.10"
+# Network access (ADR-0046): TLS on the `ring` provider (no CMake or NASM), no
+# logging; Apache-2.0, ISC or MIT; ring is Apache-2.0 AND ISC.
+rustls = { version = "0.23.46", default-features = false, features = ["ring", "std", "tls12"] }
+# The generated key and certificate (MIT or Apache-2.0). The lock file holds rcgen
+# 0.14.7 and time 0.3.45: later ones need Rust 1.88 (ADR-0046: 1.87 or lower).
+rcgen = { version = "0.14.7", default-features = false, features = ["ring", "pem"] }
+# One dual-stack listener: `IPV6_V6ONLY` must be set before bind (MIT or Apache-2.0).
+socket2 = "0.6"
+# The key pin (SHA-256 of the SubjectPublicKeyInfo) and certificate fingerprint.
+sha2 = "0.10"
+
+[dev-dependencies]
+rbs-api = { path = "../rbs-api", features = ["conformance"] }
+serde_json = "1"
+# A TLS test client that pins the server's key, as RBS clients do.
+rustls = { version = "0.23.46", default-features = false, features = ["ring", "std", "tls12"] }
+webpki = { package = "rustls-webpki", version = "0.103", default-features = false, features = ["ring", "alloc"] }
+
+[lints]
+workspace = true

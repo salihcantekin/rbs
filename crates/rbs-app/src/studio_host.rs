@@ -4,16 +4,29 @@
 //! through the studio's `PreviewEndpoint`, as it would from another process.
 //!
 //! Toolkit-free, so it is tested without a window (`tests/studio_host.rs`).
+//!
+//! The same thread serves the control API (ADR-0044) when one is attached
+//! ([`StudioHost::attach_api`]): forwarded requests are applied one at a time, after any
+//! UI command waiting, and state changes are published as events with a `seq` per
+//! state key. With no API attached this costs a counter increment per change.
 
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::sync::Weak;
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
 use std::thread::JoinHandle;
 use std::time::Duration;
 
+use rbs_api::request::{Empty, ProfileList, RecordStarted, SourceAdded, TargetList};
+use rbs_api::types as api;
+use rbs_api::{
+    ApiError, ControlEndpoint, ControlTarget, ErrorKind, EventPayload, EventPublisher, Response,
+    StateKey, Topic,
+};
 use rbs_audio::LevelMeter;
-use rbs_codec::RateControl;
-use rbs_core::capability::Requirement;
+use rbs_capture::CaptureError;
+use rbs_codec::caps as codec_caps;
+use rbs_core::capability::{CapabilitySet, CapabilityValue, Requirement};
 use rbs_core::media::{ContainerId, Size};
 use rbs_core::registry::{AdapterFactory, Registry};
 use rbs_core::timing::FrameRate;
@@ -21,13 +34,22 @@ use rbs_engine::Engine;
 use rbs_gpu::GpuContext;
 use rbs_gpu::share::{PreviewDesc, PreviewEndpoint};
 use rbs_graph::node::NodeTypeId;
-use rbs_record::{AudioSettings, OutputSettings, RecordAdapters, Studio, StudioSettings};
+use rbs_record::{
+    AudioSettings, Link, OutputSettings, RecordAdapters, Studio, StudioSettings, VideoSettings,
+};
 use rbs_scene::SceneCollection;
 use rbs_scene::Undo;
 use rbs_scene::model::{
     CanvasId, ItemContent, Layout, SceneId, SceneScope, SettingValue, Settings, SourceId,
 };
 use rbs_sources::types::{self, keys};
+use rbs_sources::{SourceError, SourceTarget};
+use rbs_transport::{ReconnectPolicy, Secret, TransportInput};
+
+use crate::canvas_profile::CanvasProfile;
+use crate::record_profile::{API_PROFILE_ID, RecordProfile};
+use crate::remote_control::ApiTokens;
+use crate::stream_key::{KeyStore, MemoryKeyStore};
 
 /// The longest the control thread sleeps between two rounds of the engine's control
 /// loop (the studio asks for at most about 100 ms).
@@ -121,6 +143,10 @@ pub struct Target {
     pub is_default: bool,
     /// Native size in pixels when known (displays and windows).
     pub size: Option<(u32, u32)>,
+    /// Not a target yet: adding it shows the OS picker of `adapter` (systems that
+    /// list no screens or windows, such as the Linux screen-cast portal), and the
+    /// target the user chooses is added.
+    pub picker: bool,
 }
 
 /// How a source is doing.
@@ -196,6 +222,17 @@ pub enum Command {
         /// The new rate.
         fps: FrameRate,
     },
+    /// The recording settings as saved: what `record.start` uses for control API
+    /// clients and `settings.get` shows. Sent at start and after each change.
+    SetProfile(RecordProfile),
+    /// Go live: stream the program ([`Update::Stream`] says how it went). The stream key
+    /// is read from the host's key store now, never earlier.
+    StartStream(StreamRequest),
+    /// End the running stream ([`StreamUpdate::Ended`] when it has).
+    EndStream,
+    /// Save the stream key in the key store (`None` removes it); answered with
+    /// [`Update::StreamKey`].
+    SaveStreamKey(Option<Secret>),
 }
 
 /// A video encoder the user can pick.
@@ -205,6 +242,67 @@ pub struct EncoderInfo {
     pub id: String,
     /// Its name in the UI.
     pub name: String,
+    /// What its quality settings can be, from its capabilities.
+    pub options: EncoderOptions,
+}
+
+/// The quality settings a video encoder takes, from its probed capabilities
+/// (`docs/specs/output-ports.md`), so the settings offer only what it can do.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct EncoderOptions {
+    /// `codec.video.rate_control` values: `cbr`, `cbr_padded`, `vbr`,
+    /// `constant_quality`.
+    pub rate_controls: Vec<String>,
+    /// H.264 profile names (`high`, `main`, `baseline`) from `codec.video.profiles`.
+    pub h264_profiles: Vec<String>,
+    /// `codec.video.b_frames.max`.
+    pub b_frames_max: u32,
+    /// `cbr_padded` is listed: CBR can be padded with filler data.
+    pub cbr_padding: bool,
+}
+
+impl EncoderOptions {
+    /// Reads them from a capability set.
+    pub fn from_caps(caps: &CapabilitySet) -> Self {
+        let set = |key| match caps.get(key) {
+            Some(CapabilityValue::Set(v)) => v.to_vec(),
+            _ => Vec::new(),
+        };
+        Self {
+            rate_controls: set(&codec_caps::VIDEO_RATE_CONTROL),
+            h264_profiles: set(&codec_caps::VIDEO_PROFILES)
+                .iter()
+                .filter_map(|p| p.strip_prefix("h264.").map(str::to_owned))
+                .collect(),
+            b_frames_max: match caps.get(&codec_caps::VIDEO_B_FRAMES_MAX) {
+                Some(CapabilityValue::Int(n)) => u32::try_from(*n).unwrap_or(0),
+                _ => 0,
+            },
+            cbr_padding: set(&codec_caps::VIDEO_RATE_CONTROL)
+                .iter()
+                .any(|r| r == "cbr_padded"),
+        }
+    }
+
+    /// What any of `all` can do: the choice when the encoder is picked automatically.
+    pub fn union<'a>(all: impl IntoIterator<Item = &'a EncoderOptions>) -> Self {
+        let mut u = EncoderOptions::default();
+        for o in all {
+            for r in &o.rate_controls {
+                if !u.rate_controls.contains(r) {
+                    u.rate_controls.push(r.clone());
+                }
+            }
+            for p in &o.h264_profiles {
+                if !u.h264_profiles.contains(p) {
+                    u.h264_profiles.push(p.clone());
+                }
+            }
+            u.b_frames_max = u.b_frames_max.max(o.b_frames_max);
+            u.cbr_padding |= o.cbr_padding;
+        }
+        u
+    }
 }
 
 /// Where and how to record.
@@ -216,8 +314,8 @@ pub struct RecordRequest {
     pub container: ContainerId,
     /// The video encoder's adapter id: only this one is used. `None`: the best one.
     pub encoder: Option<String>,
-    /// Video bitrate (constant) in bit/s.
-    pub video_bitrate_bps: u64,
+    /// Video encoding: rate control, keyframes, profile, preset, B-frames, padding.
+    pub video: VideoSettings,
     /// Audio bitrate in bit/s.
     pub audio_bitrate_bps: u64,
 }
@@ -248,6 +346,59 @@ pub enum RecordingUpdate {
         dropped: u64,
         /// Packets the video encoder still held after its final flush (normally 0).
         flush_lost: u64,
+    },
+}
+
+/// Where and how to stream.
+#[derive(Debug, Clone, PartialEq)]
+pub struct StreamRequest {
+    /// The server URL (`rtmp://host/app`, `srt://host:port`); never holds the key.
+    pub url: String,
+    /// Packets (RTMP) or the chunks of a container (SRT: MPEG-TS).
+    pub input: TransportInput,
+    /// The server needs a key (RTMP): without a saved one nothing opens.
+    pub needs_key: bool,
+    /// What the transport does when the connection drops.
+    pub reconnect: ReconnectPolicy,
+    /// Opaque transport options (SRT `latency_ms`).
+    pub transport_options: Vec<(String, String)>,
+    /// The video encoder's adapter id: only this one is used. `None`: the best one.
+    pub encoder: Option<String>,
+    /// Video encoding.
+    pub video: VideoSettings,
+    /// Audio bitrate in bit/s.
+    pub audio_bitrate_bps: u64,
+}
+
+/// What happened to the stream.
+#[derive(Debug, Clone, PartialEq)]
+pub enum StreamUpdate {
+    /// It runs and connects in the background ([`StreamUpdate::Link`] follows).
+    Started {
+        /// The server URL.
+        url: String,
+        /// The video encoder's name.
+        video_encoder: String,
+        /// The audio encoder's name, when audio is sent.
+        audio_encoder: Option<String>,
+    },
+    /// It could not start, in words; nothing streams.
+    NotStarted(String),
+    /// The server needs a key and the key store has none; nothing streams.
+    NoKey,
+    /// The connection changed: connected, lost, another attempt.
+    Link(Link),
+    /// It ended, asked to or because it failed for good.
+    Ended {
+        /// Why it ended on its own, if it did.
+        failure: Option<String>,
+        /// Video frames encoded.
+        frames: u64,
+        /// Video frames dropped at the export or the encoder, and items the transport
+        /// dropped while the connection was slow or down.
+        dropped: u64,
+        /// Times the stream connected (0: it never reached the server).
+        connects: u64,
     },
 }
 
@@ -298,6 +449,28 @@ pub enum Update {
     Error(String),
     /// The recording started, did not start or stopped.
     Recording(RecordingUpdate),
+    /// The stream started, did not start, changed its connection or ended.
+    Stream(StreamUpdate),
+    /// [`Command::SaveStreamKey`] done: `Ok(true)` a key is saved, `Ok(false)` none is,
+    /// `Err` why the store refused.
+    StreamKey(Result<bool, String>),
+    /// A control API client changed the recording settings; the UI shows and saves
+    /// them.
+    Profile(RecordProfile),
+    /// A control API client (`rbs-cli token` over local IPC) made or revoked an access
+    /// token: it is saved and in effect; the UI reads the token list again.
+    TokensChanged,
+}
+
+/// What the control thread receives.
+enum Msg {
+    Ui(Command),
+    AttachApi(Box<Api>),
+    DetachApi,
+    /// A control API request is waiting.
+    ApiWake,
+    /// An OS picker failed (not cancelled).
+    PickFailed(String),
 }
 
 /// How the studio starts.
@@ -309,6 +482,9 @@ pub struct HostConfig {
     pub fps: FrameRate,
     /// The preview's size and ring, or `None` for no preview.
     pub preview: Option<PreviewDesc>,
+    /// Where the stream key is kept: read when a stream starts, written when it is
+    /// saved, on the control thread only. Memory by default.
+    pub keys: Arc<dyn KeyStore>,
 }
 
 impl HostConfig {
@@ -323,7 +499,12 @@ impl HostConfig {
     pub fn canvas(size: Size, fps: FrameRate) -> Self {
         let preview =
             cfg!(any(target_os = "macos", windows)).then(|| preview_desc(size, PREVIEW_SURFACES));
-        Self { size, fps, preview }
+        Self {
+            size,
+            fps,
+            preview,
+            keys: Arc::new(MemoryKeyStore::new()),
+        }
     }
 }
 
@@ -343,7 +524,7 @@ fn preview_desc(size: Size, surfaces: usize) -> PreviewDesc {
 
 /// The running control thread. Dropping it stops the studio and joins the thread.
 pub struct StudioHost {
-    tx: Option<Sender<Command>>,
+    tx: Option<Arc<Sender<Msg>>>,
     thread: Option<JoinHandle<()>>,
 }
 
@@ -360,9 +541,13 @@ impl StudioHost {
         notify: impl Fn(Update) + Send + 'static,
     ) -> std::io::Result<Self> {
         let (tx, rx) = mpsc::channel();
+        let tx = Arc::new(tx);
         let thread = std::thread::Builder::new()
             .name("rbs-studio".into())
-            .spawn(move || run(config, adapters, gpu, engine, rx, &notify))?;
+            .spawn({
+                let inbox = Arc::downgrade(&tx);
+                move || run(config, adapters, gpu, engine, rx, inbox, &notify)
+            })?;
         Ok(Self {
             tx: Some(tx),
             thread: Some(thread),
@@ -371,8 +556,37 @@ impl StudioHost {
 
     /// Queues a command. Never blocks; a stopped studio ignores it.
     pub fn send(&self, c: Command) {
+        self.post(Msg::Ui(c));
+    }
+
+    /// Serves the control API on the control thread from now on: `endpoint` comes from
+    /// `rbs_api::ApiServer::start`, whose control waker is [`StudioHost::api_waker`].
+    /// With `tokens`, `tokens.*` requests are answered (local peers only, by scope);
+    /// without, they fail.
+    pub fn attach_api(&self, endpoint: ControlEndpoint, tokens: Option<ApiTokens>) {
+        self.post(Msg::AttachApi(Box::new(Api { endpoint, tokens })));
+    }
+
+    /// Stops serving the control API (remote control turned off).
+    pub fn detach_api(&self) {
+        self.post(Msg::DetachApi);
+    }
+
+    /// Wakes the control thread when the API forwarded a request. Never blocks.
+    /// It holds no strong reference to the channel, so dropping the host still closes
+    /// it and ends the control thread while an `ApiServer` keeps the waker.
+    pub fn api_waker(&self) -> impl Fn() + Send + Sync + 'static {
+        let tx: Weak<Sender<Msg>> = self.tx.as_ref().map(Arc::downgrade).unwrap_or_default();
+        move || {
+            if let Some(tx) = tx.upgrade() {
+                let _ = tx.send(Msg::ApiWake);
+            }
+        }
+    }
+
+    fn post(&self, m: Msg) {
         if let Some(tx) = &self.tx {
-            let _ = tx.send(c);
+            let _ = tx.send(m);
         }
     }
 }
@@ -387,8 +601,86 @@ impl Drop for StudioHost {
     }
 }
 
+/// The control API while it is attached.
+struct Api {
+    endpoint: ControlEndpoint,
+    tokens: Option<ApiTokens>,
+}
+
+impl Api {
+    /// Serves one request: `tokens.*` from the settings, everything else by `target`.
+    fn serve_one(
+        &self,
+        target: &mut dyn ControlTarget,
+        events: &mut EventPublisher,
+        notify: &dyn Fn(Update),
+    ) -> bool {
+        let mut with_tokens = WithTokens {
+            inner: target,
+            tokens: self.tokens.as_ref(),
+            notify,
+        };
+        self.endpoint.serve_one(&mut with_tokens, events)
+    }
+}
+
+/// Answers `tokens.*` (they do not touch the studio, so they work also after it
+/// failed), and passes everything else on.
+struct WithTokens<'a> {
+    inner: &'a mut dyn ControlTarget,
+    tokens: Option<&'a ApiTokens>,
+    notify: &'a dyn Fn(Update),
+}
+
+impl ControlTarget for WithTokens<'_> {
+    fn handle(
+        &mut self,
+        command: rbs_api::Command,
+        events: &mut EventPublisher,
+    ) -> Result<Response, ApiError> {
+        if let Some(answer) = self.tokens.and_then(|t| t.answer(&command)) {
+            let (response, changed) = answer?;
+            if changed {
+                (self.notify)(Update::TokensChanged);
+            }
+            return Ok(response);
+        }
+        self.inner.handle(command, events)
+    }
+}
+
+/// A listed target as the UI shows it.
+fn target_of(t: SourceTarget) -> Target {
+    Target {
+        name: t.name,
+        adapter: t.adapter.as_str().to_owned(),
+        target: t.target,
+        is_default: t.is_default,
+        size: t.size,
+        picker: false,
+    }
+}
+
+/// The entry that opens the OS picker for `kind` (glossary: screen, window).
+fn picker_name(kind: SourceKind) -> &'static str {
+    match kind {
+        SourceKind::Window => "Choose a window…",
+        _ => "Choose a screen…",
+    }
+}
+
+fn kind_noun(kind: SourceKind) -> &'static str {
+    match kind {
+        SourceKind::Window => "window",
+        _ => "screen",
+    }
+}
+
 /// The studio and the scene it runs.
 struct Host {
+    /// This thread's own queue, for results from picker threads. Weak, so dropping
+    /// the [`StudioHost`] still ends the thread.
+    inbox: Weak<Sender<Msg>>,
     studio: Studio,
     adapters: RecordAdapters,
     collection: SceneCollection,
@@ -402,6 +694,10 @@ struct Host {
     /// Stop was asked for: the recording ended its video and stops once its tail is
     /// in (ADR-0045).
     ending: bool,
+    /// The running stream: its URL and the connection last reported.
+    streaming: Option<(String, Link)>,
+    /// Where the stream key is kept.
+    keys: Arc<dyn KeyStore>,
     /// Makes an engine for a restart.
     engine: Box<dyn Fn() -> Engine>,
     gpu: Arc<GpuContext>,
@@ -409,6 +705,20 @@ struct Host {
     preview_surfaces: Option<usize>,
     /// Why the studio could not start again after a canvas change.
     dead: Option<String>,
+    /// Counts `seq` per state key and publishes events to control API clients.
+    events: EventPublisher,
+    /// The control API, while remote control is on.
+    api: Option<Api>,
+    /// The recording settings as the UI saved them.
+    profile: RecordProfile,
+    /// Kinds the adapters can add.
+    kinds: Vec<SourceKind>,
+    /// Video encoders, best first.
+    encoders: Vec<EncoderInfo>,
+    /// Why this system cannot record.
+    cannot_record: Option<String>,
+    /// The running recording, as the control API reports it.
+    record_state: api::RecordState,
 }
 
 fn run(
@@ -416,46 +726,92 @@ fn run(
     adapters: impl FnOnce() -> (RecordAdapters, Vec<String>),
     gpu: impl FnOnce() -> Result<Arc<GpuContext>, String>,
     engine: impl Fn() -> Engine + 'static,
-    rx: Receiver<Command>,
+    rx: Receiver<Msg>,
+    inbox: Weak<Sender<Msg>>,
     notify: &dyn Fn(Update),
 ) {
     let mut host = match start(config, adapters, gpu, engine) {
-        Ok((host, update)) => {
+        Ok((mut host, update)) => {
             notify(update);
+            host.inbox = inbox;
             host
         }
         Err(e) => {
-            notify(Update::Failed(e));
-            // Keep answering until the UI goes away, so it never waits on a dead thread.
-            while rx.recv().is_ok() {}
+            notify(Update::Failed(e.clone()));
+            // Keep answering until the UI goes away, so it never waits on a dead thread;
+            // control API requests get the reason.
+            let mut api: Option<Api> = None;
+            while let Ok(m) = rx.recv() {
+                match m {
+                    Msg::AttachApi(a) => api = Some(*a),
+                    Msg::DetachApi => api = None,
+                    Msg::Ui(_) | Msg::ApiWake | Msg::PickFailed(_) => {}
+                }
+                if let Some(api) = &api {
+                    let mut events = EventPublisher::new();
+                    while api.serve_one(&mut Refuse(e.clone()), &mut events, notify) {}
+                }
+            }
             return;
         }
     };
     host.publish(notify);
-    let mut failed = false;
+    let mut failed: Option<String> = None;
     let mut wait = MAX_WAIT;
     loop {
         match rx.recv_timeout(wait) {
-            Ok(c) => {
-                if !failed {
+            Ok(Msg::Ui(c)) => {
+                if failed.is_none() {
                     host.command(c, notify);
                 }
-                if let Some(why) = host.dead.take() {
-                    failed = true;
-                    notify(Update::Failed(why));
-                }
             }
-            Err(RecvTimeoutError::Timeout) => {}
+            Ok(Msg::AttachApi(api)) => {
+                host.events.attach(api.endpoint.event_link());
+                host.api = Some(*api);
+            }
+            Ok(Msg::DetachApi) => {
+                host.events.detach();
+                host.api = None;
+            }
+            Ok(Msg::PickFailed(why)) => notify(Update::Error(why)),
+            Ok(Msg::ApiWake) | Err(RecvTimeoutError::Timeout) => {}
             Err(RecvTimeoutError::Disconnected) => break,
         }
-        if failed {
-            wait = Duration::from_secs(3600);
+        // One API request per round: a UI command that arrived meanwhile is taken by the
+        // next `recv_timeout` first, so the local user always goes first (decision 5).
+        let served_api = match &failed {
+            None => host.serve_api(notify),
+            Some(why) => host.api.as_ref().is_some_and(|api| {
+                api.serve_one(&mut Refuse(why.clone()), &mut host.events, notify)
+            }),
+        };
+        if failed.is_none()
+            && let Some(why) = host.dead.take()
+        {
+            host.stop_recording(Some(why.clone()), notify);
+            host.end_stream(Some(why.clone()), notify);
+            failed = Some(why.clone());
+            notify(Update::Failed(why));
+        }
+        if failed.is_some() {
+            wait = if served_api {
+                Duration::ZERO
+            } else {
+                Duration::from_secs(3600)
+            };
             continue;
         }
         let serviced = host.studio.service();
         wait = serviced.wait.unwrap_or(MAX_WAIT).min(MAX_WAIT);
+        if served_api {
+            // More may wait; look again right after any UI command.
+            wait = Duration::ZERO;
+        }
         if let Some(why) = host.studio.failure() {
-            failed = true;
+            // Clients see the recording end with the failure instead of a stale state.
+            host.stop_recording(Some(why.clone()), notify);
+            host.end_stream(Some(why.clone()), notify);
+            failed = Some(why.clone());
             notify(Update::Failed(why));
             continue;
         }
@@ -478,16 +834,24 @@ fn run(
                 wait = wait.min(ENDING_WAIT);
             }
         }
+        if host.streaming.is_some() {
+            if let Some(why) = host.studio.recording_failure() {
+                host.end_stream(Some(why), notify);
+            } else {
+                host.report_link(notify);
+            }
+        }
         host.publish(notify);
     }
     // Closing while recording: keep the tail too, as Stop does.
-    if host.studio.end_recording() {
+    if host.recording.is_some() && host.studio.end_recording() {
         let started = std::time::Instant::now();
         while !host.studio.recording_tail_done() && started.elapsed() < CLOSE_TAIL_GUARD {
             host.studio.service();
             std::thread::sleep(ENDING_WAIT);
         }
     }
+    host.end_stream(None, notify);
     let _ = host.studio.shutdown();
 }
 
@@ -497,6 +861,7 @@ fn start(
     gpu: impl FnOnce() -> Result<Arc<GpuContext>, String>,
     engine: impl Fn() -> Engine + 'static,
 ) -> Result<(Host, Update), String> {
+    let keys = Arc::clone(&config.keys);
     let (mut adapters, mut notes) = adapters();
     adapters.probe();
     let gpu = gpu()?;
@@ -537,7 +902,7 @@ fn start(
         })
         .and_then(|t| t.size);
     let installed = adapters.sources.installed();
-    let kinds = SourceKind::ALL
+    let kinds: Vec<SourceKind> = SourceKind::ALL
         .into_iter()
         .filter(|k| installed.contains(&k.type_id()))
         .collect();
@@ -546,9 +911,21 @@ fn start(
         .select(&Requirement::new())
         .candidates
         .iter()
+        // An adapter that probes to nothing (no driver or device here) cannot encode.
+        .filter(|f| {
+            adapters
+                .video_encoders
+                .capabilities(&f.id())
+                .is_some_and(|c| !c.is_empty())
+        })
         .map(|f| EncoderInfo {
             id: f.id().as_str().to_owned(),
             name: f.display_name().to_owned(),
+            options: adapters
+                .video_encoders
+                .capabilities(&f.id())
+                .map(EncoderOptions::from_caps)
+                .unwrap_or_default(),
         })
         .collect();
     let cannot_record = encoders.is_empty().then(|| {
@@ -559,10 +936,10 @@ fn start(
     });
     let update = Update::Started {
         preview: studio.preview(),
-        kinds,
+        kinds: Vec::clone(&kinds),
         notes,
-        encoders,
-        cannot_record,
+        encoders: encoders.clone(),
+        cannot_record: cannot_record.clone(),
         size: config.size,
         fps: config.fps,
         display,
@@ -579,10 +956,20 @@ fn start(
             waiting: false,
             recording: None,
             ending: false,
+            streaming: None,
+            keys,
             engine: Box::new(engine),
             gpu,
             preview_surfaces: config.preview.map(|p| p.surfaces),
             dead: None,
+            events: EventPublisher::new(),
+            api: None,
+            profile: RecordProfile::new(),
+            kinds,
+            encoders,
+            cannot_record,
+            record_state: api::RecordState::Idle { last: None },
+            inbox: Weak::new(),
         },
         update,
     ))
@@ -592,24 +979,12 @@ impl Host {
     fn command(&mut self, c: Command, notify: &dyn Fn(Update)) {
         match c {
             Command::ListTargets(kind) => {
-                let targets = self
-                    .adapters
-                    .sources
-                    .targets(&kind.type_id())
-                    .unwrap_or_default()
-                    .into_iter()
-                    .map(|t| Target {
-                        name: t.name,
-                        adapter: t.adapter.as_str().to_owned(),
-                        target: t.target,
-                        is_default: t.is_default,
-                        size: t.size,
-                    })
-                    .collect();
+                let targets = self.targets(kind);
                 notify(Update::Targets(kind, targets));
             }
+            Command::AddSource { kind, target } if target.picker => self.pick(kind, &target),
             Command::AddSource { kind, target } => match self.add(kind, &target) {
-                Ok(()) => self.apply(notify),
+                Ok(_) => self.apply(notify),
                 Err(e) => notify(Update::Error(e)),
             },
             Command::DeleteSource(id) => {
@@ -632,7 +1007,7 @@ impl Host {
                 }
             }
             Command::StartRecording(r) => {
-                let update = match self.start_recording(&r) {
+                let update = match self.start_recording(&r, Some(API_PROFILE_ID.into())) {
                     Ok(update) => update,
                     Err(why) => RecordingUpdate::NotStarted(why),
                 };
@@ -650,22 +1025,199 @@ impl Host {
                 self.publish(notify);
             }
             Command::SetCanvas { size, fps } => {
-                if let Err(why) = self.set_canvas(size, fps) {
+                if let Err(why) = self.change_canvas(size, fps, notify) {
                     notify(Update::Error(why));
                 }
-                let (size, fps) = self
-                    .collection
-                    .canvas(self.canvas)
-                    .map_or((size, fps), |c| (c.size, c.frame_rate));
-                notify(Update::Canvas {
-                    preview: self.studio.preview(),
-                    size,
-                    fps,
-                });
-                self.rows.clear();
+            }
+            Command::SetProfile(profile) => {
+                if profile != self.profile {
+                    self.profile = profile;
+                    self.settings_changed();
+                }
+            }
+            Command::StartStream(r) => {
+                let update = match self.start_stream(&r) {
+                    Ok(update) => update,
+                    Err(why) => StreamUpdate::NotStarted(why),
+                };
+                notify(Update::Stream(update));
                 self.publish(notify);
             }
+            Command::EndStream => {
+                self.end_stream(None, notify);
+                self.publish(notify);
+            }
+            Command::SaveStreamKey(key) => {
+                let result = match &key {
+                    Some(k) => self.keys.write(k).map(|()| true),
+                    None => self.keys.remove().map(|()| false),
+                };
+                notify(Update::StreamKey(result.map_err(|e| {
+                    format!("{} refused the stream key: {e}", self.keys.place())
+                })));
+            }
         }
+    }
+
+    /// What a kind can capture, in OS order, then one entry per OS picker.
+    fn targets(&self, kind: SourceKind) -> Vec<Target> {
+        let mut list: Vec<Target> = self
+            .adapters
+            .sources
+            .targets(&kind.type_id())
+            .unwrap_or_default()
+            .into_iter()
+            .map(target_of)
+            .collect();
+        let pickers = self
+            .adapters
+            .sources
+            .pickers(&kind.type_id())
+            .unwrap_or_default();
+        list.extend(pickers.iter().map(|p| Target {
+            name: picker_name(kind).to_owned(),
+            adapter: p.adapter().as_str().to_owned(),
+            target: String::new(),
+            is_default: false,
+            size: None,
+            picker: true,
+        }));
+        list
+    }
+
+    /// Shows the OS picker of `entry.adapter` on a thread of its own (it blocks while
+    /// the dialog is up, and this thread keeps the studio and any recording running),
+    /// then adds the chosen target like a listed one. Closing the dialog adds nothing.
+    fn pick(&self, kind: SourceKind, entry: &Target) {
+        let Some(picker) = self
+            .adapters
+            .sources
+            .pickers(&kind.type_id())
+            .unwrap_or_default()
+            .into_iter()
+            .find(|p| p.adapter().as_str() == entry.adapter)
+        else {
+            self.post(Msg::PickFailed(format!(
+                "{} is not available any more.",
+                entry.name
+            )));
+            return;
+        };
+        let inbox = Weak::clone(&self.inbox);
+        let spawned = std::thread::Builder::new()
+            .name("rbs-picker".into())
+            .spawn(move || {
+                let msg = match picker.pick() {
+                    Ok(t) => Msg::Ui(Command::AddSource {
+                        kind,
+                        target: target_of(t),
+                    }),
+                    Err(SourceError::Capture(CaptureError::Cancelled)) => return,
+                    Err(e) => {
+                        Msg::PickFailed(format!("The {} could not be chosen: {e}", kind_noun(kind)))
+                    }
+                };
+                if let Some(tx) = inbox.upgrade() {
+                    let _ = tx.send(msg);
+                }
+            });
+        if let Err(e) = spawned {
+            self.post(Msg::PickFailed(format!("The picker could not start: {e}")));
+        }
+    }
+
+    fn post(&self, m: Msg) {
+        if let Some(tx) = self.inbox.upgrade() {
+            let _ = tx.send(m);
+        }
+    }
+
+    /// Restarts the studio with a new canvas and tells the UI what runs now (always,
+    /// also when refused).
+    fn change_canvas(
+        &mut self,
+        size: Size,
+        fps: FrameRate,
+        notify: &dyn Fn(Update),
+    ) -> Result<(), String> {
+        let before = self.api_canvas();
+        let result = self.set_canvas(size, fps);
+        let (size, fps) = self
+            .collection
+            .canvas(self.canvas)
+            .map_or((size, fps), |c| (c.size, c.frame_rate));
+        notify(Update::Canvas {
+            preview: self.studio.preview(),
+            size,
+            fps,
+        });
+        self.rows.clear();
+        self.publish(notify);
+        let now = self.api_canvas();
+        if now != before {
+            self.events
+                .changed(StateKey::topic(Topic::CanvasChanged), || {
+                    EventPayload::CanvasChanged(now)
+                });
+            self.settings_changed();
+        }
+        result
+    }
+
+    /// The canvas as the control API shows it.
+    fn api_canvas(&self) -> api::Canvas {
+        let (size, rate) = self
+            .collection
+            .canvas(self.canvas)
+            .map_or((Size::new(0, 0), FrameRate::FPS_30), |c| {
+                (c.size, c.frame_rate)
+            });
+        let r = rate.per_second();
+        api::Canvas {
+            width: size.width,
+            height: size.height,
+            fps_num: r.num(),
+            fps_den: r.den(),
+        }
+    }
+
+    /// The settings the control thread owns, as the control API shows them.
+    fn api_settings(&self) -> api::Settings {
+        api::Settings {
+            profiles: vec![self.profile.to_api()],
+            canvas: self.api_canvas(),
+        }
+    }
+
+    fn settings_changed(&mut self) {
+        let settings = self.api_settings();
+        self.events
+            .changed(StateKey::topic(Topic::SettingsChanged), || {
+                EventPayload::SettingsChanged(settings)
+            });
+    }
+
+    fn set_record_state(&mut self, state: api::RecordState) {
+        self.record_state = state.clone();
+        self.events
+            .changed(StateKey::topic(Topic::RecordState), || {
+                EventPayload::RecordState(state)
+            });
+    }
+
+    /// Serves one waiting control API request; true when one was served.
+    fn serve_api(&mut self, notify: &dyn Fn(Update)) -> bool {
+        let Some(api) = self.api.take() else {
+            return false;
+        };
+        // The endpoint answers `events.subscribe` from the publisher it is given, and
+        // the target publishes through `self.events`: the publisher moves out for the
+        // call and `ApiTarget` swaps it back in while a command runs.
+        let mut events = std::mem::take(&mut self.events);
+        let served = api.serve_one(&mut ApiTarget { host: self, notify }, &mut events, notify);
+        self.events = events;
+        self.api = Some(api);
+        served
     }
 
     /// Restarts the studio with the canvas at `size` and `fps`, the program scene's
@@ -674,6 +1226,9 @@ impl Host {
     fn set_canvas(&mut self, size: Size, fps: FrameRate) -> Result<(), String> {
         if self.recording.is_some() {
             return Err("Stop the recording before changing the canvas.".into());
+        }
+        if self.streaming.is_some() {
+            return Err("End the stream before changing the canvas.".into());
         }
         let canvas = self
             .collection
@@ -743,9 +1298,16 @@ impl Host {
     }
 
     /// Starts recording to `r.path`; the file's folder is made first.
-    fn start_recording(&mut self, r: &RecordRequest) -> Result<RecordingUpdate, String> {
+    fn start_recording(
+        &mut self,
+        r: &RecordRequest,
+        profile: Option<String>,
+    ) -> Result<RecordingUpdate, String> {
         if self.recording.is_some() {
             return Err("A recording is already running.".into());
+        }
+        if self.streaming.is_some() {
+            return Err("End the stream to record: one output runs at a time for now.".into());
         }
         if !r.path.is_absolute() {
             return Err(format!("{} is not a full path.", r.path.display()));
@@ -758,37 +1320,31 @@ impl Host {
             return Err(format!("{} already exists.", r.path.display()));
         }
         let mut out = OutputSettings::new(rbs_transport_file::file_url(&r.path), r.container);
-        out.video.rate_control = RateControl::Cbr {
-            bitrate_bps: r.video_bitrate_bps,
-        };
+        out.video = r.video.clone();
         out.audio = self.adapters.audio_encoders.ids().next().map(|_| {
             let mut a = AudioSettings::default();
             a.bitrate_bps = r.audio_bitrate_bps;
             a
         });
-        // A picked encoder is the only one tried: if it cannot open, the recording
-        // fails rather than quietly using another one.
-        let all = match &r.encoder {
-            None => None,
-            Some(id) => {
-                let only = only_encoder(&self.adapters.video_encoders, id)?;
-                Some(std::mem::replace(&mut self.adapters.video_encoders, only))
-            }
-        };
-        let started = self
-            .studio
-            .start_recording(&self.adapters, &out)
-            .map(|report| RecordingUpdate::Started {
-                path: r.path.clone(),
-                video_encoder: report.video_encoder.name.clone(),
-                audio_encoder: report.audio_encoder.as_ref().map(|c| c.name.clone()),
-            })
-            .map_err(|e| e.to_string());
-        if let Some(all) = all {
-            self.adapters.video_encoders = all;
-        }
-        if started.is_ok() {
+        let started =
+            self.start_output(&out, r.encoder.as_deref())
+                .map(|(video_encoder, audio_encoder)| RecordingUpdate::Started {
+                    path: r.path.clone(),
+                    video_encoder,
+                    audio_encoder,
+                });
+        if let Ok(RecordingUpdate::Started {
+            video_encoder,
+            audio_encoder,
+            ..
+        }) = &started
+        {
             self.recording = Some(r.path.clone());
+            self.set_record_state(api::RecordState::Recording {
+                profile,
+                video_encoder: video_encoder.clone(),
+                audio_encoder: audio_encoder.clone(),
+            });
         } else if std::fs::metadata(&r.path).is_ok_and(|m| m.len() == 0) {
             // The output may have made the file before a later node failed.
             let _ = std::fs::remove_file(&r.path);
@@ -806,22 +1362,147 @@ impl Host {
         let (frames, dropped, flush_lost, failed) = report.map_or((0, 0, 0, None), |r| {
             (
                 r.progress.frames_encoded,
-                r.progress.export_drops + r.progress.encoder_drops,
+                r.progress.export_drops + r.progress.encoder_skipped + r.progress.encoder_drops,
                 r.flush_lost,
                 r.failure,
             )
         });
+        let failure = failure.or(failed);
+        self.set_record_state(api::RecordState::Idle {
+            last: Some(api::RecordingSummary {
+                failure: failure.clone(),
+                frames,
+                dropped,
+            }),
+        });
         notify(Update::Recording(RecordingUpdate::Stopped {
             path,
-            failure: failure.or(failed),
+            failure,
             frames,
             dropped,
             flush_lost,
         }));
     }
 
+    /// Goes live: reads the key (RTMP: required) from the key store, then attaches the
+    /// stream's encoders and output to the running studio. The connection is made in
+    /// the background; [`Host::report_link`] tells the UI how it goes.
+    fn start_stream(&mut self, r: &StreamRequest) -> Result<StreamUpdate, String> {
+        if self.streaming.is_some() {
+            return Err("A stream is already running.".into());
+        }
+        if self.recording.is_some() {
+            return Err("Stop the recording to go live: one output runs at a time for now.".into());
+        }
+        if self.cannot_record.is_some() {
+            return Err(format!(
+                "Streaming is not available on {} yet: this system has no video encoder RBS can use.",
+                os_name()
+            ));
+        }
+        let key = self.keys.read().map_err(|e| {
+            format!(
+                "The stream key could not be read from {}: {e}",
+                self.keys.place()
+            )
+        })?;
+        if r.needs_key && key.is_none() {
+            return Ok(StreamUpdate::NoKey);
+        }
+        let mut out = match r.input {
+            TransportInput::Container(c) => OutputSettings::new(r.url.clone(), c),
+            _ => OutputSettings::packets(r.url.clone()),
+        };
+        out.secret = key;
+        out.reconnect = r.reconnect;
+        out.transport_options = r.transport_options.clone();
+        out.video = r.video.clone();
+        out.audio = self.adapters.audio_encoders.ids().next().map(|_| {
+            let mut a = AudioSettings::default();
+            a.bitrate_bps = r.audio_bitrate_bps;
+            a
+        });
+        let (video_encoder, audio_encoder) = self.start_output(&out, r.encoder.as_deref())?;
+        self.streaming = Some((r.url.clone(), Link::default()));
+        Ok(StreamUpdate::Started {
+            url: r.url.clone(),
+            video_encoder,
+            audio_encoder,
+        })
+    }
+
+    /// Attaches `out` to the studio with the picked encoder only, or the best one;
+    /// returns the encoders' names.
+    fn start_output(
+        &mut self,
+        out: &OutputSettings,
+        encoder: Option<&str>,
+    ) -> Result<(String, Option<String>), String> {
+        // A picked encoder is the only one tried: if it cannot open, the output fails
+        // rather than quietly using another one.
+        let all = match encoder {
+            None => None,
+            Some(id) => {
+                let only = only_encoder(&self.adapters.video_encoders, id)?;
+                Some(std::mem::replace(&mut self.adapters.video_encoders, only))
+            }
+        };
+        let started = self
+            .studio
+            .start_recording(&self.adapters, out)
+            .map(|report| {
+                (
+                    report.video_encoder.name.clone(),
+                    report.audio_encoder.as_ref().map(|c| c.name.clone()),
+                )
+            })
+            .map_err(|e| e.to_string());
+        if let Some(all) = all {
+            self.adapters.video_encoders = all;
+        }
+        started
+    }
+
+    /// Tells the UI when the stream's connection changed.
+    fn report_link(&mut self, notify: &dyn Fn(Update)) {
+        let Some((_, last)) = &mut self.streaming else {
+            return;
+        };
+        // Only what the UI shows: a change of transport drops alone sends nothing.
+        let shown = |l: &Link| (l.connected, l.connects, l.reconnect_attempts);
+        if let Some(link) = self.studio.link()
+            && shown(&link) != shown(last)
+        {
+            *last = link;
+            notify(Update::Stream(StreamUpdate::Link(link)));
+        }
+    }
+
+    /// Ends the stream, if one runs, and says so.
+    fn end_stream(&mut self, failure: Option<String>, notify: &dyn Fn(Update)) {
+        if self.streaming.take().is_none() {
+            return;
+        }
+        let report = self.studio.stop_recording();
+        let (frames, dropped, connects, failed) = report.map_or((0, 0, 0, None), |r| {
+            let p = &r.progress;
+            (
+                p.frames_encoded,
+                p.export_drops + p.encoder_skipped + p.encoder_drops + p.transport_drops,
+                p.connects,
+                r.failure,
+            )
+        });
+        notify(Update::Stream(StreamUpdate::Ended {
+            failure: failure.or(failed),
+            frames,
+            dropped,
+            connects,
+        }));
+    }
+
     /// Adds a source of `kind` for `target` to the program scene, on top.
-    fn add(&mut self, kind: SourceKind, target: &Target) -> Result<(), String> {
+    fn add(&mut self, kind: SourceKind, target: &Target) -> Result<SourceId, String> {
         let canvas = self
             .collection
             .canvas(self.canvas)
@@ -858,9 +1539,19 @@ impl Host {
             _ => Layout::new([0.0, 0.0], [1.0, 1.0]),
         };
         let name = unique_name(&self.collection, &target.name);
+        self.add_named(kind, &name, settings, layout)
+    }
+
+    fn add_named(
+        &mut self,
+        kind: SourceKind,
+        name: &str,
+        settings: Settings,
+        layout: Layout,
+    ) -> Result<SourceId, String> {
         let (id, _) = self
             .collection
-            .add_source(&name, kind.type_id(), settings)
+            .add_source(name, kind.type_id(), settings)
             .map_err(|e| format!("{e:?}"))?;
         if let Err(e) = self
             .collection
@@ -869,7 +1560,7 @@ impl Host {
             let _ = self.collection.delete_source(id);
             return Err(format!("{e:?}"));
         }
-        Ok(())
+        Ok(id)
     }
 
     /// Runs the edited collection.
@@ -892,6 +1583,11 @@ impl Host {
         let rows = self.rows();
         if rows != self.rows {
             self.rows = rows.clone();
+            let listed: Vec<api::SourceInfo> = rows.iter().map(api_source).collect();
+            self.events
+                .changed(StateKey::topic(Topic::SourceChanged), || {
+                    EventPayload::SourceChanged(listed)
+                });
             notify(Update::Sources(rows));
         }
     }
@@ -930,6 +1626,383 @@ impl Host {
                 }
             })
             .collect()
+    }
+}
+
+/// The control API's view of the host: one request at a time on the control thread.
+struct ApiTarget<'a> {
+    host: &'a mut Host,
+    notify: &'a dyn Fn(Update),
+}
+
+impl ControlTarget for ApiTarget<'_> {
+    fn handle(
+        &mut self,
+        command: rbs_api::Command,
+        events: &mut EventPublisher,
+    ) -> Result<Response, ApiError> {
+        // The real publisher comes back into the host for the command (see
+        // `Host::serve_api`), so its changes publish with the right `seq`.
+        std::mem::swap(&mut self.host.events, events);
+        let result = self.run(command);
+        std::mem::swap(&mut self.host.events, events);
+        result
+    }
+}
+
+fn failed(message: impl Into<String>) -> ApiError {
+    ApiError::new(ErrorKind::Failed, message)
+}
+
+impl ApiTarget<'_> {
+    fn run(&mut self, command: rbs_api::Command) -> Result<Response, ApiError> {
+        use rbs_api::Command as C;
+        let notify = self.notify;
+        let host = &mut *self.host;
+        match command {
+            C::StudioGet => Ok(Response::Studio(api::Snapshot {
+                seq: host.events.seq_map([Topic::CanvasChanged]),
+                data: api::StudioInfo {
+                    canvas: host.api_canvas(),
+                    kinds: host.kinds.iter().map(|k| api_kind(*k)).collect(),
+                    encoders: host
+                        .encoders
+                        .iter()
+                        .map(|e| api::EncoderInfo {
+                            id: e.id.clone(),
+                            name: e.name.clone(),
+                            rate_controls: e.options.rate_controls.clone(),
+                            h264_profiles: e.options.h264_profiles.clone(),
+                            b_frames_max: e.options.b_frames_max,
+                        })
+                        .collect(),
+                    cannot_record: host.cannot_record.clone(),
+                },
+            })),
+            C::SourceList => Ok(Response::Sources(api::Snapshot {
+                seq: host.events.seq_map([Topic::SourceChanged]),
+                data: host.rows.iter().map(api_source).collect(),
+            })),
+            C::SourceTargets(p) => {
+                let kind = app_kind(p.kind);
+                Ok(Response::Targets(TargetList {
+                    kind: p.kind,
+                    targets: host
+                        .targets(kind)
+                        .into_iter()
+                        .map(|t| api::CaptureTarget {
+                            name: t.name,
+                            adapter: t.adapter,
+                            target: t.target,
+                            is_default: t.is_default,
+                            size: t
+                                .size
+                                .map(|(width, height)| api::Dimensions { width, height }),
+                        })
+                        .collect(),
+                }))
+            }
+            C::SourceAdd(p) => {
+                let kind = app_kind(p.kind);
+                let Some(mut target) = host
+                    .targets(kind)
+                    .into_iter()
+                    .find(|t| t.adapter == p.adapter && t.target == p.target)
+                else {
+                    return Err(ApiError::new(
+                        ErrorKind::NotFound,
+                        format!("{} has no target {:?}", p.adapter, p.target),
+                    ));
+                };
+                if let Some(name) = p.name.filter(|n| !n.trim().is_empty()) {
+                    target.name = name;
+                }
+                let id = host.add(kind, &target).map_err(failed)?;
+                host.apply(notify);
+                Ok(Response::SourceAdded(SourceAdded { source: id.get() }))
+            }
+            C::SourceDelete(p) => {
+                let id = SourceId::from_raw(p.source);
+                let Some(name) = host.collection.source(id).map(|s| s.name.clone()) else {
+                    return Err(ApiError::new(
+                        ErrorKind::NotFound,
+                        format!("no source {}", p.source),
+                    ));
+                };
+                let undo = host
+                    .collection
+                    .delete_source(id)
+                    .map_err(|e| failed(format!("{e:?}")))?;
+                host.undo = Some(undo);
+                host.apply(notify);
+                notify(Update::Deleted(name));
+                Ok(Response::Done(Empty {}))
+            }
+            C::EditUndo => {
+                let Some(undo) = host.undo.take() else {
+                    return Err(ApiError::new(ErrorKind::Conflict, "nothing to undo"));
+                };
+                host.collection
+                    .undo(undo)
+                    .map_err(|e| ApiError::new(ErrorKind::UndoConflict, format!("{e:?}")))?;
+                host.apply(notify);
+                Ok(Response::Done(Empty {}))
+            }
+            C::EditRedo => Err(failed("redo is not supported by this server yet")),
+            C::OutputProfiles => Ok(Response::Profiles(ProfileList {
+                profiles: vec![host.profile.to_api_listing()],
+            })),
+            C::RecordStart(p) => {
+                check_profile(&p.profile)?;
+                let path = host.profile.file_for(chrono::Local::now().naive_local());
+                self.record(path, false)
+            }
+            C::RecordStartToFile(p) => {
+                check_profile(&p.profile)?;
+                let path = PathBuf::from(&p.path);
+                if !path.is_absolute() {
+                    return Err(ApiError::new(
+                        ErrorKind::InvalidParams,
+                        format!("{} is not a full path", p.path),
+                    ));
+                }
+                self.record(path, true)
+            }
+            C::RecordStop => {
+                if host.recording.is_none() {
+                    return Err(ApiError::new(ErrorKind::Conflict, "nothing records"));
+                }
+                host.stop_recording(None, notify);
+                host.publish(notify);
+                Ok(Response::Done(Empty {}))
+            }
+            C::RecordStatus => Ok(Response::RecordStatus(api::Snapshot {
+                seq: host.events.seq_map([Topic::RecordState]),
+                data: host.record_state.clone(),
+            })),
+            C::SettingsGet => Ok(Response::Settings(api::Snapshot {
+                seq: host.events.seq_map([Topic::SettingsChanged]),
+                data: host.api_settings(),
+            })),
+            C::SettingsSet(patch) => {
+                let profile = if let Some(profiles) = &patch.profiles {
+                    let [p] = profiles.as_slice() else {
+                        return Err(ApiError::new(
+                            ErrorKind::InvalidParams,
+                            "this server has exactly one recording profile",
+                        ));
+                    };
+                    check_profile(&p.id)?;
+                    let profile = RecordProfile::from_api(p);
+                    if let Some(why) = profile.problem() {
+                        return Err(ApiError::new(ErrorKind::InvalidParams, why));
+                    }
+                    if host.recording.is_some() && profile != host.profile {
+                        return Err(ApiError::new(
+                            ErrorKind::Conflict,
+                            "stop the recording before changing its settings",
+                        ));
+                    }
+                    Some(profile)
+                } else {
+                    None
+                };
+                // The canvas goes first: it is the part that can still fail, and then
+                // nothing of the patch has been applied.
+                if let Some(canvas) = &patch.canvas {
+                    let c = canvas_profile(canvas)?;
+                    let same = host
+                        .collection
+                        .canvas(host.canvas)
+                        .is_some_and(|k| k.size == c.size() && k.frame_rate == c.frame_rate());
+                    if !same {
+                        if host.recording.is_some() {
+                            return Err(ApiError::new(
+                                ErrorKind::Conflict,
+                                "stop the recording before changing the canvas",
+                            ));
+                        }
+                        if host.streaming.is_some() {
+                            return Err(ApiError::new(
+                                ErrorKind::Conflict,
+                                "end the stream before changing the canvas",
+                            ));
+                        }
+                        host.change_canvas(c.size(), c.frame_rate(), notify)
+                            .map_err(failed)?;
+                    }
+                }
+                if let Some(profile) = profile
+                    && profile != host.profile
+                {
+                    host.profile = profile.clone();
+                    notify(Update::Profile(profile));
+                    host.settings_changed();
+                }
+                Ok(Response::Settings(api::Snapshot {
+                    seq: host.events.seq_map([Topic::SettingsChanged]),
+                    data: host.api_settings(),
+                }))
+            }
+            // Answered by the endpoint; never reaches a target.
+            // `tokens.*` are answered before (`WithTokens`) when the API was attached
+            // with the settings.
+            C::EventsSubscribe(_) | C::TokensList | C::TokensCreate(_) | C::TokensRevoke(_) => {
+                Err(rbs_api::control::unsupported(&command))
+            }
+        }
+    }
+
+    /// Starts recording the program with the saved profile into `path`.
+    fn record(&mut self, path: PathBuf, explicit: bool) -> Result<Response, ApiError> {
+        let notify = self.notify;
+        let host = &mut *self.host;
+        if explicit && !path.is_absolute() {
+            return Err(ApiError::new(
+                ErrorKind::InvalidParams,
+                format!("{} is not a full path", path.display()),
+            ));
+        }
+        if explicit && path.exists() {
+            return Err(ApiError::new(
+                ErrorKind::FileExists,
+                format!("{} already exists", path.display()),
+            ));
+        }
+        if let Some(why) = &host.cannot_record {
+            return Err(failed(why.clone()));
+        }
+        if host.recording.is_some() {
+            return Err(ApiError::new(
+                ErrorKind::Conflict,
+                "a recording is already running",
+            ));
+        }
+        if host.streaming.is_some() {
+            return Err(ApiError::new(
+                ErrorKind::Conflict,
+                "a stream is running; one output runs at a time for now",
+            ));
+        }
+        let p = &host.profile;
+        if let Some(why) = p.problem() {
+            return Err(failed(why));
+        }
+        // A saved encoder this system does not have falls back to the best one, as the
+        // UI's automatic choice does.
+        let encoder = p
+            .encoder
+            .clone()
+            .filter(|id| host.encoders.iter().any(|e| e.id == *id));
+        let request = RecordRequest {
+            path,
+            container: p.format.container(),
+            encoder,
+            video: p.video_settings(),
+            audio_bitrate_bps: u64::from(p.audio_kbps) * 1000,
+        };
+        let profile = (!explicit).then(|| API_PROFILE_ID.to_owned());
+        let result = host.start_recording(&request, profile);
+        host.publish(notify);
+        match result {
+            Ok(update) => {
+                let started = match &update {
+                    RecordingUpdate::Started {
+                        video_encoder,
+                        audio_encoder,
+                        ..
+                    } => RecordStarted {
+                        video_encoder: video_encoder.clone(),
+                        audio_encoder: audio_encoder.clone(),
+                    },
+                    _ => return Err(failed("the recording did not start")),
+                };
+                // The UI shows the recording as if its own button started it.
+                notify(Update::Recording(update));
+                Ok(Response::RecordStarted(started))
+            }
+            Err(why) => Err(failed(why)),
+        }
+    }
+}
+
+fn check_profile(id: &str) -> Result<(), ApiError> {
+    if id == API_PROFILE_ID {
+        Ok(())
+    } else {
+        Err(ApiError::new(
+            ErrorKind::NotFound,
+            format!("no recording profile {id:?}"),
+        ))
+    }
+}
+
+fn canvas_profile(c: &api::Canvas) -> Result<CanvasProfile, ApiError> {
+    if c.fps_den != 1 {
+        return Err(ApiError::new(
+            ErrorKind::InvalidParams,
+            "the canvas rate must be a whole number of frames per second",
+        ));
+    }
+    let profile = CanvasProfile {
+        width: c.width,
+        height: c.height,
+        fps: c.fps_num,
+        ..CanvasProfile::new()
+    };
+    match profile.problem() {
+        Some(why) => Err(ApiError::new(ErrorKind::InvalidParams, why)),
+        None => Ok(profile),
+    }
+}
+
+/// Answers every control API request with why the studio cannot run.
+struct Refuse(String);
+
+impl ControlTarget for Refuse {
+    fn handle(
+        &mut self,
+        _command: rbs_api::Command,
+        _events: &mut EventPublisher,
+    ) -> Result<Response, ApiError> {
+        Err(failed(format!("the studio stopped: {}", self.0)))
+    }
+}
+
+fn api_kind(k: SourceKind) -> api::SourceKind {
+    match k {
+        SourceKind::Screen => api::SourceKind::Screen,
+        SourceKind::Window => api::SourceKind::Window,
+        SourceKind::Camera => api::SourceKind::Camera,
+        SourceKind::AudioInput => api::SourceKind::AudioInput,
+        SourceKind::SystemAudio => api::SourceKind::SystemAudio,
+        SourceKind::ApplicationAudio => api::SourceKind::ApplicationAudio,
+    }
+}
+
+fn app_kind(k: api::SourceKind) -> SourceKind {
+    match k {
+        api::SourceKind::Screen => SourceKind::Screen,
+        api::SourceKind::Window => SourceKind::Window,
+        api::SourceKind::Camera => SourceKind::Camera,
+        api::SourceKind::AudioInput => SourceKind::AudioInput,
+        api::SourceKind::SystemAudio => SourceKind::SystemAudio,
+        api::SourceKind::ApplicationAudio => SourceKind::ApplicationAudio,
+    }
+}
+
+fn api_source(row: &SourceRow) -> api::SourceInfo {
+    api::SourceInfo {
+        id: row.id.get(),
+        name: row.name.clone(),
+        kind: row.kind.map(api_kind),
+        status: match &row.status {
+            SourceStatus::Running => api::SourceStatus::Running,
+            SourceStatus::Idle => api::SourceStatus::Idle,
+            SourceStatus::Failed(why) => api::SourceStatus::Failed {
+                reason: why.clone(),
+            },
+        },
     }
 }
 

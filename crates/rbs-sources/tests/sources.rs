@@ -399,6 +399,133 @@ fn targets_list_every_capturable_thing_for_pickers() {
     ));
 }
 
+/// Lists no displays but picks them with an OS picker, like the PipeWire portal: the
+/// first pick returns a token id, later ones are cancelled.
+struct Picking {
+    inner: TestCaptureFactory,
+    picks: std::sync::atomic::AtomicU32,
+}
+
+impl rbs_core::registry::AdapterFactory for Picking {
+    fn id(&self) -> rbs_core::registry::AdapterId {
+        rbs_core::registry::AdapterId::new("org.example.picking")
+    }
+    fn display_name(&self) -> &str {
+        "Picking"
+    }
+    fn probe(&self) -> Result<rbs_core::capability::CapabilitySet, rbs_core::registry::ProbeError> {
+        let mut caps = self.inner.probe()?;
+        caps.insert(
+            rbs_capture::caps::TARGET_PICKER,
+            rbs_core::capability::CapabilityValue::Set(vec!["display".to_owned()]),
+        );
+        Ok(caps)
+    }
+}
+
+impl rbs_capture::CaptureFactory for Picking {
+    fn enumerate(
+        &self,
+        kind: rbs_capture::TargetKind,
+    ) -> Result<Vec<rbs_capture::CaptureTarget>, rbs_capture::CaptureError> {
+        match kind {
+            rbs_capture::TargetKind::Display => {
+                Err(rbs_capture::CaptureError::Unsupported("picker only"))
+            }
+            k => self.inner.enumerate(k),
+        }
+    }
+    fn open(
+        &self,
+        request: &rbs_capture::CaptureRequest,
+    ) -> Result<Box<dyn rbs_capture::CaptureSession>, rbs_capture::CaptureError> {
+        self.inner.open(request)
+    }
+    fn pick(
+        &self,
+        kind: rbs_capture::TargetKind,
+    ) -> Result<rbs_capture::CaptureTarget, rbs_capture::CaptureError> {
+        assert_eq!(kind, rbs_capture::TargetKind::Display);
+        if self
+            .picks
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+            > 0
+        {
+            return Err(rbs_capture::CaptureError::Cancelled);
+        }
+        Ok(rbs_capture::CaptureTarget::new(
+            rbs_capture::TargetId::new("portal:display:token-1"),
+            rbs_capture::TargetKind::Display,
+            "Picked display",
+        )
+        .with_size(2560, 1440))
+    }
+}
+
+#[test]
+fn pickers_choose_targets_that_no_adapter_lists() {
+    let (plain, _) = registry();
+    for t in [
+        types::DISPLAY_SOURCE,
+        types::CAMERA_SOURCE,
+        types::AUDIO_INPUT_SOURCE,
+    ] {
+        assert!(plain.pickers(&ty(t)).unwrap().is_empty(), "{t}");
+    }
+    assert!(matches!(
+        plain.pickers(&ty("org.example.plugin")),
+        Err(SourceError::UnknownType(_))
+    ));
+
+    let mut reg = SourceTypes::new();
+    reg.register_capture(Arc::new(Picking {
+        inner: TestCaptureFactory::new(),
+        picks: Default::default(),
+    }))
+    .unwrap();
+    reg.probe();
+    assert!(reg.is_installed(&ty(types::DISPLAY_SOURCE)));
+    assert!(reg.targets(&ty(types::DISPLAY_SOURCE)).unwrap().is_empty());
+    assert!(reg.pickers(&ty(types::CAMERA_SOURCE)).unwrap().is_empty());
+    let pickers = reg.pickers(&ty(types::DISPLAY_SOURCE)).unwrap();
+    assert_eq!(pickers.len(), 1);
+    assert_eq!(pickers[0].adapter().as_str(), "org.example.picking");
+    assert_eq!(pickers[0].adapter_name(), "Picking");
+
+    // A picker moves to another thread, as hosts do while the dialog is up.
+    let picker = pickers[0].clone();
+    let picked = std::thread::spawn(move || picker.pick())
+        .join()
+        .unwrap()
+        .unwrap();
+    assert_eq!(picked.adapter.as_str(), "org.example.picking");
+    assert_eq!(picked.target, "portal:display:token-1");
+    assert_eq!(picked.name, "Picked display");
+    assert_eq!(picked.size, Some((2560, 1440)));
+    assert!(!picked.is_default);
+    assert_eq!(
+        pickers[0].pick(),
+        Err(SourceError::Capture(rbs_capture::CaptureError::Cancelled))
+    );
+
+    // The picked target is stored like a listed one and goes to the picking adapter.
+    let display = video(
+        reg.instantiate(
+            &source(
+                types::DISPLAY_SOURCE,
+                settings(&[
+                    (keys::ADAPTER, text(picked.adapter.as_str())),
+                    (keys::TARGET, text(&picked.target)),
+                ]),
+            ),
+            &ctx(),
+        )
+        .unwrap(),
+    );
+    assert_eq!(display.adapter.as_str(), "org.example.picking");
+    assert_eq!(display.target.as_str(), "portal:display:token-1");
+}
+
 fn layout(x: f32, w: f32) -> Layout {
     Layout::new([x, 0.0], [w, 100.0])
 }
