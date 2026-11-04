@@ -180,6 +180,76 @@ fn sources_are_added_deleted_and_restored_through_the_host() {
 }
 
 #[test]
+fn sources_change_layer_order_and_box_through_the_host() {
+    let Some(gpu) = gpu() else { return };
+    let (host, rx) = host(gpu);
+    next(&rx, |u| match u {
+        Update::Started { .. } => Some(()),
+        Update::Failed(e) => panic!("{e}"),
+        _ => None,
+    });
+    let displays = targets(&host, &rx, SourceKind::Screen);
+    host.send(Command::AddSource {
+        kind: SourceKind::Screen,
+        target: displays[0].clone(),
+    });
+    rows_where(&rx, |r| r.len() == 1);
+    let cameras = targets(&host, &rx, SourceKind::Camera);
+    host.send(Command::AddSource {
+        kind: SourceKind::Camera,
+        target: cameras[0].clone(),
+    });
+    let rows = rows_where(&rx, |r| r.len() == 2);
+    // Top first: the camera was added last, so it is over the screen.
+    assert_eq!(rows[0].kind, Some(SourceKind::Camera));
+    let (camera, screen) = (rows[0].id, rows[1].id);
+    let camera_box = rows[0].layout.expect("a camera has a picture");
+
+    // Already the top layer: nothing to do, so no update; the down move answers.
+    host.send(Command::MoveSource {
+        id: camera,
+        up: true,
+    });
+    host.send(Command::MoveSource {
+        id: camera,
+        up: false,
+    });
+    let rows = rows_where(&rx, |r| r.len() == 2 && r[0].id == screen);
+    assert_eq!(rows[1].id, camera);
+    host.send(Command::MoveSource {
+        id: camera,
+        up: true,
+    });
+    rows_where(&rx, |r| r.len() == 2 && r[0].id == camera);
+
+    // A new box keeps the rest of the layout.
+    host.send(Command::SetSourceBox {
+        id: camera,
+        position: [10.0, 20.0],
+        size: [640.0, 360.0],
+    });
+    let rows = rows_where(&rx, |r| {
+        r[0].layout.is_some_and(|l| l.position == [10.0, 20.0])
+    });
+    let placed = rows[0].layout.unwrap();
+    assert_eq!(placed.size, [640.0, 360.0]);
+    assert_eq!(placed.rotation, camera_box.rotation);
+    assert_eq!(placed.opacity, camera_box.opacity);
+
+    // A zero size is refused and changes nothing.
+    host.send(Command::SetSourceBox {
+        id: camera,
+        position: [0.0, 0.0],
+        size: [0.0, 360.0],
+    });
+    next(&rx, |u| match u {
+        Update::Error(_) => Some(()),
+        Update::Sources(r) => panic!("refused box changed the rows: {r:?}"),
+        _ => None,
+    });
+}
+
+#[test]
 fn a_new_canvas_restarts_the_studio_with_the_sources() {
     let Some(gpu) = gpu() else { return };
     let (host, rx) = host(gpu);

@@ -40,7 +40,7 @@ use rbs_record::{
 use rbs_scene::SceneCollection;
 use rbs_scene::Undo;
 use rbs_scene::model::{
-    CanvasId, ItemContent, Layout, SceneId, SceneScope, SettingValue, Settings, SourceId,
+    CanvasId, ItemContent, Layout, SceneId, SceneItem, SceneScope, SettingValue, Settings, SourceId,
 };
 use rbs_sources::types::{self, keys};
 use rbs_sources::{SourceError, SourceTarget};
@@ -167,6 +167,8 @@ pub struct SourceRow {
     pub status: SourceStatus,
     /// Its level meter while it plays (audio sources).
     pub meter: Option<Arc<LevelMeter>>,
+    /// Where its picture is on the canvas (video sources); `None` for sound only.
+    pub layout: Option<Layout>,
 }
 
 impl PartialEq for SourceRow {
@@ -175,6 +177,7 @@ impl PartialEq for SourceRow {
             && self.name == other.name
             && self.kind == other.kind
             && self.status == other.status
+            && self.layout == other.layout
             && match (&self.meter, &other.meter) {
                 (Some(a), Some(b)) => Arc::ptr_eq(a, b),
                 (None, None) => true,
@@ -199,6 +202,25 @@ pub enum Command {
     DeleteSource(SourceId),
     /// Undo the last delete.
     UndoDelete,
+    /// Move a source one layer up (`up`, towards the top of the list, drawn over the
+    /// one above) or down in the program scene. Nothing happens at the end of the list.
+    MoveSource {
+        /// The source.
+        id: SourceId,
+        /// Up, else down.
+        up: bool,
+    },
+    /// Place a video source's picture: the box's top-left corner and size in canvas
+    /// pixels. Rotation, crop and opacity stay. A size of zero or a value that is not
+    /// finite is refused with [`Update::Error`].
+    SetSourceBox {
+        /// The source.
+        id: SourceId,
+        /// Top-left corner.
+        position: [f32; 2],
+        /// Width and height.
+        size: [f32; 2],
+    },
     /// Start recording the program ([`Update::Recording`] says how it went).
     StartRecording(RecordRequest),
     /// Stop the running recording; the file is complete when
@@ -888,6 +910,18 @@ impl Host {
                     }
                 }
             }
+            Command::MoveSource { id, up } => match self.move_source(id, up) {
+                Ok(true) => self.apply(notify),
+                Ok(false) => {}
+                Err(e) => notify(Update::Error(e)),
+            },
+            Command::SetSourceBox { id, position, size } => {
+                match self.set_source_box(id, position, size) {
+                    Ok(true) => self.apply(notify),
+                    Ok(false) => {}
+                    Err(e) => notify(Update::Error(e)),
+                }
+            }
             Command::StartRecording(r) => {
                 let update = match self.start_recording(&r, Some(API_PROFILE_ID.into())) {
                     Ok(update) => update,
@@ -1308,6 +1342,70 @@ impl Host {
         Ok(id)
     }
 
+    /// The program scene's item that places `id`, and its index (0 is the bottom).
+    fn item_of(&self, id: SourceId) -> Result<(usize, &SceneItem), String> {
+        let scene = self
+            .collection
+            .scene(self.scene)
+            .ok_or("the program scene is gone")?;
+        scene
+            .items
+            .iter()
+            .enumerate()
+            .find(|(_, i)| i.content == ItemContent::Source(id))
+            .ok_or_else(|| "This source is not in the scene any more.".to_owned())
+    }
+
+    /// One layer up or down; `Ok(false)` when it is already at that end.
+    fn move_source(&mut self, id: SourceId, up: bool) -> Result<bool, String> {
+        let (index, item) = self.item_of(id)?;
+        let item = item.id;
+        let count = self
+            .collection
+            .scene(self.scene)
+            .map_or(0, |s| s.items.len());
+        let to = match (up, index) {
+            (true, i) if i + 1 < count => i + 1,
+            (false, i) if i > 0 => i - 1,
+            _ => return Ok(false),
+        };
+        self.collection
+            .move_item(item, to)
+            .map(|_| true)
+            .map_err(|e| format!("{e:?}"))
+    }
+
+    /// A new box for a source's picture; `Ok(false)` when it is already there.
+    fn set_source_box(
+        &mut self,
+        id: SourceId,
+        position: [f32; 2],
+        size: [f32; 2],
+    ) -> Result<bool, String> {
+        let valid = position.iter().chain(size.iter()).all(|v| v.is_finite())
+            && size.iter().all(|v| *v != 0.0);
+        if !valid {
+            return Err("Position and size must be numbers, and the size cannot be 0.".into());
+        }
+        let (_, item) = self.item_of(id)?;
+        // The layout the canvas shows: its own if the item has one, else the default.
+        let mut layout = *item.layout_on(self.canvas);
+        let own = item
+            .overrides
+            .contains_key(&self.canvas)
+            .then_some(self.canvas);
+        if layout.position == position && layout.size == size {
+            return Ok(false);
+        }
+        layout.position = position;
+        layout.size = size;
+        let item = item.id;
+        self.collection
+            .set_item_layout(item, own, layout)
+            .map(|_| true)
+            .map_err(|e| format!("{e:?}"))
+    }
+
     /// Runs the edited collection.
     fn apply(&mut self, notify: &dyn Fn(Update)) {
         match self.studio.update(&self.collection, &self.adapters.sources) {
@@ -1348,10 +1446,11 @@ impl Host {
             .iter()
             .rev()
             .filter_map(|item| match item.content {
-                ItemContent::Source(id) => self.collection.source(id),
+                ItemContent::Source(id) => self.collection.source(id).map(|s| (s, item)),
                 _ => None,
             })
-            .map(|s| {
+            .map(|(s, item)| {
+                let kind = SourceKind::of(&s.type_id);
                 let state = states.iter().find(|st| st.name == s.name);
                 let status = match state {
                     None => SourceStatus::Idle,
@@ -1363,7 +1462,10 @@ impl Host {
                 SourceRow {
                     id: s.id,
                     name: s.name.clone(),
-                    kind: SourceKind::of(&s.type_id),
+                    kind,
+                    layout: kind
+                        .is_some_and(|k| !k.is_audio())
+                        .then(|| *item.layout_on(self.canvas)),
                     meter: matches!(status, SourceStatus::Running)
                         .then(|| self.studio.meter(s.id).cloned())
                         .flatten(),

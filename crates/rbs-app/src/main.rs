@@ -922,6 +922,20 @@ fn install_studio(g: &Studio<'_>, ctx: &Ctx) {
     on!(on_delete_source, |app, id: i32| {
         app.studio.delete_source(id);
     });
+    on!(on_select_source, |app, id: i32| {
+        app.studio.selected = id;
+    });
+    on!(on_move_source, |app, id: i32, up: bool| {
+        app.studio.move_source(id, up);
+    });
+    on!(on_set_source_box, |app,
+                            id: i32,
+                            x: f32,
+                            y: f32,
+                            w: f32,
+                            h: f32| {
+        app.studio.set_source_box(id, x, y, w, h);
+    });
     on!(on_undo_delete, |app| {
         app.studio.undo_delete();
     });

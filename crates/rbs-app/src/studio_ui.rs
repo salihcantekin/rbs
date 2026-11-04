@@ -63,6 +63,8 @@ pub struct StudioUi {
     pub failure: String,
     rows: Vec<SourceRow>,
     sources: Rc<VecModel<SourceData>>,
+    /// The selected source's id (-1 none), shown in every window's Properties.
+    pub selected: i32,
     kind_list: Vec<SourceKind>,
     kinds: Rc<VecModel<KindData>>,
     target_list: Vec<Target>,
@@ -166,6 +168,7 @@ impl StudioUi {
             failure: String::new(),
             rows: Vec::new(),
             sources: Rc::new(VecModel::default()),
+            selected: -1,
             kind_list: Vec::new(),
             kinds: Rc::new(VecModel::default()),
             target_list: Vec::new(),
@@ -230,6 +233,7 @@ impl StudioUi {
 
     /// Pushes the scalar state into a window's `Studio` global.
     pub fn push(&self, g: &Studio<'_>, preview_state: i32, picture_panel: &str) {
+        g.set_selected_source(self.selected);
         g.set_rec_state(self.rec_state);
         g.set_rec_file(
             self.rec_file
@@ -990,6 +994,23 @@ impl StudioUi {
         self.send(Command::DeleteSource(SourceId::from_raw(id as u32)));
     }
 
+    /// One layer up (drawn over the source above it in the list) or down.
+    pub fn move_source(&mut self, id: i32, up: bool) {
+        self.send(Command::MoveSource {
+            id: SourceId::from_raw(id as u32),
+            up,
+        });
+    }
+
+    /// A video source's box on the canvas, in canvas pixels.
+    pub fn set_source_box(&mut self, id: i32, x: f32, y: f32, w: f32, h: f32) {
+        self.send(Command::SetSourceBox {
+            id: SourceId::from_raw(id as u32),
+            position: [x, y],
+            size: [w, h],
+        });
+    }
+
     pub fn undo_delete(&mut self) {
         self.deleted.clear();
         self.send(Command::UndoDelete);
@@ -1457,15 +1478,32 @@ impl StudioUi {
                     SourceStatus::Idle => ("Not shown, closed".to_owned(), true),
                     SourceStatus::Failed(why) => (format!("Not running: {why}"), false),
                 };
+                let (x, y, w, h) = r.layout.map_or((0.0, 0.0, 0.0, 0.0), |l| {
+                    (l.position[0], l.position[1], l.size[0], l.size[1])
+                });
                 SourceData {
                     id: r.id.get() as i32,
                     name: r.name.as_str().into(),
                     kind: r.kind.map_or("Unknown type", SourceKind::label).into(),
                     status: status.into(),
                     ok,
+                    picture: r.layout.is_some(),
+                    x,
+                    y,
+                    w,
+                    h,
                 }
             })
             .collect();
+        // A source just added is selected, as the add-source flow ends (ui-design-system
+        // spec, "Add source"); a selected source that is gone is not.
+        let old: Vec<i32> = self.sources.iter().map(|d| d.id).collect();
+        let mut new = data.iter().filter(|d| !old.contains(&d.id));
+        if let (Some(added), None) = (new.next(), new.next()) {
+            self.selected = added.id;
+        } else if !data.iter().any(|d| d.id == self.selected) {
+            self.selected = -1;
+        }
         set_rows(&self.sources, data);
         // Meters: one per playing audio source, in list order; ballistics survive for
         // sources that stay.
