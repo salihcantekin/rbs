@@ -405,6 +405,14 @@ fn video_sequence(
         encoder
             .flush(&mut packets)
             .map_err(|e| format!("flush: {e}"))?;
+        // A second flush (the node's final tick, then `release`) has nothing left.
+        let flushed = packets.len();
+        encoder
+            .flush(&mut packets)
+            .map_err(|e| format!("second flush: {e}"))?;
+        if packets.len() != flushed {
+            return Err("a second flush produced packets".into());
+        }
         Ok(())
     });
     if let Err(e) = run {

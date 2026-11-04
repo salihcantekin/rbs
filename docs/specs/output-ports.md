@@ -100,6 +100,9 @@ pub trait VideoEncoder: Send {
     /// Apply a runtime change. Not hot, but must not block the caller for long.
     fn reconfigure(&mut self, change: &EncoderChange) -> Result<(), EncodeError>;
     /// Finish: encode all pending frames and move the remaining packets to `out`.
+    /// Waits only for frames already submitted; with nothing pending it returns at
+    /// once, and a second flush emits nothing (the encoder node flushes on its final
+    /// tick and again in `release`, ADR-0043).
     fn flush(&mut self, out: &mut Vec<EncodedPacket>) -> Result<(), EncodeError>;
 }
 

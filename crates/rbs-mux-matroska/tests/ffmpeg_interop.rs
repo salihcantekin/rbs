@@ -10,7 +10,8 @@ use std::process::Command;
 
 use rbs_core::media::{
     AudioFormat, BitstreamFormat, Bytes, ChunkKind, CodecId, ColorSpace, ContainerId,
-    EncodedPacket, PixelFormat, Size, StreamDescriptor, StreamIndex, StreamParams, VideoFormat,
+    EncodedPacket, MuxChunk, PixelFormat, Size, StreamDescriptor, StreamIndex, StreamParams,
+    VideoFormat,
 };
 use rbs_core::time::Timestamp;
 use rbs_core::timing::{Cadence, FrameRate, SampleRate};
@@ -25,6 +26,27 @@ fn ffmpeg(args: &[&str]) -> std::process::Output {
         .args(args)
         .output()
         .expect("ffmpeg is installed")
+}
+
+/// The byte stream without patches, as a live (non-seekable) output writes it.
+fn sequential_bytes(chunks: &[MuxChunk]) -> Vec<u8> {
+    chunks
+        .iter()
+        .filter(|c| c.is_sequential())
+        .flat_map(|c| c.data.iter().copied())
+        .collect()
+}
+
+/// The file a seekable output writes: the byte stream with the patches applied.
+fn file_bytes(chunks: &[MuxChunk]) -> Vec<u8> {
+    let mut bytes = sequential_bytes(chunks);
+    for c in chunks {
+        if let ChunkKind::Patch { offset } = c.kind {
+            let at = usize::try_from(offset).unwrap();
+            bytes[at..at + c.data.len()].copy_from_slice(&c.data);
+        }
+    }
+    bytes
 }
 
 /// Splits an Annex B stream with access unit delimiters into access units.
@@ -194,9 +216,32 @@ fn run(length_prefixed: bool) {
         .count();
     assert_eq!(keyframes, 4, "one cluster per GOP");
 
+    // A live output (no patches applied) decodes as well.
+    let live = dir.join("live.mkv");
+    std::fs::write(&live, sequential_bytes(&chunks)).unwrap();
+    let decoded = ffmpeg(&["-i", &path(&live), "-f", "null", "-"]);
+    assert!(decoded.status.success());
+    assert!(decoded.stderr.is_empty());
+
     let out = dir.join("out.mkv");
-    let bytes: Vec<u8> = chunks.iter().flat_map(|c| c.data.iter().copied()).collect();
-    std::fs::write(&out, bytes).unwrap();
+    std::fs::write(&out, file_bytes(&chunks)).unwrap();
+    // The patched Duration: 4 s from the first frame at 1 s, plus the last AAC frame's
+    // overhang past the last video frame (at most one 21 ms frame).
+    let probe = Command::new("ffprobe")
+        .args([
+            "-v",
+            "error",
+            "-show_entries",
+            "format=duration",
+            "-of",
+            "csv=p=0",
+        ])
+        .arg(&out)
+        .output()
+        .unwrap();
+    let text = String::from_utf8_lossy(&probe.stdout);
+    let duration: f64 = text.trim().parse().unwrap();
+    assert!((4.999..5.05).contains(&duration), "duration {duration}");
     let decoded = ffmpeg(&["-i", &path(&out), "-f", "null", "-"]);
     assert!(decoded.status.success());
     assert!(
@@ -345,8 +390,7 @@ fn ffmpeg_decodes_b_frames_in_presentation_order() {
     }
     muxer.finish(&mut chunks).unwrap();
     let out = dir.join("out.mkv");
-    let bytes: Vec<u8> = chunks.iter().flat_map(|c| c.data.iter().copied()).collect();
-    std::fs::write(&out, bytes).unwrap();
+    std::fs::write(&out, file_bytes(&chunks)).unwrap();
 
     let decoded = ffmpeg(&["-i", &path(&out), "-f", "null", "-"]);
     assert!(decoded.status.success());

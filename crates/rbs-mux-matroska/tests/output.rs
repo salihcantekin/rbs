@@ -224,6 +224,7 @@ fn clusters_start_at_keyframes_in_decode_order() {
     muxer.write(StreamIndex(0), &next_key, &mut chunks).unwrap();
     assert_eq!(chunks.len(), 2, "a video keyframe ends the cluster");
     muxer.finish(&mut chunks).unwrap();
+    chunks.retain(MuxChunk::is_sequential); // Clusters only, no patches.
     assert_eq!(chunks.len(), 3, "finish emits the last cluster, no trailer");
     assert!(chunks[1..].iter().all(is_key));
     assert_eq!(
@@ -268,6 +269,7 @@ fn block_timestamps_are_presentation_times() {
         muxer.write(StreamIndex(0), &p, &mut chunks).unwrap();
     }
     muxer.finish(&mut chunks).unwrap();
+    chunks.retain(MuxChunk::is_sequential); // Clusters only, no patches.
     let (base, blocks) = cluster(&chunks[1].data);
     assert_eq!(base, 1066, "the earliest pts");
     let rel: Vec<i16> = blocks.iter().map(|b| b.relative).collect();
@@ -292,6 +294,7 @@ fn long_gops_are_split_at_the_cluster_duration() {
             .unwrap();
     }
     muxer.finish(&mut chunks).unwrap();
+    chunks.retain(MuxChunk::is_sequential); // Clusters only, no patches.
     let keys: Vec<bool> = chunks[1..].iter().map(is_key).collect();
     assert_eq!(keys, [true, false, false]);
     let counts: Vec<usize> = chunks[1..]
@@ -317,6 +320,7 @@ fn streams_arriving_out_of_order_keep_their_timestamps() {
         muxer.write(StreamIndex(0), &p, &mut chunks).unwrap();
     }
     muxer.finish(&mut chunks).unwrap();
+    chunks.retain(MuxChunk::is_sequential); // Clusters only, no patches.
     assert_eq!(
         chunks[1].kind,
         ChunkKind::Media {
@@ -381,6 +385,7 @@ fn annexb_input_is_converted_and_bad_input_leaves_no_output() {
     let next = video(66, 66, true, vec![0, 0, 1, 0x65, 3], annexb);
     muxer.write(StreamIndex(0), &next, &mut chunks).unwrap();
     muxer.finish(&mut chunks).unwrap();
+    chunks.retain(MuxChunk::is_sequential); // Clusters only, no patches.
     let blocks: Vec<Vec<u8>> = chunks[1..]
         .iter()
         .flat_map(|c| cluster(&c.data).1)
@@ -408,6 +413,7 @@ fn audio_only_output_has_keyframe_clusters() {
             .unwrap();
     }
     muxer.finish(&mut chunks).unwrap();
+    chunks.retain(MuxChunk::is_sequential); // Clusters only, no patches.
     assert!(chunks.len() > 2, "clusters by duration");
     assert!(chunks[1..].iter().all(is_key));
     assert!(
@@ -539,6 +545,7 @@ fn a_lagging_stream_never_overflows_block_timestamps() {
         .write(StreamIndex(1), &audio(39_500), &mut chunks)
         .unwrap();
     muxer.finish(&mut chunks).unwrap();
+    chunks.retain(MuxChunk::is_sequential); // Clusters only, no patches.
     let times = block_times(&chunks);
     let video_times: Vec<i64> = times.iter().filter(|t| t.0 == 1).map(|t| t.1).collect();
     let expected: Vec<i64> = (0..1200i64).map(|i| 1000 + (i * 1000 / 30)).collect();
@@ -561,6 +568,7 @@ fn long_fragment_durations_are_capped_for_16_bit_block_times() {
         muxer.write(StreamIndex(0), &p, &mut chunks).unwrap();
     }
     muxer.finish(&mut chunks).unwrap();
+    chunks.retain(MuxChunk::is_sequential); // Clusters only, no patches.
     assert!(chunks.len() > 3, "a header and clusters of at most 20 s");
     // Time 0 is the capped lead (20 s) before the first dts, and pts are exact.
     let times: Vec<i64> = block_times(&chunks).iter().map(|t| t.1).collect();
@@ -581,6 +589,7 @@ fn clusters_end_at_the_block_limit() {
         muxer.write(StreamIndex(0), &audio(0), &mut chunks).unwrap();
     }
     muxer.finish(&mut chunks).unwrap();
+    chunks.retain(MuxChunk::is_sequential); // Clusters only, no patches.
     let counts: Vec<usize> = chunks[1..]
         .iter()
         .map(|c| cluster(&c.data).1.len())
@@ -599,4 +608,81 @@ fn length_prefixed_packets_without_slices_are_refused() {
         muxer.write(StreamIndex(0), &aud_only, &mut out),
         Err(MuxError::InvalidPacket(_))
     ));
+}
+
+/// Applies the patch chunks to the sequential bytes, as a seekable file would.
+fn file_bytes(chunks: &[MuxChunk]) -> Vec<u8> {
+    let mut bytes: Vec<u8> = chunks
+        .iter()
+        .filter(|c| c.is_sequential())
+        .flat_map(|c| c.data.iter().copied())
+        .collect();
+    for c in chunks {
+        if let ChunkKind::Patch { offset } = c.kind {
+            let at = offset as usize;
+            bytes[at..at + c.data.len()].copy_from_slice(&c.data);
+        }
+    }
+    bytes
+}
+
+#[test]
+fn finish_patches_the_duration_and_segment_size() {
+    let config = MuxerConfig::new(MKV, vec![h264_stream(), aac_stream()]);
+    let mut muxer = MatroskaMuxerFactory.create(&config).unwrap();
+    let mut chunks = Vec::new();
+    muxer.begin(&mut chunks).unwrap();
+    // Unpatched (live) header: a Void reserves the Duration's 11 bytes.
+    let live = parse(&chunks[0].data);
+    let info = live[1].child(0x1549_a966);
+    assert_eq!(info.child(0xec).data.len(), 9);
+    assert!(info.all(0x4489).next().is_none());
+
+    for (i, ms) in [0, 33, 66, 100].into_iter().enumerate() {
+        let data = if i == 0 {
+            vec![0, 0, 0, 2, 0x65, 9]
+        } else {
+            vec![0, 0, 0, 2, 0x41, 8]
+        };
+        let packet = video(ms, ms, i == 0, data, LP4);
+        muxer.write(StreamIndex(0), &packet, &mut chunks).unwrap();
+        muxer
+            .write(StreamIndex(1), &audio(ms), &mut chunks)
+            .unwrap();
+    }
+    muxer.finish(&mut chunks).unwrap();
+    let patches: Vec<&MuxChunk> = chunks.iter().filter(|c| !c.is_sequential()).collect();
+    assert_eq!(patches.len(), 2, "duration and segment size");
+    assert!(
+        chunks.last().is_some_and(|c| !c.is_sequential()),
+        "patches come last"
+    );
+
+    let bytes = file_bytes(&chunks);
+    let top = parse(&bytes);
+    let segment = &top[1];
+    assert_eq!(top.len(), 2, "the known Segment size covers every cluster");
+    let size_at = bytes.len() - segment.data.len() - 8;
+    assert_eq!(bytes[size_at], 0x01, "8-byte size");
+    assert_eq!(segment.all(CLUSTER).count(), 1);
+    let info = segment.child(0x1549_a966);
+    assert!(
+        info.all(0xec).next().is_none(),
+        "the Void became the Duration"
+    );
+    let duration = f64::from_bits(info.child(0x4489).uint());
+    // Time 0 is 1 s before the first dts; the last video frame (pts 100 ms) lasts one
+    // frame at 30 fps, longer than the last AAC frame (1024 samples at 48 kHz).
+    let expected = 1000.0 + 100.0 + 1000.0 / 30.0;
+    assert!((duration - expected).abs() < 0.001, "{duration} ms");
+}
+
+#[test]
+fn an_empty_recording_gets_no_patches() {
+    let config = MuxerConfig::new(MKV, vec![aac_stream()]);
+    let mut muxer = MatroskaMuxerFactory.create(&config).unwrap();
+    let mut chunks = Vec::new();
+    muxer.begin(&mut chunks).unwrap();
+    muxer.finish(&mut chunks).unwrap();
+    assert_eq!(chunks.len(), 1);
 }

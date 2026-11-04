@@ -456,7 +456,7 @@ pub(crate) fn run<X: Runtime>(
                         if newest > next {
                             stats.late.fetch_add(newest - next, Ordering::Relaxed);
                         }
-                        executor.run_tick(Tick::of(&cadence, newest));
+                        executor.run_tick(Tick::of(&cadence, newest).draining());
                         stats.ticks.fetch_add(1, Ordering::Relaxed);
                         next = newest.saturating_add(1);
                         signals.drained();
@@ -509,8 +509,9 @@ pub(crate) fn run<X: Runtime>(
                 }
             };
             stats.started_at(next);
-            let mut tick = |executor: &mut Executor<X>| {
-                executor.run_tick(Tick::new(next, clock.now()));
+            let mut tick = |executor: &mut Executor<X>, draining: bool| {
+                let t = Tick::new(next, clock.now());
+                executor.run_tick(if draining { t.draining() } else { t });
                 stats.ticks.fetch_add(1, Ordering::Relaxed);
                 next = next.saturating_add(1);
             };
@@ -520,18 +521,18 @@ pub(crate) fn run<X: Runtime>(
                         bell.wait(timer);
                         // Asked to drain or stop while waiting: handled above.
                         if signals.get() == mode::RUN {
-                            tick(&mut executor);
+                            tick(&mut executor, false);
                         }
                     }
                     mode::DRAIN => {
                         // Readers with packets left ring the doorbell again.
-                        tick(&mut executor);
+                        tick(&mut executor, true);
                         let mut ticks = 1;
                         while ticks < MAX_DRAIN_TICKS
                             && bell.wait(Duration::ZERO)
                             && signals.get() == mode::DRAIN
                         {
-                            tick(&mut executor);
+                            tick(&mut executor, true);
                             ticks += 1;
                         }
                         signals.drained();

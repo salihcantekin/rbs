@@ -615,11 +615,12 @@ impl StudioUi {
                 failure,
                 frames,
                 dropped,
+                flush_lost,
             } => {
                 self.rec_state = rec_state::OFF;
                 self.rec_file = None;
                 log(&format!(
-                    "recording stopped: {frames} frames, {dropped} dropped, failure: {failure:?}"
+                    "recording stopped: {frames} frames, {dropped} dropped, {flush_lost} packets lost in the encoder, failure: {failure:?}"
                 ));
                 match failure {
                     None => {

@@ -16,8 +16,12 @@
 //!   without lacing. A Cluster ends before each video keyframe, so Clusters start at
 //!   entry points (`keyframe` set), or once it spans `MuxerConfig::fragment_duration`
 //!   (1 s by default, at most 20 s), or at 1 GiB or 65 536 blocks. `finish` emits the
-//!   last Cluster; there are no Cues (a seek index) and no Segment size, as in any
-//!   live Matroska file.
+//!   last Cluster, then two `Patch` chunks (`mux.patches`): the Segment `Duration`
+//!   (latest pts plus duration of any block, from time 0), written over an 11-byte
+//!   `Void` the header reserves in `Info`, and the Segment size over its unknown
+//!   size. A block lasts the frame interval (video) or the AAC frame size
+//!   (audio). Outputs that cannot seek ignore patches and keep a
+//!   valid live file without a duration. There are no Cues (a seek index).
 //! - At most one video stream: a keyframe chunk must be an entry point for every
 //!   stream, which two independent GOP structures would rarely give.
 //! - A failed `write` emits nothing and changes nothing.
@@ -67,7 +71,8 @@ impl AdapterFactory for MatroskaMuxerFactory {
         Ok(CapabilitySet::new()
             .with(caps::CONTAINER, set(&[ContainerId::Matroska.as_str()]))
             .with(caps::CODECS, set(&["h264", "aac"]))
-            .with(caps::LIVE, CapabilityValue::Flag(true)))
+            .with(caps::LIVE, CapabilityValue::Flag(true))
+            .with(caps::PATCHES, CapabilityValue::Flag(true)))
     }
 }
 
