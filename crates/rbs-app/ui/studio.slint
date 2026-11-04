@@ -16,6 +16,21 @@ export struct MeterRow {
     peak: float, peak-zone: int, clipped: bool, value: string,
 }
 export struct ScaleMark { label: string, at: float }
+// The encoder fields of one output (a recording or a stream): the options offered and
+// the one in use (rbs_app::encoder_form). `rate-kind`: 0 CBR, 1 VBR, 2 constant quality.
+export struct EncoderData {
+    encoders: [string], encoder: int,
+    video-rates: [string], video-rate: int,
+    audio-rates: [string], audio-rate: int,
+    rate-modes: [string], rate-mode: int, rate-kind: int, bitrate-label: string,
+    peaks: [string], peak: int,
+    qualities: [string], quality: int,
+    padding: bool, padding-available: bool,
+    keyframes: [string], keyframe: int,
+    presets: [string], preset: int,
+    profiles: [string], profile: int,
+    b-frames: [string], b-frame: int, b-frames-note: string,
+}
 // One access token in the Remote control section: its name and what it allows.
 export struct TokenRow { name: string, access: string }
 
@@ -70,53 +85,57 @@ export global Studio {
     in-out property <int> out-folder-serial;
     in property <[string]> out-formats;
     in property <int> out-format;
-    in property <[string]> out-encoders;
-    in property <int> out-encoder;
-    in property <[string]> out-video-rates;
-    in property <int> out-video-rate;
-    in property <[string]> out-audio-rates;
-    in property <int> out-audio-rate;
-    // The video encoder's quality settings: only what the picked encoder can do.
-    in property <[string]> out-rate-modes;
-    in property <int> out-rate-mode;
-    // 0 CBR, 1 VBR, 2 constant quality (the shown fields follow it).
-    in property <int> out-rate-kind;
-    in property <string> out-bitrate-label;
-    in property <[string]> out-peaks;
-    in property <int> out-peak;
-    in property <[string]> out-qualities;
-    in property <int> out-quality;
-    in property <bool> out-padding;
-    in property <bool> out-padding-available;
-    in property <[string]> out-keyframes;
-    in property <int> out-keyframe;
-    in property <[string]> out-presets;
-    in property <int> out-preset;
-    in property <[string]> out-profiles;
-    in property <int> out-profile;
-    in property <[string]> out-b-frames;
-    in property <int> out-b-frame;
-    // Why B-frames cannot be changed; empty when they can.
-    in property <string> out-b-frames-note;
+    // The recording's encoder fields.
+    in property <EncoderData> out-enc;
     // A problem with the settings or their file; empty when none.
     in property <string> out-note;
     callback set-folder(string);
     callback set-format(int);
-    callback set-encoder(int);
-    callback set-video-rate(int);
-    callback set-audio-rate(int);
-    callback set-rate-mode(int);
-    callback set-peak(int);
-    callback set-quality(int);
-    callback set-padding(bool);
-    callback set-keyframe(int);
-    callback set-preset(int);
-    callback set-profile(int);
-    callback set-b-frames(int);
+    // An encoder field of an output (0 recording, 1 stream) was picked: `field` is an
+    // `EncoderFields` code, `value` the picked index (padding: 0 off, 1 on).
+    callback set-encoding(int /* output */, int /* field */, int /* value */);
     // One line: format, encoder, bitrates and folder of the next recording.
     in property <string> out-summary;
     // Opens the Settings window at its Recording section.
     callback open-settings();
+
+    // Streaming (Live controls, Settings > Stream): 0 off, 1 starting, 2 live, 3 ending.
+    in property <int> st-state;
+    // Live and connected: the program reaches the server.
+    in property <bool> st-connected;
+    // The stream's state or last outcome in words, for Live controls; `st-bad` marks a
+    // problem.
+    in property <string> st-text;
+    in property <bool> st-bad;
+    // No server or stream key yet: Live controls offer "Stream settings".
+    in property <bool> st-needs-setup;
+    callback go-live();
+    callback end-stream();
+    // Opens the Settings window at its Stream section.
+    callback open-stream-settings();
+    // Stream settings: the server URL field's text, bumped serial when Rust sets it.
+    in property <string> st-server;
+    in property <int> st-server-serial;
+    // Whether a key is saved, and where keys are kept (the hint).
+    in property <bool> st-key-saved;
+    in property <string> st-key-place;
+    // Bumped when a key was saved or removed: the key field is emptied.
+    in property <int> st-key-serial;
+    in property <bool> st-reconnect;
+    // The server is srt://: the latency field shows.
+    in property <bool> st-srt;
+    in property <[string]> st-latencies;
+    in property <int> st-latency;
+    in property <EncoderData> st-enc;
+    // A problem with the stream settings, the key or their file; empty when none.
+    in property <string> st-note;
+    // One line: protocol, server, encoder and bitrates of the next stream.
+    in property <string> st-summary;
+    callback set-server(string);
+    callback save-key(string);
+    callback remove-key();
+    callback set-reconnect(bool);
+    callback set-latency(int);
 
     // The canvas (Settings, Video): sizes and rates offered, the ones in use.
     in property <[string]> canvas-sizes;
@@ -458,23 +477,90 @@ export component MixerPanel inherits Rectangle {
     }
 }
 
-// Live controls: Record and Stop recording (Go live comes with streaming outputs).
+// Live controls: Go live and End stream, Record and Stop recording. One output runs at a
+// time until several run per canvas. End stream asks first (U4: it cannot be undone).
 export component LiveControlsPanel inherits Rectangle {
     background: Theme.surface-raised;
     property <bool> recording: Studio.rec-state == 2;
+    property <bool> live: Studio.st-state == 2;
+    // "End stream" was pressed: the question shows until answered.
+    property <bool> confirming: false;
+    changed live => { if !live { confirming = false; } }
     VerticalLayout {
         padding: Tokens.space-3;
         spacing: Tokens.space-2;
         alignment: start;
         HorizontalLayout {
+            spacing: Tokens.space-2;
             alignment: start;
             Button {
+                text: live ? @tr("End stream") : @tr("Go live");
+                kind: live ? "live" : "primary";
+                enabled: Studio.state == 1 && !confirming
+                    && (live || (Studio.st-state == 0 && Studio.rec-state == 0 && Studio.rec-unavailable == ""));
+                clicked => {
+                    if live { confirming = true; } else { Studio.go-live(); }
+                }
+            }
+            Button {
                 text: recording ? @tr("Stop recording") : @tr("Record");
-                kind: recording ? "live" : "primary";
-                enabled: Studio.state == 1 && Studio.rec-unavailable == "" && (Studio.rec-state == 0 || recording);
+                kind: recording ? "live" : "secondary";
+                enabled: Studio.state == 1 && Studio.rec-unavailable == ""
+                    && (recording || (Studio.rec-state == 0 && Studio.st-state == 0));
                 clicked => {
                     if recording { Studio.stop-recording(); } else { Studio.record(); }
                 }
+            }
+        }
+        if confirming: Rectangle {
+            border-width: Tokens.size-border;
+            border-color: Theme.border-strong;
+            border-radius: Tokens.radius-sm;
+            accessible-role: groupbox;
+            accessible-label: @tr("End the stream?");
+            // Keep streaming, the safe answer, has the focus.
+            init => { keep.focus(); }
+            VerticalLayout {
+                padding: Tokens.space-2;
+                spacing: Tokens.space-2;
+                Text {
+                    text: @tr("End the stream? Viewers see it end.");
+                    color: Theme.text-primary;
+                    font-size: Tokens.type-body-size;
+                    wrap: word-wrap;
+                }
+                HorizontalLayout {
+                    spacing: Tokens.space-2;
+                    alignment: start;
+                    // Its own name, so assistive technology never confuses it with
+                    // the (disabled) End stream button above.
+                    Button {
+                        text: @tr("Yes, end the stream");
+                        kind: "live";
+                        clicked => {
+                            confirming = false;
+                            Studio.end-stream();
+                        }
+                    }
+                    keep := Button {
+                        text: @tr("Keep streaming");
+                        clicked => { confirming = false; }
+                    }
+                }
+            }
+        }
+        if Studio.st-text != "": Text {
+            // The stream's state in words (U4, U9); the live indicator shows it too.
+            text: Studio.st-text;
+            color: Studio.st-bad ? Theme.state-error : Theme.text-secondary;
+            font-size: Tokens.type-body-size;
+            wrap: word-wrap;
+        }
+        if Studio.st-needs-setup && Studio.st-state == 0: HorizontalLayout {
+            alignment: start;
+            Button {
+                text: @tr("Stream settings");
+                clicked => { Studio.open-stream-settings(); }
             }
         }
         Text {
@@ -483,8 +569,9 @@ export component LiveControlsPanel inherits Rectangle {
                 : Studio.rec-state == 2 ? @tr("Recording to {}", Studio.rec-file)
                 : Studio.rec-state == 3 ? @tr("Stopping the recording and closing the file…")
                 : Studio.rec-unavailable != "" ? Studio.rec-unavailable
+                : Studio.st-state != 0 ? @tr("End the stream to record.")
                 : Studio.rec-note;
-            color: Studio.rec-state == 0 && (Studio.rec-unavailable != "" || Studio.rec-note-bad) ? Theme.state-error : Theme.text-secondary;
+            color: Studio.rec-state == 0 && Studio.st-state == 0 && (Studio.rec-unavailable != "" || Studio.rec-note-bad) ? Theme.state-error : Theme.text-secondary;
             font-size: Tokens.type-body-size;
             wrap: word-wrap;
         }
@@ -533,15 +620,197 @@ component Field inherits VerticalLayout {
     @children
 }
 
+// The encoder fields of one output, shared by the Recording and Stream sections: the
+// video encoder, its bitrate or quality level, the audio bitrate and, behind "Show
+// advanced settings" (U2), every other setting that changes the output's quality.
+// `set(field, value)` reports a pick; field codes (rbs-app `studio_ui::enc_field`):
+// 0 encoder, 1 video bitrate, 2 audio bitrate, 3 rate control, 4 maximum bitrate,
+// 5 quality level, 6 padding (value 0 or 1), 7 keyframe interval, 8 preset, 9 profile,
+// 10 B-frames.
+component EncoderFields inherits VerticalLayout {
+    in property <EncoderData> data;
+    // Not while the output runs.
+    in property <bool> idle;
+    // A stream: the hints speak of the stream instead of files.
+    in property <bool> stream;
+    callback set(int /* field */, int /* value */);
+    // Advanced settings (U2): shown with the toggle below, in the same place.
+    property <bool> advanced: false;
+    out property <bool> menu-open: encoder.open || video.open || audio.open || quality.open
+        || mode.open || peak.open || keyframe.open || profile.open || bframes.open;
+    spacing: Tokens.space-3;
+    Field {
+        label: @tr("Video encoder");
+        encoder := Select {
+            label: @tr("Video encoder");
+            options: root.data.encoders;
+            index: root.data.encoder;
+            enabled: root.idle;
+            selected(i) => { root.set(0, i); }
+        }
+    }
+    // The bitrate (CBR, VBR) or the quality level (constant quality): one slot.
+    VerticalLayout {
+        Shown {
+            shown: root.data.rate-kind != 2;
+            Field {
+                label: root.data.bitrate-label;
+                video := Select {
+                    label: root.data.bitrate-label;
+                    options: root.data.video-rates;
+                    index: root.data.video-rate;
+                    enabled: root.idle && root.data.rate-kind != 2;
+                    selected(i) => { root.set(1, i); }
+                }
+            }
+        }
+        Shown {
+            shown: root.data.rate-kind == 2;
+            Field {
+                label: @tr("Quality level");
+                quality := Select {
+                    label: @tr("Quality level");
+                    options: root.data.qualities;
+                    index: root.data.quality;
+                    enabled: root.idle && root.data.rate-kind == 2;
+                    selected(i) => { root.set(5, i); }
+                }
+                Hint { text: @tr("Lower is better quality and larger files."); }
+            }
+        }
+    }
+    Field {
+        label: @tr("Audio bitrate");
+        audio := Select {
+            label: @tr("Audio bitrate");
+            options: root.data.audio-rates;
+            index: root.data.audio-rate;
+            enabled: root.idle;
+            selected(i) => { root.set(2, i); }
+        }
+    }
+    HorizontalLayout {
+        alignment: start;
+        Button {
+            text: root.advanced ? @tr("Hide advanced settings") : @tr("Show advanced settings");
+            kind: "secondary";
+            // The text says the state; the chevron shows only while closed.
+            icon: root.advanced ? IconName.none : IconName.chevron-down;
+            clicked => { root.advanced = !root.advanced; }
+        }
+    }
+    // Advanced: every other setting that changes the output's quality.
+    Shown {
+        shown: root.advanced;
+        gap: Tokens.space-3;
+        // The rate control and the one setting that belongs to its mode.
+        VerticalLayout {
+            Field {
+                label: @tr("Rate control");
+                mode := Select {
+                    label: @tr("Rate control");
+                    options: root.data.rate-modes;
+                    index: root.data.rate-mode;
+                    enabled: root.idle && root.advanced;
+                    selected(i) => { root.set(3, i); }
+                }
+                Hint {
+                    text: root.data.rate-kind == 0 ? @tr("CBR: the same bitrate all the time. The default.")
+                        : root.data.rate-kind == 1 ? @tr("VBR: the bitrate follows the picture, up to the maximum. CBR is the default.")
+                        : @tr("Constant quality: the same quality all the time; file size varies. CBR is the default.");
+                }
+            }
+            Shown {
+                shown: root.data.rate-kind == 1;
+                lead: Tokens.space-3;
+                Field {
+                    label: @tr("Maximum bitrate");
+                    peak := Select {
+                        label: @tr("Maximum bitrate");
+                        options: root.data.peaks;
+                        index: root.data.peak;
+                        enabled: root.idle && root.advanced && root.data.rate-kind == 1;
+                        selected(i) => { root.set(4, i); }
+                    }
+                    Hint { text: @tr("The most VBR may use for a moment. Automatic is 1.5 x the target bitrate."); }
+                }
+            }
+            Shown {
+                shown: root.data.rate-kind == 0;
+                lead: Tokens.space-3;
+                Checkbox {
+                    text: @tr("Pad to the full bitrate");
+                    checked: root.data.padding;
+                    enabled: root.idle && root.advanced && root.data.rate-kind == 0 && root.data.padding-available;
+                    toggled(on) => { root.set(6, on ? 1 : 0); }
+                }
+                Hint {
+                    text: root.data.padding-available
+                        ? @tr("Adds filler data so a still picture still uses the whole bitrate. Off by default.")
+                        : @tr("This encoder cannot pad the bitrate.");
+                }
+            }
+        }
+        Field {
+            label: @tr("Keyframe interval");
+            keyframe := Select {
+                label: @tr("Keyframe interval");
+                options: root.data.keyframes;
+                index: root.data.keyframe;
+                enabled: root.idle && root.advanced;
+                selected(i) => { root.set(7, i); }
+            }
+            Hint {
+                text: root.stream
+                    ? @tr("How often a full picture is sent. Most streaming services require 2 s, the default.")
+                    : @tr("How often a full picture is stored. Shorter makes seeking faster and files larger.");
+            }
+        }
+        Field {
+            label: @tr("Encoder preset");
+            SegmentedControl {
+                label: @tr("Encoder preset");
+                options: root.data.presets;
+                index: root.data.preset;
+                enabled: root.idle && root.advanced;
+                selected(i) => { root.set(8, i); }
+            }
+            Hint { text: @tr("Quality uses more of the GPU's encoder; Speed uses less. Balanced is the default."); }
+        }
+        Field {
+            label: @tr("Profile");
+            profile := Select {
+                label: @tr("Profile");
+                options: root.data.profiles;
+                index: root.data.profile;
+                enabled: root.idle && root.advanced;
+                selected(i) => { root.set(9, i); }
+            }
+            Hint { text: @tr("Automatic lets the encoder pick, the default. Baseline plays on the oldest devices."); }
+        }
+        Field {
+            label: @tr("B-frames");
+            bframes := Select {
+                label: @tr("B-frames");
+                options: root.data.b-frames;
+                index: root.data.b-frame;
+                enabled: root.idle && root.advanced && root.data.b-frames-note == "";
+                selected(i) => { root.set(10, i); }
+            }
+            Hint {
+                text: root.data.b-frames-note != "" ? root.data.b-frames-note
+                    : @tr("More B-frames save bits and add a little delay. 0 is the default.");
+            }
+        }
+    }
+}
+
 // The recording's settings (glossary: output profile): the Recording section of the
 // Settings window (U17). They apply to the next recording and are saved at once. The
 // owner counts `menu-open` as an overlay where a preview layer is shown.
 export component RecordingSettings inherits Rectangle {
     property <bool> idle: Studio.rec-state == 0;
-    // Advanced settings (U2): shown with the toggle below, in the same place.
-    property <bool> advanced: false;
-    out property <bool> menu-open: encoder.open || video.open || audio.open || quality.open
-        || mode.open || peak.open || keyframe.open || profile.open || bframes.open;
+    out property <bool> menu-open: fields.menu-open;
     form := VerticalLayout {
         spacing: Tokens.space-3;
         alignment: start;
@@ -570,165 +839,10 @@ export component RecordingSettings inherits Rectangle {
                 selected(i) => { Studio.set-format(i); }
             }
         }
-        Field {
-            label: @tr("Video encoder");
-            encoder := Select {
-                label: @tr("Video encoder");
-                options: Studio.out-encoders;
-                index: Studio.out-encoder;
-                enabled: idle;
-                selected(i) => { Studio.set-encoder(i); }
-            }
-        }
-        // The bitrate (CBR, VBR) or the quality level (constant quality): one slot.
-        VerticalLayout {
-            Shown {
-                shown: Studio.out-rate-kind != 2;
-                Field {
-                    label: Studio.out-bitrate-label;
-                    video := Select {
-                        label: Studio.out-bitrate-label;
-                        options: Studio.out-video-rates;
-                        index: Studio.out-video-rate;
-                        enabled: idle && Studio.out-rate-kind != 2;
-                        selected(i) => { Studio.set-video-rate(i); }
-                    }
-                }
-            }
-            Shown {
-                shown: Studio.out-rate-kind == 2;
-                Field {
-                    label: @tr("Quality level");
-                    quality := Select {
-                        label: @tr("Quality level");
-                        options: Studio.out-qualities;
-                        index: Studio.out-quality;
-                        enabled: idle && Studio.out-rate-kind == 2;
-                        selected(i) => { Studio.set-quality(i); }
-                    }
-                    Hint { text: @tr("Lower is better quality and larger files."); }
-                }
-            }
-        }
-        Field {
-            label: @tr("Audio bitrate");
-            audio := Select {
-                label: @tr("Audio bitrate");
-                options: Studio.out-audio-rates;
-                index: Studio.out-audio-rate;
-                enabled: idle;
-                selected(i) => { Studio.set-audio-rate(i); }
-            }
-        }
-        HorizontalLayout {
-            alignment: start;
-            Button {
-                text: root.advanced ? @tr("Hide advanced settings") : @tr("Show advanced settings");
-                kind: "secondary";
-                // The text says the state; the chevron shows only while closed.
-                icon: root.advanced ? IconName.none : IconName.chevron-down;
-                clicked => { root.advanced = !root.advanced; }
-            }
-        }
-        // Advanced: every other setting that changes the recording's quality.
-        Shown {
-            shown: root.advanced;
-            gap: Tokens.space-3;
-            // The rate control and the one setting that belongs to its mode.
-            VerticalLayout {
-                Field {
-                    label: @tr("Rate control");
-                    mode := Select {
-                        label: @tr("Rate control");
-                        options: Studio.out-rate-modes;
-                        index: Studio.out-rate-mode;
-                        enabled: idle && root.advanced;
-                        selected(i) => { Studio.set-rate-mode(i); }
-                    }
-                    Hint {
-                        text: Studio.out-rate-kind == 0 ? @tr("CBR: the same bitrate all the time. The default.")
-                            : Studio.out-rate-kind == 1 ? @tr("VBR: the bitrate follows the picture, up to the maximum. CBR is the default.")
-                            : @tr("Constant quality: the same quality all the time; file size varies. CBR is the default.");
-                    }
-                }
-                Shown {
-                    shown: Studio.out-rate-kind == 1;
-                    lead: Tokens.space-3;
-                    Field {
-                        label: @tr("Maximum bitrate");
-                        peak := Select {
-                            label: @tr("Maximum bitrate");
-                            options: Studio.out-peaks;
-                            index: Studio.out-peak;
-                            enabled: idle && root.advanced && Studio.out-rate-kind == 1;
-                            selected(i) => { Studio.set-peak(i); }
-                        }
-                        Hint { text: @tr("The most VBR may use for a moment. Automatic is 1.5 x the target bitrate."); }
-                    }
-                }
-                Shown {
-                    shown: Studio.out-rate-kind == 0;
-                    lead: Tokens.space-3;
-                    Checkbox {
-                        text: @tr("Pad to the full bitrate");
-                        checked: Studio.out-padding;
-                        enabled: idle && root.advanced && Studio.out-rate-kind == 0 && Studio.out-padding-available;
-                        toggled(on) => { Studio.set-padding(on); }
-                    }
-                    Hint {
-                        text: Studio.out-padding-available
-                            ? @tr("Adds filler data so a still picture still uses the whole bitrate. Off by default.")
-                            : @tr("This encoder cannot pad the bitrate.");
-                    }
-                }
-            }
-            Field {
-                label: @tr("Keyframe interval");
-                keyframe := Select {
-                    label: @tr("Keyframe interval");
-                    options: Studio.out-keyframes;
-                    index: Studio.out-keyframe;
-                    enabled: idle && root.advanced;
-                    selected(i) => { Studio.set-keyframe(i); }
-                }
-                Hint { text: @tr("How often a full picture is stored. Shorter makes seeking faster and files larger."); }
-            }
-            Field {
-                label: @tr("Encoder preset");
-                SegmentedControl {
-                    label: @tr("Encoder preset");
-                    options: Studio.out-presets;
-                    index: Studio.out-preset;
-                    enabled: idle && root.advanced;
-                    selected(i) => { Studio.set-preset(i); }
-                }
-                Hint { text: @tr("Quality uses more of the GPU's encoder; Speed uses less. Balanced is the default."); }
-            }
-            Field {
-                label: @tr("Profile");
-                profile := Select {
-                    label: @tr("Profile");
-                    options: Studio.out-profiles;
-                    index: Studio.out-profile;
-                    enabled: idle && root.advanced;
-                    selected(i) => { Studio.set-profile(i); }
-                }
-                Hint { text: @tr("Automatic lets the encoder pick, the default. Baseline plays on the oldest devices."); }
-            }
-            Field {
-                label: @tr("B-frames");
-                bframes := Select {
-                    label: @tr("B-frames");
-                    options: Studio.out-b-frames;
-                    index: Studio.out-b-frame;
-                    enabled: idle && root.advanced && Studio.out-b-frames-note == "";
-                    selected(i) => { Studio.set-b-frames(i); }
-                }
-                Hint {
-                    text: Studio.out-b-frames-note != "" ? Studio.out-b-frames-note
-                        : @tr("More B-frames save bits and add a little delay. 0 is the default.");
-                }
-            }
+        fields := EncoderFields {
+            data: Studio.out-enc;
+            idle: idle;
+            set(field, value) => { Studio.set-encoding(0, field, value); }
         }
         if Studio.out-note != "": Text {
             text: Studio.out-note;
@@ -744,16 +858,122 @@ export component RecordingSettings inherits Rectangle {
     changed folder-serial => { folder.text = Studio.out-folder; }
 }
 
+// Where Go live sends the program and how it is encoded: the Stream section of the
+// Settings window (U17). Changes apply to the next stream and are saved at once. The
+// stream key is never shown: it goes to the system's credential store.
+export component StreamSettings inherits Rectangle {
+    property <bool> idle: Studio.st-state == 0;
+    out property <bool> menu-open: fields.menu-open || latency.open;
+    form := VerticalLayout {
+        spacing: Tokens.space-3;
+        alignment: start;
+        if !idle: Text {
+            text: @tr("Changes apply to the next stream.");
+            color: Theme.text-secondary;
+            font-size: Tokens.type-body-size;
+            wrap: word-wrap;
+        }
+        Field {
+            label: @tr("Server");
+            server := TextField {
+                label: @tr("Server");
+                text: Studio.st-server;
+                enabled: idle;
+                accepted(t) => { Studio.set-server(t); }
+            }
+            Hint { text: @tr("The address your streaming service gives you, starting with rtmp:// or srt://."); }
+        }
+        Field {
+            label: @tr("Stream key");
+            key := TextField {
+                label: @tr("Stream key");
+                password: true;
+                enabled: idle;
+                accepted(t) => { Studio.save-key(t); }
+            }
+            Hint { text: Studio.st-key-place; }
+            HorizontalLayout {
+                spacing: Tokens.space-2;
+                alignment: start;
+                Text {
+                    text: Studio.st-key-saved ? @tr("A stream key is saved.") : @tr("No stream key yet.");
+                    color: Theme.text-secondary;
+                    font-size: Tokens.type-body-size;
+                    vertical-alignment: center;
+                }
+                Button {
+                    text: @tr("Save key");
+                    kind: "secondary";
+                    enabled: idle && key.text != "";
+                    clicked => { Studio.save-key(key.text); }
+                }
+                if Studio.st-key-saved: Button {
+                    text: @tr("Remove key");
+                    kind: "ghost";
+                    enabled: idle;
+                    clicked => { Studio.remove-key(); }
+                }
+            }
+        }
+        VerticalLayout {
+            spacing: Tokens.space-1;
+            Checkbox {
+                text: @tr("Reconnect when the connection drops");
+                checked: Studio.st-reconnect;
+                enabled: idle;
+                toggled(on) => { Studio.set-reconnect(on); }
+            }
+            Hint { text: @tr("Tries up to 10 times, waiting longer each time. On by default."); }
+        }
+        Shown {
+            shown: Studio.st-srt;
+            Field {
+                label: @tr("SRT latency");
+                latency := Select {
+                    label: @tr("SRT latency");
+                    options: Studio.st-latencies;
+                    index: Studio.st-latency;
+                    enabled: idle && Studio.st-srt;
+                    selected(i) => { Studio.set-latency(i); }
+                }
+                Hint { text: @tr("More latency survives a worse network; viewers see the picture a little later."); }
+            }
+        }
+        fields := EncoderFields {
+            data: Studio.st-enc;
+            idle: idle;
+            stream: true;
+            set(field, value) => { Studio.set-encoding(1, field, value); }
+        }
+        if Studio.st-note != "": Text {
+            text: Studio.st-note;
+            color: Theme.state-error;
+            font-size: Tokens.type-body-size;
+            wrap: word-wrap;
+        }
+    }
+    preferred-height: form.preferred-height;
+    min-height: form.min-height;
+    // The fields show what Rust set last; typing is never overwritten by a sync.
+    property <int> server-serial: Studio.st-server-serial;
+    changed server-serial => { server.text = Studio.st-server; }
+    // A key was saved or removed: the field is emptied (the key is never shown).
+    property <int> key-serial: Studio.st-key-serial;
+    changed key-serial => { key.text = ""; }
+}
+
 // The canvas's size and frame rate: the Video section of the Settings window (U17).
 // A change restarts the studio with the new canvas; not while recording.
 export component VideoSettings inherits Rectangle {
-    property <bool> can-change: Studio.state == 1 && Studio.rec-state == 0 && !Studio.canvas-restarting;
+    property <bool> can-change: Studio.state == 1 && Studio.rec-state == 0 && Studio.st-state == 0 && !Studio.canvas-restarting;
     form := VerticalLayout {
         spacing: Tokens.space-3;
         alignment: start;
         Text {
             text: Studio.rec-state != 0
                 ? @tr("Stop the recording to change the canvas.")
+                : Studio.st-state != 0
+                ? @tr("End the stream to change the canvas.")
                 : Studio.canvas-restarting
                 ? @tr("The studio is restarting with the new canvas.")
                 : @tr("A change restarts the studio: the picture stops for a moment.");
@@ -1178,12 +1398,38 @@ export component OutputsPanel inherits Rectangle {
                     }
                 }
             }
+            Rectangle {
+                accessible-role: list-item;
+                accessible-label: @tr("Stream, {}", stream-summary.text);
+                VerticalLayout {
+                    padding-top: Tokens.space-2;
+                    spacing: Tokens.space-1;
+                    Text {
+                        text: Studio.st-connected ? @tr("Stream · live now")
+                            : Studio.st-state != 0 ? @tr("Stream · connecting") : @tr("Stream");
+                        color: Theme.text-primary;
+                        font-size: Tokens.type-label-size;
+                        font-weight: Tokens.type-label-weight;
+                    }
+                    stream-summary := Text {
+                        text: Studio.st-summary;
+                        color: Theme.text-secondary;
+                        font-size: Tokens.type-caption-size;
+                        wrap: word-wrap;
+                    }
+                }
+            }
             HorizontalLayout {
                 padding-top: Tokens.space-1;
+                spacing: Tokens.space-2;
                 alignment: start;
                 Button {
                     text: @tr("Recording settings");
                     clicked => { Studio.open-settings(); }
+                }
+                Button {
+                    text: @tr("Stream settings");
+                    clicked => { Studio.open-stream-settings(); }
                 }
             }
         }

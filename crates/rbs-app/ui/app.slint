@@ -3,9 +3,9 @@
 // layout tree into tab stacks and splitter handles with absolute positions.
 import { Theme, Tokens } from "tokens.slint";
 import { Button, IconButton, Icon, IconName, MenuItem, MenuSurface, EmptyState } from "components.slint";
-import { Studio, SourceData, KindData, TargetData, MeterRow, ScaleMark, ProgramPanel, SourcesPanel, MixerPanel, LiveControlsPanel, OutputsPanel, RecordingSettings, VideoSettings, RemoteControlSettings } from "studio.slint";
+import { Studio, SourceData, KindData, TargetData, MeterRow, ScaleMark, EncoderData, ProgramPanel, SourcesPanel, MixerPanel, LiveControlsPanel, OutputsPanel, RecordingSettings, StreamSettings, VideoSettings, RemoteControlSettings } from "studio.slint";
 
-export { Theme, Tokens, Studio, SourceData, KindData, TargetData, MeterRow, ScaleMark }
+export { Theme, Tokens, Studio, SourceData, KindData, TargetData, MeterRow, ScaleMark, EncoderData }
 
 export struct TabData { id: string, title: string, known: bool }
 export struct StackData { window: int, stack: int, x: length, y: length, w: length, h: length, tabs: [TabData], active: int }
@@ -41,6 +41,10 @@ export global Shell {
     // 0 none, 1 layout locked, 2 other error with <error-detail>.
     in property <int> error-kind;
     in property <string> error-detail;
+    // The main window was closed while a stream runs: the frame asks first (U4).
+    in property <bool> quit-confirm;
+    callback quit-end-stream();
+    callback quit-keep();
 
     callback relayout(int /* window */, length, length);
     callback activate-tab(int /* window */, int /* stack */, int /* tab */);
@@ -433,6 +437,28 @@ component FrameBar inherits Rectangle {
             icon: IconName.chevron-down;
             clicked => { panels-menu.show(); }
         }
+        // Closing while live ends the stream: asked first, in the frame (U4).
+        if Shell.quit-confirm: HorizontalLayout {
+            spacing: Tokens.space-2;
+            accessible-role: groupbox;
+            accessible-label: @tr("End the stream and quit?");
+            init => { keep-live.focus(); }
+            Text {
+                text: @tr("End the stream and quit?");
+                color: Theme.text-primary;
+                font-size: Tokens.type-body-size;
+                vertical-alignment: center;
+            }
+            Button {
+                text: @tr("End stream and quit");
+                kind: "live";
+                clicked => { Shell.quit-end-stream(); }
+            }
+            keep-live := Button {
+                text: @tr("Keep streaming");
+                clicked => { Shell.quit-keep(); }
+            }
+        }
         // Network access (ADR-0046 decision 7): shown in every workspace while other
         // computers can connect, in words.
         if Studio.rc-network-on: Text {
@@ -578,7 +604,7 @@ export component SettingsWindow inherits Window {
     min-width: Tokens.size-menu-md * 2;
     background: Theme.surface-raised;
     default-font-size: Tokens.type-body-size;
-    // 0 Video, 1 Recording, 2 Remote control.
+    // 0 Video, 1 Recording, 2 Stream, 3 Remote control.
     in-out property <int> section: 1;
     HorizontalLayout {
         Rectangle {
@@ -600,9 +626,14 @@ export component SettingsWindow inherits Window {
                     activated => { root.section = 1; }
                 }
                 MenuItem {
-                    text: @tr("Remote control");
+                    text: @tr("Stream");
                     checked: root.section == 2;
                     activated => { root.section = 2; }
+                }
+                MenuItem {
+                    text: @tr("Remote control");
+                    checked: root.section == 3;
+                    activated => { root.section = 3; }
                 }
             }
         }
@@ -613,7 +644,7 @@ export component SettingsWindow inherits Window {
                 spacing: Tokens.space-3;
                 alignment: start;
                 Text {
-                    text: root.section == 0 ? @tr("Video") : root.section == 1 ? @tr("Recording") : @tr("Remote control");
+                    text: root.section == 0 ? @tr("Video") : root.section == 1 ? @tr("Recording") : root.section == 2 ? @tr("Stream") : @tr("Remote control");
                     color: Theme.text-primary;
                     font-size: Tokens.type-heading-size;
                     font-weight: Tokens.type-heading-weight;
@@ -621,7 +652,8 @@ export component SettingsWindow inherits Window {
                 }
                 if root.section == 0: VideoSettings { }
                 if root.section == 1: RecordingSettings { }
-                if root.section == 2: RemoteControlSettings { }
+                if root.section == 2: StreamSettings { }
+                if root.section == 3: RemoteControlSettings { }
             }
         }
     }
