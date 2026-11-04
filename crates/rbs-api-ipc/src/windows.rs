@@ -414,11 +414,13 @@ struct PipeIo {
 
 impl PipeIo {
     fn new(pipe: Owned) -> io::Result<PipeIo> {
+        // The events first: if one fails, `pipe` is still an `Owned` and is closed.
+        let (read_event, write_event, cancel) = (event()?, event()?, event()?);
         Ok(PipeIo {
             pipe: std::mem::ManuallyDrop::new(pipe),
-            read_event: event()?,
-            write_event: event()?,
-            cancel: event()?,
+            read_event,
+            write_event,
+            cancel,
             finished: AtomicBool::new(false),
         })
     }
