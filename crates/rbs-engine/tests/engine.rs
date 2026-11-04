@@ -542,7 +542,12 @@ fn a_branch_removed_with_apply_draining_drains_while_render_keeps_running() {
         rig.frame();
     }
     assert!(rig.engine.has_worker(ENCODER));
-    assert!(rig.seen() > before, "the output runs again");
+    // The output's worker runs on its doorbell, not on the frames the test steps:
+    // wait for it to pass a packet instead of assuming it already did.
+    assert!(
+        eventually(LIMIT, || rig.seen() > before),
+        "the output runs again"
+    );
     let report = rig.engine.shutdown();
     assert!(report.errors.is_empty(), "{:?}", report.errors);
 }
