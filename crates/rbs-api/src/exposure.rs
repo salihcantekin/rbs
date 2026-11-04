@@ -24,13 +24,21 @@ pub struct UpgradePolicy {
     pub allowed_origins: Vec<String>,
     /// Host names the user configured for network access (`studio.local`).
     pub host_names: Vec<String>,
-    /// Addresses of the interfaces the server is bound to.
+    /// Addresses of the interfaces the server is bound to. An unspecified address
+    /// (`0.0.0.0`, `::`) is never accepted in `Host`, even when listed.
     pub bound_addresses: Vec<IpAddr>,
 }
 
 impl UpgradePolicy {
-    /// Checks the request's `Origin` and `Host` headers.
-    pub fn check(&self, origin: Option<&str>, host: Option<&str>) -> Result<(), UpgradeRefusal> {
+    /// Checks the request's `Origin` and `Host` headers. `local` is the address the
+    /// connection was accepted on (its socket's local address), which `Host` may name:
+    /// with a listener on all interfaces, that is how a client reaches this computer.
+    pub fn check(
+        &self,
+        origin: Option<&str>,
+        host: Option<&str>,
+        local: Option<IpAddr>,
+    ) -> Result<(), UpgradeRefusal> {
         if let Some(origin) = origin {
             let allowed = !origin.trim().eq_ignore_ascii_case("null")
                 && self
@@ -47,7 +55,15 @@ impl UpgradePolicy {
             return Ok(());
         }
         if let Ok(ip) = name.parse::<IpAddr>() {
-            if ip.is_loopback() || self.bound_addresses.contains(&ip) {
+            let ip = ip.to_canonical();
+            let named = |a: &IpAddr| {
+                let a = a.to_canonical();
+                !a.is_unspecified() && a == ip
+            };
+            if ip.is_loopback()
+                || self.bound_addresses.iter().any(named)
+                || local.is_some_and(|l| named(&l))
+            {
                 return Ok(());
             }
             return Err(UpgradeRefusal::Host(host.to_owned()));
