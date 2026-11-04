@@ -4464,6 +4464,7 @@ dependencies = [
  "rbs-graph",
  "rbs-mux-fmp4",
  "rbs-mux-matroska",
+ "rbs-mux-mpegts",
  "rbs-record",
  "rbs-remote-settings",
  "rbs-scene",
@@ -4471,6 +4472,8 @@ dependencies = [
  "rbs-thread-os",
  "rbs-transport",
  "rbs-transport-file",
+ "rbs-transport-rtmp",
+ "rbs-transport-srt",
  "serde_json",
 ]
 

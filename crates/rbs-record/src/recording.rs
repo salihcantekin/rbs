@@ -23,7 +23,7 @@ use rbs_scene::binder::{BindError, BindProblem};
 use rbs_scene::model::{CanvasId, SourceId};
 use rbs_sources::types::{SourceClass, class_of};
 use rbs_sources::{SourceError, SourceTypes};
-use rbs_transport::TransportFactory;
+use rbs_transport::{ReconnectPolicy, Secret, TransportFactory, TransportInput};
 
 use crate::select::Chosen;
 use crate::studio::{OutputSettings, Prepared, Strictness, Studio, StudioSettings};
@@ -203,16 +203,24 @@ impl Default for Partitions {
     }
 }
 
-/// What to record and where.
+/// What to record or stream and where.
 #[non_exhaustive]
 #[derive(Debug, Clone, PartialEq)]
 pub struct RecordSettings {
     /// The canvas recorded (its program scene).
     pub canvas: CanvasId,
-    /// Destination URL, for example `file:///C:/Videos/rec.mkv`.
+    /// Destination URL, for example `file:///C:/Videos/rec.mkv` or `rtmp://host/app`.
+    /// Never holds the secret.
     pub url: String,
-    /// Container.
-    pub container: ContainerId,
+    /// What the transport takes: a container's chunks, or packets
+    /// ([`OutputSettings::input`]).
+    pub input: TransportInput,
+    /// Stream key or stream id ([`OutputSettings::secret`]).
+    pub secret: Option<Secret>,
+    /// What the transport does when the connection drops.
+    pub reconnect: ReconnectPolicy,
+    /// Opaque transport options ([`OutputSettings::transport_options`]).
+    pub transport_options: Vec<(String, String)>,
     /// Video encoding.
     pub video: VideoSettings,
     /// Audio encoding; `None` records video only.
@@ -227,14 +235,29 @@ pub struct RecordSettings {
 }
 
 impl RecordSettings {
-    /// `canvas` to `url` in `container` with the default video and audio settings.
+    /// `canvas` to `url` in `container` with the default video and audio settings, no
+    /// secret, no reconnect.
     pub fn new(canvas: CanvasId, url: impl Into<String>, container: ContainerId) -> Self {
+        Self::from_output(canvas, OutputSettings::new(url, container))
+    }
+
+    /// `canvas` as encoded packets to `url` (RTMP), with the default video and audio
+    /// settings, no secret, no reconnect.
+    pub fn packets(canvas: CanvasId, url: impl Into<String>) -> Self {
+        Self::from_output(canvas, OutputSettings::packets(url))
+    }
+
+    /// `canvas` written as `out` says.
+    pub fn from_output(canvas: CanvasId, out: OutputSettings) -> Self {
         Self {
             canvas,
-            url: url.into(),
-            container,
-            video: VideoSettings::default(),
-            audio: Some(AudioSettings::default()),
+            url: out.url,
+            input: out.input,
+            secret: out.secret,
+            reconnect: out.reconnect,
+            transport_options: out.transport_options,
+            video: out.video,
+            audio: out.audio,
             audio_graph: AudioGraphConfig::default(),
             partitions: Partitions::default(),
             audio_offsets: BTreeMap::new(),
@@ -252,12 +275,18 @@ impl RecordSettings {
         s
     }
 
-    /// The output part: URL, container, video and audio encoding.
+    /// The output part: URL, transport input, secret, reconnect, options, video and
+    /// audio encoding.
     pub fn output(&self) -> OutputSettings {
-        let mut o = OutputSettings::new(self.url.clone(), self.container);
-        o.video = self.video.clone();
-        o.audio = self.audio.clone();
-        o
+        OutputSettings {
+            url: self.url.clone(),
+            input: self.input,
+            secret: self.secret.clone(),
+            reconnect: self.reconnect,
+            transport_options: self.transport_options.clone(),
+            video: self.video.clone(),
+            audio: self.audio.clone(),
+        }
     }
 }
 
@@ -388,8 +417,8 @@ pub struct StartReport {
     pub video_encoder: Chosen,
     /// The audio encoder, when audio is recorded.
     pub audio_encoder: Option<Chosen>,
-    /// The muxer.
-    pub muxer: Chosen,
+    /// The muxer; `None` when the transport takes packets.
+    pub muxer: Option<Chosen>,
     /// The transport.
     pub transport: Chosen,
     /// The recorded sources (those the output's plan schedules), in binder order.

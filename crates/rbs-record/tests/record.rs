@@ -23,6 +23,7 @@ use rbs_record::{AUDIO, Port, RecordError, RecordSettings, Recording};
 use rbs_scene::SceneCollection;
 use rbs_scene::model::{ItemContent, Layout, SceneScope, SettingValue, Settings};
 use rbs_sources::types::keys;
+use rbs_transport::{ReconnectPolicy, Secret, TransportInput};
 use support::*;
 
 #[test]
@@ -152,6 +153,93 @@ fn without_audio_only_video_is_recorded_and_audio_sources_stay_closed() {
     assert!(report.shutdown_errors.is_empty(), "{report:?}");
     assert_eq!(r.log.streams.lock().unwrap().len(), 1);
     assert_eq!(r.log.count(1), 0);
+}
+
+#[test]
+fn a_stream_sends_packets_without_a_muxer_with_its_secret_and_reconnect_policy() {
+    let Some(gpu) = gpu() else { return };
+    let r = rig();
+    let (col, canvas) = scene();
+    let (engine, clock) = engine_at_start();
+    let mut settings = RecordSettings::packets(canvas, "stream://live/app");
+    settings.secret = Some(Secret::new("key-123"));
+    let reconnect = ReconnectPolicy::Backoff {
+        initial: Duration::from_secs(1),
+        max: Duration::from_secs(8),
+        attempts: None,
+    };
+    settings.reconnect = reconnect;
+    settings.transport_options = vec![("latency_ms".into(), "200".into())];
+    let mut recording = Recording::start(engine, gpu, &col, &r.adapters, &settings).unwrap();
+    let started = recording.started().clone();
+    assert_eq!(started.muxer, None, "no muxer for packet input");
+    assert_eq!(
+        started.transport.adapter.as_str(),
+        "org.rbs.test.packet-transport"
+    );
+    assert!(
+        !format!("{started:?}{settings:?}").contains("key-123"),
+        "the secret is never in Debug output"
+    );
+    let config = r.log.packet_config.lock().unwrap().clone().unwrap();
+    assert_eq!(config.url, "stream://live/app");
+    assert_eq!(config.input, TransportInput::Packets);
+    assert_eq!(config.secret.as_ref().map(Secret::expose), Some("key-123"));
+    assert_eq!(config.reconnect, reconnect);
+    assert_eq!(
+        config.adapter_options,
+        [("latency_ms".to_owned(), "200".to_owned())]
+    );
+
+    let reached = run_until(&mut recording, &clock, |_| {
+        r.log.count(0) >= 6 && r.log.count(1) >= 10
+    });
+    assert!(reached, "packets: {:?}", recording.progress());
+    let report = recording.finish();
+    assert!(report.shutdown_errors.is_empty(), "{report:?}");
+    assert_eq!(report.failure, None);
+    // The transport got the encoders' streams, video then audio, and no chunk.
+    let codecs: Vec<CodecId> = r
+        .log
+        .streams
+        .lock()
+        .unwrap()
+        .iter()
+        .map(|s| s.codec)
+        .collect();
+    assert_eq!(codecs, [CodecId::H264, CodecId::Aac]);
+    assert_eq!(r.log.headers.load(Ordering::Relaxed), 0);
+    assert_eq!(r.log.finished.load(Ordering::Relaxed), 1);
+    assert_eq!(report.progress.mux_drops, 0);
+}
+
+#[test]
+fn a_transport_that_does_not_take_the_input_is_not_chosen() {
+    let Some(gpu) = gpu() else { return };
+    let r = rig();
+    let (col, canvas) = scene();
+    // `mem` transports take Matroska chunks only, `stream` ones packets only.
+    for settings in [
+        RecordSettings::packets(canvas, "mem://x"),
+        RecordSettings::new(canvas, "stream://x", ContainerId::Matroska),
+    ] {
+        let (engine, _clock) = engine_at_start();
+        let Err(err) = Recording::start(engine, Arc::clone(&gpu), &col, &r.adapters, &settings)
+        else {
+            panic!("a transport was chosen")
+        };
+        assert!(
+            matches!(
+                err,
+                RecordError::NoAdapter {
+                    port: Port::Transport,
+                    ..
+                }
+            ),
+            "{err}"
+        );
+    }
+    assert_eq!(r.capture.live_buffers(), 0);
 }
 
 #[test]

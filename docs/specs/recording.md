@@ -7,13 +7,15 @@
 
 ## Purpose
 
-Records the program scene of one canvas of a scene collection to a file: the sources the scene shows and plays, composited, encoded (video and audio) and muxed, with every stream on the master clock. `rbs-record` assembles and runs it on the engine; `rbs-cli record` is the headless command that registers the platform's adapters and builds a fixed scene. A `Studio` keeps the canvas running for a UI (preview, meters, scene edits) and starts and stops recordings on the running engine (ADR-0041); `Recording` is a studio without a preview plus one recording.
+Records the program scene of one canvas of a scene collection to a file, or streams it live: the sources the scene shows and plays, composited, encoded (video and audio) and muxed (or handed as packets to a transport that frames them, such as RTMP), with every stream on the master clock. `rbs-record` assembles and runs it on the engine; `rbs-cli record` and `rbs-cli stream` are the headless commands that register the platform's adapters and build a fixed scene. A `Studio` keeps the canvas running for a UI (preview, meters, scene edits) and starts and stops recordings on the running engine (ADR-0041); `Recording` is a studio without a preview plus one recording.
 
 ## Scope
 
 In scope: what `Recording::start` builds and how it chooses adapters, the partitions, stream order and timestamps, start and run-time failures, progress counters, the `rbs-cli` commands; the `Studio`: preview, meters, scene edits and recordings started and stopped on a running engine.
 
-Out of scope: streaming (same graph, a network transport; later), several outputs per canvas, scene documents on disk, the control API, end-of-stream flushing of encoders (engine spec, open question).
+A live stream is the same graph with a network transport: the output's URL, transport input, secret and reconnect policy differ, nothing else.
+
+Out of scope: several outputs per canvas (recording and streaming at once), scene documents on disk, the control API, end-of-stream flushing of encoders (engine spec, open question).
 
 ## Contract
 
@@ -42,14 +44,22 @@ impl RecordAdapters { pub fn new() -> Self; pub fn probe(&mut self); }
 }
 
 #[non_exhaustive] pub struct RecordSettings {
-    pub canvas: CanvasId, pub url: String, pub container: ContainerId,
+    pub canvas: CanvasId, pub url: String,    // never holds the secret
+    pub input: TransportInput,           // Container(c): a muxer's chunks; Packets: no muxer (RTMP)
+    pub secret: Option<Secret>,          // stream key or stream id, to the transport only; None
+    pub reconnect: ReconnectPolicy,      // Off
+    pub transport_options: Vec<(String, String)>, // opaque, passed through (SRT latency_ms); empty
     pub video: VideoSettings,            // codec H.264, CBR 12 Mbit/s, keyframe every 2 s, NV12
     pub audio: Option<AudioSettings>,    // AAC 160 kbit/s; None: video only
     pub audio_graph: AudioGraphConfig,   // default: 48 kHz stereo, 10 ms blocks, 50 ms latency
     pub partitions: Partitions,
     pub audio_offsets: BTreeMap<SourceId, i64>, // sync offset ns per audio source; empty
 }
-impl RecordSettings { pub fn new(canvas: CanvasId, url: impl Into<String>, container: ContainerId) -> Self; }
+impl RecordSettings {
+    pub fn new(canvas: CanvasId, url: impl Into<String>, container: ContainerId) -> Self;
+    pub fn packets(canvas: CanvasId, url: impl Into<String>) -> Self;  // input Packets
+    pub fn from_output(canvas: CanvasId, out: OutputSettings) -> Self;
+}
 
 #[non_exhaustive] pub struct VideoSettings { // every encoder setting that changes quality
     pub codec: CodecId,                  // H.264
@@ -83,11 +93,17 @@ pub const MAX_LAYERS: usize = 64;      // layers and strips held without allocat
     pub audio_offsets: BTreeMap<SourceId, i64>, // sync offset ns per audio source; empty
 }
 impl StudioSettings { pub fn new(canvas: CanvasId) -> Self; } // audio on, no preview
-#[non_exhaustive] pub struct OutputSettings {
-    pub url: String, pub container: ContainerId,
+#[non_exhaustive] pub struct OutputSettings { // a recording or a live stream
+    pub url: String, pub input: TransportInput,
+    pub secret: Option<Secret>, pub reconnect: ReconnectPolicy,
+    pub transport_options: Vec<(String, String)>,
     pub video: VideoSettings, pub audio: Option<AudioSettings>,
 }
-impl OutputSettings { pub fn new(url: impl Into<String>, container: ContainerId) -> Self; }
+impl OutputSettings {
+    pub fn new(url: impl Into<String>, container: ContainerId) -> Self; // container input
+    pub fn packets(url: impl Into<String>) -> Self;                    // packet input
+    pub fn container(&self) -> Option<ContainerId>;                   // None for packets
+}
 impl RecordSettings { pub fn studio(&self) -> StudioSettings; pub fn output(&self) -> OutputSettings; }
 #[non_exhaustive] pub struct Updated { pub problems: Vec<BindProblem>, pub failed: Vec<StartFailure> }
 
@@ -150,8 +166,8 @@ Without audio (`audio: None`) the two audio partitions are not added: three work
 2. Adapters are chosen before anything opens, each from its registry's `select`, best first (user choice, preference order, hardware first, registration order):
    - video encoder: `codec.video.encode` includes the codec, `input.memory` includes `system`, `input.pixel_format` includes the export format; the first candidate whose `VideoEncoderNode::open` succeeds with every `VideoSettings` field in its `VideoEncoderConfig` (rate control, keyframe interval, B-frames, profile, `tuning.preset`), so a candidate that refuses a setting (a profile it lacks, `cbr_padded` or constant quality on an encoder without it) is skipped with its reason in `tried`;
    - audio encoder (when `audio` is set): `codec.audio.encode` includes the codec; the first whose session is created for `audio_graph.format` and the bitrate;
-   - muxer: `mux.container` includes the container; the best;
-   - transport: `transport.schemes` includes the URL's scheme (lower case) and `transport.input` includes `container.transport_input()`; the best.
+   - muxer (container input only; none for packet input, `StartReport::muxer` is `None`): `mux.container` includes the container; the best;
+   - transport: `transport.schemes` includes the URL's scheme (lower case) and `transport.input` includes the input's capability value (`packets`, or `container.transport_input()`); the best. It is created with the URL, input, secret, reconnect policy and options of the settings and the default queue limits (output ports spec).
    No candidate: `NoAdapter { port, tried }`, with each rejected or failed adapter and why. A URL without a scheme is `InvalidUrl`.
 3. The collection is bound with `SceneBinder::new(sources.node_types())`, `.with_audio(partitions.audio)` only when audio is recorded. A `BindProblem` fails the start (`Problems`) only when it leaves out a source the program scene shows or, with audio, plays: an unknown source type, or a source with no video output when video is what it contributes (an audio-only source without audio is simply not recorded). Problems anywhere else in the collection go to `StartReport::problems` and the recording goes on.
 4. Only the sources the output's plan schedules are instantiated (`SourceTypes::instantiate` with the engine's clock and `audio_graph`), in plan order: sources of other scenes or canvases, and audio sources when audio is off, are never opened. An instantiation error fails the start (`Source`). Video sources go to `RENDER`, audio-only sources to `partitions.audio` (the binder chose).
@@ -193,6 +209,8 @@ Without audio (`audio: None`) the two audio partitions are not added: three work
 - Adapters: Matroska, fMP4 and file on every platform; Windows adds WGC and Media Foundation capture, WASAPI, NVENC and AMF (in that order), Media Foundation AAC; macOS adds ScreenCaptureKit and AVFoundation capture, Core Audio, VideoToolbox (hardware, then Apple's software encoders) and AudioToolbox AAC; Linux adds PipeWire capture (cameras, and displays and windows through the screen-cast portal's picker: `record` shows the portal dialog when no display is listed), PipeWire audio, NVENC, AMF, QSV and VA-API (in that order) and FFmpeg's AAC encoder (`rbs-codec-ffmpeg`, the system's libavcodec loaded at run time). A platform without video or audio encoders says recording is not available there yet.
 - The engine gets `OsThreadPolicy` (ADR-0030). The device is `GpuRequest::default()` (high performance, no software adapter). The file path is made absolute and turned into a `file://` URL from its components: a drive path is `file:///C:/...`, a UNC path `file://server/share/...` (verbatim `\\?\` prefixes included), and `%`, space, `#`, `?` and a `\` inside a name are escaped. When the start fails after the file was created, `rbs-cli` removes it.
 - Exit code 0 when the recording ran and stopped cleanly with packets muxed (`Progress::packets_muxed`); 1 when start failed, the recording failed while running, the engine did not stop cleanly, or no packet was muxed.
+- `rbs-cli stream <rtmp://host[:port]/app | srt://host:port> [options]`: the same scene and options as `record` except `--overwrite`, with `--bitrate` defaulting to 6000 kbit/s. `rtmp://` sends H.264 and AAC packets to the RTMP transport (no muxer); `srt://` muxes MPEG-TS for the SRT transport; any other scheme (`rtmps` included, not supported yet) is refused when the arguments are parsed. The stream key (RTMP, required) or stream id (SRT, optional) is read from the environment variable `RBS_STREAM_KEY`, or the one `--key-env NAME` names, never from the command line, and is trimmed; a missing RTMP key fails before any device is opened or permission asked; it goes into `RecordSettings::secret` only, so it is in no URL, log line or report. `--srt-latency MS` (0 to 65535, SRT only) becomes the `latency_ms` transport option. Reconnect is on by default (`Backoff`, 1 s doubling to 30 s, 10 attempts; with the transports' rule that attempts restart after a connection that reached publish), `--no-reconnect` turns it off; a server that rejects the key is not retried and stops the stream with the error. Lines and summary as for `record`, with the URL instead of the file; exit code 1 also when no packet reached the stream.
+- Stream adapters on every platform: the MPEG-TS muxer, the RTMP and SRT transports (pure Rust, no FFmpeg).
 - `rbs-cli devices` lists installed source types with numbered targets, and every registered adapter as available or unavailable.
 
 ## Errors and failure behaviour
@@ -216,8 +234,11 @@ Control-thread only; the graph's hot paths are the nodes' and keep their budgets
   - `a_scene_records_video_and_audio_in_sync_on_the_master_clock`: chosen adapters; every source delivers; streams are H.264 then AAC; header, trailer and transport finish once; video `pts` exactly on the canvas cadence, the first within four frames of the first tick; the first audio `pts` plus the graph latency exactly on the audio cadence at the start (index 0 or 1), every step one AAC frame (±1 µs); no muxer, queue or encoder drops; no late ticks.
   - `without_audio_only_video_is_recorded_and_audio_sources_stay_closed`: one stream, no audio stream opened, no audio worker.
   - `problems_outside_the_recorded_scene_do_not_stop_it`: an unknown source type in another scene is a reported problem; put on air, it fails the start with `Problems` before anything opens.
+  - `a_stream_sends_packets_without_a_muxer_with_its_secret_and_reconnect_policy`: packet input chooses no muxer and the packet transport; the transport is created with the URL, `Packets`, the secret, the reconnect policy and the options; it gets the H.264 and AAC streams and packets, no chunk, and is finished once; the secret is in no `Debug` output of the settings or the report.
+  - `a_transport_that_does_not_take_the_input_is_not_chosen`: packets to a transport that takes only Matroska chunks, and Matroska to one that takes only packets, fail with `NoAdapter { port: Transport }` before anything opens.
   - `an_unknown_canvas_or_a_missing_encoder_fails_before_anything_runs`: `NoAdapter` for the video encoder and the muxer, `UnknownCanvas`; no capture buffer or audio stream was opened.
-- `crates/rbs-cli` unit tests: argument parsing and refusals, file URLs (drive, UNC, verbatim on Windows; a write through the file transport to the URL's path), the scene (sources present, left out on request, bad indices refused, camera rectangle, sync offsets per audio source in ns, none for a source left out; offsets beyond ±200 ms refused).
+- `crates/rbs-cli` unit tests: argument parsing and refusals (`record` and `stream`: URL schemes, stream-only options, the stream bitrate default), file URLs (drive, UNC, verbatim on Windows; a write through the file transport to the URL's path), the scene (sources present, left out on request, bad indices refused, camera rectangle, sync offsets per audio source in ns, none for a source left out; offsets beyond ±200 ms refused).
+- Hardware (manual, Windows and macOS): `rbs-cli stream rtmp://127.0.0.1/live --seconds 30` with `RBS_STREAM_KEY` set, to `ffmpeg -listen 1 -i rtmp://127.0.0.1/live/<key> -c copy out.flv` (FLV with H.264 and AAC, a decode pass, video and audio durations within a frame of the run); the same with `srt://127.0.0.1:<port>` to `ffmpeg -i "srt://:<port>?mode=listener" -c copy out.ts`; a listener started after the stream (reconnect) and a wrong key (the stream stops with the server's error).
 - Hardware (manual, Windows): `rbs-cli record <file> --seconds 20` to `.mkv` and `.mp4`, with NVENC and with `--encoder amf`; `ffprobe` streams, packet steps and a decode pass; an A/V sync measurement with a clip that flashes the screen white and beeps at the same time every second, played full screen while recording display and system audio.
 
 Windows result (SC-PC, RTX 4090 + AMD iGPU, 2026-11-03), PASS: `rbs-cli record` with WGC display, Media Foundation camera (Cam Link 4K), WASAPI microphone (Shure MV7+) and loopback, NVENC (default) and AMF (`--encoder amf`), Media Foundation AAC. 20 s MKV: 1210 frames exported, 1202 encoded, 0 dropped, 0 resyncs, 0 late render or audio ticks, 0 queue or muxer drops; `ffprobe`: H.264 High 1920x1080 60/1 and AAC LC 48 kHz stereo, video steps 16.667 ms and audio steps 21.333 ms throughout, a full decode without errors. MP4 and AMF runs the same. The first packets: audio at 1.000 s, video 83 to 138 ms later (the first canvas frame waits for the display's first capture). The last 1 to 8 frames the encoder still held at shutdown are lost (open question below). Sync, measured end to end with a clip that flashes white and beeps every second played full screen by `ffplay` on the recorded display: audio leads the picture by 44 ms on average (29 to 63 ms over 28 flashes, after subtracting the analysis filter's delay measured on the clip itself); this includes `ffplay`'s output, DWM presentation and WGC capture latency on the video side. FFmpeg drops the first second of audio of the fragmented MP4 file: it reads the audio track's edit list (media time = the muxer's 1 s lead) as encoder priming (`rbs-mux-fmp4`). Fixed: media time now starts at the file's earliest sample and the muxer writes no edit list, so FFmpeg presents every audio sample from 0 (`ffmpeg_interop` test).
@@ -228,4 +249,7 @@ Windows result (SC-PC, RTX 4090 + AMD iGPU, 2026-11-03), PASS: `rbs-cli record` 
 - A/V sync, measured on SC-PC 2026-11-03 (ADR-0042, Rejected): with Windows Media Player the system audio leads the picture by 26 to 30 ms (`ffplay` 34 ms; the 44 ms above included `ffplay`'s frame drops). Both capture timestamps are honest: a click test showed WASAPI loopback timestamps equal the device's play time (`IAudioClock`) within 0.2 ms, and the display's frame age at render ticks is 0.5 to 4 ms. About 8 ms is the 60 fps sampling; the rest is likely the player's own uncompensated present latency (not measured). Per-source manual sync offsets are available for device latencies that software cannot see (see "Sync offsets").
 - Starting and stopping a recording while the engine keeps running (preview in the desktop app): the `attach`/`detach` entry point of ADR-0040 decision 6.
 - Several outputs per canvas (record and stream with one encoder) share the encoders through many-output packet pins.
+- Connection state of a stream (connecting, live, reconnecting) is not in `Progress` yet: the output node counts only `KeyframeRequested` and stops on `Disconnected`. A follow-up adds it (hot path: the output node's `process`).
+- `rtmps` (TLS) and enhanced RTMP (HEVC, AV1) wait for the RTMP transport.
+- Seen on the Mac (2026-11-04): with no listener the stream runs to the end and `rbs-cli` exits 0, because nothing reports that no connection was ever made (needs the connection state above). A listener that comes up after the start first gets the oldest staged GOP fragment (5 frames from time 0), then live media from a keyframe about 8 s later: the transports should start a new connection at the newest staged keyframe and drop older media (output ports spec, reconnect).
 - Ctrl+C in `rbs-cli` ends the process without a trailer (Matroska stays playable, without duration and cues); a console control handler that stops cleanly is a follow-up.

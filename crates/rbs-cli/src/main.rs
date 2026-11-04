@@ -2,6 +2,7 @@
 //!
 //! ```text
 //! rbs-cli record C:\Videos\rec.mkv --seconds 60
+//! RBS_STREAM_KEY=... rbs-cli stream rtmp://a.rtmp.youtube.com/live2
 //! rbs-cli devices
 //! rbs-cli token create "Stream Deck"
 //! rbs-cli remote fingerprint
@@ -10,6 +11,8 @@
 //! `record` captures the main display with the first camera in the bottom-right corner,
 //! the default microphone and the system audio, and writes H.264 and AAC to a Matroska
 //! (`.mkv`) or fragmented MP4 (`.mp4`) file until the time is up or Enter is pressed.
+//! `stream` sends the same program live: H.264 and AAC packets over RTMP, or MPEG-TS
+//! over SRT, with the stream key from an environment variable.
 
 #![allow(clippy::print_stdout, clippy::print_stderr)] // A command-line program prints.
 
@@ -32,8 +35,9 @@ use rbs_core::registry::{AdapterFactory, AdapterId, Registry};
 use rbs_engine::Engine;
 use rbs_gpu::{GpuContext, GpuRequest};
 use rbs_record::{AudioSettings, Progress, RecordAdapters, RecordSettings, Recording};
+use rbs_transport::{ReconnectPolicy, Secret, TransportInput};
 
-use crate::args::{Command, RecordArgs};
+use crate::args::{Command, RecordArgs, StreamTarget};
 
 fn main() -> ExitCode {
     let raw: Vec<String> = std::env::args().skip(1).collect();
@@ -72,7 +76,12 @@ fn main() -> ExitCode {
         Ok(Command::Record(a)) => match record(&a) {
             Ok(()) => ExitCode::SUCCESS,
             Err(e) => {
-                eprintln!("record failed: {e}");
+                let what = if a.stream.is_some() {
+                    "stream"
+                } else {
+                    "record"
+                };
+                eprintln!("{what} failed: {e}");
                 ExitCode::FAILURE
             }
         },
@@ -219,6 +228,11 @@ fn record(a: &RecordArgs) -> Result<(), String> {
         ));
     }
 
+    // The stream key is checked before any device or permission prompt is touched.
+    let secret = match &a.stream {
+        Some(target) => stream_secret(target)?,
+        None => None,
+    };
     let permissions = permissions::Permissions::new(&mut adapters.sources);
     let built = scene::build(&adapters.sources, a, &|t, id| permissions.check(t, id))?;
     for s in &built.skipped {
@@ -227,19 +241,30 @@ fn record(a: &RecordArgs) -> Result<(), String> {
     if a.duration.is_none() && !std::io::stdin().is_terminal() {
         return Err("without a terminal nothing can press Enter: pass --seconds".into());
     }
-    let out = std::path::absolute(&a.out).map_err(|e| format!("{}: {e}", a.out.display()))?;
-    let existed = out.exists();
-    if existed && !a.overwrite {
-        return Err(format!(
-            "{} exists; pass --overwrite to replace it",
-            out.display()
-        ));
-    }
-    let mut settings = RecordSettings::new(
-        built.canvas,
-        rbs_transport_file::file_url(&out),
-        a.container,
-    );
+    let mut settings = match &a.stream {
+        Some(target) => stream_settings(built.canvas, target, secret),
+        None => {
+            let out =
+                std::path::absolute(&a.out).map_err(|e| format!("{}: {e}", a.out.display()))?;
+            if out.exists() && !a.overwrite {
+                return Err(format!(
+                    "{} exists; pass --overwrite to replace it",
+                    out.display()
+                ));
+            }
+            RecordSettings::new(
+                built.canvas,
+                rbs_transport_file::file_url(&out),
+                a.container,
+            )
+        }
+    };
+    // The file written (`record`), to remove after a failed start and report its size.
+    let file = match &a.stream {
+        Some(_) => None,
+        None => Some(std::path::absolute(&a.out).map_err(|e| e.to_string())?),
+    };
+    let existed = file.as_ref().is_some_and(|f| f.exists());
     settings.video.rate_control = a.rate_control;
     settings.video.keyframe_interval = a.keyframe_interval;
     settings.video.max_b_frames = a.b_frames;
@@ -273,8 +298,8 @@ fn record(a: &RecordArgs) -> Result<(), String> {
         Ok(r) => r,
         Err(e) => {
             // A failed start may have created the file; leave no empty file behind.
-            if !existed && out.exists() {
-                let _ = std::fs::remove_file(&out);
+            if let Some(out) = file.as_ref().filter(|f| !existed && f.exists()) {
+                let _ = std::fs::remove_file(out);
             }
             return Err(e.to_string());
         }
@@ -287,7 +312,7 @@ fn record(a: &RecordArgs) -> Result<(), String> {
             .audio_encoder
             .as_ref()
             .map_or("none", |c| c.name.as_str()),
-        started.muxer.name,
+        started.muxer.as_ref().map_or("none", |c| c.name.as_str()),
         started.transport.name
     );
     for s in &started.sources {
@@ -298,13 +323,23 @@ fn record(a: &RecordArgs) -> Result<(), String> {
     }
 
     let stop = Arc::new(AtomicBool::new(false));
+    // The URL never holds the stream key, so it can be printed.
+    let destination = match (&file, &a.stream) {
+        (Some(out), _) => out.display().to_string(),
+        (None, Some(target)) => target.url.clone(),
+        (None, None) => String::new(),
+    };
+    let verb = if a.stream.is_some() {
+        "streaming"
+    } else {
+        "recording"
+    };
     match a.duration {
         Some(d) => println!(
-            "recording {} s to {} (press Enter to stop early)",
+            "{verb} {} s to {destination} (press Enter to stop early)",
             d.as_secs(),
-            out.display()
         ),
-        None => println!("recording to {}; press Enter to stop", out.display()),
+        None => println!("{verb} to {destination}; press Enter to stop"),
     }
     {
         let stop = Arc::clone(&stop);
@@ -347,7 +382,15 @@ fn record(a: &RecordArgs) -> Result<(), String> {
     println!("stopping...");
     let report = recording.finish();
     let p = &report.progress;
-    println!("--- {:.1} s recorded", elapsed.as_secs_f64());
+    println!(
+        "--- {:.1} s {}",
+        elapsed.as_secs_f64(),
+        if a.stream.is_some() {
+            "streamed"
+        } else {
+            "recorded"
+        }
+    );
     println!(
         "video: {} frames exported, {} encoded, {} dropped at export, {} skipped before the encoder, {} dropped at the encoder",
         p.frames_exported, p.frames_encoded, p.export_drops, p.encoder_skipped, p.encoder_drops
@@ -370,16 +413,75 @@ fn record(a: &RecordArgs) -> Result<(), String> {
         p.late_render_ticks,
         p.late_audio_ticks
     );
-    let size = std::fs::metadata(&out).map(|m| m.len()).unwrap_or(0);
-    println!("file: {} ({size} bytes)", out.display());
+    if let Some(out) = &file {
+        let size = std::fs::metadata(out).map(|m| m.len()).unwrap_or(0);
+        println!("file: {} ({size} bytes)", out.display());
+    }
     for e in &report.shutdown_errors {
         println!("shutdown error: {e}");
     }
     let failure = failure.or(report.failure);
     match failure {
         Some(why) => Err(why),
-        None if p.packets_muxed() == 0 => Err("no packet reached the file".into()),
+        None if p.packets_muxed() == 0 => Err(format!(
+            "no packet reached the {}",
+            if a.stream.is_some() { "stream" } else { "file" }
+        )),
         None if !report.shutdown_errors.is_empty() => Err("the engine did not stop cleanly".into()),
         None => Ok(()),
     }
+}
+
+/// Reconnect policy of `stream`: up to 10 tries, 1 s doubling to 30 s apart (about
+/// three minutes before a server that never answers fails the stream).
+const STREAM_RECONNECT: ReconnectPolicy = ReconnectPolicy::Backoff {
+    initial: Duration::from_secs(1),
+    max: Duration::from_secs(30),
+    attempts: Some(10),
+};
+
+/// The stream key (RTMP, required) or stream id (SRT, optional) from the environment
+/// variable the target names, trimmed.
+fn stream_secret(target: &StreamTarget) -> Result<Option<Secret>, String> {
+    let key = std::env::var(&target.key_env)
+        .ok()
+        .map(|k| k.trim().to_owned())
+        .filter(|k| !k.is_empty());
+    match (&key, target.input) {
+        (None, TransportInput::Packets) => Err(format!(
+            "set the environment variable {} to the stream key (an RTMP server needs one)",
+            target.key_env
+        )),
+        (None, _) => {
+            println!("no stream id ({} is not set)", target.key_env);
+            Ok(None)
+        }
+        (Some(_), _) => {
+            println!("stream key: from {}", target.key_env);
+            Ok(key.map(Secret::new))
+        }
+    }
+}
+
+/// The output settings of `stream`: the URL, its transport input, the secret, reconnect
+/// and the SRT latency.
+fn stream_settings(
+    canvas: rbs_scene::model::CanvasId,
+    target: &StreamTarget,
+    secret: Option<Secret>,
+) -> RecordSettings {
+    let mut settings = match target.input {
+        TransportInput::Container(container) => {
+            RecordSettings::new(canvas, target.url.clone(), container)
+        }
+        _ => RecordSettings::packets(canvas, target.url.clone()),
+    };
+    settings.secret = secret;
+    if target.reconnect {
+        settings.reconnect = STREAM_RECONNECT;
+    }
+    if let Some(ms) = target.srt_latency_ms {
+        settings.transport_options = vec![("latency_ms".to_owned(), ms.to_string())];
+    }
+    settings
 }
