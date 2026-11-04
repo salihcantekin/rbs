@@ -49,6 +49,8 @@ rbs-mux-matroska = { path = "../rbs-mux-matroska" }
 rbs-mux-fmp4 = { path = "../rbs-mux-fmp4" }
 rbs-transport-file = { path = "../rbs-transport-file" }
 rbs-codec = { path = "../rbs-codec" }
+# The control API (ADR-0044): the control thread serves its requests.
+rbs-api = { path = "../rbs-api" }
 rbs-capture-test = { path = "../rbs-capture-test", optional = true }
 rbs-audio-io-test = { path = "../rbs-audio-io-test", optional = true }
 
@@ -69,6 +71,8 @@ objc2-core-foundation = { version = "0.3.2", default-features = false, features 
 objc2-core-graphics = { version = "0.3.2", default-features = false, features = ["std", "CGColor"] }
 
 [dev-dependencies]
+# The control API test reads JSON-RPC answers (tests/studio_api.rs).
+serde_json = "1"
 # Reference adapters for the studio host tests (deterministic, no devices).
 rbs-capture-test = { path = "../rbs-capture-test" }
 rbs-audio-io-test = { path = "../rbs-audio-io-test" }

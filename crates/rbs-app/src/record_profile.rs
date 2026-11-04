@@ -312,6 +312,91 @@ impl RecordProfile {
     }
 }
 
+/// The id of the one recording profile the app has today, in the control API.
+pub const API_PROFILE_ID: &str = "default";
+
+impl RecordProfile {
+    /// These settings as the control API's recording profile.
+    pub fn to_api(&self) -> rbs_api::types::RecordingProfile {
+        use rbs_api::types as api;
+        api::RecordingProfile {
+            id: API_PROFILE_ID.into(),
+            name: "Recording".into(),
+            folder: self.folder.display().to_string(),
+            container: match self.format {
+                Format::Mkv => api::Container::Mkv,
+                Format::Mp4 => api::Container::Mp4,
+            },
+            encoder: self.encoder.clone(),
+            rate_control: match self.rate_control {
+                RateMode::Cbr => api::RateMode::Cbr,
+                RateMode::Vbr => api::RateMode::Vbr,
+                RateMode::ConstantQuality => api::RateMode::ConstantQuality,
+            },
+            video_kbps: self.video_kbps,
+            max_video_kbps: self.max_video_kbps,
+            quality: self.quality,
+            keyframe_seconds: self.keyframe_seconds,
+            profile: self.profile.clone(),
+            preset: match self.preset {
+                Preset::Quality => api::Preset::Quality,
+                Preset::Balanced => api::Preset::Balanced,
+                Preset::Speed => api::Preset::Speed,
+            },
+            b_frames: self.b_frames,
+            cbr_padding: self.cbr_padding,
+            audio_kbps: self.audio_kbps,
+        }
+    }
+
+    /// The listing `output.profiles` shows (no folder: that needs `admin`).
+    pub fn to_api_listing(&self) -> rbs_api::types::OutputProfile {
+        let p = self.to_api();
+        rbs_api::types::OutputProfile {
+            id: p.id,
+            name: p.name,
+            container: p.container,
+            encoder: p.encoder,
+            rate_control: p.rate_control,
+            video_kbps: p.video_kbps,
+            audio_kbps: p.audio_kbps,
+        }
+    }
+
+    /// Settings from the control API's recording profile. The caller checks
+    /// [`RecordProfile::problem`].
+    pub fn from_api(p: &rbs_api::types::RecordingProfile) -> Self {
+        use rbs_api::types as api;
+        Self {
+            format_version: FORMAT,
+            folder: PathBuf::from(&p.folder),
+            format: match p.container {
+                api::Container::Mkv => Format::Mkv,
+                api::Container::Mp4 => Format::Mp4,
+            },
+            encoder: p.encoder.clone(),
+            rate_control: match p.rate_control {
+                api::RateMode::Cbr => RateMode::Cbr,
+                api::RateMode::Vbr => RateMode::Vbr,
+                api::RateMode::ConstantQuality => RateMode::ConstantQuality,
+            },
+            video_kbps: p.video_kbps,
+            max_video_kbps: p.max_video_kbps,
+            quality: p.quality,
+            keyframe_seconds: p.keyframe_seconds,
+            profile: p.profile.clone(),
+            preset: match p.preset {
+                api::Preset::Quality => Preset::Quality,
+                api::Preset::Balanced => Preset::Balanced,
+                api::Preset::Speed => Preset::Speed,
+            },
+            b_frames: p.b_frames,
+            cbr_padding: p.cbr_padding,
+            audio_kbps: p.audio_kbps,
+        }
+    }
+}
+
 impl Default for RecordProfile {
     fn default() -> Self {
         Self::new()
@@ -389,6 +474,32 @@ mod tests {
         let d = std::env::temp_dir().join(format!("rbs-app-{name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&d);
         d
+    }
+
+    #[test]
+    fn the_api_profile_round_trips() {
+        for (format, rate, preset) in [
+            (Format::Mkv, RateMode::Cbr, Preset::Quality),
+            (Format::Mp4, RateMode::Vbr, Preset::Balanced),
+            (Format::Mkv, RateMode::ConstantQuality, Preset::Speed),
+        ] {
+            let mut p = RecordProfile::new();
+            p.folder = PathBuf::from("rec");
+            p.format = format;
+            p.rate_control = rate;
+            p.preset = preset;
+            p.encoder = Some("org.rbs.codec.nvenc".into());
+            p.max_video_kbps = Some(20_000);
+            p.profile = Some("high".into());
+            p.b_frames = 2;
+            p.cbr_padding = true;
+            let api = p.to_api();
+            assert_eq!(api.id, API_PROFILE_ID);
+            assert_eq!(RecordProfile::from_api(&api), p);
+            let listing = p.to_api_listing();
+            assert_eq!(listing.video_kbps, p.video_kbps);
+            assert_eq!(listing.encoder, p.encoder);
+        }
     }
 
     #[test]
