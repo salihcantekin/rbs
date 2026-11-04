@@ -89,7 +89,8 @@ record options:
   --preset NAME        quality, balanced or speed (default balanced)
   --cbr-padding        with cbr, pad the video to its full bitrate (filler data)
   --audio-bitrate KBPS audio bitrate in kbit/s (default 160)
-  --encoder ID         use only this video encoder: an adapter id or its last part (nvenc, amf)
+  --encoder ID         use only this video encoder: an adapter id or its last part (nvenc, amf,
+                       videotoolbox)
   --display N          display number from `devices` (default 0)
   --camera N           camera number from `devices` (default 0)
   --no-camera          no camera picture
