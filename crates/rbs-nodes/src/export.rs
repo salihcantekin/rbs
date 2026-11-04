@@ -2,7 +2,7 @@
 //! (spec `docs/specs/io-nodes.md`, "Video export node").
 
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 use rbs_core::media::{ColorSpace, Size, VideoFormat};
 use rbs_core::time::Timestamp;
@@ -40,6 +40,51 @@ pub struct ExportNodeStats {
     pub lost: AtomicU64,
 }
 
+/// Ends a video export's input at a master-clock time (ADR-0044); shared between the
+/// node and the control thread.
+///
+/// Until [`ExportEnd::end_at`] is called the export takes every canvas. Afterwards it
+/// takes only canvases up to that time, keeps passing on the readbacks still in flight,
+/// and reports [`ExportEnd::ended`] once every canvas it took is on its output. The
+/// encoder then gets the last one on its own next tick, or on its final tick.
+#[derive(Debug)]
+pub struct ExportEnd {
+    /// Nanoseconds of the last canvas time taken; `u64::MAX` while not ending.
+    at: AtomicU64,
+    ended: AtomicBool,
+}
+
+impl Default for ExportEnd {
+    fn default() -> Self {
+        Self {
+            at: AtomicU64::new(u64::MAX),
+            ended: AtomicBool::new(false),
+        }
+    }
+}
+
+impl ExportEnd {
+    /// Takes no canvas later than `at`. An earlier call with an earlier time wins.
+    pub fn end_at(&self, at: Timestamp) {
+        // `u64::MAX` means "open", so the latest representable end is one below it.
+        self.at
+            .fetch_min(at.as_nanos().min(u64::MAX - 1), Ordering::Relaxed);
+    }
+
+    /// The time asked for by [`ExportEnd::end_at`], if any.
+    pub fn requested(&self) -> Option<Timestamp> {
+        match self.at.load(Ordering::Relaxed) {
+            u64::MAX => None,
+            at => Some(Timestamp::from_nanos(at)),
+        }
+    }
+
+    /// True once the export, asked to end, has put every canvas it took on its output.
+    pub fn ended(&self) -> bool {
+        self.ended.load(Ordering::Acquire)
+    }
+}
+
 /// Converts the canvas on its input to NV12 or P010 for an encoder and puts the result
 /// on "video", one or two ticks later.
 ///
@@ -56,6 +101,7 @@ pub struct VideoExportNode {
     last: Option<(Timestamp, u64)>,
     seen: DownloadStats,
     stats: Arc<ExportNodeStats>,
+    end: Arc<ExportEnd>,
 }
 
 impl VideoExportNode {
@@ -70,6 +116,7 @@ impl VideoExportNode {
             last: None,
             seen: DownloadStats::default(),
             stats: Arc::default(),
+            end: Arc::default(),
         }
     }
 
@@ -86,6 +133,11 @@ impl VideoExportNode {
     pub fn stats(&self) -> Arc<ExportNodeStats> {
         Arc::clone(&self.stats)
     }
+
+    /// The handle that ends the export's input (ADR-0044).
+    pub fn end(&self) -> Arc<ExportEnd> {
+        Arc::clone(&self.end)
+    }
 }
 
 impl Node<GpuRuntime> for VideoExportNode {
@@ -99,6 +151,9 @@ impl Node<GpuRuntime> for VideoExportNode {
         self.seen = download.stats();
         self.download = Some(download);
         self.last = None;
+        // A restarted export has nothing in flight; it reports the end again once it
+        // has passed on what it takes from now on.
+        self.end.ended.store(false, Ordering::Release);
         Ok(())
     }
 
@@ -107,8 +162,15 @@ impl Node<GpuRuntime> for VideoExportNode {
         let (inputs, outputs, local) = ctx.parts();
         let download = self.download.as_mut().ok_or(NodeError::NotReady)?;
 
+        // `u64::MAX` (the run path) takes every canvas: one load and one compare.
+        let end = self.end.at.load(Ordering::Relaxed);
         // Frames submitted on earlier ticks first, so their staging buffers are free.
-        let ready = download.take_ready(gpu);
+        // Ending, every frame is passed on in order (ADR-0044); otherwise the newest.
+        let ready = if end == u64::MAX {
+            download.take_ready(gpu)
+        } else {
+            download.take_oldest(gpu)
+        };
         let mut result = Ok(());
         match ready {
             Ok(Some(frame)) => {
@@ -122,12 +184,17 @@ impl Node<GpuRuntime> for VideoExportNode {
 
         if let Some(canvas) = inputs.video(CANVAS_PIN, 0) {
             let key = (canvas.timestamp(), canvas.sequence());
-            if self.last != Some(key) {
+            if self.last != Some(key) && canvas.timestamp().as_nanos() <= end {
                 self.last = Some(key);
                 if download.submit(gpu, &local.pool, canvas).is_err() {
                     result = Err(NodeError::Backend("video export conversion failed"));
                 }
             }
+        }
+        // Ending (ADR-0044): done once nothing taken is still being read back. Readbacks
+        // that fail are counted in `lost` like on the run path.
+        if end != u64::MAX && download.in_flight() == 0 && !self.end.ended() {
+            self.end.ended.store(true, Ordering::Release);
         }
 
         let now = download.stats();

@@ -48,11 +48,12 @@ const FAILED: u8 = 3;
 pub struct DownloadStats {
     /// Frames converted and queued for readback.
     pub converted: u64,
-    /// Frames returned by `take_ready`.
+    /// Frames returned by `take_ready` or `take_oldest`.
     pub delivered: u64,
     /// `submit` calls refused because every staging buffer was in flight.
     pub busy: u64,
-    /// Read-back frames dropped because a newer one completed in the same poll.
+    /// Read-back frames dropped because a newer one completed in the same poll
+    /// (`take_ready` only).
     pub stale: u64,
     /// Read-back frames dropped because consumers held every frame buffer.
     pub no_buffer: u64,
@@ -256,6 +257,21 @@ impl YuvDownload {
     /// dropped (`stale`). Call after `GpuContext::poll` (the render runtime polls at the
     /// end of each tick). Hot path; never waits.
     pub fn take_ready(&mut self, ctx: &GpuContext) -> Result<Option<VideoFrame>, GpuError> {
+        self.take::<true>(ctx)
+    }
+
+    /// The oldest frame whose readback has completed, if any; newer completed frames
+    /// stay for later calls. For the end of a stream, where every frame is passed on in
+    /// order and none is dropped as stale (ADR-0044). Hot path; never waits.
+    pub fn take_oldest(&mut self, ctx: &GpuContext) -> Result<Option<VideoFrame>, GpuError> {
+        self.take::<false>(ctx)
+    }
+
+    /// `take_ready` (`NEWEST`) or `take_oldest`.
+    fn take<const NEWEST: bool>(
+        &mut self,
+        ctx: &GpuContext,
+    ) -> Result<Option<VideoFrame>, GpuError> {
         let mut newest = None;
         let mut failed = false;
         // Slots complete in submission order; walk from the oldest while they are done.
@@ -265,6 +281,10 @@ impl YuvDownload {
                     if let Some(older) = newest.replace(self.tail) {
                         self.recycle(older);
                         self.stats.stale += 1;
+                    }
+                    if !NEWEST {
+                        self.tail = (self.tail + 1) % self.slots.len();
+                        break;
                     }
                 }
                 FAILED => {

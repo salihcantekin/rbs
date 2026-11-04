@@ -15,6 +15,11 @@ pub const ENCODER_NODE_TYPE: &str = "org.rbs.audio.encoder";
 /// Encodes the block on its input with an audio encoder session. Runs on an encoder
 /// partition, behind an audio queue: encoders allocate packet payloads, which the
 /// audio thread must not do.
+///
+/// End of stream (ADR-0044): the first final tick (`Tick::draining`) without a block
+/// on its input is the end of its input (the audio queue's reader rings for one more
+/// final tick after its last block). On it the node flushes the session, passes the
+/// tail on and takes no more blocks until it is prepared again.
 pub struct EncoderNode {
     desc: NodeDescriptor,
     encoder: Box<dyn AudioEncoder>,
@@ -23,6 +28,9 @@ pub struct EncoderNode {
     drained: Vec<EncodedPacket>,
     capacity: usize,
     dropped: Arc<AtomicU64>,
+    /// The session was flushed on a final tick: it takes no more blocks.
+    ended: bool,
+    flushes: Arc<AtomicU64>,
 }
 
 /// The descriptor of audio encoder nodes.
@@ -47,12 +55,19 @@ impl EncoderNode {
             drained: Vec::with_capacity(capacity),
             capacity,
             dropped: Arc::default(),
+            ended: false,
+            flushes: Arc::default(),
         }
     }
 
     /// Packets lost because more were waiting than the node holds.
     pub fn dropped(&self) -> Arc<AtomicU64> {
         Arc::clone(&self.dropped)
+    }
+
+    /// Final ticks on which the session was flushed into the graph (ADR-0044).
+    pub fn flushes(&self) -> Arc<AtomicU64> {
+        Arc::clone(&self.flushes)
     }
 }
 
@@ -62,12 +77,13 @@ impl<X: Runtime> Node<X> for EncoderNode {
     }
 
     fn prepare(&mut self, _: &mut PrepareCtx<'_, X>) -> Result<(), NodeError> {
+        self.ended = false;
         Ok(())
     }
 
     fn release(&mut self, _: &mut PrepareCtx<'_, X>) {
-        // End of stream through the graph is an open question of the engine spec; the
-        // tail the codec still holds is dropped with the queue.
+        // Without a final tick that ended the input (a live edit, a drain that timed
+        // out) the tail the codec still holds is dropped here.
         self.drained.clear();
         let _ = self.encoder.flush(&mut self.drained);
         self.drained.clear();
@@ -75,14 +91,35 @@ impl<X: Runtime> Node<X> for EncoderNode {
     }
 
     fn process(&mut self, ctx: &mut ProcessCtx<'_, X>) -> Result<(), NodeError> {
-        if let Some(block) = ctx.inputs().audio(0, 0) {
+        let draining = ctx.tick().draining;
+        let block = if self.ended {
+            None
+        } else {
+            ctx.inputs().audio(0, 0)
+        };
+        let ended = match block {
+            Some(block) => {
+                self.encoder
+                    .submit(&block)
+                    .map_err(|_| NodeError::Backend("audio encoder submit failed"))?;
+                false
+            }
+            // End of input (ADR-0044): a final tick without a block. The flush may
+            // pad the last frame and allocate; final ticks are bounded by the drain
+            // timeout (ADR-0043 Decision 4).
+            None => draining && !self.ended,
+        };
+        if ended {
+            self.ended = true;
             self.encoder
-                .submit(&block)
-                .map_err(|_| NodeError::Backend("audio encoder submit failed"))?;
+                .flush(&mut self.drained)
+                .map_err(|_| NodeError::Backend("audio encoder flush failed"))?;
+            self.flushes.fetch_add(1, Ordering::Relaxed);
+        } else if !self.ended {
+            self.encoder
+                .drain(&mut self.drained)
+                .map_err(|_| NodeError::Backend("audio encoder drain failed"))?;
         }
-        self.encoder
-            .drain(&mut self.drained)
-            .map_err(|_| NodeError::Backend("audio encoder drain failed"))?;
         for packet in self.drained.drain(..) {
             if self.waiting.len() < self.capacity {
                 self.waiting.push_back(packet);

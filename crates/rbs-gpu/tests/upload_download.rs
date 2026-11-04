@@ -98,6 +98,32 @@ fn download_refuses_when_the_ring_is_full_and_keeps_only_the_newest() {
 }
 
 #[test]
+fn take_oldest_passes_every_completed_frame_in_order() {
+    let Some(ctx) = common::gpu() else { return };
+    let mut pool = TexturePool::new();
+    let canvas = solid(ctx, &mut pool, W, H, [0.2, 0.4, 0.6, 1.0]);
+    let mut down = YuvDownload::new(ctx, YuvFormat::Nv12, W, H).unwrap();
+    for t in 0..DOWNLOAD_RING as u64 {
+        assert!(
+            down.submit(ctx, &pool, &canvas_frame(&pool, canvas, t))
+                .unwrap()
+        );
+    }
+    ctx.wait_idle().unwrap();
+    ctx.poll();
+    // All completed in the same poll; none is dropped as stale.
+    for t in 0..DOWNLOAD_RING as u64 {
+        assert_eq!(down.in_flight(), DOWNLOAD_RING - t as usize);
+        let frame = down.take_oldest(ctx).unwrap().expect("a completed frame");
+        assert_eq!(frame.sequence(), t);
+    }
+    assert!(down.take_oldest(ctx).unwrap().is_none());
+    assert_eq!(down.in_flight(), 0);
+    let stats = down.stats();
+    assert_eq!((stats.stale, stats.delivered), (0, DOWNLOAD_RING as u64));
+}
+
+#[test]
 fn download_drops_frames_while_consumers_hold_every_buffer_and_reuses_them_after() {
     let Some(ctx) = common::gpu() else { return };
     let mut pool = TexturePool::new();

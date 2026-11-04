@@ -6,6 +6,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::Duration;
 
 use rbs_audio::{
     AudioGraphConfig, EncoderNode, InputParams, InputStats, LevelMeter, MeterSinkNode, MixerNode,
@@ -25,7 +26,7 @@ use rbs_graph::runtime::param::ParamSender;
 use rbs_graph::runtime::{Node, RuntimeEvent};
 use rbs_nodes::capture::CaptureNodeStats;
 use rbs_nodes::encode::EncoderNodeStats;
-use rbs_nodes::export::ExportNodeStats;
+use rbs_nodes::export::{ExportEnd, ExportNodeStats};
 use rbs_nodes::output::OutputNodeStats;
 use rbs_nodes::{OutputNode, PreviewNode, PreviewNodeStats, VideoEncoderNode, VideoExportNode};
 use rbs_scene::SceneCollection;
@@ -50,6 +51,10 @@ const AUDIO_ENCODER_PACKETS: usize = 64;
 /// Layers and strips the compositor and the mixer hold without allocating. Scenes edited
 /// while the studio runs may grow up to this; more layers are not drawn.
 pub const MAX_LAYERS: usize = 64;
+/// Longest wait, on the master clock, for a recording's video tail after
+/// [`Studio::end_recording`]; afterwards [`Studio::recording_tail_done`] is true anyway
+/// (a stalled readback must not hold the stop up, ADR-0044).
+pub const END_TAIL_LIMIT: Duration = Duration::from_millis(500);
 
 /// How the studio runs its canvas.
 #[non_exhaustive]
@@ -236,6 +241,7 @@ struct Attached {
     essential: BTreeMap<NodeId, &'static str>,
     failure: Option<String>,
     export: Arc<ExportNodeStats>,
+    end: Arc<ExportEnd>,
     encoder: Arc<EncoderNodeStats>,
     audio_dropped: Option<Arc<AtomicU64>>,
     output: Arc<OutputNodeStats>,
@@ -996,6 +1002,7 @@ impl Studio {
         let mut nodes = Vec::new();
         let mut essential = BTreeMap::new();
         let export_stats = p.export.stats();
+        let export_end = p.export.end();
         let export_id = add_active(
             &mut graph,
             Node::<GpuRuntime>::descriptor(&p.export),
@@ -1098,6 +1105,7 @@ impl Studio {
             essential,
             failure: None,
             export: export_stats,
+            end: export_end,
             encoder: encoder_stats,
             audio_dropped,
             output: output_stats,
@@ -1193,6 +1201,34 @@ impl Studio {
         (Some(r), errors)
     }
 
+    /// Ends the running recording's video now, on the master clock (ADR-0044): the
+    /// export takes no canvas after this time and keeps passing on the frames it still
+    /// reads back. Call [`Studio::stop_recording`] once [`Studio::recording_tail_done`]
+    /// is true, so the last frames reach the file; until then the studio and the
+    /// recording keep running (call [`Studio::service`] as usual). False when nothing
+    /// records. A second call keeps the first end.
+    pub fn end_recording(&mut self) -> bool {
+        let Some(r) = self.recording.as_ref() else {
+            return false;
+        };
+        r.end.end_at(self.engine.clock().now());
+        true
+    }
+
+    /// True when [`Studio::stop_recording`] loses no video frame up to the end: after
+    /// [`Studio::end_recording`], once the export has passed on every canvas up to the
+    /// end, or once [`END_TAIL_LIMIT`] has passed on the master clock. True when nothing
+    /// records; false while a recording runs that was not ended.
+    pub fn recording_tail_done(&self) -> bool {
+        let Some(r) = self.recording.as_ref() else {
+            return true;
+        };
+        match r.end.requested() {
+            None => false,
+            Some(at) => r.end.ended() || self.engine.clock().now() >= at + END_TAIL_LIMIT,
+        }
+    }
+
     /// Stops the running recording: drains its encoders and output in pipeline order
     /// (the output writes the container's trailer and finishes the transport) and removes
     /// them, while the studio keeps running. `None` when nothing records.
@@ -1277,6 +1313,7 @@ impl Studio {
                 .map_or(0, |d| d.load(Ordering::Relaxed));
             p.packets_taken = r.output.packets.load(Ordering::Relaxed);
             p.mux_drops = r.output.mux_drops.load(Ordering::Relaxed);
+            p.start_drops = r.output.start_drops.load(Ordering::Relaxed);
             p.backlog_peak = r.output.backlog_peak.load(Ordering::Relaxed);
         }
         p
@@ -1300,7 +1337,7 @@ impl Studio {
 /// Engine errors and links that could not cross partitions, as failures.
 /// The input parameters for a sync offset in ns (positive delays).
 fn input_params(offset_ns: i64) -> InputParams {
-    let d = std::time::Duration::from_nanos(offset_ns.unsigned_abs());
+    let d = Duration::from_nanos(offset_ns.unsigned_abs());
     if offset_ns < 0 {
         InputParams::advanced(d)
     } else {

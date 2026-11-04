@@ -19,7 +19,9 @@ use rbs_core::media::{CodecId, ContainerId, Size};
 use rbs_core::time::{Clock, Timestamp};
 use rbs_core::timing::{Cadence, SampleRate};
 use rbs_graph::node::NodeTypeId;
-use rbs_record::{AUDIO, Port, RecordError, RecordSettings, Recording};
+use rbs_record::{
+    AUDIO, AUDIO_ENCODER, END_TAIL_LIMIT, Port, RecordError, RecordSettings, Recording,
+};
 use rbs_scene::SceneCollection;
 use rbs_scene::model::{ItemContent, Layout, SceneScope, SettingValue, Settings};
 use rbs_sources::types::keys;
@@ -121,6 +123,78 @@ fn a_scene_records_video_and_audio_in_sync_on_the_master_clock() {
     }
     assert!(*video.last().unwrap() <= end && *audio.last().unwrap() <= end);
     assert!(r.submitted.load(Ordering::Relaxed) >= 12);
+}
+
+/// Audio sample frames the audio encoder got through its queue so far.
+fn audio_frames_in(recording: &Recording) -> u64 {
+    let blocks: u64 = recording
+        .engine()
+        .crossings()
+        .iter()
+        .filter(|c| c.from == AUDIO && c.to == AUDIO_ENCODER)
+        .map(|c| c.stats.received() + c.stats.filled())
+        .sum();
+    blocks * u64::from(rbs_audio::AudioGraphConfig::default().block_frames)
+}
+
+#[test]
+fn ending_first_keeps_every_frame_up_to_the_end_and_the_audio_tail() {
+    let Some(gpu) = gpu() else { return };
+    let r = rig();
+    let log = &r.log;
+    let (col, canvas) = scene();
+    let (engine, clock) = engine_at_start();
+    let settings = RecordSettings::new(canvas, "mem://recording", ContainerId::Matroska);
+    let mut recording = Recording::start(engine, gpu, &col, &r.adapters, &settings).unwrap();
+    let reached = run_until(&mut recording, &clock, |_| {
+        log.count(0) >= 8 && log.count(1) >= 10
+    });
+    assert!(reached, "packets: {:?}", recording.progress());
+    assert!(!recording.tail_done(), "not ended yet");
+
+    // End now: the export takes no later canvas and passes on what it reads back.
+    let end = clock.now();
+    recording.end();
+    let done = run_until(&mut recording, &clock, Recording::tail_done);
+    assert!(done, "{:?}", recording.progress());
+    assert!(
+        clock.now() < end + END_TAIL_LIMIT,
+        "the export ended by itself, not by the limit"
+    );
+    let audio_in = audio_frames_in(&recording);
+    let report = recording.finish();
+    assert!(report.shutdown_errors.is_empty(), "{report:?}");
+    assert_eq!(report.failure, None);
+    assert_eq!(report.flush_lost, 0);
+    let p = &report.progress;
+    assert_eq!((p.export_drops, p.encoder_drops, p.mux_drops), (0, 0, 0));
+
+    // Video: every canvas the export took is in the file, up to the last render tick
+    // at or before the end, and none after it.
+    let frames = Cadence::frames(Timestamp::ZERO, FPS);
+    let last_tick = frames.time_of(due(&frames, Duration::ZERO, end) - 1);
+    let video = pts_of(log, 0);
+    assert_eq!(*video.last().unwrap(), last_tick, "{p:?}");
+    assert_eq!(p.frames_exported, p.frames_encoded);
+    assert_eq!(video.len() as u64, p.frames_encoded);
+
+    // Audio: the encoder was flushed on its last final tick, so the packets cover
+    // every sample it got (the last frame padded with silence), the codec's delay
+    // included.
+    let audio = pts_of(log, 1);
+    let aac = SampleRate::HZ_48000.duration_of(1024);
+    for pair in audio.windows(2) {
+        let step = pair[1].saturating_since(pair[0]);
+        assert!(
+            step.abs_diff(aac) <= Duration::from_micros(1),
+            "audio gap or overlap: {pair:?}"
+        );
+    }
+    let out_frames = (audio.len() as u64 + p.start_drops) * 1024;
+    assert!(
+        out_frames >= audio_in,
+        "audio tail lost: {out_frames} frames out, {audio_in} in"
+    );
 }
 
 #[test]

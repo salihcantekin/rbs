@@ -437,6 +437,9 @@ pub struct Progress {
     pub packets_taken: u64,
     /// Packets the muxer dropped as out of order.
     pub mux_drops: u64,
+    /// Packets of other streams the output dropped because they end before the first
+    /// video packet (aligned start).
+    pub start_drops: u64,
     /// Largest output backlog (transport queue full).
     pub backlog_peak: u64,
     /// Render ticks skipped by a late render worker.
@@ -464,9 +467,10 @@ pub struct FinishReport {
     pub failure: Option<String>,
     /// Errors while the engine drained.
     pub shutdown_errors: Vec<String>,
-    /// Packets the video encoder still held at shutdown (lost, engine spec open
-    /// question). Frames in the export's readback ring and the audio encoder's last
-    /// frames are lost too and not counted.
+    /// Packets the video encoder still held when it left without a final tick (a drain
+    /// that timed out), lost. Frames still read back at the export when the recording
+    /// stopped without [`Recording::end`] (or past [`crate::END_TAIL_LIMIT`]) are lost
+    /// too and not counted.
     pub flush_lost: u64,
     /// Output items not delivered when the output finished.
     pub finish_lost: u64,
@@ -664,8 +668,22 @@ impl Recording {
         self.studio.mixer_anomalies()
     }
 
+    /// Ends the video at the master clock's now and keeps the frames still read back
+    /// (ADR-0044, [`Studio::end_recording`]). Keep calling [`Recording::service`] until
+    /// [`Recording::tail_done`], then [`Recording::finish`].
+    pub fn end(&mut self) {
+        self.studio.end_recording();
+    }
+
+    /// True once [`Recording::finish`] loses no video frame up to the end
+    /// ([`Studio::recording_tail_done`]): false before [`Recording::end`].
+    pub fn tail_done(&self) -> bool {
+        self.studio.recording_tail_done()
+    }
+
     /// Stops the recording: drains its encoders and output (the output writes the
-    /// container's trailer), then shuts the engine down, and reports.
+    /// container's trailer), then shuts the engine down, and reports. Without
+    /// [`Recording::end`] first, frames still read back for the video are lost.
     pub fn finish(mut self) -> FinishReport {
         let studio_failure = self.studio.failure();
         let (report, errors) = self.studio.shutdown();

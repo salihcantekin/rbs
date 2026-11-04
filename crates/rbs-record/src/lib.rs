@@ -27,4 +27,4 @@ pub use recording::{
     StartFailure, StartReport, VIDEO_ENCODER, VideoSettings,
 };
 pub use select::{Chosen, scheme_of};
-pub use studio::{MAX_LAYERS, OutputSettings, Studio, StudioSettings, Updated};
+pub use studio::{END_TAIL_LIMIT, MAX_LAYERS, OutputSettings, Studio, StudioSettings, Updated};

@@ -1,7 +1,7 @@
 //! Recording through the studio host: encoder choice, refusals and a clean stop, on the
-//! reference sources, fake encoders, a fake muxer and the file transport. The
-//! engine runs on a `TestClock` that never moves; the test waits for the host's
-//! updates, with a bound only as a hang guard (ADR-0032). Needs a GPU adapter
+//! reference sources, fake encoders, a fake muxer and the file transport. The engine
+//! runs on a `TestClock` that moves only to let a stop end; the test waits for the
+//! host's updates, with a bound only as a hang guard (ADR-0032). Needs a GPU adapter
 //! (software is fine); skipped without one unless `RBS_REQUIRE_GPU` is set.
 
 #![allow(clippy::unwrap_used, clippy::expect_used)] // Tests fail by panicking.
@@ -32,7 +32,7 @@ use rbs_core::time::TestClock;
 use rbs_engine::{Engine, EngineConfig};
 use rbs_gpu::{GpuContext, GpuError, GpuRequest};
 use rbs_mux::{Muxer, MuxerConfig, MuxerFactory, caps as mux_caps};
-use rbs_record::RecordAdapters;
+use rbs_record::{END_TAIL_LIMIT, RecordAdapters};
 
 /// Hang guard only: every wait ends as soon as its update arrives.
 const LIMIT: Duration = Duration::from_secs(20);
@@ -197,8 +197,9 @@ impl Muxer for FakeMuxer {
 const BROKEN: &str = "test.video-broken";
 const WORKING: &str = "test.video-working";
 
-fn host(gpu: Arc<GpuContext>) -> (StudioHost, Receiver<Update>) {
+fn host(gpu: Arc<GpuContext>, clock: &TestClock) -> (StudioHost, Receiver<Update>) {
     let (tx, rx) = mpsc::channel();
+    let clock = clock.clone();
     let mut config = HostConfig::desktop();
     config.preview = None;
     let host = StudioHost::spawn(
@@ -226,7 +227,7 @@ fn host(gpu: Arc<GpuContext>) -> (StudioHost, Receiver<Update>) {
             (a, Vec::new())
         },
         move || Ok(gpu),
-        || Engine::with_clock(Arc::new(TestClock::new()), EngineConfig::default()),
+        move || Engine::with_clock(Arc::new(clock.clone()), EngineConfig::default()),
         move |u| {
             let _ = tx.send(u);
         },
@@ -242,6 +243,27 @@ fn next<T>(rx: &Receiver<Update>, mut pick: impl FnMut(Update) -> Option<T>) -> 
         let left = deadline.saturating_duration_since(std::time::Instant::now());
         let u = rx.recv_timeout(left).expect("the host answered");
         if let Some(t) = pick(u) {
+            return t;
+        }
+    }
+}
+
+/// Like [`next`], calling `step` before each short wait for an update.
+fn next_while<T>(
+    rx: &Receiver<Update>,
+    mut step: impl FnMut(),
+    mut pick: impl FnMut(Update) -> Option<T>,
+) -> T {
+    let deadline = std::time::Instant::now() + LIMIT;
+    loop {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the host never answered"
+        );
+        step();
+        if let Ok(u) = rx.recv_timeout(Duration::from_millis(10))
+            && let Some(t) = pick(u)
+        {
             return t;
         }
     }
@@ -276,7 +298,8 @@ fn recordings_start_with_the_picked_encoder_and_stop_into_a_closed_file() {
     let Some(gpu) = gpu() else { return };
     let dir = std::env::temp_dir().join(format!("rbs-app-record-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
-    let (host, rx) = host(gpu);
+    let clock = TestClock::new();
+    let (host, rx) = host(gpu, &clock);
     let (encoders, cannot) = next(&rx, |u| match u {
         Update::Started {
             encoders,
@@ -354,8 +377,19 @@ fn recordings_start_with_the_picked_encoder_and_stop_into_a_closed_file() {
         other => panic!("{other:?}"),
     }
 
+    // Stop ends the video and waits for its tail (ADR-0044). Nothing renders on the
+    // still clock, so the host stops once `END_TAIL_LIMIT` has passed on it: the test
+    // moves the clock until the answer comes (it cannot know when the host ended).
     host.send(Command::StopRecording);
-    match recording(&rx) {
+    let stopped = next_while(
+        &rx,
+        || clock.advance(END_TAIL_LIMIT),
+        |u| match u {
+            Update::Recording(r) => Some(r),
+            _ => None,
+        },
+    );
+    match stopped {
         RecordingUpdate::Stopped { path, failure, .. } => {
             assert_eq!(path, first);
             assert_eq!(failure, None);

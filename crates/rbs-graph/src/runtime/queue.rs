@@ -29,7 +29,9 @@
 //!   reader fills the gap with silent blocks (up to one second, counted in
 //!   [`QueueStats::filled`]) so the consumer sees contiguous time. The writer rings
 //!   the consumer partition's [`Doorbell`]; the reader passes one block per tick and
-//!   rings its own doorbell while more are queued.
+//!   rings its own doorbell while more are queued, and on a final tick
+//!   (`Tick::draining`) after every block it passes, so the last final
+//!   tick of a draining consumer passes none (ADR-0044).
 //!
 //! Packet and audio queues are `std::sync::mpsc::sync_channel`s: bounded and preallocated;
 //! `try_send` and `try_recv` never allocate and never wait for the other side (they
@@ -661,7 +663,10 @@ impl<X: Runtime> Node<X> for AudioWriter {
 pub const AUDIO_FILL_LIMIT: Duration = Duration::from_secs(1);
 
 /// Passes on one queued audio block per tick; while more wait it rings its own
-/// partition's doorbell so the next tick comes at once. Where blocks were lost (a full
+/// partition's doorbell so the next tick comes at once. On a final tick it rings after
+/// any block it passed, so a draining partition runs one more final tick, on which it
+/// passes nothing: a consumer that sees a final tick without a block knows its input
+/// ended (ADR-0044). Where blocks were lost (a full
 /// queue, a bypassed producer) it passes on blocks of silence at the missing times
 /// first, up to [`AUDIO_FILL_LIMIT`], so the consumer's timeline stays continuous.
 pub struct AudioReader {
@@ -708,6 +713,7 @@ impl<X: Runtime> Node<X> for AudioReader {
         let Some(buffer) = self.take() else {
             return Ok(());
         };
+        let draining = ctx.tick().draining;
         let duration = buffer.format.sample_rate.duration_of(buffer.frames as u64);
         let mut out = ctx.outputs().audio(0)?;
         let n = buffer.format.channels.channels();
@@ -747,7 +753,10 @@ impl<X: Runtime> Node<X> for AudioReader {
         self.stats.received.fetch_add(1, Ordering::Relaxed);
         // The free channel has room for every buffer of this queue.
         let _ = self.free.try_send(buffer);
-        if self.stats.queued.load(Ordering::Acquire) > 0 {
+        // On a final tick (ADR-0044) it rings after every block it passed on, also the
+        // last: the partition's last final tick then passes nothing, which tells the
+        // consumer that its input ended.
+        if draining || self.stats.queued.load(Ordering::Acquire) > 0 {
             self.doorbell.ring();
         }
         result.map_err(NodeError::from)

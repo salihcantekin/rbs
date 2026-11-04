@@ -19,7 +19,7 @@ use rbs_graph::node::{LinkKind, NodeDescriptor, NodeKind, NodeTypeId, Pin};
 use rbs_graph::runtime::{
     Controller, Executor, Node, NodeError, PrepareCtx, ProcessCtx, Tick, channel,
 };
-use rbs_nodes::{CaptureSourceNode, VideoExportNode};
+use rbs_nodes::{CaptureSourceNode, ExportEnd, VideoExportNode};
 
 const W: u32 = 128;
 const H: u32 = 72;
@@ -97,6 +97,18 @@ impl Rig {
         id
     }
 
+    /// One render tick at 30 fps without waiting for the GPU: its readback may still
+    /// be in flight on later ticks.
+    fn tick_without_waiting(&mut self) -> Timestamp {
+        let cadence = Cadence::frames(Timestamp::ZERO, FrameRate::FPS_30);
+        let tick = Tick::of(&cadence, self.tick);
+        self.clock.set(tick.time);
+        self.exec.run_tick(tick);
+        self.tick += 1;
+        let _ = self.ctl.collect();
+        tick.time
+    }
+
     /// One render tick at 30 fps with the capture clock at the tick's time; the GPU is
     /// waited on afterwards so readbacks complete deterministically by the next tick.
     fn tick(&mut self) {
@@ -116,7 +128,7 @@ fn pipeline(
     target: &str,
     size: Option<Size>,
     formats: &[PixelFormat],
-) -> Option<(Rig, Frames, NodeId)> {
+) -> Option<(Rig, Frames, NodeId, Arc<ExportEnd>)> {
     let ctx = gpu()?;
     let (ctl, exec) = channel::<GpuRuntime>(Arc::clone(&ctx), RenderLocal::default());
     let clock = TestClock::new();
@@ -149,7 +161,9 @@ fn pipeline(
         vec![NodeLayer::new(capture, 0, 0.0, 0.0, W as f32, H as f32)],
     );
     let comp = rig.add(Box::new(comp));
-    let export = rig.add(Box::new(VideoExportNode::new(YuvFormat::Nv12, W, H)));
+    let export = VideoExportNode::new(YuvFormat::Nv12, W, H);
+    let end = export.end();
+    let export = rig.add(Box::new(export));
     let frames = Arc::new(Mutex::new(Vec::new()));
     let probe = rig.add(Box::new(Probe {
         desc: NodeDescriptor::new(
@@ -168,7 +182,7 @@ fn pipeline(
     assert!(report.failed.is_empty(), "{report:?}");
     rig.exec.swap_pending();
     let _ = rig.ctl.collect();
-    Some((rig, frames, export))
+    Some((rig, frames, export, end))
 }
 
 /// The luma and chroma bytes at the centre of an NV12 system frame.
@@ -202,7 +216,7 @@ fn expected_luma(grey: u8) -> u8 {
 
 #[test]
 fn a_window_is_captured_composited_and_exported_as_nv12() {
-    let Some((mut rig, frames, export)) = pipeline("test-window-0", None, &[PixelFormat::Bgra8])
+    let Some((mut rig, frames, export, _)) = pipeline("test-window-0", None, &[PixelFormat::Bgra8])
     else {
         return;
     };
@@ -237,7 +251,7 @@ fn a_window_is_captured_composited_and_exported_as_nv12() {
 
 #[test]
 fn a_camera_in_system_nv12_is_uploaded_decoded_and_exported() {
-    let Some((mut rig, frames, _)) = pipeline("test-camera-0", Some(Size::new(640, 480)), &[])
+    let Some((mut rig, frames, _, _)) = pipeline("test-camera-0", Some(Size::new(640, 480)), &[])
     else {
         return;
     };
@@ -252,4 +266,49 @@ fn a_camera_in_system_nv12_is_uploaded_decoded_and_exported() {
         // The test camera's pattern is a grey level of 32, 96 or 160 in every byte.
         assert!((16..=235).contains(&y), "luma {y}");
     }
+}
+
+#[test]
+fn an_ended_export_passes_on_every_canvas_up_to_the_end_and_none_after() {
+    let Some((mut rig, frames, export, end)) =
+        pipeline("test-window-0", None, &[PixelFormat::Bgra8])
+    else {
+        return;
+    };
+    for _ in 0..3 {
+        rig.tick();
+    }
+    // Without waiting, readbacks may still be in flight when the end is asked for, and
+    // several may complete in the same poll (on the run path the older ones would be
+    // stale; `take_oldest` is checked on its own in rbs-gpu). Three stay within the
+    // ring, so none is refused as busy.
+    let mut last = Timestamp::ZERO;
+    for _ in 0..3 {
+        last = rig.tick_without_waiting();
+    }
+    end.end_at(last);
+    assert_eq!(end.requested(), Some(last));
+    let mut ticks = 0;
+    while !end.ended() {
+        assert!(ticks < 8, "the export never ended");
+        rig.tick();
+        ticks += 1;
+    }
+    let cadence = Cadence::frames(Timestamp::ZERO, FrameRate::FPS_30);
+    let delivered: Vec<Timestamp> = frames
+        .lock()
+        .unwrap()
+        .iter()
+        .map(|f| f.timestamp())
+        .collect();
+    let expected: Vec<Timestamp> = (0..6).map(|i| cadence.time_of(i)).collect();
+    assert_eq!(delivered, expected, "every canvas up to the end, in order");
+    // Later canvases are not taken.
+    for _ in 0..3 {
+        rig.tick();
+    }
+    assert_eq!(frames.lock().unwrap().len(), 6);
+    assert!(end.ended());
+    let health = rig.exec.health(export).unwrap();
+    assert_eq!(health.errors, 0, "{health:?}");
 }
