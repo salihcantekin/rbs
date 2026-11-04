@@ -236,6 +236,22 @@ fn sources_change_layer_order_and_box_through_the_host() {
     assert_eq!(placed.rotation, camera_box.rotation);
     assert_eq!(placed.opacity, camera_box.opacity);
 
+    // A sound-only source between them does not count: one move takes the camera
+    // under the screen.
+    let inputs = targets(&host, &rx, SourceKind::AudioInput);
+    host.send(Command::AddSource {
+        kind: SourceKind::AudioInput,
+        target: inputs[0].clone(),
+    });
+    rows_where(&rx, |r| r.len() == 3);
+    host.send(Command::MoveSource {
+        id: camera,
+        up: false,
+    });
+    let rows = rows_where(&rx, |r| r.len() == 3 && r[2].id == camera);
+    assert_eq!(rows[1].id, screen, "{rows:?}");
+    assert!(rows[0].layout.is_none(), "audio has no box");
+
     // A zero size is refused and changes nothing.
     host.send(Command::SetSourceBox {
         id: camera,

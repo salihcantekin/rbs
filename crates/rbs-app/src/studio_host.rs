@@ -38,10 +38,10 @@ use rbs_record::{
     AudioSettings, OutputSettings, RecordAdapters, Studio, StudioSettings, VideoSettings,
 };
 use rbs_scene::SceneCollection;
-use rbs_scene::Undo;
 use rbs_scene::model::{
     CanvasId, ItemContent, Layout, SceneId, SceneItem, SceneScope, SettingValue, Settings, SourceId,
 };
+use rbs_scene::{SceneError, Undo};
 use rbs_sources::types::{self, keys};
 use rbs_sources::{SourceError, SourceTarget};
 
@@ -1344,35 +1344,52 @@ impl Host {
 
     /// The program scene's item that places `id`, and its index (0 is the bottom).
     fn item_of(&self, id: SourceId) -> Result<(usize, &SceneItem), String> {
-        let scene = self
-            .collection
-            .scene(self.scene)
-            .ok_or("the program scene is gone")?;
+        let gone = || "This source is not in the scene any more.".to_owned();
+        let scene = self.collection.scene(self.scene).ok_or_else(gone)?;
         scene
             .items
             .iter()
             .enumerate()
             .find(|(_, i)| i.content == ItemContent::Source(id))
-            .ok_or_else(|| "This source is not in the scene any more.".to_owned())
+            .ok_or_else(gone)
     }
 
-    /// One layer up or down; `Ok(false)` when it is already at that end.
+    /// True when the item shows a picture (a source that is not sound only).
+    fn has_picture(&self, item: &SceneItem) -> bool {
+        match item.content {
+            ItemContent::Source(id) => self
+                .collection
+                .source(id)
+                .and_then(|s| SourceKind::of(&s.type_id))
+                .is_some_and(|k| !k.is_audio()),
+            _ => true,
+        }
+    }
+
+    /// Over (`up`) or under the next source with a picture; sound-only items do not
+    /// count, because they draw nothing. `Ok(false)` when there is none that way.
     fn move_source(&mut self, id: SourceId, up: bool) -> Result<bool, String> {
         let (index, item) = self.item_of(id)?;
         let item = item.id;
-        let count = self
-            .collection
-            .scene(self.scene)
-            .map_or(0, |s| s.items.len());
-        let to = match (up, index) {
-            (true, i) if i + 1 < count => i + 1,
-            (false, i) if i > 0 => i - 1,
-            _ => return Ok(false),
+        let Some(scene) = self.collection.scene(self.scene) else {
+            return Ok(false);
         };
+        let mut others = scene
+            .items
+            .iter()
+            .enumerate()
+            .filter(|(i, it)| *i != index && self.has_picture(it))
+            .map(|(i, _)| i);
+        let to = if up {
+            others.find(|i| *i > index)
+        } else {
+            others.filter(|i| *i < index).last()
+        };
+        let Some(to) = to else { return Ok(false) };
         self.collection
             .move_item(item, to)
             .map(|_| true)
-            .map_err(|e| format!("{e:?}"))
+            .map_err(|e| edit_error(&e))
     }
 
     /// A new box for a source's picture; `Ok(false)` when it is already there.
@@ -1403,7 +1420,7 @@ impl Host {
         self.collection
             .set_item_layout(item, own, layout)
             .map(|_| true)
-            .map_err(|e| format!("{e:?}"))
+            .map_err(|e| edit_error(&e))
     }
 
     /// Runs the edited collection.
@@ -1473,6 +1490,19 @@ impl Host {
                 }
             })
             .collect()
+    }
+}
+
+/// A refused scene edit in words, with what to do.
+fn edit_error(e: &SceneError) -> String {
+    match e {
+        SceneError::InvalidLayout => {
+            "Position and size must be numbers, and the size cannot be 0.".to_owned()
+        }
+        SceneError::UnknownItem(_) | SceneError::UnknownScene(_) | SceneError::UnknownSource(_) => {
+            "This source is not in the scene any more.".to_owned()
+        }
+        other => format!("The scene could not be changed ({other:?}). Try again."),
     }
 }
 

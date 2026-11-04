@@ -6,8 +6,8 @@ import { Theme, Tokens } from "tokens.slint";
 import { Button, Checkbox, FocusRing, IconButton, IconName, MenuItem, MenuSurface, EmptyState, NumberField, Select, SegmentedControl, TextField } from "components.slint";
 
 // `picture`: a video source; `x`, `y`, `w`, `h` place its box on the canvas (canvas
-// pixels).
-export struct SourceData { id: int, name: string, kind: string, status: string, ok: bool, picture: bool, x: float, y: float, w: float, h: float }
+// pixels). `can-up` / `can-down`: another source with a picture is above / below it.
+export struct SourceData { id: int, name: string, kind: string, status: string, ok: bool, picture: bool, x: float, y: float, w: float, h: float, can-up: bool, can-down: bool }
 export struct KindData { code: int, label: string }
 export struct TargetData { name: string, is-default: bool }
 // One meter's moving parts as fractions of the bar (rbs_ui::meter::MeterView::zones),
@@ -293,9 +293,6 @@ export component ProgramPanel inherits Rectangle {
 
 component SourceRowView inherits Rectangle {
     in property <SourceData> data;
-    // Its place in the list (0 is the top layer) and the list's length.
-    in property <int> index;
-    in property <int> count;
     property <bool> selected: Studio.selected-source == data.id;
     height: Tokens.size-control-lg + Tokens.space-2;
     border-radius: Tokens.radius-sm;
@@ -317,6 +314,14 @@ component SourceRowView inherits Rectangle {
         clicked => { focus.focus(); Studio.select-source(data.id); }
     }
     FocusRing { show: focus.has-focus; }
+    // Selection is shown by a bar at the start too, not by colour alone (U7).
+    if selected: Rectangle {
+        x: 0;
+        y: Tokens.space-1;
+        width: Tokens.size-focus-ring;
+        height: parent.height - 2 * Tokens.space-1;
+        background: Theme.accent;
+    }
     HorizontalLayout {
         padding-left: Tokens.space-2;
         spacing: Tokens.space-1;
@@ -337,22 +342,23 @@ component SourceRowView inherits Rectangle {
                 overflow: elide;
             }
         }
-        // Order matters for pictures only: sound has no layer to stack.
-        if data.picture: VerticalLayout {
+        // Order matters for pictures only: sound has no layer to stack. Shown on the
+        // selected row only, so names and states keep their room.
+        if data.picture && selected: VerticalLayout {
             alignment: center;
             IconButton {
                 icon: IconName.chevron-up;
                 name: @tr("Move {} up", data.name);
-                enabled: index > 0;
+                enabled: data.can-up;
                 clicked => { Studio.move-source(data.id, true); }
             }
         }
-        if data.picture: VerticalLayout {
+        if data.picture && selected: VerticalLayout {
             alignment: center;
             IconButton {
                 icon: IconName.chevron-down;
                 name: @tr("Move {} down", data.name);
-                enabled: index < count - 1;
+                enabled: data.can-down;
                 clicked => { Studio.move-source(data.id, false); }
             }
         }
@@ -401,7 +407,7 @@ export component SourcesPanel inherits Rectangle {
             padding-right: Tokens.space-1;
             spacing: Tokens.space-1;
             alignment: start;
-            for s[i] in Studio.sources: SourceRowView { data: s; index: i; count: Studio.sources.length; }
+            for s in Studio.sources: SourceRowView { data: s; }
         }
     }
     property <bool> menu-open: add-menu.is-open;

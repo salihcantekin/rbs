@@ -65,6 +65,8 @@ pub struct StudioUi {
     sources: Rc<VecModel<SourceData>>,
     /// The selected source's id (-1 none), shown in every window's Properties.
     pub selected: i32,
+    /// An Add source is on its way: the next new source is selected.
+    adding: bool,
     kind_list: Vec<SourceKind>,
     kinds: Rc<VecModel<KindData>>,
     target_list: Vec<Target>,
@@ -169,6 +171,7 @@ impl StudioUi {
             rows: Vec::new(),
             sources: Rc::new(VecModel::default()),
             selected: -1,
+            adding: false,
             kind_list: Vec::new(),
             kinds: Rc::new(VecModel::default()),
             target_list: Vec::new(),
@@ -985,6 +988,7 @@ impl StudioUi {
         let kind = SourceKind::ALL.get(code as usize).copied();
         let target = self.target_list.get(index as usize).cloned();
         if let (Some(kind), Some(target)) = (kind, target) {
+            self.adding = true;
             self.send(Command::AddSource { kind, target });
         }
     }
@@ -1397,7 +1401,10 @@ impl StudioUi {
                 self.deleted = name;
                 self.deleted_serial += 1;
             }
-            Update::Error(e) => out.error = Some(e),
+            Update::Error(e) => {
+                self.adding = false;
+                out.error = Some(e);
+            }
             Update::Recording(r) => self.recording(r, &mut out),
             Update::Profile(p) => {
                 // A control API client changed the settings: show and save them.
@@ -1470,9 +1477,13 @@ impl StudioUi {
     }
 
     fn set_rows(&mut self, rows: Vec<SourceRow>) {
+        let pictures: Vec<usize> = (0..rows.len())
+            .filter(|i| rows[*i].layout.is_some())
+            .collect();
         let data: Vec<SourceData> = rows
             .iter()
-            .map(|r| {
+            .enumerate()
+            .map(|(i, r)| {
                 let (status, ok) = match &r.status {
                     SourceStatus::Running => ("Running".to_owned(), true),
                     SourceStatus::Idle => ("Not shown, closed".to_owned(), true),
@@ -1492,6 +1503,9 @@ impl StudioUi {
                     y,
                     w,
                     h,
+                    // Rows are top first.
+                    can_up: r.layout.is_some() && pictures.first().is_some_and(|f| *f < i),
+                    can_down: r.layout.is_some() && pictures.last().is_some_and(|l| *l > i),
                 }
             })
             .collect();
@@ -1499,8 +1513,9 @@ impl StudioUi {
         // spec, "Add source"); a selected source that is gone is not.
         let old: Vec<i32> = self.sources.iter().map(|d| d.id).collect();
         let mut new = data.iter().filter(|d| !old.contains(&d.id));
-        if let (Some(added), None) = (new.next(), new.next()) {
+        if let (true, Some(added), None) = (self.adding, new.next(), new.next()) {
             self.selected = added.id;
+            self.adding = false;
         } else if !data.iter().any(|d| d.id == self.selected) {
             self.selected = -1;
         }
