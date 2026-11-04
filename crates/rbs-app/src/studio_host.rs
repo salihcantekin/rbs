@@ -12,7 +12,7 @@
 
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::sync::Mutex;
+use std::sync::Weak;
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
 use std::thread::JoinHandle;
 use std::time::Duration;
@@ -431,7 +431,7 @@ fn preview_desc(size: Size, surfaces: usize) -> PreviewDesc {
 
 /// The running control thread. Dropping it stops the studio and joins the thread.
 pub struct StudioHost {
-    tx: Option<Sender<Msg>>,
+    tx: Option<Arc<Sender<Msg>>>,
     thread: Option<JoinHandle<()>>,
 }
 
@@ -448,6 +448,7 @@ impl StudioHost {
         notify: impl Fn(Update) + Send + 'static,
     ) -> std::io::Result<Self> {
         let (tx, rx) = mpsc::channel();
+        let tx = Arc::new(tx);
         let thread = std::thread::Builder::new()
             .name("rbs-studio".into())
             .spawn(move || run(config, adapters, gpu, engine, rx, &notify))?;
@@ -474,11 +475,12 @@ impl StudioHost {
     }
 
     /// Wakes the control thread when the API forwarded a request. Never blocks.
+    /// It holds no strong reference to the channel, so dropping the host still closes
+    /// it and ends the control thread while an `ApiServer` keeps the waker.
     pub fn api_waker(&self) -> impl Fn() + Send + Sync + 'static {
-        let tx = Mutex::new(self.tx.clone());
+        let tx: Weak<Sender<Msg>> = self.tx.as_ref().map(Arc::downgrade).unwrap_or_default();
         move || {
-            let tx = tx.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-            if let Some(tx) = tx.as_ref() {
+            if let Some(tx) = tx.upgrade() {
                 let _ = tx.send(Msg::ApiWake);
             }
         }
@@ -592,13 +594,15 @@ fn run(
         // next `recv_timeout` first, so the local user always goes first (decision 5).
         let served_api = match &failed {
             None => host.serve_api(notify),
-            Some(why) => host.api.as_ref().is_some_and(|api| {
-                api.serve_one(&mut Refuse(why.clone()), &mut EventPublisher::new())
-            }),
+            Some(why) => host
+                .api
+                .as_ref()
+                .is_some_and(|api| api.serve_one(&mut Refuse(why.clone()), &mut host.events)),
         };
         if failed.is_none()
             && let Some(why) = host.dead.take()
         {
+            host.stop_recording(Some(why.clone()), notify);
             failed = Some(why.clone());
             notify(Update::Failed(why));
         }
@@ -617,6 +621,8 @@ fn run(
             wait = Duration::ZERO;
         }
         if let Some(why) = host.studio.failure() {
+            // Clients see the recording end with the failure instead of a stale state.
+            host.stop_recording(Some(why.clone()), notify);
             failed = Some(why.clone());
             notify(Update::Failed(why));
             continue;
@@ -1361,7 +1367,7 @@ impl ApiTarget<'_> {
                 data: host.api_settings(),
             })),
             C::SettingsSet(patch) => {
-                if let Some(profiles) = &patch.profiles {
+                let profile = if let Some(profiles) = &patch.profiles {
                     let [p] = profiles.as_slice() else {
                         return Err(ApiError::new(
                             ErrorKind::InvalidParams,
@@ -1379,21 +1385,35 @@ impl ApiTarget<'_> {
                             "stop the recording before changing its settings",
                         ));
                     }
-                    if let Some(canvas) = &patch.canvas {
-                        // Checked before anything changes, so a bad canvas leaves the
-                        // profile as it was.
-                        canvas_profile(canvas)?;
-                    }
-                    if profile != host.profile {
-                        host.profile = profile.clone();
-                        notify(Update::Profile(profile));
-                        host.settings_changed();
-                    }
-                }
+                    Some(profile)
+                } else {
+                    None
+                };
+                // The canvas goes first: it is the part that can still fail, and then
+                // nothing of the patch has been applied.
                 if let Some(canvas) = &patch.canvas {
                     let c = canvas_profile(canvas)?;
-                    host.change_canvas(c.size(), c.frame_rate(), notify)
-                        .map_err(|why| ApiError::new(ErrorKind::Conflict, why))?;
+                    let same = host
+                        .collection
+                        .canvas(host.canvas)
+                        .is_some_and(|k| k.size == c.size() && k.frame_rate == c.frame_rate());
+                    if !same {
+                        if host.recording.is_some() {
+                            return Err(ApiError::new(
+                                ErrorKind::Conflict,
+                                "stop the recording before changing the canvas",
+                            ));
+                        }
+                        host.change_canvas(c.size(), c.frame_rate(), notify)
+                            .map_err(failed)?;
+                    }
+                }
+                if let Some(profile) = profile
+                    && profile != host.profile
+                {
+                    host.profile = profile.clone();
+                    notify(Update::Profile(profile));
+                    host.settings_changed();
                 }
                 Ok(Response::Settings(api::Snapshot {
                     seq: host.events.seq_map([Topic::SettingsChanged]),
@@ -1409,6 +1429,18 @@ impl ApiTarget<'_> {
     fn record(&mut self, path: PathBuf, explicit: bool) -> Result<Response, ApiError> {
         let notify = self.notify;
         let host = &mut *self.host;
+        if explicit && !path.is_absolute() {
+            return Err(ApiError::new(
+                ErrorKind::InvalidParams,
+                format!("{} is not a full path", path.display()),
+            ));
+        }
+        if explicit && path.exists() {
+            return Err(ApiError::new(
+                ErrorKind::FileExists,
+                format!("{} already exists", path.display()),
+            ));
+        }
         if let Some(why) = &host.cannot_record {
             return Err(failed(why.clone()));
         }
@@ -1416,12 +1448,6 @@ impl ApiTarget<'_> {
             return Err(ApiError::new(
                 ErrorKind::Conflict,
                 "a recording is already running",
-            ));
-        }
-        if explicit && path.exists() {
-            return Err(ApiError::new(
-                ErrorKind::FileExists,
-                format!("{} already exists", path.display()),
             ));
         }
         let p = &host.profile;
@@ -1460,9 +1486,6 @@ impl ApiTarget<'_> {
                 // The UI shows the recording as if its own button started it.
                 notify(Update::Recording(update));
                 Ok(Response::RecordStarted(started))
-            }
-            Err(why) if why.contains("already exists") => {
-                Err(ApiError::new(ErrorKind::FileExists, why))
             }
             Err(why) => Err(failed(why)),
         }

@@ -16,7 +16,7 @@ use rbs_api::session::ServerConfig;
 use rbs_api::thread::ApiOptions;
 use rbs_api::transport::{CloseReason, ConnectionHandle, ConnectionSender, PeerInfo, SendError};
 use rbs_api::{ApiServer, TokenStore};
-use rbs_app::studio_host::{HostConfig, StudioHost, Update};
+use rbs_app::studio_host::{Command, HostConfig, StudioHost, Update};
 use rbs_audio_io_test::TestAudioBackend;
 use rbs_capture_test::TestCaptureFactory;
 use rbs_core::time::TestClock;
@@ -181,7 +181,7 @@ fn a_control_api_client_drives_the_studio() {
 
     let sub = c.call(
         "events.subscribe",
-        json!({"topics": ["source.changed", "settings.changed", "record.state"]}),
+        json!({"topics": ["source.changed", "settings.changed", "record.state", "canvas.changed"]}),
     );
     assert_eq!(sub["result"]["seq"]["source.changed"], 0);
 
@@ -239,6 +239,45 @@ fn a_control_api_client_drives_the_studio() {
     assert_eq!(status["result"]["data"]["state"], "idle");
     let other = c.call("record.start", json!({"profile": "other"}));
     assert_eq!(other["error"]["data"]["kind"], "not_found");
+    let stop = c.call("record.stop", json!({}));
+    assert_eq!(stop["error"]["data"]["kind"], "conflict", "{stop}");
+    let relative = c.call(
+        "record.start_to_file",
+        json!({"profile": "default", "path": "relative.mkv"}),
+    );
+    assert_eq!(
+        relative["error"]["data"]["kind"], "invalid_params",
+        "{relative}"
+    );
+    let existing = std::env::current_exe().unwrap();
+    let exists = c.call(
+        "record.start_to_file",
+        json!({"profile": "default", "path": existing}),
+    );
+    assert_eq!(exists["error"]["data"]["kind"], "file_exists", "{exists}");
+
+    // A UI edit reaches API clients.
+    let mut ui_profile = p.clone();
+    ui_profile.audio_kbps = 192;
+    host.send(Command::SetProfile(ui_profile));
+    c.event("settings.changed", |d| {
+        d["profiles"][0]["audio_kbps"] == 192
+    });
+
+    // The canvas: the studio restarts, the UI and API clients are told.
+    let canvas = c.call(
+        "settings.set",
+        json!({"canvas": {"width": 1280, "height": 720, "fps_num": 30, "fps_den": 1}}),
+    );
+    assert_eq!(
+        canvas["result"]["data"]["canvas"]["width"], 1280,
+        "{canvas}"
+    );
+    c.event("canvas.changed", |d| d["width"] == 1280);
+    next(&updates, |u| match u {
+        Update::Canvas { size, .. } if size.width == 1280 => Some(()),
+        _ => None,
+    });
 
     let del = c.call("source.delete", json!({"source": id}));
     assert!(del["result"].is_object(), "{del}");
@@ -251,7 +290,11 @@ fn a_control_api_client_drives_the_studio() {
         d.as_array().is_some_and(|a| a.len() == 1)
     });
 
-    host.detach_api();
-    drop(api);
+    let none = c.call("edit.undo", json!({}));
+    assert_eq!(none["error"]["data"]["kind"], "conflict", "{none}");
+
+    // The host goes first while the server still holds its waker: the control thread
+    // must end anyway (the drop would hang otherwise).
     drop(host);
+    drop(api);
 }

@@ -190,7 +190,7 @@ Some commands change the state of one UI client, not of the engine: for example 
 
 ## Undo
 
-One user undo stack for the scene collection, shared by all clients. `edit.undo` from a panel can undo the desktop user's last edit, as in a shared document. An undo record used out of order returns `undo_conflict`. The serialisable operation type joins the schema as a minor addition with the scene document format ADR.
+One user undo stack for the scene collection, shared by all clients. `edit.undo` from a panel can undo the desktop user's last edit, as in a shared document. An undo record used out of order returns `undo_conflict`. `edit.undo` with nothing to undo returns `conflict`. The serialisable operation type joins the schema as a minor addition with the scene document format ADR.
 
 ## Compatibility
 
@@ -209,7 +209,8 @@ An OBS WebSocket (v5) compatibility layer (subset) is a separate optional adapte
 
 - `rbs-api` implements the types and JSON codec of the first slice, tokens and the token store, scopes, the session state machine (`Server`), the control-thread side (`ControlTarget`, `ControlEndpoint`, `EventPublisher` with `seq` per state key and the event slots), the `ControlTransport` port with the bounded `TransportInbox`, the shared `Origin`/`Host` check for WebSocket adapters (`UpgradePolicy`), and the API thread (`ApiServer`).
 - `rbs-app` serves the API from its control thread (`StudioHost`): an `ApiTarget` implements `ControlTarget` for studio, source, edit, output, record and settings commands and publishes `source.changed`, `canvas.changed`, `settings.changed` and `record.state` events through one `EventPublisher`. API requests are drained after the UI's own commands. The control thread holds the authoritative copy of the recording profile; the UI sends it each change, and an API `settings.set` comes back to the UI, which still writes the settings files. Nothing in `main.rs` starts an `ApiServer` yet, so the API stays off (no settings switch until a transport exists).
-- Not yet: the `schema` feature with the generated JSON Schema, its snapshot test and difference classifier (`api.describe` lists methods, scopes and topics until then); the transport conformance suite (lands with the first adapter, `rbs-api-ws`); `stats` sampling; `ui.*` routing; the U20 test, which needs the UI's own commands on `rbs-api` too; the idle-cost check by thread count (by construction today: off constructs nothing; on without a session sets no deadline, tested).
+- Not yet: `edit.redo` (answers `failed` until the scene collection keeps a redo stack); concurrent settings edits from the UI and an API client are last-writer-wins, and an in-progress UI edit is replaced without notice;
+  the `schema` feature with the generated JSON Schema, its snapshot test and difference classifier (`api.describe` lists methods, scopes and topics until then); the transport conformance suite (lands with the first adapter, `rbs-api-ws`); `stats` sampling; `ui.*` routing; the U20 test, which needs the UI's own commands on `rbs-api` too; the idle-cost check by thread count (by construction today: off constructs nothing; on without a session sets no deadline, tested).
 
 ## Open questions
 
