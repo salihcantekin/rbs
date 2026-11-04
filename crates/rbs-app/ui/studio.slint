@@ -533,7 +533,7 @@ export component RecordingSettings inherits Rectangle {
                         label: Studio.out-bitrate-label;
                         options: Studio.out-video-rates;
                         index: Studio.out-video-rate;
-                        enabled: idle;
+                        enabled: idle && Studio.out-rate-kind != 2;
                         selected(i) => { Studio.set-video-rate(i); }
                     }
                 }
@@ -546,7 +546,7 @@ export component RecordingSettings inherits Rectangle {
                         label: @tr("Quality level");
                         options: Studio.out-qualities;
                         index: Studio.out-quality;
-                        enabled: idle;
+                        enabled: idle && Studio.out-rate-kind == 2;
                         selected(i) => { Studio.set-quality(i); }
                     }
                     Hint { text: @tr("Lower is better quality and larger files."); }
@@ -568,8 +568,8 @@ export component RecordingSettings inherits Rectangle {
             Button {
                 text: root.advanced ? @tr("Hide advanced settings") : @tr("Show advanced settings");
                 kind: "ghost";
-                icon: IconName.chevron-down;
-                checked: root.advanced;
+                // The text says the state; the chevron shows only while closed.
+                icon: root.advanced ? IconName.none : IconName.chevron-down;
                 clicked => { root.advanced = !root.advanced; }
             }
         }
@@ -590,8 +590,8 @@ export component RecordingSettings inherits Rectangle {
                     }
                     Hint {
                         text: Studio.out-rate-kind == 0 ? @tr("CBR: the same bitrate all the time. The default.")
-                            : Studio.out-rate-kind == 1 ? @tr("VBR: the bitrate follows the picture, up to the maximum.")
-                            : @tr("Constant quality: the same quality all the time; file size varies.");
+                            : Studio.out-rate-kind == 1 ? @tr("VBR: the bitrate follows the picture, up to the maximum. CBR is the default.")
+                            : @tr("Constant quality: the same quality all the time; file size varies. CBR is the default.");
                     }
                 }
                 Shown {
@@ -603,9 +603,10 @@ export component RecordingSettings inherits Rectangle {
                             label: @tr("Maximum bitrate");
                             options: Studio.out-peaks;
                             index: Studio.out-peak;
-                            enabled: idle && root.advanced;
+                            enabled: idle && root.advanced && Studio.out-rate-kind == 1;
                             selected(i) => { Studio.set-peak(i); }
                         }
+                        Hint { text: @tr("The most VBR may use for a moment. Automatic is 1.5 x the target bitrate."); }
                     }
                 }
                 Shown {
@@ -614,7 +615,7 @@ export component RecordingSettings inherits Rectangle {
                     Checkbox {
                         text: @tr("Pad to the full bitrate");
                         checked: Studio.out-padding;
-                        enabled: idle && root.advanced && Studio.out-padding-available;
+                        enabled: idle && root.advanced && Studio.out-rate-kind == 0 && Studio.out-padding-available;
                         toggled(on) => { Studio.set-padding(on); }
                     }
                     Hint {
@@ -633,6 +634,7 @@ export component RecordingSettings inherits Rectangle {
                     enabled: idle && root.advanced;
                     selected(i) => { Studio.set-keyframe(i); }
                 }
+                Hint { text: @tr("How often a full picture is stored. Shorter makes seeking faster and files larger."); }
             }
             Field {
                 label: @tr("Encoder preset");
@@ -654,6 +656,7 @@ export component RecordingSettings inherits Rectangle {
                     enabled: idle && root.advanced;
                     selected(i) => { Studio.set-profile(i); }
                 }
+                Hint { text: @tr("Automatic lets the encoder pick, the default. Baseline plays on the oldest devices."); }
             }
             Field {
                 label: @tr("B-frames");
@@ -664,7 +667,10 @@ export component RecordingSettings inherits Rectangle {
                     enabled: idle && root.advanced && Studio.out-b-frames-note == "";
                     selected(i) => { Studio.set-b-frames(i); }
                 }
-                if Studio.out-b-frames-note != "": Hint { text: Studio.out-b-frames-note; }
+                Hint {
+                    text: Studio.out-b-frames-note != "" ? Studio.out-b-frames-note
+                        : @tr("More B-frames save bits and add a little delay. 0 is the default.");
+                }
             }
         }
         if Studio.out-note != "": Text {

@@ -92,7 +92,7 @@ impl EncoderForm {
             Choices::with_current(modes, profile.rate_control, |m| m.label().to_owned());
 
         let auto = format!(
-            "Automatic ({} kbit/s, 1.5 x the bitrate)",
+            "Automatic ({} kbit/s, 1.5 x the target bitrate)",
             profile.video_kbps.saturating_mul(3) / 2
         );
         let mut peaks = vec![(auto, None)];
@@ -203,7 +203,7 @@ mod tests {
         assert_eq!(f.peaks.index, 0, "automatic");
         assert_eq!(
             f.peaks.items[0].0,
-            "Automatic (18000 kbit/s, 1.5 x the bitrate)"
+            "Automatic (18000 kbit/s, 1.5 x the target bitrate)"
         );
         assert!(f.peaks.items[1..].iter().all(|(_, k)| k.unwrap() >= 12_000));
         assert_eq!(f.qualities.items[f.qualities.index].1, 23);

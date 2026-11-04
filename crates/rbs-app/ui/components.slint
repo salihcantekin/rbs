@@ -297,13 +297,15 @@ export component Select inherits Rectangle {
 
 // Checkbox: an on/off setting with its label beside the box. Toggled by click, Space
 // or Enter; the label is the accessible name and the state is shown by the check mark
-// as well as the fill (never by colour alone, U7).
+// as well as the fill (never by colour alone, U7). States: unchecked, checked, hover
+// (accent border), pressed (overlay or hover fill), focused (focus ring) and disabled
+// (subtle border, disabled ink, no input). A long label wraps and the row grows.
 export component Checkbox inherits Rectangle {
     in property <string> text;
     in property <bool> checked;
     in property <bool> enabled: true;
     callback toggled(bool);
-    height: Tokens.size-control-md;
+    min-height: Tokens.size-control-md;
     accessible-role: checkbox;
     accessible-label: text;
     accessible-checked: checked;
@@ -321,8 +323,11 @@ export component Checkbox inherits Rectangle {
                 height: Tokens.size-icon-box;
                 border-radius: Tokens.radius-sm;
                 border-width: Tokens.size-border;
-                border-color: root.enabled ? Theme.border-strong : Theme.border-subtle;
-                background: root.checked && root.enabled ? Theme.accent : Theme.surface-sunken;
+                border-color: !root.enabled ? Theme.border-subtle
+                    : touch.has-hover ? Theme.accent : Theme.border-strong;
+                background: !root.enabled ? Theme.surface-sunken
+                    : root.checked ? (touch.pressed ? Theme.accent-hover : Theme.accent)
+                    : touch.pressed ? Theme.surface-overlay : Theme.surface-sunken;
                 Icon {
                     name: root.checked ? IconName.check : IconName.none;
                     ink: root.enabled ? Theme.text-inverse : Theme.text-disabled;
