@@ -497,6 +497,8 @@ impl StudioUi {
             Ok(()) => String::new(),
             Err(e) => format!("The recording settings could not be saved: {e}"),
         };
+        // The control thread keeps a copy for control API clients (ADR-0044).
+        self.send(Command::SetProfile(self.profile.clone()));
     }
 
     /// The canvas sizes offered, with their labels: the presets, the main display's
@@ -620,6 +622,7 @@ impl StudioUi {
                     log(&n);
                 }
                 self.state = 1;
+                self.send(Command::SetProfile(self.profile.clone()));
                 self.kind_list = kinds;
                 let rows: Vec<KindData> = self
                     .kind_list
@@ -694,6 +697,12 @@ impl StudioUi {
             }
             Update::Error(e) => out.error = Some(e),
             Update::Recording(r) => self.recording(r, &mut out),
+            Update::Profile(p) => {
+                // A control API client changed the settings: show and save them.
+                self.profile = p;
+                self.folder_serial += 1;
+                self.save_profile();
+            }
         }
         out
     }
