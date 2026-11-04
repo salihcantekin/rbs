@@ -53,16 +53,14 @@ fn recordings_start_and_stop_while_the_studio_keeps_running() {
 
     for (round, url) in ["mem://first", "mem://second"].into_iter().enumerate() {
         let out = OutputSettings::new(url, ContainerId::Matroska);
-        assert_eq!(studio.link(), None, "no output, no link");
-        let started = studio.start_recording(&r.adapters, &out).unwrap().clone();
+        assert!(studio.outputs().is_empty(), "no output");
+        let id = studio.start_output(&r.adapters, &out).unwrap();
+        let started = studio.output(id).unwrap().clone();
+        assert!(!started.video_shared && !started.audio_shared);
         assert_eq!(started.sources.len(), 4, "{started:?}");
         assert!(started.sources.iter().all(|s| s.failed.is_none()));
-        assert!(studio.is_recording());
-        assert!(studio.link().is_some());
-        assert!(matches!(
-            studio.start_recording(&r.adapters, &out),
-            Err(RecordError::AlreadyRecording)
-        ));
+        assert_eq!(studio.outputs(), [id]);
+        assert!(studio.link(id).is_some());
         let before = (log.count(0), log.count(1));
         let reached = run_until(&mut studio, &clock, |_| {
             log.count(0) >= before.0 + 8 && log.count(1) >= before.1 + 12
@@ -78,7 +76,7 @@ fn recordings_start_and_stop_while_the_studio_keeps_running() {
             workers(&studio)
         );
 
-        let report = studio.stop_recording().unwrap();
+        let report = studio.stop_output(id).unwrap();
         assert!(report.shutdown_errors.is_empty(), "{report:?}");
         assert_eq!(report.failure, None);
         assert!(report.progress.packets_muxed() > 0);
@@ -91,9 +89,9 @@ fn recordings_start_and_stop_while_the_studio_keeps_running() {
             n,
             "transport finished"
         );
-        assert!(!studio.is_recording());
-        assert!(studio.stop_recording().is_none());
-        assert_eq!(studio.link(), None);
+        assert!(studio.outputs().is_empty());
+        assert!(studio.stop_output(id).is_none());
+        assert_eq!(studio.link(id), None);
 
         // The recording's partitions stopped; the audio kept running; video sources
         // are closed again (nothing shows them).
@@ -108,7 +106,7 @@ fn recordings_start_and_stop_while_the_studio_keeps_running() {
     assert_eq!(streams[1].codec, CodecId::Aac);
 
     let (report, errors) = studio.shutdown();
-    assert!(report.is_none());
+    assert!(report.is_empty());
     assert!(errors.is_empty(), "{errors:?}");
     assert_eq!(studio.engine().workers(), 0);
     assert_eq!(r.audio.active_streams(), 0);
@@ -131,7 +129,7 @@ fn a_recording_that_cannot_start_leaves_the_studio_running() {
 
     // No muxer for the container: refused before anything is added.
     let err = studio
-        .start_recording(
+        .start_output(
             &r.adapters,
             &OutputSettings::new("mem://x", ContainerId::Mp4Fragmented),
         )
@@ -142,7 +140,7 @@ fn a_recording_that_cannot_start_leaves_the_studio_running() {
     // The destination cannot be opened: the output fails in `prepare`, the recording's
     // nodes are removed again and the studio runs on.
     let err = studio
-        .start_recording(
+        .start_output(
             &r.adapters,
             &OutputSettings::new("mem://fail", ContainerId::Matroska),
         )
@@ -153,20 +151,20 @@ fn a_recording_that_cannot_start_leaves_the_studio_running() {
         }
         other => panic!("{other}"),
     }
-    assert!(!studio.is_recording());
+    assert!(studio.outputs().is_empty());
     assert_eq!(workers(&studio), [false, true, false, false, false]);
     assert_eq!(r.log.headers.load(Ordering::Relaxed), 0);
 
     // The next recording works.
-    studio
-        .start_recording(
+    let id = studio
+        .start_output(
             &r.adapters,
             &OutputSettings::new("mem://ok", ContainerId::Matroska),
         )
         .unwrap();
     let reached = run_until(&mut studio, &clock, |_| r.log.count(0) >= 4);
     assert!(reached, "{:?}", studio.progress());
-    let report = studio.stop_recording().unwrap();
+    let report = studio.stop_output(id).unwrap();
     assert!(report.shutdown_errors.is_empty(), "{report:?}");
     assert_eq!(r.log.trailers.load(Ordering::Relaxed), 1);
     let (_, errors) = studio.shutdown();
@@ -188,8 +186,8 @@ fn scene_edits_open_and_close_sources_while_it_runs() {
         &StudioSettings::new(canvas),
     )
     .unwrap();
-    studio
-        .start_recording(
+    let id = studio
+        .start_output(
             &r.adapters,
             &OutputSettings::new("mem://edit", ContainerId::Matroska),
         )
@@ -266,7 +264,7 @@ fn scene_edits_open_and_close_sources_while_it_runs() {
     let reached = run_until(&mut studio, &clock, |_| r.log.count(0) >= before + 3);
     assert!(reached);
     assert_eq!(studio.mixer_anomalies(), 0);
-    let report = studio.stop_recording().unwrap();
+    let report = studio.stop_output(id).unwrap();
     assert!(report.shutdown_errors.is_empty(), "{report:?}");
     let (_, errors) = studio.shutdown();
     assert!(errors.is_empty(), "{errors:?}");

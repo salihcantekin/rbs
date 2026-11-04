@@ -13,7 +13,7 @@ use rbs_audio::{
 };
 use rbs_codec::{AudioEncoderConfig, EncoderTuning, VideoEncoderConfig};
 use rbs_core::lifecycle::Lifecycle;
-use rbs_core::media::{ContainerId, MemoryKind};
+use rbs_core::media::{ContainerId, MemoryKind, StreamDescriptor};
 use rbs_core::time::Timestamp;
 use rbs_core::timing::{Cadence, FrameRate};
 use rbs_engine::{Applied, DEFAULT_DOORBELL_TIMER, Engine, Pacing, Serviced, WorkerStats};
@@ -216,26 +216,59 @@ struct Added {
     gpu: bool,
 }
 
-/// Adapters chosen for a recording, nothing in the graph yet.
+/// Outputs a studio runs at once (ADR-0047): a recording and a live stream.
+pub const MAX_OUTPUTS: usize = 2;
+
+/// One of a studio's running outputs, from [`Studio::start_output`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct OutputId(u64);
+
+/// The video half of a prepared output: a new export and encoder, or a running
+/// encoder chain shared with another output.
+enum VideoPlan {
+    New {
+        export: Box<VideoExportNode>,
+        encoder: Box<VideoEncoderNode>,
+        chosen: Chosen,
+        settings: VideoSettings,
+    },
+    Shared(usize),
+}
+
+/// The audio half of a prepared output.
+enum AudioPlan {
+    None,
+    New {
+        node: Box<EncoderNode>,
+        chosen: Chosen,
+        settings: AudioSettings,
+        stream: StreamDescriptor,
+    },
+    Shared(usize),
+}
+
+/// Adapters chosen for an output, nothing in the graph yet.
 pub(crate) struct Prepared {
-    export: VideoExportNode,
-    video_encoder: VideoEncoderNode,
-    video_chosen: Chosen,
-    audio: Option<(EncoderNode, Chosen)>,
+    video: VideoPlan,
+    audio: AudioPlan,
     output: OutputNode,
     muxer: Option<Chosen>,
     transport: Chosen,
 }
 
 impl Prepared {
-    /// Chooses every adapter of a recording of a `width x height` canvas at `fps`; opens
-    /// only the encoder sessions (their stream descriptors make the output).
+    /// Chooses every adapter of an output of a `width x height` canvas at `fps`; opens
+    /// only the encoder sessions it does not share (their stream descriptors make the
+    /// output). A running encoder in `running` is shared when the output's settings
+    /// equal the ones it was opened with and its adapter is a candidate of this
+    /// output's selection (ADR-0047 decision 3).
     pub(crate) fn choose(
         adapters: &RecordAdapters,
         out: &OutputSettings,
         (width, height): (u32, u32),
         fps: FrameRate,
         audio_graph: AudioGraphConfig,
+        running: &Chains,
     ) -> Result<Self, RecordError> {
         // System memory: the export reads the canvas back (the P4 exception of
         // ADR-0038); native export will take the memory kind from the encoder.
@@ -258,17 +291,68 @@ impl Prepared {
             Some(profile) => video_config.with_profile(profile.clone()),
             None => video_config,
         };
-        let (video_encoder, video_chosen) =
-            select::video_encoder(&adapters.video_encoders, &video_config)?;
-        let mut streams = vec![video_encoder.stream().clone()];
+        let shared_video = running.video.iter().position(|c| {
+            c.as_ref().is_some_and(|c| {
+                c.settings == out.video
+                    && select::is_video_candidate(
+                        &adapters.video_encoders,
+                        &video_config,
+                        &c.chosen.adapter,
+                    )
+            })
+        });
+        let (video, video_stream) =
+            match shared_video.and_then(|i| Some((i, running.video[i].as_ref()?))) {
+                Some((i, chain)) => (VideoPlan::Shared(i), chain.stream.clone()),
+                None => {
+                    let (encoder, chosen) =
+                        select::video_encoder(&adapters.video_encoders, &video_config)?;
+                    let stream = encoder.stream().clone();
+                    (
+                        VideoPlan::New {
+                            export: Box::new(export),
+                            encoder: Box::new(encoder),
+                            chosen,
+                            settings: out.video.clone(),
+                        },
+                        stream,
+                    )
+                }
+            };
+        let mut streams = vec![video_stream];
         let audio = match &out.audio {
             Some(a) => {
                 let config = AudioEncoderConfig::new(a.codec, audio_graph.format, a.bitrate_bps);
-                let (session, chosen) = select::audio_encoder(&adapters.audio_encoders, &config)?;
-                streams.push(session.stream().clone());
-                Some((EncoderNode::new(session, AUDIO_ENCODER_PACKETS), chosen))
+                let shared = running.audio.iter().enumerate().find_map(|(i, c)| {
+                    let c = c.as_ref()?;
+                    (c.settings == *a
+                        && select::is_audio_candidate(
+                            &adapters.audio_encoders,
+                            &config,
+                            &c.chosen.adapter,
+                        ))
+                    .then_some((i, c))
+                });
+                match shared {
+                    Some((i, chain)) => {
+                        streams.push(chain.stream.clone());
+                        AudioPlan::Shared(i)
+                    }
+                    None => {
+                        let (session, chosen) =
+                            select::audio_encoder(&adapters.audio_encoders, &config)?;
+                        let stream = session.stream().clone();
+                        streams.push(stream.clone());
+                        AudioPlan::New {
+                            node: Box::new(EncoderNode::new(session, AUDIO_ENCODER_PACKETS)),
+                            chosen,
+                            settings: a.clone(),
+                            stream,
+                        }
+                    }
+                }
             }
-            None => None,
+            None => AudioPlan::None,
         };
         let muxer = match out.container() {
             Some(container) => Some((select::muxer(&adapters.muxers, container)?, container)),
@@ -285,9 +369,7 @@ impl Prepared {
             None => None,
         };
         Ok(Self {
-            export,
-            video_encoder,
-            video_chosen,
+            video,
             audio,
             output,
             muxer,
@@ -296,24 +378,72 @@ impl Prepared {
     }
 }
 
-/// The running recording's nodes and counters.
+/// A running video export and encoder, used by one or more outputs.
+struct VideoChain {
+    settings: VideoSettings,
+    chosen: Chosen,
+    stream: StreamDescriptor,
+    export: Added,
+    encoder: Added,
+    export_stats: Arc<ExportNodeStats>,
+    encoder_stats: Arc<EncoderNodeStats>,
+    /// The queue into the encoder's partition, found after the apply that scheduled it.
+    queue: Option<Arc<QueueStats>>,
+}
+
+/// A running audio encoder, used by one or more outputs.
+struct AudioChain {
+    settings: AudioSettings,
+    chosen: Chosen,
+    stream: StreamDescriptor,
+    encoder: Added,
+    dropped: Arc<AtomicU64>,
+    queue: Option<Arc<QueueStats>>,
+}
+
+/// The encoder chains running, by slot (the slot picks their partitions).
+#[derive(Default)]
+pub(crate) struct Chains {
+    video: [Option<VideoChain>; MAX_OUTPUTS],
+    audio: [Option<AudioChain>; MAX_OUTPUTS],
+}
+
+/// Encoder counters when an output joined a running chain; its progress counts from
+/// there (ADR-0047 decision 7).
+#[derive(Debug, Clone, Copy, Default)]
+struct Base {
+    frames_exported: u64,
+    export_drops: u64,
+    frames_encoded: u64,
+    encoder_drops: u64,
+    encoder_skipped: u64,
+    audio_queue_drops: u64,
+    audio_packet_drops: u64,
+}
+
+/// A running output, its encoder chains and counters.
 struct Attached {
+    id: OutputId,
+    /// Its output slot (the partition of its output node).
+    slot: usize,
     report: StartReport,
-    nodes: Vec<Added>,
-    essential: BTreeMap<NodeId, &'static str>,
+    output: Added,
+    output_stats: Arc<OutputNodeStats>,
+    /// Slots of the chains it takes packets from.
+    video: usize,
+    audio: Option<usize>,
     failure: Option<String>,
     export: Arc<ExportNodeStats>,
     encoder: Arc<EncoderNodeStats>,
     audio_dropped: Option<Arc<AtomicU64>>,
-    output: Arc<OutputNodeStats>,
-    /// The queues into the video and audio encoders' partitions, found after the
-    /// apply that scheduled them and kept, so the final counters survive the draining
-    /// apply that removes them.
+    /// The queues into the video and audio encoders' partitions, kept so the final
+    /// counters survive the draining apply that removes them.
     queues: Queues,
+    base: Base,
 }
 
-/// The cross-partition queues feeding a recording's encoders.
-#[derive(Default)]
+/// The cross-partition queues feeding an output's encoders.
+#[derive(Default, Clone)]
 struct Queues {
     video: Option<Arc<QueueStats>>,
     audio: Option<Arc<QueueStats>>,
@@ -332,10 +462,12 @@ struct Mixer {
 /// [`Studio::start`] binds the collection, builds the canvas's compositor and mixer and,
 /// as asked, a preview for a UI and a meter sink, adds the partitions and starts the
 /// engine. [`Studio::update`] applies scene edits while it runs.
-/// [`Studio::start_recording`] attaches a video export, encoders and an output to the
-/// running graph; [`Studio::stop_recording`] drains and removes them while the preview
-/// and meters keep running (`Engine::apply_draining`). Control thread only; calls may
-/// block while devices open or workers swap.
+/// [`Studio::start_output`] attaches an output (a recording or a live stream) to the
+/// running graph, with a video export and encoders of its own or shared with a running
+/// output whose settings match; up to [`MAX_OUTPUTS`] run at once (ADR-0047).
+/// [`Studio::stop_output`] drains and removes what only that output used while the
+/// preview, the meters and the other output keep running (`Engine::apply_draining`).
+/// Control thread only; calls may block while devices open or workers swap.
 pub struct Studio {
     engine: Engine,
     settings: StudioSettings,
@@ -358,7 +490,13 @@ pub struct Studio {
     /// Studio nodes without which it cannot run (compositor, mixer, preview, sink).
     essential: BTreeMap<NodeId, &'static str>,
     failure: Option<String>,
-    recording: Option<Attached>,
+    /// The running outputs, in start order.
+    outputs: Vec<Attached>,
+    /// The encoder chains they use.
+    chains: Chains,
+    next_output: u64,
+    /// Nodes the last apply reported as failed to join.
+    failed_nodes: BTreeSet<NodeId>,
     render_worker: Option<Arc<WorkerStats>>,
     audio_worker: Option<Arc<WorkerStats>>,
     /// Retired instances whose take failed (their partition's swap was still in
@@ -373,7 +511,7 @@ impl fmt::Debug for Studio {
         f.debug_struct("Studio")
             .field("settings", &self.settings)
             .field("sources", &self.sources())
-            .field("recording", &self.is_recording())
+            .field("outputs", &self.outputs())
             .field("failure", &self.failure)
             .finish_non_exhaustive()
     }
@@ -481,13 +619,16 @@ impl Studio {
             RenderLocal::default(),
             Pacing::cadence(frames),
         )?;
-        engine.add_partition::<()>(
-            parts.video_encoder,
-            Arc::new(()),
-            (),
-            Pacing::cadence_after(frames, fps.frame_duration() / 4),
-        )?;
-        engine.add_partition::<()>(parts.output, Arc::new(()), (), Pacing::output())?;
+        for slot in 0..MAX_OUTPUTS {
+            let p = parts.slot(slot);
+            engine.add_partition::<()>(
+                p.video_encoder,
+                Arc::new(()),
+                (),
+                Pacing::cadence_after(frames, fps.frame_duration() / 4),
+            )?;
+            engine.add_partition::<()>(p.output, Arc::new(()), (), Pacing::output())?;
+        }
         if settings.audio {
             engine.add_partition::<()>(
                 parts.audio,
@@ -495,12 +636,14 @@ impl Studio {
                 (),
                 Pacing::stream(settings.audio_graph.cadence(clock.now()), AUDIO_CATCH_UP),
             )?;
-            engine.add_partition::<()>(
-                parts.audio_encoder,
-                Arc::new(()),
-                (),
-                Pacing::doorbell(DEFAULT_DOORBELL_TIMER),
-            )?;
+            for slot in 0..MAX_OUTPUTS {
+                engine.add_partition::<()>(
+                    parts.slot(slot).audio_encoder,
+                    Arc::new(()),
+                    (),
+                    Pacing::doorbell(DEFAULT_DOORBELL_TIMER),
+                )?;
+            }
         }
 
         let (compositor, layers) =
@@ -566,14 +709,17 @@ impl Studio {
             problems: Vec::new(),
             essential,
             failure: None,
-            recording: None,
+            outputs: Vec::new(),
+            chains: Chains::default(),
+            next_output: 0,
+            failed_nodes: BTreeSet::new(),
             render_worker,
             audio_worker,
             pending_takes: Vec::new(),
             strips: Vec::new(),
         };
         if let Some(p) = recording
-            && let Err(e) = studio.add_recording(p)
+            && let Err(e) = studio.add_output(p)
         {
             let _ = studio.engine.shutdown();
             return Err(e);
@@ -587,9 +733,9 @@ impl Studio {
                 }
                 let sources = studio.sources();
                 let problems = studio.problems.clone();
-                if let Some(r) = studio.recording.as_mut() {
-                    r.report.sources = sources;
-                    r.report.problems = problems;
+                for r in &mut studio.outputs {
+                    r.report.sources.clone_from(&sources);
+                    r.report.problems.clone_from(&problems);
                 }
                 Ok(studio)
             }
@@ -652,6 +798,7 @@ impl Studio {
         strictness: Strictness,
     ) -> Result<(Vec<StartFailure>, Vec<BindProblem>), RecordError> {
         let mut failed = Vec::new();
+        self.failed_nodes.clear();
         let mut gone: Vec<Entry> = Vec::new();
         let collection = &self.collection;
         if let Some(report) = report {
@@ -836,12 +983,13 @@ impl Studio {
         failed.extend(engine_failures(&applied));
         for report in applied.reports.values() {
             for (node, why) in &report.failed {
-                let role = self.essential.get(node).copied().or_else(|| {
-                    self.recording
-                        .as_ref()
-                        .and_then(|r| r.essential.get(node).copied())
-                });
+                let role = self
+                    .essential
+                    .get(node)
+                    .copied()
+                    .or_else(|| self.output_role(*node));
                 if let Some(role) = role {
+                    self.failed_nodes.insert(*node);
                     failed.push(StartFailure {
                         node: role.to_owned(),
                         reason: why.to_string(),
@@ -953,11 +1101,7 @@ impl Studio {
         self.essential
             .get(&node)
             .copied()
-            .or_else(|| {
-                self.recording
-                    .as_ref()
-                    .and_then(|r| r.essential.get(&node).copied())
-            })
+            .or_else(|| self.output_role(node))
             .or_else(|| {
                 self.entries
                     .iter()
@@ -968,7 +1112,8 @@ impl Studio {
 
     /// Runs the engine's control loop once and notes failures: a source that fails is
     /// marked in [`Studio::sources`] until it runs again; a studio node that fails for
-    /// good sets [`Studio::failure`], a recording node [`Studio::recording_failure`].
+    /// good sets [`Studio::failure`], a node of an output or of an encoder it uses
+    /// [`Studio::output_failure`] of every output using it.
     /// Call it again after `wait` (at most about 100 ms).
     pub fn service(&mut self) -> Serviced {
         let serviced = self.engine.service();
@@ -988,14 +1133,16 @@ impl Studio {
                         if retry_at.is_none() && self.failure.is_none() {
                             self.failure = Some(format!("{role}: {cause:?}"));
                         }
-                    } else if let Some(r) = self
-                        .recording
-                        .as_mut()
-                        .filter(|r| r.essential.contains_key(node))
-                    {
-                        if retry_at.is_none() && r.failure.is_none() {
-                            let role = r.essential.get(node).copied().unwrap_or("recording");
-                            r.failure = Some(format!("{role}: {cause:?}"));
+                    } else if let Some(role) = self.output_role(*node) {
+                        // An encoder chain's node fails every output that uses it;
+                        // an output node only its own (ADR-0047 decision 7).
+                        if retry_at.is_none() {
+                            let users = self.users(*node);
+                            for r in self.outputs.iter_mut().filter(|r| users.contains(&r.id)) {
+                                if r.failure.is_none() {
+                                    r.failure = Some(format!("{role}: {cause:?}"));
+                                }
+                            }
                         }
                     } else if let Some(e) = self.entries.iter_mut().find(|e| e.state.node == *node)
                     {
@@ -1018,40 +1165,92 @@ impl Studio {
         self.failure.clone()
     }
 
-    /// True while a recording runs.
-    pub fn is_recording(&self) -> bool {
-        self.recording.is_some()
+    /// The running outputs, in start order.
+    pub fn outputs(&self) -> Vec<OutputId> {
+        self.outputs.iter().map(|r| r.id).collect()
     }
 
-    /// What the running recording chose and records.
-    pub fn recording(&self) -> Option<&StartReport> {
-        self.recording.as_ref().map(|r| &r.report)
+    fn attached(&self, id: OutputId) -> Option<&Attached> {
+        self.outputs.iter().find(|r| r.id == id)
     }
 
-    /// Why the running recording cannot go on: the output's first permanent failure, or
-    /// one of its nodes failed for good. The composition root then stops it.
-    pub fn recording_failure(&self) -> Option<String> {
-        let r = self.recording.as_ref()?;
-        r.output
+    /// What a running output chose and records or streams.
+    pub fn output(&self, id: OutputId) -> Option<&StartReport> {
+        self.attached(id).map(|r| &r.report)
+    }
+
+    /// Why a running output cannot go on: its output's first permanent failure, or one
+    /// of its nodes (its own or an encoder it shares) failed for good. The composition
+    /// root then stops it with [`Studio::stop_output`].
+    pub fn output_failure(&self, id: OutputId) -> Option<String> {
+        let r = self.attached(id)?;
+        r.output_stats
             .failure
             .get()
             .cloned()
             .or_else(|| r.failure.clone())
     }
 
-    /// Starts recording the canvas to `out` while the studio runs. Adapters are chosen
-    /// first (`NoAdapter` before anything opens); then a video export, the video encoder,
-    /// the audio encoder (with `out.audio`) and an output are added and applied. Sources
-    /// only now scheduled (without a preview) are opened. If one of the recording's
-    /// nodes does not start, they are all removed again and the call fails with
-    /// `Start`; the studio keeps running. The output may have created the destination.
-    pub fn start_recording(
+    /// The role of a node of an output or of an encoder chain.
+    fn output_role(&self, node: NodeId) -> Option<&'static str> {
+        if self.outputs.iter().any(|r| r.output.node == node) {
+            return Some("output");
+        }
+        for c in self.chains.video.iter().flatten() {
+            if c.export.node == node {
+                return Some("video export");
+            }
+            if c.encoder.node == node {
+                return Some("video encoder");
+            }
+        }
+        self.chains
+            .audio
+            .iter()
+            .flatten()
+            .any(|c| c.encoder.node == node)
+            .then_some("audio encoder")
+    }
+
+    /// The outputs that use `node`: the output itself, or every output taking packets
+    /// from the encoder chain it belongs to.
+    fn users(&self, node: NodeId) -> Vec<OutputId> {
+        let video = self.chains.video.iter().position(|c| {
+            c.as_ref()
+                .is_some_and(|c| c.export.node == node || c.encoder.node == node)
+        });
+        let audio = self
+            .chains
+            .audio
+            .iter()
+            .position(|c| c.as_ref().is_some_and(|c| c.encoder.node == node));
+        self.outputs
+            .iter()
+            .filter(|r| {
+                r.output.node == node
+                    || video == Some(r.video)
+                    || (audio.is_some() && audio == r.audio)
+            })
+            .map(|r| r.id)
+            .collect()
+    }
+
+    /// Starts an output (a recording or a live stream) of the canvas to `out` while the
+    /// studio runs. Adapters are chosen first (`NoAdapter` before anything opens), and a
+    /// running encoder is shared when `out`'s settings equal its own (ADR-0047); then a
+    /// video export and video encoder, an audio encoder (with `out.audio`), each unless
+    /// shared, and an output are added and applied. Sources only now scheduled (without
+    /// a preview) are opened. If one of the new nodes does not start, they are all
+    /// removed again and the call fails with `Start`; the studio and the other output
+    /// keep running. The output may have created the destination.
+    /// `TooManyOutputs` while [`MAX_OUTPUTS`] run.
+    pub fn start_output(
         &mut self,
         adapters: &RecordAdapters,
         out: &OutputSettings,
-    ) -> Result<&StartReport, RecordError> {
-        if self.recording.is_some() {
-            return Err(RecordError::AlreadyRecording);
+    ) -> Result<OutputId, RecordError> {
+        if self.outputs.len() >= MAX_OUTPUTS {
+            return Err(RecordError::TooManyOutputs);
         }
         if out.audio.is_some() && self.mixer.is_none() {
             return Err(RecordError::NotBound("mixer"));
@@ -1062,72 +1261,146 @@ impl Studio {
             self.size,
             self.fps,
             self.settings.audio_graph,
+            &self.chains,
         )?;
         self.attach(prepared, &adapters.sources, Strictness::Lenient)
     }
 
-    /// Adds a prepared recording's nodes to the graph and adopts their instances; applies
-    /// nothing. All or nothing: on an error the graph and the partitions are as before.
-    fn add_recording(&mut self, p: Prepared) -> Result<(), RecordError> {
+    /// Encoder counters of the chains in `video` and `audio` slots now.
+    fn base_of(&self, video: usize, audio: Option<usize>) -> Base {
+        let mut b = Base::default();
+        if let Some(c) = &self.chains.video[video] {
+            b.frames_exported = c.export_stats.frames.load(Ordering::Relaxed);
+            b.export_drops = sum(&[&c.export_stats.busy, &c.export_stats.lost]);
+            let e = &c.encoder_stats;
+            b.frames_encoded = e.submitted.load(Ordering::Relaxed);
+            b.encoder_drops = sum(&[&e.busy_drops, &e.refused, &e.overflow_drops]);
+            b.encoder_skipped = c.queue.as_ref().map_or(0, |q| q.video_drops());
+        }
+        if let Some(c) = audio.and_then(|i| self.chains.audio[i].as_ref()) {
+            b.audio_queue_drops = c.queue.as_ref().map_or(0, |q| q.overflows());
+            b.audio_packet_drops = c.dropped.load(Ordering::Relaxed);
+        }
+        b
+    }
+
+    /// Adds a prepared output's nodes to the graph and adopts their instances; applies
+    /// nothing. All or nothing: on an error the graph, the chains and the partitions are
+    /// as before. Returns the output and the nodes it added.
+    fn add_output(&mut self, p: Prepared) -> Result<(OutputId, Vec<Added>), RecordError> {
         let parts = self.settings.partitions;
+        // Partitions are taken by role, each the first free one whose earlier nodes
+        // were all taken back (a take still pending means its swap or drain is in
+        // flight, ADR-0047). With MAX_OUTPUTS outputs and at most one chain of each kind
+        // per output, a free one of each role exists while fewer outputs run.
+        let pending: BTreeSet<PartitionId> = self
+            .pending_takes
+            .iter()
+            .map(|(a, _)| a.partition)
+            .collect();
+        let slot = (0..MAX_OUTPUTS)
+            .find(|s| {
+                !self.outputs.iter().any(|r| r.slot == *s)
+                    && !pending.contains(&parts.slot(*s).output)
+            })
+            .ok_or(RecordError::TooManyOutputs)?;
         let mut graph = self.graph.clone();
-        let mut nodes = Vec::new();
-        let mut essential = BTreeMap::new();
-        let export_stats = p.export.stats();
-        let export_id = add_active(
-            &mut graph,
-            Node::<GpuRuntime>::descriptor(&p.export),
-            RENDER,
-        )?;
-        let encoder_stats = p.video_encoder.stats();
-        let encoder_id = add_active(
-            &mut graph,
-            Node::<()>::descriptor(&p.video_encoder),
-            parts.video_encoder,
-        )?;
+        let mut nodes: Vec<Added> = Vec::new();
+
         let output_stats = p.output.stats();
-        let output_id = add_active(&mut graph, Node::<()>::descriptor(&p.output), parts.output)?;
-        for (node, partition, gpu, role) in [
-            (export_id, RENDER, true, "video export"),
-            (encoder_id, parts.video_encoder, false, "video encoder"),
-            (output_id, parts.output, false, "output"),
-        ] {
-            nodes.push(Added {
-                node,
-                partition,
-                gpu,
-            });
-            essential.insert(node, role);
-        }
-        graph.connect(self.compositor, "canvas", export_id, "canvas")?;
-        graph.connect(export_id, "video", encoder_id, "video")?;
-        graph.connect(encoder_id, "packets", output_id, "s0")?;
-        let mut audio = None;
-        if let Some((node, chosen)) = p.audio {
-            let mixer = self
-                .mixer
-                .as_ref()
-                .map(|m| m.node)
-                .ok_or(RecordError::NotBound("mixer"))?;
-            let id = add_active(
-                &mut graph,
-                Node::<()>::descriptor(&node),
-                parts.audio_encoder,
-            )?;
-            graph.connect(mixer, "main", id, "in")?;
-            graph.connect(id, "packets", output_id, "s1")?;
-            nodes.push(Added {
-                node: id,
-                partition: parts.audio_encoder,
-                gpu: false,
-            });
-            essential.insert(id, "audio encoder");
-            audio = Some((id, node, chosen));
-        }
+        let output_part = parts.slot(slot).output;
+        let output_id = add_active(&mut graph, Node::<()>::descriptor(&p.output), output_part)?;
+        let output = Added {
+            node: output_id,
+            partition: output_part,
+            gpu: false,
+        };
+
+        // Video: a new chain in a free slot, or the shared one's encoder.
+        let mut new_video = None;
+        let (video_slot, video_encoder_node) = match &p.video {
+            VideoPlan::Shared(i) => {
+                let c = self.chains.video[*i]
+                    .as_ref()
+                    .ok_or(RecordError::NotBound("shared video encoder"))?;
+                (*i, c.encoder.node)
+            }
+            VideoPlan::New {
+                export, encoder, ..
+            } => {
+                let i = (0..MAX_OUTPUTS)
+                    .find(|i| {
+                        self.chains.video[*i].is_none()
+                            && !pending.contains(&parts.slot(*i).video_encoder)
+                    })
+                    .ok_or(RecordError::TooManyOutputs)?;
+                let part = parts.slot(i).video_encoder;
+                let export_id = add_active(
+                    &mut graph,
+                    Node::<GpuRuntime>::descriptor(&**export),
+                    RENDER,
+                )?;
+                let encoder_id = add_active(&mut graph, Node::<()>::descriptor(&**encoder), part)?;
+                graph.connect(self.compositor, "canvas", export_id, "canvas")?;
+                graph.connect(export_id, "video", encoder_id, "video")?;
+                let e = Added {
+                    node: export_id,
+                    partition: RENDER,
+                    gpu: true,
+                };
+                let v = Added {
+                    node: encoder_id,
+                    partition: part,
+                    gpu: false,
+                };
+                nodes.push(e);
+                nodes.push(v);
+                new_video = Some((e, v));
+                (i, encoder_id)
+            }
+        };
+        graph.connect(video_encoder_node, "packets", output_id, "s0")?;
+
+        let mut new_audio = None;
+        let audio_slot = match &p.audio {
+            AudioPlan::None => None,
+            AudioPlan::Shared(i) => {
+                let c = self.chains.audio[*i]
+                    .as_ref()
+                    .ok_or(RecordError::NotBound("shared audio encoder"))?;
+                graph.connect(c.encoder.node, "packets", output_id, "s1")?;
+                Some(*i)
+            }
+            AudioPlan::New { node, .. } => {
+                let mixer = self
+                    .mixer
+                    .as_ref()
+                    .map(|m| m.node)
+                    .ok_or(RecordError::NotBound("mixer"))?;
+                let i = (0..MAX_OUTPUTS)
+                    .find(|i| {
+                        self.chains.audio[*i].is_none()
+                            && !pending.contains(&parts.slot(*i).audio_encoder)
+                    })
+                    .ok_or(RecordError::TooManyOutputs)?;
+                let part = parts.slot(i).audio_encoder;
+                let id = add_active(&mut graph, Node::<()>::descriptor(&**node), part)?;
+                graph.connect(mixer, "main", id, "in")?;
+                graph.connect(id, "packets", output_id, "s1")?;
+                let a = Added {
+                    node: id,
+                    partition: part,
+                    gpu: false,
+                };
+                nodes.push(a);
+                new_audio = Some(a);
+                Some(i)
+            }
+        };
+        nodes.push(output);
 
         // Instances last; one that is refused takes the adopted ones back.
-        let audio_dropped = audio.as_ref().map(|(_, node, _)| node.dropped());
-        let mut adopted = Vec::new();
+        let mut adopted: Vec<Added> = Vec::new();
         let mut adopt =
             |engine: &mut Engine, a: Added, r: Result<(), rbs_engine::EngineError>| match r {
                 Ok(()) => {
@@ -1141,121 +1414,228 @@ impl Studio {
                     Err(RecordError::from(e))
                 }
             };
-        let r = self
-            .engine
-            .adopt::<GpuRuntime>(RENDER, export_id, Box::new(p.export));
-        adopt(&mut self.engine, nodes[0], r)?;
-        let r = self
-            .engine
-            .adopt::<()>(parts.video_encoder, encoder_id, Box::new(p.video_encoder));
-        adopt(&mut self.engine, nodes[1], r)?;
-        let r = self
-            .engine
-            .adopt::<()>(parts.output, output_id, Box::new(p.output));
-        adopt(&mut self.engine, nodes[2], r)?;
-        let mut audio_chosen = None;
-        if let Some((id, node, chosen)) = audio {
-            let r = self
-                .engine
-                .adopt::<()>(parts.audio_encoder, id, Box::new(node));
-            adopt(&mut self.engine, nodes[3], r)?;
-            audio_chosen = Some(chosen);
+        let mut video_chain = None;
+        let mut video_shared = true;
+        if let (
+            VideoPlan::New {
+                export,
+                encoder,
+                chosen,
+                settings,
+            },
+            Some((e, v)),
+        ) = (p.video, new_video)
+        {
+            video_shared = false;
+            let export_stats = export.stats();
+            let encoder_stats = encoder.stats();
+            let stream = encoder.stream().clone();
+            let r = self.engine.adopt::<GpuRuntime>(RENDER, e.node, export);
+            adopt(&mut self.engine, e, r)?;
+            let r = self.engine.adopt::<()>(v.partition, v.node, encoder);
+            adopt(&mut self.engine, v, r)?;
+            video_chain = Some(VideoChain {
+                settings,
+                chosen,
+                stream,
+                export: e,
+                encoder: v,
+                export_stats,
+                encoder_stats,
+                queue: None,
+            });
         }
+        let mut audio_chain = None;
+        let mut audio_shared = audio_slot.is_some();
+        if let (
+            AudioPlan::New {
+                node,
+                chosen,
+                settings,
+                stream,
+            },
+            Some(a),
+        ) = (p.audio, new_audio)
+        {
+            audio_shared = false;
+            let dropped = node.dropped();
+            let r = self.engine.adopt::<()>(a.partition, a.node, node);
+            adopt(&mut self.engine, a, r)?;
+            audio_chain = Some(AudioChain {
+                settings,
+                chosen,
+                stream,
+                encoder: a,
+                dropped,
+                queue: None,
+            });
+        }
+        let r = self
+            .engine
+            .adopt::<()>(output.partition, output.node, Box::new(p.output));
+        adopt(&mut self.engine, output, r)?;
 
+        // Committed: the graph, the chains and the output.
         self.graph = graph;
-        self.recording = Some(Attached {
+        let base = self.base_of(video_slot, audio_slot);
+        if let Some(c) = video_chain {
+            self.chains.video[video_slot] = Some(c);
+        }
+        if let (Some(c), Some(i)) = (audio_chain, audio_slot) {
+            self.chains.audio[i] = Some(c);
+        }
+        let (video_chosen, export, encoder, video_queue) = match &self.chains.video[video_slot] {
+            Some(c) => (
+                c.chosen.clone(),
+                Arc::clone(&c.export_stats),
+                Arc::clone(&c.encoder_stats),
+                c.queue.clone(),
+            ),
+            None => return Err(RecordError::NotBound("video encoder")),
+        };
+        let audio = audio_slot.and_then(|i| self.chains.audio[i].as_ref());
+        let audio_chosen = audio.map(|c| c.chosen.clone());
+        let audio_dropped = audio.map(|c| Arc::clone(&c.dropped));
+        let audio_queue = audio.and_then(|c| c.queue.clone());
+        let id = OutputId(self.next_output);
+        self.next_output += 1;
+        self.outputs.push(Attached {
+            id,
+            slot,
             report: StartReport {
-                video_encoder: p.video_chosen,
+                video_encoder: video_chosen,
                 audio_encoder: audio_chosen,
                 muxer: p.muxer,
                 transport: p.transport,
                 sources: Vec::new(),
                 problems: self.problems.clone(),
+                video_shared,
+                audio_shared,
             },
-            nodes,
-            essential,
+            output,
+            output_stats,
+            video: video_slot,
+            audio: audio_slot,
             failure: None,
-            export: export_stats,
-            encoder: encoder_stats,
+            export,
+            encoder,
             audio_dropped,
-            output: output_stats,
-            queues: Queues::default(),
+            queues: Queues {
+                video: video_queue,
+                audio: audio_queue,
+            },
+            base,
         });
-        Ok(())
+        Ok((id, nodes))
     }
 
-    /// Adds a prepared recording to the running graph and applies it. If a node of the
-    /// recording, the engine or a link fails, or (`Strict`) a source cannot be
-    /// instantiated, the recording is removed again and the call fails.
+    /// Adds a prepared output to the running graph and applies it. If one of its new
+    /// nodes, the engine or a link fails, or (`Strict`) a source cannot be instantiated,
+    /// the output is removed again and the call fails.
     pub(crate) fn attach(
         &mut self,
         p: Prepared,
         sources: &SourceTypes,
         strictness: Strictness,
-    ) -> Result<&StartReport, RecordError> {
-        self.add_recording(p)?;
+    ) -> Result<OutputId, RecordError> {
+        let (id, added) = self.add_output(p)?;
         // Sources scheduled only now (no preview) are opened; then one apply.
         let failed = match self.reconcile(sources, None, strictness) {
             Ok((failed, _)) => failed,
             Err(e) => {
-                let _ = self.detach(false);
+                let _ = self.detach(id, false);
                 return Err(e);
             }
         };
-        let recording_essential = self
-            .recording
-            .as_ref()
-            .map(|r| r.essential.clone())
-            .unwrap_or_default();
-        let fatal: Vec<StartFailure> = failed
-            .into_iter()
-            .filter(|f| {
-                f.node != "source"
-                    && (recording_essential.values().any(|r| *r == f.node)
-                        || f.node == "engine"
-                        || f.node.starts_with("link"))
-            })
-            .collect();
-        if !fatal.is_empty() {
-            let mut fatal = fatal;
-            for e in self.detach(false).1 {
-                fatal.push(StartFailure {
-                    node: "rollback".to_owned(),
-                    reason: e,
-                });
+        let new_failed = added.iter().any(|a| self.failed_nodes.contains(&a.node));
+        let engine_failed = failed
+            .iter()
+            .any(|f| f.node == "engine" || f.node.starts_with("link"));
+        if new_failed || engine_failed {
+            let mut fatal: Vec<StartFailure> =
+                failed.into_iter().filter(|f| f.node != "source").collect();
+            if let Some((_, errors, _)) = self.detach(id, false) {
+                for e in errors {
+                    fatal.push(StartFailure {
+                        node: "rollback".to_owned(),
+                        reason: e,
+                    });
+                }
             }
             return Err(RecordError::Start(fatal));
         }
+        self.finish_attach(id);
+        Ok(id)
+    }
+
+    /// After the apply that scheduled an output: its sources in the report, and the
+    /// queues into new encoder partitions (they exist from this apply on).
+    fn finish_attach(&mut self, id: OutputId) {
         let sources = self.sources();
-        let r = self
-            .recording
-            .as_mut()
-            .ok_or(RecordError::NotBound("recording"))?;
-        r.report.sources = sources;
-        // The encoders' inputs cross partitions; their queues exist from this apply on.
-        let queue_to = |node: Option<&Added>| {
-            let node = node?.node;
-            self.engine
+        let queue_to = |engine: &Engine, node: NodeId| {
+            engine
                 .crossings()
                 .iter()
                 .find(|c| c.link.to.node == node)
                 .map(|c| Arc::clone(&c.stats))
         };
-        r.queues = Queues {
-            video: queue_to(r.nodes.get(1)),
-            audio: queue_to(r.nodes.get(3)),
+        for c in self.chains.video.iter_mut().flatten() {
+            if c.queue.is_none() {
+                c.queue = queue_to(&self.engine, c.encoder.node);
+            }
+        }
+        for c in self.chains.audio.iter_mut().flatten() {
+            if c.queue.is_none() {
+                c.queue = queue_to(&self.engine, c.encoder.node);
+            }
+        }
+        let video = self
+            .outputs
+            .iter()
+            .find(|r| r.id == id)
+            .map(|r| (r.video, r.audio));
+        let Some((v, a)) = video else {
+            return;
         };
-        Ok(&r.report)
+        let video_queue = self.chains.video[v].as_ref().and_then(|c| c.queue.clone());
+        let audio_queue = a
+            .and_then(|i| self.chains.audio[i].as_ref())
+            .and_then(|c| c.queue.clone());
+        if let Some(r) = self.outputs.iter_mut().find(|r| r.id == id) {
+            r.report.sources = sources;
+            r.queues = Queues {
+                video: video_queue,
+                audio: audio_queue,
+            };
+        }
     }
 
-    /// Removes the recording's nodes from the graph and applies, draining the encoder
-    /// and output partitions first when `drain`; takes their instances back. Returns the
-    /// engine's errors.
-    fn detach(&mut self, drain: bool) -> (Option<Attached>, Vec<String>) {
-        let Some(r) = self.recording.take() else {
-            return (None, Vec::new());
-        };
-        let nodes = r.nodes.clone();
+    /// Finishes the start of [`Recording`](crate::Recording)'s output.
+    pub(crate) fn finish_first_attach(&mut self) -> Option<OutputId> {
+        let id = self.outputs.first()?.id;
+        self.finish_attach(id);
+        Some(id)
+    }
+
+    /// Removes an output's node, and the encoder chains no other output uses, from the
+    /// graph and applies, draining the partitions this empties when `drain`; takes their
+    /// instances back. Returns the output, the engine's errors and whether its video
+    /// encoder was removed with it (drained, when `drain`).
+    fn detach(&mut self, id: OutputId, drain: bool) -> Option<(Attached, Vec<String>, bool)> {
+        let index = self.outputs.iter().position(|r| r.id == id)?;
+        let r = self.outputs.remove(index);
+        let mut nodes = vec![r.output];
+        let video_alone = !self.outputs.iter().any(|o| o.video == r.video);
+        if video_alone && let Some(c) = self.chains.video[r.video].take() {
+            nodes.push(c.export);
+            nodes.push(c.encoder);
+        }
+        if let Some(a) = r.audio
+            && !self.outputs.iter().any(|o| o.audio == Some(a))
+            && let Some(c) = self.chains.audio[a].take()
+        {
+            nodes.push(c.encoder);
+        }
         for n in &nodes {
             let _ = self.graph.set_state(n.node, Lifecycle::Standby);
             let _ = self.graph.remove_node(n.node);
@@ -1274,7 +1654,7 @@ impl Studio {
                 self.pending_takes.push((n, None));
             }
         }
-        // The plan without the recording may leave sources unscheduled (no preview);
+        // The plan without the output may leave sources unscheduled (no preview);
         // the layer hints follow the new plan.
         let plan = self.graph.plan();
         let scheduled: BTreeSet<NodeId> = plan.order.iter().copied().collect();
@@ -1282,24 +1662,29 @@ impl Studio {
             e.scheduled = scheduled.contains(&e.state.node);
         }
         let _ = self.layers.send(node_layers(&self.bound, &plan));
-        (Some(r), errors)
+        Some((r, errors, video_alone))
     }
 
-    /// Stops the running recording: drains its encoders and output in pipeline order
-    /// (the output writes the container's trailer and finishes the transport) and removes
-    /// them, while the studio keeps running. `None` when nothing records.
-    pub fn stop_recording(&mut self) -> Option<FinishReport> {
-        let (r, errors) = self.detach(true);
-        let r = r?;
-        let progress = self.progress_of(Some(&r));
+    /// Stops a running output: drains, in pipeline order, its output (which writes the
+    /// container's trailer and finishes the transport) and the encoders no other output
+    /// uses, and removes them, while the studio and the other output keep running.
+    /// `None` when `id` does not run.
+    pub fn stop_output(&mut self, id: OutputId) -> Option<FinishReport> {
+        let (r, errors, drained_video) = self.detach(id, true)?;
+        let progress = self.progress_of(&r);
         let failure = r
-            .output
+            .output_stats
             .failure
             .get()
             .cloned()
             .or_else(|| r.failure.clone());
-        let flush_lost = r.encoder.flush_lost.load(Ordering::Relaxed);
-        let finish_lost = r.output.finish_lost.load(Ordering::Relaxed);
+        // A shared encoder keeps running: its held packets are the other output's.
+        let flush_lost = if drained_video {
+            r.encoder.flush_lost.load(Ordering::Relaxed)
+        } else {
+            0
+        };
+        let finish_lost = r.output_stats.finish_lost.load(Ordering::Relaxed);
         Some(FinishReport {
             progress,
             failure,
@@ -1309,10 +1694,11 @@ impl Studio {
         })
     }
 
-    /// The running output's connection; `None` when nothing records or streams.
-    /// Cheap (a few atomic loads) and, unlike [`Studio::progress`], takes no meter peaks.
-    pub fn link(&self) -> Option<Link> {
-        let o = &self.recording.as_ref()?.output;
+    /// A running output's connection; `None` when `id` does not run.
+    /// Cheap (a few atomic loads) and, unlike [`Studio::output_progress`], takes no
+    /// meter peaks.
+    pub fn link(&self, id: OutputId) -> Option<Link> {
+        let o = &self.attached(id)?.output_stats;
         Some(Link {
             connected: o.connected.load(Ordering::Relaxed),
             connects: o.connects.load(Ordering::Relaxed),
@@ -1321,13 +1707,9 @@ impl Studio {
         })
     }
 
-    /// Counters now: sources, and the recording's when one runs. Peak levels are those
-    /// since the previous call.
+    /// Counters now of the sources and workers. Peak levels are those since the
+    /// previous call (of this or [`Studio::output_progress`]).
     pub fn progress(&self) -> Progress {
-        self.progress_of(self.recording.as_ref())
-    }
-
-    fn progress_of(&self, r: Option<&Attached>) -> Progress {
         let sources = self
             .entries
             .iter()
@@ -1353,40 +1735,68 @@ impl Studio {
                 }
             })
             .collect();
-        let mut p = Progress {
+        Progress {
             sources,
             late_render_ticks: self.render_worker.as_ref().map_or(0, |w| w.late()),
             late_audio_ticks: self.audio_worker.as_ref().map_or(0, |w| w.late()),
             master_peak_db: self.mixer.as_ref().map(|m| peak_db(&m.master)),
             ..Progress::default()
-        };
-        if let Some(r) = r {
-            let e = &r.encoder;
-            p.frames_exported = r.export.frames.load(Ordering::Relaxed);
-            p.export_drops = sum(&[&r.export.busy, &r.export.lost]);
-            p.frames_encoded = e.submitted.load(Ordering::Relaxed);
-            p.encoder_drops = sum(&[&e.busy_drops, &e.refused, &e.overflow_drops]);
-            p.encoder_skipped = r.queues.video.as_ref().map_or(0, |q| q.video_drops());
-            p.audio_queue_drops = r.queues.audio.as_ref().map_or(0, |q| q.overflows());
-            p.audio_packet_drops = r
-                .audio_dropped
-                .as_ref()
-                .map_or(0, |d| d.load(Ordering::Relaxed));
-            p.packets_taken = r.output.packets.load(Ordering::Relaxed);
-            p.mux_drops = r.output.mux_drops.load(Ordering::Relaxed);
-            p.backlog_peak = r.output.backlog_peak.load(Ordering::Relaxed);
-            p.transport_drops = r.output.transport_drops.load(Ordering::Relaxed);
-            p.connects = r.output.connects.load(Ordering::Relaxed);
-            p.reconnect_attempts = r.output.reconnect_attempts.load(Ordering::Relaxed);
-            p.connected = r.output.connected.load(Ordering::Relaxed);
         }
+    }
+
+    /// [`Studio::progress`] plus a running output's counters, counted from its start
+    /// (an output that joined a running encoder does not count what it encoded
+    /// before). `None` when `id` does not run.
+    pub fn output_progress(&self, id: OutputId) -> Option<Progress> {
+        Some(self.progress_of(self.attached(id)?))
+    }
+
+    fn progress_of(&self, r: &Attached) -> Progress {
+        let mut p = self.progress();
+        let b = &r.base;
+        let e = &r.encoder;
+        let since = |now: u64, base: u64| now.saturating_sub(base);
+        p.frames_exported = since(r.export.frames.load(Ordering::Relaxed), b.frames_exported);
+        p.export_drops = since(sum(&[&r.export.busy, &r.export.lost]), b.export_drops);
+        p.frames_encoded = since(e.submitted.load(Ordering::Relaxed), b.frames_encoded);
+        p.encoder_drops = since(
+            sum(&[&e.busy_drops, &e.refused, &e.overflow_drops]),
+            b.encoder_drops,
+        );
+        p.encoder_skipped = since(
+            r.queues.video.as_ref().map_or(0, |q| q.video_drops()),
+            b.encoder_skipped,
+        );
+        p.audio_queue_drops = since(
+            r.queues.audio.as_ref().map_or(0, |q| q.overflows()),
+            b.audio_queue_drops,
+        );
+        p.audio_packet_drops = since(
+            r.audio_dropped
+                .as_ref()
+                .map_or(0, |d| d.load(Ordering::Relaxed)),
+            b.audio_packet_drops,
+        );
+        let o = &r.output_stats;
+        p.packets_taken = o.packets.load(Ordering::Relaxed);
+        p.mux_drops = o.mux_drops.load(Ordering::Relaxed);
+        p.backlog_peak = o.backlog_peak.load(Ordering::Relaxed);
+        p.transport_drops = o.transport_drops.load(Ordering::Relaxed);
+        p.connects = o.connects.load(Ordering::Relaxed);
+        p.reconnect_attempts = o.reconnect_attempts.load(Ordering::Relaxed);
+        p.connected = o.connected.load(Ordering::Relaxed);
         p
     }
 
-    /// Stops any recording, then the engine. Returns the recording's report, if one ran,
-    /// and the shutdown's errors.
-    pub fn shutdown(&mut self) -> (Option<FinishReport>, Vec<String>) {
-        let report = self.stop_recording();
+    /// Stops every output (in start order), then the engine. Returns each output's
+    /// report and the shutdown's errors.
+    pub fn shutdown(&mut self) -> (Vec<(OutputId, FinishReport)>, Vec<String>) {
+        let mut reports = Vec::new();
+        for id in self.outputs() {
+            if let Some(r) = self.stop_output(id) {
+                reports.push((id, r));
+            }
+        }
         let errors = self
             .engine
             .shutdown()
@@ -1394,7 +1804,7 @@ impl Studio {
             .iter()
             .map(ToString::to_string)
             .collect();
-        (report, errors)
+        (reports, errors)
     }
 }
 

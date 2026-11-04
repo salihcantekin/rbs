@@ -57,14 +57,9 @@ fn rejected<F: ?Sized>(selection: &rbs_core::registry::Selection<F>) -> Vec<(Ada
         .collect()
 }
 
-/// The first video encoder, best first, that lists the codec, the input memory kind and
-/// the pixel format of `config` and opens a session for it (a candidate that refuses a
-/// setting, such as a rate-control mode it lacks, is skipped with its reason).
-pub(crate) fn video_encoder(
-    registry: &Registry<dyn VideoEncoderFactory>,
-    config: &VideoEncoderConfig,
-) -> Result<(VideoEncoderNode, Chosen), RecordError> {
-    let requirement = Requirement::new()
+/// The capabilities a video encoder needs for `config`.
+fn video_requirement(config: &VideoEncoderConfig) -> Requirement {
+    Requirement::new()
         .with(
             codec_caps::VIDEO_ENCODE,
             Constraint::Includes(config.codec.as_str().to_owned()),
@@ -76,8 +71,45 @@ pub(crate) fn video_encoder(
         .with(
             codec_caps::INPUT_PIXEL_FORMAT,
             Constraint::Includes(config.format.pixel_format.as_str().to_owned()),
-        );
-    let selection = registry.select(&requirement);
+        )
+}
+
+/// True when `adapter` is a candidate of a video encoder selection for `config`: the
+/// registry holds it and it meets the requirement (a running encoder of that adapter
+/// may then serve another output, ADR-0047).
+pub(crate) fn is_video_candidate(
+    registry: &Registry<dyn VideoEncoderFactory>,
+    config: &VideoEncoderConfig,
+    adapter: &AdapterId,
+) -> bool {
+    registry
+        .select(&video_requirement(config))
+        .candidates
+        .iter()
+        .any(|f| f.id() == *adapter)
+}
+
+/// True when `adapter` is a candidate of an audio encoder selection for `config`.
+pub(crate) fn is_audio_candidate(
+    registry: &Registry<dyn AudioEncoderFactory>,
+    config: &AudioEncoderConfig,
+    adapter: &AdapterId,
+) -> bool {
+    registry
+        .select(&includes(codec_caps::AUDIO_ENCODE, config.codec.as_str()))
+        .candidates
+        .iter()
+        .any(|f| f.id() == *adapter)
+}
+
+/// The first video encoder, best first, that lists the codec, the input memory kind and
+/// the pixel format of `config` and opens a session for it (a candidate that refuses a
+/// setting, such as a rate-control mode it lacks, is skipped with its reason).
+pub(crate) fn video_encoder(
+    registry: &Registry<dyn VideoEncoderFactory>,
+    config: &VideoEncoderConfig,
+) -> Result<(VideoEncoderNode, Chosen), RecordError> {
+    let selection = registry.select(&video_requirement(config));
     let mut tried = rejected(&selection);
     for factory in &selection.candidates {
         match VideoEncoderNode::open(Arc::clone(factory), config.clone()) {

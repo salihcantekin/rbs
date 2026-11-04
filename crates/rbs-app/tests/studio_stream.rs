@@ -1,6 +1,6 @@
 //! Streaming through the studio host (Go live): the key read from the key store reaches
 //! the transport only, a missing key refuses before anything opens, connection changes
-//! reach the UI, one output runs at a time, and the stream ends cleanly or with the
+//! reach the UI, a recording runs alongside the stream, and the stream ends cleanly or with the
 //! server's reason. Reference sources, fake encoders and a fake RTMP transport whose
 //! events the test injects. The engine runs on a `TestClock` that never moves; the
 //! output worker's doorbell timer polls the transport. Waits are for the host's updates,
@@ -247,6 +247,11 @@ fn host(
             a.transports
                 .register(Arc::new(FakeRtmpFactory(server)))
                 .unwrap();
+            // A recording alongside the stream.
+            a.muxers.register(Arc::new(FakeMuxerFactory)).unwrap();
+            a.transports
+                .register(Arc::new(rbs_transport_file::FileTransportFactory))
+                .unwrap();
             (a, Vec::new())
         },
         move || Ok(gpu),
@@ -371,21 +376,33 @@ fn streams_take_the_key_from_the_store_and_report_their_connection() {
     let l = link_where(&rx, |l| l.connected);
     assert_eq!((l.connects, l.reconnect_attempts), (1, 0));
 
-    // One output at a time, one stream at a time.
+    // A recording runs alongside the stream (ADR-0047) and stops on its own; one
+    // stream at a time.
+    let file = std::env::temp_dir().join(format!("rbs-app-stream-{}.mkv", std::process::id()));
+    let _ = std::fs::remove_file(&file);
     host.send(Command::StartRecording(RecordRequest {
-        path: std::env::temp_dir().join(format!("rbs-app-stream-{}.mkv", std::process::id())),
+        path: file.clone(),
         container: ContainerId::Matroska,
         encoder: None,
         video: VideoSettings::default(),
         audio_bitrate_bps: 128_000,
     }));
-    match next(&rx, |u| match u {
-        Update::Recording(r) => Some(r),
-        _ => None,
-    }) {
-        RecordingUpdate::NotStarted(why) => assert!(why.contains("End the stream"), "{why}"),
+    let recording = |rx: &_| {
+        next(rx, |u| match u {
+            Update::Recording(r) => Some(r),
+            _ => None,
+        })
+    };
+    match recording(&rx) {
+        RecordingUpdate::Started { path, .. } => assert_eq!(path, file),
         other => panic!("{other:?}"),
     }
+    host.send(Command::StopRecording);
+    match recording(&rx) {
+        RecordingUpdate::Stopped { failure, .. } => assert_eq!(failure, None),
+        other => panic!("{other:?}"),
+    }
+    let _ = std::fs::remove_file(&file);
     host.send(Command::StartStream(request()));
     match stream(&rx) {
         StreamUpdate::NotStarted(why) => assert!(why.contains("already"), "{why}"),
@@ -460,4 +477,68 @@ fn a_stream_the_server_refuses_ends_with_its_reason() {
     host.send(Command::EndStream);
     assert!(matches!(stream(&rx), StreamUpdate::Ended { .. }));
     drop(host);
+}
+
+/// A muxer that writes the packets' bytes between a header and a trailer.
+struct FakeMuxerFactory;
+
+impl AdapterFactory for FakeMuxerFactory {
+    fn id(&self) -> AdapterId {
+        AdapterId::new("test.muxer")
+    }
+    fn display_name(&self) -> &str {
+        "test muxer"
+    }
+    fn probe(&self) -> Result<CapabilitySet, ProbeError> {
+        Ok(CapabilitySet::new().with(
+            rbs_mux::caps::CONTAINER,
+            CapabilityValue::Set(["matroska".to_owned()].into()),
+        ))
+    }
+}
+
+impl rbs_mux::MuxerFactory for FakeMuxerFactory {
+    fn create(
+        &self,
+        _: &rbs_mux::MuxerConfig,
+    ) -> Result<Box<dyn rbs_mux::Muxer>, rbs_mux::CreateError> {
+        Ok(Box::new(FakeMuxer))
+    }
+}
+
+struct FakeMuxer;
+
+impl rbs_mux::Muxer for FakeMuxer {
+    fn begin(&mut self, out: &mut Vec<rbs_core::media::MuxChunk>) -> Result<(), rbs_mux::MuxError> {
+        out.push(rbs_core::media::MuxChunk::new(
+            rbs_core::media::ChunkKind::Header,
+            Bytes::from_static(b"h"),
+        ));
+        Ok(())
+    }
+    fn write(
+        &mut self,
+        _: rbs_core::media::StreamIndex,
+        packet: &EncodedPacket,
+        out: &mut Vec<rbs_core::media::MuxChunk>,
+    ) -> Result<(), rbs_mux::MuxError> {
+        out.push(rbs_core::media::MuxChunk::new(
+            rbs_core::media::ChunkKind::Media {
+                keyframe: packet.keyframe(),
+                timestamp: packet.dts(),
+            },
+            packet.data().clone(),
+        ));
+        Ok(())
+    }
+    fn finish(
+        &mut self,
+        out: &mut Vec<rbs_core::media::MuxChunk>,
+    ) -> Result<(), rbs_mux::MuxError> {
+        out.push(rbs_core::media::MuxChunk::new(
+            rbs_core::media::ChunkKind::Trailer,
+            Bytes::from_static(b"t"),
+        ));
+        Ok(())
+    }
 }

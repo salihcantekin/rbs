@@ -1195,7 +1195,8 @@ impl StudioUi {
 
     /// Starts recording with the output settings.
     pub fn record(&mut self) {
-        if self.rec_state != rec_state::OFF || self.st_state != st_state::OFF {
+        // A running stream does not stop it: both run at once (ADR-0047).
+        if self.rec_state != rec_state::OFF {
             return;
         }
         if let Some(why) = &self.cannot_record {
@@ -1254,7 +1255,7 @@ impl StudioUi {
 
     /// Goes live with the stream settings: the host reads the key from the store.
     pub fn go_live(&mut self) {
-        if self.st_state != st_state::OFF || self.rec_state != rec_state::OFF {
+        if self.st_state != st_state::OFF {
             return;
         }
         let fail = |ui: &mut Self, why: String| {
@@ -1392,7 +1393,6 @@ impl StudioUi {
             ),
             st_state::LIVE => format!("Connecting to {host}…"),
             st_state::ENDING => "Ending the stream…".to_owned(),
-            _ if self.rec_state != rec_state::OFF => "Stop the recording to go live.".to_owned(),
             _ => self.st_note.clone(),
         }
     }

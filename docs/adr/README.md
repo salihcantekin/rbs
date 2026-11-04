@@ -58,3 +58,4 @@ An ADR records one decision that is hard to reverse or affects more than one cra
 | [0043](0043-end-of-stream-on-final-ticks.md) | Final ticks are marked, and the video encoder flushes on them | Accepted |
 | [0044](0044-control-api-protocol-and-security.md) | Control API: one typed request layer, JSON-RPC over swappable transports, scoped token authentication | Accepted |
 | [0046](0046-network-access-over-tls.md) | Network access to the control API: TLS on the remote control port, a generated key the client pins | Accepted |
+| [0047](0047-several-outputs-per-canvas.md) | Several outputs per canvas: record and stream at once, encoders shared when their settings match | Proposed |

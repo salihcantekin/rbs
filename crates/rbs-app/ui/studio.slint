@@ -477,8 +477,9 @@ export component MixerPanel inherits Rectangle {
     }
 }
 
-// Live controls: Go live and End stream, Record and Stop recording. One output runs at a
-// time until several run per canvas. End stream asks first (U4: it cannot be undone).
+// Live controls: Go live and End stream, Record and Stop recording. The stream and the
+// recording run at the same time or alone (ADR-0047). End stream asks first (U4: it
+// cannot be undone).
 export component LiveControlsPanel inherits Rectangle {
     background: Theme.surface-raised;
     property <bool> recording: Studio.rec-state == 2;
@@ -497,7 +498,7 @@ export component LiveControlsPanel inherits Rectangle {
                 text: live ? @tr("End stream") : @tr("Go live");
                 kind: live ? "live" : "primary";
                 enabled: Studio.state == 1 && !confirming
-                    && (live || (Studio.st-state == 0 && Studio.rec-state == 0 && Studio.rec-unavailable == ""));
+                    && (live || (Studio.st-state == 0 && Studio.rec-unavailable == ""));
                 clicked => {
                     if live { confirming = true; } else { Studio.go-live(); }
                 }
@@ -506,7 +507,7 @@ export component LiveControlsPanel inherits Rectangle {
                 text: recording ? @tr("Stop recording") : @tr("Record");
                 kind: recording ? "live" : "secondary";
                 enabled: Studio.state == 1 && Studio.rec-unavailable == ""
-                    && (recording || (Studio.rec-state == 0 && Studio.st-state == 0));
+                    && (recording || Studio.rec-state == 0);
                 clicked => {
                     if recording { Studio.stop-recording(); } else { Studio.record(); }
                 }
@@ -569,9 +570,8 @@ export component LiveControlsPanel inherits Rectangle {
                 : Studio.rec-state == 2 ? @tr("Recording to {}", Studio.rec-file)
                 : Studio.rec-state == 3 ? @tr("Stopping the recording and closing the file…")
                 : Studio.rec-unavailable != "" ? Studio.rec-unavailable
-                : Studio.st-state != 0 ? @tr("End the stream to record.")
                 : Studio.rec-note;
-            color: Studio.rec-state == 0 && Studio.st-state == 0 && (Studio.rec-unavailable != "" || Studio.rec-note-bad) ? Theme.state-error : Theme.text-secondary;
+            color: Studio.rec-state == 0 && (Studio.rec-unavailable != "" || Studio.rec-note-bad) ? Theme.state-error : Theme.text-secondary;
             font-size: Tokens.type-body-size;
             wrap: word-wrap;
         }

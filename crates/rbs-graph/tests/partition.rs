@@ -699,3 +699,147 @@ fn an_active_node_moves_between_partitions_in_two_phases() {
     assert!(rig.running(ENCODER).is_empty());
     assert!(rig.packets_seen.load(Ordering::Relaxed) >= packets_before + 4);
 }
+
+/// A second output joins a running packet producer (ADR-0047): the new link gets its
+/// own queue, its first packet is a keyframe, the first output sees no gap, and the
+/// ticks after the swap allocate nothing.
+#[test]
+fn a_consumer_added_to_a_running_producer_starts_at_a_keyframe() {
+    use rbs_graph::node::{LinkKind, NodeDescriptor, NodeTypeId, Pin};
+    const SECOND: PartitionId = PartitionId(3);
+    let recorder = |got: &Arc<std::sync::Mutex<Vec<(u64, bool)>>>| Recorder {
+        desc: NodeDescriptor::new(
+            NodeTypeId::new("org.rbs.test.recorder"),
+            NodeKind::Output,
+            vec![Pin::one("in", LinkKind::Packets)],
+            vec![],
+        ),
+        got: Arc::clone(got),
+    };
+    let gop = Gop {
+        desc: NodeDescriptor::new(
+            NodeTypeId::new("org.rbs.test.gop"),
+            NodeKind::Source,
+            vec![],
+            vec![Pin::one("out", LinkKind::Packets)],
+        ),
+        burst: 1,
+        gop: 10,
+        next: 0,
+    };
+    let first = Arc::new(std::sync::Mutex::new(Vec::with_capacity(256)));
+    let second = Arc::new(std::sync::Mutex::new(Vec::with_capacity(256)));
+    let rec_a = recorder(&first);
+    let rec_b = recorder(&second);
+    let mut graph = GraphDescription::new();
+    let add = |graph: &mut GraphDescription, desc: &NodeDescriptor, p: PartitionId| {
+        let id = graph.add_node(Arc::new(desc.clone())).unwrap();
+        graph.set_state(id, Lifecycle::Standby).unwrap();
+        graph.set_state(id, Lifecycle::Active).unwrap();
+        graph.set_partition(id, p).unwrap();
+        id
+    };
+    let g = add(&mut graph, &gop.desc, ENCODER);
+    let a = add(&mut graph, &rec_a.desc, OUTPUT);
+    graph.connect(g, "out", a, "in").unwrap();
+    let mut lowering = Lowering::new();
+    let mut parts: BTreeMap<PartitionId, (Controller<()>, Executor<()>)> =
+        [ENCODER, OUTPUT, SECOND]
+            .into_iter()
+            .map(|p| (p, channel::<()>(Arc::new(()), ())))
+            .collect();
+    let cadence = Cadence::frames(Timestamp::ZERO, FrameRate::FPS_60);
+    let mut tick = 0;
+    let mut apply = |graph: &GraphDescription,
+                     parts: &mut BTreeMap<PartitionId, (Controller<()>, Executor<()>)>,
+                     tick: &mut u64| {
+        let mut lowered = lowering.lower(graph);
+        for new in lowered.created.drain(..) {
+            let (writer, reader) = new.ends.writer::<()>();
+            let c = &new.crossing;
+            parts
+                .get_mut(&c.from)
+                .unwrap()
+                .0
+                .adopt(c.writer, writer)
+                .unwrap();
+            parts
+                .get_mut(&c.to)
+                .unwrap()
+                .0
+                .adopt(c.reader, reader.into_node::<()>())
+                .unwrap();
+        }
+        // Consumers first, as the engine sends them.
+        for (p, part) in lowered.parts.iter().rev() {
+            let (ctl, exec) = parts.get_mut(p).unwrap();
+            let report = ctl.apply(part).unwrap();
+            assert!(report.failed.is_empty(), "{p}: {:?}", report.failed);
+            exec.run_tick(Tick::of(&cadence, *tick));
+            ctl.collect().unwrap().unwrap();
+        }
+        *tick += 1;
+    };
+    parts
+        .get_mut(&ENCODER)
+        .unwrap()
+        .0
+        .adopt(g, Box::new(gop))
+        .unwrap();
+    parts
+        .get_mut(&OUTPUT)
+        .unwrap()
+        .0
+        .adopt(a, Box::new(rec_a))
+        .unwrap();
+    apply(&graph, &mut parts, &mut tick);
+    let run = |parts: &mut BTreeMap<PartitionId, (Controller<()>, Executor<()>)>,
+               tick: &mut u64| {
+        for p in [ENCODER, OUTPUT, SECOND] {
+            parts
+                .get_mut(&p)
+                .unwrap()
+                .1
+                .run_tick(Tick::of(&cadence, *tick));
+        }
+        *tick += 1;
+    };
+    // Mid-GOP: 13 packets made, the next keyframe is packet 20.
+    for _ in 0..13 {
+        run(&mut parts, &mut tick);
+    }
+
+    let b = add(&mut graph, &rec_b.desc, SECOND);
+    graph.connect(g, "out", b, "in").unwrap();
+    parts
+        .get_mut(&SECOND)
+        .unwrap()
+        .0
+        .adopt(b, Box::new(rec_b))
+        .unwrap();
+    apply(&graph, &mut parts, &mut tick);
+    run(&mut parts, &mut tick);
+    let info = allocation_counter::measure(|| {
+        for _ in 0..20 {
+            run(&mut parts, &mut tick);
+        }
+    });
+    assert_eq!(info.count_total, 0, "ticks after the swap allocated");
+
+    let a_got = first.lock().unwrap().clone();
+    let b_got = second.lock().unwrap().clone();
+    for pair in a_got.windows(2) {
+        assert_eq!(
+            pair[1].0,
+            pair[0].0 + 1,
+            "the first output has no gap: {a_got:?}"
+        );
+    }
+    let (start, key) = b_got[0];
+    assert!(key, "the joining output starts at a keyframe: {b_got:?}");
+    assert!(start >= 13, "and not before it joined: {b_got:?}");
+    for pair in b_got.windows(2) {
+        assert_eq!(pair[1].0, pair[0].0 + 1, "then without a gap: {b_got:?}");
+    }
+    assert_eq!(b_got.last(), a_got.last(), "both are current");
+}
