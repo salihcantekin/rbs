@@ -214,8 +214,12 @@ pub enum Command {
     },
     /// Place a video source's picture: the box's top-left corner and size in canvas
     /// pixels. Rotation, crop and opacity stay. A size of zero or a value that is not
-    /// finite is refused with [`Update::Error`].
+    /// finite is refused with [`Update::Error`]. Always answered with
+    /// [`Update::BoxPlaced`] carrying `seq`, after any new rows, also when nothing
+    /// changed, so the UI can send the next box of a drag (ADR-0047).
     SetSourceBox {
+        /// The caller's number for this request.
+        seq: u64,
         /// The source.
         id: SourceId,
         /// Top-left corner.
@@ -422,6 +426,15 @@ pub enum StreamUpdate {
 /// What the studio tells the UI.
 #[derive(Debug, Clone)]
 pub enum Update {
+    /// The answer to [`Command::SetSourceBox`] number `seq`: `ok` when the box is the
+    /// source's now (changed or already so), else it was refused (an
+    /// [`Update::Error`] says why).
+    BoxPlaced {
+        /// The request's number.
+        seq: u64,
+        /// Taken.
+        ok: bool,
+    },
     /// The studio runs. `preview`: where the UI connects to the canvas preview (`None`
     /// where the platform has none). `kinds`: the kinds the adapters can add.
     Started {
@@ -1008,12 +1021,24 @@ impl Host {
                 Ok(false) => {}
                 Err(e) => notify(Update::Error(e)),
             },
-            Command::SetSourceBox { id, position, size } => {
-                match self.set_source_box(id, position, size) {
-                    Ok(true) => self.apply(notify),
-                    Ok(false) => {}
-                    Err(e) => notify(Update::Error(e)),
-                }
+            Command::SetSourceBox {
+                seq,
+                id,
+                position,
+                size,
+            } => {
+                let ok = match self.set_source_box(id, position, size) {
+                    Ok(true) => {
+                        self.apply(notify);
+                        true
+                    }
+                    Ok(false) => true,
+                    Err(e) => {
+                        notify(Update::Error(e));
+                        false
+                    }
+                };
+                notify(Update::BoxPlaced { seq, ok });
             }
             Command::StartRecording(r) => {
                 let update = match self.start_recording(&r, Some(API_PROFILE_ID.into())) {

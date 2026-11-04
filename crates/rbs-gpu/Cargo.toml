@@ -29,6 +29,7 @@ bytes = "1.9"
 preview-layer = [
     "dep:objc2",
     "dep:objc2-quartz-core",
+    "dep:objc2-core-graphics",
     "dep:windows-numerics",
     "windows/Win32_Graphics_CompositionSwapchain",
     "windows/Win32_Graphics_Direct3D",
@@ -96,7 +97,10 @@ objc2-core-foundation = { version = "0.3.2", default-features = false, features 
 # `preview-layer`); same objc2 versions as wgpu-hal and raw-window-metal, so nothing new
 # is built.
 objc2 = { version = "0.6.3", optional = true }
-objc2-quartz-core = { version = "0.3.2", default-features = false, features = ["std", "CALayer", "CATransaction", "objc2-core-foundation"], optional = true }
+objc2-quartz-core = { version = "0.3.2", default-features = false, features = ["std", "CALayer", "CATransaction", "objc2-core-foundation", "objc2-core-graphics"], optional = true }
+# Colours of the marks drawn over the preview (ADR-0047); already in the lockfile through
+# rbs-app.
+objc2-core-graphics = { version = "0.3.2", default-features = false, features = ["std", "CGColor"], optional = true }
 # Mach messages and bootstrap lookups for the cross-process preview (ADR-0028).
 mach2 = "0.7"
 

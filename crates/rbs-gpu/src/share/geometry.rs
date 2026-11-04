@@ -74,3 +74,68 @@ mod tests {
         assert!(ring_needed(Duration::ZERO, Duration::from_millis(1)) > 3);
     }
 }
+
+/// Most rectangles [`Mark`]s a preview layer draws at once (ADR-0047): a selection's
+/// outline and handles need 20.
+pub const MAX_MARKS: usize = 32;
+
+/// A filled rectangle drawn over the preview picture (a selection's outline or handle,
+/// ADR-0047), in the same window coordinates and units as the layer's `set_rect`.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Mark {
+    /// Left edge.
+    pub x: f64,
+    /// Top edge.
+    pub y: f64,
+    /// Width.
+    pub width: f64,
+    /// Height.
+    pub height: f64,
+    /// sRGB colour with straight alpha.
+    pub rgba: [u8; 4],
+}
+
+impl Mark {
+    /// Finite with an area: the only marks a layer draws.
+    #[cfg_attr(not(any(windows, target_os = "macos")), allow(dead_code))]
+    pub(crate) fn drawable(&self) -> bool {
+        [self.x, self.y, self.width, self.height]
+            .iter()
+            .all(|v| v.is_finite())
+            && self.width > 0.0
+            && self.height > 0.0
+    }
+}
+
+/// `v` rounded to the device pixel grid of `scale` device pixels per unit.
+#[cfg_attr(not(any(windows, target_os = "macos")), allow(dead_code))]
+pub(crate) fn snap(v: f64, scale: f64) -> f64 {
+    if scale > 0.0 {
+        (v * scale).round() / scale
+    } else {
+        v
+    }
+}
+
+#[cfg(test)]
+mod mark_tests {
+    use super::*;
+    const _: () = assert!(MAX_MARKS >= 20);
+
+    #[test]
+    fn only_finite_marks_with_a_size_are_drawn_and_edges_snap() {
+        let m = Mark {
+            x: 1.0,
+            y: 2.0,
+            width: 3.0,
+            height: 4.0,
+            rgba: [0, 0, 0, 255],
+        };
+        assert!(m.drawable());
+        assert!(!Mark { x: f64::NAN, ..m }.drawable());
+        assert!(!Mark { width: -1.0, ..m }.drawable());
+        assert!(!Mark { height: 0.0, ..m }.drawable());
+        assert_eq!(snap(10.3, 2.0), 10.5);
+        assert_eq!(snap(10.3, 0.0), 10.3);
+    }
+}

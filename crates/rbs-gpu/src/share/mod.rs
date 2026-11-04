@@ -38,6 +38,8 @@ mod win;
 use std::fmt;
 use std::str::FromStr;
 
+#[cfg(all(any(windows, target_os = "macos"), feature = "preview-layer"))]
+pub use geometry::{MAX_MARKS, Mark};
 #[cfg(all(target_os = "macos", feature = "preview-layer"))]
 pub use layer::{DEFAULT_RETIRE_AFTER, LayerRect, PreviewLayer};
 #[cfg(target_vendor = "apple")]

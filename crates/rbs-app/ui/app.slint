@@ -3,9 +3,9 @@
 // layout tree into tab stacks and splitter handles with absolute positions.
 import { Theme, Tokens } from "tokens.slint";
 import { Button, IconButton, Icon, IconName, MenuItem, MenuSurface, EmptyState } from "components.slint";
-import { Studio, SourceData, KindData, TargetData, MeterRow, ScaleMark, EncoderData, ProgramPanel, SourcesPanel, PropertiesPanel, MixerPanel, LiveControlsPanel, OutputsPanel, RecordingSettings, StreamSettings, VideoSettings, RemoteControlSettings } from "studio.slint";
+import { Studio, SourceData, MarkData, KindData, TargetData, MeterRow, ScaleMark, EncoderData, ProgramPanel, SourcesPanel, PropertiesPanel, MixerPanel, LiveControlsPanel, OutputsPanel, RecordingSettings, StreamSettings, VideoSettings, RemoteControlSettings } from "studio.slint";
 
-export { Theme, Tokens, Studio, SourceData, KindData, TargetData, MeterRow, ScaleMark, EncoderData }
+export { Theme, Tokens, Studio, SourceData, MarkData, KindData, TargetData, MeterRow, ScaleMark, EncoderData }
 
 export struct TabData { id: string, title: string, known: bool }
 export struct StackData { window: int, stack: int, x: length, y: length, w: length, h: length, tabs: [TabData], active: int }

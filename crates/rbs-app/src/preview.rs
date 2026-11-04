@@ -10,17 +10,25 @@ use std::time::Duration;
 
 use raw_window_handle::{HasWindowHandle, RawWindowHandle};
 use rbs_core::time::{Clock, MonotonicClock};
-use rbs_gpu::share::{LayerRect, PreviewEndpoint, PreviewFrame, PreviewLayer, PreviewSubscriber};
+use rbs_gpu::share::{
+    LayerRect, MAX_MARKS, Mark, PreviewEndpoint, PreviewFrame, PreviewLayer, PreviewSubscriber,
+};
+use rbs_ui::transform::{self, MarkKind};
 use slint::ComponentHandle;
 
 use crate::studio_ui::log;
-use crate::ui::{MainWindow, Shell, Studio};
+use crate::ui::{MainWindow, Shell, Studio, Theme};
+
+// Every mark of a selection reaches the layer.
+const _: () = assert!(transform::MAX_MARKS <= MAX_MARKS);
 
 /// How long connecting to the in-process publisher may take before it is given up.
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 
 struct Preview {
     layer: PreviewLayer,
+    /// The marks last given to the layer, in its units.
+    marks: Vec<Mark>,
     attached: bool,
     clock: MonotonicClock,
     timer: slint::Timer,
@@ -70,6 +78,7 @@ fn setup(mut sub: PreviewSubscriber, done: impl Fn(bool)) {
     PREVIEW.with(|p| {
         *p.borrow_mut() = Some(Preview {
             layer,
+            marks: Vec::with_capacity(MAX_MARKS),
             attached: false,
             clock: MonotonicClock::new(),
             timer: slint::Timer::default(),
@@ -195,6 +204,73 @@ fn retire() {
                     st.timer.start(slint::TimerMode::SingleShot, after, retire);
                 }
             }
+        }
+    });
+}
+
+/// Draws the selection over the picture (ADR-0047): `marks` in the Program panel's
+/// coordinates, placed into the window like the layer, in the theme's colours. Does
+/// nothing when they did not change.
+pub fn set_marks(window: &MainWindow, marks: &[transform::Mark]) {
+    let theme = window.global::<Theme>();
+    let rgba = |c: slint::Color| {
+        let c = c.to_argb_u8();
+        [c.red, c.green, c.blue, c.alpha]
+    };
+    let accent = rgba(theme.get_accent());
+    let fill = rgba(theme.get_surface_raised());
+    #[cfg(target_os = "macos")]
+    let scale = 1.0;
+    #[cfg(windows)]
+    let scale = f64::from(window.window().scale_factor());
+    // Marks are clipped to the panel's picture area: past it they would cover other
+    // panels, which the layer sits above.
+    let Some(area) = AREA.with(Cell::get) else {
+        return;
+    };
+    PREVIEW.with(|p| {
+        let mut p = p.borrow_mut();
+        let Some(st) = p.as_mut() else { return };
+        let mut changed = false;
+        let mut n = 0;
+        for m in marks {
+            let x0 = m.rect.x.max(0.0);
+            let y0 = m.rect.y.max(0.0);
+            let x1 = (m.rect.x + m.rect.w).min(area[2]);
+            let y1 = (m.rect.y + m.rect.h).min(area[3]);
+            if x1 <= x0 || y1 <= y0 || n == MAX_MARKS {
+                continue;
+            }
+            let mark = Mark {
+                x: f64::from(area[0] + x0) * scale,
+                y: f64::from(area[1] + y0) * scale,
+                width: f64::from(x1 - x0) * scale,
+                height: f64::from(y1 - y0) * scale,
+                rgba: if m.kind == MarkKind::HandleFill {
+                    fill
+                } else {
+                    accent
+                },
+            };
+            match st.marks.get_mut(n) {
+                Some(old) if *old == mark => {}
+                Some(old) => {
+                    *old = mark;
+                    changed = true;
+                }
+                None => {
+                    st.marks.push(mark);
+                    changed = true;
+                }
+            }
+            n += 1;
+        }
+        if st.marks.len() != n {
+            st.marks.truncate(n);
+            changed = true;
+        }
+        if changed {
+            st.layer.set_marks(&st.marks);
         }
     });
 }

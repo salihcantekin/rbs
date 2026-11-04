@@ -12,10 +12,12 @@ use objc2::msg_send;
 use objc2::rc::Retained;
 use objc2::runtime::AnyObject;
 use objc2_core_foundation::{CFRetained, CGPoint, CGRect, CGSize};
+use objc2_core_graphics::CGColor;
 use objc2_io_surface::IOSurfaceRef;
 use objc2_quartz_core::{CAAutoresizingMask, CALayer, CATransaction, kCAGravityResizeAspect};
 use rbs_core::time::Timestamp;
 
+use super::geometry::{MAX_MARKS, Mark, snap};
 use super::subscriber::{PreviewFrame, PreviewSubscriber};
 use crate::error::GpuError;
 
@@ -50,6 +52,14 @@ pub struct PreviewLayer {
     /// The last placement: the rectangle, the superlayer's height and whether it is
     /// flipped (the bottom-left origin depends on both).
     placed: Option<(LayerRect, f64, bool)>,
+    /// Container of the mark sublayers (ADR-0047), made at the first `set_marks`.
+    marks: Option<Retained<CALayer>>,
+    /// The mark sublayers, reused; at most [`MAX_MARKS`].
+    mark_layers: Vec<Retained<CALayer>>,
+    /// The colour each mark sublayer has now, so an unchanged colour makes no `CGColor`.
+    mark_colors: Vec<[u8; 4]>,
+    /// The marks last asked for, drawn again when the layer moves.
+    wanted: [Option<Mark>; MAX_MARKS],
 }
 
 /// Default time a replaced surface stays with the UI: two refresh periods at 60 Hz. See
@@ -77,6 +87,10 @@ impl PreviewLayer {
             retiring,
             retire_after: DEFAULT_RETIRE_AFTER,
             placed: None,
+            marks: None,
+            mark_layers: Vec::new(),
+            mark_colors: Vec::new(),
+            wanted: [None; MAX_MARKS],
         }
     }
 
@@ -142,6 +156,7 @@ impl PreviewLayer {
     /// when the preview panel closes while the window stays open; dropping the layer at
     /// once gives frames back that may still be on screen.
     pub fn detach(&mut self, now: Timestamp) {
+        self.set_marks(&[]);
         transaction(|| {
             // SAFETY: nil is a valid value for `contents`.
             unsafe { self.layer.setContents(None) };
@@ -192,6 +207,100 @@ impl PreviewLayer {
         transaction(|| {
             self.layer.setAutoresizingMask(mask);
             self.layer.setFrame(frame);
+        });
+        self.draw_marks();
+    }
+
+    /// Draws `marks` over the picture (a selection's outline and handles, ADR-0047), in
+    /// the same coordinates as [`PreviewLayer::set_rect`]; they replace the ones drawn
+    /// before, and an empty slice removes them. At most [`MAX_MARKS`] are drawn; marks
+    /// that are not finite or have a negative size are skipped. The sublayers are made
+    /// on first use and then reused: no Rust heap allocation after that.
+    pub fn set_marks(&mut self, marks: &[Mark]) {
+        if marks.is_empty() && self.marks.is_none() {
+            return;
+        }
+        self.wanted = [None; MAX_MARKS];
+        for (slot, m) in self
+            .wanted
+            .iter_mut()
+            .zip(marks.iter().filter(|m| m.drawable()))
+        {
+            *slot = Some(*m);
+        }
+        self.draw_marks();
+    }
+
+    fn draw_marks(&mut self) {
+        let Some((rect, _, _)) = self.placed else {
+            return;
+        };
+        let wanted = self.wanted;
+        let count = wanted.iter().filter(|m| m.is_some()).count();
+        if count == 0 && self.marks.is_none() {
+            return;
+        }
+        if self.marks.is_none() {
+            let c = CALayer::new();
+            c.setZPosition(1.0);
+            transaction(|| self.layer.addSublayer(&c));
+            self.marks = Some(c);
+        }
+        let Some(container) = &self.marks else {
+            return;
+        };
+        while self.mark_layers.len() < count {
+            let l = CALayer::new();
+            transaction(|| container.addSublayer(&l));
+            self.mark_layers.push(l);
+            self.mark_colors.push([0, 0, 0, 0]);
+        }
+        // The preview layer's own orientation decides where its sublayers' origin is.
+        let flipped = self.layer.contentsAreFlipped();
+        let height = rect.height.max(0.0);
+        let scale = self
+            .layer
+            .superlayer()
+            .map_or(1.0, |sup| sup.contentsScale());
+        let layers = &self.mark_layers;
+        let colors = &mut self.mark_colors;
+        transaction(|| {
+            container.setFrame(CGRect::new(
+                CGPoint::new(0.0, 0.0),
+                CGSize::new(rect.width.max(0.0), height),
+            ));
+            let mut i = 0;
+            for m in wanted.iter().flatten() {
+                let (Some(l), Some(c)) = (layers.get(i), colors.get_mut(i)) else {
+                    break;
+                };
+                // Edges on the window's device pixel grid, then relative to the layer.
+                let x0 = snap(m.x, scale) - rect.x;
+                let x1 = snap(m.x + m.width, scale) - rect.x;
+                let top = snap(m.y, scale) - rect.y;
+                let bottom = snap(m.y + m.height, scale) - rect.y;
+                let y = if flipped { top } else { height - bottom };
+                l.setFrame(CGRect::new(
+                    CGPoint::new(x0, y),
+                    CGSize::new(x1 - x0, bottom - top),
+                ));
+                if *c != m.rgba {
+                    *c = m.rgba;
+                    let ch = |v: u8| f64::from(v) / 255.0;
+                    let color = CGColor::new_srgb(
+                        ch(m.rgba[0]),
+                        ch(m.rgba[1]),
+                        ch(m.rgba[2]),
+                        ch(m.rgba[3]),
+                    );
+                    l.setBackgroundColor(Some(&color));
+                }
+                l.setHidden(false);
+                i += 1;
+            }
+            for l in layers.iter().skip(i) {
+                l.setHidden(true);
+            }
         });
     }
 
