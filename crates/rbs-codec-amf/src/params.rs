@@ -187,6 +187,13 @@ pub(crate) fn properties(plan: &Plan) -> Result<Vec<(Name, Value)>, String> {
         ),
     ]);
     list.extend(rate_properties(plan.codec, plan.rc, false));
+    if plan.cbr_padding {
+        // Only set for `cbr_padded`, so plain CBR never depends on them. AMF writes
+        // filler data only while it enforces the HRD buffer model (seen on hardware:
+        // `FillerDataEnable` alone is accepted and has no effect).
+        list.push((n.enforce_hrd, Value::Bool(true)));
+        list.push((n.filler_data, Value::Bool(true)));
+    }
     Ok(list)
 }
 
@@ -218,6 +225,13 @@ pub(crate) fn optional(name: Name) -> bool {
         })
 }
 
+/// True for the properties `cbr_padded` sets on `codec`'s encoder (filler data and
+/// HRD enforcement).
+pub(crate) fn is_filler(codec: CodecId, name: Name) -> bool {
+    let n = names(codec);
+    name == n.filler_data || name == n.enforce_hrd
+}
+
 /// 100-nanosecond ticks per frame at `fps` (AMF timestamps), at least 1.
 pub(crate) fn frame_duration(fps: (u32, u32)) -> i64 {
     (10_000_000 * i64::from(fps.1) / i64::from(fps.0.max(1))).max(1)
@@ -244,6 +258,7 @@ mod tests {
                 Profile::H264High
             },
             rc,
+            cbr_padding: false,
             gop: 2000,
             color: ColorCodes::of(&ColorSpace::BT709_LIMITED).unwrap(),
         }
@@ -266,6 +281,24 @@ mod tests {
         assert_eq!(get(&list, sys::H264.peak_bitrate), Value::Int(6_000_000));
         assert_eq!(get(&list, sys::H264.output_color_profile), Value::Int(1));
         assert_eq!(get(&list, sys::H264_FULL_RANGE), Value::Bool(false));
+        assert!(
+            list.iter()
+                .all(|(n, _)| *n != sys::H264.filler_data && *n != sys::H264.enforce_hrd)
+        );
+    }
+
+    #[test]
+    fn cbr_padding_enables_filler_data() {
+        for codec in [CodecId::H264, CodecId::Hevc] {
+            let mut p = plan(codec, Rc::Cbr { bitrate: 6_000_000 });
+            p.cbr_padding = true;
+            let list = properties(&p).unwrap();
+            assert_eq!(get(&list, names(codec).filler_data), Value::Bool(true));
+            assert_eq!(get(&list, names(codec).enforce_hrd), Value::Bool(true));
+            assert!(!optional(names(codec).filler_data));
+            assert!(is_filler(codec, names(codec).filler_data));
+            assert!(!is_filler(codec, names(codec).usage));
+        }
     }
 
     #[test]

@@ -58,7 +58,8 @@ fn rejected<F: ?Sized>(selection: &rbs_core::registry::Selection<F>) -> Vec<(Ada
 }
 
 /// The first video encoder, best first, that lists the codec, the input memory kind and
-/// the pixel format of `config` and opens a session for it.
+/// the pixel format of `config` and opens a session for it (a candidate that refuses a
+/// setting, such as a rate-control mode it lacks, is skipped with its reason).
 pub(crate) fn video_encoder(
     registry: &Registry<dyn VideoEncoderFactory>,
     config: &VideoEncoderConfig,

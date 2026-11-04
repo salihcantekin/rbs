@@ -5,7 +5,7 @@ use rbs_core::media::CodecId;
 use crate::device::{CodecCaps, DeviceCaps, Profiles};
 
 /// A device like a current discrete GPU: H.264 to 4096 (8 bits), HEVC to 8192
-/// with Main 10, every rate-control mode and bitrate changes.
+/// with Main 10, every rate-control mode, CBR padding and bitrate changes.
 pub fn discrete_gpu() -> DeviceCaps {
     DeviceCaps {
         name: "Test GPU".into(),
@@ -20,6 +20,7 @@ pub fn discrete_gpu() -> DeviceCaps {
                 vbr: true,
                 quality: true,
                 dynamic_bitrate: true,
+                cbr_padding: true,
             },
             CodecCaps {
                 codec: CodecId::Hevc,
@@ -31,6 +32,7 @@ pub fn discrete_gpu() -> DeviceCaps {
                 vbr: true,
                 quality: true,
                 dynamic_bitrate: true,
+                cbr_padding: true,
             },
         ],
     }

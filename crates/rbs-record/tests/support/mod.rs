@@ -12,8 +12,8 @@ use rbs_audio::AudioGraphConfig;
 use rbs_audio_io_test::TestAudioBackend;
 use rbs_capture_test::TestCaptureFactory;
 use rbs_codec::{
-    CreateError, EncodeError, EncoderChange, VideoEncoder, VideoEncoderConfig, VideoEncoderFactory,
-    caps as codec_caps,
+    CreateError, EncodeError, EncoderChange, RateControl, VideoEncoder, VideoEncoderConfig,
+    VideoEncoderFactory, caps as codec_caps,
 };
 use rbs_codec_mf::testing::FakeAacFactory;
 use rbs_core::capability::{CapabilitySet, CapabilityValue};
@@ -84,6 +84,8 @@ pub struct FakeVideoFactory {
     id: &'static str,
     broken: bool,
     submitted: Arc<AtomicU64>,
+    /// The configuration of the last session created.
+    configs: Arc<Mutex<Option<VideoEncoderConfig>>>,
 }
 
 impl AdapterFactory for FakeVideoFactory {
@@ -108,6 +110,12 @@ impl VideoEncoderFactory for FakeVideoFactory {
                 what: "no device (test)".into(),
             });
         }
+        if matches!(config.rate_control, RateControl::CbrPadded { .. }) {
+            return Err(CreateError::Unsupported {
+                what: "cbr_padded (test)".into(),
+            });
+        }
+        *self.configs.lock().unwrap() = Some(config.clone());
         Ok(Box::new(FakeVideo {
             stream: StreamDescriptor::new(
                 CodecId::H264,
@@ -320,11 +328,14 @@ pub struct Rig {
     pub audio: Arc<TestAudioBackend>,
     pub log: Arc<Log>,
     pub submitted: Arc<AtomicU64>,
+    /// The configuration of the last video encoder session created.
+    pub video_config: Arc<Mutex<Option<VideoEncoderConfig>>>,
 }
 
 pub fn rig() -> Rig {
     let log = Arc::new(Log::default());
     let submitted = Arc::new(AtomicU64::new(0));
+    let video_config = Arc::new(Mutex::new(None));
     let capture = Arc::new(TestCaptureFactory::new());
     let audio = Arc::new(TestAudioBackend::new());
     let mut a = RecordAdapters::new();
@@ -336,6 +347,7 @@ pub fn rig() -> Rig {
                 id,
                 broken,
                 submitted: Arc::clone(&submitted),
+                configs: Arc::clone(&video_config),
             }))
             .unwrap();
     }
@@ -355,6 +367,7 @@ pub fn rig() -> Rig {
         audio,
         log,
         submitted,
+        video_config,
     }
 }
 

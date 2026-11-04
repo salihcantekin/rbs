@@ -157,3 +157,68 @@ fn drop_with_frames_in_flight() {
         drop(session);
     }
 }
+
+/// Bits per second of `frames` copies of one still picture (the case where CBR without
+/// padding falls far below its target), and whether a filler NAL unit was seen.
+fn still_rate(config: &VideoEncoderConfig, frames: u64) -> (f64, bool) {
+    let mut session = NvencFactory::new().create_session(config).unwrap();
+    let mut source = SystemFrameSource::new();
+    let cadence = Cadence::frames(Timestamp::from_nanos(1_000_000_000), FrameRate::FPS_60);
+    let mut packets = Vec::new();
+    for i in 0..frames {
+        let frame = source.frame(&config.format, 0, cadence.time_of(i)).unwrap();
+        match session.submit(&frame) {
+            Err(EncodeError::Busy) => {
+                session.drain(&mut packets).unwrap();
+                session.submit(&frame).unwrap();
+            }
+            other => other.unwrap(),
+        }
+        session.drain(&mut packets).unwrap();
+    }
+    session.flush(&mut packets).unwrap();
+    let bytes: usize = packets.iter().map(|p| p.data().len()).sum();
+    let filler = packets.iter().any(|p| {
+        nal::annexb_unit_headers(p.data()).any(|h| match config.codec {
+            CodecId::Hevc => (h >> 1) & 0x3f == 38,
+            _ => h & 0x1f == 12,
+        })
+    });
+    let seconds = frames as f64 / 60.0;
+    (bytes as f64 * 8.0 / seconds, filler)
+}
+
+/// `cbr_padded` fills a still picture up to the target with filler data; plain CBR
+/// does not (so the padding is real, not just accepted).
+#[test]
+fn cbr_padded_reaches_the_target_on_a_still_picture() {
+    for (codec, name) in [(CodecId::H264, "h264"), (CodecId::Hevc, "hevc")] {
+        if !encodes(name) {
+            continue;
+        }
+        let target = 4_000_000u64;
+        let plain = config(codec, PixelFormat::Nv12);
+        let mut padded = plain.clone();
+        padded.rate_control = RateControl::CbrPadded {
+            bitrate_bps: target,
+        };
+        // 4 s at 60 fps: long enough for the rate controller to settle.
+        let (plain_bps, plain_filler) = still_rate(&plain, 240);
+        let (padded_bps, padded_filler) = still_rate(&padded, 240);
+        eprintln!(
+            "{name}: plain CBR {:.0} kbit/s, padded {:.0} kbit/s (target {} kbit/s)",
+            plain_bps / 1000.0,
+            padded_bps / 1000.0,
+            target / 1000
+        );
+        assert!(
+            padded_filler,
+            "{name}: no filler NAL unit in the padded stream"
+        );
+        assert!(!plain_filler, "{name}: filler data without padding");
+        assert!(
+            padded_bps >= 0.9 * target as f64,
+            "{name}: padded {padded_bps:.0} bit/s is below 90 % of {target}"
+        );
+    }
+}

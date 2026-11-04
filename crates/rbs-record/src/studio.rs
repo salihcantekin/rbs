@@ -11,7 +11,7 @@ use rbs_audio::{
     AudioGraphConfig, EncoderNode, InputParams, InputStats, LevelMeter, MeterSinkNode, MixerNode,
     MixerParams, MixerStats, Strip,
 };
-use rbs_codec::{AudioEncoderConfig, VideoEncoderConfig};
+use rbs_codec::{AudioEncoderConfig, EncoderTuning, VideoEncoderConfig};
 use rbs_core::lifecycle::Lifecycle;
 use rbs_core::media::{ContainerId, MemoryKind};
 use rbs_core::time::Timestamp;
@@ -185,7 +185,17 @@ impl Prepared {
             MemoryKind::System,
             out.video.rate_control,
         )
-        .with_keyframe_interval(out.video.keyframe_interval);
+        .with_keyframe_interval(out.video.keyframe_interval)
+        .with_max_b_frames(out.video.max_b_frames)
+        .with_tuning({
+            let mut tuning = EncoderTuning::default();
+            tuning.preset = out.video.preset;
+            tuning
+        });
+        let video_config = match &out.video.profile {
+            Some(profile) => video_config.with_profile(profile.clone()),
+            None => video_config,
+        };
         let (video_encoder, video_chosen) =
             select::video_encoder(&adapters.video_encoders, &video_config)?;
         let mut streams = vec![video_encoder.stream().clone()];

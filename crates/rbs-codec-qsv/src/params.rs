@@ -325,6 +325,7 @@ mod tests {
                 Profile::H264High
             },
             rc,
+            cbr_padding: false,
             gop: 120,
             color: ColorCodes::of(&ColorSpace::BT709_LIMITED).unwrap(),
         }

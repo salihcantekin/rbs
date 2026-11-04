@@ -129,6 +129,7 @@ pub(crate) struct Names {
     pub max_profile_cap: Name,
     pub throughput_cap: Name,
     pub enforce_hrd: Name,
+    pub filler_data: Name,
 }
 
 /// Names of the H.264 encoder (components/VideoEncoderVCE.h).
@@ -156,6 +157,7 @@ pub(crate) const H264: Names = Names {
     max_profile_cap: w!("MaxProfile"),
     throughput_cap: w!("MaxThroughput"),
     enforce_hrd: w!("EnforceHRD"),
+    filler_data: w!("FillerDataEnable"),
 };
 
 /// Names of the HEVC encoder (components/VideoEncoderHEVC.h).
@@ -183,6 +185,7 @@ pub(crate) const HEVC: Names = Names {
     max_profile_cap: w!("HevcMaxProfile"),
     throughput_cap: w!("HevcMaxThroughput"),
     enforce_hrd: w!("HevcEnforceHRD"),
+    filler_data: w!("HevcFillerDataEnable"),
 };
 
 // H.264-only names.

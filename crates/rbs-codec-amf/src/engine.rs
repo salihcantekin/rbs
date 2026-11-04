@@ -355,12 +355,13 @@ fn codec_caps(api: &'static Api, context: &Context, codec: CodecId) -> Option<Co
         height: (even_up(min_h), even_down(max_h)),
         mb_per_sec: throughput.and_then(|t| u64::try_from(t).ok()).unwrap_or(0),
         profiles,
-        // Every AMF encoder has CBR, peak-constrained VBR and constant QP, and takes
-        // rate changes while running.
+        // Every AMF encoder has CBR (with filler data), peak-constrained VBR and
+        // constant QP, and takes rate changes while running.
         cbr: true,
         vbr: true,
         quality: true,
         dynamic_bitrate: true,
+        cbr_padding: true,
     };
     c.usable().then_some(c)
 }
@@ -457,6 +458,13 @@ impl AmfEngine {
         for (name, value) in &properties {
             // SAFETY: a live, uninitialised component and a NUL-terminated name.
             let r = unsafe { set_property!(component, name, variant(*value)) }.map_err(missing)?;
+            if r != sys::AMF_OK && params::is_filler(plan.codec, name) {
+                // Declared for every encoder; one that lacks it refuses the mode
+                // like any mode it does not have.
+                return Err(CreateError::Unsupported {
+                    what: format!("cbr_padded (filler data refused: {r})"),
+                });
+            }
             if r != sys::AMF_OK && !params::optional(name) {
                 return Err(create_error(
                     &format!("SetProperty({})", wide_name(name)),

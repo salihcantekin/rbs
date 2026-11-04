@@ -7,7 +7,9 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 use rbs_audio::{AudioGraphConfig, LevelMeter};
-use rbs_codec::{AudioEncoderFactory, KeyframeInterval, RateControl, VideoEncoderFactory};
+use rbs_codec::{
+    AudioEncoderFactory, EncoderPreset, KeyframeInterval, RateControl, VideoEncoderFactory,
+};
 use rbs_core::lifecycle::Lifecycle;
 use rbs_core::media::{CodecId, ContainerId};
 use rbs_core::registry::{AdapterId, Registry};
@@ -114,22 +116,32 @@ impl fmt::Debug for RecordAdapters {
     }
 }
 
-/// Video encoding of the recording.
+/// Video encoding of the recording: every encoder setting that changes the
+/// recording's quality ([`rbs_codec::VideoEncoderConfig`]).
 #[non_exhaustive]
 #[derive(Debug, Clone, PartialEq)]
 pub struct VideoSettings {
     /// Codec.
     pub codec: CodecId,
-    /// Rate control.
+    /// Rate control: CBR (padded with filler data or not), VBR or constant quality,
+    /// with its bitrates or level.
     pub rate_control: RateControl,
     /// Keyframe interval.
     pub keyframe_interval: KeyframeInterval,
+    /// Most B-frames between references; encoders that declare a lower
+    /// `codec.video.b_frames.max` use fewer.
+    pub max_b_frames: u32,
+    /// Codec profile name (`high`, `main`, `main10`); `None` lets the encoder pick.
+    pub profile: Option<String>,
+    /// Speed versus quality.
+    pub preset: EncoderPreset,
     /// The export's pixel format (NV12, or P010 for 10-bit).
     pub format: YuvFormat,
 }
 
 impl Default for VideoSettings {
-    /// H.264, CBR 12 Mbit/s, a keyframe every 2 s, NV12.
+    /// H.264, CBR 12 Mbit/s (not padded), a keyframe every 2 s, no B-frames, the
+    /// encoder's default profile, the balanced preset, NV12.
     fn default() -> Self {
         Self {
             codec: CodecId::H264,
@@ -137,6 +149,9 @@ impl Default for VideoSettings {
                 bitrate_bps: 12_000_000,
             },
             keyframe_interval: KeyframeInterval::Duration(Duration::from_secs(2)),
+            max_b_frames: 0,
+            profile: None,
+            preset: EncoderPreset::Balanced,
             format: YuvFormat::Nv12,
         }
     }

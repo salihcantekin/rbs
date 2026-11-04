@@ -605,6 +605,7 @@ mod tests {
             low_latency: false,
             profile,
             rc,
+            cbr_padding: false,
             gop: 120,
             color: ColorCodes::of(&ColorSpace::BT709_FULL).unwrap(),
         }

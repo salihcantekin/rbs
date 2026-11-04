@@ -342,6 +342,9 @@ pub(crate) fn probe(ordinal: c_int) -> Result<DeviceCaps, String> {
             vbr: modes == 0 || modes & i64::from(sys::NV_ENC_PARAMS_RC_VBR) != 0,
             quality: modes == 0 || modes & i64::from(sys::NV_ENC_PARAMS_RC_VBR) != 0,
             dynamic_bitrate: cap(sys::NV_ENC_CAPS_SUPPORT_DYN_BITRATE_CHANGE) != 0,
+            // Filler data has no capability bit: every NVENC generation inserts it
+            // with CBR.
+            cbr_padding: true,
         });
     }
     codecs.retain(|c| c.usable());
@@ -494,6 +497,7 @@ impl NvencEngine {
                 // stream (Annex B consumers such as MPEG-TS need them).
                 h264.set_repeatSPSPPS(1);
                 h264.set_outputAUD(0);
+                h264.set_enableFillerDataInsertion(u32::from(plan.cbr_padding));
                 h264.chromaFormatIDC = 1;
                 if plan.profile == Profile::H264Baseline {
                     h264.entropyCodingMode = sys::NV_ENC_H264_ENTROPY_CODING_MODE_CAVLC;
@@ -506,6 +510,7 @@ impl NvencEngine {
                 hevc.idrPeriod = plan.gop;
                 hevc.set_repeatSPSPPS(1);
                 hevc.set_outputAUD(0);
+                hevc.set_enableFillerDataInsertion(u32::from(plan.cbr_padding));
                 hevc.set_chromaFormatIDC(1);
                 hevc.set_pixelBitDepthMinus8(if plan.ten_bit { 2 } else { 0 });
                 apply_vui(&mut hevc.hevcVUIParameters, plan);

@@ -51,6 +51,16 @@ impl RecordAdapters { pub fn new() -> Self; pub fn probe(&mut self); }
 }
 impl RecordSettings { pub fn new(canvas: CanvasId, url: impl Into<String>, container: ContainerId) -> Self; }
 
+#[non_exhaustive] pub struct VideoSettings { // every encoder setting that changes quality
+    pub codec: CodecId,                  // H.264
+    pub rate_control: RateControl,       // CBR 12 Mbit/s; or CBR padded with filler data, VBR target + peak, constant quality 0..=51
+    pub keyframe_interval: KeyframeInterval, // 2 s
+    pub max_b_frames: u32,               // 0; an encoder with a lower codec.video.b_frames.max uses fewer
+    pub profile: Option<String>,         // None: the encoder's default (H.264 High)
+    pub preset: EncoderPreset,           // Balanced
+    pub format: YuvFormat,               // NV12 (P010 for 10-bit)
+}
+
 impl Recording {
     pub fn start(engine: Engine, gpu: Arc<GpuContext>, collection: &SceneCollection,
         adapters: &RecordAdapters, settings: &RecordSettings) -> Result<Recording, RecordError>;
@@ -138,7 +148,7 @@ Without audio (`audio: None`) the two audio partitions are not added: three work
 
 1. The canvas must exist (`UnknownCanvas`) and have a program scene (`NoProgram`). The export is NV12 (or `video.format`) at the canvas size.
 2. Adapters are chosen before anything opens, each from its registry's `select`, best first (user choice, preference order, hardware first, registration order):
-   - video encoder: `codec.video.encode` includes the codec, `input.memory` includes `system`, `input.pixel_format` includes the export format; the first candidate whose `VideoEncoderNode::open` succeeds;
+   - video encoder: `codec.video.encode` includes the codec, `input.memory` includes `system`, `input.pixel_format` includes the export format; the first candidate whose `VideoEncoderNode::open` succeeds with every `VideoSettings` field in its `VideoEncoderConfig` (rate control, keyframe interval, B-frames, profile, `tuning.preset`), so a candidate that refuses a setting (a profile it lacks, `cbr_padded` or constant quality on an encoder without it) is skipped with its reason in `tried`;
    - audio encoder (when `audio` is set): `codec.audio.encode` includes the codec; the first whose session is created for `audio_graph.format` and the bitrate;
    - muxer: `mux.container` includes the container; the best;
    - transport: `transport.schemes` includes the URL's scheme (lower case) and `transport.input` includes `container.transport_input()`; the best.
@@ -177,7 +187,7 @@ Without audio (`audio: None`) the two audio partitions are not added: three work
 
 ### `rbs-cli`
 
-- `rbs-cli record <file.mkv|file.mp4> [options]`: `.mkv` is Matroska, `.mp4` fragmented MP4. Options: `--seconds N` (else until Enter; required when stdin is not a terminal, so a script cannot record forever), `--overwrite` (replace an existing file; without it an existing file is refused), `--size WxH` (even, default 1920x1080), `--fps N` (default 60), `--bitrate KBPS` (default 12000), `--audio-bitrate KBPS` (default 160), `--encoder ID` (a video encoder adapter id or its last dotted part: only that encoder is used, no fallback; an unknown id is an error), `--display N`, `--camera N` (indices from `devices`), `--no-camera`, `--no-mic`, `--no-system-audio`, `--no-audio`, `--mic-offset MS` and `--system-audio-offset MS` (sync offsets in whole ms, within ±200: positive delays that source, negative plays it earlier; the input clamps an advance to the audio graph's latency minus a period minus 5 ms, 35 ms by default). Bad arguments exit with code 2 and the usage text.
+- `rbs-cli record <file.mkv|file.mp4> [options]`: `.mkv` is Matroska, `.mp4` fragmented MP4. Options: `--seconds N` (else until Enter; required when stdin is not a terminal, so a script cannot record forever), `--overwrite` (replace an existing file; without it an existing file is refused), `--size WxH` (even, default 1920x1080), `--fps N` (default 60), `--rate-control cbr|vbr|cq` (default cbr), `--bitrate KBPS` (the CBR rate or VBR target, default 12000; refused with cq), `--max-bitrate KBPS` (VBR peak, at least the target, default 1.5 x the target; vbr only), `--quality N` (cq level 0 best to 51, default 23; cq only), `--keyframe-interval S` (whole seconds, default 2), `--b-frames N` (at most, 0 to 4, default 0), `--profile NAME` (codec profile, default the encoder's choice), `--preset quality|balanced|speed` (default balanced), `--cbr-padding` (with cbr: the `cbr_padded` mode, filler data to the full bitrate), `--audio-bitrate KBPS` (default 160), `--encoder ID` (a video encoder adapter id or its last dotted part: only that encoder is used, no fallback; an unknown id is an error), `--display N`, `--camera N` (indices from `devices`), `--no-camera`, `--no-mic`, `--no-system-audio`, `--no-audio`, `--mic-offset MS` and `--system-audio-offset MS` (sync offsets in whole ms, within ±200: positive delays that source, negative plays it earlier; the input clamps an advance to the audio graph's latency minus a period minus 5 ms, 35 ms by default). Bad arguments exit with code 2 and the usage text. The video settings are printed in one line before the start.
 - The scene: one canvas of the given size and rate, one scene on air with the chosen display filling the canvas (cursor on, at the canvas rate), the camera at 1280x720 30 fps in a 16:9 rectangle 4/15 of the canvas wide, a margin of 1/40 of the width from the bottom-right corner, the default microphone and the default system audio. A type with no target is left out and said so; no display is an error.
 - Adapters: Matroska, fMP4 and file on every platform; Windows adds WGC and Media Foundation capture, WASAPI, NVENC and AMF (in that order), Media Foundation AAC. A platform without video or audio encoders says recording is not available there yet.
 - The engine gets `OsThreadPolicy` (ADR-0030). The device is `GpuRequest::default()` (high performance, no software adapter). The file path is made absolute and turned into a `file://` URL from its components: a drive path is `file:///C:/...`, a UNC path `file://server/share/...` (verbatim `\\?\` prefixes included), and `%`, space, `#`, `?` and a `\` inside a name are escaped. When the start fails after the file was created, `rbs-cli` removes it.

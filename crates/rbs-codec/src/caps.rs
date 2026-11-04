@@ -44,4 +44,5 @@ pub const RECONFIGURE_BITRATE: &str = "bitrate";
 pub const RECONFIGURE_KEYFRAME: &str = "keyframe";
 
 /// Values of [`VIDEO_RATE_CONTROL`], matching [`crate::RateControl::name`].
-pub const RATE_CONTROL_NAMES: [&str; 3] = ["cbr", "vbr", "constant_quality"];
+/// A slice, so that adding a mode stays a minor change.
+pub const RATE_CONTROL_NAMES: &[&str] = &["cbr", "cbr_padded", "vbr", "constant_quality"];

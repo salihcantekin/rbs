@@ -7,7 +7,7 @@ use rbs_codec::caps;
 use rbs_codec::conformance::{self, Outcome, Report, SystemFrameSource};
 use rbs_codec::{
     AudioEncoder, AudioEncoderConfig, AudioEncoderFactory, CreateError, EncodeError, EncoderChange,
-    KeyframeInterval, VideoEncoder, VideoEncoderConfig, VideoEncoderFactory,
+    KeyframeInterval, RateControl, VideoEncoder, VideoEncoderConfig, VideoEncoderFactory,
 };
 use rbs_core::capability::{CapabilitySet, CapabilityValue};
 use rbs_core::media::{
@@ -27,10 +27,14 @@ enum Fault {
     IgnoresKeyframeRequest,
     DropsLastFrame,
     Panics,
+    /// Accepts `cbr_padded` without declaring it.
+    AcceptsCbrPadding,
 }
 
 struct FakeVideoFactory {
     fault: Fault,
+    /// Declares and honours `cbr_padded`.
+    padding: bool,
 }
 
 fn set(values: &[&str]) -> CapabilityValue {
@@ -48,7 +52,14 @@ impl AdapterFactory for FakeVideoFactory {
         Ok(CapabilitySet::new()
             .with(caps::HARDWARE, CapabilityValue::Flag(false))
             .with(caps::VIDEO_ENCODE, set(&["h264", "hevc"]))
-            .with(caps::VIDEO_RATE_CONTROL, set(&["cbr", "constant_quality"]))
+            .with(
+                caps::VIDEO_RATE_CONTROL,
+                if self.padding {
+                    set(&["cbr", "cbr_padded", "constant_quality"])
+                } else {
+                    set(&["cbr", "constant_quality"])
+                },
+            )
             .with(caps::INPUT_MEMORY, set(&["system"]))
             .with(caps::INPUT_PIXEL_FORMAT, set(&["nv12"]))
             .with(
@@ -68,6 +79,12 @@ impl AdapterFactory for FakeVideoFactory {
 
 impl VideoEncoderFactory for FakeVideoFactory {
     fn create(&self, config: &VideoEncoderConfig) -> Result<Box<dyn VideoEncoder>, CreateError> {
+        let padded = matches!(config.rate_control, RateControl::CbrPadded { .. });
+        if padded && !self.padding && self.fault != Fault::AcceptsCbrPadding {
+            return Err(CreateError::Unsupported {
+                what: "cbr_padded".into(),
+            });
+        }
         let interval = config.keyframe_interval.frames_at(config.frame_rate);
         Ok(Box::new(FakeVideo {
             fault: self.fault,
@@ -161,7 +178,8 @@ impl VideoEncoder for FakeVideo {
                 }
                 Ok(())
             }
-            EncoderChange::Bitrate(rc) => {
+            // A change keeps the mode (padding is part of it).
+            EncoderChange::Bitrate(rc) if rc.name() == self.config.rate_control.name() => {
                 self.config.rate_control = *rc;
                 Ok(())
             }
@@ -179,7 +197,11 @@ impl VideoEncoder for FakeVideo {
 }
 
 fn run(fault: Fault) -> Report {
-    conformance::video_encoder(&FakeVideoFactory { fault }, &mut SystemFrameSource::new())
+    let factory = FakeVideoFactory {
+        fault,
+        padding: false,
+    };
+    conformance::video_encoder(&factory, &mut SystemFrameSource::new())
 }
 
 fn failed_cases(report: &Report) -> Vec<String> {
@@ -191,8 +213,27 @@ fn correct_video_encoder_passes() {
     let report = run(Fault::None);
     report.assert_ran(&["h264/cbr/packets", "hevc/constant_quality/request-keyframe"]);
     assert!(report.skipped().next().is_none(), "{report}");
-    // probe + per codec: 2 rate controls x 5 cases + 2 invalid-input cases.
-    assert_eq!(report.cases.len(), 1 + 2 * (2 * 5 + 2), "{report}");
+    report.assert_ran(&["h264/cbr_padded-refused"]);
+    // probe + per codec: 2 rate controls x 5 cases, padding-unchanged for CBR, the
+    // undeclared-mode case and 2 invalid-input cases.
+    assert_eq!(report.cases.len(), 1 + 2 * (2 * 5 + 1 + 1 + 2), "{report}");
+}
+
+#[test]
+fn declared_cbr_padding_is_encoded() {
+    let factory = FakeVideoFactory {
+        fault: Fault::None,
+        padding: true,
+    };
+    let report = conformance::video_encoder(&factory, &mut SystemFrameSource::new());
+    report.assert_passed();
+    report.assert_ran(&[
+        "h264/cbr_padded/packets",
+        "hevc/cbr_padded/padding-unchanged",
+        "h264/cbr/padding-unchanged",
+    ]);
+    // A third mode (5 cases plus padding-unchanged) replaces the refusal case.
+    assert_eq!(report.cases.len(), 1 + 2 * (3 * 5 + 2 + 2), "{report}");
 }
 
 #[test]
@@ -205,6 +246,7 @@ fn each_video_fault_is_caught() {
         (Fault::IgnoresKeyframeRequest, "h264/cbr/request-keyframe"),
         (Fault::DropsLastFrame, "h264/cbr/packets"),
         (Fault::Panics, "h264/cbr/encode"),
+        (Fault::AcceptsCbrPadding, "h264/cbr_padded-refused"),
     ];
     for (fault, case) in expectations {
         let report = run(fault);

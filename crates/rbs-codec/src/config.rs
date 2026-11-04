@@ -14,6 +14,14 @@ pub enum RateControl {
         /// Target bits per second.
         bitrate_bps: u64,
     },
+    /// Constant bitrate padded with filler data, so that every second carries the full
+    /// bitrate even when the picture needs fewer bits (some ingest servers and players
+    /// expect it). Only adapters that list `cbr_padded` in `codec.video.rate_control`
+    /// take it.
+    CbrPadded {
+        /// Target bits per second, reached with filler data when needed.
+        bitrate_bps: u64,
+    },
     /// Variable bitrate with a ceiling.
     Vbr {
         /// Average bits per second.
@@ -34,6 +42,7 @@ impl RateControl {
     pub const fn name(&self) -> &'static str {
         match self {
             RateControl::Cbr { .. } => "cbr",
+            RateControl::CbrPadded { .. } => "cbr_padded",
             RateControl::Vbr { .. } => "vbr",
             RateControl::ConstantQuality { .. } => "constant_quality",
         }
@@ -235,6 +244,7 @@ mod tests {
     fn rate_control_names_match_capability_values() {
         let modes = [
             RateControl::Cbr { bitrate_bps: 1 },
+            RateControl::CbrPadded { bitrate_bps: 1 },
             RateControl::Vbr {
                 target_bps: 1,
                 max_bps: 2,
