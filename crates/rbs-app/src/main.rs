@@ -955,6 +955,30 @@ fn install_studio(g: &Studio<'_>, ctx: &Ctx) {
     on!(on_set_canvas_rate, |app, i: i32| {
         app.studio.set_canvas_rate(i, close_preview);
     });
+    on!(on_set_rate_mode, |app, i: i32| {
+        app.studio.set_rate_mode(i);
+    });
+    on!(on_set_peak, |app, i: i32| {
+        app.studio.set_peak(i);
+    });
+    on!(on_set_quality, |app, i: i32| {
+        app.studio.set_quality(i);
+    });
+    on!(on_set_padding, |app, on: bool| {
+        app.studio.set_padding(on);
+    });
+    on!(on_set_keyframe, |app, i: i32| {
+        app.studio.set_keyframe(i);
+    });
+    on!(on_set_preset, |app, i: i32| {
+        app.studio.set_preset(i);
+    });
+    on!(on_set_profile, |app, i: i32| {
+        app.studio.set_profile(i);
+    });
+    on!(on_set_b_frames, |app, i: i32| {
+        app.studio.set_b_frames(i);
+    });
     // A popup opened or closed: the preview layer hides or shows at once.
     #[cfg(any(target_os = "macos", windows))]
     {

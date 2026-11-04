@@ -3,7 +3,7 @@
 // Rust pushes state into the `Studio` global of every window and handles its callbacks
 // by sending commands to the studio's control thread.
 import { Theme, Tokens } from "tokens.slint";
-import { Button, IconButton, IconName, MenuItem, MenuSurface, EmptyState, Select, SegmentedControl, TextField } from "components.slint";
+import { Button, Checkbox, IconButton, IconName, MenuItem, MenuSurface, EmptyState, Select, SegmentedControl, TextField } from "components.slint";
 
 export struct SourceData { id: int, name: string, kind: string, status: string, ok: bool }
 export struct KindData { code: int, label: string }
@@ -74,6 +74,28 @@ export global Studio {
     in property <int> out-video-rate;
     in property <[string]> out-audio-rates;
     in property <int> out-audio-rate;
+    // The video encoder's quality settings: only what the picked encoder can do.
+    in property <[string]> out-rate-modes;
+    in property <int> out-rate-mode;
+    // 0 CBR, 1 VBR, 2 constant quality (the shown fields follow it).
+    in property <int> out-rate-kind;
+    in property <string> out-bitrate-label;
+    in property <[string]> out-peaks;
+    in property <int> out-peak;
+    in property <[string]> out-qualities;
+    in property <int> out-quality;
+    in property <bool> out-padding;
+    in property <bool> out-padding-available;
+    in property <[string]> out-keyframes;
+    in property <int> out-keyframe;
+    in property <[string]> out-presets;
+    in property <int> out-preset;
+    in property <[string]> out-profiles;
+    in property <int> out-profile;
+    in property <[string]> out-b-frames;
+    in property <int> out-b-frame;
+    // Why B-frames cannot be changed; empty when they can.
+    in property <string> out-b-frames-note;
     // A problem with the settings or their file; empty when none.
     in property <string> out-note;
     callback set-folder(string);
@@ -81,6 +103,14 @@ export global Studio {
     callback set-encoder(int);
     callback set-video-rate(int);
     callback set-audio-rate(int);
+    callback set-rate-mode(int);
+    callback set-peak(int);
+    callback set-quality(int);
+    callback set-padding(bool);
+    callback set-keyframe(int);
+    callback set-preset(int);
+    callback set-profile(int);
+    callback set-b-frames(int);
     // One line: format, encoder, bitrates and folder of the next recording.
     in property <string> out-summary;
     // Opens the Settings window at its Recording section.
@@ -410,6 +440,30 @@ export component LiveControlsPanel inherits Rectangle {
     }
 }
 
+// Children shown only while `shown`; takes no room otherwise (layouts have no
+// `visible`, and an `if` would hide the popups' `open` from the form). The space
+// above (`lead`) is part of it, so a hidden one leaves no gap in a layout with no
+// spacing.
+component Shown inherits Rectangle {
+    in property <bool> shown;
+    in property <length> gap: Tokens.space-1;
+    in property <length> lead: 0;
+    visible: shown;
+    height: shown ? inner.preferred-height : 0;
+    inner := VerticalLayout {
+        padding-top: root.lead;
+        spacing: root.gap;
+        @children
+    }
+}
+
+// A one-line explanation under a field (U2: every option explains itself).
+component Hint inherits Text {
+    color: Theme.text-secondary;
+    font-size: Tokens.type-caption-size;
+    wrap: word-wrap;
+}
+
 component Field inherits VerticalLayout {
     in property <string> label;
     spacing: Tokens.space-1;
@@ -427,7 +481,10 @@ component Field inherits VerticalLayout {
 // owner counts `menu-open` as an overlay where a preview layer is shown.
 export component RecordingSettings inherits Rectangle {
     property <bool> idle: Studio.rec-state == 0;
-    out property <bool> menu-open: encoder.open || video.open || audio.open;
+    // Advanced settings (U2): shown with the toggle below, in the same place.
+    property <bool> advanced: false;
+    out property <bool> menu-open: encoder.open || video.open || audio.open || quality.open
+        || mode.open || peak.open || keyframe.open || profile.open || bframes.open;
     form := VerticalLayout {
         spacing: Tokens.space-3;
         alignment: start;
@@ -466,14 +523,34 @@ export component RecordingSettings inherits Rectangle {
                 selected(i) => { Studio.set-encoder(i); }
             }
         }
-        Field {
-            label: @tr("Video bitrate");
-            video := Select {
-                label: @tr("Video bitrate");
-                options: Studio.out-video-rates;
-                index: Studio.out-video-rate;
-                enabled: idle;
-                selected(i) => { Studio.set-video-rate(i); }
+        // The bitrate (CBR, VBR) or the quality level (constant quality): one slot.
+        VerticalLayout {
+            Shown {
+                shown: Studio.out-rate-kind != 2;
+                Field {
+                    label: Studio.out-bitrate-label;
+                    video := Select {
+                        label: Studio.out-bitrate-label;
+                        options: Studio.out-video-rates;
+                        index: Studio.out-video-rate;
+                        enabled: idle;
+                        selected(i) => { Studio.set-video-rate(i); }
+                    }
+                }
+            }
+            Shown {
+                shown: Studio.out-rate-kind == 2;
+                Field {
+                    label: @tr("Quality level");
+                    quality := Select {
+                        label: @tr("Quality level");
+                        options: Studio.out-qualities;
+                        index: Studio.out-quality;
+                        enabled: idle;
+                        selected(i) => { Studio.set-quality(i); }
+                    }
+                    Hint { text: @tr("Lower is better quality and larger files."); }
+                }
             }
         }
         Field {
@@ -484,6 +561,110 @@ export component RecordingSettings inherits Rectangle {
                 index: Studio.out-audio-rate;
                 enabled: idle;
                 selected(i) => { Studio.set-audio-rate(i); }
+            }
+        }
+        HorizontalLayout {
+            alignment: start;
+            Button {
+                text: root.advanced ? @tr("Hide advanced settings") : @tr("Show advanced settings");
+                kind: "ghost";
+                icon: IconName.chevron-down;
+                checked: root.advanced;
+                clicked => { root.advanced = !root.advanced; }
+            }
+        }
+        // Advanced: every other setting that changes the recording's quality.
+        Shown {
+            shown: root.advanced;
+            gap: Tokens.space-3;
+            // The rate control and the one setting that belongs to its mode.
+            VerticalLayout {
+                Field {
+                    label: @tr("Rate control");
+                    mode := Select {
+                        label: @tr("Rate control");
+                        options: Studio.out-rate-modes;
+                        index: Studio.out-rate-mode;
+                        enabled: idle && root.advanced;
+                        selected(i) => { Studio.set-rate-mode(i); }
+                    }
+                    Hint {
+                        text: Studio.out-rate-kind == 0 ? @tr("CBR: the same bitrate all the time. The default.")
+                            : Studio.out-rate-kind == 1 ? @tr("VBR: the bitrate follows the picture, up to the maximum.")
+                            : @tr("Constant quality: the same quality all the time; file size varies.");
+                    }
+                }
+                Shown {
+                    shown: Studio.out-rate-kind == 1;
+                    lead: Tokens.space-3;
+                    Field {
+                        label: @tr("Maximum bitrate");
+                        peak := Select {
+                            label: @tr("Maximum bitrate");
+                            options: Studio.out-peaks;
+                            index: Studio.out-peak;
+                            enabled: idle && root.advanced;
+                            selected(i) => { Studio.set-peak(i); }
+                        }
+                    }
+                }
+                Shown {
+                    shown: Studio.out-rate-kind == 0;
+                    lead: Tokens.space-3;
+                    Checkbox {
+                        text: @tr("Pad to the full bitrate");
+                        checked: Studio.out-padding;
+                        enabled: idle && root.advanced && Studio.out-padding-available;
+                        toggled(on) => { Studio.set-padding(on); }
+                    }
+                    Hint {
+                        text: Studio.out-padding-available
+                            ? @tr("Adds filler data so a still picture still uses the whole bitrate. Off by default.")
+                            : @tr("This encoder cannot pad the bitrate.");
+                    }
+                }
+            }
+            Field {
+                label: @tr("Keyframe interval");
+                keyframe := Select {
+                    label: @tr("Keyframe interval");
+                    options: Studio.out-keyframes;
+                    index: Studio.out-keyframe;
+                    enabled: idle && root.advanced;
+                    selected(i) => { Studio.set-keyframe(i); }
+                }
+            }
+            Field {
+                label: @tr("Encoder preset");
+                SegmentedControl {
+                    label: @tr("Encoder preset");
+                    options: Studio.out-presets;
+                    index: Studio.out-preset;
+                    enabled: idle && root.advanced;
+                    selected(i) => { Studio.set-preset(i); }
+                }
+                Hint { text: @tr("Quality uses more of the GPU's encoder; Speed uses less. Balanced is the default."); }
+            }
+            Field {
+                label: @tr("Profile");
+                profile := Select {
+                    label: @tr("Profile");
+                    options: Studio.out-profiles;
+                    index: Studio.out-profile;
+                    enabled: idle && root.advanced;
+                    selected(i) => { Studio.set-profile(i); }
+                }
+            }
+            Field {
+                label: @tr("B-frames");
+                bframes := Select {
+                    label: @tr("B-frames");
+                    options: Studio.out-b-frames;
+                    index: Studio.out-b-frame;
+                    enabled: idle && root.advanced && Studio.out-b-frames-note == "";
+                    selected(i) => { Studio.set-b-frames(i); }
+                }
+                if Studio.out-b-frames-note != "": Hint { text: Studio.out-b-frames-note; }
             }
         }
         if Studio.out-note != "": Text {

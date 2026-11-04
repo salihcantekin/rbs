@@ -295,6 +295,62 @@ export component Select inherits Rectangle {
     }
 }
 
+// Checkbox: an on/off setting with its label beside the box. Toggled by click, Space
+// or Enter; the label is the accessible name and the state is shown by the check mark
+// as well as the fill (never by colour alone, U7).
+export component Checkbox inherits Rectangle {
+    in property <string> text;
+    in property <bool> checked;
+    in property <bool> enabled: true;
+    callback toggled(bool);
+    height: Tokens.size-control-md;
+    accessible-role: checkbox;
+    accessible-label: text;
+    accessible-checked: checked;
+    accessible-enabled: enabled;
+    accessible-action-default => { if enabled { toggled(!checked); } }
+    forward-focus: focus;
+    property <color> ink: enabled ? Theme.text-primary : Theme.text-disabled;
+    HorizontalLayout {
+        spacing: Tokens.space-2;
+        alignment: start;
+        VerticalLayout {
+            alignment: center;
+            box := Rectangle {
+                width: Tokens.size-icon-box;
+                height: Tokens.size-icon-box;
+                border-radius: Tokens.radius-sm;
+                border-width: Tokens.size-border;
+                border-color: root.enabled ? Theme.border-strong : Theme.border-subtle;
+                background: root.checked && root.enabled ? Theme.accent : Theme.surface-sunken;
+                Icon {
+                    name: root.checked ? IconName.check : IconName.none;
+                    ink: root.enabled ? Theme.text-inverse : Theme.text-disabled;
+                }
+            }
+        }
+        Text {
+            text: root.text;
+            color: root.ink;
+            font-size: Tokens.type-body-size;
+            vertical-alignment: center;
+            wrap: word-wrap;
+        }
+    }
+    focus := FocusScope {
+        enabled: root.enabled;
+        key-pressed(e) => {
+            if e.text == Key.Return || e.text == " " { root.toggled(!root.checked); return accept; }
+            reject
+        }
+    }
+    touch := TouchArea {
+        enabled: root.enabled;
+        clicked => { focus.focus(); root.toggled(!root.checked); }
+    }
+    FocusRing { show: focus.has-focus; }
+}
+
 // SegmentedControl: a few mutually exclusive options side by side.
 export component SegmentedControl inherits Rectangle {
     in property <string> label;

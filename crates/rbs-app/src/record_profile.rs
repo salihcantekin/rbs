@@ -1,10 +1,15 @@
 //! The recording's output settings in the app (glossary: output profile): folder,
-//! format, encoder and bitrates. Kept in `recording.toml` in the config directory, so
-//! they survive a restart. Toolkit-free and tested without a window.
+//! format, encoder, and every encoder setting that changes the recording's quality
+//! (rate control and bitrates, quality level, keyframe interval, profile, preset,
+//! B-frames, CBR padding). Kept in `recording.toml` in the config directory, so they
+//! survive a restart. Toolkit-free and tested without a window.
 
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
+use rbs_codec::{EncoderPreset, KeyframeInterval, RateControl};
 use rbs_core::media::ContainerId;
+use rbs_record::VideoSettings;
 use serde::{Deserialize, Serialize};
 
 /// The file format version this build writes and reads.
@@ -16,6 +21,94 @@ pub const AUDIO_KBPS: [u32; 4] = [96, 128, 160, 192];
 
 /// Video bitrates offered, in kbit/s.
 pub const VIDEO_KBPS: [u32; 8] = [2_500, 4_000, 6_000, 8_000, 12_000, 20_000, 40_000, 80_000];
+
+/// Constant-quality levels offered (0 best ..= 51).
+pub const QUALITY_LEVELS: [u8; 10] = [14, 16, 18, 20, 22, 23, 25, 28, 32, 36];
+
+/// Keyframe intervals offered, in seconds.
+pub const KEYFRAME_SECONDS: [u32; 6] = [1, 2, 3, 4, 5, 10];
+
+/// Most B-frames a profile may ask for.
+pub const MAX_B_FRAMES: u32 = 4;
+
+/// How the encoder spends bits, as the user picks it.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RateMode {
+    /// Constant bitrate.
+    #[default]
+    Cbr,
+    /// Variable bitrate with a peak.
+    Vbr,
+    /// Constant quality.
+    ConstantQuality,
+}
+
+impl RateMode {
+    /// All, in the order the UI lists them.
+    pub const ALL: [RateMode; 3] = [RateMode::Cbr, RateMode::Vbr, RateMode::ConstantQuality];
+
+    /// The name in the UI.
+    pub fn label(self) -> &'static str {
+        match self {
+            RateMode::Cbr => "CBR",
+            RateMode::Vbr => "VBR",
+            RateMode::ConstantQuality => "Constant quality",
+        }
+    }
+
+    /// The `codec.video.rate_control` value.
+    pub fn capability(self) -> &'static str {
+        match self {
+            RateMode::Cbr => "cbr",
+            RateMode::Vbr => "vbr",
+            RateMode::ConstantQuality => "constant_quality",
+        }
+    }
+}
+
+/// Speed versus quality, as the user picks it.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Preset {
+    /// Best quality the machine sustains.
+    Quality,
+    /// The default.
+    #[default]
+    Balanced,
+    /// Least GPU use.
+    Speed,
+}
+
+impl Preset {
+    /// All, in the order the UI lists them.
+    pub const ALL: [Preset; 3] = [Preset::Quality, Preset::Balanced, Preset::Speed];
+
+    /// The name in the UI.
+    pub fn label(self) -> &'static str {
+        match self {
+            Preset::Quality => "Quality",
+            Preset::Balanced => "Balanced",
+            Preset::Speed => "Speed",
+        }
+    }
+
+    fn encoder(self) -> EncoderPreset {
+        match self {
+            Preset::Quality => EncoderPreset::Quality,
+            Preset::Balanced => EncoderPreset::Balanced,
+            Preset::Speed => EncoderPreset::Speed,
+        }
+    }
+}
+
+fn default_quality() -> u8 {
+    23
+}
+
+fn default_keyframe_seconds() -> u32 {
+    2
+}
 
 /// The recording's container, as the user picks it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -69,24 +162,92 @@ pub struct RecordProfile {
     /// The video encoder's adapter id, or `None` for the best one this system has.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub encoder: Option<String>,
-    /// Video bitrate in kbit/s.
+    /// How the encoder spends bits. Fields below that a file from an earlier version
+    /// lacks take their defaults.
+    #[serde(default)]
+    pub rate_control: RateMode,
+    /// Video bitrate in kbit/s: the CBR rate, or the VBR target.
     pub video_kbps: u32,
+    /// VBR peak in kbit/s; `None` is 1.5 times the target.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_video_kbps: Option<u32>,
+    /// Constant-quality level, 0 (best) ..= 51.
+    #[serde(default = "default_quality")]
+    pub quality: u8,
+    /// Seconds between keyframes.
+    #[serde(default = "default_keyframe_seconds")]
+    pub keyframe_seconds: u32,
+    /// Codec profile (`high`, `main`, `baseline`); `None` lets the encoder pick.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub profile: Option<String>,
+    /// Speed versus quality.
+    #[serde(default)]
+    pub preset: Preset,
+    /// Most B-frames; encoders with fewer use fewer.
+    #[serde(default)]
+    pub b_frames: u32,
+    /// With CBR, pad the video to its full bitrate (filler data).
+    #[serde(default)]
+    pub cbr_padding: bool,
     /// Audio bitrate in kbit/s, one of [`AUDIO_KBPS`].
     pub audio_kbps: u32,
 }
 
 impl RecordProfile {
-    /// MKV in the user's videos folder, the best encoder, 12 Mbit/s video and
-    /// 160 kbit/s audio.
+    /// MKV in the user's videos folder, the best encoder, CBR 12 Mbit/s video without
+    /// padding, a keyframe every 2 s, the encoder's profile, the balanced preset, no
+    /// B-frames and 160 kbit/s audio.
     pub fn new() -> Self {
         Self {
             format_version: FORMAT,
             folder: default_folder(),
             format: Format::Mkv,
             encoder: None,
+            rate_control: RateMode::Cbr,
             video_kbps: 12_000,
+            max_video_kbps: None,
+            quality: default_quality(),
+            keyframe_seconds: default_keyframe_seconds(),
+            profile: None,
+            preset: Preset::Balanced,
+            b_frames: 0,
+            cbr_padding: false,
             audio_kbps: 160,
         }
+    }
+
+    /// The VBR peak in kbit/s: the saved one, or 1.5 times the target.
+    pub fn peak_kbps(&self) -> u32 {
+        self.max_video_kbps
+            .unwrap_or(self.video_kbps.saturating_mul(3) / 2)
+    }
+
+    /// The video encoding these settings ask for. Padding makes CBR `cbr_padded`; it
+    /// stays saved while another mode is picked and does nothing there.
+    pub fn video_settings(&self) -> VideoSettings {
+        let mut v = VideoSettings::default();
+        let bps = |kbps: u32| u64::from(kbps) * 1000;
+        v.rate_control = match self.rate_control {
+            RateMode::Cbr if self.cbr_padding => RateControl::CbrPadded {
+                bitrate_bps: bps(self.video_kbps),
+            },
+            RateMode::Cbr => RateControl::Cbr {
+                bitrate_bps: bps(self.video_kbps),
+            },
+            RateMode::Vbr => RateControl::Vbr {
+                target_bps: bps(self.video_kbps),
+                max_bps: bps(self.peak_kbps()),
+            },
+            RateMode::ConstantQuality => RateControl::ConstantQuality {
+                level: self.quality,
+            },
+        };
+        v.keyframe_interval =
+            KeyframeInterval::Duration(Duration::from_secs(u64::from(self.keyframe_seconds)));
+        v.max_b_frames = self.b_frames;
+        v.profile = self.profile.clone();
+        v.preset = self.preset.encoder();
+        v
     }
 
     /// Why this profile cannot be used, in words, or `None`.
@@ -110,6 +271,31 @@ impl RecordProfile {
             return Some(format!(
                 "Video bitrate {} kbit/s is outside 500 to 200000.",
                 self.video_kbps
+            ));
+        }
+        if self.rate_control == RateMode::Vbr && self.peak_kbps() < self.video_kbps {
+            return Some(format!(
+                "The maximum bitrate {} kbit/s is below the bitrate {} kbit/s.",
+                self.peak_kbps(),
+                self.video_kbps
+            ));
+        }
+        if self.quality > 51 {
+            return Some(format!(
+                "Quality level {} is outside 0 (best) to 51.",
+                self.quality
+            ));
+        }
+        if !(1..=60).contains(&self.keyframe_seconds) {
+            return Some(format!(
+                "A keyframe every {} s is outside 1 to 60 s.",
+                self.keyframe_seconds
+            ));
+        }
+        if self.b_frames > MAX_B_FRAMES {
+            return Some(format!(
+                "{} B-frames is more than {MAX_B_FRAMES}.",
+                self.b_frames
             ));
         }
         None
@@ -223,6 +409,14 @@ mod tests {
         p.encoder = Some("org.rbs.codec.nvenc".into());
         p.video_kbps = 8_000;
         p.audio_kbps = 192;
+        p.rate_control = RateMode::Vbr;
+        p.max_video_kbps = Some(20_000);
+        p.quality = 18;
+        p.keyframe_seconds = 4;
+        p.profile = Some("main".into());
+        p.preset = Preset::Quality;
+        p.b_frames = 2;
+        p.cbr_padding = true;
         save(&d, &p).unwrap();
         assert_eq!(load(&d), (p, None));
         let _ = std::fs::remove_dir_all(&d);
@@ -245,12 +439,111 @@ mod tests {
     }
 
     #[test]
+    fn a_file_from_before_the_encoder_settings_loads_with_their_defaults() {
+        let d = dir("v1-profile");
+        std::fs::create_dir_all(&d).unwrap();
+        let folder = d.join("rec");
+        let text = format!(
+            "format_version = 1\nfolder = {:?}\nformat = \"mp4\"\nvideo_kbps = 8000\naudio_kbps = 128\n",
+            folder.display().to_string()
+        );
+        std::fs::write(file(&d), text).unwrap();
+        let (p, why) = load(&d);
+        assert_eq!(why, None);
+        let mut want = RecordProfile::new();
+        want.folder = folder;
+        want.format = Format::Mp4;
+        want.video_kbps = 8_000;
+        want.audio_kbps = 128;
+        assert_eq!(p, want);
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn video_settings_follow_the_profile() {
+        let mut p = RecordProfile::new();
+        let v = p.video_settings();
+        assert_eq!(
+            v.rate_control,
+            RateControl::Cbr {
+                bitrate_bps: 12_000_000
+            }
+        );
+        assert_eq!(
+            v.keyframe_interval,
+            KeyframeInterval::Duration(Duration::from_secs(2))
+        );
+        assert_eq!(v.preset, EncoderPreset::Balanced);
+        assert_eq!((v.max_b_frames, v.profile.as_deref()), (0, None));
+
+        p.cbr_padding = true;
+        p.keyframe_seconds = 5;
+        p.profile = Some("high".into());
+        p.preset = Preset::Speed;
+        p.b_frames = 2;
+        let v = p.video_settings();
+        assert_eq!(
+            v.rate_control,
+            RateControl::CbrPadded {
+                bitrate_bps: 12_000_000
+            }
+        );
+        assert_eq!(
+            v.keyframe_interval,
+            KeyframeInterval::Duration(Duration::from_secs(5))
+        );
+        assert_eq!(v.profile.as_deref(), Some("high"));
+        assert_eq!(v.preset, EncoderPreset::Speed);
+        assert_eq!(v.max_b_frames, 2);
+
+        p.rate_control = RateMode::Vbr;
+        let v = p.video_settings();
+        assert_eq!(
+            v.rate_control,
+            RateControl::Vbr {
+                target_bps: 12_000_000,
+                max_bps: 18_000_000
+            }
+        );
+        p.max_video_kbps = Some(40_000);
+        assert_eq!(
+            p.video_settings().rate_control,
+            RateControl::Vbr {
+                target_bps: 12_000_000,
+                max_bps: 40_000_000
+            }
+        );
+
+        p.rate_control = RateMode::ConstantQuality;
+        p.quality = 18;
+        assert_eq!(
+            p.video_settings().rate_control,
+            RateControl::ConstantQuality { level: 18 }
+        );
+    }
+
+    #[test]
     fn problems_are_found() {
         let mut p = RecordProfile::new();
         p.folder = PathBuf::from("relative");
         assert!(p.problem().is_some());
         let mut p = RecordProfile::new();
         p.video_kbps = 100;
+        assert!(p.problem().is_some());
+        let mut p = RecordProfile::new();
+        p.rate_control = RateMode::Vbr;
+        p.max_video_kbps = Some(6_000);
+        assert!(p.problem().unwrap().contains("below the bitrate"));
+        p.rate_control = RateMode::Cbr;
+        assert_eq!(p.problem(), None, "the peak only matters with VBR");
+        let mut p = RecordProfile::new();
+        p.quality = 52;
+        assert!(p.problem().is_some());
+        let mut p = RecordProfile::new();
+        p.keyframe_seconds = 0;
+        assert!(p.problem().is_some());
+        let mut p = RecordProfile::new();
+        p.b_frames = 5;
         assert!(p.problem().is_some());
     }
 

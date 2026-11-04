@@ -12,8 +12,8 @@ use std::thread::JoinHandle;
 use std::time::Duration;
 
 use rbs_audio::LevelMeter;
-use rbs_codec::RateControl;
-use rbs_core::capability::Requirement;
+use rbs_codec::caps as codec_caps;
+use rbs_core::capability::{CapabilitySet, CapabilityValue, Requirement};
 use rbs_core::media::{ContainerId, Size};
 use rbs_core::registry::{AdapterFactory, Registry};
 use rbs_core::timing::FrameRate;
@@ -21,7 +21,9 @@ use rbs_engine::Engine;
 use rbs_gpu::GpuContext;
 use rbs_gpu::share::{PreviewDesc, PreviewEndpoint};
 use rbs_graph::node::NodeTypeId;
-use rbs_record::{AudioSettings, OutputSettings, RecordAdapters, Studio, StudioSettings};
+use rbs_record::{
+    AudioSettings, OutputSettings, RecordAdapters, Studio, StudioSettings, VideoSettings,
+};
 use rbs_scene::SceneCollection;
 use rbs_scene::Undo;
 use rbs_scene::model::{
@@ -200,6 +202,67 @@ pub struct EncoderInfo {
     pub id: String,
     /// Its name in the UI.
     pub name: String,
+    /// What its quality settings can be, from its capabilities.
+    pub options: EncoderOptions,
+}
+
+/// The quality settings a video encoder takes, from its probed capabilities
+/// (`docs/specs/output-ports.md`), so the settings offer only what it can do.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct EncoderOptions {
+    /// `codec.video.rate_control` values: `cbr`, `cbr_padded`, `vbr`,
+    /// `constant_quality`.
+    pub rate_controls: Vec<String>,
+    /// H.264 profile names (`high`, `main`, `baseline`) from `codec.video.profiles`.
+    pub h264_profiles: Vec<String>,
+    /// `codec.video.b_frames.max`.
+    pub b_frames_max: u32,
+    /// `cbr_padded` is listed: CBR can be padded with filler data.
+    pub cbr_padding: bool,
+}
+
+impl EncoderOptions {
+    /// Reads them from a capability set.
+    pub fn from_caps(caps: &CapabilitySet) -> Self {
+        let set = |key| match caps.get(key) {
+            Some(CapabilityValue::Set(v)) => v.to_vec(),
+            _ => Vec::new(),
+        };
+        Self {
+            rate_controls: set(&codec_caps::VIDEO_RATE_CONTROL),
+            h264_profiles: set(&codec_caps::VIDEO_PROFILES)
+                .iter()
+                .filter_map(|p| p.strip_prefix("h264.").map(str::to_owned))
+                .collect(),
+            b_frames_max: match caps.get(&codec_caps::VIDEO_B_FRAMES_MAX) {
+                Some(CapabilityValue::Int(n)) => u32::try_from(*n).unwrap_or(0),
+                _ => 0,
+            },
+            cbr_padding: set(&codec_caps::VIDEO_RATE_CONTROL)
+                .iter()
+                .any(|r| r == "cbr_padded"),
+        }
+    }
+
+    /// What any of `all` can do: the choice when the encoder is picked automatically.
+    pub fn union<'a>(all: impl IntoIterator<Item = &'a EncoderOptions>) -> Self {
+        let mut u = EncoderOptions::default();
+        for o in all {
+            for r in &o.rate_controls {
+                if !u.rate_controls.contains(r) {
+                    u.rate_controls.push(r.clone());
+                }
+            }
+            for p in &o.h264_profiles {
+                if !u.h264_profiles.contains(p) {
+                    u.h264_profiles.push(p.clone());
+                }
+            }
+            u.b_frames_max = u.b_frames_max.max(o.b_frames_max);
+            u.cbr_padding |= o.cbr_padding;
+        }
+        u
+    }
 }
 
 /// Where and how to record.
@@ -211,8 +274,8 @@ pub struct RecordRequest {
     pub container: ContainerId,
     /// The video encoder's adapter id: only this one is used. `None`: the best one.
     pub encoder: Option<String>,
-    /// Video bitrate (constant) in bit/s.
-    pub video_bitrate_bps: u64,
+    /// Video encoding: rate control, keyframes, profile, preset, B-frames, padding.
+    pub video: VideoSettings,
     /// Audio bitrate in bit/s.
     pub audio_bitrate_bps: u64,
 }
@@ -523,6 +586,11 @@ fn start(
         .map(|f| EncoderInfo {
             id: f.id().as_str().to_owned(),
             name: f.display_name().to_owned(),
+            options: adapters
+                .video_encoders
+                .capabilities(&f.id())
+                .map(EncoderOptions::from_caps)
+                .unwrap_or_default(),
         })
         .collect();
     let cannot_record = encoders.is_empty().then(|| {
@@ -725,9 +793,7 @@ impl Host {
             return Err(format!("{} already exists.", r.path.display()));
         }
         let mut out = OutputSettings::new(rbs_transport_file::file_url(&r.path), r.container);
-        out.video.rate_control = RateControl::Cbr {
-            bitrate_bps: r.video_bitrate_bps,
-        };
+        out.video = r.video.clone();
         out.audio = self.adapters.audio_encoders.ids().next().map(|_| {
             let mut a = AudioSettings::default();
             a.bitrate_bps = r.audio_bitrate_bps;
