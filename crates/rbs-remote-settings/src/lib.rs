@@ -1,7 +1,9 @@
 //! Remote control settings (glossary: Remote control, Access token): whether other apps
 //! on this computer may control RBS through the control API (ADR-0044), the port they
 //! connect to, and the access tokens they use. Kept in `remote-control.toml` in the
-//! config directory. Toolkit-free and tested without a window.
+//! config directory ([`config_dir`]). Shared by the desktop app (Settings, Remote
+//! control) and `rbs-cli token`, so both read and write the file the same way.
+//! Toolkit-free and tested without a window.
 //!
 //! Off by default (ADR-0044 decision 11, ADR-0013): while off, nothing of the control
 //! API is constructed. Only token hashes are stored (decision 9); the file is still
@@ -13,6 +15,29 @@ use std::path::{Path, PathBuf};
 use rbs_api::scope::{Scope, ScopeSet};
 use rbs_api::{Token, TokenEntry, TokenStore};
 use serde::{Deserialize, Serialize};
+
+/// The RBS configuration directory: `RBS_CONFIG_DIR` if set, else the platform's
+/// per-user configuration directory plus `RBS` (or `rbs` on Linux).
+pub fn config_dir() -> PathBuf {
+    if let Some(d) = std::env::var_os("RBS_CONFIG_DIR") {
+        return PathBuf::from(d);
+    }
+    let home = || std::env::var_os("HOME").map(PathBuf::from);
+    if cfg!(windows) {
+        if let Some(d) = std::env::var_os("APPDATA") {
+            return PathBuf::from(d).join("RBS");
+        }
+    } else if cfg!(target_os = "macos") {
+        if let Some(h) = home() {
+            return h.join("Library").join("Application Support").join("RBS");
+        }
+    } else if let Some(d) = std::env::var_os("XDG_CONFIG_HOME").filter(|d| !d.is_empty()) {
+        return PathBuf::from(d).join("rbs");
+    } else if let Some(h) = home() {
+        return h.join(".config").join("rbs");
+    }
+    std::env::temp_dir().join("rbs")
+}
 
 /// The file format version this build writes and reads.
 const FORMAT: u32 = 1;
@@ -52,6 +77,37 @@ impl Access {
             Access::Control => "Control",
             Access::Full => "Full control",
         }
+    }
+
+    /// Its word on the command line (`rbs-cli token create --access <word>`).
+    pub fn word(self) -> &'static str {
+        match self {
+            Access::View => "view",
+            Access::Control => "control",
+            Access::Full => "full",
+        }
+    }
+
+    /// The access named by `word` ([`Access::word`]), ignoring case.
+    pub fn parse(word: &str) -> Option<Access> {
+        Access::ALL
+            .into_iter()
+            .find(|a| a.word().eq_ignore_ascii_case(word.trim()))
+    }
+
+    /// How a token's scopes are shown: the access label, or the scope names for a set
+    /// no access level offers.
+    pub fn describe(scopes: ScopeSet) -> String {
+        Access::of(scopes).map_or_else(
+            || {
+                scopes
+                    .iter()
+                    .map(|s| s.name())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            },
+            |a| a.label().to_owned(),
+        )
     }
 
     /// One line on what it allows.
@@ -168,6 +224,22 @@ impl RemoteProfile {
         Ok(token)
     }
 
+    /// Where the token named `name` is in the list.
+    pub fn index_of(&self, name: &str) -> Option<usize> {
+        self.tokens.iter().position(|t| t.name == name.trim())
+    }
+
+    /// Takes the token list from `saved` (the file as another program, such as
+    /// `rbs-cli token`, left it) and keeps this profile's other settings. Returns
+    /// whether the list changed.
+    pub fn take_tokens(&mut self, saved: RemoteProfile) -> bool {
+        if self.tokens == saved.tokens {
+            return false;
+        }
+        self.tokens = saved.tokens;
+        true
+    }
+
     /// Removes the token at `index`; returns it, so the removal can be undone with
     /// [`RemoteProfile::restore`].
     pub fn revoke(&mut self, index: usize) -> Option<TokenEntry> {
@@ -222,33 +294,25 @@ fn name_problem(name: &str) -> Option<String> {
     None
 }
 
-fn file(config: &Path) -> PathBuf {
+/// The settings file in `config`.
+pub fn file(config: &Path) -> PathBuf {
     config.join("remote-control.toml")
 }
 
 /// The saved settings; the defaults (off) when there are none. A file that cannot be
-/// read gives the defaults and the reason, so remote control stays off.
+/// read gives the defaults and the reason, so remote control stays off; a file with bad
+/// content or that others can write is moved aside to `remote-control.toml.refused`.
 pub fn load(config: &Path) -> (RemoteProfile, Option<String>) {
     let path = file(config);
-    let text = match std::fs::read_to_string(&path) {
-        Ok(t) => t,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return (RemoteProfile::new(), None),
-        Err(e) => {
+    let why = match check(&path) {
+        Ok(p) => return (p.unwrap_or_default(), None),
+        Err(Refused::Unreadable(why)) => {
             return (
                 RemoteProfile::new(),
-                Some(format!("{}: {e}", path.display())),
+                Some(format!("{}: {why}", path.display())),
             );
         }
-    };
-    let why = match writable_by_others(&path) {
-        Some(why) => why,
-        None => match toml::from_str::<RemoteProfile>(&text) {
-            Ok(p) => match p.problem() {
-                None => return (p, None),
-                Some(why) => why,
-            },
-            Err(e) => e.to_string(),
-        },
+        Err(Refused::Content(why)) => why,
     };
     // The next change writes a new file; the refused one is kept beside it.
     let kept = path.with_extension("toml.refused");
@@ -260,6 +324,40 @@ pub fn load(config: &Path) -> (RemoteProfile, Option<String>) {
         RemoteProfile::new(),
         Some(format!("{}: {why}.{saved}", path.display())),
     )
+}
+
+/// The saved settings as they are now, without changing the file: `None` when there
+/// is none, the reason when it cannot be used. For a program that already holds the
+/// settings and wants changes another program made since.
+pub fn read(config: &Path) -> Result<Option<RemoteProfile>, String> {
+    let path = file(config);
+    check(&path).map_err(|r| match r {
+        Refused::Unreadable(why) | Refused::Content(why) => format!("{}: {why}", path.display()),
+    })
+}
+
+enum Refused {
+    /// The file could not be read (permissions, I/O): left as it is.
+    Unreadable(String),
+    /// Bad content, or others can write it.
+    Content(String),
+}
+
+fn check(path: &Path) -> Result<Option<RemoteProfile>, Refused> {
+    let text = match std::fs::read_to_string(path) {
+        Ok(t) => t,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => return Err(Refused::Unreadable(e.to_string())),
+    };
+    if let Some(why) = writable_by_others(path) {
+        return Err(Refused::Content(why));
+    }
+    let profile =
+        toml::from_str::<RemoteProfile>(&text).map_err(|e| Refused::Content(e.to_string()))?;
+    match profile.problem() {
+        None => Ok(Some(profile)),
+        Some(why) => Err(Refused::Content(why)),
+    }
 }
 
 /// Why a settings file others may write is refused (anyone who can write it can add a
@@ -311,7 +409,8 @@ mod tests {
     use super::*;
 
     fn dir(name: &str) -> PathBuf {
-        let d = std::env::temp_dir().join(format!("rbs-app-remote-{name}-{}", std::process::id()));
+        let d =
+            std::env::temp_dir().join(format!("rbs-remote-settings-{name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&d);
         d
     }
@@ -353,6 +452,38 @@ mod tests {
         p.restore(0, entry.clone()).unwrap();
         assert!(p.store().verify(token.expose()).is_some());
         assert!(p.restore(0, entry).is_err());
+    }
+
+    #[test]
+    fn access_words_parse_back() {
+        for a in Access::ALL {
+            assert_eq!(Access::parse(a.word()), Some(a));
+        }
+        assert_eq!(Access::parse(" FULL "), Some(Access::Full));
+        assert_eq!(Access::parse("admin"), None);
+        assert_eq!(Access::describe(ScopeSet::PANEL), "Control");
+        assert_eq!(
+            Access::describe(ScopeSet::of([Scope::Read, Scope::Tokens])),
+            "read, tokens"
+        );
+    }
+
+    #[test]
+    fn tokens_are_taken_from_the_saved_file_and_other_settings_kept() {
+        let mut shown = RemoteProfile {
+            enabled: true,
+            port: 4470,
+            ..RemoteProfile::new()
+        };
+        shown.create_token("Deck", Access::Control).unwrap();
+        let mut saved = RemoteProfile::new();
+        saved.create_token("Script", Access::View).unwrap();
+        assert!(shown.take_tokens(saved.clone()));
+        assert!(!shown.take_tokens(saved));
+        assert!(shown.enabled);
+        assert_eq!(shown.port, 4470);
+        assert_eq!(shown.index_of(" Script"), Some(0));
+        assert_eq!(shown.index_of("Deck"), None);
     }
 
     #[test]
@@ -417,6 +548,20 @@ mod tests {
         let (got, why) = load(&d);
         assert_eq!(got, RemoteProfile::new());
         assert!(why.unwrap().contains("other users"));
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn read_leaves_a_bad_file_where_it_is() {
+        let d = dir("read");
+        assert_eq!(read(&d), Ok(None));
+        std::fs::create_dir_all(&d).unwrap();
+        std::fs::write(file(&d), "enabled = yes").unwrap();
+        assert!(read(&d).is_err());
+        assert!(file(&d).exists());
+        let p = RemoteProfile::new();
+        save(&d, &p).unwrap();
+        assert_eq!(read(&d), Ok(Some(p)));
         let _ = std::fs::remove_dir_all(&d);
     }
 

@@ -1,0 +1,21 @@
+[package]
+name = "rbs-remote-settings"
+description = "Remote control settings shared by the RBS composition roots: the config directory and remote-control.toml (on or off, port, access token hashes; ADR-0044)."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+license.workspace = true
+publish.workspace = true
+
+# Application layer: shared by rbs-app and rbs-cli, so both read and write the same
+# file the same way. No toolkit, engine or adapter crate, so rbs-cli does not pull
+# Slint (ADR-0008).
+[dependencies]
+rbs-api = { path = "../rbs-api" }
+# The settings file; the versions rbs-app already uses.
+serde = { version = "1", features = ["derive"] }
+toml = "0.9"
+
+[lints]
+workspace = true

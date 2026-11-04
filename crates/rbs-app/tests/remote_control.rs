@@ -12,7 +12,7 @@ use std::time::Duration;
 
 use rbs_api_ws::{SUBPROTOCOL, close_code};
 use rbs_app::remote_control::{RemoteOptions, RemoteServer, StartError};
-use rbs_app::remote_profile::{Access, RemoteProfile};
+use rbs_remote_settings::{Access, RemoteProfile};
 use serde_json::{Value, json};
 
 /// Hang guard only.

@@ -6,6 +6,7 @@ use std::time::Duration;
 use rbs_codec::{EncoderPreset, KeyframeInterval, RateControl};
 use rbs_core::media::{ContainerId, Size};
 use rbs_core::timing::FrameRate;
+use rbs_remote_settings::Access;
 
 /// What the user asked for.
 #[derive(Debug, Clone, PartialEq)]
@@ -14,8 +15,30 @@ pub enum Command {
     Record(Box<RecordArgs>),
     /// `rbs-cli devices`: list adapters and capture targets.
     Devices,
+    /// `rbs-cli token ...`: manage remote control access tokens.
+    Token(TokenCommand),
     /// `rbs-cli help` or `--help`.
     Help,
+}
+
+/// `rbs-cli token ...` (ADR-0044 decision 9): the access tokens apps use to control
+/// RBS, in the same settings file as the desktop app's Settings, Remote control.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TokenCommand {
+    /// `token list`.
+    List,
+    /// `token create <name> [--access view|control|full]`.
+    Create {
+        /// The token's name.
+        name: String,
+        /// What its app may do.
+        access: Access,
+    },
+    /// `token revoke <name>`.
+    Revoke {
+        /// The token's name.
+        name: String,
+    },
 }
 
 /// Options of `record`.
@@ -71,6 +94,9 @@ pub const USAGE: &str = "\
 usage:
   rbs-cli record <file.mkv|file.mp4> [options]
   rbs-cli devices
+  rbs-cli token list
+  rbs-cli token create <name> [--access view|control|full]
+  rbs-cli token revoke <name>
 
 record options:
   --seconds N          stop after N seconds (default: press Enter to stop)
@@ -101,7 +127,13 @@ record options:
                        earlier, by 35 ms at most)
   --system-audio-offset MS
                        the same for the system audio
-  --overwrite          replace the file if it exists";
+  --overwrite          replace the file if it exists
+
+token commands (access tokens for apps that control RBS, as in Settings, Remote
+control; the token is printed once, keep it):
+  --access LEVEL       view: see state only; control: also change sources and
+                       start and stop recording (default, right for panels);
+                       full: also change settings";
 
 fn value<'a>(it: &mut impl Iterator<Item = &'a str>, flag: &str) -> Result<&'a str, String> {
     it.next().ok_or_else(|| format!("{flag} needs a value"))
@@ -277,7 +309,47 @@ pub fn parse<'a>(args: impl IntoIterator<Item = &'a str>) -> Result<Command, Str
             Some(extra) => Err(format!("devices: unexpected {extra:?}")),
         },
         Some("record") => record(it).map(|a| Command::Record(Box::new(a))),
+        Some("token") => token(it).map(Command::Token),
         Some(other) => Err(format!("unknown command {other:?}")),
+    }
+}
+
+fn token<'a>(mut it: impl Iterator<Item = &'a str>) -> Result<TokenCommand, String> {
+    let command = match it.next() {
+        Some("list") => TokenCommand::List,
+        Some("create") => {
+            let mut name = None;
+            let mut access = Access::Control;
+            while let Some(arg) = it.next() {
+                match arg {
+                    "--access" => {
+                        let word = value(&mut it, arg)?;
+                        access = Access::parse(word).ok_or_else(|| {
+                            format!("--access: {word:?} is not view, control or full")
+                        })?;
+                    }
+                    flag if flag.starts_with("--") => {
+                        return Err(format!("token create: unknown option {flag:?}"));
+                    }
+                    n if name.is_none() => name = Some(n.to_owned()),
+                    extra => return Err(format!("token create: unexpected {extra:?}")),
+                }
+            }
+            let name = name.ok_or("token create needs a name, such as \"Stream Deck\"")?;
+            return Ok(TokenCommand::Create { name, access });
+        }
+        Some("revoke") => {
+            let name = it.next().ok_or("token revoke needs the token's name")?;
+            TokenCommand::Revoke {
+                name: name.to_owned(),
+            }
+        }
+        Some(other) => return Err(format!("token: unknown command {other:?}")),
+        None => return Err("token needs list, create or revoke".into()),
+    };
+    match it.next() {
+        None => Ok(command),
+        Some(extra) => Err(format!("token: unexpected {extra:?}")),
     }
 }
 
@@ -562,6 +634,51 @@ mod tests {
         assert!(parse(["play"]).is_err());
         assert_eq!(parse([]).unwrap(), Command::Help);
         assert_eq!(parse(["devices"]).unwrap(), Command::Devices);
+    }
+
+    #[test]
+    fn token_commands_parse() {
+        assert_eq!(
+            parse(["token", "list"]).unwrap(),
+            Command::Token(TokenCommand::List)
+        );
+        assert_eq!(
+            parse(["token", "create", "Stream Deck"]).unwrap(),
+            Command::Token(TokenCommand::Create {
+                name: "Stream Deck".into(),
+                access: Access::Control
+            })
+        );
+        assert_eq!(
+            parse(["token", "create", "--access", "view", "Script"]).unwrap(),
+            Command::Token(TokenCommand::Create {
+                name: "Script".into(),
+                access: Access::View
+            })
+        );
+        assert_eq!(
+            parse(["token", "revoke", "Deck"]).unwrap(),
+            Command::Token(TokenCommand::Revoke {
+                name: "Deck".into()
+            })
+        );
+        for (args, want) in [
+            (&["token"][..], "list, create or revoke"),
+            (&["token", "show"][..], "unknown command"),
+            (&["token", "create"][..], "needs a name"),
+            (&["token", "create", "a", "b"][..], "unexpected"),
+            (
+                &["token", "create", "a", "--access", "admin"][..],
+                "not view",
+            ),
+            (&["token", "create", "a", "--access"][..], "needs a value"),
+            (&["token", "create", "a", "--scopes"][..], "unknown option"),
+            (&["token", "revoke"][..], "needs the token's name"),
+            (&["token", "list", "x"][..], "unexpected"),
+        ] {
+            let err = parse(args.iter().copied()).unwrap_err();
+            assert!(err.contains(want), "{args:?}: {err}");
+        }
     }
 
     /// The URL reaches the file transport as the same path: a file is written there.

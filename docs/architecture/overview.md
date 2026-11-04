@@ -34,7 +34,7 @@ RBS is a headless engine built around a **media graph**: a set of nodes (sources
 | Control | `rbs-api` (typed requests, events, session, scopes; `ControlTarget` and `ControlTransport` traits; ADR-0044) | Foundation, `serde`, `serde_json`, `sha2`, `subtle`, `getrandom` (`schemars` behind a feature); no engine, adapter, network or UI crate |
 | Control transports | `rbs-api-ws` (WebSocket), `rbs-api-ipc` (named pipe, Unix socket) | `rbs-api`, network and IPC crates |
 | UI model | `rbs-ui` (toolkit-neutral panels, layout, workspaces, layout undo, design tokens, live indicator; ADR-0022 decision 4) | std, `serde`, `toml`; no engine, port, adapter or UI toolkit crate |
-| Applications | `rbs-app` (desktop UI), `rbs-cli` (headless `record`; ADR-0040) | Everything; this is the composition root |
+| Applications | `rbs-app` (desktop UI), `rbs-cli` (headless `record`, `token`; ADR-0040), `rbs-remote-settings` (remote control settings file and config directory shared by both; ADR-0044) | Everything; this is the composition root |
 
 Arrows only point down or sideways into ports. Adapters never depend on each other; code several adapters share lives in an adapter support crate, which holds no vendor code. The engine never depends on an adapter.
 

@@ -398,6 +398,7 @@ impl Ctx {
     fn open_settings(&self) {
         let ctx = self.clone();
         self.update(move |app| {
+            app.studio.settings_opened();
             if let Some(w) = &app.settings {
                 let _ = w.show();
                 return;

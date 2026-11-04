@@ -11,12 +11,12 @@ use rbs_app::canvas_profile::{self, CanvasProfile, RATES, SIZES};
 use rbs_app::encoder_form::{Choices, EncoderForm};
 use rbs_app::record_profile::{self, AUDIO_KBPS, Format, RateMode, RecordProfile, VIDEO_KBPS};
 use rbs_app::remote_control::{RemoteOptions, RemoteServer};
-use rbs_app::remote_profile::{self, Access, RemoteProfile};
 use rbs_app::studio_host::{
     Command, EncoderInfo, EncoderOptions, RecordRequest, RecordingUpdate, SourceKind, SourceRow,
     SourceStatus, StudioHost, Target, Update,
 };
 use rbs_audio::LevelMeter;
+use rbs_remote_settings::{self as remote_profile, Access, RemoteProfile};
 use rbs_scene::model::SourceId;
 use rbs_ui::meter::{self, Meter, SCALE_MARKS_DB};
 use slint::{Model, ModelRc, SharedString, VecModel};
@@ -397,6 +397,10 @@ impl StudioUi {
         if self.remote_server.is_some() {
             return;
         }
+        if self.host.is_none() {
+            return;
+        }
+        self.reload_tokens();
         let Some(host) = &self.host else {
             return;
         };
@@ -437,6 +441,7 @@ impl StudioUi {
         if self.remote.enabled == on {
             return;
         }
+        self.reload_tokens();
         self.remote.enabled = on;
         self.save_remote();
         self.sync_remote();
@@ -448,6 +453,7 @@ impl StudioUi {
                 self.remote_note.clear();
                 self.remote_port_text = port.to_string();
                 if port != self.remote.port {
+                    self.reload_tokens();
                     self.remote.port = port;
                     self.save_remote();
                     // Listen on the new port: connected apps reconnect there.
@@ -470,6 +476,7 @@ impl StudioUi {
             .get(access as usize)
             .copied()
             .unwrap_or(Access::Control);
+        self.reload_tokens();
         match self.remote.create_token(name, access) {
             Ok(token) => {
                 self.revoked = None;
@@ -488,7 +495,17 @@ impl StudioUi {
     }
 
     pub fn revoke_token(&mut self, i: i32) {
-        let Ok(i) = usize::try_from(i) else {
+        // The row the user picked, by name: the list may have changed on disk since it
+        // was shown.
+        let Some(name) = usize::try_from(i)
+            .ok()
+            .and_then(|i| self.remote.tokens.get(i))
+            .map(|t| t.name.clone())
+        else {
+            return;
+        };
+        self.reload_tokens();
+        let Some(i) = self.remote.index_of(&name) else {
             return;
         };
         if let Some(entry) = self.remote.revoke(i) {
@@ -510,12 +527,45 @@ impl StudioUi {
         let Some((i, entry)) = self.revoked.take() else {
             return;
         };
+        self.reload_tokens();
         match self.remote.restore(i, entry) {
             Ok(()) => {
                 self.save_remote();
                 self.tokens_changed();
             }
             Err(why) => self.remote_note = why,
+        }
+    }
+
+    /// The Settings window opened: it shows the access tokens as saved now, including
+    /// changes `rbs-cli token` made while the app ran.
+    pub fn settings_opened(&mut self) {
+        self.reload_tokens();
+    }
+
+    /// Takes the access tokens as saved now: another program (`rbs-cli token`) may have
+    /// added or revoked some since the file was read. Called before every change made
+    /// here, so saving does not undo theirs, and a token revoked there stops working
+    /// (its apps are disconnected). A file that cannot be used now is left alone and
+    /// the tokens held are kept; the next change writes them back.
+    fn reload_tokens(&mut self) {
+        match remote_profile::read(&self.config) {
+            Ok(Some(saved)) => {
+                if self.remote.take_tokens(saved) {
+                    if self
+                        .new_token
+                        .as_ref()
+                        .is_some_and(|(n, _)| self.remote.index_of(n).is_none())
+                    {
+                        self.new_token = None;
+                    }
+                    self.tokens_changed();
+                }
+            }
+            Ok(None) => {}
+            Err(why) => {
+                log(&format!("remote control settings not read again: {why}"));
+            }
         }
     }
 
