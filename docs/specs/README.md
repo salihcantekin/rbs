@@ -22,7 +22,7 @@ Specs are the current contracts of RBS. Code must match them; a PR that changes 
 | [recording.md](recording.md) | Draft | `rbs-record` (scene to encoders and a muxed output on the engine), `rbs-cli` (`record`, `devices`) |
 | [plugin-sdk.md](plugin-sdk.md) | Draft | `rbs-plugin-sdk`, `rbs-plugin-host` (planned) |
 | [performance-budgets.md](performance-budgets.md) | Draft | `benches/`, CI |
-| [control-api.md](control-api.md) | Draft | `rbs-api` (planned) |
+| [control-api.md](control-api.md) | Draft | `rbs-api`, `rbs-api-ws`, `rbs-api-ipc` (planned; ADR-0044) |
 | [testing-strategy.md](testing-strategy.md) | Draft | CI, conformance suites |
 | [ui-design-system.md](ui-design-system.md) | Draft | `rbs-ui-tokens`, `rbs-app` (planned) |
 
