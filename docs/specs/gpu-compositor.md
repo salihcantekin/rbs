@@ -210,13 +210,14 @@ impl YuvDownload {
     /// The newest completed readback as a `System` frame; older completed ones are dropped
     /// (`stale`). Hot path, never waits.
     pub fn take_ready(&mut self, ctx: &GpuContext) -> Result<Option<VideoFrame>, GpuError>;
+    pub fn take_oldest(&mut self, ctx: &GpuContext) -> Result<Option<VideoFrame>, GpuError>; // ADR-0045
     pub fn stats(&self) -> DownloadStats;  // converted, delivered, busy, stale, no_buffer, failed
     pub fn in_flight(&self) -> usize;
 }
 ```
 
 - `submit` records the conversion (the `YuvConverter` passes) into two plane textures the download owns, copies both planes into one staging buffer (luma rows, then chroma rows, both with `stride`), submits once and calls `map_async`; the callback only stores an atomic state.
-- `take_ready` walks the ring from the oldest slot while slots are complete, after `GpuContext::poll` (the render runtime polls at the end of each tick). The newest mapped slot is copied (one `memcpy` of the whole buffer) into a frame buffer that no consumer holds (`Bytes::is_unique`, then `try_into_mut`; the buffers are created in the shared representation, so this keeps their allocation), unmapped, and returned as a `System` frame with the canvas frame's timestamp and sequence and plane layouts at offsets `0` and `stride * height`. With every buffer held by consumers the frame is dropped (`no_buffer`).
+- `take_ready` walks the ring from the oldest slot while slots are complete, after `GpuContext::poll` (the render runtime polls at the end of each tick). The newest mapped slot is copied (one `memcpy` of the whole buffer) into a frame buffer that no consumer holds (`Bytes::is_unique`, then `try_into_mut`; the buffers are created in the shared representation, so this keeps their allocation), unmapped, and returned as a `System` frame with the canvas frame's timestamp and sequence and plane layouts at offsets `0` and `stride * height`. With every buffer held by consumers the frame is dropped (`no_buffer`). `take_oldest` does the same for the oldest completed slot and leaves newer completed slots for later calls (no `stale` drops), for the end of a stream (ADR-0045); both share one implementation chosen at compile time.
 - Every delivered frame increments `GpuMetrics::frames_cpu_copied` (P4).
 - A map failure frees the slot and returns `GpuError::Readback` once.
 
@@ -334,6 +335,9 @@ impl PreviewLayer {                       // not Send: the UI's main thread
     /// No-op when neither the rectangle nor the superlayer's height or flip changed.
     pub fn set_rect(&mut self, rect: LayerRect);
     pub fn set_hidden(&self, hidden: bool);        // while toolkit content overlaps it
+    /// Filled rectangles over the picture (selection outline and handles, ADR-0048), in
+    /// `set_rect`'s coordinates; replaces the last ones; empty removes them.
+    pub fn set_marks(&mut self, marks: &[Mark]);
     pub fn set_retire_after(&mut self, after: Duration);
     /// Makes the frame's IOSurface the layer's contents and flushes the transaction to the
     /// window server. Never waits or allocates.
@@ -348,6 +352,7 @@ impl PreviewLayer {                       // not Send: the UI's main thread
 }
 ```
 
+- **Marks (ADR-0048).** `Mark { x, y, width, height, rgba }` (sRGB, straight alpha) in the same coordinates as `set_rect`. A container sublayer of the preview layer holds up to `MAX_MARKS` (32) solid-colour sublayers, made on first use and reused; `set_marks` changes frames, colours and `hidden` in one transaction without implicit animations, edges on the superlayer's device pixel grid (`contentsScale`); `set_rect` redraws them in the new place. Marks that are not finite or have a negative size are skipped. Marks hide, detach and drop with the layer.
 - **Surfaces.** Single-plane `'RGBA'` IOSurfaces of the preview size, 4 bytes per pixel, created in `new`; the ring never grows. Each is aliased on the engine device as an `Rgba8UnormSrgb` render target owned by the publisher (no pool slots). `publish` draws one full-screen triangle that samples the linear `Rgba16Float` canvas bilinearly (any canvas size, scaled to the preview size), composites it over opaque black and writes it with sRGB encoding by the render target. One render pass, one submission, no copy, no CPU readback.
 - **Transport.** A Mach service in the user's bootstrap namespace, named `org.rbs.preview.<pid>.<n>.<random>` (unique per publisher; the random part keeps a stale name from being registered by another process and mistaken for this engine), with a random 64-bit token from the system CSPRNG (`arc4random_buf`). The engine hands both to the UI through the control API (for the demo, on the command line). Surfaces cross the process boundary as Mach send rights (`IOSurfaceCreateMachPort`, `IOSurfaceLookupFromMachPort`); IOSurface global IDs (`kIOSurfaceIsGlobal`) are not used.
 - **Messages.** Fixed-size, version 1, little structs of 32-bit words:
@@ -394,6 +399,7 @@ impl PreviewLayer {                       // not Send: the window's thread
     pub fn detach(&mut self, now: Timestamp);
     pub fn set_rect(&mut self, rect: LayerRect);   // aspect fit; no-op when unchanged
     pub fn set_hidden(&self, hidden: bool);
+    pub fn set_marks(&mut self, marks: &[Mark]);    // as on macOS, physical pixels
     pub fn set_retire_poll(&mut self, poll: Duration);
     /// `SetBuffer` + `Present` of the frame's buffer. Never waits or allocates.
     pub fn show(&mut self, frame: PreviewFrame, now: Timestamp);
@@ -412,6 +418,7 @@ impl PreviewLayer {                       // not Send: the window's thread
 - **End of a subscription.** The engine's read fails once the UI's end is closed (subscriber and every frame dropped, or the process exited, also while holding every surface), or a write finds the pipe closed: every surface is free and the next tick listens again. The UI's read fails once the engine is gone (`Disconnected`).
 - **Lifetime with the layer.** A replaced frame is released when its presentation buffer reports `IsAvailable` (the desktop compositor no longer reads it): a completion signal, so no torn frame from early release. Checked on every `show` and, while a frame waits, by a one-shot timer at `next_retire`. `detach` removes the visual and waits for commit completion; the last shown frame is kept until a later `show` replaces it (it then retires by `IsAvailable`) or the layer is lost or dropped. A frame shown while not attached goes back at once, unpresented. After `attach` the visual is added only at the first `show`; since presentation and the commit are separate channels, the old, complete frame can appear for one compositor frame at worst. A lost presentation manager (lost event checked per `show`, or a failed `Present`) releases every frame at once; `lost()` tells the UI to recreate the layer or fall back. Dropping the layer waits for commit completion, then releases everything.
 - **Fallback.** Without a composition swapchain the UI uses `textures` (ADR-0028 path); the toolkit must treat the `Rgba8Unorm` values as sRGB-encoded.
+- **Marks (ADR-0048).** The target's root is a container visual: the picture visual, and above it an overlay visual made at the first `set_marks`. Each mark is a child visual of the overlay whose content is a shared 1 x 1 premultiplied `B8G8R8A8_UNORM` surface of its colour (filled once: `BeginDraw`, `ClearView` of the one pixel at the returned atlas offset, `EndDraw`; at most 8 colours kept), scaled to the mark's rectangle (edges on whole pixels) with nearest-neighbour sampling. Unused mark visuals are scaled to zero. At most `MAX_MARKS` (32) visuals; one `Commit` per call. A failure to make a visual or surface leaves marks out, never the picture.
 - **Placement and overlap.** As on macOS, but in physical pixels (the toolkit's logical rectangle times its scale factor); the visual is in a topmost target, so the UI hides it while toolkit content overlaps the preview.
 
 ### Native import (interop)

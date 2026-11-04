@@ -423,6 +423,11 @@ fn a_late_cadence_worker_runs_the_newest_tick_and_counts_the_skipped_ones() {
     rig.engine.apply(&rig.graph).unwrap();
     rig.frame();
     let stats = rig.engine.worker_stats(RENDER).unwrap();
+    // `frame` waits for the tick inside `run_tick`; the worker counts it after
+    // `run_tick` returns. Wait for the count too, or the snapshot below can miss it and
+    // the late tick's check would be satisfied by this one.
+    let due = due_index(rig.clock.now(), Duration::ZERO).unwrap();
+    assert!(eventually(LIMIT, || stats.next_index() > due));
     let (ticks, late) = (stats.ticks(), stats.late());
     // Five frames pass at once.
     rig.clock.advance(FRAME * 5);

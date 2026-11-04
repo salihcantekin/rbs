@@ -13,8 +13,8 @@ use rbs_codec::RateControl;
 use rbs_core::media::ContainerId;
 use rbs_core::time::{Clock, TestClock, Timestamp};
 use rbs_record::{
-    AUDIO_ENCODER, AUDIO_ENCODER_2, MAX_OUTPUTS, OUTPUT, OUTPUT_2, OutputSettings, RecordError,
-    Studio, StudioSettings, VIDEO_ENCODER, VIDEO_ENCODER_2,
+    AUDIO_ENCODER, AUDIO_ENCODER_2, END_TAIL_LIMIT, MAX_OUTPUTS, OUTPUT, OUTPUT_2, OutputSettings,
+    RecordError, Studio, StudioSettings, VIDEO_ENCODER, VIDEO_ENCODER_2,
 };
 use support::*;
 
@@ -92,7 +92,13 @@ fn a_recording_and_a_stream_with_different_settings_run_on_their_own_encoders() 
     });
     assert!(reached, "{:?}", studio.output_progress(live));
 
-    // The recording stops: its file is complete, the stream goes on.
+    // The recording ends (its own export takes no later canvas, ADR-0045) and
+    // stops: its file is complete, the stream goes on.
+    let end = clock.now();
+    assert!(studio.end_output(rec));
+    assert!(run_until(&mut studio, &clock, |s| s.output_tail_done(rec)));
+    assert!(clock.now() < end + END_TAIL_LIMIT, "ended by itself");
+    assert!(!studio.output_tail_done(live), "the stream was not ended");
     let report = studio.stop_output(rec).unwrap();
     assert!(report.shutdown_errors.is_empty(), "{report:?}");
     assert_eq!(report.failure, None);
@@ -170,7 +176,12 @@ fn outputs_with_the_same_settings_share_the_encoders() {
     );
     assert!(p_rec.frames_encoded > 0);
 
-    // The stream ends first: the recording keeps its encoders and goes on.
+    // The stream ends first: the shared export keeps running, and the tail is in
+    // once the encoder took a frame past the end. The recording keeps its encoders.
+    let end = clock.now();
+    assert!(studio.end_output(live));
+    assert!(run_until(&mut studio, &clock, |s| s.output_tail_done(live)));
+    assert!(clock.now() < end + END_TAIL_LIMIT, "ended by itself");
     let report = studio.stop_output(live).unwrap();
     assert!(report.shutdown_errors.is_empty(), "{report:?}");
     assert_eq!(report.flush_lost, 0, "a shared encoder is not flushed");

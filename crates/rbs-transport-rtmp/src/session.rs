@@ -201,6 +201,10 @@ impl Running {
             self.shared.abort();
         } else {
             let clean = later(start, budget / 5 * CLEAN_SHARE);
+            // A connection that failed is not tried again: the thread ends now if it
+            // waits for its next attempt, instead of holding `finish` to its budget.
+            self.shared.ending.store(true, Ordering::SeqCst);
+            self.thread.thread().unpark();
             // Hand over what is staged, then ask for a clean end.
             while !self.staging.is_empty() {
                 self.pump(RING_SLOTS);

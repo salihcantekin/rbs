@@ -141,7 +141,7 @@ impl EncoderNode {
 }
 ```
 
-Descriptor `org.rbs.audio.encoder`, kind `Encoder`, input `in` (Audio), output `packets` (Packets). Generic over the runtime. `process` submits the input block (if any), drains into a vector reserved in `new` and passes up to `PER_TICK_EVENTS` packets per tick; up to `packets` wait for the next ticks, more are dropped and counted. `release` flushes the encoder and discards what it returns (end of stream through the graph is an open question of the engine spec). Submit and drain errors are `NodeError::Backend`.
+Descriptor `org.rbs.audio.encoder`, kind `Encoder`, input `in` (Audio), output `packets` (Packets). Generic over the runtime. `process` submits the input block (if any), drains into a vector reserved in `new` and passes up to `PER_TICK_EVENTS` packets per tick; up to `packets` wait for the next ticks, more are dropped and counted. The first final tick (`Tick::draining`) without an input block is the end of its input (the queue reader rings once more after its last block on final ticks): the node flushes the encoder there, passes the packets on, counts it (`flushes()`) and takes no block until it is prepared again (ADR-0045); packets the output queue refuses on that last tick and blocks arriving after the flush are counted in `tail_lost()`; the flush may block and allocate on that tick only (ADR-0043 Decision 4). `release` flushes again and discards what it returns: that is a tail lost only when the node left without final ticks (a live edit, a drain that timed out). Submit and drain errors are `NodeError::Backend`.
 
 ### Meter sink (`rbs_audio::MeterSinkNode`, ADR-0041)
 

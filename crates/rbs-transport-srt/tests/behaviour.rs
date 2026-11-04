@@ -501,3 +501,46 @@ fn a_late_listener_gets_recent_media_not_what_waited_in_the_hand_off() {
     }
     assert_eq!(got.last().map(|c| c.0), Some(239));
 }
+
+#[test]
+fn finish_does_not_wait_for_the_next_attempt_after_a_lost_connection() {
+    // The listener closes the first connection after five packets; the next attempt
+    // would come a minute later, and `finish` must not wait for it.
+    let server = TestServer::start(Behaviour {
+        close_after: Some(5),
+        ..Behaviour::default()
+    });
+    let config = config(&server.url()).with_reconnect(ReconnectPolicy::Backoff {
+        initial: Duration::from_secs(60),
+        max: Duration::from_secs(60),
+        attempts: None,
+    });
+    let mut t = SrtTransportFactory.create(&config).unwrap();
+    t.start(&[]).unwrap();
+    let mut events = Vec::new();
+    send(&mut t, &header());
+    for i in 0..4 {
+        send(&mut t, &chunk(i, i == 0, 500));
+    }
+    wait_for(&mut t, &mut events, |e| {
+        matches!(e, TransportEvent::Reconnecting { attempt: 1 })
+    });
+    for i in 4..30 {
+        send(&mut t, &chunk(i, i % 10 == 0, 500));
+    }
+    let started = Instant::now();
+    let result = t.finish(Duration::from_secs(60));
+    // Hang guard only: before, `finish` spent four fifths of its budget (48 s) here.
+    assert!(
+        started.elapsed() < Duration::from_secs(10),
+        "{:?}",
+        started.elapsed()
+    );
+    assert!(
+        result.is_err(),
+        "the tail never reached the listener: {result:?}"
+    );
+    assert!(t.stats().items_dropped > 0, "{:?}", t.stats());
+    assert_eq!(t.stats().queued_bytes, 0);
+    assert_eq!(server.finish().len(), 1, "no second connection");
+}

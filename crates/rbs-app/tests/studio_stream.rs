@@ -34,7 +34,7 @@ use rbs_core::registry::{AdapterFactory, AdapterId, ProbeError};
 use rbs_core::time::TestClock;
 use rbs_engine::{Engine, EngineConfig};
 use rbs_gpu::{GpuContext, GpuError, GpuRequest};
-use rbs_record::{RecordAdapters, VideoSettings};
+use rbs_record::{END_TAIL_LIMIT, RecordAdapters, VideoSettings};
 use rbs_transport::{
     ReconnectPolicy, SendOutcome, Transport, TransportConfig, TransportError, TransportEvent,
     TransportFactory, TransportInput, TransportItem, TransportStats, caps as transport_caps,
@@ -220,7 +220,9 @@ fn host(
     gpu: Arc<GpuContext>,
     keys: Arc<dyn KeyStore>,
     server: Arc<Server>,
+    clock: &TestClock,
 ) -> (StudioHost, Receiver<Update>) {
+    let clock = clock.clone();
     let (tx, rx) = mpsc::channel();
     let mut config = HostConfig::desktop();
     config.preview = None;
@@ -255,7 +257,7 @@ fn host(
             (a, Vec::new())
         },
         move || Ok(gpu),
-        || Engine::with_clock(Arc::new(TestClock::new()), EngineConfig::default()),
+        move || Engine::with_clock(Arc::new(clock.clone()), EngineConfig::default()),
         move |u| {
             let _ = tx.send(u);
         },
@@ -276,6 +278,27 @@ fn next<T>(rx: &Receiver<Update>, mut pick: impl FnMut(Update) -> Option<T>) -> 
         let left = deadline.saturating_duration_since(std::time::Instant::now());
         let u = rx.recv_timeout(left).expect("the host answered");
         if let Some(t) = pick(u) {
+            return t;
+        }
+    }
+}
+
+/// Like [`next`], calling `step` between waits.
+fn next_while<T>(
+    rx: &Receiver<Update>,
+    mut step: impl FnMut(),
+    mut pick: impl FnMut(Update) -> Option<T>,
+) -> T {
+    let deadline = std::time::Instant::now() + LIMIT;
+    loop {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the host never answered"
+        );
+        step();
+        if let Ok(u) = rx.recv_timeout(Duration::from_millis(10))
+            && let Some(t) = pick(u)
+        {
             return t;
         }
     }
@@ -341,7 +364,8 @@ fn streams_take_the_key_from_the_store_and_report_their_connection() {
     let Some(gpu) = gpu() else { return };
     let keys = Arc::new(MemoryKeyStore::new());
     let server = Arc::new(Server::default());
-    let (host, rx) = host(gpu, keys.clone(), Arc::clone(&server));
+    let clock = TestClock::new();
+    let (host, rx) = host(gpu, keys.clone(), Arc::clone(&server), &clock);
     add_display(&host, &rx);
 
     // RTMP without a saved key: nothing opens.
@@ -397,8 +421,18 @@ fn streams_take_the_key_from_the_store_and_report_their_connection() {
         RecordingUpdate::Started { path, .. } => assert_eq!(path, file),
         other => panic!("{other:?}"),
     }
+    // Stop waits for the video tail (ADR-0045); on the still clock that is
+    // `END_TAIL_LIMIT`, so the test moves the clock until the answer comes.
     host.send(Command::StopRecording);
-    match recording(&rx) {
+    let stopped = next_while(
+        &rx,
+        || clock.advance(END_TAIL_LIMIT),
+        |u| match u {
+            Update::Recording(r) => Some(r),
+            _ => None,
+        },
+    );
+    match stopped {
         RecordingUpdate::Stopped { failure, .. } => assert_eq!(failure, None),
         other => panic!("{other:?}"),
     }
@@ -453,7 +487,7 @@ fn a_stream_the_server_refuses_ends_with_its_reason() {
     let keys = Arc::new(MemoryKeyStore::new());
     keys.write(&rbs_transport::Secret::new("wrong")).unwrap();
     let server = Arc::new(Server::default());
-    let (host, rx) = host(gpu, keys, Arc::clone(&server));
+    let (host, rx) = host(gpu, keys, Arc::clone(&server), &TestClock::new());
     host.send(Command::StartStream(request()));
     assert!(matches!(stream(&rx), StreamUpdate::Started { .. }));
     link_where(&rx, |l| l.connected);

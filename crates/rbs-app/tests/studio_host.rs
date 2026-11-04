@@ -224,6 +224,7 @@ fn sources_change_layer_order_and_box_through_the_host() {
 
     // A new box keeps the rest of the layout.
     host.send(Command::SetSourceBox {
+        seq: 1,
         id: camera,
         position: [10.0, 20.0],
         size: [640.0, 360.0],
@@ -231,6 +232,22 @@ fn sources_change_layer_order_and_box_through_the_host() {
     let rows = rows_where(&rx, |r| {
         r[0].layout.is_some_and(|l| l.position == [10.0, 20.0])
     });
+    let placed_answer = |rx: &Receiver<Update>, want: u64| {
+        next(rx, |u| match u {
+            Update::BoxPlaced { seq, ok } if seq == want => Some(ok),
+            Update::BoxPlaced { seq, .. } => panic!("answer {seq}, expected {want}"),
+            _ => None,
+        })
+    };
+    assert!(placed_answer(&rx, 1));
+    // The same box again changes nothing and is still answered.
+    host.send(Command::SetSourceBox {
+        seq: 2,
+        id: camera,
+        position: [10.0, 20.0],
+        size: [640.0, 360.0],
+    });
+    assert!(placed_answer(&rx, 2));
     let placed = rows[0].layout.unwrap();
     assert_eq!(placed.size, [640.0, 360.0]);
     assert_eq!(placed.rotation, camera_box.rotation);
@@ -254,6 +271,7 @@ fn sources_change_layer_order_and_box_through_the_host() {
 
     // A zero size is refused and changes nothing.
     host.send(Command::SetSourceBox {
+        seq: 3,
         id: camera,
         position: [0.0, 0.0],
         size: [0.0, 360.0],
@@ -263,6 +281,7 @@ fn sources_change_layer_order_and_box_through_the_host() {
         Update::Sources(r) => panic!("refused box changed the rows: {r:?}"),
         _ => None,
     });
+    assert!(!placed_answer(&rx, 3));
 }
 
 #[test]

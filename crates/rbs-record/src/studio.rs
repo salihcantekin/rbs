@@ -6,6 +6,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::Duration;
 
 use rbs_audio::{
     AudioGraphConfig, EncoderNode, InputParams, InputStats, LevelMeter, MeterSinkNode, MixerNode,
@@ -26,7 +27,7 @@ use rbs_graph::runtime::queue::QueueStats;
 use rbs_graph::runtime::{Node, RuntimeEvent};
 use rbs_nodes::capture::CaptureNodeStats;
 use rbs_nodes::encode::EncoderNodeStats;
-use rbs_nodes::export::ExportNodeStats;
+use rbs_nodes::export::{ExportEnd, ExportNodeStats};
 use rbs_nodes::output::OutputNodeStats;
 use rbs_nodes::{OutputNode, PreviewNode, PreviewNodeStats, VideoEncoderNode, VideoExportNode};
 use rbs_scene::SceneCollection;
@@ -51,6 +52,10 @@ const AUDIO_ENCODER_PACKETS: usize = 64;
 /// Layers and strips the compositor and the mixer hold without allocating. Scenes edited
 /// while the studio runs may grow up to this; more layers are not drawn.
 pub const MAX_LAYERS: usize = 64;
+/// Longest wait, on the master clock, for a recording's video tail after
+/// [`Studio::end_output`]; afterwards [`Studio::output_tail_done`] is true anyway
+/// (a stalled readback must not hold the stop up, ADR-0045).
+pub const END_TAIL_LIMIT: Duration = Duration::from_millis(500);
 
 /// How the studio runs its canvas.
 #[non_exhaustive]
@@ -294,6 +299,8 @@ impl Prepared {
         let shared_video = running.video.iter().position(|c| {
             c.as_ref().is_some_and(|c| {
                 c.settings == out.video
+                    // An export asked to end takes no later canvas (ADR-0045).
+                    && c.end.requested().is_none()
                     && select::is_video_candidate(
                         &adapters.video_encoders,
                         &video_config,
@@ -386,6 +393,8 @@ struct VideoChain {
     export: Added,
     encoder: Added,
     export_stats: Arc<ExportNodeStats>,
+    /// Ends the export (ADR-0045); used only while one output takes the chain.
+    end: Arc<ExportEnd>,
     encoder_stats: Arc<EncoderNodeStats>,
     /// The queue into the encoder's partition, found after the apply that scheduled it.
     queue: Option<Arc<QueueStats>>,
@@ -398,6 +407,9 @@ struct AudioChain {
     stream: StreamDescriptor,
     encoder: Added,
     dropped: Arc<AtomicU64>,
+    /// End-of-stream flushes and tail losses (ADR-0045).
+    flushes: Arc<AtomicU64>,
+    tail_lost: Arc<AtomicU64>,
     queue: Option<Arc<QueueStats>>,
 }
 
@@ -419,6 +431,8 @@ struct Base {
     encoder_skipped: u64,
     audio_queue_drops: u64,
     audio_packet_drops: u64,
+    audio_flushes: u64,
+    audio_tail_lost: u64,
 }
 
 /// A running output, its encoder chains and counters.
@@ -436,6 +450,11 @@ struct Attached {
     export: Arc<ExportNodeStats>,
     encoder: Arc<EncoderNodeStats>,
     audio_dropped: Option<Arc<AtomicU64>>,
+    /// The audio encoder's flushes and tail losses (ADR-0045).
+    audio_tail: Option<(Arc<AtomicU64>, Arc<AtomicU64>)>,
+    /// When [`Studio::end_output`] ended it, and whether it ended the export too (the
+    /// chain was its alone) or only waits for the shared encoder to pass that time.
+    ended: Option<(Timestamp, bool)>,
     /// The queues into the video and audio encoders' partitions, kept so the final
     /// counters survive the draining apply that removes them.
     queues: Queues,
@@ -1280,6 +1299,8 @@ impl Studio {
         if let Some(c) = audio.and_then(|i| self.chains.audio[i].as_ref()) {
             b.audio_queue_drops = c.queue.as_ref().map_or(0, |q| q.overflows());
             b.audio_packet_drops = c.dropped.load(Ordering::Relaxed);
+            b.audio_flushes = c.flushes.load(Ordering::Relaxed);
+            b.audio_tail_lost = c.tail_lost.load(Ordering::Relaxed);
         }
         b
     }
@@ -1429,6 +1450,7 @@ impl Studio {
         {
             video_shared = false;
             let export_stats = export.stats();
+            let end = export.end();
             let encoder_stats = encoder.stats();
             let stream = encoder.stream().clone();
             let r = self.engine.adopt::<GpuRuntime>(RENDER, e.node, export);
@@ -1442,6 +1464,7 @@ impl Studio {
                 export: e,
                 encoder: v,
                 export_stats,
+                end,
                 encoder_stats,
                 queue: None,
             });
@@ -1460,6 +1483,7 @@ impl Studio {
         {
             audio_shared = false;
             let dropped = node.dropped();
+            let (flushes, tail_lost) = (node.flushes(), node.tail_lost());
             let r = self.engine.adopt::<()>(a.partition, a.node, node);
             adopt(&mut self.engine, a, r)?;
             audio_chain = Some(AudioChain {
@@ -1468,6 +1492,8 @@ impl Studio {
                 stream,
                 encoder: a,
                 dropped,
+                flushes,
+                tail_lost,
                 queue: None,
             });
         }
@@ -1497,6 +1523,7 @@ impl Studio {
         let audio = audio_slot.and_then(|i| self.chains.audio[i].as_ref());
         let audio_chosen = audio.map(|c| c.chosen.clone());
         let audio_dropped = audio.map(|c| Arc::clone(&c.dropped));
+        let audio_tail = audio.map(|c| (Arc::clone(&c.flushes), Arc::clone(&c.tail_lost)));
         let audio_queue = audio.and_then(|c| c.queue.clone());
         let id = OutputId(self.next_output);
         self.next_output += 1;
@@ -1521,6 +1548,8 @@ impl Studio {
             export,
             encoder,
             audio_dropped,
+            audio_tail,
+            ended: None,
             queues: Queues {
                 video: video_queue,
                 audio: audio_queue,
@@ -1717,6 +1746,64 @@ impl Studio {
         }
     }
 
+    /// Ends a running output's video now, on the master clock (ADR-0045): call
+    /// [`Studio::stop_output`] once [`Studio::output_tail_done`] is true, so the frames
+    /// up to now reach it; until then it keeps running. When its video encoder is its
+    /// alone, the export takes no later canvas and passes on what it still reads back;
+    /// a shared export keeps running for the other output, and the tail is in once the
+    /// encoder has taken a frame from now on. False when `id` does not run. A second
+    /// call keeps the first end.
+    pub fn end_output(&mut self, id: OutputId) -> bool {
+        let now = self.engine.clock().now();
+        let alone = self.attached(id).map(|r| {
+            r.ended.map_or_else(
+                || self.outputs.iter().filter(|o| o.video == r.video).count() == 1,
+                |(_, alone)| alone,
+            )
+        });
+        let Some(alone) = alone else {
+            return false;
+        };
+        let Some(r) = self.outputs.iter_mut().find(|r| r.id == id) else {
+            return false;
+        };
+        if r.ended.is_some() {
+            return true;
+        }
+        if alone && let Some(c) = &self.chains.video[r.video] {
+            c.end.end_at(now);
+        }
+        r.ended = Some((now, alone));
+        true
+    }
+
+    /// True when [`Studio::stop_output`] loses no video frame up to the end: after
+    /// [`Studio::end_output`], once the frames up to the end have reached the video
+    /// encoder (an export of its own: it passed on every canvas it took, and the
+    /// encoder took the last of them), or once [`END_TAIL_LIMIT`] has passed on the
+    /// master clock. True when `id` does not run; false while it runs and was not ended.
+    pub fn output_tail_done(&self, id: OutputId) -> bool {
+        let Some(r) = self.attached(id) else {
+            return true;
+        };
+        let Some((at, alone)) = r.ended else {
+            return false;
+        };
+        let taken = r.encoder.last_frame.load(Ordering::Relaxed);
+        let delivered = if alone {
+            // End to end: the export passed on its last frame, and the encoder took it
+            // (the queue between them keeps only the newest frame).
+            self.chains.video[r.video]
+                .as_ref()
+                .is_none_or(|c| c.end.ended())
+                && taken >= r.export.last_frame.load(Ordering::Relaxed)
+        } else {
+            // A shared export keeps going: the encoder took a frame at or after the end.
+            taken > at.as_nanos()
+        };
+        delivered || self.engine.clock().now() >= at + END_TAIL_LIMIT
+    }
+
     /// Stops a running output: drains, in pipeline order, its output (which writes the
     /// container's trailer and finishes the transport) and the encoders no other output
     /// uses, and removes them, while the studio and the other output keep running.
@@ -1809,9 +1896,14 @@ impl Studio {
                 .map_or(0, |d| d.load(Ordering::Relaxed)),
             b.audio_packet_drops,
         );
+        if let Some((flushes, lost)) = &r.audio_tail {
+            p.audio_flushes = since(flushes.load(Ordering::Relaxed), b.audio_flushes);
+            p.audio_tail_lost = since(lost.load(Ordering::Relaxed), b.audio_tail_lost);
+        }
         let o = &r.output_stats;
         p.packets_taken = o.packets.load(Ordering::Relaxed);
         p.mux_drops = o.mux_drops.load(Ordering::Relaxed);
+        p.start_drops = o.start_drops.load(Ordering::Relaxed);
         p.backlog_peak = o.backlog_peak.load(Ordering::Relaxed);
         p.transport_drops = o.transport_drops.load(Ordering::Relaxed);
         p.connects = o.connects.load(Ordering::Relaxed);
@@ -1844,7 +1936,7 @@ impl Studio {
 /// Engine errors and links that could not cross partitions, as failures.
 /// The input parameters for a sync offset in ns (positive delays).
 fn input_params(offset_ns: i64) -> InputParams {
-    let d = std::time::Duration::from_nanos(offset_ns.unsigned_abs());
+    let d = Duration::from_nanos(offset_ns.unsigned_abs());
     if offset_ns < 0 {
         InputParams::advanced(d)
     } else {

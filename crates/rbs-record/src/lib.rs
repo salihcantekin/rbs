@@ -29,5 +29,6 @@ pub use recording::{
 };
 pub use select::{Chosen, scheme_of};
 pub use studio::{
-    Link, MAX_LAYERS, MAX_OUTPUTS, OutputId, OutputSettings, Studio, StudioSettings, Updated,
+    END_TAIL_LIMIT, Link, MAX_LAYERS, MAX_OUTPUTS, OutputId, OutputSettings, Studio,
+    StudioSettings, Updated,
 };

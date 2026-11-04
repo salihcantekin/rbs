@@ -15,6 +15,7 @@
 mod config;
 #[cfg(any(target_os = "macos", windows))]
 mod preview;
+mod preview_edit;
 mod studio_ui;
 mod view;
 
@@ -433,6 +434,20 @@ impl Ctx {
                 });
                 slint::CloseRequestResponse::HideWindow
             });
+            // Escape: hidden and dropped as by the close button. The strong handle
+            // keeps the window alive until the callback returns.
+            let weak = w.as_weak();
+            let c = ctx.clone();
+            w.on_close(move || {
+                let Some(w) = weak.upgrade() else {
+                    return;
+                };
+                let _ = w.hide();
+                c.update(|app| {
+                    app.settings = None;
+                    app.studio.settings_closed();
+                });
+            });
             w.set_section(section);
             let _ = w.show();
             app.settings = Some(w);
@@ -493,7 +508,7 @@ impl Ctx {
         }
     }
 
-    fn sync_studio(&self, app: &App) {
+    fn sync_studio(&self, app: &mut App) {
         let t = app.main.global::<Tokens>();
         let bar = t.get_size_control_md() + 2.0 * t.get_space_1();
         let border = t.get_size_border();
@@ -515,6 +530,9 @@ impl Ctx {
             "rbs.preview"
         };
         let picture_main = in_main(panel);
+        if let Some([_, _, w, h]) = picture_main {
+            app.studio.set_picture_size(w, h);
+        }
         let mixer_shown = in_main("rbs.mixer").is_some() || float_has("rbs.mixer");
         use studio_ui::preview_state as ps;
         let s = &app.studio;
@@ -565,6 +583,7 @@ impl Ctx {
         {
             preview::set_area(picture_main);
             preview::place(&app.main);
+            preview::set_marks(&app.main, app.studio.marks());
         }
     }
 
@@ -641,7 +660,7 @@ impl Ctx {
         } else {
             self.toast_timer.stop();
         }
-        self.sync_studio(&app);
+        self.sync_studio(&mut app);
         if app.save_due {
             let ctx = self.clone();
             self.save_timer
@@ -948,6 +967,29 @@ fn install_studio(g: &Studio<'_>, ctx: &Ctx) {
     });
     on!(on_select_source, |app, id: i32| {
         app.studio.selected = id;
+        app.studio.refresh_marks();
+    });
+    on!(on_preview_press, |app,
+                           x: f32,
+                           y: f32,
+                           w: f32,
+                           h: f32,
+                           shift: bool,
+                           no_snap: bool| {
+        app.studio.preview_press([x, y], [w, h], shift, no_snap);
+    });
+    on!(on_preview_drag, |app, x: f32, y: f32| {
+        app.studio.preview_drag([x, y]);
+    });
+    on!(on_preview_release, |app| {
+        app.studio.preview_release();
+    });
+    on!(on_preview_nudge, |app, dx: i32, dy: i32| {
+        app.studio.preview_nudge(dx as f32, dy as f32);
+    });
+    on!(on_preview_deselect, |app| {
+        app.studio.selected = -1;
+        app.studio.refresh_marks();
     });
     on!(on_move_source, |app, id: i32, up: bool| {
         app.studio.move_source(id, up);
@@ -1000,6 +1042,9 @@ fn install_studio(g: &Studio<'_>, ctx: &Ctx) {
     });
     on!(on_set_server, |app, text: slint::SharedString| {
         app.studio.set_server(&text);
+    });
+    on!(on_server_edited, |app, text: slint::SharedString| {
+        app.studio.server_edited(&text);
     });
     on!(on_save_key, |app, text: slint::SharedString| {
         app.studio.save_key(&text);

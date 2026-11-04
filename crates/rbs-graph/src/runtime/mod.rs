@@ -104,8 +104,11 @@ pub struct Tick {
     /// feeding it have drained, so no new input is produced upstream, and its nodes
     /// leave the schedule after the final ticks. A cadence partition runs exactly one;
     /// a doorbell partition may run several while queued input still arrives, so a node
-    /// there must not treat the first one as the end of its input. Part of `Tick`
-    /// equality.
+    /// there must not treat the first one as the end of its input. Behind an audio
+    /// queue reader the last final tick passes no block (the reader rings once more
+    /// after its last one, ADR-0045), so there a final tick without an input block is
+    /// the end of the input; packet and video readers give no such guarantee. Part of
+    /// `Tick` equality.
     pub draining: bool,
 }
 

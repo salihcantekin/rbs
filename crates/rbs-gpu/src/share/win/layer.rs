@@ -16,7 +16,7 @@ use std::num::NonZeroIsize;
 use std::time::Duration;
 
 use rbs_core::time::Timestamp;
-use windows::Win32::Foundation::{HANDLE, HMODULE, HWND, LUID, RECT, WAIT_OBJECT_0};
+use windows::Win32::Foundation::{HANDLE, HMODULE, HWND, LUID, POINT, RECT, WAIT_OBJECT_0};
 use windows::Win32::Graphics::CompositionSwapchain::{
     CreatePresentationFactory, IPresentationBuffer, IPresentationFactory, IPresentationManager,
     IPresentationSurface,
@@ -24,14 +24,16 @@ use windows::Win32::Graphics::CompositionSwapchain::{
 use windows::Win32::Graphics::Direct3D::D3D_DRIVER_TYPE_UNKNOWN;
 use windows::Win32::Graphics::Direct3D11::{
     D3D11_CREATE_DEVICE_BGRA_SUPPORT, D3D11_SDK_VERSION, D3D11CreateDevice, ID3D11Device,
-    ID3D11Device1, ID3D11Texture2D,
+    ID3D11Device1, ID3D11DeviceContext1, ID3D11RenderTargetView, ID3D11Texture2D,
 };
 use windows::Win32::Graphics::DirectComposition::{
-    DCompositionCreateDevice, DCompositionCreateSurfaceHandle, IDCompositionDevice,
+    DCOMPOSITION_BITMAP_INTERPOLATION_MODE_NEAREST_NEIGHBOR, DCompositionCreateDevice,
+    DCompositionCreateSurfaceHandle, IDCompositionDevice, IDCompositionSurface,
     IDCompositionTarget, IDCompositionVisual,
 };
 use windows::Win32::Graphics::Dxgi::Common::{
-    DXGI_ALPHA_MODE_IGNORE, DXGI_COLOR_SPACE_RGB_FULL_G22_NONE_P709,
+    DXGI_ALPHA_MODE_IGNORE, DXGI_ALPHA_MODE_PREMULTIPLIED, DXGI_COLOR_SPACE_RGB_FULL_G22_NONE_P709,
+    DXGI_FORMAT_B8G8R8A8_UNORM,
 };
 use windows::Win32::Graphics::Dxgi::{
     CreateDXGIFactory2, DXGI_CREATE_FACTORY_FLAGS, IDXGIAdapter, IDXGIDevice, IDXGIFactory4,
@@ -41,6 +43,7 @@ use windows::Win32::UI::WindowsAndMessaging::{GetSystemMetrics, SM_REMOTESESSION
 use windows::core::Interface;
 use windows_numerics::Matrix3x2;
 
+use super::super::geometry::{MAX_MARKS, Mark, snap};
 use super::pipe::Owned;
 use super::subscriber::{PreviewFrame, PreviewSubscriber};
 use crate::error::GpuError;
@@ -82,8 +85,16 @@ pub struct PreviewLayer {
     buffers: Vec<IPresentationBuffer>,
     _surface_handle: Owned,
     dcomp: IDCompositionDevice,
+    /// The target's root: the picture, and above it the marks (ADR-0048).
+    root: IDCompositionVisual,
     visual: IDCompositionVisual,
     target: Option<IDCompositionTarget>,
+    /// Parent of the mark visuals, above the picture; made at the first `set_marks`.
+    overlay: Option<IDCompositionVisual>,
+    /// The mark visuals, reused; at most [`MAX_MARKS`].
+    mark_visuals: Vec<IDCompositionVisual>,
+    /// One 1 x 1 surface per colour the marks use, stretched by each visual.
+    mark_colors: Vec<([u8; 4], IDCompositionSurface)>,
     width: u32,
     height: u32,
     shown: Option<PreviewFrame>,
@@ -193,9 +204,10 @@ impl PreviewLayer {
                 .map_err(fail("AddBufferFromResource failed"))?;
             (manager, buffers)
         };
-        // SAFETY: creates a composition surface handle we own (closed on drop) and a
-        // presentation surface and composition objects bound to it.
-        let (surface_handle, surface, dcomp, visual) = unsafe {
+        // SAFETY: creates a composition surface handle we own (closed on drop), a
+        // presentation surface and composition objects bound to it, and a root visual of
+        // our own device holding the picture visual.
+        let (surface_handle, surface, dcomp, root, visual) = unsafe {
             let handle = Owned(
                 DCompositionCreateSurfaceHandle(COMPOSITIONOBJECT_ALL_ACCESS, None)
                     .map_err(fail("DCompositionCreateSurfaceHandle failed"))?,
@@ -227,13 +239,16 @@ impl PreviewLayer {
             let dcomp: IDCompositionDevice =
                 DCompositionCreateDevice(&dxgi).map_err(fail("DCompositionCreateDevice failed"))?;
             let visual = dcomp.CreateVisual().map_err(fail("CreateVisual failed"))?;
+            let root = dcomp.CreateVisual().map_err(fail("CreateVisual failed"))?;
+            root.AddVisual(&visual, true, None::<&IDCompositionVisual>)
+                .map_err(fail("AddVisual failed"))?;
             let content = dcomp
                 .CreateSurfaceFromHandle(handle.raw())
                 .map_err(fail("CreateSurfaceFromHandle failed"))?;
             visual
                 .SetContent(&content)
                 .map_err(fail("SetContent failed"))?;
-            (handle, surface, dcomp, visual)
+            (handle, surface, dcomp, root, visual)
         };
         // SAFETY: a query of our own manager; the event stays owned by it.
         let lost_event = unsafe { manager.GetLostEvent() }.map_err(fail("GetLostEvent failed"))?;
@@ -250,8 +265,12 @@ impl PreviewLayer {
             buffers,
             _surface_handle: surface_handle,
             dcomp,
+            root,
             visual,
             target: None,
+            overlay: None,
+            mark_visuals: Vec::new(),
+            mark_colors: Vec::new(),
             width,
             height,
             shown: None,
@@ -308,6 +327,7 @@ impl PreviewLayer {
     /// `show` after a new attach replaces it, or the layer drops. Call it when the preview
     /// panel closes while the window stays open.
     pub fn detach(&mut self, now: Timestamp) {
+        self.set_marks(&[]);
         self.leave_window();
         self.placed = None;
         self.awaiting_frame = false;
@@ -362,6 +382,160 @@ impl PreviewLayer {
             let _ = self.visual.SetTransform2(&m);
         }
         self.commit();
+    }
+
+    /// Draws `marks` over the picture (a selection's outline and handles, ADR-0048), in
+    /// the same coordinates as [`PreviewLayer::set_rect`] (physical pixels of the client
+    /// area); they replace the ones drawn before, and an empty slice removes them. At
+    /// most [`MAX_MARKS`] are drawn; marks that are not finite or have a negative size
+    /// are skipped. Visuals and colour surfaces are made on first use and then reused.
+    /// A failure to make one leaves the marks out; the picture is not affected.
+    pub fn set_marks(&mut self, marks: &[Mark]) {
+        if marks.is_empty() && self.overlay.is_none() {
+            return;
+        }
+        if self.overlay.is_none() {
+            // SAFETY: a new visual of our own device, added to our own root above the
+            // picture.
+            let made = unsafe {
+                self.dcomp
+                    .CreateVisual()
+                    .and_then(|o| self.root.AddVisual(&o, true, &self.visual).map(|()| o))
+            };
+            match made {
+                Ok(o) => self.overlay = Some(o),
+                Err(_) => return,
+            }
+        }
+        let mut shown = 0;
+        for m in marks.iter().filter(|m| m.drawable()).take(MAX_MARKS) {
+            let Some(content) = self.color_surface(m.rgba) else {
+                continue;
+            };
+            if shown == self.mark_visuals.len() && !self.add_mark_visual() {
+                break;
+            }
+            let Some(v) = self.mark_visuals.get(shown) else {
+                break;
+            };
+            // Edges on whole physical pixels; a 1 x 1 surface scaled to the rectangle.
+            let x0 = snap(m.x, 1.0);
+            let y0 = snap(m.y, 1.0);
+            // At least one pixel, so a thin line never rounds away.
+            let w = (snap(m.x + m.width, 1.0) - x0).max(1.0);
+            let h = (snap(m.y + m.height, 1.0) - y0).max(1.0);
+            let t = Matrix3x2 {
+                M11: w as f32,
+                M12: 0.0,
+                M21: 0.0,
+                M22: h as f32,
+                M31: x0 as f32,
+                M32: y0 as f32,
+            };
+            // SAFETY: property changes of our own visual with our own surface; `t`
+            // outlives the call.
+            unsafe {
+                let _ = v.SetContent(&content);
+                let _ = v.SetTransform2(&t);
+            }
+            shown += 1;
+        }
+        // The rest show nothing: no content.
+        for v in self.mark_visuals.iter().skip(shown) {
+            // SAFETY: clears the content of our own visual.
+            let _ = unsafe { v.SetContent(None::<&windows::core::IUnknown>) };
+        }
+        self.commit();
+    }
+
+    /// One more mark visual under the overlay; false if it could not be made.
+    fn add_mark_visual(&mut self) -> bool {
+        let Some(overlay) = &self.overlay else {
+            return false;
+        };
+        // SAFETY: a new visual of our own device, added to our own overlay on top.
+        let made = unsafe {
+            self.dcomp.CreateVisual().and_then(|v| {
+                let _ = v.SetBitmapInterpolationMode(
+                    DCOMPOSITION_BITMAP_INTERPOLATION_MODE_NEAREST_NEIGHBOR,
+                );
+                overlay
+                    .AddVisual(&v, false, None::<&IDCompositionVisual>)
+                    .map(|()| v)
+            })
+        };
+        match made {
+            Ok(v) => {
+                self.mark_visuals.push(v);
+                true
+            }
+            Err(_) => false,
+        }
+    }
+
+    /// The 1 x 1 surface filled with `rgba` (sRGB, straight alpha), made on first use.
+    fn color_surface(&mut self, rgba: [u8; 4]) -> Option<IDCompositionSurface> {
+        if let Some((_, s)) = self.mark_colors.iter().find(|(c, _)| *c == rgba) {
+            return Some(s.clone());
+        }
+        let a = f32::from(rgba[3]) / 255.0;
+        // Premultiplied, values as stored (the surface is sRGB-encoded 8-bit).
+        let color = [
+            f32::from(rgba[0]) / 255.0 * a,
+            f32::from(rgba[1]) / 255.0 * a,
+            f32::from(rgba[2]) / 255.0 * a,
+            a,
+        ];
+        // SAFETY: a surface of our own device, drawn once: `BeginDraw` gives a texture
+        // and the offset of our 1 x 1 area in it (it may be part of a larger atlas), so
+        // only that pixel is cleared; `EndDraw` hands it back. Every out pointer is valid
+        // for its call.
+        let surface = unsafe {
+            let surface = self
+                .dcomp
+                .CreateSurface(
+                    1,
+                    1,
+                    DXGI_FORMAT_B8G8R8A8_UNORM,
+                    DXGI_ALPHA_MODE_PREMULTIPLIED,
+                )
+                .ok()?;
+            let mut offset = POINT::default();
+            let texture: ID3D11Texture2D = surface.BeginDraw(None, &mut offset).ok()?;
+            let mut rtv: Option<ID3D11RenderTargetView> = None;
+            let drawn = self
+                ._d3d
+                .CreateRenderTargetView(&texture, None, Some(&mut rtv))
+                .ok()
+                .and(rtv)
+                .zip(
+                    self._d3d
+                        .GetImmediateContext()
+                        .ok()
+                        .and_then(|c| c.cast::<ID3D11DeviceContext1>().ok()),
+                )
+                .map(|(rtv, ctx)| {
+                    let at = RECT {
+                        left: offset.x,
+                        top: offset.y,
+                        right: offset.x + 1,
+                        bottom: offset.y + 1,
+                    };
+                    ctx.ClearView(&rtv, &color, Some(&[at]));
+                })
+                .is_some();
+            let ended = surface.EndDraw().is_ok();
+            if !(drawn && ended) {
+                return None;
+            }
+            surface
+        };
+        // Bounded: a selection uses two colours; a theme change adds two more.
+        if self.mark_colors.len() >= 8 {
+            self.mark_colors.remove(0);
+        }
+        self.mark_colors.push((rgba, surface.clone()));
+        Some(surface)
     }
 
     /// Hides or shows the layer (for content the toolkit draws over the preview).
@@ -478,7 +652,7 @@ impl PreviewLayer {
                 if self.hidden.get() {
                     target.SetRoot(None::<&IDCompositionVisual>)
                 } else {
-                    target.SetRoot(&self.visual)
+                    target.SetRoot(&self.root)
                 }
             };
         }

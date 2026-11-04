@@ -39,6 +39,25 @@ struct FakeAac {
     frames_in: u64,
     frames_out: u64,
     blocks: Arc<Mutex<Vec<(Timestamp, usize)>>>,
+    /// `frames_in` at each flush.
+    flushed: Arc<Mutex<Vec<u64>>>,
+}
+
+impl FakeAac {
+    fn packet(&mut self) -> EncodedPacket {
+        let pts = self.origin.unwrap_or(Timestamp::ZERO)
+            + Duration::from_nanos(self.frames_out * 1_000_000_000 / 48_000);
+        self.frames_out += 1024;
+        EncodedPacket::new(
+            CodecId::Aac,
+            BitstreamFormat::Raw,
+            pts,
+            pts,
+            true,
+            Bytes::from_static(b"aac"),
+        )
+        .unwrap()
+    }
 }
 
 impl AudioEncoder for FakeAac {
@@ -59,28 +78,22 @@ impl AudioEncoder for FakeAac {
         Ok(())
     }
     fn drain(&mut self, out: &mut Vec<EncodedPacket>) -> Result<(), EncodeError> {
-        while self.frames_in - self.frames_out >= 1024 && out.len() < out.capacity() {
-            let pts = self.origin.unwrap_or(Timestamp::ZERO)
-                + Duration::from_nanos(self.frames_out * 1_000_000_000 / 48_000);
-            self.frames_out += 1024;
-            out.push(
-                EncodedPacket::new(
-                    CodecId::Aac,
-                    BitstreamFormat::Raw,
-                    pts,
-                    pts,
-                    true,
-                    Bytes::from_static(b"aac"),
-                )
-                .unwrap(),
-            );
+        while self.frames_in.saturating_sub(self.frames_out) >= 1024 && out.len() < out.capacity() {
+            let packet = self.packet();
+            out.push(packet);
         }
         Ok(())
     }
     fn reconfigure(&mut self, _: &EncoderChange) -> Result<(), EncodeError> {
         Err(EncodeError::Unsupported)
     }
-    fn flush(&mut self, _: &mut Vec<EncodedPacket>) -> Result<(), EncodeError> {
+    /// Every frame still held, the last one padded with silence.
+    fn flush(&mut self, out: &mut Vec<EncodedPacket>) -> Result<(), EncodeError> {
+        self.flushed.lock().unwrap().push(self.frames_in);
+        while self.frames_out < self.frames_in {
+            let packet = self.packet();
+            out.push(packet);
+        }
         Ok(())
     }
 }
@@ -125,7 +138,9 @@ struct Rig {
     audio: (Controller<()>, Executor<()>),
     encoder: (Controller<()>, Executor<()>),
     blocks: Arc<Mutex<Vec<(Timestamp, usize)>>>,
+    flushed: Arc<Mutex<Vec<u64>>>,
     packets: Arc<AtomicU64>,
+    bell: Arc<rbs_graph::runtime::queue::Doorbell>,
     meters: [Arc<LevelMeter>; 3],
     inputs: [Arc<rbs_audio::InputStats>; 2],
     queue: Arc<rbs_graph::runtime::queue::QueueStats>,
@@ -164,6 +179,7 @@ impl Rig {
         let (mixer, _mixer_params, _) = MixerNode::new(config, 8, params);
         let mix_id = active(&mut g, Node::<()>::descriptor(&mixer), AUDIO);
         let blocks = Arc::new(Mutex::new(Vec::with_capacity(10_000)));
+        let flushed = Arc::new(Mutex::new(Vec::new()));
         let enc = EncoderNode::new(
             Box::new(FakeAac {
                 stream: StreamDescriptor::new(
@@ -176,6 +192,7 @@ impl Rig {
                 frames_in: 0,
                 frames_out: 0,
                 blocks: Arc::clone(&blocks),
+                flushed: Arc::clone(&flushed),
             }),
             64,
         );
@@ -199,6 +216,7 @@ impl Rig {
 
         let mut lowering = Lowering::new();
         lowering.set_audio_queue(50, config.block_frames);
+        let bell = lowering.doorbell(ENCODER);
         let mut lowered = lowering.lower(&g);
         assert!(lowered.problems.is_empty());
         let mut audio = channel::<()>(Arc::new(()), ());
@@ -234,7 +252,9 @@ impl Rig {
             audio,
             encoder,
             blocks,
+            flushed,
             packets,
+            bell,
             meters,
             inputs: [mic_stats, lb_stats],
             queue,
@@ -321,4 +341,56 @@ fn the_audio_partition_does_not_allocate_per_block() {
         counts.count_total, 0,
         "queue reader or encoder node allocated"
     );
+}
+
+#[test]
+fn the_encoder_flushes_once_its_queued_input_ended_on_final_ticks() {
+    let mut r = Rig::new();
+    r.run(50);
+    // Five blocks the encoder has not seen yet wait in the queue when it drains.
+    let cadence = r.config.cadence(Timestamp::ZERO);
+    for _ in 0..5 {
+        let t = cadence.time_of(r.tick);
+        r.clock.advance(t.saturating_since(r.clock.now()));
+        r.audio.1.run_tick(Tick::of(&cadence, r.tick));
+        r.tick += 1;
+    }
+    while r.bell.wait(Duration::ZERO) {}
+    // Final ticks as a draining doorbell worker runs them: one, then one per ring.
+    let mut k = 0;
+    loop {
+        assert!(
+            r.flushed.lock().unwrap().is_empty(),
+            "flushed while blocks were queued (final tick {k})"
+        );
+        r.encoder
+            .1
+            .run_tick(Tick::new(10_000 + k, Timestamp::ZERO).draining());
+        k += 1;
+        if !r.bell.wait(Duration::ZERO) {
+            break;
+        }
+        assert!(k < 64, "final ticks never end");
+    }
+    assert_eq!(k, 6, "five blocks, then the tick that ends the input");
+    let frames_in = r
+        .blocks
+        .lock()
+        .unwrap()
+        .iter()
+        .map(|b| b.1 as u64)
+        .sum::<u64>();
+    assert_eq!(
+        *r.flushed.lock().unwrap(),
+        [frames_in],
+        "one flush, after every block"
+    );
+    // Every sample reached a packet, the last frame padded.
+    let packets = r.packets.load(Ordering::Relaxed);
+    assert_eq!(packets, frames_in.div_ceil(1024));
+    // Later final ticks change nothing.
+    r.encoder
+        .1
+        .run_tick(Tick::new(20_000, Timestamp::ZERO).draining());
+    assert_eq!(r.flushed.lock().unwrap().len(), 1);
 }

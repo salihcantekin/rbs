@@ -383,6 +383,40 @@ fn audio_crosses_partitions_once_and_in_order() {
     let _ = &rig.lowering;
 }
 
+/// Runs final ticks as a draining doorbell worker does: one, then one more for each
+/// ring. Returns how many ran.
+fn final_ticks(rig: &mut Split, from: u64) -> u64 {
+    let mut k = 0;
+    loop {
+        rig.encoder
+            .1
+            .run_tick(Tick::new(from + k, Timestamp::ZERO).draining());
+        k += 1;
+        if !rig.bell.wait(std::time::Duration::ZERO) {
+            return k;
+        }
+        assert!(k < 64, "final ticks never end");
+    }
+}
+
+#[test]
+fn final_ticks_pass_every_queued_block_and_end_with_one_that_passes_none() {
+    let mut rig = split(8);
+    let c = cadence();
+    for i in 0..3 {
+        rig.audio.1.run_tick(Tick::of(&c, i));
+    }
+    while rig.bell.wait(std::time::Duration::ZERO) {}
+    // Three final ticks pass the three blocks; the reader rings after the last one too,
+    // so a fourth runs and passes nothing: the consumer sees its input end (ADR-0045).
+    assert_eq!(final_ticks(&mut rig, 0), 4);
+    assert_eq!(rig.seen.lock().unwrap().len(), 3);
+    assert_eq!(rig.stats.received(), 3);
+    // An empty queue: one final tick, which passes nothing and rings nothing.
+    assert_eq!(final_ticks(&mut rig, 4), 1);
+    assert_eq!(rig.seen.lock().unwrap().len(), 3);
+}
+
 #[test]
 fn a_full_audio_queue_loses_blocks_and_counts_them() {
     let mut rig = split(3);

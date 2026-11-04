@@ -34,6 +34,8 @@ use rbs_core::capability::Requirement;
 use rbs_core::registry::{AdapterFactory, AdapterId, Registry};
 use rbs_engine::Engine;
 use rbs_gpu::{GpuContext, GpuRequest};
+use rbs_graph::description::NodeId;
+use rbs_graph::runtime::{FaultCause, RuntimeEvent};
 use rbs_record::{AudioSettings, Progress, RecordAdapters, RecordSettings, Recording};
 use rbs_transport::{ReconnectPolicy, Secret, TransportInput};
 
@@ -363,7 +365,9 @@ fn record(a: &RecordArgs) -> Result<(), String> {
     while !stop.load(Ordering::Relaxed) && a.duration.is_none_or(|d| start.elapsed() < d) {
         let serviced = recording.service();
         for (_, event) in &serviced.events {
-            println!("engine: {event:?}");
+            if let Some(text) = describe_event(event, &recording.started().sources) {
+                println!("{text}");
+            }
         }
         for e in &serviced.errors {
             println!("engine error: {e}");
@@ -395,6 +399,16 @@ fn record(a: &RecordArgs) -> Result<(), String> {
     }
     let elapsed = start.elapsed();
     println!("stopping...");
+    if failure.is_none() {
+        // Ends the video now and lets the frames still read back reach the encoder
+        // (ADR-0045); the recording gives up on them after `END_TAIL_LIMIT` itself.
+        recording.end();
+        let ending = Instant::now();
+        while !recording.tail_done() && ending.elapsed() < Duration::from_secs(1) {
+            recording.service();
+            std::thread::sleep(Duration::from_millis(5));
+        }
+    }
     let report = recording.finish();
     let p = &report.progress;
     println!(
@@ -428,6 +442,10 @@ fn record(a: &RecordArgs) -> Result<(), String> {
         p.late_render_ticks,
         p.late_audio_ticks
     );
+    println!(
+        "audio tail: {} encoder flushes, {} lost at the end; {} packets dropped before the first video packet",
+        p.audio_flushes, p.audio_tail_lost, p.start_drops
+    );
     if a.stream.is_some() {
         println!(
             "stream: connected {} times, {} reconnect attempts, {} items dropped by the transport",
@@ -456,6 +474,47 @@ fn record(a: &RecordArgs) -> Result<(), String> {
         )),
         None if !report.shutdown_errors.is_empty() => Err("the engine did not stop cleanly".into()),
         None => Ok(()),
+    }
+}
+
+/// A node failure or restart the engine reported, in words; `None` for what is not
+/// worth a line (a failure record dropped with its node). Sources go by name; other
+/// nodes (encoders, the output) by their part, since the recording's own failure
+/// report names the cause when it ends the recording.
+fn describe_event(event: &RuntimeEvent, sources: &[rbs_record::SourceState]) -> Option<String> {
+    let name = |node: NodeId| {
+        sources.iter().find(|s| s.node == node).map_or_else(
+            || format!("an engine node ({node})"),
+            |s| format!("source {}", s.name),
+        )
+    };
+    match event {
+        RuntimeEvent::Failed {
+            node,
+            attempt,
+            cause,
+            retry_at,
+        } => {
+            let cause = match cause {
+                FaultCause::Join(e) => e.to_string(),
+                FaultCause::Bypassed(h) => h.last_error.unwrap_or("stopped").to_owned(),
+                _ => "failed".to_owned(),
+            };
+            let next = if retry_at.is_some() {
+                "restarting it shortly"
+            } else {
+                "not restarted"
+            };
+            let times = if *attempt > 1 {
+                format!(" ({attempt} times in a row)")
+            } else {
+                String::new()
+            };
+            Some(format!("{} failed{times}: {cause}; {next}", name(*node)))
+        }
+        RuntimeEvent::Restarted { node, .. } => Some(format!("{} restarted", name(*node))),
+        RuntimeEvent::Recovered { node } => Some(format!("{} runs normally again", name(*node))),
+        _ => None,
     }
 }
 
@@ -555,8 +614,59 @@ impl Link {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used)] // Tests fail by panicking.
 mod tests {
     use super::*;
+
+    fn node_id() -> NodeId {
+        use rbs_graph::description::GraphDescription;
+        use rbs_graph::node::{LinkKind, NodeDescriptor, NodeKind, NodeTypeId, Pin};
+        GraphDescription::new()
+            .add_node(Arc::new(NodeDescriptor::new(
+                NodeTypeId::new_static("test.node"),
+                NodeKind::Source,
+                Vec::new(),
+                vec![Pin::named("video", LinkKind::Video, true)],
+            )))
+            .unwrap()
+    }
+
+    #[test]
+    fn engine_events_are_described_in_words() {
+        use rbs_graph::runtime::{JoinError, NodeError, NodeHealth};
+        let node = node_id();
+        let failed = RuntimeEvent::Failed {
+            node,
+            attempt: 1,
+            cause: FaultCause::Join(JoinError::Prepare(NodeError::Permanent(
+                "transport disconnected",
+            ))),
+            retry_at: None,
+        };
+        let text = describe_event(&failed, &[]).unwrap();
+        assert_eq!(
+            text,
+            format!(
+                "an engine node ({node}) failed: prepare failed: permanent failure: transport disconnected; not restarted"
+            )
+        );
+        assert!(!text.contains('{'), "no debug output: {text}");
+        let mut health = NodeHealth::default();
+        health.last_error = Some("device lost");
+        let bypassed = RuntimeEvent::Failed {
+            node,
+            attempt: 3,
+            cause: FaultCause::Bypassed(health),
+            retry_at: Some(rbs_core::time::Timestamp::from_nanos(1)),
+        };
+        assert_eq!(
+            describe_event(&bypassed, &[]).unwrap(),
+            format!(
+                "an engine node ({node}) failed (3 times in a row): device lost; restarting it shortly"
+            )
+        );
+        assert_eq!(describe_event(&RuntimeEvent::Cleared { node }, &[]), None);
+    }
 
     #[test]
     fn connection_changes_are_printed_once_each() {

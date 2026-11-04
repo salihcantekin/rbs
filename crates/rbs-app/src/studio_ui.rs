@@ -27,10 +27,13 @@ use rbs_remote_settings::{self as remote_profile, Access, RemoteProfile};
 use rbs_scene::model::SourceId;
 use rbs_transport::Secret;
 use rbs_ui::meter::{self, Meter, SCALE_MARKS_DB};
+use rbs_ui::transform::{DragKeys, MAX_MARKS, Mark, MarkKind, SourceBox};
 use slint::{Model, ModelRc, SharedString, VecModel};
 
+use crate::preview_edit::{Effect, Placed, PreviewEdit};
 use crate::ui::{
-    EncoderData, KindData, MeterRow, ScaleMark, SourceData, StackData, Studio, TargetData, TokenRow,
+    EncoderData, KindData, MarkData, MeterRow, ScaleMark, SourceData, StackData, Studio,
+    TargetData, TokenRow,
 };
 
 /// Meter refresh while the Mixer is visible (U16: 30 Hz).
@@ -103,6 +106,11 @@ pub struct StudioUi {
     pub selected: i32,
     /// An Add source is on its way: the next new source is selected.
     adding: bool,
+    /// Moving and resizing on the picture panel (ADR-0048).
+    edit: PreviewEdit,
+    /// The selection as marks, panel coordinates; and as the toolkit draws them.
+    mark_buf: Vec<Mark>,
+    marks: Rc<VecModel<MarkData>>,
     kind_list: Vec<SourceKind>,
     kinds: Rc<VecModel<KindData>>,
     target_list: Vec<Target>,
@@ -177,6 +185,8 @@ pub struct StudioUi {
     stream_note: String,
     /// The server field shows the saved server; bumped when Rust sets it.
     server_serial: u64,
+    /// The server field's text while it is changed and not confirmed yet.
+    server_draft: Option<String>,
     /// Bumped when a key was saved or removed: the key field is emptied.
     key_serial: u64,
     /// The key field's hint: where keys are kept.
@@ -190,6 +200,8 @@ pub struct StudioUi {
     /// The last stream's outcome, or why one did not start; `st_bad` marks a problem.
     st_note: String,
     st_bad: bool,
+    /// `st_note` asks for a missing setting (server, key): hidden once it is set.
+    st_setup_note: bool,
 }
 
 /// What the Remote control section shows while other computers can connect.
@@ -230,6 +242,9 @@ impl StudioUi {
             sources: Rc::new(VecModel::default()),
             selected: -1,
             adding: false,
+            edit: PreviewEdit::default(),
+            mark_buf: Vec::with_capacity(MAX_MARKS),
+            marks: Rc::new(VecModel::default()),
             kind_list: Vec::new(),
             kinds: Rc::new(VecModel::default()),
             target_list: Vec::new(),
@@ -282,6 +297,7 @@ impl StudioUi {
                 .map(|w| format!("The saved stream settings were not used: {w}"))
                 .unwrap_or_default(),
             server_serial: 1,
+            server_draft: None,
             key_serial: 0,
             key_hint: stream_key::hint(keys),
             st_state: st_state::OFF,
@@ -289,6 +305,7 @@ impl StudioUi {
             st_link: Link::default(),
             st_note: String::new(),
             st_bad: false,
+            st_setup_note: false,
         };
         ui.refresh_tokens();
         ui
@@ -297,6 +314,7 @@ impl StudioUi {
     /// Gives a window's `Studio` global the shared models (once per window).
     pub fn attach_models(&self, g: &Studio<'_>) {
         g.set_sources(ModelRc::from(self.sources.clone()));
+        g.set_marks(ModelRc::from(self.marks.clone()));
         g.set_kinds(ModelRc::from(self.kinds.clone()));
         g.set_targets(ModelRc::from(self.targets.clone()));
         g.set_meters(ModelRc::from(self.meters.clone()));
@@ -938,6 +956,7 @@ impl StudioUi {
     /// The Settings window closed: a token shown once is not shown again, and the
     /// revoke can no longer be undone there.
     pub fn settings_closed(&mut self) {
+        self.commit_server();
         self.new_token = None;
         self.revoked = None;
     }
@@ -1020,13 +1039,124 @@ impl StudioUi {
         });
     }
 
-    /// A video source's box on the canvas, in canvas pixels.
+    /// A video source's box on the canvas, in canvas pixels (the Properties fields;
+    /// the picture panel's drags go through [`PreviewEdit`], numbered).
     pub fn set_source_box(&mut self, id: i32, x: f32, y: f32, w: f32, h: f32) {
+        self.send_box(0, id, SourceBox::new([x, y], [w, h]));
+    }
+
+    fn send_box(&mut self, seq: u64, id: i32, b: SourceBox) {
+        if self.host.is_none() {
+            // Nothing will answer: forget what the picture panel has on its way.
+            self.edit.reset();
+            return;
+        }
+        let (position, size) = (b.position, b.size);
         self.send(Command::SetSourceBox {
+            seq,
             id: SourceId::from_raw(id as u32),
-            position: [x, y],
-            size: [w, h],
+            position,
+            size,
         });
+    }
+
+    /// The video sources as the picture panel places them, bottom first.
+    fn placed(&self) -> Vec<Placed> {
+        let mut v: Vec<Placed> = self
+            .sources
+            .iter()
+            .filter(|d| d.picture)
+            .map(|d| Placed {
+                id: d.id,
+                at: SourceBox::new([d.x, d.y], [d.w, d.h]),
+            })
+            .collect();
+        v.reverse();
+        v
+    }
+
+    fn canvas_px(&self) -> [f32; 2] {
+        [self.canvas.width as f32, self.canvas.height as f32]
+    }
+
+    fn run(&mut self, effect: Effect) {
+        match effect {
+            Effect::None => {}
+            Effect::Select(id) => self.selected = id,
+            Effect::Send(seq, id, b) => self.send_box(seq, id, b),
+        }
+        self.refresh_marks();
+    }
+
+    /// A press on the picture panel (panel coordinates, its size `size`).
+    pub fn preview_press(&mut self, at: [f32; 2], size: [f32; 2], shift: bool, no_snap: bool) {
+        self.edit.set_panel(size[0], size[1]);
+        let keys = DragKeys {
+            free: shift,
+            no_snap,
+        };
+        let placed = self.placed();
+        let e = self
+            .edit
+            .press(at, self.canvas_px(), &placed, self.selected, keys);
+        self.run(e);
+    }
+
+    pub fn preview_drag(&mut self, at: [f32; 2]) {
+        let e = self.edit.drag_to(at, self.canvas_px());
+        self.run(e);
+    }
+
+    pub fn preview_release(&mut self) {
+        self.edit.release();
+    }
+
+    pub fn preview_nudge(&mut self, dx: f32, dy: f32) {
+        let placed = self.placed();
+        let e = self.edit.nudge(&placed, self.selected, dx, dy);
+        self.run(e);
+    }
+
+    /// The picture panel's size in the main window, from the layout.
+    pub fn set_picture_size(&mut self, w: f32, h: f32) {
+        self.edit.set_panel(w, h);
+        self.refresh_marks();
+    }
+
+    /// The selection as marks in the picture panel's coordinates.
+    #[cfg_attr(
+        not(any(target_os = "macos", windows)),
+        allow(
+            dead_code,
+            reason = "no preview layer here; the toolkit draws the marks"
+        )
+    )]
+    pub fn marks(&self) -> &[Mark] {
+        &self.mark_buf
+    }
+
+    /// Works out the selection's marks again (selection, rows, drag or panel changed).
+    pub fn refresh_marks(&mut self) {
+        let placed = self.placed();
+        let mut buf = std::mem::take(&mut self.mark_buf);
+        self.edit
+            .marks(self.canvas_px(), &placed, self.selected, &mut buf);
+        let data: Vec<MarkData> = buf
+            .iter()
+            .map(|m| MarkData {
+                x: m.rect.x,
+                y: m.rect.y,
+                w: m.rect.w,
+                h: m.rect.h,
+                kind: match m.kind {
+                    MarkKind::Outline => 0,
+                    MarkKind::HandleBorder => 1,
+                    MarkKind::HandleFill => 2,
+                },
+            })
+            .collect();
+        self.mark_buf = buf;
+        set_rows(&self.marks, data);
     }
 
     pub fn undo_delete(&mut self) {
@@ -1283,6 +1413,7 @@ impl StudioUi {
         if self.st_state != st_state::OFF {
             return;
         }
+        self.commit_server();
         let fail = |ui: &mut Self, why: String| {
             ui.st_note = why;
             ui.st_bad = true;
@@ -1292,8 +1423,11 @@ impl StudioUi {
             return;
         }
         if let Some(why) = self.stream.missing() {
-            return fail(self, why.to_owned());
+            fail(self, why.to_owned());
+            self.st_setup_note = true;
+            return;
         }
+        self.st_setup_note = false;
         if let Some(why) = self.stream.problem() {
             return fail(self, why);
         }
@@ -1329,6 +1463,7 @@ impl StudioUi {
 
     /// The server field was confirmed.
     pub fn set_server(&mut self, text: &str) {
+        self.server_draft = None;
         let url = text.trim();
         if url == self.stream.server {
             return;
@@ -1344,6 +1479,19 @@ impl StudioUi {
         self.stream.server = url.to_owned();
         self.server_serial += 1;
         self.save_stream();
+    }
+
+    /// The server field changed without being confirmed (Return, leaving the field).
+    pub fn server_edited(&mut self, text: &str) {
+        self.server_draft = Some(text.to_owned());
+    }
+
+    /// Confirms a server typed but not confirmed: closing Settings or pressing Go live
+    /// keeps what the field shows.
+    fn commit_server(&mut self) {
+        if let Some(text) = self.server_draft.take() {
+            self.set_server(&text);
+        }
     }
 
     /// The key field was confirmed: the host saves it in the store.
@@ -1418,8 +1566,16 @@ impl StudioUi {
             ),
             st_state::LIVE => format!("Connecting to {host}…"),
             st_state::ENDING => "Ending the stream…".to_owned(),
+            // What is still missing, nothing once all is set.
+            _ if self.st_setup_note => self.stream.missing().unwrap_or_default().to_owned(),
             _ => self.st_note.clone(),
         }
+    }
+
+    /// The note asked for settings that are all set now (Live controls then show
+    /// neither a note nor "Stream settings").
+    fn setup_note_stale(&self) -> bool {
+        self.st_setup_note && self.stream.missing().is_none()
     }
 
     fn push_stream(&self, g: &Studio<'_>) {
@@ -1428,7 +1584,10 @@ impl StudioUi {
         g.set_st_connected(self.st_state == st_state::LIVE && self.st_link.connected);
         g.set_st_text(self.stream_text().into());
         g.set_st_bad(
-            self.st_state == st_state::OFF && self.rec_state == rec_state::OFF && self.st_bad,
+            self.st_state == st_state::OFF
+                && self.rec_state == rec_state::OFF
+                && self.st_bad
+                && !self.setup_note_stale(),
         );
         g.set_st_needs_setup(st.missing().is_some());
         if g.get_st_server_serial() != self.server_serial as i32 {
@@ -1504,6 +1663,7 @@ impl StudioUi {
                     "The stream did not start: no stream key is saved. Enter it in Settings, Stream."
                         .into();
                 self.st_bad = true;
+                self.st_setup_note = true;
             }
             StreamUpdate::Link(link) => {
                 if link.connected != self.st_link.connected {
@@ -1693,7 +1853,18 @@ impl StudioUi {
     /// and the preview endpoint when it arrives.
     pub fn apply(&mut self, u: Update) -> Applied {
         let mut out = Applied::default();
+        // A studio that starts, stops or restarts answers nothing sent before.
+        if matches!(
+            u,
+            Update::Started { .. } | Update::Failed(_) | Update::Canvas { .. }
+        ) {
+            self.edit.reset();
+        }
         match u {
+            Update::BoxPlaced { seq, ok } => {
+                let next = self.edit.answered(seq, ok);
+                self.run(next);
+            }
             Update::Started {
                 preview,
                 kinds,
@@ -1770,7 +1941,10 @@ impl StudioUi {
                 self.failure = why.clone();
                 out.error = Some(format!("The studio stopped: {why}"));
             }
-            Update::Sources(rows) => self.set_rows(rows),
+            Update::Sources(rows) => {
+                self.set_rows(rows);
+                self.refresh_marks();
+            }
             Update::Targets(kind, list) => {
                 self.targets_kind = SourceKind::ALL
                     .iter()
@@ -2071,4 +2245,59 @@ pub fn log(line: &str) {
 fn whole_fps(rate: rbs_core::timing::FrameRate) -> u32 {
     let r = rate.per_second();
     r.num().div_ceil(r.den().max(1))
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)] // Tests fail by panicking.
+mod tests {
+    use super::*;
+    use rbs_app::stream_key::MemoryKeyStore;
+
+    fn ui(name: &str) -> (StudioUi, std::path::PathBuf) {
+        let d = std::env::temp_dir().join(format!("rbs-app-ui-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        let mut ui = StudioUi::new(&d, &MemoryKeyStore::new());
+        // As after `Update::Started`: Go live is possible.
+        ui.cannot_record = None;
+        (ui, d)
+    }
+
+    #[test]
+    fn a_server_typed_but_not_confirmed_is_kept() {
+        let (mut ui, d) = ui("server-draft");
+        ui.server_edited("rtmp://127.0.0.1/li");
+        ui.server_edited("rtmp://127.0.0.1/live");
+        ui.settings_closed();
+        assert_eq!(ui.stream.server, "rtmp://127.0.0.1/live");
+        assert_eq!(stream_profile::load(&d).0.server, "rtmp://127.0.0.1/live");
+
+        // Go live confirms it too; a bad one is refused and the one in use stays.
+        ui.server_edited("http://example.com");
+        ui.go_live();
+        assert_eq!(ui.stream.server, "rtmp://127.0.0.1/live");
+        // Confirmed with Return: closing Settings later changes nothing.
+        ui.server_edited("srt://127.0.0.1:9000");
+        ui.set_server("srt://127.0.0.1:9000");
+        ui.settings_closed();
+        assert_eq!(ui.stream.server, "srt://127.0.0.1:9000");
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn a_note_asking_for_a_setting_goes_once_it_is_set() {
+        let (mut ui, d) = ui("setup-note");
+        ui.go_live();
+        assert_eq!(ui.st_state, st_state::OFF);
+        assert!(ui.stream_text().contains("Enter the server"));
+        ui.set_server("rtmp://127.0.0.1/live");
+        assert!(
+            ui.stream_text().contains("Enter the stream key"),
+            "still missing: the key"
+        );
+        ui.stream.key_saved = true;
+        assert!(ui.setup_note_stale());
+        assert_eq!(ui.stream_text(), "");
+        let _ = std::fs::remove_dir_all(&d);
+    }
 }

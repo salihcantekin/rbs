@@ -28,6 +28,7 @@ pub mod panel;
 pub mod session;
 pub mod store;
 pub mod tokens;
+pub mod transform;
 pub mod workspace;
 
 pub use layout::{Axis, Edge, Node, Rect};

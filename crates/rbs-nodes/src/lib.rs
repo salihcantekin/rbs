@@ -27,6 +27,6 @@ pub mod preview;
 
 pub use capture::{CAPTURE_NODE_TYPE, CaptureSourceNode, capture_descriptor};
 pub use encode::{VIDEO_ENCODER_NODE_TYPE, VideoEncoderNode, video_encoder_descriptor};
-pub use export::{VIDEO_EXPORT_NODE_TYPE, VideoExportNode, video_export_descriptor};
+pub use export::{ExportEnd, VIDEO_EXPORT_NODE_TYPE, VideoExportNode, video_export_descriptor};
 pub use output::{OUTPUT_NODE_TYPE, OutputNode, output_descriptor};
 pub use preview::{PREVIEW_NODE_TYPE, PreviewNode, PreviewNodeStats, preview_descriptor};

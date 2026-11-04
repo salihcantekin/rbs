@@ -55,6 +55,11 @@ use crate::stream_key::{KeyStore, MemoryKeyStore};
 /// The longest the control thread sleeps between two rounds of the engine's control
 /// loop (the studio asks for at most about 100 ms).
 const MAX_WAIT: Duration = Duration::from_millis(50);
+/// Control-loop wait while a stopped recording's tail comes in.
+const ENDING_WAIT: Duration = Duration::from_millis(5);
+/// Hang guard for the tail when the app closes while recording (the studio itself
+/// gives up after `rbs_record::END_TAIL_LIMIT` on the master clock).
+const CLOSE_TAIL_GUARD: Duration = Duration::from_secs(1);
 /// The camera picture asked for (most webcams and capture cards offer it).
 const CAMERA_SIZE: (i64, i64, i64) = (1280, 720, 30);
 
@@ -215,8 +220,12 @@ pub enum Command {
     },
     /// Place a video source's picture: the box's top-left corner and size in canvas
     /// pixels. Rotation, crop and opacity stay. A size of zero or a value that is not
-    /// finite is refused with [`Update::Error`].
+    /// finite is refused with [`Update::Error`]. Always answered with
+    /// [`Update::BoxPlaced`] carrying `seq`, after any new rows, also when nothing
+    /// changed, so the UI can send the next box of a drag (ADR-0048).
     SetSourceBox {
+        /// The caller's number for this request.
+        seq: u64,
         /// The source.
         id: SourceId,
         /// Top-left corner.
@@ -423,6 +432,15 @@ pub enum StreamUpdate {
 /// What the studio tells the UI.
 #[derive(Debug, Clone)]
 pub enum Update {
+    /// The answer to [`Command::SetSourceBox`] number `seq`: `ok` when the box is the
+    /// source's now (changed or already so), else it was refused (an
+    /// [`Update::Error`] says why).
+    BoxPlaced {
+        /// The request's number.
+        seq: u64,
+        /// Taken.
+        ok: bool,
+    },
     /// The studio runs. `preview`: where the UI connects to the canvas preview (`None`
     /// where the platform has none). `kinds`: the kinds the adapters can add.
     Started {
@@ -710,6 +728,9 @@ struct Host {
     /// The running recording: its file and output (ADR-0047: it runs alongside a
     /// stream).
     recording: Option<(PathBuf, OutputId)>,
+    /// Stop was asked for: the recording ended its video and stops once its tail is
+    /// in (ADR-0045).
+    ending: bool,
     /// The running stream: its URL, the connection last reported and its output.
     streaming: Option<(String, Link, OutputId)>,
     /// Where the stream key is kept.
@@ -842,6 +863,16 @@ fn run(
         {
             host.stop_recording(Some(why), notify);
         }
+        if host.ending
+            && let Some((_, id)) = &host.recording
+        {
+            if host.studio.output_tail_done(*id) {
+                host.stop_recording(None, notify);
+            } else {
+                // The tail takes a few frames; look again soon.
+                wait = wait.min(ENDING_WAIT);
+            }
+        }
         if let Some((_, _, id)) = &host.streaming {
             if let Some(why) = host.studio.output_failure(*id) {
                 host.end_stream(Some(why), notify);
@@ -850,6 +881,16 @@ fn run(
             }
         }
         host.publish(notify);
+    }
+    // Closing while recording: keep the tail too, as Stop does.
+    if let Some((_, id)) = host.recording.clone()
+        && host.studio.end_output(id)
+    {
+        let started = std::time::Instant::now();
+        while !host.studio.output_tail_done(id) && started.elapsed() < CLOSE_TAIL_GUARD {
+            host.studio.service();
+            std::thread::sleep(ENDING_WAIT);
+        }
     }
     host.end_stream(None, notify);
     host.stop_recording(None, notify);
@@ -956,6 +997,7 @@ fn start(
             undo: None,
             waiting: false,
             recording: None,
+            ending: false,
             streaming: None,
             keys,
             engine: Box::new(engine),
@@ -1011,12 +1053,24 @@ impl Host {
                 Ok(false) => {}
                 Err(e) => notify(Update::Error(e)),
             },
-            Command::SetSourceBox { id, position, size } => {
-                match self.set_source_box(id, position, size) {
-                    Ok(true) => self.apply(notify),
-                    Ok(false) => {}
-                    Err(e) => notify(Update::Error(e)),
-                }
+            Command::SetSourceBox {
+                seq,
+                id,
+                position,
+                size,
+            } => {
+                let ok = match self.set_source_box(id, position, size) {
+                    Ok(true) => {
+                        self.apply(notify);
+                        true
+                    }
+                    Ok(false) => true,
+                    Err(e) => {
+                        notify(Update::Error(e));
+                        false
+                    }
+                };
+                notify(Update::BoxPlaced { seq, ok });
             }
             Command::StartRecording(r) => {
                 let update = match self.start_recording(&r, Some(API_PROFILE_ID.into())) {
@@ -1027,7 +1081,15 @@ impl Host {
                 self.publish(notify);
             }
             Command::StopRecording => {
-                self.stop_recording(None, notify);
+                // Ends the video now; the loop stops the recording once the frames
+                // still read back are in (ADR-0045).
+                if let Some((_, id)) = &self.recording
+                    && self.studio.end_output(*id)
+                {
+                    self.ending = true;
+                } else {
+                    self.stop_recording(None, notify);
+                }
                 self.publish(notify);
             }
             Command::SetCanvas { size, fps } => {
@@ -1365,6 +1427,7 @@ impl Host {
 
     /// Stops the recording, if one runs, and says so.
     fn stop_recording(&mut self, failure: Option<String>, notify: &dyn Fn(Update)) {
+        self.ending = false;
         let Some((path, id)) = self.recording.take() else {
             return;
         };

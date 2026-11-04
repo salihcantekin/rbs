@@ -531,12 +531,20 @@ pub struct Progress {
     pub encoder_drops: u64,
     /// Audio packets the audio encoder node lost (its carry-over was full).
     pub audio_packet_drops: u64,
+    /// End-of-stream flushes of the audio encoder: 1 after a drained stop (ADR-0045).
+    pub audio_flushes: u64,
+    /// Audio packets or blocks lost at the end of the stream (ADR-0045): packets the
+    /// output's queue refused on the last final tick, blocks after the flush.
+    pub audio_tail_lost: u64,
     /// Audio blocks lost at the queue between the mixer and the audio encoder.
     pub audio_queue_drops: u64,
     /// Packets the output took, all streams, including those the muxer dropped.
     pub packets_taken: u64,
     /// Packets the muxer dropped as out of order.
     pub mux_drops: u64,
+    /// Packets of other streams the output dropped because they end before the first
+    /// video packet (aligned start).
+    pub start_drops: u64,
     /// Largest output backlog (transport queue full).
     pub backlog_peak: u64,
     /// Items the transport dropped by its drop policy (a network transport whose
@@ -574,9 +582,10 @@ pub struct FinishReport {
     pub failure: Option<String>,
     /// Errors while the engine drained.
     pub shutdown_errors: Vec<String>,
-    /// Packets the video encoder still held at shutdown (lost, engine spec open
-    /// question). Frames in the export's readback ring and the audio encoder's last
-    /// frames are lost too and not counted.
+    /// Packets the video encoder still held when it left without a final tick (a drain
+    /// that timed out), lost. Frames still read back at the export when the recording
+    /// stopped without [`Recording::end`] (or past [`crate::END_TAIL_LIMIT`]) are lost
+    /// too and counted in [`Progress::export_drops`].
     pub flush_lost: u64,
     /// Output items not delivered when the output finished.
     pub finish_lost: u64,
@@ -782,8 +791,22 @@ impl Recording {
         self.studio.mixer_anomalies()
     }
 
+    /// Ends the video at the master clock's now and keeps the frames still read back
+    /// (ADR-0045, [`Studio::end_output`]). Keep calling [`Recording::service`] until
+    /// [`Recording::tail_done`], then [`Recording::finish`].
+    pub fn end(&mut self) {
+        self.studio.end_output(self.output);
+    }
+
+    /// True once [`Recording::finish`] loses no video frame up to the end
+    /// ([`Studio::output_tail_done`]): false before [`Recording::end`].
+    pub fn tail_done(&self) -> bool {
+        self.studio.output_tail_done(self.output)
+    }
+
     /// Stops the recording: drains its encoders and output (the output writes the
-    /// container's trailer), then shuts the engine down, and reports.
+    /// container's trailer), then shuts the engine down, and reports. Without
+    /// [`Recording::end`] first, frames still read back for the video are lost.
     pub fn finish(mut self) -> FinishReport {
         let studio_failure = self.studio.failure();
         let (reports, errors) = self.studio.shutdown();
