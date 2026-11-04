@@ -212,7 +212,10 @@ impl Listener {
         if peer_uid(&s) != Some(self.uid) {
             return Ok(None);
         }
-        s.set_write_timeout(Some(WRITE_STALL))?;
+        // Fails (EINVAL on macOS) when the peer has already gone: drop it.
+        if s.set_write_timeout(Some(WRITE_STALL)).is_err() {
+            return Ok(None);
+        }
         Ok(Some(Box::new(UnixIo(s))))
     }
 
@@ -279,8 +282,24 @@ impl ClientIo {
         buf: &mut [u8],
         timeout: Option<Duration>,
     ) -> io::Result<Option<usize>> {
-        self.0
-            .set_read_timeout(timeout.map(|t| t.max(Duration::from_millis(1))))?;
+        if let Err(e) = self
+            .0
+            .set_read_timeout(timeout.map(|t| t.max(Duration::from_millis(1))))
+        {
+            // macOS refuses socket options (EINVAL) once the server has shut the
+            // connection down; what it sent before is still there to read.
+            if e.kind() != io::ErrorKind::InvalidInput {
+                return Err(e);
+            }
+            self.0.set_nonblocking(true)?;
+            let r = (&self.0).read(buf);
+            let _ = self.0.set_nonblocking(false);
+            return match r {
+                Ok(n) => Ok(Some(n)),
+                Err(e) if e.kind() == io::ErrorKind::WouldBlock => Ok(Some(0)),
+                Err(e) => Err(e),
+            };
+        }
         match (&self.0).read(buf) {
             Ok(n) => Ok(Some(n)),
             Err(e)
