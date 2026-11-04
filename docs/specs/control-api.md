@@ -1,7 +1,7 @@
 # Spec: Control API
 
 - Status: Draft
-- Owner crate(s): `rbs-api` (planned), `rbs-api-ws` (planned adapter), `rbs-api-ipc` (planned adapter)
+- Owner crate(s): `rbs-api` (first slice implemented, see "Implementation status"), `rbs-api-ws` (planned adapter), `rbs-api-ipc` (planned adapter)
 - Related ADRs: [0008](../adr/0008-ui-as-api-client.md), [0013](../adr/0013-zero-cost-when-unused.md), [0021](../adr/0021-scene-collection-model.md), [0035](../adr/0035-meters-as-native-layers.md), [0044](../adr/0044-control-api-protocol-and-security.md)
 
 ## Purpose
@@ -80,6 +80,8 @@ Test vector: token `rbs1_000102030405060708090a0b0c0d0e0f101112131415161718191a1
 
 Every method declares one scope in the schema; where a parameter would need a different scope it is a separate method; a call outside the session's scopes returns `scope_denied`. A hardware panel token is `read` + `control`. The in-process UI and same-user IPC peers have all scopes.
 
+Event topics declare a scope the same way: `settings.changed` carries recording folders, which only `admin` reads (`settings.get`), so subscribing to it needs `admin`; every other topic needs `read`.
+
 ### Subscriptions and events
 
 - `events.subscribe {topics: [...], rates: {"audio.levels": 20}}` returns the current `seq` per state key; `events.unsubscribe`.
@@ -100,6 +102,23 @@ Protocol version `major.minor`, independent of the `rbs-api` crate's semver. Min
 - IPC endpoint: current user only. Unix: socket mode 0600 in a user-private directory. Windows: named pipe with a DACL for the current user's SID and `PIPE_REJECT_REMOTE_CLIENTS`.
 - Caps: total connections, pending handshakes, connections per peer address (not applied on loopback, where every client shares one address). Pre-authentication messages are small (4 KiB). Repeated `auth_failed` delays further attempts with growing back-off: per connection on loopback, per peer address otherwise.
 - Per session: maximum message size, request rate, queue length (`busy` when full).
+- Responses come in request order, with one exception: refusals that protect the server are sent at once and can overtake the answer to an earlier request still in flight. They are `busy`, `rate_limited`, `message_too_large`, and decoding errors for messages that cannot be read as a request (`parse_error`, `invalid_request`, `batch_unsupported`, `method_not_found`, and `invalid_params` when the parameters do not match the schema). Every other answer, including `scope_denied`, waits its turn.
+- A peer that does not read its answers is closed once more than a limit of answers wait for it (events do not count: only the latest per state key waits).
+
+Version 1 limits (from the first implementation, `rbs_api::Limits::default`):
+
+| Limit | Value |
+| --- | --- |
+| Connections (including closed ones whose request is still in flight) | 64 |
+| Pending handshakes | 16 |
+| Connections per non-loopback address | 8 |
+| Handshake timeout (connect to authenticated) | 10 s |
+| Message size before / after authentication | 4 KiB / 1 MiB |
+| Request rate per session | 50 per second, bursts of 100 |
+| Requests queued behind the one in flight | 16 |
+| Answers waiting for a peer that does not read | 64 |
+| Unread messages per connection in the transport inbox | 8 |
+| Authentication back-off per non-loopback address | 500 ms after the first failure, doubling, at most 30 s; forgotten after 30 s without failures; 1024 addresses remembered |
 - Connections, authentication failures and `admin`, `plugins` and `tokens` calls are logged with the token name.
 
 ## Zero cost
@@ -109,6 +128,31 @@ Protocol version `major.minor`, independent of the `rbs-api` crate's semver. Min
 | Installed (setting off) | None: server not constructed |
 | Standby (on, no session) | Adapter accept and the API thread asleep on its wake primitive; no wake-ups, no event production |
 | Active (sessions) | Events produced on the control thread only for subscribed topics, on state change; sampling only while a latest-value topic is subscribed. Nothing in `Node::process`, audio callbacks or the render tick |
+
+## Errors
+
+`error.data.kind` is stable; codes are fixed so clients that only read `code` still work.
+
+| Kind | Code | Meaning |
+| --- | --- | --- |
+| `parse_error` | -32700 | Not JSON |
+| `invalid_request` | -32600 | Not a JSON-RPC 2.0 request (no integer or string `id`, wrong `jsonrpc`), or a handshake method after authentication |
+| `method_not_found` | -32601 | Unknown method |
+| `invalid_params` | -32602 | Parameters do not match the method's schema; `params` must be an object or absent |
+| `internal` | -32603 | Server bug |
+| `not_authenticated` | -32001 | Method before authentication |
+| `auth_failed` | -32002 | Unknown or wrong token |
+| `unsupported_protocol` | -32003 | No common protocol major |
+| `scope_denied` | -32010 | Scope missing |
+| `busy` | -32020 | Request queue full |
+| `rate_limited` | -32021 | Request rate exceeded |
+| `message_too_large` | -32022 | Message over the size limit |
+| `batch_unsupported` | -32023 | JSON array of requests |
+| `not_found` | -32030 | Object does not exist |
+| `conflict` | -32031 | Conflicts with the current state (for example a recording runs) |
+| `undo_conflict` | -32032 | Undo record used out of order |
+| `file_exists` | -32033 | Explicit file exists |
+| `failed` | -32040 | Valid but could not be carried out |
 
 ## Initial method set (version 1, first slice)
 
@@ -154,11 +198,15 @@ An OBS WebSocket (v5) compatibility layer (subset) is a separate optional adapte
 - U20 test: every desktop UI command maps to a control API method.
 - Idle-cost check: off starts no thread; on without a session has no wake-ups and produces no events (thread count and wake-ups, performance budgets spec).
 
+## Implementation status
+
+- `rbs-api` implements the types and JSON codec of the first slice, tokens and the token store, scopes, the session state machine (`Server`), the control-thread side (`ControlTarget`, `ControlEndpoint`, `EventPublisher` with `seq` per state key and the event slots), the `ControlTransport` port with the bounded `TransportInbox`, the shared `Origin`/`Host` check for WebSocket adapters (`UpgradePolicy`), and the API thread (`ApiServer`).
+- Not yet: the `schema` feature with the generated JSON Schema, its snapshot test and difference classifier (`api.describe` lists methods, scopes and topics until then); the transport conformance suite (lands with the first adapter, `rbs-api-ws`); `stats` sampling; `ui.*` routing; the U20 test, which needs the desktop app on `rbs-api`; the idle-cost check by thread count (by construction today: off constructs nothing; on without a session sets no deadline, tested).
+
 ## Open questions
 
 - Preview transport for remote clients: UI rule U5 requires a reduced-rate encoded preview for remote panels; WebRTC from the engine is the candidate.
 - Stable addressing for layout commands. `rbs_ui::LayoutCommand` addresses windows and tab stacks by index, which shifts after each change; it is internal to the desktop shell. The `ui.*` commands for remote callers address panels by panel id (open, close, float, dock, move to an edge) and need stable window ids before they can target a window or stack.
 - Where the token store lives (settings file with user-only permissions, or the OS credential store).
 - TLS certificates for network access: a generated self-signed certificate with a fingerprint the user pins, or a user-supplied one; channel binding (RFC 9266) if pinning proves insufficient.
-- Exact caps and timeouts (connections, handshakes, back-off, queue lengths), set with the first implementation and its tests.
 - Which WebSocket crate and runtime `rbs-api-ws` uses (adapter choice, decided in its PR).

@@ -1,0 +1,27 @@
+[package]
+name = "rbs-api"
+description = "RBS control API: typed requests, responses and events, the session state machine (handshake, tokens, scopes, limits), and the ControlTarget and ControlTransport ports (ADR-0044)."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+license.workspace = true
+publish.workspace = true
+
+# Dependencies are exactly the ones ADR-0044 decision 1 allows: no engine, adapter,
+# network, IPC, async-runtime or UI crate.
+[dependencies]
+rbs-core = { path = "../rbs-core" }
+# The request, response and event types are the schema (ADR-0044 decision 8).
+serde = { version = "1", features = ["derive"] }
+# The JSON-RPC codec (behind the `Codec` trait).
+serde_json = "1"
+# Tokens are stored as SHA-256 of their text (decision 9).
+sha2 = "0.10"
+# Constant-time comparison of token hashes.
+subtle = "2.6"
+# OS randomness for tokens and the server instance id.
+getrandom = "0.3"
+
+[lints]
+workspace = true
