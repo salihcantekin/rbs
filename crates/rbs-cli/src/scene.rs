@@ -6,12 +6,13 @@ use rbs_core::timing::FrameRate;
 use rbs_graph::node::NodeTypeId;
 use std::collections::BTreeMap;
 
+use rbs_capture::CaptureError;
 use rbs_scene::SceneCollection;
 use rbs_scene::model::{
     CanvasId, ItemContent, Layout, SceneScope, SettingValue, Settings, SourceId,
 };
 use rbs_sources::types::{self, keys};
-use rbs_sources::{SourceTarget, SourceTypes};
+use rbs_sources::{SourceError, SourceTarget, SourceTypes};
 
 use crate::args::RecordArgs;
 use crate::permissions::Check;
@@ -88,6 +89,24 @@ fn whole_fps(rate: FrameRate) -> i64 {
     i64::from(r.num().div_ceil(r.den().max(1)))
 }
 
+/// A display from the OS picker, for systems that list none (the Linux screen-cast
+/// portal). Blocks while the dialog is up.
+fn choose_display(types: &SourceTypes) -> Result<SourceTarget, String> {
+    let picker = types
+        .pickers(&rbs_graph_type(types::DISPLAY_SOURCE))
+        .unwrap_or_default()
+        .into_iter()
+        .next()
+        .ok_or("no display can be captured on this system")?;
+    println!("choose the display to record in the system dialog");
+    picker.pick().map_err(|e| match e {
+        SourceError::Capture(CaptureError::Cancelled) => {
+            "the display dialog was closed without a choice".to_owned()
+        }
+        e => format!("display: {e}"),
+    })
+}
+
 /// The camera's rectangle: a 16:9 picture 4/15 of the canvas wide, a margin of 1/40
 /// of the width from the bottom-right corner. On 1920 x 1080 it is 512 x 288 with its
 /// top-left corner at (1360, 744).
@@ -134,8 +153,14 @@ pub fn build(
     let mut audio_offsets = BTreeMap::new();
 
     let displays = targets(types, types::DISPLAY_SOURCE);
-    let display = pick(&displays, args.display, "display")?
-        .ok_or("no display can be captured on this system")?;
+    let chosen;
+    let display = match pick(&displays, args.display, "display")? {
+        Some(d) => d,
+        None => {
+            chosen = choose_display(types)?;
+            &chosen
+        }
+    };
     let mut settings = target_settings(display);
     settings.insert(keys::FPS.into(), SettingValue::Int(whole_fps(args.fps)));
     add(

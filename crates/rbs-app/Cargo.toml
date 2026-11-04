@@ -68,6 +68,14 @@ rbs-codec-nvenc = { path = "../rbs-codec-nvenc" }
 rbs-codec-amf = { path = "../rbs-codec-amf" }
 rbs-codec-mf = { path = "../rbs-codec-mf" }
 
+[target.'cfg(target_os = "linux")'.dependencies]
+rbs-capture-pipewire = { path = "../rbs-capture-pipewire" }
+rbs-audio-io-pipewire = { path = "../rbs-audio-io-pipewire" }
+rbs-codec-nvenc = { path = "../rbs-codec-nvenc" }
+rbs-codec-amf = { path = "../rbs-codec-amf" }
+rbs-codec-qsv = { path = "../rbs-codec-qsv" }
+rbs-codec-vaapi = { path = "../rbs-codec-vaapi" }
+
 # Audio meters as Core Animation layers (src/native, ADR-0035). Same objc2 versions as
 # wgpu-hal, raw-window-metal and rbs-gpu's preview layer, so nothing new is built.
 [target.'cfg(target_os = "macos")'.dependencies]

@@ -42,10 +42,17 @@ impl SourceTypes {
     pub fn installed(&self) -> Vec<NodeTypeId>;
     pub fn node_types(&self) -> NodeTypeTable;                 // impl NodeTypes, a snapshot
     pub fn targets(&self, type_id: &NodeTypeId) -> Result<Vec<SourceTarget>, SourceError>;
+    pub fn pickers(&self, type_id: &NodeTypeId) -> Result<Vec<SourcePicker>, SourceError>;
     pub fn instantiate(&self, source: &Source, ctx: &InstanceContext)
         -> Result<SourceInstance, SourceError>;
 }
 pub struct SourceTarget { adapter, target, name, is_default, size: Option<(u32, u32)> }  // size: displays and windows, when known
+#[derive(Clone)] pub struct SourcePicker;  // Send; holds the adapter's factory only
+impl SourcePicker {
+    pub fn adapter(&self) -> AdapterId;
+    pub fn adapter_name(&self) -> &str;
+    pub fn pick(&self) -> Result<SourceTarget, SourceError>; // blocks while the OS dialog is up
+}
 pub struct InstanceContext { clock, audio: AudioGraphConfig, max_audio_offset }  // new(), with_max_audio_offset()
 pub enum SourceInstance {
     Video(VideoSource { node: CaptureSourceNode, stats, adapter, target }),
@@ -73,7 +80,8 @@ Unknown keys are ignored. A wrong value type or value is `InvalidSetting`.
 3. A `target` without `adapter` goes to the first adapter, best first, that lists it, else to the best adapter (picker-only ids are never listed). Default target, when `target` is missing: the first display or camera an adapter lists; the audio endpoint marked default, else the first one; windows have none (`NoTarget`). Without `adapter`, candidates are tried best first until one lists a default; with `adapter`, only that one.
 4. A `Video` instance opens nothing until `prepare` (ADR-0038). An `Audio` instance holds a stream opened in Standby: the port guarantees no device activity before `start` (audio input port spec).
 5. `instantiate` and `targets` run on the control thread and may enumerate (up to 100 ms per adapter); they never prompt.
-6. `node_layers` returns the bound layers whose producer `plan` schedules, bottom first, each with the index of its link among the compositor's scheduled links (scene model spec, `resolve`), the transform, crop and opacity unchanged.
+6. `pickers` returns, best first, the probed capture adapters whose `capture.target.picker` includes the type's kind (none for audio types). `SourcePicker::pick` calls the port's `pick` and returns the choice as a `SourceTarget` (`is_default` false) to store like a listed one; a closed dialog is `Capture(Cancelled)`. Some systems offer displays and windows only this way (the PipeWire screen-cast portal lists nothing), so hosts show a "choose" entry per picker next to the listed targets, and a headless host with no listed display picks one. `pick` blocks while the dialog is up: hosts call it off the threads that must keep running (a picker is `Send` and holds no resources).
+7. `node_layers` returns the bound layers whose producer `plan` schedules, bottom first, each with the index of its link among the compositor's scheduled links (scene model spec, `resolve`), the transform, crop and opacity unchanged.
 
 ### How the composition root uses it
 
@@ -94,7 +102,7 @@ Control thread only, user-paced; nothing here runs per frame or per block.
 
 ## Conformance tests
 
-`crates/rbs-sources/tests/sources.rs`, with the reference adapters `rbs-capture-test` and `rbs-audio-io-test`: installed types follow probed kinds; an empty registry has the compositor and mixer; instance descriptors equal table descriptors for every installed type; default targets; windows need a target; stored targets are used as given; bad settings, adapters and types are refused; targets for pickers; a bound scene instantiates into the partitions the binder chose, and `node_layers` keeps the transform, crop, opacity and link order.
+`crates/rbs-sources/tests/sources.rs`, with the reference adapters `rbs-capture-test` and `rbs-audio-io-test`: installed types follow probed kinds; an empty registry has the compositor and mixer; instance descriptors equal table descriptors for every installed type; default targets; windows need a target; stored targets are used as given; bad settings, adapters and types are refused; targets for pickers; pickers only for kinds an adapter declares, picking on another thread, a cancelled pick, a picked target instantiated by its adapter; a bound scene instantiates into the partitions the binder chose, and `node_layers` keeps the transform, crop, opacity and link order.
 
 Hardware (manual): `cargo run -p rbs-sources --example scene_sources --release -- 15` on Windows (WGC, Media Foundation camera, WASAPI microphone and system audio through the binder, the compositor and the mixer on the engine workers).
 

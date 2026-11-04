@@ -25,7 +25,7 @@ pub mod types;
 
 pub use layers::node_layers;
 pub use registry::{
-    AudioSource, InstanceContext, NodeTypeTable, SourceError, SourceInstance, SourceTarget,
-    SourceTypes, VideoSource,
+    AudioSource, InstanceContext, NodeTypeTable, SourceError, SourceInstance, SourcePicker,
+    SourceTarget, SourceTypes, VideoSource,
 };
 pub use types::{SourceClass, class_of};

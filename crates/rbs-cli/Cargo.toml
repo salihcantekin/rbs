@@ -48,6 +48,14 @@ rbs-codec-nvenc = { path = "../rbs-codec-nvenc" }
 rbs-codec-amf = { path = "../rbs-codec-amf" }
 rbs-codec-mf = { path = "../rbs-codec-mf" }
 
+[target.'cfg(target_os = "linux")'.dependencies]
+rbs-capture-pipewire = { path = "../rbs-capture-pipewire" }
+rbs-audio-io-pipewire = { path = "../rbs-audio-io-pipewire" }
+rbs-codec-nvenc = { path = "../rbs-codec-nvenc" }
+rbs-codec-amf = { path = "../rbs-codec-amf" }
+rbs-codec-qsv = { path = "../rbs-codec-qsv" }
+rbs-codec-vaapi = { path = "../rbs-codec-vaapi" }
+
 [target.'cfg(target_os = "macos")'.dependencies]
 rbs-capture-sck = { path = "../rbs-capture-sck" }
 rbs-capture-avf = { path = "../rbs-capture-avf" }
