@@ -132,6 +132,9 @@ export global Studio {
     // One line: protocol, server, encoder and bitrates of the next stream.
     in property <string> st-summary;
     callback set-server(string);
+    // The server field changed but is not confirmed yet: confirmed when Settings
+    // closes or Go live is pressed.
+    callback server-edited(string);
     callback save-key(string);
     callback remove-key();
     callback set-reconnect(bool);
@@ -880,6 +883,7 @@ export component StreamSettings inherits Rectangle {
                 text: Studio.st-server;
                 enabled: idle;
                 accepted(t) => { Studio.set-server(t); }
+                edited(t) => { Studio.server-edited(t); }
             }
             Hint { text: @tr("The address your streaming service gives you, starting with rtmp:// or srt://."); }
         }

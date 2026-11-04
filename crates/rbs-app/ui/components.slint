@@ -379,7 +379,9 @@ export component SegmentedControl inherits Rectangle {
     }
 }
 
-// TextField: one line of text. `accepted` runs on Return and when focus leaves.
+// TextField: one line of text. `accepted` runs on Return and when focus leaves;
+// `edited` runs on every change, for text that must not be lost when the field goes
+// away without losing focus (its window closes, another section shows).
 export component TextField inherits Rectangle {
     in property <string> label;
     in-out property <string> text;
@@ -389,6 +391,7 @@ export component TextField inherits Rectangle {
     // A secret: what is typed is never shown, and leaving the field does not confirm it.
     in property <bool> password: false;
     callback accepted(string);
+    callback edited(string);
     // Puts the whole text on the clipboard.
     public function copy-all() {
         input.select-all();
@@ -416,6 +419,7 @@ export component TextField inherits Rectangle {
         selection-foreground-color: Theme.text-primary;
         accessible-label: root.label;
         accepted => { root.accepted(self.text); }
+        edited => { root.edited(self.text); }
     }
     property <bool> focused: input.has-focus;
     changed focused => { if !focused && !root.read-only && !root.password { root.accepted(root.text); } }
