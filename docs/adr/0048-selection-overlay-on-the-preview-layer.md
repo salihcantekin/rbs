@@ -1,6 +1,6 @@
 # ADR-0048: Draw the preview's selection outline and handles as native layers of the preview
 
-- Status: Proposed
+- Status: Accepted
 - Date: 2026-11-04
 - Deciders: Salih (owner)
 - Builds on: ADR-0034 (preview as a native layer, macOS), ADR-0036 (Windows preview layer), ADR-0035 (meters as native layers), ADR-0013 (zero cost when unused), ADR-0015 (UI design rules)
@@ -49,3 +49,5 @@ Scene edits during a drag reach the running studio through `Studio::update` (ADR
   6. `detach` left marks behind for the next `attach`: it clears them (decision 1).
   7. The fallback wording did not say editing stays available where no layer is used: reworded (decision 7).
   8. A cancelled pointer (lost capture) left a drag running: cancel ends the drag.
+- 2026-11-04, hardware checks: Windows (SC-PC, RTX 4090, local console, 100 % scale) pass: the outline and handles show over the live picture and line up with it, move, corner resize (aspect kept), Shift+arrow nudge and Escape work, no flicker and no stale marks after a popup hides the layer; while moving, the picture trails the marks by about one frame. macOS (M4 Pro): build and tests pass; a box edit costs 15 µs median, 39 µs max on the control thread (300 edits), so decision 5's fallback is not needed; the marks over the live picture are still to be seen on a Mac (screen-control permission).
+- Accepted 2026-11-04 under the project's ADR policy (threads mark ADRs Accepted after the independent review).

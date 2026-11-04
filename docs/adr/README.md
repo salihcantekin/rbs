@@ -58,4 +58,4 @@ An ADR records one decision that is hard to reverse or affects more than one cra
 | [0043](0043-end-of-stream-on-final-ticks.md) | Final ticks are marked, and the video encoder flushes on them | Accepted |
 | [0044](0044-control-api-protocol-and-security.md) | Control API: one typed request layer, JSON-RPC over swappable transports, scoped token authentication | Accepted |
 | [0046](0046-network-access-over-tls.md) | Network access to the control API: TLS on the remote control port, a generated key the client pins | Accepted |
-| [0048](0048-selection-overlay-on-the-preview-layer.md) | Draw the preview's selection outline and handles as native layers of the preview | Proposed |
+| [0048](0048-selection-overlay-on-the-preview-layer.md) | Draw the preview's selection outline and handles as native layers of the preview | Accepted |
