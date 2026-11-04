@@ -43,6 +43,8 @@ rbs-gpu = { path = "../rbs-gpu", features = ["preview-layer"] }
 rbs-audio = { path = "../rbs-audio" }
 rbs-scene = { path = "../rbs-scene" }
 rbs-sources = { path = "../rbs-sources" }
+# CaptureError::Cancelled from OS pickers.
+rbs-capture = { path = "../rbs-capture" }
 rbs-record = { path = "../rbs-record" }
 rbs-thread-os = { path = "../rbs-thread-os" }
 rbs-mux-matroska = { path = "../rbs-mux-matroska" }
@@ -75,6 +77,7 @@ rbs-codec-nvenc = { path = "../rbs-codec-nvenc" }
 rbs-codec-amf = { path = "../rbs-codec-amf" }
 rbs-codec-qsv = { path = "../rbs-codec-qsv" }
 rbs-codec-vaapi = { path = "../rbs-codec-vaapi" }
+rbs-codec-ffmpeg = { path = "../rbs-codec-ffmpeg" }
 
 # Audio meters as Core Animation layers (src/native, ADR-0035). Same objc2 versions as
 # wgpu-hal, raw-window-metal and rbs-gpu's preview layer, so nothing new is built.

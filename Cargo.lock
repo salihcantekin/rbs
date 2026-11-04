@@ -4225,6 +4225,7 @@ dependencies = [
  "rbs-audio-io-pipewire",
  "rbs-audio-io-test",
  "rbs-audio-io-wasapi",
+ "rbs-capture",
  "rbs-capture-avf",
  "rbs-capture-mf",
  "rbs-capture-pipewire",
@@ -4234,6 +4235,7 @@ dependencies = [
  "rbs-codec",
  "rbs-codec-amf",
  "rbs-codec-audiotoolbox",
+ "rbs-codec-ffmpeg",
  "rbs-codec-mf",
  "rbs-codec-nvenc",
  "rbs-codec-qsv",
@@ -4450,6 +4452,7 @@ dependencies = [
  "rbs-codec",
  "rbs-codec-amf",
  "rbs-codec-audiotoolbox",
+ "rbs-codec-ffmpeg",
  "rbs-codec-mf",
  "rbs-codec-nvenc",
  "rbs-codec-qsv",
@@ -4499,6 +4502,18 @@ dependencies = [
  "objc2-audio-toolbox",
  "objc2-core-audio-types",
  "rbs-codec",
+ "rbs-core",
+ "rbs-media-format",
+]
+
+[[package]]
+name = "rbs-codec-ffmpeg"
+version = "0.0.1"
+dependencies = [
+ "criterion 0.8.2",
+ "libloading",
+ "rbs-codec",
+ "rbs-codec-ffmpeg",
  "rbs-core",
  "rbs-media-format",
 ]

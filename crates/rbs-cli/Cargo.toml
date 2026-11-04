@@ -55,6 +55,7 @@ rbs-codec-nvenc = { path = "../rbs-codec-nvenc" }
 rbs-codec-amf = { path = "../rbs-codec-amf" }
 rbs-codec-qsv = { path = "../rbs-codec-qsv" }
 rbs-codec-vaapi = { path = "../rbs-codec-vaapi" }
+rbs-codec-ffmpeg = { path = "../rbs-codec-ffmpeg" }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 rbs-capture-sck = { path = "../rbs-capture-sck" }

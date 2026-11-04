@@ -81,6 +81,11 @@ pub fn adapters() -> (RecordAdapters, Vec<String>) {
             a.video_encoders
                 .register(Arc::new(rbs_codec_vaapi::VaapiFactory::new())),
         );
+        // The system's FFmpeg (libavcodec), loaded at run time (ADR-0007).
+        note(
+            a.audio_encoders
+                .register(Arc::new(rbs_codec_ffmpeg::FfmpegAacFactory::new())),
+        );
     }
     #[cfg(target_os = "macos")]
     {
