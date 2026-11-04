@@ -95,7 +95,7 @@ pub(crate) fn parse(buf: &[u8], policy: &UpgradePolicy) -> Result<Option<Upgrade
         } else if name.eq_ignore_ascii_case("connection") {
             connection |= has_token(value, "upgrade");
         } else if name.eq_ignore_ascii_case("sec-websocket-version") {
-            version = Some(value.trim());
+            once(&mut version, value.trim())?;
         } else if name.eq_ignore_ascii_case("sec-websocket-key") {
             once(&mut key, value.trim())?;
         } else if name.eq_ignore_ascii_case("origin") {

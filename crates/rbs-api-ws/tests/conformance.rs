@@ -63,8 +63,12 @@ impl WsClient {
     }
 
     fn frame(&mut self, opcode: u8, payload: &[u8]) {
+        self.raw_frame(true, opcode, payload);
+    }
+
+    fn raw_frame(&mut self, fin: bool, opcode: u8, payload: &[u8]) {
         let mask = [1u8, 2, 3, 4];
-        let mut out = vec![0x80 | opcode];
+        let mut out = vec![if fin { 0x80 } else { 0 } | opcode];
         let len = payload.len();
         if len < 126 {
             out.push(0x80 | len as u8);
@@ -108,6 +112,14 @@ impl WsClient {
 impl Client for WsClient {
     fn send(&mut self, text: &str) {
         self.frame(0x1, text.as_bytes());
+    }
+
+    fn send_fragments(&mut self, parts: &[&str]) {
+        for (i, part) in parts.iter().enumerate() {
+            let opcode = if i == 0 { 0x1 } else { 0x0 };
+            let fin = i + 1 == parts.len();
+            self.raw_frame(fin, opcode, part.as_bytes());
+        }
     }
 
     fn recv(&mut self, timeout: Duration) -> Option<ClientEvent> {

@@ -54,6 +54,11 @@ pub enum ClientEvent {
 pub trait Client {
     /// Sends one whole message.
     fn send(&mut self, text: &str);
+    /// Sends one message in parts, as the transport fragments messages (WebSocket:
+    /// continuation frames). Transports without fragments send the parts as one.
+    fn send_fragments(&mut self, parts: &[&str]) {
+        self.send(&parts.concat());
+    }
     /// The next message or the close, waiting at most `timeout`; `None` when nothing
     /// came.
     fn recv(&mut self, timeout: Duration) -> Option<ClientEvent>;
@@ -193,6 +198,11 @@ pub fn messages_round_trip<H: Harness>(h: &mut H) {
         "a test client is local: {:?}",
         conn.peer
     );
+    c.send_fragments(&["{\"jsonrpc\"", ":", "\"2.0\"}"]);
+    match rig.next() {
+        TransportEvent::Message { text, .. } => assert_eq!(text, "{\"jsonrpc\":\"2.0\"}"),
+        other => panic!("expected the fragments as one Message, got {other:?}"),
+    }
     for text in ["{\"jsonrpc\":\"2.0\"}", "çağrı ✓ 🎥", ""] {
         c.send(text);
         match rig.next() {
@@ -264,8 +274,9 @@ pub fn a_client_close_is_reported<H: Harness>(h: &mut H) {
 }
 
 /// A connection that used its quota is not read until the inbox drains: the inbox
-/// never holds more of its messages than the quota, and every message still arrives,
-/// in order.
+/// fills to the quota, never holds more of its messages than that, and every message
+/// still arrives, in order. (That the adapter stays paused cannot be observed without
+/// waiting for something not to happen; the bound is checked at every pop.)
 pub fn a_paused_connection_is_not_read<H: Harness>(h: &mut H) {
     const QUOTA: usize = 2;
     const SENT: usize = 7;
@@ -274,6 +285,12 @@ pub fn a_paused_connection_is_not_read<H: Harness>(h: &mut H) {
     let _conn = rig.connected();
     for i in 0..SENT {
         c.send(&format!("m{i}"));
+    }
+    let deadline = Instant::now() + LIMIT;
+    while rig.inbox.len() < QUOTA {
+        let left = deadline.saturating_duration_since(Instant::now());
+        assert!(!left.is_zero(), "the inbox never filled to the quota");
+        rig.wake.wait(Some(left));
     }
     for i in 0..SENT {
         assert!(

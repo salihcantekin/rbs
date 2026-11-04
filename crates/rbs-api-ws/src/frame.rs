@@ -103,7 +103,17 @@ impl FrameReader {
                     let payload = std::mem::take(&mut self.control);
                     let code = match payload.as_slice() {
                         [] => None,
-                        [a, b, ..] => Some(u16::from_be_bytes([*a, *b])),
+                        [a, b, reason @ ..] => {
+                            let code = u16::from_be_bytes([*a, *b]);
+                            // RFC 6455 section 7.4: codes a peer may send.
+                            if !matches!(code, 1000..=1003 | 1007..=1011 | 3000..=4999) {
+                                return Err(PROTOCOL_ERROR);
+                            }
+                            if std::str::from_utf8(reason).is_err() {
+                                return Err(INVALID_PAYLOAD);
+                            }
+                            Some(code)
+                        }
                         [_] => return Err(PROTOCOL_ERROR),
                     };
                     return Ok(Some(Incoming::Close(code)));
@@ -369,6 +379,13 @@ mod tests {
             read_all(&client(0x88, b""), 10),
             [Ok(Incoming::Close(None))]
         );
+        assert_eq!(
+            read_all(&client(0x88, &1005u16.to_be_bytes()), 10),
+            [Err(PROTOCOL_ERROR)]
+        );
+        let mut bad = 1000u16.to_be_bytes().to_vec();
+        bad.push(0xff);
+        assert_eq!(read_all(&client(0x88, &bad), 10), [Err(INVALID_PAYLOAD)]);
     }
 
     #[test]

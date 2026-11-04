@@ -6,7 +6,7 @@
 //! per-connection state and wakes the poller; each wake services every connection
 //! (at most the connection cap plus the upgrade cap).
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::io::{ErrorKind, Read, Write};
 use std::net::{Shutdown, SocketAddr, TcpListener, TcpStream};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -32,12 +32,16 @@ const CHUNK: usize = 16 * 1024;
 const CHUNKS_PER_WAKE: usize = 4;
 /// An idle output buffer larger than this is released.
 const KEEP_CAPACITY: usize = 64 * 1024;
+/// How long accepting pauses after an accept error other than `WouldBlock` (out of
+/// file descriptors), so the listener does not fire in a busy loop.
+const ACCEPT_BACKOFF: Duration = Duration::from_millis(250);
 
 pub(crate) struct Settings {
     pub policy: UpgradePolicy,
     pub upgrade_timeout: Duration,
     pub max_upgrading: usize,
     pub max_queued_bytes: usize,
+    pub max_sockets: usize,
 }
 
 /// Output and flags shared between the API thread (sender, resume) and the I/O
@@ -118,7 +122,8 @@ enum State {
     /// A close frame is queued or sent; the inbox already has `Closed`. Waits for the
     /// peer to hang up, at most until `deadline`.
     Lingering {
-        shared: Arc<Shared>,
+        /// `None` for a refused upgrade, whose answer was written already.
+        shared: Option<Arc<Shared>>,
         deadline: Instant,
         write_shut: bool,
     },
@@ -138,10 +143,14 @@ impl Drop for Conn {
         // Keeps the registration invariant of `Poller::add` (see `register`).
         let _ = self.poller.delete(&self.stream);
         match &self.state {
-            State::Open { shared, .. } | State::Lingering { shared, .. } => {
+            State::Open { shared, .. }
+            | State::Lingering {
+                shared: Some(shared),
+                ..
+            } => {
                 shared.lock().gone = true;
             }
-            State::Upgrading { .. } => {}
+            State::Upgrading { .. } | State::Lingering { shared: None, .. } => {}
         }
     }
 }
@@ -180,6 +189,8 @@ pub(crate) struct Io {
     inbox: TransportInbox,
     settings: Settings,
     scratch: Vec<u8>,
+    /// Accepting resumes at this time after an accept error.
+    accept_paused: Option<Instant>,
 }
 
 impl Io {
@@ -208,6 +219,7 @@ impl Io {
             inbox,
             settings,
             scratch: vec![0; CHUNK],
+            accept_paused: None,
         })
     }
 
@@ -230,14 +242,22 @@ impl Io {
             if self.stop.load(Ordering::Acquire) {
                 break;
             }
-            let mut readable = Vec::new();
+            if let Some(at) = self.accept_paused
+                && Instant::now() >= at
+            {
+                self.accept_paused = None;
+                for (key, l) in self.listeners.iter().enumerate() {
+                    let _ = self.poller.modify(&l.listener, Event::readable(key));
+                }
+            }
+            let mut readable = HashSet::new();
             for ev in events.iter() {
                 if ev.key < self.listeners.len() {
                     self.accept(ev.key);
                 } else if let Some(c) = self.conns.get_mut(&ev.key) {
                     c.armed = None;
                     if ev.readable {
-                        readable.push(ev.key);
+                        readable.insert(ev.key);
                     }
                 }
             }
@@ -255,7 +275,8 @@ impl Io {
     }
 
     fn next_deadline(&self) -> Option<Instant> {
-        self.conns
+        let conns = self
+            .conns
             .values()
             .filter_map(|c| match &c.state {
                 State::Upgrading { deadline, .. } | State::Lingering { deadline, .. } => {
@@ -263,7 +284,11 @@ impl Io {
                 }
                 State::Open { .. } => None,
             })
-            .min()
+            .min();
+        match (conns, self.accept_paused) {
+            (Some(a), Some(b)) => Some(a.min(b)),
+            (a, b) => a.or(b),
+        }
     }
 
     fn accept(&mut self, index: usize) {
@@ -279,6 +304,7 @@ impl Io {
                         .filter(|c| matches!(c.state, State::Upgrading { .. }))
                         .count();
                     if upgrading >= self.settings.max_upgrading
+                        || self.conns.len() >= self.settings.max_sockets
                         || stream.set_nonblocking(true).is_err()
                     {
                         continue; // Dropping the stream closes it.
@@ -304,8 +330,13 @@ impl Io {
                     );
                 }
                 Err(e) if e.kind() == ErrorKind::Interrupted => {}
-                // `WouldBlock`, or an error a later accept may not have: arm again.
-                Err(_) => break,
+                Err(e) if e.kind() == ErrorKind::WouldBlock => break,
+                // Out of file descriptors or similar: the connection stays in the
+                // backlog and the listener would fire again at once. Pause accepting.
+                Err(_) => {
+                    self.accept_paused = Some(Instant::now() + ACCEPT_BACKOFF);
+                    return;
+                }
             }
         }
         if let Some(l) = self.listeners.get(index) {
@@ -322,8 +353,14 @@ impl Io {
         if keep {
             let want = match &conn.state {
                 State::Upgrading { .. } => (true, false),
-                State::Open { shared, paused, .. } => (!*paused, !shared.lock().buf.is_empty()),
-                State::Lingering { shared, .. } => (true, !shared.lock().buf.is_empty()),
+                State::Open { shared, paused, .. } => {
+                    let queued = shared.lock().buf.len();
+                    (may_read(*paused, queued, shared.max), queued > 0)
+                }
+                State::Lingering { shared, .. } => (
+                    true,
+                    shared.as_ref().is_some_and(|s| !s.lock().buf.is_empty()),
+                ),
             };
             if conn.armed != Some(want) {
                 if self
@@ -360,8 +397,9 @@ impl Io {
         true
     }
 
-    /// Reads the upgrade request. `Some(true)`: the connection is open now;
-    /// `Some(false)`: refused or gone; `None`: still waiting.
+    /// Reads the upgrade request. `Some(true)`: the connection is open now, or refused
+    /// and lingering until its answer is read; `Some(false)`: gone; `None`: still
+    /// waiting.
     fn upgrade(&mut self, conn: &mut Conn, readable: bool, now: Instant) -> Option<bool> {
         let State::Upgrading { buf, deadline } = &mut conn.state else {
             return Some(false);
@@ -382,8 +420,8 @@ impl Io {
             Ok(None) if now >= *deadline => return Some(false),
             Ok(None) => return None,
             Err(refusal) => {
-                write_small(&mut conn.stream, refusal.response());
-                return Some(false);
+                refuse(conn, refusal.response(), now);
+                return Some(true);
             }
         };
         let shared = Arc::new(Shared {
@@ -414,8 +452,8 @@ impl Io {
         let handle = match self.inbox.connect(peer, Box::new(sender), Box::new(resume)) {
             Ok(h) => h,
             Err(_) => {
-                write_small(&mut conn.stream, UNAVAILABLE);
-                return Some(false);
+                refuse(conn, UNAVAILABLE, now);
+                return Some(true);
             }
         };
         if !write_small(&mut conn.stream, &handshake::accept_response(&upgrade)) {
@@ -452,8 +490,13 @@ impl Io {
         }
         if readable || resumed {
             for _ in 0..CHUNKS_PER_WAKE {
-                if *paused || shared.lock().closing {
-                    break;
+                {
+                    // A peer that does not read its answers (pongs, too) is not read
+                    // either, so its output stays bounded.
+                    let out = shared.lock();
+                    if out.closing || !may_read(*paused, out.buf.len(), shared.max) {
+                        break;
+                    }
                 }
                 match conn.stream.read(&mut self.scratch) {
                     Ok(0) => return false,
@@ -485,7 +528,7 @@ impl Io {
             // Replacing the state drops the handle: the inbox gets `Closed` now, the
             // close frame is still flushed.
             conn.state = State::Lingering {
-                shared: shared.clone(),
+                shared: Some(shared.clone()),
                 deadline: Instant::now() + LINGER,
                 write_shut: false,
             };
@@ -497,7 +540,12 @@ impl Io {
     /// for slow peers) and releases everything; `Closed` is pushed for each open one.
     fn shutdown(&mut self) {
         for conn in self.conns.values_mut() {
-            if let State::Open { shared, .. } | State::Lingering { shared, .. } = &conn.state {
+            if let State::Open { shared, .. }
+            | State::Lingering {
+                shared: Some(shared),
+                ..
+            } = &conn.state
+            {
                 shared.close(
                     close_code(CloseReason::ServerStopping),
                     close_text(CloseReason::ServerStopping),
@@ -509,6 +557,13 @@ impl Io {
         self.conns.clear();
         self.listeners.clear();
     }
+}
+
+/// Whether an open connection is read: not while paused by the inbox, and not while
+/// its own output is backed up, so a peer that sends pings but never reads cannot grow
+/// its pong queue (it is bounded by `max` plus one wake's worth of reads).
+fn may_read(paused: bool, queued: usize, max: usize) -> bool {
+    !paused && queued < max
 }
 
 /// Hands the reader's messages to the inbox until it needs more bytes, the
@@ -557,15 +612,20 @@ fn linger(conn: &mut Conn, readable: bool, now: Instant, scratch: &mut [u8]) -> 
     else {
         return false;
     };
-    if now >= *deadline || flush(&mut conn.stream, shared).is_err() {
+    if now >= *deadline {
         return false;
     }
-    if !*write_shut && shared.lock().buf.is_empty() {
+    if let Some(shared) = shared {
+        if flush(&mut conn.stream, shared).is_err() {
+            return false;
+        }
+    }
+    if !*write_shut && shared.as_ref().is_none_or(|s| s.lock().buf.is_empty()) {
         let _ = conn.stream.shutdown(Shutdown::Write);
         *write_shut = true;
     }
     if readable {
-        loop {
+        for _ in 0..CHUNKS_PER_WAKE {
             match conn.stream.read(scratch) {
                 Ok(0) => return false,
                 Ok(_) => {}
@@ -576,6 +636,18 @@ fn linger(conn: &mut Conn, readable: bool, now: Instant, scratch: &mut [u8]) -> 
         }
     }
     true
+}
+
+/// Answers a refused upgrade and lingers, so the peer reads the answer before the
+/// socket closes (closing with its request unread would reset the connection).
+fn refuse(conn: &mut Conn, answer: &[u8], now: Instant) {
+    let shut = write_small(&mut conn.stream, answer);
+    let _ = conn.stream.shutdown(Shutdown::Write);
+    conn.state = State::Lingering {
+        shared: None,
+        deadline: if shut { now + LINGER } else { now },
+        write_shut: true,
+    };
 }
 
 /// Writes queued output until the socket would block.
@@ -613,4 +685,17 @@ fn write_small(stream: &mut TcpStream, mut bytes: &[u8]) -> bool {
 
 fn is_transient(e: &std::io::Error) -> bool {
     matches!(e.kind(), ErrorKind::WouldBlock | ErrorKind::Interrupted)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_backed_up_or_paused_connection_is_not_read() {
+        assert!(may_read(false, 0, 1024));
+        assert!(may_read(false, 1023, 1024));
+        assert!(!may_read(false, 1024, 1024));
+        assert!(!may_read(true, 0, 1024));
+    }
 }

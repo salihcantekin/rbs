@@ -46,12 +46,17 @@ pub struct WsConfig {
     /// at accept.
     pub max_upgrading: usize,
     /// Output bytes queued per connection before `try_send` answers `Full` (one message
-    /// is always taken when nothing is queued).
+    /// is always taken when nothing is queued). A connection with this much queued is
+    /// not read until it drains, so a peer that never reads cannot grow it with pings.
     pub max_queued_bytes: usize,
+    /// Sockets open at once, in any state (upgrading, open, closing); more are closed
+    /// at accept. Set above the API's connection cap plus `max_upgrading`.
+    pub max_sockets: usize,
 }
 
 impl WsConfig {
     /// Listens on `127.0.0.1` and `::1` at `port` (`::1` is skipped where IPv6 is off).
+    /// Give a fixed port: with 0 the two addresses get different ports.
     pub fn loopback(port: u16) -> Self {
         Self::on(vec![
             SocketAddr::from(([127, 0, 0, 1], port)),
@@ -67,6 +72,7 @@ impl WsConfig {
             upgrade_timeout: Duration::from_secs(10),
             max_upgrading: 16,
             max_queued_bytes: 1024 * 1024,
+            max_sockets: 128,
         }
     }
 }
@@ -112,22 +118,21 @@ impl ControlTransport for WsTransport {
             )));
         }
         let mut listeners = Vec::new();
-        for (i, addr) in self.config.addresses.iter().enumerate() {
+        let mut v6_error = None;
+        for addr in &self.config.addresses {
             match TcpListener::bind(addr) {
                 Ok(l) => listeners.push(l),
-                // `::1` where IPv6 is off, when another address is bound.
-                Err(e)
-                    if addr.is_ipv6()
-                        && (i > 0 || self.config.addresses.len() > 1)
-                        && matches!(
-                            e.kind(),
-                            std::io::ErrorKind::AddrNotAvailable | std::io::ErrorKind::Unsupported
-                        ) => {}
+                // `::1` where IPv6 is off (the error differs by OS and kernel setting):
+                // fine as long as another address is bound.
+                Err(e) if addr.is_ipv6() => v6_error = Some(format!("{addr}: {e}")),
                 Err(e) => return Err(TransportError(format!("cannot listen on {addr}: {e}"))),
             }
         }
         if listeners.is_empty() {
-            return Err(TransportError("no address to listen on".into()));
+            return Err(TransportError(format!(
+                "no address to listen on{}",
+                v6_error.map(|e| format!(" ({e})")).unwrap_or_default()
+            )));
         }
         let mut local = Vec::new();
         for l in &listeners {
@@ -154,6 +159,7 @@ impl ControlTransport for WsTransport {
                 upgrade_timeout: self.config.upgrade_timeout,
                 max_upgrading: self.config.max_upgrading,
                 max_queued_bytes: self.config.max_queued_bytes,
+                max_sockets: self.config.max_sockets,
             },
         )
         .map_err(|e| TransportError(format!("poller: {e}")))?;
@@ -175,12 +181,9 @@ impl ControlTransport for WsTransport {
             return;
         };
         r.stop.store(true, Ordering::Release);
-        // If the notification fails the thread still sees the flag at its next wake;
-        // a poller that cannot be notified is broken and `join` would hang, so this
-        // is reported rather than hidden.
-        if let Err(e) = r.poller.notify() {
-            debug_assert!(false, "poller notify failed: {e}");
-        }
+        // A poller that cannot be notified is broken; the thread then still sees the
+        // flag at its next event or deadline.
+        let _ = r.poller.notify();
         let _ = r.thread.join();
         self.local.clear();
     }
