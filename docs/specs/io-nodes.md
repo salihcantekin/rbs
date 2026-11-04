@@ -34,7 +34,7 @@ impl VideoExportNode {                                        // Node<GpuRuntime
     pub fn new(format: YuvFormat, width: u32, height: u32) -> Self;
     pub fn frame_format(&self) -> VideoFormat;                // the encoder config's input format
     pub fn stats(&self) -> Arc<ExportNodeStats>;              // frames, busy, lost
-    pub fn end(&self) -> Arc<ExportEnd>;                      // ADR-0044
+    pub fn end(&self) -> Arc<ExportEnd>;                      // ADR-0045
 }
 impl ExportEnd {                                              // shared with the control thread
     pub fn end_at(&self, at: Timestamp);                      // no canvas after `at`; earliest wins
@@ -108,7 +108,7 @@ Invariants:
 | --- | --- |
 | `prepare` | Creates a `YuvDownload` for the size and format (converter, plane textures, staging ring, frame buffers) |
 | `prepare` (again) | Clears `ExportEnd::ended`; the end time stays |
-| `process` | Not ending: 1. `take_ready`: the newest completed readback, if any, goes on "video". 2. A canvas frame not seen before (timestamp, sequence) is submitted. Ending (`ExportEnd::end_at`, ADR-0044): 1. `take_oldest`: the oldest completed readback goes on "video" (none is dropped as stale). 2. Only a canvas at or before the end time is submitted. 3. With no readback in flight, `ended` is set |
+| `process` | Not ending: 1. `take_ready`: the newest completed readback, if any, goes on "video". 2. A canvas frame not seen before (timestamp, sequence) is submitted. Ending (`ExportEnd::end_at`, ADR-0045): 1. `take_oldest`: the oldest completed readback goes on "video" (none is dropped as stale). 2. Only a canvas at or before the end time is submitted. 3. With no readback in flight, `ended` is set |
 | `release` | Drops the download |
 
 Invariants:
@@ -190,7 +190,7 @@ Nodes report through `NodeError` (ADR-0020): `Permanent` for what retrying canno
 ## Conformance tests
 
 - `crates/rbs-nodes/tests/encode_output.rs`: frames submitted once; header, media and trailer in order; backlog on `QueueFull` delivered in order; backlog overflow is permanent; carry-over in order; carry overflow resumes at a keyframe and requests one; a changed stream after restart is permanent; no session while installed or in Standby; a refused frame loses no packet; an output that wrote media refuses to restart; a failure keeps its cause; `release` gives up on a full queue on the wait clock without sleeping; no allocation per tick.
-- `crates/rbs-nodes/tests/pipeline_gpu.rs` (any GPU adapter; CI uses lavapipe, WARP and Metal): a BGRA window and an NV12 camera from the synthetic adapter go through capture, compositor and export, and arrive as NV12 with the right format, times and luma; an ended export passes on every canvas up to the end and none after (ADR-0044).
+- `crates/rbs-nodes/tests/pipeline_gpu.rs` (any GPU adapter; CI uses lavapipe, WARP and Metal): a BGRA window and an NV12 camera from the synthetic adapter go through capture, compositor and export, and arrive as NV12 with the right format, times and luma; an ended export passes on every canvas up to the end and none after (ADR-0045).
 - `crates/rbs-gpu/tests/upload_download.rs`: download codes, busy ring, stale frames, buffer recycling, `frames_cpu_copied`; upload of padded BGRA rows and NV12.
 - Hardware (manual, `crates/rbs-nodes/examples/record.rs`): screen and camera to an H.264 Matroska file with the platform's adapters.
 

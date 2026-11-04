@@ -262,7 +262,7 @@ impl YuvDownload {
 
     /// The oldest frame whose readback has completed, if any; newer completed frames
     /// stay for later calls. For the end of a stream, where every frame is passed on in
-    /// order and none is dropped as stale (ADR-0044). Hot path; never waits.
+    /// order and none is dropped as stale (ADR-0045). Hot path; never waits.
     pub fn take_oldest(&mut self, ctx: &GpuContext) -> Result<Option<VideoFrame>, GpuError> {
         self.take::<false>(ctx)
     }

@@ -40,7 +40,7 @@ pub struct ExportNodeStats {
     pub lost: AtomicU64,
 }
 
-/// Ends a video export's input at a master-clock time (ADR-0044); shared between the
+/// Ends a video export's input at a master-clock time (ADR-0045); shared between the
 /// node and the control thread.
 ///
 /// Until [`ExportEnd::end_at`] is called the export takes every canvas. Afterwards it
@@ -134,7 +134,7 @@ impl VideoExportNode {
         Arc::clone(&self.stats)
     }
 
-    /// The handle that ends the export's input (ADR-0044).
+    /// The handle that ends the export's input (ADR-0045).
     pub fn end(&self) -> Arc<ExportEnd> {
         Arc::clone(&self.end)
     }
@@ -165,7 +165,7 @@ impl Node<GpuRuntime> for VideoExportNode {
         // `u64::MAX` (the run path) takes every canvas: one load and one compare.
         let end = self.end.at.load(Ordering::Relaxed);
         // Frames submitted on earlier ticks first, so their staging buffers are free.
-        // Ending, every frame is passed on in order (ADR-0044); otherwise the newest.
+        // Ending, every frame is passed on in order (ADR-0045); otherwise the newest.
         let ready = if end == u64::MAX {
             download.take_ready(gpu)
         } else {
@@ -191,7 +191,7 @@ impl Node<GpuRuntime> for VideoExportNode {
                 }
             }
         }
-        // Ending (ADR-0044): done once nothing taken is still being read back. Readbacks
+        // Ending (ADR-0045): done once nothing taken is still being read back. Readbacks
         // that fail are counted in `lost` like on the run path.
         if end != u64::MAX && download.in_flight() == 0 && !self.end.ended() {
             self.end.ended.store(true, Ordering::Release);

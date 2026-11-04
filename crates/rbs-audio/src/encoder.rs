@@ -16,7 +16,7 @@ pub const ENCODER_NODE_TYPE: &str = "org.rbs.audio.encoder";
 /// partition, behind an audio queue: encoders allocate packet payloads, which the
 /// audio thread must not do.
 ///
-/// End of stream (ADR-0044): the first final tick (`Tick::draining`) without a block
+/// End of stream (ADR-0045): the first final tick (`Tick::draining`) without a block
 /// on its input is the end of its input (the audio queue's reader rings for one more
 /// final tick after its last block). On it the node flushes the session, passes the
 /// tail on and takes no more blocks until it is prepared again.
@@ -65,7 +65,7 @@ impl EncoderNode {
         Arc::clone(&self.dropped)
     }
 
-    /// Final ticks on which the session was flushed into the graph (ADR-0044).
+    /// Final ticks on which the session was flushed into the graph (ADR-0045).
     pub fn flushes(&self) -> Arc<AtomicU64> {
         Arc::clone(&self.flushes)
     }
@@ -104,7 +104,7 @@ impl<X: Runtime> Node<X> for EncoderNode {
                     .map_err(|_| NodeError::Backend("audio encoder submit failed"))?;
                 false
             }
-            // End of input (ADR-0044): a final tick without a block. The flush may
+            // End of input (ADR-0045): a final tick without a block. The flush may
             // pad the last frame and allocate; final ticks are bounded by the drain
             // timeout (ADR-0043 Decision 4).
             None => draining && !self.ended,

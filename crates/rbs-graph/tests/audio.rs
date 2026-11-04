@@ -408,7 +408,7 @@ fn final_ticks_pass_every_queued_block_and_end_with_one_that_passes_none() {
     }
     while rig.bell.wait(std::time::Duration::ZERO) {}
     // Three final ticks pass the three blocks; the reader rings after the last one too,
-    // so a fourth runs and passes nothing: the consumer sees its input end (ADR-0044).
+    // so a fourth runs and passes nothing: the consumer sees its input end (ADR-0045).
     assert_eq!(final_ticks(&mut rig, 0), 4);
     assert_eq!(rig.seen.lock().unwrap().len(), 3);
     assert_eq!(rig.stats.received(), 3);

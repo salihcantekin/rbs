@@ -377,7 +377,7 @@ fn recordings_start_with_the_picked_encoder_and_stop_into_a_closed_file() {
         other => panic!("{other:?}"),
     }
 
-    // Stop ends the video and waits for its tail (ADR-0044). Nothing renders on the
+    // Stop ends the video and waits for its tail (ADR-0045). Nothing renders on the
     // still clock, so the host stops once `END_TAIL_LIMIT` has passed on it: the test
     // moves the clock until the answer comes (it cannot know when the host ended).
     host.send(Command::StopRecording);

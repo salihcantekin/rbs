@@ -79,7 +79,7 @@ fn recordings_start_and_stop_while_the_studio_keeps_running() {
             workers(&studio)
         );
 
-        // The second round ends first (ADR-0044): every canvas up to the end reaches
+        // The second round ends first (ADR-0045): every canvas up to the end reaches
         // the file, although the render partition keeps running and the export leaves
         // it without a final tick.
         let end = (round == 1).then(|| {

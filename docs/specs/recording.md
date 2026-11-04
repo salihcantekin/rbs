@@ -71,7 +71,7 @@ impl Recording {
     pub fn failure(&self) -> Option<String>;
     pub fn progress(&self) -> Progress;     // plain counters; peaks since the previous call; packets_muxed()
     pub fn mixer_anomalies(&self) -> u64;
-    pub fn end(&mut self);                  // end the video now; keep servicing until tail_done (ADR-0044)
+    pub fn end(&mut self);                  // end the video now; keep servicing until tail_done (ADR-0045)
     pub fn tail_done(&self) -> bool;
     pub fn finish(self) -> FinishReport;    // shutdown in pipeline order
 }
@@ -79,7 +79,7 @@ pub fn scheme_of(url: &str) -> Option<&str>;
 
 // The studio (ADR-0041)
 pub const MAX_LAYERS: usize = 64;      // layers and strips held without allocating
-pub const END_TAIL_LIMIT: Duration;    // 500 ms on the master clock (ADR-0044)
+pub const END_TAIL_LIMIT: Duration;    // 500 ms on the master clock (ADR-0045)
 #[non_exhaustive] pub struct StudioSettings {
     pub canvas: CanvasId, pub audio: bool, pub audio_graph: AudioGraphConfig,
     pub partitions: Partitions, pub preview: Option<PreviewDesc>,
@@ -101,7 +101,7 @@ impl Studio {
         -> Result<Updated, RecordError>;
     pub fn start_recording(&mut self, adapters: &RecordAdapters, out: &OutputSettings)
         -> Result<&StartReport, RecordError>;
-    pub fn end_recording(&mut self) -> bool;          // ADR-0044; false when nothing records
+    pub fn end_recording(&mut self) -> bool;          // ADR-0045; false when nothing records
     pub fn recording_tail_done(&self) -> bool;        // true when nothing records
     pub fn stop_recording(&mut self) -> Option<FinishReport>;
     pub fn is_recording(&self) -> bool;
@@ -166,7 +166,7 @@ Without audio (`audio: None`) the two audio partitions are not added: three work
 ### Running and stopping
 
 - `service` runs `Engine::service` and reads its events, matched to sources by `SourceState::node`: a `Failed` event of a source sets that source's `failed`, `Restarted` or `Recovered` clears it; a permanent failure (`retry_at: None`) of an essential node sets `failure`. `failure()` also returns the output's first permanent failure cause (`OutputNodeStats::failure`). The composition root stops when `failure()` is set.
-- `finish` shuts the engine down (sources first, the output last, which writes the container's trailer and finishes the transport) and returns the final `Progress`, `failure`, shutdown errors, `flush_lost` (packets the video encoder still held after its final-tick flush, ADR-0043; normally 0) and `finish_lost` (output items not delivered). Call `end` first and service until `tail_done` to keep the frames still read back (ADR-0044). `Progress::start_drops` counts audio packets dropped by the output's aligned start.
+- `finish` shuts the engine down (sources first, the output last, which writes the container's trailer and finishes the transport) and returns the final `Progress`, `failure`, shutdown errors, `flush_lost` (packets the video encoder still held after its final-tick flush, ADR-0043; normally 0) and `finish_lost` (output items not delivered). Call `end` first and service until `tail_done` to keep the frames still read back (ADR-0045). `Progress::start_drops` counts audio packets dropped by the output's aligned start.
 
 ### Studio (ADR-0041)
 
@@ -175,7 +175,7 @@ Without audio (`audio: None`) the two audio partitions are not added: three work
 3. `update(collection, sources)`: the canvas must keep its size and rate (`NotBound`) and have a program scene (`NoProgram`), both checked before anything changes. The binder syncs; new sources get entries, retired ones are taken back from their partitions after the apply; a replaced source (settings changed) is applied break-before-make (one apply without the new node first). An instance whose take fails (its partition's swap still in flight) is kept and `service` retries it; a replacement is not instantiated while the instance it replaces is not taken back (`sources()[i].failed` says it waits, `waiting()` is true; an `update` with the same collection opens it once `waiting()` is false). Scheduled sources without an instance are instantiated (a source's first failure reason is kept), the layers are sent, and the graph is applied once. Strips: before the apply the mixer gets the strips of the old and the new inputs, after it only the new ones, so neither schedule feeds an input without a strip (`unknown_inputs` stays 0). Layers are sent before the apply: for up to one tick the old schedule may draw without a layer for a source that just left (skipped) and the new one without a layer for a source that just joined (not drawn yet); a producer is never drawn in the wrong place. Returns problems and the nodes that did not join.
 4. `start_recording(adapters, out)`: `AlreadyRecording` while one runs; `NotBound("mixer")` for audio on a studio without audio. Adapters are chosen as in `Recording::start` step 2 before anything is added. Then the export (`RENDER`), video encoder, audio encoder (with `out.audio`) and output are added Active and linked (output streams: video, then audio), sources only now scheduled are opened, layers are sent and the graph is applied once. The recording's nodes are added to a copy of the graph and adopted all or nothing, so a failure there leaves the studio as it was. If the export, an encoder or the output did not join, or the engine reported errors or links that could not cross partitions (in any partition), the recording's nodes are removed again (plain apply) and taken back, and the call fails with `Start` (removal errors listed with node `"rollback"`); the studio runs on. The output may have created the destination.
 5. `stop_recording()`: the recording's nodes are removed and the graph applied with `Engine::apply_draining`: the encoders run their final tick, the output drains its queue and writes the trailer in `release`, their partitions stop; render and audio keep running when the preview or the meter sink keeps them scheduled. Instances are taken back. Returns a `FinishReport` (its `shutdown_errors` are the apply's errors), or `None` when nothing records.
-5a. **Keeping the tail** (ADR-0044). `end_recording()` ends the export at the master clock's now (`ExportEnd::end_at`): it takes no later canvas and passes on every frame it still reads back. `recording_tail_done()` is true once the export reports `ended`, or `END_TAIL_LIMIT` after the end on the master clock, and while nothing records; false while a recording that was not ended runs. The composition root keeps calling `service` until then and calls `stop_recording`; the video encoder's final tick takes the last frame from the queue, and the audio encoder flushes on its last final tick (audio graph spec). Audio keeps flowing until the drain, so the file's audio may end a few frames after its last picture. `rbs-cli` (when the recording did not fail) and the desktop app's Stop and close do this; `stop_recording` alone loses the frames still read back.
+5a. **Keeping the tail** (ADR-0045). `end_recording()` ends the export at the master clock's now (`ExportEnd::end_at`): it takes no later canvas and passes on every frame it still reads back. `recording_tail_done()` is true once the export reports `ended`, or `END_TAIL_LIMIT` after the end on the master clock, and while nothing records; false while a recording that was not ended runs. The composition root keeps calling `service` until then and calls `stop_recording`; the video encoder's final tick takes the last frame from the queue, and the audio encoder flushes on its last final tick (audio graph spec). Audio keeps flowing until the drain, so the file's audio may end a few frames after its last picture. `rbs-cli` (when the recording did not fail) and the desktop app's Stop and close do this; `stop_recording` alone loses the frames still read back.
 6. `service()` maps engine events as `Recording::service` does; a permanent failure of a studio node sets `failure()`, of a recording node `recording_failure()` (which also returns the output's first permanent failure). The composition root stops the recording when `recording_failure()` is set.
 7. `shutdown()` stops a running recording as `stop_recording`, then shuts the engine down. Every call runs on the control thread.
 8. Sync offsets: `settings.audio_offsets` holds a sync offset in ns per audio source (positive delays it, negative advances it; audio graph spec, "Offset", clamps it). An audio source's offset is sent on its input's offset channel before the node is adopted, so its first block already has it; this also holds for a source opened later or rebound after a settings change. `set_audio_offset(source, ns)` updates the setting (0 removes it) and sends it to a running input of that source (a change below 5 ms slews, a larger one resyncs once), returning whether one got it. `RecordSettings::audio_offsets` is passed to the studio by `studio()`.

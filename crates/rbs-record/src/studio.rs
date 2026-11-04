@@ -53,7 +53,7 @@ const AUDIO_ENCODER_PACKETS: usize = 64;
 pub const MAX_LAYERS: usize = 64;
 /// Longest wait, on the master clock, for a recording's video tail after
 /// [`Studio::end_recording`]; afterwards [`Studio::recording_tail_done`] is true anyway
-/// (a stalled readback must not hold the stop up, ADR-0044).
+/// (a stalled readback must not hold the stop up, ADR-0045).
 pub const END_TAIL_LIMIT: Duration = Duration::from_millis(500);
 
 /// How the studio runs its canvas.
@@ -1201,7 +1201,7 @@ impl Studio {
         (Some(r), errors)
     }
 
-    /// Ends the running recording's video now, on the master clock (ADR-0044): the
+    /// Ends the running recording's video now, on the master clock (ADR-0045): the
     /// export takes no canvas after this time and keeps passing on the frames it still
     /// reads back. Call [`Studio::stop_recording`] once [`Studio::recording_tail_done`]
     /// is true, so the last frames reach the file; until then the studio and the

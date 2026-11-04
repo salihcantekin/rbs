@@ -1,4 +1,4 @@
-# ADR-0044: A stopped recording keeps its tail: the export ends first, the audio encoder flushes when its input ends
+# ADR-0045: A stopped recording keeps its tail: the export ends first, the audio encoder flushes when its input ends
 
 - Status: Proposed
 - Date: 2026-11-04

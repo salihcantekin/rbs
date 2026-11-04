@@ -669,7 +669,7 @@ impl Recording {
     }
 
     /// Ends the video at the master clock's now and keeps the frames still read back
-    /// (ADR-0044, [`Studio::end_recording`]). Keep calling [`Recording::service`] until
+    /// (ADR-0045, [`Studio::end_recording`]). Keep calling [`Recording::service`] until
     /// [`Recording::tail_done`], then [`Recording::finish`].
     pub fn end(&mut self) {
         self.studio.end_recording();

@@ -400,7 +400,7 @@ struct Host {
     /// The running recording's file.
     recording: Option<PathBuf>,
     /// Stop was asked for: the recording ended its video and stops once its tail is
-    /// in (ADR-0044).
+    /// in (ADR-0045).
     ending: bool,
     /// Makes an engine for a restart.
     engine: Box<dyn Fn() -> Engine>,
@@ -641,7 +641,7 @@ impl Host {
             }
             Command::StopRecording => {
                 // Ends the video now; the loop stops the recording once the frames
-                // still read back are in (ADR-0044).
+                // still read back are in (ADR-0045).
                 if self.recording.is_some() && self.studio.end_recording() {
                     self.ending = true;
                 } else {

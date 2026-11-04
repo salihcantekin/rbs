@@ -31,7 +31,7 @@
 //!   the consumer partition's [`Doorbell`]; the reader passes one block per tick and
 //!   rings its own doorbell while more are queued, and on a final tick
 //!   (`Tick::draining`) after every block it passes, so the last final
-//!   tick of a draining consumer passes none (ADR-0044).
+//!   tick of a draining consumer passes none (ADR-0045).
 //!
 //! Packet and audio queues are `std::sync::mpsc::sync_channel`s: bounded and preallocated;
 //! `try_send` and `try_recv` never allocate and never wait for the other side (they
@@ -666,7 +666,7 @@ pub const AUDIO_FILL_LIMIT: Duration = Duration::from_secs(1);
 /// partition's doorbell so the next tick comes at once. On a final tick it rings after
 /// any block it passed, so a draining partition runs one more final tick, on which it
 /// passes nothing: a consumer that sees a final tick without a block knows its input
-/// ended (ADR-0044). Where blocks were lost (a full
+/// ended (ADR-0045). Where blocks were lost (a full
 /// queue, a bypassed producer) it passes on blocks of silence at the missing times
 /// first, up to [`AUDIO_FILL_LIMIT`], so the consumer's timeline stays continuous.
 pub struct AudioReader {
@@ -753,7 +753,7 @@ impl<X: Runtime> Node<X> for AudioReader {
         self.stats.received.fetch_add(1, Ordering::Relaxed);
         // The free channel has room for every buffer of this queue.
         let _ = self.free.try_send(buffer);
-        // On a final tick (ADR-0044) it rings after every block it passed on, also the
+        // On a final tick (ADR-0045) it rings after every block it passed on, also the
         // last: the partition's last final tick then passes nothing, which tells the
         // consumer that its input ended.
         if draining || self.stats.queued.load(Ordering::Acquire) > 0 {

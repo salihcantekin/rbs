@@ -304,7 +304,7 @@ fn record(a: &RecordArgs) -> Result<(), String> {
     println!("stopping...");
     if failure.is_none() {
         // Ends the video now and lets the frames still read back reach the encoder
-        // (ADR-0044); the recording gives up on them after `END_TAIL_LIMIT` itself.
+        // (ADR-0045); the recording gives up on them after `END_TAIL_LIMIT` itself.
         recording.end();
         let ending = Instant::now();
         while !recording.tail_done() && ending.elapsed() < Duration::from_secs(1) {
