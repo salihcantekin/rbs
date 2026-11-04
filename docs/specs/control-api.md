@@ -60,7 +60,7 @@ JSON-RPC 2.0 over UTF-8 JSON text messages. WebSocket subprotocol: `rbs.v<major>
 3. Client: `session.authenticate {token}`.
 4. Server: `{scopes, server: {name, version}}`, or `auth_failed` and close.
 
-On IPC, a peer the OS identifies as the same user is authenticated by step 2, which then also returns its scopes. Before authentication every other method returns `not_authenticated`. A connection that has not authenticated within the handshake timeout is closed. `auth_failed` is the same for an unknown and a wrong token.
+Until the `session.authenticate` answer arrives, the pre-authentication message limit (4 KiB) applies, so a client waits for it before sending larger requests. On IPC, a peer the OS identifies as the same user is authenticated by step 2, which then also returns its scopes. Before authentication every other method returns `not_authenticated`. A connection that has not authenticated within the handshake timeout is closed. `auth_failed` is the same for an unknown and a wrong token.
 
 **Tokens.** Text `rbs1_` followed by 64 lowercase hex digits (32 bytes of OS randomness). The server stores `SHA-256` of the token's UTF-8 bytes, as lowercase hex, and compares in constant time. Each token has a user-given name and scopes, is shown once at creation (UI or `rbs-cli token create`), and can be revoked; revoking closes its sessions.
 
@@ -106,7 +106,7 @@ Protocol version `major.minor`, independent of the `rbs-api` crate's semver. Min
 - Responses come in request order, with one exception: refusals that protect the server are sent at once and can overtake the answer to an earlier request still in flight, because queueing them would make the queue unbounded. They are `busy`, `rate_limited`, `message_too_large`, and errors for messages whose request id cannot be read (answered with `"id": null`). Every other answer, including `scope_denied` and decoding errors that carry an id, waits its turn.
 - Before authentication the server reveals only the handshake: a message naming any other method, known or not, gets `not_authenticated`, without the method list or parameter details.
 - Transports read at most the connection's current message limit (4 KiB before authentication) and report a longer message instead of buffering it, so unauthenticated peers cannot make the server hold large messages.
-- The pending-handshake cap counts and refuses only non-loopback peers, so remote clients cannot lock out loopback and IPC clients; local peers are bounded by the connection cap, of which unauthenticated remote peers can hold at most the pending-handshake cap.
+- The pending-handshake cap counts and refuses only non-loopback peers, and the last slots of the connection cap are reserved for loopback and IPC peers, so remote clients, even a flood of connections the server refuses, cannot lock out local clients.
 - Per-address caps and back-off group IPv6 addresses by their /64 prefix.
 - Changing a token's name or scopes, or revoking it, closes its sessions; the client reconnects with what the token allows now.
 - A peer that does not read its answers is closed once more than a limit of answers wait for it (events do not count: only the latest per state key waits).
@@ -117,6 +117,7 @@ Version 1 limits (from the first implementation, `rbs_api::Limits::default`):
 | --- | --- |
 | Connections (including closed ones whose request is still in flight) | 64 |
 | Pending handshakes (non-loopback peers) | 16 |
+| Connection slots only loopback and IPC peers can take | 8 of the 64 |
 | Connections per non-loopback address (IPv6: per /64) | 8 |
 | Handshake timeout (connect to authenticated) | 10 s |
 | Message size before / after authentication | 4 KiB / 1 MiB |

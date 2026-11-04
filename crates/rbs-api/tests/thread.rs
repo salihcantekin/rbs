@@ -266,3 +266,21 @@ fn the_inbox_pauses_a_connection_at_its_quota_and_resumes_it() {
     assert!(matches!(inbox.pop(), Some(TransportEvent::Closed { .. })));
     assert!(inbox.is_empty());
 }
+
+#[test]
+fn remote_peers_cannot_take_the_local_reserve() {
+    use rbs_api::transport::ConnectionBudget;
+    use rbs_api::wake::Wake;
+
+    let budget = Arc::new(ConnectionBudget::with_local_reserve(3, 1));
+    let inbox = TransportInbox::new(Arc::new(Wake::new()), budget.clone(), 2, 4096);
+    let (tx, _rx) = mpsc::channel();
+    let connect =
+        |peer: PeerInfo| inbox.connect(peer, Box::new(ChannelSender(tx.clone())), Box::new(|| {}));
+    let _r1 = connect(PeerInfo::remote_websocket("10.0.0.1")).unwrap();
+    let _r2 = connect(PeerInfo::remote_websocket("10.0.0.2")).unwrap();
+    assert!(connect(PeerInfo::remote_websocket("10.0.0.3")).is_err());
+    let _local = connect(PeerInfo::same_user_ipc()).unwrap();
+    assert_eq!(budget.open(), 3);
+    assert!(connect(PeerInfo::loopback_websocket()).is_err());
+}

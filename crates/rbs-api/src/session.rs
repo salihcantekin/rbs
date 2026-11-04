@@ -34,7 +34,9 @@ pub const PROTOCOL_VERSION: &str = "1.0";
 pub struct Limits {
     /// Connections at once, including closed ones whose request is still in flight.
     pub max_connections: usize,
-    /// Connections not yet authenticated.
+    /// Of `max_connections`, how many only loopback and IPC peers can take.
+    pub local_reserved_connections: usize,
+    /// Remote connections not yet authenticated.
     pub max_pending_handshakes: usize,
     /// Connections per peer address (not applied on loopback or IPC).
     pub max_connections_per_address: usize,
@@ -68,6 +70,7 @@ impl Default for Limits {
     fn default() -> Self {
         Self {
             max_connections: 64,
+            local_reserved_connections: 8,
             max_pending_handshakes: 16,
             max_connections_per_address: 8,
             handshake_timeout: Duration::from_secs(10),
@@ -292,7 +295,10 @@ pub struct Server {
 impl Server {
     /// A server with the JSON codec and no sampler.
     pub fn new(config: ServerConfig, tokens: TokenStore) -> Self {
-        let budget = Arc::new(ConnectionBudget::new(config.limits.max_connections));
+        let budget = Arc::new(ConnectionBudget::with_local_reserve(
+            config.limits.max_connections,
+            config.limits.local_reserved_connections,
+        ));
         Self {
             config,
             codec: Box::new(JsonCodec),

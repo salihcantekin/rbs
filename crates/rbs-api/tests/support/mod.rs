@@ -174,10 +174,13 @@ impl Harness {
         self.wire(conn).lock().unwrap().closed
     }
 
+    /// Drops the connection's handle as an adapter does when the peer is gone.
     pub fn transport_closed(&mut self, conn: ConnectionId) {
+        self.handles.retain(|h| h.id() != conn);
         let now = self.now();
-        self.server
-            .handle(Input::Transport(TransportEvent::Closed { id: conn }), now);
+        while let Some(event) = self.inbox.pop() {
+            self.server.handle(Input::Transport(event), now);
+        }
         self.collect();
     }
 

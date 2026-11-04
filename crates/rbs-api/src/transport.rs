@@ -258,12 +258,21 @@ pub enum Refused {
 pub struct ConnectionBudget {
     open: AtomicUsize,
     max: usize,
+    local_reserve: usize,
 }
 
 impl ConnectionBudget {
     /// A budget of `max` connections.
     pub fn new(max: usize) -> Self {
+        Self::with_local_reserve(max, 0)
+    }
+
+    /// A budget of `max` connections of which the last `local_reserve` only loopback
+    /// and IPC peers can take, so a flood of remote connections (refused by the server
+    /// only after `connect`) cannot lock local clients out.
+    pub fn with_local_reserve(max: usize, local_reserve: usize) -> Self {
         Self {
+            local_reserve: local_reserve.min(max),
             open: AtomicUsize::new(0),
             max,
         }
@@ -274,11 +283,16 @@ impl ConnectionBudget {
         self.open.load(Ordering::Acquire)
     }
 
-    fn try_take(&self) -> bool {
+    fn try_take(&self, local: bool) -> bool {
+        let max = if local {
+            self.max
+        } else {
+            self.max - self.local_reserve
+        };
         // A compare-exchange loop: `fetch_update` is deprecated on new toolchains and
         // its replacement is newer than the MSRV.
         let mut n = self.open.load(Ordering::Acquire);
-        while n < self.max {
+        while n < max {
             match self
                 .open
                 .compare_exchange_weak(n, n + 1, Ordering::AcqRel, Ordering::Acquire)
@@ -371,7 +385,7 @@ impl TransportInbox {
         if self.inner.stopped.load(Ordering::Acquire) {
             return Err(Refused::Stopped);
         }
-        if !self.inner.budget.try_take() {
+        if !self.inner.budget.try_take(peer.is_local()) {
             return Err(Refused::TooManyConnections);
         }
         let id = ConnectionId(self.inner.next_id.fetch_add(1, Ordering::Relaxed));
