@@ -525,8 +525,20 @@ impl Engine {
         // Move the idle instances; each partition that gains one is sent again below,
         // also one that was sent in phase 1.
         self.run_moves(&mut out.errors);
-        // Phase 2: every partition with a part not sent yet, in pipeline order.
-        for p in &order {
+        // Phase 2: every partition with a part not sent yet. A draining apply sends in
+        // pipeline order, so a partition drains after the ones that fed it (8c). A plain
+        // apply sends consumers first (invariant 4a): each partition's new nodes are
+        // prepared on this thread, which may block on a device, and its worker runs the
+        // new schedule before the partitions feeding it prepare theirs, so a producer
+        // never writes into a queue whose reader does not run yet.
+        let consumers_first: Vec<PartitionId>;
+        let phase2: &[PartitionId] = if drain {
+            &order
+        } else {
+            consumers_first = order.iter().rev().copied().collect();
+            &consumers_first
+        };
+        for p in phase2 {
             if self.dirty.contains(p) {
                 self.send_current(*p, &mut out.reports, &mut out.events, &mut out.errors);
             }
