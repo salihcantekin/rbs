@@ -574,7 +574,15 @@ impl StudioUi {
     /// The Settings window opened: it shows the access tokens as saved now, including
     /// changes `rbs-cli token` made while the app ran.
     pub fn settings_opened(&mut self) {
-        self.reload_tokens();
+        // Under the lock, so an older list read here never replaces in the server one
+        // the control thread saved meanwhile (`tokens.*` over IPC). While another
+        // program holds the lock, only the list shown is updated: that program's
+        // change reaches the server its own way, or with the next change made here.
+        match remote_profile::try_lock(&self.config) {
+            Ok(None) => self.read_tokens(false),
+            Ok(Some(_lock)) => self.read_tokens(true),
+            Err(_) => self.read_tokens(true),
+        }
     }
 
     /// Holds the settings file while this window reads, changes and saves it, so a
@@ -604,6 +612,11 @@ impl StudioUi {
     /// (its apps are disconnected). A file that cannot be used now is left alone and
     /// the tokens held are kept; the next change writes them back.
     fn reload_tokens(&mut self) {
+        self.read_tokens(true);
+    }
+
+    /// [`Self::reload_tokens`]; with `to_server` false only the list shown changes.
+    fn read_tokens(&mut self, to_server: bool) {
         match remote_profile::read(&self.config) {
             Ok(Some(saved)) => {
                 if self.remote.take_tokens(saved) {
@@ -614,14 +627,14 @@ impl StudioUi {
                     {
                         self.new_token = None;
                     }
-                    self.tokens_changed();
+                    self.tokens_read(to_server);
                 }
             }
             // Deleted: no tokens (the next change writes the file again).
             Ok(None) => {
                 if self.remote.take_tokens(RemoteProfile::new()) {
                     self.new_token = None;
-                    self.tokens_changed();
+                    self.tokens_read(to_server);
                 }
             }
             Err(why) => {
@@ -643,6 +656,14 @@ impl StudioUi {
 
     /// The token list changed: the server accepts the new set (apps using a removed
     /// token are disconnected) and the list shows it.
+    fn tokens_read(&mut self, to_server: bool) {
+        if to_server {
+            self.tokens_changed();
+        } else {
+            self.refresh_tokens();
+        }
+    }
+
     fn tokens_changed(&mut self) {
         if let Some(server) = &self.remote_server {
             server.set_tokens(self.remote.store());
@@ -1092,12 +1113,9 @@ impl StudioUi {
                 self.folder_serial += 1;
                 self.save_profile();
             }
-            // `rbs-cli token` over local IPC made or revoked a token; the server has
-            // it already. Show the list as saved. Reading it again also sets it in the
-            // server: if this window read the file without the lock (opening Settings,
-            // starting remote control) just before the change and set that older list
-            // after it, this puts the newer one back.
-            Update::TokensChanged => self.reload_tokens(),
+            // `rbs-cli token` over local IPC made or revoked a token; the control
+            // thread gave it to the server already. Only the list shown changes here.
+            Update::TokensChanged => self.read_tokens(false),
         }
         out
     }

@@ -331,7 +331,7 @@ fn tokens_changed_over_local_ipc_take_effect_at_once() {
         json!(["read", "control"]),
         "{auth}"
     );
-    // A panel token cannot manage tokens, and loopback WebSocket never gets `tokens`.
+    // A panel token cannot manage tokens (no token the app makes has `tokens`).
     let denied = deck.call(json!({"jsonrpc": "2.0", "id": 3, "method": "tokens.list"}));
     assert_eq!(denied["error"]["data"]["kind"], "scope_denied", "{denied}");
 

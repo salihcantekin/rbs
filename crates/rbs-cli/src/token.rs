@@ -38,8 +38,15 @@ pub fn run(
         && let Some(endpoint) = ipc
     {
         match RunningApp::connect(endpoint) {
-            Reach::Connected(app) => return live(app, command, out, notes),
+            Reach::Connected(app) => return live(app, endpoint, command, out, notes),
             Reach::NotRunning => {}
+            // A revoke made only in the file would leave the token working in the
+            // running RBS: refused, so a script does not take it as done.
+            Reach::Unusable(why) if matches!(command, TokenCommand::Revoke { .. }) => {
+                return Err(format!(
+                    "RBS is running but could not be reached ({why}), so nothing was revoked. Try again."
+                ));
+            }
             Reach::Unusable(why) => {
                 writeln!(
                     notes,
@@ -52,9 +59,30 @@ pub fn run(
     in_file(config, command, out, notes)
 }
 
+/// After `tokens.create` got no answer: revokes the token by name if RBS made it, and
+/// says what happened.
+fn unanswered_create(endpoint: &Endpoint, name: &str, why: &str) -> String {
+    let undone = match RunningApp::connect(endpoint) {
+        Reach::Connected(mut app) => match app.call("tokens.revoke", json!({ "name": name })) {
+            Ok(_) => Ok(()),
+            Err(e) if e.kind.as_deref() == Some("not_found") => Ok(()),
+            Err(e) => Err(e.message),
+        },
+        Reach::NotRunning => Err("RBS is no longer running".to_owned()),
+        Reach::Unusable(w) => Err(w),
+    };
+    match undone {
+        Ok(()) => format!("{why}, so \"{name}\" was not kept. Try again."),
+        Err(e) => format!(
+            "{why}. RBS may have made \"{name}\" without showing it, and it could not be revoked ({e}). Check with: rbs-cli token list, and revoke it with: rbs-cli token revoke \"{name}\""
+        ),
+    }
+}
+
 /// Makes the change in the running RBS.
 fn live(
     mut app: RunningApp,
+    endpoint: &Endpoint,
     command: &TokenCommand,
     out: &mut dyn Write,
     notes: &mut dyn Write,
@@ -67,12 +95,19 @@ fn live(
     match command {
         TokenCommand::List => Ok(()),
         TokenCommand::Create { name, access } => {
-            let r = app
-                .call(
-                    "tokens.create",
-                    json!({"name": name, "scopes": access.scopes()}),
-                )
-                .map_err(refused)?;
+            let r = match app.call(
+                "tokens.create",
+                json!({"name": name, "scopes": access.scopes()}),
+            ) {
+                Ok(r) => r,
+                // No answer (timeout, connection lost): RBS may have made the token
+                // all the same, and nobody saw it. Revoke it on a new connection.
+                Err(e) if e.kind.is_none() => {
+                    drop(app);
+                    return Err(unanswered_create(endpoint, name.trim(), &e.message));
+                }
+                Err(e) => return Err(refused(e)),
+            };
             let (Some(token), Some(name)) = (r["token"].as_str(), r["name"].as_str()) else {
                 return Err("RBS answered without a token.".into());
             };

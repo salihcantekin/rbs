@@ -97,7 +97,7 @@ fn change(
         Ok(None) => {
             return Err(ApiError::new(
                 ErrorKind::Failed,
-                "Another program is changing the remote control settings. Try again.",
+                "The remote control settings are being changed right now (in RBS's Settings window or by rbs-cli). Try again.",
             ));
         }
         // A lock file that cannot be used does not stop the change (as in the app's
