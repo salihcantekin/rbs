@@ -52,5 +52,32 @@ pub fn adapters() -> (RecordAdapters, Vec<String>) {
                 .register(Arc::new(rbs_codec_mf::MfAacFactory::new())),
         );
     }
+    #[cfg(target_os = "macos")]
+    {
+        note(
+            a.sources
+                .register_capture(Arc::new(rbs_capture_sck::SckCaptureFactory::new())),
+        );
+        note(
+            a.sources
+                .register_capture(Arc::new(rbs_capture_avf::AvfCaptureFactory::new())),
+        );
+        note(
+            a.sources
+                .register_audio(Arc::new(rbs_audio_io_coreaudio::CoreAudioBackend::new())),
+        );
+        note(
+            a.video_encoders
+                .register(Arc::new(rbs_codec_videotoolbox::VideoToolboxFactory::new())),
+        );
+        // Apple's software encoders: a last resort after the hardware adapter.
+        note(a.video_encoders.register(Arc::new(
+            rbs_codec_videotoolbox::VideoToolboxFactory::with_software(),
+        )));
+        note(
+            a.audio_encoders
+                .register(Arc::new(rbs_codec_audiotoolbox::AacFactory::new())),
+        );
+    }
     (a, errors)
 }

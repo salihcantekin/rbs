@@ -36,6 +36,13 @@ rbs-codec-nvenc = { path = "../rbs-codec-nvenc" }
 rbs-codec-amf = { path = "../rbs-codec-amf" }
 rbs-codec-mf = { path = "../rbs-codec-mf" }
 
+[target.'cfg(target_os = "macos")'.dependencies]
+rbs-capture-sck = { path = "../rbs-capture-sck" }
+rbs-capture-avf = { path = "../rbs-capture-avf" }
+rbs-audio-io-coreaudio = { path = "../rbs-audio-io-coreaudio" }
+rbs-codec-videotoolbox = { path = "../rbs-codec-videotoolbox" }
+rbs-codec-audiotoolbox = { path = "../rbs-codec-audiotoolbox" }
+
 [dev-dependencies]
 # Reference adapters for the scene-building tests (deterministic, no devices).
 rbs-capture-test = { path = "../rbs-capture-test" }

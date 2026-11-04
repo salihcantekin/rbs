@@ -69,6 +69,12 @@ objc2 = "0.6.3"
 objc2-quartz-core = { version = "0.3.2", default-features = false, features = ["std", "CALayer", "CATransaction", "objc2-core-foundation", "objc2-core-graphics"] }
 objc2-core-foundation = { version = "0.3.2", default-features = false, features = ["std", "CFCGTypes"] }
 objc2-core-graphics = { version = "0.3.2", default-features = false, features = ["std", "CGColor"] }
+# The platform's adapters (src/platform.rs).
+rbs-capture-sck = { path = "../rbs-capture-sck" }
+rbs-capture-avf = { path = "../rbs-capture-avf" }
+rbs-audio-io-coreaudio = { path = "../rbs-audio-io-coreaudio" }
+rbs-codec-videotoolbox = { path = "../rbs-codec-videotoolbox" }
+rbs-codec-audiotoolbox = { path = "../rbs-codec-audiotoolbox" }
 
 [dev-dependencies]
 # The control API test reads JSON-RPC answers (tests/studio_api.rs).
