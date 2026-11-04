@@ -12,6 +12,7 @@
 #![allow(clippy::print_stdout, clippy::print_stderr)] // A command-line program prints.
 
 mod args;
+mod permissions;
 mod platform;
 mod scene;
 
@@ -177,7 +178,8 @@ fn record(a: &RecordArgs) -> Result<(), String> {
         ));
     }
 
-    let built = scene::build(&adapters.sources, a)?;
+    let permissions = permissions::Permissions::new(&mut adapters.sources);
+    let built = scene::build(&adapters.sources, a, &|t, id| permissions.check(t, id))?;
     for s in &built.skipped {
         println!("left out: {s}");
     }

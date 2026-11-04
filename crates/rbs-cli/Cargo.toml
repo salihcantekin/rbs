@@ -21,6 +21,9 @@ rbs-graph = { path = "../rbs-graph" }
 rbs-gpu = { path = "../rbs-gpu" }
 rbs-scene = { path = "../rbs-scene" }
 rbs-sources = { path = "../rbs-sources" }
+# Permission requests before a recording opens devices (src/permissions.rs).
+rbs-capture = { path = "../rbs-capture" }
+rbs-audio-io = { path = "../rbs-audio-io" }
 rbs-record = { path = "../rbs-record" }
 rbs-codec = { path = "../rbs-codec" }
 rbs-thread-os = { path = "../rbs-thread-os" }
