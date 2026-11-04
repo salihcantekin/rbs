@@ -4,6 +4,7 @@
 //! rbs-cli record C:\Videos\rec.mkv --seconds 60
 //! rbs-cli devices
 //! rbs-cli token create "Stream Deck"
+//! rbs-cli remote fingerprint
 //! ```
 //!
 //! `record` captures the main display with the first camera in the bottom-right corner,
@@ -16,6 +17,7 @@ mod args;
 mod control;
 mod permissions;
 mod platform;
+mod remote;
 mod scene;
 mod token;
 
@@ -54,6 +56,15 @@ fn main() -> ExitCode {
                 Ok(()) => ExitCode::SUCCESS,
                 Err(e) => {
                     eprintln!("token: {e}");
+                    ExitCode::FAILURE
+                }
+            }
+        }
+        Ok(Command::RemoteFingerprint) => {
+            match remote::fingerprint(&rbs_remote_settings::config_dir(), &mut std::io::stdout()) {
+                Ok(()) => ExitCode::SUCCESS,
+                Err(e) => {
+                    eprintln!("remote fingerprint: {e}");
                     ExitCode::FAILURE
                 }
             }
