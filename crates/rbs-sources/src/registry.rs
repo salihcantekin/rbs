@@ -89,6 +89,53 @@ pub struct SourceTarget {
     pub size: Option<(u32, u32)>,
 }
 
+/// One adapter's OS picker for a capture kind, from [`SourceTypes::pickers`]. It holds
+/// the adapter's factory only (no resources), so a host can move it to a thread of its
+/// own while the dialog is up.
+#[derive(Clone)]
+pub struct SourcePicker {
+    factory: Arc<dyn CaptureFactory>,
+    kind: TargetKind,
+}
+
+impl fmt::Debug for SourcePicker {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("SourcePicker")
+            .field("adapter", &self.factory.id())
+            .field("kind", &self.kind)
+            .finish()
+    }
+}
+
+impl SourcePicker {
+    /// The adapter that shows the picker.
+    pub fn adapter(&self) -> AdapterId {
+        self.factory.id()
+    }
+
+    /// Its display name, for a "choose with ..." entry.
+    pub fn adapter_name(&self) -> &str {
+        self.factory.display_name()
+    }
+
+    /// Shows the OS picker and blocks until the user chooses or closes it (capture port
+    /// `pick`): never call it on a real-time thread, and expect it to block for as long
+    /// as the dialog is up. A closed picker is `Capture(CaptureError::Cancelled)`, not a
+    /// denial. The returned target is stored like a listed one (`adapter` and `target`
+    /// settings); its id carries the OS restore token. Not a default target
+    /// (`is_default` is false).
+    pub fn pick(&self) -> Result<SourceTarget, SourceError> {
+        let t = self.factory.pick(self.kind).map_err(SourceError::Capture)?;
+        Ok(SourceTarget {
+            adapter: self.factory.id(),
+            target: t.id.as_str().to_owned(),
+            name: t.name,
+            is_default: false,
+            size: t.size,
+        })
+    }
+}
+
 /// What [`SourceTypes::instantiate`] needs besides the source.
 #[non_exhaustive]
 #[derive(Clone)]
@@ -340,6 +387,30 @@ impl SourceTypes {
 
     fn audio_candidates(&self, kind: EndpointKind) -> Vec<Arc<dyn AudioBackend>> {
         self.audio.select(&audio_requirement(kind)).candidates
+    }
+
+    /// The OS pickers for `type_id`, best adapter first: probed capture adapters that
+    /// declare its kind in `capture.target.picker`. Empty for audio types and kinds no
+    /// adapter picks. Some systems offer displays and windows only this way (the
+    /// PipeWire screen-cast portal); hosts show a "choose" entry for each picker next
+    /// to the listed targets. Never prompts.
+    pub fn pickers(&self, type_id: &NodeTypeId) -> Result<Vec<SourcePicker>, SourceError> {
+        match class_of(type_id).ok_or_else(|| SourceError::UnknownType(type_id.clone()))? {
+            SourceClass::Capture(kind) => {
+                let requirement = capture_requirement(kind).with(
+                    capture_caps::TARGET_PICKER,
+                    Constraint::Includes(kind.as_str().to_owned()),
+                );
+                Ok(self
+                    .capture
+                    .select(&requirement)
+                    .candidates
+                    .into_iter()
+                    .map(|factory| SourcePicker { factory, kind })
+                    .collect())
+            }
+            SourceClass::Audio(_) => Ok(Vec::new()),
+        }
     }
 
     /// Whether some probed adapter provides `type_id`.

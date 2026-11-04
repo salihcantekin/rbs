@@ -24,6 +24,7 @@ use rbs_api::{
     StateKey, Topic,
 };
 use rbs_audio::LevelMeter;
+use rbs_capture::CaptureError;
 use rbs_codec::caps as codec_caps;
 use rbs_core::capability::{CapabilitySet, CapabilityValue, Requirement};
 use rbs_core::media::{ContainerId, Size};
@@ -42,6 +43,7 @@ use rbs_scene::model::{
     CanvasId, ItemContent, Layout, SceneId, SceneScope, SettingValue, Settings, SourceId,
 };
 use rbs_sources::types::{self, keys};
+use rbs_sources::{SourceError, SourceTarget};
 
 use crate::canvas_profile::CanvasProfile;
 use crate::record_profile::{API_PROFILE_ID, RecordProfile};
@@ -134,6 +136,10 @@ pub struct Target {
     pub is_default: bool,
     /// Native size in pixels when known (displays and windows).
     pub size: Option<(u32, u32)>,
+    /// Not a target yet: adding it shows the OS picker of `adapter` (systems that
+    /// list no screens or windows, such as the Linux screen-cast portal), and the
+    /// target the user chooses is added.
+    pub picker: bool,
 }
 
 /// How a source is doing.
@@ -390,6 +396,8 @@ enum Msg {
     DetachApi,
     /// A control API request is waiting.
     ApiWake,
+    /// An OS picker failed (not cancelled).
+    PickFailed(String),
 }
 
 /// How the studio starts.
@@ -455,7 +463,10 @@ impl StudioHost {
         let tx = Arc::new(tx);
         let thread = std::thread::Builder::new()
             .name("rbs-studio".into())
-            .spawn(move || run(config, adapters, gpu, engine, rx, &notify))?;
+            .spawn({
+                let inbox = Arc::downgrade(&tx);
+                move || run(config, adapters, gpu, engine, rx, inbox, &notify)
+            })?;
         Ok(Self {
             tx: Some(tx),
             thread: Some(thread),
@@ -557,8 +568,38 @@ impl ControlTarget for WithTokens<'_> {
     }
 }
 
+/// A listed target as the UI shows it.
+fn target_of(t: SourceTarget) -> Target {
+    Target {
+        name: t.name,
+        adapter: t.adapter.as_str().to_owned(),
+        target: t.target,
+        is_default: t.is_default,
+        size: t.size,
+        picker: false,
+    }
+}
+
+/// The entry that opens the OS picker for `kind` (glossary: screen, window).
+fn picker_name(kind: SourceKind) -> &'static str {
+    match kind {
+        SourceKind::Window => "Choose a window…",
+        _ => "Choose a screen…",
+    }
+}
+
+fn kind_noun(kind: SourceKind) -> &'static str {
+    match kind {
+        SourceKind::Window => "window",
+        _ => "screen",
+    }
+}
+
 /// The studio and the scene it runs.
 struct Host {
+    /// This thread's own queue, for results from picker threads. Weak, so dropping
+    /// the [`StudioHost`] still ends the thread.
+    inbox: Weak<Sender<Msg>>,
     studio: Studio,
     adapters: RecordAdapters,
     collection: SceneCollection,
@@ -598,11 +639,13 @@ fn run(
     gpu: impl FnOnce() -> Result<Arc<GpuContext>, String>,
     engine: impl Fn() -> Engine + 'static,
     rx: Receiver<Msg>,
+    inbox: Weak<Sender<Msg>>,
     notify: &dyn Fn(Update),
 ) {
     let mut host = match start(config, adapters, gpu, engine) {
-        Ok((host, update)) => {
+        Ok((mut host, update)) => {
             notify(update);
+            host.inbox = inbox;
             host
         }
         Err(e) => {
@@ -614,7 +657,7 @@ fn run(
                 match m {
                     Msg::AttachApi(a) => api = Some(*a),
                     Msg::DetachApi => api = None,
-                    Msg::Ui(_) | Msg::ApiWake => {}
+                    Msg::Ui(_) | Msg::ApiWake | Msg::PickFailed(_) => {}
                 }
                 if let Some(api) = &api {
                     let mut events = EventPublisher::new();
@@ -642,6 +685,7 @@ fn run(
                 host.events.detach();
                 host.api = None;
             }
+            Ok(Msg::PickFailed(why)) => notify(Update::Error(why)),
             Ok(Msg::ApiWake) | Err(RecvTimeoutError::Timeout) => {}
             Err(RecvTimeoutError::Disconnected) => break,
         }
@@ -752,6 +796,13 @@ fn start(
         .select(&Requirement::new())
         .candidates
         .iter()
+        // An adapter that probes to nothing (no driver or device here) cannot encode.
+        .filter(|f| {
+            adapters
+                .video_encoders
+                .capabilities(&f.id())
+                .is_some_and(|c| !c.is_empty())
+        })
         .map(|f| EncoderInfo {
             id: f.id().as_str().to_owned(),
             name: f.display_name().to_owned(),
@@ -800,6 +851,7 @@ fn start(
             encoders,
             cannot_record,
             record_state: api::RecordState::Idle { last: None },
+            inbox: Weak::new(),
         },
         update,
     ))
@@ -812,6 +864,7 @@ impl Host {
                 let targets = self.targets(kind);
                 notify(Update::Targets(kind, targets));
             }
+            Command::AddSource { kind, target } if target.picker => self.pick(kind, &target),
             Command::AddSource { kind, target } => match self.add(kind, &target) {
                 Ok(_) => self.apply(notify),
                 Err(e) => notify(Update::Error(e)),
@@ -861,21 +914,77 @@ impl Host {
         }
     }
 
-    /// What a kind can capture, in OS order.
+    /// What a kind can capture, in OS order, then one entry per OS picker.
     fn targets(&self, kind: SourceKind) -> Vec<Target> {
-        self.adapters
+        let mut list: Vec<Target> = self
+            .adapters
             .sources
             .targets(&kind.type_id())
             .unwrap_or_default()
             .into_iter()
-            .map(|t| Target {
-                name: t.name,
-                adapter: t.adapter.as_str().to_owned(),
-                target: t.target,
-                is_default: t.is_default,
-                size: t.size,
-            })
-            .collect()
+            .map(target_of)
+            .collect();
+        let pickers = self
+            .adapters
+            .sources
+            .pickers(&kind.type_id())
+            .unwrap_or_default();
+        list.extend(pickers.iter().map(|p| Target {
+            name: picker_name(kind).to_owned(),
+            adapter: p.adapter().as_str().to_owned(),
+            target: String::new(),
+            is_default: false,
+            size: None,
+            picker: true,
+        }));
+        list
+    }
+
+    /// Shows the OS picker of `entry.adapter` on a thread of its own (it blocks while
+    /// the dialog is up, and this thread keeps the studio and any recording running),
+    /// then adds the chosen target like a listed one. Closing the dialog adds nothing.
+    fn pick(&self, kind: SourceKind, entry: &Target) {
+        let Some(picker) = self
+            .adapters
+            .sources
+            .pickers(&kind.type_id())
+            .unwrap_or_default()
+            .into_iter()
+            .find(|p| p.adapter().as_str() == entry.adapter)
+        else {
+            self.post(Msg::PickFailed(format!(
+                "{} is not available any more.",
+                entry.name
+            )));
+            return;
+        };
+        let inbox = Weak::clone(&self.inbox);
+        let spawned = std::thread::Builder::new()
+            .name("rbs-picker".into())
+            .spawn(move || {
+                let msg = match picker.pick() {
+                    Ok(t) => Msg::Ui(Command::AddSource {
+                        kind,
+                        target: target_of(t),
+                    }),
+                    Err(SourceError::Capture(CaptureError::Cancelled)) => return,
+                    Err(e) => {
+                        Msg::PickFailed(format!("The {} could not be chosen: {e}", kind_noun(kind)))
+                    }
+                };
+                if let Some(tx) = inbox.upgrade() {
+                    let _ = tx.send(msg);
+                }
+            });
+        if let Err(e) = spawned {
+            self.post(Msg::PickFailed(format!("The picker could not start: {e}")));
+        }
+    }
+
+    fn post(&self, m: Msg) {
+        if let Some(tx) = self.inbox.upgrade() {
+            let _ = tx.send(m);
+        }
     }
 
     /// Restarts the studio with a new canvas and tells the UI what runs now (always,

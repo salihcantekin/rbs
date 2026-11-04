@@ -99,7 +99,8 @@ fn list_registry<F: ?Sized + AdapterFactory>(title: &str, registry: &Registry<F>
         println!("  (none on this platform yet)");
     }
     for id in ids {
-        let state = if registry.capabilities(id).is_some() {
+        // An adapter that probes to nothing (no driver, no device) cannot be used.
+        let state = if registry.capabilities(id).is_some_and(|c| !c.is_empty()) {
             "available"
         } else {
             "unavailable"
@@ -121,6 +122,9 @@ fn devices() -> ExitCode {
                 target.adapter,
                 if target.is_default { " (default)" } else { "" }
             );
+        }
+        for picker in adapters.sources.pickers(&t).unwrap_or_default() {
+            println!("    chosen in the system dialog [{}]", picker.adapter());
         }
     }
     list_registry("video encoders", &adapters.video_encoders);
@@ -200,11 +204,15 @@ fn record(a: &RecordArgs) -> Result<(), String> {
         only.probe_all();
         adapters.video_encoders = only;
     }
-    if adapters.video_encoders.ids().next().is_none()
-        || (!a.no_audio && adapters.audio_encoders.ids().next().is_none())
-    {
+    if adapters.video_encoders.ids().next().is_none() {
         return Err(format!(
-            "recording is not available on {} yet (no encoder adapters are wired)",
+            "recording is not available on {} yet (no video encoder adapters are wired)",
+            std::env::consts::OS
+        ));
+    }
+    if !a.no_audio && adapters.audio_encoders.ids().next().is_none() {
+        return Err(format!(
+            "no audio encoder is wired on {} yet; pass --no-audio to record the picture only",
             std::env::consts::OS
         ));
     }

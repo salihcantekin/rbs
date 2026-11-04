@@ -51,6 +51,42 @@ pub fn adapters() -> (RecordAdapters, Vec<String>) {
                 .register(Arc::new(rbs_codec_mf::MfAacFactory::new())),
         );
     }
+    #[cfg(target_os = "linux")]
+    {
+        // Cameras (PipeWire video nodes) and, through the screen-cast portal's
+        // picker, displays and windows. System memory only until DMA-BUF import is
+        // checked on hardware (rbs_nodes::capture::import_preferences).
+        note(
+            a.sources
+                .register_capture(Arc::new(rbs_capture_pipewire::PipeWireCaptureFactory::new())),
+        );
+        note(
+            a.sources
+                .register_audio(Arc::new(rbs_audio_io_pipewire::PipeWireAudioBackend::new())),
+        );
+        // Hardware encoders; the first that probes and opens wins.
+        note(
+            a.video_encoders
+                .register(Arc::new(rbs_codec_nvenc::NvencFactory::new())),
+        );
+        note(
+            a.video_encoders
+                .register(Arc::new(rbs_codec_amf::AmfFactory::new())),
+        );
+        note(
+            a.video_encoders
+                .register(Arc::new(rbs_codec_qsv::QsvFactory::new())),
+        );
+        note(
+            a.video_encoders
+                .register(Arc::new(rbs_codec_vaapi::VaapiFactory::new())),
+        );
+        // The system's FFmpeg (libavcodec), loaded at run time (ADR-0007).
+        note(
+            a.audio_encoders
+                .register(Arc::new(rbs_codec_ffmpeg::FfmpegAacFactory::new())),
+        );
+    }
     #[cfg(target_os = "macos")]
     {
         note(
