@@ -92,6 +92,7 @@ pub fn run_all<H: Harness>(h: &mut H) {
     the_server_closes_with_a_reason(h);
     a_client_close_is_reported(h);
     a_paused_connection_is_not_read(h);
+    a_paused_connection_still_gets_its_answers_and_close(h);
     a_full_connection_reports_writable(h);
     a_refused_connection_never_reaches_the_inbox(h);
     stop_closes_everything(h);
@@ -302,6 +303,31 @@ pub fn a_paused_connection_is_not_read<H: Harness>(h: &mut H) {
             TransportEvent::Message { text, .. } => assert_eq!(text, format!("m{i}")),
             other => panic!("expected Message, got {other:?}"),
         }
+    }
+}
+
+/// A connection paused on its quota that the server closes still gets what was sent
+/// to it and then the close, with its reason.
+pub fn a_paused_connection_still_gets_its_answers_and_close<H: Harness>(h: &mut H) {
+    const QUOTA: usize = 1;
+    let rig = Rig::start(h, 4, QUOTA);
+    let mut c = h.connect(&ConnectOptions::default()).expect("accepted");
+    let mut conn = rig.connected();
+    for i in 0..4 {
+        c.send(&format!("m{i}"));
+    }
+    let deadline = Instant::now() + LIMIT;
+    while rig.inbox.len() < QUOTA {
+        let left = deadline.saturating_duration_since(Instant::now());
+        assert!(!left.is_zero(), "the inbox never filled to the quota");
+        rig.wake.wait(Some(left));
+    }
+    send(conn.sender.as_mut(), "answer");
+    conn.sender.close(CloseReason::AuthFailed);
+    assert_eq!(recv(&mut c), ClientEvent::Message("answer".into()));
+    match recv(&mut c) {
+        ClientEvent::Closed(Some(r)) => assert_eq!(r, CloseReason::AuthFailed),
+        other => panic!("expected the close, got {other:?}"),
     }
 }
 

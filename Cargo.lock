@@ -4044,6 +4044,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "rbs-api-ipc"
+version = "0.0.1"
+dependencies = [
+ "libc",
+ "rbs-api",
+ "serde_json",
+ "windows",
+]
+
+[[package]]
 name = "rbs-api-ws"
 version = "0.0.1"
 dependencies = [
