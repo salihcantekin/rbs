@@ -19,7 +19,7 @@ use rbs_app::stream_key::{self, KeyStore};
 use rbs_app::stream_profile::{self, SRT_DEFAULT_LATENCY_MS, SRT_LATENCIES_MS, StreamProfile};
 use rbs_app::studio_host::{
     Command, EncoderInfo, EncoderOptions, RecordRequest, RecordingUpdate, SourceKind, SourceRow,
-    SourceStatus, StreamRequest, StreamUpdate, StudioHost, Target, Update,
+    SourceStatus, Stats, StreamRequest, StreamUpdate, StudioHost, Target, Update,
 };
 use rbs_audio::LevelMeter;
 use rbs_record::Link;
@@ -32,7 +32,7 @@ use slint::{Model, ModelRc, SharedString, VecModel};
 
 use crate::preview_edit::{Effect, Placed, PreviewEdit};
 use crate::ui::{
-    EncoderData, KindData, MarkData, MeterRow, ScaleMark, SourceData, StackData, Studio,
+    EncoderData, KindData, MarkData, MeterRow, ScaleMark, SourceData, StackData, StatRow, Studio,
     TargetData, TokenRow,
 };
 
@@ -118,6 +118,8 @@ pub struct StudioUi {
     pub targets_kind: i32,
     slots: Vec<MeterSlot>,
     meters: Rc<VecModel<MeterRow>>,
+    /// The Stats panel's lines ([`stat_lines`]).
+    stats: Rc<VecModel<StatRow>>,
     scale: Rc<VecModel<ScaleMark>>,
     meter_start: Instant,
     meter_ticks: u32,
@@ -252,6 +254,7 @@ impl StudioUi {
             targets_kind: -1,
             slots: Vec::new(),
             meters: Rc::new(VecModel::default()),
+            stats: Rc::new(VecModel::default()),
             scale: Rc::new(VecModel::from(scale)),
             meter_start: Instant::now(),
             meter_ticks: 0,
@@ -318,6 +321,7 @@ impl StudioUi {
         g.set_kinds(ModelRc::from(self.kinds.clone()));
         g.set_targets(ModelRc::from(self.targets.clone()));
         g.set_meters(ModelRc::from(self.meters.clone()));
+        g.set_stats(ModelRc::from(self.stats.clone()));
         g.set_scale(ModelRc::from(self.scale.clone()));
         g.set_rc_tokens(ModelRc::from(self.tokens.clone()));
     }
@@ -1987,6 +1991,18 @@ impl StudioUi {
             // `rbs-cli token` over local IPC made or revoked a token; the control
             // thread gave it to the server already. Only the list shown changes here.
             Update::TokensChanged => self.read_tokens(false),
+            Update::Stats(stats) => {
+                let rows: Vec<StatRow> = stat_lines(&stats)
+                    .into_iter()
+                    .map(|l| StatRow {
+                        heading: l.heading,
+                        label: l.label.into(),
+                        value: l.value.into(),
+                        bad: l.bad,
+                    })
+                    .collect();
+                self.stats.set_vec(rows);
+            }
         }
         out
     }
@@ -2247,11 +2263,147 @@ fn whole_fps(rate: rbs_core::timing::FrameRate) -> u32 {
     r.num().div_ceil(r.den().max(1))
 }
 
+/// One line of the Stats panel.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StatLine {
+    /// A section heading: `label` only.
+    pub heading: bool,
+    /// What is counted.
+    pub label: String,
+    /// The count, in words where it needs them.
+    pub value: String,
+    /// The value shows a loss.
+    pub bad: bool,
+}
+
+/// The Stats panel's lines for `stats`: a section per running output, then the
+/// engine's late ticks; none while no output runs.
+pub fn stat_lines(stats: &Stats) -> Vec<StatLine> {
+    let heading = |label: &str| StatLine {
+        heading: true,
+        label: label.to_owned(),
+        value: String::new(),
+        bad: false,
+    };
+    let line = |label: &str, value: String, bad: bool| StatLine {
+        heading: false,
+        label: label.to_owned(),
+        value,
+        bad,
+    };
+    let dropped = |o: &rbs_app::studio_host::OutputStats| {
+        let total = o.frames + o.dropped;
+        if o.dropped == 0 || total == 0 {
+            o.dropped.to_string()
+        } else {
+            format!(
+                "{} ({:.1} %)",
+                o.dropped,
+                o.dropped as f64 * 100.0 / total as f64
+            )
+        }
+    };
+    let mut lines = Vec::new();
+    if let Some(o) = &stats.recording {
+        lines.push(heading("Recording"));
+        lines.push(line("Frames encoded", o.frames.to_string(), false));
+        lines.push(line("Frames dropped", dropped(o), o.dropped > 0));
+        lines.push(line("Packets written", o.packets.to_string(), false));
+    }
+    if let Some(o) = &stats.stream {
+        lines.push(heading("Stream"));
+        lines.push(line(
+            "Connection",
+            if o.connected {
+                "Live".to_owned()
+            } else {
+                "Not connected".to_owned()
+            },
+            !o.connected,
+        ));
+        lines.push(line("Frames encoded", o.frames.to_string(), false));
+        lines.push(line("Frames dropped", dropped(o), o.dropped > 0));
+        lines.push(line(
+            "Dropped while the connection was slow or down",
+            o.transport_drops.to_string(),
+            o.transport_drops > 0,
+        ));
+        lines.push(line(
+            "Reconnect attempts",
+            o.reconnect_attempts.to_string(),
+            false,
+        ));
+    }
+    if !lines.is_empty() {
+        lines.push(heading("Engine"));
+        lines.push(line(
+            "Late render ticks",
+            stats.late_render_ticks.to_string(),
+            stats.late_render_ticks > 0,
+        ));
+        lines.push(line(
+            "Late audio ticks",
+            stats.late_audio_ticks.to_string(),
+            stats.late_audio_ticks > 0,
+        ));
+    }
+    lines
+}
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used)] // Tests fail by panicking.
 mod tests {
     use super::*;
     use rbs_app::stream_key::MemoryKeyStore;
+
+    #[test]
+    fn stats_show_each_running_output_and_mark_losses() {
+        use rbs_app::studio_host::OutputStats;
+        assert!(stat_lines(&Stats::default()).is_empty(), "nothing runs");
+        let stats = Stats {
+            recording: Some(OutputStats {
+                frames: 999,
+                dropped: 1,
+                packets: 1500,
+                ..OutputStats::default()
+            }),
+            stream: Some(OutputStats {
+                frames: 600,
+                connected: true,
+                ..OutputStats::default()
+            }),
+            late_render_ticks: 0,
+            late_audio_ticks: 2,
+        };
+        let lines = stat_lines(&stats);
+        let find = |section: &str, label: &str| {
+            let start = lines
+                .iter()
+                .position(|l| l.heading && l.label == section)
+                .unwrap();
+            lines[start + 1..]
+                .iter()
+                .take_while(|l| !l.heading)
+                .find(|l| l.label == label)
+                .cloned()
+                .unwrap()
+        };
+        let rec = find("Recording", "Frames dropped");
+        assert_eq!((rec.value.as_str(), rec.bad), ("1 (0.1 %)", true));
+        let live = find("Stream", "Connection");
+        assert_eq!((live.value.as_str(), live.bad), ("Live", false));
+        assert!(!find("Stream", "Frames dropped").bad);
+        let late = find("Engine", "Late audio ticks");
+        assert_eq!((late.value.as_str(), late.bad), ("2", true));
+        let only_stream = Stats {
+            stream: Some(OutputStats::default()),
+            ..Stats::default()
+        };
+        let lines = stat_lines(&only_stream);
+        assert!(!lines.iter().any(|l| l.label == "Recording"));
+        let c = lines.iter().find(|l| l.label == "Connection").unwrap();
+        assert_eq!((c.value.as_str(), c.bad), ("Not connected", true));
+    }
 
     fn ui(name: &str) -> (StudioUi, std::path::PathBuf) {
         let d = std::env::temp_dir().join(format!("rbs-app-ui-{name}-{}", std::process::id()));

@@ -15,8 +15,8 @@ use std::time::Duration;
 
 use rbs_app::stream_key::{KeyStore, MemoryKeyStore};
 use rbs_app::studio_host::{
-    Command, HostConfig, RecordRequest, RecordingUpdate, SourceKind, StreamRequest, StreamUpdate,
-    StudioHost, Update,
+    Command, HostConfig, RecordRequest, RecordingUpdate, SourceKind, Stats, StreamRequest,
+    StreamUpdate, StudioHost, Update,
 };
 use rbs_audio_io_test::TestAudioBackend;
 use rbs_capture_test::TestCaptureFactory;
@@ -399,6 +399,16 @@ fn streams_take_the_key_from_the_store_and_report_their_connection() {
     );
     let l = link_where(&rx, |l| l.connected);
     assert_eq!((l.connects, l.reconnect_attempts), (1, 0));
+    // The Stats panel gets the stream's counters once a second (on the master clock).
+    let stats = next_while(
+        &rx,
+        || clock.advance(Duration::from_millis(250)),
+        |u| match u {
+            Update::Stats(s) if s.stream.is_some_and(|o| o.connected) => Some(s),
+            _ => None,
+        },
+    );
+    assert_eq!(stats.recording, None, "{stats:?}");
 
     // A recording runs alongside the stream (ADR-0047) and stops on its own; one
     // stream at a time.
@@ -474,6 +484,11 @@ fn streams_take_the_key_from_the_store_and_report_their_connection() {
         1,
         "the session was finished"
     );
+    // With no output left, the panel empties once.
+    next(&rx, |u| match u {
+        Update::Stats(s) if s == Stats::default() => Some(()),
+        _ => None,
+    });
 
     host.send(Command::SaveStreamKey(None));
     assert_eq!(key_saved(&rx), Ok(false));
@@ -509,7 +524,14 @@ fn a_stream_the_server_refuses_ends_with_its_reason() {
     host.send(Command::StartStream(request()));
     assert!(matches!(stream(&rx), StreamUpdate::Started { .. }));
     host.send(Command::EndStream);
-    assert!(matches!(stream(&rx), StreamUpdate::Ended { .. }));
+    // The new connection's `Link` may come before or after End stream is taken; only
+    // the end counts here.
+    next(&rx, |u| match u {
+        Update::Stream(StreamUpdate::Ended { .. }) => Some(()),
+        Update::Stream(StreamUpdate::Link(_)) => None,
+        Update::Stream(other) => panic!("{other:?}"),
+        _ => None,
+    });
     drop(host);
 }
 

@@ -3,7 +3,7 @@
 // layout tree into tab stacks and splitter handles with absolute positions.
 import { Theme, Tokens } from "tokens.slint";
 import { Button, IconButton, Icon, IconName, MenuItem, MenuSurface, EmptyState } from "components.slint";
-import { Studio, SourceData, MarkData, KindData, TargetData, MeterRow, ScaleMark, EncoderData, ProgramPanel, SourcesPanel, PropertiesPanel, MixerPanel, LiveControlsPanel, OutputsPanel, RecordingSettings, StreamSettings, VideoSettings, RemoteControlSettings } from "studio.slint";
+import { Studio, SourceData, MarkData, KindData, TargetData, MeterRow, ScaleMark, EncoderData, ProgramPanel, SourcesPanel, PropertiesPanel, MixerPanel, LiveControlsPanel, OutputsPanel, StatsPanel, RecordingSettings, StreamSettings, VideoSettings, RemoteControlSettings } from "studio.slint";
 
 export { Theme, Tokens, Studio, SourceData, MarkData, KindData, TargetData, MeterRow, ScaleMark, EncoderData }
 
@@ -111,7 +111,7 @@ component LiveIndicator inherits Rectangle {
 // A panel's content: the panels connected to the studio, a placeholder for the others.
 component PanelContent inherits Rectangle {
     in property <TabData> tab;
-    property <bool> connected: tab.id == "rbs.program" || tab.id == "rbs.sources" || tab.id == "rbs.properties" || tab.id == "rbs.mixer" || tab.id == "rbs.preview" || tab.id == "rbs.live-controls" || tab.id == "rbs.outputs";
+    property <bool> connected: tab.id == "rbs.program" || tab.id == "rbs.sources" || tab.id == "rbs.properties" || tab.id == "rbs.mixer" || tab.id == "rbs.preview" || tab.id == "rbs.live-controls" || tab.id == "rbs.outputs" || tab.id == "rbs.stats";
     background: Theme.surface-raised;
     if tab.id == "rbs.program" || tab.id == "rbs.preview": ProgramPanel {
         width: parent.width;
@@ -136,6 +136,10 @@ component PanelContent inherits Rectangle {
         height: parent.height;
     }
     if tab.id == "rbs.outputs": OutputsPanel {
+        width: parent.width;
+        height: parent.height;
+    }
+    if tab.id == "rbs.stats": StatsPanel {
         width: parent.width;
         height: parent.height;
     }
@@ -611,13 +615,13 @@ export component SettingsWindow inherits Window {
     // 0 Video, 1 Recording, 2 Stream, 3 Remote control.
     in-out property <int> section: 1;
     // Escape was pressed: the window closes, as with its close button.
-    callback close();
+    callback dismiss();
     forward-focus: keys;
     // Keys a field does not take come up here: Escape closes the window (U7: every
     // action is reachable by keyboard).
     keys := FocusScope {
         key-pressed(e) => {
-            if e.text == Key.Escape { root.close(); return accept; }
+            if e.text == Key.Escape { root.dismiss(); return accept; }
             reject
         }
         HorizontalLayout {

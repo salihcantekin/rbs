@@ -38,6 +38,9 @@ export struct EncoderData {
 }
 // One access token in the Remote control section: its name and what it allows.
 export struct TokenRow { name: string, access: string }
+// One line of the Stats panel: a section heading (`heading`, `label` only) or a counter
+// with its value; `bad` marks a value that shows a loss (in words too, U7).
+export struct StatRow { heading: bool, label: string, value: string, bad: bool }
 
 export global Studio {
     // 0 starting, 1 running, 2 failed (`failure` says why).
@@ -49,6 +52,8 @@ export global Studio {
     // The kind `targets` lists; -1 while a list is being made.
     in property <int> targets-kind: -1;
     in property <[MeterRow]> meters;
+    // The Stats panel's lines; empty while nothing records or streams.
+    in property <[StatRow]> stats;
     in property <[ScaleMark]> scale;
     // 0 shown, 1 starting, 2 not on this platform yet, 3 not in this session (remote
     // desktop), 4 shown only in the main window, 5 the studio is not running.
@@ -1643,6 +1648,55 @@ export component OutputsPanel inherits Rectangle {
                 Button {
                     text: @tr("Stream settings");
                     clicked => { Studio.open-stream-settings(); }
+                }
+            }
+        }
+    }
+}
+
+// Stats: the running recording's and stream's counters and the engine's late ticks,
+// updated once a second while an output runs (design system: `rbs.stats` 1 Hz).
+export component StatsPanel inherits Rectangle {
+    background: Theme.surface-raised;
+    if Studio.stats.length == 0: EmptyState {
+        width: parent.width;
+        height: parent.height;
+        title: @tr("Nothing to measure yet");
+        message: @tr("Statistics show here while you record or stream.");
+    }
+    if Studio.stats.length > 0: Flickable {
+        width: parent.width;
+        height: parent.height;
+        content-height: list.preferred-height;
+        list := VerticalLayout {
+            padding: Tokens.space-3;
+            spacing: Tokens.space-1;
+            alignment: start;
+            for row in Studio.stats: VerticalLayout {
+                if row.heading: Text {
+                    text: row.label;
+                    color: Theme.text-primary;
+                    font-size: Tokens.type-label-size;
+                    font-weight: Tokens.type-label-weight;
+                    accessible-role: AccessibleRole.text;
+                }
+                if !row.heading: HorizontalLayout {
+                    spacing: Tokens.space-2;
+                    accessible-role: AccessibleRole.list-item;
+                    accessible-label: @tr("{}: {}", row.label, row.value);
+                    Text {
+                        text: row.label;
+                        color: Theme.text-secondary;
+                        font-size: Tokens.type-body-size;
+                        horizontal-stretch: 1;
+                        overflow: elide;
+                    }
+                    Text {
+                        text: row.value;
+                        color: row.bad ? Theme.state-error : Theme.text-primary;
+                        font-size: Tokens.type-body-size;
+                        horizontal-alignment: right;
+                    }
                 }
             }
         }

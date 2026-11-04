@@ -1870,8 +1870,26 @@ impl Studio {
         Some(self.progress_of(self.attached(id)?))
     }
 
+    /// A running output's counters, as in [`Studio::output_progress`], without the
+    /// sources and without taking any meter's peak: for a statistics view read once a
+    /// second next to level meters that must keep their peaks. The late tick counters
+    /// of the workers are included. `None` when `id` does not run.
+    pub fn output_counters(&self, id: OutputId) -> Option<Progress> {
+        let r = self.attached(id)?;
+        let workers = Progress {
+            late_render_ticks: self.render_worker.as_ref().map_or(0, |w| w.late()),
+            late_audio_ticks: self.audio_worker.as_ref().map_or(0, |w| w.late()),
+            ..Progress::default()
+        };
+        Some(Self::counters_of(r, workers))
+    }
+
     fn progress_of(&self, r: &Attached) -> Progress {
-        let mut p = self.progress();
+        Self::counters_of(r, self.progress())
+    }
+
+    /// `p` with `r`'s output counters filled in.
+    fn counters_of(r: &Attached, mut p: Progress) -> Progress {
         let b = &r.base;
         let e = &r.encoder;
         let since = |now: u64, base: u64| now.saturating_sub(base);
