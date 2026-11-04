@@ -57,4 +57,5 @@ An ADR records one decision that is hard to reverse or affects more than one cra
 | [0042](0042-loopback-presentation-latency.md) | Loopback audio is delayed by the render endpoint's measured output latency | Rejected |
 | [0043](0043-end-of-stream-on-final-ticks.md) | Final ticks are marked, and the video encoder flushes on them | Accepted |
 | [0044](0044-control-api-protocol-and-security.md) | Control API: one typed request layer, JSON-RPC over swappable transports, scoped token authentication | Accepted |
+| [0045](0045-recording-tail-on-stop.md) | A stopped recording keeps its tail: the export ends first, the audio encoder flushes when its input ends | Accepted |
 | [0046](0046-network-access-over-tls.md) | Network access to the control API: TLS on the remote control port, a generated key the client pins | Accepted |

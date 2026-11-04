@@ -210,13 +210,14 @@ impl YuvDownload {
     /// The newest completed readback as a `System` frame; older completed ones are dropped
     /// (`stale`). Hot path, never waits.
     pub fn take_ready(&mut self, ctx: &GpuContext) -> Result<Option<VideoFrame>, GpuError>;
+    pub fn take_oldest(&mut self, ctx: &GpuContext) -> Result<Option<VideoFrame>, GpuError>; // ADR-0045
     pub fn stats(&self) -> DownloadStats;  // converted, delivered, busy, stale, no_buffer, failed
     pub fn in_flight(&self) -> usize;
 }
 ```
 
 - `submit` records the conversion (the `YuvConverter` passes) into two plane textures the download owns, copies both planes into one staging buffer (luma rows, then chroma rows, both with `stride`), submits once and calls `map_async`; the callback only stores an atomic state.
-- `take_ready` walks the ring from the oldest slot while slots are complete, after `GpuContext::poll` (the render runtime polls at the end of each tick). The newest mapped slot is copied (one `memcpy` of the whole buffer) into a frame buffer that no consumer holds (`Bytes::is_unique`, then `try_into_mut`; the buffers are created in the shared representation, so this keeps their allocation), unmapped, and returned as a `System` frame with the canvas frame's timestamp and sequence and plane layouts at offsets `0` and `stride * height`. With every buffer held by consumers the frame is dropped (`no_buffer`).
+- `take_ready` walks the ring from the oldest slot while slots are complete, after `GpuContext::poll` (the render runtime polls at the end of each tick). The newest mapped slot is copied (one `memcpy` of the whole buffer) into a frame buffer that no consumer holds (`Bytes::is_unique`, then `try_into_mut`; the buffers are created in the shared representation, so this keeps their allocation), unmapped, and returned as a `System` frame with the canvas frame's timestamp and sequence and plane layouts at offsets `0` and `stride * height`. With every buffer held by consumers the frame is dropped (`no_buffer`). `take_oldest` does the same for the oldest completed slot and leaves newer completed slots for later calls (no `stale` drops), for the end of a stream (ADR-0045); both share one implementation chosen at compile time.
 - Every delivered frame increments `GpuMetrics::frames_cpu_copied` (P4).
 - A map failure frees the slot and returns `GpuError::Readback` once.
 

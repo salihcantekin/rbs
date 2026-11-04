@@ -39,6 +39,9 @@ pub fn video_encoder_descriptor() -> NodeDescriptor {
 pub struct EncoderNodeStats {
     /// Frames the session accepted.
     pub submitted: AtomicU64,
+    /// Timestamp in nanoseconds plus one of the last frame the session accepted; 0
+    /// before the first (ADR-0045).
+    pub last_frame: AtomicU64,
     /// Packets passed on.
     pub packets: AtomicU64,
     /// Frames dropped because the session stayed busy after a drain.
@@ -129,6 +132,8 @@ impl VideoEncoderNode {
         match result {
             Ok(()) => {
                 add(&self.stats.submitted, 1);
+                let at = frame.timestamp().as_nanos().saturating_add(1);
+                self.stats.last_frame.store(at, Ordering::Relaxed);
                 Ok(())
             }
             Err(EncodeError::Busy) => {

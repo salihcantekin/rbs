@@ -54,6 +54,11 @@ use crate::stream_key::{KeyStore, MemoryKeyStore};
 /// The longest the control thread sleeps between two rounds of the engine's control
 /// loop (the studio asks for at most about 100 ms).
 const MAX_WAIT: Duration = Duration::from_millis(50);
+/// Control-loop wait while a stopped recording's tail comes in.
+const ENDING_WAIT: Duration = Duration::from_millis(5);
+/// Hang guard for the tail when the app closes while recording (the studio itself
+/// gives up after `rbs_record::END_TAIL_LIMIT` on the master clock).
+const CLOSE_TAIL_GUARD: Duration = Duration::from_secs(1);
 /// The camera picture asked for (most webcams and capture cards offer it).
 const CAMERA_SIZE: (i64, i64, i64) = (1280, 720, 30);
 
@@ -708,6 +713,9 @@ struct Host {
     waiting: bool,
     /// The running recording's file.
     recording: Option<PathBuf>,
+    /// Stop was asked for: the recording ended its video and stops once its tail is
+    /// in (ADR-0045).
+    ending: bool,
     /// The running stream: its URL and the connection last reported.
     streaming: Option<(String, Link)>,
     /// Where the stream key is kept.
@@ -840,6 +848,14 @@ fn run(
         {
             host.stop_recording(Some(why), notify);
         }
+        if host.ending {
+            if host.studio.recording_tail_done() {
+                host.stop_recording(None, notify);
+            } else {
+                // The tail takes a few frames; look again soon.
+                wait = wait.min(ENDING_WAIT);
+            }
+        }
         if host.streaming.is_some() {
             if let Some(why) = host.studio.recording_failure() {
                 host.end_stream(Some(why), notify);
@@ -848,6 +864,14 @@ fn run(
             }
         }
         host.publish(notify);
+    }
+    // Closing while recording: keep the tail too, as Stop does.
+    if host.recording.is_some() && host.studio.end_recording() {
+        let started = std::time::Instant::now();
+        while !host.studio.recording_tail_done() && started.elapsed() < CLOSE_TAIL_GUARD {
+            host.studio.service();
+            std::thread::sleep(ENDING_WAIT);
+        }
     }
     host.end_stream(None, notify);
     let _ = host.studio.shutdown();
@@ -953,6 +977,7 @@ fn start(
             undo: None,
             waiting: false,
             recording: None,
+            ending: false,
             streaming: None,
             keys,
             engine: Box::new(engine),
@@ -1024,7 +1049,13 @@ impl Host {
                 self.publish(notify);
             }
             Command::StopRecording => {
-                self.stop_recording(None, notify);
+                // Ends the video now; the loop stops the recording once the frames
+                // still read back are in (ADR-0045).
+                if self.recording.is_some() && self.studio.end_recording() {
+                    self.ending = true;
+                } else {
+                    self.stop_recording(None, notify);
+                }
                 self.publish(notify);
             }
             Command::SetCanvas { size, fps } => {
@@ -1357,6 +1388,7 @@ impl Host {
 
     /// Stops the recording, if one runs, and says so.
     fn stop_recording(&mut self, failure: Option<String>, notify: &dyn Fn(Update)) {
+        self.ending = false;
         let Some(path) = self.recording.take() else {
             return;
         };

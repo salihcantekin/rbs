@@ -528,9 +528,9 @@ mod tests {
 
     #[test]
     fn closed_descriptor_is_an_error() {
-        let (reader, _writer) = std::io::pipe().unwrap();
-        let fd = reader.as_raw_fd();
-        drop(reader);
-        assert!(is_signalled(fd).is_err());
+        // A descriptor that is never open. Closing a pipe and polling its number raced
+        // with other tests opening files in the same process, which could reuse it
+        // (seen under load).
+        assert!(is_signalled(i32::MAX).is_err());
     }
 }

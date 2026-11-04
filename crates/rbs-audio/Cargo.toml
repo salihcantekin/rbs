@@ -28,3 +28,7 @@ harness = false
 
 [lints]
 workspace = true
+
+[[bench]]
+name = "encoder"
+harness = false

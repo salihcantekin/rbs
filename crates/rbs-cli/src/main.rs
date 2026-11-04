@@ -395,6 +395,16 @@ fn record(a: &RecordArgs) -> Result<(), String> {
     }
     let elapsed = start.elapsed();
     println!("stopping...");
+    if failure.is_none() {
+        // Ends the video now and lets the frames still read back reach the encoder
+        // (ADR-0045); the recording gives up on them after `END_TAIL_LIMIT` itself.
+        recording.end();
+        let ending = Instant::now();
+        while !recording.tail_done() && ending.elapsed() < Duration::from_secs(1) {
+            recording.service();
+            std::thread::sleep(Duration::from_millis(5));
+        }
+    }
     let report = recording.finish();
     let p = &report.progress;
     println!(

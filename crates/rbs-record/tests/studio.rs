@@ -8,12 +8,15 @@
 mod support;
 
 use std::sync::atomic::Ordering;
+use std::time::Duration;
 
 use rbs_core::media::{CodecId, ContainerId};
+use rbs_core::time::{Clock, Timestamp};
+use rbs_core::timing::Cadence;
 use rbs_graph::node::NodeTypeId;
 use rbs_record::{
-    AUDIO, AUDIO_ENCODER, OUTPUT, OutputSettings, RENDER, RecordError, Studio, StudioSettings,
-    VIDEO_ENCODER,
+    AUDIO, AUDIO_ENCODER, END_TAIL_LIMIT, OUTPUT, OutputSettings, RENDER, RecordError, Studio,
+    StudioSettings, VIDEO_ENCODER,
 };
 use rbs_scene::model::{ItemContent, Layout, Settings};
 use rbs_sources::types;
@@ -78,7 +81,25 @@ fn recordings_start_and_stop_while_the_studio_keeps_running() {
             workers(&studio)
         );
 
+        // The second round ends first (ADR-0045): every canvas up to the end reaches
+        // the file, although the render partition keeps running and the export leaves
+        // it without a final tick.
+        let end = (round == 1).then(|| {
+            assert!(!studio.recording_tail_done(), "not ended yet");
+            let end = clock.now();
+            assert!(studio.end_recording());
+            assert!(run_until(&mut studio, &clock, Studio::recording_tail_done));
+            assert!(clock.now() < end + END_TAIL_LIMIT, "ended by itself");
+            end
+        });
         let report = studio.stop_recording().unwrap();
+        if let Some(end) = end {
+            let frames = Cadence::frames(Timestamp::ZERO, FPS);
+            let last_tick = frames.time_of(due(&frames, Duration::ZERO, end) - 1);
+            assert_eq!(pts_of(log, 0).last(), Some(&last_tick), "{report:?}");
+            let p = &report.progress;
+            assert_eq!(p.frames_exported, p.frames_encoded, "{report:?}");
+        }
         assert!(report.shutdown_errors.is_empty(), "{report:?}");
         assert_eq!(report.failure, None);
         assert!(report.progress.packets_muxed() > 0);
