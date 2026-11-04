@@ -216,7 +216,7 @@ pub enum Command {
     /// pixels. Rotation, crop and opacity stay. A size of zero or a value that is not
     /// finite is refused with [`Update::Error`]. Always answered with
     /// [`Update::BoxPlaced`] carrying `seq`, after any new rows, also when nothing
-    /// changed, so the UI can send the next box of a drag (ADR-0047).
+    /// changed, so the UI can send the next box of a drag (ADR-0048).
     SetSourceBox {
         /// The caller's number for this request.
         seq: u64,

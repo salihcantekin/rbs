@@ -1,4 +1,4 @@
-//! Selecting, moving and resizing sources on the picture panel (ADR-0047): the pointer
+//! Selecting, moving and resizing sources on the picture panel (ADR-0048): the pointer
 //! and keys become source boxes, sent to the studio one at a time, and the selection
 //! becomes marks. The geometry is `rbs_ui::transform`; this keeps the state of one drag
 //! and of the boxes on their way to the studio.

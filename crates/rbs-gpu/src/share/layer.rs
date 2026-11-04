@@ -52,7 +52,7 @@ pub struct PreviewLayer {
     /// The last placement: the rectangle, the superlayer's height and whether it is
     /// flipped (the bottom-left origin depends on both).
     placed: Option<(LayerRect, f64, bool)>,
-    /// Container of the mark sublayers (ADR-0047), made at the first `set_marks`.
+    /// Container of the mark sublayers (ADR-0048), made at the first `set_marks`.
     marks: Option<Retained<CALayer>>,
     /// The mark sublayers, reused; at most [`MAX_MARKS`].
     mark_layers: Vec<Retained<CALayer>>,
@@ -211,7 +211,7 @@ impl PreviewLayer {
         self.draw_marks();
     }
 
-    /// Draws `marks` over the picture (a selection's outline and handles, ADR-0047), in
+    /// Draws `marks` over the picture (a selection's outline and handles, ADR-0048), in
     /// the same coordinates as [`PreviewLayer::set_rect`]; they replace the ones drawn
     /// before, and an empty slice removes them. At most [`MAX_MARKS`] are drawn; marks
     /// that are not finite or have a negative size are skipped. The sublayers are made

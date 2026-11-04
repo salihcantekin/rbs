@@ -106,7 +106,7 @@ pub struct StudioUi {
     pub selected: i32,
     /// An Add source is on its way: the next new source is selected.
     adding: bool,
-    /// Moving and resizing on the picture panel (ADR-0047).
+    /// Moving and resizing on the picture panel (ADR-0048).
     edit: PreviewEdit,
     /// The selection as marks, panel coordinates; and as the toolkit draws them.
     mark_buf: Vec<Mark>,

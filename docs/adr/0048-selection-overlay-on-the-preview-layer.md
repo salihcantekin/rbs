@@ -1,4 +1,4 @@
-# ADR-0047: Draw the preview's selection outline and handles as native layers of the preview
+# ADR-0048: Draw the preview's selection outline and handles as native layers of the preview
 
 - Status: Proposed
 - Date: 2026-11-04

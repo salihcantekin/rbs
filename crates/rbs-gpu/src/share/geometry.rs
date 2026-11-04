@@ -75,12 +75,12 @@ mod tests {
     }
 }
 
-/// Most rectangles [`Mark`]s a preview layer draws at once (ADR-0047): a selection's
+/// Most rectangles [`Mark`]s a preview layer draws at once (ADR-0048): a selection's
 /// outline and handles need 20.
 pub const MAX_MARKS: usize = 32;
 
 /// A filled rectangle drawn over the preview picture (a selection's outline or handle,
-/// ADR-0047), in the same window coordinates and units as the layer's `set_rect`.
+/// ADR-0048), in the same window coordinates and units as the layer's `set_rect`.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Mark {
     /// Left edge.

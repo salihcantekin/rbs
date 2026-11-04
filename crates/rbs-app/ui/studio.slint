@@ -75,7 +75,7 @@ export global Studio {
     // A video source's box on the canvas, in canvas pixels.
     callback set-source-box(int /* id */, float /* x */, float /* y */, float /* w */, float /* h */);
     // The selection drawn by the toolkit where no preview layer shows the picture (the
-    // layer draws it itself otherwise, ADR-0047).
+    // layer draws it itself otherwise, ADR-0048).
     in property <[MarkData]> marks;
     // Pointer on the picture panel (panel coordinates, logical pixels; `w`, `h` the
     // panel's size). Shift: free resize at corners; Ctrl or Cmd: no snapping.
@@ -324,7 +324,7 @@ export component ProgramPanel inherits Rectangle {
         vertical-alignment: center;
         wrap: word-wrap;
     }
-    // Selecting, moving and resizing sources on the picture (ADR-0047). Arrow keys move
+    // Selecting, moving and resizing sources on the picture (ADR-0048). Arrow keys move
     // the selected source by 1 canvas pixel, with Shift by 10; Escape clears the
     // selection.
     property <bool> editable: here && Studio.state == 1;

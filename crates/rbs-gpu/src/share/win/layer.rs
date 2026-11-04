@@ -85,7 +85,7 @@ pub struct PreviewLayer {
     buffers: Vec<IPresentationBuffer>,
     _surface_handle: Owned,
     dcomp: IDCompositionDevice,
-    /// The target's root: the picture, and above it the marks (ADR-0047).
+    /// The target's root: the picture, and above it the marks (ADR-0048).
     root: IDCompositionVisual,
     visual: IDCompositionVisual,
     target: Option<IDCompositionTarget>,
@@ -384,7 +384,7 @@ impl PreviewLayer {
         self.commit();
     }
 
-    /// Draws `marks` over the picture (a selection's outline and handles, ADR-0047), in
+    /// Draws `marks` over the picture (a selection's outline and handles, ADR-0048), in
     /// the same coordinates as [`PreviewLayer::set_rect`] (physical pixels of the client
     /// area); they replace the ones drawn before, and an empty slice removes them. At
     /// most [`MAX_MARKS`] are drawn; marks that are not finite or have a negative size

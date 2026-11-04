@@ -208,7 +208,7 @@ fn retire() {
     });
 }
 
-/// Draws the selection over the picture (ADR-0047): `marks` in the Program panel's
+/// Draws the selection over the picture (ADR-0048): `marks` in the Program panel's
 /// coordinates, placed into the window like the layer, in the theme's colours. Does
 /// nothing when they did not change.
 pub fn set_marks(window: &MainWindow, marks: &[transform::Mark]) {

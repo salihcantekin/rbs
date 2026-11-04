@@ -98,7 +98,7 @@ objc2-core-foundation = { version = "0.3.2", default-features = false, features 
 # is built.
 objc2 = { version = "0.6.3", optional = true }
 objc2-quartz-core = { version = "0.3.2", default-features = false, features = ["std", "CALayer", "CATransaction", "objc2-core-foundation", "objc2-core-graphics"], optional = true }
-# Colours of the marks drawn over the preview (ADR-0047); already in the lockfile through
+# Colours of the marks drawn over the preview (ADR-0048); already in the lockfile through
 # rbs-app.
 objc2-core-graphics = { version = "0.3.2", default-features = false, features = ["std", "CGColor"], optional = true }
 # Mach messages and bootstrap lookups for the cross-process preview (ADR-0028).
