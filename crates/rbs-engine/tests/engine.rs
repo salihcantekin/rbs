@@ -316,9 +316,15 @@ fn an_apply_starts_consumers_before_the_partitions_feeding_them() {
     );
     graph.connect(ids.0, "out", ids.1, "in").unwrap();
     graph.connect(ids.1, "out", ids.2, "in").unwrap();
-    engine.adopt::<Ticks>(RENDER, ids.0, Box::new(source)).unwrap();
-    engine.adopt::<Ticks>(ENCODER, ids.1, Box::new(encoder)).unwrap();
-    engine.adopt::<Ticks>(OUTPUT, ids.2, Box::new(sink)).unwrap();
+    engine
+        .adopt::<Ticks>(RENDER, ids.0, Box::new(source))
+        .unwrap();
+    engine
+        .adopt::<Ticks>(ENCODER, ids.1, Box::new(encoder))
+        .unwrap();
+    engine
+        .adopt::<Ticks>(OUTPUT, ids.2, Box::new(sink))
+        .unwrap();
 
     let applied = engine.apply(&graph).unwrap();
     assert!(applied.errors.is_empty(), "{:?}", applied.errors);
@@ -393,9 +399,15 @@ fn a_branch_added_to_a_running_render_starts_downstream_first() {
     );
     graph.connect(ids.0, "out", ids.1, "in").unwrap();
     graph.connect(ids.1, "out", ids.2, "in").unwrap();
-    engine.adopt::<Ticks>(RENDER, ids.0, Box::new(export)).unwrap();
-    engine.adopt::<Ticks>(ENCODER, ids.1, Box::new(encoder)).unwrap();
-    engine.adopt::<Ticks>(OUTPUT, ids.2, Box::new(sink)).unwrap();
+    engine
+        .adopt::<Ticks>(RENDER, ids.0, Box::new(export))
+        .unwrap();
+    engine
+        .adopt::<Ticks>(ENCODER, ids.1, Box::new(encoder))
+        .unwrap();
+    engine
+        .adopt::<Ticks>(OUTPUT, ids.2, Box::new(sink))
+        .unwrap();
     let applied = engine.apply(&graph).unwrap();
     assert!(applied.errors.is_empty(), "{:?}", applied.errors);
     // When render prepared its part (and before its worker could swap it in), the
