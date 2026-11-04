@@ -76,7 +76,7 @@ fn video_requirement(config: &VideoEncoderConfig) -> Requirement {
 
 /// True when `adapter` is a candidate of a video encoder selection for `config`: the
 /// registry holds it and it meets the requirement (a running encoder of that adapter
-/// may then serve another output, ADR-0048).
+/// may then serve another output, ADR-0047).
 pub(crate) fn is_video_candidate(
     registry: &Registry<dyn VideoEncoderFactory>,
     config: &VideoEncoderConfig,

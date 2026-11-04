@@ -12,7 +12,7 @@
 //! one) and removed at the end; without it, the saved key is used. Prints every update
 //! and exits with an error when the stream did not start or never connected.
 //!
-//! Record and stream at once (ADR-0048): with `RBS_ALSO_RECORD=/abs/path.mkv` a
+//! Record and stream at once (ADR-0047): with `RBS_ALSO_RECORD=/abs/path.mkv` a
 //! recording starts once the stream runs and stops a quarter of the time before the
 //! stream ends, while the stream goes on. It uses the recording defaults (12 Mbit/s,
 //! its own encoder) or, with `RBS_RECORD_SAME=1`, the stream's video settings (the

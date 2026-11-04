@@ -216,7 +216,7 @@ struct Added {
     gpu: bool,
 }
 
-/// Outputs a studio runs at once (ADR-0048): a recording and a live stream.
+/// Outputs a studio runs at once (ADR-0047): a recording and a live stream.
 pub const MAX_OUTPUTS: usize = 2;
 
 /// One of a studio's running outputs, from [`Studio::start_output`].
@@ -261,7 +261,7 @@ impl Prepared {
     /// only the encoder sessions it does not share (their stream descriptors make the
     /// output). A running encoder in `running` is shared when the output's settings
     /// equal the ones it was opened with and its adapter is a candidate of this
-    /// output's selection (ADR-0048 decision 3).
+    /// output's selection (ADR-0047 decision 3).
     pub(crate) fn choose(
         adapters: &RecordAdapters,
         out: &OutputSettings,
@@ -409,7 +409,7 @@ pub(crate) struct Chains {
 }
 
 /// Encoder counters when an output joined a running chain; its progress counts from
-/// there (ADR-0048 decision 7).
+/// there (ADR-0047 decision 7).
 #[derive(Debug, Clone, Copy, Default)]
 struct Base {
     frames_exported: u64,
@@ -464,7 +464,7 @@ struct Mixer {
 /// engine. [`Studio::update`] applies scene edits while it runs.
 /// [`Studio::start_output`] attaches an output (a recording or a live stream) to the
 /// running graph, with a video export and encoders of its own or shared with a running
-/// output whose settings match; up to [`MAX_OUTPUTS`] run at once (ADR-0048).
+/// output whose settings match; up to [`MAX_OUTPUTS`] run at once (ADR-0047).
 /// [`Studio::stop_output`] drains and removes what only that output used while the
 /// preview, the meters and the other output keep running (`Engine::apply_draining`).
 /// Control thread only; calls may block while devices open or workers swap.
@@ -1135,7 +1135,7 @@ impl Studio {
                         }
                     } else if let Some(role) = self.output_role(*node) {
                         // An encoder chain's node fails every output that uses it;
-                        // an output node only its own (ADR-0048 decision 7).
+                        // an output node only its own (ADR-0047 decision 7).
                         if retry_at.is_none() {
                             let users = self.users(*node);
                             for r in self.outputs.iter_mut().filter(|r| users.contains(&r.id)) {
@@ -1237,7 +1237,7 @@ impl Studio {
 
     /// Starts an output (a recording or a live stream) of the canvas to `out` while the
     /// studio runs. Adapters are chosen first (`NoAdapter` before anything opens), and a
-    /// running encoder is shared when `out`'s settings equal its own (ADR-0048); then a
+    /// running encoder is shared when `out`'s settings equal its own (ADR-0047); then a
     /// video export and video encoder, an audio encoder (with `out.audio`), each unless
     /// shared, and an output are added and applied. Sources only now scheduled (without
     /// a preview) are opened. If one of the new nodes does not start, they are all
@@ -1291,7 +1291,7 @@ impl Studio {
         let parts = self.settings.partitions;
         // Partitions are taken by role, each the first free one whose earlier nodes
         // were all taken back (a take still pending means its swap or drain is in
-        // flight, ADR-0048). With MAX_OUTPUTS outputs and at most one chain of each kind
+        // flight, ADR-0047). With MAX_OUTPUTS outputs and at most one chain of each kind
         // per output, a free one of each role exists while fewer outputs run, once the
         // pending takes are done; until then the start fails with `OutputFinishing`.
         let pending: BTreeSet<PartitionId> = self
