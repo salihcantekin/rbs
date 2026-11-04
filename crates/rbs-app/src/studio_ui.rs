@@ -121,6 +121,8 @@ pub struct StudioUi {
     remote_port_text: String,
     /// A token just made, and its name: shown once, until dismissed.
     new_token: Option<(String, rbs_api::Token)>,
+    /// The token revoked last and where it was: "Undo" puts it back (U4).
+    revoked: Option<(usize, rbs_api::TokenEntry)>,
     tokens: Rc<VecModel<TokenRow>>,
 }
 
@@ -184,6 +186,7 @@ impl StudioUi {
                 .unwrap_or_default(),
             remote_port_serial: 1,
             new_token: None,
+            revoked: None,
             tokens: Rc::new(VecModel::default()),
         };
         ui.refresh_tokens();
@@ -336,6 +339,13 @@ impl StudioUi {
         g.set_rc_new_token(token.into());
         g.set_rc_new_token_name(name.into());
         g.set_rc_note(self.remote_note.as_str().into());
+        g.set_rc_revoked(
+            self.revoked
+                .as_ref()
+                .map(|(_, e)| e.name.as_str())
+                .unwrap_or_default()
+                .into(),
+        );
     }
 
     /// What the Remote control section says about the server, and whether it is a
@@ -347,8 +357,14 @@ impl StudioUi {
         if let Some(why) = &self.remote_failure {
             return (
                 format!(
-                    "Remote control is not running: {why} Choose another port, or turn remote control off."
+                    "Remote control is not running: {why}. Choose another port, or turn remote control off."
                 ),
+                true,
+            );
+        }
+        if self.host.is_none() && self.state == 2 {
+            return (
+                "Remote control is not running because the studio did not start.".into(),
                 true,
             );
         }
@@ -397,7 +413,11 @@ impl StudioUi {
             }
             Err(e) => {
                 log(&format!("remote control did not start: {e}"));
-                self.remote_failure = Some(format!("{e}."));
+                let mut why = e.to_string();
+                if let Some(first) = why.get(..1) {
+                    why.replace_range(..1, &first.to_uppercase());
+                }
+                self.remote_failure = Some(why);
             }
         }
     }
@@ -425,6 +445,7 @@ impl StudioUi {
     pub fn set_remote_port(&mut self, text: &str) {
         match remote_profile::parse_port(text) {
             Ok(port) => {
+                self.remote_note.clear();
                 self.remote_port_text = port.to_string();
                 if port != self.remote.port {
                     self.remote.port = port;
@@ -451,6 +472,7 @@ impl StudioUi {
             .unwrap_or(Access::Control);
         match self.remote.create_token(name, access) {
             Ok(token) => {
+                self.revoked = None;
                 let name = self
                     .remote
                     .tokens
@@ -469,13 +491,39 @@ impl StudioUi {
         let Ok(i) = usize::try_from(i) else {
             return;
         };
-        if let Some(name) = self.remote.revoke(i) {
-            if self.new_token.as_ref().is_some_and(|(n, _)| *n == name) {
+        if let Some(entry) = self.remote.revoke(i) {
+            if self
+                .new_token
+                .as_ref()
+                .is_some_and(|(n, _)| *n == entry.name)
+            {
                 self.new_token = None;
             }
+            self.revoked = Some((i, entry));
             self.save_remote();
             self.tokens_changed();
         }
+    }
+
+    /// Puts the token revoked last back: apps can connect with it again.
+    pub fn undo_revoke(&mut self) {
+        let Some((i, entry)) = self.revoked.take() else {
+            return;
+        };
+        match self.remote.restore(i, entry) {
+            Ok(()) => {
+                self.save_remote();
+                self.tokens_changed();
+            }
+            Err(why) => self.remote_note = why,
+        }
+    }
+
+    /// The Settings window closed: a token shown once is not shown again, and the
+    /// revoke can no longer be undone there.
+    pub fn settings_closed(&mut self) {
+        self.new_token = None;
+        self.revoked = None;
     }
 
     pub fn dismiss_new_token(&mut self) {

@@ -415,7 +415,10 @@ impl Ctx {
             app.studio.attach_models(&w.global::<Studio>());
             let c = ctx.clone();
             w.window().on_close_requested(move || {
-                c.update(|app| app.settings = None);
+                c.update(|app| {
+                    app.settings = None;
+                    app.studio.settings_closed();
+                });
                 slint::CloseRequestResponse::HideWindow
             });
             let _ = w.show();
@@ -998,6 +1001,9 @@ fn install_studio(g: &Studio<'_>, ctx: &Ctx) {
     });
     on!(on_dismiss_new_token, |app| {
         app.studio.dismiss_new_token();
+    });
+    on!(on_undo_revoke, |app| {
+        app.studio.undo_revoke();
     });
     // A popup opened or closed: the preview layer hides or shows at once.
     #[cfg(any(target_os = "macos", windows))]

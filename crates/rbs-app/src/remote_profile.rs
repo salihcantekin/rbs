@@ -168,9 +168,24 @@ impl RemoteProfile {
         Ok(token)
     }
 
-    /// Removes the token at `index`; returns its name.
-    pub fn revoke(&mut self, index: usize) -> Option<String> {
-        (index < self.tokens.len()).then(|| self.tokens.remove(index).name)
+    /// Removes the token at `index`; returns it, so the removal can be undone with
+    /// [`RemoteProfile::restore`].
+    pub fn revoke(&mut self, index: usize) -> Option<TokenEntry> {
+        (index < self.tokens.len()).then(|| self.tokens.remove(index))
+    }
+
+    /// Puts a revoked token back at `index` (or last): undo of a revoke. Refused when a
+    /// token of that name was made since.
+    pub fn restore(&mut self, index: usize, entry: TokenEntry) -> Result<(), String> {
+        if self.tokens.iter().any(|t| t.name == entry.name) {
+            return Err(format!(
+                "\"{}\" cannot be restored: another access token has that name.",
+                entry.name
+            ));
+        }
+        let index = index.min(self.tokens.len());
+        self.tokens.insert(index, entry);
+        Ok(())
     }
 }
 
@@ -225,19 +240,45 @@ pub fn load(config: &Path) -> (RemoteProfile, Option<String>) {
             );
         }
     };
-    match toml::from_str::<RemoteProfile>(&text) {
-        Ok(p) => match p.problem() {
-            None => (p, None),
-            Some(why) => (
-                RemoteProfile::new(),
-                Some(format!("{}: {why}", path.display())),
-            ),
+    let why = match writable_by_others(&path) {
+        Some(why) => why,
+        None => match toml::from_str::<RemoteProfile>(&text) {
+            Ok(p) => match p.problem() {
+                None => return (p, None),
+                Some(why) => why,
+            },
+            Err(e) => e.to_string(),
         },
-        Err(e) => (
-            RemoteProfile::new(),
-            Some(format!("{}: {e}", path.display())),
-        ),
-    }
+    };
+    // The next change writes a new file; the refused one is kept beside it.
+    let kept = path.with_extension("toml.refused");
+    let saved = match std::fs::rename(&path, &kept) {
+        Ok(()) => format!(" It was moved to {}.", kept.display()),
+        Err(_) => String::new(),
+    };
+    (
+        RemoteProfile::new(),
+        Some(format!("{}: {why}.{saved}", path.display())),
+    )
+}
+
+/// Why a settings file others may write is refused (anyone who can write it can add a
+/// token of their own), or `None`.
+#[cfg(unix)]
+fn writable_by_others(path: &Path) -> Option<String> {
+    use std::os::unix::fs::PermissionsExt;
+    let mode = std::fs::metadata(path).ok()?.permissions().mode();
+    (mode & 0o022 != 0).then(|| {
+        format!(
+            "other users can change this file (mode {:o}), so its access tokens are not trusted",
+            mode & 0o777
+        )
+    })
+}
+
+#[cfg(not(unix))]
+fn writable_by_others(_path: &Path) -> Option<String> {
+    None
 }
 
 /// Writes the settings, replacing the file in one step. On Unix the file is made
@@ -305,9 +346,13 @@ mod tests {
         let entry = store.verify(token.expose()).unwrap();
         assert_eq!(entry.scopes, ScopeSet::PANEL);
         assert!(store.verify("rbs1_0000").is_none());
-        assert_eq!(p.revoke(0).as_deref(), Some("Stream Deck"));
+        let entry = p.revoke(0).unwrap();
+        assert_eq!(entry.name, "Stream Deck");
         assert_eq!(p.revoke(0), None);
         assert!(p.store().verify(token.expose()).is_none());
+        p.restore(0, entry.clone()).unwrap();
+        assert!(p.store().verify(token.expose()).is_some());
+        assert!(p.restore(0, entry).is_err());
     }
 
     #[test]
@@ -357,6 +402,24 @@ mod tests {
         let _ = std::fs::remove_dir_all(&d);
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn a_file_others_can_write_is_refused() {
+        use std::os::unix::fs::PermissionsExt;
+        let d = dir("mode");
+        let mut p = RemoteProfile {
+            enabled: true,
+            ..RemoteProfile::new()
+        };
+        p.create_token("Deck", Access::Control).unwrap();
+        save(&d, &p).unwrap();
+        std::fs::set_permissions(file(&d), std::fs::Permissions::from_mode(0o666)).unwrap();
+        let (got, why) = load(&d);
+        assert_eq!(got, RemoteProfile::new());
+        assert!(why.unwrap().contains("other users"));
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
     #[test]
     fn a_bad_file_leaves_remote_control_off() {
         let d = dir("bad");
@@ -369,6 +432,8 @@ mod tests {
         let (p, why) = load(&d);
         assert!(!p.enabled);
         assert!(why.is_some());
+        assert!(d.join("remote-control.toml.refused").exists());
+        assert!(!file(&d).exists());
         let _ = std::fs::remove_dir_all(&d);
     }
 }

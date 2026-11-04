@@ -11,7 +11,7 @@ use std::net::{SocketAddr, TcpStream};
 use std::time::Duration;
 
 use rbs_api_ws::{SUBPROTOCOL, close_code};
-use rbs_app::remote_control::{RemoteOptions, RemoteServer};
+use rbs_app::remote_control::{RemoteOptions, RemoteServer, StartError};
 use rbs_app::remote_profile::{Access, RemoteProfile};
 use serde_json::{Value, json};
 
@@ -154,7 +154,7 @@ fn a_token_from_the_settings_works_and_revoking_it_disconnects_the_app() {
     assert_eq!(auth["result"]["scopes"], json!(["read"]), "{auth}");
 
     // Revoking "Stream Deck" closes its session only.
-    profile.revoke(0).unwrap();
+    let revoked = profile.revoke(0).unwrap();
     server.set_tokens(profile.store());
     assert_eq!(c.closed(), Some(close_code(rbs_api::CloseReason::Revoked)));
 
@@ -184,6 +184,17 @@ fn a_token_from_the_settings_works_and_revoking_it_disconnects_the_app() {
     }
     assert!(refused);
 
+    // Undoing the revoke makes the same token work again.
+    profile.restore(0, revoked).unwrap();
+    server.set_tokens(profile.store());
+    let mut back = Client::open(addr);
+    let auth = back.login(deck.expose());
+    assert_eq!(
+        auth["result"]["scopes"],
+        json!(["read", "control"]),
+        "{auth}"
+    );
+
     // Turning remote control off tells the remaining app the server is going away.
     drop(server);
     assert_eq!(
@@ -207,5 +218,9 @@ fn a_taken_port_fails_the_start_with_a_reason() {
     let Err(why) = result else {
         panic!("a second server started on a taken port")
     };
-    assert!(why.contains(&taken.to_string()), "{why}");
+    assert_eq!(why, StartError::PortInUse(taken.port()));
+    assert_eq!(
+        why.to_string(),
+        format!("another app is using port {}", taken.port())
+    );
 }

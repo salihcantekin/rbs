@@ -7,7 +7,8 @@
 //! server, so no thread, socket or event buffer. On with no app connected, the API
 //! thread and the transport's I/O thread sleep until a connection arrives.
 
-use std::net::SocketAddr;
+use std::fmt;
+use std::net::{SocketAddr, TcpListener};
 
 use rbs_api::request::ClientInfo;
 use rbs_api::{
@@ -21,6 +22,24 @@ pub struct RemoteServer {
     // Field order is drop order: the transport stops before the API thread.
     transport: WsTransport,
     api: ApiServer,
+}
+
+/// Why remote control did not start.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum StartError {
+    /// Another program listens on this port.
+    PortInUse(u16),
+    /// Anything else, in the system's words (for the log and the status line).
+    Other(String),
+}
+
+impl fmt::Display for StartError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            StartError::PortInUse(port) => write!(f, "another app is using port {port}"),
+            StartError::Other(why) => f.write_str(why),
+        }
+    }
 }
 
 /// What the server needs from the app.
@@ -38,16 +57,30 @@ impl RemoteServer {
         addresses: Vec<SocketAddr>,
         tokens: TokenStore,
         options: RemoteOptions,
-    ) -> Result<(RemoteServer, ControlEndpoint), String> {
-        let config = ServerConfig::new(ClientInfo::new("RBS", env!("CARGO_PKG_VERSION")))
-            .map_err(|e| format!("the system could not make a random server id ({e})"))?;
+    ) -> Result<(RemoteServer, ControlEndpoint), StartError> {
+        let config =
+            ServerConfig::new(ClientInfo::new("RBS", env!("CARGO_PKG_VERSION"))).map_err(|e| {
+                StartError::Other(format!(
+                    "the system could not make a random server id ({e})"
+                ))
+            })?;
         let mut api_options = ApiOptions::new(options.control_waker);
         api_options.audit = options.audit;
-        let (api, endpoint) =
-            ApiServer::start(config, tokens, api_options).map_err(|e| e.to_string())?;
+        let (api, endpoint) = ApiServer::start(config, tokens, api_options)
+            .map_err(|e| StartError::Other(e.to_string()))?;
         // Started here, not by `ApiServer::start`, so the bound addresses can be read.
-        let mut transport = WsTransport::new(WsConfig::on(addresses));
-        transport.start(api.inbox()).map_err(|e| e.to_string())?;
+        let mut transport = WsTransport::new(WsConfig::on(addresses.clone()));
+        if let Err(e) = transport.start(api.inbox()) {
+            // The transport's error is text; the port being taken is the one case the
+            // user can fix, so it is told apart by trying the addresses again.
+            let taken = addresses.iter().find(|a| {
+                TcpListener::bind(a).is_err_and(|e| e.kind() == std::io::ErrorKind::AddrInUse)
+            });
+            return Err(match taken {
+                Some(a) => StartError::PortInUse(a.port()),
+                None => StartError::Other(e.to_string()),
+            });
+        }
         Ok((RemoteServer { transport, api }, endpoint))
     }
 
@@ -56,7 +89,7 @@ impl RemoteServer {
         port: u16,
         tokens: TokenStore,
         options: RemoteOptions,
-    ) -> Result<(RemoteServer, ControlEndpoint), String> {
+    ) -> Result<(RemoteServer, ControlEndpoint), StartError> {
         Self::start(WsConfig::loopback(port).addresses, tokens, options)
     }
 

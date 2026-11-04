@@ -155,6 +155,9 @@ export global Studio {
     callback create-token(string /* name */, int /* access */);
     callback revoke-token(int);
     callback dismiss-new-token();
+    // The access token revoked last; empty when none. "Undo" puts it back.
+    in property <string> rc-revoked;
+    callback undo-revoke();
 }
 
 // The add-source picker: a kind, then what it captures. Keyboard: arrows are not
@@ -807,7 +810,7 @@ export component RemoteControlSettings inherits Rectangle {
         if Studio.rc-new-token != "": Rectangle {
             border-radius: Tokens.radius-sm;
             border-width: Tokens.size-border;
-            border-color: Theme.border-focus;
+            border-color: Theme.border-strong;
             accessible-role: groupbox;
             accessible-label: @tr("New access token for {}", Studio.rc-new-token-name);
             created := VerticalLayout {
@@ -867,6 +870,23 @@ export component RemoteControlSettings inherits Rectangle {
             color: Theme.state-error;
             font-size: Tokens.type-body-size;
             wrap: word-wrap;
+        }
+        if Studio.rc-revoked != "": HorizontalLayout {
+            spacing: Tokens.space-2;
+            Text {
+                text: @tr("{} was revoked: apps using it were disconnected.", Studio.rc-revoked);
+                color: Theme.text-secondary;
+                font-size: Tokens.type-body-size;
+                vertical-alignment: center;
+                wrap: word-wrap;
+                horizontal-stretch: 1;
+            }
+            Button {
+                horizontal-stretch: 0;
+                text: @tr("Undo");
+                accessible-name: @tr("Undo revoking {}", Studio.rc-revoked);
+                clicked => { Studio.undo-revoke(); }
+            }
         }
         VerticalLayout {
             spacing: Tokens.space-2;
