@@ -1,6 +1,6 @@
 # ADR-0045: A stopped recording keeps its tail: the export ends first, the audio encoder flushes when its input ends
 
-- Status: Proposed
+- Status: Accepted
 - Date: 2026-11-04
 - Deciders: Salih (owner)
 - Amends: [ADR-0043](0043-end-of-stream-on-final-ticks.md) (closes its Decision 5 open question), [ADR-0026](0026-partitions-and-queues.md) (audio reader rings on final ticks)
@@ -64,3 +64,5 @@ Concerns:
 9. The export's hot-path cost was not resolvable by the benchmark -> stated as accepted by argument; status stays Proposed until the owner's P15 sign-off and the SC-PC run.
 
 The owner's P15 sign-off and the SC-PC run are recorded before the status changes.
+
+Recorded 2026-11-04: SC-PC hardware run passed (commit 52fdc27; exported equals encoded frames in three `rbs-cli` recordings, NVENC and AMF, MKV and MP4, and two desktop app recordings; audio ends 13-24 ms before video, under one AAC frame; stop to file closed about 160 ms). Salih gave the P15 sign-off; status Accepted.
