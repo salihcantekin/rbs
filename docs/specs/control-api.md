@@ -1,7 +1,7 @@
 # Spec: Control API
 
 - Status: Draft
-- Owner crate(s): `rbs-api` (planned), `rbs-api-ws` (planned adapter), `rbs-api-ipc` (planned adapter)
+- Owner crate(s): `rbs-api` (first slice implemented, see "Implementation status"), `rbs-api-ws` (planned adapter), `rbs-api-ipc` (planned adapter)
 - Related ADRs: [0008](../adr/0008-ui-as-api-client.md), [0013](../adr/0013-zero-cost-when-unused.md), [0021](../adr/0021-scene-collection-model.md), [0035](../adr/0035-meters-as-native-layers.md), [0044](../adr/0044-control-api-protocol-and-security.md)
 
 ## Purpose
@@ -60,7 +60,7 @@ JSON-RPC 2.0 over UTF-8 JSON text messages. WebSocket subprotocol: `rbs.v<major>
 3. Client: `session.authenticate {token}`.
 4. Server: `{scopes, server: {name, version}}`, or `auth_failed` and close.
 
-On IPC, a peer the OS identifies as the same user is authenticated by step 2, which then also returns its scopes. Before authentication every other method returns `not_authenticated`. A connection that has not authenticated within the handshake timeout is closed. `auth_failed` is the same for an unknown and a wrong token.
+Until the `session.authenticate` answer arrives, the pre-authentication message limit (4 KiB) applies, so a client waits for it before sending larger requests. On IPC, a peer the OS identifies as the same user is authenticated by step 2, which then also returns its scopes. Before authentication every other method returns `not_authenticated`. A connection that has not authenticated within the handshake timeout is closed. `auth_failed` is the same for an unknown and a wrong token.
 
 **Tokens.** Text `rbs1_` followed by 64 lowercase hex digits (32 bytes of OS randomness). The server stores `SHA-256` of the token's UTF-8 bytes, as lowercase hex, and compares in constant time. Each token has a user-given name and scopes, is shown once at creation (UI or `rbs-cli token create`), and can be revoked; revoking closes its sessions.
 
@@ -80,11 +80,14 @@ Test vector: token `rbs1_000102030405060708090a0b0c0d0e0f101112131415161718191a1
 
 Every method declares one scope in the schema; where a parameter would need a different scope it is a separate method; a call outside the session's scopes returns `scope_denied`. A hardware panel token is `read` + `control`. The in-process UI and same-user IPC peers have all scopes.
 
+Event topics declare a scope the same way: `settings.changed` carries recording folders, which only `admin` reads (`settings.get`), so subscribing to it needs `admin`; every other topic needs `read`.
+
 ### Subscriptions and events
 
 - `events.subscribe {topics: [...], rates: {"audio.levels": 20}}` returns the current `seq` per state key; `events.unsubscribe`.
 - State queries return `{seq: {state_key: n}, data}`, so a client knows which events its snapshot already includes and ignores events with an equal or lower `seq`.
 - A state event carries the whole current state of its state key, never a delta, so a newer event replaces an older one without loss. Topics are kept small. A state key is a topic name plus an optional object id (for example one key per source); `seq`, coalescing and the `seq` maps in queries and `events.subscribe` use the state key, while subscriptions and the subscriber mask are per topic name. The first slice's topics have no object id: `source.changed` carries the whole program-scene source list. A client applies an event only when its `seq` is higher than what it holds; skipped `seq` values are normal and need no re-query.
+- Sampling of a latest-value topic starts when `events.subscribe` is handled on the API thread, so a sample can arrive before the subscribe answer. Samples carry a per-server sample counter as `seq`, which has no entry in `seq` maps.
 - State topics are sent when the state changes. Latest-value topics (`audio.levels`, `stats`) are sampled at the client's rate, capped (30 Hz levels, 1 Hz statistics in version 1), and coalesced per session.
 - Each session's outgoing queue keeps only the latest event per state key, so it is bounded by the number of live state keys and cannot overflow. There is no `events.lost`.
 
@@ -100,6 +103,29 @@ Protocol version `major.minor`, independent of the `rbs-api` crate's semver. Min
 - IPC endpoint: current user only. Unix: socket mode 0600 in a user-private directory. Windows: named pipe with a DACL for the current user's SID and `PIPE_REJECT_REMOTE_CLIENTS`.
 - Caps: total connections, pending handshakes, connections per peer address (not applied on loopback, where every client shares one address). Pre-authentication messages are small (4 KiB). Repeated `auth_failed` delays further attempts with growing back-off: per connection on loopback, per peer address otherwise.
 - Per session: maximum message size, request rate, queue length (`busy` when full).
+- Responses come in request order, with one exception: refusals that protect the server are sent at once and can overtake the answer to an earlier request still in flight, because queueing them would make the queue unbounded. They are `busy`, `rate_limited`, `message_too_large`, and errors for messages whose request id cannot be read (answered with `"id": null`). Every other answer, including `scope_denied` and decoding errors that carry an id, waits its turn.
+- Before authentication the server reveals only the handshake: a message naming any other method, known or not, gets `not_authenticated`, without the method list or parameter details.
+- Transports read at most the connection's current message limit (4 KiB before authentication) and report a longer message instead of buffering it, so unauthenticated peers cannot make the server hold large messages.
+- The pending-handshake cap counts and refuses only non-loopback peers, and the last slots of the connection cap are reserved for loopback and IPC peers, so remote clients, even a flood of connections the server refuses, cannot lock out local clients.
+- Per-address caps and back-off group IPv6 addresses by their /64 prefix.
+- Changing a token's name or scopes, or revoking it, closes its sessions; the client reconnects with what the token allows now.
+- A peer that does not read its answers is closed once more than a limit of answers wait for it (events do not count: only the latest per state key waits).
+
+Version 1 limits (from the first implementation, `rbs_api::Limits::default`):
+
+| Limit | Value |
+| --- | --- |
+| Connections (including closed ones whose request is still in flight) | 64 |
+| Pending handshakes (non-loopback peers) | 16 |
+| Connection slots only loopback and IPC peers can take | 8 of the 64 |
+| Connections per non-loopback address (IPv6: per /64) | 8 |
+| Handshake timeout (connect to authenticated) | 10 s |
+| Message size before / after authentication | 4 KiB / 1 MiB |
+| Request rate per session | 50 per second, bursts of 100 |
+| Requests queued behind the one in flight | 16 |
+| Answers waiting for a peer that does not read | 64 |
+| Unread messages per connection in the transport inbox | 8 |
+| Authentication back-off per non-loopback address | 500 ms after the first failure, doubling, at most 30 s; forgotten 30 s after its delay ends; 1024 addresses remembered; an attempt released after its delay waits again if another attempt from the address failed meanwhile |
 - Connections, authentication failures and `admin`, `plugins` and `tokens` calls are logged with the token name.
 
 ## Zero cost
@@ -109,6 +135,31 @@ Protocol version `major.minor`, independent of the `rbs-api` crate's semver. Min
 | Installed (setting off) | None: server not constructed |
 | Standby (on, no session) | Adapter accept and the API thread asleep on its wake primitive; no wake-ups, no event production |
 | Active (sessions) | Events produced on the control thread only for subscribed topics, on state change; sampling only while a latest-value topic is subscribed. Nothing in `Node::process`, audio callbacks or the render tick |
+
+## Errors
+
+`error.data.kind` is stable; codes are fixed so clients that only read `code` still work.
+
+| Kind | Code | Meaning |
+| --- | --- | --- |
+| `parse_error` | -32700 | Not JSON |
+| `invalid_request` | -32600 | Not a JSON-RPC 2.0 request (no integer or string `id`, wrong `jsonrpc`), or a handshake method after authentication |
+| `method_not_found` | -32601 | Unknown method |
+| `invalid_params` | -32602 | Parameters do not match the method's schema; `params` must be an object or absent |
+| `internal` | -32603 | Server bug |
+| `not_authenticated` | -32001 | Method before authentication |
+| `auth_failed` | -32002 | Unknown or wrong token |
+| `unsupported_protocol` | -32003 | No common protocol major |
+| `scope_denied` | -32010 | Scope missing |
+| `busy` | -32020 | Request queue full |
+| `rate_limited` | -32021 | Request rate exceeded |
+| `message_too_large` | -32022 | Message over the size limit |
+| `batch_unsupported` | -32023 | JSON array of requests |
+| `not_found` | -32030 | Object does not exist |
+| `conflict` | -32031 | Conflicts with the current state (for example a recording runs) |
+| `undo_conflict` | -32032 | Undo record used out of order |
+| `file_exists` | -32033 | Explicit file exists |
+| `failed` | -32040 | Valid but could not be carried out |
 
 ## Initial method set (version 1, first slice)
 
@@ -154,11 +205,15 @@ An OBS WebSocket (v5) compatibility layer (subset) is a separate optional adapte
 - U20 test: every desktop UI command maps to a control API method.
 - Idle-cost check: off starts no thread; on without a session has no wake-ups and produces no events (thread count and wake-ups, performance budgets spec).
 
+## Implementation status
+
+- `rbs-api` implements the types and JSON codec of the first slice, tokens and the token store, scopes, the session state machine (`Server`), the control-thread side (`ControlTarget`, `ControlEndpoint`, `EventPublisher` with `seq` per state key and the event slots), the `ControlTransport` port with the bounded `TransportInbox`, the shared `Origin`/`Host` check for WebSocket adapters (`UpgradePolicy`), and the API thread (`ApiServer`).
+- Not yet: the `schema` feature with the generated JSON Schema, its snapshot test and difference classifier (`api.describe` lists methods, scopes and topics until then); the transport conformance suite (lands with the first adapter, `rbs-api-ws`); `stats` sampling; `ui.*` routing; the U20 test, which needs the desktop app on `rbs-api`; the idle-cost check by thread count (by construction today: off constructs nothing; on without a session sets no deadline, tested).
+
 ## Open questions
 
 - Preview transport for remote clients: UI rule U5 requires a reduced-rate encoded preview for remote panels; WebRTC from the engine is the candidate.
 - Stable addressing for layout commands. `rbs_ui::LayoutCommand` addresses windows and tab stacks by index, which shifts after each change; it is internal to the desktop shell. The `ui.*` commands for remote callers address panels by panel id (open, close, float, dock, move to an edge) and need stable window ids before they can target a window or stack.
 - Where the token store lives (settings file with user-only permissions, or the OS credential store).
 - TLS certificates for network access: a generated self-signed certificate with a fingerprint the user pins, or a user-supplied one; channel binding (RFC 9266) if pinning proves insufficient.
-- Exact caps and timeouts (connections, handshakes, back-off, queue lengths), set with the first implementation and its tests.
 - Which WebSocket crate and runtime `rbs-api-ws` uses (adapter choice, decided in its PR).
