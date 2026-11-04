@@ -1,6 +1,6 @@
 # ADR-0044: Control API: one typed request layer, JSON-RPC over swappable transports, scoped token authentication
 
-- Status: Proposed
+- Status: Accepted
 - Date: 2026-11-04
 - Deciders: Salih (owner)
 
@@ -66,7 +66,7 @@ Forces:
 
 Reviewer: independent AI sessions (a fresh session per round, given only the ADR, specs, principles, related ADRs and code)
 Date: 2026-11-04
-Verdict: six rounds; round 6 left only a wording fix, applied in the following commit. Owner approval: pending.
+Verdict: six rounds; round 6 left only a wording fix, applied in the following commit. Owner approval: Salih, 2026-11-04 (in the project thread).
 Concerns and resolutions:
 1. Round 1, changes requested, 20 concerns. The salted challenge stored the real credential: replaced by bearer tokens stored as SHA-256, constant-time comparison, channel rules and a test vector. `record.start` needed settings the UI owned: profiles and settings move to the control thread, and `record.start_to_file` needs `admin`. Other fixes: the dependency list is now exact; a Threads section and decision 5 were added; per-session queues serve the UI first; instance id and `seq` come with queries and subscribe; connection, handshake and size caps and back-off were added; new `plugins` and `tokens` scopes, local-only by default; the IPC endpoint is user-only and uses peer credentials; schema changes are classified by kind; all types are serializable, with a round-trip test. Undo, the `source.targets` scope, Origin/Host, bootstrap, the OBS adapter and the missing alternatives were addressed too.
 2. Round 2, changes requested, 12 concerns, all resolved. They were: a shared inbox and blocking output from the control thread; `seq` against the subscriber mask; the UI event path; scopes that depended on parameters; the IPC handshake; OBS secrets; where sampling reads; loopback lock-out; the `null` origin; overwrites through explicit paths; `TestClock` testability (now a pure state machine); and wording.
