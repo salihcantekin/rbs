@@ -1292,7 +1292,8 @@ impl Studio {
         // Partitions are taken by role, each the first free one whose earlier nodes
         // were all taken back (a take still pending means its swap or drain is in
         // flight, ADR-0047). With MAX_OUTPUTS outputs and at most one chain of each kind
-        // per output, a free one of each role exists while fewer outputs run.
+        // per output, a free one of each role exists while fewer outputs run, once the
+        // pending takes are done; until then the start fails with `OutputFinishing`.
         let pending: BTreeSet<PartitionId> = self
             .pending_takes
             .iter()
@@ -1303,7 +1304,7 @@ impl Studio {
                 !self.outputs.iter().any(|r| r.slot == *s)
                     && !pending.contains(&parts.slot(*s).output)
             })
-            .ok_or(RecordError::TooManyOutputs)?;
+            .ok_or(RecordError::OutputFinishing)?;
         let mut graph = self.graph.clone();
         let mut nodes: Vec<Added> = Vec::new();
 
@@ -1333,7 +1334,7 @@ impl Studio {
                         self.chains.video[*i].is_none()
                             && !pending.contains(&parts.slot(*i).video_encoder)
                     })
-                    .ok_or(RecordError::TooManyOutputs)?;
+                    .ok_or(RecordError::OutputFinishing)?;
                 let part = parts.slot(i).video_encoder;
                 let export_id = add_active(
                     &mut graph,
@@ -1382,7 +1383,7 @@ impl Studio {
                         self.chains.audio[*i].is_none()
                             && !pending.contains(&parts.slot(*i).audio_encoder)
                     })
-                    .ok_or(RecordError::TooManyOutputs)?;
+                    .ok_or(RecordError::OutputFinishing)?;
                 let part = parts.slot(i).audio_encoder;
                 let id = add_active(&mut graph, Node::<()>::descriptor(&**node), part)?;
                 graph.connect(mixer, "main", id, "in")?;
@@ -1617,24 +1618,37 @@ impl Studio {
         Some(id)
     }
 
-    /// Removes an output's node, and the encoder chains no other output uses, from the
-    /// graph and applies, draining the partitions this empties when `drain`; takes their
-    /// instances back. Returns the output, the engine's errors and whether its video
-    /// encoder was removed with it (drained, when `drain`).
-    fn detach(&mut self, id: OutputId, drain: bool) -> Option<(Attached, Vec<String>, bool)> {
-        let index = self.outputs.iter().position(|r| r.id == id)?;
-        let r = self.outputs.remove(index);
-        let mut nodes = vec![r.output];
-        let video_alone = !self.outputs.iter().any(|o| o.video == r.video);
-        if video_alone && let Some(c) = self.chains.video[r.video].take() {
-            nodes.push(c.export);
-            nodes.push(c.encoder);
+    /// Removes outputs' nodes, and the encoder chains no remaining output uses, from the
+    /// graph in one apply, draining the partitions this empties when `drain`; takes their
+    /// instances back. Returns each output with whether its video encoder was removed
+    /// (drained, when `drain`), and the engine's errors.
+    fn detach_all(
+        &mut self,
+        ids: &[OutputId],
+        drain: bool,
+    ) -> (Vec<(Attached, bool)>, Vec<String>) {
+        let (gone, kept): (Vec<Attached>, Vec<Attached>) = std::mem::take(&mut self.outputs)
+            .into_iter()
+            .partition(|r| ids.contains(&r.id));
+        self.outputs = kept;
+        if gone.is_empty() {
+            return (Vec::new(), Vec::new());
         }
-        if let Some(a) = r.audio
-            && !self.outputs.iter().any(|o| o.audio == Some(a))
-            && let Some(c) = self.chains.audio[a].take()
-        {
-            nodes.push(c.encoder);
+        let mut nodes: Vec<Added> = gone.iter().map(|r| r.output).collect();
+        let mut removed = Vec::new();
+        for r in gone {
+            let video_alone = !self.outputs.iter().any(|o| o.video == r.video);
+            if video_alone && let Some(c) = self.chains.video[r.video].take() {
+                nodes.push(c.export);
+                nodes.push(c.encoder);
+            }
+            if let Some(a) = r.audio
+                && !self.outputs.iter().any(|o| o.audio == Some(a))
+                && let Some(c) = self.chains.audio[a].take()
+            {
+                nodes.push(c.encoder);
+            }
+            removed.push((r, video_alone));
         }
         for n in &nodes {
             let _ = self.graph.set_state(n.node, Lifecycle::Standby);
@@ -1654,7 +1668,7 @@ impl Studio {
                 self.pending_takes.push((n, None));
             }
         }
-        // The plan without the output may leave sources unscheduled (no preview);
+        // The plan without the outputs may leave sources unscheduled (no preview);
         // the layer hints follow the new plan.
         let plan = self.graph.plan();
         let scheduled: BTreeSet<NodeId> = plan.order.iter().copied().collect();
@@ -1662,7 +1676,45 @@ impl Studio {
             e.scheduled = scheduled.contains(&e.state.node);
         }
         let _ = self.layers.send(node_layers(&self.bound, &plan));
+        (removed, errors)
+    }
+
+    /// [`Studio::detach_all`] for one output.
+    fn detach(&mut self, id: OutputId, drain: bool) -> Option<(Attached, Vec<String>, bool)> {
+        let (mut removed, errors) = self.detach_all(&[id], drain);
+        let (r, video_alone) = removed.pop()?;
         Some((r, errors, video_alone))
+    }
+
+    /// The report of an output removed by [`Studio::detach_all`].
+    fn finish_report(
+        &self,
+        r: &Attached,
+        errors: Vec<String>,
+        drained_video: bool,
+    ) -> FinishReport {
+        let progress = self.progress_of(r);
+        let failure = r
+            .output_stats
+            .failure
+            .get()
+            .cloned()
+            .or_else(|| r.failure.clone());
+        // A shared encoder that keeps running is not flushed: its held packets are the
+        // other output's.
+        let flush_lost = if drained_video {
+            r.encoder.flush_lost.load(Ordering::Relaxed)
+        } else {
+            0
+        };
+        let finish_lost = r.output_stats.finish_lost.load(Ordering::Relaxed);
+        FinishReport {
+            progress,
+            failure,
+            shutdown_errors: errors,
+            flush_lost,
+            finish_lost,
+        }
     }
 
     /// Stops a running output: drains, in pipeline order, its output (which writes the
@@ -1671,27 +1723,7 @@ impl Studio {
     /// `None` when `id` does not run.
     pub fn stop_output(&mut self, id: OutputId) -> Option<FinishReport> {
         let (r, errors, drained_video) = self.detach(id, true)?;
-        let progress = self.progress_of(&r);
-        let failure = r
-            .output_stats
-            .failure
-            .get()
-            .cloned()
-            .or_else(|| r.failure.clone());
-        // A shared encoder keeps running: its held packets are the other output's.
-        let flush_lost = if drained_video {
-            r.encoder.flush_lost.load(Ordering::Relaxed)
-        } else {
-            0
-        };
-        let finish_lost = r.output_stats.finish_lost.load(Ordering::Relaxed);
-        Some(FinishReport {
-            progress,
-            failure,
-            shutdown_errors: errors,
-            flush_lost,
-            finish_lost,
-        })
+        Some(self.finish_report(&r, errors, drained_video))
     }
 
     /// A running output's connection; `None` when `id` does not run.
@@ -1788,15 +1820,16 @@ impl Studio {
         p
     }
 
-    /// Stops every output (in start order), then the engine. Returns each output's
-    /// report and the shutdown's errors.
+    /// Stops every output in one draining apply (a shared encoder is flushed for all
+    /// of them), then the engine. Returns each output's report, in start order, and the
+    /// shutdown's errors.
     pub fn shutdown(&mut self) -> (Vec<(OutputId, FinishReport)>, Vec<String>) {
-        let mut reports = Vec::new();
-        for id in self.outputs() {
-            if let Some(r) = self.stop_output(id) {
-                reports.push((id, r));
-            }
-        }
+        let ids = self.outputs();
+        let (removed, errors) = self.detach_all(&ids, true);
+        let reports = removed
+            .iter()
+            .map(|(r, drained)| (r.id, self.finish_report(r, errors.clone(), *drained)))
+            .collect();
         let errors = self
             .engine
             .shutdown()

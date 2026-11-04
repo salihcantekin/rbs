@@ -393,6 +393,9 @@ pub enum RecordError {
     /// The studio runs [`MAX_OUTPUTS`](crate::MAX_OUTPUTS) outputs already
     /// ([`Studio::start_output`]).
     TooManyOutputs,
+    /// A partition the new output needs still finishes a stopped output (its swap or
+    /// drain is in flight); [`Studio::service`] completes it, then a start works.
+    OutputFinishing,
 }
 
 impl fmt::Display for RecordError {
@@ -417,6 +420,9 @@ impl fmt::Display for RecordError {
             }
             RecordError::Graph(e) => write!(f, "graph: {e}"),
             RecordError::Engine(e) => write!(f, "engine: {e}"),
+            RecordError::OutputFinishing => {
+                f.write_str("an output stopped just now is still finishing; try again")
+            }
             RecordError::TooManyOutputs => write!(
                 f,
                 "{} outputs run already, the most a studio runs at once",
