@@ -492,8 +492,20 @@ pub(crate) fn run<X: Runtime>(
                     stats.late.fetch_add(newest - next, Ordering::Relaxed);
                     newest
                 };
+                let diag_t0 = std::time::Instant::now();
                 executor.run_tick(Tick::of(&cadence, run));
-                stats.ticks.fetch_add(1, Ordering::Relaxed);
+                let diag_el = diag_t0.elapsed();
+                let diag_n = stats.ticks.fetch_add(1, Ordering::Relaxed);
+                if diag_n < 2 || diag_el > std::time::Duration::from_millis(8) || run > next {
+                    let ms = std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .map_or(0, |d| d.as_millis() % 100_000);
+                    eprintln!(
+                        "[diag {ms}] {:?} tick #{diag_n} index {run} skipped {} took {diag_el:?}",
+                        thread::current().name(),
+                        run - next
+                    );
+                }
                 next = run.saturating_add(1);
             }
         }

@@ -574,7 +574,16 @@ impl Engine {
             handle.stop_worker();
         }
         let part = self.current.get(&p).unwrap_or(&empty);
-        match handle.apply(part) {
+        let diag_t0 = std::time::Instant::now();
+        let diag_ms = |t: std::time::SystemTime| {
+            t.duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_millis() % 100_000)
+        };
+        eprintln!("[diag {}] partition {} apply start (nodes {})", diag_ms(std::time::SystemTime::now()), p.0, part.nodes().len());
+        let diag_applied = handle.apply(part);
+        eprintln!("[diag {}] partition {} prepared in {:?}", diag_ms(std::time::SystemTime::now()), p.0, diag_t0.elapsed());
+        let diag_t1 = std::time::Instant::now();
+        let _diag_guard = DiagSettle(p.0, diag_t1);
+        match diag_applied {
             Ok(report) => {
                 events.extend(report.events.iter().cloned().map(|e| (p, e)));
                 reports.insert(p, report);
@@ -880,4 +889,14 @@ pub(crate) fn pipeline_order(
         }
     }
     order
+}
+
+struct DiagSettle(u32, std::time::Instant);
+impl Drop for DiagSettle {
+    fn drop(&mut self) {
+        let ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| d.as_millis() % 100_000);
+        eprintln!("[diag {ms}] partition {} settled in {:?}", self.0, self.1.elapsed());
+    }
 }
