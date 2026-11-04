@@ -40,7 +40,7 @@ The single way to control and observe the engine, used by the desktop UI, remote
 - The session logic is a pure state machine, `handle(event, now)` and `next_deadline()`, that tests drive directly with `TestClock` (ADR-0032); the API thread only wraps it.
 - Adapters apply back-pressure per connection: a connection that has used its queue quota is not read until it drains, so one client cannot fill the transport inbox.
 - Each session has at most one request in flight to the control thread and a bounded queue behind it; the API thread forwards from sessions in round-robin order. Responses on one connection come in request order, so a long command (for example `canvas.set`, which restarts the studio) delays that connection's later requests; while it runs on the single control thread, other sessions' and the UI's requests also wait for it. A dispatched command is never cancelled.
-- Output from the control thread never blocks it and never loses a response. Responses go into their own channel whose capacity is at least the session cap, so a send cannot fail, whatever fills the transport inbox. Events go into per-topic latest-value slots; a newer event replaces the older one. A single `events pending` flag is set on a write and cleared by the API thread when it drains the slots, so an event flood posts no messages and the wake-up is never lost.
+- Output from the control thread never blocks it and never loses a response. Responses go into their own channel sized by the number of requests that can be in flight: one per connection under the connection cap. A closed session's in-flight request stays counted, and its connection slot stays taken, until its response is drained and discarded. So a send cannot fail, whatever fills the transport inbox. Events go into per-topic latest-value slots; a newer event replaces the older one. A single `events pending` flag replaces one message per write: the API thread atomically swaps it to clear before it reads the slots, and a writer that changes it from clear to set signals the wake primitive. The wake primitive is permit-based, so a signal sent before the API thread sleeps is not lost; pushes to the transport inbox and the response channel signal it the same way.
 - Every state topic has a change counter `seq` that the control thread increments on every change of that state, subscribed or not. It builds event payloads only for topics in a subscriber mask. The in-process UI is a permanent subscriber registered on the control thread and gets the same event types and `seq`. The API thread sets its sessions' mask bits before it forwards `events.subscribe`; the control thread answers with the `seq` read after that.
 - The desktop UI's level meters and preview do not go through `rbs-api`: the local UI gets the shared meters (ADR-0035) and the preview endpoint as local-only attachments.
 
@@ -82,11 +82,11 @@ Every method declares one scope in the schema; where a parameter would need a di
 
 ### Subscriptions and events
 
-- `events.subscribe {topics: [...], rates: {"audio.levels": 20}}` returns the current `seq` per topic; `events.unsubscribe`.
-- State queries return `{seq: {topic: n}, data}`, so a client knows which events its snapshot already includes and ignores events with an equal or lower `seq`.
-- A state event carries the whole current state of its topic, never a delta, so a newer event replaces an older one without loss. Topics are kept small and fine-grained (per object where needed). A client applies an event only when its `seq` is higher than what it holds; skipped `seq` values are normal and need no re-query.
+- `events.subscribe {topics: [...], rates: {"audio.levels": 20}}` returns the current `seq` per state key; `events.unsubscribe`.
+- State queries return `{seq: {state_key: n}, data}`, so a client knows which events its snapshot already includes and ignores events with an equal or lower `seq`.
+- A state event carries the whole current state of its topic, never a delta, so a newer event replaces an older one without loss. Topics are kept small. A state key is a topic name plus an optional object id (for example one key per source); `seq`, coalescing and the `seq` maps in queries and `events.subscribe` use the state key, while subscriptions and the subscriber mask are per topic name. The first slice's topics have no object id: `source.changed` carries the whole program-scene source list. A client applies an event only when its `seq` is higher than what it holds; skipped `seq` values are normal and need no re-query.
 - State topics are sent when the state changes. Latest-value topics (`audio.levels`, `stats`) are sampled at the client's rate, capped (30 Hz levels, 1 Hz statistics in version 1), and coalesced per session.
-- Each session's outgoing queue keeps only the latest event per state topic, so it is bounded by the number of topics and cannot overflow. There is no `events.lost`.
+- Each session's outgoing queue keeps only the latest event per state key, so it is bounded by the number of live state keys and cannot overflow. There is no `events.lost`.
 
 ### Versioning
 
@@ -107,7 +107,7 @@ Protocol version `major.minor`, independent of the `rbs-api` crate's semver. Min
 | State | Cost |
 | --- | --- |
 | Installed (setting off) | None: server not constructed |
-| Standby (on, no session) | Adapter accept and the API thread blocked on its inbox; no wake-ups, no event production |
+| Standby (on, no session) | Adapter accept and the API thread asleep on its wake primitive; no wake-ups, no event production |
 | Active (sessions) | Events produced on the control thread only for subscribed topics, on state change; sampling only while a latest-value topic is subscribed. Nothing in `Node::process`, audio callbacks or the render tick |
 
 ## Initial method set (version 1, first slice)
@@ -148,7 +148,7 @@ An OBS WebSocket (v5) compatibility layer (subset) is a separate optional adapte
 ## Tests
 
 - Transport conformance suite: framing, size limits, close reasons, peer information, Origin and Host cases (`null`, allow list, IP literals), upgrade refused before completion.
-- Session state machine tests on `TestClock`: handshake timeout, IPC same-user handshake, auth success, uniform failure, token test vector, scopes, remote refusal of `admin`/`plugins`/`tokens`, connection and handshake caps, back-off, pre-auth size, rate limit, `busy`, round-robin fairness, UI priority, per-connection back-pressure, control thread never blocked by API output, responses and events delivered while the transport inbox is full, no response lost under an event flood, event coalescing per topic, `seq` across subscribe, `seq` and instance id.
+- Session state machine tests on `TestClock`: handshake timeout, IPC same-user handshake, auth success, uniform failure, token test vector, scopes, remote refusal of `admin`/`plugins`/`tokens`, connection and handshake caps, back-off, pre-auth size, rate limit, `busy`, round-robin fairness, UI priority, per-connection back-pressure, control thread never blocked by API output, responses and events delivered while the transport inbox is full, no response lost under an event flood or with a session closed while its request is in flight, an event written while the API thread drains the slots, event coalescing per topic, `seq` across subscribe, `seq` and instance id.
 - JSON round-trip test of every request, response and event type.
 - Schema snapshot test with difference classification.
 - U20 test: every desktop UI command maps to a control API method.
