@@ -238,17 +238,32 @@ impl ConnectionBudget {
     }
 
     fn try_take(&self) -> bool {
-        self.open
-            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |n| {
-                (n < self.max).then_some(n + 1)
-            })
-            .is_ok()
+        // A compare-exchange loop: `fetch_update` is deprecated on new toolchains and
+        // its replacement is newer than the MSRV.
+        let mut n = self.open.load(Ordering::Acquire);
+        while n < self.max {
+            match self
+                .open
+                .compare_exchange_weak(n, n + 1, Ordering::AcqRel, Ordering::Acquire)
+            {
+                Ok(_) => return true,
+                Err(now) => n = now,
+            }
+        }
+        false
     }
 
     pub(crate) fn release(&self) {
-        let _ = self
-            .open
-            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |n| n.checked_sub(1));
+        let mut n = self.open.load(Ordering::Acquire);
+        while n > 0 {
+            match self
+                .open
+                .compare_exchange_weak(n, n - 1, Ordering::AcqRel, Ordering::Acquire)
+            {
+                Ok(_) => return,
+                Err(now) => n = now,
+            }
+        }
     }
 }
 
