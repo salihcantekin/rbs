@@ -2,7 +2,7 @@
 
 - Status: Draft
 - Owner crate(s): `rbs-record`, `rbs-cli`
-- Related ADRs: [0004](../adr/0004-single-master-clock.md), [0013](../adr/0013-zero-cost-when-unused.md), [0026](../adr/0026-partitions-and-queues.md), [0027](../adr/0027-engine-loop.md), [0037](../adr/0037-audio-graph.md), [0038](../adr/0038-io-graph-nodes.md), [0039](../adr/0039-scene-source-types.md), [0040](../adr/0040-recording-composition.md), [0041](../adr/0041-studio-recording-on-a-running-engine.md), [0047](../adr/0048-several-outputs-per-canvas.md)
+- Related ADRs: [0004](../adr/0004-single-master-clock.md), [0013](../adr/0013-zero-cost-when-unused.md), [0026](../adr/0026-partitions-and-queues.md), [0027](../adr/0027-engine-loop.md), [0037](../adr/0037-audio-graph.md), [0038](../adr/0038-io-graph-nodes.md), [0039](../adr/0039-scene-source-types.md), [0040](../adr/0040-recording-composition.md), [0041](../adr/0041-studio-recording-on-a-running-engine.md), [0048](../adr/0048-several-outputs-per-canvas.md)
 - Builds on: [scene sources](scene-sources.md), [scene model](scene-model.md) (binder), [I/O nodes](io-nodes.md), [audio graph](audio-graph.md), [engine](engine.md), [output ports](output-ports.md)
 
 ## Purpose
