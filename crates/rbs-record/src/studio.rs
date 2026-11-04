@@ -160,6 +160,21 @@ impl OutputSettings {
     }
 }
 
+/// The running output's connection, for a UI that shows whether a stream is live.
+/// Read from the output's counters only: no meter peaks are taken.
+#[non_exhaustive]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Link {
+    /// The transport is connected now.
+    pub connected: bool,
+    /// Connections that reached the point of delivering, reconnections included.
+    pub connects: u64,
+    /// Connection attempts after a failure or a lost connection.
+    pub reconnect_attempts: u64,
+    /// Items the transport dropped (its queue filled while slow or down).
+    pub transport_drops: u64,
+}
+
 /// What [`Studio::update`] did.
 #[non_exhaustive]
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -1291,6 +1306,18 @@ impl Studio {
             shutdown_errors: errors,
             flush_lost,
             finish_lost,
+        })
+    }
+
+    /// The running output's connection; `None` when nothing records or streams.
+    /// Cheap (a few atomic loads) and, unlike [`Studio::progress`], takes no meter peaks.
+    pub fn link(&self) -> Option<Link> {
+        let o = &self.recording.as_ref()?.output;
+        Some(Link {
+            connected: o.connected.load(Ordering::Relaxed),
+            connects: o.connects.load(Ordering::Relaxed),
+            reconnect_attempts: o.reconnect_attempts.load(Ordering::Relaxed),
+            transport_drops: o.transport_drops.load(Ordering::Relaxed),
         })
     }
 

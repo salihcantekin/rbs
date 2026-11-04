@@ -24,6 +24,19 @@ pub fn adapters() -> (RecordAdapters, Vec<String>) {
         a.transports
             .register(Arc::new(rbs_transport_file::FileTransportFactory)),
     );
+    // Go live: RTMP takes packets; SRT takes MPEG-TS (pure Rust, every platform).
+    note(
+        a.muxers
+            .register(Arc::new(rbs_mux_mpegts::MpegTsMuxerFactory)),
+    );
+    note(
+        a.transports
+            .register(Arc::new(rbs_transport_rtmp::RtmpTransportFactory)),
+    );
+    note(
+        a.transports
+            .register(Arc::new(rbs_transport_srt::SrtTransportFactory)),
+    );
     #[cfg(windows)]
     {
         note(

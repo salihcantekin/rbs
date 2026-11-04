@@ -4,7 +4,7 @@
 //! without a window; the window shows the labels and maps a picked index back.
 
 use crate::record_profile::{
-    KEYFRAME_SECONDS, MAX_B_FRAMES, Preset, QUALITY_LEVELS, RateMode, RecordProfile, VIDEO_KBPS,
+    Encoding, KEYFRAME_SECONDS, MAX_B_FRAMES, Preset, QUALITY_LEVELS, RateMode, VIDEO_KBPS,
 };
 use crate::studio_host::EncoderOptions;
 
@@ -80,11 +80,22 @@ fn profile_label(p: &str) -> String {
 }
 
 impl EncoderForm {
-    /// The form for `profile` with an encoder that can do `options`.
-    pub fn new(profile: &RecordProfile, options: &EncoderOptions) -> Self {
+    /// The form for a recording's `profile` with an encoder that can do `options`.
+    pub fn new(profile: &Encoding, options: &EncoderOptions) -> Self {
+        Self::build(profile, options, true)
+    }
+
+    /// The form for a stream: as [`EncoderForm::new`] without constant quality, since
+    /// streaming services need a bitrate (a saved one is still shown).
+    pub fn for_stream(profile: &Encoding, options: &EncoderOptions) -> Self {
+        Self::build(profile, options, false)
+    }
+
+    fn build(profile: &Encoding, options: &EncoderOptions, constant_quality: bool) -> Self {
         let has = |r: &str| options.rate_controls.iter().any(|c| c == r);
         let modes = RateMode::ALL
             .into_iter()
+            .filter(|m| constant_quality || *m != RateMode::ConstantQuality)
             .filter(|m| options.rate_controls.is_empty() || has(m.capability()))
             .map(|m| (m.label().to_owned(), m))
             .collect();
@@ -179,6 +190,7 @@ impl EncoderForm {
 #[allow(clippy::unwrap_used)] // Tests fail by panicking.
 mod tests {
     use super::*;
+    use crate::record_profile::RecordProfile;
 
     fn gpu() -> EncoderOptions {
         EncoderOptions {
@@ -193,7 +205,7 @@ mod tests {
 
     #[test]
     fn the_defaults_on_a_full_encoder() {
-        let f = EncoderForm::new(&RecordProfile::new(), &gpu());
+        let f = EncoderForm::new(&RecordProfile::new().encoding(), &gpu());
         assert_eq!(
             f.rate_modes.labels().collect::<Vec<_>>(),
             ["CBR", "VBR", "Constant quality"]
@@ -225,7 +237,7 @@ mod tests {
         o.h264_profiles = vec!["main".into()];
         o.b_frames_max = 2;
         o.cbr_padding = false;
-        let f = EncoderForm::new(&RecordProfile::new(), &o);
+        let f = EncoderForm::new(&RecordProfile::new().encoding(), &o);
         assert_eq!(f.rate_modes.labels().collect::<Vec<_>>(), ["CBR", "VBR"]);
         assert_eq!(
             f.profiles.labels().collect::<Vec<_>>(),
@@ -247,7 +259,7 @@ mod tests {
         let mut o = gpu();
         o.rate_controls = vec!["cbr".into()];
         o.h264_profiles = vec!["high".into()];
-        let f = EncoderForm::new(&p, &o);
+        let f = EncoderForm::new(&p.encoding(), &o);
         assert_eq!(
             f.rate_modes.get(f.rate_modes.index as i32),
             Some(RateMode::ConstantQuality)
@@ -269,15 +281,29 @@ mod tests {
         p.rate_control = RateMode::Vbr;
         p.video_kbps = 20_000;
         p.max_video_kbps = Some(40_000);
-        let f = EncoderForm::new(&p, &gpu());
+        let f = EncoderForm::new(&p.encoding(), &gpu());
         assert_eq!(f.bitrate_label, "Target bitrate");
         assert_eq!(f.peaks.get(f.peaks.index as i32), Some(Some(40_000)));
         assert!(f.peaks.items[1..].iter().all(|(_, k)| k.unwrap() >= 20_000));
     }
 
     #[test]
+    fn streams_offer_no_constant_quality_unless_saved() {
+        let f = EncoderForm::for_stream(&Encoding::new(6_000), &gpu());
+        assert_eq!(f.rate_modes.labels().collect::<Vec<_>>(), ["CBR", "VBR"]);
+        let mut e = Encoding::new(6_000);
+        e.rate_control = RateMode::ConstantQuality;
+        let f = EncoderForm::for_stream(&e, &gpu());
+        assert_eq!(
+            f.rate_modes.get(f.rate_modes.index as i32),
+            Some(RateMode::ConstantQuality),
+            "a saved value is never changed silently"
+        );
+    }
+
+    #[test]
     fn no_encoder_info_offers_every_mode() {
-        let f = EncoderForm::new(&RecordProfile::new(), &EncoderOptions::default());
+        let f = EncoderForm::new(&RecordProfile::new().encoding(), &EncoderOptions::default());
         assert_eq!(f.rate_modes.items.len(), 3);
         assert_eq!(f.profiles.items.len(), 1);
     }

@@ -5,6 +5,8 @@
 //! - [`platform`]: the platform's adapters (the composition root's list, P1).
 //! - [`canvas_profile`]: the canvas size and frame rate and their file.
 //! - [`record_profile`]: the recording's output settings and their file.
+//! - [`stream_profile`]: where Go live sends the program, and how; [`stream_key`]: the
+//!   stream key in the system's credential store.
 //! - [`encoder_form`]: the encoder settings' choices, from the encoders' capabilities.
 //! - [`remote_control`]: the control API server while remote control is on.
 //! - `native::MeterBridgeLayer` (macOS): audio meters as Core Animation layers, so meter
@@ -18,4 +20,6 @@ pub mod network_access;
 pub mod platform;
 pub mod record_profile;
 pub mod remote_control;
+pub mod stream_key;
+pub mod stream_profile;
 pub mod studio_host;
