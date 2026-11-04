@@ -3,9 +3,11 @@
 // Rust pushes state into the `Studio` global of every window and handles its callbacks
 // by sending commands to the studio's control thread.
 import { Theme, Tokens } from "tokens.slint";
-import { Button, Checkbox, IconButton, IconName, MenuItem, MenuSurface, EmptyState, Select, SegmentedControl, TextField } from "components.slint";
+import { Button, Checkbox, FocusRing, IconButton, IconName, MenuItem, MenuSurface, EmptyState, NumberField, Select, SegmentedControl, TextField } from "components.slint";
 
-export struct SourceData { id: int, name: string, kind: string, status: string, ok: bool }
+// `picture`: a video source; `x`, `y`, `w`, `h` place its box on the canvas (canvas
+// pixels). `can-up` / `can-down`: another source with a picture is above / below it.
+export struct SourceData { id: int, name: string, kind: string, status: string, ok: bool, picture: bool, x: float, y: float, w: float, h: float, can-up: bool, can-down: bool }
 export struct KindData { code: int, label: string }
 export struct TargetData { name: string, is-default: bool }
 // One meter's moving parts as fractions of the bar (rbs_ui::meter::MeterView::zones),
@@ -61,6 +63,14 @@ export global Studio {
     callback list-targets(int /* kind */);
     callback add-source(int /* kind */, int /* target */);
     callback delete-source(int /* id */);
+    // The source selected in the Sources panel (its id; -1 none). Properties shows it;
+    // every window shows the same selection.
+    in property <int> selected-source: -1;
+    callback select-source(int /* id */);
+    // One layer up (over the source above it in the list) or down.
+    callback move-source(int /* id */, bool /* up */);
+    // A video source's box on the canvas, in canvas pixels.
+    callback set-source-box(int /* id */, float /* x */, float /* y */, float /* w */, float /* h */);
     callback undo-delete();
     callback dismiss-deleted();
     callback reset-clip(int /* meter */);
@@ -302,15 +312,38 @@ export component ProgramPanel inherits Rectangle {
 
 component SourceRowView inherits Rectangle {
     in property <SourceData> data;
+    property <bool> selected: Studio.selected-source == data.id;
     height: Tokens.size-control-lg + Tokens.space-2;
     border-radius: Tokens.radius-sm;
-    background: touch.has-hover ? Theme.surface-overlay : transparent;
+    background: selected ? Theme.accent-subtle : touch.has-hover ? Theme.surface-overlay : transparent;
     accessible-role: list-item;
     accessible-label: @tr("{}, {}, {}", data.name, data.kind, data.status);
-    touch := TouchArea { }
+    accessible-item-selectable: true;
+    accessible-item-selected: selected;
+    accessible-action-default => { Studio.select-source(data.id); }
+    // Return or Space selects the focused row; the TouchArea is after the FocusScope
+    // so it gets the press (see Button).
+    focus := FocusScope {
+        key-pressed(e) => {
+            if e.text == Key.Return || e.text == " " { Studio.select-source(data.id); return accept; }
+            reject
+        }
+    }
+    touch := TouchArea {
+        clicked => { focus.focus(); Studio.select-source(data.id); }
+    }
+    FocusRing { show: focus.has-focus; }
+    // Selection is shown by a bar at the start too, not by colour alone (U7).
+    if selected: Rectangle {
+        x: 0;
+        y: Tokens.space-1;
+        width: Tokens.size-focus-ring;
+        height: parent.height - 2 * Tokens.space-1;
+        background: Theme.accent;
+    }
     HorizontalLayout {
         padding-left: Tokens.space-2;
-        spacing: Tokens.space-2;
+        spacing: Tokens.space-1;
         VerticalLayout {
             alignment: center;
             Text {
@@ -326,6 +359,26 @@ component SourceRowView inherits Rectangle {
                 color: data.ok ? Theme.text-secondary : Theme.state-error;
                 font-size: Tokens.type-caption-size;
                 overflow: elide;
+            }
+        }
+        // Order matters for pictures only: sound has no layer to stack. Shown on the
+        // selected row only, so names and states keep their room.
+        if data.picture && selected: VerticalLayout {
+            alignment: center;
+            IconButton {
+                icon: IconName.chevron-up;
+                name: @tr("Move {} up", data.name);
+                enabled: data.can-up;
+                clicked => { Studio.move-source(data.id, true); }
+            }
+        }
+        if data.picture && selected: VerticalLayout {
+            alignment: center;
+            IconButton {
+                icon: IconName.chevron-down;
+                name: @tr("Move {} down", data.name);
+                enabled: data.can-down;
+                clicked => { Studio.move-source(data.id, false); }
             }
         }
         VerticalLayout {
@@ -800,6 +853,98 @@ component EncoderFields inherits VerticalLayout {
             Hint {
                 text: root.data.b-frames-note != "" ? root.data.b-frames-note
                     : @tr("More B-frames save bits and add a little delay. 0 is the default.");
+            }
+        }
+    }
+}
+
+// The selected source's properties. For now: where its picture is on the canvas
+// (position and size in canvas pixels). Rotation, crop and filters come later.
+component TransformFields inherits VerticalLayout {
+    in property <SourceData> data;
+    spacing: Tokens.space-3;
+    alignment: start;
+    Text {
+        text: data.name;
+        color: Theme.text-primary;
+        font-size: Tokens.type-label-size;
+        font-weight: Tokens.type-label-weight;
+        overflow: elide;
+    }
+    if !data.picture: Hint {
+        text: @tr("This source has sound only, so it has no place on the canvas.");
+    }
+    if data.picture: HorizontalLayout {
+        spacing: Tokens.space-2;
+        // Equal columns, whatever the labels' lengths.
+        Field {
+            horizontal-stretch: 1;
+            preferred-width: 0;
+            label: @tr("X");
+            NumberField {
+                label: @tr("Position X of {}", data.name);
+                value: data.x;
+                edited(v) => { Studio.set-source-box(data.id, v, data.y, data.w, data.h); }
+            }
+        }
+        Field {
+            horizontal-stretch: 1;
+            preferred-width: 0;
+            label: @tr("Y");
+            NumberField {
+                label: @tr("Position Y of {}", data.name);
+                value: data.y;
+                edited(v) => { Studio.set-source-box(data.id, data.x, v, data.w, data.h); }
+            }
+        }
+    }
+    if data.picture: HorizontalLayout {
+        spacing: Tokens.space-2;
+        // Equal columns, whatever the labels' lengths.
+        Field {
+            horizontal-stretch: 1;
+            preferred-width: 0;
+            label: @tr("Width");
+            NumberField {
+                label: @tr("Width of {}", data.name);
+                value: data.w;
+                edited(v) => { Studio.set-source-box(data.id, data.x, data.y, v, data.h); }
+            }
+        }
+        Field {
+            horizontal-stretch: 1;
+            preferred-width: 0;
+            label: @tr("Height");
+            NumberField {
+                label: @tr("Height of {}", data.name);
+                value: data.h;
+                edited(v) => { Studio.set-source-box(data.id, data.x, data.y, data.w, v); }
+            }
+        }
+    }
+    if data.picture: Hint {
+        text: @tr("In canvas pixels, from the top-left corner. Up and Down arrows change a value by 1, with Shift by 10.");
+    }
+}
+
+export component PropertiesPanel inherits Rectangle {
+    background: Theme.surface-raised;
+    property <bool> any: Studio.selected-source >= 0;
+    if !any: EmptyState {
+        width: parent.width;
+        height: parent.height;
+        title: @tr("Nothing selected");
+        message: @tr("Select a source in the Sources panel to see its properties.");
+    }
+    if any: Flickable {
+        width: parent.width;
+        height: parent.height;
+        content-height: list.preferred-height;
+        list := VerticalLayout {
+            padding: Tokens.space-3;
+            alignment: start;
+            for s in Studio.sources: VerticalLayout {
+                if s.id == Studio.selected-source: TransformFields { data: s; }
             }
         }
     }
