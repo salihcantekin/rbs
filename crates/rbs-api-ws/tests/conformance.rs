@@ -304,3 +304,17 @@ fn a_client_authenticates_with_the_api_server_over_websocket() {
     );
     drop(api);
 }
+
+#[test]
+fn a_taken_ipv6_loopback_port_fails_the_start() {
+    // Someone else holds [::1]:port: starting on 127.0.0.1 alone would hand clients
+    // that try ::1 first to that process.
+    let Ok(squatter) = std::net::TcpListener::bind("[::1]:0") else {
+        return; // No IPv6 here.
+    };
+    let port = squatter.local_addr().unwrap().port();
+    let wake = Arc::new(Wake::new());
+    let inbox = TransportInbox::new(wake, Arc::new(ConnectionBudget::new(4)), 8, 4096);
+    let mut t = WsTransport::new(WsConfig::loopback(port));
+    assert!(t.start(inbox).is_err());
+}

@@ -122,9 +122,13 @@ impl ControlTransport for WsTransport {
         for addr in &self.config.addresses {
             match TcpListener::bind(addr) {
                 Ok(l) => listeners.push(l),
-                // `::1` where IPv6 is off (the error differs by OS and kernel setting):
-                // fine as long as another address is bound.
-                Err(e) if addr.is_ipv6() => v6_error = Some(format!("{addr}: {e}")),
+                // `::1` where IPv6 is off: fine as long as another address is bound.
+                // Any other error fails, above all `AddrInUse`: a process holding
+                // `[::1]:port` would otherwise get the tokens of clients that try
+                // `localhost` over IPv6 first.
+                Err(e) if addr.is_ipv6() && ipv6_unavailable(&e) => {
+                    v6_error = Some(format!("{addr}: {e}"));
+                }
                 Err(e) => return Err(TransportError(format!("cannot listen on {addr}: {e}"))),
             }
         }
@@ -193,6 +197,16 @@ impl Drop for WsTransport {
     fn drop(&mut self) {
         self.stop();
     }
+}
+
+/// True for a bind error that means the system has no IPv6.
+fn ipv6_unavailable(e: &std::io::Error) -> bool {
+    // EAFNOSUPPORT: 97 on Linux, 47 on macOS and the BSDs; WSAEAFNOSUPPORT: 10047.
+    const NO_FAMILY: [i32; 3] = [97, 47, 10047];
+    matches!(
+        e.kind(),
+        std::io::ErrorKind::AddrNotAvailable | std::io::ErrorKind::Unsupported
+    ) || e.raw_os_error().is_some_and(|c| NO_FAMILY.contains(&c))
 }
 
 /// The WebSocket close code for a reason the server closes with: 1001 (going away)

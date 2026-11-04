@@ -106,7 +106,7 @@ impl FrameReader {
                         [a, b, reason @ ..] => {
                             let code = u16::from_be_bytes([*a, *b]);
                             // RFC 6455 section 7.4: codes a peer may send.
-                            if !matches!(code, 1000..=1003 | 1007..=1011 | 3000..=4999) {
+                            if !matches!(code, 1000..=1003 | 1007..=1014 | 3000..=4999) {
                                 return Err(PROTOCOL_ERROR);
                             }
                             if std::str::from_utf8(reason).is_err() {
