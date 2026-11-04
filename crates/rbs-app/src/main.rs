@@ -434,6 +434,20 @@ impl Ctx {
                 });
                 slint::CloseRequestResponse::HideWindow
             });
+            // Escape: hidden and dropped as by the close button. The strong handle
+            // keeps the window alive until the callback returns.
+            let weak = w.as_weak();
+            let c = ctx.clone();
+            w.on_close(move || {
+                let Some(w) = weak.upgrade() else {
+                    return;
+                };
+                let _ = w.hide();
+                c.update(|app| {
+                    app.settings = None;
+                    app.studio.settings_closed();
+                });
+            });
             w.set_section(section);
             let _ = w.show();
             app.settings = Some(w);

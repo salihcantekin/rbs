@@ -358,6 +358,11 @@ pub fn container_of(path: &Path) -> Result<ContainerId, String> {
 
 /// Parses the arguments after the program name.
 pub fn parse<'a>(args: impl IntoIterator<Item = &'a str>) -> Result<Command, String> {
+    let args: Vec<&str> = args.into_iter().collect();
+    // `--help` anywhere (`rbs-cli stream --help`) shows the usage, as `help` does.
+    if args.iter().any(|a| matches!(*a, "--help" | "-h")) {
+        return Ok(Command::Help);
+    }
     let mut it = args.into_iter();
     match it.next() {
         None | Some("help" | "--help" | "-h") => Ok(Command::Help),
@@ -743,6 +748,22 @@ mod tests {
         assert!(parse(["play"]).is_err());
         assert_eq!(parse([]).unwrap(), Command::Help);
         assert_eq!(parse(["devices"]).unwrap(), Command::Devices);
+    }
+
+    #[test]
+    fn help_after_a_command_shows_the_usage() {
+        for args in [
+            &["stream", "--help"][..],
+            &["record", "-h"][..],
+            &["stream", "rtmp://h/app", "--bitrate", "6000", "--help"][..],
+            &["token", "--help"][..],
+        ] {
+            assert_eq!(
+                parse(args.iter().copied()).unwrap(),
+                Command::Help,
+                "{args:?}"
+            );
+        }
     }
 
     fn parse_stream(args: &[&str]) -> Result<RecordArgs, String> {

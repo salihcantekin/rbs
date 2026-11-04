@@ -126,6 +126,10 @@ pub(crate) struct Shared {
     pub stop: AtomicBool,
     /// Give up now: discard what is queued and exit.
     pub abort: AtomicBool,
+    /// `finish` was called: a connection that fails from now on is not tried again,
+    /// and a wait before the next attempt ends at once (nobody receives the stream,
+    /// so the tail is not worth the wait).
+    pub ending: AtomicBool,
     /// Ask the encoder for a keyframe (set when a connection is lost).
     pub keyframe_wanted: AtomicBool,
     /// A connection is up and takes media: the producer moves staged items to the
@@ -617,7 +621,7 @@ impl Io {
             };
             self.failed_before = true;
             let retry = error.is_recoverable() && attempts.is_none_or(|n| attempt < n);
-            if !retry || self.finishing() {
+            if !retry || self.finishing() || self.shared.ending.load(Ordering::Acquire) {
                 // Also while finishing with nothing queued: no reason to reconnect,
                 // but what was in flight may be lost, so `finish` reports the error.
                 let _ = self.shared.error.set(error);
@@ -629,6 +633,10 @@ impl Io {
             progress.attempts.fetch_add(1, Ordering::Release);
             self.shared.keyframe_wanted.store(true, Ordering::Release);
             if !self.back_off(delay) {
+                if !self.shared.abort.load(Ordering::Acquire) {
+                    // Ended while waiting to try again: what was queued is lost.
+                    let _ = self.shared.error.set(error);
+                }
                 break;
             }
             delay = delay.saturating_mul(2).min(max.max(initial));
@@ -651,7 +659,10 @@ impl Io {
             .checked_add(delay)
             .unwrap_or(now + Duration::from_secs(86_400));
         loop {
-            if self.shared.abort.load(Ordering::Acquire) || self.finishing() {
+            if self.shared.abort.load(Ordering::Acquire)
+                || self.shared.ending.load(Ordering::Acquire)
+                || self.finishing()
+            {
                 return false;
             }
             let left = until.saturating_duration_since(Instant::now());
