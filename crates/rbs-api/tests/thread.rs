@@ -399,3 +399,26 @@ fn a_token_set_before_the_reply_works_for_the_next_message_and_revoking_closes_i
     ctl_tx.send(Ctl::Stop).unwrap();
     control.join().unwrap();
 }
+
+#[test]
+fn a_plain_remote_websocket_peer_is_refused_by_the_inbox() {
+    use rbs_api::transport::{ConnectionBudget, Refused};
+    use rbs_api::wake::Wake;
+
+    let inbox = TransportInbox::new(
+        Arc::new(Wake::new()),
+        Arc::new(ConnectionBudget::new(4)),
+        2,
+        4096,
+    );
+    let (tx, _rx) = mpsc::channel();
+    let connect =
+        |peer: PeerInfo| inbox.connect(peer, Box::new(ChannelSender(tx.clone())), Box::new(|| {}));
+    let plain = PeerInfo {
+        secure: false,
+        ..PeerInfo::remote_websocket("10.0.0.1")
+    };
+    assert!(matches!(connect(plain), Err(Refused::Insecure)));
+    assert!(connect(PeerInfo::remote_websocket("10.0.0.1")).is_ok());
+    assert!(connect(PeerInfo::loopback_websocket()).is_ok());
+}

@@ -76,6 +76,10 @@ pub struct PeerInfo {
     pub host: Option<String>,
     /// IPC only: the OS verified that the peer runs as the same user.
     pub same_user: bool,
+    /// The connection is encrypted and the server authenticated by TLS. A WebSocket
+    /// peer that is not loopback must be (ADR-0046): `TransportInbox::connect` refuses
+    /// it otherwise.
+    pub secure: bool,
 }
 
 impl PeerInfo {
@@ -88,6 +92,7 @@ impl PeerInfo {
             origin: None,
             host: Some("localhost".into()),
             same_user: false,
+            secure: false,
         }
     }
 
@@ -100,10 +105,11 @@ impl PeerInfo {
             origin: None,
             host: None,
             same_user: true,
+            secure: false,
         }
     }
 
-    /// A WebSocket peer from another machine at `address`.
+    /// A WebSocket peer from another machine at `address`, over TLS.
     pub fn remote_websocket(address: &str) -> Self {
         Self {
             kind: TransportKind::WebSocket,
@@ -112,6 +118,7 @@ impl PeerInfo {
             origin: None,
             host: Some("studio.local".into()),
             same_user: false,
+            secure: true,
         }
     }
 
@@ -250,6 +257,8 @@ pub enum Refused {
     TooManyConnections,
     /// The server stopped.
     Stopped,
+    /// A WebSocket peer that is not loopback without TLS (ADR-0046): never served.
+    Insecure,
 }
 
 /// Counts connections from `connect` until the server has forgotten them (the
@@ -384,6 +393,11 @@ impl TransportInbox {
     ) -> Result<ConnectionHandle, Refused> {
         if self.inner.stopped.load(Ordering::Acquire) {
             return Err(Refused::Stopped);
+        }
+        // Defence in depth: a transport that let a plain remote connection through
+        // must not open a session for it.
+        if peer.kind == TransportKind::WebSocket && !peer.loopback && !peer.secure {
+            return Err(Refused::Insecure);
         }
         if !self.inner.budget.try_take(peer.is_local()) {
             return Err(Refused::TooManyConnections);

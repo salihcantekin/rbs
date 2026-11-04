@@ -1,5 +1,7 @@
 //! `Origin` and `Host` checks before the WebSocket upgrade (ADR-0044 decision 11).
 
+#![allow(clippy::unwrap_used)] // Tests fail by panicking.
+
 use rbs_api::{UpgradePolicy, UpgradeRefusal};
 
 fn policy() -> UpgradePolicy {
@@ -17,17 +19,17 @@ fn policy() -> UpgradePolicy {
 #[test]
 fn origins_must_be_on_the_allow_list_and_null_never_is() {
     let p = policy();
-    assert_eq!(p.check(None, Some("localhost:4455")), Ok(()));
+    assert_eq!(p.check(None, Some("localhost:4455"), None), Ok(()));
     assert_eq!(
-        p.check(Some("https://PANEL.example"), Some("localhost")),
+        p.check(Some("https://PANEL.example"), Some("localhost"), None),
         Ok(())
     );
     assert!(matches!(
-        p.check(Some("null"), Some("localhost")),
+        p.check(Some("null"), Some("localhost"), None),
         Err(UpgradeRefusal::Origin(_))
     ));
     assert!(matches!(
-        p.check(Some("https://evil.example"), Some("localhost")),
+        p.check(Some("https://evil.example"), Some("localhost"), None),
         Err(UpgradeRefusal::Origin(_))
     ));
 }
@@ -45,7 +47,7 @@ fn host_must_be_loopback_configured_or_bound() {
         "studio.local.",
         "192.168.1.5:4455",
     ] {
-        assert_eq!(p.check(None, Some(ok)), Ok(()), "{ok}");
+        assert_eq!(p.check(None, Some(ok), None), Ok(()), "{ok}");
     }
     // DNS rebinding: an attacker's name resolving to 127.0.0.1 is refused.
     for bad in [
@@ -56,7 +58,28 @@ fn host_must_be_loopback_configured_or_bound() {
         "localhost:http",
         "",
     ] {
-        assert!(p.check(None, Some(bad)).is_err(), "{bad}");
+        assert!(p.check(None, Some(bad), None).is_err(), "{bad}");
     }
-    assert_eq!(p.check(None, None), Err(UpgradeRefusal::MissingHost));
+    assert_eq!(p.check(None, None, None), Err(UpgradeRefusal::MissingHost));
+}
+
+#[test]
+fn host_may_name_the_accepting_address_but_never_an_unspecified_one() {
+    let p = UpgradePolicy {
+        bound_addresses: vec!["0.0.0.0".parse().unwrap(), "::".parse().unwrap()],
+        ..UpgradePolicy::default()
+    };
+    let local = Some("192.168.1.7".parse().unwrap());
+    assert_eq!(p.check(None, Some("192.168.1.7:4456"), local), Ok(()));
+    // A dual-stack socket reports IPv4 clients' local address as IPv4-mapped IPv6.
+    let mapped = Some("::ffff:192.168.1.7".parse().unwrap());
+    assert_eq!(p.check(None, Some("192.168.1.7:4456"), mapped), Ok(()));
+    assert!(p.check(None, Some("192.168.1.8"), local).is_err());
+    for bad in ["0.0.0.0:4456", "[::]:4456"] {
+        assert!(p.check(None, Some(bad), local).is_err(), "{bad}");
+        assert!(
+            p.check(None, Some(bad), Some("0.0.0.0".parse().unwrap()))
+                .is_err()
+        );
+    }
 }

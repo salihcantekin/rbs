@@ -58,12 +58,20 @@ impl Refusal {
     }
 }
 
+/// The answer to a plain (not TLS) request from another computer while network access
+/// is on (ADR-0046).
+pub(crate) const USE_TLS: &[u8] = b"HTTP/1.1 426 Upgrade Required\r\nConnection: close\r\nContent-Type: text/plain; charset=utf-8\r\nContent-Length: 56\r\n\r\nConnections from other computers must use wss:// (TLS).\n";
+
 /// The answer when the connection cap is reached or the server stops.
 pub(crate) const UNAVAILABLE: &[u8] =
     b"HTTP/1.1 503 Service Unavailable\r\nConnection: close\r\nContent-Length: 0\r\n\r\n";
 
 /// Reads the upgrade request at the start of `buf`: `Ok(None)` while it is incomplete.
-pub(crate) fn parse(buf: &[u8], policy: &UpgradePolicy) -> Result<Option<Upgrade>, Refusal> {
+pub(crate) fn parse(
+    buf: &[u8],
+    policy: &UpgradePolicy,
+    local: Option<std::net::IpAddr>,
+) -> Result<Option<Upgrade>, Refusal> {
     let mut headers = [httparse::EMPTY_HEADER; 32];
     let mut req = httparse::Request::new(&mut headers);
     let rest = match req.parse(buf) {
@@ -122,7 +130,9 @@ pub(crate) fn parse(buf: &[u8], policy: &UpgradePolicy) -> Result<Option<Upgrade
     if offered && !subprotocol {
         return Err(Refusal::BadRequest("rbs.v1 not offered"));
     }
-    policy.check(origin, host).map_err(Refusal::Forbidden)?;
+    policy
+        .check(origin, host, local)
+        .map_err(Refusal::Forbidden)?;
     Ok(Some(Upgrade {
         key: key.to_owned(),
         subprotocol,
@@ -169,7 +179,7 @@ pub fn accept_key(key: &str) -> String {
     base64(&h.finalize())
 }
 
-fn base64(bytes: &[u8]) -> String {
+pub(crate) fn base64(bytes: &[u8]) -> String {
     const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
     let mut out = String::with_capacity(bytes.len().div_ceil(3) * 4);
     for chunk in bytes.chunks(3) {
@@ -213,12 +223,12 @@ mod tests {
     fn a_valid_upgrade_is_accepted_with_or_without_the_subprotocol() {
         let policy = UpgradePolicy::default();
         let plain = request("");
-        let u = parse(plain.as_bytes(), &policy).unwrap().unwrap();
+        let u = parse(plain.as_bytes(), &policy, None).unwrap().unwrap();
         assert!(!u.subprotocol);
         assert_eq!(u.rest, plain.len());
         assert_eq!(u.host.as_deref(), Some("localhost:4455"));
         let with = request("Sec-WebSocket-Protocol: other, rbs.v1\r\n");
-        let u = parse(with.as_bytes(), &policy).unwrap().unwrap();
+        let u = parse(with.as_bytes(), &policy, None).unwrap().unwrap();
         assert!(u.subprotocol);
         let answer = String::from_utf8(accept_response(&u)).unwrap();
         assert!(
@@ -232,9 +242,12 @@ mod tests {
     fn an_incomplete_request_waits_and_a_huge_one_is_refused() {
         let policy = UpgradePolicy::default();
         let r = request("");
-        assert_eq!(parse(&r.as_bytes()[..20], &policy), Ok(None));
+        assert_eq!(parse(&r.as_bytes()[..20], &policy, None), Ok(None));
         let huge = format!("GET / HTTP/1.1\r\nX: {}", "a".repeat(MAX_REQUEST));
-        assert_eq!(parse(huge.as_bytes(), &policy), Err(Refusal::TooLarge));
+        assert_eq!(
+            parse(huge.as_bytes(), &policy, None),
+            Err(Refusal::TooLarge)
+        );
     }
 
     #[test]
@@ -250,8 +263,11 @@ mod tests {
             request("").replace("dGhlIHNhbXBsZSBub25jZQ==", "short"),
         ];
         for c in &cases {
-            assert!(parse(c.as_bytes(), &policy).is_err(), "{c}");
+            assert!(parse(c.as_bytes(), &policy, None).is_err(), "{c}");
         }
-        assert_eq!(parse(cases[3].as_bytes(), &policy), Err(Refusal::Version));
+        assert_eq!(
+            parse(cases[3].as_bytes(), &policy, None),
+            Err(Refusal::Version)
+        );
     }
 }

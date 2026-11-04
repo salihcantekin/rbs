@@ -8,8 +8,14 @@
 //! connection, or an upgrade's deadline passes: no periodic wake-up. Nothing exists
 //! until `start` (ADR-0013).
 //!
-//! - Loopback only: an address that is not loopback is refused at `start`, because
-//!   network access needs TLS, which this adapter does not have yet.
+//! - Loopback by default ([`WsConfig::loopback`]). Network access ([`WsConfig::network`],
+//!   ADR-0046) listens on all interfaces at the same port and needs a [`TlsIdentity`]:
+//!   each connection's first byte decides between TLS and plain HTTP, and plain HTTP is
+//!   served only to loopback peers (others get `426`). Without TLS, an address that is
+//!   not loopback is refused at `start`.
+//! - Remote peers cannot lock out local ones: the last sockets are kept for loopback
+//!   peers, and remote connections still upgrading and sockets per remote address are
+//!   capped at accept.
 //! - A message is never buffered past the connection's current limit (4 KiB before
 //!   authentication): a longer one is skipped as it arrives and reported as
 //!   `Oversized`.
@@ -20,6 +26,7 @@
 mod frame;
 mod handshake;
 mod io;
+pub mod tls;
 
 use std::net::{SocketAddr, TcpListener};
 use std::sync::Arc;
@@ -32,18 +39,21 @@ use rbs_api::transport::TransportError;
 use rbs_api::{CloseReason, ControlTransport, TransportInbox, UpgradePolicy};
 
 pub use handshake::{SUBPROTOCOL, accept_key};
+pub use tls::TlsIdentity;
 
 /// Settings of the WebSocket transport.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WsConfig {
-    /// Addresses to listen on; each must be loopback.
+    /// Addresses to listen on. Without `tls` each must be loopback. An unspecified
+    /// IPv6 address (`[::]`) is bound dual-stack, so it also takes IPv4; where IPv6 is
+    /// off, `0.0.0.0` is bound instead.
     pub addresses: Vec<SocketAddr>,
     /// The `Origin` allow list and host names. The bound addresses are added at start.
     pub policy: UpgradePolicy,
     /// How long a connection may take to send its upgrade request.
     pub upgrade_timeout: Duration,
-    /// Connections that may be sending their upgrade request at once; more are closed
-    /// at accept.
+    /// Remote connections that may be in their TLS handshake or upgrade request at
+    /// once; more are closed at accept. Loopback peers are not counted.
     pub max_upgrading: usize,
     /// Output bytes queued per connection before `try_send` answers `Full` (one message
     /// is always taken when nothing is queued). A connection with this much queued is
@@ -52,6 +62,12 @@ pub struct WsConfig {
     /// Sockets open at once, in any state (upgrading, open, closing); more are closed
     /// at accept. Set above the API's connection cap plus `max_upgrading`.
     pub max_sockets: usize,
+    /// Of `max_sockets`, how many only loopback peers can take.
+    pub loopback_reserve: usize,
+    /// Sockets per remote address (IPv6: per /64), in any state.
+    pub max_per_address: usize,
+    /// TLS for network access (ADR-0046); `None` serves plain WebSocket on loopback.
+    pub tls: Option<TlsIdentity>,
 }
 
 impl WsConfig {
@@ -64,6 +80,18 @@ impl WsConfig {
         ])
     }
 
+    /// Network access (ADR-0046): listens on every interface at `port` (one dual-stack
+    /// socket), TLS with `identity` for every peer, plain WebSocket for loopback peers.
+    pub fn network(port: u16, identity: TlsIdentity) -> Self {
+        Self {
+            tls: Some(identity),
+            ..Self::on(vec![SocketAddr::from((
+                std::net::Ipv6Addr::UNSPECIFIED,
+                port,
+            ))])
+        }
+    }
+
     /// Listens on `addresses`.
     pub fn on(addresses: Vec<SocketAddr>) -> Self {
         Self {
@@ -73,6 +101,9 @@ impl WsConfig {
             max_upgrading: 16,
             max_queued_bytes: 1024 * 1024,
             max_sockets: 128,
+            loopback_reserve: 32,
+            max_per_address: 8,
+            tls: None,
         }
     }
 }
@@ -112,15 +143,17 @@ impl ControlTransport for WsTransport {
         if self.running.is_some() {
             return Err(TransportError("already running".into()));
         }
-        if let Some(a) = self.config.addresses.iter().find(|a| !a.ip().is_loopback()) {
+        if self.config.tls.is_none()
+            && let Some(a) = self.config.addresses.iter().find(|a| !a.ip().is_loopback())
+        {
             return Err(TransportError(format!(
-                "{a} is not a loopback address; network access needs TLS, which the WebSocket transport does not have yet"
+                "{a} is not a loopback address; network access needs TLS"
             )));
         }
         let mut listeners = Vec::new();
         let mut v6_error = None;
         for addr in &self.config.addresses {
-            match TcpListener::bind(addr) {
+            match bind(addr) {
                 Ok(l) => listeners.push(l),
                 // `::1` where IPv6 is off: fine as long as another address is bound.
                 // Any other error fails, above all `AddrInUse`: a process holding
@@ -128,6 +161,15 @@ impl ControlTransport for WsTransport {
                 // `localhost` over IPv6 first.
                 Err(e) if addr.is_ipv6() && ipv6_unavailable(&e) => {
                     v6_error = Some(format!("{addr}: {e}"));
+                    // No IPv6: all interfaces over IPv4.
+                    if addr.ip().is_unspecified() {
+                        let v4 = SocketAddr::from(([0, 0, 0, 0], addr.port()));
+                        listeners.push(
+                            TcpListener::bind(v4).map_err(|e| {
+                                TransportError(format!("cannot listen on {v4}: {e}"))
+                            })?,
+                        );
+                    }
                 }
                 Err(e) => return Err(TransportError(format!("cannot listen on {addr}: {e}"))),
             }
@@ -148,9 +190,14 @@ impl ControlTransport for WsTransport {
             );
         }
         let mut policy = self.config.policy.clone();
-        policy
-            .bound_addresses
-            .extend(local.iter().map(SocketAddr::ip));
+        // An unspecified address is never a `Host`; each connection's own local
+        // address is checked instead.
+        policy.bound_addresses.extend(
+            local
+                .iter()
+                .map(SocketAddr::ip)
+                .filter(|ip| !ip.is_unspecified()),
+        );
         let poller = Arc::new(Poller::new().map_err(|e| TransportError(format!("poller: {e}")))?);
         let stop = Arc::new(AtomicBool::new(false));
         let io = io::Io::new(
@@ -164,6 +211,9 @@ impl ControlTransport for WsTransport {
                 max_upgrading: self.config.max_upgrading,
                 max_queued_bytes: self.config.max_queued_bytes,
                 max_sockets: self.config.max_sockets,
+                loopback_reserve: self.config.loopback_reserve,
+                max_per_address: self.config.max_per_address,
+                tls: self.config.tls.as_ref().map(TlsIdentity::server_config),
             },
         )
         .map_err(|e| TransportError(format!("poller: {e}")))?;
@@ -197,6 +247,22 @@ impl Drop for WsTransport {
     fn drop(&mut self) {
         self.stop();
     }
+}
+
+/// Binds `addr`; an unspecified IPv6 address dual-stack (`IPV6_V6ONLY` off, which std
+/// cannot set before bind, and which Windows turns on by default).
+fn bind(addr: &SocketAddr) -> std::io::Result<TcpListener> {
+    if !(addr.is_ipv6() && addr.ip().is_unspecified()) {
+        return TcpListener::bind(addr);
+    }
+    use socket2::{Domain, Protocol, Socket, Type};
+    let socket = Socket::new(Domain::IPV6, Type::STREAM, Some(Protocol::TCP))?;
+    socket.set_only_v6(false)?;
+    #[cfg(not(windows))]
+    socket.set_reuse_address(true)?;
+    socket.bind(&(*addr).into())?;
+    socket.listen(128)?;
+    Ok(socket.into())
 }
 
 /// True for a bind error that means the system has no IPv6.

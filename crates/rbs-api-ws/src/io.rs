@@ -4,11 +4,17 @@
 //! with the interest its state needs now (read unless paused, write while output
 //! waits). The API thread queues output and frees paused connections through shared
 //! per-connection state and wakes the poller; each wake services every connection
-//! (at most the connection cap plus the upgrade cap).
+//! (at most the socket cap).
+//!
+//! With network access on (ADR-0046), a connection's first byte decides its wire:
+//! `0x16` starts TLS (rustls, without I/O of its own: socket bytes pass through
+//! `read_tls`/`write_tls` here), anything else is plain HTTP, accepted only from a
+//! loopback peer. Every write goes through the wire, and plaintext rustls decrypted
+//! already is read before the thread sleeps, since it raises no readiness event.
 
 use std::collections::{HashMap, HashSet};
 use std::io::{ErrorKind, Read, Write};
-use std::net::{Shutdown, SocketAddr, TcpListener, TcpStream};
+use std::net::{IpAddr, Shutdown, TcpListener, TcpStream};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant};
@@ -21,7 +27,7 @@ use rbs_api::{
 };
 
 use crate::frame::{self, FrameReader, Incoming};
-use crate::handshake::{self, MAX_REQUEST, UNAVAILABLE};
+use crate::handshake::{self, MAX_REQUEST, UNAVAILABLE, USE_TLS};
 use crate::{close_code, close_text};
 
 /// How long a closing connection may take to receive its close frame and hang up.
@@ -35,13 +41,34 @@ const KEEP_CAPACITY: usize = 64 * 1024;
 /// How long accepting pauses after an accept error other than `WouldBlock` (out of
 /// file descriptors), so the listener does not fire in a busy loop.
 const ACCEPT_BACKOFF: Duration = Duration::from_millis(250);
+/// rustls' limit on output it buffers (records and plaintext not yet sent).
+const TLS_BUFFER: usize = 16 * 1024;
+/// A connection whose message limit is at most this has not authenticated: its queued
+/// output is capped at [`PRE_AUTH_OUTPUT`], so pongs it never reads stay small.
+const PRE_AUTH_LIMIT: usize = 16 * 1024;
+const PRE_AUTH_OUTPUT: usize = 16 * 1024;
 
 pub(crate) struct Settings {
     pub policy: UpgradePolicy,
     pub upgrade_timeout: Duration,
+    /// Remote connections still upgrading (TLS handshake or HTTP upgrade).
     pub max_upgrading: usize,
     pub max_queued_bytes: usize,
     pub max_sockets: usize,
+    /// Sockets only loopback peers can take.
+    pub loopback_reserve: usize,
+    /// Sockets per remote address (IPv6: per /64).
+    pub max_per_address: usize,
+    /// TLS for network access, or `None` (loopback only, plain).
+    pub tls: Option<Arc<rustls::ServerConfig>>,
+}
+
+/// How a connection's bytes travel.
+enum Wire {
+    /// Network access is on and the first byte has not arrived.
+    Unknown,
+    Plain,
+    Tls(Box<rustls::ServerConnection>),
 }
 
 /// Output and flags shared between the API thread (sender, resume) and the I/O
@@ -131,7 +158,11 @@ enum State {
 
 struct Conn {
     stream: TcpStream,
-    peer: SocketAddr,
+    /// The peer's address, canonical (IPv4-mapped IPv6 as IPv4).
+    peer: IpAddr,
+    /// The address the connection was accepted on, canonical.
+    local: Option<IpAddr>,
+    wire: Wire,
     state: State,
     /// The interest the source is armed with; `None` after its event fired.
     armed: Option<(bool, bool)>,
@@ -298,17 +329,11 @@ impl Io {
             };
             match l.listener.accept() {
                 Ok((stream, peer)) => {
-                    let upgrading = self
-                        .conns
-                        .values()
-                        .filter(|c| matches!(c.state, State::Upgrading { .. }))
-                        .count();
-                    if upgrading >= self.settings.max_upgrading
-                        || self.conns.len() >= self.settings.max_sockets
-                        || stream.set_nonblocking(true).is_err()
-                    {
+                    let peer = peer.ip().to_canonical();
+                    if !self.admits(peer) || stream.set_nonblocking(true).is_err() {
                         continue; // Dropping the stream closes it.
                     }
+                    let local = stream.local_addr().ok().map(|a| a.ip().to_canonical());
                     let _ = stream.set_nodelay(true);
                     let key = self.next_key;
                     self.next_key += 1;
@@ -320,6 +345,12 @@ impl Io {
                         Conn {
                             stream,
                             peer,
+                            local,
+                            wire: if self.settings.tls.is_some() {
+                                Wire::Unknown
+                            } else {
+                                Wire::Plain
+                            },
                             state: State::Upgrading {
                                 buf: Vec::new(),
                                 deadline: Instant::now() + self.settings.upgrade_timeout,
@@ -344,6 +375,31 @@ impl Io {
         }
     }
 
+    /// Whether a new connection from `peer` is taken: the socket cap, with the last
+    /// slots kept for loopback peers, and for remote peers a cap on connections still
+    /// upgrading and on sockets per address, so remote peers cannot lock out local
+    /// ones (ADR-0046 decision 2).
+    fn admits(&self, peer: IpAddr) -> bool {
+        let s = &self.settings;
+        let total = self.conns.len();
+        if total >= s.max_sockets {
+            return false;
+        }
+        if peer.is_loopback() {
+            return true;
+        }
+        if total >= s.max_sockets.saturating_sub(s.loopback_reserve) {
+            return false;
+        }
+        let remote = || self.conns.values().filter(|c| !c.peer.is_loopback());
+        let upgrading = remote()
+            .filter(|c| matches!(c.state, State::Upgrading { .. }))
+            .count();
+        let key = address_key(peer);
+        let same = remote().filter(|c| address_key(c.peer) == key).count();
+        upgrading < s.max_upgrading && same < s.max_per_address
+    }
+
     /// Services one connection; false when it is done.
     fn service(&mut self, key: usize, readable: bool, now: Instant) -> bool {
         let Some(mut conn) = self.conns.remove(&key) else {
@@ -351,15 +407,24 @@ impl Io {
         };
         let keep = self.step(&mut conn, readable, now);
         if keep {
+            let tls_out = wants_write(&conn.wire);
             let want = match &conn.state {
-                State::Upgrading { .. } => (true, false),
-                State::Open { shared, paused, .. } => {
+                State::Upgrading { .. } => (true, tls_out),
+                State::Open {
+                    handle,
+                    shared,
+                    paused,
+                    ..
+                } => {
                     let queued = shared.lock().buf.len();
-                    (may_read(*paused, queued, shared.max), queued > 0)
+                    (
+                        may_read(*paused, queued, read_cap(handle, shared)),
+                        queued > 0 || tls_out,
+                    )
                 }
                 State::Lingering { shared, .. } => (
                     true,
-                    shared.as_ref().is_some_and(|s| !s.lock().buf.is_empty()),
+                    tls_out || shared.as_ref().is_some_and(|s| !s.lock().buf.is_empty()),
                 ),
             };
             if conn.armed != Some(want) {
@@ -401,21 +466,72 @@ impl Io {
     /// and lingering until its answer is read; `Some(false)`: gone; `None`: still
     /// waiting.
     fn upgrade(&mut self, conn: &mut Conn, readable: bool, now: Instant) -> Option<bool> {
+        let State::Upgrading { deadline, .. } = &conn.state else {
+            return Some(false);
+        };
+        if now >= *deadline {
+            return Some(false);
+        }
+        if let Wire::Unknown = conn.wire {
+            if !readable {
+                return None;
+            }
+            let mut first = [0u8; 1];
+            match conn.stream.peek(&mut first) {
+                Ok(0) => return Some(false),
+                Ok(_) => {}
+                Err(e) if is_transient(&e) => return None,
+                Err(_) => return Some(false),
+            }
+            if first[0] == 0x16 {
+                let Some(config) = &self.settings.tls else {
+                    return Some(false);
+                };
+                let Ok(mut tls) = rustls::ServerConnection::new(config.clone()) else {
+                    return Some(false);
+                };
+                tls.set_buffer_limit(Some(TLS_BUFFER));
+                conn.wire = Wire::Tls(Box::new(tls));
+            } else if conn.peer.is_loopback() {
+                conn.wire = Wire::Plain;
+            } else {
+                // Plain HTTP from another computer: told to use TLS, never served.
+                conn.wire = Wire::Plain;
+                refuse(conn, USE_TLS, now);
+                return Some(true);
+            }
+        }
         let State::Upgrading { buf, deadline } = &mut conn.state else {
             return Some(false);
         };
-        if readable {
+        // Until the request is whole or would block: rustls may hold decrypted bytes
+        // that raise no readiness event.
+        loop {
             let room = MAX_REQUEST.saturating_sub(buf.len()).min(CHUNK);
-            if room > 0 {
-                match conn.stream.read(&mut self.scratch[..room]) {
-                    Ok(0) => return Some(false),
-                    Ok(n) => buf.extend_from_slice(&self.scratch[..n]),
-                    Err(e) if is_transient(&e) => {}
-                    Err(_) => return Some(false),
+            if room == 0 {
+                break;
+            }
+            match read_plain(
+                &mut conn.stream,
+                &mut conn.wire,
+                &mut self.scratch[..room],
+                readable,
+            ) {
+                Ok(0) => return Some(false),
+                Ok(n) => buf.extend_from_slice(&self.scratch[..n]),
+                Err(e) if e.kind() == ErrorKind::Interrupted => {}
+                Err(e) if e.kind() == ErrorKind::WouldBlock => break,
+                Err(_) => {
+                    let _ = flush_wire(&mut conn.stream, &mut conn.wire);
+                    return Some(false);
                 }
             }
         }
-        let upgrade = match handshake::parse(buf, &self.settings.policy) {
+        // The TLS handshake's own records.
+        if flush_wire(&mut conn.stream, &mut conn.wire).is_err() {
+            return Some(false);
+        }
+        let upgrade = match handshake::parse(buf, &self.settings.policy, conn.local) {
             Ok(Some(u)) => u,
             Ok(None) if now >= *deadline => return Some(false),
             Ok(None) => return None,
@@ -428,7 +544,7 @@ impl Io {
             out: Mutex::new(Out::default()),
             max: self.settings.max_queued_bytes,
         });
-        let ip = conn.peer.ip().to_canonical();
+        let ip = conn.peer;
         let peer = PeerInfo {
             kind: TransportKind::WebSocket,
             loopback: ip.is_loopback(),
@@ -436,6 +552,7 @@ impl Io {
             origin: upgrade.origin.clone(),
             host: upgrade.host.clone(),
             same_user: false,
+            secure: matches!(conn.wire, Wire::Tls(_)),
         };
         let sender = WsSender {
             shared: shared.clone(),
@@ -456,7 +573,11 @@ impl Io {
                 return Some(true);
             }
         };
-        if !write_small(&mut conn.stream, &handshake::accept_response(&upgrade)) {
+        if !write_small(
+            &mut conn.stream,
+            &mut conn.wire,
+            &handshake::accept_response(&upgrade),
+        ) {
             return Some(false); // Dropping the handle reports the connection closed.
         }
         let mut reader = FrameReader::default();
@@ -488,17 +609,25 @@ impl Io {
         if !*paused {
             process(handle, reader, shared, paused);
         }
-        if readable || resumed {
+        // TLS: plaintext rustls already decrypted is read even without an event.
+        let buffered = matches!(conn.wire, Wire::Tls(_));
+        if readable || resumed || buffered {
             for _ in 0..CHUNKS_PER_WAKE {
                 {
                     // A peer that does not read its answers (pongs, too) is not read
-                    // either, so its output stays bounded.
+                    // either, so its output stays bounded. A paused connection is not
+                    // read at all: rustls refuses records once its plaintext is full.
                     let out = shared.lock();
-                    if out.closing || !may_read(*paused, out.buf.len(), shared.max) {
+                    if out.closing || !may_read(*paused, out.buf.len(), read_cap(handle, shared)) {
                         break;
                     }
                 }
-                match conn.stream.read(&mut self.scratch) {
+                match read_plain(
+                    &mut conn.stream,
+                    &mut conn.wire,
+                    &mut self.scratch,
+                    readable || resumed,
+                ) {
                     Ok(0) => return false,
                     Ok(n) => {
                         reader.feed(&self.scratch[..n]);
@@ -510,7 +639,7 @@ impl Io {
                 }
             }
         }
-        if flush(&mut conn.stream, shared).is_err() {
+        if flush(&mut conn.stream, &mut conn.wire, shared).is_err() {
             return false;
         }
         let (closing, writable) = {
@@ -550,7 +679,11 @@ impl Io {
                     close_code(CloseReason::ServerStopping),
                     close_text(CloseReason::ServerStopping),
                 );
-                let _ = flush(&mut conn.stream, shared);
+                let _ = flush(&mut conn.stream, &mut conn.wire, shared);
+                if let Wire::Tls(tls) = &mut conn.wire {
+                    tls.send_close_notify();
+                    let _ = flush_tls(&mut conn.stream, tls);
+                }
                 let _ = conn.stream.shutdown(Shutdown::Write);
             }
         }
@@ -564,6 +697,105 @@ impl Io {
 /// its pong queue (it is bounded by `max` plus one wake's worth of reads).
 fn may_read(paused: bool, queued: usize, max: usize) -> bool {
     !paused && queued < max
+}
+
+/// The queued output above which an open connection is not read: small before
+/// authentication (ADR-0046 decision 6).
+fn read_cap(handle: &ConnectionHandle, shared: &Shared) -> usize {
+    if handle.max_message_bytes() <= PRE_AUTH_LIMIT {
+        shared.max.min(PRE_AUTH_OUTPUT)
+    } else {
+        shared.max
+    }
+}
+
+/// The key per-address caps group by: the address, or for IPv6 its /64.
+fn address_key(ip: IpAddr) -> IpAddr {
+    match ip {
+        IpAddr::V4(_) => ip,
+        IpAddr::V6(v6) => {
+            let s = v6.segments();
+            IpAddr::from([s[0], s[1], s[2], s[3], 0, 0, 0, 0])
+        }
+    }
+}
+
+/// Reads plaintext: first what rustls decrypted already, then, when `from_socket`,
+/// from the socket. `Ok(0)` when the peer closed.
+fn read_plain(
+    stream: &mut TcpStream,
+    wire: &mut Wire,
+    buf: &mut [u8],
+    from_socket: bool,
+) -> std::io::Result<usize> {
+    match wire {
+        Wire::Unknown | Wire::Plain => {
+            if !from_socket {
+                return Err(ErrorKind::WouldBlock.into());
+            }
+            stream.read(buf)
+        }
+        Wire::Tls(tls) => loop {
+            match tls.reader().read(buf) {
+                Ok(n) => return Ok(n),
+                Err(e) if e.kind() == ErrorKind::WouldBlock => {}
+                Err(e) => return Err(e),
+            }
+            if !from_socket {
+                return Err(ErrorKind::WouldBlock.into());
+            }
+            if tls.read_tls(stream)? == 0 {
+                return Ok(0);
+            }
+            if let Err(e) = tls.process_new_packets() {
+                // The alert rustls queued goes out before the connection is dropped.
+                let _ = tls.write_tls(stream);
+                return Err(std::io::Error::new(ErrorKind::InvalidData, e));
+            }
+        },
+    }
+}
+
+/// Writes as much of `bytes` as the wire takes now (TLS: into rustls' bounded buffer,
+/// then records to the socket until it would block).
+fn write_plain(stream: &mut TcpStream, wire: &mut Wire, bytes: &[u8]) -> std::io::Result<usize> {
+    match wire {
+        Wire::Unknown | Wire::Plain => stream.write(bytes),
+        Wire::Tls(tls) => {
+            let n = tls.writer().write(bytes)?;
+            flush_tls(stream, tls)?;
+            if n == 0 && !bytes.is_empty() {
+                return Err(ErrorKind::WouldBlock.into());
+            }
+            Ok(n)
+        }
+    }
+}
+
+/// Sends the TLS records rustls holds until the socket would block.
+fn flush_tls(stream: &mut TcpStream, tls: &mut rustls::ServerConnection) -> std::io::Result<()> {
+    while tls.wants_write() {
+        match tls.write_tls(stream) {
+            Ok(0) => return Err(ErrorKind::WriteZero.into()),
+            Ok(_) => {}
+            Err(e) if e.kind() == ErrorKind::Interrupted => {}
+            Err(e) if e.kind() == ErrorKind::WouldBlock => break,
+            Err(e) => return Err(e),
+        }
+    }
+    Ok(())
+}
+
+fn flush_wire(stream: &mut TcpStream, wire: &mut Wire) -> std::io::Result<()> {
+    match wire {
+        Wire::Tls(tls) => flush_tls(stream, tls),
+        Wire::Unknown | Wire::Plain => Ok(()),
+    }
+}
+
+/// TLS records wait to be sent.
+fn wants_write(wire: &Wire) -> bool {
+    matches!(wire, Wire::Tls(tls) if tls.wants_write())
 }
 
 /// Hands the reader's messages to the inbox until it needs more bytes, the
@@ -615,18 +847,31 @@ fn linger(conn: &mut Conn, readable: bool, now: Instant, scratch: &mut [u8]) -> 
     if now >= *deadline {
         return false;
     }
-    if let Some(shared) = shared {
-        if flush(&mut conn.stream, shared).is_err() {
-            return false;
-        }
+    if let Some(shared) = shared
+        && flush(&mut conn.stream, &mut conn.wire, shared).is_err()
+    {
+        return false;
     }
     if !*write_shut && shared.as_ref().is_none_or(|s| s.lock().buf.is_empty()) {
-        let _ = conn.stream.shutdown(Shutdown::Write);
-        *write_shut = true;
+        // TLS: `close_notify` first, and the socket shut once rustls sent everything.
+        let sent = match &mut conn.wire {
+            Wire::Tls(tls) => {
+                tls.send_close_notify();
+                if flush_tls(&mut conn.stream, tls).is_err() {
+                    return false;
+                }
+                !tls.wants_write()
+            }
+            Wire::Unknown | Wire::Plain => true,
+        };
+        if sent {
+            let _ = conn.stream.shutdown(Shutdown::Write);
+            *write_shut = true;
+        }
     }
     if readable {
         for _ in 0..CHUNKS_PER_WAKE {
-            match conn.stream.read(scratch) {
+            match read_plain(&mut conn.stream, &mut conn.wire, scratch, true) {
                 Ok(0) => return false,
                 Ok(_) => {}
                 Err(e) if e.kind() == ErrorKind::Interrupted => {}
@@ -639,22 +884,26 @@ fn linger(conn: &mut Conn, readable: bool, now: Instant, scratch: &mut [u8]) -> 
 }
 
 /// Answers a refused upgrade and lingers, so the peer reads the answer before the
-/// socket closes (closing with its request unread would reset the connection).
+/// socket closes (closing with its request unread would reset the connection). Over
+/// TLS the answer is encrypted, and lingering sends it and `close_notify`.
 fn refuse(conn: &mut Conn, answer: &[u8], now: Instant) {
-    let shut = write_small(&mut conn.stream, answer);
-    let _ = conn.stream.shutdown(Shutdown::Write);
+    let written = write_small(&mut conn.stream, &mut conn.wire, answer);
+    let tls = matches!(conn.wire, Wire::Tls(_));
+    if !tls {
+        let _ = conn.stream.shutdown(Shutdown::Write);
+    }
     conn.state = State::Lingering {
         shared: None,
-        deadline: if shut { now + LINGER } else { now },
-        write_shut: true,
+        deadline: if written { now + LINGER } else { now },
+        write_shut: !tls,
     };
 }
 
 /// Writes queued output until the socket would block.
-fn flush(stream: &mut TcpStream, shared: &Shared) -> std::io::Result<()> {
+fn flush(stream: &mut TcpStream, wire: &mut Wire, shared: &Shared) -> std::io::Result<()> {
     let mut out = shared.lock();
     while !out.buf.is_empty() {
-        match stream.write(&out.buf) {
+        match write_plain(stream, wire, &out.buf) {
             Ok(0) => return Err(ErrorKind::WriteZero.into()),
             Ok(n) => {
                 out.buf.drain(..n);
@@ -667,11 +916,17 @@ fn flush(stream: &mut TcpStream, shared: &Shared) -> std::io::Result<()> {
     if out.buf.is_empty() && out.buf.capacity() > KEEP_CAPACITY {
         out.buf = Vec::new();
     }
-    Ok(())
+    drop(out);
+    flush_wire(stream, wire)
 }
 
-/// Writes a short answer to a fresh socket; false when it did not all go out.
-fn write_small(stream: &mut TcpStream, mut bytes: &[u8]) -> bool {
+/// Writes a short answer to a fresh connection; false when it did not all go out.
+/// Over TLS it is taken whole into rustls (far below its buffer limit) and sent as the
+/// socket allows; what remains goes out with the next flush.
+fn write_small(stream: &mut TcpStream, wire: &mut Wire, mut bytes: &[u8]) -> bool {
+    if let Wire::Tls(tls) = wire {
+        return tls.writer().write_all(bytes).is_ok() && flush_tls(stream, tls).is_ok();
+    }
     while !bytes.is_empty() {
         match stream.write(bytes) {
             Ok(0) => return false,
