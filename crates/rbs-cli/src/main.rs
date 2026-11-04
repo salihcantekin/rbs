@@ -228,6 +228,11 @@ fn record(a: &RecordArgs) -> Result<(), String> {
         ));
     }
 
+    // The stream key is checked before any device or permission prompt is touched.
+    let secret = match &a.stream {
+        Some(target) => stream_secret(target)?,
+        None => None,
+    };
     let permissions = permissions::Permissions::new(&mut adapters.sources);
     let built = scene::build(&adapters.sources, a, &|t, id| permissions.check(t, id))?;
     for s in &built.skipped {
@@ -237,7 +242,7 @@ fn record(a: &RecordArgs) -> Result<(), String> {
         return Err("without a terminal nothing can press Enter: pass --seconds".into());
     }
     let mut settings = match &a.stream {
-        Some(target) => stream_settings(built.canvas, target)?,
+        Some(target) => stream_settings(built.canvas, target, secret),
         None => {
             let out =
                 std::path::absolute(&a.out).map_err(|e| format!("{}: {e}", a.out.display()))?;
@@ -435,37 +440,48 @@ const STREAM_RECONNECT: ReconnectPolicy = ReconnectPolicy::Backoff {
     attempts: Some(10),
 };
 
-/// The output settings of `stream`: the URL, its transport input, the stream key from
-/// the environment, reconnect and the SRT latency.
+/// The stream key (RTMP, required) or stream id (SRT, optional) from the environment
+/// variable the target names, trimmed.
+fn stream_secret(target: &StreamTarget) -> Result<Option<Secret>, String> {
+    let key = std::env::var(&target.key_env)
+        .ok()
+        .map(|k| k.trim().to_owned())
+        .filter(|k| !k.is_empty());
+    match (&key, target.input) {
+        (None, TransportInput::Packets) => Err(format!(
+            "set the environment variable {} to the stream key (an RTMP server needs one)",
+            target.key_env
+        )),
+        (None, _) => {
+            println!("no stream id ({} is not set)", target.key_env);
+            Ok(None)
+        }
+        (Some(_), _) => {
+            println!("stream key: from {}", target.key_env);
+            Ok(key.map(Secret::new))
+        }
+    }
+}
+
+/// The output settings of `stream`: the URL, its transport input, the secret, reconnect
+/// and the SRT latency.
 fn stream_settings(
     canvas: rbs_scene::model::CanvasId,
     target: &StreamTarget,
-) -> Result<RecordSettings, String> {
+    secret: Option<Secret>,
+) -> RecordSettings {
     let mut settings = match target.input {
         TransportInput::Container(container) => {
             RecordSettings::new(canvas, target.url.clone(), container)
         }
         _ => RecordSettings::packets(canvas, target.url.clone()),
     };
-    let key = std::env::var(&target.key_env)
-        .ok()
-        .filter(|k| !k.trim().is_empty());
-    match (&key, target.input) {
-        (None, TransportInput::Packets) => {
-            return Err(format!(
-                "set the environment variable {} to the stream key (an RTMP server needs one)",
-                target.key_env
-            ));
-        }
-        (None, _) => println!("no stream id ({} is not set)", target.key_env),
-        (Some(_), _) => println!("stream key: from {}", target.key_env),
-    }
-    settings.secret = key.map(|k| Secret::new(k.trim()));
+    settings.secret = secret;
     if target.reconnect {
         settings.reconnect = STREAM_RECONNECT;
     }
     if let Some(ms) = target.srt_latency_ms {
         settings.transport_options = vec![("latency_ms".to_owned(), ms.to_string())];
     }
-    Ok(settings)
+    settings
 }
