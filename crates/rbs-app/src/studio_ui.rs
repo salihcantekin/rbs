@@ -1220,7 +1220,7 @@ impl StudioUi {
 
     /// Starts recording with the output settings.
     pub fn record(&mut self) {
-        // A running stream does not stop it: both run at once (ADR-0047).
+        // A running stream does not stop it: both run at once (ADR-0048).
         if self.rec_state != rec_state::OFF {
             return;
         }

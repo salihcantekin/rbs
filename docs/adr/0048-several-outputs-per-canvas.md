@@ -1,4 +1,4 @@
-# ADR-0047: Several outputs per canvas: record and stream at once, encoders shared when their settings match
+# ADR-0048: Several outputs per canvas: record and stream at once, encoders shared when their settings match
 
 - Status: Proposed
 - Date: 2026-11-04

@@ -376,7 +376,7 @@ fn streams_take_the_key_from_the_store_and_report_their_connection() {
     let l = link_where(&rx, |l| l.connected);
     assert_eq!((l.connects, l.reconnect_attempts), (1, 0));
 
-    // A recording runs alongside the stream (ADR-0047) and stops on its own; one
+    // A recording runs alongside the stream (ADR-0048) and stops on its own; one
     // stream at a time.
     let file = std::env::temp_dir().join(format!("rbs-app-stream-{}.mkv", std::process::id()));
     let _ = std::fs::remove_file(&file);

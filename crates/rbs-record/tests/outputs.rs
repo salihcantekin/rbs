@@ -1,4 +1,4 @@
-//! Several outputs per canvas (spec `recording.md`, "Several outputs", ADR-0047): a
+//! Several outputs per canvas (spec `recording.md`, "Several outputs", ADR-0048): a
 //! recording and a live stream at once, on their own encoders when their settings
 //! differ and sharing them when they match; each stops without touching the other.
 //! Reference adapters on a `TestClock`, as in `studio.rs`; tests wait for counts.

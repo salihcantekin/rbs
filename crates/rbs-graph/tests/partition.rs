@@ -700,7 +700,7 @@ fn an_active_node_moves_between_partitions_in_two_phases() {
     assert!(rig.packets_seen.load(Ordering::Relaxed) >= packets_before + 4);
 }
 
-/// A second output joins a running packet producer (ADR-0047): the new link gets its
+/// A second output joins a running packet producer (ADR-0048): the new link gets its
 /// own queue, its first packet is a keyframe, the first output sees no gap, and the
 /// ticks after the swap allocate nothing.
 #[test]

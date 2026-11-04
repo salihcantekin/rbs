@@ -41,7 +41,7 @@ pub const VIDEO_ENCODER: PartitionId = PartitionId(2);
 pub const AUDIO_ENCODER: PartitionId = PartitionId(3);
 /// Default output partition (muxer and transport).
 pub const OUTPUT: PartitionId = PartitionId(4);
-/// Default video encoder partition of a studio's second output slot (ADR-0047).
+/// Default video encoder partition of a studio's second output slot (ADR-0048).
 pub const VIDEO_ENCODER_2: PartitionId = PartitionId(5);
 /// Default audio encoder partition of a studio's second output slot.
 pub const AUDIO_ENCODER_2: PartitionId = PartitionId(6);
@@ -198,7 +198,7 @@ pub struct Partitions {
     pub audio_encoder: PartitionId,
     /// The output.
     pub output: PartitionId,
-    /// The second output slot of a studio (ADR-0047): its encoders, when they are not
+    /// The second output slot of a studio (ADR-0048): its encoders, when they are not
     /// shared with the first output, and its output. The fields above are the first.
     pub second: OutputPartitions,
 }
@@ -488,7 +488,7 @@ pub struct StartReport {
     /// or not fatal (a skipped filter, the video of a source with audio).
     pub problems: Vec<BindProblem>,
     /// The video encoder (and its export) was already running for another output and is
-    /// shared (ADR-0047); the output started at its next keyframe.
+    /// shared (ADR-0048); the output started at its next keyframe.
     pub video_shared: bool,
     /// The audio encoder was already running for another output and is shared.
     pub audio_shared: bool,

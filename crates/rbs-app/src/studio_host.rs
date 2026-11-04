@@ -707,7 +707,7 @@ struct Host {
     rows: Vec<SourceRow>,
     undo: Option<Undo>,
     waiting: bool,
-    /// The running recording: its file and output (ADR-0047: it runs alongside a
+    /// The running recording: its file and output (ADR-0048: it runs alongside a
     /// stream).
     recording: Option<(PathBuf, OutputId)>,
     /// The running stream: its URL, the connection last reported and its output.
@@ -1439,7 +1439,7 @@ impl Host {
     }
 
     /// Attaches `out` to the studio with the picked encoder only, or the best one (a
-    /// running one when the settings match, ADR-0047); returns the output and the
+    /// running one when the settings match, ADR-0048); returns the output and the
     /// encoders' names.
     fn start_output(
         &mut self,
