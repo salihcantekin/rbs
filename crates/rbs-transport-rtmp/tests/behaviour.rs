@@ -741,3 +741,43 @@ fn a_late_server_gets_recent_media_not_what_waited_in_the_hand_off() {
         assert_eq!(pair[1] - pair[0], 33, "{video:?}");
     }
 }
+
+#[test]
+fn finish_does_not_wait_for_the_next_attempt_after_a_failed_connection() {
+    // Nothing listens on this port: every connection is refused.
+    let port = std::net::TcpListener::bind("127.0.0.1:0")
+        .unwrap()
+        .local_addr()
+        .unwrap()
+        .port();
+    // The next attempt would come a minute later; `finish` must not wait for it.
+    let config =
+        config(&format!("rtmp://127.0.0.1:{port}/live")).with_reconnect(ReconnectPolicy::Backoff {
+            initial: Duration::from_secs(60),
+            max: Duration::from_secs(60),
+            attempts: None,
+        });
+    let mut t = RtmpTransportFactory.create(&config).unwrap();
+    t.start(&streams()).unwrap();
+    for i in 0..30 {
+        send(&mut t, VIDEO, &video(1000 + i * 33, i == 0, 1000));
+    }
+    let mut events = Vec::new();
+    wait_for(&mut t, &mut events, |e| {
+        matches!(e, TransportEvent::Reconnecting { .. })
+    });
+    let started = Instant::now();
+    let result = t.finish(Duration::from_secs(60));
+    // Hang guard only: before, `finish` spent four fifths of its budget (48 s) here.
+    assert!(
+        started.elapsed() < Duration::from_secs(10),
+        "{:?}",
+        started.elapsed()
+    );
+    assert!(
+        matches!(result, Err(TransportError::Connection(_))),
+        "{result:?}"
+    );
+    assert_eq!(t.stats().items_dropped, 30, "{:?}", t.stats());
+    assert_eq!(t.stats().queued_bytes, 0);
+}

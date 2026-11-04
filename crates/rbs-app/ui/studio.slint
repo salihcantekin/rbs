@@ -550,8 +550,10 @@ export component LiveControlsPanel inherits Rectangle {
             spacing: Tokens.space-2;
             alignment: start;
             Button {
-                text: live ? @tr("End stream") : @tr("Go live");
-                kind: live ? "live" : "primary";
+                // While the stream ends the button says so (disabled) until the
+                // output closed, so it never offers Go live too early.
+                text: Studio.st-state == 3 ? @tr("Ending…") : live ? @tr("End stream") : @tr("Go live");
+                kind: live || Studio.st-state == 3 ? "live" : "primary";
                 enabled: Studio.state == 1 && !confirming
                     && (live || (Studio.st-state == 0 && Studio.rec-state == 0 && Studio.rec-unavailable == ""));
                 clicked => {
@@ -559,8 +561,10 @@ export component LiveControlsPanel inherits Rectangle {
                 }
             }
             Button {
-                text: recording ? @tr("Stop recording") : @tr("Record");
-                kind: recording ? "live" : "secondary";
+                // Stopping: the button says so (disabled) until the file is closed;
+                // Record comes back only then.
+                text: Studio.rec-state == 3 ? @tr("Stopping…") : recording ? @tr("Stop recording") : @tr("Record");
+                kind: recording || Studio.rec-state == 3 ? "live" : "secondary";
                 enabled: Studio.state == 1 && Studio.rec-unavailable == ""
                     && (recording || (Studio.rec-state == 0 && Studio.st-state == 0));
                 clicked => {
