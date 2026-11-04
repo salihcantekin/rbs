@@ -1006,6 +1006,24 @@ fn install_studio(g: &Studio<'_>, ctx: &Ctx) {
     on!(on_undo_revoke, |app| {
         app.studio.undo_revoke();
     });
+    on!(on_set_rc_network, |app, on: bool| {
+        app.studio.set_network(on);
+    });
+    on!(on_set_rc_remote_admin, |app, on: bool| {
+        app.studio.set_remote_admin(on);
+    });
+    on!(
+        on_rc_use_own,
+        |app, cert: slint::SharedString, key: slint::SharedString| {
+            app.studio.use_own_certificate(&cert, &key);
+        }
+    );
+    on!(on_rc_use_generated, |app| {
+        app.studio.use_generated_certificate();
+    });
+    on!(on_rc_new_key, |app| {
+        app.studio.new_key();
+    });
     // A popup opened or closed: the preview layer hides or shows at once.
     #[cfg(any(target_os = "macos", windows))]
     {

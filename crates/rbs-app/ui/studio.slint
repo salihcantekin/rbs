@@ -158,6 +158,30 @@ export global Studio {
     // The access token revoked last; empty when none. "Undo" puts it back.
     in property <string> rc-revoked;
     callback undo-revoke();
+
+    // Network access (ADR-0046): other computers connect over TLS. Off by default.
+    in property <bool> rc-network;
+    // "Allow remote admin": Full control tokens keep admin from other computers.
+    in property <bool> rc-remote-admin;
+    // Other computers can connect now: the frame shows it in every workspace.
+    in property <bool> rc-network-on;
+    // Where other computers connect, or why they cannot; `-bad` marks a problem.
+    in property <string> rc-network-status;
+    in property <bool> rc-network-status-bad;
+    // What clients check: the key pin, and the certificate fingerprint.
+    in property <string> rc-key-pin;
+    in property <string> rc-fingerprint;
+    // Where the certificate came from, and whether it was just renewed.
+    in property <string> rc-cert-note;
+    // The user's own certificate is used, and its files.
+    in property <bool> rc-own;
+    in property <string> rc-own-cert;
+    in property <string> rc-own-key;
+    callback set-rc-network(bool);
+    callback set-rc-remote-admin(bool);
+    callback rc-use-own(string /* certificate */, string /* key */);
+    callback rc-use-generated();
+    callback rc-new-key();
 }
 
 // The add-source picker: a kind, then what it captures. Keyboard: arrows are not
@@ -772,6 +796,11 @@ export component VideoSettings inherits Rectangle {
 export component RemoteControlSettings inherits Rectangle {
     // The access picked for the next token: 1 Control, the default.
     property <int> access: 1;
+    // Network access certificate: 0 the one RBS made, 1 the user's own (picked, maybe
+    // not yet in use).
+    property <int> cert-source: Studio.rc-own ? 1 : 0;
+    // "New key" asks first: every client must pin the new key.
+    property <bool> confirming;
     form := VerticalLayout {
         spacing: Tokens.space-3;
         alignment: start;
@@ -799,6 +828,154 @@ export component RemoteControlSettings inherits Rectangle {
             }
             Hint { text: @tr("The port apps connect to. Changing it disconnects connected apps. 4456 is the default."); }
         }
+        Rectangle { height: Tokens.size-border; background: Theme.border-subtle; }
+        // Network access (ADR-0046): apps on other computers connect over TLS and
+        // check the key pin before they send a token.
+        VerticalLayout {
+            spacing: Tokens.space-1;
+            Checkbox {
+                text: @tr("Allow access from other computers");
+                checked: Studio.rc-network;
+                enabled: Studio.rc-enabled;
+                toggled(on) => { Studio.set-rc-network(on); }
+            }
+            Hint { text: @tr("Lets apps on other computers on your network connect, over an encrypted connection. Turn it on only on networks you trust. Windows and macOS ask to allow RBS through the firewall the first time; if that is refused, other computers cannot connect and RBS is not told."); }
+        }
+        if Studio.rc-network-status != "": Text {
+            text: Studio.rc-network-status;
+            color: Studio.rc-network-status-bad ? Theme.state-error : Theme.text-secondary;
+            font-size: Tokens.type-body-size;
+            wrap: word-wrap;
+        }
+        if Studio.rc-network && Studio.rc-key-pin != "": Field {
+            label: @tr("Key pin");
+            HorizontalLayout {
+                spacing: Tokens.space-2;
+                pin := TextField {
+                    label: @tr("Key pin");
+                    text: Studio.rc-key-pin;
+                    read-only: true;
+                    horizontal-stretch: 1;
+                }
+                Button {
+                    horizontal-stretch: 0;
+                    text: @tr("Copy");
+                    accessible-name: @tr("Copy key pin");
+                    clicked => { pin.copy-all(); }
+                }
+            }
+            Hint { text: @tr("Apps on other computers must check this before they send a token. It stays the same when the certificate is renewed."); }
+        }
+        if Studio.rc-network && Studio.rc-fingerprint != "": Field {
+            label: @tr("Certificate fingerprint (SHA-256)");
+            HorizontalLayout {
+                spacing: Tokens.space-2;
+                print := TextField {
+                    label: @tr("Certificate fingerprint (SHA-256)");
+                    text: Studio.rc-fingerprint;
+                    read-only: true;
+                    horizontal-stretch: 1;
+                }
+                Button {
+                    horizontal-stretch: 0;
+                    text: @tr("Copy");
+                    accessible-name: @tr("Copy certificate fingerprint");
+                    clicked => { print.copy-all(); }
+                }
+            }
+            Hint { text: Studio.rc-cert-note + " " + @tr("For apps that can only compare the certificate itself; it changes when the certificate is renewed, so prefer the key pin."); }
+        }
+        if Studio.rc-network: VerticalLayout {
+            spacing: Tokens.space-1;
+            Checkbox {
+                text: @tr("Allow remote admin");
+                checked: Studio.rc-remote-admin;
+                toggled(on) => { Studio.set-rc-remote-admin(on); }
+            }
+            Hint { text: @tr("Lets Full control tokens change settings from other computers too. Off by default. Changing it disconnects connected apps."); }
+        }
+        if Studio.rc-network: Field {
+            label: @tr("Certificate");
+            SegmentedControl {
+                label: @tr("Certificate");
+                options: [@tr("Made by RBS"), @tr("Your own")];
+                index: root.cert-source;
+                selected(i) => {
+                    root.cert-source = i;
+                    if i == 0 { Studio.rc-use-generated(); }
+                }
+            }
+            Hint { text: root.cert-source == 0
+                ? @tr("RBS made a key and a certificate for this computer. Browser panels on other devices cannot check a key pin: they need your own certificate, one those devices already trust.")
+                : @tr("A certificate chain and its key, as PEM files, for example from your own certificate authority. RBS reads them each time network access starts and never copies them."); }
+        }
+        if Studio.rc-network && root.cert-source == 1: VerticalLayout {
+            spacing: Tokens.space-3;
+            Field {
+                label: @tr("Certificate file");
+                own-cert := TextField {
+                    label: @tr("Certificate file");
+                    text: Studio.rc-own-cert;
+                }
+            }
+            Field {
+                label: @tr("Key file");
+                own-key := TextField {
+                    label: @tr("Key file");
+                    text: Studio.rc-own-key;
+                }
+                Hint { text: @tr("Full paths. On macOS and Linux the key file must be readable by you only."); }
+            }
+            HorizontalLayout {
+                alignment: start;
+                Button {
+                    text: @tr("Use these files");
+                    clicked => { Studio.rc-use-own(own-cert.text, own-key.text); }
+                }
+            }
+        }
+        if Studio.rc-network && root.cert-source == 0 && !root.confirming: VerticalLayout {
+            spacing: Tokens.space-1;
+            HorizontalLayout {
+                alignment: start;
+                Button {
+                    text: @tr("New key…");
+                    clicked => { root.confirming = true; }
+                }
+            }
+            Hint { text: @tr("Makes a new key, for example if the key may have been copied. Every app on another computer must then check the new key pin."); }
+        }
+        if Studio.rc-network && root.cert-source == 0 && root.confirming: Rectangle {
+            border-radius: Tokens.radius-sm;
+            border-width: Tokens.size-border;
+            border-color: Theme.border-strong;
+            accessible-role: groupbox;
+            accessible-label: @tr("Make a new key");
+            VerticalLayout {
+                padding: Tokens.space-3;
+                spacing: Tokens.space-2;
+                Text {
+                    text: @tr("Make a new key? Apps on other computers are disconnected and connect again only after they check the new key pin. This cannot be undone.");
+                    color: Theme.text-primary;
+                    font-size: Tokens.type-body-size;
+                    wrap: word-wrap;
+                }
+                HorizontalLayout {
+                    spacing: Tokens.space-2;
+                    alignment: start;
+                    Button {
+                        text: @tr("Make new key");
+                        kind: "primary";
+                        clicked => { root.confirming = false; Studio.rc-new-key(); }
+                    }
+                    Button {
+                        text: @tr("Cancel");
+                        clicked => { root.confirming = false; }
+                    }
+                }
+            }
+        }
+
         Rectangle { height: Tokens.size-border; background: Theme.border-subtle; }
         Text {
             text: @tr("Access tokens");

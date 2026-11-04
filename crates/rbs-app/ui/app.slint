@@ -433,6 +433,16 @@ component FrameBar inherits Rectangle {
             icon: IconName.chevron-down;
             clicked => { panels-menu.show(); }
         }
+        // Network access (ADR-0046 decision 7): shown in every workspace while other
+        // computers can connect, in words.
+        if Studio.rc-network-on: Text {
+            text: @tr("Reachable from other computers");
+            color: Theme.text-secondary;
+            font-size: Tokens.type-caption-size;
+            vertical-alignment: center;
+            accessible-role: AccessibleRole.text;
+            accessible-label: @tr("Remote control: reachable from other computers");
+        }
         if Shell.locked: Text {
             text: @tr("Layout locked");
             color: Theme.text-secondary;

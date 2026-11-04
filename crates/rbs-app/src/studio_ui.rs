@@ -9,8 +9,9 @@ use std::time::{Duration, Instant};
 
 use rbs_app::canvas_profile::{self, CanvasProfile, RATES, SIZES};
 use rbs_app::encoder_form::{Choices, EncoderForm};
+use rbs_app::network_access::{self, Source};
 use rbs_app::record_profile::{self, AUDIO_KBPS, Format, RateMode, RecordProfile, VIDEO_KBPS};
-use rbs_app::remote_control::{RemoteOptions, RemoteServer};
+use rbs_app::remote_control::{NetworkOptions, RemoteOptions, RemoteServer};
 use rbs_app::studio_host::{
     Command, EncoderInfo, EncoderOptions, RecordRequest, RecordingUpdate, SourceKind, SourceRow,
     SourceStatus, StudioHost, Target, Update,
@@ -124,6 +125,18 @@ pub struct StudioUi {
     /// The token revoked last and where it was: "Undo" puts it back (U4).
     revoked: Option<(usize, rbs_api::TokenEntry)>,
     tokens: Rc<VecModel<TokenRow>>,
+    /// Network access while it runs: what clients check (ADR-0046).
+    network: Option<NetworkShown>,
+    /// Why other computers cannot connect although network access is on.
+    network_failure: Option<String>,
+}
+
+/// What the Remote control section shows while other computers can connect.
+struct NetworkShown {
+    key_pin: String,
+    fingerprint: String,
+    /// Where the certificate came from, and whether it was just renewed.
+    note: String,
 }
 
 /// The remote control settings are locked by another program.
@@ -193,6 +206,8 @@ impl StudioUi {
             new_token: None,
             revoked: None,
             tokens: Rc::new(VecModel::default()),
+            network: None,
+            network_failure: None,
         };
         ui.refresh_tokens();
         ui
@@ -351,6 +366,58 @@ impl StudioUi {
                 .unwrap_or_default()
                 .into(),
         );
+        g.set_rc_network(r.network);
+        g.set_rc_remote_admin(r.remote_admin);
+        g.set_rc_own(r.own_certificate.is_some());
+        let (cert, key) = r
+            .own_certificate
+            .as_ref()
+            .map(|o| {
+                (
+                    o.certificate.display().to_string(),
+                    o.key.display().to_string(),
+                )
+            })
+            .unwrap_or_default();
+        g.set_rc_own_cert(cert.into());
+        g.set_rc_own_key(key.into());
+        let shown = self
+            .network
+            .as_ref()
+            .filter(|_| self.remote_server.is_some());
+        g.set_rc_network_on(shown.is_some());
+        g.set_rc_key_pin(shown.map(|n| n.key_pin.as_str()).unwrap_or_default().into());
+        g.set_rc_fingerprint(
+            shown
+                .map(|n| n.fingerprint.as_str())
+                .unwrap_or_default()
+                .into(),
+        );
+        g.set_rc_cert_note(shown.map(|n| n.note.as_str()).unwrap_or_default().into());
+        let (status, bad) = self.network_status();
+        g.set_rc_network_status(status.into());
+        g.set_rc_network_status_bad(bad);
+    }
+
+    /// What the section says about network access, and whether it is a problem.
+    fn network_status(&self) -> (String, bool) {
+        if !self.remote.enabled || !self.remote.network || self.remote_server.is_none() {
+            return (String::new(), false);
+        }
+        if let Some(why) = &self.network_failure {
+            return (format!("Other computers cannot connect: {why}."), true);
+        }
+        let name = network_access::host_names()
+            .into_iter()
+            .next()
+            .unwrap_or_else(|| "<this computer's address>".into());
+        (
+            format!(
+                "Other computers connect at wss://{name}:{}, or at this computer's address. They must check the key pin below.",
+                self.remote.port
+            ),
+            false,
+        )
     }
 
     /// What the Remote control section says about the server, and whether it is a
@@ -383,8 +450,13 @@ impl StudioUi {
             )
         } else {
             format!(
-                "On. Apps on this computer connect at {}. Other computers cannot connect.",
-                self.remote.address()
+                "On. Apps on this computer connect at {}.{}",
+                self.remote.address(),
+                if self.remote.network {
+                    ""
+                } else {
+                    " Other computers cannot connect."
+                }
             )
         };
         (status, false)
@@ -422,7 +494,19 @@ impl StudioUi {
             audit: Box::new(|a| log(&format!("remote control: {a:?}"))),
             ipc,
         };
-        match RemoteServer::start_on_port(self.remote.port, self.remote.store(), options) {
+        // The settings may change on the way (a renewed certificate): `host` is taken
+        // again below.
+        let network = self.prepare_network();
+        let started = match network {
+            Some(n) => {
+                RemoteServer::start_network(self.remote.port, n, self.remote.store(), options)
+            }
+            None => RemoteServer::start_on_port(self.remote.port, self.remote.store(), options),
+        };
+        let Some(host) = &self.host else {
+            return;
+        };
+        match started {
             Ok((server, endpoint)) => {
                 host.attach_api(endpoint, Some(server.api_tokens(self.config.clone())));
                 log(&format!("remote control on at {}", self.remote.address()));
@@ -445,6 +529,167 @@ impl StudioUi {
         }
     }
 
+    /// The TLS identity and settings for network access when it is on, made or renewed
+    /// under the settings lock (`network_access::prepare`); `None` (the reason in
+    /// `network_failure`) when off or when it cannot be used, so only apps on this
+    /// computer can connect.
+    fn prepare_network(&mut self) -> Option<NetworkOptions> {
+        self.network = None;
+        self.network_failure = None;
+        if !self.remote.network {
+            return None;
+        }
+        let lock = match remote_profile::try_lock(&self.config) {
+            Ok(Some(lock)) => Some(lock),
+            Ok(None) => {
+                self.network_failure = Some(
+                    "another program (rbs-cli) was changing the remote control settings. Turn access from other computers off and on again".into(),
+                );
+                return None;
+            }
+            Err(e) => {
+                log(&format!("remote control settings not locked: {e}"));
+                None
+            }
+        };
+        let prepared =
+            network_access::prepare(&self.config, &mut self.remote, network_access::now());
+        drop(lock);
+        match prepared {
+            Ok(p) => {
+                let note = match &p.source {
+                    Source::Own(path) => format!("Your own certificate, {}.", path.display()),
+                    Source::Generated { created: true, .. } => {
+                        log("remote control: made a key and certificate for network access");
+                        "Made by RBS just now.".into()
+                    }
+                    Source::Generated { renewed: true, .. } => {
+                        log(
+                            "remote control: renewed the certificate (same key, so the key pin is unchanged)",
+                        );
+                        "Made by RBS. The certificate was renewed, so its fingerprint changed; the key pin did not.".into()
+                    }
+                    Source::Generated { .. } => "Made by RBS.".into(),
+                };
+                self.network = Some(NetworkShown {
+                    key_pin: p.identity.key_pin().to_owned(),
+                    fingerprint: p.identity.fingerprint().to_owned(),
+                    note,
+                });
+                log(&format!(
+                    "remote control: network access on, key pin {}{}",
+                    p.identity.key_pin(),
+                    if self.remote.remote_admin {
+                        ", remote admin allowed"
+                    } else {
+                        ""
+                    }
+                ));
+                Some(NetworkOptions {
+                    identity: p.identity,
+                    host_names: network_access::host_names(),
+                    allow_remote_admin: self.remote.remote_admin,
+                })
+            }
+            Err(why) => {
+                log(&format!(
+                    "remote control: network access not started: {why}"
+                ));
+                self.network_failure = Some(why);
+                None
+            }
+        }
+    }
+
+    /// Starts the server again with the settings as they are now (connected apps are
+    /// disconnected and reconnect).
+    fn restart_remote(&mut self) {
+        self.stop_remote();
+        self.remote_failure = None;
+        self.sync_remote();
+    }
+
+    /// "Allow access from other computers".
+    pub fn set_network(&mut self, on: bool) {
+        self.change_network(|r| {
+            let changed = r.network != on;
+            r.network = on;
+            changed
+        });
+    }
+
+    /// "Allow remote admin".
+    pub fn set_remote_admin(&mut self, on: bool) {
+        self.change_network(|r| {
+            let changed = r.remote_admin != on;
+            r.remote_admin = on;
+            changed
+        });
+    }
+
+    /// Uses the user's own certificate and key files.
+    pub fn use_own_certificate(&mut self, cert: &str, key: &str) {
+        let own = remote_profile::OwnCertificate {
+            certificate: PathBuf::from(cert.trim()),
+            key: PathBuf::from(key.trim()),
+        };
+        if let Some(why) = own.problem() {
+            self.remote_note = why;
+            return;
+        }
+        if let Err(why) = remote_profile::read_own(&own).and_then(|pem| {
+            rbs_api_ws::TlsIdentity::from_pem(&pem.certificate, &pem.key).map(|_| ())
+        }) {
+            self.remote_note = format!("These files were not used: {why}.");
+            return;
+        }
+        self.change_network(|r| {
+            let changed = r.own_certificate.as_ref() != Some(&own);
+            r.own_certificate = Some(own);
+            changed
+        });
+    }
+
+    /// Goes back to the key and certificate RBS made.
+    pub fn use_generated_certificate(&mut self) {
+        self.change_network(|r| r.own_certificate.take().is_some());
+    }
+
+    /// "New key": every client must pin the new key; apps on other computers are
+    /// disconnected.
+    pub fn new_key(&mut self) {
+        let Ok(lock) = self.lock_remote() else {
+            return;
+        };
+        self.reload_tokens();
+        let made = network_access::new_key(&self.config, &mut self.remote, network_access::now());
+        drop(lock);
+        match made {
+            Ok(()) => {
+                log("remote control: made a new key; clients must pin it again");
+                self.remote_note.clear();
+                self.restart_remote();
+            }
+            Err(why) => self.remote_note = format!("No new key was made: {why}."),
+        }
+    }
+
+    /// Changes a network access setting under the lock, saves it, and restarts the
+    /// server when `f` changed something.
+    fn change_network(&mut self, f: impl FnOnce(&mut RemoteProfile) -> bool) {
+        let Ok(lock) = self.lock_remote() else {
+            return;
+        };
+        self.reload_tokens();
+        if !f(&mut self.remote) {
+            return;
+        }
+        self.save_remote();
+        // The lock is released first: starting network access takes it again.
+        drop(lock);
+        self.restart_remote();
+    }
+
     /// Stops the control API server, if it runs: connected apps are disconnected.
     pub fn stop_remote(&mut self) {
         if let Some(server) = self.remote_server.take() {
@@ -460,12 +705,14 @@ impl StudioUi {
         if self.remote.enabled == on {
             return;
         }
-        let Ok(_lock) = self.lock_remote() else {
+        let Ok(lock) = self.lock_remote() else {
             return;
         };
         self.reload_tokens();
         self.remote.enabled = on;
         self.save_remote();
+        // Starting network access takes the lock again.
+        drop(lock);
         self.sync_remote();
     }
 
@@ -481,10 +728,10 @@ impl StudioUi {
                     self.reload_tokens();
                     self.remote.port = port;
                     self.save_remote();
-                    // Listen on the new port: connected apps reconnect there.
-                    self.stop_remote();
-                    self.remote_failure = None;
-                    self.sync_remote();
+                    // Listen on the new port: connected apps reconnect there. Starting
+                    // network access takes the lock again.
+                    drop(lock);
+                    self.restart_remote();
                 }
             }
             Err(why) => {
