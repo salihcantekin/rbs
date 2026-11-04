@@ -77,11 +77,16 @@ impl ApiServer {
         } = options;
         let wake = Arc::new(Wake::new());
         let quota = config.limits.inbox_quota;
+        let pre_auth_bytes = config.limits.pre_auth_max_bytes;
         let mut server = Server::new(config, tokens);
         if let Some(s) = sampler {
             server = server.with_sampler(s);
         }
-        let inbox = TransportInbox::new(wake.clone(), server.budget(), quota);
+        let inbox = TransportInbox::new(wake.clone(), server.budget(), quota, pre_auth_bytes);
+        // Both channels are bounded by construction: a session has at most one command
+        // in flight, and sessions (including closed ones whose command is still in
+        // flight) are limited by the connection budget. So the control thread's reply
+        // send never fails or blocks while the API thread runs.
         let (forward_tx, forward_rx) = mpsc::channel();
         let (reply_tx, reply_rx) = mpsc::channel();
         let events = Arc::new(EventShared::new(wake.clone()));

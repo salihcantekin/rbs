@@ -44,6 +44,8 @@ pub struct Incoming {
 pub struct Malformed {
     /// The request's id, when it could be read.
     pub id: Option<RequestId>,
+    /// The method name, when it could be read.
+    pub method: Option<String>,
     /// Why it is not valid.
     pub error: ApiError,
 }
@@ -70,6 +72,7 @@ impl Codec for JsonCodec {
     fn decode(&self, text: &str) -> Result<Incoming, Malformed> {
         let value: Value = serde_json::from_str(text).map_err(|e| Malformed {
             id: None,
+            method: None,
             error: ApiError::new(ErrorKind::ParseError, e.to_string()),
         })?;
         let mut object = match value {
@@ -110,26 +113,31 @@ impl Codec for JsonCodec {
             ));
         };
         if method_scope(&method).is_none() {
-            return Err(malformed(
+            let m = malformed(
                 Some(id),
                 ErrorKind::MethodNotFound,
                 format!("no method {method:?}"),
-            ));
+            );
+            return Err(with_method(m, &method));
         }
         let params = match object.remove("params") {
             None | Some(Value::Null) => Value::Object(Map::new()),
             Some(p @ Value::Object(_)) => p,
             Some(_) => {
-                return Err(malformed(
+                let m = malformed(
                     Some(id),
                     ErrorKind::InvalidParams,
                     "params must be an object",
-                ));
+                );
+                return Err(with_method(m, &method));
             }
         };
-        match serde_json::from_value::<Request>(json!({ "method": method, "params": params })) {
+        match serde_json::from_value::<Request>(json!({ "method": &method, "params": params })) {
             Ok(request) => Ok(Incoming { id, request }),
-            Err(e) => Err(malformed(Some(id), ErrorKind::InvalidParams, e.to_string())),
+            Err(e) => Err(with_method(
+                malformed(Some(id), ErrorKind::InvalidParams, e.to_string()),
+                &method,
+            )),
         }
     }
 
@@ -183,6 +191,12 @@ fn error_body(id: &Value, error: &ApiError) -> Value {
 fn malformed(id: Option<RequestId>, kind: ErrorKind, message: impl Into<String>) -> Malformed {
     Malformed {
         id,
+        method: None,
         error: ApiError::new(kind, message),
     }
+}
+
+fn with_method(mut m: Malformed, method: &str) -> Malformed {
+    m.method = Some(method.to_owned());
+    m
 }

@@ -64,11 +64,12 @@ pub struct Harness {
     pub server: Server,
     pub clock: TestClock,
     pub wires: Vec<(ConnectionId, Arc<Mutex<Wire>>)>,
-    pub next_conn: u64,
     pub next_id: i64,
     pub forwarded: Vec<Forwarded>,
     pub audit: Vec<AuditEvent>,
     pub masks: Vec<rbs_api::TopicSet>,
+    pub inbox: rbs_api::TransportInbox,
+    pub handles: Vec<rbs_api::ConnectionHandle>,
 }
 
 impl Harness {
@@ -83,11 +84,19 @@ impl Harness {
         let mut tokens = TokenStore::new();
         tokens.insert(token(ALL_TOKEN_SEED, "admin console", ScopeSet::ALL).1);
         tokens.insert(token(PANEL_TOKEN_SEED, "Stream Deck", ScopeSet::PANEL).1);
+        let server = Server::new(config, tokens);
+        let inbox = rbs_api::TransportInbox::new(
+            Arc::new(rbs_api::wake::Wake::new()),
+            server.budget(),
+            8,
+            4096,
+        );
         Self {
-            server: Server::new(config, tokens),
+            inbox,
+            handles: Vec::new(),
+            server,
             clock: TestClock::new(),
             wires: Vec::new(),
-            next_conn: 1,
             next_id: 1,
             forwarded: Vec::new(),
             audit: Vec::new(),
@@ -99,20 +108,21 @@ impl Harness {
         self.clock.now()
     }
 
+    /// Connects through a real `TransportInbox`, so the connection budget is taken as
+    /// in production; the handle is kept until the harness drops.
     pub fn connect(&mut self, peer: PeerInfo) -> ConnectionId {
-        let id = ConnectionId::from_raw(self.next_conn);
-        self.next_conn += 1;
         let wire = Arc::new(Mutex::new(Wire::default()));
-        self.wires.push((id, wire.clone()));
+        let handle = self
+            .inbox
+            .connect(peer, Box::new(FakeSender(wire.clone())), Box::new(|| {}))
+            .expect("budget");
+        let id = handle.id();
+        self.handles.push(handle);
+        self.wires.push((id, wire));
         let now = self.now();
-        self.server.handle(
-            Input::Transport(TransportEvent::Connected {
-                id,
-                peer,
-                sender: Box::new(FakeSender(wire)),
-            }),
-            now,
-        );
+        while let Some(event) = self.inbox.pop() {
+            self.server.handle(Input::Transport(event), now);
+        }
         self.collect();
         id
     }

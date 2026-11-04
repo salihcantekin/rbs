@@ -87,6 +87,7 @@ Event topics declare a scope the same way: `settings.changed` carries recording 
 - `events.subscribe {topics: [...], rates: {"audio.levels": 20}}` returns the current `seq` per state key; `events.unsubscribe`.
 - State queries return `{seq: {state_key: n}, data}`, so a client knows which events its snapshot already includes and ignores events with an equal or lower `seq`.
 - A state event carries the whole current state of its state key, never a delta, so a newer event replaces an older one without loss. Topics are kept small. A state key is a topic name plus an optional object id (for example one key per source); `seq`, coalescing and the `seq` maps in queries and `events.subscribe` use the state key, while subscriptions and the subscriber mask are per topic name. The first slice's topics have no object id: `source.changed` carries the whole program-scene source list. A client applies an event only when its `seq` is higher than what it holds; skipped `seq` values are normal and need no re-query.
+- Sampling of a latest-value topic starts when `events.subscribe` is handled on the API thread, so a sample can arrive before the subscribe answer. Samples carry a per-server sample counter as `seq`, which has no entry in `seq` maps.
 - State topics are sent when the state changes. Latest-value topics (`audio.levels`, `stats`) are sampled at the client's rate, capped (30 Hz levels, 1 Hz statistics in version 1), and coalesced per session.
 - Each session's outgoing queue keeps only the latest event per state key, so it is bounded by the number of live state keys and cannot overflow. There is no `events.lost`.
 
@@ -102,7 +103,12 @@ Protocol version `major.minor`, independent of the `rbs-api` crate's semver. Min
 - IPC endpoint: current user only. Unix: socket mode 0600 in a user-private directory. Windows: named pipe with a DACL for the current user's SID and `PIPE_REJECT_REMOTE_CLIENTS`.
 - Caps: total connections, pending handshakes, connections per peer address (not applied on loopback, where every client shares one address). Pre-authentication messages are small (4 KiB). Repeated `auth_failed` delays further attempts with growing back-off: per connection on loopback, per peer address otherwise.
 - Per session: maximum message size, request rate, queue length (`busy` when full).
-- Responses come in request order, with one exception: refusals that protect the server are sent at once and can overtake the answer to an earlier request still in flight. They are `busy`, `rate_limited`, `message_too_large`, and decoding errors for messages that cannot be read as a request (`parse_error`, `invalid_request`, `batch_unsupported`, `method_not_found`, and `invalid_params` when the parameters do not match the schema). Every other answer, including `scope_denied`, waits its turn.
+- Responses come in request order, with one exception: refusals that protect the server are sent at once and can overtake the answer to an earlier request still in flight, because queueing them would make the queue unbounded. They are `busy`, `rate_limited`, `message_too_large`, and errors for messages whose request id cannot be read (answered with `"id": null`). Every other answer, including `scope_denied` and decoding errors that carry an id, waits its turn.
+- Before authentication the server reveals only the handshake: a message naming any other method, known or not, gets `not_authenticated`, without the method list or parameter details.
+- Transports read at most the connection's current message limit (4 KiB before authentication) and report a longer message instead of buffering it, so unauthenticated peers cannot make the server hold large messages.
+- The pending-handshake cap counts and refuses only non-loopback peers, so remote clients cannot lock out loopback and IPC clients; local peers are bounded by the connection cap, of which unauthenticated remote peers can hold at most the pending-handshake cap.
+- Per-address caps and back-off group IPv6 addresses by their /64 prefix.
+- Changing a token's name or scopes, or revoking it, closes its sessions; the client reconnects with what the token allows now.
 - A peer that does not read its answers is closed once more than a limit of answers wait for it (events do not count: only the latest per state key waits).
 
 Version 1 limits (from the first implementation, `rbs_api::Limits::default`):
@@ -110,15 +116,15 @@ Version 1 limits (from the first implementation, `rbs_api::Limits::default`):
 | Limit | Value |
 | --- | --- |
 | Connections (including closed ones whose request is still in flight) | 64 |
-| Pending handshakes | 16 |
-| Connections per non-loopback address | 8 |
+| Pending handshakes (non-loopback peers) | 16 |
+| Connections per non-loopback address (IPv6: per /64) | 8 |
 | Handshake timeout (connect to authenticated) | 10 s |
 | Message size before / after authentication | 4 KiB / 1 MiB |
 | Request rate per session | 50 per second, bursts of 100 |
 | Requests queued behind the one in flight | 16 |
 | Answers waiting for a peer that does not read | 64 |
 | Unread messages per connection in the transport inbox | 8 |
-| Authentication back-off per non-loopback address | 500 ms after the first failure, doubling, at most 30 s; forgotten after 30 s without failures; 1024 addresses remembered |
+| Authentication back-off per non-loopback address | 500 ms after the first failure, doubling, at most 30 s; forgotten 30 s after its delay ends; 1024 addresses remembered; an attempt released after its delay waits again if another attempt from the address failed meanwhile |
 - Connections, authentication failures and `admin`, `plugins` and `tokens` calls are logged with the token name.
 
 ## Zero cost

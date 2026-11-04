@@ -212,9 +212,9 @@ fn pending_handshakes_and_per_address_connections_are_capped() {
         c.limits.max_pending_handshakes = 2;
         c.limits.max_connections_per_address = 3;
     });
-    let a = h.connect(PeerInfo::loopback_websocket());
-    let b = h.connect(PeerInfo::loopback_websocket());
-    let c = h.connect(PeerInfo::loopback_websocket());
+    let a = h.connect(PeerInfo::remote_websocket("10.0.0.1"));
+    let b = h.connect(PeerInfo::remote_websocket("10.0.0.2"));
+    let c = h.connect(PeerInfo::remote_websocket("10.0.0.3"));
     assert_eq!(h.closed(a), None);
     assert_eq!(h.closed(b), None);
     assert_eq!(h.closed(c), Some(CloseReason::TooManyConnections));
@@ -342,13 +342,24 @@ fn a_closed_session_keeps_its_slot_until_its_reply_is_drained() {
     let mut h = Harness::new();
     let budget = h.server.budget();
     let conn = h.login(PeerInfo::loopback_websocket(), PANEL_TOKEN_SEED);
+    assert_eq!(budget.open(), 1);
     h.call(conn, "record.status", json!({}));
     let f = h.forwarded.pop().unwrap();
     h.transport_closed(conn);
     assert_eq!(h.server.session_count(), 1);
-    let _ = budget;
+    assert_eq!(budget.open(), 1);
     h.reply(&f, Ok(rbs_api::Response::Done(rbs_api::request::Empty {})));
     assert_eq!(h.server.session_count(), 0);
+    assert_eq!(budget.open(), 0);
+
+    // A refused connection frees its slot once the transport drops it.
+    let mut h = Harness::with_config(|c| c.limits.max_pending_handshakes = 0);
+    let budget = h.server.budget();
+    let refused = h.connect(PeerInfo::remote_websocket("10.1.1.1"));
+    assert_eq!(h.closed(refused), Some(CloseReason::TooManyConnections));
+    assert_eq!(budget.open(), 1);
+    h.transport_closed(refused);
+    assert_eq!(budget.open(), 0);
     assert!(h.take(conn).is_empty());
 }
 
@@ -499,6 +510,12 @@ fn sampled_topics_follow_the_client_rate_capped() {
     let mut tokens = TokenStore::new();
     tokens.insert(token(PANEL_TOKEN_SEED, "Stream Deck", ScopeSet::PANEL).1);
     h.server = rbs_api::Server::new(config, tokens).with_sampler(Box::new(Levels));
+    h.inbox = rbs_api::TransportInbox::new(
+        std::sync::Arc::new(rbs_api::wake::Wake::new()),
+        h.server.budget(),
+        8,
+        4096,
+    );
     let conn = h.login(PeerInfo::loopback_websocket(), PANEL_TOKEN_SEED);
     h.call(
         conn,
@@ -524,4 +541,161 @@ fn sampled_topics_follow_the_client_rate_capped() {
         json!({"topics": ["record.state"], "rates": {"record.state": 5}}),
     );
     assert_eq!(error_kind(&h.one(conn)), "invalid_params");
+}
+
+#[test]
+fn remote_handshakes_cannot_lock_out_local_clients() {
+    let mut h = Harness::with_config(|c| c.limits.max_pending_handshakes = 2);
+    let r1 = h.connect(PeerInfo::remote_websocket("10.0.0.1"));
+    let r2 = h.connect(PeerInfo::remote_websocket("10.0.0.2"));
+    let r3 = h.connect(PeerInfo::remote_websocket("10.0.0.3"));
+    assert_eq!(h.closed(r1), None);
+    assert_eq!(h.closed(r2), None);
+    assert_eq!(h.closed(r3), Some(CloseReason::TooManyConnections));
+    for _ in 0..4 {
+        let local = h.connect(PeerInfo::loopback_websocket());
+        assert_eq!(h.closed(local), None);
+        let ipc = h.connect(PeerInfo::same_user_ipc());
+        assert_eq!(h.closed(ipc), None);
+    }
+}
+
+#[test]
+fn ipv6_peers_are_grouped_by_their_64_prefix() {
+    let mut h = Harness::with_config(|c| c.limits.max_connections_per_address = 2);
+    h.connect(PeerInfo::remote_websocket("2001:db8:1:2::10"));
+    h.connect(PeerInfo::remote_websocket("2001:db8:1:2::11"));
+    let third = h.connect(PeerInfo::remote_websocket("2001:db8:1:2:ffff::1"));
+    assert_eq!(h.closed(third), Some(CloseReason::TooManyConnections));
+    let other_net = h.connect(PeerInfo::remote_websocket("2001:db8:1:3::1"));
+    assert_eq!(h.closed(other_net), None);
+}
+
+#[test]
+fn parallel_attempts_from_one_address_share_the_back_off() {
+    let mut h = Harness::new();
+    let bad = Token::from_bytes(&[9; 32]);
+    let remote = || PeerInfo::remote_websocket("203.0.113.9");
+    let first = h.connect(remote());
+    h.call(first, "session.hello", hello());
+    h.take(first);
+    h.call(
+        first,
+        "session.authenticate",
+        json!({"token": bad.expose()}),
+    );
+    h.take(first);
+    // Two attempts wait for the same 500 ms delay.
+    let (a, b) = (h.connect(remote()), h.connect(remote()));
+    for c in [a, b] {
+        h.call(c, "session.hello", hello());
+        h.take(c);
+        h.call(c, "session.authenticate", json!({"token": bad.expose()}));
+    }
+    h.advance(Duration::from_millis(500));
+    // The first released attempt fails; the second now waits for the new 1 s delay.
+    let answered: Vec<_> = [a, b]
+        .into_iter()
+        .filter(|c| !h.take(*c).is_empty())
+        .collect();
+    assert_eq!(answered.len(), 1);
+    let waiting = if answered[0] == a { b } else { a };
+    h.advance(Duration::from_millis(999));
+    assert!(h.take(waiting).is_empty());
+    h.advance(Duration::from_millis(1));
+    assert_eq!(error_kind(&h.one(waiting)), "auth_failed");
+}
+
+#[test]
+fn before_authentication_only_the_handshake_is_revealed() {
+    let mut h = Harness::new();
+    let conn = h.connect(PeerInfo::loopback_websocket());
+    h.call(conn, "studio.explode", json!({}));
+    assert_eq!(error_kind(&h.one(conn)), "not_authenticated");
+    h.call(conn, "source.delete", json!({"source": "x"}));
+    assert_eq!(error_kind(&h.one(conn)), "not_authenticated");
+    // The handshake's own schema is public.
+    h.call(conn, "session.hello", json!({"protocols": 1}));
+    assert_eq!(error_kind(&h.one(conn)), "invalid_params");
+}
+
+#[test]
+fn decoding_errors_with_an_id_wait_behind_the_request_in_flight() {
+    let mut h = Harness::new();
+    let conn = h.login(PeerInfo::loopback_websocket(), PANEL_TOKEN_SEED);
+    let first = h.call(conn, "record.status", json!({}));
+    let second = h.call(conn, "source.delete", json!({"source": "x"}));
+    assert!(h.take(conn).is_empty());
+    let mut target = FakeTarget::default();
+    h.serve(&mut target);
+    let answers = h.take(conn);
+    assert_eq!(answers[0]["id"], first);
+    assert_eq!(answers[1]["id"], second);
+    assert_eq!(error_kind(&answers[1]), "invalid_params");
+}
+
+#[test]
+fn changing_a_tokens_scopes_closes_its_sessions() {
+    let mut h = Harness::new();
+    let panel = h.login(PeerInfo::loopback_websocket(), PANEL_TOKEN_SEED);
+    let mut tokens = TokenStore::new();
+    tokens.insert(token(ALL_TOKEN_SEED, "admin console", ScopeSet::ALL).1);
+    tokens.insert(
+        token(
+            PANEL_TOKEN_SEED,
+            "Stream Deck",
+            ScopeSet::of([rbs_api::Scope::Read]),
+        )
+        .1,
+    );
+    h.server.set_tokens(tokens);
+    assert_eq!(h.closed(panel), Some(CloseReason::Revoked));
+}
+
+#[test]
+fn oversized_messages_close_before_and_are_refused_after_authentication() {
+    use rbs_api::transport::TransportEvent;
+    let mut h = Harness::new();
+    let early = h.connect(PeerInfo::loopback_websocket());
+    let now = h.now();
+    h.server.handle(
+        Input::Transport(TransportEvent::Oversized {
+            id: early,
+            len: 5000,
+        }),
+        now,
+    );
+    h.collect();
+    assert_eq!(h.closed(early), Some(CloseReason::MessageTooLarge));
+
+    let late = h.login(PeerInfo::loopback_websocket(), PANEL_TOKEN_SEED);
+    h.server.handle(
+        Input::Transport(TransportEvent::Oversized {
+            id: late,
+            len: 5_000_000,
+        }),
+        now,
+    );
+    h.collect();
+    assert_eq!(error_kind(&h.one(late)), "message_too_large");
+    assert_eq!(h.closed(late), None);
+}
+
+#[test]
+fn a_slow_peer_closed_with_a_request_in_flight_keeps_its_slot_until_the_reply() {
+    let mut h = Harness::with_config(|c| c.limits.max_pending_answers = 1);
+    let conn = h.login(PeerInfo::loopback_websocket(), PANEL_TOKEN_SEED);
+    h.call(conn, "record.status", json!({}));
+    let f = h.forwarded.pop().unwrap();
+    h.set_full(conn, true);
+    h.call(conn, "api.describe", json!({}));
+    h.call(conn, "api.describe", json!({}));
+    for _ in 0..16 {
+        h.call(conn, "nope", json!({}));
+    }
+    assert_eq!(h.closed(conn), Some(CloseReason::TooSlow));
+    h.transport_closed(conn);
+    assert_eq!(h.server.session_count(), 1);
+    h.reply(&f, Ok(rbs_api::Response::Done(rbs_api::request::Empty {})));
+    assert_eq!(h.server.session_count(), 0);
 }

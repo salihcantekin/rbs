@@ -219,7 +219,7 @@ fn the_inbox_pauses_a_connection_at_its_quota_and_resumes_it() {
 
     let wake = Arc::new(Wake::new());
     let budget = Arc::new(ConnectionBudget::new(1));
-    let inbox = TransportInbox::new(wake.clone(), budget.clone(), 2);
+    let inbox = TransportInbox::new(wake.clone(), budget.clone(), 2, 4096);
     let resumed = Arc::new(AtomicUsize::new(0));
     let r = resumed.clone();
     let (tx, _rx) = mpsc::channel();
@@ -255,6 +255,13 @@ fn the_inbox_pauses_a_connection_at_its_quota_and_resumes_it() {
     assert!(conn.can_read());
     assert!(matches!(inbox.pop(), Some(TransportEvent::Message { .. })));
     assert_eq!(resumed.load(Ordering::SeqCst), 1);
+    // Before authentication a message over 4 KiB is dropped and reported, not queued.
+    assert_eq!(conn.max_message_bytes(), 4096);
+    conn.push_message("x".repeat(4097));
+    assert!(matches!(
+        inbox.pop(),
+        Some(TransportEvent::Oversized { len: 4097, .. })
+    ));
     drop(conn);
     assert!(matches!(inbox.pop(), Some(TransportEvent::Closed { .. })));
     assert!(inbox.is_empty());

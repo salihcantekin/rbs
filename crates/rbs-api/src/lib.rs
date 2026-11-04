@@ -43,6 +43,6 @@ pub use session::{
 pub use thread::{ApiOptions, ApiServer};
 pub use token::{Token, TokenEntry, TokenHash, TokenStore};
 pub use transport::{
-    CloseReason, ConnectionHandle, ConnectionId, ConnectionSender, ControlTransport, PeerInfo,
-    ReadState, SendError, TransportEvent, TransportInbox, TransportKind,
+    CloseReason, ConnectionHandle, ConnectionId, ConnectionSender, ControlTransport, MessageLimit,
+    PeerInfo, ReadState, SendError, TransportEvent, TransportInbox, TransportKind,
 };

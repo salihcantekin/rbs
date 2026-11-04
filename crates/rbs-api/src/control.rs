@@ -88,8 +88,13 @@ impl EventShared {
         if !self.pending.swap(false, Ordering::AcqRel) {
             return Vec::new();
         }
-        let mut slots = self.slots.lock().unwrap_or_else(PoisonError::into_inner);
-        let mut events: Vec<Event> = slots.drain().map(|(_, e)| e).collect();
+        let mut events: Vec<Event> = self
+            .slots
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .drain()
+            .map(|(_, e)| e)
+            .collect();
         events.sort_by_key(Event::key);
         events
     }
@@ -154,6 +159,12 @@ impl EventPublisher {
             }
         }
         map
+    }
+
+    /// Forgets a state key whose object is gone (a deleted source), so per-object keys
+    /// do not accumulate. Its `seq` restarts at 0 if the key comes back.
+    pub fn forget(&mut self, key: StateKey) {
+        self.seqs.remove(&key);
     }
 
     /// The state of `key` changed: increments its `seq` and, when anyone subscribes to

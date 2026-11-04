@@ -9,6 +9,9 @@
 //! - Call [`TransportInbox::connect`] for each accepted connection after any checks that
 //!   must happen before it is accepted (WebSocket: [`UpgradePolicy`](crate::UpgradePolicy)
 //!   before the upgrade completes). A refused connection is closed without a session.
+//! - Read at most [`ConnectionHandle::max_message_bytes`] of a message (the
+//!   pre-authentication limit until the session is authenticated); report a longer one
+//!   with [`ConnectionHandle::push_oversized`] instead of buffering it.
 //! - Push each whole received message with [`ConnectionHandle::push_message`]. When it
 //!   returns [`ReadState::Pause`], stop reading that connection until the `resume`
 //!   callback given to `connect` runs (it can run before the adapter has paused, so it
@@ -163,6 +166,30 @@ pub trait ConnectionSender: Send {
     fn close(&mut self, reason: CloseReason);
 }
 
+/// The largest message a connection may send now: the pre-authentication limit until
+/// the session is authenticated, then the session limit. The server raises it; the
+/// adapter reads it ([`ConnectionHandle::max_message_bytes`]) and stops reading a
+/// message as soon as it is longer, so an unauthenticated peer cannot make the server
+/// hold large messages.
+#[derive(Debug, Clone)]
+pub struct MessageLimit(Arc<AtomicUsize>);
+
+impl MessageLimit {
+    /// A limit of `bytes`.
+    pub fn new(bytes: usize) -> Self {
+        Self(Arc::new(AtomicUsize::new(bytes)))
+    }
+
+    /// The limit now.
+    pub fn get(&self) -> usize {
+        self.0.load(Ordering::Acquire)
+    }
+
+    pub(crate) fn set(&self, bytes: usize) {
+        self.0.store(bytes, Ordering::Release);
+    }
+}
+
 /// What adapters push into the inbox.
 pub enum TransportEvent {
     /// A connection was accepted.
@@ -173,6 +200,8 @@ pub enum TransportEvent {
         peer: PeerInfo,
         /// How to answer it.
         sender: Box<dyn ConnectionSender>,
+        /// Its message limit, raised by the server on authentication.
+        limit: MessageLimit,
     },
     /// A whole message arrived.
     Message {
@@ -180,6 +209,13 @@ pub enum TransportEvent {
         id: ConnectionId,
         /// The message.
         text: String,
+    },
+    /// A message longer than the connection's limit arrived; its text was dropped.
+    Oversized {
+        /// The connection.
+        id: ConnectionId,
+        /// Its length in bytes (at least; the adapter may stop counting).
+        len: usize,
     },
     /// The connection can take messages again after [`SendError::Full`].
     Writable {
@@ -200,6 +236,7 @@ impl fmt::Debug for TransportEvent {
                 write!(f, "Connected({id}, {peer:?})")
             }
             TransportEvent::Message { id, text } => write!(f, "Message({id}, {} B)", text.len()),
+            TransportEvent::Oversized { id, len } => write!(f, "Oversized({id}, {len} B)"),
             TransportEvent::Writable { id } => write!(f, "Writable({id})"),
             TransportEvent::Closed { id } => write!(f, "Closed({id})"),
         }
@@ -255,6 +292,7 @@ impl ConnectionBudget {
 
     pub(crate) fn release(&self) {
         let mut n = self.open.load(Ordering::Acquire);
+        debug_assert!(n > 0, "connection budget released more often than taken");
         while n > 0 {
             match self
                 .open
@@ -288,11 +326,12 @@ struct Inner {
     budget: Arc<ConnectionBudget>,
     next_id: AtomicU64,
     quota: usize,
+    pre_auth_bytes: usize,
     stopped: std::sync::atomic::AtomicBool,
 }
 
 /// The bounded inbox adapters push into: at most the connection cap times
-/// (per-connection quota + 3) events.
+/// (per-connection quota + 3) events, each message at most its connection's limit.
 #[derive(Clone)]
 pub struct TransportInbox {
     inner: Arc<Inner>,
@@ -300,8 +339,14 @@ pub struct TransportInbox {
 
 impl TransportInbox {
     /// An inbox that signals `wake`, counts connections in `budget` and lets each
-    /// connection have `quota` unread messages.
-    pub fn new(wake: Arc<Wake>, budget: Arc<ConnectionBudget>, quota: usize) -> Self {
+    /// connection have `quota` unread messages of at most `pre_auth_bytes` until it is
+    /// authenticated.
+    pub fn new(
+        wake: Arc<Wake>,
+        budget: Arc<ConnectionBudget>,
+        quota: usize,
+        pre_auth_bytes: usize,
+    ) -> Self {
         Self {
             inner: Arc::new(Inner {
                 queue: Mutex::new(VecDeque::new()),
@@ -309,6 +354,7 @@ impl TransportInbox {
                 budget,
                 next_id: AtomicU64::new(1),
                 quota: quota.max(1),
+                pre_auth_bytes,
                 stopped: std::sync::atomic::AtomicBool::new(false),
             }),
         }
@@ -334,11 +380,21 @@ impl TransportInbox {
             max: self.inner.quota,
             resume,
         });
-        self.push(TransportEvent::Connected { id, peer, sender }, None);
+        let limit = MessageLimit::new(self.inner.pre_auth_bytes);
+        self.push(
+            TransportEvent::Connected {
+                id,
+                peer,
+                sender,
+                limit: limit.clone(),
+            },
+            None,
+        );
         Ok(ConnectionHandle {
             id,
             inbox: self.clone(),
             quota,
+            limit,
             closed: false,
         })
     }
@@ -396,6 +452,7 @@ pub struct ConnectionHandle {
     id: ConnectionId,
     inbox: TransportInbox,
     quota: Arc<Quota>,
+    limit: MessageLimit,
     closed: bool,
 }
 
@@ -405,13 +462,30 @@ impl ConnectionHandle {
         self.id
     }
 
-    /// Pushes a whole received message.
+    /// The largest message the connection may send now. The adapter stops reading a
+    /// message once it is longer and calls [`ConnectionHandle::push_oversized`].
+    pub fn max_message_bytes(&self) -> usize {
+        self.limit.get()
+    }
+
+    /// Pushes a whole received message. A message over the limit is dropped here and
+    /// reported as [`TransportEvent::Oversized`].
     pub fn push_message(&self, text: String) -> ReadState {
+        if text.len() > self.limit.get() {
+            return self.push_oversized(text.len());
+        }
+        self.push_counted(TransportEvent::Message { id: self.id, text })
+    }
+
+    /// Reports a message the adapter stopped reading because it was longer than
+    /// [`ConnectionHandle::max_message_bytes`].
+    pub fn push_oversized(&self, len: usize) -> ReadState {
+        self.push_counted(TransportEvent::Oversized { id: self.id, len })
+    }
+
+    fn push_counted(&self, event: TransportEvent) -> ReadState {
         let queued = self.quota.queued.fetch_add(1, Ordering::AcqRel) + 1;
-        self.inbox.push(
-            TransportEvent::Message { id: self.id, text },
-            Some(self.quota.clone()),
-        );
+        self.inbox.push(event, Some(self.quota.clone()));
         if queued >= self.quota.max {
             ReadState::Pause
         } else {

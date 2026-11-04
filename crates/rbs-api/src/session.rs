@@ -21,8 +21,8 @@ use crate::request::{
 use crate::scope::{Scope, ScopeSet};
 use crate::token::{TokenHash, TokenStore};
 use crate::transport::{
-    CloseReason, ConnectionBudget, ConnectionId, ConnectionSender, PeerInfo, SendError,
-    TransportEvent,
+    CloseReason, ConnectionBudget, ConnectionId, ConnectionSender, MessageLimit, PeerInfo,
+    SendError, TransportEvent,
 };
 
 /// The protocol version this server speaks.
@@ -201,7 +201,8 @@ enum Phase {
     AwaitAuth,
     Ready {
         scopes: ScopeSet,
-        token: Option<(String, TokenHash)>,
+        /// The token's name, hash and stored scopes (before channel limits).
+        token: Option<(String, TokenHash, ScopeSet)>,
     },
     Closed,
 }
@@ -238,7 +239,10 @@ struct Sampling {
 
 struct Session {
     peer: PeerInfo,
+    /// Back-off and per-address key: the address, or its /64 for IPv6.
+    address_key: Option<String>,
     sender: Box<dyn ConnectionSender>,
+    limit: MessageLimit,
     phase: Phase,
     handshake_deadline: Timestamp,
     transport_closed: bool,
@@ -258,7 +262,7 @@ impl Session {
 
     fn token_name(&self) -> Option<String> {
         match &self.phase {
-            Phase::Ready { token, .. } => token.as_ref().map(|(n, _)| n.clone()),
+            Phase::Ready { token, .. } => token.as_ref().map(|(n, _, _)| n.clone()),
             _ => None,
         }
     }
@@ -341,10 +345,16 @@ impl Server {
             .sessions
             .iter()
             .filter(|(_, s)| match &s.phase {
+                // Revoked, renamed or re-scoped: the session ends; the client
+                // reconnects with what the token allows now.
                 Phase::Ready {
-                    token: Some((_, hash)),
+                    token: Some((name, hash, scopes)),
                     ..
-                } => !self.tokens.contains(hash),
+                } => !self
+                    .tokens
+                    .entries()
+                    .iter()
+                    .any(|e| e.hash == *hash && e.name == *name && e.scopes == *scopes),
                 _ => false,
             })
             .map(|(c, _)| *c)
@@ -386,10 +396,16 @@ impl Server {
     /// Handles one input at time `now`.
     pub fn handle(&mut self, input: Input, now: Timestamp) {
         match input {
-            Input::Transport(TransportEvent::Connected { id, peer, sender }) => {
-                self.connected(id, peer, sender, now);
+            Input::Transport(TransportEvent::Connected {
+                id,
+                peer,
+                sender,
+                limit,
+            }) => {
+                self.connected(id, peer, sender, limit, now);
             }
             Input::Transport(TransportEvent::Message { id, text }) => self.message(id, &text, now),
+            Input::Transport(TransportEvent::Oversized { id, .. }) => self.oversized(id),
             Input::Transport(TransportEvent::Writable { id }) => {
                 if let Some(s) = self.sessions.get_mut(&id) {
                     s.out.blocked = false;
@@ -415,8 +431,24 @@ impl Server {
                 continue;
             }
             if s.pending_auth.as_ref().is_some_and(|p| now >= p.not_before) {
-                if let Some(p) = s.pending_auth.take() {
-                    self.authenticate(conn, p.id, &p.token, now);
+                // Another attempt from the address may have failed meanwhile: then this
+                // one waits for the new delay, so parallel attempts gain nothing.
+                let until = s
+                    .address_key
+                    .as_ref()
+                    .and_then(|a| self.backoff.get(a))
+                    .map(|b| b.until);
+                match until {
+                    Some(until) if until > now => {
+                        if let Some(p) = s.pending_auth.as_mut() {
+                            p.not_before = until;
+                        }
+                    }
+                    _ => {
+                        if let Some(p) = s.pending_auth.take() {
+                            self.authenticate(conn, p.id, &p.token, now);
+                        }
+                    }
                 }
             }
         }
@@ -428,25 +460,36 @@ impl Server {
         conn: ConnectionId,
         peer: PeerInfo,
         sender: Box<dyn ConnectionSender>,
+        limit: MessageLimit,
         now: Timestamp,
     ) {
         let limits = &self.config.limits;
-        let pending = self
+        let address_key = peer
+            .address
+            .as_deref()
+            .filter(|_| !peer.is_local())
+            .map(address_key);
+        // The pending-handshake cap counts and refuses remote peers only, so remote
+        // clients cannot lock out loopback and IPC clients (decision 12). Local peers
+        // are bounded by the connection budget, which remote peers cannot fill without
+        // a token: at most this many of its slots are unauthenticated remote ones.
+        let remote_pending = self
             .sessions
             .values()
-            .filter(|s| s.is_handshaking())
+            .filter(|s| s.is_handshaking() && !s.peer.is_local())
             .count();
-        let same_address = match (&peer.address, peer.is_local()) {
-            (Some(addr), false) => self
+        let same_address = match &address_key {
+            Some(key) => self
                 .sessions
                 .values()
                 .filter(|s| !matches!(s.phase, Phase::Closed))
-                .filter(|s| s.peer.address.as_ref() == Some(addr))
+                .filter(|s| s.address_key.as_ref() == Some(key))
                 .count(),
-            _ => 0,
+            None => 0,
         };
-        let refuse = pending >= limits.max_pending_handshakes
-            || (!peer.is_local() && same_address >= limits.max_connections_per_address);
+        let refuse = !peer.is_local()
+            && (remote_pending >= limits.max_pending_handshakes
+                || same_address >= limits.max_connections_per_address);
         self.actions.push_back(Action::Audit(AuditEvent::Connected {
             conn,
             peer: peer.clone(),
@@ -455,7 +498,9 @@ impl Server {
             conn,
             Session {
                 peer,
+                address_key,
                 sender,
+                limit,
                 phase: Phase::AwaitHello,
                 handshake_deadline: now + limits.handshake_timeout,
                 transport_closed: false,
@@ -507,8 +552,28 @@ impl Server {
         }
         let incoming = match decoded {
             Ok(i) => i,
-            Err(m) => {
-                self.send_now(conn, m.id.as_ref(), Err(m.error));
+            Err(mut m) => {
+                let handshake_method = m
+                    .method
+                    .as_deref()
+                    .is_some_and(|name| name.starts_with("session."));
+                if handshaking && m.method.is_some() && !handshake_method {
+                    // Before authentication only the handshake is revealed (decision 9):
+                    // no method list, no parameter schema.
+                    m.error = ApiError::new(
+                        ErrorKind::NotAuthenticated,
+                        "send session.hello, then session.authenticate",
+                    );
+                }
+                let ready = self
+                    .sessions
+                    .get(&conn)
+                    .is_some_and(|s| matches!(s.phase, Phase::Ready { .. }));
+                match (ready, m.id) {
+                    // An answer with an id waits its turn behind the request in flight.
+                    (true, Some(id)) => self.enqueue(conn, Queued::Answer(id, Err(m.error)), now),
+                    (_, id) => self.send_now(conn, id.as_ref(), Err(m.error)),
+                }
                 return;
             }
         };
@@ -537,6 +602,7 @@ impl Server {
                         scopes,
                         token: None,
                     };
+                    s.limit.set(limits.max_message_bytes);
                     self.actions
                         .push_back(Action::Audit(AuditEvent::Authenticated {
                             conn,
@@ -560,10 +626,8 @@ impl Server {
                     return;
                 }
                 let not_before = s
-                    .peer
-                    .address
+                    .address_key
                     .as_ref()
-                    .filter(|_| !s.peer.is_local())
                     .and_then(|a| self.backoff.get(a))
                     .map_or(now, |b| b.until);
                 if now >= not_before {
@@ -600,18 +664,48 @@ impl Server {
                         self.actions
                             .push_back(Action::Audit(AuditEvent::Privileged {
                                 conn,
-                                token: token.map(|(n, _)| n),
+                                token: token.map(|(n, _, _)| n),
                                 method: command.method(),
                                 detail,
                             }));
                     }
                 }
-                if let Some(s) = self.sessions.get_mut(&conn) {
-                    s.queue.push_back(queued);
-                }
-                self.pump(conn, now);
+                self.enqueue(conn, queued, now);
             }
             (Phase::Closed, _) => {}
+        }
+    }
+
+    /// Queues an answer or request behind the one in flight (`busy` when full).
+    fn enqueue(&mut self, conn: ConnectionId, queued: Queued, now: Timestamp) {
+        let max = self.config.limits.queue_len;
+        let Some(s) = self.sessions.get_mut(&conn) else {
+            return;
+        };
+        if s.queue.len() >= max {
+            let id = match &queued {
+                Queued::Answer(id, _) | Queued::Local(id, _) | Queued::Forward(id, _) => id.clone(),
+            };
+            let e = ApiError::new(ErrorKind::Busy, "request queue full");
+            self.send_now(conn, Some(&id), Err(e));
+            return;
+        }
+        s.queue.push_back(queued);
+        self.pump(conn, now);
+    }
+
+    /// A message over the connection's limit, dropped by the transport.
+    fn oversized(&mut self, conn: ConnectionId) {
+        let Some(s) = self.sessions.get(&conn) else {
+            return;
+        };
+        match s.phase {
+            Phase::Closed => {}
+            Phase::AwaitHello | Phase::AwaitAuth => self.close(conn, CloseReason::MessageTooLarge),
+            Phase::Ready { .. } => {
+                let e = ApiError::new(ErrorKind::MessageTooLarge, "message too large");
+                self.send_now(conn, None, Err(e));
+            }
         }
     }
 
@@ -636,6 +730,7 @@ impl Server {
 
     fn authenticate(&mut self, conn: ConnectionId, id: RequestId, token: &str, now: Timestamp) {
         let allow_remote_admin = self.config.allow_remote_admin;
+        let max_message = self.config.limits.max_message_bytes;
         let entry = self
             .tokens
             .verify(token)
@@ -644,12 +739,13 @@ impl Server {
             return;
         };
         match entry {
-            Some((name, scopes, hash)) => {
-                let scopes = scopes.for_channel(s.peer.is_local(), allow_remote_admin);
+            Some((name, stored, hash)) => {
+                let scopes = stored.for_channel(s.peer.is_local(), allow_remote_admin);
                 s.phase = Phase::Ready {
                     scopes,
-                    token: Some((name.clone(), hash)),
+                    token: Some((name.clone(), hash, stored)),
                 };
+                s.limit.set(max_message);
                 self.actions
                     .push_back(Action::Audit(AuditEvent::Authenticated {
                         conn,
@@ -664,8 +760,8 @@ impl Server {
             }
             None => {
                 let address = s.peer.address.clone();
-                if let Some(addr) = address.as_ref().filter(|_| !s.peer.is_local()) {
-                    self.record_failure(addr.clone(), now);
+                if let Some(key) = s.address_key.clone() {
+                    self.record_failure(key, now);
                 }
                 self.actions
                     .push_back(Action::Audit(AuditEvent::AuthFailed { conn, address }));
@@ -678,7 +774,7 @@ impl Server {
 
     fn record_failure(&mut self, address: String, now: Timestamp) {
         let limits = &self.config.limits;
-        // Forget addresses quiet for longer than the longest delay.
+        // Forget an address once its delay ended longer ago than the longest delay.
         let quiet = limits.backoff_max;
         self.backoff
             .retain(|_, b| now.saturating_since(b.until) <= quiet);
@@ -983,6 +1079,21 @@ impl Server {
     /// The token name of a session (tests and logs).
     pub fn token_of(&self, conn: ConnectionId) -> Option<String> {
         self.sessions.get(&conn).and_then(Session::token_name)
+    }
+}
+
+/// The key for per-address caps and back-off: the address, or for IPv6 its /64, since
+/// one host usually holds a whole /64.
+fn address_key(address: &str) -> String {
+    match address.parse::<std::net::IpAddr>() {
+        Ok(std::net::IpAddr::V6(v6)) if v6.to_ipv4_mapped().is_none() => {
+            let s = v6.segments();
+            format!("{:x}:{:x}:{:x}:{:x}::/64", s[0], s[1], s[2], s[3])
+        }
+        Ok(std::net::IpAddr::V6(v6)) => v6
+            .to_ipv4_mapped()
+            .map_or_else(|| address.to_owned(), |v4| v4.to_string()),
+        _ => address.to_owned(),
     }
 }
 
