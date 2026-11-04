@@ -277,6 +277,11 @@ fn a_late_cadence_worker_runs_the_newest_tick_and_counts_the_skipped_ones() {
     rig.engine.apply(&rig.graph).unwrap();
     rig.frame();
     let stats = rig.engine.worker_stats(RENDER).unwrap();
+    // `frame` waits for the tick inside `run_tick`; the worker counts it after
+    // `run_tick` returns. Wait for the count too, or the snapshot below can miss it and
+    // the late tick's check would be satisfied by this one.
+    let due = due_index(rig.clock.now(), Duration::ZERO).unwrap();
+    assert!(eventually(LIMIT, || stats.next_index() > due));
     let (ticks, late) = (stats.ticks(), stats.late());
     // Five frames pass at once.
     rig.clock.advance(FRAME * 5);
@@ -542,7 +547,12 @@ fn a_branch_removed_with_apply_draining_drains_while_render_keeps_running() {
         rig.frame();
     }
     assert!(rig.engine.has_worker(ENCODER));
-    assert!(rig.seen() > before, "the output runs again");
+    // `frame` waits for the render and encoder ticks only; the output ticks when its
+    // doorbell rings, on its own thread (under load it had not run yet).
+    assert!(
+        eventually(LIMIT, || rig.seen() > before),
+        "the output runs again"
+    );
     let report = rig.engine.shutdown();
     assert!(report.errors.is_empty(), "{:?}", report.errors);
 }

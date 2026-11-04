@@ -126,9 +126,15 @@ mod tests {
         };
         let mut seen_max = 0.0f32;
         let mut takes = 0;
-        while !writer.is_finished() {
+        // At least one take, also when the writer finishes before this thread runs
+        // (it did under load: `takes` was 0).
+        loop {
+            let finished = writer.is_finished();
             seen_max = seen_max.max(m.take().peak(0));
             takes += 1;
+            if finished {
+                break;
+            }
         }
         writer.join().unwrap();
         seen_max = seen_max.max(m.take().peak(0));
