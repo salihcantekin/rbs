@@ -3,7 +3,7 @@
 // layout tree into tab stacks and splitter handles with absolute positions.
 import { Theme, Tokens } from "tokens.slint";
 import { Button, IconButton, Icon, IconName, MenuItem, MenuSurface, EmptyState } from "components.slint";
-import { Studio, SourceData, KindData, TargetData, MeterRow, ScaleMark, ProgramPanel, SourcesPanel, MixerPanel, LiveControlsPanel, OutputsPanel, RecordingSettings, VideoSettings } from "studio.slint";
+import { Studio, SourceData, KindData, TargetData, MeterRow, ScaleMark, ProgramPanel, SourcesPanel, MixerPanel, LiveControlsPanel, OutputsPanel, RecordingSettings, VideoSettings, RemoteControlSettings } from "studio.slint";
 
 export { Theme, Tokens, Studio, SourceData, KindData, TargetData, MeterRow, ScaleMark }
 
@@ -559,8 +559,8 @@ export component FloatWindow inherits Window {
     }
 }
 
-// The Settings window (U17): a list of sections and the chosen one. For now the only
-// section is Recording; search comes when there are more.
+// The Settings window (U17): a list of sections and the chosen one. Search comes when
+// there are more.
 export component SettingsWindow inherits Window {
     title: @tr("RBS settings");
     preferred-width: Tokens.size-floating-w;
@@ -568,7 +568,7 @@ export component SettingsWindow inherits Window {
     min-width: Tokens.size-menu-md * 2;
     background: Theme.surface-raised;
     default-font-size: Tokens.type-body-size;
-    // 0 Video, 1 Recording.
+    // 0 Video, 1 Recording, 2 Remote control.
     in-out property <int> section: 1;
     HorizontalLayout {
         Rectangle {
@@ -589,6 +589,11 @@ export component SettingsWindow inherits Window {
                     checked: root.section == 1;
                     activated => { root.section = 1; }
                 }
+                MenuItem {
+                    text: @tr("Remote control");
+                    checked: root.section == 2;
+                    activated => { root.section = 2; }
+                }
             }
         }
         Flickable {
@@ -598,7 +603,7 @@ export component SettingsWindow inherits Window {
                 spacing: Tokens.space-3;
                 alignment: start;
                 Text {
-                    text: root.section == 0 ? @tr("Video") : @tr("Recording");
+                    text: root.section == 0 ? @tr("Video") : root.section == 1 ? @tr("Recording") : @tr("Remote control");
                     color: Theme.text-primary;
                     font-size: Tokens.type-heading-size;
                     font-weight: Tokens.type-heading-weight;
@@ -606,6 +611,7 @@ export component SettingsWindow inherits Window {
                 }
                 if root.section == 0: VideoSettings { }
                 if root.section == 1: RecordingSettings { }
+                if root.section == 2: RemoteControlSettings { }
             }
         }
     }

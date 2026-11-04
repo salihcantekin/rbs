@@ -51,6 +51,8 @@ rbs-transport-file = { path = "../rbs-transport-file" }
 rbs-codec = { path = "../rbs-codec" }
 # The control API (ADR-0044): the control thread serves its requests.
 rbs-api = { path = "../rbs-api" }
+# Remote control: the control API over WebSocket on loopback (src/remote_control.rs).
+rbs-api-ws = { path = "../rbs-api-ws" }
 rbs-capture-test = { path = "../rbs-capture-test", optional = true }
 rbs-audio-io-test = { path = "../rbs-audio-io-test", optional = true }
 

@@ -410,9 +410,15 @@ impl Ctx {
             };
             apply_theme(&w.global::<Theme>());
             install_studio(&w.global::<Studio>(), &ctx);
+            // `install_studio` cannot borrow the app here (this runs inside an update):
+            // the shared models (the access token list) are attached directly.
+            app.studio.attach_models(&w.global::<Studio>());
             let c = ctx.clone();
             w.window().on_close_requested(move || {
-                c.update(|app| app.settings = None);
+                c.update(|app| {
+                    app.settings = None;
+                    app.studio.settings_closed();
+                });
                 slint::CloseRequestResponse::HideWindow
             });
             let _ = w.show();
@@ -979,6 +985,26 @@ fn install_studio(g: &Studio<'_>, ctx: &Ctx) {
     on!(on_set_b_frames, |app, i: i32| {
         app.studio.set_b_frames(i);
     });
+    on!(on_set_rc_enabled, |app, on: bool| {
+        app.studio.set_remote_enabled(on);
+    });
+    on!(on_set_rc_port, |app, text: slint::SharedString| {
+        app.studio.set_remote_port(&text);
+    });
+    on!(on_create_token, |app,
+                          name: slint::SharedString,
+                          access: i32| {
+        app.studio.create_token(&name, access);
+    });
+    on!(on_revoke_token, |app, i: i32| {
+        app.studio.revoke_token(i);
+    });
+    on!(on_dismiss_new_token, |app| {
+        app.studio.dismiss_new_token();
+    });
+    on!(on_undo_revoke, |app| {
+        app.studio.undo_revoke();
+    });
     // A popup opened or closed: the preview layer hides or shows at once.
     #[cfg(any(target_os = "macos", windows))]
     {
@@ -1093,7 +1119,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         },
         deliver,
     ) {
-        Ok(host) => ctx.update(move |app| app.studio.host = Some(host)),
+        Ok(host) => ctx.update(move |app| {
+            app.studio.host = Some(host);
+            // Remote control, if the user turned it on (off by default: nothing starts).
+            app.studio.sync_remote();
+        }),
         Err(e) => ctx.update(move |app| {
             app.studio.state = 2;
             app.studio.failure = e.to_string();
@@ -1125,7 +1155,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         if app.save_due {
             app.persist_now();
         }
-        // Stops the studio and joins its thread.
+        // Disconnects remote control apps, then stops the studio and joins its thread.
+        app.studio.stop_remote();
         app.studio.host = None;
     }
     CTX.with(|c| c.borrow_mut().take());
