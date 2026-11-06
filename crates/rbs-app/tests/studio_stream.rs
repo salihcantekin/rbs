@@ -521,7 +521,14 @@ fn a_stream_the_server_refuses_ends_with_its_reason() {
         .push(TransportEvent::Disconnected {
             error: TransportError::Rejected("unknown stream key".into()),
         });
-    match stream(&rx) {
+    // The lost connection's `Link` may come before the end (the output reports it
+    // before the host ends the stream); only the end counts here.
+    let ended = next(&rx, |u| match u {
+        Update::Stream(StreamUpdate::Link(_)) => None,
+        Update::Stream(s) => Some(s),
+        _ => None,
+    });
+    match ended {
         StreamUpdate::Ended { failure, .. } => {
             let why = failure.expect("a reason");
             assert!(why.contains("unknown stream key"), "{why}");

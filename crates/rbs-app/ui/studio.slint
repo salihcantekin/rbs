@@ -195,6 +195,16 @@ export global Studio {
     callback set-canvas-size(int);
     callback set-canvas-rate(int);
 
+    // General (Settings, General, ADR-0056): what closing the main window does.
+    // 0 Quit RBS, 1 Keep RBS running.
+    in property <int> on-close;
+    // 0 macOS, 1 Windows, 2 elsewhere (the setting is not available there).
+    in property <int> platform;
+    // A hidden window can be brought back on this platform now; without it, closing
+    // the window quits.
+    in property <bool> way-back;
+    callback set-on-close(int);
+
     // Remote control (Settings, Remote control): other apps control RBS through the
     // control API. Off by default.
     in property <bool> rc-enabled;
@@ -1407,6 +1417,31 @@ export component VideoSettings inherits Rectangle {
 // Remote control (glossary): the Remote control section of the Settings window (U17).
 // Apps on this computer, such as Stream Deck or the user's scripts, control RBS through
 // the control API with an access token each. Changes apply at once.
+// Settings, General (ADR-0056): what closing the main window does.
+export component GeneralSettings inherits Rectangle {
+    form := VerticalLayout {
+        spacing: Tokens.space-3;
+        alignment: start;
+        Field {
+            label: @tr("When I close the main window");
+            SegmentedControl {
+                label: @tr("When I close the main window");
+                options: [@tr("Quit RBS"), @tr("Keep RBS running")];
+                index: Studio.platform == 2 ? 0 : Studio.on-close;
+                enabled: Studio.platform != 2;
+                selected(i) => { Studio.set-on-close(i); }
+            }
+            Hint {
+                text: Studio.platform == 2 ? @tr("Not available on Linux yet. Closing the main window quits RBS.")
+                    : !Studio.way-back ? @tr("Keeping RBS running is not available on this computer yet, so closing the main window quits RBS.")
+                    : Studio.platform == 0 ? @tr("Keep RBS running: recording, streaming and remote control go on, and RBS stays in the Dock. Click its Dock icon to get the window back; quit with Cmd+Q. Default on Mac: Keep RBS running.")
+                    : @tr("Keep RBS running: recording, streaming and remote control go on, and RBS stays in the notification area. Click its icon there to get the window back, or quit from its menu. Default on Windows: Quit RBS.");
+            }
+        }
+    }
+    height: form.preferred-height;
+}
+
 export component RemoteControlSettings inherits Rectangle {
     // The access picked for the next token: 1 Control, the default.
     property <int> access: 1;
