@@ -389,8 +389,9 @@ export component ProgramPanel inherits Rectangle {
 
 component SourceRowView inherits Rectangle {
     in property <SourceData> data;
-    // Delete source was activated (the row and its focus are about to go).
-    callback deleting();
+    // Move up, Move down or Delete source was activated: the list is made again, so
+    // the row's buttons and their focus are about to go.
+    callback leaving();
     property <bool> selected: Studio.selected-source == data.id;
     height: Tokens.size-control-lg + Tokens.space-2;
     border-radius: Tokens.radius-sm;
@@ -448,7 +449,7 @@ component SourceRowView inherits Rectangle {
                 icon: IconName.chevron-up;
                 name: @tr("Move {} up", data.name);
                 enabled: data.can-up;
-                clicked => { Studio.move-source(data.id, true); }
+                clicked => { root.leaving(); Studio.move-source(data.id, true); }
             }
         }
         if data.picture && selected: VerticalLayout {
@@ -457,7 +458,7 @@ component SourceRowView inherits Rectangle {
                 icon: IconName.chevron-down;
                 name: @tr("Move {} down", data.name);
                 enabled: data.can-down;
-                clicked => { Studio.move-source(data.id, false); }
+                clicked => { root.leaving(); Studio.move-source(data.id, false); }
             }
         }
         VerticalLayout {
@@ -465,7 +466,7 @@ component SourceRowView inherits Rectangle {
             IconButton {
                 icon: IconName.close;
                 name: @tr("Delete source {}", data.name);
-                clicked => { root.deleting(); Studio.delete-source(data.id); }
+                clicked => { root.leaving(); Studio.delete-source(data.id); }
             }
         }
     }
@@ -532,13 +533,13 @@ export component SourcesPanel inherits Rectangle {
             alignment: start;
             for s in Studio.sources: SourceRowView {
                 data: s;
-                deleting => { after-delete.focus(); }
+                leaving => { list-focus.focus(); }
             }
         }
     }
-    // Takes the focus from a deleted row, so Ctrl+Z / Cmd+Z right after a delete
-    // still reaches the window's undo keys.
-    after-delete := FocusScope {
+    // Takes the focus from a row that is made again (a layer move) or deleted, so
+    // Ctrl+Z / Cmd+Z right after it still reaches the window's undo keys.
+    list-focus := FocusScope {
         width: 0;
         height: 0;
         focus-on-click: false;
