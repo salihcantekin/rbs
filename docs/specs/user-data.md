@@ -12,7 +12,7 @@ What users make and keep (output profiles, scene collections, and later themes, 
 
 In scope: document versioning and safe writes; libraries; `current.toml`; output profiles as sections; the scene collection document format.
 
-Out of scope, later changes: workspaces (ADR-0017 and ADR-0049, owned by `rbs-ui`, until a change of their own moves them onto a library); themes and the asset library (directories reserved); packs (`.rbspack`); the app's menus and settings windows (UI design system spec); how the app's recording and stream sections look (they keep their own `format_version` and are documented with the app).
+Out of scope, later changes: workspaces (ADR-0017 and ADR-0049, owned by `rbs-ui`, until a change of their own moves them onto a library); themes and the asset library (directories reserved); packs (`.rbspack`); the app's menus and settings windows ([UI design system spec](ui-design-system.md), Output profile and Scene collection menus); how the app's recording and stream sections look (they keep their own `format_version` and are documented with the app).
 
 ## Contract
 

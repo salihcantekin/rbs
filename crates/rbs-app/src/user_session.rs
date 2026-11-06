@@ -3,9 +3,9 @@
 //! applies every write in order and keeps only the latest snapshot of each entry.
 //! Toolkit-free and tested without a window.
 
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 use std::path::Path;
-use std::sync::{Arc, Condvar, Mutex};
+use std::sync::{Arc, Condvar, Mutex, mpsc};
 use std::thread::JoinHandle;
 
 use rbs_core::media::Size;
@@ -33,11 +33,39 @@ pub const STREAM: &str = "stream";
 /// Reports a failed save, on the writer thread. Must not block.
 pub type OnError = Arc<dyn Fn(String) + Send + Sync>;
 
-/// A save the writer thread applies.
+/// Work for the writer thread: library changes (create, rename, delete, ...) that
+/// need the writer lock, run in order with the saves.
+type Task = Box<dyn FnOnce(&UserData, &WriterLock, &Names) + Send>;
+
+/// The names entries are saved with, kept by the writer thread: a rename changes the
+/// name for the saves after it, never for those before.
+#[derive(Default)]
+pub struct Names {
+    profiles: Mutex<HashMap<EntryId, String>>,
+    collections: Mutex<HashMap<EntryId, String>>,
+}
+
+impl Names {
+    fn of(map: &Mutex<HashMap<EntryId, String>>, id: &EntryId) -> String {
+        map.lock()
+            .ok()
+            .and_then(|m| m.get(id).cloned())
+            .unwrap_or_else(|| id.as_str().to_owned())
+    }
+
+    fn set(map: &Mutex<HashMap<EntryId, String>>, id: &EntryId, name: &str) {
+        if let Ok(mut m) = map.lock() {
+            m.insert(id.clone(), name.to_owned());
+        }
+    }
+}
+
+/// A save or task the writer thread applies.
 enum Job {
-    Collection(EntryId, String, SceneCollection),
-    Profile(EntryId, String, OutputProfile),
+    Collection(EntryId, SceneCollection),
+    Profile(EntryId, OutputProfile),
     Current(Current),
+    Run(Task),
 }
 
 impl Job {
@@ -62,6 +90,7 @@ struct Queue {
 struct Shared {
     queue: Mutex<Queue>,
     changed: Condvar,
+    names: Names,
 }
 
 impl Shared {
@@ -91,6 +120,7 @@ impl Saver {
         let shared = Arc::new(Shared {
             queue: Mutex::new(Queue::default()),
             changed: Condvar::new(),
+            names: Names::default(),
         });
         let thread = std::thread::Builder::new()
             .name("rbs-user-data".into())
@@ -150,22 +180,31 @@ fn write_jobs(shared: &Shared, data: &UserData, lock: &WriterLock, on_error: &dy
                 };
             }
         };
-        let failed = match &job {
-            Job::Collection(id, name, col) => data
-                .scene_collections()
-                .save(lock, id, &Entry::new(name.clone(), col.clone()))
-                .err()
-                .map(|e| format!("The scene collection {name:?} could not be saved: {e}")),
-            Job::Profile(id, name, p) => data
-                .profiles()
-                .save(lock, id, &Entry::new(name.clone(), p.clone()))
-                .err()
-                .map(|e| format!("The output profile {name:?} could not be saved: {e}")),
-            Job::Current(c) => data.set_current(lock, c).err().map(|e| {
+        let names = &shared.names;
+        let failed = match job {
+            Job::Collection(id, col) => {
+                let name = Names::of(&names.collections, &id);
+                data.scene_collections()
+                    .save(lock, &id, &Entry::new(name.clone(), col))
+                    .err()
+                    .map(|e| format!("The scene collection {name:?} could not be saved: {e}"))
+            }
+            Job::Profile(id, p) => {
+                let name = Names::of(&names.profiles, &id);
+                data.profiles()
+                    .save(lock, &id, &Entry::new(name.clone(), p))
+                    .err()
+                    .map(|e| format!("The output profile {name:?} could not be saved: {e}"))
+            }
+            Job::Current(c) => data.set_current(lock, &c).err().map(|e| {
                 format!(
                     "Which output profile and scene collection are in use could not be saved: {e}"
                 )
             }),
+            Job::Run(task) => {
+                task(data, lock, names);
+                None
+            }
         };
         if let Some(why) = failed {
             on_error(why);
@@ -179,6 +218,7 @@ fn write_jobs(shared: &Shared, data: &UserData, lock: &WriterLock, on_error: &dy
 
 /// The output profile and scene collection in use.
 pub struct UserSession {
+    data: UserData,
     saver: Option<Saver>,
     /// The output profile's id.
     pub profile_id: EntryId,
@@ -221,11 +261,9 @@ impl UserSession {
             }
             Err(e) => return Err(e.to_string()),
         }
-        saver.shared.push(Job::Profile(
-            self.profile_id.clone(),
-            self.profile_name.clone(),
-            self.profile.clone(),
-        ));
+        saver
+            .shared
+            .push(Job::Profile(self.profile_id.clone(), self.profile.clone()));
         Ok(())
     }
 
@@ -235,7 +273,6 @@ impl UserSession {
         self.saver.as_ref().map(|s| CollectionSaver {
             shared: Arc::clone(&s.shared),
             id: self.collection_id.clone(),
-            name: self.collection_name.clone(),
         })
     }
 
@@ -245,6 +282,203 @@ impl UserSession {
             s.flush();
         }
     }
+
+    /// Runs `task` on the writer thread after every save asked for so far, and waits
+    /// for its result. Refused when changes are not saved (read-only).
+    fn run<R: Send + 'static>(
+        &self,
+        task: impl FnOnce(&UserData, &WriterLock, &Names) -> R + Send + 'static,
+    ) -> Result<R, String> {
+        let saver = self.saver.as_ref().ok_or_else(read_only_note)?;
+        let (tx, rx) = mpsc::channel();
+        saver
+            .shared
+            .push(Job::Run(Box::new(move |data, lock, names| {
+                let _ = tx.send(task(data, lock, names));
+            })));
+        rx.recv()
+            .map_err(|_| "the user data writer stopped".to_owned())
+    }
+
+    fn save_current(&self) {
+        if let Some(s) = &self.saver {
+            s.shared.push(Job::Current(Current::new(
+                Some(self.profile_id.clone()),
+                Some(self.collection_id.clone()),
+            )));
+        }
+    }
+
+    /// The output profiles, by name.
+    pub fn profiles(&self) -> Vec<(EntryId, String)> {
+        listed(&self.data.profiles())
+    }
+
+    /// The scene collections, by name.
+    pub fn collections(&self) -> Vec<(EntryId, String)> {
+        listed(&self.data.scene_collections())
+    }
+
+    /// Uses the output profile `id` from now on (its sections replace
+    /// [`UserSession::profile`]) and saves the choice.
+    pub fn switch_profile(&mut self, id: &EntryId) -> Result<(), String> {
+        // A save of the profile in use still waiting is written first.
+        self.flush();
+        let entry = self.data.profiles().load(id).map_err(|e| e.to_string())?;
+        if let Some(s) = &self.saver {
+            Names::set(&s.shared.names.profiles, id, &entry.name);
+        }
+        self.profile_id = id.clone();
+        self.profile_name = entry.name;
+        self.profile = entry.document;
+        self.save_current();
+        Ok(())
+    }
+
+    /// Makes an output profile named `name` with default settings, or a copy of the
+    /// one in use (`copy`), and returns its id. The stream key is not copied: it
+    /// belongs to one profile.
+    pub fn new_profile(&self, name: &str, copy: bool) -> Result<EntryId, String> {
+        let name = name.to_owned();
+        let from = copy.then(|| self.profile_id.clone());
+        self.run(move |data, lock, _| {
+            let lib = data.profiles();
+            match from {
+                Some(from) => lib.duplicate(lock, &from, &name),
+                None => lib.create(lock, &name, &OutputProfile::new()),
+            }
+            .map_err(|e| e.to_string())
+        })?
+    }
+
+    /// Renames the output profile in use.
+    pub fn rename_profile(&mut self, name: &str) -> Result<(), String> {
+        let id = self.profile_id.clone();
+        let name = rename(self, id, name, true)?;
+        self.profile_name = name;
+        Ok(())
+    }
+
+    /// Deletes the output profile `id`, which must not be the one in use (ADR-0051:
+    /// its file is moved to `deleted/`). The caller removes its stream key.
+    pub fn delete_profile(&self, id: &EntryId) -> Result<(), String> {
+        if *id == self.profile_id {
+            return Err("the output profile in use cannot be deleted".into());
+        }
+        let id = id.clone();
+        self.run(move |data, lock, _| {
+            data.profiles()
+                .delete(lock, &id)
+                .map(|_| ())
+                .map_err(|e| e.to_string())
+        })?
+    }
+
+    /// Loads the scene collection `id`, to run it.
+    pub fn load_collection(&self, id: &EntryId) -> Result<(String, SceneCollection), String> {
+        // A save of it still waiting is written first.
+        self.flush();
+        let entry = self
+            .data
+            .scene_collections()
+            .load(id)
+            .map_err(|e| e.to_string())?;
+        Ok((entry.name, entry.document))
+    }
+
+    /// What saves the scene collection `id` (named `name`) after a change, once it
+    /// runs; `None` when changes are not saved.
+    pub fn saver_for(&self, id: &EntryId, name: &str) -> Option<CollectionSaver> {
+        self.saver.as_ref().map(|s| {
+            Names::set(&s.shared.names.collections, id, name);
+            CollectionSaver {
+                shared: Arc::clone(&s.shared),
+                id: id.clone(),
+            }
+        })
+    }
+
+    /// The scene collection `id` named `name` runs now: saves the choice.
+    pub fn collection_switched(&mut self, id: &EntryId, name: &str) {
+        self.collection_id = id.clone();
+        self.collection_name = name.to_owned();
+        self.save_current();
+    }
+
+    /// Makes a scene collection named `name`, new (one canvas of `canvas` and one
+    /// scene) or a copy of the one in use (`copy`, as last saved), and returns its id.
+    pub fn new_collection(
+        &self,
+        name: &str,
+        canvas: &CanvasProfile,
+        copy: bool,
+    ) -> Result<EntryId, String> {
+        let name = name.to_owned();
+        let from = copy.then(|| self.collection_id.clone());
+        let starter = starter_collection(canvas);
+        self.run(move |data, lock, _| {
+            let lib = data.scene_collections();
+            match from {
+                Some(from) => lib.duplicate(lock, &from, &name),
+                None => lib.create(lock, &name, &starter),
+            }
+            .map_err(|e| e.to_string())
+        })?
+    }
+
+    /// Renames the scene collection in use.
+    pub fn rename_collection(&mut self, name: &str) -> Result<(), String> {
+        let id = self.collection_id.clone();
+        let name = rename(self, id, name, false)?;
+        self.collection_name = name;
+        Ok(())
+    }
+
+    /// Deletes the scene collection `id`, which must not be the one in use (its file
+    /// is moved to `deleted/`).
+    pub fn delete_collection(&self, id: &EntryId) -> Result<(), String> {
+        if *id == self.collection_id {
+            return Err("the scene collection in use cannot be deleted".into());
+        }
+        let id = id.clone();
+        self.run(move |data, lock, _| {
+            data.scene_collections()
+                .delete(lock, &id)
+                .map(|_| ())
+                .map_err(|e| e.to_string())
+        })?
+    }
+}
+
+/// Renames entry `id` of the profiles (`profile`) or the collections on the writer
+/// thread, so saves asked for before keep the old name and later ones the new.
+/// Returns the name as saved (trimmed).
+fn rename(s: &UserSession, id: EntryId, name: &str, profile: bool) -> Result<String, String> {
+    let name = name.trim().to_owned();
+    let given = name.clone();
+    s.run(move |data, lock, names| {
+        let done = if profile {
+            data.profiles().rename(lock, &id, &given)
+        } else {
+            data.scene_collections().rename(lock, &id, &given)
+        };
+        done.map_err(|e| e.to_string())?;
+        let map = if profile {
+            &names.profiles
+        } else {
+            &names.collections
+        };
+        Names::set(map, &id, &given);
+        Ok::<(), String>(())
+    })??;
+    Ok(name)
+}
+
+/// A library's entries by name; nothing when it cannot be listed.
+fn listed<T: Document>(lib: &Library<T>) -> Vec<(EntryId, String)> {
+    lib.list()
+        .map(|l| l.entries.into_iter().map(|e| (e.id, e.name)).collect())
+        .unwrap_or_default()
 }
 
 /// Saves one scene collection through the writer thread; cheap to clone and send.
@@ -252,7 +486,6 @@ impl UserSession {
 pub struct CollectionSaver {
     shared: Arc<Shared>,
     id: EntryId,
-    name: String,
 }
 
 impl std::fmt::Debug for CollectionSaver {
@@ -267,11 +500,8 @@ impl CollectionSaver {
     /// Asks the writer thread to save `collection` (replacing a save of it still
     /// waiting).
     pub fn save(&self, collection: &SceneCollection) {
-        self.shared.push(Job::Collection(
-            self.id.clone(),
-            self.name.clone(),
-            collection.clone(),
-        ));
+        self.shared
+            .push(Job::Collection(self.id.clone(), collection.clone()));
     }
 }
 
@@ -449,9 +679,16 @@ pub fn open(config: &Path, on_error: OnError) -> (UserSession, SceneCollection) 
         }
     };
     let saver = lock.and_then(|lock| {
+        let data = data.clone();
         let wanted = Current::new(Some(profile_id.clone()), Some(collection_id.clone()));
-        match Saver::start(data.clone(), lock, on_error) {
+        match Saver::start(data, lock, on_error) {
             Ok(s) => {
+                Names::set(&s.shared.names.profiles, &profile_id, &profile_name);
+                Names::set(
+                    &s.shared.names.collections,
+                    &collection_id,
+                    &collection_name,
+                );
                 if wanted != current {
                     s.shared.push(Job::Current(wanted));
                 }
@@ -465,6 +702,7 @@ pub fn open(config: &Path, on_error: OnError) -> (UserSession, SceneCollection) 
     });
     (
         UserSession {
+            data,
             saver,
             profile_id,
             profile_name,
@@ -641,5 +879,73 @@ mod tests {
         let seen = seen.lock().unwrap();
         assert_eq!(seen.len(), 1);
         assert!(seen[0].contains("could not be saved"), "{seen:?}");
+    }
+
+    #[test]
+    fn a_rename_applies_to_saves_after_it_only() {
+        let d = Dir::new("rename");
+        let (mut s, mut col) = open(&d.0, quiet());
+        let saver = s.collection_saver().unwrap();
+        let canvas = col.canvases().next().unwrap().id;
+        col.rename_canvas(canvas, "Before").unwrap();
+        saver.save(&col);
+        s.rename_collection("  Show  ").unwrap();
+        assert_eq!(s.collection_name, "Show");
+        col.rename_canvas(canvas, "After").unwrap();
+        saver.save(&col);
+        s.flush();
+        let (name, saved) = s.load_collection(&s.collection_id.clone()).unwrap();
+        assert_eq!(name, "Show");
+        assert_eq!(saved, col);
+        // Names are unique ignoring case.
+        let other = s
+            .new_collection("Other", &CanvasProfile::new(), false)
+            .unwrap();
+        assert_ne!(other, s.collection_id);
+        assert!(s.rename_collection("other").is_err());
+        assert_eq!(s.collection_name, "Show");
+    }
+
+    #[test]
+    fn output_profiles_are_made_switched_and_deleted() {
+        let d = Dir::new("profiles");
+        let (mut s, _) = open(&d.0, quiet());
+        let mut rec = RecordProfile::new();
+        rec.folder = d.0.join("videos-a");
+        s.set_section(RECORDING, &rec).unwrap();
+        let first = s.profile_id.clone();
+
+        let copy = s.new_profile("Copy", true).unwrap();
+        let fresh = s.new_profile("Fresh", false).unwrap();
+        s.switch_profile(&copy).unwrap();
+        assert_eq!(s.profile_name, "Copy");
+        assert_eq!(s.section::<RecordProfile>(RECORDING).unwrap().unwrap(), rec);
+        s.switch_profile(&fresh).unwrap();
+        assert!(s.section::<RecordProfile>(RECORDING).unwrap().is_none());
+        assert_eq!(s.profiles().len(), 3);
+
+        assert!(s.delete_profile(&fresh).is_err(), "the one in use stays");
+        s.delete_profile(&first).unwrap();
+        let names: Vec<_> = s.profiles().into_iter().map(|(_, n)| n).collect();
+        assert_eq!(names, ["Copy", "Fresh"]);
+        // The choice is saved: the next start uses it.
+        s.flush();
+        drop(s);
+        let (s, _) = open(&d.0, quiet());
+        assert_eq!(s.profile_id, fresh);
+        // A new profile never gets the deleted one's id (its stream key is gone).
+        assert!(s.new_profile(DEFAULT_NAME, false).unwrap() != first);
+    }
+
+    #[test]
+    fn a_read_only_app_does_not_change_the_libraries() {
+        let d = Dir::new("read-only-library");
+        let (s, _) = open(&d.0, quiet());
+        let (mut other, _) = open(&d.0, quiet());
+        assert!(!other.writable());
+        assert!(other.new_profile("New", false).is_err());
+        assert!(other.rename_profile("New").is_err());
+        assert_eq!(other.profile_name, DEFAULT_NAME);
+        drop(s);
     }
 }

@@ -19,7 +19,7 @@ use rbs_api::session::ServerConfig;
 use rbs_api::thread::ApiOptions;
 use rbs_api::transport::{CloseReason, ConnectionHandle, ConnectionSender, PeerInfo, SendError};
 use rbs_api::{ApiServer, TokenStore};
-use rbs_app::stream_key::{KeyStore, MemoryKeyStore};
+use rbs_app::stream_key::{ACCOUNT, KeyStore, MemoryKeyStore};
 use rbs_app::stream_profile::StreamProfile;
 use rbs_app::studio_host::{
     Command, HostConfig, RecordRequest, RecordingUpdate, SourceKind, Stats, StreamRequest,
@@ -384,7 +384,7 @@ fn streams_take_the_key_from_the_store_and_report_their_connection() {
         "live_abc",
     ))));
     assert_eq!(key_saved(&rx), Ok(true));
-    assert_eq!(keys.read().unwrap().unwrap().expose(), "live_abc");
+    assert_eq!(keys.read(ACCOUNT).unwrap().unwrap().expose(), "live_abc");
 
     host.send(Command::StartStream(request()));
     match stream(&rx) {
@@ -499,7 +499,7 @@ fn streams_take_the_key_from_the_store_and_report_their_connection() {
 
     host.send(Command::SaveStreamKey(None));
     assert_eq!(key_saved(&rx), Ok(false));
-    assert!(keys.read().unwrap().is_none());
+    assert!(keys.read(ACCOUNT).unwrap().is_none());
     drop(host);
 }
 
@@ -507,7 +507,8 @@ fn streams_take_the_key_from_the_store_and_report_their_connection() {
 fn a_stream_the_server_refuses_ends_with_its_reason() {
     let Some(gpu) = gpu() else { return };
     let keys = Arc::new(MemoryKeyStore::new());
-    keys.write(&rbs_transport::Secret::new("wrong")).unwrap();
+    keys.write(ACCOUNT, &rbs_transport::Secret::new("wrong"))
+        .unwrap();
     let server = Arc::new(Server::default());
     let (host, rx) = host(gpu, keys, Arc::clone(&server), &TestClock::new());
     host.send(Command::StartStream(request()));
@@ -940,4 +941,43 @@ impl rbs_mux::Muxer for FakeMuxer {
         ));
         Ok(())
     }
+}
+
+#[test]
+fn each_output_profile_has_its_own_stream_key() {
+    let Some(gpu) = gpu() else { return };
+    let keys = Arc::new(MemoryKeyStore::new());
+    let server = Arc::new(Server::default());
+    let clock = TestClock::new();
+    let (host, rx) = host(gpu, keys.clone(), Arc::clone(&server), &clock);
+    add_display(&host, &rx);
+    host.send(Command::SaveStreamKey(Some(rbs_transport::Secret::new(
+        "default_key",
+    ))));
+    assert_eq!(key_saved(&rx), Ok(true));
+
+    // Another profile: the default profile's key is not its key.
+    let b = rbs_app::stream_key::account("studio-b");
+    host.send(Command::SetKeyAccount(b.clone()));
+    host.send(Command::StartStream(request()));
+    assert_eq!(stream(&rx), StreamUpdate::NoKey);
+    host.send(Command::SaveStreamKey(Some(rbs_transport::Secret::new(
+        "b_key",
+    ))));
+    assert_eq!(key_saved(&rx), Ok(true));
+    assert_eq!(keys.read(&b).unwrap().unwrap().expose(), "b_key");
+    assert_eq!(keys.read(ACCOUNT).unwrap().unwrap().expose(), "default_key");
+
+    // Deleting a profile removes its key only.
+    host.send(Command::SetKeyAccount(ACCOUNT.to_owned()));
+    host.send(Command::RemoveStreamKey(b.clone()));
+    host.send(Command::SaveStreamKey(Some(rbs_transport::Secret::new(
+        "default_key",
+    ))));
+    assert_eq!(key_saved(&rx), Ok(true));
+    assert!(keys.read(&b).unwrap().is_none());
+    assert_eq!(keys.read(ACCOUNT).unwrap().unwrap().expose(), "default_key");
+    assert!(server.sessions.lock().unwrap().is_empty());
+    drop(host);
+    while rx.recv_timeout(LIMIT).is_ok() {}
 }
