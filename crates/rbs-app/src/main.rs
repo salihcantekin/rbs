@@ -1357,9 +1357,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let notice = match rbs_crash::install(&config.join("crash-reports")) {
         Ok(session) => {
             let notice = crash_notice(session.unclean());
-            // Clean on every exit through `exit`, also one with an error and also
-            // macOS Cmd+Q, which ends the process from inside the event loop without
-            // returning here; an uncaught panic on this thread is not clean.
+            // Clean on every exit through `exit`, also one with an error and one the
+            // system forces from inside the event loop without returning here; an
+            // uncaught panic on this thread is not clean.
             if !session.end_clean_at_exit() {
                 eprintln!("rbs: crash detection is off: no exit handler");
             }
@@ -1371,6 +1371,26 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     };
     run(config, notice)
+}
+
+/// The system asked the app to quit (macOS `terminate:`): closes the main window as
+/// its close button does, once AppKit's call has returned.
+#[cfg(target_os = "macos")]
+fn quit_from_system() {
+    let _ = entry::invoke(|| {
+        // The window handle only: the close handler borrows the app itself.
+        let main = CTX.with(|c| {
+            let ctx = c.borrow().clone()?;
+            let app = ctx.app.try_borrow().ok()?;
+            Some(app.main.as_weak())
+        });
+        if let Some(main) = main.and_then(|w| w.upgrade()) {
+            // The question while live must be visible.
+            main.window().set_minimized(false);
+            main.window()
+                .dispatch_event(slint::platform::WindowEvent::CloseRequested);
+        }
+    });
 }
 
 /// The notice for sessions that ended without a clean exit, if any.
@@ -1576,6 +1596,13 @@ fn run(config: PathBuf, notice: Option<String>) -> Result<(), Box<dyn std::error
             });
             let _ = slint::quit_event_loop();
         });
+    }
+
+    // Cmd+Q, Dock > Quit and logout take the same path as closing the main window, so
+    // they ask while live, save and stop the studio before the process ends.
+    #[cfg(target_os = "macos")]
+    if !rbs_app::native::route_quit(quit_from_system) {
+        eprintln!("rbs: Quit ends the app without closing the studio first");
     }
 
     #[allow(clippy::disallowed_methods)] // The one event loop of the app.
