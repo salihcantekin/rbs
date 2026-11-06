@@ -194,8 +194,7 @@ impl LayoutSession {
                 let ok = next
                     .windows
                     .get_mut(window)
-                    .and_then(|w| w.layout_mut())
-                    .is_some_and(|l| l.activate(stack, tab));
+                    .is_some_and(|w| w.activate(stack, tab));
                 if !ok {
                     return Err(WorkspaceError::NoTarget.into());
                 }

@@ -11,7 +11,7 @@ use std::io;
 use std::path::{Path, PathBuf};
 
 use crate::builtin;
-use crate::workspace::{Workspace, WorkspaceError, same_name, validate_name};
+use crate::workspace::{FORMAT, Workspace, WorkspaceError, file_format, same_name, validate_name};
 
 /// Errors from the workspace store.
 #[derive(Debug)]
@@ -192,6 +192,7 @@ impl WorkspaceStore {
             None => self.free_path(&workspace.name)?,
         };
         fs::create_dir_all(&self.dir)?;
+        keep_older_format(&path)?;
         let tmp = path.with_extension("toml.tmp");
         {
             use std::io::Write;
@@ -303,6 +304,27 @@ pub fn slug(name: &str) -> String {
     }
     out.truncate(48);
     out
+}
+
+/// Before a file written in an older format is first rewritten in the current one,
+/// copy it to `<file>.format<N>.bak` (once, never overwritten), so a user can go back
+/// to an older build by hand (ADR-0049 decision 6).
+fn keep_older_format(path: &Path) -> Result<(), StoreError> {
+    let text = match fs::read_to_string(path) {
+        Ok(t) => t,
+        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(()),
+        Err(e) => return Err(e.into()),
+    };
+    let Some(older) = file_format(&text).filter(|f| *f < FORMAT) else {
+        return Ok(());
+    };
+    let mut bak = path.as_os_str().to_owned();
+    bak.push(format!(".format{older}.bak"));
+    let bak = PathBuf::from(bak);
+    if !bak.exists() {
+        fs::copy(path, &bak)?;
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -423,5 +445,33 @@ mod tests {
         assert_eq!(slug("Minimal live"), "minimal-live");
         assert_eq!(slug("  --Çok güzel!! "), "ok-g-zel");
         assert_eq!(slug("ışığ"), "workspace");
+    }
+
+    #[test]
+    fn first_rewrite_of_a_format_1_file_keeps_a_copy() {
+        let d = TempDir::new("format1");
+        let s = WorkspaceStore::new(&d.0);
+        fs::create_dir_all(&d.0).unwrap();
+        let old = "format = 1\nname = \"Mine\"\n[[windows]]\nkind = \"main\"\nlayout = { tabs = [\"rbs.program\"] }\n";
+        let path = d.0.join("mine.toml");
+        fs::write(&path, old).unwrap();
+        let mut w = s.load("Mine").unwrap();
+        assert_eq!(w.format, FORMAT);
+        // Loading alone writes nothing.
+        assert!(!d.0.join("mine.toml.format1.bak").exists());
+        w.locked = true;
+        s.save(&w).unwrap();
+        let bak = d.0.join("mine.toml.format1.bak");
+        assert_eq!(fs::read_to_string(&bak).unwrap(), old);
+        assert_eq!(
+            file_format(&fs::read_to_string(&path).unwrap()),
+            Some(FORMAT)
+        );
+        // The copy is made once and never overwritten; it is not listed as a workspace.
+        fs::write(&path, old).unwrap();
+        fs::write(&bak, "kept").unwrap();
+        s.save(&w).unwrap();
+        assert_eq!(fs::read_to_string(&bak).unwrap(), "kept");
+        assert!(s.list().unwrap().problems.is_empty());
     }
 }
