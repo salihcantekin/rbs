@@ -8,6 +8,7 @@
 //! - [`panel`]: panel ids, built-in panels and how often each needs redrawing.
 //! - [`layout`]: a window's tree of splits and tab stacks, flattened to rectangles.
 //! - [`workspace`]: the versioned workspace file and the layout operations of rule U21.
+//! - [`command`]: the command registry behind menus, toolbar and palette (ADR-0050).
 //! - [`builtin`]: the Edit, Live, Minimal and Audio workspaces.
 //! - [`display`]: placing saved windows on the displays connected now.
 //! - [`store`]: workspace files on disk.
@@ -19,6 +20,7 @@
 //! Spec: `docs/specs/ui-design-system.md`. Rules: `docs/ui/principles.md`.
 
 pub mod builtin;
+pub mod command;
 pub mod display;
 pub mod history;
 pub mod layout;

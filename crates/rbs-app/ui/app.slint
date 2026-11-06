@@ -2,7 +2,7 @@
 // crate: Slint has no recursive components, so Rust flattens each window's
 // layout tree into tab stacks and splitter handles with absolute positions.
 import { Theme, Tokens } from "tokens.slint";
-import { Button, IconButton, Icon, IconName, MenuItem, MenuSurface, EmptyState } from "components.slint";
+import { Button, IconButton, Icon, IconName, MenuItem as MenuRow, MenuSurface, EmptyState } from "components.slint";
 import { Studio, EntryRow, SourceData, MarkData, KindData, TargetData, MeterRow, ScaleMark, EncoderData, ProgramPanel, SourcesPanel, PropertiesPanel, MixerPanel, LiveControlsPanel, OutputsPanel, StatsPanel, RecordingSettings, StreamSettings, VideoSettings, RemoteControlSettings, GeneralSettings } from "studio.slint";
 
 export { Theme, Tokens, Studio, EntryRow, SourceData, MarkData, KindData, TargetData, MeterRow, ScaleMark, EncoderData }
@@ -31,6 +31,18 @@ export struct Cover {
 }
 
 // Rust pushes the same state into each window's copy.
+// The menu bar's run-time values (menu_bar.rs): titles, enabled and checked states
+// indexed in the generated items' order, and each choice submenu's choices.
+export struct MenuChoice { title: string, id: string, checked: bool }
+export global Menus {
+    in property <[string]> titles;
+    in property <[bool]> enabled;
+    in property <[bool]> checked;
+    in property <[[MenuChoice]]> choices;
+    // Runs a command registry id (ADR-0050).
+    callback run(string);
+}
+
 export global Shell {
     // 0 not live, 1 live, 2 recording, 3 live and recording.
     in property <int> live-state;
@@ -64,6 +76,9 @@ export global Shell {
     callback close-main();
     callback quit-end-stream();
     callback quit-keep();
+    // End stream from the menu bar: the frame asks first (U4).
+    in property <bool> end-stream-confirm;
+    callback end-stream-answer(bool /* end */);
 
     callback relayout(int /* window */, length, length);
     callback activate-tab(int /* window */, int /* stack */, int /* tab */);
@@ -184,14 +199,14 @@ component PanelMenu inherits PopupWindow {
     MenuSurface {
         VerticalLayout {
             padding: Tokens.space-1;
-            MenuItem { autofocus: true; text: @tr("Move to left edge"); activated => { Shell.move-edge(panel, window, Edges.left); root.close(); } }
-            MenuItem { text: @tr("Move to right edge"); activated => { Shell.move-edge(panel, window, Edges.right); root.close(); } }
-            MenuItem { text: @tr("Move to top edge"); activated => { Shell.move-edge(panel, window, Edges.top); root.close(); } }
-            MenuItem { text: @tr("Move to bottom edge"); activated => { Shell.move-edge(panel, window, Edges.bottom); root.close(); } }
-            MenuItem { text: @tr("Move to next tab stack"); activated => { Shell.move-next-stack(panel); root.close(); } }
-            if !floating: MenuItem { text: @tr("Float in its own window"); activated => { Shell.float-panel(panel); root.close(); } }
-            if floating: MenuItem { text: @tr("Dock back"); activated => { Shell.dock(window); root.close(); } }
-            MenuItem { text: @tr("Close {}", title); activated => { Shell.close-panel(panel); root.close(); } }
+            MenuRow { autofocus: true; text: @tr("Move to left edge"); activated => { Shell.move-edge(panel, window, Edges.left); root.close(); } }
+            MenuRow { text: @tr("Move to right edge"); activated => { Shell.move-edge(panel, window, Edges.right); root.close(); } }
+            MenuRow { text: @tr("Move to top edge"); activated => { Shell.move-edge(panel, window, Edges.top); root.close(); } }
+            MenuRow { text: @tr("Move to bottom edge"); activated => { Shell.move-edge(panel, window, Edges.bottom); root.close(); } }
+            MenuRow { text: @tr("Move to next tab stack"); activated => { Shell.move-next-stack(panel); root.close(); } }
+            if !floating: MenuRow { text: @tr("Float in its own window"); activated => { Shell.float-panel(panel); root.close(); } }
+            if floating: MenuRow { text: @tr("Dock back"); activated => { Shell.dock(window); root.close(); } }
+            MenuRow { text: @tr("Close {}", title); activated => { Shell.close-panel(panel); root.close(); } }
         }
     }
 }
@@ -378,26 +393,26 @@ component WorkspaceMenu inherits PopupWindow {
         VerticalLayout {
             padding: Tokens.space-2;
             spacing: Tokens.space-1;
-            for w[i] in Shell.workspaces: MenuItem {
+            for w[i] in Shell.workspaces: MenuRow {
                 autofocus: i == 0;
                 text: w.name;
                 checked: w.current;
                 activated => { Shell.switch-workspace(w.name); root.close(); }
             }
             Rectangle { height: Tokens.size-border; background: Theme.border-subtle; }
-            MenuItem { text: @tr("Save changes to {}", Shell.workspace-name); activated => { Shell.save-workspace(); root.close(); } }
-            MenuItem {
+            MenuRow { text: @tr("Save changes to {}", Shell.workspace-name); activated => { Shell.save-workspace(); root.close(); } }
+            MenuRow {
                 text: @tr("Restore default of {}", Shell.workspace-name);
                 enabled: Shell.workspace-built-in;
                 activated => { Shell.restore-workspace(); root.close(); }
             }
-            MenuItem {
+            MenuRow {
                 text: Shell.locked ? @tr("Unlock layout") : @tr("Lock layout");
                 checked: Shell.locked;
                 activated => { Shell.set-locked(!Shell.locked); root.close(); }
             }
-            MenuItem { text: @tr("Undo layout change"); enabled: Shell.can-undo; activated => { Shell.undo(); root.close(); } }
-            MenuItem { text: @tr("Redo layout change"); enabled: Shell.can-redo; activated => { Shell.redo(); root.close(); } }
+            MenuRow { text: @tr("Undo layout change"); enabled: Shell.can-undo; activated => { Shell.undo(); root.close(); } }
+            MenuRow { text: @tr("Redo layout change"); enabled: Shell.can-redo; activated => { Shell.redo(); root.close(); } }
             Rectangle { height: Tokens.size-border; background: Theme.border-subtle; }
             HorizontalLayout {
                 spacing: Tokens.space-2;
@@ -448,7 +463,7 @@ component EntryMenu inherits PopupWindow {
         VerticalLayout {
             padding: Tokens.space-2;
             spacing: Tokens.space-1;
-            for e[i] in root.entries: MenuItem {
+            for e[i] in root.entries: MenuRow {
                 autofocus: i == 0;
                 text: e.name;
                 checked: e.current;
@@ -456,15 +471,15 @@ component EntryMenu inherits PopupWindow {
                 activated => { root.pick(e.id); root.close(); }
             }
             Rectangle { height: Tokens.size-border; background: Theme.border-subtle; }
-            MenuItem {
+            MenuRow {
                 text: @tr("Import…");
                 activated => { root.act(4, ""); root.close(); }
             }
-            MenuItem {
+            MenuRow {
                 text: @tr("Export {}…", root.current);
                 activated => { root.act(5, ""); root.close(); }
             }
-            if !root.confirm-delete: MenuItem {
+            if !root.confirm-delete: MenuRow {
                 text: @tr("Delete {}…", root.current);
                 enabled: root.entries.length > 1 && !root.busy;
                 activated => { root.confirm-delete = true; }
@@ -535,13 +550,37 @@ component PanelsMenu inherits PopupWindow {
         width: Tokens.size-menu-sm;
         VerticalLayout {
             padding: Tokens.space-2;
-            for p[i] in Shell.panels: MenuItem {
+            for p[i] in Shell.panels: MenuRow {
                 autofocus: i == 0;
                 text: p.title;
                 checked: p.open;
                 activated => { Shell.toggle-panel(p.id); root.close(); }
             }
         }
+    }
+}
+
+// End stream picked in the menu bar asks first (U4), in the frame of the window
+// whose menu it was picked from; Keep streaming has the focus.
+component EndStreamConfirm inherits HorizontalLayout {
+    spacing: Tokens.space-2;
+    accessible-role: groupbox;
+    accessible-label: @tr("End the stream?");
+    init => { keep-stream.focus(); }
+    Text {
+        text: @tr("End the stream? Viewers see it end.");
+        color: Theme.text-primary;
+        font-size: Tokens.type-body-size;
+        vertical-alignment: center;
+    }
+    Button {
+        text: @tr("Yes, end the stream");
+        kind: "live";
+        clicked => { Shell.end-stream-answer(true); }
+    }
+    keep-stream := Button {
+        text: @tr("Keep streaming");
+        clicked => { Shell.end-stream-answer(false); }
     }
 }
 
@@ -597,6 +636,8 @@ component FrameBar inherits Rectangle {
                 clicked => { Shell.quit-keep(); }
             }
         }
+        // End stream from the menu bar asks first, in the frame (U4).
+        if Shell.end-stream-confirm && !Shell.quit-confirm: EndStreamConfirm { }
         // Network access (ADR-0046 decision 7): shown in every workspace while other
         // computers can connect, in words.
         if Studio.rc-network-on: Text {
@@ -692,6 +733,45 @@ export component MainWindow inherits Window {
     in property <[StackData]> stacks;
     in property <[HandleData]> handles;
     forward-focus: edit-keys;
+    // BEGIN generated menu bar (menu_bar.rs; do not edit)
+    MenuBar {
+        Menu {
+            title: @tr("Edit");
+            MenuItem { title: Menus.titles[0]; enabled: Menus.enabled[0]; activated => { Menus.run("edit.undo"); } }
+            MenuItem { title: Menus.titles[1]; enabled: Menus.enabled[1]; activated => { Menus.run("edit.redo"); } }
+        }
+        Menu {
+            title: @tr("View");
+            Menu {
+                title: Menus.titles[2];
+                enabled: Menus.enabled[2];
+                for c in Menus.choices[0]: MenuItem { title: c.title; checkable: true; checked: c.checked; activated => { Menus.run(c.id); } }
+            }
+            MenuSeparator { }
+            MenuItem { title: Menus.titles[3]; enabled: Menus.enabled[3]; checkable: true; checked: Menus.checked[3]; activated => { Menus.run("ui.area.toggle?area=left"); } }
+            MenuItem { title: Menus.titles[4]; enabled: Menus.enabled[4]; checkable: true; checked: Menus.checked[4]; activated => { Menus.run("ui.area.toggle?area=right"); } }
+            MenuItem { title: Menus.titles[5]; enabled: Menus.enabled[5]; checkable: true; checked: Menus.checked[5]; activated => { Menus.run("ui.area.toggle?area=bottom"); } }
+            MenuItem { title: Menus.titles[6]; enabled: Menus.enabled[6]; activated => { Menus.run("ui.area.hide_all"); } }
+            MenuItem { title: Menus.titles[7]; enabled: Menus.enabled[7]; activated => { Menus.run("ui.area.show_all"); } }
+            MenuSeparator { }
+            MenuItem { title: Menus.titles[8]; enabled: Menus.enabled[8]; activated => { Menus.run("ui.layout.reset_sizes"); } }
+            MenuItem { title: Menus.titles[9]; enabled: Menus.enabled[9]; activated => { Menus.run("ui.toolbar.reset"); } }
+        }
+        Menu {
+            title: @tr("Output");
+            MenuItem { title: Menus.titles[10]; enabled: Menus.enabled[10]; checkable: true; checked: Menus.checked[10]; activated => { Menus.run("stream.toggle"); } }
+            MenuItem { title: Menus.titles[11]; enabled: Menus.enabled[11]; checkable: true; checked: Menus.checked[11]; activated => { Menus.run("record.toggle"); } }
+        }
+        Menu {
+            title: @tr("Window");
+            Menu {
+                title: Menus.titles[12];
+                enabled: Menus.enabled[12];
+                for c in Menus.choices[1]: MenuItem { title: c.title; checkable: true; checked: c.checked; activated => { Menus.run(c.id); } }
+            }
+        }
+    }
+    // END generated menu bar
     // Scene edit undo and redo from any panel of this window (U4): keys a focused
     // control does not take come up here, and a click where no control takes it
     // focuses this scope, so the keys work there too. Text fields keep their own undo.
@@ -759,6 +839,45 @@ export component FloatWindow inherits Window {
     in property <[HandleData]> handles;
     title: @tr("RBS – {}", panel-names);
     forward-focus: edit-keys;
+    // BEGIN generated menu bar (menu_bar.rs; do not edit)
+    MenuBar {
+        Menu {
+            title: @tr("Edit");
+            MenuItem { title: Menus.titles[0]; enabled: Menus.enabled[0]; activated => { Menus.run("edit.undo"); } }
+            MenuItem { title: Menus.titles[1]; enabled: Menus.enabled[1]; activated => { Menus.run("edit.redo"); } }
+        }
+        Menu {
+            title: @tr("View");
+            Menu {
+                title: Menus.titles[2];
+                enabled: Menus.enabled[2];
+                for c in Menus.choices[0]: MenuItem { title: c.title; checkable: true; checked: c.checked; activated => { Menus.run(c.id); } }
+            }
+            MenuSeparator { }
+            MenuItem { title: Menus.titles[3]; enabled: Menus.enabled[3]; checkable: true; checked: Menus.checked[3]; activated => { Menus.run("ui.area.toggle?area=left"); } }
+            MenuItem { title: Menus.titles[4]; enabled: Menus.enabled[4]; checkable: true; checked: Menus.checked[4]; activated => { Menus.run("ui.area.toggle?area=right"); } }
+            MenuItem { title: Menus.titles[5]; enabled: Menus.enabled[5]; checkable: true; checked: Menus.checked[5]; activated => { Menus.run("ui.area.toggle?area=bottom"); } }
+            MenuItem { title: Menus.titles[6]; enabled: Menus.enabled[6]; activated => { Menus.run("ui.area.hide_all"); } }
+            MenuItem { title: Menus.titles[7]; enabled: Menus.enabled[7]; activated => { Menus.run("ui.area.show_all"); } }
+            MenuSeparator { }
+            MenuItem { title: Menus.titles[8]; enabled: Menus.enabled[8]; activated => { Menus.run("ui.layout.reset_sizes"); } }
+            MenuItem { title: Menus.titles[9]; enabled: Menus.enabled[9]; activated => { Menus.run("ui.toolbar.reset"); } }
+        }
+        Menu {
+            title: @tr("Output");
+            MenuItem { title: Menus.titles[10]; enabled: Menus.enabled[10]; checkable: true; checked: Menus.checked[10]; activated => { Menus.run("stream.toggle"); } }
+            MenuItem { title: Menus.titles[11]; enabled: Menus.enabled[11]; checkable: true; checked: Menus.checked[11]; activated => { Menus.run("record.toggle"); } }
+        }
+        Menu {
+            title: @tr("Window");
+            Menu {
+                title: Menus.titles[12];
+                enabled: Menus.enabled[12];
+                for c in Menus.choices[1]: MenuItem { title: c.title; checkable: true; checked: c.checked; activated => { Menus.run(c.id); } }
+            }
+        }
+    }
+    // END generated menu bar
     preferred-width: Tokens.size-floating-w;
     preferred-height: Tokens.size-floating-h;
     background: Theme.surface-sunken;
@@ -778,6 +897,7 @@ export component FloatWindow inherits Window {
                     padding: Tokens.space-1;
                     alignment: start;
                     Button { text: @tr("Dock back"); clicked => { Shell.dock(root.window); } }
+                    if Shell.end-stream-confirm: EndStreamConfirm { }
                 }
             }
             DockArea {
@@ -820,27 +940,27 @@ export component SettingsWindow inherits Window {
                     alignment: start;
                     accessible-role: list;
                     accessible-label: @tr("Settings sections");
-                    MenuItem {
+                    MenuRow {
                         text: @tr("General");
                         checked: root.section == 4;
                         activated => { root.section = 4; }
                     }
-                    MenuItem {
+                    MenuRow {
                         text: @tr("Video");
                         checked: root.section == 0;
                         activated => { root.section = 0; }
                     }
-                    MenuItem {
+                    MenuRow {
                         text: @tr("Recording");
                         checked: root.section == 1;
                         activated => { root.section = 1; }
                     }
-                    MenuItem {
+                    MenuRow {
                         text: @tr("Stream");
                         checked: root.section == 2;
                         activated => { root.section = 2; }
                     }
-                    MenuItem {
+                    MenuRow {
                         text: @tr("Remote control");
                         checked: root.section == 3;
                         activated => { root.section = 3; }

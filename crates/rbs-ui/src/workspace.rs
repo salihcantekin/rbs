@@ -12,6 +12,7 @@ use std::fmt;
 
 use serde::{Deserialize, Serialize};
 
+use crate::command::CommandId;
 use crate::layout::{Edge, MAX_DEPTH, Node, Tabs};
 use crate::panel::PanelId;
 
@@ -258,7 +259,7 @@ pub enum ToolbarStyle {
 /// One toolbar item.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ToolbarItem {
-    /// A command registry id (ADR-0050), in the panel id grammar.
+    /// A command registry id (ADR-0050) in canonical form ([`CommandId`]).
     Command(String),
     /// `|`: a separator.
     Separator,
@@ -304,9 +305,12 @@ impl TryFrom<RawToolbar> for Toolbar {
                 "|" => ToolbarItem::Separator,
                 "~" => ToolbarItem::Space,
                 _ => {
-                    let id =
-                        PanelId::parse(&text).map_err(|e| format!("toolbar item {text:?}: {e}"))?;
-                    ToolbarItem::Command(id.as_str().to_owned())
+                    let id = CommandId::parse(&text)
+                        .map_err(|e| format!("toolbar item {text:?}: {e}"))?;
+                    // Only the grammar is checked: an unknown id (a missing plugin) or
+                    // one whose parameters its entry does not accept is kept and shown
+                    // disabled with the reason, so a registry change never breaks a file.
+                    ToolbarItem::Command(id.to_string())
                 }
             };
             if item == ToolbarItem::Space && items.contains(&ToolbarItem::Space) {

@@ -314,6 +314,34 @@ pub const METHODS: &[MethodInfo] = &[
     m("tokens.revoke", Some(Scope::Tokens)),
 ];
 
+/// The client-scoped `ui.*` methods (control API spec, "Client-scoped UI commands").
+/// The API thread routes them to a UI client, so they are not in [`METHODS`]; the
+/// desktop UI's command registry may run them (ADR-0050, U20 test).
+pub const UI_METHODS: &[&str] = &[
+    "ui.workspace.list",
+    "ui.workspace.switch",
+    "ui.panel.open",
+    "ui.panel.close",
+    "ui.area.show",
+    "ui.area.hide",
+    "ui.area.toggle",
+    "ui.panel.collapse",
+    "ui.panel.expand",
+    "ui.panel.auto_hide",
+    "ui.panel.pin",
+    "ui.area.hide_all",
+    "ui.area.show_all",
+    "ui.panel.maximize",
+    "ui.panel.restore",
+    "ui.layout.studio_split",
+    "ui.layout.reset_sizes",
+    "ui.toolbar.get",
+    "ui.toolbar.set",
+    "ui.toolbar.reset",
+    "ui.command.list",
+    "ui.command.run",
+];
+
 const fn m(name: &'static str, scope: Option<Scope>) -> MethodInfo {
     MethodInfo { name, scope }
 }

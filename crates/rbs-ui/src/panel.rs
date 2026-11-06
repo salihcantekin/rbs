@@ -36,6 +36,11 @@ impl fmt::Display for PanelIdError {
 
 impl std::error::Error for PanelIdError {}
 
+/// `namespace.name`: the base of panel and command ids (ADR-0017, ADR-0050).
+pub(crate) fn valid_base(base: &str) -> bool {
+    valid_word(base) && base.contains('.') && !base.starts_with('.') && !base.ends_with('.')
+}
+
 fn valid_word(s: &str) -> bool {
     !s.is_empty()
         && s.bytes()
@@ -57,8 +62,7 @@ impl PanelId {
             Some((b, p)) => (b, Some(p)),
             None => (s, None),
         };
-        if !valid_word(base) || !base.contains('.') || base.starts_with('.') || base.ends_with('.')
-        {
+        if !valid_base(base) {
             return Err(err(
                 "the base must be `namespace.panel` in lowercase letters, digits, `.`, `-` and `_`",
             ));
