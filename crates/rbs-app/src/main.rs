@@ -55,6 +55,9 @@ const SAVE_DELAY: Duration = Duration::from_millis(400);
 enum UiError {
     Locked,
     Other(String),
+    /// Shown as it is, without "That did not work" (ADR-0055): a caught panic, an
+    /// unclean last exit.
+    Notice(String),
 }
 
 /// Row models of one window's dock area. They live as long as the window, so
@@ -368,7 +371,7 @@ fn show_caught() {
             let ctx = CTX.with(|c| c.borrow().clone());
             if let Some(ctx) = ctx {
                 if let Ok(mut app) = ctx.app.try_borrow_mut() {
-                    app.error = Some(UiError::Other(rbs_crash::CAUGHT_TEXT.into()));
+                    app.error = Some(UiError::Notice(rbs_crash::CAUGHT_TEXT.into()));
                 }
                 ctx.sync();
             }
@@ -425,7 +428,13 @@ impl Ctx {
         self.update(move |app| {
             let applied = app.studio.apply(u);
             if let Some(e) = applied.error {
-                app.error = Some(UiError::Other(e));
+                // A caught panic on the studio's thread reads as a notice, not as an
+                // action that failed (ADR-0055).
+                app.error = Some(if e == rbs_crash::CAUGHT_TEXT {
+                    UiError::Notice(e)
+                } else {
+                    UiError::Other(e)
+                });
             }
             if let Some(endpoint) = applied.preview {
                 ctx.connect_preview(endpoint);
@@ -680,6 +689,7 @@ impl Ctx {
         let (error_kind, error_detail) = match &app.error {
             Some(UiError::Locked) => (1, String::new()),
             Some(UiError::Other(e)) => (2, e.clone()),
+            Some(UiError::Notice(e)) => (3, e.clone()),
             None => (0, String::new()),
         };
         let panels = ModelRc::from(app.panels_model.clone());
@@ -1346,20 +1356,43 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Crash reports and the running marker (ADR-0055 decisions 4 and 5): a report for
     // every panic on the UI thread, and a notice when the last session ended badly.
     rbs_crash::report_panics_on_this_thread();
-    let crash = rbs_crash::install(&config.join("crash-reports"));
-    let notice = match &crash {
-        Ok(session) => crash_notice(session.unclean()),
+    let notice = match rbs_crash::install(&config.join("crash-reports")) {
+        Ok(session) => {
+            let notice = crash_notice(session.unclean());
+            // Clean on every exit through `exit`, also one with an error and one the
+            // system forces from inside the event loop without returning here; an
+            // uncaught panic on this thread is not clean.
+            if !session.end_clean_at_exit() {
+                eprintln!("rbs: crash detection is off: no exit handler");
+            }
+            notice
+        }
         Err(e) => {
             eprintln!("rbs: crash detection is off: {e}");
             None
         }
     };
-    let ran = run(config, notice);
-    // Every exit that reaches here is clean, also one with an error.
-    if let Ok(session) = crash {
-        session.end_clean();
-    }
-    ran
+    run(config, notice)
+}
+
+/// The system asked the app to quit (macOS `terminate:`): closes the main window as
+/// its close button does, once AppKit's call has returned.
+#[cfg(target_os = "macos")]
+fn quit_from_system() {
+    let _ = entry::invoke(|| {
+        // The window handle only: the close handler borrows the app itself.
+        let main = CTX.with(|c| {
+            let ctx = c.borrow().clone()?;
+            let app = ctx.app.try_borrow().ok()?;
+            Some(app.main.as_weak())
+        });
+        if let Some(main) = main.and_then(|w| w.upgrade()) {
+            // The question while live must be visible.
+            main.window().set_minimized(false);
+            main.window()
+                .dispatch_event(slint::platform::WindowEvent::CloseRequested);
+        }
+    });
 }
 
 /// The notice for sessions that ended without a clean exit, if any.
@@ -1393,8 +1426,7 @@ fn run(config: PathBuf, notice: Option<String>) -> Result<(), Box<dyn std::error
         &config,
         std::sync::Arc::new(|why| deliver(studio_host::Update::Error(why))),
     );
-    let mut user_notes = user.notes.clone();
-    user_notes.extend(notice);
+    let user_notes = user.notes.clone();
     let first_canvas = rbs_app::user_session::first_canvas(&collection);
     let autosave = user.collection_saver();
     let key_account = rbs_app::stream_key::account(user.profile_id.as_str());
@@ -1520,6 +1552,15 @@ fn run(config: PathBuf, notice: Option<String>) -> Result<(), Box<dyn std::error
     if !user_notes.is_empty() {
         deliver(studio_host::Update::Error(user_notes.join("\n")));
     }
+    // The last session ended badly: said once, as a notice, after the notes above.
+    if let Some(notice) = notice {
+        let _ = entry::invoke(move || {
+            let ctx = CTX.with(|c| c.borrow().clone());
+            if let Some(ctx) = ctx {
+                ctx.update(move |app| app.error = Some(UiError::Notice(notice)));
+            }
+        });
+    }
 
     // Closing the main window ends the app: floating windows close with it and
     // their closing is not a layout change.
@@ -1566,6 +1607,13 @@ fn run(config: PathBuf, notice: Option<String>) -> Result<(), Box<dyn std::error
             });
             let _ = slint::quit_event_loop();
         });
+    }
+
+    // Cmd+Q, Dock > Quit and logout take the same path as closing the main window, so
+    // they ask while live, save and stop the studio before the process ends.
+    #[cfg(target_os = "macos")]
+    if !rbs_app::native::route_quit(quit_from_system) {
+        eprintln!("rbs: Quit ends the app without closing the studio first");
     }
 
     #[allow(clippy::disallowed_methods)] // The one event loop of the app.

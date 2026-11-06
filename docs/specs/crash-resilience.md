@@ -37,7 +37,7 @@ pub const CAUGHT_TEXT: &str;
 
 - `src/entry.rs` is the only module that calls `slint::Timer::single_shot`, `slint::Timer::start`, `slint::invoke_from_event_loop`, `slint::spawn_local`, `slint::Window::on_close_requested` and `slint::Window::set_rendering_notifier`. Its wrappers (`single_shot`, `start`, `invoke`, `spawn_local`, `on_close_requested`, `set_rendering_notifier`) run the body (for a task: each poll, and its drop) under `contain`. A panic in a close handler keeps the window; a panic in a task ends the task, which is then dropped inside the boundary.
 - `Ctx::update` runs the change, and each change queued while the state was borrowed, under `contain`. Callbacks of the generated globals are installed through the `on!` macro (its body runs in `Ctx::update`) or start with `entry::guard`; `tests/entry_points.rs` checks every `.on_*(` in `src/`.
-- A caught panic shows `CAUGHT_TEXT` in the error bar, at most once every 5 s.
+- A caught panic shows `CAUGHT_TEXT` in the error bar, at most once every 5 s. Crash texts (`CAUGHT_TEXT`, also from the studio's thread, and the unclean-exit notice) use the error bar's notice kind (`Shell.error-kind` 3), which shows the text as it is, without the "That did not work:" prefix of failed actions.
 
 ### Studio control thread (`rbs-app::studio_host`)
 
@@ -72,6 +72,9 @@ impl Session {
     pub fn unclean(&self) -> &[Unclean];
     /// Removes the marker: call on a clean exit only.
     pub fn end_clean(self);
+    /// Ends the session cleanly from a C runtime exit handler; false when it
+    /// could not be registered.
+    pub fn end_clean_at_exit(self) -> bool;
 }
 
 #[non_exhaustive]
@@ -96,7 +99,9 @@ pub const MAX_REPORTS_PER_PROCESS: u32 = 5;
 - **Hook robustness:** it never waits on a lock (secrets are read with `try_lock`; when busy they are not applied); thread-locals are read with `try_with`; a thread-local flag stops a nested panic from writing again; the writer uses no panicking operation (a panic inside a hook aborts); a failed write is ignored.
 - **Running marker:** created as `starting-<pid>.tmp`, locked with `File::try_lock`, `started <unix seconds>` written, then renamed to `running-<pid>.lock`, and held for the life of the `Session`. `end_clean` writes `clean\n` into it while still locked, deletes it, then closes it. Renaming and deleting the open file works on Windows because std opens files with `FILE_SHARE_DELETE`. Dropping the `Session` without `end_clean` releases the lock and keeps the file, as a crash would.
 - **Unclean detection:** at `install`, every `running-*.lock` whose lock can be taken belongs to a process that ended without `end_clean`. A marker that holds `clean\n` is deleted without a notice. Each other one is listed in `unclean()` with that pid's newest report whose time is not before the marker's start, then deleted. A marker still locked belongs to a running instance and is left alone. A `starting-*.tmp` whose lock can be taken is deleted.
-- The app calls `end_clean` on every return from `main`, also with an error, and shows one notice per start when `unclean()` is not empty, with the newest report's path and a note that reports may contain file names. When `install` fails, the app goes on and says so on stderr.
+- **Exit handler:** `end_clean_at_exit` stores the session and registers (once) an `atexit` handler in a marked low-level module. The handler runs on every exit through the C runtime's `exit`: a return from `main` and the OS's normal quit (macOS Cmd+Q and Quit call `exit` from inside `NSApplication`). It calls `end_clean` unless a panic on the thread that called `install` was not caught (`contain`), never waits on a lock and never unwinds. Aborts, signals, kills and native faults run no exit handler, nor does `std::process::exit` on Windows (std calls `ExitProcess`); the app on Windows returns from `main`.
+- **Quit on macOS:** `terminate:` (Cmd+Q, Dock > Quit, logout) never ends the app directly. `rbs_app::native::route_quit` (marked low-level module) adds `applicationShouldTerminate:` to the application delegate's class once the event loop exists; it answers `NSTerminateCancel` and queues the main window's close request on the event loop, which is the close button's path: it asks while live (U4), saves, and ends the event loop so that `main` stops the studio and returns. A panic in that path answers `NSTerminateNow`. If the delegate already answers the selector, nothing is routed and stderr says so.
+- The app calls `end_clean_at_exit` right after `install`, and shows one notice per start when `unclean()` is not empty, with the newest report's path and a note that reports may contain file names. When `install` fails, the app goes on and says so on stderr.
 - Nothing in this crate sends data anywhere.
 
 ### Nested event loops and blocking (`rbs-app/clippy.toml`)
@@ -126,6 +131,7 @@ None on hot paths: `contain` is used on the UI and control threads only, and the
 3. A marker left by a dropped `Session` is reported as unclean by the next `install` with that pid's newest report written after it started, and is deleted.
 4. A marker held by a live `Session` is not reported and not deleted.
 5. `end_clean` leaves no marker and the next `install` reports nothing.
+10. In child processes (`tests/exit.rs`): one that returns from `main`, or (not on Windows) calls `exit`, after `end_clean_at_exit` leaves no marker; one whose installing thread panics uncaught keeps it.
 6. Retention keeps the newest `KEEP_REPORTS`.
 7. `redact` hides the home directory (only as a whole path, ignoring case on Windows) and stream URLs; registered secrets are hidden.
 9. A marker that says `clean` and a leftover `starting-*.tmp` are deleted without a notice; the report a notice points to survives pruning.
