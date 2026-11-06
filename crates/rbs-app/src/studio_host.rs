@@ -49,6 +49,7 @@ use rbs_sources::{SourceError, SourceTarget};
 use rbs_transport::{ReconnectPolicy, Secret, TransportInput};
 
 use crate::canvas_profile::CanvasProfile;
+use crate::edit_history::{EditKind, History, HistoryError, StepInfo};
 use crate::record_profile::{API_PROFILE_ID, RecordProfile};
 use crate::remote_control::ApiTokens;
 use crate::stream_key::{KeyStore, MemoryKeyStore};
@@ -212,8 +213,14 @@ pub enum Command {
     },
     /// Delete a source from every scene (glossary: "Delete source").
     DeleteSource(SourceId),
-    /// Undo the last delete.
+    /// The toast's Undo after a delete: undoes the newest edit if it is a delete, else
+    /// nothing (another edit came after it).
     UndoDelete,
+    /// Undo the newest scene edit (U4): an add, a delete, a layer move or a box; all
+    /// the boxes of one drag are one edit. [`Update::History`] says what is next.
+    Undo,
+    /// Redo the edit undone last.
+    Redo,
     /// Move a source one layer up (`up`, towards the top of the list, drawn over the
     /// one above) or down in the program scene. Nothing happens at the end of the list.
     MoveSource {
@@ -230,6 +237,9 @@ pub enum Command {
     SetSourceBox {
         /// The caller's number for this request.
         seq: u64,
+        /// Boxes with the same number other than 0 that follow each other are one undo
+        /// step (one drag on the picture panel); 0 is a step of its own.
+        gesture: u64,
         /// The source.
         id: SourceId,
         /// Top-left corner.
@@ -485,6 +495,14 @@ pub enum Update {
     Targets(SourceKind, Vec<Target>),
     /// A source was deleted; [`Command::UndoDelete`] brings it back.
     Deleted(String),
+    /// What [`Command::Undo`] and [`Command::Redo`] would apply now (`None`: nothing).
+    /// Sent when it changes.
+    History {
+        /// The next undo.
+        undo: Option<StepInfo>,
+        /// The next redo.
+        redo: Option<StepInfo>,
+    },
     /// A command did not work, in words for a toast.
     Error(String),
     /// The recording started, did not start or stopped.
@@ -787,7 +805,10 @@ struct Host {
     canvas: CanvasId,
     scene: SceneId,
     rows: Vec<SourceRow>,
-    undo: Option<Undo>,
+    /// The user's undo history of scene edits, shared with control API clients.
+    history: History<Undo>,
+    /// The next undo and redo as last sent.
+    history_shown: (Option<StepInfo>, Option<StepInfo>),
     waiting: bool,
     /// The running recording: its file and output (ADR-0047: it runs alongside a
     /// stream).
@@ -1069,7 +1090,8 @@ fn start(
             canvas,
             scene,
             rows: Vec::new(),
-            undo: None,
+            history: History::new(),
+            history_shown: (None, None),
             waiting: false,
             recording: None,
             ending: false,
@@ -1106,25 +1128,24 @@ impl Host {
                 Ok(_) => self.apply(notify),
                 Err(e) => notify(Update::Error(e)),
             },
-            Command::DeleteSource(id) => {
-                let name = self.collection.source(id).map(|s| s.name.clone());
-                match self.collection.delete_source(id) {
-                    Ok(undo) => {
-                        self.undo = Some(undo);
-                        self.apply(notify);
-                        notify(Update::Deleted(name.unwrap_or_default()));
-                    }
-                    Err(e) => notify(Update::Error(format!("{e:?}"))),
+            Command::DeleteSource(id) => match self.delete(id) {
+                Ok(name) => {
+                    self.apply(notify);
+                    notify(Update::Deleted(name));
                 }
-            }
+                Err(e) => notify(Update::Error(e)),
+            },
             Command::UndoDelete => {
-                if let Some(undo) = self.undo.take() {
-                    match self.collection.undo(undo) {
-                        Ok(_) => self.apply(notify),
-                        Err(e) => notify(Update::Error(format!("{e:?}"))),
-                    }
+                if self
+                    .history
+                    .next_undo()
+                    .is_some_and(|s| s.kind == EditKind::Delete)
+                {
+                    self.step(true, notify);
                 }
             }
+            Command::Undo => self.step(true, notify),
+            Command::Redo => self.step(false, notify),
             Command::MoveSource { id, up } => match self.move_source(id, up) {
                 Ok(true) => self.apply(notify),
                 Ok(false) => {}
@@ -1132,11 +1153,12 @@ impl Host {
             },
             Command::SetSourceBox {
                 seq,
+                gesture,
                 id,
                 position,
                 size,
             } => {
-                let ok = match self.set_source_box(id, position, size) {
+                let ok = match self.set_source_box(id, position, size, gesture) {
                     Ok(true) => {
                         self.apply(notify);
                         true
@@ -1401,7 +1423,7 @@ impl Host {
             let _ = self.collection.set_item_layout(id, None, moved);
         }
         // Old layouts would come back with an undo.
-        self.undo = None;
+        self.history.clear();
         let _ = self.studio.shutdown();
         match self.restart() {
             Ok(()) => Ok(()),
@@ -1729,18 +1751,84 @@ impl Host {
         settings: Settings,
         layout: Layout,
     ) -> Result<SourceId, String> {
-        let (id, _) = self
+        let (id, source) = self
             .collection
             .add_source(name, kind.type_id(), settings)
             .map_err(|e| format!("{e:?}"))?;
-        if let Err(e) = self
+        match self
             .collection
             .add_item(self.scene, ItemContent::Source(id), layout, None)
         {
-            let _ = self.collection.delete_source(id);
-            return Err(format!("{e:?}"));
+            Ok((_, item)) => {
+                self.history
+                    .record(EditKind::Add, name, 0, vec![source, item]);
+                Ok(id)
+            }
+            Err(e) => {
+                let _ = self.collection.undo(source);
+                Err(format!("{e:?}"))
+            }
         }
-        Ok(id)
+    }
+
+    /// Deletes a source from every scene; returns its name.
+    fn delete(&mut self, id: SourceId) -> Result<String, String> {
+        let name = self
+            .collection
+            .source(id)
+            .map(|s| s.name.clone())
+            .ok_or("This source is not in the scene any more.")?;
+        let undo = self
+            .collection
+            .delete_source(id)
+            .map_err(|e| format!("{e:?}"))?;
+        self.history.record(EditKind::Delete, &name, 0, vec![undo]);
+        Ok(name)
+    }
+
+    /// Undoes (`back`) or redoes one step of the history and runs the result. A
+    /// refused step is said in [`Update::Error`]; with nothing to do, nothing happens.
+    fn step(&mut self, back: bool, notify: &dyn Fn(Update)) {
+        // Nothing to undo is not a problem: the buttons are disabled then, and a key
+        // press says nothing.
+        if let Err((false, why)) = self.undo_or_redo(back) {
+            notify(Update::Error(why));
+        }
+        self.apply(notify);
+    }
+
+    /// One step of the history; the error says whether there was nothing to do
+    /// (`true`) and why it failed.
+    fn undo_or_redo(&mut self, back: bool) -> Result<(), (bool, String)> {
+        let collection = &mut self.collection;
+        let apply = |r: Undo| collection.undo(r);
+        let done = if back {
+            self.history.undo(apply)
+        } else {
+            self.history.redo(apply)
+        };
+        match done {
+            Ok(_) => Ok(()),
+            Err(HistoryError::Empty) => Err((
+                true,
+                if back {
+                    "nothing to undo"
+                } else {
+                    "nothing to redo"
+                }
+                .to_owned(),
+            )),
+            Err(HistoryError::Refused(e)) => Err((
+                false,
+                format!("The scene changed in a way this step cannot be applied to ({e:?})."),
+            )),
+            Err(HistoryError::Lost(e)) => Err((
+                false,
+                format!(
+                    "The scene changed in a way this step cannot be applied to ({e:?}); the undo history was cleared."
+                ),
+            )),
+        }
     }
 
     /// The program scene's item that places `id`, and its index (0 is the bottom).
@@ -1787,10 +1875,20 @@ impl Host {
             others.rfind(|i| *i < index)
         };
         let Some(to) = to else { return Ok(false) };
-        self.collection
+        let undo = self
+            .collection
             .move_item(item, to)
-            .map(|_| true)
-            .map_err(|e| edit_error(&e))
+            .map_err(|e| edit_error(&e))?;
+        let name = self.name_of(id);
+        self.history.record(EditKind::Order, &name, 0, vec![undo]);
+        Ok(true)
+    }
+
+    fn name_of(&self, id: SourceId) -> String {
+        self.collection
+            .source(id)
+            .map(|s| s.name.clone())
+            .unwrap_or_default()
     }
 
     /// A new box for a source's picture; `Ok(false)` when it is already there.
@@ -1799,6 +1897,7 @@ impl Host {
         id: SourceId,
         position: [f32; 2],
         size: [f32; 2],
+        gesture: u64,
     ) -> Result<bool, String> {
         let valid = position.iter().chain(size.iter()).all(|v| v.is_finite())
             && size.iter().all(|v| *v != 0.0);
@@ -1818,10 +1917,14 @@ impl Host {
         layout.position = position;
         layout.size = size;
         let item = item.id;
-        self.collection
+        let undo = self
+            .collection
             .set_item_layout(item, own, layout)
-            .map(|_| true)
-            .map_err(|e| edit_error(&e))
+            .map_err(|e| edit_error(&e))?;
+        let name = self.name_of(id);
+        self.history
+            .record(EditKind::Place, &name, gesture, vec![undo]);
+        Ok(true)
     }
 
     /// Runs the edited collection.
@@ -1839,7 +1942,7 @@ impl Host {
         self.publish(notify);
     }
 
-    /// Sends the rows when they changed.
+    /// Sends the rows and the undo history when they changed.
     fn publish(&mut self, notify: &dyn Fn(Update)) {
         let rows = self.rows();
         if rows != self.rows {
@@ -1850,6 +1953,18 @@ impl Host {
                     EventPayload::SourceChanged(listed)
                 });
             notify(Update::Sources(rows));
+        }
+        // After the rows, so the UI sees the edit before what undoes it.
+        let shown = (
+            self.history.next_undo().cloned(),
+            self.history.next_redo().cloned(),
+        );
+        if shown != self.history_shown {
+            self.history_shown = shown.clone();
+            notify(Update::History {
+                undo: shown.0,
+                redo: shown.1,
+            });
         }
     }
 
@@ -2007,26 +2122,24 @@ impl ApiTarget<'_> {
                         format!("no source {}", p.source),
                     ));
                 };
-                let undo = host
-                    .collection
-                    .delete_source(id)
-                    .map_err(|e| failed(format!("{e:?}")))?;
-                host.undo = Some(undo);
+                host.delete(id).map_err(failed)?;
                 host.apply(notify);
                 notify(Update::Deleted(name));
                 Ok(Response::Done(Empty {}))
             }
-            C::EditUndo => {
-                let Some(undo) = host.undo.take() else {
-                    return Err(ApiError::new(ErrorKind::Conflict, "nothing to undo"));
-                };
-                host.collection
-                    .undo(undo)
-                    .map_err(|e| ApiError::new(ErrorKind::UndoConflict, format!("{e:?}")))?;
+            C::EditUndo | C::EditRedo => {
+                let done = host.undo_or_redo(matches!(command, C::EditUndo));
                 host.apply(notify);
+                done.map_err(|(empty, why)| {
+                    let kind = if empty {
+                        ErrorKind::Conflict
+                    } else {
+                        ErrorKind::UndoConflict
+                    };
+                    ApiError::new(kind, why)
+                })?;
                 Ok(Response::Done(Empty {}))
             }
-            C::EditRedo => Err(failed("redo is not supported by this server yet")),
             C::OutputProfiles => Ok(Response::Profiles(ProfileList {
                 profiles: vec![host.profile.to_api_listing()],
             })),

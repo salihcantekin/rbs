@@ -2,6 +2,7 @@
 //! share.
 //!
 //! - [`studio_host`]: the studio's control thread (ADR-0041 decision 7).
+//! - [`edit_history`]: the undo history of scene edits (U4).
 //! - [`platform`]: the platform's adapters (the composition root's list, P1).
 //! - [`canvas_profile`]: the canvas size and frame rate and their file.
 //! - [`record_profile`]: the recording's output settings and their file.
@@ -13,6 +14,7 @@
 //!   updates do not make the toolkit redraw the window (ADR-0035).
 
 pub mod canvas_profile;
+pub mod edit_history;
 pub mod encoder_form;
 #[cfg(target_os = "macos")]
 pub mod native;

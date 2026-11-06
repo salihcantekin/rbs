@@ -9,6 +9,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use rbs_app::canvas_profile::{self, CanvasProfile, RATES, SIZES};
+use rbs_app::edit_history::{EditKind, StepInfo};
 use rbs_app::encoder_form::{Choices, EncoderForm};
 use rbs_app::network_access::{self, Source};
 use rbs_app::record_profile::{
@@ -131,6 +132,9 @@ pub struct StudioUi {
     pub preview_ready: bool,
     pub deleted: String,
     pub deleted_serial: u64,
+    /// What Undo and Redo would apply now (the studio's undo history).
+    pub next_undo: Option<StepInfo>,
+    pub next_redo: Option<StepInfo>,
     /// [`rec_state`].
     pub rec_state: i32,
     /// The running recording's file and when it started.
@@ -263,6 +267,8 @@ impl StudioUi {
             preview_ready: false,
             deleted: String::new(),
             deleted_serial: 0,
+            next_undo: None,
+            next_redo: None,
             rec_state: rec_state::OFF,
             rec_file: None,
             rec_note: String::new(),
@@ -385,6 +391,12 @@ impl StudioUi {
         g.set_targets_kind(self.targets_kind);
         g.set_preview_state(preview_state);
         g.set_deleted(self.deleted.as_str().into());
+        let (kind, name) = step_view(self.next_undo.as_ref());
+        g.set_undo_kind(kind);
+        g.set_undo_name(name.into());
+        let (kind, name) = step_view(self.next_redo.as_ref());
+        g.set_redo_kind(kind);
+        g.set_redo_name(name.into());
     }
 
     fn push_remote(&self, g: &Studio<'_>) {
@@ -1026,6 +1038,7 @@ impl StudioUi {
         let target = self.target_list.get(index as usize).cloned();
         if let (Some(kind), Some(target)) = (kind, target) {
             self.adding = true;
+            self.deleted.clear();
             self.send(Command::AddSource { kind, target });
         }
     }
@@ -1037,6 +1050,7 @@ impl StudioUi {
 
     /// One layer up (drawn over the source above it in the list) or down.
     pub fn move_source(&mut self, id: i32, up: bool) {
+        self.deleted.clear();
         self.send(Command::MoveSource {
             id: SourceId::from_raw(id as u32),
             up,
@@ -1046,10 +1060,11 @@ impl StudioUi {
     /// A video source's box on the canvas, in canvas pixels (the Properties fields;
     /// the picture panel's drags go through [`PreviewEdit`], numbered).
     pub fn set_source_box(&mut self, id: i32, x: f32, y: f32, w: f32, h: f32) {
-        self.send_box(0, id, SourceBox::new([x, y], [w, h]));
+        self.deleted.clear();
+        self.send_box(0, id, SourceBox::new([x, y], [w, h]), 0);
     }
 
-    fn send_box(&mut self, seq: u64, id: i32, b: SourceBox) {
+    fn send_box(&mut self, seq: u64, id: i32, b: SourceBox, gesture: u64) {
         if self.host.is_none() {
             // Nothing will answer: forget what the picture panel has on its way.
             self.edit.reset();
@@ -1058,6 +1073,7 @@ impl StudioUi {
         let (position, size) = (b.position, b.size);
         self.send(Command::SetSourceBox {
             seq,
+            gesture,
             id: SourceId::from_raw(id as u32),
             position,
             size,
@@ -1087,7 +1103,10 @@ impl StudioUi {
         match effect {
             Effect::None => {}
             Effect::Select(id) => self.selected = id,
-            Effect::Send(seq, id, b) => self.send_box(seq, id, b),
+            Effect::Send(seq, id, b, gesture) => {
+                self.deleted.clear();
+                self.send_box(seq, id, b, gesture);
+            }
         }
         self.refresh_marks();
     }
@@ -1113,6 +1132,7 @@ impl StudioUi {
 
     pub fn preview_release(&mut self) {
         self.edit.release();
+        self.refresh_marks();
     }
 
     pub fn preview_nudge(&mut self, dx: f32, dy: f32) {
@@ -1166,6 +1186,14 @@ impl StudioUi {
     pub fn undo_delete(&mut self) {
         self.deleted.clear();
         self.send(Command::UndoDelete);
+    }
+
+    /// Undo (`back`) or redo the newest scene edit (Ctrl/Cmd+Z, the Undo and Redo
+    /// buttons). A box on its way is still applied first: the studio takes commands
+    /// in order.
+    pub fn undo_edit(&mut self, back: bool) {
+        self.deleted.clear();
+        self.send(if back { Command::Undo } else { Command::Redo });
     }
 
     /// The encoder settings of an [`output`].
@@ -1972,6 +2000,10 @@ impl StudioUi {
                 self.adding = false;
                 out.error = Some(e);
             }
+            Update::History { undo, redo } => {
+                self.next_undo = undo;
+                self.next_redo = redo;
+            }
             Update::Recording(r) => self.recording(r, &mut out),
             Update::Stream(u) => self.stream_update(u, &mut out),
             Update::StreamKey(r) => match r {
@@ -2348,6 +2380,23 @@ pub fn stat_lines(stats: &Stats) -> Vec<StatLine> {
         ));
     }
     lines
+}
+
+/// The Studio global's `undo-kind` / `redo-kind` code and the source's name for a
+/// step: 0 nothing, 1 add, 2 delete, 3 layer order, 4 move or resize.
+fn step_view(step: Option<&StepInfo>) -> (i32, &str) {
+    match step {
+        None => (0, ""),
+        Some(s) => (
+            match s.kind {
+                EditKind::Add => 1,
+                EditKind::Delete => 2,
+                EditKind::Order => 3,
+                EditKind::Place => 4,
+            },
+            s.name.as_str(),
+        ),
+    }
 }
 
 #[cfg(test)]
