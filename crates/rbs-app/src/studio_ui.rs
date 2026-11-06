@@ -1974,10 +1974,29 @@ impl StudioUi {
                 })
                 .collect()
         };
+        let profiles = self.user.profiles();
+        let collections = self.user.collections();
+        self.send(Command::SetLibrary {
+            profiles: api_library(&profiles, &self.user.profile_id),
+            collections: api_library(&collections, &self.user.collection_id),
+        });
         self.profile_rows
-            .set_vec(rows(self.user.profiles(), &self.user.profile_id));
+            .set_vec(rows(profiles, &self.user.profile_id));
         self.collection_rows
-            .set_vec(rows(self.user.collections(), &self.user.collection_id));
+            .set_vec(rows(collections, &self.user.collection_id));
+    }
+
+    /// The output profiles (`collection` false) or scene collections as last read,
+    /// for the File menu's pickers: `(name, id, in use)`, by name.
+    pub fn library_choices(&self, collection: bool) -> Vec<(String, String, bool)> {
+        let rows = if collection {
+            &self.collection_rows
+        } else {
+            &self.profile_rows
+        };
+        rows.iter()
+            .map(|r| (r.name.to_string(), r.id.to_string(), r.current))
+            .collect()
     }
 
     /// Refused, in words, while a recording or stream runs: `doing` is what would
@@ -2253,6 +2272,7 @@ impl StudioUi {
                 self.state = 1;
                 self.send(Command::SetProfile(self.profile.clone()));
                 self.send(Command::SetStreamProfile(self.stream.clone()));
+                self.refresh_library();
                 self.kind_list = kinds;
                 let rows: Vec<KindData> = self
                     .kind_list
@@ -2380,6 +2400,9 @@ impl StudioUi {
             // `rbs-cli token` over local IPC made or revoked a token; the control
             // thread gave it to the server already. Only the list shown changes here.
             Update::TokensChanged => self.read_tokens(false),
+            // `profile.switch` or `collection.switch`: the caller switches, since a
+            // collection switch needs the window's preview.
+            Update::SwitchRequested { collection, id } => out.switch = Some((collection, id)),
             Update::Stats(stats) => {
                 let rows: Vec<StatRow> = stat_lines(&stats)
                     .into_iter()
@@ -2596,6 +2619,24 @@ impl StudioUi {
 pub struct Applied {
     pub error: Option<String>,
     pub preview: Option<rbs_gpu::share::PreviewEndpoint>,
+    /// A control API client asked to switch: scene collections (`true`) or output
+    /// profiles to the entry with this id. The caller switches as the File menu
+    /// does and then calls [`StudioUi::refresh_library`], which answers the host.
+    pub switch: Option<(bool, String)>,
+}
+
+/// A library as `profile.list` and `collection.list` show it.
+fn api_library(list: &[(EntryId, String)], current: &EntryId) -> rbs_api::types::Library {
+    rbs_api::types::Library {
+        entries: list
+            .iter()
+            .map(|(id, name)| rbs_api::types::LibraryEntry {
+                id: id.as_str().to_owned(),
+                name: name.clone(),
+            })
+            .collect(),
+        current: current.as_str().to_owned(),
+    }
 }
 
 fn file_name(p: &Path) -> String {

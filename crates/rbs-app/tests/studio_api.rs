@@ -15,6 +15,7 @@ use rbs_api::request::ClientInfo;
 use rbs_api::session::ServerConfig;
 use rbs_api::thread::ApiOptions;
 use rbs_api::transport::{CloseReason, ConnectionHandle, ConnectionSender, PeerInfo, SendError};
+use rbs_api::types::{Library, LibraryEntry};
 use rbs_api::{ApiServer, TokenStore};
 use rbs_app::studio_host::{Command, HostConfig, StudioHost, Update};
 use rbs_audio_io_test::TestAudioBackend;
@@ -275,6 +276,69 @@ fn a_control_api_client_drives_the_studio() {
     profile["audio_kbps"] = json!(100);
     let bad = c.call("settings.set", json!({"profiles": [profile]}));
     assert_eq!(bad["error"]["data"]["kind"], "invalid_params");
+
+    // Output profiles and scene collections (protocol 1.4): `failed` until the UI
+    // sent its libraries, then listed; a switch is checked here and handed to the UI,
+    // which answers with the libraries again.
+    let early = c.call("profile.list", json!({}));
+    assert_eq!(early["error"]["data"]["kind"], "failed", "{early}");
+    let library = |ids: &[(&str, &str)], current: &str| Library {
+        entries: ids
+            .iter()
+            .map(|(id, name)| LibraryEntry {
+                id: (*id).into(),
+                name: (*name).into(),
+            })
+            .collect(),
+        current: current.into(),
+    };
+    let profiles = library(&[("default", "Default"), ("live", "Live")], "default");
+    let collections = library(
+        &[("default", "Default"), ("talk-show", "Talk show")],
+        "default",
+    );
+    host.send(Command::SetLibrary {
+        profiles: profiles.clone(),
+        collections: collections.clone(),
+    });
+    let listed = c.call("collection.list", json!({}));
+    assert_eq!(
+        listed["result"],
+        json!({"entries": [{"id": "default", "name": "Default"}, {"id": "talk-show", "name": "Talk show"}], "current": "default"})
+    );
+    let listed = c.call("profile.list", json!({}));
+    assert_eq!(listed["result"]["entries"][1]["id"], "live", "{listed}");
+    let same = c.call("collection.switch", json!({"id": "default"}));
+    assert!(same["result"].is_object(), "{same}");
+    let missing = c.call("profile.switch", json!({"id": "nope"}));
+    assert_eq!(missing["error"]["data"]["kind"], "not_found", "{missing}");
+    let switch = c.call("collection.switch", json!({"id": "talk-show"}));
+    assert!(switch["result"].is_object(), "{switch}");
+    next(&updates, |u| match u {
+        Update::SwitchRequested { collection, id } => {
+            assert!(collection);
+            assert_eq!(id, "talk-show");
+            Some(())
+        }
+        _ => None,
+    });
+    // Until the UI answered, another switch waits its turn.
+    let busy = c.call("profile.switch", json!({"id": "live"}));
+    assert_eq!(busy["error"]["data"]["kind"], "conflict", "{busy}");
+    host.send(Command::SetLibrary {
+        profiles,
+        collections,
+    });
+    let switch = c.call("profile.switch", json!({"id": "live"}));
+    assert!(switch["result"].is_object(), "{switch}");
+    next(&updates, |u| match u {
+        Update::SwitchRequested { collection, id } => {
+            assert!(!collection);
+            assert_eq!(id, "live");
+            Some(())
+        }
+        _ => None,
+    });
 
     // No encoder: the recording is refused with the reason, and nothing records.
     let rec = c.call("record.start", json!({"profile": "default"}));

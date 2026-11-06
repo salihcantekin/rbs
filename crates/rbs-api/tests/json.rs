@@ -155,6 +155,14 @@ fn every_request() -> Vec<Request> {
         c(Command::StreamStop),
         c(Command::StreamStatus),
         c(Command::SettingsGet),
+        c(Command::ProfileList),
+        c(Command::ProfileSwitch(EntryRef {
+            id: "default".into(),
+        })),
+        c(Command::CollectionList),
+        c(Command::CollectionSwitch(EntryRef {
+            id: "talk-show".into(),
+        })),
         c(Command::SettingsSet(SettingsPatch {
             profiles: Some(vec![profile()]),
             canvas: Some(canvas()),
@@ -212,6 +220,13 @@ fn every_request_decodes_from_json_rpc() {
 #[test]
 fn every_result_and_event_type_round_trips() {
     let seq = SeqMap::from([("record.state".to_owned(), 4)]);
+    round_trip(&Library {
+        entries: vec![LibraryEntry {
+            id: "talk-show".into(),
+            name: "Talk show".into(),
+        }],
+        current: "talk-show".into(),
+    });
     round_trip(&HelloResult {
         protocol: "1.0".into(),
         instance: "ab".into(),

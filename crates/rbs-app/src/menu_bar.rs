@@ -305,6 +305,8 @@ impl CommandState for Shown<'_> {
                 })
                 .collect(),
             "ui.panel.select" => self.panels.clone(),
+            "profile.select" => self.studio.library_choices(false),
+            "collection.select" => self.studio.library_choices(true),
             _ => Vec::new(),
         }
     }
@@ -319,6 +321,10 @@ pub enum Run {
     Workspace(String),
     /// Open (or show) a panel.
     Panel(String),
+    /// Use the output profile with this id.
+    Profile(String),
+    /// Run the scene collection with this id.
+    Collection(String),
     /// A layout change.
     Layout(rbs_ui::LayoutCommand),
     GoLive,
@@ -340,6 +346,8 @@ pub fn run(text: &str, state: &Shown<'_>) -> Option<Run> {
         return Some(match id.base() {
             "ui.workspace.select" => Run::Workspace(value),
             "ui.panel.select" => Run::Panel(value),
+            "profile.select" => Run::Profile(value),
+            "collection.select" => Run::Collection(value),
             _ => return None,
         });
     }
