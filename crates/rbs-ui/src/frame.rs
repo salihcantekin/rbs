@@ -1,0 +1,391 @@
+//! Where the main window's centre and areas go, and a whole window flattened into
+//! tab stacks and dividers (ADR-0049 decisions 1 and 3).
+//!
+//! The bottom area spans the width under the left area, the centre and the right
+//! area. An area takes space only while it is shown and holds panels. Sizes are the
+//! areas' own, clamped to their limits (spec, Size limits), and when the window is too
+//! small the centre keeps its minimum first and the side areas shrink in proportion.
+//! Collapsing stacks and drawing areas as edge tabs when even their minimums do not
+//! fit come with stack states.
+
+use crate::layout::{Axis, HANDLE_THICKNESS, Handle, Rect, StackRect};
+use crate::workspace::{MainLayout, Side, Window, WindowContent};
+
+/// The centre's smallest width and height in logical pixels (one preview).
+pub const CENTRE_MIN: (f32, f32) = (320.0, 180.0);
+
+/// An area's smallest size: width for left and right, height for bottom.
+pub fn min_size(side: Side) -> f32 {
+    match side {
+        Side::Left | Side::Right => 200.0,
+        Side::Bottom => 90.0,
+    }
+}
+
+/// An area's largest size as a share of the window's content.
+pub fn max_share(side: Side) -> f32 {
+    match side {
+        Side::Left | Side::Right => 0.4,
+        Side::Bottom => 0.6,
+    }
+}
+
+/// Is the area on `side` laid out: shown and holding panels?
+pub fn shown(m: &MainLayout, side: Side) -> bool {
+    let a = m.area(side);
+    a.visible && a.layout.is_some()
+}
+
+/// The size an area is drawn at, from its own size and limits alone.
+fn limited(side: Side, size: f32, content: Rect) -> f32 {
+    let along = match side {
+        Side::Left | Side::Right => content.w,
+        Side::Bottom => content.h,
+    };
+    size.min(along * max_share(side)).max(min_size(side))
+}
+
+/// Rectangles of the main window's content.
+#[derive(Clone, Debug, PartialEq)]
+pub struct MainRects {
+    /// The centre.
+    pub centre: Rect,
+    /// Each area that is laid out, with its rectangle.
+    pub areas: Vec<(Side, Rect)>,
+    /// The divider between each laid out area and the rest.
+    pub dividers: Vec<(Side, Rect)>,
+}
+
+impl MainRects {
+    /// The rectangle of the area on `side`, if it is laid out.
+    pub fn area(&self, side: Side) -> Option<Rect> {
+        self.areas.iter().find(|(s, _)| *s == side).map(|(_, r)| *r)
+    }
+}
+
+/// Lay out the centre and areas of `m` in `content`.
+pub fn main_rects(m: &MainLayout, content: Rect) -> MainRects {
+    let t = HANDLE_THICKNESS;
+    let mut out = MainRects {
+        centre: content,
+        areas: Vec::new(),
+        dividers: Vec::new(),
+    };
+    // Bottom first: it spans the full width.
+    let mut upper_h = content.h;
+    if shown(m, Side::Bottom) {
+        let wanted = limited(Side::Bottom, m.bottom.size as f32, content);
+        let h = wanted.min(content.h - CENTRE_MIN.1 - t).max(0.0);
+        upper_h = (content.h - h - t).max(0.0);
+        out.dividers.push((
+            Side::Bottom,
+            Rect {
+                x: content.x,
+                y: content.y + upper_h,
+                w: content.w,
+                h: t,
+            },
+        ));
+        out.areas.push((
+            Side::Bottom,
+            Rect {
+                x: content.x,
+                y: content.y + upper_h + t,
+                w: content.w,
+                h,
+            },
+        ));
+    }
+    let sides: Vec<Side> = [Side::Left, Side::Right]
+        .into_iter()
+        .filter(|s| shown(m, *s))
+        .collect();
+    let mut widths: Vec<f32> = sides
+        .iter()
+        .map(|s| limited(*s, m.area(*s).size as f32, content))
+        .collect();
+    let avail = (content.w - CENTRE_MIN.0 - t * sides.len() as f32).max(0.0);
+    let total: f32 = widths.iter().sum();
+    if total > avail && total > 0.0 {
+        let k = avail / total;
+        widths.iter_mut().for_each(|w| *w *= k);
+    }
+    let mut left = content.x;
+    let mut right = content.x + content.w;
+    for (side, w) in sides.into_iter().zip(widths) {
+        let (area_x, divider_x) = match side {
+            Side::Left => {
+                let x = left;
+                left += w + t;
+                (x, x + w)
+            }
+            _ => {
+                right -= w + t;
+                (right + t, right)
+            }
+        };
+        out.areas.push((
+            side,
+            Rect {
+                x: area_x,
+                y: content.y,
+                w,
+                h: upper_h,
+            },
+        ));
+        out.dividers.push((
+            side,
+            Rect {
+                x: divider_x,
+                y: content.y,
+                w: t,
+                h: upper_h,
+            },
+        ));
+    }
+    out.centre = Rect {
+        x: left,
+        y: content.y,
+        w: (right - left).max(0.0),
+        h: upper_h,
+    };
+    // Areas in stack numbering order, so callers can zip them with trees.
+    out.areas
+        .sort_by_key(|(s, _)| Side::ALL.iter().position(|x| x == s));
+    out.dividers
+        .sort_by_key(|(s, _)| Side::ALL.iter().position(|x| x == s));
+    out
+}
+
+/// What a divider of a window moves.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum HandleTarget {
+    /// A splitter in the window's tree number `n` ([`Window::trees`] order).
+    Tree(usize),
+    /// The edge of an area of the main window.
+    Area(Side),
+}
+
+/// A divider of a window.
+#[derive(Clone, Debug, PartialEq)]
+pub struct WindowHandle {
+    /// What it moves.
+    pub target: HandleTarget,
+    /// Where it is; for a tree splitter, the tree's own handle.
+    pub handle: Handle,
+}
+
+/// A whole window as absolute rectangles: every tree that is shown, with window stack
+/// numbers ([`Window::stack`]), and every divider.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct WindowFlat {
+    /// Tab stacks that are shown; `stack` is the window stack index.
+    pub stacks: Vec<StackRect>,
+    /// Dividers: the trees' splitters, then the areas' edges.
+    pub handles: Vec<WindowHandle>,
+}
+
+/// Flatten window `w` laid out in `content`.
+pub fn flatten_window(w: &Window, content: Rect) -> WindowFlat {
+    let mut out = WindowFlat::default();
+    let mut place = |tree: usize, first: usize, node: &crate::layout::Node, r: Rect| {
+        let flat = node.flatten(r);
+        out.stacks.extend(flat.stacks.into_iter().map(|mut s| {
+            s.stack += first;
+            s
+        }));
+        out.handles
+            .extend(flat.handles.into_iter().map(|handle| WindowHandle {
+                target: HandleTarget::Tree(tree),
+                handle,
+            }));
+    };
+    match &w.content {
+        WindowContent::Main(m) => {
+            let rects = main_rects(m, content);
+            place(0, 0, &m.centre, rects.centre);
+            let mut tree = 1;
+            let mut first = m.centre.stack_count();
+            for side in Side::ALL {
+                let Some(layout) = &m.area(side).layout else {
+                    continue;
+                };
+                // A hidden area keeps its stack numbers.
+                if let Some(r) = rects.area(side) {
+                    place(tree, first, layout, r);
+                }
+                tree += 1;
+                first += layout.stack_count();
+            }
+            for (side, rect) in rects.dividers {
+                let (axis, extent) = match side {
+                    Side::Bottom => (Axis::Vertical, content.h),
+                    _ => (Axis::Horizontal, content.w),
+                };
+                out.handles.push(WindowHandle {
+                    target: HandleTarget::Area(side),
+                    handle: Handle {
+                        path: Vec::new(),
+                        index: 0,
+                        axis,
+                        rect,
+                        extent,
+                    },
+                });
+            }
+        }
+        WindowContent::Floating(n) => place(0, 0, n, content),
+        WindowContent::Projector(_) => {}
+    }
+    out
+}
+
+/// The new size of the area on `side` after its divider moved by `delta` pixels
+/// (right or down is positive), within its limits and the centre's minimum.
+pub fn resized_area(m: &MainLayout, content: Rect, side: Side, delta: f32) -> u32 {
+    let rects = main_rects(m, content);
+    let (current, room) = match (side, rects.area(side)) {
+        (Side::Bottom, Some(r)) => (r.h, rects.centre.h - CENTRE_MIN.1),
+        (_, Some(r)) => (r.w, rects.centre.w - CENTRE_MIN.0),
+        (_, None) => return m.area(side).size,
+    };
+    let grow = match side {
+        Side::Left => delta,
+        Side::Right | Side::Bottom => -delta,
+    };
+    let wanted = current + grow.min(room.max(0.0));
+    limited(side, wanted, content).round() as u32
+}
+
+#[cfg(test)]
+#[allow(clippy::expect_used)] // Tests fail by panicking.
+mod tests {
+    use super::*;
+    use crate::layout::Node;
+    use crate::panel::PanelId;
+
+    fn tabs(ids: &[&str]) -> Node {
+        Node::tabs(ids.iter().filter_map(|i| PanelId::parse(i).ok()).collect())
+    }
+
+    fn layout(left: bool, right: bool, bottom: bool) -> MainLayout {
+        let mut m = MainLayout::new(tabs(&["rbs.preview"]));
+        if left {
+            m.left.layout = Some(tabs(&["rbs.scenes", "rbs.sources"]));
+        }
+        if right {
+            m.right.layout = Some(tabs(&["rbs.properties"]));
+        }
+        if bottom {
+            m.bottom.layout = Some(tabs(&["rbs.mixer"]));
+        }
+        m
+    }
+
+    const WINDOW: Rect = Rect {
+        x: 0.0,
+        y: 0.0,
+        w: 1280.0,
+        h: 720.0,
+    };
+
+    #[test]
+    fn empty_areas_take_no_space() {
+        let r = main_rects(&layout(false, false, false), WINDOW);
+        assert_eq!(r.centre, WINDOW);
+        assert!(r.areas.is_empty() && r.dividers.is_empty());
+    }
+
+    #[test]
+    fn areas_keep_their_sizes_and_the_bottom_spans_the_width() {
+        let r = main_rects(&layout(true, true, true), WINDOW);
+        let t = HANDLE_THICKNESS;
+        assert_eq!(r.area(Side::Left).map(|a| a.w), Some(260.0));
+        assert_eq!(r.area(Side::Right).map(|a| a.w), Some(260.0));
+        let bottom = r.area(Side::Bottom).expect("bottom");
+        assert_eq!((bottom.x, bottom.w, bottom.h), (0.0, 1280.0, 200.0));
+        assert_eq!(r.centre.x, 260.0 + t);
+        assert_eq!(r.centre.w, 1280.0 - 2.0 * (260.0 + t));
+        assert_eq!(r.centre.h, 720.0 - 200.0 - t);
+        assert_eq!(r.dividers.len(), 3);
+    }
+
+    #[test]
+    fn hidden_areas_take_no_space() {
+        let mut m = layout(true, false, false);
+        m.left.visible = false;
+        assert_eq!(main_rects(&m, WINDOW).centre, WINDOW);
+    }
+
+    #[test]
+    fn the_centre_keeps_its_minimum_in_a_small_window() {
+        let mut m = layout(true, true, true);
+        m.left.size = 2000;
+        m.right.size = 2000;
+        m.bottom.size = 2000;
+        for (w, h) in [
+            (640.0, 360.0),
+            (800.0, 450.0),
+            (1280.0, 720.0),
+            (300.0, 150.0),
+        ] {
+            let content = Rect::sized(w, h);
+            let r = main_rects(&m, content);
+            if w >= CENTRE_MIN.0 + 2.0 * HANDLE_THICKNESS {
+                assert!(r.centre.w + 0.01 >= CENTRE_MIN.0, "{w}x{h}: {:?}", r.centre);
+            }
+            if h >= CENTRE_MIN.1 + HANDLE_THICKNESS {
+                assert!(r.centre.h + 0.01 >= CENTRE_MIN.1, "{w}x{h}: {:?}", r.centre);
+            }
+            // Nothing leaves the window.
+            for (_, a) in &r.areas {
+                assert!(a.x >= -0.01 && a.x + a.w <= w + 0.01, "{a:?}");
+                assert!(a.y >= -0.01 && a.y + a.h <= h + 0.01, "{a:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn a_window_numbers_stacks_through_its_trees_and_skips_hidden_ones() {
+        let mut m = layout(true, true, false);
+        m.left.layout = Some(Node::Split(crate::layout::Split {
+            axis: Axis::Vertical,
+            ratios: vec![0.5, 0.5],
+            children: vec![tabs(&["rbs.scenes"]), tabs(&["rbs.sources"])],
+        }));
+        let mut w = Window {
+            content: WindowContent::Main(Box::new(m)),
+            placement: None,
+        };
+        let flat = flatten_window(&w, WINDOW);
+        let numbers: Vec<usize> = flat.stacks.iter().map(|s| s.stack).collect();
+        assert_eq!(numbers, vec![0, 1, 2, 3]);
+        // The left area's splitter, then the two area edges.
+        let targets: Vec<HandleTarget> = flat.handles.iter().map(|h| h.target).collect();
+        assert_eq!(
+            targets,
+            vec![
+                HandleTarget::Tree(1),
+                HandleTarget::Area(Side::Left),
+                HandleTarget::Area(Side::Right)
+            ]
+        );
+        if let Some(m) = w.main_mut() {
+            m.left.visible = false;
+        }
+        let flat = flatten_window(&w, WINDOW);
+        let numbers: Vec<usize> = flat.stacks.iter().map(|s| s.stack).collect();
+        assert_eq!(numbers, vec![0, 3]);
+    }
+
+    #[test]
+    fn dragging_an_area_edge_changes_its_size_within_limits() {
+        let m = layout(true, true, true);
+        assert_eq!(resized_area(&m, WINDOW, Side::Left, 40.0), 300);
+        assert_eq!(resized_area(&m, WINDOW, Side::Right, 40.0), 220);
+        assert_eq!(resized_area(&m, WINDOW, Side::Bottom, -30.0), 230);
+        // Not below the minimum, not past 40 % of the window.
+        assert_eq!(resized_area(&m, WINDOW, Side::Left, -500.0), 200);
+        assert_eq!(resized_area(&m, WINDOW, Side::Left, 400.0), 512);
+    }
+}

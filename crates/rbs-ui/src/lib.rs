@@ -22,6 +22,7 @@
 pub mod builtin;
 pub mod command;
 pub mod display;
+pub mod frame;
 pub mod history;
 pub mod layout;
 pub mod live;
