@@ -372,6 +372,7 @@ component DockArea inherits Rectangle {
 
 component WorkspaceMenu inherits PopupWindow {
     close-policy: close-on-click-outside;
+    width: Tokens.size-menu-md;
     MenuSurface {
         width: Tokens.size-menu-md;
         VerticalLayout {
@@ -441,6 +442,7 @@ component EntryMenu inherits PopupWindow {
     callback act(int, string);
     property <bool> confirm-delete;
     close-policy: close-on-click-outside;
+    width: Tokens.size-menu-md;
     MenuSurface {
         width: Tokens.size-menu-md;
         VerticalLayout {
@@ -528,6 +530,7 @@ component EntryMenu inherits PopupWindow {
 
 component PanelsMenu inherits PopupWindow {
     close-policy: close-on-click-outside;
+    width: Tokens.size-menu-sm;
     MenuSurface {
         width: Tokens.size-menu-sm;
         VerticalLayout {

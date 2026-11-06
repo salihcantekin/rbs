@@ -62,6 +62,16 @@ pub struct Tabs {
     pub tabs: Vec<PanelId>,
     /// Index of the visible tab.
     pub active: usize,
+    /// Only the title row is shown (ADR-0049 decision 2, file `state = "collapsed"`).
+    pub collapsed: bool,
+}
+
+/// The state a tab stack has in a file; `docked` is the default and is not written.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+enum StackState {
+    Docked,
+    Collapsed,
 }
 
 /// A layout tree node.
@@ -88,6 +98,8 @@ struct RawNode {
     tabs: Option<Vec<PanelId>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     active: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    state: Option<StackState>,
 }
 
 impl TryFrom<RawNode> for Node {
@@ -95,6 +107,9 @@ impl TryFrom<RawNode> for Node {
 
     fn try_from(r: RawNode) -> Result<Self, String> {
         match (r.split, r.ratios, r.children, r.tabs, r.active) {
+            (Some(_), _, _, None, None) if r.state.is_some() => {
+                Err("only a tab stack has a `state`".into())
+            }
             (Some(axis), Some(ratios), Some(children), None, None) => {
                 if children.len() < 2 {
                     return Err("a split needs at least two children".into());
@@ -128,7 +143,11 @@ impl TryFrom<RawNode> for Node {
                         tabs.len()
                     ));
                 }
-                Ok(Node::Tabs(Tabs { tabs, active }))
+                Ok(Node::Tabs(Tabs {
+                    tabs,
+                    active,
+                    collapsed: r.state == Some(StackState::Collapsed),
+                }))
             }
             _ => Err(
                 "a layout node is either `{ split, ratios, children }` or `{ tabs, active }`"
@@ -147,12 +166,14 @@ impl From<Node> for RawNode {
                 children: Some(s.children),
                 tabs: None,
                 active: None,
+                state: None,
             },
             Node::Tabs(t) => RawNode {
                 split: None,
                 ratios: None,
                 children: None,
                 active: (t.active != 0).then_some(t.active),
+                state: t.collapsed.then_some(StackState::Collapsed),
                 tabs: Some(t.tabs),
             },
         }
@@ -227,12 +248,17 @@ impl Node {
         Node::Tabs(Tabs {
             tabs: Vec::new(),
             active: 0,
+            collapsed: false,
         })
     }
 
     /// A tab stack.
     pub fn tabs(tabs: Vec<PanelId>) -> Node {
-        Node::Tabs(Tabs { tabs, active: 0 })
+        Node::Tabs(Tabs {
+            tabs,
+            active: 0,
+            collapsed: false,
+        })
     }
 
     /// A split with the given shares (normalised to sum to 1).
@@ -280,11 +306,23 @@ impl Node {
         out
     }
 
-    /// The active panel of every stack, depth first.
+    /// The active panel of every stack that is not collapsed, depth first.
     pub fn visible(&self) -> Vec<&PanelId> {
         let mut out = Vec::new();
-        self.visit_stacks(&mut |t| out.extend(t.tabs.get(t.active)));
+        self.visit_stacks(&mut |t| {
+            if !t.collapsed {
+                out.extend(t.tabs.get(t.active));
+            }
+        });
         out
+    }
+
+    /// Does the tree have a tab stack that is not collapsed? The centre must keep one
+    /// (ADR-0049 decision 2).
+    pub fn has_expanded_stack(&self) -> bool {
+        let mut any = false;
+        self.visit_stacks(&mut |t| any |= !t.collapsed);
+        any
     }
 
     /// Number of tab stacks.

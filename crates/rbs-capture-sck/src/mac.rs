@@ -9,6 +9,7 @@ use std::ptr::NonNull;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex, MutexGuard};
+use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 use block2::RcBlock;
@@ -16,10 +17,12 @@ use dispatch2::{DispatchQueue, DispatchRetained};
 use objc2::rc::{Retained, autoreleasepool};
 use objc2::runtime::{AnyObject, NSObject, NSObjectProtocol, ProtocolObject};
 use objc2::{AllocAnyThread, DefinedClass, define_class, msg_send};
-use objc2_core_foundation::{CFDictionary, CFRetained, CFType, CGRect};
+use objc2_core_foundation::{CFArray, CFDictionary, CFRetained, CFString, CFType, CGRect};
 use objc2_core_graphics::{
-    CGDisplayCopyDisplayMode, CGDisplayMode, CGMainDisplayID, CGPreflightScreenCaptureAccess,
-    CGRectMakeWithDictionaryRepresentation, CGRequestScreenCaptureAccess, kCGColorSpaceSRGB,
+    CGDisplayCopyDisplayMode, CGDisplayMode, CGEvent, CGMainDisplayID,
+    CGPreflightScreenCaptureAccess, CGRectMakeWithDictionaryRepresentation,
+    CGRequestScreenCaptureAccess, CGWindowListCopyWindowInfo, CGWindowListOption,
+    kCGColorSpaceSRGB, kCGWindowAlpha, kCGWindowBounds, kCGWindowLayer,
 };
 use objc2_core_media::{CMSampleBuffer, CMTime, CMTimeFlags};
 use objc2_core_video::{
@@ -49,6 +52,7 @@ use rbs_core::registry::{AdapterFactory, AdapterId, HARDWARE, ProbeError};
 use rbs_core::time::{Clock, Timestamp};
 use rbs_core::timing::{DriftEstimator, FrameRate};
 
+use crate::cursor::{self, Above};
 use crate::{ADAPTER_ID, Consumer, FRAMES_IN_FLIGHT, QUEUE_DEPTH, RING_SLOTS};
 
 /// Highest frame rate requested from ScreenCaptureKit (ProMotion displays).
@@ -278,7 +282,11 @@ fn permission_granted() -> bool {
 /// What the stream is configured with. Shared by the session (reconfigure) and the
 /// producer (follows the target's size).
 struct Config {
+    /// The cursor was asked for.
     cursor: bool,
+    /// A window capture's cursor is over a window stacked above the target, so the
+    /// stream does not draw it (see `crate::cursor`).
+    cursor_covered: bool,
     frame_rate: Option<FrameRate>,
     size: Size,
 }
@@ -301,6 +309,7 @@ fn accept(request: &CaptureRequest, size: Size) -> Result<Config, CaptureError> 
     }
     Ok(Config {
         cursor: request.cursor,
+        cursor_covered: false,
         frame_rate: request.frame_rate,
         size,
     })
@@ -791,22 +800,14 @@ impl Producer {
         let Some(stream) = self.stream.as_ref() else {
             return;
         };
-        let config = {
-            let mut config = lock(&self.config);
-            let size = Size::new(native.0, native.1);
-            if config.size == size {
-                return;
-            }
-            config.size = size;
-            configuration(&config)
-        };
-        // SAFETY: a valid configuration; no completion handler, so the sample handler
-        // does not wait.
-        unsafe {
-            stream
-                .0
-                .updateConfiguration_completionHandler(&config, None)
-        };
+        let mut config = lock(&self.config);
+        let size = Size::new(native.0, native.1);
+        if config.size == size {
+            return;
+        }
+        config.size = size;
+        // Sent under the lock, so updates from the cursor watcher keep their order.
+        send_configuration(&stream.0, &config);
     }
 }
 
@@ -859,6 +860,8 @@ impl Output {
 
 struct Active {
     stream: Sendable<Retained<SCStream>>,
+    /// Window captures with the cursor: hides it while it is over another window.
+    cursor_watch: Option<CursorWatch>,
     output: Sendable<Retained<Output>>,
     _queue: Sendable<DispatchRetained<DispatchQueue>>,
     producer: Arc<Mutex<Producer>>,
@@ -889,6 +892,15 @@ fn frame_interval(rate: Option<FrameRate>) -> CMTime {
     }
 }
 
+/// Sends `config` to a running stream without waiting for it to apply, so the caller
+/// (the sample handler, the cursor watcher) never blocks. Callers hold the config lock
+/// so updates reach ScreenCaptureKit in the order they were made.
+fn send_configuration(stream: &SCStream, config: &Config) {
+    let config = configuration(config);
+    // SAFETY: a valid configuration; no completion handler.
+    unsafe { stream.updateConfiguration_completionHandler(&config, None) };
+}
+
 fn configuration(config: &Config) -> Retained<SCStreamConfiguration> {
     let size = config.size;
     // SAFETY: a fresh configuration object, configured before use; the colour space
@@ -899,7 +911,7 @@ fn configuration(config: &Config) -> Retained<SCStreamConfiguration> {
         stream_config.setHeight(size.height as usize);
         stream_config.setPixelFormat(PIXEL_FORMAT_BGRA);
         stream_config.setColorSpaceName(kCGColorSpaceSRGB);
-        stream_config.setShowsCursor(config.cursor);
+        stream_config.setShowsCursor(config.cursor && !config.cursor_covered);
         stream_config.setQueueDepth(QUEUE_DEPTH as isize);
         stream_config.setMinimumFrameInterval(frame_interval(config.frame_rate));
         stream_config
@@ -924,7 +936,18 @@ impl SckSession {
                 ),
             }
         };
-        let config = configuration(&lock(&self.config));
+        let window = match self.parsed {
+            Parsed::Window(id) => Some(id),
+            Parsed::Display(_) => None,
+        };
+        let config = {
+            let mut config = lock(&self.config);
+            config.cursor_covered = match window {
+                Some(id) if config.cursor => cursor_covered(id),
+                _ => false,
+            };
+            configuration(&config)
+        };
 
         let shared = Arc::new(Shared {
             ring: Ring::new(&[0; RING_SLOTS]),
@@ -989,8 +1012,15 @@ impl SckSession {
         // the published size, retained in `shared.slots` while their slot is referenced
         // (see the `LeaseOwner` impl); ScreenCaptureKit delivers complete frames only.
         let consumer = unsafe { Consumer::new(Arc::clone(&shared), self.format) };
+        let cursor_watch = match window {
+            Some(id) if lock(&self.config).cursor => {
+                CursorWatch::start(id, &stream, Arc::clone(&self.config))
+            }
+            _ => None,
+        };
         Ok(Active {
             stream: Sendable(stream),
+            cursor_watch,
             output: Sendable(output),
             _queue: Sendable(queue),
             producer,
@@ -1031,9 +1061,12 @@ impl CaptureSession for SckSession {
     }
 
     fn stop(&mut self) {
-        let Some(active) = self.active.take() else {
+        let Some(mut active) = self.active.take() else {
             return;
         };
+        if let Some(watch) = active.cursor_watch.take() {
+            watch.stop();
+        }
         let stream = &active.stream.0;
         // SAFETY: a completion block of the documented signature.
         let _ = wait_completion(|block| unsafe {
@@ -1107,7 +1140,22 @@ impl CaptureSession for SckSession {
     fn reconfigure(&mut self, change: CaptureChange) -> Result<(), CaptureError> {
         match change {
             CaptureChange::Cursor(on) => {
-                lock(&self.config).cursor = on;
+                {
+                    let mut config = lock(&self.config);
+                    config.cursor = on;
+                    config.cursor_covered = false;
+                }
+                if let (Some(active), Parsed::Window(id)) = (self.active.as_mut(), &self.parsed) {
+                    match (on, active.cursor_watch.take()) {
+                        (true, None) => {
+                            active.cursor_watch =
+                                CursorWatch::start(*id, &active.stream.0, Arc::clone(&self.config));
+                        }
+                        (true, Some(watch)) => active.cursor_watch = Some(watch),
+                        (false, Some(watch)) => watch.stop(),
+                        (false, None) => {}
+                    }
+                }
                 self.update_configuration()
             }
             CaptureChange::FrameRate(rate) => {
@@ -1116,6 +1164,126 @@ impl CaptureSession for SckSession {
             }
             _ => Err(CaptureError::Unsupported("change not supported")),
         }
+    }
+}
+
+/// The pointer in global display points, origin top left.
+fn pointer() -> Option<(f64, f64)> {
+    let event = CGEvent::new(None)?;
+    let point = CGEvent::location(Some(&event));
+    Some((point.x, point.y))
+}
+
+/// Reads an `NSString` key of a CoreGraphics constant.
+fn ns_key(key: &CFString) -> &NSString {
+    // SAFETY: CFString is toll-free bridged to NSString.
+    unsafe { &*(key as *const CFString).cast::<NSString>() }
+}
+
+/// The on-screen windows stacked above `window`, from the window server's list.
+fn windows_above(window: u32) -> Vec<Above> {
+    let options =
+        CGWindowListOption::OptionOnScreenAboveWindow | CGWindowListOption::ExcludeDesktopElements;
+    let Some(list) = CGWindowListCopyWindowInfo(options, window) else {
+        return Vec::new();
+    };
+    // SAFETY: CFArray is toll-free bridged to NSArray; the window list holds
+    // dictionaries with string keys.
+    let list = unsafe {
+        &*(&*list as *const CFArray).cast::<NSArray<NSDictionary<NSString, AnyObject>>>()
+    };
+    // SAFETY: the keys are immutable framework constants.
+    let (bounds_key, alpha_key, layer_key) = unsafe {
+        (
+            ns_key(kCGWindowBounds),
+            ns_key(kCGWindowAlpha),
+            ns_key(kCGWindowLayer),
+        )
+    };
+    list.iter()
+        .filter_map(|info| {
+            let bounds = info
+                .objectForKey(bounds_key)?
+                .downcast::<NSDictionary>()
+                .ok()?;
+            let mut rect = CGRect::default();
+            // SAFETY: a dictionary of a CGRect (kCGWindowBounds), toll-free bridged;
+            // `rect` is a valid out pointer.
+            let ok = unsafe {
+                let cf = &*(&*bounds as *const NSDictionary).cast::<CFDictionary>();
+                CGRectMakeWithDictionaryRepresentation(Some(cf), &mut rect)
+            };
+            let alpha = number(&info, alpha_key).map_or(1.0, |n| n.doubleValue());
+            let layer = number(&info, layer_key).map_or(0, |n| n.integerValue() as i64);
+            ok.then_some(Above {
+                bounds: cursor::Rect {
+                    x: rect.origin.x,
+                    y: rect.origin.y,
+                    width: rect.size.width,
+                    height: rect.size.height,
+                },
+                alpha,
+                layer,
+            })
+        })
+        .collect()
+}
+
+/// Whether a window stacked above `window` is under the pointer at `point`.
+fn covered_at(window: u32, point: Option<(f64, f64)>) -> bool {
+    autoreleasepool(|_| point.is_some_and(|(x, y)| cursor::covered(x, y, windows_above(window))))
+}
+
+/// Whether a window stacked above `window` is under the pointer now.
+fn cursor_covered(window: u32) -> bool {
+    covered_at(window, pointer())
+}
+
+/// The watcher thread of an Active window capture with the cursor (`crate::cursor`).
+/// Exists only while Active (P13); `stop` joins it.
+struct CursorWatch {
+    stop: mpsc::Sender<()>,
+    thread: JoinHandle<()>,
+}
+
+impl CursorWatch {
+    /// Starts watching; `None` if the thread cannot start, which leaves the cursor
+    /// drawn as ScreenCaptureKit does by default.
+    fn start(window: u32, stream: &Retained<SCStream>, config: Arc<Mutex<Config>>) -> Option<Self> {
+        let (stop, stopped) = mpsc::channel::<()>();
+        let stream = Sendable(stream.clone());
+        let thread = std::thread::Builder::new()
+            .name("rbs-sck-cursor".into())
+            .spawn(move || {
+                let stream = stream;
+                let mut last_point = None;
+                let mut still_polls = 0u32;
+                // Ends when `stop` drops the sender (or sends).
+                while let Err(mpsc::RecvTimeoutError::Timeout) = stopped.recv_timeout(cursor::POLL)
+                {
+                    let point = pointer();
+                    let moved = point != last_point;
+                    last_point = point;
+                    if !cursor::should_query(moved, still_polls) {
+                        still_polls += 1;
+                        continue;
+                    }
+                    still_polls = 0;
+                    let covered = covered_at(window, point);
+                    let mut config = lock(&config);
+                    if config.cursor && config.cursor_covered != covered {
+                        config.cursor_covered = covered;
+                        autoreleasepool(|_| send_configuration(&stream.0, &config));
+                    }
+                }
+            })
+            .ok()?;
+        Some(Self { stop, thread })
+    }
+
+    fn stop(self) {
+        drop(self.stop);
+        let _ = self.thread.join();
     }
 }
 

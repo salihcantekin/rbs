@@ -68,3 +68,4 @@ An ADR records one decision that is hard to reverse or affects more than one cra
 | [0053](0053-item-style-and-video-filter-chains.md) | Item shape, border and shadow drawn by the compositor; video filters as a per-source chain of GPU nodes | Accepted |
 | [0054](0054-preview-never-disappears.md) | The preview picture never disappears behind popups: split it around covers | Accepted |
 | [0055](0055-crash-resilience.md) | Crash resilience: a fault in the app must not end a recording or a stream | Proposed |
+| [0056](0056-keep-running-after-the-main-window-closes.md) | Keep running after the main window closes: Close and Quit are separate; Dock on macOS, tray icon on Windows | Accepted |
