@@ -138,6 +138,13 @@ struct App {
 }
 
 impl App {
+    /// Shows why an Output profile or Scene collection menu action did not work.
+    fn library_done(&mut self, done: Result<(), String>) {
+        if let Err(e) = done {
+            self.error = Some(UiError::Other(e));
+        }
+    }
+
     fn default_area(&self, window: usize) -> Rect {
         let t = self.main.global::<Tokens>();
         if window == 0 {
@@ -1073,6 +1080,45 @@ fn install_studio(g: &Studio<'_>, ctx: &Ctx) {
     on!(on_set_rc_port, |app, text: slint::SharedString| {
         app.studio.set_remote_port(&text);
     });
+    // Output profile and Scene collection menus (ADR-0051).
+    on!(on_switch_profile, |app, id: slint::SharedString| {
+        let done = app.studio.switch_profile(&id);
+        app.library_done(done);
+    });
+    on!(
+        on_profile_action,
+        |app, action: i32, text: slint::SharedString| {
+            let done = match action {
+                0 => app.studio.new_profile(&text, false),
+                1 => app.studio.new_profile(&text, true),
+                2 => app.studio.rename_profile(&text),
+                _ => {
+                    let id = app.studio.user.profile_id.as_str().to_owned();
+                    app.studio.delete_profile(&id)
+                }
+            };
+            app.library_done(done);
+        }
+    );
+    on!(on_switch_collection, |app, id: slint::SharedString| {
+        let done = app.studio.switch_collection(&id, close_preview);
+        app.library_done(done);
+    });
+    on!(
+        on_collection_action,
+        |app, action: i32, text: slint::SharedString| {
+            let done = match action {
+                0 => app.studio.new_collection(&text, false, close_preview),
+                1 => app.studio.new_collection(&text, true, close_preview),
+                2 => app.studio.rename_collection(&text),
+                _ => {
+                    let id = app.studio.user.collection_id.as_str().to_owned();
+                    app.studio.delete_collection(&id, close_preview)
+                }
+            };
+            app.library_done(done);
+        }
+    );
     on!(on_create_token, |app,
                           name: slint::SharedString,
                           access: i32| {
@@ -1137,6 +1183,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let user_notes = user.notes.clone();
     let first_canvas = rbs_app::user_session::first_canvas(&collection);
     let autosave = user.collection_saver();
+    let key_account = rbs_app::stream_key::account(user.profile_id.as_str());
     let store = WorkspaceStore::new(config::workspace_dir(&config));
     let name = config::last_workspace(&config).unwrap_or_else(|| "Edit".to_owned());
     let mut error = None;
@@ -1205,6 +1252,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         config.keys = keys;
         config.collection = Some(collection);
         config.autosave = autosave;
+        config.key_account = key_account;
         config
     };
     match studio_host::StudioHost::spawn(

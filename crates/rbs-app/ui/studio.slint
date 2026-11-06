@@ -41,6 +41,8 @@ export struct TokenRow { name: string, access: string }
 // One line of the Stats panel: a section heading (`heading`, `label` only) or a counter
 // with its value; `bad` marks a value that shows a loss (in words too, U7).
 export struct StatRow { heading: bool, label: string, value: string, bad: bool }
+// An output profile or scene collection in its menu (ADR-0051).
+export struct EntryRow { id: string, name: string, current: bool }
 
 export global Studio {
     // 0 starting, 1 running, 2 failed (`failure` says why).
@@ -246,6 +248,20 @@ export global Studio {
     callback rc-use-own(string /* certificate */, string /* key */);
     callback rc-use-generated();
     callback rc-new-key();
+
+    // Output profiles and scene collections (ADR-0051): the entries, the one in use,
+    // and the menu actions. Actions: 0 new, 1 duplicate (both with a name and then
+    // used), 2 rename the one in use, 3 delete the one in use.
+    in property <[EntryRow]> profiles;
+    in property <string> profile-name;
+    in property <[EntryRow]> collections;
+    in property <string> collection-name;
+    // A scene collection switch is running (the studio restarts).
+    in property <bool> switching;
+    callback switch-profile(string /* id */);
+    callback profile-action(int /* action */, string);
+    callback switch-collection(string /* id */);
+    callback collection-action(int /* action */, string);
 }
 
 // The add-source picker: a kind, then what it captures. Keyboard: arrows are not

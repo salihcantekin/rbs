@@ -648,3 +648,61 @@ fn the_scene_collection_is_saved_after_edits_and_runs_again_after_a_restart() {
     drop(user);
     let _ = std::fs::remove_dir_all(&d);
 }
+
+#[test]
+fn another_scene_collection_runs_and_keeps_its_own_edits() {
+    let Some(gpu) = gpu() else { return };
+    let d = std::env::temp_dir().join(format!("rbs-app-host-switch-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&d);
+    let (user, collection) = rbs_app::user_session::open(&d, Arc::new(|_| {}));
+    let first = user.collection_id.clone();
+    let mut config = HostConfig::canvas(Size::new(1920, 1080), FrameRate::FPS_30);
+    config.preview = None;
+    config.collection = Some(collection);
+    config.autosave = user.collection_saver();
+    let (host, rx) = host_with(Arc::clone(&gpu), config);
+    next(&rx, |u| match u {
+        Update::Started { .. } => Some(()),
+        Update::Failed(e) => panic!("{e}"),
+        _ => None,
+    });
+
+    let small = rbs_app::canvas_profile::CanvasProfile {
+        width: 1280,
+        height: 720,
+        ..rbs_app::canvas_profile::CanvasProfile::new()
+    };
+    let second = user.new_collection("Second", &small, false).unwrap();
+    let (name, loaded) = user.load_collection(&second).unwrap();
+    host.send(Command::SwitchCollection {
+        seq: 7,
+        collection: Box::new(loaded),
+        autosave: user.saver_for(&second, &name),
+    });
+    let size = next(&rx, |u| match u {
+        Update::Canvas { size, .. } => Some(size),
+        _ => None,
+    });
+    assert_eq!(size, Size::new(1280, 720), "its own canvas runs");
+    let result = next(&rx, |u| match u {
+        Update::CollectionSwitched { seq, result } => Some((seq, result)),
+        _ => None,
+    });
+    assert_eq!(result, (7, Ok(())));
+
+    let displays = targets(&host, &rx, SourceKind::Screen);
+    host.send(Command::AddSource {
+        kind: SourceKind::Screen,
+        target: displays[0].clone(),
+    });
+    rows_where(&rx, |r| r.len() == 1);
+    stop(host, &rx);
+    // The edit went into the second collection only.
+    assert_eq!(
+        user.load_collection(&second).unwrap().1.sources().count(),
+        1
+    );
+    assert_eq!(user.load_collection(&first).unwrap().1.sources().count(), 0);
+    drop(user);
+    let _ = std::fs::remove_dir_all(&d);
+}

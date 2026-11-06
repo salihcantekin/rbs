@@ -3,9 +3,9 @@
 // layout tree into tab stacks and splitter handles with absolute positions.
 import { Theme, Tokens } from "tokens.slint";
 import { Button, IconButton, Icon, IconName, MenuItem, MenuSurface, EmptyState } from "components.slint";
-import { Studio, SourceData, MarkData, KindData, TargetData, MeterRow, ScaleMark, EncoderData, ProgramPanel, SourcesPanel, PropertiesPanel, MixerPanel, LiveControlsPanel, OutputsPanel, StatsPanel, RecordingSettings, StreamSettings, VideoSettings, RemoteControlSettings } from "studio.slint";
+import { Studio, EntryRow, SourceData, MarkData, KindData, TargetData, MeterRow, ScaleMark, EncoderData, ProgramPanel, SourcesPanel, PropertiesPanel, MixerPanel, LiveControlsPanel, OutputsPanel, StatsPanel, RecordingSettings, StreamSettings, VideoSettings, RemoteControlSettings } from "studio.slint";
 
-export { Theme, Tokens, Studio, SourceData, MarkData, KindData, TargetData, MeterRow, ScaleMark, EncoderData }
+export { Theme, Tokens, Studio, EntryRow, SourceData, MarkData, KindData, TargetData, MeterRow, ScaleMark, EncoderData }
 
 export struct TabData { id: string, title: string, known: bool }
 export struct StackData { window: int, stack: int, x: length, y: length, w: length, h: length, tabs: [TabData], active: int }
@@ -409,6 +409,97 @@ component WorkspaceMenu inherits PopupWindow {
     }
 }
 
+// The Output profile and Scene collection menus (ADR-0051): the entries to switch to,
+// then New, Duplicate and Rename with the name typed below, and Delete, which asks
+// first (U4) because it cannot be undone here.
+component EntryMenu inherits PopupWindow {
+    in property <[EntryRow]> entries;
+    in property <string> current;
+    // "output profile" or "scene collection", for labels.
+    in property <string> what;
+    in property <bool> busy;
+    callback pick(string /* id */);
+    // 0 new, 1 duplicate, 2 rename (with the name typed), 3 delete the one in use.
+    callback act(int, string);
+    property <bool> confirm-delete;
+    close-policy: close-on-click-outside;
+    MenuSurface {
+        width: Tokens.size-menu-md;
+        VerticalLayout {
+            padding: Tokens.space-2;
+            spacing: Tokens.space-1;
+            for e[i] in root.entries: MenuItem {
+                autofocus: i == 0;
+                text: e.name;
+                checked: e.current;
+                enabled: !root.busy;
+                activated => { root.pick(e.id); root.close(); }
+            }
+            Rectangle { height: Tokens.size-border; background: Theme.border-subtle; }
+            if !root.confirm-delete: MenuItem {
+                text: @tr("Delete {}…", root.current);
+                enabled: root.entries.length > 1 && !root.busy;
+                activated => { root.confirm-delete = true; }
+            }
+            if root.confirm-delete: HorizontalLayout {
+                spacing: Tokens.space-2;
+                accessible-role: groupbox;
+                accessible-label: @tr("Delete {}?", root.current);
+                Text {
+                    text: @tr("Delete {}?", root.current);
+                    color: Theme.text-primary;
+                    font-size: Tokens.type-body-size;
+                    vertical-alignment: center;
+                    wrap: word-wrap;
+                }
+                Button {
+                    text: @tr("Delete");
+                    clicked => { root.act(3, ""); root.confirm-delete = false; root.close(); }
+                }
+                Button {
+                    text: @tr("Keep");
+                    clicked => { root.confirm-delete = false; }
+                }
+            }
+            Rectangle { height: Tokens.size-border; background: Theme.border-subtle; }
+            Rectangle {
+                border-width: Tokens.size-border;
+                border-radius: Tokens.radius-sm;
+                border-color: name.has-focus ? Theme.border-focus : Theme.border-strong;
+                background: Theme.surface-sunken;
+                height: Tokens.size-control-md;
+                name := TextInput {
+                    x: Tokens.space-2;
+                    width: parent.width - 2 * Tokens.space-2;
+                    color: Theme.text-primary;
+                    font-size: Tokens.type-body-size;
+                    vertical-alignment: center;
+                    accessible-label: @tr("Name for a new or renamed {}", root.what);
+                    accepted => { if self.text != "" && !root.busy { root.act(0, self.text); root.close(); } }
+                }
+            }
+            HorizontalLayout {
+                spacing: Tokens.space-2;
+                Button {
+                    text: @tr("New");
+                    enabled: name.text != "" && !root.busy;
+                    clicked => { root.act(0, name.text); root.close(); }
+                }
+                Button {
+                    text: @tr("Duplicate");
+                    enabled: name.text != "" && !root.busy;
+                    clicked => { root.act(1, name.text); root.close(); }
+                }
+                Button {
+                    text: @tr("Rename");
+                    enabled: name.text != "";
+                    clicked => { root.act(2, name.text); root.close(); }
+                }
+            }
+        }
+    }
+}
+
 component PanelsMenu inherits PopupWindow {
     close-policy: close-on-click-outside;
     MenuSurface {
@@ -444,6 +535,16 @@ component FrameBar inherits Rectangle {
             text: @tr("Panels");
             icon: IconName.chevron-down;
             clicked => { panels-menu.show(); }
+        }
+        profile-button := Button {
+            text: @tr("Output profile: {}", Studio.profile-name);
+            icon: IconName.chevron-down;
+            clicked => { profile-menu.show(); }
+        }
+        collection-button := Button {
+            text: @tr("Scene collection: {}", Studio.collection-name);
+            icon: IconName.chevron-down;
+            clicked => { collection-menu.show(); }
         }
         // Closing while live ends the stream: asked first, in the frame (U4).
         if Shell.quit-confirm: HorizontalLayout {
@@ -495,6 +596,29 @@ component FrameBar inherits Rectangle {
     panels-menu := PanelsMenu {
         x: panels-button.x;
         y: parent.height;
+    }
+    property <bool> profile-open: profile-menu.is-open;
+    changed profile-open => { Studio.overlays += profile-open ? 1 : -1; Studio.overlays-changed(); }
+    property <bool> collection-open: collection-menu.is-open;
+    changed collection-open => { Studio.overlays += collection-open ? 1 : -1; Studio.overlays-changed(); }
+    profile-menu := EntryMenu {
+        x: profile-button.x;
+        y: parent.height;
+        entries: Studio.profiles;
+        current: Studio.profile-name;
+        what: @tr("output profile");
+        pick(id) => { Studio.switch-profile(id); }
+        act(a, text) => { Studio.profile-action(a, text); }
+    }
+    collection-menu := EntryMenu {
+        x: collection-button.x;
+        y: parent.height;
+        entries: Studio.collections;
+        current: Studio.collection-name;
+        what: @tr("scene collection");
+        busy: Studio.switching;
+        pick(id) => { Studio.switch-collection(id); }
+        act(a, text) => { Studio.collection-action(a, text); }
     }
 }
 
