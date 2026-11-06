@@ -3,7 +3,7 @@
 // Rust pushes state into the `Studio` global of every window and handles its callbacks
 // by sending commands to the studio's control thread.
 import { Theme, Tokens } from "tokens.slint";
-import { Button, Checkbox, FocusRing, IconButton, IconName, MenuItem, MenuSurface, EmptyState, NumberField, Select, SegmentedControl, TextField } from "components.slint";
+import { Button, Checkbox, ColorPicker, FocusRing, IconButton, IconName, MenuItem, MenuSurface, EmptyState, NumberField, Select, SegmentedControl, TextField } from "components.slint";
 
 // `picture`: a video source; `x`, `y`, `w`, `h` place its box on the canvas (canvas
 // pixels). `can-up` / `can-down`: another source with a picture is above / below it.
@@ -996,6 +996,9 @@ component StyleFields inherits VerticalLayout {
     // because setting the text after an edit ends the field's binding.
     property <string> colour-text: data.border-color;
     changed colour-text => { colour.text = colour-text; }
+    // The picker's popover hides the preview layer while it is open, like a menu.
+    property <bool> picker-open: picker.open;
+    changed picker-open => { Studio.overlays += picker-open ? 1 : -1; Studio.overlays-changed(); }
     spacing: Tokens.space-3;
     Text {
         text: @tr("Shape and border");
@@ -1065,14 +1068,16 @@ component StyleFields inherits VerticalLayout {
                 label: @tr("Colour");
                 HorizontalLayout {
                     spacing: Tokens.space-2;
-                    // The colour as a swatch, beside its text (never colour alone, U7).
-                    Rectangle {
-                        width: Tokens.size-control-md;
-                        border-radius: Tokens.radius-sm;
-                        border-width: Tokens.size-border;
-                        border-color: Theme.border-subtle;
-                        background: data.border-swatch;
-                        accessible-role: none;
+                    // The colour as a swatch that opens the colour picker, beside its
+                    // text (never colour alone, U7).
+                    picker := ColorPicker {
+                        label: @tr("Choose the border colour of {}", data.name);
+                        value: data.border-swatch;
+                        picked(c) => {
+                            if c != data.border-color {
+                                Studio.set-source-style(data.id, data.shape, data.radius, true, data.border-width, c);
+                            }
+                        }
                     }
                     colour := TextField {
                         label: @tr("Border colour of {}", data.name);

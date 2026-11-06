@@ -434,6 +434,221 @@ export component TextField inherits Rectangle {
     changed focused => { if !focused && !root.read-only && !root.password { root.accepted(root.text); } }
 }
 
+// ColorPicker: a swatch button that opens a popover to choose a colour by hue,
+// saturation and brightness, or from a row of preset colours. The swatch shows
+// `value`; the field beside it says the colour in words (never colour alone, U7).
+// A choice is reported through `picked` as "#rrggbb" ("#rrggbbaa" when `value` is
+// not opaque: the transparency is kept) and stands only once the owner sets `value`.
+// Dragging shows the colour in the popover and reports it on release, so one drag
+// is one change; a preset, or an arrow key on the hue bar or the colour area, reports
+// at once. Escape or a click outside closes the popover.
+export component ColorPicker inherits Rectangle {
+    // The accessible name of the swatch button, such as "Border colour of Camera".
+    in property <string> label;
+    in property <color> value;
+    in property <bool> enabled: true;
+    out property <bool> open: popup.is-open;
+    callback picked(string);
+    // The colour being chosen in the popover, as hue (degrees), saturation and value.
+    property <float> hue;
+    property <float> sat;
+    property <float> val;
+    property <color> draft: hsv(hue, sat, val);
+    property <[string]> digits: ["0", "1", "2", "3", "4", "5", "6", "7", "8", "9", "a", "b", "c", "d", "e", "f"];
+    function hex2(n: int) -> string {
+        return digits[floor(n / 16)] + digits[mod(n, 16)];
+    }
+    function hex(c: color) -> string {
+        return "#" + hex2(c.red) + hex2(c.green) + hex2(c.blue) + (root.value.alpha < 255 ? hex2(root.value.alpha) : "");
+    }
+    function report(c: color) {
+        root.picked(hex(c));
+    }
+    function show-popup() {
+        if !root.enabled { return; }
+        root.hue = root.value.to-hsv().hue;
+        root.sat = root.value.to-hsv().saturation;
+        root.val = root.value.to-hsv().value;
+        popup.show();
+    }
+    width: Tokens.size-control-md;
+    height: Tokens.size-control-md;
+    border-radius: Tokens.radius-sm;
+    border-width: Tokens.size-border;
+    border-color: touch.has-hover && root.enabled ? Theme.border-strong : Theme.border-subtle;
+    background: root.value;
+    accessible-role: button;
+    accessible-label: root.label;
+    accessible-enabled: root.enabled;
+    accessible-action-default => { root.show-popup(); }
+    forward-focus: focus;
+    focus := FocusScope {
+        enabled: root.enabled;
+        key-pressed(e) => {
+            if e.text == Key.Return || e.text == " " { root.show-popup(); return accept; }
+            reject
+        }
+    }
+    touch := TouchArea {
+        enabled: root.enabled;
+        clicked => { root.show-popup(); }
+    }
+    FocusRing { show: focus.has-focus; }
+    popup := PopupWindow {
+        close-policy: close-on-click-outside;
+        y: root.height + Tokens.space-1;
+        width: Tokens.size-menu-sm;
+        MenuSurface {
+            width: Tokens.size-menu-sm;
+            accessible-role: groupbox;
+            accessible-label: root.label;
+            VerticalLayout {
+                padding: Tokens.space-3;
+                spacing: Tokens.space-3;
+                // Saturation left to right, brightness bottom to top, at the chosen hue.
+                area := Rectangle {
+                    height: 3 * Tokens.space-8;
+                    border-radius: Tokens.radius-sm;
+                    background: hsv(root.hue, 1, 1);
+                    clip: true;
+                    accessible-role: slider;
+                    accessible-label: @tr("Saturation and brightness");
+                    accessible-value: @tr("Saturation {}%, brightness {}%", round(root.sat * 100), round(root.val * 100));
+                    Rectangle { background: @linear-gradient(90deg, #ffffff 0%, #ffffff00 100%); }
+                    Rectangle { background: @linear-gradient(0deg, #000000 0%, #00000000 100%); }
+                    Rectangle {
+                        x: root.sat * area.width - self.width / 2;
+                        y: (1 - root.val) * area.height - self.height / 2;
+                        width: Tokens.space-3;
+                        height: Tokens.space-3;
+                        border-radius: self.width / 2;
+                        border-width: Tokens.size-focus-ring;
+                        border-color: root.val > 0.5 ? #000000 : #ffffff;
+                        background: root.draft;
+                    }
+                    area-focus := FocusScope {
+                        key-pressed(e) => {
+                            if e.text == Key.LeftArrow { root.sat = max(0, root.sat - (e.modifiers.shift ? 0.1 : 0.01)); }
+                            else if e.text == Key.RightArrow { root.sat = min(1, root.sat + (e.modifiers.shift ? 0.1 : 0.01)); }
+                            else if e.text == Key.DownArrow { root.val = max(0, root.val - (e.modifiers.shift ? 0.1 : 0.01)); }
+                            else if e.text == Key.UpArrow { root.val = min(1, root.val + (e.modifiers.shift ? 0.1 : 0.01)); }
+                            else { return reject; }
+                            root.report(root.draft);
+                            accept
+                        }
+                    }
+                    TouchArea {
+                        function track() {
+                            root.sat = clamp(self.mouse-x / area.width, 0, 1);
+                            root.val = clamp(1 - self.mouse-y / area.height, 0, 1);
+                        }
+                        pointer-event(e) => {
+                            if e.kind == PointerEventKind.down && e.button == PointerEventButton.left {
+                                area-focus.focus();
+                                self.track();
+                            } else if e.kind == PointerEventKind.up && e.button == PointerEventButton.left {
+                                root.report(root.draft);
+                            }
+                        }
+                        moved => { if self.pressed { self.track(); } }
+                    }
+                    FocusRing { show: area-focus.has-focus; }
+                }
+                // The hue, around the colour wheel from red back to red.
+                bar := Rectangle {
+                    height: Tokens.space-4;
+                    border-radius: Tokens.radius-sm;
+                    background: @linear-gradient(90deg, #ff0000 0%, #ffff00 16.7%, #00ff00 33.3%, #00ffff 50%, #0000ff 66.7%, #ff00ff 83.3%, #ff0000 100%);
+                    accessible-role: slider;
+                    accessible-label: @tr("Hue");
+                    accessible-value: @tr("{} degrees", round(root.hue));
+                    Rectangle {
+                        x: root.hue / 360 * bar.width - self.width / 2;
+                        width: Tokens.space-1;
+                        border-width: Tokens.size-border;
+                        border-color: #000000;
+                        background: #ffffff;
+                    }
+                    bar-focus := FocusScope {
+                        key-pressed(e) => {
+                            if e.text == Key.LeftArrow { root.hue = max(0, root.hue - (e.modifiers.shift ? 10 : 1)); }
+                            else if e.text == Key.RightArrow { root.hue = min(360, root.hue + (e.modifiers.shift ? 10 : 1)); }
+                            else { return reject; }
+                            root.report(root.draft);
+                            accept
+                        }
+                    }
+                    TouchArea {
+                        pointer-event(e) => {
+                            if e.kind == PointerEventKind.down && e.button == PointerEventButton.left {
+                                bar-focus.focus();
+                                root.hue = clamp(self.mouse-x / bar.width, 0, 1) * 360;
+                            } else if e.kind == PointerEventKind.up && e.button == PointerEventButton.left {
+                                root.report(root.draft);
+                            }
+                        }
+                        moved => { if self.pressed { root.hue = clamp(self.mouse-x / bar.width, 0, 1) * 360; } }
+                    }
+                    FocusRing { show: bar-focus.has-focus; }
+                }
+                // Preset colours, each a button named after its colour.
+                HorizontalLayout {
+                    spacing: Tokens.space-1;
+                    for p in [
+                        { name: @tr("White"), c: #ffffff },
+                        { name: @tr("Black"), c: #000000 },
+                        { name: @tr("Red"), c: #e5383b },
+                        { name: @tr("Orange"), c: #f77f00 },
+                        { name: @tr("Yellow"), c: #fcbf49 },
+                        { name: @tr("Green"), c: #2a9d8f },
+                        { name: @tr("Blue"), c: #3a86ff },
+                        { name: @tr("Purple"), c: #8338ec },
+                    ]: Rectangle {
+                        height: Tokens.size-control-sm;
+                        horizontal-stretch: 1;
+                        border-radius: Tokens.radius-sm;
+                        border-width: Tokens.size-border;
+                        border-color: Theme.border-strong;
+                        background: p.c;
+                        accessible-role: button;
+                        accessible-label: p.name;
+                        accessible-action-default => { root.report(p.c); popup.close(); }
+                        forward-focus: preset-focus;
+                        preset-focus := FocusScope {
+                            key-pressed(e) => {
+                                if e.text == Key.Return || e.text == " " { root.report(p.c); popup.close(); return accept; }
+                                reject
+                            }
+                        }
+                        TouchArea {
+                            clicked => { root.report(p.c); popup.close(); }
+                        }
+                        FocusRing { show: preset-focus.has-focus; }
+                    }
+                }
+                HorizontalLayout {
+                    spacing: Tokens.space-2;
+                    Rectangle {
+                        width: Tokens.size-control-md;
+                        height: Tokens.size-control-sm;
+                        border-radius: Tokens.radius-sm;
+                        border-width: Tokens.size-border;
+                        border-color: Theme.border-subtle;
+                        background: root.draft;
+                        accessible-role: none;
+                    }
+                    Text {
+                        text: root.hex(root.draft);
+                        color: Theme.text-primary;
+                        font-size: Tokens.type-body-size;
+                        vertical-alignment: center;
+                    }
+                }
+            }
+        }
+    }
+}
+
 // A number the user types (NumberField). Enter or leaving the field commits it through
 // `edited`; text that is not a number goes back to `value`. Up and Down arrows step by
 // `step` (Shift: ten steps) and commit at once. Shows whole numbers.
