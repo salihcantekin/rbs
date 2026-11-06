@@ -10,7 +10,7 @@ use crate::event::Topic;
 use crate::scope::{Scope, ScopeSet};
 use crate::types::{
     Canvas, CaptureTarget, OutputProfile, RecordState, RecordingProfile, SeqMap, Settings,
-    Snapshot, SourceInfo, SourceKind, StudioInfo,
+    Snapshot, SourceInfo, SourceKind, StreamState, StudioInfo,
 };
 
 /// Parameters of a method that takes none. Unknown fields are ignored.
@@ -174,6 +174,12 @@ pub enum Command {
     RecordStop,
     /// `record.status`.
     RecordStatus,
+    /// `stream.start`.
+    StreamStart,
+    /// `stream.stop`.
+    StreamStop,
+    /// `stream.status`.
+    StreamStatus,
     /// `settings.get`.
     SettingsGet,
     /// `settings.set`.
@@ -205,6 +211,9 @@ impl Command {
             Command::RecordStartToFile(_) => "record.start_to_file",
             Command::RecordStop => "record.stop",
             Command::RecordStatus => "record.status",
+            Command::StreamStart => "stream.start",
+            Command::StreamStop => "stream.stop",
+            Command::StreamStatus => "stream.status",
             Command::SettingsGet => "settings.get",
             Command::SettingsSet(_) => "settings.set",
             Command::EventsSubscribe(_) => "events.subscribe",
@@ -275,6 +284,9 @@ pub const METHODS: &[MethodInfo] = &[
     m("record.start_to_file", Some(Scope::Admin)),
     m("record.stop", Some(Scope::Control)),
     m("record.status", Some(Scope::Read)),
+    m("stream.start", Some(Scope::Control)),
+    m("stream.stop", Some(Scope::Control)),
+    m("stream.status", Some(Scope::Read)),
     m("settings.get", Some(Scope::Admin)),
     m("settings.set", Some(Scope::Admin)),
     m("events.subscribe", Some(Scope::Read)),
@@ -337,6 +349,12 @@ enum WireRequest {
     RecordStop(Empty),
     #[serde(rename = "record.status")]
     RecordStatus(Empty),
+    #[serde(rename = "stream.start")]
+    StreamStart(Empty),
+    #[serde(rename = "stream.stop")]
+    StreamStop(Empty),
+    #[serde(rename = "stream.status")]
+    StreamStatus(Empty),
     #[serde(rename = "settings.get")]
     SettingsGet(Empty),
     #[serde(rename = "settings.set")]
@@ -373,6 +391,9 @@ impl From<WireRequest> for Request {
             WireRequest::RecordStartToFile(p) => Request::Command(C::RecordStartToFile(p)),
             WireRequest::RecordStop(_) => Request::Command(C::RecordStop),
             WireRequest::RecordStatus(_) => Request::Command(C::RecordStatus),
+            WireRequest::StreamStart(_) => Request::Command(C::StreamStart),
+            WireRequest::StreamStop(_) => Request::Command(C::StreamStop),
+            WireRequest::StreamStatus(_) => Request::Command(C::StreamStatus),
             WireRequest::SettingsGet(_) => Request::Command(C::SettingsGet),
             WireRequest::SettingsSet(p) => Request::Command(C::SettingsSet(p)),
             WireRequest::EventsSubscribe(p) => Request::Command(C::EventsSubscribe(p)),
@@ -404,6 +425,9 @@ impl From<Request> for WireRequest {
                 C::RecordStartToFile(p) => WireRequest::RecordStartToFile(p),
                 C::RecordStop => WireRequest::RecordStop(Empty {}),
                 C::RecordStatus => WireRequest::RecordStatus(Empty {}),
+                C::StreamStart => WireRequest::StreamStart(Empty {}),
+                C::StreamStop => WireRequest::StreamStop(Empty {}),
+                C::StreamStatus => WireRequest::StreamStatus(Empty {}),
                 C::SettingsGet => WireRequest::SettingsGet(Empty {}),
                 C::SettingsSet(p) => WireRequest::SettingsSet(p),
                 C::EventsSubscribe(p) => WireRequest::EventsSubscribe(p),
@@ -489,6 +513,16 @@ pub struct RecordStarted {
     pub audio_encoder: Option<String>,
 }
 
+/// `stream.start`'s answer: the stream runs and connects in the background
+/// (`stream.state` says when it reaches the server).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StreamStarted {
+    /// The video encoder's name.
+    pub video_encoder: String,
+    /// The audio encoder's name, when audio is sent.
+    pub audio_encoder: Option<String>,
+}
+
 /// `events.subscribe`'s answer.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Subscribed {
@@ -558,6 +592,10 @@ pub enum Response {
     RecordStarted(RecordStarted),
     /// `record.status`.
     RecordStatus(Snapshot<RecordState>),
+    /// `stream.start`.
+    StreamStarted(StreamStarted),
+    /// `stream.status`.
+    StreamStatus(Snapshot<StreamState>),
     /// `settings.get`, `settings.set`.
     Settings(Snapshot<Settings>),
     /// `events.subscribe`.
@@ -567,6 +605,6 @@ pub enum Response {
     /// `tokens.create`.
     TokenCreated(TokenCreated),
     /// Methods with nothing to return: `source.delete`, `edit.undo`, `edit.redo`,
-    /// `record.stop`, `events.unsubscribe`, `tokens.revoke`.
+    /// `record.stop`, `stream.stop`, `events.unsubscribe`, `tokens.revoke`.
     Done(Empty),
 }

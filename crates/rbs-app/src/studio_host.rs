@@ -17,7 +17,7 @@ use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
 use std::thread::JoinHandle;
 use std::time::Duration;
 
-use rbs_api::request::{Empty, ProfileList, RecordStarted, SourceAdded, TargetList};
+use rbs_api::request::{Empty, ProfileList, RecordStarted, SourceAdded, StreamStarted, TargetList};
 use rbs_api::types as api;
 use rbs_api::{
     ApiError, ControlEndpoint, ControlTarget, ErrorKind, EventPayload, EventPublisher, Response,
@@ -53,6 +53,7 @@ use crate::edit_history::{EditKind, History, HistoryError, StepInfo};
 use crate::record_profile::{API_PROFILE_ID, RecordProfile};
 use crate::remote_control::ApiTokens;
 use crate::stream_key::{KeyStore, MemoryKeyStore};
+use crate::stream_profile::{Protocol, StreamProfile, parse_server};
 
 /// The longest the control thread sleeps between two rounds of the engine's control
 /// loop (the studio asks for at most about 100 ms).
@@ -271,6 +272,9 @@ pub enum Command {
     StartStream(StreamRequest),
     /// End the running stream ([`StreamUpdate::Ended`] when it has).
     EndStream,
+    /// The stream settings as saved: what `stream.start` uses for control API clients.
+    /// Sent at start and after each change.
+    SetStreamProfile(StreamProfile),
     /// Save the stream key in the key store (`None` removes it); answered with
     /// [`Update::StreamKey`].
     SaveStreamKey(Option<Secret>),
@@ -409,6 +413,33 @@ pub struct StreamRequest {
     pub video: VideoSettings,
     /// Audio bitrate in bit/s.
     pub audio_bitrate_bps: u64,
+}
+
+impl StreamRequest {
+    /// The request for the saved stream settings, with `encoder` as the video encoder
+    /// (`None`: the best one). Says why when they cannot be used: no server, a server
+    /// that is not valid, or settings out of range. The key is not checked here: the
+    /// host reads it from the key store when the stream starts.
+    pub fn from_profile(p: &StreamProfile, encoder: Option<String>) -> Result<Self, String> {
+        if let Some(why) = p.problem() {
+            return Err(why);
+        }
+        if p.server.is_empty() {
+            return Err("Enter the server in Settings, Stream.".into());
+        }
+        let server = parse_server(&p.server)?;
+        let e = &p.encoding;
+        Ok(Self {
+            url: p.server.clone(),
+            input: server.protocol.input(),
+            needs_key: server.protocol.needs_key(),
+            reconnect: p.reconnect_policy(),
+            transport_options: p.transport_options(),
+            encoder,
+            video: e.video_settings(),
+            audio_bitrate_bps: e.audio_bps(),
+        })
+    }
 }
 
 /// What happened to the stream.
@@ -841,6 +872,10 @@ struct Host {
     cannot_record: Option<String>,
     /// The running recording, as the control API reports it.
     record_state: api::RecordState,
+    /// The stream settings as the UI uses them; `None` until the UI sent them.
+    stream_profile: Option<StreamProfile>,
+    /// The running stream, as the control API reports it.
+    stream_state: api::StreamState,
     /// When the Stats panel's counters go out next, on `clock`; `None` while no
     /// output runs.
     stats_due: Option<Timestamp>,
@@ -1110,6 +1145,8 @@ fn start(
             encoders,
             cannot_record,
             record_state: api::RecordState::Idle { last: None },
+            stream_profile: None,
+            stream_state: api::StreamState::Idle { last: None },
             inbox: Weak::new(),
         },
         update,
@@ -1214,6 +1251,7 @@ impl Host {
                 self.end_stream(None, notify);
                 self.publish(notify);
             }
+            Command::SetStreamProfile(profile) => self.stream_profile = Some(profile),
             Command::SaveStreamKey(key) => {
                 let result = match &key {
                     Some(k) => self.keys.write(k).map(|()| true),
@@ -1369,6 +1407,17 @@ impl Host {
         self.events
             .changed(StateKey::topic(Topic::RecordState), || {
                 EventPayload::RecordState(state)
+            });
+    }
+
+    fn set_stream_state(&mut self, state: api::StreamState) {
+        if state == self.stream_state {
+            return;
+        }
+        self.stream_state = state.clone();
+        self.events
+            .changed(StateKey::topic(Topic::StreamState), || {
+                EventPayload::StreamState(state)
             });
     }
 
@@ -1599,6 +1648,19 @@ impl Host {
         });
         let (id, video_encoder, audio_encoder) = self.start_output(&out, r.encoder.as_deref())?;
         self.streaming = Some((r.url.clone(), Link::default(), id));
+        let protocol = match parse_server(&r.url).map(|s| s.protocol) {
+            Ok(Protocol::Srt) => api::StreamProtocol::Srt,
+            // Only RTMP and SRT servers pass the settings' check.
+            _ => api::StreamProtocol::Rtmp,
+        };
+        self.set_stream_state(api::StreamState::Live {
+            protocol,
+            connected: false,
+            connects: 0,
+            reconnect_attempts: 0,
+            video_encoder: video_encoder.clone(),
+            audio_encoder: audio_encoder.clone(),
+        });
         Ok(StreamUpdate::Started {
             url: r.url.clone(),
             video_encoder,
@@ -1680,6 +1742,23 @@ impl Host {
         {
             *last = link;
             notify(Update::Stream(StreamUpdate::Link(link)));
+            if let api::StreamState::Live {
+                protocol,
+                video_encoder,
+                audio_encoder,
+                ..
+            } = &self.stream_state
+            {
+                let state = api::StreamState::Live {
+                    protocol: *protocol,
+                    connected: link.connected,
+                    connects: link.connects,
+                    reconnect_attempts: link.reconnect_attempts,
+                    video_encoder: video_encoder.clone(),
+                    audio_encoder: audio_encoder.clone(),
+                };
+                self.set_stream_state(state);
+            }
         }
     }
 
@@ -1698,8 +1777,17 @@ impl Host {
                 r.failure,
             )
         });
+        let failure = failure.or(failed);
+        self.set_stream_state(api::StreamState::Idle {
+            last: Some(api::StreamSummary {
+                failure: failure.clone(),
+                frames,
+                dropped,
+                connects,
+            }),
+        });
         notify(Update::Stream(StreamUpdate::Ended {
-            failure: failure.or(failed),
+            failure,
             frames,
             dropped,
             connects,
@@ -2180,6 +2268,19 @@ impl ApiTarget<'_> {
                 seq: host.events.seq_map([Topic::RecordState]),
                 data: host.record_state.clone(),
             })),
+            C::StreamStart => self.stream(),
+            C::StreamStop => {
+                if host.streaming.is_none() {
+                    return Err(ApiError::new(ErrorKind::Conflict, "nothing streams"));
+                }
+                host.end_stream(None, notify);
+                host.publish(notify);
+                Ok(Response::Done(Empty {}))
+            }
+            C::StreamStatus => Ok(Response::StreamStatus(api::Snapshot {
+                seq: host.events.seq_map([Topic::StreamState]),
+                data: host.stream_state.clone(),
+            })),
             C::SettingsGet => Ok(Response::Settings(api::Snapshot {
                 seq: host.events.seq_map([Topic::SettingsChanged]),
                 data: host.api_settings(),
@@ -2316,6 +2417,66 @@ impl ApiTarget<'_> {
                 Ok(Response::RecordStarted(started))
             }
             Err(why) => Err(failed(why)),
+        }
+    }
+}
+
+impl ApiTarget<'_> {
+    /// Goes live with the saved stream settings and the key in the key store.
+    fn stream(&mut self) -> Result<Response, ApiError> {
+        let notify = self.notify;
+        let host = &mut *self.host;
+        if host.streaming.is_some() {
+            return Err(ApiError::new(
+                ErrorKind::Conflict,
+                "a stream is already running",
+            ));
+        }
+        let Some(profile) = &host.stream_profile else {
+            return Err(failed("the studio is still starting; try again"));
+        };
+        if profile.server.is_empty() {
+            return Err(failed("no server is saved: enter it in Settings, Stream"));
+        }
+        // The saved server is a setting (`admin`): a `control` caller never gets it back,
+        // also not inside an error text.
+        let url = profile.server.clone();
+        let hide = |why: String| failed(why.replace(&url, "the saved server"));
+        // A saved encoder this system does not have falls back to the best one, as the
+        // UI's automatic choice does.
+        let encoder = profile
+            .encoding
+            .encoder
+            .clone()
+            .filter(|id| host.encoders.iter().any(|e| e.id == *id));
+        let request = StreamRequest::from_profile(profile, encoder).map_err(|_| {
+            failed("the saved stream settings cannot be used: see Settings, Stream")
+        })?;
+        let result = host.start_stream(&request);
+        host.publish(notify);
+        match result {
+            Ok(StreamUpdate::Started {
+                url,
+                video_encoder,
+                audio_encoder,
+            }) => {
+                let started = StreamStarted {
+                    video_encoder: video_encoder.clone(),
+                    audio_encoder: audio_encoder.clone(),
+                };
+                // The UI shows the stream as if its own button started it.
+                notify(Update::Stream(StreamUpdate::Started {
+                    url,
+                    video_encoder,
+                    audio_encoder,
+                }));
+                Ok(Response::StreamStarted(started))
+            }
+            Ok(StreamUpdate::NoKey) => Err(failed(
+                "no stream key is saved: enter it in Settings, Stream",
+            )),
+            Ok(_) => Err(failed("the stream did not start")),
+            Err(why) => Err(hide(why)),
         }
     }
 }

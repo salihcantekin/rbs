@@ -23,7 +23,7 @@ fn handshake_then_authenticate_returns_scopes_and_instance() {
     let conn = h.connect(PeerInfo::loopback_websocket());
     h.call(conn, "session.hello", hello());
     let hello = h.one(conn);
-    assert_eq!(hello["result"]["protocol"], "1.0");
+    assert_eq!(hello["result"]["protocol"], rbs_api::PROTOCOL_VERSION);
     assert_eq!(hello["result"]["instance"], h.server.config().instance);
     assert!(hello["result"].get("scopes").is_none());
 
