@@ -16,6 +16,7 @@
 mod config;
 mod entry;
 mod look;
+mod menu_bar;
 #[cfg(any(target_os = "macos", windows))]
 mod preview;
 mod preview_edit;
@@ -144,6 +145,60 @@ struct App {
     studio: studio_ui::StudioUi,
     /// The Settings window while it is open (U17).
     settings: Option<SettingsWindow>,
+    menus: MenuModels,
+    /// End stream was picked in the menu bar: the frame asks first (U4).
+    confirm_end: bool,
+}
+
+/// The `Menus` global's models, shared by every window (`menu_bar`).
+#[derive(Default)]
+struct MenuModels {
+    titles: Rc<VecModel<slint::SharedString>>,
+    enabled: Rc<VecModel<bool>>,
+    checked: Rc<VecModel<bool>>,
+    choices: Rc<VecModel<ModelRc<MenuChoice>>>,
+    /// The values shown, so an unchanged menu bar is not rebuilt.
+    shown: Option<menu_bar::Values>,
+}
+
+impl MenuModels {
+    fn update(&mut self, v: menu_bar::Values) {
+        if self.shown.as_ref() == Some(&v) {
+            return;
+        }
+        set_rows(
+            &self.titles,
+            v.titles.iter().map(|t| t.as_str().into()).collect(),
+        );
+        set_rows(&self.enabled, v.enabled.clone());
+        set_rows(&self.checked, v.checked.clone());
+        if self.shown.as_ref().map(|s| &s.choices) != Some(&v.choices) {
+            let rows: Vec<ModelRc<MenuChoice>> = v
+                .choices
+                .iter()
+                .map(|list| {
+                    let items: Vec<MenuChoice> = list
+                        .iter()
+                        .map(|(title, id, checked)| MenuChoice {
+                            title: title.as_str().into(),
+                            id: id.as_str().into(),
+                            checked: *checked,
+                        })
+                        .collect();
+                    ModelRc::from(Rc::new(VecModel::from(items)))
+                })
+                .collect();
+            self.choices.set_vec(rows);
+        }
+        self.shown = Some(v);
+    }
+
+    fn push(&self, g: &Menus<'_>) {
+        g.set_titles(ModelRc::from(self.titles.clone()));
+        g.set_enabled(ModelRc::from(self.enabled.clone()));
+        g.set_checked(ModelRc::from(self.checked.clone()));
+        g.set_choices(ModelRc::from(self.choices.clone()));
+    }
 }
 
 impl App {
@@ -241,6 +296,51 @@ impl App {
     fn flush(&mut self) {
         if self.save_due {
             self.persist_now();
+        }
+    }
+
+    /// Loads the named workspace and switches to it.
+    fn switch_workspace(&mut self, name: &str) {
+        // Save first, so loading the workspace already shown reads the latest copy.
+        self.flush();
+        match self.store.load(name) {
+            Ok(ws) => self.command(LayoutCommand::Switch(ws), Origin::Command),
+            Err(e) => self.error = Some(UiError::Other(e.to_string())),
+        }
+    }
+
+    /// The shell's state as the command registry reads it.
+    fn shown(&self) -> menu_bar::Shown<'_> {
+        menu_bar::Shown {
+            workspace: self.session.workspace(),
+            workspaces: &self.workspaces,
+            studio: &self.studio,
+            panels: view::panel_entries(self.session.workspace())
+                .into_iter()
+                .map(|p| (p.title.into(), p.id.into(), p.open))
+                .collect(),
+        }
+    }
+
+    /// Runs a command registry id from the menu bar (ADR-0050).
+    fn run_command(&mut self, id: &str) {
+        use menu_bar::Run;
+        let Some(run) = menu_bar::run(id, &self.shown()) else {
+            return;
+        };
+        match run {
+            Run::UndoEdit(back) => self.studio.undo_edit(back),
+            Run::Workspace(name) => self.switch_workspace(&name),
+            Run::Panel(id) => {
+                if let Some(id) = panel(&id) {
+                    self.command(LayoutCommand::OpenPanel(id), Origin::Command);
+                }
+            }
+            Run::Layout(c) => self.command(c, Origin::Command),
+            Run::GoLive => self.studio.go_live(),
+            Run::AskEndStream => self.confirm_end = true,
+            Run::Record => self.studio.record(),
+            Run::StopRecording => self.studio.stop_recording(),
         }
     }
 
@@ -679,6 +779,15 @@ impl Ctx {
         );
         let entries = view::workspace_entries(&app.workspaces, &app.session.workspace().name);
         set_rows(&app.workspaces_model, entries);
+        // The question goes once the stream ends some other way.
+        if !matches!(
+            app.studio.st_state,
+            studio_ui::st_state::LIVE | studio_ui::st_state::STARTING
+        ) {
+            app.confirm_end = false;
+        }
+        let values = menu_bar::values(&app.shown());
+        app.menus.update(values);
         let ws = app.session.workspace();
         let live = app.session.live();
         let (toast_kind, toast_subject) = match &app.toast {
@@ -709,10 +818,13 @@ impl Ctx {
             g.set_toast_subject(toast_subject.as_str().into());
             g.set_error_kind(error_kind);
             g.set_error_detail(error_detail.as_str().into());
+            g.set_end_stream_confirm(app.confirm_end);
         };
         push(app.main.global::<Shell>());
+        app.menus.push(&app.main.global::<Menus>());
         for f in &app.floats {
             push(f.window.global::<Shell>());
+            app.menus.push(&f.window.global::<Menus>());
         }
 
         if app.toast.is_some() {
@@ -815,6 +927,7 @@ impl Ctx {
     fn new_float(&self) -> Option<FloatSlot> {
         let fw = FloatWindow::new().ok()?;
         install(&fw.global::<Shell>(), self);
+        install_menus(&fw.global::<Menus>(), self);
         install_studio(&fw.global::<Studio>(), self);
         look::apply(
             &fw.global::<Theme>(),
@@ -955,12 +1068,7 @@ fn install(g: &Shell<'_>, ctx: &Ctx) {
         app.command(c, Origin::Command);
     });
     on!(on_switch_workspace, |app, name: slint::SharedString| {
-        // Save first, so loading the workspace already shown reads the latest copy.
-        app.flush();
-        match app.store.load(&name) {
-            Ok(ws) => app.command(LayoutCommand::Switch(ws), Origin::Command),
-            Err(e) => app.error = Some(UiError::Other(e.to_string())),
-        }
+        app.switch_workspace(&name);
     });
     on!(on_save_workspace, |app| {
         app.persist_now();
@@ -1006,6 +1114,18 @@ fn install(g: &Shell<'_>, ctx: &Ctx) {
     on!(on_dismiss_error, |app| {
         app.error = None;
     });
+    on!(on_end_stream_answer, |app, end: bool| {
+        app.confirm_end = false;
+        if end {
+            app.studio.end_stream();
+        }
+    });
+}
+
+/// Connect one window's menu bar to the shared state.
+fn install_menus(g: &Menus<'_>, ctx: &Ctx) {
+    let ctx = ctx.clone();
+    g.on_run(move |id| ctx.update(move |app| app.run_command(&id)));
 }
 
 /// Which library a menu imports into or exports from.
@@ -1484,6 +1604,8 @@ fn run(config: PathBuf, notice: Option<String>) -> Result<(), Box<dyn std::error
             save_due: false,
             exiting: false,
             settings: None,
+            menus: MenuModels::default(),
+            confirm_end: false,
             demo_since: demo_live.then(Instant::now),
             studio: studio_ui::StudioUi::new(&studio_config, keys.as_ref(), user, first_canvas),
         })),
@@ -1498,6 +1620,7 @@ fn run(config: PathBuf, notice: Option<String>) -> Result<(), Box<dyn std::error
         live_timer: Rc::new(slint::Timer::default()),
     };
     install(&main.global::<Shell>(), &ctx);
+    install_menus(&main.global::<Menus>(), &ctx);
     install_studio(&main.global::<Studio>(), &ctx);
     CTX.with(|c| *c.borrow_mut() = Some(ctx.clone()));
     // The studio: its own control thread (ADR-0041 decision 7), on the saved canvas.

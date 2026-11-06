@@ -9,7 +9,7 @@ use crate::history::LayoutHistory;
 use crate::layout::{Edge, Handle, Rect};
 use crate::live::LiveStatus;
 use crate::panel::{PanelId, UpdateRate, built_in, needed_rate};
-use crate::workspace::{Workspace, WorkspaceError};
+use crate::workspace::{Side, Workspace, WorkspaceError};
 
 /// A change to the layout.
 #[derive(Clone, Debug, PartialEq)]
@@ -75,6 +75,20 @@ pub enum LayoutCommand {
     SetLocked(bool),
     /// Replace the layout with another workspace (`ui.workspace.switch`).
     Switch(Workspace),
+    /// Show or hide an area of the main window (`ui.area.show`, `ui.area.hide`). A
+    /// hidden area keeps its panels and size.
+    SetAreaVisible {
+        /// The area.
+        side: Side,
+        /// Shown.
+        visible: bool,
+    },
+    /// Show (`ui.area.show_all`) or hide (`ui.area.hide_all`) all three areas.
+    SetAllAreasVisible(bool),
+    /// Give every area its default size (`ui.layout.reset_sizes`).
+    ResetSizes,
+    /// Put the workspace's default toolbar back (`ui.toolbar.reset`).
+    ResetToolbar,
 }
 
 /// Who asked for a change. A locked workspace refuses pointer moves, resizes
@@ -176,6 +190,7 @@ impl LayoutSession {
                 | LayoutCommand::Dock { .. }
                 | LayoutCommand::CloseWindow { .. }
                 | LayoutCommand::Resize { .. }
+                | LayoutCommand::ResetToolbar
         );
         if origin == Origin::Pointer && self.workspace.locked && pointer_blocked {
             return Err(CommandError::Locked);
@@ -243,6 +258,25 @@ impl LayoutSession {
                 group = g;
             }
             LayoutCommand::SetLocked(locked) => next.locked = locked,
+            LayoutCommand::SetAreaVisible { side, visible } => {
+                next.main_layout_mut()
+                    .ok_or(WorkspaceError::NoTarget)?
+                    .area_mut(side)
+                    .visible = visible;
+            }
+            LayoutCommand::SetAllAreasVisible(visible) => {
+                let m = next.main_layout_mut().ok_or(WorkspaceError::NoTarget)?;
+                for side in Side::ALL {
+                    m.area_mut(side).visible = visible;
+                }
+            }
+            LayoutCommand::ResetSizes => {
+                let m = next.main_layout_mut().ok_or(WorkspaceError::NoTarget)?;
+                for side in Side::ALL {
+                    m.area_mut(side).size = side.default_size();
+                }
+            }
+            LayoutCommand::ResetToolbar => next.toolbar = None,
             LayoutCommand::Switch(w) => {
                 closed.extend(
                     before
@@ -552,5 +586,44 @@ mod tests {
         )
         .unwrap();
         assert_eq!(s.redraw_rate(), UpdateRate::OnChange, "stats tab is hidden");
+    }
+
+    #[test]
+    fn areas_show_hide_and_reset() {
+        use crate::layout::Node;
+        use crate::panel::id;
+        use crate::workspace::Side;
+        let mut ws = builtin::edit();
+        {
+            let m = ws.main_layout_mut().unwrap();
+            m.left.layout = Some(Node::tabs(vec![id("rbs.library")]));
+            m.left.size = 400;
+        }
+        ws.locked = true;
+        let mut s = LayoutSession::new(ws);
+        // Showing and hiding rearrange nothing: allowed from the pointer while locked.
+        s.apply(
+            LayoutCommand::SetAreaVisible {
+                side: Side::Left,
+                visible: false,
+            },
+            Origin::Pointer,
+        )
+        .unwrap();
+        let m = s.workspace().main_layout().unwrap();
+        assert!(!m.left.visible && m.left.layout.is_some());
+        assert!(!s.workspace().visible().contains(&&id("rbs.library")));
+        s.apply(LayoutCommand::SetAllAreasVisible(true), Origin::Pointer)
+            .unwrap();
+        assert!(s.workspace().main_layout().unwrap().left.visible);
+        s.apply(LayoutCommand::ResetSizes, Origin::Command).unwrap();
+        assert_eq!(s.workspace().main_layout().unwrap().left.size, 260);
+        assert!(s.undo());
+        assert_eq!(s.workspace().main_layout().unwrap().left.size, 400);
+        // A toolbar edit rearranges: refused from the pointer while locked.
+        assert_eq!(
+            s.apply(LayoutCommand::ResetToolbar, Origin::Pointer),
+            Err(CommandError::Locked)
+        );
     }
 }
