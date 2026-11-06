@@ -199,7 +199,7 @@ A token change is in effect before its answer is sent: a new token authenticates
 
 ## Client-scoped UI commands
 
-Some commands change the state of one UI client, not of the engine: for example `ui.workspace.list`, `ui.workspace.switch(name)`, `ui.panel.open(id)` and `ui.panel.close(id)`, and with ADR-0049 `ui.area.show/hide(area)`, `ui.panel.collapse/expand(id)`, `ui.panel.auto_hide/pin(id)`, `ui.panel.maximize/restore(id)`, `ui.layout.reset_sizes` and `ui.toolbar.*`. They live in the `ui.*` namespace with these rules:
+Some commands change the state of one UI client, not of the engine: for example `ui.workspace.list`, `ui.workspace.switch(name)`, `ui.panel.open(id)` and `ui.panel.close(id)`, and with ADR-0049 `ui.area.show/hide/toggle(area)`, `ui.panel.collapse/expand(id)`, `ui.panel.auto_hide/pin(id)`, `ui.panel.maximize/restore(id)`, `ui.layout.reset_sizes` and `ui.toolbar.*`, and with ADR-0050 the command registry that maps menu and toolbar items to these commands. They live in the `ui.*` namespace with these rules:
 
 - They are not written to the engine command log and are not undoable through it. The client keeps its own layout undo history (UI rule U21).
 - The engine only routes them. Each connected UI client registers with a client id and a display name ("Studio PC"). A caller such as a Stream Deck plugin sends a `ui.*` command with a target client id, or without one to reach the desktop client that was focused most recently.

@@ -61,4 +61,5 @@ An ADR records one decision that is hard to reverse or affects more than one cra
 | [0046](0046-network-access-over-tls.md) | Network access to the control API: TLS on the remote control port, a generated key the client pins | Accepted |
 | [0047](0047-several-outputs-per-canvas.md) | Several outputs per canvas: record and stream at once, encoders shared when their settings match | Accepted |
 | [0048](0048-selection-overlay-on-the-preview-layer.md) | Draw the preview's selection outline and handles as native layers of the preview | Accepted |
-| [0049](0049-main-window-areas-panel-states-and-command-surfaces.md) | Main window areas, panel states (collapse, auto-hide, maximize), size limits and a command registry for menus and a customisable toolbar (workspace format 2) | Proposed |
+| [0049](0049-main-window-areas-panel-states-and-sizes.md) | Main window areas, panel states (collapse, auto-hide, maximize) and size limits (workspace format 2) | Proposed |
+| [0050](0050-command-registry-menus-and-toolbar.md) | One command registry for menus, context menus, the toolbar and the palette | Proposed |
