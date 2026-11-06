@@ -44,6 +44,7 @@ use windows::core::Interface;
 use windows_numerics::Matrix3x2;
 
 use super::super::geometry::{MAX_MARKS, Mark, snap};
+use super::super::region::{self, Edges, MAX_CUTOUTS, MAX_MARK_PIECES};
 use super::pipe::Owned;
 use super::subscriber::{PreviewFrame, PreviewSubscriber};
 use crate::error::GpuError;
@@ -74,8 +75,10 @@ pub struct LayerRect {
 /// Not `Send`: create and use it on the thread that owns the window (the UI thread).
 /// The visual is in a topmost composition target, above everything the toolkit draws, so
 /// toolkit content drawn over the preview rectangle (an in-window menu, for example) is
-/// hidden while the layer shows; the UI hides the layer while such content overlaps it
-/// ([`PreviewLayer::set_hidden`]).
+/// hidden while the layer shows; the UI passes such content's rectangles to
+/// [`PreviewLayer::set_cutouts`]. Marks are cut around them; the picture hides while
+/// one overlaps it, until sharing the surface between clipped visuals is checked on
+/// hardware (ADR-0054 decision 5).
 pub struct PreviewLayer {
     _d3d: ID3D11Device,
     /// Keep the engine's textures open as long as their buffers exist.
@@ -115,6 +118,17 @@ pub struct PreviewLayer {
     poll: Duration,
     placed: Option<LayerRect>,
     hidden: Cell<bool>,
+    /// The covers last asked for (physical pixels).
+    cutouts: [Option<Edges>; MAX_CUTOUTS],
+    /// A cover was not finite or there were too many: hidden.
+    cut_bad: bool,
+    /// A cover overlaps the picture: hidden (ADR-0054 decision 5, Windows interim).
+    cut_over: bool,
+    /// The marks last asked for, drawn again when the covers change.
+    wanted: [Option<Mark>; MAX_MARKS],
+    /// Scratch for mark pieces; capacity kept.
+    pieces: Vec<Edges>,
+    mark_pieces: Vec<(Edges, [u8; 4])>,
     lost: bool,
 }
 
@@ -278,6 +292,12 @@ impl PreviewLayer {
             poll: DEFAULT_RETIRE_POLL,
             placed: None,
             hidden: Cell::new(false),
+            cutouts: [None; MAX_CUTOUTS],
+            cut_bad: false,
+            cut_over: false,
+            wanted: [None; MAX_MARKS],
+            pieces: Vec::with_capacity(region::MAX_PIECES),
+            mark_pieces: Vec::with_capacity(MAX_MARK_PIECES),
             lost: false,
         })
     }
@@ -381,7 +401,47 @@ impl PreviewLayer {
             let _ = self.visual.SetOffsetY2(0.0);
             let _ = self.visual.SetTransform2(&m);
         }
+        self.apply_cutouts();
         self.commit();
+    }
+
+    /// Leaves `cutouts` out: toolkit content drawn over the layer (in-window popups,
+    /// toasts), in the same coordinates as [`PreviewLayer::set_rect`] (ADR-0054). Covers
+    /// grow to whole pixels. Marks are drawn around them; while one overlaps the picture
+    /// the layer hides (the Windows interim of ADR-0054 decision 5). A cover that is not
+    /// finite, or more than [`MAX_CUTOUTS`], hides the layer. Does nothing when the
+    /// covers did not change.
+    pub fn set_cutouts(&mut self, cutouts: &[LayerRect]) {
+        let mut wanted = [None; MAX_CUTOUTS];
+        let mut bad = cutouts.len() > MAX_CUTOUTS;
+        for (slot, c) in wanted.iter_mut().zip(cutouts) {
+            *slot = Edges::from_rect(c.x, c.y, c.width, c.height).map(|e| e.snapped_outward(1.0));
+            bad |= slot.is_none();
+        }
+        if wanted == self.cutouts && bad == self.cut_bad {
+            return;
+        }
+        self.cutouts = wanted;
+        self.cut_bad = bad;
+        self.apply_cutouts();
+        self.commit();
+    }
+
+    /// Hides the picture while a cover overlaps it and draws the marks around the covers.
+    fn apply_cutouts(&mut self) {
+        let over = self.placed.is_some_and(|rect| {
+            let area = Edges {
+                x0: rect.x,
+                y0: rect.y,
+                x1: rect.x + rect.width.max(0.0),
+                y1: rect.y + rect.height.max(0.0),
+            };
+            let picture = region::picture(area, (self.width, self.height), 1.0);
+            self.cutouts.iter().flatten().any(|c| c.overlaps(&picture))
+        });
+        self.cut_over = over;
+        self.apply_root();
+        self.draw_marks();
     }
 
     /// Draws `marks` over the picture (a selection's outline and handles, ADR-0048), in
@@ -392,6 +452,23 @@ impl PreviewLayer {
     /// A failure to make one leaves the marks out; the picture is not affected.
     pub fn set_marks(&mut self, marks: &[Mark]) {
         if marks.is_empty() && self.overlay.is_none() {
+            return;
+        }
+        self.wanted = [None; MAX_MARKS];
+        for (slot, m) in self
+            .wanted
+            .iter_mut()
+            .zip(marks.iter().filter(|m| m.drawable()))
+        {
+            *slot = Some(*m);
+        }
+        self.draw_marks();
+        self.commit();
+    }
+
+    /// Draws the wanted marks as their pieces outside the covers (ADR-0054 decision 3).
+    fn draw_marks(&mut self) {
+        if self.overlay.is_none() && self.wanted.iter().all(Option::is_none) {
             return;
         }
         if self.overlay.is_none() {
@@ -407,9 +484,40 @@ impl PreviewLayer {
                 Err(_) => return,
             }
         }
+        let mut covers = [Edges {
+            x0: 0.0,
+            y0: 0.0,
+            x1: 0.0,
+            y1: 0.0,
+        }; MAX_CUTOUTS];
+        let mut n = 0;
+        for (slot, c) in covers.iter_mut().zip(self.cutouts.iter().flatten()) {
+            *slot = *c;
+            n += 1;
+        }
+        let covers = covers.get(..n).unwrap_or(&[]);
+        let mut cut = std::mem::take(&mut self.mark_pieces);
+        let mut scratch = std::mem::take(&mut self.pieces);
+        cut.clear();
+        for m in self.wanted.iter().flatten() {
+            // Edges on whole physical pixels; at least one pixel, so a thin line never
+            // rounds away.
+            let x0 = snap(m.x, 1.0);
+            let y0 = snap(m.y, 1.0);
+            let e = Edges {
+                x0,
+                y0,
+                x1: snap(m.x + m.width, 1.0).max(x0 + 1.0),
+                y1: snap(m.y + m.height, 1.0).max(y0 + 1.0),
+            };
+            region::subtract(e, covers, MAX_MARK_PIECES, &mut scratch);
+            let room = MAX_MARK_PIECES.saturating_sub(cut.len());
+            cut.extend(scratch.iter().take(room).map(|p| (*p, m.rgba)));
+        }
+        self.pieces = scratch;
         let mut shown = 0;
-        for m in marks.iter().filter(|m| m.drawable()).take(MAX_MARKS) {
-            let Some(content) = self.color_surface(m.rgba) else {
+        for &(piece, rgba) in &cut {
+            let Some(content) = self.color_surface(rgba) else {
                 continue;
             };
             if shown == self.mark_visuals.len() && !self.add_mark_visual() {
@@ -418,12 +526,11 @@ impl PreviewLayer {
             let Some(v) = self.mark_visuals.get(shown) else {
                 break;
             };
-            // Edges on whole physical pixels; a 1 x 1 surface scaled to the rectangle.
-            let x0 = snap(m.x, 1.0);
-            let y0 = snap(m.y, 1.0);
-            // At least one pixel, so a thin line never rounds away.
-            let w = (snap(m.x + m.width, 1.0) - x0).max(1.0);
-            let h = (snap(m.y + m.height, 1.0) - y0).max(1.0);
+            // A 1 x 1 surface scaled to the piece.
+            let x0 = piece.x0;
+            let y0 = piece.y0;
+            let w = piece.x1 - piece.x0;
+            let h = piece.y1 - piece.y0;
             let t = Matrix3x2 {
                 M11: w as f32,
                 M12: 0.0,
@@ -445,7 +552,7 @@ impl PreviewLayer {
             // SAFETY: clears the content of our own visual.
             let _ = unsafe { v.SetContent(None::<&windows::core::IUnknown>) };
         }
-        self.commit();
+        self.mark_pieces = cut;
     }
 
     /// One more mark visual under the overlay; false if it could not be made.
@@ -649,7 +756,7 @@ impl PreviewLayer {
         if let Some(target) = &self.target {
             // SAFETY: sets or clears the root of our own target to our own visual.
             let _ = unsafe {
-                if self.hidden.get() {
+                if self.hidden.get() || self.cut_bad || self.cut_over {
                     target.SetRoot(None::<&IDCompositionVisual>)
                 } else {
                     target.SetRoot(&self.root)

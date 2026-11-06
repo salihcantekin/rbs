@@ -1,6 +1,6 @@
 # ADR-0054: The preview picture never disappears behind popups
 
-- Status: Proposed
+- Status: Accepted
 - Date: 2026-11-06
 - Deciders: Salih (owner)
 - Builds on: ADR-0034 (macOS preview layer), ADR-0036 (Windows preview layer), ADR-0048 (selection marks on the layer), ADR-0013 (zero cost when unused)
@@ -71,4 +71,4 @@ The owner approved two steps (2026-11-06). Step 1, done without a new decision b
   7-11. Minor: tiles keep surfaces after use; Windows cost claim; spec and U21 not listed; one-refresh lag; future scrims. Resolved in decisions 2 and 5 and Consequences.
 - 2026-11-06, independent AI session (fresh context), round 2: all round-1 findings resolved, band bound checked (2k + 1 bands of k + 1 intervals); changes requested on wording: the shell and the layer fitting different sizes (now: the layer computes the region from covers, everything fits the surface size), cover snapping direction (outward; shadows inside geometry), more than four covers (now exact up to five, cap 72, beyond that a stated limit), non-finite covers (hide), Windows marks in the interim (clipped at once), fixed-capacity scratch and overlay promotion in the measurement. All applied in decisions 3, 5 and 8.
 - 2026-11-06, independent AI session (fresh context), round 3: approve. Minor wording applied: exceptions to rule 1 named in decision 1, the non-finite cover added to decision 7, where macOS gets its snapping scale, and the error bar named as `Shell.top-toast` in decision 2.
-- Status stays Proposed: decision 5 leaves rule 1 unmet on Windows until a hardware check, which needs the owner's approval.
+- Owner: Salih accepted the ADR on 2026-11-06, including the Windows interim of decision 5 (rule 1 not yet met on Windows until the hardware check). Status: Accepted.
