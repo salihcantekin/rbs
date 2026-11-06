@@ -12,9 +12,7 @@ use rbs_app::canvas_profile::{self, CanvasProfile, RATES, SIZES};
 use rbs_app::edit_history::{EditKind, StepInfo};
 use rbs_app::encoder_form::{Choices, EncoderForm};
 use rbs_app::network_access::{self, Source};
-use rbs_app::record_profile::{
-    self, AUDIO_KBPS, Encoding, Format, RateMode, RecordProfile, VIDEO_KBPS,
-};
+use rbs_app::record_profile::{AUDIO_KBPS, Encoding, Format, RateMode, RecordProfile, VIDEO_KBPS};
 use rbs_app::remote_control::{NetworkOptions, RemoteOptions, RemoteServer};
 use rbs_app::stream_key::{self, KeyStore};
 use rbs_app::stream_profile::{self, SRT_DEFAULT_LATENCY_MS, SRT_LATENCIES_MS, StreamProfile};
@@ -22,6 +20,7 @@ use rbs_app::studio_host::{
     Command, EncoderInfo, EncoderOptions, RecordRequest, RecordingUpdate, SourceKind, SourceRow,
     SourceStatus, Stats, StreamRequest, StreamUpdate, StudioHost, Target, Update,
 };
+use rbs_app::user_session::{RECORDING, STREAM, UserSession};
 use rbs_audio::LevelMeter;
 use rbs_record::Link;
 use rbs_remote_settings::{self as remote_profile, Access, RemoteProfile};
@@ -149,6 +148,8 @@ pub struct StudioUi {
     /// The output settings and where they are saved.
     pub profile: RecordProfile,
     config: PathBuf,
+    /// The output profile and scene collection in use, and their writer (ADR-0051).
+    pub user: UserSession,
     /// Why the settings could not be saved or loaded.
     pub profile_note: String,
     /// The folder field shows this; it changes only on load and on Return (typing is
@@ -224,12 +225,27 @@ struct NetworkShown {
 struct Busy;
 
 impl StudioUi {
-    pub fn new(config: &Path, keys: &dyn KeyStore) -> Self {
-        let (profile, why) = record_profile::load(config);
-        let (mut stream, stream_why) = stream_profile::load(config);
+    /// The studio's state for the settings in `config` (remote control), the output
+    /// profile and collection of `user`, and the canvas the studio starts on
+    /// (`canvas`, the collection's first).
+    pub fn new(
+        config: &Path,
+        keys: &dyn KeyStore,
+        user: UserSession,
+        canvas: (rbs_core::media::Size, rbs_core::timing::FrameRate),
+    ) -> Self {
+        let (profile, why) = section(&user, RECORDING, RecordProfile::new, RecordProfile::problem);
+        let (mut stream, stream_why) =
+            section(&user, STREAM, StreamProfile::new, StreamProfile::problem);
         // A key kept only in memory is gone after a restart.
         stream.key_saved &= keys.persistent();
-        let (canvas, canvas_why) = canvas_profile::load(config);
+        let canvas = CanvasProfile {
+            width: canvas.0.width,
+            height: canvas.0.height,
+            fps: whole_fps(canvas.1),
+            ..CanvasProfile::new()
+        };
+        let canvas_why: Option<String> = None;
         // Without the lock: `rbs-cli` replaces the file in one rename, so this reads
         // either version whole; a bad file it moves aside is never one `rbs-cli` wrote.
         let (remote, remote_why) = remote_profile::load(config);
@@ -277,6 +293,7 @@ impl StudioUi {
             encoders: Vec::new(),
             profile,
             config: config.to_owned(),
+            user,
             profile_note: why
                 .map(|w| format!("The saved recording settings were not used: {w}"))
                 .unwrap_or_default(),
@@ -1561,7 +1578,7 @@ impl StudioUi {
     }
 
     fn save_stream(&mut self) {
-        self.stream_note = match stream_profile::save(&self.config, &self.stream) {
+        self.stream_note = match self.user.set_section(STREAM, &self.stream) {
             Ok(()) => String::new(),
             Err(e) => format!("The stream settings could not be saved: {e}"),
         };
@@ -1783,7 +1800,7 @@ impl StudioUi {
     }
 
     fn save_profile(&mut self) {
-        self.profile_note = match record_profile::save(&self.config, &self.profile) {
+        self.profile_note = match self.user.set_section(RECORDING, &self.profile) {
             Ok(()) => String::new(),
             Err(e) => format!("The recording settings could not be saved: {e}"),
         };
@@ -1858,12 +1875,13 @@ impl StudioUi {
             self.canvas_note = why;
             return;
         }
-        self.canvas = next;
-        self.save_canvas();
         if self.state != 1 || self.host.is_none() {
-            // Not running: the next start uses it.
+            // The canvas is part of the scene collection, which the studio keeps.
+            self.canvas_note = "The canvas can be changed once the studio runs.".into();
             return;
         }
+        self.canvas = next;
+        self.canvas_note.clear();
         close_preview();
         self.preview_ready = false;
         self.preview_failed = false;
@@ -1872,14 +1890,6 @@ impl StudioUi {
             size: next.size(),
             fps: next.frame_rate(),
         });
-    }
-
-    fn save_canvas(&mut self) {
-        if let Err(e) = canvas_profile::save(&self.config, &self.canvas) {
-            self.canvas_note = format!("The canvas could not be saved: {e}");
-        } else {
-            self.canvas_note.clear();
-        }
     }
 
     /// The recording's duration so far, while one runs.
@@ -1953,11 +1963,6 @@ impl StudioUi {
                         fps: whole_fps(fps),
                         ..self.canvas
                     };
-                    let note = std::mem::take(&mut self.canvas_note);
-                    self.save_canvas();
-                    if self.canvas_note.is_empty() {
-                        self.canvas_note = note;
-                    }
                 }
                 self.preview_offered = preview.is_some();
                 out.preview = preview;
@@ -2432,6 +2437,23 @@ fn step_view(step: Option<&StepInfo>) -> (i32, &str) {
     }
 }
 
+/// A profile section, or its default and why the saved one was not used.
+fn section<S: serde::de::DeserializeOwned>(
+    user: &UserSession,
+    name: &str,
+    default: impl Fn() -> S,
+    problem: impl Fn(&S) -> Option<String>,
+) -> (S, Option<String>) {
+    match user.section::<S>(name) {
+        Ok(None) => (default(), None),
+        Ok(Some(s)) => match problem(&s) {
+            None => (s, None),
+            Some(why) => (default(), Some(why)),
+        },
+        Err(why) => (default(), Some(why)),
+    }
+}
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used)] // Tests fail by panicking.
 mod tests {
@@ -2491,7 +2513,9 @@ mod tests {
         let d = std::env::temp_dir().join(format!("rbs-app-ui-{name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&d);
         std::fs::create_dir_all(&d).unwrap();
-        let mut ui = StudioUi::new(&d, &MemoryKeyStore::new());
+        let (user, col) = rbs_app::user_session::open(&d, std::sync::Arc::new(|_| {}));
+        let canvas = rbs_app::user_session::first_canvas(&col);
+        let mut ui = StudioUi::new(&d, &MemoryKeyStore::new(), user, canvas);
         // As after `Update::Started`: Go live is possible.
         ui.cannot_record = None;
         (ui, d)
@@ -2512,7 +2536,7 @@ mod tests {
         assert!(ui.stream.key_saved);
         assert!(!ui.stream.reconnect);
         assert_eq!(ui.stream.encoding.video_kbps, 9_000);
-        let saved = stream_profile::load(&d).0;
+        let saved: StreamProfile = ui.user.section(STREAM).unwrap().unwrap();
         assert_eq!(saved, ui.stream);
         // The server being typed is still there to confirm.
         ui.settings_closed();
@@ -2527,7 +2551,14 @@ mod tests {
         ui.server_edited("rtmp://127.0.0.1/live");
         ui.settings_closed();
         assert_eq!(ui.stream.server, "rtmp://127.0.0.1/live");
-        assert_eq!(stream_profile::load(&d).0.server, "rtmp://127.0.0.1/live");
+        assert_eq!(
+            ui.user
+                .section::<StreamProfile>(STREAM)
+                .unwrap()
+                .unwrap()
+                .server,
+            "rtmp://127.0.0.1/live"
+        );
 
         // Go live confirms it too; a bad one is refused and the one in use stays.
         ui.server_edited("http://example.com");

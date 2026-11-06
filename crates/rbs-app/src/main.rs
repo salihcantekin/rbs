@@ -1128,6 +1128,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // The stream key's store: read only when a stream starts (src/stream_key.rs).
     let keys = rbs_app::stream_key::system();
     let studio_config = config.clone();
+    // The output profile and scene collection in use (ADR-0051); failed saves are
+    // reported like other studio errors.
+    let (user, collection) = rbs_app::user_session::open(
+        &config,
+        std::sync::Arc::new(|why| deliver(studio_host::Update::Error(why))),
+    );
+    let user_notes = user.notes.clone();
+    let first_canvas = rbs_app::user_session::first_canvas(&collection);
+    let autosave = user.collection_saver();
     let store = WorkspaceStore::new(config::workspace_dir(&config));
     let name = config::last_workspace(&config).unwrap_or_else(|| "Edit".to_owned());
     let mut error = None;
@@ -1174,7 +1183,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             exiting: false,
             settings: None,
             demo_since: demo_live.then(Instant::now),
-            studio: studio_ui::StudioUi::new(&studio_config, keys.as_ref()),
+            studio: studio_ui::StudioUi::new(&studio_config, keys.as_ref(), user, first_canvas),
         })),
         queue: Rc::new(RefCell::new(Vec::new())),
         pending: Rc::new(Cell::new(false)),
@@ -1194,6 +1203,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let c = ctx.app.borrow().studio.canvas;
         let mut config = studio_host::HostConfig::canvas(c.size(), c.frame_rate());
         config.keys = keys;
+        config.collection = Some(collection);
+        config.autosave = autosave;
         config
     };
     match studio_host::StudioHost::spawn(
@@ -1234,6 +1245,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }),
     }
     ctx.update(App::refresh_list);
+    // Entries that could not be read, or read-only mode: in the error bar once.
+    if !user_notes.is_empty() {
+        deliver(studio_host::Update::Error(user_notes.join("\n")));
+    }
 
     // Closing the main window ends the app: floating windows close with it and
     // their closing is not a layout change.
@@ -1289,6 +1304,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         // Disconnects remote control apps, then stops the studio and joins its thread.
         app.studio.stop_remote();
         app.studio.host = None;
+        // The last changes reach the disk before the app ends.
+        app.studio.user.flush();
     }
     CTX.with(|c| c.borrow_mut().take());
     Ok(())

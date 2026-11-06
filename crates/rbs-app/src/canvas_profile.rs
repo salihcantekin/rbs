@@ -1,6 +1,8 @@
 //! The canvas the app's studio runs (glossary: Canvas): its size and frame rate, as the
-//! Video section of the Settings window sets them. Kept in `video.toml` in the config
-//! directory. Toolkit-free and tested without a window.
+//! Video section of the Settings window sets them. The canvas itself lives in the scene
+//! collection in use (ADR-0051); `video.toml` in the config directory, which older
+//! versions kept, is read once to make the first collection. Toolkit-free and tested
+//! without a window.
 
 use std::path::{Path, PathBuf};
 

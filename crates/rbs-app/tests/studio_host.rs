@@ -50,9 +50,13 @@ fn gpu() -> Option<Arc<GpuContext>> {
 }
 
 fn host(gpu: Arc<GpuContext>) -> (StudioHost, Receiver<Update>) {
-    let (tx, rx) = mpsc::channel();
     let mut config = HostConfig::desktop();
     config.preview = None;
+    host_with(gpu, config)
+}
+
+fn host_with(gpu: Arc<GpuContext>, config: HostConfig) -> (StudioHost, Receiver<Update>) {
+    let (tx, rx) = mpsc::channel();
     let host = StudioHost::spawn(
         config,
         || {
@@ -595,4 +599,52 @@ fn screens_only_an_os_picker_offers_are_added_through_it() {
         error.starts_with("The screen could not be chosen"),
         "{error}"
     );
+}
+
+/// Ends the host and waits for its thread.
+fn stop(host: StudioHost, rx: &Receiver<Update>) {
+    drop(host);
+    while rx.recv_timeout(LIMIT).is_ok() {}
+}
+
+#[test]
+fn the_scene_collection_is_saved_after_edits_and_runs_again_after_a_restart() {
+    let Some(gpu) = gpu() else { return };
+    let d = std::env::temp_dir().join(format!("rbs-app-host-collection-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&d);
+    let (user, collection) = rbs_app::user_session::open(&d, Arc::new(|_| {}));
+    let start = |user: &rbs_app::user_session::UserSession, collection| {
+        let mut config = HostConfig::canvas(Size::new(1280, 720), FrameRate::FPS_30);
+        config.preview = None;
+        config.collection = Some(collection);
+        config.autosave = user.collection_saver();
+        host_with(Arc::clone(&gpu), config)
+    };
+    let (host, rx) = start(&user, collection);
+    // The collection's canvas, not the configured size.
+    let size = next(&rx, |u| match u {
+        Update::Started { size, .. } => Some(size),
+        Update::Failed(e) => panic!("{e}"),
+        _ => None,
+    });
+    assert_eq!(size, Size::new(1920, 1080));
+    let displays = targets(&host, &rx, SourceKind::Screen);
+    host.send(Command::AddSource {
+        kind: SourceKind::Screen,
+        target: displays[0].clone(),
+    });
+    let rows = rows_where(&rx, |r| r.len() == 1);
+    stop(host, &rx);
+    user.flush();
+    drop(user);
+
+    // A new app: the same collection, with its source, runs again.
+    let (user, collection) = rbs_app::user_session::open(&d, Arc::new(|_| {}));
+    assert_eq!(collection.sources().count(), 1);
+    let (host, rx) = start(&user, collection);
+    let again = rows_where(&rx, |r| r.len() == 1);
+    assert_eq!((again[0].id, &again[0].name), (rows[0].id, &rows[0].name));
+    stop(host, &rx);
+    drop(user);
+    let _ = std::fs::remove_dir_all(&d);
 }

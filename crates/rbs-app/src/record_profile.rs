@@ -1,8 +1,9 @@
 //! The recording's output settings in the app (glossary: output profile): folder,
 //! format, encoder, and every encoder setting that changes the recording's quality
 //! (rate control and bitrates, quality level, keyframe interval, profile, preset,
-//! B-frames, CBR padding). Kept in `recording.toml` in the config directory, so they
-//! survive a restart. Toolkit-free and tested without a window.
+//! B-frames, CBR padding). Kept in the `recording` section of the output profile in
+//! use (ADR-0051, `user_session`); `recording.toml`, which older versions kept, is read
+//! once to make the first profile. Toolkit-free and tested without a window.
 
 use std::path::{Path, PathBuf};
 use std::time::Duration;

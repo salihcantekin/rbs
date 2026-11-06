@@ -4290,6 +4290,7 @@ dependencies = [
  "rbs-transport-rtmp",
  "rbs-transport-srt",
  "rbs-ui",
+ "rbs-user-data",
  "serde",
  "serde_json",
  "slint",
