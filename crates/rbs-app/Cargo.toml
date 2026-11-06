@@ -88,6 +88,12 @@ rbs-audio-io-test = { path = "../rbs-audio-io-test", optional = true }
 rfd = { version = "0.17.2", default-features = false }
 
 [target.'cfg(windows)'.dependencies]
+# The tray icon while RBS keeps running without a window (src/win, ADR-0056 decision 9).
+# 0.24 is the line that uses muda 0.19, which Slint already builds: one copy of muda.
+tray-icon = { version = "=0.24.2", default-features = false }
+# The named event a second launch signals (src/win/show_event.rs, ADR-0056 decision 6);
+# the version Slint and wgpu already build.
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Security", "Win32_Security_Authorization", "Win32_System_Threading", "Win32_UI_WindowsAndMessaging"] }
 # The stream key in the Windows Credential Manager (src/stream_key.rs).
 keyring = { version = "3.6.3", default-features = false, features = ["windows-native"] }
 rbs-capture-wgc = { path = "../rbs-capture-wgc" }
