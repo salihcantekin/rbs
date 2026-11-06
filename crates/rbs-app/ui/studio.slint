@@ -251,7 +251,8 @@ export global Studio {
 
     // Output profiles and scene collections (ADR-0051): the entries, the one in use,
     // and the menu actions. Actions: 0 new, 1 duplicate (both with a name and then
-    // used), 2 rename the one in use, 3 delete the one in use.
+    // used), 2 rename the one in use, 3 delete the one in use, 4 import a file,
+    // 5 export the one in use to a file.
     in property <[EntryRow]> profiles;
     in property <string> profile-name;
     in property <[EntryRow]> collections;

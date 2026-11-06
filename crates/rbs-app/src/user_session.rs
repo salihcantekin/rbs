@@ -434,6 +434,49 @@ impl UserSession {
         Ok(())
     }
 
+    /// Writes the output profile in use, as last saved, to `to` (one file), without
+    /// what belongs to this computer only ([`scrub_profile`]).
+    pub fn export_profile(&self, to: &Path) -> Result<(), String> {
+        self.flush();
+        self.data
+            .profiles()
+            .export_with(&self.profile_id, to, scrub_profile)
+            .map_err(|e| e.to_string())
+    }
+
+    /// Writes the scene collection in use, as last saved, to `to` (one file).
+    pub fn export_collection(&self, to: &Path) -> Result<(), String> {
+        self.flush();
+        self.data
+            .scene_collections()
+            .export(&self.collection_id, to)
+            .map_err(|e| e.to_string())
+    }
+
+    /// Adds the output profile in the file `from` (a clashing name gets a number);
+    /// returns its name.
+    pub fn import_profile(&self, from: &Path) -> Result<String, String> {
+        let from = from.to_owned();
+        self.run(move |data, lock, _| {
+            data.profiles()
+                .import(lock, &from)
+                .map(|(_, name)| name)
+                .map_err(|e| e.to_string())
+        })?
+    }
+
+    /// Adds the scene collection in the file `from` (a clashing name gets a number);
+    /// returns its name.
+    pub fn import_collection(&self, from: &Path) -> Result<String, String> {
+        let from = from.to_owned();
+        self.run(move |data, lock, _| {
+            data.scene_collections()
+                .import(lock, &from)
+                .map(|(_, name)| name)
+                .map_err(|e| e.to_string())
+        })?
+    }
+
     /// Deletes the scene collection `id`, which must not be the one in use (its file
     /// is moved to `deleted/`).
     pub fn delete_collection(&self, id: &EntryId) -> Result<(), String> {
@@ -447,6 +490,20 @@ impl UserSession {
                 .map(|_| ())
                 .map_err(|e| e.to_string())
         })?
+    }
+}
+
+/// Removes what belongs to this computer only from a profile being exported
+/// (ADR-0051 decision 5): the recording folder, and "a stream key is saved" (the key
+/// itself is never in a profile).
+pub fn scrub_profile(p: &mut OutputProfile) {
+    if let Ok(Some(mut rec)) = p.get::<toml::Table>(RECORDING) {
+        rec.remove("folder");
+        let _ = p.set(RECORDING, &rec);
+    }
+    if let Ok(Some(mut st)) = p.get::<toml::Table>(STREAM) {
+        st.insert("key_saved".into(), toml::Value::Boolean(false));
+        let _ = p.set(STREAM, &st);
     }
 }
 
@@ -947,5 +1004,42 @@ mod tests {
         assert!(other.rename_profile("New").is_err());
         assert_eq!(other.profile_name, DEFAULT_NAME);
         drop(s);
+    }
+
+    #[test]
+    fn an_exported_profile_leaves_this_computer_out_and_imports_with_a_new_name() {
+        let d = Dir::new("export");
+        let (mut s, _) = open(&d.0, quiet());
+        let mut rec = RecordProfile::new();
+        rec.folder = d.0.join("my-videos");
+        rec.video_kbps = 12_000;
+        s.set_section(RECORDING, &rec).unwrap();
+        let mut st = StreamProfile::new();
+        st.server = "rtmp://127.0.0.1/live".into();
+        st.key_saved = true;
+        s.set_section(STREAM, &st).unwrap();
+        let file = d.0.join("shared.toml");
+        s.export_profile(&file).unwrap();
+        let text = std::fs::read_to_string(&file).unwrap();
+        assert!(!text.contains("my-videos"), "{text}");
+
+        assert_eq!(s.import_profile(&file).unwrap(), "Default 2");
+        let (id, _) = s
+            .profiles()
+            .into_iter()
+            .find(|(_, n)| n == "Default 2")
+            .unwrap();
+        s.switch_profile(&id).unwrap();
+        let got: RecordProfile = s.section(RECORDING).unwrap().unwrap();
+        assert_eq!(got.video_kbps, 12_000);
+        assert_eq!(got.folder, RecordProfile::new().folder);
+        let got: StreamProfile = s.section(STREAM).unwrap().unwrap();
+        assert_eq!(got.server, st.server);
+        assert!(!got.key_saved);
+
+        // A scene collection goes out and comes back whole.
+        let col_file = d.0.join("show.toml");
+        s.export_collection(&col_file).unwrap();
+        assert_eq!(s.import_collection(&col_file).unwrap(), "Default 2");
     }
 }

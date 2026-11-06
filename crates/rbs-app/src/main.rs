@@ -946,6 +946,88 @@ fn install(g: &Shell<'_>, ctx: &Ctx) {
     });
 }
 
+/// Which library a menu imports into or exports from.
+#[derive(Clone, Copy)]
+enum Library {
+    Profiles,
+    Collections,
+}
+
+/// Import (`import`) a file into a library, or export the entry in use, named `name`,
+/// to a file. The system file dialog opens after the menu's callback returns, outside
+/// the app state's borrow, since the dialog runs its own event loop.
+fn transfer(library: Library, import: bool, name: String) {
+    slint::Timer::single_shot(std::time::Duration::ZERO, move || {
+        let Some(ctx) = CTX.with(|c| c.borrow().clone()) else {
+            return;
+        };
+        let what = match library {
+            Library::Profiles => "output profile",
+            Library::Collections => "scene collection",
+        };
+        let picked = if import {
+            file_dialog::open(&format!("Import {what}"))
+        } else {
+            file_dialog::save(&format!("Export {name}"), &format!("{name}.toml"))
+        };
+        ctx.update(move |app| {
+            let done = match picked {
+                Ok(None) => Ok(()),
+                Err(why) => Err(why),
+                Ok(Some(path)) => {
+                    let user = &app.studio.user;
+                    let result = match (library, import) {
+                        (Library::Profiles, true) => user.import_profile(&path).map(|_| ()),
+                        (Library::Profiles, false) => user.export_profile(&path),
+                        (Library::Collections, true) => user.import_collection(&path).map(|_| ()),
+                        (Library::Collections, false) => user.export_collection(&path),
+                    };
+                    app.studio.refresh_library();
+                    result
+                }
+            };
+            app.library_done(done);
+        });
+    });
+}
+
+/// The system file dialog for import and export (ADR-0051).
+mod file_dialog {
+    use std::path::PathBuf;
+
+    /// A file to import; `Ok(None)` when cancelled.
+    #[cfg(any(target_os = "macos", windows))]
+    pub fn open(title: &str) -> Result<Option<PathBuf>, String> {
+        Ok(rfd::FileDialog::new()
+            .set_title(title)
+            .add_filter("RBS settings", &["toml"])
+            .pick_file())
+    }
+
+    /// Where to export; `Ok(None)` when cancelled.
+    #[cfg(any(target_os = "macos", windows))]
+    pub fn save(title: &str, file_name: &str) -> Result<Option<PathBuf>, String> {
+        Ok(rfd::FileDialog::new()
+            .set_title(title)
+            .add_filter("RBS settings", &["toml"])
+            .set_file_name(file_name)
+            .save_file())
+    }
+
+    #[cfg(not(any(target_os = "macos", windows)))]
+    const NONE: &str = "Import and export need a file dialog, which RBS does not have on this system yet. Copy the files in the profiles or scenes folder of the settings folder instead.";
+
+    #[cfg(not(any(target_os = "macos", windows)))]
+    pub fn open(_title: &str) -> Result<Option<PathBuf>, String> {
+        Err(NONE.into())
+    }
+
+    #[cfg(not(any(target_os = "macos", windows)))]
+    pub fn save(_title: &str, _file_name: &str) -> Result<Option<PathBuf>, String> {
+        Err(NONE.into())
+    }
+}
+
 /// Connect one window's `Studio` callbacks to the studio and give it the shared models.
 /// Drops the preview layer before the studio restarts (its frames go back first).
 fn close_preview() {
@@ -1092,6 +1174,11 @@ fn install_studio(g: &Studio<'_>, ctx: &Ctx) {
                 0 => app.studio.new_profile(&text, false),
                 1 => app.studio.new_profile(&text, true),
                 2 => app.studio.rename_profile(&text),
+                4 | 5 => {
+                    let name = app.studio.user.profile_name.clone();
+                    transfer(Library::Profiles, action == 4, name);
+                    Ok(())
+                }
                 _ => {
                     let id = app.studio.user.profile_id.as_str().to_owned();
                     app.studio.delete_profile(&id)
@@ -1111,6 +1198,11 @@ fn install_studio(g: &Studio<'_>, ctx: &Ctx) {
                 0 => app.studio.new_collection(&text, false, close_preview),
                 1 => app.studio.new_collection(&text, true, close_preview),
                 2 => app.studio.rename_collection(&text),
+                4 | 5 => {
+                    let name = app.studio.user.collection_name.clone();
+                    transfer(Library::Collections, action == 4, name);
+                    Ok(())
+                }
                 _ => {
                     let id = app.studio.user.collection_id.as_str().to_owned();
                     app.studio.delete_collection(&id, close_preview)
