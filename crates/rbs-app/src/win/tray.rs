@@ -21,8 +21,11 @@ const SHOW_ID: &str = "rbs.tray.show";
 const QUIT_ID: &str = "rbs.tray.quit";
 const STATUS_ID: &str = "rbs.tray.status";
 
+/// The app's show path and quit path.
+type Paths = (fn(), fn());
+
 /// The app's show and quit paths, set once by [`install_handlers`].
-static PATHS: OnceLock<(fn(), fn())> = OnceLock::new();
+static PATHS: OnceLock<Paths> = OnceLock::new();
 
 fn run(f: fn()) {
     // The paths only queue work on the UI thread; a panic stays here.
