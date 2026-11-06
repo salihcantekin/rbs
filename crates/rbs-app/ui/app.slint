@@ -3,7 +3,7 @@
 // layout tree into tab stacks and splitter handles with absolute positions.
 import { Theme, Tokens } from "tokens.slint";
 import { Button, IconButton, Icon, IconName, MenuItem, MenuSurface, EmptyState } from "components.slint";
-import { Studio, EntryRow, SourceData, MarkData, KindData, TargetData, MeterRow, ScaleMark, EncoderData, ProgramPanel, SourcesPanel, PropertiesPanel, MixerPanel, LiveControlsPanel, OutputsPanel, StatsPanel, RecordingSettings, StreamSettings, VideoSettings, RemoteControlSettings } from "studio.slint";
+import { Studio, EntryRow, SourceData, MarkData, KindData, TargetData, MeterRow, ScaleMark, EncoderData, ProgramPanel, SourcesPanel, PropertiesPanel, MixerPanel, LiveControlsPanel, OutputsPanel, StatsPanel, RecordingSettings, StreamSettings, VideoSettings, RemoteControlSettings, GeneralSettings } from "studio.slint";
 
 export { Theme, Tokens, Studio, EntryRow, SourceData, MarkData, KindData, TargetData, MeterRow, ScaleMark, EncoderData }
 
@@ -56,6 +56,12 @@ export global Shell {
     in-out property <Cover> top-toast;
     // The main window was closed while a stream runs: the frame asks first (U4).
     in property <bool> quit-confirm;
+    // The first Close to the background says once where RBS went (ADR-0056): 0 none,
+    // 1 macOS (the Dock), 2 Windows (the notification area).
+    in property <int> background-notice;
+    callback background-notice-ok();
+    // Cmd+W on macOS: Close, as the main window's close button (ADR-0056).
+    callback close-main();
     callback quit-end-stream();
     callback quit-keep();
 
@@ -588,6 +594,25 @@ component FrameBar inherits Rectangle {
                 clicked => { Shell.quit-keep(); }
             }
         }
+        // The first Close with Keep RBS running: where RBS goes, said once (ADR-0056).
+        if Shell.background-notice != 0: HorizontalLayout {
+            spacing: Tokens.space-2;
+            accessible-role: groupbox;
+            accessible-label: @tr("RBS keeps running");
+            init => { notice-ok.focus(); }
+            Text {
+                text: Shell.background-notice == 1 ? @tr("RBS keeps running in the Dock. Quit with Cmd+Q.")
+                    : @tr("RBS keeps running in the notification area (under the ^ arrow until you pin it). Quit it from the RBS icon there.");
+                color: Theme.text-primary;
+                font-size: Tokens.type-body-size;
+                vertical-alignment: center;
+            }
+            notice-ok := Button {
+                text: @tr("OK");
+                kind: "primary";
+                clicked => { Shell.background-notice-ok(); }
+            }
+        }
         // Network access (ADR-0046 decision 7): shown in every workspace while other
         // computers can connect, in words.
         if Studio.rc-network-on: Text {
@@ -691,6 +716,8 @@ export component MainWindow inherits Window {
         KeyBinding { keys: @keys(Control + Z); activated => { Studio.undo-edit(true); } }
         KeyBinding { keys: @keys(Control + Shift + Z); activated => { Studio.undo-edit(false); } }
         KeyBinding { keys: @keys(Control + Y); activated => { Studio.undo-edit(false); } }
+        // Cmd+W closes the main window on macOS, as its close button does (ADR-0056).
+        KeyBinding { keys: @keys(Control + W); activated => { if Studio.platform == 0 { Shell.close-main(); } } }
         VerticalLayout {
             frame := FrameBar { }
             DockArea {
@@ -776,7 +803,7 @@ export component SettingsWindow inherits Window {
     min-width: Tokens.size-menu-md * 2;
     background: Theme.surface-raised;
     default-font-size: Tokens.type-body-size;
-    // 0 Video, 1 Recording, 2 Stream, 3 Remote control.
+    // 0 Video, 1 Recording, 2 Stream, 3 Remote control, 4 General (listed first).
     in-out property <int> section: 1;
     // Escape was pressed: the window closes, as with its close button.
     callback dismiss();
@@ -797,6 +824,11 @@ export component SettingsWindow inherits Window {
                     alignment: start;
                     accessible-role: list;
                     accessible-label: @tr("Settings sections");
+                    MenuItem {
+                        text: @tr("General");
+                        checked: root.section == 4;
+                        activated => { root.section = 4; }
+                    }
                     MenuItem {
                         text: @tr("Video");
                         checked: root.section == 0;
@@ -826,7 +858,7 @@ export component SettingsWindow inherits Window {
                     spacing: Tokens.space-3;
                     alignment: start;
                     Text {
-                        text: root.section == 0 ? @tr("Video") : root.section == 1 ? @tr("Recording") : root.section == 2 ? @tr("Stream") : @tr("Remote control");
+                        text: root.section == 0 ? @tr("Video") : root.section == 1 ? @tr("Recording") : root.section == 2 ? @tr("Stream") : root.section == 3 ? @tr("Remote control") : @tr("General");
                         color: Theme.text-primary;
                         font-size: Tokens.type-heading-size;
                         font-weight: Tokens.type-heading-weight;
@@ -836,6 +868,7 @@ export component SettingsWindow inherits Window {
                     if root.section == 1: RecordingSettings { }
                     if root.section == 2: StreamSettings { }
                     if root.section == 3: RemoteControlSettings { }
+                    if root.section == 4: GeneralSettings { }
                 }
             }
         }
