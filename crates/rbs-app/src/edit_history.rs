@@ -29,6 +29,8 @@ pub enum EditKind {
     Order,
     /// A source's box was moved or resized.
     Place,
+    /// A source's shape or border changed (ADR-0053).
+    Style,
 }
 
 /// The step the next undo or redo applies: its kind and the source's name.

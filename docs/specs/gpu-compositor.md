@@ -24,7 +24,7 @@ Out of scope (later specs or PRs):
 
 - Export on D3D12 (NT handle) and Vulkan (exportable memory, DMA-BUF); same frame shape as the macOS exporter (ADR-0025). Cross-process preview on Linux and Windows (ADR-0028).
 - Scene tree evaluation (groups, nesting, animation): `rbs-scene` flattens a scene into the layer list below.
-- Filters, masks, blend modes other than "normal", transitions and HDR output (PQ, HLG, BT.2020).
+- Filters, image masks, blend modes other than "normal", transitions and HDR output (PQ, HLG, BT.2020). Analytic shapes and borders of layers are in scope (ADR-0053).
 
 ## Contract
 
@@ -92,6 +92,15 @@ pub struct Layer {
     pub opacity: f32,            // 0.0..=1.0, clamped
     pub source_transfer: Transfer, // Linear | Srgb: how the source texture encodes colour
     pub opaque: bool,            // ignore source alpha (XRGB layouts with an undefined 4th byte)
+    pub style: LayerStyle,       // shape and border (ADR-0053); the default draws the picture as it is
+}
+
+pub enum LayerShape { Box, Rounded { radius: f32 }, Circle, Ellipse }
+pub struct LayerStyle {
+    pub shape: LayerShape,
+    pub border_width: f32,       // box units, inside the shape's edge; 0 for none
+    pub border_color: [f32; 4],  // linear, premultiplied (LayerStyle::new converts sRGB8 straight alpha)
+    pub box_size: [f32; 2],      // the box in its own units (the item's |Layout::size|, before nesting)
 }
 
 impl Compositor {
@@ -108,6 +117,7 @@ impl Compositor {
 - `max_layers` sizes the per-layer uniform buffer. Growing it is a non-real-time call (`reserve_layers`), done by the control thread when the scene changes. `render` with more layers returns `GpuError::TooManyLayers` and draws nothing.
 - A layer whose texture id is stale or missing is skipped and counted in `RenderStats::skipped_layers`; the rest of the canvas renders (P7).
 - The target must be an `Rgba16Float` texture of the canvas size with render-attachment usage, else `GpuError::TargetMismatch`.
+- **Styles (ADR-0053).** A layer whose style draws nothing extra (`LayerStyle::is_plain`: a box without a border, a box size with no area, values that are not finite) and a layer whose transform is singular are drawn by the plain pipeline exactly as before: same shader, same 64-byte record. Other layers are drawn by a second pipeline (`vs_styled`, `fs_styled`; same pipeline layout, blend state and target) that reads a 48-byte style record (kind, radius, border width; box size; border colour) from a second storage binding in group 0, indexed by the layer record's `params.w`; the plain shader never reads it. `render` fills both arrays in one loop over the drawn layers (skipped layers leave no record, so instance and style indices stay in step) and switches pipelines only between consecutive layers that differ. Both arrays are sized by `new` and `reserve_layers`. The styled vertex shader grows the quad by one canvas pixel on each side; the fragment shader clamps the texture coordinate to the crop, evaluates the signed distance to the shape on `unit × box_size` (rounded rectangle with the radius clamped to half the shorter side, the largest centred circle, or an ellipse by its gradient-normalised implicit function), converts it to canvas pixels along the edge normal (`w = length(Jᵀ n)`, `J` from `dpdx`/`dpdy` of the box position taken before any branch, `n` by central differences) and computes `outer = clamp(0.5 - d / w)` and `inner` the same for `d + border_width`. The colour is `(border · t + content · (1 - border.a · t)) · outer · opacity` with `t = (outer - inner) / outer` (0 where `outer` is 0), after the XRGB and sRGB handling of plain layers.
 
 ### Encoder conversion (NV12, P010)
 
@@ -484,6 +494,7 @@ pub struct NodeLayer {
     pub opacity: f32,         // 0.0..=1.0; the value a fade ends at
     pub fade: Option<Fade>,   // animates opacity, evaluated against tick time
     pub opaque: bool,         // ignore source alpha (XRGB sources)
+    pub style: LayerStyle,    // shape and border (ADR-0053), converted from the scene's ItemStyle by rbs-sources
 }
 pub struct Fade { pub from: f32, pub start: Timestamp, pub duration: Duration }  // linear from `from` to `opacity`
 
@@ -526,7 +537,7 @@ Device loss is reported by wgpu through the device-lost callback and surfaced as
 - `Compositor::render`, `YuvConverter::convert`, `YuvConverter::convert_to_surface`, `SurfaceExporter::export` and `take_ready`, `PreviewPublisher::publish` and `tick`, and the pool's `acquire` (reuse), `release` and `get` are hot paths ([hot-paths.md](../architecture/hot-paths.md)). RBS code inside them does not allocate. wgpu allocates internally while recording and submitting command buffers (about 130 allocations per frame for render + NV12 in the first measurement); the `alloc_per_frame` test asserts this does not grow over time and adds at most a small constant per layer. Reducing it (for example re-recorded render bundles) is follow-up work with its own measurements.
 - No CPU readback on the default path (P4).
 - Installed but unused: a `GpuContext` is created only when the first canvas becomes Active. A compositor or converter that is not Active is dropped, releasing its GPU objects (P13).
-- Benchmarks: `benches/preview.rs` (macOS) measures the CPU time of `PreviewPublisher::publish` and `tick` and the GPU frame time of the preview pass (1080p canvas to 720p). `benches/compositor.rs` measures 1080p frame time (render, render + NV12, waiting for the GPU) with 1, 8 and 32 layers, and the CPU cost of recording and submitting 32 layers.
+- Benchmarks: `benches/preview.rs` (macOS) measures the CPU time of `PreviewPublisher::publish` and `tick` and the GPU frame time of the preview pass (1080p canvas to 720p). `benches/compositor.rs` measures 1080p frame time (render, render + NV12, waiting for the GPU) with 1, 8 and 32 layers, plain and with every tile styled (`composite_styled`), and the CPU cost of recording and submitting 32 layers, plain and half styled.
 
 ## Conformance tests
 
@@ -534,6 +545,7 @@ Run on any adapter, including software adapters in CI (lavapipe on Linux, WARP o
 
 - Pool: reuse, generation and stale-id handling, trim, capacity, leases (a leased slot survives the owner's release, is reused after the last lease drops on another thread, frames share the lease).
 - Golden images (sampled pixels with tolerance): single opaque layer placement, crop, opacity blend over a background layer, sRGB source decode, layer order, stale layer skipped, an `opaque` layer drawn opaque over a source whose alpha is 0.
+- Styled layers (`tests/style.rs`, ADR-0053): rounded corners cut only the corners; a circle centred in a wide box; an ellipse filling the box; a half-transparent border over the picture; opacity multiplying shape and border; a rotated circle staying round; a flipped layer keeping its corners; a circle under a 4:1 squash following the picture with a one-pixel edge (0.75 coverage a quarter pixel inside the edge, where a mean pixel width would give 1.0); a cropped styled layer sampling exactly what a plain one does; plain layers around styled ones unchanged; boxes without area.
 - NV12: known colours (black, white, mid grey, pure red) produce BT.709 limited-range values within ±1.
 - P010 (where `gpu.p010`; required on Linux CI): the same colours produce 10-bit values within ±2, and the low six bits of every word are zero.
 - NV12 and P010 surfaces (where `gpu.nv12_surface` / `gpu.p010_surface`; required on Linux CI): both planes of `convert_to_surface` equal the two-plane output byte for byte on a two-colour canvas; a texture of another format is rejected.

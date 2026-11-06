@@ -31,7 +31,7 @@ Out of scope, later changes:
 | `SceneScope` | `Canvas(id)`: only that canvas shows it, directly or nested. `Shared`: every canvas may show it (U15) |
 | `Scene` | Name, `scope`, `items` bottom first |
 | `SceneItem` | `content` (`Source` or nested `Scene`), `visible`, default `layout`, `overrides: BTreeMap<CanvasId, Layout>`; `layout_on(canvas)` picks the override or the default |
-| `Layout` | Box at `position` (top-left, canvas pixels) of `size` (negative flips), rotated clockwise by `rotation` degrees about its centre; `crop` in source pixels; `opacity` 0..=1. `Layout::fit(box_w, box_h, source_w, source_h)` is the largest centred box with the source's aspect ratio (letterbox or pillarbox) |
+| `Layout` | Box at `position` (top-left, canvas pixels) of `size` (negative flips), rotated clockwise by `rotation` degrees about its centre; `crop` in source pixels; `opacity` 0..=1; `style: ItemStyle` (ADR-0053): `shape` (`Shape::Rectangle { radius }`, `Circle`: the largest circle centred in the box, `Ellipse`: fills the box), `border: Option<Border { width, color }>`, `shadow: Option<Shadow { offset, blur, color }>` (saved, not drawn yet); lengths in the item's box units (those of `size`), colours sRGB `[u8; 4]` with straight alpha; `ItemStyle::is_valid` (finite, radius and blur not negative, border width above 0), `is_plain` (the default). `Layout::fit(box_w, box_h, source_w, source_h)` is the largest centred box with the source's aspect ratio (letterbox or pillarbox) |
 | `Settings` | `BTreeMap<String, SettingValue>`; values `Bool`, `Int`, `Float` (finite), `Text`. Schemas come with the plugin SDK |
 
 `Canvas::new`, `Source::new`, `Filter::new`, `Scene::new` and `SceneItem::new` build model values for documents (edits issue ids themselves).
@@ -60,7 +60,7 @@ Checked after every edit on the would-be result; a refused edit leaves the colle
 2. Node type ids are reverse-DNS; float settings are finite.
 3. Canvases are at least 1x1, at most `MAX_CANVAS_SIDE` (16384) pixels on a side and at most `MAX_FRAME_RATE` (1000) frames per second (`CanvasTooLarge`, `FrameRateTooHigh`).
 4. Every item refers to an existing source or scene; every override and canvas scope refers to an existing canvas.
-5. Layouts are finite with opacity in 0..=1. Crop is only set on source items (a nested scene cannot be cropped by a flat layer list).
+5. Layouts are finite with opacity in 0..=1 and a valid style. Crop and a style other than the default are only set on source items (a nested scene cannot be cropped or shaped by a flat layer list; `CropOnScene`, `StyleOnScene`), on the default layout and on every per-canvas override.
 6. Nesting is acyclic, at most `MAX_NESTING_DEPTH` (16) scenes deep, and no scene flattens to more than `MAX_LAYERS` (4096) layers, counting hidden items (so showing an item never fails). Diamond-shaped nesting multiplies layers, so the bound is checked on every edit; it also bounds the recursion of `flatten`.
 7. Scope (U15): a canvas shows only its own and shared scenes as program or preview. A scene scoped to canvas C may nest shared scenes and scenes of C; a shared scene may nest only shared scenes, because it can be shown anywhere.
 8. Per-canvas layouts exist only for canvases that may show the scene (a scene scoped to canvas C has overrides for C only). Filter ids are unique across the collection.
@@ -70,7 +70,7 @@ A property test applies random sequences of every edit kind, checks that refused
 
 ### Flattening
 
-`flatten(canvas, scene) -> Vec<FlatLayer>`, bottom first. A `FlatLayer` has the `source`, the item `path` from the shown scene to the source item, a `transform` (`Affine2`, same convention as `rbs-gpu`: maps the unit square of the cropped source to canvas pixels), the `crop` in source pixels (the compositor turns it into texture coordinates with the real source size) and `opacity`.
+`flatten(canvas, scene) -> Vec<FlatLayer>`, bottom first. A `FlatLayer` has the `source`, the item `path` from the shown scene to the source item, a `transform` (`Affine2`, same convention as `rbs-gpu`: maps the unit square of the cropped source to canvas pixels), the `crop` in source pixels (the compositor turns it into texture coordinates with the real source size), `opacity`, the item's `style` and `box_size` (`|Layout::size|`, the units of the style; the compositor evaluates the shape on the unit square scaled by it, so the shape transforms with the picture, also inside scaled or squashed nested scenes).
 
 - The layout used for each item is `layout_on(canvas)`.
 - Hidden items, everything inside a hidden nested scene, and items whose effective opacity is 0 are left out.
@@ -99,7 +99,7 @@ Tests in `crates/rbs-scene/tests/binder.rs` cover audio sources feeding the mixe
 
 ## Errors and failure behaviour
 
-`SceneError` (non-exhaustive): unknown ids, `DuplicateName`, `DuplicateId`, `CanvasTooLarge`, `FrameRateTooHigh`, `EmptyName`, `BadTypeId`, `EmptyCanvas`, `InvalidLayout`, `InvalidSetting`, `CropOnScene`, `NestingCycle`, `NestingTooDeep`, `TooManyLayers`, `DuplicateFilter`, `ScopeViolation`, `IndexOutOfRange`, `CanvasHasScenes`, `UndoConflict`, `IdsExhausted`. Edits never panic.
+`SceneError` (non-exhaustive): unknown ids, `DuplicateName`, `DuplicateId`, `CanvasTooLarge`, `FrameRateTooHigh`, `EmptyName`, `BadTypeId`, `EmptyCanvas`, `InvalidLayout`, `InvalidSetting`, `CropOnScene`, `StyleOnScene`, `NestingCycle`, `NestingTooDeep`, `TooManyLayers`, `DuplicateFilter`, `ScopeViolation`, `IndexOutOfRange`, `CanvasHasScenes`, `UndoConflict`, `IdsExhausted`. Edits never panic.
 
 ## Performance requirements
 

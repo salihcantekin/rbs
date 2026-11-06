@@ -8,6 +8,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::event::Topic;
 use crate::scope::{Scope, ScopeSet};
+use crate::types::ItemStyle;
 use crate::types::{
     Canvas, CaptureTarget, OutputProfile, RecordState, RecordingProfile, SeqMap, Settings,
     Snapshot, SourceInfo, SourceKind, StreamSettingsPatch, StreamState, StudioInfo,
@@ -86,6 +87,16 @@ pub struct SourceRef {
     pub source: u32,
 }
 
+/// `item.set_style` (protocol 1.3, ADR-0053): replaces the whole style of the item's
+/// layout on the studio's canvas.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SetItemStyle {
+    /// The item's id (`source.list` gives each video source's program-scene item).
+    pub item: u32,
+    /// The new style.
+    pub style: ItemStyle,
+}
+
 /// `record.start`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RecordStart {
@@ -151,7 +162,7 @@ pub struct TokenRef {
 }
 
 /// A request the control thread carries out.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum Command {
     /// `studio.get`.
     StudioGet,
@@ -163,6 +174,8 @@ pub enum Command {
     SourceAdd(AddSource),
     /// `source.delete`.
     SourceDelete(SourceRef),
+    /// `item.set_style` (protocol 1.3).
+    ItemSetStyle(SetItemStyle),
     /// `edit.undo`.
     EditUndo,
     /// `edit.redo`.
@@ -207,6 +220,7 @@ impl Command {
             Command::SourceTargets(_) => "source.targets",
             Command::SourceAdd(_) => "source.add",
             Command::SourceDelete(_) => "source.delete",
+            Command::ItemSetStyle(_) => "item.set_style",
             Command::EditUndo => "edit.undo",
             Command::EditRedo => "edit.redo",
             Command::OutputProfiles => "output.profiles",
@@ -228,7 +242,7 @@ impl Command {
 }
 
 /// Everything a client may send.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(from = "WireRequest", into = "WireRequest")]
 pub enum Request {
     /// `session.hello`.
@@ -280,6 +294,7 @@ pub const METHODS: &[MethodInfo] = &[
     m("source.targets", Some(Scope::Control)),
     m("source.add", Some(Scope::Control)),
     m("source.delete", Some(Scope::Control)),
+    m("item.set_style", Some(Scope::Control)),
     m("edit.undo", Some(Scope::Control)),
     m("edit.redo", Some(Scope::Control)),
     m("output.profiles", Some(Scope::Read)),
@@ -338,6 +353,8 @@ enum WireRequest {
     SourceAdd(AddSource),
     #[serde(rename = "source.delete")]
     SourceDelete(SourceRef),
+    #[serde(rename = "item.set_style")]
+    ItemSetStyle(SetItemStyle),
     #[serde(rename = "edit.undo")]
     EditUndo(Empty),
     #[serde(rename = "edit.redo")]
@@ -387,6 +404,7 @@ impl From<WireRequest> for Request {
             WireRequest::SourceTargets(p) => Request::Command(C::SourceTargets(p)),
             WireRequest::SourceAdd(p) => Request::Command(C::SourceAdd(p)),
             WireRequest::SourceDelete(p) => Request::Command(C::SourceDelete(p)),
+            WireRequest::ItemSetStyle(p) => Request::Command(C::ItemSetStyle(p)),
             WireRequest::EditUndo(_) => Request::Command(C::EditUndo),
             WireRequest::EditRedo(_) => Request::Command(C::EditRedo),
             WireRequest::OutputProfiles(_) => Request::Command(C::OutputProfiles),
@@ -421,6 +439,7 @@ impl From<Request> for WireRequest {
                 C::SourceTargets(p) => WireRequest::SourceTargets(p),
                 C::SourceAdd(p) => WireRequest::SourceAdd(p),
                 C::SourceDelete(p) => WireRequest::SourceDelete(p),
+                C::ItemSetStyle(p) => WireRequest::ItemSetStyle(p),
                 C::EditUndo => WireRequest::EditUndo(Empty {}),
                 C::EditRedo => WireRequest::EditRedo(Empty {}),
                 C::OutputProfiles => WireRequest::OutputProfiles(Empty {}),
@@ -572,7 +591,7 @@ impl std::fmt::Debug for TokenCreated {
 
 /// A successful answer. Serialized as the JSON-RPC `result`; a client knows its type
 /// from the method it called, so each result type deserializes on its own.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(untagged)]
 pub enum Response {
     /// `session.hello`.

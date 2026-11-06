@@ -244,6 +244,127 @@ impl Crop {
     }
 }
 
+/// The outline of an item's picture inside its box (ADR-0053).
+#[non_exhaustive]
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum Shape {
+    /// The box, with rounded corners of `radius` box units (0: square corners). A radius
+    /// larger than half the shorter side is drawn as half the shorter side.
+    Rectangle {
+        /// Corner radius, not negative.
+        radius: f32,
+    },
+    /// The largest circle centred in the box.
+    Circle,
+    /// The ellipse that fills the box.
+    Ellipse,
+}
+
+impl Default for Shape {
+    fn default() -> Self {
+        Self::Rectangle { radius: 0.0 }
+    }
+}
+
+/// A line drawn inside the edge of an item's shape (ADR-0053).
+#[non_exhaustive]
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Border {
+    /// Width in box units, more than 0.
+    pub width: f32,
+    /// sRGB colour with straight alpha: red, green, blue, alpha.
+    pub color: [u8; 4],
+}
+
+impl Border {
+    /// A border of `width` box units in `color` (sRGB, straight alpha).
+    pub const fn new(width: f32, color: [u8; 4]) -> Self {
+        Self { width, color }
+    }
+}
+
+/// A shadow under an item's shape (ADR-0053). Saved and validated; drawn from a later
+/// step of ADR-0053 on.
+#[non_exhaustive]
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Shadow {
+    /// Offset in box units, x right and y down.
+    pub offset: [f32; 2],
+    /// Blur radius in box units, not negative.
+    pub blur: f32,
+    /// sRGB colour with straight alpha.
+    pub color: [u8; 4],
+}
+
+impl Shadow {
+    /// A shadow.
+    pub const fn new(offset: [f32; 2], blur: f32, color: [u8; 4]) -> Self {
+        Self {
+            offset,
+            blur,
+            color,
+        }
+    }
+}
+
+/// How an item's picture is shaped and framed on the canvas (ADR-0053). Lengths are in
+/// the item's box units (those of [`Layout::size`]), so the shape scales, rotates and
+/// flips with the picture. The default draws the picture as it is.
+#[non_exhaustive]
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct ItemStyle {
+    /// The outline.
+    pub shape: Shape,
+    /// A line inside the outline's edge.
+    pub border: Option<Border>,
+    /// A shadow under the shape.
+    pub shadow: Option<Shadow>,
+}
+
+impl ItemStyle {
+    /// A style with `shape` and no border.
+    pub const fn new(shape: Shape) -> Self {
+        Self {
+            shape,
+            border: None,
+            shadow: None,
+        }
+    }
+
+    /// The same style with `border`.
+    pub const fn with_border(mut self, border: Option<Border>) -> Self {
+        self.border = border;
+        self
+    }
+
+    /// The same style with `shadow`.
+    pub const fn with_shadow(mut self, shadow: Option<Shadow>) -> Self {
+        self.shadow = shadow;
+        self
+    }
+
+    /// True if it is the default: no rounding, no border, no shadow.
+    pub fn is_plain(&self) -> bool {
+        *self == Self::default()
+    }
+
+    /// True if every length is finite, radius and blur are not negative, and a border is
+    /// wider than 0.
+    pub fn is_valid(&self) -> bool {
+        let shape = match self.shape {
+            Shape::Rectangle { radius } => radius.is_finite() && radius >= 0.0,
+            Shape::Circle | Shape::Ellipse => true,
+        };
+        let border = self
+            .border
+            .is_none_or(|b| b.width.is_finite() && b.width > 0.0);
+        let shadow = self.shadow.is_none_or(|s| {
+            s.offset.iter().all(|v| v.is_finite()) && s.blur.is_finite() && s.blur >= 0.0
+        });
+        shape && border && shadow
+    }
+}
+
 /// Where an item sits on a canvas: a box at `position` (top-left, canvas pixels) of
 /// `size`, rotated clockwise by `rotation` degrees about its centre.
 #[non_exhaustive]
@@ -259,10 +380,12 @@ pub struct Layout {
     pub crop: Crop,
     /// 0.0 (invisible) to 1.0 (opaque).
     pub opacity: f32,
+    /// Shape, border and shadow of the picture (ADR-0053). Only for source items.
+    pub style: ItemStyle,
 }
 
 impl Layout {
-    /// A box at `position` of `size`, no rotation, no crop, opaque.
+    /// A box at `position` of `size`, no rotation, no crop, opaque, no style.
     pub const fn new(position: [f32; 2], size: [f32; 2]) -> Self {
         Self {
             position,
@@ -270,6 +393,7 @@ impl Layout {
             rotation: 0.0,
             crop: Crop::new(0, 0, 0, 0),
             opacity: 1.0,
+            style: ItemStyle::new(Shape::Rectangle { radius: 0.0 }),
         }
     }
 
@@ -310,12 +434,19 @@ impl Layout {
         self
     }
 
-    /// True if every number is finite and opacity is within 0..=1.
+    /// The same layout with `style`.
+    pub const fn with_style(mut self, style: ItemStyle) -> Self {
+        self.style = style;
+        self
+    }
+
+    /// True if every number is finite, opacity is within 0..=1 and the style is valid.
     pub fn is_valid(&self) -> bool {
         self.position.iter().all(|v| v.is_finite())
             && self.size.iter().all(|v| v.is_finite())
             && self.rotation.is_finite()
             && (0.0..=1.0).contains(&self.opacity)
+            && self.style.is_valid()
     }
 }
 

@@ -4,7 +4,7 @@
 use std::collections::BTreeSet;
 
 use crate::collection::{SceneCollection, SceneError, allowed_on};
-use crate::model::{CanvasId, Crop, ItemContent, ItemId, Layout, SceneId, SourceId};
+use crate::model::{CanvasId, Crop, ItemContent, ItemId, ItemStyle, Layout, SceneId, SourceId};
 
 /// A 2D affine transform, with the same convention as `rbs-gpu`'s layer transform:
 /// maps `(x, y)` to `(a*x + c*y + tx, b*x + d*y + ty)`; for layers it maps the unit
@@ -96,6 +96,12 @@ pub struct FlatLayer {
     pub crop: Crop,
     /// Product of the opacities along the path.
     pub opacity: f32,
+    /// Shape, border and shadow, with lengths in the item's own box units (ADR-0053):
+    /// the compositor evaluates them on the unit square scaled by `box_size`, so they
+    /// transform with the picture, nested scenes included.
+    pub style: ItemStyle,
+    /// The item's own box size (`|Layout::size|`), the units of `style`.
+    pub box_size: [f32; 2],
 }
 
 impl SceneCollection {
@@ -158,6 +164,8 @@ impl SceneCollection {
                     transform: placed,
                     crop: layout.crop,
                     opacity: alpha,
+                    style: layout.style,
+                    box_size: [layout.size[0].abs(), layout.size[1].abs()],
                 }),
                 ItemContent::Scene(nested) => {
                     let inner = Affine2::scale(1.0 / size.0, 1.0 / size.1).then(&placed);

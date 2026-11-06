@@ -41,7 +41,8 @@ use rbs_record::{
 };
 use rbs_scene::SceneCollection;
 use rbs_scene::model::{
-    CanvasId, ItemContent, Layout, SceneId, SceneItem, SceneScope, SettingValue, Settings, SourceId,
+    Border, CanvasId, ItemContent, ItemId, ItemStyle, Layout, SceneId, SceneItem, SceneScope,
+    SettingValue, Settings, Shadow, Shape, SourceId,
 };
 use rbs_scene::{SceneError, Undo};
 use rbs_sources::types::{self, keys};
@@ -184,6 +185,8 @@ pub struct SourceRow {
     pub meter: Option<Arc<LevelMeter>>,
     /// Where its picture is on the canvas (video sources); `None` for sound only.
     pub layout: Option<Layout>,
+    /// Its item in the program scene.
+    pub item: ItemId,
 }
 
 impl PartialEq for SourceRow {
@@ -193,6 +196,7 @@ impl PartialEq for SourceRow {
             && self.kind == other.kind
             && self.status == other.status
             && self.layout == other.layout
+            && self.item == other.item
             && match (&self.meter, &other.meter) {
                 (Some(a), Some(b)) => Arc::ptr_eq(a, b),
                 (None, None) => true,
@@ -248,6 +252,18 @@ pub enum Command {
         position: [f32; 2],
         /// Width and height.
         size: [f32; 2],
+    },
+    /// Shape and border of a video source's picture (ADR-0053), replacing the whole
+    /// style of the layout the canvas shows. A style that is not valid is refused with
+    /// [`Update::Error`].
+    SetSourceStyle {
+        /// Styles with the same number other than 0 that follow each other are one undo
+        /// step (one slider drag); 0 is a step of its own.
+        gesture: u64,
+        /// The source.
+        id: SourceId,
+        /// The new style.
+        style: ItemStyle,
     },
     /// Start recording the program ([`Update::Recording`] says how it went).
     StartRecording(RecordRequest),
@@ -1262,6 +1278,17 @@ impl Host {
                 };
                 notify(Update::BoxPlaced { seq, ok });
             }
+            Command::SetSourceStyle { gesture, id, style } => {
+                let edit = self
+                    .item_of(id)
+                    .map(|(_, item)| item.id)
+                    .and_then(|item| self.set_item_style(item, style, gesture));
+                match edit {
+                    Ok(true) => self.apply(notify),
+                    Ok(false) => {}
+                    Err(e) => notify(Update::Error(e)),
+                }
+            }
             Command::StartRecording(r) => {
                 let update = match self.start_recording(&r, Some(API_PROFILE_ID.into())) {
                     Ok(update) => update,
@@ -2180,6 +2207,45 @@ impl Host {
         Ok(true)
     }
 
+    /// A new style for an item's layout on the studio's canvas (its own layout there if
+    /// it has one, else the default); `Ok(false)` when it already has it.
+    fn set_item_style(
+        &mut self,
+        item: ItemId,
+        style: ItemStyle,
+        gesture: u64,
+    ) -> Result<bool, String> {
+        if !style.is_valid() {
+            return Err(STYLE_ERROR.into());
+        }
+        let gone = || "This source is not in the scene any more.".to_owned();
+        let found = self
+            .collection
+            .scenes()
+            .find_map(|s| s.items.iter().find(|i| i.id == item).cloned());
+        let found = found.ok_or_else(gone)?;
+        let mut layout = *found.layout_on(self.canvas);
+        if layout.style == style {
+            return Ok(false);
+        }
+        let own = found
+            .overrides
+            .contains_key(&self.canvas)
+            .then_some(self.canvas);
+        layout.style = style;
+        let undo = self
+            .collection
+            .set_item_layout(item, own, layout)
+            .map_err(|e| edit_error(&e))?;
+        let name = match found.content {
+            ItemContent::Source(id) => self.name_of(id),
+            _ => String::new(),
+        };
+        self.history
+            .record(EditKind::Style, &name, gesture, vec![undo]);
+        Ok(true)
+    }
+
     /// Runs the edited collection.
     fn apply(&mut self, notify: &dyn Fn(Update)) {
         match self.studio.update(&self.collection, &self.adapters.sources) {
@@ -2251,6 +2317,7 @@ impl Host {
                 };
                 SourceRow {
                     id: s.id,
+                    item: item.id,
                     name: s.name.clone(),
                     kind,
                     layout: kind
@@ -2266,9 +2333,15 @@ impl Host {
     }
 }
 
+/// Why a style is refused, with what to do.
+const STYLE_ERROR: &str = "Corner radius and border width must be numbers, not below 0, and a border must be wider than 0.";
+
 /// A refused scene edit in words, with what to do.
 fn edit_error(e: &SceneError) -> String {
     match e {
+        SceneError::StyleOnScene(_) => {
+            "Shape and border are for sources, not for scenes placed in a scene.".to_owned()
+        }
         SceneError::InvalidLayout => {
             "Position and size must be numbers, and the size cannot be 0.".to_owned()
         }
@@ -2382,6 +2455,36 @@ impl ApiTarget<'_> {
                 host.delete(id).map_err(failed)?;
                 host.apply(notify);
                 notify(Update::Deleted(name));
+                Ok(Response::Done(Empty {}))
+            }
+            C::ItemSetStyle(p) => {
+                let style = scene_style(&p.style)
+                    .map_err(|why| ApiError::new(ErrorKind::InvalidParams, why))?;
+                let item = ItemId::from_raw(p.item);
+                let found = host
+                    .collection
+                    .scenes()
+                    .flat_map(|s| s.items.iter())
+                    .find(|i| i.id == item)
+                    .map(|i| i.content);
+                match found {
+                    None => {
+                        return Err(ApiError::new(
+                            ErrorKind::NotFound,
+                            format!("no item {}", p.item),
+                        ));
+                    }
+                    Some(ItemContent::Scene(_)) => {
+                        return Err(ApiError::new(
+                            ErrorKind::InvalidParams,
+                            "shape and border are for source items, not nested scenes",
+                        ));
+                    }
+                    Some(_) => {}
+                }
+                if host.set_item_style(item, style, 0).map_err(failed)? {
+                    host.apply(notify);
+                }
                 Ok(Response::Done(Empty {}))
             }
             C::EditUndo | C::EditRedo => {
@@ -2731,8 +2834,69 @@ fn app_kind(k: api::SourceKind) -> SourceKind {
     }
 }
 
+/// The control API's form of a style (ADR-0053).
+fn api_style(s: &ItemStyle) -> api::ItemStyle {
+    let (shape, radius) = match s.shape {
+        Shape::Rectangle { radius } => (api::ShapeKind::Rectangle, radius),
+        Shape::Circle => (api::ShapeKind::Circle, 0.0),
+        Shape::Ellipse => (api::ShapeKind::Ellipse, 0.0),
+        _ => (api::ShapeKind::Rectangle, 0.0),
+    };
+    api::ItemStyle {
+        shape,
+        radius,
+        border: s.border.map(|b| api::StyleBorder {
+            width: b.width,
+            color: api::format_color(b.color),
+        }),
+        shadow: s.shadow.map(|sh| api::StyleShadow {
+            offset: sh.offset,
+            blur: sh.blur,
+            color: api::format_color(sh.color),
+        }),
+    }
+}
+
+/// The scene's form of an API style; the error says what is wrong.
+fn scene_style(s: &api::ItemStyle) -> Result<ItemStyle, String> {
+    let shape = match s.shape {
+        api::ShapeKind::Rectangle => Shape::Rectangle { radius: s.radius },
+        _ if s.radius != 0.0 => return Err("radius is only for shape \"rectangle\"".into()),
+        api::ShapeKind::Circle => Shape::Circle,
+        api::ShapeKind::Ellipse => Shape::Ellipse,
+    };
+    let color = |c: &str| {
+        api::parse_color(c).ok_or_else(|| format!("colour {c:?} is not #rrggbb or #rrggbbaa"))
+    };
+    let border = match &s.border {
+        Some(b) => Some(Border::new(b.width, color(&b.color)?)),
+        None => None,
+    };
+    let shadow = match &s.shadow {
+        Some(sh) => Some(Shadow::new(sh.offset, sh.blur, color(&sh.color)?)),
+        None => None,
+    };
+    let style = ItemStyle::new(shape)
+        .with_border(border)
+        .with_shadow(shadow);
+    if style.is_valid() {
+        Ok(style)
+    } else {
+        Err(STYLE_ERROR.into())
+    }
+}
+
 fn api_source(row: &SourceRow) -> api::SourceInfo {
     api::SourceInfo {
+        item: Some(row.item.get()),
+        layout: row.layout.map(|l| api::ItemLayout {
+            position: l.position,
+            size: l.size,
+            rotation: l.rotation,
+            crop: [l.crop.left, l.crop.top, l.crop.right, l.crop.bottom],
+            opacity: l.opacity,
+            style: api_style(&l.style),
+        }),
         id: row.id.get(),
         name: row.name.clone(),
         kind: row.kind.map(api_kind),
@@ -2828,6 +2992,7 @@ pub fn rescale_layout(layout: &Layout, from: (u32, u32), to: (u32, u32)) -> Layo
         };
         out.size = [nw * w.signum(), nh * h.signum()];
         out.position = [(tw - nw) / 2.0, (th - nh) / 2.0];
+        out.style = scale_style(&layout.style, nw / w.abs());
         return out;
     }
     let s = (tw / fw).min(th / fh);
@@ -2847,6 +3012,27 @@ pub fn rescale_layout(layout: &Layout, from: (u32, u32), to: (u32, u32)) -> Layo
     let (ny, nh) = axis(y, h, fh, th);
     out.position = [nx, ny];
     out.size = [nw, nh];
+    out.style = scale_style(&layout.style, s);
+    out
+}
+
+/// `style` with its lengths multiplied by `factor`, the factor its box was scaled by
+/// (ADR-0053 decision 12). A factor that is not finite and positive leaves it as it is.
+fn scale_style(style: &ItemStyle, factor: f32) -> ItemStyle {
+    if !(factor.is_finite() && factor > 0.0) {
+        return *style;
+    }
+    let mut out = *style;
+    if let Shape::Rectangle { radius } = &mut out.shape {
+        *radius *= factor;
+    }
+    if let Some(b) = &mut out.border {
+        b.width *= factor;
+    }
+    if let Some(sh) = &mut out.shadow {
+        sh.offset = sh.offset.map(|v| v * factor);
+        sh.blur *= factor;
+    }
     out
 }
 
@@ -2914,6 +3100,34 @@ mod tests {
         assert!((got.size[0] - cam.size[0] * s).abs() < 0.01);
         assert!((3440.0 - got.position[0] - got.size[0] - right * s).abs() < 0.01);
         assert!((1440.0 - got.position[1] - got.size[1] - right * s).abs() < 0.01);
+    }
+
+    #[test]
+    fn style_lengths_scale_with_the_box_in_both_branches() {
+        let style = ItemStyle::new(Shape::Rectangle { radius: 20.0 })
+            .with_border(Some(Border::new(4.0, [255; 4])))
+            .with_shadow(Some(Shadow::new([2.0, 3.0], 10.0, [0, 0, 0, 255])));
+        // Fitted: 1920 wide to 1280 wide.
+        let full = Layout::new([0.0, 0.0], [1920.0, 1080.0]).with_style(style);
+        let got = rescale_layout(&full, (1920, 1080), (1280, 720)).style;
+        let f = 1280.0 / 1920.0;
+        assert_eq!(got.shape, Shape::Rectangle { radius: 20.0 * f });
+        assert_eq!(got.border.map(|b| b.width), Some(4.0 * f));
+        assert_eq!(
+            got.shadow.map(|sh| (sh.offset, sh.blur)),
+            Some(([2.0 * f, 3.0 * f], 10.0 * f))
+        );
+        // In a corner: by the box's own factor.
+        let cam = camera_layout(1920, 1080).with_style(style);
+        let got = rescale_layout(&cam, (1920, 1080), (3440, 1440));
+        let s = got.size[0] / cam.size[0];
+        assert!((s - 1440.0 / 1080.0).abs() < 1e-4);
+        assert_eq!(got.style.border.map(|b| b.width), Some(4.0 * s));
+        // Circles have no length to scale.
+        let circle =
+            Layout::new([0.0, 0.0], [1920.0, 1080.0]).with_style(ItemStyle::new(Shape::Circle));
+        let got = rescale_layout(&circle, (1920, 1080), (1280, 720));
+        assert_eq!(got.style, ItemStyle::new(Shape::Circle));
     }
 
     #[test]

@@ -2,7 +2,7 @@
 //! [`rbs_scene::SceneCollection`], mapping one-to-one onto the model (ADR-0021).
 //!
 //! ```toml
-//! format = 1
+//! format = 2
 //! kind = "scene-collection"
 //! name = "Main show"
 //!
@@ -39,7 +39,9 @@
 //! ```
 //!
 //! Layouts may also have `rotation` (degrees), `crop` (`[left, top, right, bottom]`
-//! source pixels) and `opacity`; items `visible = false` and
+//! source pixels), `opacity` and `style` (ADR-0053, format 2: `shape = "rectangle" |
+//! "circle" | "ellipse"`, `radius` for rectangles, `border = { width, color =
+//! "#rrggbbaa" }`, `shadow = { offset = [x, y], blur, color }`); items `visible = false` and
 //! `overrides = [{ canvas = 1, layout = {...} }]`; sources `filters = [{ id, type,
 //! enabled, settings }]`. Setting values are TOML booleans, integers, floats or
 //! strings. Loading validates the whole collection
@@ -51,8 +53,8 @@ use rbs_core::media::Size;
 use rbs_core::timing::FrameRate;
 use rbs_graph::node::NodeTypeId;
 use rbs_scene::model::{
-    Canvas, CanvasId, Crop, Filter, FilterId, ItemContent, ItemId, Layout, Scene, SceneId,
-    SceneItem, SceneScope, SettingValue, Settings, Source, SourceId,
+    Border, Canvas, CanvasId, Crop, Filter, FilterId, ItemContent, ItemId, ItemStyle, Layout,
+    Scene, SceneId, SceneItem, SceneScope, SettingValue, Settings, Shadow, Shape, Source, SourceId,
 };
 use rbs_scene::{IdCounters, SceneCollection};
 use serde::{Deserialize, Serialize};
@@ -203,6 +205,126 @@ struct LayoutDoc {
     crop: [u32; 4],
     #[serde(default = "one", skip_serializing_if = "is_one")]
     opacity: f64,
+    #[serde(default, skip_serializing_if = "StyleDoc::is_plain")]
+    style: StyleDoc,
+}
+
+#[derive(Serialize, Deserialize, Default, Clone, Copy, PartialEq)]
+#[serde(rename_all = "lowercase")]
+enum ShapeName {
+    #[default]
+    Rectangle,
+    Circle,
+    Ellipse,
+}
+
+fn is_rectangle(v: &ShapeName) -> bool {
+    *v == ShapeName::Rectangle
+}
+
+#[derive(Serialize, Deserialize, Default, PartialEq)]
+#[serde(deny_unknown_fields)]
+struct StyleDoc {
+    #[serde(default, skip_serializing_if = "is_rectangle")]
+    shape: ShapeName,
+    #[serde(default, skip_serializing_if = "is_zero")]
+    radius: f64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    border: Option<BorderDoc>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    shadow: Option<ShadowDoc>,
+}
+
+#[derive(Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+struct BorderDoc {
+    width: f64,
+    color: String,
+}
+
+#[derive(Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+struct ShadowDoc {
+    #[serde(default)]
+    offset: [f64; 2],
+    #[serde(default)]
+    blur: f64,
+    color: String,
+}
+
+/// `#rrggbbaa`, the form documents write.
+fn color_doc(c: [u8; 4]) -> String {
+    format!("#{:02x}{:02x}{:02x}{:02x}", c[0], c[1], c[2], c[3])
+}
+
+/// `#rrggbb` (opaque) or `#rrggbbaa`, hexadecimal digits in either case.
+fn color(text: &str) -> Result<[u8; 4], String> {
+    let bad = || format!("colour {text:?} is not #rrggbb or #rrggbbaa");
+    let hex = text.strip_prefix('#').ok_or_else(bad)?;
+    if !(hex.len() == 6 || hex.len() == 8) || !hex.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return Err(bad());
+    }
+    let byte = |i: usize| u8::from_str_radix(&hex[i..i + 2], 16).map_err(|_| bad());
+    let alpha = if hex.len() == 8 { byte(6)? } else { 255 };
+    Ok([byte(0)?, byte(2)?, byte(4)?, alpha])
+}
+
+impl StyleDoc {
+    fn is_plain(&self) -> bool {
+        *self == Self::default()
+    }
+
+    fn of(s: &ItemStyle) -> Self {
+        let (shape, radius) = match s.shape {
+            Shape::Rectangle { radius } => (ShapeName::Rectangle, wide(radius)),
+            Shape::Circle => (ShapeName::Circle, 0.0),
+            Shape::Ellipse => (ShapeName::Ellipse, 0.0),
+            // Shapes this build does not know cannot exist in its model.
+            _ => (ShapeName::Rectangle, 0.0),
+        };
+        Self {
+            shape,
+            radius,
+            border: s.border.map(|b| BorderDoc {
+                width: wide(b.width),
+                color: color_doc(b.color),
+            }),
+            shadow: s.shadow.map(|sh| ShadowDoc {
+                offset: sh.offset.map(wide),
+                blur: wide(sh.blur),
+                color: color_doc(sh.color),
+            }),
+        }
+    }
+
+    /// The model's style; validity of the numbers is checked with the collection.
+    fn style(&self) -> Result<ItemStyle, String> {
+        let shape = match self.shape {
+            ShapeName::Rectangle => Shape::Rectangle {
+                radius: self.radius as f32,
+            },
+            _ if self.radius != 0.0 => {
+                return Err("radius is only for shape = \"rectangle\"".into());
+            }
+            ShapeName::Circle => Shape::Circle,
+            ShapeName::Ellipse => Shape::Ellipse,
+        };
+        let border = match &self.border {
+            Some(b) => Some(Border::new(b.width as f32, color(&b.color)?)),
+            None => None,
+        };
+        let shadow = match &self.shadow {
+            Some(sh) => Some(Shadow::new(
+                sh.offset.map(|v| v as f32),
+                sh.blur as f32,
+                color(&sh.color)?,
+            )),
+            None => None,
+        };
+        Ok(ItemStyle::new(shape)
+            .with_border(border)
+            .with_shadow(shadow))
+    }
 }
 
 /// An `f32` as the shortest `f64` that reads back as the same `f32` (so `0.1` is
@@ -220,15 +342,19 @@ impl LayoutDoc {
             rotation: wide(l.rotation),
             crop: [c.left, c.top, c.right, c.bottom],
             opacity: wide(l.opacity),
+            style: StyleDoc::of(&l.style),
         }
     }
 
-    fn layout(&self) -> Layout {
+    fn layout(&self) -> Result<Layout, String> {
         let [left, top, right, bottom] = self.crop;
-        Layout::new(self.position.map(|v| v as f32), self.size.map(|v| v as f32))
-            .with_rotation(self.rotation as f32)
-            .with_crop(Crop::new(left, top, right, bottom))
-            .with_opacity(self.opacity as f32)
+        Ok(
+            Layout::new(self.position.map(|v| v as f32), self.size.map(|v| v as f32))
+                .with_rotation(self.rotation as f32)
+                .with_crop(Crop::new(left, top, right, bottom))
+                .with_opacity(self.opacity as f32)
+                .with_style(self.style.style()?),
+        )
     }
 }
 
@@ -263,7 +389,17 @@ fn settings(s: BTreeMap<String, Value>) -> Settings {
 
 impl Document for SceneCollection {
     const KIND: &'static str = "scene-collection";
-    const FORMAT: u32 = 1;
+    const FORMAT: u32 = 2;
+
+    /// Format 2 adds the optional layout `style` (ADR-0053); a format 1 body is a
+    /// format 2 body without styles.
+    fn upgrade(from: u32, body: &mut toml::Table) -> Result<(), String> {
+        let _ = body;
+        match from {
+            1 => Ok(()),
+            _ => Err(format!("format {from} cannot be read")),
+        }
+    }
 
     fn to_body(&self) -> Result<toml::Table, String> {
         let n = self.id_counters();
@@ -435,11 +571,11 @@ impl Document for SceneCollection {
                             }
                         };
                         let mut item =
-                            SceneItem::new(ItemId::from_raw(i.id), content, i.layout.layout());
+                            SceneItem::new(ItemId::from_raw(i.id), content, i.layout.layout()?);
                         item.visible = i.visible;
                         for o in i.overrides {
                             let canvas = CanvasId::from_raw(o.canvas);
-                            if item.overrides.insert(canvas, o.layout.layout()).is_some() {
+                            if item.overrides.insert(canvas, o.layout.layout()?).is_some() {
                                 return Err(format!(
                                     "item {} has two layouts for canvas {}",
                                     i.id, o.canvas
