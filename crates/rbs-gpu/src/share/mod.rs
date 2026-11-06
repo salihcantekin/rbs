@@ -30,6 +30,11 @@ mod layer;
 mod mach;
 #[cfg(target_vendor = "apple")]
 mod publisher;
+#[cfg(any(
+    test,
+    all(any(windows, target_os = "macos"), feature = "preview-layer")
+))]
+mod region;
 #[cfg(target_vendor = "apple")]
 mod subscriber;
 #[cfg(windows)]
@@ -44,6 +49,8 @@ pub use geometry::{MAX_MARKS, Mark};
 pub use layer::{DEFAULT_RETIRE_AFTER, LayerRect, PreviewLayer};
 #[cfg(target_vendor = "apple")]
 pub use publisher::PreviewPublisher;
+#[cfg(all(any(windows, target_os = "macos"), feature = "preview-layer"))]
+pub use region::MAX_CUTOUTS;
 #[cfg(target_vendor = "apple")]
 pub use subscriber::{
     PREVIEW_TEXTURE_FORMAT, PREVIEW_TEXTURE_USAGE, PreviewFrame, PreviewSubscriber,

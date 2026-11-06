@@ -14,10 +14,11 @@ use objc2::runtime::AnyObject;
 use objc2_core_foundation::{CFRetained, CGPoint, CGRect, CGSize};
 use objc2_core_graphics::CGColor;
 use objc2_io_surface::IOSurfaceRef;
-use objc2_quartz_core::{CAAutoresizingMask, CALayer, CATransaction, kCAGravityResizeAspect};
+use objc2_quartz_core::{CAAutoresizingMask, CALayer, CATransaction, kCAGravityResize};
 use rbs_core::time::Timestamp;
 
 use super::geometry::{MAX_MARKS, Mark, snap};
+use super::region::{self, Edges, MAX_CUTOUTS, MAX_MARK_PIECES, MAX_PIECES, MAX_TILES};
 use super::subscriber::{PreviewFrame, PreviewSubscriber};
 use crate::error::GpuError;
 
@@ -39,10 +40,32 @@ pub struct LayerRect {
 /// Not `Send`: create and use it on one thread; once attached to a view, the thread that
 /// owns the view (the UI's main thread).
 /// The layer sits above the toolkit's own layer, so toolkit content drawn over the
-/// preview rectangle (an in-window menu, for example) is hidden while the layer shows;
-/// the UI hides the layer while such content overlaps it ([`PreviewLayer::set_hidden`]).
+/// preview rectangle (an in-window menu, for example) would be hidden under it; the UI
+/// passes such content's rectangles to [`PreviewLayer::set_cutouts`] and the layer
+/// leaves them out (ADR-0054).
+///
+/// Sublayers: the picture (the surface fitted into the rectangle), the tiles that
+/// replace it while covers cut it (each a rectangular clip around its own picture
+/// layer), and the marks' container above them.
 pub struct PreviewLayer {
     layer: Retained<CALayer>,
+    /// The surface, fitted into the rectangle (ADR-0054 decision 3).
+    picture: Retained<CALayer>,
+    /// The engine's picture size in pixels.
+    image: (u32, u32),
+    /// The covers last asked for, in the same units as `set_rect`.
+    cutouts: [Option<Edges>; MAX_CUTOUTS],
+    /// A cover was not finite or there were more than `MAX_CUTOUTS`: the layer hides.
+    cut_hidden: bool,
+    /// What the UI asked for with `set_hidden`.
+    hidden: bool,
+    /// Tile clips and their picture layers, made on first use and reused.
+    tiles: Vec<(Retained<CALayer>, Retained<CALayer>)>,
+    /// Tiles showing the picture now (0: the picture layer shows it whole).
+    tiled: usize,
+    /// Scratch for the region and the mark pieces; capacity kept.
+    pieces: Vec<Edges>,
+    mark_pieces: Vec<Edges>,
     surfaces: Vec<CFRetained<IOSurfaceRef>>,
     /// The frame whose surface is the layer's contents.
     shown: Option<PreviewFrame>,
@@ -71,17 +94,25 @@ impl PreviewLayer {
     /// first [`PreviewLayer::show`]. Not for real-time threads.
     pub fn new(subscriber: &PreviewSubscriber) -> Self {
         let layer = CALayer::new();
-        // SAFETY: `kCAGravityResizeAspect` is a constant NSString exported by
-        // QuartzCore; reading it has no other requirement.
-        layer.setContentsGravity(unsafe { kCAGravityResizeAspect });
         // Not opaque: letterbox bars beside the image show what the toolkit draws there.
         layer.setOpaque(false);
         // Above the toolkit's layer even when the toolkit recreates its own.
         layer.setZPosition(1.0);
+        let picture = picture_layer();
+        transaction(|| layer.addSublayer(&picture));
         let surfaces = subscriber.io_surfaces();
         let retiring = Vec::with_capacity(surfaces.len());
         Self {
             layer,
+            picture,
+            image: subscriber.size(),
+            cutouts: [None; MAX_CUTOUTS],
+            cut_hidden: false,
+            hidden: false,
+            tiles: Vec::new(),
+            tiled: 0,
+            pieces: Vec::with_capacity(MAX_PIECES),
+            mark_pieces: Vec::with_capacity(MAX_MARK_PIECES),
             surfaces,
             shown: None,
             retiring,
@@ -159,7 +190,11 @@ impl PreviewLayer {
         self.set_marks(&[]);
         transaction(|| {
             // SAFETY: nil is a valid value for `contents`.
-            unsafe { self.layer.setContents(None) };
+            unsafe { self.picture.setContents(None) };
+            for (_, pic) in &self.tiles {
+                // SAFETY: as above.
+                unsafe { pic.setContents(None) };
+            }
             self.layer.removeFromSuperlayer();
         });
         CATransaction::flush();
@@ -173,6 +208,21 @@ impl PreviewLayer {
     #[doc(hidden)]
     pub fn layer(&self) -> &CALayer {
         &self.layer
+    }
+
+    /// The layer showing the whole picture while no cover cuts it (tests).
+    #[doc(hidden)]
+    pub fn picture_layer(&self) -> &CALayer {
+        &self.picture
+    }
+
+    /// The tiles showing the picture now, each its clip and its picture layer (tests).
+    #[doc(hidden)]
+    pub fn tile_layers(&self) -> impl Iterator<Item = (&CALayer, &CALayer)> {
+        self.tiles
+            .iter()
+            .take(self.tiled)
+            .map(|(t, p)| (&**t, &**p))
     }
 
     /// Places the layer over `rect` of its superlayer. Does nothing when neither the
@@ -208,7 +258,131 @@ impl PreviewLayer {
             self.layer.setAutoresizingMask(mask);
             self.layer.setFrame(frame);
         });
+        self.arrange();
+    }
+
+    /// Leaves `cutouts` out of the picture and the marks: toolkit content drawn over the
+    /// layer (in-window popups, toasts), in the same coordinates as
+    /// [`PreviewLayer::set_rect`] (ADR-0054). Covers grow to whole device pixels. While
+    /// no cover overlaps the picture it stays one layer; otherwise it is shown as tiles
+    /// around the covers (rectangular clips sharing the surface, no copy and no mask).
+    /// A cover that is not finite, or more than [`MAX_CUTOUTS`] covers, hides the layer.
+    /// Does nothing when the covers did not change.
+    pub fn set_cutouts(&mut self, cutouts: &[LayerRect]) {
+        let mut wanted = [None; MAX_CUTOUTS];
+        let mut bad = cutouts.len() > MAX_CUTOUTS;
+        for (slot, c) in wanted.iter_mut().zip(cutouts) {
+            *slot = Edges::from_rect(c.x, c.y, c.width, c.height);
+            bad |= slot.is_none();
+        }
+        if wanted == self.cutouts && bad == self.cut_hidden {
+            return;
+        }
+        self.cutouts = wanted;
+        self.cut_hidden = bad;
+        self.arrange();
+    }
+
+    /// Places the picture or its tiles and the marks for the current rectangle and
+    /// covers, in one transaction.
+    fn arrange(&mut self) {
+        let Some((rect, _, _)) = self.placed else {
+            self.apply_hidden();
+            return;
+        };
+        let flipped = self.layer.contentsAreFlipped();
+        let scale = self
+            .layer
+            .superlayer()
+            .map_or(1.0, |sup| sup.contentsScale());
+        let area = Edges {
+            x0: rect.x,
+            y0: rect.y,
+            x1: rect.x + rect.width.max(0.0),
+            y1: rect.y + rect.height.max(0.0),
+        };
+        let picture = region::picture(area, self.image, scale);
+        let mut covers = [area; MAX_CUTOUTS];
+        let mut n = 0;
+        for (slot, c) in covers.iter_mut().zip(self.cutouts.iter().flatten()) {
+            *slot = c.snapped_outward(scale);
+            n += 1;
+        }
+        let covers = covers.get(..n).unwrap_or(&[]);
+        region::subtract(picture, covers, MAX_TILES, &mut self.pieces);
+        let whole = matches!(self.pieces.as_slice(), [p] if *p == picture);
+        while !whole && self.tiles.len() < self.pieces.len() {
+            let tile = CALayer::new();
+            tile.setMasksToBounds(true);
+            let pic = picture_layer();
+            transaction(|| {
+                tile.addSublayer(&pic);
+                // Below the marks' container (z 1), above nothing else.
+                self.layer.insertSublayer_atIndex(&tile, 0);
+            });
+            self.tiles.push((tile, pic));
+        }
+        let tiled = if whole { 0 } else { self.pieces.len() };
+        let shown = self.shown_contents();
+        let height = rect.height.max(0.0);
+        let at = |e: &Edges, origin: (f64, f64), parent_h: f64| {
+            let top = e.y0 - origin.1;
+            let bottom = e.y1 - origin.1;
+            let y = if flipped { top } else { parent_h - bottom };
+            CGRect::new(
+                CGPoint::new(e.x0 - origin.0, y),
+                CGSize::new(e.x1 - e.x0, bottom - top),
+            )
+        };
+        let root = (rect.x, rect.y);
+        let pieces = &self.pieces;
+        let tiles = &self.tiles;
+        let previous = self.tiled;
+        transaction(|| {
+            self.picture.setFrame(at(&picture, root, height));
+            self.picture.setHidden(tiled > 0);
+            for (i, (tile, pic)) in tiles.iter().enumerate() {
+                match pieces.get(i).filter(|_| i < tiled) {
+                    Some(piece) => {
+                        tile.setFrame(at(piece, root, height));
+                        pic.setFrame(at(&picture, (piece.x0, piece.y0), piece.y1 - piece.y0));
+                        if i >= previous {
+                            // A new tile shows the frame on screen at once.
+                            // SAFETY: `shown` is nil or the IOSurface of the shown frame,
+                            // which `contents` accepts (see `show`).
+                            unsafe { pic.setContents(shown) };
+                        }
+                        tile.setHidden(false);
+                    }
+                    None if i < previous => {
+                        // No longer needed: it holds no surface.
+                        // SAFETY: nil is a valid value for `contents`.
+                        unsafe { pic.setContents(None) };
+                        tile.setHidden(true);
+                    }
+                    None => {}
+                }
+            }
+        });
+        self.tiled = tiled;
+        self.apply_hidden();
         self.draw_marks();
+    }
+
+    /// The shown frame's surface as `contents`, if a frame is shown.
+    fn shown_contents(&self) -> Option<&AnyObject> {
+        let frame = self.shown.as_ref()?;
+        let surface: &IOSurfaceRef = self.surfaces.get(frame.slot())?;
+        // SAFETY: an IOSurfaceRef is toll-free bridged with the Objective-C `IOSurface`
+        // class; the reference lives as long as `self.surfaces`.
+        Some(unsafe { &*(surface as *const IOSurfaceRef).cast::<AnyObject>() })
+    }
+
+    fn apply_hidden(&self) {
+        let hidden = self.hidden || self.cut_hidden;
+        if self.layer.isHidden() != hidden {
+            transaction(|| self.layer.setHidden(hidden));
+        }
     }
 
     /// Draws `marks` over the picture (a selection's outline and handles, ADR-0048), in
@@ -240,6 +414,44 @@ impl PreviewLayer {
         if count == 0 && self.marks.is_none() {
             return;
         }
+        let scale = self
+            .layer
+            .superlayer()
+            .map_or(1.0, |sup| sup.contentsScale());
+        // Each mark as its pieces outside the covers (ADR-0054 decision 3): edges on the
+        // window's device pixel grid; at most `MAX_MARK_PIECES`, the smallest left out.
+        let mut covers = [Edges {
+            x0: 0.0,
+            y0: 0.0,
+            x1: 0.0,
+            y1: 0.0,
+        }; MAX_CUTOUTS];
+        let mut n = 0;
+        for (slot, c) in covers.iter_mut().zip(self.cutouts.iter().flatten()) {
+            *slot = c.snapped_outward(scale);
+            n += 1;
+        }
+        let covers = covers.get(..n).unwrap_or(&[]);
+        let mut cut = std::mem::take(&mut self.mark_pieces);
+        let mut colored: [(usize, [u8; 4]); MAX_MARKS] = [(0, [0; 4]); MAX_MARKS];
+        let mut piece_count = 0;
+        let mut scratch = std::mem::take(&mut self.pieces);
+        cut.clear();
+        for (slot, m) in colored.iter_mut().zip(wanted.iter().flatten()) {
+            let e = Edges {
+                x0: snap(m.x, scale),
+                y0: snap(m.y, scale),
+                x1: snap(m.x + m.width, scale),
+                y1: snap(m.y + m.height, scale),
+            };
+            region::subtract(e, covers, MAX_MARK_PIECES, &mut scratch);
+            let room = MAX_MARK_PIECES.saturating_sub(cut.len());
+            cut.extend(scratch.iter().take(room));
+            piece_count = cut.len();
+            *slot = (piece_count, m.rgba);
+        }
+        self.pieces = scratch;
+        let count = piece_count;
         if self.marks.is_none() {
             let c = CALayer::new();
             c.setZPosition(1.0);
@@ -258,57 +470,55 @@ impl PreviewLayer {
         // The preview layer's own orientation decides where its sublayers' origin is.
         let flipped = self.layer.contentsAreFlipped();
         let height = rect.height.max(0.0);
-        let scale = self
-            .layer
-            .superlayer()
-            .map_or(1.0, |sup| sup.contentsScale());
         let layers = &self.mark_layers;
         let colors = &mut self.mark_colors;
+        let marks_of = &colored;
+        let pieces = &cut;
         transaction(|| {
             container.setFrame(CGRect::new(
                 CGPoint::new(0.0, 0.0),
                 CGSize::new(rect.width.max(0.0), height),
             ));
-            let mut i = 0;
-            for m in wanted.iter().flatten() {
+            for (i, piece) in pieces.iter().enumerate() {
                 let (Some(l), Some(c)) = (layers.get(i), colors.get_mut(i)) else {
                     break;
                 };
-                // Edges on the window's device pixel grid, then relative to the layer.
-                let x0 = snap(m.x, scale) - rect.x;
-                let x1 = snap(m.x + m.width, scale) - rect.x;
-                let top = snap(m.y, scale) - rect.y;
-                let bottom = snap(m.y + m.height, scale) - rect.y;
+                // The colour of the mark this piece belongs to.
+                let rgba = marks_of
+                    .iter()
+                    .find(|(end, _)| i < *end)
+                    .map_or([0; 4], |(_, rgba)| *rgba);
+                // Relative to the layer.
+                let x0 = piece.x0 - rect.x;
+                let top = piece.y0 - rect.y;
+                let bottom = piece.y1 - rect.y;
                 let y = if flipped { top } else { height - bottom };
                 l.setFrame(CGRect::new(
                     CGPoint::new(x0, y),
-                    CGSize::new(x1 - x0, bottom - top),
+                    CGSize::new(piece.x1 - piece.x0, bottom - top),
                 ));
-                if *c != m.rgba {
-                    *c = m.rgba;
+                if *c != rgba {
+                    *c = rgba;
                     let ch = |v: u8| f64::from(v) / 255.0;
-                    let color = CGColor::new_srgb(
-                        ch(m.rgba[0]),
-                        ch(m.rgba[1]),
-                        ch(m.rgba[2]),
-                        ch(m.rgba[3]),
-                    );
+                    let color =
+                        CGColor::new_srgb(ch(rgba[0]), ch(rgba[1]), ch(rgba[2]), ch(rgba[3]));
                     l.setBackgroundColor(Some(&color));
                 }
                 l.setHidden(false);
-                i += 1;
             }
-            for l in layers.iter().skip(i) {
+            for l in layers.iter().skip(pieces.len()) {
                 l.setHidden(true);
             }
         });
+        self.mark_pieces = cut;
     }
 
-    /// Hides or shows the layer (for content the toolkit draws over the preview).
-    pub fn set_hidden(&self, hidden: bool) {
-        if self.layer.isHidden() != hidden {
-            transaction(|| self.layer.setHidden(hidden));
-        }
+    /// Hides or shows the layer (while the picture is not shown at all, for example its
+    /// panel is not in the window). Content drawn over the picture is cut out instead
+    /// ([`PreviewLayer::set_cutouts`]).
+    pub fn set_hidden(&mut self, hidden: bool) {
+        self.hidden = hidden;
+        self.apply_hidden();
     }
 
     /// Shows `frame` from `now` (any monotonic clock, the same one for every call). The
@@ -325,8 +535,14 @@ impl PreviewLayer {
         // SAFETY: an IOSurfaceRef is toll-free bridged with the Objective-C `IOSurface`
         // class, which `CALayer.contents` accepts on macOS; the layer retains it.
         unsafe {
-            let object = (contents as *const IOSurfaceRef).cast::<AnyObject>();
-            transaction(|| self.layer.setContents(Some(&*object)));
+            let object = &*(contents as *const IOSurfaceRef).cast::<AnyObject>();
+            let tiles = self.tiles.iter().take(self.tiled);
+            transaction(|| {
+                self.picture.setContents(Some(object));
+                for (_, pic) in tiles {
+                    pic.setContents(Some(object));
+                }
+            });
         }
         // Send the change now, not at the end of the run-loop turn, so the retire time
         // counts from when the window server has it.
@@ -376,7 +592,11 @@ impl Drop for PreviewLayer {
     fn drop(&mut self) {
         transaction(|| {
             // SAFETY: nil is a valid value for `contents`.
-            unsafe { self.layer.setContents(None) };
+            unsafe { self.picture.setContents(None) };
+            for (_, pic) in &self.tiles {
+                // SAFETY: as above.
+                unsafe { pic.setContents(None) };
+            }
             self.layer.removeFromSuperlayer();
         });
         // The frames drop after this and go back to the engine at once. If the window
@@ -384,6 +604,17 @@ impl Drop for PreviewLayer {
         // the engine could write a surface still on screen (one torn preview frame at
         // worst); `detach` first avoids that.
     }
+}
+
+/// A layer that shows the surface stretched to its frame (the frame has the picture's
+/// aspect ratio, ADR-0054 decision 3).
+fn picture_layer() -> Retained<CALayer> {
+    let l = CALayer::new();
+    // SAFETY: `kCAGravityResize` is a constant NSString exported by QuartzCore; reading
+    // it has no other requirement.
+    l.setContentsGravity(unsafe { kCAGravityResize });
+    l.setOpaque(false);
+    l
 }
 
 /// Runs `f` in an explicit transaction without implicit animations (contents and frame

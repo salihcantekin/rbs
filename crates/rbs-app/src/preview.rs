@@ -11,11 +11,11 @@ use std::time::Duration;
 use raw_window_handle::{HasWindowHandle, RawWindowHandle};
 use rbs_core::time::{Clock, MonotonicClock};
 use rbs_gpu::share::{
-    LayerRect, MAX_MARKS, Mark, PreviewEndpoint, PreviewFrame, PreviewLayer, PreviewSubscriber,
+    LayerRect, MAX_CUTOUTS, MAX_MARKS, Mark, PreviewEndpoint, PreviewFrame, PreviewLayer,
+    PreviewSubscriber,
 };
-use rbs_ui::cover;
 use rbs_ui::layout::Rect;
-use rbs_ui::transform::{self, MarkKind, Viewport};
+use rbs_ui::transform::{self, MarkKind};
 use slint::ComponentHandle;
 
 use crate::studio_ui::log;
@@ -31,11 +31,10 @@ struct Preview {
     layer: PreviewLayer,
     /// The marks last given to the layer, in its units.
     marks: Vec<Mark>,
-    /// The picture's size in pixels (the engine's surfaces), for where the layer draws it.
-    size: [f32; 2],
-    /// Scratch for what the layer draws and what covers it, in the layer's units; reused.
-    drawn: Vec<Rect>,
+    /// Scratch for what Slint draws over the layer (window logical pixels) and the same in
+    /// the layer's units; reused.
     covers: Vec<Rect>,
+    cutouts: Vec<LayerRect>,
     attached: bool,
     clock: MonotonicClock,
     timer: slint::Timer,
@@ -70,7 +69,6 @@ pub fn connect(endpoint: PreviewEndpoint, done: impl Fn(bool) + Send + Clone + '
 }
 
 fn setup(mut sub: PreviewSubscriber, done: impl Fn(bool)) {
-    let (width, height) = sub.size();
     #[cfg(target_os = "macos")]
     let made: Result<PreviewLayer, rbs_gpu::GpuError> = Ok(PreviewLayer::new(&sub));
     #[cfg(windows)]
@@ -87,9 +85,8 @@ fn setup(mut sub: PreviewSubscriber, done: impl Fn(bool)) {
         *p.borrow_mut() = Some(Preview {
             layer,
             marks: Vec::with_capacity(MAX_MARKS),
-            size: [width as f32, height as f32],
-            drawn: Vec::with_capacity(MAX_MARKS + 1),
-            covers: Vec::new(),
+            covers: Vec::with_capacity(MAX_CUTOUTS),
+            cutouts: Vec::with_capacity(MAX_CUTOUTS),
             attached: false,
             clock: MonotonicClock::new(),
             timer: slint::Timer::default(),
@@ -127,11 +124,12 @@ pub fn set_area(area: Option<[f32; 4]>) {
 }
 
 /// Attaches the layer once the window exists, places it over the Program panel and
-/// hides it while toolkit content drawn over the window overlaps what the layer draws
-/// (an in-window popup, a toast or the error bar over the picture or a selection mark;
-/// ADR-0034 decision 4). A popup beside the picture leaves it shown. Called after every
-/// view sync and before every redraw of the main window (popups open, move and close
-/// with a redraw); unchanged placement makes no layer call.
+/// gives it what Slint draws over the window (in-window popups, the bottom toast, the
+/// error bar), which the layer leaves out of the picture and the marks (ADR-0054). The
+/// picture never hides for them (on Windows until the hardware check of ADR-0054
+/// decision 5, it does while one overlaps it). Called after every view sync and before
+/// every redraw of the main window (popups open, move and close with a redraw);
+/// unchanged placement and covers make no layer call.
 pub fn place(window: &MainWindow) {
     PREVIEW.with(|p| {
         // Never nested in practice; a redraw inside a layer call would skip one placement.
@@ -178,26 +176,14 @@ pub fn place(window: &MainWindow) {
         let scale = 1.0f32;
         #[cfg(windows)]
         let scale = window.window().scale_factor();
-        let area = Rect { x, y, w, h };
-        let picture = Viewport {
-            area,
-            canvas: st.size,
-        }
-        .picture();
-        let in_layer = |r: Rect| Rect {
-            x: r.x * scale,
-            y: r.y * scale,
-            w: r.w * scale,
-            h: r.h * scale,
+        let in_layer = |r: Rect| LayerRect {
+            x: f64::from(r.x * scale),
+            y: f64::from(r.y * scale),
+            width: f64::from(r.w * scale),
+            height: f64::from(r.h * scale),
         };
-        st.drawn.clear();
-        st.drawn.push(in_layer(picture));
-        st.drawn.extend(st.marks.iter().map(|m| Rect {
-            x: m.x as f32,
-            y: m.y as f32,
-            w: m.width as f32,
-            h: m.height as f32,
-        }));
+        // What Slint draws over the layer: its in-window popups, the bottom toast and the
+        // error bar (ADR-0054 decision 2). The layer cuts them out.
         rbs_app::popups::open_in(window.window(), &mut st.covers);
         let shell = window.global::<Shell>();
         let toast = |c: crate::ui::Cover| Rect {
@@ -212,17 +198,11 @@ pub fn place(window: &MainWindow) {
         if shell.get_error_kind() != 0 {
             st.covers.push(toast(shell.get_top_toast()));
         }
-        for c in &mut st.covers {
-            *c = in_layer(*c);
-        }
-        let covered = cover::covered(&st.drawn, &st.covers);
-        st.layer.set_rect(LayerRect {
-            x: f64::from(area.x * scale),
-            y: f64::from(area.y * scale),
-            width: f64::from(area.w * scale),
-            height: f64::from(area.h * scale),
-        });
-        st.layer.set_hidden(covered);
+        st.cutouts.clear();
+        st.cutouts.extend(st.covers.iter().map(|&c| in_layer(c)));
+        st.layer.set_rect(in_layer(Rect { x, y, w, h }));
+        st.layer.set_cutouts(&st.cutouts);
+        st.layer.set_hidden(false);
     });
 }
 

@@ -131,11 +131,16 @@ fn next(sub: &mut PreviewSubscriber) -> PreviewFrame {
         .expect("a frame per successful publish")
 }
 
-/// IOSurface ID of a layer's contents.
+/// IOSurface ID of the layer's picture.
 fn contents_id(layer: &PreviewLayer) -> Option<u32> {
+    surface_id(layer.picture_layer())
+}
+
+/// IOSurface ID of a Core Animation layer's contents.
+fn surface_id(layer: &CALayer) -> Option<u32> {
     // SAFETY: reading `contents` has no requirement beyond a live layer; it is unsafe
     // only because its type is not known to the compiler.
-    let contents = unsafe { layer.layer().contents() }?;
+    let contents = unsafe { layer.contents() }?;
     let object: &objc2::runtime::AnyObject = &contents;
     // SAFETY: the layer's contents are only ever set to IOSurfaces, which are toll-free
     // bridged with `IOSurfaceRef`.
@@ -338,4 +343,130 @@ fn rect_follows_the_superlayer_geometry() {
     parent.setGeometryFlipped(true);
     layer.set_rect(rect);
     assert_eq!(layer.layer().frame().origin.y, 20.0);
+}
+
+/// Covers over the picture split it into tiles around them (ADR-0054): each tile clips
+/// a picture layer framed at the whole picture, shows the frame on screen at once and
+/// the next frames too; tiles follow the superlayer's orientation; when the covers go,
+/// the single picture layer shows again and the tiles hold no surface.
+#[test]
+fn covers_split_the_picture_into_tiles() {
+    let Some(ctx) = common::gpu() else { return };
+    let Some(mut engine) = Engine::new(ctx, 4) else {
+        return;
+    };
+    let mut sub = engine.subscribe(ctx);
+    let ids: Vec<u32> = engine.publisher.surface_ids().collect();
+    let clock = TestClock::new();
+    let mut layer = PreviewLayer::new(&sub);
+    let parent = CALayer::new();
+    parent.setBounds(CGRect::new(
+        CGPoint::new(0.0, 0.0),
+        CGSize::new(200.0, 100.0),
+    ));
+    layer.attach_to_layer(&parent);
+    // A square canvas in a 100 x 50 panel at (20, 10): the picture is 50 x 50 at x 45.
+    layer.set_rect(LayerRect {
+        x: 20.0,
+        y: 10.0,
+        width: 100.0,
+        height: 50.0,
+    });
+    let pic = layer.picture_layer().frame();
+    assert_eq!(
+        (pic.origin.x, pic.size.width, pic.size.height),
+        (25.0, 50.0, 50.0)
+    );
+    assert!(engine.publish(ctx, 1));
+    let frame = next(&mut sub);
+    let first = ids[frame.slot()];
+    layer.show(frame, clock.now());
+    assert_eq!(contents_id(&layer), Some(first));
+
+    // Beside the picture (over the letterbox bar only): nothing changes.
+    let beside = LayerRect {
+        x: 20.0,
+        y: 10.0,
+        width: 20.0,
+        height: 50.0,
+    };
+    layer.set_cutouts(&[beside]);
+    assert_eq!(layer.tile_layers().count(), 0);
+    assert!(!layer.picture_layer().isHidden());
+
+    // Over the picture's right half, rows 20..40 of the window: three tiles.
+    let over = LayerRect {
+        x: 70.0,
+        y: 20.0,
+        width: 100.0,
+        height: 20.0,
+    };
+    layer.set_cutouts(&[beside, over]);
+    assert!(layer.picture_layer().isHidden());
+    let tiles: Vec<_> = layer
+        .tile_layers()
+        .map(|(t, p)| (t.frame(), p.frame(), surface_id(p), t.masksToBounds()))
+        .collect();
+    assert_eq!(tiles.len(), 3, "above, left of and below the cover");
+    for (tile, pic, id, clips) in &tiles {
+        assert!(*clips);
+        assert_eq!(*id, Some(first), "a new tile shows the frame on screen");
+        assert_eq!((pic.size.width, pic.size.height), (50.0, 50.0));
+        // The picture inside sits where the whole picture is: 45 in the window.
+        assert_eq!(tile.origin.x + pic.origin.x, 25.0);
+    }
+    // Unflipped superlayer: the band above the cover (window rows 10..20) is at the
+    // top of the 50-point layer.
+    let top = tiles
+        .iter()
+        .find(|(t, _, _, _)| t.size.height == 10.0)
+        .expect("the band above");
+    assert_eq!((top.0.origin.y, top.0.size.width), (40.0, 50.0));
+
+    // The next frame reaches every tile.
+    assert!(engine.publish(ctx, 2));
+    let frame = next(&mut sub);
+    let second = ids[frame.slot()];
+    clock.advance(FRAME);
+    layer.show(frame, clock.now());
+    assert!(
+        layer
+            .tile_layers()
+            .all(|(_, p)| surface_id(p) == Some(second))
+    );
+
+    // Flipped superlayer: the same band at the layer's top is y 0.
+    parent.setGeometryFlipped(true);
+    layer.set_rect(LayerRect {
+        x: 20.0,
+        y: 10.0,
+        width: 100.0,
+        height: 50.0,
+    });
+    let top = layer
+        .tile_layers()
+        .map(|(t, _)| t.frame())
+        .find(|t| t.size.height == 10.0)
+        .expect("the band above");
+    assert_eq!(top.origin.y, 0.0);
+
+    // Covers gone: one picture layer again, the tiles hold nothing.
+    let tile_pictures: Vec<_> = layer
+        .tile_layers()
+        .map(|(_, p)| objc2::Message::retain(p))
+        .collect();
+    layer.set_cutouts(&[]);
+    assert_eq!(layer.tile_layers().count(), 0);
+    assert!(!layer.picture_layer().isHidden());
+    assert_eq!(contents_id(&layer), Some(second));
+    assert!(tile_pictures.iter().all(|p| surface_id(p).is_none()));
+
+    // A cover that is not finite hides the layer.
+    layer.set_cutouts(&[LayerRect {
+        x: f64::NAN,
+        ..over
+    }]);
+    assert!(layer.layer().isHidden());
+    layer.set_cutouts(&[]);
+    assert!(!layer.layer().isHidden());
 }
