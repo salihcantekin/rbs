@@ -70,6 +70,13 @@ rbs-user-data = { path = "../rbs-user-data" }
 rbs-capture-test = { path = "../rbs-capture-test", optional = true }
 rbs-audio-io-test = { path = "../rbs-audio-io-test", optional = true }
 
+[target.'cfg(any(target_os = "macos", windows))'.dependencies]
+# The system file dialog for importing and exporting output profiles and scene
+# collections (ADR-0051). Without default features it uses only AppKit and Win32, which
+# objc2 and windows-sys already bring; Linux has no dialog in RBS until a Linux machine
+# is available to test one (xdg portal).
+rfd = { version = "0.17.2", default-features = false }
+
 [target.'cfg(windows)'.dependencies]
 # The stream key in the Windows Credential Manager (src/stream_key.rs).
 keyring = { version = "3.6.3", default-features = false, features = ["windows-native"] }

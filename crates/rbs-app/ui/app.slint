@@ -419,7 +419,8 @@ component EntryMenu inherits PopupWindow {
     in property <string> what;
     in property <bool> busy;
     callback pick(string /* id */);
-    // 0 new, 1 duplicate, 2 rename (with the name typed), 3 delete the one in use.
+    // 0 new, 1 duplicate, 2 rename (with the name typed), 3 delete the one in use,
+    // 4 import from a file, 5 export the one in use to a file.
     callback act(int, string);
     property <bool> confirm-delete;
     close-policy: close-on-click-outside;
@@ -436,6 +437,14 @@ component EntryMenu inherits PopupWindow {
                 activated => { root.pick(e.id); root.close(); }
             }
             Rectangle { height: Tokens.size-border; background: Theme.border-subtle; }
+            MenuItem {
+                text: @tr("Import…");
+                activated => { root.act(4, ""); root.close(); }
+            }
+            MenuItem {
+                text: @tr("Export {}…", root.current);
+                activated => { root.act(5, ""); root.close(); }
+            }
             if !root.confirm-delete: MenuItem {
                 text: @tr("Delete {}…", root.current);
                 enabled: root.entries.length > 1 && !root.busy;

@@ -311,7 +311,9 @@ impl Encoding {
 pub struct RecordProfile {
     /// File format version (1).
     pub format_version: u32,
-    /// Where recordings are written.
+    /// Where recordings are written. A profile exported from another computer has
+    /// none (ADR-0051): this computer's default is used.
+    #[serde(default = "default_folder")]
     pub folder: PathBuf,
     /// The container.
     pub format: Format,
