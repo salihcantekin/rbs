@@ -373,6 +373,8 @@ mod tests {
     #[test]
     fn app_slint_has_the_current_menu_bar() {
         let text = std::fs::read_to_string(APP_SLINT).expect("ui/app.slint is readable");
+        // A Windows checkout may have CRLF line ends; the generated text has LF.
+        let text = text.replace("\r\n", "\n");
         let fresh = refreshed(&text).expect("ui/app.slint has the menu bar markers");
         if fresh != text && std::env::var_os("RBS_UPDATE_MENU_BAR").is_some() {
             std::fs::write(APP_SLINT, &fresh).expect("ui/app.slint is writable");
