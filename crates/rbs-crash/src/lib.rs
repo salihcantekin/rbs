@@ -130,7 +130,8 @@ impl Session {
     }
 
     /// Ends the session cleanly when the process exits through the C runtime's `exit`:
-    /// a return from `main`, `std::process::exit`, or an OS quit that ends the process
+    /// a return from `main`, `std::process::exit` (not on Windows, where std calls
+    /// `ExitProcess`, which runs no C runtime exit handler), or an OS quit that ends the process
     /// without returning from the event loop (on macOS, Cmd+Q and the Quit menu call
     /// `exit` from inside `NSApplication`). An uncaught panic on the thread that called
     /// [`install`] keeps the marker, as do an abort, a signal, a kill or a native fault,
