@@ -2,7 +2,7 @@
 
 - Status: Draft
 - Owner crate(s): `rbs-ui` (toolkit-neutral model: panels, layout, workspaces, layout undo, tokens, live indicator), `rbs-app` (Slint desktop shell; `ui/tokens.slint` is generated from the token file at build time, `ui/components.slint` is the component library)
-- Related ADRs: [0008](../adr/0008-ui-as-api-client.md), [0013](../adr/0013-zero-cost-when-unused.md), [0015](../adr/0015-ui-design-rules.md), [0016](../adr/0016-native-desktop-ui.md), [0017](../adr/0017-flexible-panels-and-workspaces.md), [0022](../adr/0022-native-ui-toolkit.md)
+- Related ADRs: [0008](../adr/0008-ui-as-api-client.md), [0013](../adr/0013-zero-cost-when-unused.md), [0015](../adr/0015-ui-design-rules.md), [0016](../adr/0016-native-desktop-ui.md), [0017](../adr/0017-flexible-panels-and-workspaces.md), [0022](../adr/0022-native-ui-toolkit.md), [0049](../adr/0049-main-window-areas-panel-states-and-command-surfaces.md)
 - Rules: [UI principles](../ui/principles.md)
 
 ## Purpose
@@ -62,6 +62,7 @@ One family (initial choice: Inter, with the OS UI font as fallback). Numbers in 
 | Keyboard steps | `step.nudge`=8, `step.nudge-large`=128 (splitter move per arrow key, with Shift) |
 | Elevation | `elevation.0` (flat), `elevation.1` (popovers), `elevation.2` (dialogs); subtle, no heavy shadows |
 | Motion | `motion.fast`=120 ms, `motion.normal`=180 ms, `motion.easing.standard`; all motion disabled under "reduce motion" |
+| Delays | `motion.hover-open`=400 ms (hover time before an auto-hide edge tab slides its panel out; not motion, so it stays under "reduce motion", where the panel appears without sliding) |
 
 A token file cannot set `size.focus-ring` below 2 or `size.icon.box` / `size.icon.stroke` below 12 / 1 (U7) or `size.window.min-w` / `.min-h` below 1280 / 720 (U11); the loader rejects such a file.
 
@@ -94,21 +95,32 @@ The meter of rule U16, used alone and inside AudioStrip. Logic in `rbs_ui::meter
 
 ## Main window structure
 
+The main window is a frame around a centre and three areas ([ADR-0049](../adr/0049-main-window-areas-panel-states-and-command-surfaces.md)). The picture shows the built-in Edit workspace.
+
 ```
-+--------------------------------------------------------------------------+
-| Title bar: scene collection, workspace, command palette, settings        |
-+-----------+------------------------------------------+-------------------+
-| Scenes    |  Preview  (| Program in studio mode)     | Properties of the |
-| (cards)   |                                          | selected scene,   |
-|-----------|                                          | source, filter or |
-| Sources   |                                          | output            |
-| in scene  |                                          |                   |
-+-----------+------------------------------------------+-------------------+
-| Mixer (audio strips)                     | Transition | Go live | Record  |
-+--------------------------------------------------------------------------+
-| Status bar: live/rec state + time, bitrate, dropped frames, CPU, GPU     |
-+--------------------------------------------------------------------------+
++--------------------------------------------------------------------------------+
+| Menu bar: File Edit View Scene Source Output Tools Window Help  [live indicator]| (macOS: system menu bar)
++--------------------------------------------------------------------------------+
+| Toolbar (per workspace, customisable): mode | + Scene  Add source | Studio mode |
+|   Transition | screenshot marker replay  ~  search  [L][B][R] area toggles  Go live Record |
++--+------------+--------------------------------------------+---------------+--+
+|e | Left area  |  Centre                                    | Right area    |e |
+|d | Scenes     |  Preview (studio mode: Preview | Transition | Inspector     |d |
+|g |------------|  rail | Program)                           |---------------|g |
+|e | Sources    |                                            | Filters (coll.)|e |
+|  |            |                                            |               |  |
+|t +------------+--------------------------------------------+---------------+t |
+|a | Bottom area: Mixer (collapsed: one-line meter strip)                    |a |
+|bs|                                                                         |bs|
++--+-------------------------------------------------------------------------+--+
+| Status bar: live/rec state + time, bitrate, dropped frames, CPU, GPU           |
++--------------------------------------------------------------------------------+
 ```
+
+- **Frame.** Menu bar, toolbar, content, status bar. The menu bar is drawn in the window on Windows and Linux and lives in the system menu bar on macOS. The live indicator (U4, U21) is at the right of the menu bar on Windows and Linux and at the right of the toolbar on macOS, in every workspace. The toolbar can be hidden (View › Toolbar); the menu bar cannot.
+- **Areas.** `left`, `right` and `bottom` hold panels around the `centre`. Each has a size in logical pixels (width, or height for `bottom`) and can be hidden and shown with its toolbar toggle, the View menu or a shortcut; hiding keeps its panels and size. The bottom area spans the full width under the other three. The centre always exists and takes the remaining space.
+- **Edge tabs.** Auto-hidden panels show as tabs on the window edge of their area (outside the areas, inside the frame). An edge with no auto-hidden panel takes no space.
+- **Commands.** Every command is in the menu bar; the toolbar only holds a chosen subset (see Commands, menus and the toolbar).
 
 ## Studio panels (first version, ADR-0041)
 
@@ -140,29 +152,59 @@ Workspaces are client-side UI state. The desktop UI crate owns the panel model a
 - Panels that can exist more than once take parameters in the id: `rbs.preview?canvas=vertical`, `rbs.program?canvas=horizontal`. Without a parameter they show the canvas being edited.
 - A layout is a tree per window: splits (horizontal or vertical, with ratios) whose leaves are tab stacks of panels. Floating windows and projectors have their own tree or content plus their position.
 - Each built-in panel declares how often it must redraw while visible: on change only (lists, properties, controls), at most N times per second (`rbs.mixer` 30 Hz, `rbs.stats` and `rbs.status-bar` 1 Hz), or at display rate (`rbs.preview`, `rbs.program`). The shell runs at most one redraw timer, at the fastest rate any visible panel needs, plus 1 Hz for the live indicator while live or recording, and no timer otherwise. Hidden tabs and closed panels never count.
-- `rbs.program`, `rbs.live-controls` and `rbs.mixer` are guarded: closing them while live (directly or by closing their floating window) shows the undo toast of U21.
-- The live indicator is not a panel and cannot be removed (U4, U21). The workspace menu and Panels menu are part of the window frame, not panels.
+- `rbs.program`, `rbs.live-controls` and `rbs.mixer` are guarded: closing them while live (directly or by closing their floating window) shows the undo toast of U21. Collapsing or auto-hiding them shows no toast: they stay one interaction away.
+- **Stack states** (ADR-0049). A tab stack in an area or the centre is `docked` (default), `collapsed` (only its title row, `size.control.lg` plus border, is shown; the rest of its split takes the space and gets it back on expand) or auto-hidden (it leaves the tree and becomes edge tabs; activating a tab slides the panel out over the content at its remembered size; it slides back when focus or the pointer leaves, on Escape, or when another edge tab opens). Pinning an auto-hidden panel docks it next to its anchor panel, else at the outer side of its area. **Maximize** (double-click a tab, Shift+Esc) shows one panel over the whole content until restored; it is not saved.
+- **Compact view.** A panel may declare a view drawn in its title row while collapsed, with its own update rate. `rbs.mixer`: one small meter and a mute button per audio source, meters at 30 Hz like the full mixer. Panels without one show only their titles.
+- **Size limits.** Each panel declares `min`, `default` and `max` sizes on both axes in logical pixels; `max` may be a share of the window. Dividers move within the limits of the panels on both sides, double-click returns a divider to the default, and View › Reset panel sizes resets them all. Built-in limits (width x height where both matter):
+
+  | Panel or area | Min | Default | Max |
+  | --- | --- | --- | --- |
+  | Left and right area | 200 px | 260 px | 40 % of the window |
+  | Bottom area | 90 px | 200 px | 60 % of the window |
+  | `rbs.transition` between preview and program | 0 | 56 px | 200 px |
+  | `rbs.preview`, `rbs.program` | 320 x 180 px | (fills) | (fills) |
+  | Auto-hide flyout | the panel's min | 320 px | 60 % of the window |
+
+  `rbs.transition` is drawn as a floating control over the bottom edge of the two views below 40 px, as a rail with Cut, Auto, a T-bar and the duration from 40 to 120 px, and with names and a duration field above 120 px. A bottom area dragged below 90 px collapses its stacks.
+- The live indicator is not a panel and cannot be removed (U4, U21). The workspace and Panels menus are in the menu bar (View › Workspace, View › Panels), part of the window frame, not panels.
 
 ### Workspace file
 
 Workspaces are stored as versioned TOML in the user's config directory, one file per workspace, so they can be shared and kept in version control. A JSON Schema for the format is published with the UI crate and checked in CI.
 
-```toml
-format = 1
-name = "Minimal live"
-locked = true
+Format 2 (ADR-0049; format 1 is read and migrated, see below):
 
-[[windows]]
-kind = "main"
-layout = { split = "vertical", ratios = [0.78, 0.22], children = [
-  { tabs = ["rbs.program"] },
-  { tabs = ["rbs.live-controls", "rbs.mixer"] },
+```toml
+format = 2
+name = "Edit"
+locked = false
+toolbar = { style = "icons-text", items = [
+  "ui.workspace.select", "|", "scene.create", "source.add", "|",
+  "ui.studio_mode.toggle", "transition.pick", "|", "program.screenshot", "marker.add",
+  "~", "ui.command_palette", "ui.area.toggle?area=left", "ui.area.toggle?area=bottom",
+  "ui.area.toggle?area=right", "|", "stream.toggle", "record.toggle",
 ] }
 
 [[windows]]
+kind = "main"
+centre = { tabs = ["rbs.preview"] }
+left = { size = 260, visible = true, layout = { split = "vertical", ratios = [0.4, 0.6], children = [
+  { tabs = ["rbs.scenes"] },
+  { tabs = ["rbs.sources"] },
+] } }
+right = { size = 290, visible = true, layout = { split = "vertical", ratios = [0.8, 0.2], children = [
+  { tabs = ["rbs.properties"] },
+  { tabs = ["rbs.transition"], state = "collapsed" },
+] } }
+bottom = { size = 200, visible = true, layout = { tabs = ["rbs.mixer"] } }
+auto_hide = [
+  { edge = "right", tabs = ["rbs.stats", "rbs.outputs"], size = 320, anchor = "rbs.properties" },
+]
+
+[[windows]]
 kind = "floating"
-layout = { tabs = ["rbs.stats"] }
-placement = { display = "edid:DEL-41A3-7H2K9", connector = "DP-2", size = [2560, 1440], scale = 1.5, rect = [0, 0, 1280, 720] }
+layout = { tabs = ["rbs.live-controls"] }
+placement = { display = "edid:DEL-41A3-7H2K9", connector = "DP-2", size = [2560, 1440], scale = 1.5, rect = [0, 0, 640, 420] }
 
 [[windows]]
 kind = "projector"
@@ -170,23 +212,28 @@ content = "program?canvas=vertical"
 placement = { display = "edid:SAM-7012-HX55", connector = "HDMI-1", size = [1920, 1080], scale = 1.0, fullscreen = true }
 ```
 
+Command ids in `toolbar.items` are control API command names (ADR-0008); the ones above show the shape and are fixed with the command registry.
+
+- **Main window (format 2).** `centre` is a layout tree (required). `left`, `right` and `bottom` are optional tables with `size` (logical pixels, clamped to the area limits on load), `visible` (default true) and `layout` (a tree; an absent area is empty). `auto_hide` lists edge groups: `edge` (`left`, `right`, `top`, `bottom`), `tabs` (at least one panel id), `active` (index, default 0), `size` (flyout size in logical pixels) and optional `anchor` (a panel id used to dock back). A tab stack may carry `state = "collapsed"`; a split must keep at least one child that is not collapsed.
+- **Toolbar.** `toolbar` is optional (absent: the workspace's built-in default, or the Edit default for user workspaces). `style` is `icons` or `icons-text`; `visible` defaults to true; `items` are command ids, `"|"` (separator) and at most one `"~"` (flexible space). Unknown command ids are kept and shown as a disabled placeholder that names the missing plugin.
+- **Migration from format 1.** The main window's `layout` becomes `centre`; the three areas start empty and visible; nothing is collapsed or auto-hidden; the toolbar is the default. Floating windows and projectors are unchanged. Migration happens in memory on load; the file is rewritten in format 2 only when the workspace is next saved.
 - `placement.display` is a stable fingerprint derived from the display's EDID (manufacturer, product code, serial). `connector`, `size` (physical pixels) and `scale` help when the fingerprint is ambiguous. `rect` is in logical pixels relative to that display.
 - Matching order when a workspace is applied: (1) same fingerprint, (2) same connector with the same size, (3) any display with the same size and scale, (4) no match: the window docks into the main window and a projector is not opened. A rect that would fall outside the matched display is clamped to it.
 - Export removes `placement` display details (fingerprint, connector) and keeps only size, scale and relative rect, so exported workspaces are portable and contain no hardware identifiers. Import then matches by step (3) or docks.
 - `locked` blocks pointer moves, resizes and close buttons. Commands from the palette, shortcuts and the control API still apply.
 - Unknown panel ids (for example from an uninstalled plugin) are kept in the file and shown as a placeholder that offers to install or remove them.
 - The format is versioned; RBS reads older versions and migrates them. A file with a newer `format` is refused with a message, never rewritten.
-- Validation: unknown keys are errors; there is exactly one `main` window and it is first; a panel id appears at most once in the whole workspace; a split has at least two children, one positive ratio per child, ratios summing to 1 (within 0.01, then normalised) and at most 16 levels of nesting; a tab stack may carry `active` (index of the visible tab, default 0); only the main window's root may be an empty stack (`{ tabs = [] }`, every panel closed); a floating window holds at least one panel; a projector has `content` and no `layout`; names have 1 to 64 characters, no control characters, and are unique ignoring case (Unicode lowercase, not locale-specific).
+- Validation: unknown keys are errors; there is exactly one `main` window and it is first; a panel id appears at most once in the whole workspace (areas, centre, edge groups and floating windows together); a split has at least two children, one positive ratio per child, ratios summing to 1 (within 0.01, then normalised) and at most 16 levels of nesting; a tab stack may carry `active` (index of the visible tab, default 0); only the main window's centre may be an empty stack (`{ tabs = [] }`, every panel closed; format 1: its root); a floating window holds at least one panel; a projector has `content` and no `layout`; names have 1 to 64 characters, no control characters, and are unique ignoring case (Unicode lowercase, not locale-specific).
 - Files are named after a slug of the workspace name and written atomically (temporary file, then rename). Files that fail to parse are listed as problems and left untouched. Built-in workspaces need no file; saving a changed built-in writes an override file, and restoring its default removes it.
 
 ### Built-in workspaces
 
-| Name | Main window |
-| --- | --- |
-| Edit | Scenes over Sources on the left, Preview in the centre, Properties on the right; below: Mixer (tabs with Stats and Outputs), Transition, Live controls |
-| Live | Preview and Program side by side over the Mixer; on the right Live controls (tab with Transition) over Stats (tab with Scenes) |
-| Minimal | Program over Live controls |
-| Audio | Program and Live controls over a large Mixer |
+| Name | Main window (areas and centre) | Toolbar |
+| --- | --- | --- |
+| Edit | Left: Scenes over Sources. Centre: Preview. Right: Properties, Transition collapsed. Bottom: Mixer (tabs with Stats and Outputs). Edge: Library | Default (as in the example) |
+| Live | Left: Scenes. Centre: Preview, Transition rail, Program (studio mode). Right hidden; Properties and Sources auto-hidden to the right edge. Bottom: Mixer collapsed. Stats, Outputs auto-hidden | Mode, Studio mode, Transition, Marker, Save replay, area toggles, Go live / End stream, Record / Stop recording |
+| Minimal | Centre: Program. Bottom: Live controls. Left and right hidden | Mode, Go live, Record |
+| Audio | Centre: Program. Right: Live controls. Bottom: Mixer at 60 % | Mode, Mute all, Go live, Record |
 
 ### Switching
 
@@ -194,10 +241,17 @@ placement = { display = "edid:SAM-7012-HX55", connector = "HDMI-1", size = [1920
 - Optional `on_go_live` and `on_stream_end` workspace settings, stored in the UI settings, not in the scene collection or output profile.
 - Switching only changes UI state; it never reconfigures sources or outputs.
 - Layout changes and switches go into the UI's own layout undo history, not the engine command log. A history step is a whole-workspace snapshot; the moves of one splitter drag form one step; changes that leave the layout as it was record nothing; at least 100 steps are kept.
-- Every layout change is a command (open, close, show tab, move to stack, move to edge, float, dock, close window, resize, lock, switch). Pointer and keyboard both issue these commands. When `locked` is set, close, move to stack, move to edge, float, dock, close window and resize are refused if they come from the pointer; open, show tab, lock or unlock and switch are always allowed, and every command from the palette, a shortcut or the control API applies.
+- Every layout change is a command (open, close, show tab, move to stack, move to edge, float, dock, close window, resize, lock, switch; and with ADR-0049: show or hide an area, collapse or expand a stack, auto-hide or pin a panel, maximize or restore, reset sizes, edit the toolbar). Pointer and keyboard both issue these commands. When `locked` is set, close, move to stack, move to edge, float, dock, close window, resize, auto-hide, pin and toolbar edits are refused if they come from the pointer (collapse, expand, area toggles, maximize and opening an auto-hidden panel stay allowed: they hide or show, they do not rearrange); open, show tab, lock or unlock and switch are always allowed, and every command from the palette, a shortcut or the control API applies.
 - The result of every command is validated against the rules above; a command whose result would break one (for example splits nested deeper than 16 levels) is refused, so a workspace can always be saved and loaded again.
 - A switch that leaves a guarded panel closed while live shows the same undo toast as closing it. An automatic switch (on go live or stream end) shows one toast naming the previous workspace with a one-click way back; that toast replaces the undo toast for any guarded panel the switch closed, because going back reopens it.
 - Deleting a workspace asks for confirmation; deleting a built-in workspace is not possible, only restoring its default.
+
+### Commands, menus and the toolbar
+
+- One command registry in `rbs-ui`: id (the control API command name), title (Fluent message), icon, default shortcut, menu and group, and how to read its enabled state (with the reason when disabled, shown as a tooltip) and checked state. The menu bar, context menus, toolbar, command palette and shortcut map are all built from it (U20).
+- Menus: File, Edit, View, Scene, Source, Output, Tools, Window, Help. Every command is in exactly one menu; context menus repeat the commands that apply to their item (U3). Menus show shortcuts and checkmarks.
+- The menu bar is Slint's `MenuBar` and context menus are Slint's `ContextMenuArea`. Every RBS window that can take focus (main and floating windows) declares the same menu bar, because the macOS system menu bar shows the focused window's menus; on Windows and Linux only the main window draws it.
+- Toolbar: the workspace's `toolbar.items` in order. Items that do not fit go into a » overflow menu at the end, last items first (U11). Customize toolbar (View menu, or the toolbar's context menu) adds commands from a searchable list, removes and reorders them by drag or keyboard, adds separators, picks the style and resets to the default.
 
 ## Core flows (contract for U1)
 
@@ -209,7 +263,8 @@ Interactions are counted as defined in the UI principles. "Max" is the limit for
 | Add and adjust a filter | Select the source on the preview or list -> "+" in the Filters section of Properties -> pick from a searchable list with previews -> adjust in place; before/after toggle | 3 + adjustments |
 | Choose a transition | Transition control next to Go live shows the current one -> pick another (duration inline) | 2 |
 | Create a scene | "+" on Scenes -> type a name (optional template) and confirm | 3 |
-| Switch workspace | Workspace menu in the window frame, or a user-assigned shortcut | 2 (1 with a shortcut) |
+| Switch workspace | Workspace selector in the toolbar (or View › Workspace), or a user-assigned shortcut | 2 (1 with a shortcut) |
+| Hide a panel and get it back | Pin icon (or Hide side panels in the toolbar) -> edge tab (or the same toggle) | 1 each way |
 | Go live | Go live button (first time only: pick service, sign in or paste key, automatic checks for bandwidth and encoder) | 1 after setup |
 
 ## Actions that cannot be undone
@@ -218,7 +273,7 @@ End stream, stop recording, delete a scene collection, delete a recording file, 
 
 ## Keyboard
 
-Docking by keyboard (U21): Tab moves focus through the frame (workspace menu, Panels menu), then each tab stack's tabs and their buttons, then the splitters. On a focused tab, Enter or Space shows it, the Menu key or Shift+F10 opens its panel menu (move to an edge, move to the next tab stack, float or dock back, close), and Delete closes it. A focused splitter moves by `step.nudge` per arrow key, `step.nudge-large` with Shift. Menus open with the first item focused; Tab and Shift+Tab move between items, Enter or Space chooses one and closes the menu, Escape closes it. Delete or Backspace on a focused tab closes it.
+Docking by keyboard (U21): Tab moves focus through the frame (menu bar where drawn in the window, toolbar), then each tab stack's tabs and their buttons, then the edge tabs, then the splitters. F10 focuses the menu bar on Windows and Linux. On a focused tab the panel menu also offers collapse or expand, auto-hide or pin, and maximize or restore; Shift+Esc maximizes or restores the focused panel. Show or hide the left, right and bottom area: Ctrl/Cmd+Alt+1, 2, 3; Ctrl/Cmd+Alt+0 hides or shows all three. An auto-hidden panel that slides out takes focus and gives it back when it closes. On a focused tab, Enter or Space shows it, the Menu key or Shift+F10 opens its panel menu (move to an edge, move to the next tab stack, float or dock back, close), and Delete closes it. A focused splitter moves by `step.nudge` per arrow key, `step.nudge-large` with Shift. Menus open with the first item focused; Tab and Shift+Tab move between items, Enter or Space chooses one and closes the menu, Escape closes it. Delete or Backspace on a focused tab closes it.
 
 Every command is in the command palette (Ctrl/Cmd+K) with its shortcut. Defaults include: switch to scene 1-9 (Ctrl/Cmd+1..9), transition preview to program (Ctrl/Cmd+Enter; Space also works while the preview or program has focus), undo/redo, nudge source (arrows, Shift for 10 px), duplicate, delete, toggle studio mode. All shortcuts are rebindable; global hotkeys are opt-in.
 
@@ -240,5 +295,6 @@ The comparison prototype and its measurements are in [`prototypes/ui-toolkit`](.
 ## Open questions
 
 - Final font choice and licence.
-- JSON Schema for the workspace file (promised by ADR-0017): not delivered yet; the Rust parser in `rbs-ui` is the reference until it is.
+- JSON Schema for the workspace file (promised by ADR-0017): not delivered yet; the Rust parser in `rbs-ui` is the reference until it is. It is written together with format 2.
+- Tear-off across windows relies on pointer events outside the window while the button is held (ADR-0049, decision 5); confirmed on X11, to be confirmed on macOS and Windows.
 - Expressiveness of the declarative plugin panel format (forms, lists, charts, live previews).
