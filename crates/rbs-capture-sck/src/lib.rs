@@ -24,6 +24,9 @@
 //!
 //! - When the target is resized, the sample handler reconfigures the stream so later
 //!   frames come at the new size instead of scaled into the old one.
+//! - Window captures draw the cursor only while no other window covers it: a watcher
+//!   thread, alive only while such a capture is Active, turns the stream's cursor off
+//!   while the pointer is over a window stacked above the target (`cursor` module).
 //!
 //! ScreenCaptureKit is linked strongly by its bindings, so binaries using this crate
 //! need macOS 12.3 as their minimum deployment target; the probe's version check only
@@ -38,6 +41,7 @@ use rbs_core::media::{
 };
 use rbs_core::time::Timestamp;
 
+mod cursor;
 #[cfg(target_os = "macos")]
 mod mac;
 

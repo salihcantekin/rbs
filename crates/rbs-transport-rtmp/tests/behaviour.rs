@@ -21,7 +21,7 @@ use rbs_transport::{
     TransportError, TransportEvent, TransportFactory, TransportInput, TransportItem,
 };
 use rbs_transport_rtmp::RtmpTransportFactory;
-use support::{Behaviour, PPS, SPS, Session, TestServer};
+use support::{Behaviour, PPS, SPS, Session, Stalled, TestServer};
 
 const KEY: &str = "live_9f8e7d6c5b4a";
 const VIDEO: StreamIndex = StreamIndex(0);
@@ -558,9 +558,11 @@ fn refuses_bad_configurations() {
 
 #[test]
 fn start_and_send_check_streams_and_packets() {
-    let mut t = RtmpTransportFactory
-        .create(&config("rtmp://127.0.0.1:9/live"))
-        .unwrap();
+    // A peer that accepts and never answers: a refused port (as before) could fail the
+    // connection before the sends below, which then return that error (seen on macOS
+    // CI, 2026-11-06).
+    let peer = Stalled::new();
+    let mut t = RtmpTransportFactory.create(&config(&peer.url())).unwrap();
     let hevc = StreamDescriptor::new(
         CodecId::Hevc,
         BitstreamFormat::AnnexB,
