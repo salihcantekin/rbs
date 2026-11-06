@@ -207,6 +207,50 @@ fn a_control_api_client_drives_the_studio() {
     assert_eq!(list["result"]["seq"]["source.changed"], 1);
     assert_eq!(list["result"]["data"][0]["id"], id);
 
+    // Shape and border (protocol 1.3, ADR-0053): the item and layout are listed, a
+    // style is set on the item, published, and undone like any edit.
+    let row = &list["result"]["data"][0];
+    let item = row["item"].as_u64().unwrap();
+    assert_eq!(
+        row["layout"]["style"],
+        json!({"shape": "rectangle", "radius": 0.0})
+    );
+    let set = c.call(
+        "item.set_style",
+        json!({"item": item, "style": {"shape": "circle", "border": {"width": 6.0, "color": "#FF0080"}}}),
+    );
+    assert!(set["result"].is_object(), "{set}");
+    let styled = c.event("source.changed", |d| {
+        d[0]["layout"]["style"]["shape"] == "circle"
+    });
+    assert_eq!(
+        styled["params"]["data"][0]["layout"]["style"]["border"],
+        json!({"width": 6.0, "color": "#ff0080ff"})
+    );
+    for (params, kind) in [
+        (
+            json!({"item": item, "style": {"shape": "circle", "radius": 4.0}}),
+            "invalid_params",
+        ),
+        (
+            json!({"item": item, "style": {"radius": -1.0}}),
+            "invalid_params",
+        ),
+        (
+            json!({"item": item, "style": {"border": {"width": 2.0, "color": "red"}}}),
+            "invalid_params",
+        ),
+        (json!({"item": 999, "style": {}}), "not_found"),
+    ] {
+        let bad = c.call("item.set_style", params.clone());
+        assert_eq!(bad["error"]["data"]["kind"], kind, "{params}: {bad}");
+    }
+    let undo = c.call("edit.undo", json!({}));
+    assert!(undo["result"].is_object(), "{undo}");
+    c.event("source.changed", |d| {
+        d[0]["layout"]["style"]["shape"] == "rectangle"
+    });
+
     let unknown = c.call(
         "source.add",
         json!({"kind": "screen", "adapter": "nope", "target": "x"}),

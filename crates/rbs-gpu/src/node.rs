@@ -10,7 +10,7 @@ use rbs_graph::node::{LinkKind, NodeDescriptor, NodeKind, NodeTypeId, Pin};
 use rbs_graph::runtime::param::{self, ParamReceiver, ParamSender};
 use rbs_graph::runtime::{Inputs, Node, NodeError, PrepareCtx, ProcessCtx, Runtime, Tick, WarmCtx};
 
-use crate::compositor::{CanvasDesc, Compositor, Layer, Transfer};
+use crate::compositor::{CanvasDesc, Compositor, Layer, LayerStyle, Transfer};
 use crate::context::GpuContext;
 use crate::error::GpuError;
 use crate::interop::Importer;
@@ -117,6 +117,8 @@ pub struct NodeLayer {
     pub fade: Option<Fade>,
     /// Ignore the source's alpha (XRGB sources).
     pub opaque: bool,
+    /// Shape and border (ADR-0053).
+    pub style: LayerStyle,
 }
 
 impl NodeLayer {
@@ -131,6 +133,7 @@ impl NodeLayer {
             opacity: 1.0,
             fade: None,
             opaque: false,
+            style: LayerStyle::default(),
         }
     }
 }
@@ -273,6 +276,7 @@ impl Node<GpuRuntime> for CompositorNode {
                 },
                 source_transfer,
                 opaque: spec.opaque,
+                style: spec.style,
             });
         }
 

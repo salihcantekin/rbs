@@ -185,6 +185,7 @@ The first slice covers what the desktop app does today; the full catalogue follo
 | `source.list` | `read` | Program scene sources |
 | `source.targets` | `control` | Capture targets of a kind (window titles can be private) |
 | `source.add`, `source.delete`, `edit.undo`, `edit.redo` | `control` | Edit the program scene |
+| `item.set_style {item, style}` | `control` | Shape, border and shadow of a source item (protocol 1.3, ADR-0053) |
 | `output.profiles` | `read` | Recording profiles: id, name, container, encoder, bitrates (folders only through `settings.get`) |
 | `record.start {profile}`, `record.stop` | `control` | Record with a configured profile into its folder |
 | `record.start_to_file {profile, path}` | `admin` | Record to an explicit file; refused if it exists |
@@ -196,6 +197,12 @@ The first slice covers what the desktop app does today; the full catalogue follo
 | `tokens.list` | `tokens` | Access tokens: name and scopes, never the token or its hash |
 | `tokens.create {name, scopes}` | `tokens` | Make a named token; the answer holds the token, the only time it exists in readable form. `scopes` is one of the desktop app's access levels: `["read"]`, `["read", "control"]` or `["read", "control", "admin"]`; other sets, an empty, too long or taken name, or a name with control characters are refused (`invalid_params`, `conflict` for a taken name) |
 | `tokens.revoke {name}` | `tokens` | Revoke a token by name (`not_found` if none); its sessions are closed |
+
+### Item styles (protocol 1.3)
+
+`source.list` rows, and the rows of `source.changed`, carry `item` (the source's item id in the program scene) and, for video sources, `layout`: `{position, size, rotation, crop: [left, top, right, bottom], opacity, style}`, the layout the studio's canvas shows. `style` is `{shape: "rectangle" | "circle" | "ellipse", radius, border?: {width, color}, shadow?: {offset, blur, color}}`; lengths are in the item's box units (canvas pixels for an item on the canvas), colours `#rrggbb` or `#rrggbbaa` (answers use `#rrggbbaa`), and `{}` is the plain picture. A 1.2 client ignores the new fields.
+
+`item.set_style {item, style}` replaces the whole style of the item's layout on the studio's canvas: its override for that canvas when it has one, else its default layout, which every canvas without an override shows (as the app's Properties panel does). Refusals: `not_found` for an unknown item; `invalid_params` for an item that places a scene, a radius on a circle or ellipse, a colour in another form, a negative radius or blur, a border width of 0 or less, numbers that are not finite, or unknown keys. Each call is one undo step on the shared stack and publishes `source.changed`; setting the style an item already has changes nothing. The shadow is saved and returned but not drawn yet.
 
 ### Streaming (protocol 1.1)
 

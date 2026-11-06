@@ -67,7 +67,7 @@ Every library write (`create`, `save`, `rename`, `duplicate`, `delete`, `import`
 
 The body is a set of sections, each a TOML table; section names are lowercase ASCII letters, digits, `-`, `_` and `.`, and not `format`, `kind` or `name`. `get::<S>(section)` deserialises one (`Ok(None)` if absent, `Invalid` if it does not fit), `set(section, &value)` replaces one (must serialise to a table; refused with `Newer` when the section present has a higher integer `format_version`, `SECTION_VERSION`, than the new value), `remove(section)`. Unknown sections are kept on save. A section that does not load is left alone by the app until the user resets it. A profile never holds a secret.
 
-### Scene collection document (`kind = "scene-collection"`, format 1)
+### Scene collection document (`kind = "scene-collection"`, format 2)
 
 `rbs_scene::SceneCollection` implements `Document`. Body:
 
@@ -79,11 +79,12 @@ The body is a set of sections, each a TOML table; section names are lowercase AS
 | `sources.filters` | array of tables `id`, `type`, `enabled?` (default true), `settings?` | In order |
 | `scenes` | array of tables `id`, `name`, `canvas?`, `items?` | `canvas` = scope `Canvas(id)`; absent = `Shared` |
 | `scenes.items` | array of tables `id`, `source?` or `scene?` (exactly one), `visible?` (default true), `layout`, `overrides?` | Bottom first |
-| `layout` | table `position = [x, y]`, `size = [w, h]`, `rotation?` (0), `crop? = [left, top, right, bottom]` (0s), `opacity?` (1) | Canvas pixels; crop in source pixels |
+| `layout` | table `position = [x, y]`, `size = [w, h]`, `rotation?` (0), `crop? = [left, top, right, bottom]` (0s), `opacity?` (1), `style?` | Canvas pixels; crop in source pixels |
+| `layout.style` | table `shape?` (`"rectangle"` default, `"circle"`, `"ellipse"`), `radius?` (0; rectangles only), `border? = { width, color }`, `shadow? = { offset? = [x, y], blur?, color }` | Format 2 (ADR-0053). Box units; colours `"#rrggbb"` or `"#rrggbbaa"` (written as `#rrggbbaa`); a radius on another shape and colours in other forms are refused |
 | `overrides` | array of tables `canvas`, `layout` | At most one per canvas |
 | `settings` | table of booleans, integers, floats and strings | Other TOML types are refused |
 
-Defaults are left out when written. Floats are written as the shortest decimal that reads back as the same `f32` (`0.1`, not `0.10000000149011612`). Unknown keys are refused. Loading builds the model and calls `SceneCollection::from_parts(canvases, sources, scenes, counters)`, which:
+Format 1 documents load unchanged (format 2 only adds `style`); the app writes format 2, which builds that know only format 1 refuse without touching the file (ADR-0053 decision 11). Defaults are left out when written. Floats are written as the shortest decimal that reads back as the same `f32` (`0.1`, not `0.10000000149011612`). Unknown keys are refused. Loading builds the model and calls `SceneCollection::from_parts(canvases, sources, scenes, counters)`, which:
 
 - trims names like edits do;
 - refuses two canvases, sources, scenes or items (across all scenes) with one id (`SceneError::DuplicateId`), and filter ids used twice (`DuplicateFilter`);
