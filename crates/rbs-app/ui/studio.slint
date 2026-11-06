@@ -1004,9 +1004,6 @@ component StyleFields inherits VerticalLayout {
     // because setting the text after an edit ends the field's binding.
     property <string> colour-text: data.border-color;
     changed colour-text => { colour.text = colour-text; }
-    // The picker's popover hides the preview layer while it is open, like a menu.
-    property <bool> picker-open: picker.open;
-    changed picker-open => { Studio.overlays += picker-open ? 1 : -1; Studio.overlays-changed(); }
     spacing: Tokens.space-3;
     Text {
         text: @tr("Shape and border");
