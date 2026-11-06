@@ -2,7 +2,7 @@
 
 - Status: Draft
 - Owner crate(s): `rbs-api` (first slice implemented, see "Implementation status"), `rbs-api-ws` (WebSocket adapter implemented: loopback, and TLS for network access), `rbs-api-ipc` (local IPC adapter implemented and served by `rbs-app`)
-- Related ADRs: [0008](../adr/0008-ui-as-api-client.md), [0013](../adr/0013-zero-cost-when-unused.md), [0021](../adr/0021-scene-collection-model.md), [0035](../adr/0035-meters-as-native-layers.md), [0044](../adr/0044-control-api-protocol-and-security.md)
+- Related ADRs: [0008](../adr/0008-ui-as-api-client.md), [0013](../adr/0013-zero-cost-when-unused.md), [0021](../adr/0021-scene-collection-model.md), [0035](../adr/0035-meters-as-native-layers.md), [0044](../adr/0044-control-api-protocol-and-security.md), [0052](../adr/0052-ai-agent-control-through-mcp.md)
 
 ## Purpose
 
@@ -72,7 +72,7 @@ The same JSON-RPC messages over a local stream (`rbs-api-ipc`):
 3. Client: `session.authenticate {token}`.
 4. Server: `{scopes, server: {name, version}}`, or `auth_failed` and close.
 
-Until the `session.authenticate` answer arrives, the pre-authentication message limit (4 KiB) applies, so a client waits for it before sending larger requests. On IPC, a peer the OS identifies as the same user is authenticated by step 2, which then also returns its scopes. Before authentication every other method returns `not_authenticated`. A connection that has not authenticated within the handshake timeout is closed. `auth_failed` is the same for an unknown and a wrong token.
+Until the `session.authenticate` answer arrives, the pre-authentication message limit (4 KiB) applies, so a client waits for it before sending larger requests. On IPC, a peer the OS identifies as the same user is authenticated by step 2, which then also returns its scopes. Planned (ADR-0052, minor addition): such a peer may still send `session.authenticate {token}` as its first request after `session.hello` (whose answer still reports all scopes); the session then has exactly the token's scopes and permission for the rest of its life (narrowing, never widening), and the answer reports both (`scopes`, and a new `irreversible` field). It is refused (`invalid_request`) once any other request was admitted, and a second time. A wrong token gets `auth_failed` and close; IPC has no back-off (the peer is the same user, the token has 256 bits). Revoking the token closes the session. Narrowing is voluntary: a peer that does not authenticate keeps all scopes. So an AI agent's `rbs-mcp` is limited by its own token on IPC too. Session tests on `TestClock` cover each case. Before authentication every other method returns `not_authenticated`. A connection that has not authenticated within the handshake timeout is closed. `auth_failed` is the same for an unknown and a wrong token.
 
 **Tokens.** Text `rbs1_` followed by 64 lowercase hex digits (32 bytes of OS randomness). The server stores `SHA-256` of the token's UTF-8 bytes, as lowercase hex, and compares in constant time. Each token has a user-given name and scopes, is shown once at creation (UI or `rbs-cli token create`), and can be revoked; revoking closes its sessions.
 
@@ -163,6 +163,7 @@ Version 1 limits (from the first implementation, `rbs_api::Limits::default`):
 | `auth_failed` | -32002 | Unknown or wrong token |
 | `unsupported_protocol` | -32003 | No common protocol major |
 | `scope_denied` | -32010 | Scope missing |
+| `not_permitted` | -32011 | Planned (ADR-0052): the token lacks the irreversible-actions permission; `data.reason` is `irreversible`, `on_air` or `network` |
 | `busy` | -32020 | Request queue full |
 | `rate_limited` | -32021 | Request rate exceeded |
 | `message_too_large` | -32022 | Message over the size limit |
@@ -172,6 +173,18 @@ Version 1 limits (from the first implementation, `rbs_api::Limits::default`):
 | `undo_conflict` | -32032 | Undo record used out of order |
 | `file_exists` | -32033 | Explicit file exists |
 | `failed` | -32040 | Valid but could not be carried out |
+
+## API parity (ADR-0052)
+
+Everything a user can do in the desktop app must be doable through this API, with the same validation and undo behaviour, except what is kept for the local user: entering the stream server and key, the remote control and network access settings, and turning the irreversible-actions permission on for an existing token. The U20 test allows exactly these; a PR that adds a UI action adds its request. Planned additions, each a minor version with its own spec change:
+
+- `profile.*` and `collection.*` for output profiles and scene collections (ADR-0051): list, get, create, rename, duplicate, delete, switch, import, export. None of them sets or reveals a stream server: `profile.import` drops the imported file's server and `profile.export` leaves it out. Exports to a path that exists are refused with `file_exists`; an import error gives the error kind, line and column, never text from the file.
+- `scene.*`, `canvas.*` and the remaining `source.*` methods for the scene model's operations.
+- `edit.apply {label, operations}` (`control`): a list of undoable scene operations only, validated as a whole, applied all or none, recorded as one undo step named `label`; waits for the serialisable scene operation type.
+- An `effect` per method in the schema: `read`, `edit` (undoable, or reversed by another call with nothing lost), `live` (record and stream start and stop, `profile.switch`) or `destructive` (removes something outside the undo history). Clients such as `rbs-mcp` ([MCP server spec](mcp-server.md)) turn it into tool annotations; a client treats a missing or unknown effect as `destructive`.
+- A per-token permission, "Allow actions that cannot be undone". Without it, `live` and `destructive` methods, `edit` methods (undo, redo, program switch and `collection.switch` included) that change what is on air (for a canvas with any active output: its format, everything reachable from its program scene, nested scenes, shared sources and filters included, and its audio mix), adding or re-addressing a source of a type that opens network connections, and any location field (paths and URLs in source settings, recording folders, `record.start_to_file`, import and export paths; marked in the schema) whose value is not a local absolute file system path (URL schemes, UNC and `\\?\UNC` paths, device paths), are refused; a source type that does not declare itself local-only, with its location fields, counts as network with a new error kind `not_permitted` (code -32011, `data.reason` `irreversible`, `on_air` or `network`). A token store entry without the field has it, so existing tokens and same-user IPC peers keep today's behaviour; `tokens.create` takes an optional `irreversible` (default `true` when the caller holds the permission) and never gives more scopes or permission than the caller holds (`not_permitted`). `settings.set` is `edit`; its `canvas` field gets the on-air check. `ControlTarget::handle` receives the caller context (token name or a fixed label, and the permission).
+- An audit record, with the caller label, for every `live` and `destructive` call and every `not_permitted` refusal, written on the API thread.
+- The scopes and effects of `profile.*` and `collection.*` are listed in ADR-0052 decision 1.
 
 ## Initial method set (version 1, first slice)
 
