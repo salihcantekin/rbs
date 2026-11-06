@@ -16,7 +16,12 @@
 //!    the release position (window coordinates) shows whether pointer events keep coming
 //!    outside the window while the button is held, which floating a panel needs.
 
-#![allow(missing_docs, clippy::print_stdout, clippy::print_stderr, clippy::expect_used)] // A spike: generated types are undocumented.
+#![allow(
+    missing_docs,
+    clippy::print_stdout,
+    clippy::print_stderr,
+    clippy::expect_used
+)] // A spike: generated types are undocumented.
 
 use slint::{ComponentHandle, DataTransfer, SharedString};
 
@@ -178,7 +183,10 @@ fn main() -> Result<(), slint::PlatformError> {
     let main = SpikeMain::new()?;
     let second = SpikeSecond::new()?;
     let size = main.window().size();
-    println!("SPIKE start: main window {}x{} physical px", size.width, size.height);
+    println!(
+        "SPIKE start: main window {}x{} physical px",
+        size.width, size.height
+    );
 
     main.on_make_data(payload);
     main.on_dropped_on(report_drop);
