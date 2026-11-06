@@ -239,6 +239,43 @@ impl StreamProfile {
     }
 }
 
+impl StreamProfile {
+    /// These settings as the control API shows them (`settings.get`): the server's
+    /// protocol but not its address, and whether a key is saved.
+    pub fn to_api(&self) -> rbs_api::types::StreamSettings {
+        use rbs_api::types as api;
+        api::StreamSettings {
+            protocol: self.parsed().map(|s| match s.protocol {
+                Protocol::Rtmp => api::StreamProtocol::Rtmp,
+                Protocol::Srt => api::StreamProtocol::Srt,
+            }),
+            key_saved: self.key_saved,
+            reconnect: self.reconnect,
+            srt_latency_ms: self.srt_latency_ms,
+            encoding: self.encoding.to_api(),
+        }
+    }
+
+    /// These settings with what a control API client may change (`settings.set`)
+    /// replaced: the server and the key stay. Refused, in words, when the result cannot
+    /// be used.
+    pub fn with_api(&self, patch: &rbs_api::types::StreamSettingsPatch) -> Result<Self, String> {
+        let mut p = self.clone();
+        p.reconnect = patch.reconnect;
+        p.srt_latency_ms = patch.srt_latency_ms;
+        p.encoding = Encoding::from_api(&patch.encoding);
+        match p.problem() {
+            // The saved server is not the caller's to read: a problem with it is not
+            // repeated.
+            Some(_) if !p.server.is_empty() && parse_server(&p.server).is_err() => {
+                Err("the saved server cannot be used: see Settings, Stream".into())
+            }
+            Some(why) => Err(why),
+            None => Ok(p),
+        }
+    }
+}
+
 impl Default for StreamProfile {
     fn default() -> Self {
         Self::new()
@@ -407,6 +444,38 @@ mod tests {
         assert!(text.contains("[encoding]"), "{text}");
         assert!(!text.to_lowercase().contains("secret"), "{text}");
         let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn the_control_api_sees_and_changes_all_but_the_server_and_the_key() {
+        let mut p = StreamProfile::new();
+        p.server = "srt://ingest.example.com:9000".into();
+        p.key_saved = true;
+        let api = p.to_api();
+        assert_eq!(api.protocol, Some(rbs_api::types::StreamProtocol::Srt));
+        let text = serde_json::to_string(&api).unwrap();
+        assert!(!text.contains("ingest.example.com"), "{text}");
+        let mut patch = rbs_api::types::StreamSettingsPatch {
+            reconnect: false,
+            srt_latency_ms: Some(1_000),
+            encoding: api.encoding.clone(),
+        };
+        patch.encoding.video_kbps = 9_000;
+        let changed = p.with_api(&patch).unwrap();
+        assert_eq!(changed.server, p.server);
+        assert!(changed.key_saved);
+        assert!(!changed.reconnect);
+        assert_eq!(changed.srt_latency_ms, Some(1_000));
+        assert_eq!(changed.encoding.video_kbps, 9_000);
+        assert_eq!(changed.to_api().encoding, patch.encoding);
+        patch.encoding.video_kbps = 1;
+        assert!(p.with_api(&patch).unwrap_err().contains("bitrate"));
+        // A saved server that is not valid is not repeated to the caller.
+        patch.encoding.video_kbps = 6_000;
+        p.server = "srt://secret.example.com".into();
+        let why = p.with_api(&patch).unwrap_err();
+        assert!(!why.contains("secret"), "{why}");
+        assert_eq!(StreamProfile::new().to_api().protocol, None);
     }
 
     #[test]

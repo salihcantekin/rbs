@@ -2044,6 +2044,15 @@ impl StudioUi {
                 self.folder_serial += 1;
                 self.save_profile();
             }
+            Update::StreamProfile(p) => {
+                // A control API client changed the stream settings: show and save
+                // them. It cannot change the server or the key, so a server being
+                // typed here, or a key saved meanwhile, stays.
+                self.stream.reconnect = p.reconnect;
+                self.stream.srt_latency_ms = p.srt_latency_ms;
+                self.stream.encoding = p.encoding;
+                self.save_stream();
+            }
             // `rbs-cli token` over local IPC made or revoked a token; the control
             // thread gave it to the server already. Only the list shown changes here.
             Update::TokensChanged => self.read_tokens(false),

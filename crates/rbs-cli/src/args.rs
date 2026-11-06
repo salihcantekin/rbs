@@ -18,6 +18,8 @@ pub enum Command {
     Devices,
     /// `rbs-cli token ...`: manage remote control access tokens.
     Token(TokenCommand),
+    /// `rbs-cli app ...`: control a running RBS desktop app over local IPC.
+    App(AppCommand),
     /// `rbs-cli remote fingerprint`: print the key pin and certificate fingerprint
     /// clients on other computers check (ADR-0046).
     RemoteFingerprint,
@@ -42,6 +44,28 @@ pub enum TokenCommand {
     Revoke {
         /// The token's name.
         name: String,
+    },
+}
+
+/// `rbs-cli app ...`: what to ask a running RBS desktop app (control API over local
+/// IPC).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AppCommand {
+    /// `app stream ...`.
+    Stream(StreamControl),
+}
+
+/// `rbs-cli app stream ...`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum StreamControl {
+    /// `start`: go live with the app's saved stream settings.
+    Start,
+    /// `stop`: end its stream.
+    Stop,
+    /// `status [--json]`: its stream state.
+    Status {
+        /// Print the state as the control API's JSON.
+        json: bool,
     },
 }
 
@@ -144,6 +168,7 @@ usage:
   rbs-cli token create <name> [--access view|control|full]
   rbs-cli token revoke <name>
   rbs-cli remote fingerprint
+  rbs-cli app stream start|stop|status [--json]
 
 record options:
   --seconds N          stop after N seconds (default: press Enter to stop)
@@ -189,7 +214,15 @@ token commands (access tokens for apps that control RBS, as in Settings, Remote
 control; the token is printed once, keep it):
   --access LEVEL       view: see state only; control: also change sources and
                        start and stop recording (default, right for panels);
-                       full: also change settings";
+                       full: also change settings
+
+app commands (control the running RBS app; it needs Allow remote control on in
+its Settings, Remote control):
+  stream start         go live with the server, key and encoder settings saved in
+                       the app's Settings, Stream
+  stream stop          end the stream (the app does not ask first)
+  stream status        the stream's state and connection; --json prints it as
+                       the control API's JSON";
 
 fn value<'a>(it: &mut impl Iterator<Item = &'a str>, flag: &str) -> Result<&'a str, String> {
     it.next().ok_or_else(|| format!("{flag} needs a value"))
@@ -373,6 +406,7 @@ pub fn parse<'a>(args: impl IntoIterator<Item = &'a str>) -> Result<Command, Str
         Some("record") => record(it, false).map(|a| Command::Record(Box::new(a))),
         Some("stream") => record(it, true).map(|a| Command::Record(Box::new(a))),
         Some("token") => token(it).map(Command::Token),
+        Some("app") => app(it).map(Command::App),
         Some("remote") => match (it.next(), it.next()) {
             (Some("fingerprint"), None) => Ok(Command::RemoteFingerprint),
             (Some("fingerprint"), Some(extra)) => {
@@ -382,6 +416,32 @@ pub fn parse<'a>(args: impl IntoIterator<Item = &'a str>) -> Result<Command, Str
             (None, _) => Err("remote needs fingerprint".into()),
         },
         Some(other) => Err(format!("unknown command {other:?}")),
+    }
+}
+
+fn app<'a>(mut it: impl Iterator<Item = &'a str>) -> Result<AppCommand, String> {
+    match it.next() {
+        Some("stream") => {}
+        Some(other) => return Err(format!("app: unknown command {other:?}")),
+        None => return Err("app needs stream start, stream stop or stream status".into()),
+    }
+    let command = match it.next() {
+        Some("start") => StreamControl::Start,
+        Some("stop") => StreamControl::Stop,
+        Some("status") => {
+            let json = match it.next() {
+                None => false,
+                Some("--json") => true,
+                Some(extra) => return Err(format!("app stream status: unexpected {extra:?}")),
+            };
+            StreamControl::Status { json }
+        }
+        Some(other) => return Err(format!("app stream: unknown command {other:?}")),
+        None => return Err("app stream needs start, stop or status".into()),
+    };
+    match it.next() {
+        None => Ok(AppCommand::Stream(command)),
+        Some(extra) => Err(format!("app stream: unexpected {extra:?}")),
     }
 }
 
@@ -858,6 +918,41 @@ mod tests {
         // Stream options are not record options.
         let err = parse_record(&["a.mkv", "--no-reconnect"]).unwrap_err();
         assert!(err.contains("unknown option"), "{err}");
+    }
+
+    #[test]
+    fn app_commands_parse() {
+        let p = |a: &[&str]| parse(a.iter().copied());
+        assert_eq!(
+            p(&["app", "stream", "start"]),
+            Ok(Command::App(AppCommand::Stream(StreamControl::Start)))
+        );
+        assert_eq!(
+            p(&["app", "stream", "stop"]),
+            Ok(Command::App(AppCommand::Stream(StreamControl::Stop)))
+        );
+        assert_eq!(
+            p(&["app", "stream", "status"]),
+            Ok(Command::App(AppCommand::Stream(StreamControl::Status {
+                json: false
+            })))
+        );
+        assert_eq!(
+            p(&["app", "stream", "status", "--json"]),
+            Ok(Command::App(AppCommand::Stream(StreamControl::Status {
+                json: true
+            })))
+        );
+        for bad in [
+            &["app"][..],
+            &["app", "record"],
+            &["app", "stream"],
+            &["app", "stream", "go"],
+            &["app", "stream", "start", "rtmp://x/app"],
+            &["app", "stream", "status", "--yaml"],
+        ] {
+            assert!(p(bad).is_err(), "{bad:?}");
+        }
     }
 
     #[test]

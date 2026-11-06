@@ -546,6 +546,9 @@ pub enum Update {
     /// A control API client changed the recording settings; the UI shows and saves
     /// them.
     Profile(RecordProfile),
+    /// A control API client changed the stream settings (not the server or the key);
+    /// the UI shows and saves them.
+    StreamProfile(StreamProfile),
     /// A control API client (`rbs-cli token` over local IPC) made or revoked an access
     /// token: it is saved and in effect; the UI reads the token list again.
     TokensChanged,
@@ -1251,7 +1254,12 @@ impl Host {
                 self.end_stream(None, notify);
                 self.publish(notify);
             }
-            Command::SetStreamProfile(profile) => self.stream_profile = Some(profile),
+            Command::SetStreamProfile(profile) => {
+                if self.stream_profile.as_ref() != Some(&profile) {
+                    self.stream_profile = Some(profile);
+                    self.settings_changed();
+                }
+            }
             Command::SaveStreamKey(key) => {
                 let result = match &key {
                     Some(k) => self.keys.write(k).map(|()| true),
@@ -1391,6 +1399,7 @@ impl Host {
         api::Settings {
             profiles: vec![self.profile.to_api()],
             canvas: self.api_canvas(),
+            stream: self.stream_profile.as_ref().map(StreamProfile::to_api),
         }
     }
 
@@ -2308,6 +2317,24 @@ impl ApiTarget<'_> {
                 } else {
                     None
                 };
+                let stream = match &patch.stream {
+                    Some(patch) => {
+                        let Some(current) = &host.stream_profile else {
+                            return Err(failed("the studio is still starting; try again"));
+                        };
+                        let stream = current
+                            .with_api(patch)
+                            .map_err(|why| ApiError::new(ErrorKind::InvalidParams, why))?;
+                        if host.streaming.is_some() && stream != *current {
+                            return Err(ApiError::new(
+                                ErrorKind::Conflict,
+                                "end the stream before changing its settings",
+                            ));
+                        }
+                        Some(stream)
+                    }
+                    None => None,
+                };
                 // The canvas goes first: it is the part that can still fail, and then
                 // nothing of the patch has been applied.
                 if let Some(canvas) = &patch.canvas {
@@ -2338,6 +2365,13 @@ impl ApiTarget<'_> {
                 {
                     host.profile = profile.clone();
                     notify(Update::Profile(profile));
+                    host.settings_changed();
+                }
+                if let Some(stream) = stream
+                    && host.stream_profile.as_ref() != Some(&stream)
+                {
+                    host.stream_profile = Some(stream.clone());
+                    notify(Update::StreamProfile(stream));
                     host.settings_changed();
                 }
                 Ok(Response::Settings(api::Snapshot {

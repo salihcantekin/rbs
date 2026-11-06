@@ -1,7 +1,7 @@
 //! A small control API client over local IPC (ADR-0044, control API spec "Local IPC"):
 //! `rbs-cli token` sends its changes to a running RBS this way, so they take effect at
-//! once. The OS identifies this program as the same user, so `session.hello` is all
-//! the authentication it needs.
+//! once, and `rbs-cli app` controls a running RBS's stream. The OS identifies this
+//! program as the same user, so `session.hello` is all the authentication it needs.
 
 use std::time::Duration;
 
@@ -14,7 +14,7 @@ const WAIT: Duration = Duration::from_secs(10);
 
 /// The outcome of trying to reach a running RBS.
 pub enum Reach {
-    /// It serves the control API to this user and allows token management.
+    /// It serves the control API to this user and allows what was asked for.
     Connected(RunningApp),
     /// Nothing serves the endpoint: RBS is not running, or remote control is off.
     NotRunning,
@@ -26,6 +26,8 @@ pub enum Reach {
 pub struct RunningApp {
     client: IpcClient,
     next: i64,
+    /// The minor version of the protocol it speaks (`1.<minor>`).
+    minor: u32,
 }
 
 /// A request that failed: the error's stable kind (`not_found`, `conflict`, ...) when
@@ -37,14 +39,21 @@ pub struct CallError {
 }
 
 impl RunningApp {
-    /// Connects to `endpoint` and says hello.
-    pub fn connect(endpoint: &Endpoint) -> Reach {
+    /// Connects to `endpoint`, says hello and checks that the session has `scope`
+    /// (`tokens`, `control`, `read`); `what` names it in a refusal ("token
+    /// management").
+    pub fn connect(endpoint: &Endpoint, scope: &str, what: &str) -> Reach {
         let client = match IpcClient::connect(endpoint, WAIT) {
             Ok(c) => c,
             Err(ClientError::NotRunning(_)) => return Reach::NotRunning,
             Err(e) => return Reach::Unusable(e.to_string()),
         };
-        let mut app = RunningApp { client, next: 1 };
+        let mut app = RunningApp {
+            client,
+            next: 1,
+            minor: 0,
+        };
+        // Any 1.x offer is accepted; the answer names the server's own minor version.
         let hello = app.call(
             "session.hello",
             json!({
@@ -56,13 +65,23 @@ impl RunningApp {
             Ok(r)
                 if r["scopes"]
                     .as_array()
-                    .is_some_and(|s| s.iter().any(|x| x == "tokens")) =>
+                    .is_some_and(|s| s.iter().any(|x| x == scope)) =>
             {
+                app.minor = r["protocol"]
+                    .as_str()
+                    .and_then(|p| p.strip_prefix("1."))
+                    .and_then(|m| m.parse().ok())
+                    .unwrap_or(0);
                 Reach::Connected(app)
             }
-            Ok(_) => Reach::Unusable("it does not allow token management here".into()),
+            Ok(_) => Reach::Unusable(format!("it does not allow {what} here")),
             Err(e) => Reach::Unusable(e.message),
         }
+    }
+
+    /// It speaks protocol `1.<minor>` or a later 1.x.
+    pub fn speaks(&self, minor: u32) -> bool {
+        self.minor >= minor
     }
 
     /// Calls `method` and returns its result.
