@@ -594,25 +594,6 @@ component FrameBar inherits Rectangle {
                 clicked => { Shell.quit-keep(); }
             }
         }
-        // The first Close with Keep RBS running: where RBS goes, said once (ADR-0056).
-        if Shell.background-notice != 0: HorizontalLayout {
-            spacing: Tokens.space-2;
-            accessible-role: groupbox;
-            accessible-label: @tr("RBS keeps running");
-            init => { notice-ok.focus(); }
-            Text {
-                text: Shell.background-notice == 1 ? @tr("RBS keeps running in the Dock. Quit with Cmd+Q.")
-                    : @tr("RBS keeps running in the notification area (under the ^ arrow until you pin it). Quit it from the RBS icon there.");
-                color: Theme.text-primary;
-                font-size: Tokens.type-body-size;
-                vertical-alignment: center;
-            }
-            notice-ok := Button {
-                text: @tr("OK");
-                kind: "primary";
-                clicked => { Shell.background-notice-ok(); }
-            }
-        }
         // Network access (ADR-0046 decision 7): shown in every workspace while other
         // computers can connect, in words.
         if Studio.rc-network-on: Text {
@@ -743,7 +724,19 @@ export component MainWindow inherits Window {
         act => { Studio.undo-delete(); }
         dismiss => { Studio.dismiss-deleted(); }
     }
-    if Shell.error-kind != 0: Toast {
+    // The first Close with Keep RBS running says once where RBS goes, in the error
+    // bar's place over the window (ADR-0056); OK (or Dismiss) hides the windows.
+    if Shell.background-notice != 0: Toast {
+        x: (parent.width - self.width) / 2;
+        y: frame.height + Tokens.space-2;
+        top: true;
+        text: Shell.background-notice == 1 ? @tr("RBS keeps running in the Dock. Quit with Cmd+Q.")
+            : @tr("RBS keeps running in the notification area (under the ^ arrow until you pin it). Quit it from the RBS icon there.");
+        action: @tr("OK");
+        act => { Shell.background-notice-ok(); }
+        dismiss => { Shell.background-notice-ok(); }
+    }
+    if Shell.error-kind != 0 && Shell.background-notice == 0: Toast {
         x: (parent.width - self.width) / 2;
         y: frame.height + Tokens.space-2;
         top: true;
