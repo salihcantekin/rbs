@@ -34,8 +34,16 @@ pub fn run(ipc: &Endpoint, command: &AppCommand, out: &mut dyn Write) -> Result<
         }
         Reach::Unusable(why) => return Err(format!("RBS could not be reached ({why}).")),
     };
-    if !app.speaks(STREAM_MINOR) {
-        return Err("the running RBS is too old to control its stream; update it.".into());
+    match app.speaks(STREAM_MINOR) {
+        Some(true) => {}
+        Some(false) => {
+            return Err("the running RBS is too old to control its stream; update it.".into());
+        }
+        None => {
+            return Err(
+                "the running RBS speaks a control protocol this rbs-cli does not know; use the rbs-cli of the same release.".into(),
+            );
+        }
     }
     let written = |e: std::io::Error| e.to_string();
     match command {

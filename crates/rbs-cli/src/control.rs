@@ -26,8 +26,9 @@ pub enum Reach {
 pub struct RunningApp {
     client: IpcClient,
     next: i64,
-    /// The minor version of the protocol it speaks (`1.<minor>`).
-    minor: u32,
+    /// The minor version of the protocol it speaks (`1.<minor>`); `None` for another
+    /// major version.
+    minor: Option<u32>,
 }
 
 /// A request that failed: the error's stable kind (`not_found`, `conflict`, ...) when
@@ -51,7 +52,7 @@ impl RunningApp {
         let mut app = RunningApp {
             client,
             next: 1,
-            minor: 0,
+            minor: None,
         };
         // Any 1.x offer is accepted; the answer names the server's own minor version.
         let hello = app.call(
@@ -70,8 +71,7 @@ impl RunningApp {
                 app.minor = r["protocol"]
                     .as_str()
                     .and_then(|p| p.strip_prefix("1."))
-                    .and_then(|m| m.parse().ok())
-                    .unwrap_or(0);
+                    .and_then(|m| m.parse().ok());
                 Reach::Connected(app)
             }
             Ok(_) => Reach::Unusable(format!("it does not allow {what} here")),
@@ -79,9 +79,10 @@ impl RunningApp {
         }
     }
 
-    /// It speaks protocol `1.<minor>` or a later 1.x.
-    pub fn speaks(&self, minor: u32) -> bool {
-        self.minor >= minor
+    /// Whether it speaks protocol `1.<minor>` or a later 1.x: `None` when it speaks
+    /// another major version.
+    pub fn speaks(&self, minor: u32) -> Option<bool> {
+        self.minor.map(|m| m >= minor)
     }
 
     /// Calls `method` and returns its result.

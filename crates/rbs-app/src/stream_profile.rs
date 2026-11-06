@@ -264,6 +264,21 @@ impl StreamProfile {
         p.reconnect = patch.reconnect;
         p.srt_latency_ms = patch.srt_latency_ms;
         p.encoding = Encoding::from_api(&patch.encoding);
+        // Free text the form never offers would make every later Go live fail.
+        if let Some(name) = &p.encoding.profile
+            && !["high", "main", "baseline"].contains(&name.as_str())
+        {
+            return Err(format!(
+                "codec profile {name:?} is not high, main or baseline"
+            ));
+        }
+        if p.encoding
+            .encoder
+            .as_ref()
+            .is_some_and(|id| id.is_empty() || id.len() > 128 || id.chars().any(char::is_control))
+        {
+            return Err("the encoder id is not an adapter id".into());
+        }
         match p.problem() {
             // The saved server is not the caller's to read: a problem with it is not
             // repeated.
@@ -470,6 +485,13 @@ mod tests {
         assert_eq!(changed.to_api().encoding, patch.encoding);
         patch.encoding.video_kbps = 1;
         assert!(p.with_api(&patch).unwrap_err().contains("bitrate"));
+        patch.encoding.video_kbps = 6_000;
+        patch.encoding.profile = Some("high10".into());
+        assert!(p.with_api(&patch).unwrap_err().contains("high10"));
+        patch.encoding.profile = Some("main".into());
+        patch.encoding.encoder = Some("x".repeat(200));
+        assert!(p.with_api(&patch).is_err());
+        patch.encoding.encoder = None;
         // A saved server that is not valid is not repeated to the caller.
         patch.encoding.video_kbps = 6_000;
         p.server = "srt://secret.example.com".into();

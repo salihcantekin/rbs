@@ -2498,6 +2498,29 @@ mod tests {
     }
 
     #[test]
+    fn stream_settings_from_the_control_api_keep_the_server_and_the_key() {
+        let (mut ui, d) = ui("api-stream");
+        ui.set_server("rtmp://127.0.0.1/live");
+        ui.stream.key_saved = true;
+        ui.server_edited("rtmp://127.0.0.1/typing");
+        let mut p = StreamProfile::new();
+        p.server = "rtmp://elsewhere.example/app".into();
+        p.reconnect = false;
+        p.encoding.video_kbps = 9_000;
+        ui.apply(Update::StreamProfile(p));
+        assert_eq!(ui.stream.server, "rtmp://127.0.0.1/live");
+        assert!(ui.stream.key_saved);
+        assert!(!ui.stream.reconnect);
+        assert_eq!(ui.stream.encoding.video_kbps, 9_000);
+        let saved = stream_profile::load(&d).0;
+        assert_eq!(saved, ui.stream);
+        // The server being typed is still there to confirm.
+        ui.settings_closed();
+        assert_eq!(ui.stream.server, "rtmp://127.0.0.1/typing");
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
     fn a_server_typed_but_not_confirmed_is_kept() {
         let (mut ui, d) = ui("server-draft");
         ui.server_edited("rtmp://127.0.0.1/li");
