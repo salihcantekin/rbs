@@ -1,6 +1,6 @@
 # ADR-0049: Main window areas, panel states and sizes (workspace format 2)
 
-- Status: Proposed
+- Status: Accepted
 - Date: 2026-11-06
 - Deciders: Salih (owner)
 - Amends: ADR-0015 (rule U5, collapsed panels; for that rule this ADR supersedes ADR-0015), ADR-0017 (workspace format). On acceptance both status lines name this ADR.
@@ -120,3 +120,5 @@ What Slint 1.18.1 (the version we use) provides, checked in its source and with 
   2. `ui.command.run` had no mechanism for the scope check: the routed request carries the caller's scopes and remote flag, and resolved methods run as the caller's session (control API spec).
   3. The studio toggle had no API methods or canvas: it pairs `canvas.set_preview` (joining with the scene model's operations; not offered before), with a `canvas` parameter. Minor: centre minimum counts fixed children at their minimums; the studio split's shape is validated.
 - 2026-11-06, fifth independent AI session (final check): round 4 fixes hold; one major finding (layout commands that would break a studio split's shape) and three minor. Resolved: the split is one unit, closing or moving a panel out dissolves it, `ui.layout.studio_split` rebuilds it; opening a closed Preview is the one studio-mode layout change, also when locked; the rail shows only the picker outside studio mode; superseded review items marked.
+- 2026-11-06, sixth independent AI session (check of the studio split rule): two majors (the rail's fixed size after dissolving; `ui.layout.studio_split` underdefined) and two minors (lock list, auto-open of other canvases' Preview). Resolved in the spec: dissolving drops the rail's `size`; the command takes a canvas, has a defined placement, history step, lock rule and `conflict`; auto-open covers every canvas and is a history step.
+- 2026-11-06: Accepted by the project thread under the owner's standing ADR policy, after six review rounds with every finding resolved. The owner chose this direction (round 2, "E + F area toggles").

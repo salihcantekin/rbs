@@ -1,6 +1,6 @@
 # ADR-0050: One command registry for menus, context menus, the toolbar and the palette
 
-- Status: Proposed
+- Status: Accepted
 - Date: 2026-11-06
 - Deciders: Salih (owner)
 - Builds on: ADR-0008 (UI as an API client, U20), ADR-0017 and ADR-0049 (workspaces, main window frame), ADR-0022 (Slint)
@@ -44,3 +44,4 @@ Slint 1.18.1 provides `MenuBar`, `Menu`, `MenuItem` (title, icon, shortcut, chec
 - 2026-11-06, independent AI session (second round of the ADR-0049 review, which covered this ADR): changes requested on decision 6 (U1 forbids menu-only starts; Edit lacked Live controls) and on decisions 1-2 (toggle ids unreachable for surfaces, parameter mapping, picker items, `ui.toolbar.*` undefined). Resolved: decision 6 rewritten, `picker` kind, id parameter mapping, `ui.command.run` / `ui.command.list`, `ui.toolbar.*` listed in the control API spec.
 - 2026-11-06, third independent AI session (verification): `ui.command.run` must not widen a token's rights (now checked per resolved method, `scope_denied`), parameter values need an encoding (percent-encoded UTF-8), the U1 workspace test must count edge tabs. Resolved in decisions 2 and 6 and the specs.
 - 2026-11-06, fourth independent AI session (final check): the scope check needed a mechanism (resolved: resolved methods run as the caller's session, decision 2) and the studio toggle needed real methods and a canvas (resolved in ADR-0049 and the spec).
+- 2026-11-06: Accepted by the project thread under the owner's standing ADR policy, together with ADR-0049, after its review rounds with every finding resolved.
