@@ -529,7 +529,7 @@ mod tests {
     fn a_first_start_makes_default_entries_from_the_old_files() {
         let d = Dir::new("migrate");
         let mut rec = RecordProfile::new();
-        rec.folder = "/videos/old".into();
+        rec.folder = d.0.join("videos-old");
         record_profile::save(&d.0, &rec).unwrap();
         let mut st = StreamProfile::new();
         st.server = "rtmp://127.0.0.1/live".into();
@@ -563,7 +563,7 @@ mod tests {
     fn old_files_are_not_used_again_once_the_libraries_exist() {
         let d = Dir::new("no-remigrate");
         let mut rec = RecordProfile::new();
-        rec.folder = "/videos/old".into();
+        rec.folder = d.0.join("videos-old");
         record_profile::save(&d.0, &rec).unwrap();
         let (s, _) = open(&d.0, quiet());
         s.flush();
@@ -579,7 +579,7 @@ mod tests {
         let d = Dir::new("save");
         let (mut s, mut col) = open(&d.0, quiet());
         let mut rec = RecordProfile::new();
-        rec.folder = "/videos/new".into();
+        rec.folder = d.0.join("videos-new");
         s.set_section(RECORDING, &rec).unwrap();
         let saver = s.collection_saver().unwrap();
         let canvas = col.canvases().next().unwrap().id;
