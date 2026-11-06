@@ -28,6 +28,8 @@ UI text uses these terms and no synonyms (rule U13). Code may use different inte
 | Access token | A secret one app uses for remote control, with a name and an access level (View only, Control, Full control). Shown once; can be revoked | Password, key, API key | `rbs_api::Token` with its scopes |
 | Access from other computers | Remote control by apps on other computers on the network, over an encrypted connection. Off by default | Network mode, LAN access, remote access | Network access, TLS (`WsConfig::network`, ADR-0046) |
 | Key pin | What apps on other computers check before they send an access token: `sha256//` and the hash of RBS's public key. Stays the same when the certificate is renewed | Fingerprint, thumbprint | SPKI SHA-256 pin (`TlsIdentity::key_pin`) |
+| Keep running | RBS stays running with no window after the main window is closed: outputs and remote control go on. Ended by Quit | Minimize to tray, background mode | `on_close = "keep_running"` (ADR-0056) |
+| Notification area | The icons at the end of the Windows taskbar, where RBS shows its icon while it keeps running | System tray, tray | Windows tray icon (ADR-0056) |
 | Area | One of the three regions around the centre of the main window (left, right, bottom) that can be shown or hidden with its button. Hiding an area keeps its panels | Dock, sidebar, region | Main window area (`left`, `right`, `bottom`, ADR-0049) |
 | Edge tab | A tab at the window edge for a panel that is set to auto-hide; pointing at it or pressing it opens the panel | Side tab, pin tab | Auto-hide group tab |
 | Collapse / Expand | Shrink a panel to its title row (or a narrow strip) and back, without closing it | Minimize, fold | Stack state `collapsed` |

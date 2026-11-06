@@ -17,11 +17,13 @@ mod probe {
             callback open-plain();
             callback open-clamped();
             callback open-nested();
+            callback open-wide();
             callback close-all();
             open-plain => { plain.show(); }
             open-clamped => { clamped.show(); }
             open-nested => { outer.show(); }
-            close-all => { plain.close(); clamped.close(); outer.close(); }
+            open-wide => { wide.show(); }
+            close-all => { plain.close(); clamped.close(); outer.close(); wide.close(); }
             anchor := Rectangle {
                 x: 50px;
                 y: 40px;
@@ -39,6 +41,15 @@ mod probe {
                     width: 200px;
                     height: 60px;
                 }
+            }
+            // Its child is wider than the popup, so Slint centres it and draws it
+            // past both edges (as `EntryMenu` did before its root got a width).
+            wide := PopupWindow {
+                x: 100px;
+                y: 200px;
+                width: 60px;
+                height: 40px;
+                Rectangle { width: 100px; height: 50px; }
             }
             outer := PopupWindow {
                 x: 20px;
@@ -93,6 +104,12 @@ fn reads_where_slint_placed_each_popup() {
         open(&probe),
         vec![r(20.0, 30.0, 100.0, 100.0), r(30.0, 40.0, 40.0, 30.0)]
     );
+    probe.invoke_close_all();
+    assert_eq!(open(&probe), vec![]);
+
+    // Joined with what it draws: x 100 - 20, y 200 - 5, 100 by 50.
+    probe.invoke_open_wide();
+    assert_eq!(open(&probe), vec![r(80.0, 195.0, 100.0, 50.0)]);
     probe.invoke_close_all();
     assert_eq!(open(&probe), vec![]);
 }

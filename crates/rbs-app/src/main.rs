@@ -9,11 +9,13 @@
 //!
 //! Options: `--demo-live` shows a made-up live and recording state, to check
 //! the live indicator without an engine. `RBS_THEME=dark|light|high-contrast`
-//! overrides the OS theme. `RBS_CONFIG_DIR` overrides the config directory.
+//! overrides the OS theme. `RBS_TOKENS=<file>` uses another token file
+//! (development aid, see `look`). `RBS_CONFIG_DIR` overrides the config directory.
 #![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
 
 mod config;
 mod entry;
+mod look;
 #[cfg(any(target_os = "macos", windows))]
 mod preview;
 mod preview_edit;
@@ -308,6 +310,8 @@ type Op = Box<dyn FnOnce(&mut App)>;
 #[derive(Clone)]
 struct Ctx {
     app: Rc<RefCell<App>>,
+    /// The token file every window gets when it opens (`look`).
+    look: Rc<Option<rbs_ui::tokens::Tokens>>,
     /// Changes asked for while the state was borrowed; applied before the next sync.
     queue: Rc<RefCell<Vec<Op>>>,
     pending: Rc<Cell<bool>>,
@@ -471,7 +475,11 @@ impl Ctx {
                 ));
                 return;
             };
-            apply_theme(&w.global::<Theme>());
+            look::apply(
+                &w.global::<Theme>(),
+                &w.global::<Tokens>(),
+                ctx.look.as_ref().as_ref(),
+            );
             install_studio(&w.global::<Studio>(), &ctx);
             // `install_studio` cannot borrow the app here (this runs inside an update):
             // the shared models (the access token list) are attached directly.
@@ -808,7 +816,11 @@ impl Ctx {
         let fw = FloatWindow::new().ok()?;
         install(&fw.global::<Shell>(), self);
         install_studio(&fw.global::<Studio>(), self);
-        apply_theme(&fw.global::<Theme>());
+        look::apply(
+            &fw.global::<Theme>(),
+            &fw.global::<Tokens>(),
+            self.look.as_ref().as_ref(),
+        );
         let models = DockModels::new();
         fw.set_stacks(ModelRc::from(models.stacks.clone()));
         fw.set_handles(ModelRc::from(models.handles.clone()));
@@ -833,16 +845,6 @@ impl Ctx {
             models,
         })
     }
-}
-
-fn apply_theme(theme: &Theme<'_>) {
-    let choice = match std::env::var("RBS_THEME").as_deref() {
-        Ok("dark") => 0,
-        Ok("light") => 1,
-        Ok("high-contrast") => 2,
-        _ => -1,
-    };
-    theme.set_choice(choice);
 }
 
 fn edge(code: i32) -> Edge {
@@ -1448,12 +1450,21 @@ fn run(config: PathBuf, notice: Option<String>) -> Result<(), Box<dyn std::error
         });
     }
 
+    let (look, look_error) = look::load();
+    if let Some(why) = look_error {
+        error = error.or(Some(UiError::Other(why)));
+    }
     let main = MainWindow::new()?;
-    apply_theme(&main.global::<Theme>());
+    look::apply(
+        &main.global::<Theme>(),
+        &main.global::<Tokens>(),
+        look.as_ref(),
+    );
     let main_models = DockModels::new();
     main.set_stacks(ModelRc::from(main_models.stacks.clone()));
     main.set_handles(ModelRc::from(main_models.handles.clone()));
     let ctx = Ctx {
+        look: Rc::new(look),
         app: Rc::new(RefCell::new(App {
             session,
             store,
