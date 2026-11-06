@@ -37,7 +37,7 @@ pub fn run(
     if !matches!(command, TokenCommand::List)
         && let Some(endpoint) = ipc
     {
-        match RunningApp::connect(endpoint) {
+        match RunningApp::connect(endpoint, "tokens", "token management") {
             Reach::Connected(app) => return live(app, endpoint, command, out, notes),
             Reach::NotRunning => {}
             // A revoke made only in the file would leave the token working in the
@@ -62,7 +62,7 @@ pub fn run(
 /// After `tokens.create` got no answer: revokes the token by name if RBS made it, and
 /// says what happened.
 fn unanswered_create(endpoint: &Endpoint, name: &str, why: &str) -> String {
-    let undone = match RunningApp::connect(endpoint) {
+    let undone = match RunningApp::connect(endpoint, "tokens", "token management") {
         Reach::Connected(mut app) => match app.call("tokens.revoke", json!({ "name": name })) {
             Ok(_) => Ok(()),
             Err(e) if e.kind.as_deref() == Some("not_found") => Ok(()),

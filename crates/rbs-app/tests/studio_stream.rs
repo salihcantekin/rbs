@@ -581,7 +581,12 @@ impl Client {
 
     /// The next `stream.state` event whose data `ok` accepts; earlier ones are dropped.
     fn stream_state(&mut self, ok: impl Fn(&serde_json::Value) -> bool) -> serde_json::Value {
-        let topic = |e: &serde_json::Value| e["params"]["topic"] == "stream.state";
+        self.event("stream.state", ok)
+    }
+
+    /// The next event of `name` whose data `ok` accepts; earlier ones are dropped.
+    fn event(&mut self, name: &str, ok: impl Fn(&serde_json::Value) -> bool) -> serde_json::Value {
+        let topic = |e: &serde_json::Value| e["params"]["topic"] == name;
         while !self.events.is_empty() {
             let e = self.events.remove(0);
             if topic(&e) && ok(&e["params"]["data"]) {
@@ -597,13 +602,9 @@ impl Client {
     }
 }
 
-#[test]
-fn a_control_api_client_goes_live_and_ends_the_stream() {
-    let Some(gpu) = gpu() else { return };
-    let keys = Arc::new(MemoryKeyStore::new());
-    let server = Arc::new(Server::default());
-    let (host, rx) = host(gpu, keys, Arc::clone(&server), &TestClock::new());
-
+/// Serves the control API from `host` and connects a same-user IPC client to it, after
+/// `session.hello`.
+fn api_client(host: &StudioHost) -> (ApiServer, Client) {
     let config = ServerConfig::new(ClientInfo::new("rbs", "test")).unwrap();
     let (api, endpoint) =
         ApiServer::start(config, TokenStore::new(), ApiOptions::new(host.api_waker())).unwrap();
@@ -625,8 +626,18 @@ fn a_control_api_client_goes_live_and_ends_the_stream() {
     };
     c.call(
         "session.hello",
-        serde_json::json!({"protocols": ["1.1"], "client": {"name": "test", "version": "1"}}),
+        serde_json::json!({"protocols": ["1.2"], "client": {"name": "test", "version": "1"}}),
     );
+    (api, c)
+}
+
+#[test]
+fn a_control_api_client_goes_live_and_ends_the_stream() {
+    let Some(gpu) = gpu() else { return };
+    let keys = Arc::new(MemoryKeyStore::new());
+    let server = Arc::new(Server::default());
+    let (host, rx) = host(gpu, keys, Arc::clone(&server), &TestClock::new());
+    let (api, mut c) = api_client(&host);
     let sub = c.call(
         "events.subscribe",
         serde_json::json!({"topics": ["stream.state"]}),
@@ -749,6 +760,119 @@ fn a_control_api_client_goes_live_and_ends_the_stream() {
         .unwrap_or_default()
         .to_owned();
     assert!(why.contains("unknown stream key"), "{failed}");
+
+    drop(host);
+    drop(api);
+}
+
+#[test]
+fn stream_settings_are_read_and_changed_through_settings_but_never_the_server() {
+    let Some(gpu) = gpu() else { return };
+    let keys = Arc::new(MemoryKeyStore::new());
+    let server = Arc::new(Server::default());
+    let (host, rx) = host(gpu, keys, Arc::clone(&server), &TestClock::new());
+    let (api, mut c) = api_client(&host);
+    let none = serde_json::json!({});
+    c.call(
+        "events.subscribe",
+        serde_json::json!({"topics": ["settings.changed"]}),
+    );
+
+    // Before the UI sent its stream settings there are none to show or change.
+    let early = c.call("settings.get", none.clone());
+    assert!(early["result"]["data"].get("stream").is_none(), "{early}");
+    let patch = serde_json::json!({"stream": {
+        "reconnect": false,
+        "srt_latency_ms": null,
+        "encoding": {
+            "encoder": null, "rate_control": "vbr", "video_kbps": 8000,
+            "max_video_kbps": 12000, "quality": 23, "keyframe_seconds": 2,
+            "profile": null, "preset": "quality", "b_frames": 2,
+            "cbr_padding": false, "audio_kbps": 192
+        }
+    }});
+    let refused = c.call("settings.set", patch.clone());
+    assert_eq!(refused["error"]["data"]["kind"], "failed", "{refused}");
+
+    let mut profile = StreamProfile::new();
+    profile.server = URL.into();
+    profile.key_saved = true;
+    host.send(Command::SetStreamProfile(profile.clone()));
+    add_display(&host, &rx);
+    let got = c.call("settings.get", none.clone());
+    let stream = &got["result"]["data"]["stream"];
+    assert_eq!(stream["protocol"], "rtmp", "{got}");
+    assert_eq!(stream["key_saved"], true, "{got}");
+    assert_eq!(stream["reconnect"], true, "{got}");
+    assert_eq!(stream["encoding"]["video_kbps"], 6000, "{got}");
+    // The server is the local user's: no answer or event names it.
+    assert!(!got.to_string().contains("live.example.com"), "{got}");
+
+    // The settings `settings.get` returned can be sent back changed; the server and
+    // the key stay, whatever the caller adds.
+    let mut back = serde_json::json!({"stream": stream.clone()});
+    back["stream"]["encoding"] = patch["stream"]["encoding"].clone();
+    back["stream"]["reconnect"] = false.into();
+    back["stream"]["server"] = "rtmp://elsewhere.example/app".into();
+    back["stream"]["key_saved"] = false.into();
+    let set = c.call("settings.set", back);
+    let data = &set["result"]["data"]["stream"];
+    assert_eq!(data["encoding"]["video_kbps"], 8000, "{set}");
+    assert_eq!(data["encoding"]["rate_control"], "vbr", "{set}");
+    assert_eq!(data["reconnect"], false, "{set}");
+    assert_eq!(data["key_saved"], true, "{set}");
+    // The UI is told, to show and save them.
+    let saved = next(&rx, |u| match u {
+        Update::StreamProfile(p) => Some(p),
+        _ => None,
+    });
+    assert_eq!(saved.server, URL);
+    assert!(saved.key_saved);
+    assert!(!saved.reconnect);
+    assert_eq!(saved.encoding.video_kbps, 8000);
+    assert_eq!(saved.encoding.audio_kbps, 192);
+    let event = c.event("settings.changed", |d| d["stream"]["reconnect"] == false);
+    assert_eq!(
+        event["params"]["data"]["stream"]["encoding"]["video_kbps"], 8000,
+        "{event}"
+    );
+    assert!(!event.to_string().contains("live.example.com"), "{event}");
+
+    // Settings that cannot be used are refused, and nothing changes.
+    let mut bad = patch.clone();
+    bad["stream"]["encoding"]["audio_kbps"] = 100.into();
+    let refused = c.call("settings.set", bad);
+    assert_eq!(
+        refused["error"]["data"]["kind"], "invalid_params",
+        "{refused}"
+    );
+    let mut bad = patch.clone();
+    bad["stream"]["srt_latency_ms"] = 0.into();
+    let refused = c.call("settings.set", bad);
+    assert_eq!(
+        refused["error"]["data"]["kind"], "invalid_params",
+        "{refused}"
+    );
+    let got = c.call("settings.get", none.clone());
+    assert_eq!(
+        got["result"]["data"]["stream"]["encoding"]["audio_kbps"], 192,
+        "{got}"
+    );
+
+    // While a stream runs its settings stay; the same settings are accepted.
+    host.send(Command::SaveStreamKey(Some(rbs_transport::Secret::new(
+        "k",
+    ))));
+    assert_eq!(key_saved(&rx), Ok(true));
+    let started = c.call("stream.start", none.clone());
+    assert!(started["result"].is_object(), "{started}");
+    let mut changed = patch.clone();
+    changed["stream"]["encoding"]["video_kbps"] = 4000.into();
+    let busy = c.call("settings.set", changed);
+    assert_eq!(busy["error"]["data"]["kind"], "conflict", "{busy}");
+    let same = c.call("settings.set", patch);
+    assert!(same["result"].is_object(), "{same}");
+    c.call("stream.stop", none);
 
     drop(host);
     drop(api);

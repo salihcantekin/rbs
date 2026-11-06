@@ -10,7 +10,7 @@ use crate::event::Topic;
 use crate::scope::{Scope, ScopeSet};
 use crate::types::{
     Canvas, CaptureTarget, OutputProfile, RecordState, RecordingProfile, SeqMap, Settings,
-    Snapshot, SourceInfo, SourceKind, StreamState, StudioInfo,
+    Snapshot, SourceInfo, SourceKind, StreamSettingsPatch, StreamState, StudioInfo,
 };
 
 /// Parameters of a method that takes none. Unknown fields are ignored.
@@ -111,6 +111,9 @@ pub struct SettingsPatch {
     /// A new canvas; the studio restarts with it. Refused while recording.
     #[serde(default)]
     pub canvas: Option<Canvas>,
+    /// New stream settings (protocol 1.2). Refused while a stream runs.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stream: Option<StreamSettingsPatch>,
 }
 
 /// `events.subscribe`.
