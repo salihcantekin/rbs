@@ -992,6 +992,10 @@ component EncoderFields inherits VerticalLayout {
 // is one undo step.
 component StyleFields inherits VerticalLayout {
     in property <SourceData> data;
+    // The colour that stands. The field's text is set from it whenever it changes,
+    // because setting the text after an edit ends the field's binding.
+    property <string> colour-text: data.border-color;
+    changed colour-text => { colour.text = colour-text; }
     spacing: Tokens.space-3;
     Text {
         text: @tr("Shape and border");
@@ -1077,7 +1081,8 @@ component StyleFields inherits VerticalLayout {
                             if t != data.border-color {
                                 Studio.set-source-style(data.id, data.shape, data.radius, true, data.border-width, t);
                             }
-                            // A refused colour goes back to the one that stands.
+                            // A refused colour goes back to the one that stands; an
+                            // accepted one arrives through `colour-text`.
                             self.text = data.border-color;
                         }
                     }
