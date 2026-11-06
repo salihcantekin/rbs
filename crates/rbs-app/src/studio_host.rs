@@ -1509,7 +1509,14 @@ impl Host {
                 collection,
                 autosave,
             } => {
-                let result = self.switch_collection(*collection, autosave, notify);
+                // Answered also after a caught panic, so the UI's switch, and a control
+                // API switch waiting on it, end; the round then recovers the host.
+                let result =
+                    rbs_crash::contain(|| self.switch_collection(*collection, autosave, notify))
+                        .unwrap_or_else(|_| {
+                            self.caught = true;
+                            Err(rbs_crash::CAUGHT_TEXT.to_owned())
+                        });
                 notify(Update::CollectionSwitched { seq, result });
             }
             Command::SetLibrary {
