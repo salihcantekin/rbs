@@ -53,6 +53,9 @@ const SAVE_DELAY: Duration = Duration::from_millis(400);
 enum UiError {
     Locked,
     Other(String),
+    /// Shown as it is, without "That did not work" (ADR-0055): a caught panic, an
+    /// unclean last exit.
+    Notice(String),
 }
 
 /// Row models of one window's dock area. They live as long as the window, so
@@ -364,7 +367,7 @@ fn show_caught() {
             let ctx = CTX.with(|c| c.borrow().clone());
             if let Some(ctx) = ctx {
                 if let Ok(mut app) = ctx.app.try_borrow_mut() {
-                    app.error = Some(UiError::Other(rbs_crash::CAUGHT_TEXT.into()));
+                    app.error = Some(UiError::Notice(rbs_crash::CAUGHT_TEXT.into()));
                 }
                 ctx.sync();
             }
@@ -421,7 +424,13 @@ impl Ctx {
         self.update(move |app| {
             let applied = app.studio.apply(u);
             if let Some(e) = applied.error {
-                app.error = Some(UiError::Other(e));
+                // A caught panic on the studio's thread reads as a notice, not as an
+                // action that failed (ADR-0055).
+                app.error = Some(if e == rbs_crash::CAUGHT_TEXT {
+                    UiError::Notice(e)
+                } else {
+                    UiError::Other(e)
+                });
             }
             if let Some(endpoint) = applied.preview {
                 ctx.connect_preview(endpoint);
@@ -672,6 +681,7 @@ impl Ctx {
         let (error_kind, error_detail) = match &app.error {
             Some(UiError::Locked) => (1, String::new()),
             Some(UiError::Other(e)) => (2, e.clone()),
+            Some(UiError::Notice(e)) => (3, e.clone()),
             None => (0, String::new()),
         };
         let panels = ModelRc::from(app.panels_model.clone());
@@ -1391,8 +1401,7 @@ fn run(config: PathBuf, notice: Option<String>) -> Result<(), Box<dyn std::error
         &config,
         std::sync::Arc::new(|why| deliver(studio_host::Update::Error(why))),
     );
-    let mut user_notes = user.notes.clone();
-    user_notes.extend(notice);
+    let user_notes = user.notes.clone();
     let first_canvas = rbs_app::user_session::first_canvas(&collection);
     let autosave = user.collection_saver();
     let key_account = rbs_app::stream_key::account(user.profile_id.as_str());
@@ -1508,6 +1517,15 @@ fn run(config: PathBuf, notice: Option<String>) -> Result<(), Box<dyn std::error
     // Entries that could not be read, or read-only mode: in the error bar once.
     if !user_notes.is_empty() {
         deliver(studio_host::Update::Error(user_notes.join("\n")));
+    }
+    // The last session ended badly: said once, as a notice, after the notes above.
+    if let Some(notice) = notice {
+        let _ = entry::invoke(move || {
+            let ctx = CTX.with(|c| c.borrow().clone());
+            if let Some(ctx) = ctx {
+                ctx.update(move |app| app.error = Some(UiError::Notice(notice)));
+            }
+        });
     }
 
     // Closing the main window ends the app: floating windows close with it and

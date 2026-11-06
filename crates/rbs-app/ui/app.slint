@@ -46,7 +46,8 @@ export global Shell {
     // 0 none, 1 "<subject> closed." (undo), 2 automatic switch from workspace <subject>.
     in property <int> toast-kind;
     in property <string> toast-subject;
-    // 0 none, 1 layout locked, 2 other error with <error-detail>.
+    // 0 none, 1 layout locked, 2 other error with <error-detail>, 3 a notice whose
+    // <error-detail> is the whole text (ADR-0055: a caught panic, an unclean last exit).
     in property <int> error-kind;
     in property <string> error-detail;
     // Where the bottom toast and the top error bar are while they show (the main
@@ -719,7 +720,9 @@ export component MainWindow inherits Window {
         x: (parent.width - self.width) / 2;
         y: frame.height + Tokens.space-2;
         top: true;
-        text: Shell.error-kind == 1 ? @tr("The layout is locked. Unlock it from the workspace menu.") : @tr("That did not work: {}", Shell.error-detail);
+        text: Shell.error-kind == 1 ? @tr("The layout is locked. Unlock it from the workspace menu.")
+            : Shell.error-kind == 3 ? Shell.error-detail
+            : @tr("That did not work: {}", Shell.error-detail);
         action: "";
         dismiss => { Shell.dismiss-error(); }
     }
