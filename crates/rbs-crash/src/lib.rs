@@ -40,9 +40,9 @@ pub struct Caught {
 /// Runs `f`; a panic is caught and returned, never unwound further (ADR-0054 decisions
 /// 2 and 3). The panic hook has written its report by the time this returns.
 pub fn contain<R>(f: impl FnOnce() -> R) -> Result<R, Caught> {
-    CONTAINED.with(|d| d.set(d.get() + 1));
+    let _ = CONTAINED.try_with(|d| d.set(d.get() + 1));
     let result = catch_unwind(AssertUnwindSafe(f));
-    CONTAINED.with(|d| d.set(d.get().saturating_sub(1)));
+    let _ = CONTAINED.try_with(|d| d.set(d.get().saturating_sub(1)));
     result.map_err(|payload| Caught {
         message: payload_text(payload.as_ref()),
     })
@@ -52,8 +52,32 @@ pub fn contain<R>(f: impl FnOnce() -> R) -> Result<R, Caught> {
 /// thread and on control threads, never on a real-time thread: the report captures a
 /// backtrace and writes a file.
 pub fn report_panics_on_this_thread() {
-    REPORTING.with(|r| r.set(true));
+    let _ = REPORTING.try_with(|r| r.set(true));
 }
+
+/// Text that must never appear in a report, such as a stream key or a stream URL
+/// in use: the hook replaces it with `<redacted>`. Kept for the life of the process
+/// (at most [`MAX_SECRETS`], the oldest dropped first).
+pub fn add_secret(secret: &str) {
+    if secret.len() < 4 {
+        return; // Too short to redact without hiding ordinary text.
+    }
+    let mut secrets = SECRETS
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if secrets.iter().any(|s| s == secret) {
+        return;
+    }
+    if secrets.len() == MAX_SECRETS {
+        secrets.remove(0);
+    }
+    secrets.push(secret.to_owned());
+}
+
+/// Secrets [`add_secret`] keeps at most.
+pub const MAX_SECRETS: usize = 16;
+
+static SECRETS: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
 
 fn payload_text(payload: &(dyn std::any::Any + Send)) -> String {
     if let Some(s) = payload.downcast_ref::<&str>() {
@@ -91,8 +115,15 @@ impl Session {
     /// Removes the marker: call on a clean exit only. Dropping the session without it
     /// keeps the marker, as a crash would.
     pub fn end_clean(mut self) {
-        if let Some((file, path)) = self.marker.take() {
-            // Unlocked and closed first: Windows does not delete an open file at once.
+        if let Some((mut file, path)) = self.marker.take() {
+            // Marked clean while still locked: another instance that takes the lock
+            // between our close and the delete sees a clean exit, not a crash.
+            let _ = file.set_len(0);
+            let _ = file.write_all(CLEAN.as_bytes());
+            let _ = file.flush();
+            // Deleted while open: Unix unlinks at once; Windows deletes on close, which
+            // std's default share mode (`FILE_SHARE_DELETE`) allows.
+            let _ = fs::remove_file(&path);
             drop(file);
             let _ = fs::remove_file(path);
         }
@@ -114,6 +145,10 @@ pub fn install(dir: &Path) -> io::Result<Session> {
 
 static REPORT_DIR: OnceLock<PathBuf> = OnceLock::new();
 static REPORT_SERIAL: AtomicU32 = AtomicU32::new(0);
+static CAUGHT_REPORTS: AtomicU32 = AtomicU32::new(0);
+
+/// What a marker holds after a clean exit.
+const CLEAN: &str = "clean\n";
 
 thread_local! {
     /// Set while this thread writes a report: a panic in the writer must not write again.
@@ -130,13 +165,15 @@ fn set_hook(dir: PathBuf) {
     }
     let previous = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
-        if REPORTING.with(Cell::get) && !WRITING.with(|w| w.replace(true)) {
+        // `try_with`: thread-locals may be gone while a thread exits, and a panic in
+        // the hook aborts the process. The writer itself must not panic: nothing in
+        // it unwraps or indexes.
+        let asked = REPORTING.try_with(Cell::get).unwrap_or(false);
+        if asked && !WRITING.try_with(|w| w.replace(true)).unwrap_or(true) {
             if let Some(dir) = REPORT_DIR.get() {
-                // A panic while writing aborts in a hook; the writer itself never
-                // panics, and `catch_unwind` is the second line.
-                let _ = catch_unwind(AssertUnwindSafe(|| report_panic(dir, info)));
+                report_panic(dir, info);
             }
-            WRITING.with(|w| w.set(false));
+            let _ = WRITING.try_with(|w| w.set(false));
         }
         previous(info);
     }));
@@ -149,6 +186,11 @@ fn report_panic(dir: &Path, info: &PanicHookInfo<'_>) {
         .location()
         .map(|l| format!("{}:{}:{}", l.file(), l.line(), l.column()))
         .unwrap_or_else(|| "unknown".to_owned());
+    let caught = CONTAINED.try_with(Cell::get).unwrap_or(0) > 0;
+    // The last slot is kept for an uncaught panic, the one that may end the process.
+    if caught && CAUGHT_REPORTS.fetch_add(1, Ordering::Relaxed) + 1 >= MAX_REPORTS_PER_PROCESS {
+        return;
+    }
     let serial = REPORT_SERIAL.fetch_add(1, Ordering::Relaxed);
     if serial >= MAX_REPORTS_PER_PROCESS {
         return;
@@ -157,11 +199,11 @@ fn report_panic(dir: &Path, info: &PanicHookInfo<'_>) {
     let home = home_dir();
     let report = Report {
         secs: unix_now(),
-        caught: CONTAINED.with(Cell::get) > 0,
+        caught,
         thread: thread.name().unwrap_or("unnamed"),
-        message: &redact(&message, home.as_deref()),
+        message: &redact_secrets(&redact(&message, home.as_deref())),
         location: &location,
-        backtrace: &redact(&backtrace, home.as_deref()),
+        backtrace: &redact_secrets(&redact(&backtrace, home.as_deref())),
     };
     let _ = write_report(dir, std::process::id(), serial, &report);
 }
@@ -242,13 +284,25 @@ fn open_session(dir: &Path, pid: u32, now: u64) -> io::Result<Session> {
             .and_then(|r| r.parse::<u32>().ok())
         {
             markers.push((pid, entry.path()));
+        } else if name.starts_with("starting-") && name.ends_with(".tmp") {
+            // Left by a process that ended while it started; one still starting holds
+            // its lock, and is left alone.
+            if stale_marker(&entry.path()).is_some() {
+                let _ = fs::remove_file(entry.path());
+            }
         }
     }
     reports.sort_by_key(|r| r.0);
     let mut unclean = Vec::new();
     for (old_pid, path) in markers {
-        let Some(started) = stale_marker(&path) else {
-            continue; // Locked: a running instance.
+        let started = match stale_marker(&path) {
+            None => continue, // Locked: a running instance.
+            Some(Stale::Clean) => {
+                // Ended cleanly; only its delete was not done yet.
+                let _ = fs::remove_file(&path);
+                continue;
+            }
+            Some(Stale::Unclean { started }) => started,
         };
         // The newest report of that process, written after it started (pids are
         // reused, so an older report belongs to another process).
@@ -263,9 +317,12 @@ fn open_session(dir: &Path, pid: u32, now: u64) -> io::Result<Session> {
         });
         let _ = fs::remove_file(&path);
     }
+    // Old reports go, except those the notice is about to show.
     let excess = reports.len().saturating_sub(KEEP_REPORTS);
     for (_, _, path) in reports.drain(..excess) {
-        let _ = fs::remove_file(path);
+        if !unclean.iter().any(|u| u.report.as_ref() == Some(&path)) {
+            let _ = fs::remove_file(path);
+        }
     }
     // Locked under a name the scan ignores, then renamed: another instance starting at
     // the same moment never sees an unlocked marker of a live process.
@@ -279,6 +336,8 @@ fn open_session(dir: &Path, pid: u32, now: u64) -> io::Result<Session> {
     file.try_lock().map_err(io::Error::from)?;
     file.write_all(format!("started {now}\n").as_bytes())?;
     let marker = dir.join(format!("running-{pid}.lock"));
+    // Renaming the open, locked file works on Windows too: std opens files with
+    // `FILE_SHARE_DELETE`.
     fs::rename(&starting, &marker)?;
     Ok(Session {
         marker: Some((file, marker)),
@@ -286,19 +345,31 @@ fn open_session(dir: &Path, pid: u32, now: u64) -> io::Result<Session> {
     })
 }
 
-/// When the marker at `path` is not locked by a live process: its start time (0 when
-/// unreadable). `None` while a process holds it.
-fn stale_marker(path: &Path) -> Option<u64> {
+/// A marker no live process holds.
+enum Stale {
+    /// Its process ended cleanly but had not deleted it yet.
+    Clean,
+    /// Its process ended without a clean exit; `started` is its start time (0 when
+    /// unreadable).
+    Unclean { started: u64 },
+}
+
+/// What the marker at `path` says when no live process holds it; `None` while one
+/// does (or it cannot be opened).
+fn stale_marker(path: &Path) -> Option<Stale> {
     let mut file = OpenOptions::new().read(true).write(true).open(path).ok()?;
     file.try_lock().ok()?;
     let mut text = String::new();
     let _ = file.read_to_string(&mut text);
+    if text == CLEAN {
+        return Some(Stale::Clean);
+    }
     let started = text
         .trim()
         .strip_prefix("started ")
         .and_then(|s| s.parse().ok())
         .unwrap_or(0);
-    Some(started)
+    Some(Stale::Unclean { started })
 }
 
 /// The user's home directory, from the environment.
@@ -315,7 +386,7 @@ const SECRET_SCHEMES: [&str; 5] = ["rtmp://", "rtmps://", "srt://", "rist://", "
 /// user name from a path (ADR-0054 decision 4).
 pub fn redact(text: &str, home: Option<&str>) -> String {
     let mut out = match home {
-        Some(home) => text.replace(home, "~"),
+        Some(home) => replace_home(text, home, cfg!(windows)),
         None => text.to_owned(),
     };
     for scheme in SECRET_SCHEMES {
@@ -332,7 +403,57 @@ pub fn redact(text: &str, home: Option<&str>) -> String {
     out
 }
 
-/// Case-insensitive `find` of an ASCII `needle`.
+/// `text` with `home` shown as `~` where it is a whole path: followed by a separator,
+/// the end, or a character that cannot be part of a file name in a report (quote,
+/// space, colon). On Windows paths are matched ignoring ASCII case.
+fn replace_home(text: &str, home: &str, ignore_case: bool) -> String {
+    let home = home.trim_end_matches(['/', '\\']);
+    if home.is_empty() {
+        return text.to_owned();
+    }
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text;
+    loop {
+        let found = if ignore_case {
+            lower_find(rest, home)
+        } else {
+            rest.find(home)
+        };
+        let Some(at) = found else {
+            out.push_str(rest);
+            return out;
+        };
+        let after = &rest[at + home.len()..];
+        let whole = after
+            .chars()
+            .next()
+            .is_none_or(|c| matches!(c, '/' | '\\' | '"' | '\'' | ' ' | ':' | '\n' | ')'));
+        out.push_str(&rest[..at]);
+        out.push_str(if whole {
+            "~"
+        } else {
+            &rest[at..at + home.len()]
+        });
+        rest = after;
+    }
+}
+
+/// `text` with every secret from [`add_secret`] replaced. Never waits: when another
+/// thread holds the list, the text is returned as it is.
+fn redact_secrets(text: &str) -> String {
+    let Ok(secrets) = SECRETS.try_lock() else {
+        return text.to_owned();
+    };
+    let mut out = text.to_owned();
+    for secret in secrets.iter() {
+        if out.contains(secret.as_str()) {
+            out = out.replace(secret.as_str(), "<redacted>");
+        }
+    }
+    out
+}
+
+/// Case-insensitive `find` of a `needle` (ASCII case only).
 fn lower_find(hay: &str, needle: &str) -> Option<usize> {
     hay.as_bytes()
         .windows(needle.len())
@@ -433,6 +554,63 @@ mod tests {
         );
         assert_eq!(redact("rtmp://", None), "rtmp://<redacted>");
         assert_eq!(redact("nothing", None), "nothing");
+    }
+
+    #[test]
+    fn home_is_replaced_only_as_a_whole_path() {
+        assert_eq!(
+            replace_home(
+                "/Users/sc/a and /Users/scott/b and /Users/sc",
+                "/Users/sc",
+                false
+            ),
+            "~/a and /Users/scott/b and ~"
+        );
+        assert_eq!(
+            replace_home(r"C:\users\SC\x.mkv", r"C:\Users\sc", true),
+            r"~\x.mkv"
+        );
+        assert_eq!(replace_home("/home/a/b", "/home/a/", false), "~/b");
+    }
+
+    #[test]
+    fn secrets_are_redacted() {
+        add_secret("live_abcdef123");
+        add_secret("ab"); // Too short: ignored.
+        assert_eq!(
+            redact_secrets("key live_abcdef123 in https://x/live_abcdef123/ ab"),
+            "key <redacted> in https://x/<redacted>/ ab"
+        );
+    }
+
+    #[test]
+    fn a_clean_marker_left_behind_is_not_a_crash() {
+        let dir = temp_dir("clean-left");
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("running-600.lock"), CLEAN).unwrap();
+        fs::write(dir.join("starting-601.tmp"), "").unwrap();
+        let s = open_session(&dir, 602, 1_000).unwrap();
+        assert!(s.unclean().is_empty());
+        assert!(!dir.join("running-600.lock").exists());
+        assert!(!dir.join("starting-601.tmp").exists());
+        s.end_clean();
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn the_report_shown_is_never_pruned() {
+        let dir = temp_dir("keep-shown");
+        let crashed = open_session(&dir, 700, 1_000).unwrap();
+        let shown = write_report(&dir, 700, 0, &report(1_001)).unwrap();
+        for i in 0..KEEP_REPORTS as u64 {
+            write_report(&dir, 800 + i as u32, 0, &report(2_000 + i)).unwrap();
+        }
+        drop(crashed);
+        let next = open_session(&dir, 701, 3_000).unwrap();
+        assert_eq!(next.unclean()[0].report.as_ref(), Some(&shown));
+        assert!(shown.exists());
+        next.end_clean();
+        fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]

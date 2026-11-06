@@ -57,7 +57,7 @@ pub fn invoke(f: impl FnOnce() + Send + 'static) -> Result<(), slint::EventLoopE
 pub fn spawn_local(
     task: impl Future<Output = ()> + 'static,
 ) -> Result<slint::JoinHandle<()>, slint::EventLoopError> {
-    slint::spawn_local(Guarded(Box::pin(task)))
+    slint::spawn_local(Guarded(Some(Box::pin(task))))
 }
 
 /// `Window::on_close_requested` with the handler guarded; a panic keeps the window.
@@ -70,14 +70,41 @@ pub fn on_close_requested(
     });
 }
 
-/// A task whose polls run under the panic boundary.
-struct Guarded(Pin<Box<dyn Future<Output = ()>>>);
+/// A task whose polls, and whose drop, run under the panic boundary. After a panic the
+/// task is dropped inside the boundary too, so nothing of it unwinds into Slint.
+struct Guarded(Option<Pin<Box<dyn Future<Output = ()>>>>);
 
 impl Future for Guarded {
     type Output = ();
 
     fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<()> {
-        let task = self.0.as_mut();
-        guard_or(|| Poll::Ready(()), move || task.poll(cx))
+        let Some(task) = self.0.as_mut() else {
+            return Poll::Ready(());
+        };
+        let polled = rbs_crash::contain(|| task.as_mut().poll(cx));
+        match polled {
+            Ok(Poll::Pending) => Poll::Pending,
+            Ok(Poll::Ready(())) => {
+                drop_guarded(self.0.take());
+                Poll::Ready(())
+            }
+            Err(_) => {
+                crate::show_caught();
+                drop_guarded(self.0.take());
+                Poll::Ready(())
+            }
+        }
+    }
+}
+
+impl Drop for Guarded {
+    fn drop(&mut self) {
+        drop_guarded(self.0.take());
+    }
+}
+
+fn drop_guarded(task: Option<Pin<Box<dyn Future<Output = ()>>>>) {
+    if let Some(task) = task {
+        guard(move || drop(task));
     }
 }

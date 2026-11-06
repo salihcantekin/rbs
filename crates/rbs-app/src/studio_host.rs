@@ -601,6 +601,14 @@ pub enum Update {
         /// How it went.
         result: Result<(), String>,
     },
+    /// After a caught panic: how many outputs the host did not track and stopped
+    /// (tests only, ADR-0054).
+    #[cfg(feature = "fault-injection")]
+    #[doc(hidden)]
+    Recovered {
+        /// Untracked outputs stopped.
+        stopped: usize,
+    },
 }
 
 /// Counters of one running output, for the Stats panel.
@@ -693,6 +701,10 @@ pub struct HostConfig {
     /// Saves the collection after every change (on the user data writer thread);
     /// `None`: changes are not saved.
     pub autosave: Option<CollectionSaver>,
+    /// A step to panic at once (tests only, ADR-0054).
+    #[cfg(feature = "fault-injection")]
+    #[doc(hidden)]
+    pub fault: Option<Fault>,
 }
 
 impl HostConfig {
@@ -715,8 +727,33 @@ impl HostConfig {
             key_account: stream_key::ACCOUNT.to_owned(),
             collection: None,
             autosave: None,
+            #[cfg(feature = "fault-injection")]
+            fault: None,
         }
     }
+}
+
+/// A panic the host raises once at a chosen step, for the crash-resilience tests
+/// (ADR-0054). Only with the `fault-injection` feature, which release builds never use.
+#[cfg(feature = "fault-injection")]
+#[doc(hidden)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Fault {
+    /// In a recording start, after the output started and before the host tracks it.
+    AfterOutputStart,
+    /// In a recording stop, after the output stopped and before the host forgets it.
+    InRecordingStop,
+}
+
+/// Panics once if the host was told to fail at `$fault`.
+macro_rules! inject {
+    ($host:expr, $fault:expr) => {
+        #[cfg(feature = "fault-injection")]
+        if $host.fault == Some($fault) {
+            $host.fault = None;
+            panic!("injected fault: {:?}", $fault);
+        }
+    };
 }
 
 /// Surfaces in the preview's ring.
@@ -931,6 +968,11 @@ struct Host {
     restarting: bool,
     /// An API request panicked in this round: the loop reconciles after it.
     caught: bool,
+    /// The answer the UI waits for while a command runs, sent by
+    /// [`Host::recover`] when the command panicked.
+    unanswered: Option<Update>,
+    #[cfg(feature = "fault-injection")]
+    fault: Option<Fault>,
     /// Counts `seq` per state key and publishes events to control API clients.
     events: EventPublisher,
     /// The control API, while remote control is on.
@@ -1044,6 +1086,16 @@ fn run(
 /// stream end cleanly instead of running on with a host that keeps panicking.
 const CAUGHT_LIMIT: u32 = 3;
 
+/// What the UI waits for after `c`, if `c` panics before answering.
+fn answer_on_panic(c: &Command) -> Option<Update> {
+    let why = || rbs_crash::CAUGHT_TEXT.to_owned();
+    match c {
+        Command::StartRecording(_) => Some(Update::Recording(RecordingUpdate::NotStarted(why()))),
+        Command::StartStream(_) => Some(Update::Stream(StreamUpdate::NotStarted(why()))),
+        _ => None,
+    }
+}
+
 /// One round of the control loop: the message that woke it (`None`: the wait ended),
 /// one API request, then the studio's service. Returns how long to wait for the next.
 fn round(
@@ -1055,7 +1107,9 @@ fn round(
     match msg {
         Some(Msg::Ui(c)) => {
             if failed.is_none() {
+                host.unanswered = answer_on_panic(&c);
                 host.command(c, notify);
+                host.unanswered = None;
             }
         }
         Some(Msg::AttachApi(api)) => {
@@ -1081,9 +1135,10 @@ fn round(
     if failed.is_none()
         && let Some(why) = host.dead.take()
     {
+        // Failed first: a panic while the outputs end must not undo it.
+        *failed = Some(why.clone());
         host.stop_recording(Some(why.clone()), notify);
         host.end_stream(Some(why.clone()), notify);
-        *failed = Some(why.clone());
         notify(Update::Failed(why));
     }
     if failed.is_some() {
@@ -1101,9 +1156,10 @@ fn round(
     }
     if let Some(why) = host.studio.failure() {
         // Clients see the recording end with the failure instead of a stale state.
+        // Failed first: a panic while the outputs end must not undo it.
+        *failed = Some(why.clone());
         host.stop_recording(Some(why.clone()), notify);
         host.end_stream(Some(why.clone()), notify);
-        *failed = Some(why.clone());
         notify(Update::Failed(why));
         return wait;
     }
@@ -1150,6 +1206,8 @@ fn start(
     engine: impl Fn() -> Engine + 'static,
 ) -> Result<(Host, Update), String> {
     let keys = Arc::clone(&config.keys);
+    #[cfg(feature = "fault-injection")]
+    let config_fault = config.fault;
     let (mut adapters, mut notes) = adapters();
     adapters.probe();
     let gpu = gpu()?;
@@ -1256,6 +1314,9 @@ fn start(
             dead: None,
             restarting: false,
             caught: false,
+            unanswered: None,
+            #[cfg(feature = "fault-injection")]
+            fault: config_fault,
             autosave: config.autosave,
             // A collection that had to be completed is saved at the first publish.
             saved: loaded,
@@ -1737,14 +1798,22 @@ impl Host {
 
     /// Brings the host's bookkeeping back in line with the studio after a caught panic
     /// (ADR-0054 decision 3), `in_row` being how many rounds in a row panicked:
+    /// - the command that panicked gets the answer the UI waits for, if any;
     /// - a panic during a canvas restart leaves the studio stopped: it is dead;
     /// - an output the studio runs but the host does not track (a start that panicked
     ///   half-way) is stopped, so no file grows that Stop cannot end;
-    /// - a tracked recording or stream that no longer runs is ended with the reason;
+    /// - a tracked recording or stream that no longer runs (a stop that panicked
+    ///   half-way) is ended again;
     /// - after [`CAUGHT_LIMIT`] panics in a row the studio counts as failed, and its
-    ///   outputs end cleanly.
+    ///   outputs end, each step under its own boundary.
+    ///
+    /// Every step runs under its own boundary, so one that panics again does not skip
+    /// the others.
     fn recover(&mut self, failed: &mut Option<String>, in_row: u32, notify: &dyn Fn(Update)) {
         const WHY: &str = "An internal error ended it (a report was saved).";
+        if let Some(answer) = self.unanswered.take() {
+            notify(answer);
+        }
         if std::mem::take(&mut self.restarting) {
             self.dead.get_or_insert_with(|| {
                 "An internal error stopped the studio while it restarted.".into()
@@ -1753,24 +1822,37 @@ impl Host {
         let running = self.studio.outputs();
         let recording = self.recording.as_ref().map(|(_, id)| *id);
         let streaming = self.streaming.as_ref().map(|(_, _, id)| *id);
+        let mut stopped = 0;
         for id in &running {
             if Some(*id) != recording && Some(*id) != streaming {
-                let _ = self.studio.stop_output(*id);
+                let _ = rbs_crash::contain(|| self.studio.stop_output(*id));
+                stopped += 1;
             }
         }
+        #[cfg(feature = "fault-injection")]
+        notify(Update::Recovered { stopped });
+        let _ = stopped;
         if recording.is_some_and(|id| !running.contains(&id)) {
-            self.stop_recording(Some(WHY.into()), notify);
+            let _ = rbs_crash::contain(|| self.stop_recording(Some(WHY.into()), notify));
         }
         if streaming.is_some_and(|id| !running.contains(&id)) {
-            self.end_stream(Some(WHY.into()), notify);
+            let _ = rbs_crash::contain(|| self.end_stream(Some(WHY.into()), notify));
         }
-        if in_row >= CAUGHT_LIMIT && failed.is_none() && self.dead.is_none() {
-            self.dead = Some(
-                "RBS stopped the studio after repeated internal errors (reports were saved)."
-                    .into(),
+        if in_row >= CAUGHT_LIMIT && failed.is_none() {
+            let why = String::from(
+                "RBS stopped the studio after repeated internal errors (reports were saved).",
             );
+            *failed = Some(why.clone());
+            let _ = rbs_crash::contain(|| self.stop_recording(Some(why.clone()), notify));
+            let _ = rbs_crash::contain(|| self.end_stream(Some(why.clone()), notify));
+            for id in self.studio.outputs() {
+                let _ = rbs_crash::contain(|| self.studio.stop_output(id));
+            }
+            self.recording = None;
+            self.streaming = None;
+            notify(Update::Failed(why));
         }
-        self.publish(notify);
+        let _ = rbs_crash::contain(|| self.publish(notify));
     }
 
     /// Starts a new studio for the collection as it is.
@@ -1823,18 +1905,18 @@ impl Host {
             a.bitrate_bps = r.audio_bitrate_bps;
             a
         });
-        let started = self.start_output(&out, r.encoder.as_deref()).map(
-            |(id, video_encoder, audio_encoder)| {
-                (
-                    id,
-                    RecordingUpdate::Started {
-                        path: r.path.clone(),
-                        video_encoder,
-                        audio_encoder,
-                    },
-                )
-            },
-        );
+        let started = self.start_output(&out, r.encoder.as_deref());
+        inject!(self, Fault::AfterOutputStart);
+        let started = started.map(|(id, video_encoder, audio_encoder)| {
+            (
+                id,
+                RecordingUpdate::Started {
+                    path: r.path.clone(),
+                    video_encoder,
+                    audio_encoder,
+                },
+            )
+        });
         if let Ok((
             id,
             RecordingUpdate::Started {
@@ -1860,10 +1942,13 @@ impl Host {
     /// Stops the recording, if one runs, and says so.
     fn stop_recording(&mut self, failure: Option<String>, notify: &dyn Fn(Update)) {
         self.ending = false;
-        let Some((path, id)) = self.recording.take() else {
+        // Tracked until the end: when a stop panics half-way, `Host::recover` finds the
+        // recording still tracked and ends it again (ADR-0054 decision 3).
+        let Some((path, id)) = self.recording.clone() else {
             return;
         };
         let report = self.studio.stop_output(id);
+        inject!(self, Fault::InRecordingStop);
         let (frames, dropped, flush_lost, failed) = report.map_or((0, 0, 0, None), |r| {
             (
                 r.progress.frames_encoded,
@@ -1880,6 +1965,7 @@ impl Host {
                 dropped,
             }),
         });
+        self.recording = None;
         notify(Update::Recording(RecordingUpdate::Stopped {
             path,
             failure,
@@ -1915,6 +2001,11 @@ impl Host {
             TransportInput::Container(c) => OutputSettings::new(r.url.clone(), c),
             _ => OutputSettings::packets(r.url.clone()),
         };
+        // Never in a crash report (ADR-0054 decision 4).
+        if let Some(key) = &key {
+            rbs_crash::add_secret(key.expose());
+        }
+        rbs_crash::add_secret(&r.url);
         out.secret = key;
         out.reconnect = r.reconnect;
         out.transport_options = r.transport_options.clone();
@@ -2042,7 +2133,8 @@ impl Host {
 
     /// Ends the stream, if one runs, and says so.
     fn end_stream(&mut self, failure: Option<String>, notify: &dyn Fn(Update)) {
-        let Some((_, _, id)) = self.streaming.take() else {
+        // Tracked until the end, as in `stop_recording`.
+        let Some((_, _, id)) = self.streaming.clone() else {
             return;
         };
         let report = self.studio.stop_output(id);
@@ -2056,6 +2148,7 @@ impl Host {
             )
         });
         let failure = failure.or(failed);
+        self.streaming = None;
         self.set_stream_state(api::StreamState::Idle {
             last: Some(api::StreamSummary {
                 failure: failure.clone(),

@@ -14,6 +14,9 @@ name = "rbs"
 path = "src/main.rs"
 
 [features]
+# Test-only panics at chosen steps of the studio host (ADR-0054 crash-resilience
+# tests). Never enabled in builds that ship.
+fault-injection = []
 # `RBS_DEMO_SOURCES=1` adds the deterministic reference adapters (synthetic displays,
 # cameras and audio), for screenshots and UI checks on machines without devices. Off
 # in normal builds.
@@ -115,6 +118,8 @@ rbs-codec-videotoolbox = { path = "../rbs-codec-videotoolbox" }
 rbs-codec-audiotoolbox = { path = "../rbs-codec-audiotoolbox" }
 
 [dev-dependencies]
+# The crash-resilience tests inject panics into the studio host (tests/studio_faults.rs).
+rbs-app = { path = ".", features = ["fault-injection"] }
 # The control API tests read JSON-RPC answers (tests/studio_api.rs, studio_stream.rs).
 serde_json = "1"
 # Reference adapters for the studio host tests (deterministic, no devices).

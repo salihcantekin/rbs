@@ -35,20 +35,25 @@ pub const CAUGHT_TEXT: &str;
 
 ### UI thread (`rbs-app`)
 
-- `src/entry.rs` is the only module that calls `slint::Timer::single_shot`, `slint::Timer::start`, `slint::invoke_from_event_loop`, `slint::spawn_local` and `slint::Window::on_close_requested`. Its wrappers (`single_shot`, `start`, `invoke`, `spawn_local`, `on_close_requested`) run the body (for a task: each poll) under `contain`. A panic in a close handler keeps the window; a panic in a task ends the task.
-- `Ctx::update` runs the change, and each change queued while the state was borrowed, under `contain`. Other callbacks of the generated globals that do not go through `Ctx::update` wrap their body in `entry::guard`.
+- `src/entry.rs` is the only module that calls `slint::Timer::single_shot`, `slint::Timer::start`, `slint::invoke_from_event_loop`, `slint::spawn_local` and `slint::Window::on_close_requested`. Its wrappers (`single_shot`, `start`, `invoke`, `spawn_local`, `on_close_requested`) run the body (for a task: each poll, and its drop) under `contain`. A panic in a close handler keeps the window; a panic in a task ends the task, which is then dropped inside the boundary.
+- `Ctx::update` runs the change, and each change queued while the state was borrowed, under `contain`. Callbacks of the generated globals are installed through the `on!` macro (its body runs in `Ctx::update`) or start with `entry::guard`; `tests/entry_points.rs` checks every `.on_*(` in `src/`.
 - A caught panic shows `CAUGHT_TEXT` in the error bar, at most once every 5 s.
 
 ### Studio control thread (`rbs-app::studio_host`)
 
 - Each round of the control loop (the message that woke it, one API request, the studio's service and output checks) runs under `contain`. A caught panic sends `Update::Error(CAUGHT_TEXT)`, then runs `Host::recover`.
 - An API request runs under its own `contain`; a panic answers it with error kind `internal` and message `CAUGHT_TEXT`, and the round then runs `Host::recover`.
-- `Host::recover`:
-  1. a panic while the studio restarted (canvas change) sets the studio's failure (`dead`), which the next round handles as any studio failure (outputs end, `Update::Failed`);
-  2. every output the studio runs that is neither the tracked recording nor the tracked stream is stopped;
-  3. a tracked recording or stream that the studio no longer runs is ended with an error;
-  4. after 3 rounds in a row that panicked, the studio's failure is set;
-  5. snapshots are published.
+- While a UI command runs, the host keeps the answer the UI waits for if it panics: `StartRecording` → `Update::Recording(NotStarted(CAUGHT_TEXT))`, `StartStream` → `Update::Stream(NotStarted(CAUGHT_TEXT))`.
+- Stopping a recording or a stream keeps it tracked until the stop is done.
+- When the studio fails (its own failure or `dead`), the loop records the failure first and then ends the outputs.
+- `Host::recover`, each step under its own `contain`:
+  1. sends the kept answer, if any;
+  2. a panic while the studio restarted (canvas change) sets the studio's failure (`dead`), which the next round handles as any studio failure (outputs end, `Update::Failed`);
+  3. every output the studio runs that is neither the tracked recording nor the tracked stream is stopped;
+  4. a tracked recording or stream that the studio no longer runs is ended again, with an error;
+  5. after 3 rounds in a row that panicked: the failure is recorded, the recording and stream are ended, every remaining output is stopped, and `Update::Failed` is sent;
+  6. snapshots are published.
+- With the `fault-injection` feature (tests only), `HostConfig::fault` makes the host panic once at a chosen step (`Fault::AfterOutputStart`, `Fault::InRecordingStop`), and `recover` sends `Update::Recovered { stopped }`.
 - Starting the studio runs under `contain`; a panic there is reported as `Update::Failed(CAUGHT_TEXT)`.
 
 ### Crash reports (`rbs-crash`)
@@ -75,6 +80,10 @@ pub struct Unclean { pub pid: u32, pub report: Option<PathBuf> }
 /// `text` with the home directory as `~` and stream URLs redacted.
 pub fn redact(text: &str, home: Option<&str>) -> String;
 
+/// Text that must never appear in a report (a stream key, a stream URL in use).
+pub fn add_secret(secret: &str);
+pub const MAX_SECRETS: usize = 16;
+
 pub const KEEP_REPORTS: usize = 20;
 pub const MAX_REPORTS_PER_PROCESS: u32 = 5;
 ```
@@ -82,11 +91,11 @@ pub const MAX_REPORTS_PER_PROCESS: u32 = 5;
 - `dir` is `<config>/crash-reports/` and is created when missing. The hook is installed even when the marker fails.
 - **Who gets a report:** only threads that called `report_panics_on_this_thread` (the app: the UI thread and the studio's control thread). The hook does nothing else on other threads, so real-time threads never capture a backtrace or write a file. The previous hook runs on every thread (the message on stderr stays).
 - **Report file:** `panic-<pid>-<unix seconds>-<n>.txt`, written once per panic with `create_new`, UTF-8 text with these lines first: `RBS <version>`, `OS: <os> <arch>`, `Time: <RFC 3339 UTC>`, `Kind: caught|uncaught`, `Thread: <name or unnamed>`, `Message: <message>`, `Location: <file>:<line>:<column>`, then a blank line and the backtrace. Message and backtrace pass through `redact`.
-- **Redaction:** every occurrence of the home directory (`HOME`, on Windows `USERPROFILE`) becomes `~`. After `rtmp://`, `rtmps://`, `srt://`, `rist://` or `whip://` (any case), everything up to whitespace or one of `"'>)` becomes `<redacted>`.
-- **Limits:** at most `MAX_REPORTS_PER_PROCESS` per process; at `install`, reports beyond the newest `KEEP_REPORTS` (by time, then `n`) are deleted.
-- **Hook robustness:** no locks of its own; a thread-local flag stops a panic while writing from writing again; the writer runs under `catch_unwind`; a failed write is ignored.
-- **Running marker:** created as `starting-<pid>.tmp`, locked with `File::try_lock`, `started <unix seconds>` written, then renamed to `running-<pid>.lock`, and held for the life of the `Session`. `end_clean` closes and deletes it. Dropping the `Session` without `end_clean` releases the lock and keeps the file, as a crash would.
-- **Unclean detection:** at `install`, every `running-*.lock` whose lock can be taken belongs to a process that ended without `end_clean`. Each is listed in `unclean()` with that pid's newest report whose time is not before the marker's start, then deleted. A marker still locked belongs to a running instance and is left alone.
+- **Redaction:** the home directory (`HOME`, on Windows `USERPROFILE`, without a trailing separator) becomes `~` where it is followed by a separator, the end or one of `"' :)` and a newline (on Windows ignoring ASCII case), so `/Users/sc` does not touch `/Users/scott`. Every secret from `add_secret` (4 bytes or longer; the newest 16) becomes `<redacted>`; the studio host adds the stream key and URL when a stream starts. After `rtmp://`, `rtmps://`, `srt://`, `rist://` or `whip://` (any case), everything up to whitespace or one of `"'>)` becomes `<redacted>`.
+- **Limits:** at most `MAX_REPORTS_PER_PROCESS` per process, of which caught panics use at most one less; at `install`, reports beyond the newest `KEEP_REPORTS` (by time, then `n`) are deleted, except one that `unclean()` points to.
+- **Hook robustness:** it never waits on a lock (secrets are read with `try_lock`; when busy they are not applied); thread-locals are read with `try_with`; a thread-local flag stops a nested panic from writing again; the writer uses no panicking operation (a panic inside a hook aborts); a failed write is ignored.
+- **Running marker:** created as `starting-<pid>.tmp`, locked with `File::try_lock`, `started <unix seconds>` written, then renamed to `running-<pid>.lock`, and held for the life of the `Session`. `end_clean` writes `clean\n` into it while still locked, deletes it, then closes it. Renaming and deleting the open file works on Windows because std opens files with `FILE_SHARE_DELETE`. Dropping the `Session` without `end_clean` releases the lock and keeps the file, as a crash would.
+- **Unclean detection:** at `install`, every `running-*.lock` whose lock can be taken belongs to a process that ended without `end_clean`. A marker that holds `clean\n` is deleted without a notice. Each other one is listed in `unclean()` with that pid's newest report whose time is not before the marker's start, then deleted. A marker still locked belongs to a running instance and is left alone. A `starting-*.tmp` whose lock can be taken is deleted.
 - The app calls `end_clean` on every return from `main`, also with an error, and shows one notice per start when `unclean()` is not empty, with the newest report's path and a note that reports may contain file names. When `install` fails, the app goes on and says so on stderr.
 - Nothing in this crate sends data anywhere.
 
@@ -96,7 +105,7 @@ pub const MAX_REPORTS_PER_PROCESS: u32 = 5;
 
 ### Build
 
-No `Cargo.toml` may set `panic = "abort"`; CI checks it.
+No `Cargo.toml` may set `panic = "abort"`, and no `.cargo/` config may pass `panic=abort`; CI checks both.
 
 ## Errors and failure behaviour
 
@@ -118,10 +127,15 @@ None on hot paths: `contain` is used on the UI and control threads only, and the
 4. A marker held by a live `Session` is not reported and not deleted.
 5. `end_clean` leaves no marker and the next `install` reports nothing.
 6. Retention keeps the newest `KEEP_REPORTS`.
-7. `redact` hides the home directory and stream URLs.
+7. `redact` hides the home directory (only as a whole path, ignoring case on Windows) and stream URLs; registered secrets are hidden.
+9. A marker that says `clean` and a leftover `starting-*.tmp` are deleted without a notice; the report a notice points to survives pruning.
 8. With the hook installed, a panic on a thread that did not opt in writes no report; one on a thread that did writes one with `Kind: caught`.
 
-`rbs-app` (`tests/studio_faults.rs`): with a capture adapter whose `enumerate` panics, `ListTargets` answers `Update::Error(CAUGHT_TEXT)`, the studio does not fail, and the next commands (list, add a source) work.
+`rbs-app`:
+
+- `tests/studio_faults.rs`: with a capture adapter whose `enumerate` panics, `ListTargets` answers `Update::Error(CAUGHT_TEXT)`, the studio does not fail, and the next commands (list, add a source) work.
+- `tests/studio_record.rs`: a panic after a recording's output started answers `NotStarted(CAUGHT_TEXT)`, stops that one untracked output, and the next recording starts and stops normally; a panic in the middle of a recording stop still ends it with an error, the file is complete, and a new recording starts.
+- `tests/entry_points.rs`: every generated callback is guarded.
 
 ## Open questions
 

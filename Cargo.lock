@@ -4252,6 +4252,7 @@ dependencies = [
  "rbs-api",
  "rbs-api-ipc",
  "rbs-api-ws",
+ "rbs-app",
  "rbs-audio",
  "rbs-audio-io",
  "rbs-audio-io-coreaudio",

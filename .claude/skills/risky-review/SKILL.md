@@ -24,7 +24,8 @@ Read the diff as a reviewer who did not write it. Report each item as OK / Issue
 - Queues are bounded; full-queue behaviour is defined and counted.
 
 ## Crash resilience (ADR-0054)
-- Closures handed to Slint go through `rbs-app/src/entry.rs` (clippy enforces it); a body that bypasses `Ctx::update` uses `entry::guard`.
+- Closures handed to Slint go through `rbs-app/src/entry.rs` (clippy enforces it for the Slint functions); a generated `on_*` callback goes through `on!` or starts with `entry::guard` (`tests/entry_points.rs` checks it).
+- A new stream secret or URL is passed to `rbs_crash::add_secret` before use.
 - Nothing on the UI thread runs a nested event loop or blocks (modal dialogs, `sleep`, `recv`, `join`).
 - A new control thread calls `rbs_crash::report_panics_on_this_thread()`; a real-time thread never does.
 - A step on the studio's control thread that can panic half-way leaves state `Host::recover` can reconcile.
