@@ -19,6 +19,9 @@ fn run_child(mode: &str) -> (PathBuf, Vec<String>) {
         .args(["--exact", "child", "--nocapture", "--test-threads=1"])
         .env(CHILD, mode)
         .env(DIR, &dir)
+        // The panicking child's failure report is expected; keep it out of this output.
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
         .status()
         .unwrap();
     // The child that panics fails its test; the others do not.
