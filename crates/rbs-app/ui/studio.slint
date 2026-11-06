@@ -67,9 +67,6 @@ export global Studio {
     // The panel the picture shows in: "rbs.program", else "rbs.preview" (without studio
     // mode both show the scene on air); the other one says where it is.
     in property <string> picture-panel: "rbs.program";
-    // In-window popups open now. The preview is a native layer above everything Slint
-    // draws, so it is hidden while one is open (ADR-0036).
-    in-out property <int> overlays;
     callback list-targets(int /* kind */);
     callback add-source(int /* kind */, int /* target */);
     callback delete-source(int /* id */);
@@ -106,8 +103,6 @@ export global Studio {
     // Undo (true) or redo (false) the newest scene edit.
     callback undo-edit(bool /* back */);
     callback reset-clip(int /* meter */);
-    // `overlays` changed (Rust hides or shows the preview layer).
-    callback overlays-changed();
 
     // Recording: 0 off, 1 starting, 2 recording, 3 stopping.
     in property <int> rec-state;
@@ -562,8 +557,6 @@ export component SourcesPanel inherits Rectangle {
         focus-on-click: false;
         focus-on-tab-navigation: false;
     }
-    property <bool> menu-open: add-menu.is-open;
-    changed menu-open => { Studio.overlays += menu-open ? 1 : -1; Studio.overlays-changed(); }
     add-menu := AddSourceMenu {
         x: Tokens.space-2;
         y: header;
@@ -655,8 +648,6 @@ export component MixerPanel inherits Rectangle {
             }
         }
     }
-    property <bool> menu-open: add-menu.is-open;
-    changed menu-open => { Studio.overlays += menu-open ? 1 : -1; Studio.overlays-changed(); }
     add-menu := AddSourceMenu {
         x: Tokens.space-2;
         y: Tokens.space-2;

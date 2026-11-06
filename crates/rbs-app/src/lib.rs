@@ -4,6 +4,7 @@
 //! - [`studio_host`]: the studio's control thread (ADR-0041 decision 7).
 //! - [`edit_history`]: the undo history of scene edits (U4).
 //! - [`platform`]: the platform's adapters (the composition root's list, P1).
+//! - [`popups`]: the popups Slint draws inside a window, as rectangles.
 //! - [`canvas_profile`]: the canvas size and frame rate (and `video.toml`, which older
 //!   versions kept).
 //! - [`record_profile`]: the recording's output settings (a section of the output
@@ -24,6 +25,7 @@ pub mod encoder_form;
 pub mod native;
 pub mod network_access;
 pub mod platform;
+pub mod popups;
 pub mod record_profile;
 pub mod remote_control;
 pub mod stream_key;
