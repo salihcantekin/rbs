@@ -138,6 +138,13 @@ struct App {
 }
 
 impl App {
+    /// Shows why an Output profile or Scene collection menu action did not work.
+    fn library_done(&mut self, done: Result<(), String>) {
+        if let Err(e) = done {
+            self.error = Some(UiError::Other(e));
+        }
+    }
+
     fn default_area(&self, window: usize) -> Rect {
         let t = self.main.global::<Tokens>();
         if window == 0 {
@@ -939,6 +946,88 @@ fn install(g: &Shell<'_>, ctx: &Ctx) {
     });
 }
 
+/// Which library a menu imports into or exports from.
+#[derive(Clone, Copy)]
+enum Library {
+    Profiles,
+    Collections,
+}
+
+/// Import (`import`) a file into a library, or export the entry in use, named `name`,
+/// to a file. The system file dialog opens after the menu's callback returns, outside
+/// the app state's borrow, since the dialog runs its own event loop.
+fn transfer(library: Library, import: bool, name: String) {
+    slint::Timer::single_shot(std::time::Duration::ZERO, move || {
+        let Some(ctx) = CTX.with(|c| c.borrow().clone()) else {
+            return;
+        };
+        let what = match library {
+            Library::Profiles => "output profile",
+            Library::Collections => "scene collection",
+        };
+        let picked = if import {
+            file_dialog::open(&format!("Import {what}"))
+        } else {
+            file_dialog::save(&format!("Export {name}"), &format!("{name}.toml"))
+        };
+        ctx.update(move |app| {
+            let done = match picked {
+                Ok(None) => Ok(()),
+                Err(why) => Err(why),
+                Ok(Some(path)) => {
+                    let user = &app.studio.user;
+                    let result = match (library, import) {
+                        (Library::Profiles, true) => user.import_profile(&path).map(|_| ()),
+                        (Library::Profiles, false) => user.export_profile(&path),
+                        (Library::Collections, true) => user.import_collection(&path).map(|_| ()),
+                        (Library::Collections, false) => user.export_collection(&path),
+                    };
+                    app.studio.refresh_library();
+                    result
+                }
+            };
+            app.library_done(done);
+        });
+    });
+}
+
+/// The system file dialog for import and export (ADR-0051).
+mod file_dialog {
+    use std::path::PathBuf;
+
+    /// A file to import; `Ok(None)` when cancelled.
+    #[cfg(any(target_os = "macos", windows))]
+    pub fn open(title: &str) -> Result<Option<PathBuf>, String> {
+        Ok(rfd::FileDialog::new()
+            .set_title(title)
+            .add_filter("RBS settings", &["toml"])
+            .pick_file())
+    }
+
+    /// Where to export; `Ok(None)` when cancelled.
+    #[cfg(any(target_os = "macos", windows))]
+    pub fn save(title: &str, file_name: &str) -> Result<Option<PathBuf>, String> {
+        Ok(rfd::FileDialog::new()
+            .set_title(title)
+            .add_filter("RBS settings", &["toml"])
+            .set_file_name(file_name)
+            .save_file())
+    }
+
+    #[cfg(not(any(target_os = "macos", windows)))]
+    const NONE: &str = "Import and export need a file dialog, which RBS does not have on this system yet. Copy the files in the profiles or scenes folder of the settings folder instead.";
+
+    #[cfg(not(any(target_os = "macos", windows)))]
+    pub fn open(_title: &str) -> Result<Option<PathBuf>, String> {
+        Err(NONE.into())
+    }
+
+    #[cfg(not(any(target_os = "macos", windows)))]
+    pub fn save(_title: &str, _file_name: &str) -> Result<Option<PathBuf>, String> {
+        Err(NONE.into())
+    }
+}
+
 /// Connect one window's `Studio` callbacks to the studio and give it the shared models.
 /// Drops the preview layer before the studio restarts (its frames go back first).
 fn close_preview() {
@@ -1086,6 +1175,55 @@ fn install_studio(g: &Studio<'_>, ctx: &Ctx) {
     on!(on_set_rc_port, |app, text: slint::SharedString| {
         app.studio.set_remote_port(&text);
     });
+    // Output profile and Scene collection menus (ADR-0051).
+    on!(on_switch_profile, |app, id: slint::SharedString| {
+        let done = app.studio.switch_profile(&id);
+        app.library_done(done);
+    });
+    on!(
+        on_profile_action,
+        |app, action: i32, text: slint::SharedString| {
+            let done = match action {
+                0 => app.studio.new_profile(&text, false),
+                1 => app.studio.new_profile(&text, true),
+                2 => app.studio.rename_profile(&text),
+                4 | 5 => {
+                    let name = app.studio.user.profile_name.clone();
+                    transfer(Library::Profiles, action == 4, name);
+                    Ok(())
+                }
+                _ => {
+                    let id = app.studio.user.profile_id.as_str().to_owned();
+                    app.studio.delete_profile(&id)
+                }
+            };
+            app.library_done(done);
+        }
+    );
+    on!(on_switch_collection, |app, id: slint::SharedString| {
+        let done = app.studio.switch_collection(&id, close_preview);
+        app.library_done(done);
+    });
+    on!(
+        on_collection_action,
+        |app, action: i32, text: slint::SharedString| {
+            let done = match action {
+                0 => app.studio.new_collection(&text, false, close_preview),
+                1 => app.studio.new_collection(&text, true, close_preview),
+                2 => app.studio.rename_collection(&text),
+                4 | 5 => {
+                    let name = app.studio.user.collection_name.clone();
+                    transfer(Library::Collections, action == 4, name);
+                    Ok(())
+                }
+                _ => {
+                    let id = app.studio.user.collection_id.as_str().to_owned();
+                    app.studio.delete_collection(&id, close_preview)
+                }
+            };
+            app.library_done(done);
+        }
+    );
     on!(on_create_token, |app,
                           name: slint::SharedString,
                           access: i32| {
@@ -1141,6 +1279,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // The stream key's store: read only when a stream starts (src/stream_key.rs).
     let keys = rbs_app::stream_key::system();
     let studio_config = config.clone();
+    // The output profile and scene collection in use (ADR-0051); failed saves are
+    // reported like other studio errors.
+    let (user, collection) = rbs_app::user_session::open(
+        &config,
+        std::sync::Arc::new(|why| deliver(studio_host::Update::Error(why))),
+    );
+    let user_notes = user.notes.clone();
+    let first_canvas = rbs_app::user_session::first_canvas(&collection);
+    let autosave = user.collection_saver();
+    let key_account = rbs_app::stream_key::account(user.profile_id.as_str());
     let store = WorkspaceStore::new(config::workspace_dir(&config));
     let name = config::last_workspace(&config).unwrap_or_else(|| "Edit".to_owned());
     let mut error = None;
@@ -1187,7 +1335,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             exiting: false,
             settings: None,
             demo_since: demo_live.then(Instant::now),
-            studio: studio_ui::StudioUi::new(&studio_config, keys.as_ref()),
+            studio: studio_ui::StudioUi::new(&studio_config, keys.as_ref(), user, first_canvas),
         })),
         queue: Rc::new(RefCell::new(Vec::new())),
         pending: Rc::new(Cell::new(false)),
@@ -1207,6 +1355,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let c = ctx.app.borrow().studio.canvas;
         let mut config = studio_host::HostConfig::canvas(c.size(), c.frame_rate());
         config.keys = keys;
+        config.collection = Some(collection);
+        config.autosave = autosave;
+        config.key_account = key_account;
         config
     };
     match studio_host::StudioHost::spawn(
@@ -1247,6 +1398,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }),
     }
     ctx.update(App::refresh_list);
+    // Entries that could not be read, or read-only mode: in the error bar once.
+    if !user_notes.is_empty() {
+        deliver(studio_host::Update::Error(user_notes.join("\n")));
+    }
 
     // Closing the main window ends the app: floating windows close with it and
     // their closing is not a layout change.
@@ -1302,6 +1457,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         // Disconnects remote control apps, then stops the studio and joins its thread.
         app.studio.stop_remote();
         app.studio.host = None;
+        // The last changes reach the disk before the app ends.
+        app.studio.user.flush();
     }
     CTX.with(|c| c.borrow_mut().take());
     Ok(())

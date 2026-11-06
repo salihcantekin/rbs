@@ -53,8 +53,9 @@ use crate::canvas_profile::CanvasProfile;
 use crate::edit_history::{EditKind, History, HistoryError, StepInfo};
 use crate::record_profile::{API_PROFILE_ID, RecordProfile};
 use crate::remote_control::ApiTokens;
-use crate::stream_key::{KeyStore, MemoryKeyStore};
+use crate::stream_key::{self, KeyStore, MemoryKeyStore};
 use crate::stream_profile::{Protocol, StreamProfile, parse_server};
+use crate::user_session::CollectionSaver;
 
 /// The longest the control thread sleeps between two rounds of the engine's control
 /// loop (the studio asks for at most about 100 ms).
@@ -294,6 +295,27 @@ pub enum Command {
     /// Save the stream key in the key store (`None` removes it); answered with
     /// [`Update::StreamKey`].
     SaveStreamKey(Option<Secret>),
+    /// The key store account of the output profile in use ([`stream_key::account`]):
+    /// where Go live, `stream.start` and [`Command::SaveStreamKey`] read and write the
+    /// key from now on. Sent when the user switches output profiles.
+    SetKeyAccount(String),
+    /// Remove the key saved for a deleted output profile's account (ADR-0051 decision
+    /// 5). A failure is reported with [`Update::Error`].
+    RemoveStreamKey(String),
+    /// Run another scene collection (Scene collection menu): the studio restarts with
+    /// it, as for a canvas change, and its first canvas's program scene is shown.
+    /// Refused while recording or streaming. Changes are saved through `autosave` from
+    /// now on. Always answered with [`Update::Canvas`] and then
+    /// [`Update::CollectionSwitched`] carrying `seq`; on a refusal or failure the
+    /// collection that ran keeps running.
+    SwitchCollection {
+        /// The caller's number for this request.
+        seq: u64,
+        /// The collection.
+        collection: Box<SceneCollection>,
+        /// Saves it after every change; `None`: changes are not saved.
+        autosave: Option<CollectionSaver>,
+    },
 }
 
 /// A video encoder the user can pick.
@@ -571,6 +593,14 @@ pub enum Update {
     /// The running outputs' counters for the Stats panel, once a second while any
     /// output runs.
     Stats(Stats),
+    /// [`Command::SwitchCollection`] with this `seq` is done: `Ok` the new collection
+    /// runs, `Err` why the one before still runs.
+    CollectionSwitched {
+        /// The request's number.
+        seq: u64,
+        /// How it went.
+        result: Result<(), String>,
+    },
 }
 
 /// Counters of one running output, for the Stats panel.
@@ -653,6 +683,16 @@ pub struct HostConfig {
     /// Where the stream key is kept: read when a stream starts, written when it is
     /// saved, on the control thread only. Memory by default.
     pub keys: Arc<dyn KeyStore>,
+    /// The key store account of the output profile in use ([`stream_key::account`]);
+    /// [`stream_key::ACCOUNT`] by default.
+    pub key_account: String,
+    /// The scene collection to run (ADR-0051). Its first canvas is the studio's; that
+    /// canvas's program scene is the one shown and edited (a scene is added when it
+    /// has none). `None`: a new collection with one canvas of `size` at `fps`.
+    pub collection: Option<SceneCollection>,
+    /// Saves the collection after every change (on the user data writer thread);
+    /// `None`: changes are not saved.
+    pub autosave: Option<CollectionSaver>,
 }
 
 impl HostConfig {
@@ -672,6 +712,9 @@ impl HostConfig {
             fps,
             preview,
             keys: Arc::new(MemoryKeyStore::new()),
+            key_account: stream_key::ACCOUNT.to_owned(),
+            collection: None,
+            autosave: None,
         }
     }
 }
@@ -849,6 +892,10 @@ struct Host {
     /// This thread's own queue, for results from picker threads. Weak, so dropping
     /// the [`StudioHost`] still ends the thread.
     inbox: Weak<Sender<Msg>>,
+    /// Saves the collection after a change ([`HostConfig::autosave`]).
+    autosave: Option<CollectionSaver>,
+    /// The collection as last handed to `autosave`.
+    saved: Option<SceneCollection>,
     studio: Studio,
     adapters: RecordAdapters,
     collection: SceneCollection,
@@ -870,6 +917,8 @@ struct Host {
     streaming: Option<(String, Link, OutputId)>,
     /// Where the stream key is kept.
     keys: Arc<dyn KeyStore>,
+    /// The account of the output profile in use.
+    key_account: String,
     /// Makes an engine for a restart.
     engine: Box<dyn Fn() -> Engine>,
     gpu: Arc<GpuContext>,
@@ -1056,16 +1105,14 @@ fn start(
     adapters.probe();
     let gpu = gpu()?;
     notes.push(format!("gpu: {}", gpu.adapter_name()));
-    let mut collection = SceneCollection::new();
-    let (canvas, _) = collection
-        .add_canvas("Main", config.size, config.fps)
-        .map_err(|e| format!("canvas: {e:?}"))?;
-    let (scene, _) = collection
-        .add_scene("Scene", SceneScope::Shared)
-        .map_err(|e| format!("scene: {e:?}"))?;
-    collection
-        .set_program(canvas, Some(scene))
-        .map_err(|e| format!("program: {e:?}"))?;
+    let loaded = config.collection.clone();
+    let mut collection = config.collection.unwrap_or_default();
+    let (canvas, scene) = shown_scene(&mut collection, config.size, config.fps)?;
+    // The collection's canvas, which may differ from `config.size` (only the preview's
+    // aspect ratio is chosen from that).
+    let (run_size, run_fps) = collection
+        .canvas(canvas)
+        .map_or((config.size, config.fps), |c| (c.size, c.frame_rate));
     let mut settings = StudioSettings::new(canvas);
     settings.preview = config.preview;
     let first = engine();
@@ -1132,8 +1179,8 @@ fn start(
         notes,
         encoders: encoders.clone(),
         cannot_record: cannot_record.clone(),
-        size: config.size,
-        fps: config.fps,
+        size: run_size,
+        fps: run_fps,
         display,
     };
     Ok((
@@ -1153,10 +1200,14 @@ fn start(
             clock,
             streaming: None,
             keys,
+            key_account: config.key_account,
             engine: Box::new(engine),
             gpu,
             preview_surfaces: config.preview.map(|p| p.surfaces),
             dead: None,
+            autosave: config.autosave,
+            // A collection that had to be completed is saved at the first publish.
+            saved: loaded,
             events: EventPublisher::new(),
             api: None,
             profile: RecordProfile::new(),
@@ -1289,12 +1340,29 @@ impl Host {
             }
             Command::SaveStreamKey(key) => {
                 let result = match &key {
-                    Some(k) => self.keys.write(k).map(|()| true),
-                    None => self.keys.remove().map(|()| false),
+                    Some(k) => self.keys.write(&self.key_account, k).map(|()| true),
+                    None => self.keys.remove(&self.key_account).map(|()| false),
                 };
                 notify(Update::StreamKey(result.map_err(|e| {
                     format!("{} refused the stream key: {e}", self.keys.place())
                 })));
+            }
+            Command::SetKeyAccount(account) => self.key_account = account,
+            Command::RemoveStreamKey(account) => {
+                if let Err(e) = self.keys.remove(&account) {
+                    notify(Update::Error(format!(
+                        "The deleted output profile's stream key could not be removed from {}: {e}",
+                        self.keys.place()
+                    )));
+                }
+            }
+            Command::SwitchCollection {
+                seq,
+                collection,
+                autosave,
+            } => {
+                let result = self.switch_collection(*collection, autosave, notify);
+                notify(Update::CollectionSwitched { seq, result });
             }
         }
     }
@@ -1382,10 +1450,80 @@ impl Host {
     ) -> Result<(), String> {
         let before = self.api_canvas();
         let result = self.set_canvas(size, fps);
+        self.canvas_changed(before, notify);
+        result
+    }
+
+    /// Runs `next` instead of the collection that runs now (the studio restarts);
+    /// on a failure the one before runs again. Always sends [`Update::Canvas`].
+    fn switch_collection(
+        &mut self,
+        next: SceneCollection,
+        autosave: Option<CollectionSaver>,
+        notify: &dyn Fn(Update),
+    ) -> Result<(), String> {
+        if self.recording.is_some() {
+            let why = "Stop the recording before switching scene collections.".to_owned();
+            self.canvas_changed(self.api_canvas(), notify);
+            return Err(why);
+        }
+        if self.streaming.is_some() {
+            let why = "End the stream before switching scene collections.".to_owned();
+            self.canvas_changed(self.api_canvas(), notify);
+            return Err(why);
+        }
+        let before = self.api_canvas();
+        let loaded = next.clone();
+        let mut next = next;
         let (size, fps) = self
             .collection
             .canvas(self.canvas)
-            .map_or((size, fps), |c| (c.size, c.frame_rate));
+            .map_or((Size::new(1920, 1080), FrameRate::FPS_30), |c| {
+                (c.size, c.frame_rate)
+            });
+        let (canvas, scene) = match shown_scene(&mut next, size, fps) {
+            Ok(shown) => shown,
+            Err(why) => {
+                self.canvas_changed(before, notify);
+                return Err(format!("The scene collection cannot be used: {why}"));
+            }
+        };
+        // Whatever the old collection's last change was, it is saved before this one.
+        self.publish_save();
+        let old = (
+            std::mem::replace(&mut self.collection, next),
+            std::mem::replace(&mut self.canvas, canvas),
+            std::mem::replace(&mut self.scene, scene),
+        );
+        let _ = self.studio.shutdown();
+        let result = match self.restart() {
+            Ok(()) => {
+                self.autosave = autosave;
+                self.saved = Some(loaded);
+                self.history.clear();
+                Ok(())
+            }
+            Err(why) => {
+                (self.collection, self.canvas, self.scene) = old;
+                if let Err(again) = self.restart() {
+                    self.dead = Some(again);
+                }
+                Err(format!("The scene collection cannot run: {why}"))
+            }
+        };
+        self.canvas_changed(before, notify);
+        result
+    }
+
+    /// After a restart: tells the UI the canvas (connect to the preview again), shows
+    /// the rows anew and publishes a canvas change to control API clients.
+    fn canvas_changed(&mut self, before: api::Canvas, notify: &dyn Fn(Update)) {
+        let (size, fps) = self
+            .collection
+            .canvas(self.canvas)
+            .map_or((Size::new(0, 0), FrameRate::FPS_30), |c| {
+                (c.size, c.frame_rate)
+            });
         notify(Update::Canvas {
             preview: self.studio.preview(),
             size,
@@ -1401,7 +1539,16 @@ impl Host {
                 });
             self.settings_changed();
         }
-        result
+    }
+
+    /// Hands the collection to autosave when it changed since it was last handed.
+    fn publish_save(&mut self) {
+        if let Some(save) = &self.autosave
+            && self.saved.as_ref() != Some(&self.collection)
+        {
+            save.save(&self.collection);
+            self.saved = Some(self.collection.clone());
+        }
     }
 
     /// The canvas as the control API shows it.
@@ -1660,7 +1807,7 @@ impl Host {
                 os_name()
             ));
         }
-        let key = self.keys.read().map_err(|e| {
+        let key = self.keys.read(&self.key_account).map_err(|e| {
             format!(
                 "The stream key could not be read from {}: {e}",
                 self.keys.place()
@@ -2114,8 +2261,12 @@ impl Host {
         self.publish(notify);
     }
 
-    /// Sends the rows and the undo history when they changed.
+    /// Sends the rows and the undo history when they changed, and saves the collection
+    /// when it changed (every edit, undo, canvas change or control API change passes
+    /// here; the writer thread keeps only the latest snapshot, so a drag costs one
+    /// write behind it, never a wait here).
     fn publish(&mut self, notify: &dyn Fn(Update)) {
+        self.publish_save();
         let rows = self.rows();
         if rows != self.rows {
             self.rows = rows.clone();
@@ -2883,6 +3034,43 @@ fn scale_style(style: &ItemStyle, factor: f32) -> ItemStyle {
         sh.blur *= factor;
     }
     out
+}
+
+/// The canvas the studio runs (the collection's first, or a new one of `size` at
+/// `fps`) and the scene it shows (that canvas's program, else the first scene it may
+/// show, else a new shared scene), set on air.
+fn shown_scene(
+    collection: &mut SceneCollection,
+    size: Size,
+    fps: FrameRate,
+) -> Result<(CanvasId, SceneId), String> {
+    let first = collection.canvases().next().map(|c| c.id);
+    let canvas = match first {
+        Some(c) => c,
+        None => {
+            collection
+                .add_canvas("Main", size, fps)
+                .map_err(|e| format!("canvas: {e:?}"))?
+                .0
+        }
+    };
+    let program = collection.canvas(canvas).and_then(|c| c.program);
+    let allowed = collection.scenes_for(canvas).next().map(|s| s.id);
+    let scene = match program.or(allowed) {
+        Some(s) => s,
+        None => {
+            collection
+                .add_scene("Scene", SceneScope::Shared)
+                .map_err(|e| format!("scene: {e:?}"))?
+                .0
+        }
+    };
+    if program != Some(scene) {
+        collection
+            .set_program(canvas, Some(scene))
+            .map_err(|e| format!("program: {e:?}"))?;
+    }
+    Ok((canvas, scene))
 }
 
 #[cfg(test)]

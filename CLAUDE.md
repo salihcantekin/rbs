@@ -10,7 +10,7 @@ A headless live production engine in Rust (capture, compose, encode, stream, rec
 
 1. **English only.** Code, identifiers, comments, docs, commit messages and PR text are in English, even when the conversation is in another language ([ADR-0011](docs/adr/0011-english-only-repository.md)).
 2. **Spec first.** Before implementing a public API, port, node type or crate, find its spec in `docs/specs`. If it is missing or wrong, update the spec in the same change and say so. Do not invent contracts in code alone.
-3. **Respect the layers.** Core and port crates never depend on adapters, vendor SDKs, FFmpeg, OS media APIs or UI toolkits (principle P1). Only `rbs-app` / `rbs-cli` wire adapters together.
+3. **Respect the layers.** Core and port crates never depend on adapters, vendor SDKs, FFmpeg, OS media APIs or UI toolkits (principle P1). Only the composition roots `rbs-app`, `rbs-cli` and `rbs-mcp` (planned, ADR-0052) wire adapters together.
 4. **Capabilities, not vendors.** Never branch on vendor or device model names in engine code. Add a capability instead (P3).
 5. **Real-time paths.** No allocation, blocking, I/O or contended locks in audio callbacks or `Node::process` (P6). Use pre-allocated buffers and lock-free queues.
 6. **Zero-copy by default.** Pass GPU texture handles; never read frames back to the CPU on the default path (P4).

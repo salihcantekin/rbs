@@ -1,7 +1,8 @@
 //! Where Go live sends the program and how it is encoded: the server URL, whether a
 //! stream key is saved (the key itself lives only in the system's credential store,
-//! `stream_key`), reconnecting, the SRT latency and the encoder settings. Kept in
-//! `stream.toml` in the config directory. Toolkit-free and tested without a window.
+//! `stream_key`), reconnecting, the SRT latency and the encoder settings. Kept in the
+//! `stream` section of the output profile in use (ADR-0051); `stream.toml`, which
+//! older versions kept, is read once to make the first profile. Toolkit-free and tested without a window.
 
 use std::path::{Path, PathBuf};
 use std::time::Duration;
