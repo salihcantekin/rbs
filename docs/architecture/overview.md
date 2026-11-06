@@ -35,6 +35,7 @@ RBS is a headless engine built around a **media graph**: a set of nodes (sources
 | Control transports | `rbs-api-ws` (WebSocket), `rbs-api-ipc` (named pipe, Unix socket) | `rbs-api`, network and IPC crates |
 | UI model | `rbs-ui` (toolkit-neutral panels, layout, workspaces, layout undo, design tokens, live indicator; ADR-0022 decision 4) | std, `serde`, `toml`; no engine, port, adapter or UI toolkit crate |
 | Application settings | `rbs-remote-settings` (remote control settings file and config directory, shared by `rbs-app` and `rbs-cli`; ADR-0044) | `rbs-api`, `serde`, `toml`; no toolkit, engine or adapter crate |
+| User data | `rbs-user-data` (versioned documents, output profiles, scene collection documents, import and export; ADR-0051) | `rbs-scene`, `rbs-core`, `rbs-graph`, `serde`, `toml`; no toolkit, engine or adapter crate |
 | Applications | `rbs-app` (desktop UI), `rbs-cli` (headless `record`, `token`; ADR-0040) | Everything; this is the composition root |
 | Agent application | `rbs-mcp` (planned: MCP server for AI agents, a plain control API client with its own token; ADR-0052) | `rbs-api`, `rbs-api-ipc` (its client), `rbs-remote-settings`, an MCP library; a composition root that uses no engine, port, other adapter or toolkit crate |
 

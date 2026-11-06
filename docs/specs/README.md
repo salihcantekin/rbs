@@ -15,7 +15,8 @@ Specs are the current contracts of RBS. Code must match them; a PR that changes 
 | [audio-graph.md](audio-graph.md) | Draft | `rbs-audio` (input node, resampler, mixer, meters, encoder node), `rbs-graph` (audio values, audio queue) |
 | [engine.md](engine.md) | Draft | `rbs-engine` (worker threads per partition, pacing, control loop, shutdown, non-blocking handle) |
 | [media-types.md](media-types.md) | Draft | `rbs-core` (`media`, `timing`) |
-| [scene-model.md](scene-model.md) | Draft | `rbs-scene` (model, edits, undo, flattening, graph binding; document format planned) |
+| [scene-model.md](scene-model.md) | Draft | `rbs-scene` (model, edits, undo, flattening, graph binding, validating loader) |
+| [user-data.md](user-data.md) | Draft | `rbs-user-data` (versioned documents, libraries, output profiles, scene collection document; ADR-0051) |
 | [gpu-compositor.md](gpu-compositor.md) | Draft | `rbs-gpu` |
 | [scene-sources.md](scene-sources.md) | Draft | `rbs-sources` (built-in source types, adapter registry for sources, instances for bound sources) |
 | [io-nodes.md](io-nodes.md) | Draft | `rbs-nodes` (capture source, video export, video encoder and output nodes), `rbs-gpu` (`upload`, `download`) |
