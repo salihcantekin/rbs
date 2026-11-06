@@ -11,7 +11,7 @@
 //! Prints one line per second and a summary; exits with an error when the path is not
 //! continuous (resyncs after start-up, read errors, queue losses, skipped audio ticks,
 //! packet gaps).
-
+#![allow(clippy::disallowed_methods)] // A demo, not the app shell: ADR-0055 rules the shell.
 #![allow(clippy::print_stdout, clippy::print_stderr, clippy::expect_used)] // A demo: setup errors end it.
 
 use std::process::ExitCode;

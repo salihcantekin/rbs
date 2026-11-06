@@ -56,11 +56,11 @@ pub fn connect(endpoint: PreviewEndpoint, done: impl Fn(bool) + Send + Clone + '
             move || match PreviewSubscriber::connect(&endpoint, CONNECT_TIMEOUT) {
                 Ok(sub) => {
                     let d = done.clone();
-                    let _ = slint::invoke_from_event_loop(move || setup(sub, d));
+                    let _ = crate::entry::invoke(move || setup(sub, d));
                 }
                 Err(e) => {
                     log(&format!("preview: cannot connect: {e}"));
-                    let _ = slint::invoke_from_event_loop(move || done(false));
+                    let _ = crate::entry::invoke(move || done(false));
                 }
             },
         );
@@ -102,7 +102,7 @@ fn setup(mut sub: PreviewSubscriber, done: impl Fn(bool)) {
             loop {
                 match sub.recv(Duration::from_millis(250)) {
                     Ok(Some(frame)) => {
-                        if slint::invoke_from_event_loop(move || show(frame)).is_err() {
+                        if crate::entry::invoke(move || show(frame)).is_err() {
                             break;
                         }
                     }
@@ -249,7 +249,7 @@ fn retire() {
             Some(due) => {
                 if !st.timer.running() {
                     let after = due.saturating_since(now).max(Duration::from_millis(1));
-                    st.timer.start(slint::TimerMode::SingleShot, after, retire);
+                    crate::entry::start(&st.timer, slint::TimerMode::SingleShot, after, retire);
                 }
             }
         }

@@ -38,6 +38,7 @@
 //!
 //! This is a demo, not the product's Program/Preview panel: wiring the panel to the
 //! engine is follow-up work in the shell.
+#![allow(clippy::disallowed_methods)] // A demo, not the app shell: ADR-0055 rules the shell.
 
 #[cfg(any(target_os = "macos", windows))]
 fn main() -> Result<(), Box<dyn std::error::Error>> {

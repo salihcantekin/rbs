@@ -11,7 +11,7 @@ Read the diff as a reviewer who did not write it. Report each item as OK / Issue
 - Every `unsafe` block has a `// SAFETY:` comment stating the invariant and why it holds.
 - Pointer lifetimes: nothing outlives the foreign object; no use after the vendor `release`/`destroy` call.
 - Ownership across FFI is explicit (who frees what); `Drop` releases every handle exactly once.
-- No panics unwind across `extern "C"`; entry points use `catch_unwind` where needed.
+- No panics unwind across `extern "C"`: every function or block an OS or vendor library calls wraps its body in `catch_unwind` and returns a neutral value (silence, no frame, an error status). Since Rust 1.81 a panic there aborts the process (ADR-0055 decision 7).
 - Thread affinity of the vendor API is respected (COM apartments, Metal command queues, CUDA contexts).
 
 ## GPU interop
@@ -22,6 +22,13 @@ Read the diff as a reviewer who did not write it. Report each item as OK / Issue
 ## Real-time threads
 - No allocation, locking, I/O, logging or unbounded loops in audio callbacks or `Node::process`.
 - Queues are bounded; full-queue behaviour is defined and counted.
+
+## Crash resilience (ADR-0055)
+- Closures handed to Slint go through `rbs-app/src/entry.rs` (clippy enforces it for the Slint functions); a generated `on_*` callback goes through `on!` or starts with `entry::guard` (`tests/entry_points.rs` checks it).
+- A new stream secret or URL is passed to `rbs_crash::add_secret` before use.
+- Nothing on the UI thread runs a nested event loop or blocks (modal dialogs, `sleep`, `recv`, `join`).
+- A new control thread calls `rbs_crash::report_panics_on_this_thread()`; a real-time thread never does.
+- A step on the studio's control thread that can panic half-way leaves state `Host::recover` can reconcile.
 
 ## Concurrency
 - Shared state uses the narrowest primitive; no lock held across an await or a callback into user code.

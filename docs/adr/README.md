@@ -67,3 +67,4 @@ An ADR records one decision that is hard to reverse or affects more than one cra
 | [0052](0052-ai-agent-control-through-mcp.md) | AI agents control RBS through an MCP server that is a plain control API client | Accepted |
 | [0053](0053-item-style-and-video-filter-chains.md) | Item shape, border and shadow drawn by the compositor; video filters as a per-source chain of GPU nodes | Accepted |
 | [0054](0054-preview-never-disappears.md) | The preview picture never disappears behind popups: split it around covers | Proposed |
+| [0055](0055-crash-resilience.md) | Crash resilience: a fault in the app must not end a recording or a stream | Proposed |

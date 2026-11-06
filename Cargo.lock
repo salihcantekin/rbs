@@ -4254,6 +4254,7 @@ dependencies = [
  "rbs-api",
  "rbs-api-ipc",
  "rbs-api-ws",
+ "rbs-app",
  "rbs-audio",
  "rbs-audio-io",
  "rbs-audio-io-coreaudio",
@@ -4277,6 +4278,7 @@ dependencies = [
  "rbs-codec-vaapi",
  "rbs-codec-videotoolbox",
  "rbs-core",
+ "rbs-crash",
  "rbs-engine",
  "rbs-gpu",
  "rbs-graph",
@@ -4643,6 +4645,10 @@ dependencies = [
  "bytes",
  "criterion 0.8.2",
 ]
+
+[[package]]
+name = "rbs-crash"
+version = "0.0.1"
 
 [[package]]
 name = "rbs-engine"

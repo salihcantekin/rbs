@@ -12,8 +12,8 @@ use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
 use rbs_app::studio_host::{
-    Command, HostConfig, RecordRequest, RecordingUpdate, SourceKind, SourceRow, SourceStatus,
-    StudioHost, Update,
+    Command, Fault, HostConfig, RecordRequest, RecordingUpdate, SourceKind, SourceRow,
+    SourceStatus, StudioHost, Update,
 };
 use rbs_audio_io_test::TestAudioBackend;
 use rbs_capture_test::TestCaptureFactory;
@@ -198,10 +198,20 @@ const BROKEN: &str = "test.video-broken";
 const WORKING: &str = "test.video-working";
 
 fn host(gpu: Arc<GpuContext>, clock: &TestClock) -> (StudioHost, Receiver<Update>) {
+    host_with(gpu, clock, None)
+}
+
+/// [`host`], panicking once at `fault` (ADR-0055).
+fn host_with(
+    gpu: Arc<GpuContext>,
+    clock: &TestClock,
+    fault: Option<Fault>,
+) -> (StudioHost, Receiver<Update>) {
     let (tx, rx) = mpsc::channel();
     let clock = clock.clone();
     let mut config = HostConfig::desktop();
     config.preview = None;
+    config.fault = fault;
     let host = StudioHost::spawn(
         config,
         || {
@@ -413,6 +423,115 @@ fn recordings_start_with_the_picked_encoder_and_stop_into_a_closed_file() {
         other => panic!("{other:?}"),
     }
 
+    drop(host);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A started host with one display source, ready to record.
+fn ready(gpu: Arc<GpuContext>, clock: &TestClock, fault: Fault) -> (StudioHost, Receiver<Update>) {
+    let (host, rx) = host_with(gpu, clock, Some(fault));
+    next(&rx, |u| match u {
+        Update::Started { .. } => Some(()),
+        Update::Failed(e) => panic!("{e}"),
+        _ => None,
+    });
+    host.send(Command::ListTargets(SourceKind::Screen));
+    let display = next(&rx, |u| match u {
+        Update::Targets(SourceKind::Screen, t) => Some(t[0].clone()),
+        _ => None,
+    });
+    host.send(Command::AddSource {
+        kind: SourceKind::Screen,
+        target: display,
+    });
+    rows_where(&rx, |r| r.len() == 1);
+    (host, rx)
+}
+
+/// Stops the recording and returns how it ended, moving the clock so its tail ends.
+fn stop_recording(host: &StudioHost, rx: &Receiver<Update>, clock: &TestClock) -> RecordingUpdate {
+    host.send(Command::StopRecording);
+    next_while(
+        rx,
+        || clock.advance(END_TAIL_LIMIT),
+        |u| match u {
+            Update::Recording(r) => Some(r),
+            Update::Failed(e) => panic!("the studio failed: {e}"),
+            _ => None,
+        },
+    )
+}
+
+#[test]
+fn a_start_that_panics_after_the_output_started_stops_that_output() {
+    let Some(gpu) = gpu() else { return };
+    let dir = std::env::temp_dir().join(format!("rbs-app-fault-start-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let clock = TestClock::new();
+    let (host, rx) = ready(gpu, &clock, Fault::AfterOutputStart);
+
+    // The start panics once the output runs: the UI gets its answer, and the output
+    // the host never tracked is stopped.
+    let lost = dir.join("lost.mkv");
+    host.send(Command::StartRecording(request(lost.clone(), None)));
+    match recording(&rx) {
+        RecordingUpdate::NotStarted(why) => assert_eq!(why, rbs_crash::CAUGHT_TEXT),
+        other => panic!("{other:?}"),
+    }
+    let stopped = next(&rx, |u| match u {
+        Update::Recovered { stopped } => Some(stopped),
+        _ => None,
+    });
+    assert_eq!(stopped, 1);
+    // Nothing counts as running: the next recording starts and stops normally.
+    let next_file = dir.join("next.mkv");
+    host.send(Command::StartRecording(request(next_file.clone(), None)));
+    match recording(&rx) {
+        RecordingUpdate::Started { path, .. } => assert_eq!(path, next_file),
+        other => panic!("{other:?}"),
+    }
+    match stop_recording(&host, &rx, &clock) {
+        RecordingUpdate::Stopped { failure, .. } => assert_eq!(failure, None),
+        other => panic!("{other:?}"),
+    }
+    assert!(std::fs::read(&next_file).unwrap().ends_with(TRAILER));
+    drop(host);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn a_stop_that_panics_half_way_still_ends_the_recording() {
+    let Some(gpu) = gpu() else { return };
+    let dir = std::env::temp_dir().join(format!("rbs-app-fault-stop-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let clock = TestClock::new();
+    let (host, rx) = ready(gpu, &clock, Fault::InRecordingStop);
+
+    let file = dir.join("take.mkv");
+    host.send(Command::StartRecording(request(file.clone(), None)));
+    match recording(&rx) {
+        RecordingUpdate::Started { .. } => {}
+        other => panic!("{other:?}"),
+    }
+    // The stop panics after the output stopped: recovery ends the recording, says why,
+    // and the file is complete.
+    match stop_recording(&host, &rx, &clock) {
+        RecordingUpdate::Stopped { path, failure, .. } => {
+            assert_eq!(path, file);
+            assert!(failure.is_some_and(|f| f.contains("internal error")));
+        }
+        other => panic!("{other:?}"),
+    }
+    assert!(std::fs::read(&file).unwrap().ends_with(TRAILER));
+
+    // The host does not think a recording still runs.
+    let again = dir.join("again.mkv");
+    host.send(Command::StartRecording(request(again.clone(), None)));
+    match recording(&rx) {
+        RecordingUpdate::Started { path, .. } => assert_eq!(path, again),
+        other => panic!("{other:?}"),
+    }
+    let _ = stop_recording(&host, &rx, &clock);
     drop(host);
     let _ = std::fs::remove_dir_all(&dir);
 }

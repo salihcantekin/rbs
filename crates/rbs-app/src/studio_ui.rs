@@ -2229,6 +2229,8 @@ impl StudioUi {
             self.edit.reset();
         }
         match u {
+            #[cfg(feature = "fault-injection")]
+            Update::Recovered { .. } => {}
             Update::BoxPlaced { seq, ok } => {
                 let next = self.edit.answered(seq, ok);
                 self.run(next);
