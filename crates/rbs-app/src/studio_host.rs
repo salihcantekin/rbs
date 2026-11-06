@@ -1422,11 +1422,14 @@ impl Host {
             );
             let _ = self.collection.set_item_layout(id, None, moved);
         }
-        // Old layouts would come back with an undo.
-        self.history.clear();
         let _ = self.studio.shutdown();
         match self.restart() {
-            Ok(()) => Ok(()),
+            Ok(()) => {
+                // Old layouts would come back with an undo. (When the restart fails
+                // the collection goes back as it was, and so the history stays.)
+                self.history.clear();
+                Ok(())
+            }
             Err(why) => {
                 self.collection = before;
                 match self.restart() {
@@ -1791,10 +1794,16 @@ impl Host {
     fn step(&mut self, back: bool, notify: &dyn Fn(Update)) {
         // Nothing to undo is not a problem: the buttons are disabled then, and a key
         // press says nothing.
-        if let Err((false, why)) = self.undo_or_redo(back) {
-            notify(Update::Error(why));
+        match self.undo_or_redo(back) {
+            Ok(()) => self.apply(notify),
+            Err((true, _)) => {}
+            Err((false, why)) => {
+                notify(Update::Error(why));
+                // A refused step left the scene as it was, but a lost one may not
+                // have: run what is there.
+                self.apply(notify);
+            }
         }
-        self.apply(notify);
     }
 
     /// One step of the history; the error says whether there was nothing to do
@@ -1825,7 +1834,7 @@ impl Host {
             Err(HistoryError::Lost(e)) => Err((
                 false,
                 format!(
-                    "The scene changed in a way this step cannot be applied to ({e:?}); the undo history was cleared."
+                    "The scene changed in a way this step cannot be applied to ({e:?}), and part of it may have been applied; the undo history was cleared."
                 ),
             )),
         }

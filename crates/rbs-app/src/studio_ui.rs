@@ -2001,6 +2001,15 @@ impl StudioUi {
                 out.error = Some(e);
             }
             Update::History { undo, redo } => {
+                // The toast undoes only the delete it names: once another edit (also
+                // one from a control API client) or an undo changed what is newest,
+                // it goes.
+                let still = undo
+                    .as_ref()
+                    .is_some_and(|s| s.kind == EditKind::Delete && s.name == self.deleted);
+                if !still {
+                    self.deleted.clear();
+                }
                 self.next_undo = undo;
                 self.next_redo = redo;
             }
