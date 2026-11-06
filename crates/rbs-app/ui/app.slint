@@ -541,12 +541,22 @@ export component MainWindow inherits Window {
     // it is placed again.
     property <float> scale: 1px / 1phx;
     changed scale => { Studio.overlays-changed(); }
-    VerticalLayout {
-        frame := FrameBar { }
-        DockArea {
-            window: 0;
-            stacks: root.stacks;
-            handles: root.handles;
+    forward-focus: edit-keys;
+    // Scene edit undo and redo from any panel of this window (U4): keys a focused
+    // control does not take come up here, and a click where no control takes it
+    // focuses this scope, so the keys work there too. Text fields keep their own undo.
+    edit-keys := FocusScope {
+        focus-on-tab-navigation: false;
+        KeyBinding { keys: @keys(Control + Z); activated => { Studio.undo-edit(true); } }
+        KeyBinding { keys: @keys(Control + Shift + Z); activated => { Studio.undo-edit(false); } }
+        KeyBinding { keys: @keys(Control + Y); activated => { Studio.undo-edit(false); } }
+        VerticalLayout {
+            frame := FrameBar { }
+            DockArea {
+                window: 0;
+                stacks: root.stacks;
+                handles: root.handles;
+            }
         }
     }
     if Shell.toast-kind != 0: Toast {
@@ -581,24 +591,34 @@ export component FloatWindow inherits Window {
     in property <[StackData]> stacks;
     in property <[HandleData]> handles;
     title: @tr("RBS – {}", panel-names);
+    forward-focus: edit-keys;
     preferred-width: Tokens.size-floating-w;
     preferred-height: Tokens.size-floating-h;
     background: Theme.surface-sunken;
     default-font-size: Tokens.type-body-size;
-    VerticalLayout {
-        Rectangle {
-            height: Tokens.size-control-md + 2 * Tokens.space-1;
-            HorizontalLayout {
-                padding: Tokens.space-1;
-                alignment: start;
-                Button { text: @tr("Dock back"); clicked => { Shell.dock(root.window); } }
+    // Scene edit undo and redo from any panel of this window (U4): keys a focused
+    // control does not take come up here, and a click where no control takes it
+    // focuses this scope, so the keys work there too. Text fields keep their own undo.
+    edit-keys := FocusScope {
+        focus-on-tab-navigation: false;
+        KeyBinding { keys: @keys(Control + Z); activated => { Studio.undo-edit(true); } }
+        KeyBinding { keys: @keys(Control + Shift + Z); activated => { Studio.undo-edit(false); } }
+        KeyBinding { keys: @keys(Control + Y); activated => { Studio.undo-edit(false); } }
+        VerticalLayout {
+            Rectangle {
+                height: Tokens.size-control-md + 2 * Tokens.space-1;
+                HorizontalLayout {
+                    padding: Tokens.space-1;
+                    alignment: start;
+                    Button { text: @tr("Dock back"); clicked => { Shell.dock(root.window); } }
+                }
             }
-        }
-        DockArea {
-            window: root.window;
-            stacks: root.stacks;
-            handles: root.handles;
-            floating: true;
+            DockArea {
+                window: root.window;
+                stacks: root.stacks;
+                handles: root.handles;
+                floating: true;
+            }
         }
     }
 }

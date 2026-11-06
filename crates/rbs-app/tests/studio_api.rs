@@ -290,6 +290,21 @@ fn a_control_api_client_drives_the_studio() {
         d.as_array().is_some_and(|a| a.len() == 1)
     });
 
+    // Redo deletes it again; the same undo stack as the app's own panels.
+    let redo = c.call("edit.redo", json!({}));
+    assert!(redo["result"].is_object(), "{redo}");
+    c.event("source.changed", |d| {
+        d.as_array().is_some_and(Vec::is_empty)
+    });
+    let nothing = c.call("edit.redo", json!({}));
+    assert_eq!(nothing["error"]["data"]["kind"], "conflict", "{nothing}");
+    let undo = c.call("edit.undo", json!({}));
+    assert!(undo["result"].is_object(), "{undo}");
+    c.event("source.changed", |d| {
+        d.as_array().is_some_and(|a| a.len() == 1)
+    });
+
+    // The canvas change before cleared the add: nothing older to undo.
     let none = c.call("edit.undo", json!({}));
     assert_eq!(none["error"]["data"]["kind"], "conflict", "{none}");
 
