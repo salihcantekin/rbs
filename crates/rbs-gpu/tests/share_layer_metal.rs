@@ -373,7 +373,10 @@ fn covers_split_the_picture_into_tiles() {
         height: 50.0,
     });
     let pic = layer.picture_layer().frame();
-    assert_eq!((pic.origin.x, pic.size.width, pic.size.height), (25.0, 50.0, 50.0));
+    assert_eq!(
+        (pic.origin.x, pic.size.width, pic.size.height),
+        (25.0, 50.0, 50.0)
+    );
     assert!(engine.publish(ctx, 1));
     let frame = next(&mut sub);
     let first = ids[frame.slot()];
@@ -426,7 +429,11 @@ fn covers_split_the_picture_into_tiles() {
     let second = ids[frame.slot()];
     clock.advance(FRAME);
     layer.show(frame, clock.now());
-    assert!(layer.tile_layers().all(|(_, p)| surface_id(p) == Some(second)));
+    assert!(
+        layer
+            .tile_layers()
+            .all(|(_, p)| surface_id(p) == Some(second))
+    );
 
     // Flipped superlayer: the same band at the layer's top is y 0.
     parent.setGeometryFlipped(true);
