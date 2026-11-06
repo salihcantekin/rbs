@@ -65,6 +65,8 @@ rbs-api-ws = { path = "../rbs-api-ws" }
 rbs-api-ipc = { path = "../rbs-api-ipc" }
 # Remote control settings and the config directory, shared with rbs-cli.
 rbs-remote-settings = { path = "../rbs-remote-settings" }
+# Output profiles and scene collections on disk (ADR-0051).
+rbs-user-data = { path = "../rbs-user-data" }
 rbs-capture-test = { path = "../rbs-capture-test", optional = true }
 rbs-audio-io-test = { path = "../rbs-audio-io-test", optional = true }
 

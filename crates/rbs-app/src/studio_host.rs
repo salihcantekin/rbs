@@ -54,6 +54,7 @@ use crate::record_profile::{API_PROFILE_ID, RecordProfile};
 use crate::remote_control::ApiTokens;
 use crate::stream_key::{KeyStore, MemoryKeyStore};
 use crate::stream_profile::{Protocol, StreamProfile, parse_server};
+use crate::user_session::CollectionSaver;
 
 /// The longest the control thread sleeps between two rounds of the engine's control
 /// loop (the studio asks for at most about 100 ms).
@@ -637,6 +638,13 @@ pub struct HostConfig {
     /// Where the stream key is kept: read when a stream starts, written when it is
     /// saved, on the control thread only. Memory by default.
     pub keys: Arc<dyn KeyStore>,
+    /// The scene collection to run (ADR-0051). Its first canvas is the studio's; that
+    /// canvas's program scene is the one shown and edited (a scene is added when it
+    /// has none). `None`: a new collection with one canvas of `size` at `fps`.
+    pub collection: Option<SceneCollection>,
+    /// Saves the collection after every change (on the user data writer thread);
+    /// `None`: changes are not saved.
+    pub autosave: Option<CollectionSaver>,
 }
 
 impl HostConfig {
@@ -656,6 +664,8 @@ impl HostConfig {
             fps,
             preview,
             keys: Arc::new(MemoryKeyStore::new()),
+            collection: None,
+            autosave: None,
         }
     }
 }
@@ -833,6 +843,10 @@ struct Host {
     /// This thread's own queue, for results from picker threads. Weak, so dropping
     /// the [`StudioHost`] still ends the thread.
     inbox: Weak<Sender<Msg>>,
+    /// Saves the collection after a change ([`HostConfig::autosave`]).
+    autosave: Option<CollectionSaver>,
+    /// The collection as last handed to `autosave`.
+    saved: Option<SceneCollection>,
     studio: Studio,
     adapters: RecordAdapters,
     collection: SceneCollection,
@@ -1040,16 +1054,14 @@ fn start(
     adapters.probe();
     let gpu = gpu()?;
     notes.push(format!("gpu: {}", gpu.adapter_name()));
-    let mut collection = SceneCollection::new();
-    let (canvas, _) = collection
-        .add_canvas("Main", config.size, config.fps)
-        .map_err(|e| format!("canvas: {e:?}"))?;
-    let (scene, _) = collection
-        .add_scene("Scene", SceneScope::Shared)
-        .map_err(|e| format!("scene: {e:?}"))?;
-    collection
-        .set_program(canvas, Some(scene))
-        .map_err(|e| format!("program: {e:?}"))?;
+    let loaded = config.collection.clone();
+    let mut collection = config.collection.unwrap_or_default();
+    let (canvas, scene) = shown_scene(&mut collection, config.size, config.fps)?;
+    // The collection's canvas, which may differ from `config.size` (only the preview's
+    // aspect ratio is chosen from that).
+    let (run_size, run_fps) = collection
+        .canvas(canvas)
+        .map_or((config.size, config.fps), |c| (c.size, c.frame_rate));
     let mut settings = StudioSettings::new(canvas);
     settings.preview = config.preview;
     let first = engine();
@@ -1116,8 +1128,8 @@ fn start(
         notes,
         encoders: encoders.clone(),
         cannot_record: cannot_record.clone(),
-        size: config.size,
-        fps: config.fps,
+        size: run_size,
+        fps: run_fps,
         display,
     };
     Ok((
@@ -1141,6 +1153,9 @@ fn start(
             gpu,
             preview_surfaces: config.preview.map(|p| p.surfaces),
             dead: None,
+            autosave: config.autosave,
+            // A collection that had to be completed is saved at the first publish.
+            saved: loaded,
             events: EventPublisher::new(),
             api: None,
             profile: RecordProfile::new(),
@@ -2048,8 +2063,17 @@ impl Host {
         self.publish(notify);
     }
 
-    /// Sends the rows and the undo history when they changed.
+    /// Sends the rows and the undo history when they changed, and saves the collection
+    /// when it changed (every edit, undo, canvas change or control API change passes
+    /// here; the writer thread keeps only the latest snapshot, so a drag costs one
+    /// write behind it, never a wait here).
     fn publish(&mut self, notify: &dyn Fn(Update)) {
+        if let Some(save) = &self.autosave
+            && self.saved.as_ref() != Some(&self.collection)
+        {
+            save.save(&self.collection);
+            self.saved = Some(self.collection.clone());
+        }
         let rows = self.rows();
         if rows != self.rows {
             self.rows = rows.clone();
@@ -2697,6 +2721,43 @@ pub fn rescale_layout(layout: &Layout, from: (u32, u32), to: (u32, u32)) -> Layo
     out.position = [nx, ny];
     out.size = [nw, nh];
     out
+}
+
+/// The canvas the studio runs (the collection's first, or a new one of `size` at
+/// `fps`) and the scene it shows (that canvas's program, else the first scene it may
+/// show, else a new shared scene), set on air.
+fn shown_scene(
+    collection: &mut SceneCollection,
+    size: Size,
+    fps: FrameRate,
+) -> Result<(CanvasId, SceneId), String> {
+    let first = collection.canvases().next().map(|c| c.id);
+    let canvas = match first {
+        Some(c) => c,
+        None => {
+            collection
+                .add_canvas("Main", size, fps)
+                .map_err(|e| format!("canvas: {e:?}"))?
+                .0
+        }
+    };
+    let program = collection.canvas(canvas).and_then(|c| c.program);
+    let allowed = collection.scenes_for(canvas).next().map(|s| s.id);
+    let scene = match program.or(allowed) {
+        Some(s) => s,
+        None => {
+            collection
+                .add_scene("Scene", SceneScope::Shared)
+                .map_err(|e| format!("scene: {e:?}"))?
+                .0
+        }
+    };
+    if program != Some(scene) {
+        collection
+            .set_program(canvas, Some(scene))
+            .map_err(|e| format!("program: {e:?}"))?;
+    }
+    Ok((canvas, scene))
 }
 
 #[cfg(test)]
