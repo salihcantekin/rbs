@@ -102,10 +102,7 @@ fn entries_are_created_listed_loaded_and_saved() {
     assert!(matches!(
         lib.save(
             &EntryId::parse("kick").unwrap(),
-            &Entry {
-                name: "Kick".to_owned(),
-                document: rec(1)
-            }
+            &Entry::new("Kick", rec(1))
         ),
         Err(DataError::NotFound(_))
     ));
@@ -134,6 +131,10 @@ fn names_are_unique_ignoring_case_and_checked() {
         );
     }
     lib.create(&"é".repeat(MAX_NAME), &rec(1)).unwrap();
+    assert!(matches!(
+        lib.create("abc\u{202E}def", &rec(1)),
+        Err(DataError::BadName(_))
+    ));
 }
 
 #[test]
@@ -160,11 +161,15 @@ fn delete_moves_the_file_aside() {
     assert_eq!(first, lib.dir().join(DELETED_DIR).join("gone.toml"));
     assert!(lib.list().unwrap().entries.is_empty());
     assert!(matches!(lib.delete(&id), Err(DataError::NotFound(_))));
-    // Deleting a second entry with the same id keeps both copies.
-    let id = lib.create("Gone", &rec(2)).unwrap();
-    let second = lib.delete(&id).unwrap();
+    // A new entry with the same name never gets the deleted entry's id, so nothing
+    // kept by id (a stream key, the current selection) passes to it.
+    let id2 = lib.create("Gone", &rec(2)).unwrap();
+    assert_eq!(id2.as_str(), "gone-2");
+    let second = lib.delete(&id2).unwrap();
     assert_ne!(first, second);
     assert!(first.exists() && second.exists());
+    let id3 = lib.create("Gone", &rec(3)).unwrap();
+    assert_eq!(id3.as_str(), "gone-3");
 }
 
 #[test]
@@ -180,7 +185,14 @@ fn unreadable_and_newer_files_are_reported_and_left_alone() {
     std::fs::write(dir.join("Bad Name.toml"), "ignored: not an id").unwrap();
     let listing = lib.list().unwrap();
     assert_eq!(listing.entries.len(), 1);
-    assert_eq!(listing.problems.len(), 2);
+    // The newer file, the broken one, and a .toml file whose name is not an id.
+    assert_eq!(listing.problems.len(), 3);
+    assert!(
+        listing
+            .problems
+            .iter()
+            .any(|(p, e)| p.ends_with("Bad Name.toml") && matches!(e, DataError::BadName(_)))
+    );
     assert!(
         listing
             .problems
@@ -243,6 +255,87 @@ fn export_and_import_round_trip_and_rename_on_clash() {
     let (_, name) = lib.import(&f).unwrap();
     assert_eq!(name.chars().count(), MAX_NAME);
     assert!(name.ends_with(" 2"));
+    // A hand-made file with an over-long name is shortened, not renamed.
+    let over = d.path().join("over.toml");
+    std::fs::write(
+        &over,
+        format!(
+            "format = 1\nkind = \"output-profile\"\nname = \"{}\"\n",
+            "z".repeat(100)
+        ),
+    )
+    .unwrap();
+    assert_eq!(lib.import(&over).unwrap().1, "z".repeat(MAX_NAME));
+}
+
+#[test]
+fn export_can_scrub_and_never_writes_into_the_library() {
+    let d = TempDir::new("lib-export-scrub");
+    let lib = UserData::new(d.path()).profiles();
+    let id = lib.create("Twitch", &rec(6000)).unwrap();
+    let file = d.path().join("out.toml");
+    lib.export_with(&id, &file, |p| p.remove("recording"))
+        .unwrap();
+    let (copy, _) = lib.import(&file).unwrap();
+    assert_eq!(lib.load(&copy).unwrap().document, OutputProfile::new());
+    // The library itself is unchanged.
+    assert_eq!(lib.load(&id).unwrap().document, rec(6000));
+    assert!(matches!(
+        lib.export(&id, &lib.dir().join("sneaky.toml")),
+        Err(DataError::Invalid(_))
+    ));
+    assert!(!lib.dir().join("sneaky.toml").exists());
+}
+
+#[test]
+fn a_section_from_a_newer_build_is_not_replaced() {
+    let mut p = rec(1);
+    p.set(
+        "recording",
+        &Recording {
+            format_version: 2,
+            folder: "/n".to_owned(),
+            bitrate: 2,
+        },
+    )
+    .unwrap();
+    assert!(matches!(
+        p.set(
+            "recording",
+            &Recording {
+                format_version: 1,
+                folder: "/o".to_owned(),
+                bitrate: 3
+            }
+        ),
+        Err(DataError::Newer {
+            found: 2,
+            supported: 1
+        })
+    ));
+    assert_eq!(p.get::<Recording>("recording").unwrap().unwrap().bitrate, 2);
+    // An explicit reset first.
+    p.remove("recording");
+    p.set(
+        "recording",
+        &Recording {
+            format_version: 1,
+            folder: "/o".to_owned(),
+            bitrate: 3,
+        },
+    )
+    .unwrap();
+}
+
+#[test]
+fn only_one_program_holds_the_writer_lock() {
+    let d = TempDir::new("lock");
+    let data = UserData::new(d.path());
+    let first = data.try_lock().unwrap();
+    assert!(first.is_some());
+    assert!(UserData::new(d.path()).try_lock().unwrap().is_none());
+    drop(first);
+    assert!(data.try_lock().unwrap().is_some());
 }
 
 #[test]

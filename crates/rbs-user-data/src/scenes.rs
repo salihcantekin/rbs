@@ -457,7 +457,13 @@ impl Document for SceneCollection {
             canvases,
             sources,
             scenes,
-            IdCounters::new(n.canvas, n.source, n.scene, n.item, n.filter),
+            IdCounters {
+                canvas: n.canvas,
+                source: n.source,
+                scene: n.scene,
+                item: n.item,
+                filter: n.filter,
+            },
         )
         .map_err(|e| e.to_string())
     }

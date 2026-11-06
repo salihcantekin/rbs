@@ -3,7 +3,9 @@ name = "rbs-user-data"
 description = "RBS user data: versioned documents in the config directory, libraries of named entries (output profiles, scene collections) with import and export, and which ones are in use (ADR-0051)."
 version.workspace = true
 edition.workspace = true
-rust-version.workspace = true
+# `File::try_lock` (1.89) for the writer lock; application layer only, like
+# rbs-remote-settings.
+rust-version = "1.89"
 repository.workspace = true
 license.workspace = true
 publish.workspace = true

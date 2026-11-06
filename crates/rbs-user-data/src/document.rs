@@ -9,6 +9,7 @@ use std::fmt;
 use std::fs;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use serde::Serialize;
 use serde::de::DeserializeOwned;
@@ -131,6 +132,7 @@ impl From<io::Error> for DataError {
 }
 
 /// A document as read: its display name (library entries have one) and contents.
+#[non_exhaustive]
 #[derive(Debug, Clone, PartialEq)]
 pub struct Read<T> {
     /// The `name` in the file, if any.
@@ -145,6 +147,15 @@ pub struct Read<T> {
 /// Parses a document from text: checks `kind`, refuses a newer `format`, upgrades an
 /// older one.
 pub fn parse<T: Document>(text: &str) -> Result<Read<T>, DataError> {
+    // A newer RBS may use syntax this build cannot parse; say "newer", not "broken".
+    if let Some(found) = scan_format(text)
+        && found > T::FORMAT
+    {
+        return Err(DataError::Newer {
+            found,
+            supported: T::FORMAT,
+        });
+    }
     let mut table: toml::Table =
         toml::from_str(text).map_err(|e: toml::de::Error| DataError::Syntax(e.to_string()))?;
     let format = match table.remove(FORMAT_KEY) {
@@ -207,13 +218,137 @@ pub fn render<T: Document>(document: &T, name: Option<&str>) -> Result<String, D
     toml::to_string(&table).map_err(|e| DataError::Invalid(e.to_string()))
 }
 
+/// Largest document file read, in bytes. Shared files are untrusted input; a scene
+/// collection with thousands of objects is well below this.
+pub const MAX_FILE: u64 = 16 * 1024 * 1024;
+
+/// The text of a file; `Ok(None)` if there is none. Files larger than [`MAX_FILE`] are
+/// refused.
+fn read_text(path: &Path) -> Result<Option<String>, DataError> {
+    let f = match fs::File::open(path) {
+        Ok(f) => f,
+        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => return Err(e.into()),
+    };
+    let len = f.metadata()?.len();
+    if len > MAX_FILE {
+        return Err(DataError::Invalid(format!(
+            "the file is {len} bytes; at most {MAX_FILE} are read"
+        )));
+    }
+    let mut text = String::new();
+    io::Read::read_to_string(&mut io::Read::take(f, MAX_FILE + 1), &mut text)?;
+    Ok(Some(text))
+}
+
 /// Reads a document file; `Ok(None)` if there is none.
 pub fn read<T: Document>(path: &Path) -> Result<Option<Read<T>>, DataError> {
-    match fs::read_to_string(path) {
-        Ok(text) => parse(&text).map(Some),
-        Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(None),
-        Err(e) => Err(e.into()),
+    match read_text(path)? {
+        Some(text) => parse(&text).map(Some),
+        None => Ok(None),
     }
+}
+
+/// A document's envelope: what [`peek`] reads without the body.
+#[non_exhaustive]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Envelope {
+    /// Its format.
+    pub format: u32,
+    /// Its kind.
+    pub kind: String,
+    /// Its name, if any.
+    pub name: Option<String>,
+}
+
+/// The `format` of a document text, found without parsing the rest: the first
+/// top-level `format = <integer>` line ([`render`] always writes it first). Lets a
+/// file that a newer RBS wrote in syntax this build cannot parse still be recognised
+/// as newer.
+pub fn scan_format(text: &str) -> Option<u32> {
+    for line in text.lines() {
+        let line = line.trim();
+        if line.starts_with('[') {
+            return None;
+        }
+        if let Some(rest) = line.strip_prefix(FORMAT_KEY)
+            && let Some(value) = rest.trim_start().strip_prefix('=')
+        {
+            let digits: String = value
+                .trim_start()
+                .chars()
+                .take_while(char::is_ascii_digit)
+                .collect();
+            return digits.parse().ok();
+        }
+    }
+    None
+}
+
+/// Reads only the envelope of a document file (`format`, `kind`, `name`), checking
+/// the kind and refusing newer formats, without building the body. `Ok(None)` if
+/// there is no file. A file whose body is broken can pass; [`read`] reports it.
+pub fn peek<T: Document>(path: &Path) -> Result<Option<Envelope>, DataError> {
+    let Some(text) = read_text(path)? else {
+        return Ok(None);
+    };
+    if let Some(found) = scan_format(&text)
+        && found > T::FORMAT
+    {
+        return Err(DataError::Newer {
+            found,
+            supported: T::FORMAT,
+        });
+    }
+    // Files RBS writes have the envelope before the first table: parse only that part
+    // (listing a library of large collections stays fast). Hand-written files may
+    // order keys differently; then the whole file is parsed.
+    let head: String = text
+        .lines()
+        .take_while(|l| !l.trim_start().starts_with('['))
+        .flat_map(|l| [l, "\n"])
+        .collect();
+    let table = match toml::from_str::<toml::Table>(&head) {
+        Ok(t)
+            if [FORMAT_KEY, KIND_KEY, NAME_KEY]
+                .iter()
+                .all(|k| t.contains_key(*k)) =>
+        {
+            t
+        }
+        _ => {
+            toml::from_str(&text).map_err(|e: toml::de::Error| DataError::Syntax(e.to_string()))?
+        }
+    };
+    let format = match table.get(FORMAT_KEY) {
+        Some(toml::Value::Integer(v)) => u32::try_from(*v).map_err(|_| DataError::NoVersion)?,
+        _ => return Err(DataError::NoVersion),
+    };
+    let kind = match table.get(KIND_KEY) {
+        Some(toml::Value::String(k)) => k.clone(),
+        _ => return Err(DataError::NoVersion),
+    };
+    if kind != T::KIND {
+        return Err(DataError::WrongKind {
+            found: kind,
+            expected: T::KIND,
+        });
+    }
+    if format == 0 {
+        return Err(DataError::NoVersion);
+    }
+    if format > T::FORMAT {
+        return Err(DataError::Newer {
+            found: format,
+            supported: T::FORMAT,
+        });
+    }
+    let name = match table.get(NAME_KEY) {
+        None => None,
+        Some(toml::Value::String(n)) => Some(n.clone()),
+        Some(_) => return Err(DataError::Invalid("name must be text".to_owned())),
+    };
+    Ok(Some(Envelope { format, kind, name }))
 }
 
 /// The copy kept of a file of an older format before it is first rewritten:
@@ -224,63 +359,133 @@ pub fn backup_path(path: &Path, format: u32) -> PathBuf {
     path.with_file_name(name)
 }
 
-/// The format of the document at `path`, if it is there and has one.
-fn format_on_disk(path: &Path) -> Result<Option<u32>, DataError> {
-    let text = match fs::read_to_string(path) {
-        Ok(t) => t,
-        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(None),
-        Err(e) => return Err(e.into()),
-    };
-    let Ok(table) = toml::from_str::<toml::Table>(&text) else {
-        return Ok(None);
-    };
-    Ok(match table.get(FORMAT_KEY) {
-        Some(toml::Value::Integer(v)) => u32::try_from(*v).ok(),
-        _ => None,
-    })
+/// Where a file that could not be read is moved before it is replaced:
+/// `<file>.unreadable.bak`, or `<file>.unreadable-N.bak` if that is taken.
+pub fn unreadable_path(path: &Path) -> PathBuf {
+    let base = path.file_name().unwrap_or_default().to_os_string();
+    let mut n = 1u32;
+    loop {
+        let mut name = base.clone();
+        if n == 1 {
+            name.push(".unreadable.bak");
+        } else {
+            name.push(format!(".unreadable-{n}.bak"));
+        }
+        let candidate = path.with_file_name(name);
+        if !candidate.exists() || n == u32::MAX {
+            return candidate;
+        }
+        n += 1;
+    }
 }
 
-/// Writes a document file in one step. Refuses to replace a file of a newer format;
-/// copies a file of an older format to [`backup_path`] once before replacing it.
+/// Writes a document file in one step, without ever losing the file it replaces:
+///
+/// - a file of a newer format is refused ([`DataError::Newer`]) and left untouched,
+///   even when this build cannot parse it ([`scan_format`]);
+/// - a file of an older format is copied to [`backup_path`] once;
+/// - a file that is not a readable document of this kind (broken by hand, another
+///   kind) is moved to [`unreadable_path`] first.
 pub fn write<T: Document>(path: &Path, document: &T, name: Option<&str>) -> Result<(), DataError> {
     let text = render(document, name)?;
-    match format_on_disk(path)? {
-        Some(found) if found > T::FORMAT => {
-            return Err(DataError::Newer {
-                found,
-                supported: T::FORMAT,
-            });
-        }
-        Some(found) if found < T::FORMAT => {
-            let backup = backup_path(path, found);
-            if !backup.exists() {
-                fs::copy(path, &backup)?;
+    if let Some(old) = read_text(path)? {
+        match peek_text::<T>(&old) {
+            Ok(found) if found < T::FORMAT => {
+                let backup = backup_path(path, found);
+                if !backup.exists() {
+                    write_atomic(&backup, old.as_bytes())?;
+                }
             }
+            Ok(_) => {}
+            Err(e @ DataError::Newer { .. }) => return Err(e),
+            Err(_) => fs::rename(path, unreadable_path(path))?,
         }
-        _ => {}
     }
     write_atomic(path, text.as_bytes())
 }
 
-/// Writes `bytes` to `path` through a temporary file in the same directory, flushed to
-/// disk and renamed over `path`, so a crash leaves the old file or the new one, never
-/// half of one.
+/// The format of a document text of kind `T`, or why it is not one.
+fn peek_text<T: Document>(text: &str) -> Result<u32, DataError> {
+    if let Some(found) = scan_format(text)
+        && found > T::FORMAT
+    {
+        return Err(DataError::Newer {
+            found,
+            supported: T::FORMAT,
+        });
+    }
+    let table: toml::Table =
+        toml::from_str(text).map_err(|e: toml::de::Error| DataError::Syntax(e.to_string()))?;
+    let format = match table.get(FORMAT_KEY) {
+        Some(toml::Value::Integer(v)) if *v >= 1 => {
+            u32::try_from(*v).map_err(|_| DataError::NoVersion)?
+        }
+        _ => return Err(DataError::NoVersion),
+    };
+    match table.get(KIND_KEY) {
+        Some(toml::Value::String(k)) if k == T::KIND => {}
+        _ => return Err(DataError::NoVersion),
+    }
+    if format > T::FORMAT {
+        return Err(DataError::Newer {
+            found: format,
+            supported: T::FORMAT,
+        });
+    }
+    Ok(format)
+}
+
+/// Writes `bytes` to `path` through a temporary file of its own in the same directory
+/// (unique per process and call, created new), flushed to disk and renamed over
+/// `path`, so a crash leaves the old file or the new one, never half of one, and two
+/// writers never share a temporary file. On Unix the directory is flushed too, so the
+/// rename survives a power loss. On Windows a rename refused because another program
+/// (an indexer, antivirus, an editor) briefly holds the file is tried again a few
+/// times.
 pub fn write_atomic(path: &Path, bytes: &[u8]) -> Result<(), DataError> {
-    if let Some(dir) = path.parent().filter(|d| !d.as_os_str().is_empty()) {
+    static WRITES: AtomicU64 = AtomicU64::new(0);
+    let dir = path.parent().filter(|d| !d.as_os_str().is_empty());
+    if let Some(dir) = dir {
         fs::create_dir_all(dir)?;
     }
+    let n = WRITES.fetch_add(1, Ordering::Relaxed);
     let mut name = path.file_name().unwrap_or_default().to_os_string();
-    name.push(".tmp");
+    name.push(format!(".{}-{n}.tmp", std::process::id()));
     let tmp = path.with_file_name(name);
     let result = (|| {
-        let mut f = fs::File::create(&tmp)?;
+        let mut f = fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&tmp)?;
         f.write_all(bytes)?;
         f.sync_all()?;
         drop(f);
-        fs::rename(&tmp, path)
+        rename_replacing(&tmp, path)?;
+        #[cfg(unix)]
+        if let Some(dir) = dir {
+            fs::File::open(dir)?.sync_all()?;
+        }
+        Ok::<(), io::Error>(())
     })();
     if result.is_err() {
         let _ = fs::remove_file(&tmp);
     }
     result.map_err(DataError::from)
+}
+
+fn rename_replacing(from: &Path, to: &Path) -> io::Result<()> {
+    #[cfg(windows)]
+    {
+        // ERROR_ACCESS_DENIED (5) and ERROR_SHARING_VIOLATION (32): another program
+        // has the target open for a moment. Not a hot path; a short wait is fine.
+        for _ in 0..10 {
+            match fs::rename(from, to) {
+                Err(e) if matches!(e.raw_os_error(), Some(5 | 32)) => {
+                    std::thread::sleep(std::time::Duration::from_millis(50));
+                }
+                other => return other,
+            }
+        }
+    }
+    fs::rename(from, to)
 }

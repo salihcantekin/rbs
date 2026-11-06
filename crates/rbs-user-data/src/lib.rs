@@ -83,4 +83,31 @@ impl UserData {
     pub fn set_current(&self, current: &Current) -> Result<(), DataError> {
         document::write(&self.root.join(CURRENT_FILE), current, None)
     }
+
+    /// Takes the writer lock (`user-data.lock`), or `Ok(None)` if another program
+    /// holds it. Only the holder may write user data; a second app instance opens it
+    /// read-only, and `rbs-cli` only reads (ADR-0051). Released when dropped or when
+    /// the process ends.
+    pub fn try_lock(&self) -> Result<Option<WriterLock>, DataError> {
+        std::fs::create_dir_all(&self.root)?;
+        let file = std::fs::OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .write(true)
+            .open(self.root.join(LOCK_FILE))?;
+        match file.try_lock() {
+            Ok(()) => Ok(Some(WriterLock { _file: file })),
+            Err(std::fs::TryLockError::WouldBlock) => Ok(None),
+            Err(std::fs::TryLockError::Error(e)) => Err(e.into()),
+        }
+    }
+}
+
+/// File whose lock marks the program allowed to write user data.
+pub const LOCK_FILE: &str = "user-data.lock";
+
+/// Held by the one program that writes user data ([`UserData::try_lock`]).
+#[derive(Debug)]
+pub struct WriterLock {
+    _file: std::fs::File,
 }

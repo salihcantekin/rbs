@@ -166,3 +166,76 @@ fn reserved_keys_cannot_be_used_by_a_body() {
         Err(DataError::Invalid(_))
     ));
 }
+
+#[test]
+fn a_newer_file_this_build_cannot_parse_is_still_never_replaced() {
+    let d = TempDir::new("doc-newer-syntax");
+    let path = d.path().join("n.toml");
+    // A later TOML syntax, or anything else unparseable, after a newer format line.
+    let newer = "format = 12\nkind = \"note\"\ntitle = <<future syntax>>\n";
+    std::fs::write(&path, newer).unwrap();
+    assert_eq!(document::scan_format(newer), Some(12));
+    assert!(matches!(
+        document::write(&path, &note("x"), None),
+        Err(DataError::Newer { found: 12, .. })
+    ));
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), newer);
+    assert!(matches!(
+        document::read::<Note>(&path),
+        Err(DataError::Newer { found: 12, .. })
+    ));
+}
+
+#[test]
+fn an_unreadable_file_is_moved_aside_before_it_is_replaced() {
+    let d = TempDir::new("doc-unreadable");
+    let path = d.path().join("n.toml");
+    for (i, broken) in [
+        "format = 3\nkind = \"note\"\ntitle = [\n",
+        "just some notes\n",
+        "format = 1\nkind = \"theme\"\n",
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        std::fs::write(&path, broken).unwrap();
+        document::write(&path, &note("new"), None).unwrap();
+        let aside = if i == 0 {
+            d.path().join("n.toml.unreadable.bak")
+        } else {
+            d.path().join(format!("n.toml.unreadable-{}.bak", i + 1))
+        };
+        assert_eq!(std::fs::read_to_string(&aside).unwrap(), broken);
+        assert_eq!(
+            document::read::<Note>(&path).unwrap().unwrap().document,
+            note("new")
+        );
+    }
+    // No temporary files are left behind.
+    let names: Vec<String> = std::fs::read_dir(d.path())
+        .unwrap()
+        .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+        .collect();
+    assert!(names.iter().all(|n| !n.ends_with(".tmp")), "{names:?}");
+}
+
+#[test]
+fn the_format_is_found_by_a_line_scan_only_before_any_table() {
+    assert_eq!(document::scan_format("# c\n  format   =  4 # x\n"), Some(4));
+    assert_eq!(document::scan_format("kind = \"a\"\nformat=2\n"), Some(2));
+    assert_eq!(document::scan_format("[t]\nformat = 2\n"), None);
+    assert_eq!(document::scan_format("formats = 2\n"), None);
+    assert_eq!(document::scan_format(""), None);
+}
+
+#[test]
+fn files_over_the_size_limit_are_refused() {
+    let d = TempDir::new("doc-big");
+    let path = d.path().join("big.toml");
+    let f = std::fs::File::create(&path).unwrap();
+    f.set_len(document::MAX_FILE + 1).unwrap();
+    assert!(matches!(
+        document::read::<Note>(&path),
+        Err(DataError::Invalid(_))
+    ));
+}

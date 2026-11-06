@@ -13,6 +13,11 @@ use serde::de::DeserializeOwned;
 
 use crate::document::{DataError, Document, FORMAT_KEY, KIND_KEY, NAME_KEY};
 
+/// The key of a section's own format version. Each section owner bumps it whenever an
+/// older build could not read the section (for example a new field, when the type
+/// refuses unknown fields).
+pub const SECTION_VERSION: &str = "format_version";
+
 /// An output profile's sections.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct OutputProfile {
@@ -46,10 +51,28 @@ impl OutputProfile {
 
     /// Sets a section. Its value must serialise to a table, and the names `format`,
     /// `kind` and `name` are reserved.
+    ///
+    /// A section written by a newer build (a higher integer `format_version` than the
+    /// new value's) is refused with [`DataError::Newer`] and kept, so an older app
+    /// never replaces settings it does not understand; [`OutputProfile::remove`] first
+    /// when the user asks to reset them.
     pub fn set<S: Serialize>(&mut self, section: &str, value: &S) -> Result<(), DataError> {
         check_section(section)?;
         match toml::Value::try_from(value).map_err(|e| DataError::Invalid(e.to_string()))? {
             v @ toml::Value::Table(_) => {
+                let version = |v: &toml::Value| match v.get(SECTION_VERSION) {
+                    Some(toml::Value::Integer(n)) => u32::try_from(*n).ok(),
+                    _ => None,
+                };
+                if let (Some(found), Some(new)) =
+                    (self.sections.get(section).and_then(version), version(&v))
+                    && found > new
+                {
+                    return Err(DataError::Newer {
+                        found,
+                        supported: new,
+                    });
+                }
                 self.sections.insert(section.to_owned(), v);
                 Ok(())
             }

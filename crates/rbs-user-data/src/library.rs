@@ -26,8 +26,13 @@ pub const DELETED_DIR: &str = "deleted";
 
 const EXTENSION: &str = "toml";
 
+/// Entry files by id, and `.toml` files whose name is not an id.
+type Files = (Vec<(EntryId, PathBuf)>, Vec<PathBuf>);
+
 /// An entry's id: its file name without `.toml`. Lowercase ASCII letters, digits and
-/// `-`, 1 to [`MAX_ID`] bytes, not starting or ending with `-`.
+/// `-`, 1 to [`MAX_ID`] bytes, not starting or ending with `-`, and not a name Windows
+/// reserves for devices (`con`, `nul`, `com1`, ...). Never reused within a library,
+/// also after a delete.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct EntryId(String);
 
@@ -40,7 +45,8 @@ impl EntryId {
             && !text.ends_with('-')
             && text
                 .bytes()
-                .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-');
+                .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
+            && !is_device_name(text);
         ok.then(|| Self(text.to_owned()))
     }
 
@@ -59,7 +65,12 @@ impl EntryId {
         // Leave room for a "-NNN" suffix.
         s.truncate(MAX_ID - 8);
         let s = s.trim_end_matches('-');
-        Self(if s.is_empty() { "entry" } else { s }.to_owned())
+        let s = if s.is_empty() { "entry" } else { s };
+        if is_device_name(s) {
+            Self(format!("{s}-1"))
+        } else {
+            Self(s.to_owned())
+        }
     }
 
     /// The id as text.
@@ -72,6 +83,14 @@ impl fmt::Display for EntryId {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(&self.0)
     }
+}
+
+/// Names Windows reserves for devices, with or without an extension.
+fn is_device_name(id: &str) -> bool {
+    matches!(id, "con" | "prn" | "aux" | "nul")
+        || ((id.starts_with("com") || id.starts_with("lpt"))
+            && id.len() == 4
+            && id.as_bytes()[3].is_ascii_digit())
 }
 
 /// `c` without its accent, for the common accented Latin letters; others unchanged.
@@ -100,6 +119,14 @@ pub fn check_name(name: &str) -> Result<String, DataError> {
             "a name cannot have line breaks or control characters".to_owned(),
         ));
     }
+    // Direction overrides make a shared name look like another one.
+    if name.chars().any(|c| {
+        matches!(c, '\u{200E}' | '\u{200F}' | '\u{202A}'..='\u{202E}' | '\u{2066}'..='\u{2069}')
+    }) {
+        return Err(DataError::BadName(
+            "a name cannot have text direction marks".to_owned(),
+        ));
+    }
     Ok(name.to_owned())
 }
 
@@ -108,6 +135,7 @@ fn same_name(a: &str, b: &str) -> bool {
 }
 
 /// An entry: its name and contents.
+#[non_exhaustive]
 #[derive(Debug, Clone, PartialEq)]
 pub struct Entry<T> {
     /// Display name, unique in the library.
@@ -116,7 +144,18 @@ pub struct Entry<T> {
     pub document: T,
 }
 
+impl<T> Entry<T> {
+    /// An entry named `name`.
+    pub fn new(name: impl Into<String>, document: T) -> Self {
+        Self {
+            name: name.into(),
+            document,
+        }
+    }
+}
+
 /// One entry of [`Library::list`].
+#[non_exhaustive]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Listed {
     /// Its id.
@@ -126,12 +165,14 @@ pub struct Listed {
 }
 
 /// What [`Library::list`] found.
+#[non_exhaustive]
 #[derive(Debug, Default)]
 pub struct Listing {
     /// Readable entries, by name ignoring case.
     pub entries: Vec<Listed>,
-    /// Files that could not be read (including ones made by a newer RBS), with the
-    /// reason. They are left untouched and their ids stay taken.
+    /// Files that could not be read (including ones made by a newer RBS, and `.toml`
+    /// files whose name is not an id), with the reason. They are left untouched and
+    /// their ids stay taken.
     pub problems: Vec<(PathBuf, DataError)>,
 }
 
@@ -161,14 +202,16 @@ impl<T: Document> Library<T> {
         self.dir.join(format!("{}.{EXTENSION}", id.as_str()))
     }
 
-    /// Ids of every entry file, readable or not, sorted.
-    fn ids(&self) -> Result<Vec<(EntryId, PathBuf)>, DataError> {
+    /// Ids of every entry file, readable or not, sorted, and `.toml` files whose name
+    /// is not an id.
+    fn files(&self) -> Result<Files, DataError> {
         let entries = match fs::read_dir(&self.dir) {
             Ok(e) => e,
-            Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
+            Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok((Vec::new(), Vec::new())),
             Err(e) => return Err(e.into()),
         };
         let mut ids = Vec::new();
+        let mut odd = Vec::new();
         for entry in entries {
             let entry = entry?;
             let path = entry.path();
@@ -177,26 +220,67 @@ impl<T: Document> Library<T> {
             {
                 continue;
             }
-            if let Some(id) = path
+            match path
                 .file_stem()
                 .and_then(|s| s.to_str())
                 .and_then(EntryId::parse)
             {
-                ids.push((id, path));
+                Some(id) => ids.push((id, path)),
+                None => odd.push(path),
             }
         }
         ids.sort();
-        Ok(ids)
+        odd.sort();
+        Ok((ids, odd))
     }
 
-    /// Every entry, readable ones by name, the rest as problems.
+    /// Every id ever used here: live entries, files whose name is an id, and deleted
+    /// entries (`deleted/<id>.toml` and `deleted/<id>-N.toml`), so an id is never given
+    /// to a second entry. Credential store entries and other references by id can
+    /// therefore never reach a different entry.
+    fn used_ids(&self) -> Result<Vec<String>, DataError> {
+        let mut used: Vec<String> = self.files()?.0.into_iter().map(|(id, _)| id.0).collect();
+        match fs::read_dir(self.dir.join(DELETED_DIR)) {
+            Ok(entries) => {
+                for entry in entries {
+                    let path = entry?.path();
+                    if let Some(stem) = path.file_stem().and_then(|s| s.to_str()) {
+                        used.push(stem.to_owned());
+                    }
+                }
+            }
+            Err(e) if e.kind() == io::ErrorKind::NotFound => {}
+            Err(e) => return Err(e.into()),
+        }
+        Ok(used)
+    }
+
+    /// Every entry, readable ones by name, the rest as problems. Reads only each
+    /// file's envelope (format, kind, name); a body that does not load is reported by
+    /// [`Library::load`].
     pub fn list(&self) -> Result<Listing, DataError> {
         let mut listing = Listing::default();
-        for (id, path) in self.ids()? {
-            match self.read(&path) {
-                Ok(e) => listing.entries.push(Listed { id, name: e.name }),
+        let (ids, odd) = self.files()?;
+        for (id, path) in ids {
+            let named = document::peek::<T>(&path).and_then(|e| {
+                let e = e.ok_or_else(|| DataError::NotFound(id.to_string()))?;
+                let name = e
+                    .name
+                    .ok_or_else(|| DataError::Invalid("the entry has no name".to_owned()))?;
+                check_name(&name)
+            });
+            match named {
+                Ok(name) => listing.entries.push(Listed { id, name }),
                 Err(e) => listing.problems.push((path, e)),
             }
+        }
+        for path in odd {
+            listing.problems.push((
+                path,
+                DataError::BadName(
+                    "the file name is not an entry id (lowercase letters, digits and -)".to_owned(),
+                ),
+            ));
         }
         listing
             .entries
@@ -248,11 +332,11 @@ impl<T: Document> Library<T> {
         }
     }
 
-    /// An unused id made from `name`.
+    /// An id made from `name` that was never used here.
     fn new_id(&self, name: &str) -> Result<EntryId, DataError> {
         let base = EntryId::from_name(name);
-        let used: Vec<EntryId> = self.ids()?.into_iter().map(|(id, _)| id).collect();
-        let free = |id: &EntryId| !used.contains(id) && !self.path(id).exists();
+        let used = self.used_ids()?;
+        let free = |id: &EntryId| !used.contains(&id.0) && !self.path(id).exists();
         if free(&base) {
             return Ok(base);
         }
@@ -278,7 +362,16 @@ impl<T: Document> Library<T> {
         if !path.is_file() {
             return Err(DataError::NotFound(id.to_string()));
         }
-        self.check_free(&name, Some(id))?;
+        // Most saves keep the name (an autosave after an edit): no need to read every
+        // other entry then.
+        let same = document::peek::<T>(&path)
+            .ok()
+            .flatten()
+            .and_then(|e| e.name)
+            .is_some_and(|old| old.trim() == name);
+        if !same {
+            self.check_free(&name, Some(id))?;
+        }
         document::write(&path, &entry.document, Some(&name))
     }
 
@@ -315,13 +408,35 @@ impl<T: Document> Library<T> {
     }
 
     /// Writes an entry to a file outside the library, in the current format, for
-    /// sharing. Documents never hold secrets (ADR-0051), so the file can be given away.
+    /// sharing. Same as [`Library::export_with`] with nothing removed.
     pub fn export(&self, id: &EntryId, to: &Path) -> Result<(), DataError> {
-        let entry = self.load(id)?;
-        document::write_atomic(
-            to,
-            document::render(&entry.document, Some(&entry.name))?.as_bytes(),
-        )
+        self.export_with(id, to, |_| {})
+    }
+
+    /// Writes an entry to a file outside the library, after `scrub` has removed what
+    /// belongs to this computer only (folders, "a key is saved" flags; ADR-0051).
+    /// Documents never hold secrets. A target in the library's own directory is
+    /// refused (that would bypass the name rules); an existing target is replaced only
+    /// under the rules of [`document::write`].
+    pub fn export_with(
+        &self,
+        id: &EntryId,
+        to: &Path,
+        scrub: impl FnOnce(&mut T),
+    ) -> Result<(), DataError> {
+        let mut entry = self.load(id)?;
+        scrub(&mut entry.document);
+        let parent = to.parent().filter(|p| !p.as_os_str().is_empty());
+        let inside = match (parent.map(fs::canonicalize), fs::canonicalize(&self.dir)) {
+            (Some(Ok(p)), Ok(d)) => p.starts_with(&d),
+            _ => false,
+        };
+        if inside {
+            return Err(DataError::Invalid(
+                "export to a file outside the library folder".to_owned(),
+            ));
+        }
+        document::write(to, &entry.document, Some(&entry.name))
     }
 
     /// Adds the entry in a file made by [`Library::export`] (or by hand). Older formats
@@ -335,6 +450,7 @@ impl<T: Document> Library<T> {
             .name
             .or_else(|| from.file_stem().map(|s| s.to_string_lossy().into_owned()))
             .unwrap_or_default();
+        let wanted: String = wanted.trim().chars().take(MAX_NAME).collect();
         let wanted = check_name(&wanted).or_else(|_| check_name("Imported"))?;
         let names: Vec<String> = self.list()?.entries.into_iter().map(|e| e.name).collect();
         let free = |n: &str| !names.iter().any(|m| same_name(m, n));

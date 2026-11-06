@@ -40,27 +40,32 @@ A kind implements `Document`: `KIND`, `FORMAT` (current version, from 1), `from_
 | `name` | Display name (library entries) |
 | anything else | The body |
 
+- `scan_format(text)`: the first top-level `format = <integer>` line, found without parsing (before any `[` line). `parse`, `peek` and `write` use it to recognise a newer file even when its syntax cannot be parsed.
+- Files larger than `MAX_FILE` (16 MiB) are not read (`Invalid`).
+- `peek` reads only the envelope (`Envelope { format, kind, name }`), parsing the lines before the first table when they hold all three, else the whole file; it checks kind and format but not the body.
 - `parse` / `read`: a file without an integer `format` of at least 1 or without `kind` is `NoVersion`; another kind is `WrongKind`; a higher format is `Newer`; a lower one is upgraded step by step before `from_body`. `Read` reports the name, the format found and the document. Invalid TOML is `Syntax`; a body that does not fit is `Invalid` with the reason.
-- `render` / `write`: writes `format = FORMAT`, `kind`, `name` if given, then the body; a body using a reserved key is `Invalid`. `write` refuses with `Newer` when the file on disk has a higher format and leaves it untouched; when it has a lower one, copies it to `<file>.format<N>.bak` (`backup_path`) unless that exists, then writes. Rendering is deterministic, so unchanged documents give identical files.
-- `write_atomic`: creates the parent directory, writes `<file>.tmp`, flushes it to disk and renames it over the file; on failure the temporary file is removed.
+- `render` / `write`: writes `format = FORMAT`, `kind`, `name` if given, then the body; a body using a reserved key is `Invalid`. `write` refuses with `Newer` when the file on disk has a higher format (by `scan_format` or by parsing) and leaves it untouched; when it has a lower one, copies it atomically to `<file>.format<N>.bak` (`backup_path`) unless that exists; when it is not a readable document of this kind, moves it to `<file>.unreadable.bak` or `<file>.unreadable-N.bak` (`unreadable_path`); then writes. Rendering is deterministic, so unchanged documents give identical files.
+- `write_atomic`: creates the parent directory, writes a temporary file of its own (`<file>.<pid>-<n>.tmp`, created new), flushes it to disk, renames it over the file (on Windows retried up to ten times, 50 ms apart, while another program holds the file) and on Unix flushes the directory; on failure the temporary file is removed.
 
 ### Libraries (`library`)
 
 `Library<T: Document>::new(dir)`; the directory is created by the first write.
 
-- **Ids** (`EntryId`): the file name without `.toml`: lowercase ASCII letters, digits and `-`, 1 to 64 bytes, not starting or ending with `-`. `EntryId::from_name` folds common accented Latin letters (`ç` to `c`, `ı` to `i`, ...), lowercases, turns every other run into one `-` and keeps at most 56 bytes; `entry` if nothing is left. A new entry gets that id, or the id with `-2`, `-3`, ... when a file with it exists. Ids never change.
-- **Names**: trimmed; 1 to `MAX_NAME` (64) characters; no control characters (`BadName`); unique in the library, compared after lowercasing (`NameTaken`).
-- `list()`: entries directly in the directory whose name is a valid id plus `.toml`, sorted by name ignoring case; files that cannot be read, including files of a newer format, are in `problems` with the reason, untouched, and their ids stay taken.
-- `load(id)`, `find(name)`, `create(name, document) -> id`, `save(id, entry)` (existing entries only, `NotFound` otherwise), `rename(id, name)` (id unchanged), `duplicate(id, name) -> id`.
+- **Ids** (`EntryId`): the file name without `.toml`: lowercase ASCII letters, digits and `-`, 1 to 64 bytes, not starting or ending with `-`, not a Windows device name (`con`, `prn`, `aux`, `nul`, `com0`-`com9`, `lpt0`-`lpt9`). `EntryId::from_name` folds common accented Latin letters (`ç` to `c`, `ı` to `i`, ...), lowercases, turns every other run into one `-`, keeps at most 56 bytes and adds `-1` to a device name; `entry` if nothing is left. A new entry gets that id, or the id with `-2`, `-3`, ... when it was ever used: by a file in the library (readable or not) or by a file in `deleted/` (its stem). Ids never change and are never given to a second entry.
+- **Names**: trimmed; 1 to `MAX_NAME` (64) characters; no control characters or text direction marks (U+200E, U+200F, U+202A-U+202E, U+2066-U+2069) (`BadName`); unique in the library, compared after lowercasing, without Unicode normalisation (`NameTaken`).
+- `list()`: entries directly in the directory whose name is a valid id plus `.toml`, sorted by name ignoring case, from their envelopes (`peek`); files that cannot be read, including files of a newer format, and `.toml` files whose name is not an id are in `problems` with the reason, untouched, and their ids stay taken.
+- `load(id)`, `find(name)`, `create(name, document) -> id`, `save(id, entry)` (existing entries only, `NotFound` otherwise; the name check runs only when the name changes; written under the `write` rules, so a newer entry is refused and a broken one moved aside), `rename(id, name)` (id unchanged), `duplicate(id, name) -> id`. `Entry::new(name, document)`.
 - `delete(id)`: moves the file to `deleted/<id>.toml` (or `<id>-N.toml` when taken) and returns the new path. Nothing is removed.
-- `export(id, path)`: writes the entry, current format, to `path` (atomically).
-- `import(path) -> (id, name)`: reads with upgrades; refuses newer formats and other kinds; names the entry after the file's `name`, else the file stem, else `Imported`; a clashing name becomes `Name 2`, `Name 3`, ..., shortened so it stays within 64 characters.
+- `export_with(id, path, scrub)`: writes the entry, after `scrub` changed it (removing what belongs to this computer only), in the current format, to `path` under the `write` rules; a path inside the library directory is refused (`Invalid`). `export(id, path)` scrubs nothing.
+- `import(path) -> (id, name)`: reads with upgrades; refuses newer formats and other kinds; names the entry after the file's `name`, else the file stem, else `Imported`, shortened to 64 characters; a clashing name becomes `Name 2`, `Name 3`, ..., shortened so it stays within 64 characters.
 
-The app is the only writer of libraries and `current.toml` (no lock); other programs only read.
+### Writer lock
+
+`UserData::try_lock() -> Result<Option<WriterLock>, DataError>` locks `user-data.lock` in the config directory (`Ok(None)` when another program holds it). Only the holder writes libraries and `current.toml`; a second app instance works read-only; `rbs-cli` only reads.
 
 ### Output profile (`OutputProfile`, `kind = "output-profile"`, format 1)
 
-The body is a set of sections, each a TOML table; section names are lowercase ASCII letters, digits, `-`, `_` and `.`, and not `format`, `kind` or `name`. `get::<S>(section)` deserialises one (`Ok(None)` if absent, `Invalid` if it does not fit), `set(section, &value)` replaces one (must serialise to a table), `remove(section)`. Unknown sections are kept on save. A profile never holds a secret.
+The body is a set of sections, each a TOML table; section names are lowercase ASCII letters, digits, `-`, `_` and `.`, and not `format`, `kind` or `name`. `get::<S>(section)` deserialises one (`Ok(None)` if absent, `Invalid` if it does not fit), `set(section, &value)` replaces one (must serialise to a table; refused with `Newer` when the section present has a higher integer `format_version`, `SECTION_VERSION`, than the new value), `remove(section)`. Unknown sections are kept on save. A section that does not load is left alone by the app until the user resets it. A profile never holds a secret.
 
 ### Scene collection document (`kind = "scene-collection"`, format 1)
 
@@ -82,10 +87,11 @@ Defaults are left out when written. Floats are written as the shortest decimal t
 
 - trims names like edits do;
 - refuses two canvases, sources, scenes or items (across all scenes) with one id (`SceneError::DuplicateId`), and filter ids used twice (`DuplicateFilter`);
+- refuses canvases larger than `MAX_CANVAS_SIDE` (16384) pixels on a side (`CanvasTooLarge`) or faster than `MAX_FRAME_RATE` (1000) frames per second (`FrameRateTooHigh`), like edits;
 - raises each counter above the highest id in use (`IdsExhausted` if an id is `u32::MAX`), so a document with stale counters never makes the collection reuse an id it holds;
 - checks every invariant of the [scene model spec](scene-model.md#invariants).
 
-A document that fails any of these is `DataError::Invalid` with the reason.
+A document that fails any of these is `DataError::Invalid` with the reason. A change that makes the loader refuse data an earlier build accepted needs a new `format` with an `upgrade` step that repairs the data (ADR-0051 decision 6).
 
 ## Errors and failure behaviour
 
@@ -93,14 +99,14 @@ A document that fails any of these is `DataError::Invalid` with the reason.
 
 ## Performance requirements
 
-Control thread only, user-paced; never on a hot path. Listing a library parses each entry (milliseconds for tens of entries). Nothing runs while the user does nothing: no watching, no polling (P13).
+User-paced; never on a hot path. The app saves collections on a writer thread (ADR-0051 decision 8). Measured by `slow_save_cost_of_a_large_collection` (release): 2000 sources and items save in about 45 ms and load in about 25 ms; a library of 20 such collections lists in about 4 ms. Nothing runs while the user does nothing: no watching, no polling (P13).
 
 ## Conformance tests
 
 `crates/rbs-user-data/tests`:
 
-- `document.rs`: round trip with format, kind and name; step-by-step upgrades; newer formats, other kinds, missing or bad versions, invalid TOML and bodies refused; writes never replace a newer file and back up an older one once; reserved keys.
-- `library.rs`: ids from names (accents, other scripts, length) and id validation; create, list, load, save, find; unique names ignoring case and name checks; rename keeps the id, duplicate gets a new one; delete moves to `deleted/` and keeps every copy; unreadable and newer files reported, kept and their ids taken; export and import, also into another user's data, numbered names on a clash (within 64 characters), other kinds refused, unnamed files named after the file; profile sections typed with unknown ones kept; `current.toml` round trip and unreadable selection.
-- `scenes.rs`: a collection with two canvases, nested and canvas-scoped scenes, filters, every setting type, overrides, crop, rotation, opacity, hidden items and studio mode round-trips exactly, with counters and stable text; the documented example loads; invalid documents (unknown keys, frame rate, empty canvas, items placing nothing, two things or a missing source, non-finite or out-of-range layouts and settings, non-plain settings, bad type ids, blank names, duplicate ids, two overrides for one canvas, scope violations) are refused with a reason; collections live in their own library and profiles are not imported as collections.
+- `document.rs`: round trip with format, kind and name; step-by-step upgrades; newer formats, other kinds, missing or bad versions, invalid TOML and bodies refused; writes never replace a newer file (also one this build cannot parse) and back up an older one once; unreadable files moved aside, no temporary files left; the format line scan; the size limit; reserved keys.
+- `library.rs`: ids from names (accents, other scripts, length, device names) and id validation; ids never reused after delete; saves over newer and broken entries; export scrub and no export into the library; newer sections not replaced; the writer lock; create, list, load, save, find; unique names ignoring case and name checks; rename keeps the id, duplicate gets a new one; delete moves to `deleted/` and keeps every copy; unreadable and newer files reported, kept and their ids taken; export and import, also into another user's data, numbered names on a clash (within 64 characters), other kinds refused, unnamed files named after the file; profile sections typed with unknown ones kept; `current.toml` round trip and unreadable selection.
+- `scenes.rs`: a collection with two canvases, nested and canvas-scoped scenes, filters, every setting type, overrides, crop, rotation, opacity, hidden items and studio mode round-trips exactly, with counters and stable text; the documented example loads; every scene model invariant checked on load (cycles, crop on nested scenes, overrides for canvases that cannot show the scene, scope of nested scenes, duplicate filters, nesting depth, canvas and frame rate bounds, exhausted ids); every state of a 200-step deterministic edit sequence round-trips with its counters; invalid documents (unknown keys, frame rate, empty canvas, items placing nothing, two things or a missing source, non-finite or out-of-range layouts and settings, non-plain settings, bad type ids, blank names, duplicate ids, two overrides for one canvas, scope violations) are refused with a reason; collections live in their own library and profiles are not imported as collections.
 
 `crates/rbs-scene/tests/collection.rs`: `from_parts` rebuilds an equal collection with its counters, raises stale counters and trims names, and refuses duplicate ids and broken invariants.

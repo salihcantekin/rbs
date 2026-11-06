@@ -58,7 +58,7 @@ Checked after every edit on the would-be result; a refused edit leaves the colle
 
 1. Names are non-blank and unique among canvases, among sources and among scenes.
 2. Node type ids are reverse-DNS; float settings are finite.
-3. Canvases are at least 1x1.
+3. Canvases are at least 1x1, at most `MAX_CANVAS_SIDE` (16384) pixels on a side and at most `MAX_FRAME_RATE` (1000) frames per second (`CanvasTooLarge`, `FrameRateTooHigh`).
 4. Every item refers to an existing source or scene; every override and canvas scope refers to an existing canvas.
 5. Layouts are finite with opacity in 0..=1. Crop is only set on source items (a nested scene cannot be cropped by a flat layer list).
 6. Nesting is acyclic, at most `MAX_NESTING_DEPTH` (16) scenes deep, and no scene flattens to more than `MAX_LAYERS` (4096) layers, counting hidden items (so showing an item never fails). Diamond-shaped nesting multiplies layers, so the bound is checked on every edit; it also bounds the recursion of `flatten`.
@@ -99,7 +99,7 @@ Tests in `crates/rbs-scene/tests/binder.rs` cover audio sources feeding the mixe
 
 ## Errors and failure behaviour
 
-`SceneError` (non-exhaustive): unknown ids, `DuplicateName`, `DuplicateId`, `EmptyName`, `BadTypeId`, `EmptyCanvas`, `InvalidLayout`, `InvalidSetting`, `CropOnScene`, `NestingCycle`, `NestingTooDeep`, `TooManyLayers`, `DuplicateFilter`, `ScopeViolation`, `IndexOutOfRange`, `CanvasHasScenes`, `UndoConflict`, `IdsExhausted`. Edits never panic.
+`SceneError` (non-exhaustive): unknown ids, `DuplicateName`, `DuplicateId`, `CanvasTooLarge`, `FrameRateTooHigh`, `EmptyName`, `BadTypeId`, `EmptyCanvas`, `InvalidLayout`, `InvalidSetting`, `CropOnScene`, `NestingCycle`, `NestingTooDeep`, `TooManyLayers`, `DuplicateFilter`, `ScopeViolation`, `IndexOutOfRange`, `CanvasHasScenes`, `UndoConflict`, `IdsExhausted`. Edits never panic.
 
 ## Performance requirements
 

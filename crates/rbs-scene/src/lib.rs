@@ -20,6 +20,7 @@ pub mod flatten;
 pub mod model;
 
 pub use collection::{
-    IdCounters, MAX_LAYERS, MAX_NESTING_DEPTH, SceneCollection, SceneError, Undo,
+    IdCounters, MAX_CANVAS_SIDE, MAX_FRAME_RATE, MAX_LAYERS, MAX_NESTING_DEPTH, SceneCollection,
+    SceneError, Undo,
 };
 pub use flatten::{Affine2, FlatLayer};

@@ -259,3 +259,212 @@ fn collections_live_in_their_own_library() {
         Err(DataError::WrongKind { .. })
     ));
 }
+
+#[test]
+fn every_scene_model_invariant_is_checked_on_load() {
+    let two = "[[canvases]]\nid = 1\nname = \"V\"\nwidth = 2\nheight = 2\nframe_rate = [30, 1]\n";
+    let lay = "layout = { position = [0.0, 0.0], size = [1.0, 1.0] }\n";
+    let scene = |id: u32, extra: &str| format!("[[scenes]]\nid = {id}\nname = \"S{id}\"\n{extra}");
+    // A nesting cycle.
+    let cycle = format!(
+        "{}[[scenes.items]]\nid = 0\nscene = 1\n{lay}{}[[scenes.items]]\nid = 1\nscene = 0\n{lay}",
+        scene(0, ""),
+        scene(1, "")
+    );
+    assert!(
+        invalid(&cycle).contains("contain itself"),
+        "{}",
+        invalid(&cycle)
+    );
+    // Crop on a nested scene.
+    let crop = format!(
+        "{}{}[[scenes.items]]\nid = 0\nscene = 0\nlayout = {{ position = [0.0, 0.0], size = [1.0, 1.0], crop = [1, 0, 0, 0] }}\n",
+        scene(0, ""),
+        scene(1, "")
+    );
+    assert!(invalid(&crop).contains("crop"));
+    // A per-canvas layout for a canvas that may not show the scene.
+    let over = format!(
+        "{CANVAS}{two}{SOURCE}{}[[scenes.items]]\nid = 0\nsource = 0\n{lay}overrides = [{{ canvas = 1, layout = {{ position = [0.0, 0.0], size = [1.0, 1.0] }} }}]\n",
+        scene(0, "canvas = 0\n")
+    );
+    invalid(&over);
+    // A shared scene nesting a canvas scene.
+    let nest = format!(
+        "{CANVAS}{}{}[[scenes.items]]\nid = 0\nscene = 0\n{lay}",
+        scene(0, "canvas = 0\n"),
+        scene(1, "")
+    );
+    invalid(&nest);
+    // The same filter id on two sources.
+    let filters = "filters = [{ id = 0, type = \"org.rbs.filter.blur\" }]\n";
+    let dup = format!(
+        "{SOURCE}{filters}[[sources]]\nid = 1\nname = \"T\"\ntype = \"org.rbs.source.display\"\n{filters}"
+    );
+    assert!(invalid(&dup).contains("used twice"));
+    // Nesting deeper than the limit.
+    let mut deep = String::new();
+    for i in 0..=rbs_scene::MAX_NESTING_DEPTH as u32 {
+        deep += &scene(i, "");
+        deep += &format!("[[scenes.items]]\nid = {i}\nscene = {}\n{lay}", i + 1);
+    }
+    deep += &scene(rbs_scene::MAX_NESTING_DEPTH as u32 + 1, "");
+    assert!(invalid(&deep).contains("nests more"));
+    // Canvas bounds: shared files are untrusted input.
+    assert!(invalid("[[canvases]]\nid = 0\nname = \"M\"\nwidth = 4294967295\nheight = 2\nframe_rate = [30, 1]\n").contains("at most"));
+    assert!(invalid("[[canvases]]\nid = 0\nname = \"M\"\nwidth = 2\nheight = 2\nframe_rate = [4294967295, 1]\n").contains("at most"));
+    // An id with no next id left.
+    invalid(
+        "[[canvases]]\nid = 4294967295\nname = \"M\"\nwidth = 2\nheight = 2\nframe_rate = [30, 1]\n",
+    );
+}
+
+/// A small deterministic generator (no randomness between runs).
+struct Lcg(u64);
+
+impl Lcg {
+    fn next(&mut self, n: usize) -> usize {
+        self.0 = self
+            .0
+            .wrapping_mul(6_364_136_223_846_793_005)
+            .wrapping_add(1_442_695_040_888_963_407);
+        ((self.0 >> 33) % n as u64) as usize
+    }
+}
+
+fn pick<T: Copy>(rng: &mut Lcg, v: &[T]) -> T {
+    v[rng.next(v.len())]
+}
+
+#[test]
+fn every_state_of_a_long_edit_sequence_round_trips() {
+    let mut col = show();
+    let mut rng = Lcg(7);
+    for step in 0..200 {
+        let canvases: Vec<_> = col.canvases().map(|c| c.id).collect();
+        let sources: Vec<_> = col.sources().map(|s| s.id).collect();
+        let scenes: Vec<_> = col.scenes().map(|s| s.id).collect();
+        let items: Vec<_> = col
+            .scenes()
+            .flat_map(|s| s.items.iter().map(|i| i.id))
+            .collect();
+        // Refused edits are fine: the collection stays valid either way.
+        let _ = match rng.next(10) {
+            0 => col
+                .add_source(&format!("S{step}"), ty("camera"), Settings::new())
+                .map(|_| ()),
+            1 if !sources.is_empty() => col.delete_source(pick(&mut rng, &sources)).map(|_| ()),
+            2 => col
+                .add_scene(
+                    &format!("Sc{step}"),
+                    if rng.next(2) == 0 {
+                        SceneScope::Shared
+                    } else {
+                        SceneScope::Canvas(pick(&mut rng, &canvases))
+                    },
+                )
+                .map(|_| ()),
+            3 if !scenes.is_empty() && !sources.is_empty() => col
+                .add_item(
+                    pick(&mut rng, &scenes),
+                    ItemContent::Source(pick(&mut rng, &sources)),
+                    Layout::new([rng.next(100) as f32 / 3.0, 0.5], [10.0, 7.25]),
+                    None,
+                )
+                .map(|_| ()),
+            4 if scenes.len() > 1 => col
+                .add_item(
+                    pick(&mut rng, &scenes),
+                    ItemContent::Scene(pick(&mut rng, &scenes)),
+                    Layout::new([0.0, 0.0], [5.0, 5.0]).with_opacity(0.3),
+                    None,
+                )
+                .map(|_| ()),
+            5 if !items.is_empty() => col.remove_item(pick(&mut rng, &items)).map(|_| ()),
+            6 if !items.is_empty() => col
+                .set_item_layout(
+                    pick(&mut rng, &items),
+                    if rng.next(2) == 0 {
+                        None
+                    } else {
+                        Some(pick(&mut rng, &canvases))
+                    },
+                    Layout::new([1.0, 2.0], [3.0, -4.0]).with_rotation(rng.next(360) as f32 * 0.7),
+                )
+                .map(|_| ()),
+            7 if !scenes.is_empty() => col
+                .set_program(pick(&mut rng, &canvases), Some(pick(&mut rng, &scenes)))
+                .map(|_| ()),
+            8 if !scenes.is_empty() => col.remove_scene(pick(&mut rng, &scenes)).map(|_| ()),
+            _ if !items.is_empty() => col
+                .set_item_visible(pick(&mut rng, &items), rng.next(2) == 0)
+                .map(|_| ()),
+            _ => Ok(()),
+        };
+        let text = document::render(&col, Some("Show")).unwrap();
+        let back = document::parse::<SceneCollection>(&text)
+            .unwrap_or_else(|e| panic!("step {step}: {e}\n{text}"))
+            .document;
+        assert_eq!(back, col, "step {step}");
+        assert_eq!(back.id_counters(), col.id_counters(), "step {step}");
+    }
+}
+
+/// Measures a save of a large collection in a library of 20 (ADR-0051 consequence):
+/// `cargo test -p rbs-user-data --release --test scenes -- --ignored --nocapture`.
+#[test]
+#[ignore = "slow: measures saving large collections"]
+fn slow_save_cost_of_a_large_collection() {
+    let d = TempDir::new("scene-bench");
+    let lib = UserData::new(d.path()).scene_collections();
+    let mut col = SceneCollection::new();
+    let (canvas, _) = col
+        .add_canvas("Main", Size::new(1920, 1080), FrameRate::FPS_60)
+        .unwrap();
+    let mut scenes = Vec::new();
+    for s in 0..50 {
+        scenes.push(
+            col.add_scene(&format!("Scene {s}"), SceneScope::Canvas(canvas))
+                .unwrap()
+                .0,
+        );
+    }
+    for i in 0..2000 {
+        let mut settings = Settings::new();
+        settings.insert(
+            "target".to_owned(),
+            SettingValue::Text(format!("display:{i}")),
+        );
+        let (src, _) = col
+            .add_source(&format!("Source {i}"), ty("display"), settings)
+            .unwrap();
+        col.add_item(
+            scenes[i % 50],
+            ItemContent::Source(src),
+            Layout::new([1.5, 2.5], [640.0, 360.0]),
+            None,
+        )
+        .unwrap();
+    }
+    let mut ids = Vec::new();
+    for n in 0..20 {
+        ids.push(lib.create(&format!("Show {n}"), &col).unwrap());
+    }
+    let entry = rbs_user_data::Entry::new("Show 0", col.clone());
+    let t = std::time::Instant::now();
+    let runs = 20;
+    for _ in 0..runs {
+        lib.save(&ids[0], &entry).unwrap();
+    }
+    let save = t.elapsed() / runs;
+    let t = std::time::Instant::now();
+    let loaded = lib.load(&ids[0]).unwrap();
+    let load = t.elapsed();
+    let t = std::time::Instant::now();
+    let listed = lib.list().unwrap();
+    let list = t.elapsed();
+    assert_eq!(loaded.document, col);
+    assert_eq!(listed.entries.len(), 20);
+    let size = std::fs::metadata(lib.path(&ids[0])).unwrap().len();
+    println!("2000 sources/items, {size} bytes: save {save:?}, load {load:?}, list of 20 {list:?}");
+}

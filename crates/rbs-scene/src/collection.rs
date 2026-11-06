@@ -61,13 +61,24 @@ pub enum SceneError {
     /// Two filters share an id.
     DuplicateFilter(FilterId),
     /// A document lists two canvases, sources, scenes or items with the same id
-    /// ([`SceneCollection::from_parts`]).
+    /// ([`SceneCollection::from_parts`]): the id, as `canvas#3`, `item#7`, ...
     DuplicateId(String),
+    /// A canvas side is larger than [`MAX_CANVAS_SIDE`].
+    CanvasTooLarge,
+    /// A canvas frame rate is above [`MAX_FRAME_RATE`] frames per second.
+    FrameRateTooHigh,
 }
 
 /// Most levels of scenes in a nesting chain, counting the shown scene. Bounds the
 /// recursion of [`SceneCollection::flatten`].
 pub const MAX_NESTING_DEPTH: usize = 16;
+
+/// Largest canvas side, in pixels. Documents are shared and so untrusted; no GPU path
+/// or encoder handles more.
+pub const MAX_CANVAS_SIDE: u32 = 16_384;
+
+/// Highest canvas frame rate, in frames per second.
+pub const MAX_FRAME_RATE: u32 = 1000;
 
 /// Most layers one scene may flatten to (counting hidden items, so showing an item
 /// never fails). Diamond-shaped nesting multiplies layers, so this is checked on every
@@ -105,6 +116,15 @@ impl fmt::Display for SceneError {
             }
             SceneError::DuplicateFilter(id) => write!(f, "{id} is used twice"),
             SceneError::DuplicateId(id) => write!(f, "{id} is listed twice"),
+            SceneError::CanvasTooLarge => {
+                write!(f, "canvas sides can be at most {MAX_CANVAS_SIDE} pixels")
+            }
+            SceneError::FrameRateTooHigh => {
+                write!(
+                    f,
+                    "canvas frame rates can be at most {MAX_FRAME_RATE} per second"
+                )
+            }
         }
     }
 }
@@ -184,7 +204,10 @@ struct NextIds {
 /// The next id of each kind a collection will issue: what a document stores so ids are
 /// not reused after a reload ([`SceneCollection::id_counters`],
 /// [`SceneCollection::from_parts`]).
-#[non_exhaustive]
+///
+/// Adding a kind of id adds a field, which is a breaking change for callers that build
+/// it with a struct expression; that is intended, since a document then needs the new
+/// counter too.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct IdCounters {
     /// Next canvas id.
@@ -197,19 +220,6 @@ pub struct IdCounters {
     pub item: u32,
     /// Next filter id.
     pub filter: u32,
-}
-
-impl IdCounters {
-    /// Counters that issue `canvas`, `source`, `scene`, `item` and `filter` next.
-    pub const fn new(canvas: u32, source: u32, scene: u32, item: u32, filter: u32) -> Self {
-        Self {
-            canvas,
-            source,
-            scene,
-            item,
-            filter,
-        }
-    }
 }
 
 fn issue(counter: &mut u32) -> Result<u32, SceneError> {
@@ -340,7 +350,13 @@ impl SceneCollection {
     /// The next id of each kind this collection will issue.
     pub fn id_counters(&self) -> IdCounters {
         let n = &self.next;
-        IdCounters::new(n.canvas, n.source, n.scene, n.item, n.filter)
+        IdCounters {
+            canvas: n.canvas,
+            source: n.source,
+            scene: n.scene,
+            item: n.item,
+            filter: n.filter,
+        }
     }
 
     // ----- queries -----
@@ -1063,6 +1079,13 @@ impl SceneCollection {
             }
             if c.size.width == 0 || c.size.height == 0 {
                 return Err(SceneError::EmptyCanvas);
+            }
+            if c.size.width > MAX_CANVAS_SIDE || c.size.height > MAX_CANVAS_SIDE {
+                return Err(SceneError::CanvasTooLarge);
+            }
+            let rate = c.frame_rate.per_second();
+            if u64::from(rate.num()) > u64::from(MAX_FRAME_RATE) * u64::from(rate.den()) {
+                return Err(SceneError::FrameRateTooHigh);
             }
             for shown in [c.program, c.preview].into_iter().flatten() {
                 let scene = self.get_scene(shown)?;

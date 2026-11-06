@@ -908,3 +908,25 @@ fn from_parts_refuses_duplicate_ids_and_broken_invariants() {
         Err(SceneError::IdsExhausted)
     );
 }
+
+#[test]
+fn canvas_size_and_frame_rate_are_bounded() {
+    let mut col = SceneCollection::new();
+    let max = rbs_scene::MAX_CANVAS_SIDE;
+    assert!(
+        col.add_canvas("Max", Size::new(max, max), FrameRate::FPS_60)
+            .is_ok()
+    );
+    assert_eq!(
+        col.add_canvas("Big", Size::new(max + 1, 2), FrameRate::FPS_60)
+            .map(|_| ()),
+        Err(SceneError::CanvasTooLarge)
+    );
+    let fastest = FrameRate::new(rbs_scene::MAX_FRAME_RATE, 1).unwrap();
+    let (c, _) = col.add_canvas("Fast", Size::new(2, 2), fastest).unwrap();
+    assert_eq!(
+        col.set_canvas_format(c, Size::new(2, 2), FrameRate::new(1001, 1).unwrap())
+            .map(|_| ()),
+        Err(SceneError::FrameRateTooHigh)
+    );
+}

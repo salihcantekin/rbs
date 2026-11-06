@@ -9,7 +9,10 @@ pub struct TempDir(pub PathBuf);
 
 impl TempDir {
     pub fn new(name: &str) -> Self {
-        let d = std::env::temp_dir().join(format!("rbs-user-data-{name}-{}", std::process::id()));
+        static N: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+        let n = N.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let d =
+            std::env::temp_dir().join(format!("rbs-user-data-{name}-{}-{n}", std::process::id()));
         let _ = std::fs::remove_dir_all(&d);
         std::fs::create_dir_all(&d).unwrap_or_else(|e| panic!("{}: {e}", d.display()));
         Self(d)
