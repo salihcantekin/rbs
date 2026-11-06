@@ -8,6 +8,9 @@
 //! client-scoped `ui.*` methods. Whether an entry is enabled, why not, whether a
 //! toggle is on and which choices a picker offers is the shell's state; it answers
 //! through [`CommandState`], so this crate stays free of engine and toolkit types.
+//!
+//! Not yet: titles and tooltips are English text until the UI has Fluent messages
+//! (ADR-0050 decision 1), and no entry has an icon until the icon set grows.
 
 use std::fmt;
 
@@ -78,6 +81,17 @@ pub enum ParamType {
     OneOf(&'static [&'static str]),
 }
 
+/// One parameter of an entry.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Param {
+    /// Its key in ids and in the method's parameters.
+    pub name: &'static str,
+    /// Its type.
+    pub ty: ParamType,
+    /// An id without it cannot run (it is kept and shown disabled with the reason).
+    pub required: bool,
+}
+
 /// What an entry runs.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Kind {
@@ -96,7 +110,9 @@ pub enum Kind {
         off: &'static str,
     },
     /// A list of choices ([`CommandState::choices`]); each runs `method` with
-    /// `param` set to the choice's value.
+    /// `param` set to the choice's value. The picker's id with that parameter
+    /// (`ui.workspace.select?name=Live`) runs the choice directly; without it there is
+    /// nothing to run (`ui.command.run` answers `invalid_params`).
     Picker {
         /// The method each choice runs.
         method: &'static str,
@@ -132,13 +148,26 @@ pub struct Entry {
     pub menu: Menu,
     /// What it runs.
     pub kind: Kind,
-    /// Its parameters and their types; an id may set each once.
-    pub params: &'static [(&'static str, ParamType)],
+    /// Its parameters; an id may set each once.
+    pub params: &'static [Param],
     /// Shows a checkmark: toggles, and actions with an on or off state (area toggles).
     pub checkable: bool,
 }
 
-const AREAS: ParamType = ParamType::OneOf(&["left", "right", "bottom"]);
+const AREA: Param = Param {
+    name: "area",
+    ty: ParamType::OneOf(&["left", "right", "bottom"]),
+    required: true,
+};
+
+/// A picker's choice: optional, because the bare picker id opens the list.
+const fn choice(name: &'static str) -> Param {
+    Param {
+        name,
+        ty: ParamType::Text,
+        required: false,
+    }
+}
 
 const fn action(method: &'static str) -> Kind {
     Kind::Action { method }
@@ -180,7 +209,7 @@ pub const ENTRIES: &[Entry] = &[
             method: "ui.workspace.switch",
             param: "name",
         },
-        params: &[],
+        params: &[choice("name")],
         checkable: false,
     },
     Entry {
@@ -191,7 +220,7 @@ pub const ENTRIES: &[Entry] = &[
         shortcut: None,
         menu: Menu::View,
         kind: action("ui.area.toggle"),
-        params: &[("area", AREAS)],
+        params: &[AREA],
         checkable: true,
     },
     Entry {
@@ -249,7 +278,7 @@ pub const ENTRIES: &[Entry] = &[
             method: "ui.panel.open",
             param: "id",
         },
-        params: &[],
+        params: &[choice("id")],
         checkable: false,
     },
     Entry {
@@ -331,7 +360,11 @@ fn decode(v: &str) -> Option<String> {
     while i < bytes.len() {
         match bytes[i] {
             b'%' => {
+                // Two hex digits; lower case is read too and written in capitals.
                 let hex = v.get(i + 1..i + 3)?;
+                if !hex.bytes().all(|h| h.is_ascii_hexdigit()) {
+                    return None;
+                }
                 out.push(u8::from_str_radix(hex, 16).ok()?);
                 i += 3;
             }
@@ -368,8 +401,7 @@ impl CommandId {
             Some((b, p)) => (b, Some(p)),
             None => (s, None),
         };
-        if !valid_word(base) || !base.contains('.') || base.starts_with('.') || base.ends_with('.')
-        {
+        if !crate::panel::valid_base(base) {
             return err(
                 "the base must be `namespace.name` in lowercase letters, digits, `.`, `-` and `_`",
             );
@@ -428,18 +460,22 @@ impl CommandId {
         &self.params
     }
 
-    /// Its registry entry, after checking its parameters against the entry's types.
-    /// `Ok(None)` for an id no entry has (a missing plugin): kept, shown disabled.
+    /// Its registry entry. `Ok(None)` for an id no entry has (a missing plugin);
+    /// `Err` with the reason when the entry does not accept its parameters or misses a
+    /// required one. Either way a toolbar keeps the id and shows it disabled.
     pub fn resolve(&self) -> Result<Option<&'static Entry>, CommandIdError> {
         let Some(e) = entry(&self.base) else {
             return Ok(None);
         };
         for (k, v) in &self.params {
-            match e.params.iter().find(|(name, _)| name == k) {
+            match e.params.iter().find(|p| p.name == k) {
                 None => {
                     return Err(CommandIdError(format!("{} has no parameter {k:?}", e.id)));
                 }
-                Some((_, ParamType::OneOf(values))) if !values.contains(&v.as_str()) => {
+                Some(Param {
+                    ty: ParamType::OneOf(values),
+                    ..
+                }) if !values.contains(&v.as_str()) => {
                     return Err(CommandIdError(format!(
                         "{}: {k} is one of {}",
                         e.id,
@@ -448,6 +484,13 @@ impl CommandId {
                 }
                 Some(_) => {}
             }
+        }
+        if let Some(p) = e
+            .params
+            .iter()
+            .find(|p| p.required && self.param(p.name).is_none())
+        {
+            return Err(CommandIdError(format!("{} needs {}", e.id, p.name)));
         }
         Ok(Some(e))
     }
@@ -491,7 +534,7 @@ pub enum MenuItem {
         /// `Some` for checkable entries.
         checked: Option<bool>,
     },
-    /// A submenu of a picker's choices; each runs `method` with the choice.
+    /// A submenu of a picker's choices; each is the picker's id with the choice.
     Choices {
         /// The picker's title.
         title: String,
@@ -535,13 +578,13 @@ pub fn title(id: &CommandId, e: &Entry) -> String {
 }
 
 fn item(id: CommandId, e: &Entry, state: &dyn CommandState) -> MenuItem {
-    if let Kind::Picker { method, param } = e.kind {
+    if let Kind::Picker { param, .. } = e.kind {
         let choices = state
             .choices(&id)
             .into_iter()
             .map(|(t, v, current)| {
                 let run = CommandId {
-                    base: method.to_owned(),
+                    base: e.id.to_owned(),
                     params: vec![(param.to_owned(), v)],
                 };
                 (t, run, current)
@@ -748,8 +791,9 @@ mod tests {
         };
         assert_eq!(
             choices[1].1.to_string(),
-            "ui.workspace.switch?name=Live%20show"
+            "ui.workspace.select?name=Live%20show"
         );
+        assert!(choices[1].1.resolve().unwrap().is_some());
         assert!(choices[0].2 && !choices[1].2);
         assert!(matches!(
             &view[2],
@@ -773,5 +817,26 @@ mod tests {
                 assert!(id.resolve().unwrap().is_some(), "{text}");
             }
         }
+    }
+
+    #[test]
+    fn required_parameters_pickers_and_escapes() {
+        // A required parameter must be there; a picker's choice need not.
+        assert!(
+            CommandId::parse("ui.area.toggle")
+                .unwrap()
+                .resolve()
+                .is_err()
+        );
+        let bare = CommandId::parse("ui.workspace.select").unwrap();
+        assert!(bare.resolve().unwrap().is_some());
+        let pick = CommandId::parse("ui.workspace.select?name=Live%20show").unwrap();
+        assert_eq!(pick.resolve().unwrap().unwrap().id, "ui.workspace.select");
+        for bad in ["a.b?x=%+1", "a.b?x=%2", "a.b?x=%2g"] {
+            assert!(CommandId::parse(bad).is_err(), "{bad}");
+        }
+        // Lower case escapes are read and written in capitals.
+        let lower = CommandId::parse("ui.workspace.switch?name=a%2ab").unwrap();
+        assert_eq!(lower.to_string(), "ui.workspace.switch?name=a%2Ab");
     }
 }

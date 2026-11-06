@@ -307,10 +307,9 @@ impl TryFrom<RawToolbar> for Toolbar {
                 _ => {
                     let id = CommandId::parse(&text)
                         .map_err(|e| format!("toolbar item {text:?}: {e}"))?;
-                    // An unknown id is kept (a missing plugin); a known one must have
-                    // parameters its entry accepts.
-                    id.resolve()
-                        .map_err(|e| format!("toolbar item {text:?}: {e}"))?;
+                    // Only the grammar is checked: an unknown id (a missing plugin) or
+                    // one whose parameters its entry does not accept is kept and shown
+                    // disabled with the reason, so a registry change never breaks a file.
                     ToolbarItem::Command(id.to_string())
                 }
             };
