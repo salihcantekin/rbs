@@ -926,6 +926,11 @@ struct Host {
     preview_surfaces: Option<usize>,
     /// Why the studio could not start again after a canvas change.
     dead: Option<String>,
+    /// The studio is being stopped and started again (canvas change): a panic now
+    /// leaves it stopped, so recovery treats it as dead (ADR-0054 decision 3).
+    restarting: bool,
+    /// An API request panicked in this round: the loop reconciles after it.
+    caught: bool,
     /// Counts `seq` per state key and publishes events to control API clients.
     events: EventPublisher,
     /// The control API, while remote control is on.
@@ -960,7 +965,11 @@ fn run(
     inbox: Weak<Sender<Msg>>,
     notify: &dyn Fn(Update),
 ) {
-    let mut host = match start(config, adapters, gpu, engine) {
+    // A control thread, not a real-time one: its panics get crash reports (ADR-0054).
+    rbs_crash::report_panics_on_this_thread();
+    let started = rbs_crash::contain(|| start(config, adapters, gpu, engine))
+        .unwrap_or_else(|_| Err(rbs_crash::CAUGHT_TEXT.to_owned()));
+    let mut host = match started {
         Ok((mut host, update)) => {
             notify(update);
             host.inbox = inbox;
@@ -988,96 +997,31 @@ fn run(
     host.publish(notify);
     let mut failed: Option<String> = None;
     let mut wait = MAX_WAIT;
+    let mut caught_in_row = 0;
     loop {
-        match rx.recv_timeout(wait) {
-            Ok(Msg::Ui(c)) => {
-                if failed.is_none() {
-                    host.command(c, notify);
+        let msg = match rx.recv_timeout(wait) {
+            Ok(m) => Some(m),
+            Err(RecvTimeoutError::Timeout) => None,
+            Err(RecvTimeoutError::Disconnected) => break,
+        };
+        // Each round is a panic boundary (ADR-0054 decision 3): a bug in one command or
+        // one round fails that round, and the studio and its outputs keep running.
+        match rbs_crash::contain(|| round(&mut host, &mut failed, msg, notify)) {
+            Ok(next) => {
+                caught_in_row = 0;
+                wait = next;
+                // An API request panicked: its client got an `internal` error.
+                if std::mem::take(&mut host.caught) {
+                    let _ = rbs_crash::contain(|| host.recover(&mut failed, 1, notify));
                 }
             }
-            Ok(Msg::AttachApi(api)) => {
-                host.events.attach(api.endpoint.event_link());
-                host.api = Some(*api);
-            }
-            Ok(Msg::DetachApi) => {
-                host.events.detach();
-                host.api = None;
-            }
-            Ok(Msg::PickFailed(why)) => notify(Update::Error(why)),
-            Ok(Msg::ApiWake) | Err(RecvTimeoutError::Timeout) => {}
-            Err(RecvTimeoutError::Disconnected) => break,
-        }
-        // One API request per round: a UI command that arrived meanwhile is taken by the
-        // next `recv_timeout` first, so the local user always goes first (decision 5).
-        let served_api = match &failed {
-            None => host.serve_api(notify),
-            Some(why) => host.api.as_ref().is_some_and(|api| {
-                api.serve_one(&mut Refuse(why.clone()), &mut host.events, notify)
-            }),
-        };
-        if failed.is_none()
-            && let Some(why) = host.dead.take()
-        {
-            host.stop_recording(Some(why.clone()), notify);
-            host.end_stream(Some(why.clone()), notify);
-            failed = Some(why.clone());
-            notify(Update::Failed(why));
-        }
-        if failed.is_some() {
-            wait = if served_api {
-                Duration::ZERO
-            } else {
-                Duration::from_secs(3600)
-            };
-            continue;
-        }
-        let serviced = host.studio.service();
-        wait = serviced.wait.unwrap_or(MAX_WAIT).min(MAX_WAIT);
-        if served_api {
-            // More may wait; look again right after any UI command.
-            wait = Duration::ZERO;
-        }
-        if let Some(why) = host.studio.failure() {
-            // Clients see the recording end with the failure instead of a stale state.
-            host.stop_recording(Some(why.clone()), notify);
-            host.end_stream(Some(why.clone()), notify);
-            failed = Some(why.clone());
-            notify(Update::Failed(why));
-            continue;
-        }
-        // A replacement that waited for its predecessor opens now.
-        let waiting = host.studio.waiting();
-        if host.waiting && !waiting {
-            host.apply(notify);
-        }
-        host.waiting = waiting;
-        if let Some((_, id)) = &host.recording
-            && let Some(why) = host.studio.output_failure(*id)
-        {
-            host.stop_recording(Some(why), notify);
-        }
-        if host.ending
-            && let Some((_, id)) = &host.recording
-        {
-            if host.studio.output_tail_done(*id) {
-                host.stop_recording(None, notify);
-            } else {
-                // The tail takes a few frames; look again soon.
-                wait = wait.min(ENDING_WAIT);
+            Err(_) => {
+                caught_in_row += 1;
+                wait = MAX_WAIT;
+                notify(Update::Error(rbs_crash::CAUGHT_TEXT.into()));
+                let _ = rbs_crash::contain(|| host.recover(&mut failed, caught_in_row, notify));
             }
         }
-        if let Some((_, _, id)) = &host.streaming {
-            if let Some(why) = host.studio.output_failure(*id) {
-                host.end_stream(Some(why), notify);
-            } else {
-                host.report_link(notify);
-            }
-        }
-        let now = host.clock.now();
-        if let Some(left) = host.report_stats(now, notify) {
-            wait = wait.min(left);
-        }
-        host.publish(notify);
     }
     // Closing while recording: keep the tail too, as Stop does.
     if let Some((_, id)) = host.recording.clone()
@@ -1086,12 +1030,117 @@ fn run(
         let started = std::time::Instant::now();
         while !host.studio.output_tail_done(id) && started.elapsed() < CLOSE_TAIL_GUARD {
             host.studio.service();
+            // The control thread at shutdown, not the UI thread (ADR-0054 decision 6).
+            #[allow(clippy::disallowed_methods)]
             std::thread::sleep(ENDING_WAIT);
         }
     }
     host.end_stream(None, notify);
     host.stop_recording(None, notify);
     let _ = host.studio.shutdown();
+}
+
+/// Caught panics in a row after which the studio counts as failed: its recording and
+/// stream end cleanly instead of running on with a host that keeps panicking.
+const CAUGHT_LIMIT: u32 = 3;
+
+/// One round of the control loop: the message that woke it (`None`: the wait ended),
+/// one API request, then the studio's service. Returns how long to wait for the next.
+fn round(
+    host: &mut Host,
+    failed: &mut Option<String>,
+    msg: Option<Msg>,
+    notify: &dyn Fn(Update),
+) -> Duration {
+    match msg {
+        Some(Msg::Ui(c)) => {
+            if failed.is_none() {
+                host.command(c, notify);
+            }
+        }
+        Some(Msg::AttachApi(api)) => {
+            host.events.attach(api.endpoint.event_link());
+            host.api = Some(*api);
+        }
+        Some(Msg::DetachApi) => {
+            host.events.detach();
+            host.api = None;
+        }
+        Some(Msg::PickFailed(why)) => notify(Update::Error(why)),
+        Some(Msg::ApiWake) | None => {}
+    }
+    // One API request per round: a UI command that arrived meanwhile is taken by the
+    // next `recv_timeout` first, so the local user always goes first (decision 5).
+    let served_api = match &*failed {
+        None => host.serve_api(notify),
+        Some(why) => host
+            .api
+            .as_ref()
+            .is_some_and(|api| api.serve_one(&mut Refuse(why.clone()), &mut host.events, notify)),
+    };
+    if failed.is_none()
+        && let Some(why) = host.dead.take()
+    {
+        host.stop_recording(Some(why.clone()), notify);
+        host.end_stream(Some(why.clone()), notify);
+        *failed = Some(why.clone());
+        notify(Update::Failed(why));
+    }
+    if failed.is_some() {
+        return if served_api {
+            Duration::ZERO
+        } else {
+            Duration::from_secs(3600)
+        };
+    }
+    let serviced = host.studio.service();
+    let mut wait = serviced.wait.unwrap_or(MAX_WAIT).min(MAX_WAIT);
+    if served_api {
+        // More may wait; look again right after any UI command.
+        wait = Duration::ZERO;
+    }
+    if let Some(why) = host.studio.failure() {
+        // Clients see the recording end with the failure instead of a stale state.
+        host.stop_recording(Some(why.clone()), notify);
+        host.end_stream(Some(why.clone()), notify);
+        *failed = Some(why.clone());
+        notify(Update::Failed(why));
+        return wait;
+    }
+    // A replacement that waited for its predecessor opens now.
+    let waiting = host.studio.waiting();
+    if host.waiting && !waiting {
+        host.apply(notify);
+    }
+    host.waiting = waiting;
+    if let Some((_, id)) = &host.recording
+        && let Some(why) = host.studio.output_failure(*id)
+    {
+        host.stop_recording(Some(why), notify);
+    }
+    if host.ending
+        && let Some((_, id)) = &host.recording
+    {
+        if host.studio.output_tail_done(*id) {
+            host.stop_recording(None, notify);
+        } else {
+            // The tail takes a few frames; look again soon.
+            wait = wait.min(ENDING_WAIT);
+        }
+    }
+    if let Some((_, _, id)) = &host.streaming {
+        if let Some(why) = host.studio.output_failure(*id) {
+            host.end_stream(Some(why), notify);
+        } else {
+            host.report_link(notify);
+        }
+    }
+    let now = host.clock.now();
+    if let Some(left) = host.report_stats(now, notify) {
+        wait = wait.min(left);
+    }
+    host.publish(notify);
+    wait
 }
 
 fn start(
@@ -1205,6 +1254,8 @@ fn start(
             gpu,
             preview_surfaces: config.preview.map(|p| p.surfaces),
             dead: None,
+            restarting: false,
+            caught: false,
             autosave: config.autosave,
             // A collection that had to be completed is saved at the first publish.
             saved: loaded,
@@ -1654,8 +1705,11 @@ impl Host {
             );
             let _ = self.collection.set_item_layout(id, None, moved);
         }
+        self.restarting = true;
         let _ = self.studio.shutdown();
-        match self.restart() {
+        let restarted = self.restart();
+        self.restarting = false;
+        match restarted {
             Ok(()) => {
                 // Old layouts would come back with an undo. (When the restart fails
                 // the collection goes back as it was, and so the history stays.)
@@ -1664,7 +1718,10 @@ impl Host {
             }
             Err(why) => {
                 self.collection = before;
-                match self.restart() {
+                self.restarting = true;
+                let again = self.restart();
+                self.restarting = false;
+                match again {
                     Ok(()) => Err(format!(
                         "The canvas {} x {} cannot be used: {why}",
                         size.width, size.height
@@ -1676,6 +1733,44 @@ impl Host {
                 }
             }
         }
+    }
+
+    /// Brings the host's bookkeeping back in line with the studio after a caught panic
+    /// (ADR-0054 decision 3), `in_row` being how many rounds in a row panicked:
+    /// - a panic during a canvas restart leaves the studio stopped: it is dead;
+    /// - an output the studio runs but the host does not track (a start that panicked
+    ///   half-way) is stopped, so no file grows that Stop cannot end;
+    /// - a tracked recording or stream that no longer runs is ended with the reason;
+    /// - after [`CAUGHT_LIMIT`] panics in a row the studio counts as failed, and its
+    ///   outputs end cleanly.
+    fn recover(&mut self, failed: &mut Option<String>, in_row: u32, notify: &dyn Fn(Update)) {
+        const WHY: &str = "An internal error ended it (a report was saved).";
+        if std::mem::take(&mut self.restarting) {
+            self.dead.get_or_insert_with(|| {
+                "An internal error stopped the studio while it restarted.".into()
+            });
+        }
+        let running = self.studio.outputs();
+        let recording = self.recording.as_ref().map(|(_, id)| *id);
+        let streaming = self.streaming.as_ref().map(|(_, _, id)| *id);
+        for id in &running {
+            if Some(*id) != recording && Some(*id) != streaming {
+                let _ = self.studio.stop_output(*id);
+            }
+        }
+        if recording.is_some_and(|id| !running.contains(&id)) {
+            self.stop_recording(Some(WHY.into()), notify);
+        }
+        if streaming.is_some_and(|id| !running.contains(&id)) {
+            self.end_stream(Some(WHY.into()), notify);
+        }
+        if in_row >= CAUGHT_LIMIT && failed.is_none() && self.dead.is_none() {
+            self.dead = Some(
+                "RBS stopped the studio after repeated internal errors (reports were saved)."
+                    .into(),
+            );
+        }
+        self.publish(notify);
     }
 
     /// Starts a new studio for the collection as it is.
@@ -2367,9 +2462,14 @@ impl ControlTarget for ApiTarget<'_> {
         // The real publisher comes back into the host for the command (see
         // `Host::serve_api`), so its changes publish with the right `seq`.
         std::mem::swap(&mut self.host.events, events);
-        let result = self.run(command);
+        // A panic fails this request only (ADR-0054 decision 3); the control loop
+        // reconciles the host after the round.
+        let result = rbs_crash::contain(|| self.run(command));
         std::mem::swap(&mut self.host.events, events);
-        result
+        result.unwrap_or_else(|_| {
+            self.host.caught = true;
+            Err(ApiError::new(ErrorKind::Internal, rbs_crash::CAUGHT_TEXT))
+        })
     }
 }
 

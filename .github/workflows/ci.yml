@@ -29,6 +29,12 @@ jobs:
         with:
           components: rustfmt
       - run: cargo fmt --all -- --check
+      # Panics must stay catchable at the app's boundaries (ADR-0054 decision 1).
+      - name: no panic = "abort"
+        run: |
+          if grep -rnE --include=Cargo.toml '^\s*panic\s*=\s*"abort"' .; then
+            echo 'panic = "abort" breaks the panic boundaries of ADR-0054'; exit 1
+          fi
 
   deny:
     name: dependency bans and licenses

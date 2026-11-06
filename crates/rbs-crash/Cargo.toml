@@ -1,0 +1,18 @@
+[package]
+name = "rbs-crash"
+description = "Crash resilience for RBS composition roots: panic boundaries, local crash reports and unclean-exit detection (ADR-0054)."
+version.workspace = true
+edition.workspace = true
+# `File::try_lock` (1.89). Application layer only (rbs-app needs 1.92 already); engine
+# and port crates keep the workspace minimum.
+rust-version = "1.89"
+repository.workspace = true
+license.workspace = true
+publish.workspace = true
+
+# Application layer: shared by rbs-app and, later, rbs-cli and rbs-mcp. Standard
+# library only: no toolkit, engine or adapter crate (P8).
+[dependencies]
+
+[lints]
+workspace = true

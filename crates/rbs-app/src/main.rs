@@ -13,6 +13,7 @@
 #![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
 
 mod config;
+mod entry;
 #[cfg(any(target_os = "macos", windows))]
 mod preview;
 mod preview_edit;
@@ -41,6 +42,9 @@ use ui::*;
 
 /// How long a toast stays before it dismisses itself.
 const TOAST_TIME: Duration = Duration::from_secs(8);
+
+/// A caught panic is shown at most once in this time.
+const CAUGHT_QUIET: Duration = Duration::from_secs(5);
 
 /// Layout changes are written to disk after this quiet time, not on every change (U5).
 const SAVE_DELAY: Duration = Duration::from_millis(400);
@@ -330,11 +334,41 @@ thread_local! {
 
 /// Hands an update from the studio's control thread to the UI thread.
 fn deliver(u: studio_host::Update) {
-    let _ = slint::invoke_from_event_loop(move || {
+    let _ = entry::invoke(move || {
         let ctx = CTX.with(|c| c.borrow().clone());
         if let Some(ctx) = ctx {
             ctx.studio_update(u);
         }
+    });
+}
+
+/// Shows a caught panic in the error bar (ADR-0054 decision 2): at most once every few
+/// seconds, so a panic that repeats on every tick cannot flood the event loop.
+fn show_caught() {
+    thread_local! {
+        static SHOWN: Cell<Option<Instant>> = const { Cell::new(None) };
+    }
+    let now = Instant::now();
+    if SHOWN.with(|s| {
+        s.get()
+            .is_some_and(|t| now.duration_since(t) < CAUGHT_QUIET)
+    }) {
+        return;
+    }
+    SHOWN.with(|s| s.set(Some(now)));
+    // Not through `Ctx::update` or the guarded helpers: a panic while showing it must
+    // not report itself again.
+    #[allow(clippy::disallowed_methods)]
+    let _ = slint::invoke_from_event_loop(|| {
+        let _ = rbs_crash::contain(|| {
+            let ctx = CTX.with(|c| c.borrow().clone());
+            if let Some(ctx) = ctx {
+                if let Ok(mut app) = ctx.app.try_borrow_mut() {
+                    app.error = Some(UiError::Other(rbs_crash::CAUGHT_TEXT.into()));
+                }
+                ctx.sync();
+            }
+        });
     });
 }
 
@@ -344,12 +378,12 @@ impl Ctx {
     /// windows cannot re-enter borrowed state.
     fn update(&self, f: impl FnOnce(&mut App) + 'static) {
         match self.app.try_borrow_mut() {
-            Ok(mut app) => f(&mut app),
+            Ok(mut app) => entry::guard(|| f(&mut app)),
             Err(_) => self.queue.borrow_mut().push(Box::new(f)),
         }
         if !self.pending.replace(true) {
             let ctx = self.clone();
-            slint::Timer::single_shot(Duration::ZERO, move || {
+            entry::single_shot(Duration::ZERO, move || {
                 ctx.pending.set(false);
                 ctx.sync();
             });
@@ -434,7 +468,7 @@ impl Ctx {
             // the shared models (the access token list) are attached directly.
             app.studio.attach_models(&w.global::<Studio>());
             let c = ctx.clone();
-            w.window().on_close_requested(move || {
+            entry::on_close_requested(w.window(), move || {
                 c.update(|app| {
                     app.settings = None;
                     app.studio.settings_closed();
@@ -446,13 +480,15 @@ impl Ctx {
             let weak = w.as_weak();
             let c = ctx.clone();
             w.on_dismiss(move || {
-                let Some(w) = weak.upgrade() else {
-                    return;
-                };
-                let _ = w.hide();
-                c.update(|app| {
-                    app.settings = None;
-                    app.studio.settings_closed();
+                entry::guard(|| {
+                    let Some(w) = weak.upgrade() else {
+                        return;
+                    };
+                    let _ = w.hide();
+                    c.update(|app| {
+                        app.settings = None;
+                        app.studio.settings_closed();
+                    });
                 });
             });
             w.set_section(section);
@@ -504,7 +540,8 @@ impl Ctx {
         if app.session.live().is_active() {
             if !self.live_timer.running() {
                 let ctx = self.clone();
-                self.live_timer.start(
+                entry::start(
+                    &self.live_timer,
                     slint::TimerMode::Repeated,
                     Duration::from_secs(1),
                     move || ctx.live_tick(),
@@ -563,7 +600,8 @@ impl Ctx {
         if mixer_shown && s.has_meters() {
             if !self.meter_timer.running() {
                 let ctx = self.clone();
-                self.meter_timer.start(
+                entry::start(
+                    &self.meter_timer,
                     slint::TimerMode::Repeated,
                     studio_ui::METER_PERIOD,
                     move || ctx.meter_tick(),
@@ -577,10 +615,14 @@ impl Ctx {
             if self.deleted_shown.get() != s.deleted_serial || !self.deleted_timer.running() {
                 self.deleted_shown.set(s.deleted_serial);
                 let ctx = self.clone();
-                self.deleted_timer
-                    .start(slint::TimerMode::SingleShot, TOAST_TIME, move || {
+                entry::start(
+                    &self.deleted_timer,
+                    slint::TimerMode::SingleShot,
+                    TOAST_TIME,
+                    move || {
                         ctx.update(|app| app.studio.deleted.clear());
-                    });
+                    },
+                );
             }
         } else {
             self.deleted_timer.stop();
@@ -600,7 +642,7 @@ impl Ctx {
         };
         let queued: Vec<Op> = std::mem::take(&mut *self.queue.borrow_mut());
         for op in queued {
-            op(&mut app);
+            entry::guard(|| op(&mut app));
         }
         if app.exiting {
             return;
@@ -659,10 +701,14 @@ impl Ctx {
             if self.toast_shown.get() != app.toast_serial || !self.toast_timer.running() {
                 self.toast_shown.set(app.toast_serial);
                 let ctx = self.clone();
-                self.toast_timer
-                    .start(slint::TimerMode::SingleShot, TOAST_TIME, move || {
+                entry::start(
+                    &self.toast_timer,
+                    slint::TimerMode::SingleShot,
+                    TOAST_TIME,
+                    move || {
                         ctx.update(|app| app.toast = None);
-                    });
+                    },
+                );
             }
         } else {
             self.toast_timer.stop();
@@ -670,10 +716,14 @@ impl Ctx {
         self.sync_studio(&mut app);
         if app.save_due {
             let ctx = self.clone();
-            self.save_timer
-                .start(slint::TimerMode::SingleShot, SAVE_DELAY, move || {
+            entry::start(
+                &self.save_timer,
+                slint::TimerMode::SingleShot,
+                SAVE_DELAY,
+                move || {
                     ctx.update(App::persist_now);
-                });
+                },
+            );
         }
     }
 
@@ -754,7 +804,7 @@ impl Ctx {
         fw.set_handles(ModelRc::from(models.handles.clone()));
         let ctx = self.clone();
         let weak = fw.as_weak();
-        fw.window().on_close_requested(move || {
+        entry::on_close_requested(fw.window(), move || {
             if let Some(fw) = weak.upgrade() {
                 let w = fw.get_window() as usize;
                 ctx.update(move |app| {
@@ -958,7 +1008,7 @@ enum Library {
 /// modal dialog would run a nested event loop inside a window event, which winit does
 /// not allow on macOS (the app aborted on Export).
 fn transfer(library: Library, import: bool, name: String) {
-    let task = slint::spawn_local(async move {
+    let task = entry::spawn_local(async move {
         let Some(ctx) = CTX.with(|c| c.borrow().clone()) else {
             return;
         };
@@ -1130,11 +1180,11 @@ fn install_studio(g: &Studio<'_>, ctx: &Ctx) {
     });
     {
         let ctx = ctx.clone();
-        g.on_open_settings(move || ctx.open_settings(SECTION_RECORDING));
+        g.on_open_settings(move || entry::guard(|| ctx.open_settings(SECTION_RECORDING)));
     }
     {
         let ctx = ctx.clone();
-        g.on_open_stream_settings(move || ctx.open_settings(SECTION_STREAM));
+        g.on_open_stream_settings(move || entry::guard(|| ctx.open_settings(SECTION_STREAM)));
     }
     on!(on_record, |app| {
         app.studio.record();
@@ -1273,21 +1323,58 @@ fn install_studio(g: &Studio<'_>, ctx: &Ctx) {
     {
         let ctx = ctx.clone();
         g.on_overlays_changed(move || {
-            if let Ok(app) = ctx.app.try_borrow() {
-                preview::place(&app.main);
-            }
+            entry::guard(|| {
+                if let Ok(app) = ctx.app.try_borrow() {
+                    preview::place(&app.main);
+                }
+            });
         });
     }
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let config = config::config_dir();
+    // Crash reports and the running marker (ADR-0054 decisions 4 and 5): a report for
+    // every panic on the UI thread, and a notice when the last session ended badly.
+    rbs_crash::report_panics_on_this_thread();
+    let crash = rbs_crash::install(&config.join("crash-reports"));
+    let notice = match &crash {
+        Ok(session) => crash_notice(session.unclean()),
+        Err(e) => {
+            eprintln!("rbs: crash detection is off: {e}");
+            None
+        }
+    };
+    let ran = run(config, notice);
+    // Every exit that reaches here is clean, also one with an error.
+    if let Ok(session) = crash {
+        session.end_clean();
+    }
+    ran
+}
+
+/// The notice for sessions that ended without a clean exit, if any.
+fn crash_notice(unclean: &[rbs_crash::Unclean]) -> Option<String> {
+    unclean.last()?;
+    let mut text = String::from(
+        "RBS closed unexpectedly last time. Your scenes were kept as last saved, and a Matroska recording stays playable up to that moment.",
+    );
+    if let Some(report) = unclean.iter().rev().find_map(|u| u.report.as_ref()) {
+        text.push_str(&format!(
+            " A report was saved at {} (it may contain file names).",
+            report.display()
+        ));
+    }
+    Some(text)
+}
+
+fn run(config: PathBuf, notice: Option<String>) -> Result<(), Box<dyn std::error::Error>> {
     let demo_live = std::env::args().any(|a| a == "--demo-live");
     slint::BackendSelector::new()
         .backend_name("winit".into())
         .renderer_name("skia".into())
         .select()?;
 
-    let config = config::config_dir();
     // The stream key's store: read only when a stream starts (src/stream_key.rs).
     let keys = rbs_app::stream_key::system();
     let studio_config = config.clone();
@@ -1297,7 +1384,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         &config,
         std::sync::Arc::new(|why| deliver(studio_host::Update::Error(why))),
     );
-    let user_notes = user.notes.clone();
+    let mut user_notes = user.notes.clone();
+    user_notes.extend(notice);
     let first_canvas = rbs_app::user_session::first_canvas(&collection);
     let autosave = user.collection_saver();
     let key_account = rbs_app::stream_key::account(user.profile_id.as_str());
@@ -1419,7 +1507,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // their closing is not a layout change.
     {
         let ctx = ctx.clone();
-        main.window().on_close_requested(move || {
+        entry::on_close_requested(main.window(), move || {
             if let Ok(mut app) = ctx.app.try_borrow_mut() {
                 // Ending a stream cannot be undone: the frame asks first (U4).
                 if app.studio.st_state != studio_ui::st_state::OFF {
@@ -1438,26 +1526,31 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     {
         let ctx = ctx.clone();
         main.global::<Shell>().on_quit_keep(move || {
-            if let Ok(app) = ctx.app.try_borrow() {
-                app.main.global::<Shell>().set_quit_confirm(false);
-            }
+            entry::guard(|| {
+                if let Ok(app) = ctx.app.try_borrow() {
+                    app.main.global::<Shell>().set_quit_confirm(false);
+                }
+            });
         });
     }
     {
         // Quitting ends the stream: the studio host's shutdown ends it cleanly.
         let ctx = ctx.clone();
         main.global::<Shell>().on_quit_end_stream(move || {
-            if let Ok(mut app) = ctx.app.try_borrow_mut() {
-                app.exiting = true;
-                if app.save_due {
-                    app.persist_now();
+            entry::guard(|| {
+                if let Ok(mut app) = ctx.app.try_borrow_mut() {
+                    app.exiting = true;
+                    if app.save_due {
+                        app.persist_now();
+                    }
+                    let _ = app.main.hide();
                 }
-                let _ = app.main.hide();
-            }
+            });
             let _ = slint::quit_event_loop();
         });
     }
 
+    #[allow(clippy::disallowed_methods)] // The one event loop of the app.
     main.run()?;
     // The layer's frames go back before the studio and its publisher stop.
     #[cfg(any(target_os = "macos", windows))]
