@@ -1438,17 +1438,12 @@ impl StudioUi {
         let Some(server) = self.stream.parsed() else {
             return fail(self, "Enter the server in Settings, Stream.".to_owned());
         };
-        let e = &self.stream.encoding;
-        let request = StreamRequest {
-            url: self.stream.server.clone(),
-            input: server.protocol.input(),
-            needs_key: server.protocol.needs_key(),
-            reconnect: self.stream.reconnect_policy(),
-            transport_options: self.stream.transport_options(),
-            encoder: self.encoder_id(e),
-            video: e.video_settings(),
-            audio_bitrate_bps: e.audio_bps(),
-        };
+        let request =
+            match StreamRequest::from_profile(&self.stream, self.encoder_id(&self.stream.encoding))
+            {
+                Ok(r) => r,
+                Err(why) => return fail(self, why),
+            };
         self.st_state = st_state::STARTING;
         self.st_live = Some((server.host, Instant::now()));
         self.st_link = Link::default();
@@ -1542,6 +1537,8 @@ impl StudioUi {
             Ok(()) => String::new(),
             Err(e) => format!("The stream settings could not be saved: {e}"),
         };
+        // The control thread keeps a copy for `stream.start` (control API).
+        self.send(Command::SetStreamProfile(self.stream.clone()));
     }
 
     /// The stream's duration so far and its server's host, while one runs.
@@ -1646,10 +1643,26 @@ impl StudioUi {
                     "streaming to {url} (video: {video_encoder}, audio: {})",
                     audio_encoder.as_deref().unwrap_or("none")
                 ));
+                if self.st_state == st_state::OFF {
+                    // A control API client went live: show it as if Go live was pressed.
+                    let host = stream_profile::parse_server(&url)
+                        .map(|s| s.host)
+                        .unwrap_or_default();
+                    self.st_live = Some((host, Instant::now()));
+                    self.st_link = Link::default();
+                    self.st_note.clear();
+                    self.st_bad = false;
+                    self.st_setup_note = false;
+                }
                 self.st_state = st_state::LIVE;
                 if let Some((_, since)) = &mut self.st_live {
                     *since = Instant::now();
                 }
+            }
+            // A control API client went live first while Go live was on its way: the
+            // stream that runs is shown already.
+            StreamUpdate::NotStarted(why) if self.st_state != st_state::STARTING => {
+                log(&format!("go live refused: {why}"));
             }
             StreamUpdate::NotStarted(why) => {
                 self.st_state = st_state::OFF;
@@ -1695,8 +1708,9 @@ impl StudioUi {
                     .take()
                     .map(|(_, since)| since.elapsed())
                     .unwrap_or_default();
-                // The user ended it (not the server or a failure).
-                let asked = self.st_state == st_state::ENDING;
+                // The user, or a control API client (`stream.stop`), ended it: only a
+                // stream asked to end has no failure.
+                let asked = self.st_state == st_state::ENDING || failure.is_none();
                 self.st_state = st_state::OFF;
                 self.st_link = Link::default();
                 log(&format!(
@@ -1886,6 +1900,7 @@ impl StudioUi {
                 }
                 self.state = 1;
                 self.send(Command::SetProfile(self.profile.clone()));
+                self.send(Command::SetStreamProfile(self.stream.clone()));
                 self.kind_list = kinds;
                 let rows: Vec<KindData> = self
                     .kind_list
