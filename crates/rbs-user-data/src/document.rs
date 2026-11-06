@@ -251,13 +251,26 @@ fn read_text(path: &Path) -> Result<Option<String>, DataError> {
 
 /// The text of a file of any size (the file about to be replaced); `Ok(None)` if
 /// there is none. Not valid UTF-8 counts as unreadable, so it is moved aside.
+/// A file larger than [`MAX_FILE`] (say, a video exported over by mistake) is not read
+/// whole: only its first bytes, enough for [`scan_format`].
 fn read_text_unbounded(path: &Path) -> Result<Option<String>, DataError> {
-    match fs::read(path) {
-        Ok(bytes) => Ok(Some(String::from_utf8_lossy(&bytes).into_owned())),
-        Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(None),
-        Err(e) => Err(e.into()),
-    }
+    let f = match fs::File::open(path) {
+        Ok(f) => f,
+        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => return Err(e.into()),
+    };
+    let limit = if f.metadata()?.len() > MAX_FILE {
+        HEAD_BYTES
+    } else {
+        MAX_FILE
+    };
+    let mut bytes = Vec::new();
+    io::Read::read_to_end(&mut io::Read::take(f, limit), &mut bytes)?;
+    Ok(Some(String::from_utf8_lossy(&bytes).into_owned()))
 }
+
+/// How much of an oversized file is read to look for its format line.
+const HEAD_BYTES: u64 = 4096;
 
 /// Reads a document file; `Ok(None)` if there is none.
 pub fn read<T: Document>(path: &Path) -> Result<Option<Read<T>>, DataError> {

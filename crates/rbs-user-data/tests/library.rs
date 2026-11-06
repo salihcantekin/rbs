@@ -69,12 +69,13 @@ fn ids_are_made_from_names_and_validated() {
 #[test]
 fn entries_are_created_listed_loaded_and_saved() {
     let d = TempDir::new("lib-basic");
+    let w = UserData::new(d.path()).try_lock().unwrap().unwrap();
     let data = UserData::new(d.path());
     let lib = data.profiles();
     assert!(lib.list().unwrap().entries.is_empty());
 
-    let twitch = lib.create("  Twitch  ", &rec(6000)).unwrap();
-    let youtube = lib.create("YouTube", &rec(9000)).unwrap();
+    let twitch = lib.create(&w, "  Twitch  ", &rec(6000)).unwrap();
+    let youtube = lib.create(&w, "YouTube", &rec(9000)).unwrap();
     assert_eq!(twitch.as_str(), "twitch");
     assert_eq!(names(&data), ["Twitch", "YouTube"]);
 
@@ -89,7 +90,7 @@ fn entries_are_created_listed_loaded_and_saved() {
         6000
     );
     e.document = rec(4500);
-    lib.save(&twitch, &e).unwrap();
+    lib.save(&w, &twitch, &e).unwrap();
     assert_eq!(lib.load(&twitch).unwrap().document, rec(4500));
     assert_eq!(lib.find("twitch").unwrap(), Some(twitch.clone()));
     assert_eq!(lib.find("youtube ").unwrap(), Some(youtube));
@@ -101,6 +102,7 @@ fn entries_are_created_listed_loaded_and_saved() {
     ));
     assert!(matches!(
         lib.save(
+            &w,
             &EntryId::parse("kick").unwrap(),
             &Entry::new("Kick", rec(1))
         ),
@@ -111,28 +113,29 @@ fn entries_are_created_listed_loaded_and_saved() {
 #[test]
 fn names_are_unique_ignoring_case_and_checked() {
     let d = TempDir::new("lib-names");
+    let w = UserData::new(d.path()).try_lock().unwrap().unwrap();
     let lib = UserData::new(d.path()).profiles();
-    let a = lib.create("Main", &rec(1)).unwrap();
-    let b = lib.create("Other", &rec(2)).unwrap();
+    let a = lib.create(&w, "Main", &rec(1)).unwrap();
+    let b = lib.create(&w, "Other", &rec(2)).unwrap();
     assert!(matches!(
-        lib.create("MAIN", &rec(3)),
+        lib.create(&w, "MAIN", &rec(3)),
         Err(DataError::NameTaken(_))
     ));
     assert!(matches!(
-        lib.rename(&b, "main"),
+        lib.rename(&w, &b, "main"),
         Err(DataError::NameTaken(_))
     ));
     // Its own name in another case is fine.
-    lib.rename(&a, "MAIN").unwrap();
+    lib.rename(&w, &a, "MAIN").unwrap();
     for bad in ["", "   ", "a\nb", &"x".repeat(MAX_NAME + 1)] {
         assert!(
-            matches!(lib.create(bad, &rec(1)), Err(DataError::BadName(_))),
+            matches!(lib.create(&w, bad, &rec(1)), Err(DataError::BadName(_))),
             "{bad:?}"
         );
     }
-    lib.create(&"é".repeat(MAX_NAME), &rec(1)).unwrap();
+    lib.create(&w, &"é".repeat(MAX_NAME), &rec(1)).unwrap();
     assert!(matches!(
-        lib.create("abc\u{202E}def", &rec(1)),
+        lib.create(&w, "abc\u{202E}def", &rec(1)),
         Err(DataError::BadName(_))
     ));
 }
@@ -140,14 +143,15 @@ fn names_are_unique_ignoring_case_and_checked() {
 #[test]
 fn rename_keeps_the_id_and_duplicate_gets_a_new_one() {
     let d = TempDir::new("lib-rename");
+    let w = UserData::new(d.path()).try_lock().unwrap().unwrap();
     let lib = UserData::new(d.path()).profiles();
-    let id = lib.create("Stream", &rec(6000)).unwrap();
-    lib.rename(&id, "Stream old").unwrap();
+    let id = lib.create(&w, "Stream", &rec(6000)).unwrap();
+    lib.rename(&w, &id, "Stream old").unwrap();
     assert_eq!(lib.load(&id).unwrap().name, "Stream old");
     // A new entry may take the old name; its id gets a number.
-    let again = lib.create("Stream", &rec(1)).unwrap();
+    let again = lib.create(&w, "Stream", &rec(1)).unwrap();
     assert_eq!(again.as_str(), "stream-2");
-    let copy = lib.duplicate(&id, "Stream copy").unwrap();
+    let copy = lib.duplicate(&w, &id, "Stream copy").unwrap();
     assert_eq!(lib.load(&copy).unwrap().document, rec(6000));
     assert_ne!(copy, id);
 }
@@ -155,28 +159,30 @@ fn rename_keeps_the_id_and_duplicate_gets_a_new_one() {
 #[test]
 fn delete_moves_the_file_aside() {
     let d = TempDir::new("lib-delete");
+    let w = UserData::new(d.path()).try_lock().unwrap().unwrap();
     let lib = UserData::new(d.path()).profiles();
-    let id = lib.create("Gone", &rec(1)).unwrap();
-    let first = lib.delete(&id).unwrap();
+    let id = lib.create(&w, "Gone", &rec(1)).unwrap();
+    let first = lib.delete(&w, &id).unwrap();
     assert_eq!(first, lib.dir().join(DELETED_DIR).join("gone.toml"));
     assert!(lib.list().unwrap().entries.is_empty());
-    assert!(matches!(lib.delete(&id), Err(DataError::NotFound(_))));
+    assert!(matches!(lib.delete(&w, &id), Err(DataError::NotFound(_))));
     // A new entry with the same name never gets the deleted entry's id, so nothing
     // kept by id (a stream key, the current selection) passes to it.
-    let id2 = lib.create("Gone", &rec(2)).unwrap();
+    let id2 = lib.create(&w, "Gone", &rec(2)).unwrap();
     assert_eq!(id2.as_str(), "gone-2");
-    let second = lib.delete(&id2).unwrap();
+    let second = lib.delete(&w, &id2).unwrap();
     assert_ne!(first, second);
     assert!(first.exists() && second.exists());
-    let id3 = lib.create("Gone", &rec(3)).unwrap();
+    let id3 = lib.create(&w, "Gone", &rec(3)).unwrap();
     assert_eq!(id3.as_str(), "gone-3");
 }
 
 #[test]
 fn unreadable_and_newer_files_are_reported_and_left_alone() {
     let d = TempDir::new("lib-problems");
+    let w = UserData::new(d.path()).try_lock().unwrap().unwrap();
     let lib = UserData::new(d.path()).profiles();
-    lib.create("Good", &rec(1)).unwrap();
+    lib.create(&w, "Good", &rec(1)).unwrap();
     let dir = lib.dir().to_owned();
     let newer = "format = 7\nkind = \"output-profile\"\nname = \"Future\"\n";
     std::fs::write(dir.join("future.toml"), newer).unwrap();
@@ -200,7 +206,7 @@ fn unreadable_and_newer_files_are_reported_and_left_alone() {
             .any(|(_, e)| matches!(e, DataError::Newer { found: 7, .. }))
     );
     // The newer file's id stays taken and the file is untouched.
-    let id = lib.create("Future", &rec(1)).unwrap();
+    let id = lib.create(&w, "Future", &rec(1)).unwrap();
     assert_eq!(id.as_str(), "future-2");
     assert_eq!(
         std::fs::read_to_string(dir.join("future.toml")).unwrap(),
@@ -211,23 +217,25 @@ fn unreadable_and_newer_files_are_reported_and_left_alone() {
 #[test]
 fn export_and_import_round_trip_and_rename_on_clash() {
     let d = TempDir::new("lib-export");
+    let w = UserData::new(d.path()).try_lock().unwrap().unwrap();
     let data = UserData::new(d.path());
     let lib = data.profiles();
-    let id = lib.create("Twitch", &rec(6000)).unwrap();
+    let id = lib.create(&w, "Twitch", &rec(6000)).unwrap();
     let file = d.path().join("shared").join("twitch.rbs-profile.toml");
     lib.export(&id, &file).unwrap();
 
-    let (copy, name) = lib.import(&file).unwrap();
+    let (copy, name) = lib.import(&w, &file).unwrap();
     assert_eq!(name, "Twitch 2");
     assert_eq!(lib.load(&copy).unwrap().document, rec(6000));
-    let (_, name) = lib.import(&file).unwrap();
+    let (_, name) = lib.import(&w, &file).unwrap();
     assert_eq!(name, "Twitch 3");
 
     // Into another user's data.
     let other = TempDir::new("lib-export-other");
+    let w2 = UserData::new(other.path()).try_lock().unwrap().unwrap();
     let (id2, name) = UserData::new(other.path())
         .profiles()
-        .import(&file)
+        .import(&w2, &file)
         .unwrap();
     assert_eq!((id2.as_str(), name.as_str()), ("twitch", "Twitch"));
 
@@ -239,20 +247,20 @@ fn export_and_import_round_trip_and_rename_on_clash() {
     )
     .unwrap();
     assert!(matches!(
-        lib.import(&wrong),
+        lib.import(&w, &wrong),
         Err(DataError::WrongKind { .. })
     ));
     // A file without a name is named after the file.
     let unnamed = d.path().join("Studio B.toml");
     std::fs::write(&unnamed, "format = 1\nkind = \"output-profile\"\n").unwrap();
-    assert_eq!(lib.import(&unnamed).unwrap().1, "Studio B");
+    assert_eq!(lib.import(&w, &unnamed).unwrap().1, "Studio B");
     // A long name that clashes still fits after numbering.
     let long = "y".repeat(MAX_NAME);
-    lib.create(&long, &rec(1)).unwrap();
+    lib.create(&w, &long, &rec(1)).unwrap();
     let lid = lib.find(&long).unwrap().unwrap();
     let f = d.path().join("long.toml");
     lib.export(&lid, &f).unwrap();
-    let (_, name) = lib.import(&f).unwrap();
+    let (_, name) = lib.import(&w, &f).unwrap();
     assert_eq!(name.chars().count(), MAX_NAME);
     assert!(name.ends_with(" 2"));
     // A hand-made file with an over-long name is shortened, not renamed.
@@ -265,18 +273,19 @@ fn export_and_import_round_trip_and_rename_on_clash() {
         ),
     )
     .unwrap();
-    assert_eq!(lib.import(&over).unwrap().1, "z".repeat(MAX_NAME));
+    assert_eq!(lib.import(&w, &over).unwrap().1, "z".repeat(MAX_NAME));
 }
 
 #[test]
 fn export_can_scrub_and_never_writes_into_the_library() {
     let d = TempDir::new("lib-export-scrub");
+    let w = UserData::new(d.path()).try_lock().unwrap().unwrap();
     let lib = UserData::new(d.path()).profiles();
-    let id = lib.create("Twitch", &rec(6000)).unwrap();
+    let id = lib.create(&w, "Twitch", &rec(6000)).unwrap();
     let file = d.path().join("out.toml");
     lib.export_with(&id, &file, |p| p.remove("recording"))
         .unwrap();
-    let (copy, _) = lib.import(&file).unwrap();
+    let (copy, _) = lib.import(&w, &file).unwrap();
     assert_eq!(lib.load(&copy).unwrap().document, OutputProfile::new());
     // The library itself is unchanged.
     assert_eq!(lib.load(&id).unwrap().document, rec(6000));
@@ -341,6 +350,7 @@ fn only_one_program_holds_the_writer_lock() {
 #[test]
 fn profile_sections_are_typed_and_unknown_ones_are_kept() {
     let d = TempDir::new("lib-sections");
+    let w = UserData::new(d.path()).try_lock().unwrap().unwrap();
     let lib = UserData::new(d.path()).profiles();
     let dir = lib.dir().to_owned();
     std::fs::create_dir_all(&dir).unwrap();
@@ -380,7 +390,7 @@ fn profile_sections_are_typed_and_unknown_ones_are_kept() {
             },
         )
         .unwrap();
-    lib.save(&id, &e).unwrap();
+    lib.save(&w, &id, &e).unwrap();
     let again = lib.load(&id).unwrap();
     assert!(again.document.sections().any(|s| s == "plugin-x"));
     assert_eq!(
@@ -420,12 +430,13 @@ fn profile_sections_are_typed_and_unknown_ones_are_kept() {
 #[test]
 fn the_current_selection_round_trips() {
     let d = TempDir::new("current");
+    let w = UserData::new(d.path()).try_lock().unwrap().unwrap();
     let data = UserData::new(d.path());
     let (c, problem) = data.current();
     assert_eq!(c, Current::default());
     assert!(problem.is_none());
     let want = Current::new(EntryId::parse("twitch"), EntryId::parse("talk-show"));
-    data.set_current(&want).unwrap();
+    data.set_current(&w, &want).unwrap();
     assert_eq!(data.current().0, want);
     std::fs::write(
         d.path().join("current.toml"),
@@ -440,16 +451,21 @@ fn the_current_selection_round_trips() {
 #[test]
 fn a_hand_edit_that_breaks_only_the_body_is_kept_when_saved_over() {
     let d = TempDir::new("lib-body-broken");
+    let w = UserData::new(d.path()).try_lock().unwrap().unwrap();
     let lib = UserData::new(d.path()).scene_collections();
     let id = lib
-        .create("Show", &rbs_scene::SceneCollection::new())
+        .create(&w, "Show", &rbs_scene::SceneCollection::new())
         .unwrap();
     let path = lib.path(&id);
     let edited = "format = 1\nkind = \"scene-collection\"\nname = \"Show\"\nsetings = { a = 1 }\n";
     std::fs::write(&path, edited).unwrap();
     assert!(matches!(lib.load(&id), Err(DataError::Invalid(_))));
-    lib.save(&id, &Entry::new("Show", rbs_scene::SceneCollection::new()))
-        .unwrap();
+    lib.save(
+        &w,
+        &id,
+        &Entry::new("Show", rbs_scene::SceneCollection::new()),
+    )
+    .unwrap();
     assert_eq!(
         std::fs::read_to_string(lib.dir().join("show.toml.unreadable.bak")).unwrap(),
         edited
@@ -457,7 +473,7 @@ fn a_hand_edit_that_breaks_only_the_body_is_kept_when_saved_over() {
     // The backup keeps its id taken even if the entry file were gone.
     std::fs::remove_file(&path).unwrap();
     assert_eq!(
-        lib.create("Show", &rbs_scene::SceneCollection::new())
+        lib.create(&w, "Show", &rbs_scene::SceneCollection::new())
             .unwrap()
             .as_str(),
         "show-2"
@@ -467,6 +483,7 @@ fn a_hand_edit_that_breaks_only_the_body_is_kept_when_saved_over() {
 #[test]
 fn a_document_too_large_to_read_back_is_never_written() {
     let d = TempDir::new("lib-too-large");
+    let w = UserData::new(d.path()).try_lock().unwrap().unwrap();
     let lib = UserData::new(d.path()).profiles();
     #[derive(Serialize)]
     struct Big {
@@ -480,6 +497,9 @@ fn a_document_too_large_to_read_back_is_never_written() {
         },
     )
     .unwrap();
-    assert!(matches!(lib.create("Big", &p), Err(DataError::Invalid(_))));
+    assert!(matches!(
+        lib.create(&w, "Big", &p),
+        Err(DataError::Invalid(_))
+    ));
     assert!(lib.list().unwrap().entries.is_empty());
 }

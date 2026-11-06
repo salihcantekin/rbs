@@ -61,4 +61,4 @@ An ADR records one decision that is hard to reverse or affects more than one cra
 | [0046](0046-network-access-over-tls.md) | Network access to the control API: TLS on the remote control port, a generated key the client pins | Accepted |
 | [0047](0047-several-outputs-per-canvas.md) | Several outputs per canvas: record and stream at once, encoders shared when their settings match | Accepted |
 | [0048](0048-selection-overlay-on-the-preview-layer.md) | Draw the preview's selection outline and handles as native layers of the preview | Accepted |
-| [0051](0051-user-data-profiles-and-scene-collections.md) | User data as versioned documents; output profiles and scene collections as libraries of named files | Proposed |
+| [0051](0051-user-data-profiles-and-scene-collections.md) | User data as versioned documents; output profiles and scene collections as libraries of named files | Accepted |

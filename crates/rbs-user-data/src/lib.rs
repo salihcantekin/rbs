@@ -80,7 +80,7 @@ impl UserData {
     }
 
     /// Records which profile and collection are in use.
-    pub fn set_current(&self, current: &Current) -> Result<(), DataError> {
+    pub fn set_current(&self, _lock: &WriterLock, current: &Current) -> Result<(), DataError> {
         document::write(&self.root.join(CURRENT_FILE), current, None)
     }
 

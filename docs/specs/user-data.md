@@ -41,7 +41,7 @@ A kind implements `Document`: `KIND`, `FORMAT` (current version, from 1), `from_
 | anything else | The body |
 
 - `scan_format(text)`: the first top-level `format = <integer>` line, found without parsing (before any `[` line). `parse`, `peek` and `write` use it to recognise a newer file even when its syntax cannot be parsed.
-- Files larger than `MAX_FILE` (16 MiB) are not read (`Invalid`).
+- Files larger than `MAX_FILE` (16 MiB) are not read (`Invalid`). A file that large in the way of a `write` is not read whole: its first 4 KiB are scanned for a newer format, else it is moved aside.
 - `peek` reads only the envelope (`Envelope { format, kind, name }`), parsing the lines before the first table when they hold all three, else the whole file; it checks kind and format but not the body.
 - `parse` / `read`: a file without an integer `format` of at least 1 or without `kind` is `NoVersion`; another kind is `WrongKind`; a higher format is `Newer`; a lower one is upgraded step by step before `from_body`. `Read` reports the name, the format found and the document. Invalid TOML is `Syntax`; a body that does not fit is `Invalid` with the reason.
 - `render` / `write`: writes `format = FORMAT`, `kind`, `name` if given, then the body; a body using a reserved key is `Invalid`. `write` refuses with `Newer` when the file on disk has a higher format (by `scan_format` or by parsing) and leaves it untouched; when it has a lower one, copies it atomically to `<file>.format<N>.bak` (`backup_path`) unless that exists; when it does not load as a document of this kind (envelope or body), moves it to `<file>.unreadable.bak` or `<file>.unreadable-N.bak` (`unreadable_path`); then writes. Rendering is deterministic, so unchanged documents give identical files. A rendered document over `MAX_FILE` is refused (`Invalid`) before anything is written.
@@ -61,7 +61,7 @@ A kind implements `Document`: `KIND`, `FORMAT` (current version, from 1), `from_
 
 ### Writer lock
 
-`UserData::try_lock() -> Result<Option<WriterLock>, DataError>` locks `user-data.lock` in the config directory (`Ok(None)` when another program holds it). Only the holder writes libraries and `current.toml`; a second app instance works read-only; `rbs-cli` only reads. The holder sends every write through one writer thread, in order (ADR-0051 decision 8); the library itself does not order concurrent calls.
+Every library write (`create`, `save`, `rename`, `duplicate`, `delete`, `import`) and `set_current` takes `&WriterLock` as proof. `UserData::try_lock() -> Result<Option<WriterLock>, DataError>` locks `user-data.lock` in the config directory (`Ok(None)` when another program holds it). Only the holder writes libraries and `current.toml`; a second app instance works read-only; `rbs-cli` only reads. The holder sends every write through one writer thread, in order (ADR-0051 decision 8); the library itself does not order concurrent calls.
 
 ### Output profile (`OutputProfile`, `kind = "output-profile"`, format 1)
 

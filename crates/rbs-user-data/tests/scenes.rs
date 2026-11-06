@@ -241,9 +241,10 @@ fn invalid_documents_are_refused_with_a_reason() {
 #[test]
 fn collections_live_in_their_own_library() {
     let d = TempDir::new("scene-lib");
+    let w = UserData::new(d.path()).try_lock().unwrap().unwrap();
     let data = UserData::new(d.path());
     let lib = data.scene_collections();
-    let id = lib.create("Main show", &show()).unwrap();
+    let id = lib.create(&w, "Main show", &show()).unwrap();
     assert_eq!(
         lib.path(&id),
         d.path().join("scenes").join("main-show.toml")
@@ -252,10 +253,10 @@ fn collections_live_in_their_own_library() {
     // A profile file is not a collection.
     let p = data
         .profiles()
-        .create("P", &rbs_user_data::OutputProfile::new())
+        .create(&w, "P", &rbs_user_data::OutputProfile::new())
         .unwrap();
     assert!(matches!(
-        lib.import(&data.profiles().path(&p)),
+        lib.import(&w, &data.profiles().path(&p)),
         Err(DataError::WrongKind { .. })
     ));
 }
@@ -416,6 +417,7 @@ fn every_state_of_a_long_edit_sequence_round_trips() {
 #[ignore = "slow: measures saving large collections"]
 fn slow_save_cost_of_a_large_collection() {
     let d = TempDir::new("scene-bench");
+    let w = UserData::new(d.path()).try_lock().unwrap().unwrap();
     let lib = UserData::new(d.path()).scene_collections();
     let mut col = SceneCollection::new();
     let (canvas, _) = col
@@ -448,13 +450,13 @@ fn slow_save_cost_of_a_large_collection() {
     }
     let mut ids = Vec::new();
     for n in 0..20 {
-        ids.push(lib.create(&format!("Show {n}"), &col).unwrap());
+        ids.push(lib.create(&w, &format!("Show {n}"), &col).unwrap());
     }
     let entry = rbs_user_data::Entry::new("Show 0", col.clone());
     let t = std::time::Instant::now();
     let runs = 20;
     for _ in 0..runs {
-        lib.save(&ids[0], &entry).unwrap();
+        lib.save(&w, &ids[0], &entry).unwrap();
     }
     let save = t.elapsed() / runs;
     let t = std::time::Instant::now();

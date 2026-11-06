@@ -1,6 +1,6 @@
 # ADR-0051: User data as versioned documents; output profiles and scene collections as libraries of named files
 
-- Status: Proposed
+- Status: Accepted
 - Date: 2026-11-06
 - Deciders: Salih (owner)
 
@@ -88,6 +88,10 @@ Re-review by the same session, 2026-11-06: changes requested; concerns 2-7, 9, 1
 1. Blocking: a file with a valid envelope but a broken body was still overwritten. `write` now loads the whole existing document and moves it aside on any error but `Newer`. Test `a_hand_edit_that_breaks_only_the_body_is_kept_when_saved_over`.
 2. Major: a writer thread for autosave raced with direct rename and delete. Decision 8 now routes every write through the one writer, in order.
 3. Minor: a document too large to read back could be written. `render` refuses it. Test `a_document_too_large_to_read_back_is_never_written`.
-4. Minor: the writer lock is advisory; library writes do not require it. Accepted: the app is the only program that links write paths, and `rbs-cli` gets read-only commands; enforcing it in the type system can come with the app wiring if a second writer appears.
+4. Minor: the writer lock was advisory. Fixed after the final review: every library write and `set_current` takes `&WriterLock`, which only `UserData::try_lock` hands out.
 5. Minor: moving a broken file aside could free its id. Backups (`<id>.toml.*.bak`) keep their id taken (same test as 1).
 6. Nit: a hand-restored profile has no stream key. Stated in decision 5.
+
+Final review by the same session, 2026-11-06: approve. Concerns 1, 2, 3, 5 and 6 of the re-review confirmed fixed (2 is a rule for the app wiring, whose review must check the single ordered writer). Its two open minor points were then fixed rather than accepted: the writer lock is required by the API (4 above), and a file larger than 16 MiB in the way of a write is not read whole, only its first 4 KiB for the format line, then moved aside or kept if newer (test `an_oversized_file_in_the_way_is_moved_aside_or_kept_if_newer`).
+
+Owner approval: Salih's standing early-phase policy (threads may mark ADRs Accepted after the independent review; merge once CI is green).

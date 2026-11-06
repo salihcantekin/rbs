@@ -239,3 +239,31 @@ fn files_over_the_size_limit_are_refused() {
         Err(DataError::Invalid(_))
     ));
 }
+
+#[test]
+fn an_oversized_file_in_the_way_is_moved_aside_or_kept_if_newer() {
+    let d = TempDir::new("doc-oversized-target");
+    let path = d.path().join("n.toml");
+    let f = std::fs::File::create(&path).unwrap();
+    f.set_len(document::MAX_FILE + 10).unwrap();
+    document::write(&path, &note("x"), None).unwrap();
+    assert_eq!(
+        std::fs::metadata(d.path().join("n.toml.unreadable.bak"))
+            .unwrap()
+            .len(),
+        document::MAX_FILE + 10
+    );
+    // A huge file from a newer RBS is still recognised by its first line.
+    let newer = d.path().join("m.toml");
+    std::fs::write(&newer, "format = 99\n").unwrap();
+    std::fs::OpenOptions::new()
+        .write(true)
+        .open(&newer)
+        .unwrap()
+        .set_len(document::MAX_FILE + 10)
+        .unwrap();
+    assert!(matches!(
+        document::write(&newer, &note("x"), None),
+        Err(DataError::Newer { found: 99, .. })
+    ));
+}

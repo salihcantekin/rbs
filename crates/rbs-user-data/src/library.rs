@@ -4,7 +4,8 @@
 //! entry is created and never changed, so a rename touches one line of one file and
 //! anything that refers to the entry by id keeps working. The display name is inside
 //! the file and unique in the library, compared ignoring case. Deleting moves the file
-//! into `deleted/`, so a mistake can be undone by hand (and later by the app). Only
+//! into `deleted/`, so a mistake can be undone by hand (and later by the app). Every
+//! write takes the [`WriterLock`], so only the program holding it can write. Only
 //! files ending in `.toml` directly in the directory are entries.
 
 use std::fmt;
@@ -13,6 +14,7 @@ use std::io;
 use std::marker::PhantomData;
 use std::path::{Path, PathBuf};
 
+use crate::WriterLock;
 use crate::document::{self, DataError, Document};
 
 /// Longest entry name, in characters.
@@ -361,7 +363,12 @@ impl<T: Document> Library<T> {
     }
 
     /// Adds an entry named `name`; its id is made from the name.
-    pub fn create(&self, name: &str, document: &T) -> Result<EntryId, DataError> {
+    pub fn create(
+        &self,
+        _lock: &WriterLock,
+        name: &str,
+        document: &T,
+    ) -> Result<EntryId, DataError> {
         let name = check_name(name)?;
         self.check_free(&name, None)?;
         let id = self.new_id(&name)?;
@@ -370,7 +377,12 @@ impl<T: Document> Library<T> {
     }
 
     /// Replaces the contents and name of an existing entry.
-    pub fn save(&self, id: &EntryId, entry: &Entry<T>) -> Result<(), DataError> {
+    pub fn save(
+        &self,
+        _lock: &WriterLock,
+        id: &EntryId,
+        entry: &Entry<T>,
+    ) -> Result<(), DataError> {
         let name = check_name(&entry.name)?;
         let path = self.path(id);
         if !path.is_file() {
@@ -390,21 +402,26 @@ impl<T: Document> Library<T> {
     }
 
     /// Renames an entry; its id stays.
-    pub fn rename(&self, id: &EntryId, name: &str) -> Result<(), DataError> {
+    pub fn rename(&self, lock: &WriterLock, id: &EntryId, name: &str) -> Result<(), DataError> {
         let mut entry = self.load(id)?;
         entry.name = name.to_owned();
-        self.save(id, &entry)
+        self.save(lock, id, &entry)
     }
 
     /// Copies an entry under a new name.
-    pub fn duplicate(&self, id: &EntryId, name: &str) -> Result<EntryId, DataError> {
+    pub fn duplicate(
+        &self,
+        lock: &WriterLock,
+        id: &EntryId,
+        name: &str,
+    ) -> Result<EntryId, DataError> {
         let entry = self.load(id)?;
-        self.create(name, &entry.document)
+        self.create(lock, name, &entry.document)
     }
 
     /// Moves an entry's file to the `deleted` subdirectory (as `<id>.toml`, or
     /// `<id>-N.toml` if that is taken) and returns where it went.
-    pub fn delete(&self, id: &EntryId) -> Result<PathBuf, DataError> {
+    pub fn delete(&self, _lock: &WriterLock, id: &EntryId) -> Result<PathBuf, DataError> {
         let path = self.path(id);
         if !path.is_file() {
             return Err(DataError::NotFound(id.to_string()));
@@ -457,7 +474,7 @@ impl<T: Document> Library<T> {
     /// are upgraded; newer ones and other kinds are refused. A file without a name is
     /// named after the file; a name already used gets a number (`Name 2`). Returns the
     /// new id and the name it got.
-    pub fn import(&self, from: &Path) -> Result<(EntryId, String), DataError> {
+    pub fn import(&self, lock: &WriterLock, from: &Path) -> Result<(EntryId, String), DataError> {
         let read = document::read::<T>(from)?
             .ok_or_else(|| DataError::NotFound(from.display().to_string()))?;
         let wanted = read
@@ -481,7 +498,7 @@ impl<T: Document> Library<T> {
                 .find(|n| free(n))
                 .ok_or_else(|| DataError::Invalid("no free name".to_owned()))?
         };
-        let id = self.create(&name, &read.document)?;
+        let id = self.create(lock, &name, &read.document)?;
         Ok((id, name))
     }
 }
