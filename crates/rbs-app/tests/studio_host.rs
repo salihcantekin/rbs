@@ -10,6 +10,7 @@ use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
 use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
+use rbs_app::edit_history::{EditKind, StepInfo};
 use rbs_app::studio_host::{
     Command, HostConfig, SourceKind, SourceRow, SourceStatus, StudioHost, Target, Update,
 };
@@ -224,6 +225,7 @@ fn sources_change_layer_order_and_box_through_the_host() {
 
     // A new box keeps the rest of the layout.
     host.send(Command::SetSourceBox {
+        gesture: 0,
         seq: 1,
         id: camera,
         position: [10.0, 20.0],
@@ -242,6 +244,7 @@ fn sources_change_layer_order_and_box_through_the_host() {
     assert!(placed_answer(&rx, 1));
     // The same box again changes nothing and is still answered.
     host.send(Command::SetSourceBox {
+        gesture: 0,
         seq: 2,
         id: camera,
         position: [10.0, 20.0],
@@ -271,6 +274,7 @@ fn sources_change_layer_order_and_box_through_the_host() {
 
     // A zero size is refused and changes nothing.
     host.send(Command::SetSourceBox {
+        gesture: 0,
         seq: 3,
         id: camera,
         position: [0.0, 0.0],
@@ -282,6 +286,118 @@ fn sources_change_layer_order_and_box_through_the_host() {
         _ => None,
     });
     assert!(!placed_answer(&rx, 3));
+}
+
+fn history(rx: &Receiver<Update>) -> (Option<StepInfo>, Option<StepInfo>) {
+    next(rx, |u| match u {
+        Update::History { undo, redo } => Some((undo, redo)),
+        _ => None,
+    })
+}
+
+#[test]
+fn edits_are_undone_and_redone_and_a_drag_is_one_step() {
+    let Some(gpu) = gpu() else { return };
+    let (host, rx) = host(gpu);
+    next(&rx, |u| match u {
+        Update::Started { .. } => Some(()),
+        Update::Failed(e) => panic!("{e}"),
+        _ => None,
+    });
+    let displays = targets(&host, &rx, SourceKind::Screen);
+    host.send(Command::AddSource {
+        kind: SourceKind::Screen,
+        target: displays[0].clone(),
+    });
+    rows_where(&rx, |r| r.len() == 1);
+    let cameras = targets(&host, &rx, SourceKind::Camera);
+    host.send(Command::AddSource {
+        kind: SourceKind::Camera,
+        target: cameras[0].clone(),
+    });
+    let rows = rows_where(&rx, |r| r.len() == 2);
+    let (camera, screen) = (rows[0].id, rows[1].id);
+    let start = rows[0].layout.unwrap();
+    let (undo, redo) = history(&rx);
+    assert_eq!(undo.as_ref().map(|s| s.kind), Some(EditKind::Add));
+    assert_eq!(undo.unwrap().name, rows[0].name);
+    assert!(redo.is_none());
+
+    // A drag: three boxes of one gesture, then one of its own from the fields.
+    for (seq, x) in [(1, 10.0), (2, 20.0), (3, 30.0)] {
+        host.send(Command::SetSourceBox {
+            seq,
+            gesture: 5,
+            id: camera,
+            position: [x, 0.0],
+            size: start.size,
+        });
+    }
+    host.send(Command::SetSourceBox {
+        seq: 4,
+        gesture: 0,
+        id: camera,
+        position: [30.0, 0.0],
+        size: [320.0, 180.0],
+    });
+    rows_where(&rx, |r| {
+        r[0].layout.is_some_and(|l| l.size == [320.0, 180.0])
+    });
+    host.send(Command::MoveSource {
+        id: camera,
+        up: false,
+    });
+    rows_where(&rx, |r| r[0].id == screen);
+
+    // Undo the move, the resize, then the whole drag in one step.
+    host.send(Command::Undo);
+    rows_where(&rx, |r| r[0].id == camera);
+    host.send(Command::Undo);
+    let rows = rows_where(&rx, |r| r[0].layout.is_some_and(|l| l.size == start.size));
+    assert_eq!(rows[0].layout.unwrap().position, [30.0, 0.0]);
+    host.send(Command::Undo);
+    let rows = rows_where(&rx, |r| {
+        r[0].layout.is_some_and(|l| l.position == start.position)
+    });
+    assert_eq!(rows[0].layout.unwrap(), start);
+    let (undo, redo) = history(&rx);
+    assert_eq!(undo.map(|s| s.kind), Some(EditKind::Add));
+    assert_eq!(redo.map(|s| s.kind), Some(EditKind::Place));
+
+    // Redo the drag, then a new edit clears what was left to redo.
+    host.send(Command::Redo);
+    rows_where(&rx, |r| {
+        r[0].layout.is_some_and(|l| l.position == [30.0, 0.0])
+    });
+    host.send(Command::DeleteSource(screen));
+    rows_where(&rx, |r| r.len() == 1);
+    let (undo, redo) = history(&rx);
+    assert_eq!(undo.map(|s| s.kind), Some(EditKind::Delete));
+    assert!(redo.is_none());
+    // The toast's Undo brings the screen back; after another edit it does nothing.
+    host.send(Command::UndoDelete);
+    rows_where(&rx, |r| r.len() == 2);
+    host.send(Command::Undo);
+    rows_where(&rx, |r| {
+        r.len() == 2 && r[0].layout.is_some_and(|l| l.position == start.position)
+    });
+    host.send(Command::UndoDelete);
+    // Undo everything: the adds go too.
+    host.send(Command::Undo);
+    rows_where(&rx, |r| r.len() == 1);
+    host.send(Command::Undo);
+    rows_where(&rx, |r| r.is_empty());
+    let (undo, redo) = history(&rx);
+    assert!(undo.is_none());
+    assert_eq!(redo.map(|s| s.kind), Some(EditKind::Add));
+    // Nothing to undo: nothing happens.
+    host.send(Command::Undo);
+    host.send(Command::Redo);
+    let rows = rows_where(&rx, |r| r.len() == 1);
+    assert_eq!(
+        rows[0].id, screen,
+        "the same source comes back under its old id"
+    );
 }
 
 #[test]

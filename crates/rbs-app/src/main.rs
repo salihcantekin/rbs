@@ -1005,6 +1005,9 @@ fn install_studio(g: &Studio<'_>, ctx: &Ctx) {
     on!(on_undo_delete, |app| {
         app.studio.undo_delete();
     });
+    on!(on_undo_edit, |app, back: bool| {
+        app.studio.undo_edit(back);
+    });
     on!(on_dismiss_deleted, |app| {
         app.studio.deleted.clear();
     });

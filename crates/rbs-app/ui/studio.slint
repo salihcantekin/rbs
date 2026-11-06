@@ -94,6 +94,15 @@ export global Studio {
     callback preview-deselect();
     callback undo-delete();
     callback dismiss-deleted();
+    // What Undo and Redo would apply to the scene now: 0 nothing, 1 adding, 2 deleting,
+    // 3 the layer order, 4 moving or resizing the source named `undo-name` /
+    // `redo-name` (U4). Separate from the layout history (U21).
+    in property <int> undo-kind;
+    in property <string> undo-name;
+    in property <int> redo-kind;
+    in property <string> redo-name;
+    // Undo (true) or redo (false) the newest scene edit.
+    callback undo-edit(bool /* back */);
     callback reset-clip(int /* meter */);
     // `overlays` changed (Rust hides or shows the preview layer).
     callback overlays-changed();
@@ -380,6 +389,9 @@ export component ProgramPanel inherits Rectangle {
 
 component SourceRowView inherits Rectangle {
     in property <SourceData> data;
+    // Move up, Move down or Delete source was activated: the list is made again, so
+    // the row's buttons and their focus are about to go.
+    callback leaving();
     property <bool> selected: Studio.selected-source == data.id;
     height: Tokens.size-control-lg + Tokens.space-2;
     border-radius: Tokens.radius-sm;
@@ -437,7 +449,7 @@ component SourceRowView inherits Rectangle {
                 icon: IconName.chevron-up;
                 name: @tr("Move {} up", data.name);
                 enabled: data.can-up;
-                clicked => { Studio.move-source(data.id, true); }
+                clicked => { root.leaving(); Studio.move-source(data.id, true); }
             }
         }
         if data.picture && selected: VerticalLayout {
@@ -446,7 +458,7 @@ component SourceRowView inherits Rectangle {
                 icon: IconName.chevron-down;
                 name: @tr("Move {} down", data.name);
                 enabled: data.can-down;
-                clicked => { Studio.move-source(data.id, false); }
+                clicked => { root.leaving(); Studio.move-source(data.id, false); }
             }
         }
         VerticalLayout {
@@ -454,7 +466,7 @@ component SourceRowView inherits Rectangle {
             IconButton {
                 icon: IconName.close;
                 name: @tr("Delete source {}", data.name);
-                clicked => { Studio.delete-source(data.id); }
+                clicked => { root.leaving(); Studio.delete-source(data.id); }
             }
         }
     }
@@ -468,11 +480,36 @@ export component SourcesPanel inherits Rectangle {
         height: header;
         padding: Tokens.space-2;
         alignment: start;
+        spacing: Tokens.space-1;
         add-button := Button {
             text: @tr("Add source");
             icon: IconName.chevron-down;
             enabled: Studio.state == 1;
             clicked => { Studio.picker-kind = -1; add-menu.show(); }
+        }
+        // Scene edits (U4); Ctrl+Z / Cmd+Z and Ctrl+Shift+Z / Cmd+Shift+Z (Ctrl+Y)
+        // in any panel too. The accessible name says what they apply to.
+        Button {
+            text: @tr("Undo");
+            kind: "ghost";
+            enabled: Studio.state == 1 && Studio.undo-kind != 0;
+            accessible-name: Studio.undo-kind == 1 ? @tr("Undo adding {}", Studio.undo-name)
+                : Studio.undo-kind == 2 ? @tr("Undo deleting {}", Studio.undo-name)
+                : Studio.undo-kind == 3 ? @tr("Undo the layer change of {}", Studio.undo-name)
+                : Studio.undo-kind == 4 ? @tr("Undo moving or resizing {}", Studio.undo-name)
+                : @tr("Undo");
+            clicked => { Studio.undo-edit(true); }
+        }
+        Button {
+            text: @tr("Redo");
+            kind: "ghost";
+            enabled: Studio.state == 1 && Studio.redo-kind != 0;
+            accessible-name: Studio.redo-kind == 1 ? @tr("Redo adding {}", Studio.redo-name)
+                : Studio.redo-kind == 2 ? @tr("Redo deleting {}", Studio.redo-name)
+                : Studio.redo-kind == 3 ? @tr("Redo the layer change of {}", Studio.redo-name)
+                : Studio.redo-kind == 4 ? @tr("Redo moving or resizing {}", Studio.redo-name)
+                : @tr("Redo");
+            clicked => { Studio.undo-edit(false); }
         }
     }
     if Studio.sources.length == 0: EmptyState {
@@ -494,8 +531,19 @@ export component SourcesPanel inherits Rectangle {
             padding-right: Tokens.space-1;
             spacing: Tokens.space-1;
             alignment: start;
-            for s in Studio.sources: SourceRowView { data: s; }
+            for s in Studio.sources: SourceRowView {
+                data: s;
+                leaving => { list-focus.focus(); }
+            }
         }
+    }
+    // Takes the focus from a row that is made again (a layer move) or deleted, so
+    // Ctrl+Z / Cmd+Z right after it still reaches the window's undo keys.
+    list-focus := FocusScope {
+        width: 0;
+        height: 0;
+        focus-on-click: false;
+        focus-on-tab-navigation: false;
     }
     property <bool> menu-open: add-menu.is-open;
     changed menu-open => { Studio.overlays += menu-open ? 1 : -1; Studio.overlays-changed(); }

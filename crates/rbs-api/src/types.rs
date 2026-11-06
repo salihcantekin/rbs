@@ -1,5 +1,5 @@
 //! The data the first method slice reads and writes: studio, sources, capture targets,
-//! recording profiles, recording state and settings. Plain serializable values with no
+//! recording profiles, recording and stream state and settings. Plain serializable values with no
 //! engine types, so clients in any language get them from the JSON Schema.
 
 use std::collections::BTreeMap;
@@ -258,6 +258,57 @@ pub struct RecordingSummary {
     pub frames: u64,
     /// Video frames dropped.
     pub dropped: u64,
+}
+
+/// How a stream reaches its server.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum StreamProtocol {
+    /// RTMP (`rtmp://`), with a stream key.
+    Rtmp,
+    /// SRT (`srt://`).
+    Srt,
+}
+
+/// What the stream is doing. The server's address is not part of it: it is a setting,
+/// and the stream key is never shown.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "state", rename_all = "snake_case")]
+pub enum StreamState {
+    /// Nothing streams.
+    Idle {
+        /// How the last stream of this server run ended, if one ran.
+        last: Option<StreamSummary>,
+    },
+    /// A stream runs; it connects, and reconnects, in the background.
+    Live {
+        /// How it reaches the server.
+        protocol: StreamProtocol,
+        /// The server takes the stream now.
+        connected: bool,
+        /// Times it connected so far (0: it has not reached the server yet).
+        connects: u64,
+        /// Reconnect attempts so far.
+        reconnect_attempts: u64,
+        /// The video encoder's name.
+        video_encoder: String,
+        /// The audio encoder's name, when audio is sent.
+        audio_encoder: Option<String>,
+    },
+}
+
+/// How a stream ended.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StreamSummary {
+    /// Why it stopped on its own, or `null` when it was asked to.
+    pub failure: Option<String>,
+    /// Video frames encoded.
+    pub frames: u64,
+    /// Video frames dropped, and items the transport dropped while the connection was
+    /// slow or down.
+    pub dropped: u64,
+    /// Times it connected (0: it never reached the server).
+    pub connects: u64,
 }
 
 /// One audio source's levels, for `audio.levels`.

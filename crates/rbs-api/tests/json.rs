@@ -10,7 +10,7 @@ use rbs_api::codec::{Codec, JsonCodec, RequestId};
 use rbs_api::event::{Event, EventPayload, Topic};
 use rbs_api::request::*;
 use rbs_api::types::*;
-use rbs_api::{ApiError, ErrorKind, ScopeSet};
+use rbs_api::{ApiError, ErrorKind, Scope, ScopeSet};
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 use serde_json::{Value, json};
@@ -100,6 +100,9 @@ fn every_request() -> Vec<Request> {
         })),
         c(Command::RecordStop),
         c(Command::RecordStatus),
+        c(Command::StreamStart),
+        c(Command::StreamStop),
+        c(Command::StreamStatus),
         c(Command::SettingsGet),
         c(Command::SettingsSet(SettingsPatch {
             profiles: Some(vec![profile()]),
@@ -248,6 +251,21 @@ fn every_result_and_event_type_round_trips() {
             canvas: canvas(),
         },
     });
+    round_trip(&StreamStarted {
+        video_encoder: "VideoToolbox".into(),
+        audio_encoder: None,
+    });
+    round_trip(&Snapshot {
+        seq: seq.clone(),
+        data: StreamState::Idle {
+            last: Some(StreamSummary {
+                failure: Some("the server closed the connection".into()),
+                frames: 1800,
+                dropped: 3,
+                connects: 2,
+            }),
+        },
+    });
     round_trip(&Subscribed { seq });
     round_trip(&Empty {});
     round_trip(&ApiError::new(ErrorKind::UndoConflict, "x"));
@@ -268,6 +286,14 @@ fn every_result_and_event_type_round_trips() {
             peak_db: vec![-6.0, -7.5],
             rms_db: vec![-18.0, -19.25],
         }]),
+        EventPayload::StreamState(StreamState::Live {
+            protocol: StreamProtocol::Srt,
+            connected: true,
+            connects: 1,
+            reconnect_attempts: 0,
+            video_encoder: "NVENC".into(),
+            audio_encoder: Some("MF AAC".into()),
+        }),
     ] {
         round_trip(&Event {
             object: None,
@@ -366,4 +392,54 @@ fn authenticate_debug_hides_the_token() {
         token: "rbs1_secret".into(),
     };
     assert!(!format!("{a:?}").contains("secret"));
+}
+
+#[test]
+fn stream_state_has_a_stable_wire_form() {
+    let live = StreamState::Live {
+        protocol: StreamProtocol::Rtmp,
+        connected: false,
+        connects: 0,
+        reconnect_attempts: 1,
+        video_encoder: "VT".into(),
+        audio_encoder: None,
+    };
+    assert_eq!(
+        serde_json::to_value(&live).unwrap(),
+        json!({
+            "state": "live",
+            "protocol": "rtmp",
+            "connected": false,
+            "connects": 0,
+            "reconnect_attempts": 1,
+            "video_encoder": "VT",
+            "audio_encoder": null,
+        })
+    );
+    let event = Event {
+        object: None,
+        seq: 3,
+        payload: EventPayload::StreamState(StreamState::Idle { last: None }),
+    };
+    let v: Value = serde_json::from_str(&JsonCodec.encode_event(&event)).unwrap();
+    assert_eq!(
+        v["params"],
+        json!({"topic": "stream.state", "seq": 3, "data": {"state": "idle", "last": null}})
+    );
+    assert_eq!(
+        rbs_api::request::method_scope("stream.start"),
+        Some(Some(Scope::Control))
+    );
+    assert_eq!(
+        rbs_api::request::method_scope("stream.stop"),
+        Some(Some(Scope::Control))
+    );
+    assert_eq!(
+        rbs_api::request::method_scope("stream.status"),
+        Some(Some(Scope::Read))
+    );
+    assert_eq!(
+        rbs_api::request::topic_scope(Topic::StreamState),
+        Scope::Read
+    );
 }

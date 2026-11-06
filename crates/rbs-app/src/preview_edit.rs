@@ -27,8 +27,10 @@ pub enum Effect {
     /// Select this source (-1: none).
     Select(i32),
     /// Send this box for this source, as request `seq`; the studio answers it with the
-    /// same `seq` whether or not anything changed.
-    Send(u64, i32, SourceBox),
+    /// same `seq` whether or not anything changed. The last number is the gesture: the
+    /// boxes of one drag share one, so they are one undo step; 0 for a box of its own
+    /// (arrow keys).
+    Send(u64, i32, SourceBox, u64),
 }
 
 /// The editing state of the picture panel.
@@ -42,9 +44,13 @@ pub struct PreviewEdit {
     live: Vec<(i32, SourceBox)>,
     /// The request with the studio, if any.
     in_flight: Option<(u64, i32)>,
-    /// The newest box per source waiting for the one in flight, oldest source first.
-    waiting: Vec<(i32, SourceBox)>,
+    /// The newest box per source waiting for the one in flight, oldest source first,
+    /// with its gesture.
+    waiting: Vec<(i32, SourceBox, u64)>,
     next_seq: u64,
+    /// The current drag's gesture number (see [`Effect::Send`]).
+    gesture: u64,
+    next_gesture: u64,
 }
 
 impl PreviewEdit {
@@ -105,6 +111,7 @@ impl PreviewEdit {
             let b = self.current(p);
             if let Some(grip) = transform::grip_at(&view, &b, point) {
                 self.drag = Some((p.id, Drag::new(grip, at, b)));
+                self.new_gesture();
                 return Effect::None;
             }
         }
@@ -112,6 +119,7 @@ impl PreviewEdit {
         match transform::topmost_at(&view, &boxes, point).and_then(|i| placed.get(i)) {
             Some(p) => {
                 self.drag = Some((p.id, Drag::new(Grip::Move, at, self.current(p))));
+                self.new_gesture();
                 Effect::Select(p.id)
             }
             None => {
@@ -138,13 +146,26 @@ impl PreviewEdit {
             return Effect::None;
         }
         self.set_live(id, b);
-        self.send(id, b)
+        self.send(id, b, self.gesture)
+    }
+
+    fn new_gesture(&mut self) {
+        self.next_gesture += 1;
+        self.gesture = self.next_gesture;
     }
 
     /// The button went up or the press was cancelled: the drag ends (its last box is
     /// already on its way).
     pub fn release(&mut self) {
-        self.drag = None;
+        if let Some((id, _)) = self.drag.take() {
+            // Nothing more on its way for it: the studio's box shows again (it is the
+            // drag's last box, or what an undo made of it since).
+            let busy = self.in_flight.is_some_and(|(_, i)| i == id)
+                || self.waiting.iter().any(|(w, ..)| *w == id);
+            if !busy {
+                self.live.retain(|(i, _)| *i != id);
+            }
+        }
     }
 
     /// Arrow keys: the selected source moves by `dx`, `dy` canvas pixels.
@@ -154,21 +175,24 @@ impl PreviewEdit {
         };
         let b = self.current(p).nudged(dx, dy);
         self.set_live(p.id, b);
-        self.send(p.id, b)
+        self.send(p.id, b, 0)
     }
 
     /// At most one box is with the studio; newer ones wait, the newest per source.
-    fn send(&mut self, id: i32, b: SourceBox) -> Effect {
+    fn send(&mut self, id: i32, b: SourceBox, gesture: u64) -> Effect {
         if self.in_flight.is_some() {
-            match self.waiting.iter_mut().find(|(i, _)| *i == id) {
-                Some(w) => w.1 = b,
-                None => self.waiting.push((id, b)),
+            match self.waiting.iter_mut().find(|(i, ..)| *i == id) {
+                Some(w) => {
+                    w.1 = b;
+                    w.2 = gesture;
+                }
+                None => self.waiting.push((id, b, gesture)),
             }
             return Effect::None;
         }
         self.next_seq += 1;
         self.in_flight = Some((self.next_seq, id));
-        Effect::Send(self.next_seq, id, b)
+        Effect::Send(self.next_seq, id, b, gesture)
     }
 
     /// The studio answered request `seq` (`ok`: it took the box or found it unchanged;
@@ -184,17 +208,17 @@ impl PreviewEdit {
         }
         self.in_flight = None;
         if !ok {
-            self.waiting.retain(|(i, _)| *i != id);
+            self.waiting.retain(|(i, ..)| *i != id);
         }
         let dragged = self.drag.map(|(d, _)| d);
         let waiting = &self.waiting;
         self.live
-            .retain(|(i, _)| Some(*i) == dragged || waiting.iter().any(|(w, _)| w == i));
+            .retain(|(i, _)| Some(*i) == dragged || waiting.iter().any(|(w, ..)| w == i));
         if self.waiting.is_empty() {
             return Effect::None;
         }
-        let (id, b) = self.waiting.remove(0);
-        self.send(id, b)
+        let (id, b, gesture) = self.waiting.remove(0);
+        self.send(id, b, gesture)
     }
 
     /// The selection of `selected` as marks in panel coordinates, written into `out`.
@@ -235,7 +259,7 @@ mod tests {
 
     fn sent(e: Effect) -> (u64, i32, SourceBox) {
         match e {
-            Effect::Send(s, i, b) => (s, i, b),
+            Effect::Send(s, i, b, _) => (s, i, b),
             other => panic!("expected a send, got {other:?}"),
         }
     }
@@ -259,6 +283,55 @@ mod tests {
             e.press([10.0, 10.0], CANVAS, &only, 2, DragKeys::default()),
             Effect::Select(-1)
         );
+    }
+
+    fn gesture_of(e: Effect) -> u64 {
+        match e {
+            Effect::Send(.., g) => g,
+            other => panic!("expected a send, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn the_boxes_of_one_drag_share_a_gesture_and_keys_have_none() {
+        let mut e = edit();
+        let s = scene();
+        e.press([800.0, 400.0], CANVAS, &s, 2, DragKeys::default());
+        let first = e.drag_to([790.0, 400.0], CANVAS);
+        let g = gesture_of(first);
+        assert_ne!(g, 0);
+        let (seq, ..) = sent(first);
+        e.drag_to([780.0, 400.0], CANVAS);
+        // The waiting box keeps the drag's gesture.
+        let next = e.answered(seq, true);
+        assert_eq!(gesture_of(next), g);
+        let (seq, ..) = sent(next);
+        e.release();
+        e.answered(seq, true);
+        // A new press is a new gesture.
+        e.press([700.0, 400.0], CANVAS, &s, 2, DragKeys::default());
+        let other = e.drag_to([690.0, 400.0], CANVAS);
+        let g2 = gesture_of(other);
+        assert!(g2 != 0 && g2 != g);
+        let (seq, ..) = sent(other);
+        e.release();
+        e.answered(seq, true);
+        // Arrow keys: each box is its own step.
+        assert_eq!(gesture_of(e.nudge(&s, 2, 1.0, 0.0)), 0);
+    }
+
+    #[test]
+    fn a_release_after_the_last_answer_shows_the_studios_box() {
+        let mut e = edit();
+        let s = scene();
+        e.press([800.0, 400.0], CANVAS, &s, 2, DragKeys::default());
+        let (seq, ..) = sent(e.drag_to([790.0, 400.0], CANVAS));
+        // Answered while the button is still down: the dragged box stays shown.
+        assert_eq!(e.answered(seq, true), Effect::None);
+        assert_ne!(e.current(&s[1]), s[1].at);
+        // After the release the studio's box shows, so an undo is seen at once.
+        e.release();
+        assert_eq!(e.current(&s[1]), s[1].at);
     }
 
     #[test]
