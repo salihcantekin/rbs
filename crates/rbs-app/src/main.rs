@@ -1567,10 +1567,10 @@ fn quit_from_system() {
 fn show_from_system() {
     let _ = entry::invoke(|| {
         let ctx = CTX.with(|c| c.borrow().clone());
-        if let Some(ctx) = ctx {
-            if let Ok(mut app) = ctx.app.try_borrow_mut() {
-                ctx.show_all(&mut app);
-            }
+        if let Some(ctx) = ctx
+            && let Ok(mut app) = ctx.app.try_borrow_mut()
+        {
+            ctx.show_all(&mut app);
         }
     });
 }
