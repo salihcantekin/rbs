@@ -22,6 +22,14 @@ export global Edges {
 }
 
 // State and commands shared by every window. Slint globals are per window, so
+// A rectangle in window coordinates.
+export struct Cover {
+    x: length,
+    y: length,
+    width: length,
+    height: length,
+}
+
 // Rust pushes the same state into each window's copy.
 export global Shell {
     // 0 not live, 1 live, 2 recording, 3 live and recording.
@@ -41,6 +49,10 @@ export global Shell {
     // 0 none, 1 layout locked, 2 other error with <error-detail>.
     in property <int> error-kind;
     in property <string> error-detail;
+    // Where the bottom toast and the top error bar are while they show (the main
+    // window's): the preview layer hides only while one overlaps the picture.
+    in-out property <Cover> bottom-toast;
+    in-out property <Cover> top-toast;
     // The main window was closed while a stream runs: the frame asks first (U4).
     in property <bool> quit-confirm;
     callback quit-end-stream();
@@ -276,8 +288,6 @@ component StackView inherits Rectangle {
         height: max(0px, parent.height - bar - 2 * Tokens.size-border);
         tab: data.tabs[data.active];
     }
-    property <bool> menu-open: menu.is-open;
-    changed menu-open => { Studio.overlays += menu-open ? 1 : -1; Studio.overlays-changed(); }
     menu := PanelMenu {
         x: Tokens.space-2;
         y: bar;
@@ -594,10 +604,6 @@ component FrameBar inherits Rectangle {
             vertical-alignment: center;
         }
     }
-    property <bool> ws-open: ws-menu.is-open;
-    changed ws-open => { Studio.overlays += ws-open ? 1 : -1; Studio.overlays-changed(); }
-    property <bool> panels-open: panels-menu.is-open;
-    changed panels-open => { Studio.overlays += panels-open ? 1 : -1; Studio.overlays-changed(); }
     ws-menu := WorkspaceMenu {
         x: ws-button.x;
         y: parent.height;
@@ -606,10 +612,6 @@ component FrameBar inherits Rectangle {
         x: panels-button.x;
         y: parent.height;
     }
-    property <bool> profile-open: profile-menu.is-open;
-    changed profile-open => { Studio.overlays += profile-open ? 1 : -1; Studio.overlays-changed(); }
-    property <bool> collection-open: collection-menu.is-open;
-    changed collection-open => { Studio.overlays += collection-open ? 1 : -1; Studio.overlays-changed(); }
     profile-menu := EntryMenu {
         x: profile-button.x;
         y: parent.height;
@@ -634,8 +636,18 @@ component FrameBar inherits Rectangle {
 component Toast inherits Rectangle {
     in property <string> text;
     in property <string> action;
+    // Reports its rectangle as `Shell.top-toast` (the error bar) instead of
+    // `Shell.bottom-toast`.
+    in property <bool> top;
     callback act();
     callback dismiss();
+    // A direct child of the window, so its own coordinates are the window's.
+    property <Cover> rect: { x: self.x, y: self.y, width: self.width, height: self.height };
+    init => { report(); }
+    changed rect => { report(); }
+    function report() {
+        if top { Shell.top-toast = rect; } else { Shell.bottom-toast = rect; }
+    }
     height: Tokens.size-control-lg + 2 * Tokens.space-2;
     width: row.preferred-width;
     background: Theme.surface-overlay;
@@ -669,11 +681,6 @@ export component MainWindow inherits Window {
     default-font-size: Tokens.type-body-size;
     in property <[StackData]> stacks;
     in property <[HandleData]> handles;
-    // The window's scale factor. Moving to a display with another scale changes it
-    // without a resize; the preview layer is placed in physical pixels on Windows, so
-    // it is placed again.
-    property <float> scale: 1px / 1phx;
-    changed scale => { Studio.overlays-changed(); }
     forward-focus: edit-keys;
     // Scene edit undo and redo from any panel of this window (U4): keys a focused
     // control does not take come up here, and a click where no control takes it
@@ -711,6 +718,7 @@ export component MainWindow inherits Window {
     if Shell.error-kind != 0: Toast {
         x: (parent.width - self.width) / 2;
         y: frame.height + Tokens.space-2;
+        top: true;
         text: Shell.error-kind == 1 ? @tr("The layout is locked. Unlock it from the workspace menu.") : @tr("That did not work: {}", Shell.error-detail);
         action: "";
         dismiss => { Shell.dismiss-error(); }

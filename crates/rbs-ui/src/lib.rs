@@ -15,10 +15,12 @@
 //! - [`live`]: the live indicator.
 //! - [`tokens`]: design tokens and their contrast checks.
 //! - [`meter`]: the audio meter's scale, peak hold and clip latch.
+//! - [`cover`]: whether toolkit content drawn over the preview layer overlaps it.
 //!
 //! Spec: `docs/specs/ui-design-system.md`. Rules: `docs/ui/principles.md`.
 
 pub mod builtin;
+pub mod cover;
 pub mod display;
 pub mod history;
 pub mod layout;
