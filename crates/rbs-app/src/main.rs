@@ -1354,20 +1354,23 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Crash reports and the running marker (ADR-0055 decisions 4 and 5): a report for
     // every panic on the UI thread, and a notice when the last session ended badly.
     rbs_crash::report_panics_on_this_thread();
-    let crash = rbs_crash::install(&config.join("crash-reports"));
-    let notice = match &crash {
-        Ok(session) => crash_notice(session.unclean()),
+    let notice = match rbs_crash::install(&config.join("crash-reports")) {
+        Ok(session) => {
+            let notice = crash_notice(session.unclean());
+            // Clean on every exit through `exit`, also one with an error and also
+            // macOS Cmd+Q, which ends the process from inside the event loop without
+            // returning here; an uncaught panic on this thread is not clean.
+            if !session.end_clean_at_exit() {
+                eprintln!("rbs: crash detection is off: no exit handler");
+            }
+            notice
+        }
         Err(e) => {
             eprintln!("rbs: crash detection is off: {e}");
             None
         }
     };
-    let ran = run(config, notice);
-    // Every exit that reaches here is clean, also one with an error.
-    if let Ok(session) = crash {
-        session.end_clean();
-    }
-    ran
+    run(config, notice)
 }
 
 /// The notice for sessions that ended without a clean exit, if any.

@@ -16,7 +16,7 @@ use std::io::{self, Read, Write};
 use std::panic::{AssertUnwindSafe, PanicHookInfo, catch_unwind};
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 /// The error bar's text for a caught panic.
@@ -129,6 +129,22 @@ impl Session {
         }
     }
 
+    /// Ends the session cleanly when the process exits through the C runtime's `exit`:
+    /// a return from `main`, `std::process::exit`, or an OS quit that ends the process
+    /// without returning from the event loop (on macOS, Cmd+Q and the Quit menu call
+    /// `exit` from inside `NSApplication`). An uncaught panic on the thread that called
+    /// [`install`] keeps the marker, as do an abort, a signal, a kill or a native fault,
+    /// which never run exit handlers. Returns `false` when the handler could not be
+    /// registered; the session is then ended at once by nothing, as if dropped.
+    pub fn end_clean_at_exit(self) -> bool {
+        match AT_EXIT.lock() {
+            Ok(mut slot) => *slot = Some(self),
+            Err(poisoned) => *poisoned.into_inner() = Some(self),
+        }
+        static REGISTERED: OnceLock<bool> = OnceLock::new();
+        *REGISTERED.get_or_init(|| at_exit::register(on_exit))
+    }
+
     /// The marker's path.
     pub fn marker(&self) -> Option<&Path> {
         self.marker.as_ref().map(|(_, p)| p.as_path())
@@ -139,11 +155,59 @@ impl Session {
 /// `dir`, which is created when missing. Returns what earlier sessions left behind.
 /// The hook is installed also when the marker fails.
 pub fn install(dir: &Path) -> io::Result<Session> {
+    let _ = INSTALL_THREAD.set(std::thread::current().id());
     set_hook(dir.to_owned());
     open_session(dir, std::process::id(), unix_now())
 }
 
 static REPORT_DIR: OnceLock<PathBuf> = OnceLock::new();
+/// The thread that called [`install`] (the app's main thread).
+static INSTALL_THREAD: OnceLock<std::thread::ThreadId> = OnceLock::new();
+/// An uncaught panic on [`INSTALL_THREAD`]: the process ends badly even when it then
+/// exits through `exit`, so the exit handler keeps the marker.
+static UNCAUGHT_ON_INSTALL_THREAD: AtomicBool = AtomicBool::new(false);
+/// The session [`Session::end_clean_at_exit`] ends from the exit handler.
+static AT_EXIT: std::sync::Mutex<Option<Session>> = std::sync::Mutex::new(None);
+
+/// The C runtime's exit handler: ends the session cleanly unless the main thread
+/// panicked uncaught. Never unwinds (an `extern "C"` function must not, ADR-0055
+/// decision 7) and never waits on a lock.
+extern "C" fn on_exit() {
+    let _ = catch_unwind(|| {
+        if UNCAUGHT_ON_INSTALL_THREAD.load(Ordering::Relaxed) {
+            return;
+        }
+        let session = match AT_EXIT.try_lock() {
+            Ok(mut slot) => slot.take(),
+            Err(std::sync::TryLockError::Poisoned(p)) => p.into_inner().take(),
+            Err(std::sync::TryLockError::WouldBlock) => None,
+        };
+        if let Some(session) = session {
+            session.end_clean();
+        }
+    });
+}
+
+/// Low-level module (CLAUDE.md rule 7): registers a C runtime exit handler. Std has no
+/// `atexit`, and this crate takes no dependency for one function.
+mod at_exit {
+    use std::ffi::c_int;
+
+    unsafe extern "C" {
+        /// The C runtime's `atexit` (libSystem on macOS, glibc on Linux, the UCRT on
+        /// Windows).
+        fn atexit(f: extern "C" fn()) -> c_int;
+    }
+
+    /// Registers `f` to run when the process exits through `exit`; `false` on failure.
+    pub(super) fn register(f: extern "C" fn()) -> bool {
+        // SAFETY: `atexit` only stores the pointer and calls it once from `exit`. `f`
+        // is a plain `extern "C" fn()` item: it lives for the whole program, takes no
+        // arguments and catches every panic itself, so it never unwinds into the C
+        // runtime.
+        unsafe { atexit(f) == 0 }
+    }
+}
 static REPORT_SERIAL: AtomicU32 = AtomicU32::new(0);
 static CAUGHT_REPORTS: AtomicU32 = AtomicU32::new(0);
 
@@ -165,6 +229,10 @@ fn set_hook(dir: PathBuf) {
     }
     let previous = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
+        let caught = CONTAINED.try_with(Cell::get).unwrap_or(0) > 0;
+        if !caught && INSTALL_THREAD.get() == Some(&std::thread::current().id()) {
+            UNCAUGHT_ON_INSTALL_THREAD.store(true, Ordering::Relaxed);
+        }
         // `try_with`: thread-locals may be gone while a thread exits, and a panic in
         // the hook aborts the process. The writer itself must not panic: nothing in
         // it unwraps or indexes.
