@@ -11,10 +11,12 @@
 fn winit_is_the_checked_version() {
     let lock = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/../../Cargo.lock"))
         .expect("the workspace lockfile");
-    let versions: Vec<&str> = lock
-        .split("[[package]]")
-        .filter(|p| p.contains("\nname = \"winit\"\n"))
-        .filter_map(|p| p.lines().find_map(|l| l.strip_prefix("version = \"")))
+    // Line by line: a Windows checkout may have CRLF line ends.
+    let lines: Vec<&str> = lock.lines().map(str::trim_end).collect();
+    let versions: Vec<&str> = lines
+        .windows(2)
+        .filter(|w| w[0] == "name = \"winit\"")
+        .filter_map(|w| w[1].strip_prefix("version = \""))
         .map(|v| v.trim_end_matches('"'))
         .collect();
     assert_eq!(
