@@ -1,7 +1,7 @@
 # Spec: UI design system
 
 - Status: Draft
-- Owner crate(s): `rbs-ui` (toolkit-neutral model: panels, layout, workspaces, layout undo, tokens, live indicator), `rbs-app` (Slint desktop shell; `ui/tokens.slint` is generated from the token file at build time, `ui/components.slint` is the component library)
+- Owner crate(s): `rbs-ui` (toolkit-neutral model: panels, layout, workspaces, layout undo, tokens, live indicator), `rbs-app` (Slint desktop shell; `ui/tokens.slint` is generated from the token file at build time and its values are set at run time, `ui/components.slint` is the component library)
 - Related ADRs: [0008](../adr/0008-ui-as-api-client.md), [0013](../adr/0013-zero-cost-when-unused.md), [0015](../adr/0015-ui-design-rules.md), [0016](../adr/0016-native-desktop-ui.md), [0017](../adr/0017-flexible-panels-and-workspaces.md), [0022](../adr/0022-native-ui-toolkit.md), [0049](../adr/0049-main-window-areas-panel-states-and-sizes.md), [0050](../adr/0050-command-registry-menus-and-toolbar.md)
 - Rules: [UI principles](../ui/principles.md)
 
@@ -14,6 +14,8 @@ Binding now (once ADR-0015 is accepted): token names, the component list and con
 ## Tokens
 
 Tokens are defined once in a data file ([`crates/rbs-ui/tokens.toml`](../../crates/rbs-ui/tokens.toml)) and generated into the native toolkit's format (ADR-0016), and exported as CSS variables only for remote clients outside the desktop app. UI code references tokens by name only (rule U6).
+
+In the desktop shell every token is a run-time value: the build generates the `Theme` and `Tokens` globals with the built-in values as defaults (so the `.slint` files compile and preview on their own) and a function that copies a parsed token file into them (`rbs-app` `look`). Each window gets the token file in use when it opens, so a theme changes without a new build and costs nothing per frame (bindings read the globals; nothing polls). `Theme` holds one colour set per theme in `THEMES` order and `Theme.active` picks one: the OS scheme, or `Theme.choice`. The file in use is the built-in one; `RBS_TOKENS=<file>` names another complete token file as a development aid (a file that fails the checks below is not used, the built-in one is, and the error bar says why). How users pick and install themes is a later decision.
 
 File layout (format 1): `[fixed]` holds the colours no theme may change (`color.state.live`, `color.text.on-live`); `[themes.dark]`, `[themes.light]` and `[themes.high-contrast]` each define exactly the theme colour names below, as opaque `#rrggbb`; `[length]` (logical pixels: the spacing, size, radius, line, menu, window and keyboard step tokens below), `[duration]` (milliseconds: `motion.fast`, `motion.normal`) and `[type]` (`{ size, line, weight }` for the five text styles) hold the rest. Token names are lowercase words joined by `.` or `-`. A custom theme is a complete token file; its `[fixed]` values must equal the built-in ones (`#c4262e` and `#ffffff`), otherwise it is refused. Elevation and easing tokens are added to the file together with the components that use them. `rbs_ui::tokens` parses the file and fails on a missing, unknown or invalid token, a changed fixed colour, and any failed contrast rule:
 
