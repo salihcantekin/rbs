@@ -436,3 +436,50 @@ fn the_current_selection_round_trips() {
     assert_eq!(c, Current::default());
     assert!(matches!(problem, Some(DataError::Invalid(_))));
 }
+
+#[test]
+fn a_hand_edit_that_breaks_only_the_body_is_kept_when_saved_over() {
+    let d = TempDir::new("lib-body-broken");
+    let lib = UserData::new(d.path()).scene_collections();
+    let id = lib
+        .create("Show", &rbs_scene::SceneCollection::new())
+        .unwrap();
+    let path = lib.path(&id);
+    let edited = "format = 1\nkind = \"scene-collection\"\nname = \"Show\"\nsetings = { a = 1 }\n";
+    std::fs::write(&path, edited).unwrap();
+    assert!(matches!(lib.load(&id), Err(DataError::Invalid(_))));
+    lib.save(&id, &Entry::new("Show", rbs_scene::SceneCollection::new()))
+        .unwrap();
+    assert_eq!(
+        std::fs::read_to_string(lib.dir().join("show.toml.unreadable.bak")).unwrap(),
+        edited
+    );
+    // The backup keeps its id taken even if the entry file were gone.
+    std::fs::remove_file(&path).unwrap();
+    assert_eq!(
+        lib.create("Show", &rbs_scene::SceneCollection::new())
+            .unwrap()
+            .as_str(),
+        "show-2"
+    );
+}
+
+#[test]
+fn a_document_too_large_to_read_back_is_never_written() {
+    let d = TempDir::new("lib-too-large");
+    let lib = UserData::new(d.path()).profiles();
+    #[derive(Serialize)]
+    struct Big {
+        text: String,
+    }
+    let mut p = OutputProfile::new();
+    p.set(
+        "big",
+        &Big {
+            text: "x".repeat(rbs_user_data::document::MAX_FILE as usize + 1),
+        },
+    )
+    .unwrap();
+    assert!(matches!(lib.create("Big", &p), Err(DataError::Invalid(_))));
+    assert!(lib.list().unwrap().entries.is_empty());
+}

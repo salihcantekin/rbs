@@ -215,7 +215,15 @@ pub fn render<T: Document>(document: &T, name: Option<&str>) -> Result<String, D
         }
         table.insert(k, v);
     }
-    toml::to_string(&table).map_err(|e| DataError::Invalid(e.to_string()))
+    let text = toml::to_string(&table).map_err(|e| DataError::Invalid(e.to_string()))?;
+    // Never write what could not be read back.
+    if text.len() as u64 > MAX_FILE {
+        return Err(DataError::Invalid(format!(
+            "the document would be {} bytes; at most {MAX_FILE} are allowed",
+            text.len()
+        )));
+    }
+    Ok(text)
 }
 
 /// Largest document file read, in bytes. Shared files are untrusted input; a scene
@@ -239,6 +247,16 @@ fn read_text(path: &Path) -> Result<Option<String>, DataError> {
     let mut text = String::new();
     io::Read::read_to_string(&mut io::Read::take(f, MAX_FILE + 1), &mut text)?;
     Ok(Some(text))
+}
+
+/// The text of a file of any size (the file about to be replaced); `Ok(None)` if
+/// there is none. Not valid UTF-8 counts as unreadable, so it is moved aside.
+fn read_text_unbounded(path: &Path) -> Result<Option<String>, DataError> {
+    match fs::read(path) {
+        Ok(bytes) => Ok(Some(String::from_utf8_lossy(&bytes).into_owned())),
+        Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(None),
+        Err(e) => Err(e.into()),
+    }
 }
 
 /// Reads a document file; `Ok(None)` if there is none.
@@ -384,12 +402,14 @@ pub fn unreadable_path(path: &Path) -> PathBuf {
 /// - a file of a newer format is refused ([`DataError::Newer`]) and left untouched,
 ///   even when this build cannot parse it ([`scan_format`]);
 /// - a file of an older format is copied to [`backup_path`] once;
-/// - a file that is not a readable document of this kind (broken by hand, another
-///   kind) is moved to [`unreadable_path`] first.
+/// - a file that does not load as a document of this kind (broken by hand, also only
+///   in its body, or another kind) is moved to [`unreadable_path`] first.
 pub fn write<T: Document>(path: &Path, document: &T, name: Option<&str>) -> Result<(), DataError> {
     let text = render(document, name)?;
-    if let Some(old) = read_text(path)? {
-        match peek_text::<T>(&old) {
+    if let Some(old) = read_text_unbounded(path)? {
+        // The whole document, not only its envelope: a hand edit that breaks the body
+        // (a typo'd key, a broken invariant) must be kept too.
+        match peek_text::<T>(&old).and_then(|f| parse::<T>(&old).map(|_| f)) {
             Ok(found) if found < T::FORMAT => {
                 let backup = backup_path(path, found);
                 if !backup.exists() {

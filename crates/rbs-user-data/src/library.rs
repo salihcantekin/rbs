@@ -234,12 +234,26 @@ impl<T: Document> Library<T> {
         Ok((ids, odd))
     }
 
-    /// Every id ever used here: live entries, files whose name is an id, and deleted
+    /// Every id ever used here: live entries, their backups, and deleted
     /// entries (`deleted/<id>.toml` and `deleted/<id>-N.toml`), so an id is never given
     /// to a second entry. Credential store entries and other references by id can
     /// therefore never reach a different entry.
     fn used_ids(&self) -> Result<Vec<String>, DataError> {
-        let mut used: Vec<String> = self.files()?.0.into_iter().map(|(id, _)| id.0).collect();
+        let mut used: Vec<String> = Vec::new();
+        // Every file here, including backups (`<id>.toml.format1.bak`,
+        // `<id>.toml.unreadable.bak`): the part of its name before the first dot.
+        match fs::read_dir(&self.dir) {
+            Ok(entries) => {
+                for entry in entries {
+                    let name = entry?.file_name();
+                    if let Some(stem) = name.to_str().and_then(|n| n.split('.').next()) {
+                        used.push(stem.to_owned());
+                    }
+                }
+            }
+            Err(e) if e.kind() == io::ErrorKind::NotFound => {}
+            Err(e) => return Err(e.into()),
+        }
         match fs::read_dir(self.dir.join(DELETED_DIR)) {
             Ok(entries) => {
                 for entry in entries {
