@@ -851,8 +851,8 @@ struct Host {
     cannot_record: Option<String>,
     /// The running recording, as the control API reports it.
     record_state: api::RecordState,
-    /// The stream settings as the UI saved them.
-    stream_profile: StreamProfile,
+    /// The stream settings as the UI uses them; `None` until the UI sent them.
+    stream_profile: Option<StreamProfile>,
     /// The running stream, as the control API reports it.
     stream_state: api::StreamState,
     /// When the Stats panel's counters go out next, on `clock`; `None` while no
@@ -1123,7 +1123,7 @@ fn start(
             encoders,
             cannot_record,
             record_state: api::RecordState::Idle { last: None },
-            stream_profile: StreamProfile::new(),
+            stream_profile: None,
             stream_state: api::StreamState::Idle { last: None },
             inbox: Weak::new(),
         },
@@ -1229,7 +1229,7 @@ impl Host {
                 self.end_stream(None, notify);
                 self.publish(notify);
             }
-            Command::SetStreamProfile(profile) => self.stream_profile = profile,
+            Command::SetStreamProfile(profile) => self.stream_profile = Some(profile),
             Command::SaveStreamKey(key) => {
                 let result = match &key {
                     Some(k) => self.keys.write(k).map(|()| true),
@@ -2310,40 +2310,51 @@ impl ApiTarget<'_> {
                 "a stream is already running",
             ));
         }
+        let Some(profile) = &host.stream_profile else {
+            return Err(failed("the studio is still starting; try again"));
+        };
+        if profile.server.is_empty() {
+            return Err(failed("no server is saved: enter it in Settings, Stream"));
+        }
+        // The saved server is a setting (`admin`): a `control` caller never gets it back,
+        // also not inside an error text.
+        let url = profile.server.clone();
+        let hide = |why: String| failed(why.replace(&url, "the saved server"));
         // A saved encoder this system does not have falls back to the best one, as the
         // UI's automatic choice does.
-        let encoder = host
-            .stream_profile
+        let encoder = profile
             .encoding
             .encoder
             .clone()
             .filter(|id| host.encoders.iter().any(|e| e.id == *id));
-        let request = StreamRequest::from_profile(&host.stream_profile, encoder).map_err(failed)?;
+        let request = StreamRequest::from_profile(profile, encoder).map_err(|_| {
+            failed("the saved stream settings cannot be used: see Settings, Stream")
+        })?;
         let result = host.start_stream(&request);
         host.publish(notify);
         match result {
-            Ok(update @ StreamUpdate::Started { .. }) => {
-                let StreamUpdate::Started {
-                    video_encoder,
-                    audio_encoder,
-                    ..
-                } = &update
-                else {
-                    return Err(failed("the stream did not start"));
-                };
+            Ok(StreamUpdate::Started {
+                url,
+                video_encoder,
+                audio_encoder,
+            }) => {
                 let started = StreamStarted {
                     video_encoder: video_encoder.clone(),
                     audio_encoder: audio_encoder.clone(),
                 };
                 // The UI shows the stream as if its own button started it.
-                notify(Update::Stream(update));
+                notify(Update::Stream(StreamUpdate::Started {
+                    url,
+                    video_encoder,
+                    audio_encoder,
+                }));
                 Ok(Response::StreamStarted(started))
             }
             Ok(StreamUpdate::NoKey) => Err(failed(
                 "no stream key is saved: enter it in Settings, Stream",
             )),
             Ok(_) => Err(failed("the stream did not start")),
-            Err(why) => Err(failed(why)),
+            Err(why) => Err(hide(why)),
         }
     }
 }

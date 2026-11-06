@@ -1708,8 +1708,9 @@ impl StudioUi {
                     .take()
                     .map(|(_, since)| since.elapsed())
                     .unwrap_or_default();
-                // The user ended it (not the server or a failure).
-                let asked = self.st_state == st_state::ENDING;
+                // The user, or a control API client (`stream.stop`), ended it: only a
+                // stream asked to end has no failure.
+                let asked = self.st_state == st_state::ENDING || failure.is_none();
                 self.st_state = st_state::OFF;
                 self.st_link = Link::default();
                 log(&format!(

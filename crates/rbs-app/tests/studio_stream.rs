@@ -634,7 +634,19 @@ fn a_control_api_client_goes_live_and_ends_the_stream() {
     assert_eq!(sub["result"]["seq"]["stream.state"], 0, "{sub}");
     let none = serde_json::json!({});
 
-    // No server saved yet: refused, saying what is missing.
+    // The UI has not sent its stream settings yet: refused, nothing guessed.
+    let early = c.call("stream.start", none.clone());
+    assert!(
+        early["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("starting"),
+        "{early}"
+    );
+    // No server saved yet: refused, saying what is missing. `add_display` waits for an
+    // answer from the control thread, so the settings are in place before the call.
+    host.send(Command::SetStreamProfile(StreamProfile::new()));
+    add_display(&host, &rx);
     let refused = c.call("stream.start", none.clone());
     assert_eq!(refused["error"]["data"]["kind"], "failed", "{refused}");
     assert!(
@@ -645,13 +657,22 @@ fn a_control_api_client_goes_live_and_ends_the_stream() {
         "{refused}"
     );
 
-    // The UI sends the saved settings; `add_display` waits for an answer from the
-    // control thread, so they are in place before the next call.
+    // A server that is not valid is refused without repeating it.
+    let mut profile = StreamProfile::new();
+    profile.server = "rtmp://".into();
+    host.send(Command::SetStreamProfile(profile));
+    host.send(Command::ListTargets(SourceKind::Screen));
+    next(&rx, |u| matches!(u, Update::Targets(..)).then_some(()));
+    let bad = c.call("stream.start", none.clone());
+    assert_eq!(bad["error"]["data"]["kind"], "failed", "{bad}");
+    assert!(!bad.to_string().contains("rtmp://"), "{bad}");
+
     let mut profile = StreamProfile::new();
     profile.server = URL.into();
     profile.reconnect = false;
     host.send(Command::SetStreamProfile(profile));
-    add_display(&host, &rx);
+    host.send(Command::ListTargets(SourceKind::Screen));
+    next(&rx, |u| matches!(u, Update::Targets(..)).then_some(()));
 
     // RTMP without a saved key: nothing opens.
     let no_key = c.call("stream.start", none.clone());
@@ -685,6 +706,7 @@ fn a_control_api_client_goes_live_and_ends_the_stream() {
     assert_eq!(data["video_encoder"], WORKING, "{live}");
     // The key is never shown.
     assert!(!live.to_string().contains("live_api"), "{live}");
+    // The fake server sends no further connection change, so this is the latest state.
     let status = c.call("stream.status", none.clone());
     assert_eq!(status["result"]["data"]["state"], "live", "{status}");
     assert_eq!(
@@ -710,12 +732,23 @@ fn a_control_api_client_goes_live_and_ends_the_stream() {
     let stop = c.call("stream.stop", none.clone());
     assert_eq!(stop["error"]["data"]["kind"], "conflict", "{stop}");
 
-    // A stream the UI starts reaches API clients too.
+    // A stream the UI starts reaches API clients too, and so does its failure.
     host.send(Command::StartStream(request()));
     assert!(matches!(stream(&rx), StreamUpdate::Started { .. }));
-    c.stream_state(|d| d["state"] == "live");
-    host.send(Command::EndStream);
-    c.stream_state(|d| d["state"] == "idle");
+    c.stream_state(|d| d["state"] == "live" && d["connected"] == true);
+    server
+        .events
+        .lock()
+        .unwrap()
+        .push(TransportEvent::Disconnected {
+            error: TransportError::Rejected("unknown stream key".into()),
+        });
+    let failed = c.stream_state(|d| d["state"] == "idle");
+    let why = failed["params"]["data"]["last"]["failure"]
+        .as_str()
+        .unwrap_or_default()
+        .to_owned();
+    assert!(why.contains("unknown stream key"), "{failed}");
 
     drop(host);
     drop(api);
