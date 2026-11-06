@@ -10,12 +10,17 @@
 //! - [`binder`]: keeps a media graph description in step with a collection, with
 //!   stable node ids, compositor layer lists and wanted lifecycle states.
 //!
-//! The on-disk document format comes in a later change. Spec: `docs/specs/scene-model.md`.
+//! [`SceneCollection::from_parts`] is the validating loader for documents; the on-disk
+//! format lives with the user data layer (`rbs-user-data`, ADR-0051). Spec:
+//! `docs/specs/scene-model.md`.
 
 pub mod binder;
 mod collection;
 pub mod flatten;
 pub mod model;
 
-pub use collection::{MAX_LAYERS, MAX_NESTING_DEPTH, SceneCollection, SceneError, Undo};
+pub use collection::{
+    IdCounters, MAX_CANVAS_SIDE, MAX_FRAME_RATE, MAX_LAYERS, MAX_NESTING_DEPTH, SceneCollection,
+    SceneError, Undo,
+};
 pub use flatten::{Affine2, FlatLayer};

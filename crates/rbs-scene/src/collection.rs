@@ -60,11 +60,25 @@ pub enum SceneError {
     TooManyLayers(SceneId),
     /// Two filters share an id.
     DuplicateFilter(FilterId),
+    /// A document lists two canvases, sources, scenes or items with the same id
+    /// ([`SceneCollection::from_parts`]): the id, as `canvas#3`, `item#7`, ...
+    DuplicateId(String),
+    /// A canvas side is larger than [`MAX_CANVAS_SIDE`].
+    CanvasTooLarge,
+    /// A canvas frame rate is above [`MAX_FRAME_RATE`] frames per second.
+    FrameRateTooHigh,
 }
 
 /// Most levels of scenes in a nesting chain, counting the shown scene. Bounds the
 /// recursion of [`SceneCollection::flatten`].
 pub const MAX_NESTING_DEPTH: usize = 16;
+
+/// Largest canvas side, in pixels. Documents are shared and so untrusted; no GPU path
+/// or encoder handles more.
+pub const MAX_CANVAS_SIDE: u32 = 16_384;
+
+/// Highest canvas frame rate, in frames per second.
+pub const MAX_FRAME_RATE: u32 = 1000;
 
 /// Most layers one scene may flatten to (counting hidden items, so showing an item
 /// never fails). Diamond-shaped nesting multiplies layers, so this is checked on every
@@ -101,6 +115,16 @@ impl fmt::Display for SceneError {
                 write!(f, "{id} would flatten to more than {MAX_LAYERS} layers")
             }
             SceneError::DuplicateFilter(id) => write!(f, "{id} is used twice"),
+            SceneError::DuplicateId(id) => write!(f, "{id} is listed twice"),
+            SceneError::CanvasTooLarge => {
+                write!(f, "canvas sides can be at most {MAX_CANVAS_SIDE} pixels")
+            }
+            SceneError::FrameRateTooHigh => {
+                write!(
+                    f,
+                    "canvas frame rates can be at most {MAX_FRAME_RATE} per second"
+                )
+            }
         }
     }
 }
@@ -177,6 +201,27 @@ struct NextIds {
     filter: u32,
 }
 
+/// The next id of each kind a collection will issue: what a document stores so ids are
+/// not reused after a reload ([`SceneCollection::id_counters`],
+/// [`SceneCollection::from_parts`]).
+///
+/// Adding a kind of id adds a field, which is a breaking change for callers that build
+/// it with a struct expression; that is intended, since a document then needs the new
+/// counter too.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct IdCounters {
+    /// Next canvas id.
+    pub canvas: u32,
+    /// Next source id.
+    pub source: u32,
+    /// Next scene id.
+    pub scene: u32,
+    /// Next item id.
+    pub item: u32,
+    /// Next filter id.
+    pub filter: u32,
+}
+
 fn issue(counter: &mut u32) -> Result<u32, SceneError> {
     let id = *counter;
     *counter = counter.checked_add(1).ok_or(SceneError::IdsExhausted)?;
@@ -237,6 +282,81 @@ impl SceneCollection {
     /// An empty collection.
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// A collection from its parts, as a document stores them: the validating loader.
+    ///
+    /// Names are trimmed like edits trim them. Ids must be unique per kind (items across
+    /// every scene); the whole result must satisfy every invariant of the scene model
+    /// spec, so a loaded collection is as valid as an edited one. A counter below an id
+    /// in use is raised past the highest one, so a document with stale or missing
+    /// counters never makes the collection reuse an id it holds.
+    pub fn from_parts(
+        canvases: Vec<Canvas>,
+        sources: Vec<Source>,
+        scenes: Vec<Scene>,
+        counters: IdCounters,
+    ) -> Result<Self, SceneError> {
+        fn above(counter: u32, id: u32) -> Result<u32, SceneError> {
+            Ok(counter.max(id.checked_add(1).ok_or(SceneError::IdsExhausted)?))
+        }
+        let mut next = NextIds {
+            canvas: counters.canvas,
+            source: counters.source,
+            scene: counters.scene,
+            item: counters.item,
+            filter: counters.filter,
+        };
+        let mut col = SceneCollection::new();
+        for mut c in canvases {
+            c.name = c.name.trim().to_owned();
+            next.canvas = above(next.canvas, c.id.0)?;
+            let id = c.id;
+            if col.canvases.insert(id, c).is_some() {
+                return Err(SceneError::DuplicateId(id.to_string()));
+            }
+        }
+        for mut s in sources {
+            s.name = s.name.trim().to_owned();
+            next.source = above(next.source, s.id.0)?;
+            for f in &s.filters {
+                next.filter = above(next.filter, f.id.0)?;
+            }
+            let id = s.id;
+            if col.sources.insert(id, s).is_some() {
+                return Err(SceneError::DuplicateId(id.to_string()));
+            }
+        }
+        let mut items = BTreeSet::new();
+        for mut s in scenes {
+            s.name = s.name.trim().to_owned();
+            next.scene = above(next.scene, s.id.0)?;
+            for i in &s.items {
+                next.item = above(next.item, i.id.0)?;
+                if !items.insert(i.id) {
+                    return Err(SceneError::DuplicateId(i.id.to_string()));
+                }
+            }
+            let id = s.id;
+            if col.scenes.insert(id, s).is_some() {
+                return Err(SceneError::DuplicateId(id.to_string()));
+            }
+        }
+        col.next = next;
+        col.validate()?;
+        Ok(col)
+    }
+
+    /// The next id of each kind this collection will issue.
+    pub fn id_counters(&self) -> IdCounters {
+        let n = &self.next;
+        IdCounters {
+            canvas: n.canvas,
+            source: n.source,
+            scene: n.scene,
+            item: n.item,
+            filter: n.filter,
+        }
     }
 
     // ----- queries -----
@@ -959,6 +1079,13 @@ impl SceneCollection {
             }
             if c.size.width == 0 || c.size.height == 0 {
                 return Err(SceneError::EmptyCanvas);
+            }
+            if c.size.width > MAX_CANVAS_SIDE || c.size.height > MAX_CANVAS_SIDE {
+                return Err(SceneError::CanvasTooLarge);
+            }
+            let rate = c.frame_rate.per_second();
+            if u64::from(rate.num()) > u64::from(MAX_FRAME_RATE) * u64::from(rate.den()) {
+                return Err(SceneError::FrameRateTooHigh);
             }
             for shown in [c.program, c.preview].into_iter().flatten() {
                 let scene = self.get_scene(shown)?;

@@ -96,6 +96,21 @@ pub struct Canvas {
     pub preview: Option<SceneId>,
 }
 
+impl Canvas {
+    /// A canvas with no program or preview scene. Edits issue ids themselves; this is
+    /// for documents ([`crate::SceneCollection::from_parts`]).
+    pub fn new(id: CanvasId, name: &str, size: Size, frame_rate: FrameRate) -> Self {
+        Self {
+            id,
+            name: name.to_owned(),
+            size,
+            frame_rate,
+            program: None,
+            preview: None,
+        }
+    }
+}
+
 /// An effect applied to a source (glossary: Filter).
 #[non_exhaustive]
 #[derive(Debug, Clone, PartialEq)]
@@ -108,6 +123,18 @@ pub struct Filter {
     pub enabled: bool,
     /// Settings.
     pub settings: Settings,
+}
+
+impl Filter {
+    /// An enabled filter with `settings`, for documents.
+    pub fn new(id: FilterId, type_id: NodeTypeId, settings: Settings) -> Self {
+        Self {
+            id,
+            type_id,
+            enabled: true,
+            settings,
+        }
+    }
 }
 
 /// Something that produces video or audio, shared by every scene that places it
@@ -125,6 +152,19 @@ pub struct Source {
     pub settings: Settings,
     /// Filters, applied in order.
     pub filters: Vec<Filter>,
+}
+
+impl Source {
+    /// A source without filters, for documents.
+    pub fn new(id: SourceId, name: &str, type_id: NodeTypeId, settings: Settings) -> Self {
+        Self {
+            id,
+            name: name.to_owned(),
+            type_id,
+            settings,
+            filters: Vec::new(),
+        }
+    }
 }
 
 /// Who may show a scene (UI rule U15).
@@ -149,6 +189,18 @@ pub struct Scene {
     pub scope: SceneScope,
     /// Items, bottom first.
     pub items: Vec<SceneItem>,
+}
+
+impl Scene {
+    /// An empty scene, for documents.
+    pub fn new(id: SceneId, name: &str, scope: SceneScope) -> Self {
+        Self {
+            id,
+            name: name.to_owned(),
+            scope,
+            items: Vec::new(),
+        }
+    }
 }
 
 /// What a scene item places.
@@ -286,6 +338,17 @@ pub struct SceneItem {
 }
 
 impl SceneItem {
+    /// A visible item with `layout` on every canvas, for documents.
+    pub fn new(id: ItemId, content: ItemContent, layout: Layout) -> Self {
+        Self {
+            id,
+            content,
+            visible: true,
+            layout,
+            overrides: BTreeMap::new(),
+        }
+    }
+
     /// The layout on `canvas`: its override, or the default layout.
     pub fn layout_on(&self, canvas: CanvasId) -> &Layout {
         self.overrides.get(&canvas).unwrap_or(&self.layout)
