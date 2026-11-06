@@ -22,11 +22,17 @@ pub(crate) const POLL: Duration = Duration::from_millis(50);
 #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 pub(crate) const STILL_POLLS: u32 = 6;
 
-/// Window level of the Dock (`kCGDockWindowLevel`). The Dock's window spans the whole
-/// display, opaque by its alpha, though only the Dock itself is drawn, so it would
-/// cover every pointer position. It is ignored: over the visible Dock the captured
-/// cursor can still show.
+/// Window level of the Dock (`kCGDockWindowLevel`). Only windows below it count as
+/// covering: app windows, floating panels and modal panels. System windows from the
+/// Dock level up are left out because their bounds do not say what they draw: the
+/// Dock's window spans the whole display with alpha 1, and the window server's own
+/// cursor window sits under the pointer (both seen on macOS 26). Over the menu bar,
+/// the visible Dock or an open popup menu the captured cursor can therefore still show.
 pub(crate) const DOCK_LAYER: i64 = 20;
+
+/// Window level of the cursor (`kCGCursorWindowLevel`), for tests.
+#[cfg(test)]
+const CURSOR_LAYER: i64 = 2_147_483_630;
 
 /// A rectangle in global display points, origin top left (Quartz window bounds).
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -59,7 +65,7 @@ pub(crate) struct Above {
 pub(crate) fn covered(x: f64, y: f64, above: impl IntoIterator<Item = Above>) -> bool {
     above
         .into_iter()
-        .any(|w| w.alpha > 0.0 && w.layer != DOCK_LAYER && w.bounds.contains(x, y))
+        .any(|w| w.alpha > 0.0 && w.layer < DOCK_LAYER && w.bounds.contains(x, y))
 }
 
 /// When the watcher reads the window list: whenever the pointer moved, and at least
@@ -127,7 +133,24 @@ mod tests {
         let mut menu_bar = window(0.0, 0.0, 1800.0, 39.0);
         menu_bar.layer = 24;
         assert!(!covered(986.0, 1032.0, [menu_bar, dock]));
-        assert!(covered(900.0, 10.0, [menu_bar, dock]));
+        assert!(!covered(900.0, 10.0, [menu_bar, dock]));
+    }
+
+    #[test]
+    fn the_window_servers_cursor_window_does_not_cover() {
+        let mut cursor = window(710.0, 522.0, 9.0, 18.0);
+        cursor.layer = CURSOR_LAYER;
+        assert!(!covered(714.2, 531.4, [cursor]));
+    }
+
+    #[test]
+    fn floating_and_modal_panels_cover() {
+        let mut floating = window(0.0, 0.0, 100.0, 100.0);
+        floating.layer = 3;
+        let mut modal = window(200.0, 0.0, 100.0, 100.0);
+        modal.layer = 8;
+        assert!(covered(50.0, 50.0, [floating, modal]));
+        assert!(covered(250.0, 50.0, [floating, modal]));
     }
 
     #[test]
