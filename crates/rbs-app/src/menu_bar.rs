@@ -310,6 +310,102 @@ impl CommandState for Shown<'_> {
     }
 }
 
+/// One toolbar item as the frame draws it.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ToolItem {
+    /// The registry id it runs.
+    pub id: String,
+    pub title: String,
+    pub kind: ToolKind,
+    pub enabled: bool,
+    /// A toggle or area toggle that is on.
+    pub checked: bool,
+    /// It stops a live output now (drawn in the live colour, U12).
+    pub live: bool,
+}
+
+/// What a toolbar item is (`ToolbarData.kind`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ToolKind {
+    Command = 0,
+    WorkspacePicker = 1,
+    Separator = 2,
+    Space = 3,
+    /// An id this version has no entry or toolbar control for: a disabled placeholder.
+    Unknown = 4,
+}
+
+/// The workspace's toolbar (its own or the default one): items, shown, and whether it
+/// has the flexible space.
+pub fn toolbar(state: &Shown<'_>) -> (Vec<ToolItem>, bool, bool) {
+    use rbs_ui::workspace::ToolbarItem;
+    let default;
+    let bar = match &state.workspace.toolbar {
+        Some(t) => t,
+        None => {
+            default = rbs_ui::command::default_toolbar();
+            &default
+        }
+    };
+    let blank = |kind| ToolItem {
+        id: String::new(),
+        title: String::new(),
+        kind,
+        enabled: false,
+        checked: false,
+        live: false,
+    };
+    let items = bar
+        .items
+        .iter()
+        .map(|item| match item {
+            ToolbarItem::Separator => blank(ToolKind::Separator),
+            ToolbarItem::Space => blank(ToolKind::Space),
+            ToolbarItem::Command(text) => {
+                let unknown = ToolItem {
+                    id: text.clone(),
+                    title: text.clone(),
+                    ..blank(ToolKind::Unknown)
+                };
+                let Ok(id) = CommandId::parse(text) else {
+                    return unknown;
+                };
+                let Ok(Some(entry)) = id.resolve() else {
+                    return unknown;
+                };
+                let title = rbs_ui::command::title(&id, entry);
+                if let Kind::Picker { .. } = entry.kind {
+                    return match id.base() {
+                        "ui.workspace.select" => ToolItem {
+                            title,
+                            enabled: true,
+                            ..blank(ToolKind::WorkspacePicker)
+                        },
+                        _ => ToolItem { title, ..unknown },
+                    };
+                }
+                let on = entry.checkable && state.checked(&id);
+                // A running output's toggle says what it does now (as Live controls do).
+                let (title, live) = match (id.base(), on) {
+                    ("stream.toggle", true) => ("End stream".to_owned(), true),
+                    ("record.toggle", true) => ("Stop recording".to_owned(), true),
+                    _ => (title, false),
+                };
+                ToolItem {
+                    id: id.to_string(),
+                    title,
+                    kind: ToolKind::Command,
+                    enabled: state.enabled(&id).is_ok(),
+                    checked: on,
+                    live,
+                }
+            }
+        })
+        .collect();
+    let has_space = bar.items.contains(&ToolbarItem::Space);
+    (items, bar.visible, has_space)
+}
+
 /// What running an id from the menu bar does.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Run {
