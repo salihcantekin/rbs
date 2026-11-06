@@ -68,6 +68,9 @@ pub fn connect(endpoint: PreviewEndpoint, done: impl Fn(bool) + Send + Clone + '
     }
 }
 
+/// Set by [`close`] at quit: the frame thread's end is then not logged.
+static CLOSED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
 fn setup(mut sub: PreviewSubscriber, done: impl Fn(bool)) {
     #[cfg(target_os = "macos")]
     let made: Result<PreviewLayer, rbs_gpu::GpuError> = Ok(PreviewLayer::new(&sub));
@@ -105,7 +108,10 @@ fn setup(mut sub: PreviewSubscriber, done: impl Fn(bool)) {
                     }
                     Ok(None) => {}
                     Err(e) => {
-                        log(&format!("preview: the studio's preview ended: {e}"));
+                        // At quit the studio stops after `close`; that end is expected.
+                        if !CLOSED.load(std::sync::atomic::Ordering::Relaxed) {
+                            log(&format!("preview: the studio's preview ended: {e}"));
+                        }
                         break;
                     }
                 }
@@ -305,5 +311,6 @@ pub fn set_marks(window: &MainWindow, marks: &[transform::Mark]) {
 
 /// Drops the layer (its frames go back) before the studio stops.
 pub fn close() {
+    CLOSED.store(true, std::sync::atomic::Ordering::Relaxed);
     PREVIEW.with(|p| p.borrow_mut().take());
 }
