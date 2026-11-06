@@ -1,7 +1,8 @@
 //! Streaming through the studio host (Go live): the key read from the key store reaches
 //! the transport only, a missing key refuses before anything opens, connection changes
 //! reach the UI, a recording runs alongside the stream, and the stream ends cleanly or with the
-//! server's reason. Reference sources, fake encoders and a fake RTMP transport whose
+//! server's reason; a control API client goes live, follows the connection on
+//! `stream.state` and ends the stream (ADR-0044). Reference sources, fake encoders and a fake RTMP transport whose
 //! events the test injects. The engine runs on a `TestClock` that never moves; the
 //! output worker's doorbell timer polls the transport. Waits are for the host's updates,
 //! bounded only as a hang guard (ADR-0032). Needs a GPU adapter (software is fine);
@@ -9,11 +10,17 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used)] // Tests fail by panicking.
 
-use std::sync::mpsc::{self, Receiver};
+use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 
+use rbs_api::request::ClientInfo;
+use rbs_api::session::ServerConfig;
+use rbs_api::thread::ApiOptions;
+use rbs_api::transport::{CloseReason, ConnectionHandle, ConnectionSender, PeerInfo, SendError};
+use rbs_api::{ApiServer, TokenStore};
 use rbs_app::stream_key::{KeyStore, MemoryKeyStore};
+use rbs_app::stream_profile::StreamProfile;
 use rbs_app::studio_host::{
     Command, HostConfig, RecordRequest, RecordingUpdate, SourceKind, Stats, StreamRequest,
     StreamUpdate, StudioHost, Update,
@@ -533,6 +540,185 @@ fn a_stream_the_server_refuses_ends_with_its_reason() {
         _ => None,
     });
     drop(host);
+}
+
+struct ChannelSender(Sender<serde_json::Value>);
+
+impl ConnectionSender for ChannelSender {
+    fn try_send(&mut self, text: &Arc<str>) -> Result<(), SendError> {
+        self.0
+            .send(serde_json::from_str(text).unwrap())
+            .map_err(|_| SendError::Closed)
+    }
+
+    fn close(&mut self, _reason: CloseReason) {}
+}
+
+/// A same-user IPC client of the control API, in memory.
+struct Client {
+    handle: ConnectionHandle,
+    rx: Receiver<serde_json::Value>,
+    next: i64,
+    events: Vec<serde_json::Value>,
+}
+
+impl Client {
+    /// Calls a method and returns its answer; events that arrive meanwhile are kept.
+    fn call(&mut self, method: &str, params: serde_json::Value) -> serde_json::Value {
+        let id = self.next;
+        self.next += 1;
+        let text =
+            serde_json::json!({"jsonrpc": "2.0", "id": id, "method": method, "params": params});
+        self.handle.push_message(text.to_string());
+        loop {
+            let v = self.rx.recv_timeout(LIMIT).expect("an answer");
+            if v["id"] == id {
+                return v;
+            }
+            self.events.push(v);
+        }
+    }
+
+    /// The next `stream.state` event whose data `ok` accepts; earlier ones are dropped.
+    fn stream_state(&mut self, ok: impl Fn(&serde_json::Value) -> bool) -> serde_json::Value {
+        let topic = |e: &serde_json::Value| e["params"]["topic"] == "stream.state";
+        while !self.events.is_empty() {
+            let e = self.events.remove(0);
+            if topic(&e) && ok(&e["params"]["data"]) {
+                return e;
+            }
+        }
+        loop {
+            let v = self.rx.recv_timeout(LIMIT).expect("an event");
+            if topic(&v) && ok(&v["params"]["data"]) {
+                return v;
+            }
+        }
+    }
+}
+
+#[test]
+fn a_control_api_client_goes_live_and_ends_the_stream() {
+    let Some(gpu) = gpu() else { return };
+    let keys = Arc::new(MemoryKeyStore::new());
+    let server = Arc::new(Server::default());
+    let (host, rx) = host(gpu, keys, Arc::clone(&server), &TestClock::new());
+
+    let config = ServerConfig::new(ClientInfo::new("rbs", "test")).unwrap();
+    let (api, endpoint) =
+        ApiServer::start(config, TokenStore::new(), ApiOptions::new(host.api_waker())).unwrap();
+    host.attach_api(endpoint, None);
+    let (out_tx, out_rx) = mpsc::channel();
+    let handle = api
+        .inbox()
+        .connect(
+            PeerInfo::same_user_ipc(),
+            Box::new(ChannelSender(out_tx)),
+            Box::new(|| {}),
+        )
+        .unwrap();
+    let mut c = Client {
+        handle,
+        rx: out_rx,
+        next: 1,
+        events: Vec::new(),
+    };
+    c.call(
+        "session.hello",
+        serde_json::json!({"protocols": ["1.1"], "client": {"name": "test", "version": "1"}}),
+    );
+    let sub = c.call(
+        "events.subscribe",
+        serde_json::json!({"topics": ["stream.state"]}),
+    );
+    assert_eq!(sub["result"]["seq"]["stream.state"], 0, "{sub}");
+    let none = serde_json::json!({});
+
+    // No server saved yet: refused, saying what is missing.
+    let refused = c.call("stream.start", none.clone());
+    assert_eq!(refused["error"]["data"]["kind"], "failed", "{refused}");
+    assert!(
+        refused["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("server"),
+        "{refused}"
+    );
+
+    // The UI sends the saved settings; `add_display` waits for an answer from the
+    // control thread, so they are in place before the next call.
+    let mut profile = StreamProfile::new();
+    profile.server = URL.into();
+    profile.reconnect = false;
+    host.send(Command::SetStreamProfile(profile));
+    add_display(&host, &rx);
+
+    // RTMP without a saved key: nothing opens.
+    let no_key = c.call("stream.start", none.clone());
+    assert_eq!(no_key["error"]["data"]["kind"], "failed", "{no_key}");
+    assert!(
+        no_key["error"]["message"].as_str().unwrap().contains("key"),
+        "{no_key}"
+    );
+    assert!(server.sessions.lock().unwrap().is_empty());
+
+    host.send(Command::SaveStreamKey(Some(rbs_transport::Secret::new(
+        "live_api",
+    ))));
+    assert_eq!(key_saved(&rx), Ok(true));
+    let started = c.call("stream.start", none.clone());
+    assert_eq!(started["result"]["video_encoder"], WORKING, "{started}");
+    assert!(started["result"]["audio_encoder"].is_string(), "{started}");
+    // The UI shows it as if Go live was pressed.
+    match stream(&rx) {
+        StreamUpdate::Started { url, .. } => assert_eq!(url, URL),
+        other => panic!("{other:?}"),
+    }
+    assert_eq!(
+        *server.sessions.lock().unwrap(),
+        [(URL.to_owned(), Some("live_api".to_owned()))]
+    );
+    let live = c.stream_state(|d| d["state"] == "live" && d["connected"] == true);
+    let data = &live["params"]["data"];
+    assert_eq!(data["protocol"], "rtmp", "{live}");
+    assert_eq!(data["connects"], 1, "{live}");
+    assert_eq!(data["video_encoder"], WORKING, "{live}");
+    // The key is never shown.
+    assert!(!live.to_string().contains("live_api"), "{live}");
+    let status = c.call("stream.status", none.clone());
+    assert_eq!(status["result"]["data"]["state"], "live", "{status}");
+    assert_eq!(
+        status["result"]["seq"]["stream.state"], live["params"]["seq"],
+        "{status}"
+    );
+    let again = c.call("stream.start", none.clone());
+    assert_eq!(again["error"]["data"]["kind"], "conflict", "{again}");
+
+    let stop = c.call("stream.stop", none.clone());
+    assert!(stop["result"].is_object(), "{stop}");
+    let idle = c.stream_state(|d| d["state"] == "idle");
+    let last = &idle["params"]["data"]["last"];
+    assert_eq!(last["failure"], serde_json::Value::Null, "{idle}");
+    assert_eq!(last["connects"], 1, "{idle}");
+    next(&rx, |u| match u {
+        Update::Stream(StreamUpdate::Ended { failure, .. }) => {
+            assert_eq!(failure, None);
+            Some(())
+        }
+        _ => None,
+    });
+    let stop = c.call("stream.stop", none.clone());
+    assert_eq!(stop["error"]["data"]["kind"], "conflict", "{stop}");
+
+    // A stream the UI starts reaches API clients too.
+    host.send(Command::StartStream(request()));
+    assert!(matches!(stream(&rx), StreamUpdate::Started { .. }));
+    c.stream_state(|d| d["state"] == "live");
+    host.send(Command::EndStream);
+    c.stream_state(|d| d["state"] == "idle");
+
+    drop(host);
+    drop(api);
 }
 
 /// A muxer that writes the packets' bytes between a header and a trailer.

@@ -181,7 +181,7 @@ fn a_client_authenticates_subscribes_records_and_gets_the_event() {
         "session.hello",
         json!({"protocols": ["1.0"], "client": {"name": "t", "version": "1"}}),
     );
-    assert_eq!(c.text()["result"]["protocol"], "1.0");
+    assert_eq!(c.text()["result"]["protocol"], rbs_api::PROTOCOL_VERSION);
     c.call("session.authenticate", json!({"token": token.expose()}));
     assert_eq!(c.text()["result"]["scopes"], json!(["read", "control"]));
     c.call("events.subscribe", json!({"topics": ["record.state"]}));
