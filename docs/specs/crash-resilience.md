@@ -2,7 +2,7 @@
 
 - Status: Draft
 - Owner crate(s): `rbs-crash` (boundary, reports, running marker); `rbs-app` (`src/entry.rs`, `clippy.toml`, `studio_host`)
-- Related ADRs: [ADR-0054](../adr/0054-crash-resilience.md), [ADR-0024](../adr/0024-node-restart-with-back-off.md), [ADR-0041](../adr/0041-studio-recording-on-a-running-engine.md), [ADR-0051](../adr/0051-user-data-profiles-and-scene-collections.md)
+- Related ADRs: [ADR-0055](../adr/0055-crash-resilience.md), [ADR-0024](../adr/0024-node-restart-with-back-off.md), [ADR-0041](../adr/0041-studio-recording-on-a-running-engine.md), [ADR-0051](../adr/0051-user-data-profiles-and-scene-collections.md)
 
 ## Purpose
 
@@ -12,7 +12,7 @@ How the desktop app keeps running when its own code panics, how it records what 
 
 In scope: panic boundaries on the UI thread and the studio's control thread, crash reports, unclean-exit detection, the ban on nested event loops and blocking on the UI thread.
 
-Out of scope (ADR-0054 follow-up work): the studio in its own process, heartbeats, native crash dumps, GPU device loss, isolated adapters and plugins.
+Out of scope (ADR-0055 follow-up work): the studio in its own process, heartbeats, native crash dumps, GPU device loss, isolated adapters and plugins.
 
 ## Contract
 
@@ -35,7 +35,7 @@ pub const CAUGHT_TEXT: &str;
 
 ### UI thread (`rbs-app`)
 
-- `src/entry.rs` is the only module that calls `slint::Timer::single_shot`, `slint::Timer::start`, `slint::invoke_from_event_loop`, `slint::spawn_local` and `slint::Window::on_close_requested`. Its wrappers (`single_shot`, `start`, `invoke`, `spawn_local`, `on_close_requested`) run the body (for a task: each poll, and its drop) under `contain`. A panic in a close handler keeps the window; a panic in a task ends the task, which is then dropped inside the boundary.
+- `src/entry.rs` is the only module that calls `slint::Timer::single_shot`, `slint::Timer::start`, `slint::invoke_from_event_loop`, `slint::spawn_local`, `slint::Window::on_close_requested` and `slint::Window::set_rendering_notifier`. Its wrappers (`single_shot`, `start`, `invoke`, `spawn_local`, `on_close_requested`, `set_rendering_notifier`) run the body (for a task: each poll, and its drop) under `contain`. A panic in a close handler keeps the window; a panic in a task ends the task, which is then dropped inside the boundary.
 - `Ctx::update` runs the change, and each change queued while the state was borrowed, under `contain`. Callbacks of the generated globals are installed through the `on!` macro (its body runs in `Ctx::update`) or start with `entry::guard`; `tests/entry_points.rs` checks every `.on_*(` in `src/`.
 - A caught panic shows `CAUGHT_TEXT` in the error bar, at most once every 5 s.
 

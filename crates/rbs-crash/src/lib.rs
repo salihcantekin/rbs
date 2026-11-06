@@ -1,4 +1,4 @@
-//! Crash resilience for the RBS composition roots (ADR-0054, spec `crash-resilience.md`).
+//! Crash resilience for the RBS composition roots (ADR-0055, spec `crash-resilience.md`).
 //!
 //! - [`contain`]: the panic boundary every UI entry point and every studio command runs
 //!   under, so a panic never unwinds into toolkit or OS frames.
@@ -37,7 +37,7 @@ pub struct Caught {
     pub message: String,
 }
 
-/// Runs `f`; a panic is caught and returned, never unwound further (ADR-0054 decisions
+/// Runs `f`; a panic is caught and returned, never unwound further (ADR-0055 decisions
 /// 2 and 3). The panic hook has written its report by the time this returns.
 pub fn contain<R>(f: impl FnOnce() -> R) -> Result<R, Caught> {
     let _ = CONTAINED.try_with(|d| d.set(d.get() + 1));
@@ -383,7 +383,7 @@ const SECRET_SCHEMES: [&str; 5] = ["rtmp://", "rtmps://", "srt://", "rist://", "
 
 /// `text` with the home directory shown as `~` and everything after a stream URL's
 /// scheme (host, path, key, query) replaced, so a report holds no stream key and no
-/// user name from a path (ADR-0054 decision 4).
+/// user name from a path (ADR-0055 decision 4).
 pub fn redact(text: &str, home: Option<&str>) -> String {
     let mut out = match home {
         Some(home) => replace_home(text, home, cfg!(windows)),

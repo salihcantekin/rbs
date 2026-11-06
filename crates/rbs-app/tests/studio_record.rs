@@ -201,7 +201,7 @@ fn host(gpu: Arc<GpuContext>, clock: &TestClock) -> (StudioHost, Receiver<Update
     host_with(gpu, clock, None)
 }
 
-/// [`host`], panicking once at `fault` (ADR-0054).
+/// [`host`], panicking once at `fault` (ADR-0055).
 fn host_with(
     gpu: Arc<GpuContext>,
     clock: &TestClock,

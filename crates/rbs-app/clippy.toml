@@ -1,22 +1,22 @@
-# Crash resilience in the desktop app (ADR-0054, spec crash-resilience.md).
+# Crash resilience in the desktop app (ADR-0055, spec crash-resilience.md).
 disallowed-methods = [
     # Decision 2: toolkit entry points only through `src/entry.rs`, whose wrappers run
     # the body under the panic boundary.
-    { path = "slint::Timer::single_shot", reason = "use entry::single_shot (panic boundary, ADR-0054)" },
-    { path = "slint::Timer::start", reason = "use entry::start (panic boundary, ADR-0054)" },
-    { path = "slint::invoke_from_event_loop", reason = "use entry::invoke (panic boundary, ADR-0054)" },
-    { path = "slint::spawn_local", reason = "use entry::spawn_local (panic boundary, ADR-0054)" },
-    { path = "slint::Window::on_close_requested", reason = "use entry::on_close_requested (panic boundary, ADR-0054)" },
-    { path = "slint::Window::set_rendering_notifier", reason = "use entry::set_rendering_notifier (panic boundary, ADR-0054)" },
+    { path = "slint::Timer::single_shot", reason = "use entry::single_shot (panic boundary, ADR-0055)" },
+    { path = "slint::Timer::start", reason = "use entry::start (panic boundary, ADR-0055)" },
+    { path = "slint::invoke_from_event_loop", reason = "use entry::invoke (panic boundary, ADR-0055)" },
+    { path = "slint::spawn_local", reason = "use entry::spawn_local (panic boundary, ADR-0055)" },
+    { path = "slint::Window::on_close_requested", reason = "use entry::on_close_requested (panic boundary, ADR-0055)" },
+    { path = "slint::Window::set_rendering_notifier", reason = "use entry::set_rendering_notifier (panic boundary, ADR-0055)" },
     # Decision 6: nothing on the UI thread may run a nested event loop or block. The
     # blocking system dialogs exist on macOS and Windows only.
-    { path = "rfd::FileDialog::pick_file", reason = "a nested event loop (ADR-0054); use rfd::AsyncFileDialog under entry::spawn_local", allow-invalid = true },
-    { path = "rfd::FileDialog::pick_files", reason = "a nested event loop (ADR-0054); use rfd::AsyncFileDialog under entry::spawn_local", allow-invalid = true },
-    { path = "rfd::FileDialog::pick_folder", reason = "a nested event loop (ADR-0054); use rfd::AsyncFileDialog under entry::spawn_local", allow-invalid = true },
-    { path = "rfd::FileDialog::pick_folders", reason = "a nested event loop (ADR-0054); use rfd::AsyncFileDialog under entry::spawn_local", allow-invalid = true },
-    { path = "rfd::FileDialog::save_file", reason = "a nested event loop (ADR-0054); use rfd::AsyncFileDialog under entry::spawn_local", allow-invalid = true },
-    { path = "rfd::MessageDialog::show", reason = "a nested event loop (ADR-0054); use rfd::AsyncMessageDialog under entry::spawn_local", allow-invalid = true },
-    { path = "slint::run_event_loop", reason = "a nested event loop (ADR-0054)" },
-    { path = "slint::ComponentHandle::run", reason = "a nested event loop (ADR-0054); main() runs the one event loop" },
-    { path = "std::thread::sleep", reason = "blocks the thread (ADR-0054 decision 6; tests use TestClock, ADR-0032)" },
+    { path = "rfd::FileDialog::pick_file", reason = "a nested event loop (ADR-0055); use rfd::AsyncFileDialog under entry::spawn_local", allow-invalid = true },
+    { path = "rfd::FileDialog::pick_files", reason = "a nested event loop (ADR-0055); use rfd::AsyncFileDialog under entry::spawn_local", allow-invalid = true },
+    { path = "rfd::FileDialog::pick_folder", reason = "a nested event loop (ADR-0055); use rfd::AsyncFileDialog under entry::spawn_local", allow-invalid = true },
+    { path = "rfd::FileDialog::pick_folders", reason = "a nested event loop (ADR-0055); use rfd::AsyncFileDialog under entry::spawn_local", allow-invalid = true },
+    { path = "rfd::FileDialog::save_file", reason = "a nested event loop (ADR-0055); use rfd::AsyncFileDialog under entry::spawn_local", allow-invalid = true },
+    { path = "rfd::MessageDialog::show", reason = "a nested event loop (ADR-0055); use rfd::AsyncMessageDialog under entry::spawn_local", allow-invalid = true },
+    { path = "slint::run_event_loop", reason = "a nested event loop (ADR-0055)" },
+    { path = "slint::ComponentHandle::run", reason = "a nested event loop (ADR-0055); main() runs the one event loop" },
+    { path = "std::thread::sleep", reason = "blocks the thread (ADR-0055 decision 6; tests use TestClock, ADR-0032)" },
 ]

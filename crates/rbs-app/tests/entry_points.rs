@@ -1,4 +1,4 @@
-//! Every callback the shell hands to Slint runs under the panic boundary (ADR-0054
+//! Every callback the shell hands to Slint runs under the panic boundary (ADR-0055
 //! decision 2). `clippy.toml` covers the Slint functions; this covers the generated
 //! `on_*` callbacks: each is installed through the `on!` macro (whose body goes through
 //! the guarded `Ctx::update`) or starts with `entry::guard`. Reads the sources only.

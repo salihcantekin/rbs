@@ -1,4 +1,4 @@
-//! The studio host survives a panic on its control thread (ADR-0054 decision 3): the
+//! The studio host survives a panic on its control thread (ADR-0055 decision 3): the
 //! command fails with the caught-panic error and the next command runs. Uses the
 //! reference adapters and a `TestClock`; waits only for updates, with a bound as a
 //! hang guard (ADR-0032). Needs a GPU adapter (software is fine); skipped without one

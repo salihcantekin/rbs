@@ -342,7 +342,7 @@ fn deliver(u: studio_host::Update) {
     });
 }
 
-/// Shows a caught panic in the error bar (ADR-0054 decision 2): at most once every few
+/// Shows a caught panic in the error bar (ADR-0055 decision 2): at most once every few
 /// seconds, so a panic that repeats on every tick cannot flood the event loop.
 fn show_caught() {
     thread_local! {
@@ -1341,7 +1341,7 @@ fn install_studio(g: &Studio<'_>, ctx: &Ctx) {
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let config = config::config_dir();
-    // Crash reports and the running marker (ADR-0054 decisions 4 and 5): a report for
+    // Crash reports and the running marker (ADR-0055 decisions 4 and 5): a report for
     // every panic on the UI thread, and a notice when the last session ended badly.
     rbs_crash::report_panics_on_this_thread();
     let crash = rbs_crash::install(&config.join("crash-reports"));

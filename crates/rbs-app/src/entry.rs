@@ -1,4 +1,4 @@
-//! The UI thread's entry points, each a panic boundary (ADR-0054 decision 2).
+//! The UI thread's entry points, each a panic boundary (ADR-0055 decision 2).
 //!
 //! Everything the toolkit calls back is installed through these functions, so a panic
 //! in our code never unwinds into Slint, winit or OS frames (on macOS that aborts the
@@ -71,6 +71,7 @@ pub fn on_close_requested(
 }
 
 /// `Window::set_rendering_notifier` with the notifier guarded.
+#[allow(dead_code)] // Used on macOS and Windows only (the preview layer).
 pub fn set_rendering_notifier(
     window: &slint::Window,
     mut f: impl FnMut(slint::RenderingState, &slint::GraphicsAPI<'_>) + 'static,

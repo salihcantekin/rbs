@@ -602,7 +602,7 @@ pub enum Update {
         result: Result<(), String>,
     },
     /// After a caught panic: how many outputs the host did not track and stopped
-    /// (tests only, ADR-0054).
+    /// (tests only, ADR-0055).
     #[cfg(feature = "fault-injection")]
     #[doc(hidden)]
     Recovered {
@@ -701,7 +701,7 @@ pub struct HostConfig {
     /// Saves the collection after every change (on the user data writer thread);
     /// `None`: changes are not saved.
     pub autosave: Option<CollectionSaver>,
-    /// A step to panic at once (tests only, ADR-0054).
+    /// A step to panic at once (tests only, ADR-0055).
     #[cfg(feature = "fault-injection")]
     #[doc(hidden)]
     pub fault: Option<Fault>,
@@ -734,7 +734,7 @@ impl HostConfig {
 }
 
 /// A panic the host raises once at a chosen step, for the crash-resilience tests
-/// (ADR-0054). Only with the `fault-injection` feature, which release builds never use.
+/// (ADR-0055). Only with the `fault-injection` feature, which release builds never use.
 #[cfg(feature = "fault-injection")]
 #[doc(hidden)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -964,7 +964,7 @@ struct Host {
     /// Why the studio could not start again after a canvas change.
     dead: Option<String>,
     /// The studio is being stopped and started again (canvas change): a panic now
-    /// leaves it stopped, so recovery treats it as dead (ADR-0054 decision 3).
+    /// leaves it stopped, so recovery treats it as dead (ADR-0055 decision 3).
     restarting: bool,
     /// An API request panicked in this round: the loop reconciles after it.
     caught: bool,
@@ -1007,7 +1007,7 @@ fn run(
     inbox: Weak<Sender<Msg>>,
     notify: &dyn Fn(Update),
 ) {
-    // A control thread, not a real-time one: its panics get crash reports (ADR-0054).
+    // A control thread, not a real-time one: its panics get crash reports (ADR-0055).
     rbs_crash::report_panics_on_this_thread();
     let started = rbs_crash::contain(|| start(config, adapters, gpu, engine))
         .unwrap_or_else(|_| Err(rbs_crash::CAUGHT_TEXT.to_owned()));
@@ -1046,7 +1046,7 @@ fn run(
             Err(RecvTimeoutError::Timeout) => None,
             Err(RecvTimeoutError::Disconnected) => break,
         };
-        // Each round is a panic boundary (ADR-0054 decision 3): a bug in one command or
+        // Each round is a panic boundary (ADR-0055 decision 3): a bug in one command or
         // one round fails that round, and the studio and its outputs keep running.
         match rbs_crash::contain(|| round(&mut host, &mut failed, msg, notify)) {
             Ok(next) => {
@@ -1072,7 +1072,7 @@ fn run(
         let started = std::time::Instant::now();
         while !host.studio.output_tail_done(id) && started.elapsed() < CLOSE_TAIL_GUARD {
             host.studio.service();
-            // The control thread at shutdown, not the UI thread (ADR-0054 decision 6).
+            // The control thread at shutdown, not the UI thread (ADR-0055 decision 6).
             #[allow(clippy::disallowed_methods)]
             std::thread::sleep(ENDING_WAIT);
         }
@@ -1797,7 +1797,7 @@ impl Host {
     }
 
     /// Brings the host's bookkeeping back in line with the studio after a caught panic
-    /// (ADR-0054 decision 3), `in_row` being how many rounds in a row panicked:
+    /// (ADR-0055 decision 3), `in_row` being how many rounds in a row panicked:
     /// - the command that panicked gets the answer the UI waits for, if any;
     /// - a panic during a canvas restart leaves the studio stopped: it is dead;
     /// - an output the studio runs but the host does not track (a start that panicked
@@ -1943,7 +1943,7 @@ impl Host {
     fn stop_recording(&mut self, failure: Option<String>, notify: &dyn Fn(Update)) {
         self.ending = false;
         // Tracked until the end: when a stop panics half-way, `Host::recover` finds the
-        // recording still tracked and ends it again (ADR-0054 decision 3).
+        // recording still tracked and ends it again (ADR-0055 decision 3).
         let Some((path, id)) = self.recording.clone() else {
             return;
         };
@@ -2001,7 +2001,7 @@ impl Host {
             TransportInput::Container(c) => OutputSettings::new(r.url.clone(), c),
             _ => OutputSettings::packets(r.url.clone()),
         };
-        // Never in a crash report (ADR-0054 decision 4).
+        // Never in a crash report (ADR-0055 decision 4).
         if let Some(key) = &key {
             rbs_crash::add_secret(key.expose());
         }
@@ -2555,7 +2555,7 @@ impl ControlTarget for ApiTarget<'_> {
         // The real publisher comes back into the host for the command (see
         // `Host::serve_api`), so its changes publish with the right `seq`.
         std::mem::swap(&mut self.host.events, events);
-        // A panic fails this request only (ADR-0054 decision 3); the control loop
+        // A panic fails this request only (ADR-0055 decision 3); the control loop
         // reconciles the host after the round.
         let result = rbs_crash::contain(|| self.run(command));
         std::mem::swap(&mut self.host.events, events);

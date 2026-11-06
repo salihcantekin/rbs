@@ -1,6 +1,6 @@
 [package]
 name = "rbs-crash"
-description = "Crash resilience for RBS composition roots: panic boundaries, local crash reports and unclean-exit detection (ADR-0054)."
+description = "Crash resilience for RBS composition roots: panic boundaries, local crash reports and unclean-exit detection (ADR-0055)."
 version.workspace = true
 edition.workspace = true
 # `File::try_lock` (1.89). Application layer only (rbs-app needs 1.92 already); engine

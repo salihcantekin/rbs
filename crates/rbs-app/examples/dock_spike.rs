@@ -15,7 +15,7 @@
 //! 5. Tear-off with a plain `TouchArea`: press a tab's grip and release outside the window;
 //!    the release position (window coordinates) shows whether pointer events keep coming
 //!    outside the window while the button is held, which floating a panel needs.
-#![allow(clippy::disallowed_methods)] // A demo, not the app shell: ADR-0054 rules the shell.
+#![allow(clippy::disallowed_methods)] // A demo, not the app shell: ADR-0055 rules the shell.
 #![allow(
     missing_docs,
     clippy::print_stdout,

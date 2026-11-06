@@ -14,7 +14,7 @@ name = "rbs"
 path = "src/main.rs"
 
 [features]
-# Test-only panics at chosen steps of the studio host (ADR-0054 crash-resilience
+# Test-only panics at chosen steps of the studio host (ADR-0055 crash-resilience
 # tests). Never enabled in builds that ship.
 fault-injection = []
 # `RBS_DEMO_SOURCES=1` adds the deterministic reference adapters (synthetic displays,
@@ -75,7 +75,7 @@ rbs-api-ipc = { path = "../rbs-api-ipc" }
 rbs-remote-settings = { path = "../rbs-remote-settings" }
 # Output profiles and scene collections on disk (ADR-0051).
 rbs-user-data = { path = "../rbs-user-data" }
-# Panic boundaries, crash reports and unclean-exit detection (ADR-0054).
+# Panic boundaries, crash reports and unclean-exit detection (ADR-0055).
 rbs-crash = { path = "../rbs-crash" }
 rbs-capture-test = { path = "../rbs-capture-test", optional = true }
 rbs-audio-io-test = { path = "../rbs-audio-io-test", optional = true }

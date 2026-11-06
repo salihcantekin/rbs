@@ -25,7 +25,7 @@ Specs are the current contracts of RBS. Code must match them; a PR that changes 
 | [performance-budgets.md](performance-budgets.md) | Draft | `benches/`, CI |
 | [control-api.md](control-api.md) | Draft | `rbs-api`, `rbs-api-ws`, `rbs-api-ipc` (planned; ADR-0044) |
 | [mcp-server.md](mcp-server.md) | Draft | `rbs-mcp` (planned; ADR-0052) |
-| [crash-resilience.md](crash-resilience.md) | Draft | `rbs-crash` (panic boundary, crash reports, unclean-exit detection), `rbs-app` (`entry.rs`, `clippy.toml`, studio host recovery; ADR-0054) |
+| [crash-resilience.md](crash-resilience.md) | Draft | `rbs-crash` (panic boundary, crash reports, unclean-exit detection), `rbs-app` (`entry.rs`, `clippy.toml`, studio host recovery; ADR-0055) |
 | [testing-strategy.md](testing-strategy.md) | Draft | CI, conformance suites |
 | [ui-design-system.md](ui-design-system.md) | Draft | `rbs-ui-tokens`, `rbs-app` (planned) |
 
