@@ -4241,6 +4241,8 @@ name = "rbs-app"
 version = "0.0.1"
 dependencies = [
  "chrono",
+ "i-slint-backend-testing",
+ "i-slint-core",
  "keyring",
  "libc",
  "objc2 0.6.5",

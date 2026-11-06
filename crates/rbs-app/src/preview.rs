@@ -13,7 +13,9 @@ use rbs_core::time::{Clock, MonotonicClock};
 use rbs_gpu::share::{
     LayerRect, MAX_MARKS, Mark, PreviewEndpoint, PreviewFrame, PreviewLayer, PreviewSubscriber,
 };
-use rbs_ui::transform::{self, MarkKind};
+use rbs_ui::cover;
+use rbs_ui::layout::Rect;
+use rbs_ui::transform::{self, MarkKind, Viewport};
 use slint::ComponentHandle;
 
 use crate::studio_ui::log;
@@ -29,6 +31,11 @@ struct Preview {
     layer: PreviewLayer,
     /// The marks last given to the layer, in its units.
     marks: Vec<Mark>,
+    /// The picture's size in pixels (the engine's surfaces), for where the layer draws it.
+    size: [f32; 2],
+    /// Scratch for what the layer draws and what covers it, in the layer's units; reused.
+    drawn: Vec<Rect>,
+    covers: Vec<Rect>,
     attached: bool,
     clock: MonotonicClock,
     timer: slint::Timer,
@@ -63,6 +70,7 @@ pub fn connect(endpoint: PreviewEndpoint, done: impl Fn(bool) + Send + Clone + '
 }
 
 fn setup(mut sub: PreviewSubscriber, done: impl Fn(bool)) {
+    let (width, height) = sub.size();
     #[cfg(target_os = "macos")]
     let made: Result<PreviewLayer, rbs_gpu::GpuError> = Ok(PreviewLayer::new(&sub));
     #[cfg(windows)]
@@ -79,6 +87,9 @@ fn setup(mut sub: PreviewSubscriber, done: impl Fn(bool)) {
         *p.borrow_mut() = Some(Preview {
             layer,
             marks: Vec::with_capacity(MAX_MARKS),
+            size: [width as f32, height as f32],
+            drawn: Vec::with_capacity(MAX_MARKS + 1),
+            covers: Vec::new(),
             attached: false,
             clock: MonotonicClock::new(),
             timer: slint::Timer::default(),
@@ -116,11 +127,17 @@ pub fn set_area(area: Option<[f32; 4]>) {
 }
 
 /// Attaches the layer once the window exists, places it over the Program panel and
-/// hides it while toolkit content would be covered by it (menus, toasts, the error bar).
-/// Called after every view sync and whenever a popup opens or closes.
+/// hides it while toolkit content drawn over the window overlaps what the layer draws
+/// (an in-window popup, a toast or the error bar over the picture or a selection mark;
+/// ADR-0034 decision 4). A popup beside the picture leaves it shown. Called after every
+/// view sync and before every redraw of the main window (popups open, move and close
+/// with a redraw); unchanged placement makes no layer call.
 pub fn place(window: &MainWindow) {
     PREVIEW.with(|p| {
-        let mut p = p.borrow_mut();
+        // Never nested in practice; a redraw inside a layer call would skip one placement.
+        let Ok(mut p) = p.try_borrow_mut() else {
+            return;
+        };
         let Some(st) = p.as_mut() else { return };
         if !st.attached {
             let window_handle = window.window().window_handle();
@@ -151,30 +168,61 @@ pub fn place(window: &MainWindow) {
             }
             st.attached = true;
         }
-        let shell = window.global::<Shell>();
-        let studio = window.global::<Studio>();
-        let covered = studio.get_overlays() > 0
-            || shell.get_toast_kind() != 0
-            || shell.get_error_kind() != 0
-            || !studio.get_deleted().is_empty();
-        match AREA.with(Cell::get) {
-            Some([x, y, w, h]) if !covered && w > 0.0 && h > 0.0 => {
-                // Core Animation places in points (logical pixels); DirectComposition in
-                // physical pixels.
-                #[cfg(target_os = "macos")]
-                let scale = 1.0;
-                #[cfg(windows)]
-                let scale = f64::from(window.window().scale_factor());
-                st.layer.set_rect(LayerRect {
-                    x: f64::from(x) * scale,
-                    y: f64::from(y) * scale,
-                    width: f64::from(w) * scale,
-                    height: f64::from(h) * scale,
-                });
-                st.layer.set_hidden(false);
-            }
-            _ => st.layer.set_hidden(true),
+        let Some([x, y, w, h]) = AREA.with(Cell::get).filter(|a| a[2] > 0.0 && a[3] > 0.0) else {
+            st.layer.set_hidden(true);
+            return;
+        };
+        // Core Animation places in points (logical pixels); DirectComposition in
+        // physical pixels.
+        #[cfg(target_os = "macos")]
+        let scale = 1.0f32;
+        #[cfg(windows)]
+        let scale = window.window().scale_factor();
+        let area = Rect { x, y, w, h };
+        let picture = Viewport {
+            area,
+            canvas: st.size,
         }
+        .picture();
+        let in_layer = |r: Rect| Rect {
+            x: r.x * scale,
+            y: r.y * scale,
+            w: r.w * scale,
+            h: r.h * scale,
+        };
+        st.drawn.clear();
+        st.drawn.push(in_layer(picture));
+        st.drawn.extend(st.marks.iter().map(|m| Rect {
+            x: m.x as f32,
+            y: m.y as f32,
+            w: m.width as f32,
+            h: m.height as f32,
+        }));
+        rbs_app::popups::open_in(window.window(), &mut st.covers);
+        let shell = window.global::<Shell>();
+        let toast = |c: crate::ui::Cover| Rect {
+            x: c.x,
+            y: c.y,
+            w: c.width,
+            h: c.height,
+        };
+        if shell.get_toast_kind() != 0 || !window.global::<Studio>().get_deleted().is_empty() {
+            st.covers.push(toast(shell.get_bottom_toast()));
+        }
+        if shell.get_error_kind() != 0 {
+            st.covers.push(toast(shell.get_top_toast()));
+        }
+        for c in &mut st.covers {
+            *c = in_layer(*c);
+        }
+        let covered = cover::covered(&st.drawn, &st.covers);
+        st.layer.set_rect(LayerRect {
+            x: f64::from(area.x * scale),
+            y: f64::from(area.y * scale),
+            width: f64::from(area.w * scale),
+            height: f64::from(area.h * scale),
+        });
+        st.layer.set_hidden(covered);
     });
 }
 

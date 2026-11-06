@@ -28,6 +28,11 @@ rbs-ui = { path = "../rbs-ui" }
 # lets the preview display engine surfaces imported on rbs-gpu's device (decision 2,
 # ADR-0028); it must track rbs-gpu's wgpu major.
 slint = { version = "=1.18.1", default-features = false, features = ["std", "backend-winit", "renderer-skia", "accessibility", "compat-1-2", "unstable-wgpu-30", "raw-window-handle-06"] }
+# Slint's own list of open in-window popups, so the preview layer hides only while one
+# overlaps the picture (src/popups.rs, ADR-0034 decision 4). Internal crate of Slint:
+# exactly the version `slint` is pinned to (already built through it);
+# tests/popup_covers.rs fails if an upgrade changes what it reads.
+i-slint-core = { version = "=1.18.1", default-features = false }
 # The Program panel attaches the preview layer to the window (ADR-0034, ADR-0036).
 raw-window-handle = "0.6"
 # The recording settings file (src/record_profile.rs); the versions rbs-ui already uses.
@@ -118,6 +123,8 @@ rbs-codec-videotoolbox = { path = "../rbs-codec-videotoolbox" }
 rbs-codec-audiotoolbox = { path = "../rbs-codec-audiotoolbox" }
 
 [dev-dependencies]
+# Headless Slint windows for tests/popup_covers.rs; already in the lockfile through Slint.
+i-slint-backend-testing = { version = "=1.18.1", default-features = false }
 # The crash-resilience tests inject panics into the studio host (tests/studio_faults.rs).
 rbs-app = { path = ".", features = ["fault-injection"] }
 # The control API tests read JSON-RPC answers (tests/studio_api.rs, studio_stream.rs).

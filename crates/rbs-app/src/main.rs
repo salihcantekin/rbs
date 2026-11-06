@@ -631,8 +631,8 @@ impl Ctx {
         #[cfg(any(target_os = "macos", windows))]
         {
             preview::set_area(picture_main);
-            preview::place(&app.main);
             preview::set_marks(&app.main, app.studio.marks());
+            preview::place(&app.main);
         }
     }
 
@@ -1318,17 +1318,24 @@ fn install_studio(g: &Studio<'_>, ctx: &Ctx) {
     on!(on_rc_new_key, |app| {
         app.studio.new_key();
     });
-    // A popup opened or closed: the preview layer hides or shows at once.
+    // Before every redraw of the main window: popups open, move and close with a redraw,
+    // and so does a change of the window's scale; the preview layer follows them
+    // (ADR-0034 decisions 2 and 4).
     #[cfg(any(target_os = "macos", windows))]
     {
-        let ctx = ctx.clone();
-        g.on_overlays_changed(move || {
-            entry::guard(|| {
-                if let Ok(app) = ctx.app.try_borrow() {
-                    preview::place(&app.main);
+        if let Ok(app) = ctx.app.try_borrow() {
+            let main = app.main.as_weak();
+            let set = entry::set_rendering_notifier(app.main.window(), move |state, _| {
+                if matches!(state, slint::RenderingState::BeforeRendering)
+                    && let Some(main) = main.upgrade()
+                {
+                    preview::place(&main);
                 }
             });
-        });
+            if let Err(e) = set {
+                studio_ui::log(&format!("preview: no rendering notifier: {e:?}"));
+            }
+        }
     }
 }
 

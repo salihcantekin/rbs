@@ -7,6 +7,7 @@ disallowed-methods = [
     { path = "slint::invoke_from_event_loop", reason = "use entry::invoke (panic boundary, ADR-0054)" },
     { path = "slint::spawn_local", reason = "use entry::spawn_local (panic boundary, ADR-0054)" },
     { path = "slint::Window::on_close_requested", reason = "use entry::on_close_requested (panic boundary, ADR-0054)" },
+    { path = "slint::Window::set_rendering_notifier", reason = "use entry::set_rendering_notifier (panic boundary, ADR-0054)" },
     # Decision 6: nothing on the UI thread may run a nested event loop or block. The
     # blocking system dialogs exist on macOS and Windows only.
     { path = "rfd::FileDialog::pick_file", reason = "a nested event loop (ADR-0054); use rfd::AsyncFileDialog under entry::spawn_local", allow-invalid = true },

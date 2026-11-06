@@ -70,6 +70,14 @@ pub fn on_close_requested(
     });
 }
 
+/// `Window::set_rendering_notifier` with the notifier guarded.
+pub fn set_rendering_notifier(
+    window: &slint::Window,
+    mut f: impl FnMut(slint::RenderingState, &slint::GraphicsAPI<'_>) + 'static,
+) -> Result<(), slint::SetRenderingNotifierError> {
+    window.set_rendering_notifier(move |state, api| guard(|| f(state, api)))
+}
+
 /// A task whose polls, and whose drop, run under the panic boundary. After a panic the
 /// task is dropped inside the boundary too, so nothing of it unwinds into Slint.
 struct Guarded(Option<Pin<Box<dyn Future<Output = ()>>>>);
