@@ -9,7 +9,9 @@ use rbs_core::media::Size;
 use rbs_core::timing::FrameRate;
 use rbs_graph::node::NodeTypeId;
 use rbs_scene::SceneCollection;
-use rbs_scene::model::{Crop, ItemContent, Layout, SceneScope, SettingValue, Settings};
+use rbs_scene::model::{
+    Border, Crop, ItemContent, ItemStyle, Layout, SceneScope, SettingValue, Settings, Shadow, Shape,
+};
 use rbs_user_data::document;
 use rbs_user_data::{DataError, UserData};
 
@@ -54,14 +56,25 @@ fn show() -> SceneCollection {
         .add_item(
             talk,
             ItemContent::Source(cam),
-            Layout::new([0.0, 0.0], [1920.0, 1080.0]),
+            Layout::new([0.0, 0.0], [1920.0, 1080.0]).with_style(
+                ItemStyle::new(Shape::Circle)
+                    .with_border(Some(Border::new(6.5, [255, 0, 128, 200]))),
+            ),
             None,
         )
         .unwrap();
     col.set_item_layout(
         cam_item,
         Some(tall),
-        Layout::new([0.0, 420.0], [1080.0, 1080.0]).with_crop(Crop::new(420, 0, 420, 0)),
+        Layout::new([0.0, 420.0], [1080.0, 1080.0])
+            .with_crop(Crop::new(420, 0, 420, 0))
+            .with_style(
+                ItemStyle::new(Shape::Rectangle { radius: 24.0 }).with_shadow(Some(Shadow::new(
+                    [4.0, 6.0],
+                    12.0,
+                    [0, 0, 0, 128],
+                ))),
+            ),
     )
     .unwrap();
     col.add_item(
@@ -120,6 +133,11 @@ fn a_collection_round_trips_exactly_with_its_counters() {
         "enabled = false",
         "visible = false",
         "canvas = 0",
+        "format = 2",
+        "shape = \"circle\"",
+        "color = \"#ff0080c8\"",
+        "radius = 24.0",
+        "offset = [4.0, 6.0]",
     ] {
         assert!(text.contains(want), "{want} missing in:\n{text}");
     }
@@ -469,4 +487,47 @@ fn slow_save_cost_of_a_large_collection() {
     assert_eq!(listed.entries.len(), 20);
     let size = std::fs::metadata(lib.path(&ids[0])).unwrap().len();
     println!("2000 sources/items, {size} bytes: save {save:?}, load {load:?}, list of 20 {list:?}");
+}
+
+#[test]
+fn styles_are_checked_on_load() {
+    let item = |style: &str| {
+        format!(
+            "{CANVAS}{SOURCE}[[scenes]]\nid = 0\nname = \"Sc\"\n[[scenes.items]]\nid = 0\nsource = 0\nlayout = {{ position = [0.0, 0.0], size = [10.0, 10.0], style = {style} }}\n"
+        )
+    };
+    // A good one loads, in a format 1 file too (format 2 only adds keys).
+    let text = format!(
+        "format = 1\nkind = \"scene-collection\"\n{}",
+        item("{ shape = \"ellipse\", border = { width = 2.0, color = \"#FFFFFF\" } }")
+    );
+    let col = document::parse::<SceneCollection>(&text).unwrap().document;
+    let scene = col.scenes().next().unwrap();
+    let style = scene.items[0].layout.style;
+    assert_eq!(style.shape, Shape::Ellipse);
+    assert_eq!(style.border, Some(Border::new(2.0, [255, 255, 255, 255])));
+    for (style, why) in [
+        ("{ shape = \"circle\", radius = 3.0 }", "radius"),
+        ("{ shape = \"star\" }", "star"),
+        ("{ border = { width = 2.0, color = \"red\" } }", "colour"),
+        ("{ border = { width = 2.0, color = \"#12345\" } }", "colour"),
+        (
+            "{ border = { width = 0.0, color = \"#000000\" } }",
+            "layout",
+        ),
+        ("{ radius = -1.0 }", "layout"),
+        (
+            "{ shadow = { blur = -2.0, color = \"#000000\" } }",
+            "layout",
+        ),
+        ("{ glow = 1 }", "glow"),
+    ] {
+        let reason = invalid(&item(style));
+        assert!(reason.contains(why), "{style}: {reason}");
+    }
+    // Shape and border are for sources, not nested scenes.
+    let nested = format!(
+        "{CANVAS}[[scenes]]\nid = 0\nname = \"A\"\n[[scenes]]\nid = 1\nname = \"B\"\n[[scenes.items]]\nid = 0\nscene = 0\nlayout = {{ position = [0.0, 0.0], size = [10.0, 10.0], style = {{ shape = \"circle\" }} }}\n"
+    );
+    assert!(invalid(&nested).contains("shape and border"));
 }

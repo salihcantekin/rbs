@@ -8,8 +8,8 @@ use rbs_core::media::Size;
 use rbs_core::timing::FrameRate;
 use rbs_graph::node::NodeTypeId;
 use rbs_scene::model::{
-    CanvasId, Crop, ItemContent, ItemId, Layout, SceneId, SceneScope, SettingValue, Settings,
-    SourceId,
+    Border, CanvasId, Crop, ItemContent, ItemId, ItemStyle, Layout, SceneId, SceneScope,
+    SettingValue, Settings, Shadow, Shape, SourceId,
 };
 use rbs_scene::{MAX_LAYERS, MAX_NESTING_DEPTH, SceneCollection, SceneError, Undo};
 
@@ -176,6 +176,9 @@ fn nested_scenes_are_scaled_into_their_box_and_inherit_visibility_and_opacity() 
     assert_eq!(l.crop, Crop::new(10, 0, 10, 0));
     assert_eq!(l.path.len(), 2);
     assert_eq!(l.path[0], nest);
+    // A plain item carries the default style and its own box size.
+    assert!(l.style.is_plain());
+    assert_eq!(l.box_size, [960.0, 1080.0]);
 
     s.col.set_item_visible(nest, false).unwrap();
     assert!(s.col.flatten(s.wide, outer).unwrap().is_empty());
@@ -330,6 +333,37 @@ fn invalid_edits_are_refused() {
         ),
         Err(SceneError::CropOnScene(_))
     ));
+    assert!(matches!(
+        s.col.add_item(
+            scene,
+            ItemContent::Scene(other),
+            full(1.0, 1.0).with_style(ItemStyle::new(Shape::Circle)),
+            None
+        ),
+        Err(SceneError::StyleOnScene(_))
+    ));
+    for bad in [
+        ItemStyle::new(Shape::Rectangle { radius: -1.0 }),
+        ItemStyle::new(Shape::Rectangle { radius: f32::NAN }),
+        ItemStyle::new(Shape::Circle).with_border(Some(Border::new(0.0, [0; 4]))),
+        ItemStyle::new(Shape::Circle).with_shadow(Some(Shadow::new(
+            [f32::INFINITY, 0.0],
+            1.0,
+            [0; 4],
+        ))),
+    ] {
+        assert_eq!(
+            s.col
+                .add_item(
+                    scene,
+                    ItemContent::Source(s.cam),
+                    full(1.0, 1.0).with_style(bad),
+                    None
+                )
+                .map(|_| ()),
+            Err(SceneError::InvalidLayout)
+        );
+    }
     assert_eq!(
         s.col
             .add_item(scene, ItemContent::Source(s.cam), full(1.0, 1.0), Some(5))
@@ -929,4 +963,34 @@ fn canvas_size_and_frame_rate_are_bounded() {
             .map(|_| ()),
         Err(SceneError::FrameRateTooHigh)
     );
+}
+
+#[test]
+fn a_style_reaches_the_layer_in_the_items_own_units() {
+    let mut s = studio();
+    let (inner, _) = s.col.add_scene("Inner", SceneScope::Shared).unwrap();
+    let (outer, _) = s.col.add_scene("Outer", SceneScope::Shared).unwrap();
+    let style = ItemStyle::new(Shape::Rectangle { radius: 40.0 })
+        .with_border(Some(Border::new(8.0, [255, 255, 255, 255])));
+    s.col
+        .add_item(
+            inner,
+            ItemContent::Source(s.cam),
+            Layout::new([0.0, 0.0], [-640.0, 360.0]).with_style(style),
+            None,
+        )
+        .unwrap();
+    // Nested at a quarter of the size: the style keeps the item's units, so the
+    // compositor scales it with the picture.
+    s.col
+        .add_item(
+            outer,
+            ItemContent::Scene(inner),
+            Layout::new([0.0, 0.0], [480.0, 270.0]),
+            None,
+        )
+        .unwrap();
+    let l = &s.col.flatten(s.wide, outer).unwrap()[0];
+    assert_eq!(l.style, style);
+    assert_eq!(l.box_size, [640.0, 360.0]);
 }

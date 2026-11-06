@@ -75,7 +75,7 @@ pub enum SourceStatus {
 }
 
 /// One source of the program scene.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SourceInfo {
     /// Its id in the scene collection.
     pub id: u32,
@@ -85,6 +85,104 @@ pub struct SourceInfo {
     pub kind: Option<SourceKind>,
     /// How it is doing.
     pub status: SourceStatus,
+    /// The id of its item in the program scene (protocol 1.3; absent before).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub item: Option<u32>,
+    /// Where its picture is on the studio's canvas; absent for sound-only sources and
+    /// before protocol 1.3.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub layout: Option<ItemLayout>,
+}
+
+/// A picture's place on the canvas (protocol 1.3): the layout the studio's canvas
+/// shows.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ItemLayout {
+    /// Top-left corner of the unrotated box, canvas pixels.
+    pub position: [f32; 2],
+    /// Box size in canvas pixels; negative flips.
+    pub size: [f32; 2],
+    /// Clockwise rotation in degrees about the box centre.
+    pub rotation: f32,
+    /// Source pixels cut from the left, top, right and bottom.
+    pub crop: [u32; 4],
+    /// 0 to 1.
+    pub opacity: f32,
+    /// Shape, border and shadow (ADR-0053).
+    pub style: ItemStyle,
+}
+
+/// The outline of a picture inside its box (ADR-0053).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ShapeKind {
+    /// The box, with corners rounded by `radius`.
+    #[default]
+    Rectangle,
+    /// The largest circle centred in the box.
+    Circle,
+    /// The ellipse that fills the box.
+    Ellipse,
+}
+
+/// Shape, border and shadow of a picture (ADR-0053). Lengths are in the item's box
+/// units (canvas pixels for an item on the canvas); colours are `#rrggbb` or
+/// `#rrggbbaa`, sRGB with straight alpha. `{}` is the plain picture.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ItemStyle {
+    /// The outline.
+    #[serde(default)]
+    pub shape: ShapeKind,
+    /// Corner radius; only for `rectangle`.
+    #[serde(default)]
+    pub radius: f32,
+    /// A line inside the shape's edge.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub border: Option<StyleBorder>,
+    /// A shadow under the shape; saved, not drawn yet.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub shadow: Option<StyleShadow>,
+}
+
+/// A border (ADR-0053).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct StyleBorder {
+    /// Width, more than 0.
+    pub width: f32,
+    /// `#rrggbb` or `#rrggbbaa`.
+    pub color: String,
+}
+
+/// A shadow (ADR-0053).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct StyleShadow {
+    /// Offset, x right and y down.
+    #[serde(default)]
+    pub offset: [f32; 2],
+    /// Blur radius, not negative.
+    #[serde(default)]
+    pub blur: f32,
+    /// `#rrggbb` or `#rrggbbaa`.
+    pub color: String,
+}
+
+/// `#rrggbb` (opaque) or `#rrggbbaa` as red, green, blue, alpha; `None` otherwise.
+pub fn parse_color(text: &str) -> Option<[u8; 4]> {
+    let hex = text.strip_prefix('#')?;
+    if !(hex.len() == 6 || hex.len() == 8) || !hex.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return None;
+    }
+    let byte = |i: usize| u8::from_str_radix(&hex[i..i + 2], 16).ok();
+    let alpha = if hex.len() == 8 { byte(6)? } else { 255 };
+    Some([byte(0)?, byte(2)?, byte(4)?, alpha])
+}
+
+/// `#rrggbbaa`.
+pub fn format_color(c: [u8; 4]) -> String {
+    format!("#{:02x}{:02x}{:02x}{:02x}", c[0], c[1], c[2], c[3])
 }
 
 /// Something a source can capture: a display, window, camera or audio endpoint.

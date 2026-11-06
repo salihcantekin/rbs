@@ -1091,6 +1091,19 @@ fn install_studio(g: &Studio<'_>, ctx: &Ctx) {
                             h: f32| {
         app.studio.set_source_box(id, x, y, w, h);
     });
+    on!(
+        on_set_source_style,
+        |app,
+         id: i32,
+         shape: i32,
+         radius: f32,
+         border: bool,
+         width: f32,
+         color: slint::SharedString| {
+            app.studio
+                .set_source_style(id, shape, radius, border, width, &color);
+        }
+    );
     on!(on_undo_delete, |app| {
         app.studio.undo_delete();
     });

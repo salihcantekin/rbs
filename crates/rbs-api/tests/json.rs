@@ -84,6 +84,27 @@ fn source() -> SourceInfo {
         status: SourceStatus::Failed {
             reason: "unplugged".into(),
         },
+        item: Some(7),
+        layout: Some(ItemLayout {
+            position: [1400.0, 780.0],
+            size: [480.0, 270.0],
+            rotation: 0.0,
+            crop: [0, 0, 0, 0],
+            opacity: 1.0,
+            style: style(),
+        }),
+    }
+}
+
+fn style() -> ItemStyle {
+    ItemStyle {
+        shape: ShapeKind::Circle,
+        radius: 0.0,
+        border: Some(StyleBorder {
+            width: 6.0,
+            color: "#ffffffff".into(),
+        }),
+        shadow: None,
     }
 }
 
@@ -114,6 +135,10 @@ fn every_request() -> Vec<Request> {
             name: None,
         })),
         c(Command::SourceDelete(SourceRef { source: 4 })),
+        c(Command::ItemSetStyle(SetItemStyle {
+            item: 7,
+            style: style(),
+        })),
         c(Command::EditUndo),
         c(Command::EditRedo),
         c(Command::OutputProfiles),
@@ -502,4 +527,32 @@ fn stream_settings_are_a_minor_addition() {
             encoding: encoding(),
         }
     );
+}
+
+/// Protocol 1.3 added item layouts and `item.set_style` (ADR-0053): a 1.2 source row
+/// without them still parses, `{}` is the plain style, unknown style keys are refused,
+/// and colours parse as `#rrggbb` or `#rrggbbaa`.
+#[test]
+fn item_styles_are_a_minor_addition() {
+    let old: SourceInfo = serde_json::from_value(json!({
+        "id": 1, "name": "Screen", "kind": "screen", "status": {"state": "running"}
+    }))
+    .unwrap();
+    assert_eq!((old.item, old.layout), (None, None));
+    let plain: ItemStyle = serde_json::from_value(json!({})).unwrap();
+    assert_eq!(plain, ItemStyle::default());
+    assert!(serde_json::from_value::<ItemStyle>(json!({"glow": 1})).is_err());
+    assert!(serde_json::from_value::<ItemStyle>(json!({"shape": "star"})).is_err());
+    let set: Request = serde_json::from_value(json!({
+        "method": "item.set_style",
+        "params": {"item": 3, "style": {"shape": "rectangle", "radius": 24.0}}
+    }))
+    .unwrap();
+    assert_eq!(set.scope(), Some(Scope::Control));
+    assert_eq!(parse_color("#FF0080"), Some([255, 0, 128, 255]));
+    assert_eq!(parse_color("#ff008080"), Some([255, 0, 128, 128]));
+    for bad in ["ff0080", "#ff008", "#gg0080", "#ff00800", "red"] {
+        assert_eq!(parse_color(bad), None, "{bad}");
+    }
+    assert_eq!(format_color([255, 0, 128, 128]), "#ff008080");
 }

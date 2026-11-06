@@ -10,8 +10,8 @@
 
 use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
 use rbs_gpu::{
-    CanvasDesc, Compositor, GpuContext, GpuRequest, Layer, TextureDesc, TexturePool, YuvConverter,
-    YuvFormat, readback, yuv,
+    CanvasDesc, Compositor, GpuContext, GpuRequest, Layer, LayerShape, LayerStyle, TextureDesc,
+    TexturePool, YuvConverter, YuvFormat, readback, yuv,
 };
 
 const W: u32 = 1920;
@@ -94,6 +94,35 @@ fn bench(c: &mut Criterion) {
                     comp.render(&ctx, &pool, layers, canvas).expect("render");
                     conv.convert(&ctx, &pool, canvas, luma, chroma)
                         .expect("convert");
+                    ctx.wait_idle().expect("wait");
+                });
+            },
+        );
+        // The same scene with every tile styled (ADR-0053): rounded corners and a border
+        // on even tiles, a circle with a border on odd ones; the full-canvas layer stays
+        // plain, so the pipeline switches between them.
+        let styled: Vec<Layer> = layers
+            .iter()
+            .enumerate()
+            .map(|(i, l)| {
+                let mut l = *l;
+                if i > 0 {
+                    let shape = if i % 2 == 0 {
+                        LayerShape::Rounded { radius: 24.0 }
+                    } else {
+                        LayerShape::Circle
+                    };
+                    l.style = LayerStyle::new(shape, 6.0, [255, 255, 255, 255], [480.0, 270.0]);
+                }
+                l
+            })
+            .collect();
+        group.bench_with_input(
+            BenchmarkId::new("composite_styled", count),
+            &styled,
+            |b, layers| {
+                b.iter(|| {
+                    comp.render(&ctx, &pool, layers, canvas).expect("render");
                     ctx.wait_idle().expect("wait");
                 });
             },
@@ -189,6 +218,25 @@ fn bench(c: &mut Criterion) {
     c.bench_function("record_submit_32_layers_64px", |b| {
         b.iter(|| {
             tiny.render(&ctx, &pool, &layers, small).expect("render");
+            ctx.poll();
+        });
+    });
+    // The same with every other layer styled: the CPU cost of the style records and
+    // pipeline switches (ADR-0053).
+    let styled: Vec<Layer> = layers
+        .iter()
+        .enumerate()
+        .map(|(i, l)| {
+            let mut l = *l;
+            if i % 2 == 1 {
+                l.style = LayerStyle::new(LayerShape::Circle, 2.0, [255; 4], [64.0, 64.0]);
+            }
+            l
+        })
+        .collect();
+    c.bench_function("record_submit_32_layers_64px_half_styled", |b| {
+        b.iter(|| {
+            tiny.render(&ctx, &pool, &styled, small).expect("render");
             ctx.poll();
         });
     });

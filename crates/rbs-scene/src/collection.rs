@@ -40,6 +40,9 @@ pub enum SceneError {
     InvalidSetting(String),
     /// Crop applies to source items only.
     CropOnScene(ItemId),
+    /// Shape and border apply to source items only (ADR-0053): a nested scene is not
+    /// drawn as one picture.
+    StyleOnScene(ItemId),
     /// The scene would contain itself, directly or through other scenes.
     NestingCycle(SceneId),
     /// The scene's scope does not allow it here: a canvas scene shown on another
@@ -98,10 +101,13 @@ impl fmt::Display for SceneError {
             SceneError::BadTypeId(t) => write!(f, "type id {t:?} is not reverse-DNS"),
             SceneError::EmptyCanvas => f.write_str("canvas size must be at least 1x1"),
             SceneError::InvalidLayout => {
-                f.write_str("layout is not finite or opacity out of range")
+                f.write_str("layout is not finite, opacity is out of range or the style is invalid")
             }
             SceneError::InvalidSetting(k) => write!(f, "setting {k:?} is not finite"),
             SceneError::CropOnScene(id) => write!(f, "{id} places a scene; crop is for sources"),
+            SceneError::StyleOnScene(id) => {
+                write!(f, "{id} places a scene; shape and border are for sources")
+            }
             SceneError::NestingCycle(id) => write!(f, "{id} would contain itself"),
             SceneError::ScopeViolation(id) => write!(f, "{id} is not allowed here by its scope"),
             SceneError::IndexOutOfRange(i) => write!(f, "index {i} out of range"),
@@ -1137,6 +1143,9 @@ impl SceneCollection {
                     }
                     if matches!(item.content, ItemContent::Scene(_)) && !layout.crop.is_none() {
                         return Err(SceneError::CropOnScene(item.id));
+                    }
+                    if matches!(item.content, ItemContent::Scene(_)) && !layout.style.is_plain() {
+                        return Err(SceneError::StyleOnScene(item.id));
                     }
                 }
                 match item.content {

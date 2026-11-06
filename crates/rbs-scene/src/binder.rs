@@ -27,7 +27,7 @@ use rbs_graph::node::{LinkKind, NodeDescriptor, NodeKind, NodeTypeId};
 
 use crate::collection::{SceneCollection, SceneError};
 use crate::flatten::Affine2;
-use crate::model::{CanvasId, Crop, FilterId, ItemId, SceneId, Settings, SourceId};
+use crate::model::{CanvasId, Crop, FilterId, ItemId, ItemStyle, SceneId, Settings, SourceId};
 
 /// Node type id of the canvas compositor.
 pub const COMPOSITOR_TYPE: &str = "org.rbs.compositor";
@@ -77,6 +77,10 @@ pub struct BoundLayer {
     pub crop: Crop,
     /// 0.0..=1.0.
     pub opacity: f32,
+    /// Shape, border and shadow, as in [`FlatLayer::style`](crate::FlatLayer::style).
+    pub style: ItemStyle,
+    /// The item's own box size, the units of `style`.
+    pub box_size: [f32; 2],
 }
 
 /// A bound compositor and what it draws.
@@ -713,6 +717,8 @@ impl State {
                         transform: layer.transform,
                         crop: layer.crop,
                         opacity: layer.opacity,
+                        style: layer.style,
+                        box_size: layer.box_size,
                     });
                 }
             }

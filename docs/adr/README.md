@@ -65,3 +65,4 @@ An ADR records one decision that is hard to reverse or affects more than one cra
 | [0050](0050-command-registry-menus-and-toolbar.md) | One command registry for menus, context menus, the toolbar and the palette | Accepted |
 | [0051](0051-user-data-profiles-and-scene-collections.md) | User data as versioned documents; output profiles and scene collections as libraries of named files | Accepted |
 | [0052](0052-ai-agent-control-through-mcp.md) | AI agents control RBS through an MCP server that is a plain control API client | Accepted |
+| [0053](0053-item-style-and-video-filter-chains.md) | Item shape, border and shadow drawn by the compositor; video filters as a per-source chain of GPU nodes | Accepted |

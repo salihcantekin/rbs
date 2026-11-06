@@ -37,7 +37,9 @@ pub mod upload;
 pub mod yuv;
 pub mod yuv_decode;
 
-pub use compositor::{CanvasDesc, Compositor, Layer, RenderStats, Transfer};
+pub use compositor::{
+    CanvasDesc, Compositor, Layer, LayerShape, LayerStyle, RenderStats, Transfer,
+};
 pub use context::{GpuContext, GpuMetrics, GpuRequest, PowerPreference};
 pub use download::{DownloadStats, YuvDownload};
 pub use error::GpuError;

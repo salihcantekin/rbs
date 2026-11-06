@@ -3,11 +3,14 @@
 // Rust pushes state into the `Studio` global of every window and handles its callbacks
 // by sending commands to the studio's control thread.
 import { Theme, Tokens } from "tokens.slint";
-import { Button, Checkbox, FocusRing, IconButton, IconName, MenuItem, MenuSurface, EmptyState, NumberField, Select, SegmentedControl, TextField } from "components.slint";
+import { Button, Checkbox, ColorPicker, FocusRing, IconButton, IconName, MenuItem, MenuSurface, EmptyState, NumberField, Select, SegmentedControl, TextField } from "components.slint";
 
 // `picture`: a video source; `x`, `y`, `w`, `h` place its box on the canvas (canvas
 // pixels). `can-up` / `can-down`: another source with a picture is above / below it.
-export struct SourceData { id: int, name: string, kind: string, status: string, ok: bool, picture: bool, x: float, y: float, w: float, h: float, can-up: bool, can-down: bool }
+// Style (ADR-0053): `shape` 0 rectangle, 1 circle, 2 ellipse; `radius` for rectangles;
+// `border` on or off, its `border-width`, its colour as `#rrggbb` or `#rrggbbaa` text
+// and as a swatch (the values a border gets when turned on while it is off).
+export struct SourceData { id: int, name: string, kind: string, status: string, ok: bool, picture: bool, x: float, y: float, w: float, h: float, can-up: bool, can-down: bool, shape: int, radius: float, border: bool, border-width: float, border-color: string, border-swatch: color }
 export struct KindData { code: int, label: string }
 // A filled rectangle of the selection on the preview (outline or handle), in the
 // panel's coordinates; kind 0 outline, 1 handle border, 2 handle inside.
@@ -81,6 +84,9 @@ export global Studio {
     callback move-source(int /* id */, bool /* up */);
     // A video source's box on the canvas, in canvas pixels.
     callback set-source-box(int /* id */, float /* x */, float /* y */, float /* w */, float /* h */);
+    // Shape and border of a video source (ADR-0053); a colour that is not #rrggbb or
+    // #rrggbbaa is ignored.
+    callback set-source-style(int /* id */, int /* shape */, float /* radius */, bool /* border */, float /* width */, string /* colour */);
     // The selection drawn by the toolkit where no preview layer shows the picture (the
     // layer draws it itself otherwise, ADR-0048).
     in property <[MarkData]> marks;
@@ -514,6 +520,7 @@ export component SourcesPanel inherits Rectangle {
                 : Studio.undo-kind == 2 ? @tr("Undo deleting {}", Studio.undo-name)
                 : Studio.undo-kind == 3 ? @tr("Undo the layer change of {}", Studio.undo-name)
                 : Studio.undo-kind == 4 ? @tr("Undo moving or resizing {}", Studio.undo-name)
+                : Studio.undo-kind == 5 ? @tr("Undo the shape or border of {}", Studio.undo-name)
                 : @tr("Undo");
             clicked => { Studio.undo-edit(true); }
         }
@@ -525,6 +532,7 @@ export component SourcesPanel inherits Rectangle {
                 : Studio.redo-kind == 2 ? @tr("Redo deleting {}", Studio.redo-name)
                 : Studio.redo-kind == 3 ? @tr("Redo the layer change of {}", Studio.redo-name)
                 : Studio.redo-kind == 4 ? @tr("Redo moving or resizing {}", Studio.redo-name)
+                : Studio.redo-kind == 5 ? @tr("Redo the shape or border of {}", Studio.redo-name)
                 : @tr("Redo");
             clicked => { Studio.undo-edit(false); }
         }
@@ -997,6 +1005,118 @@ component EncoderFields inherits VerticalLayout {
 
 // The selected source's properties. For now: where its picture is on the canvas
 // (position and size in canvas pixels). Rotation, crop and filters come later.
+// Shape and border of a picture (ADR-0053), under its position and size. Every change
+// is one undo step.
+component StyleFields inherits VerticalLayout {
+    in property <SourceData> data;
+    // The colour that stands. The field's text is set from it whenever it changes,
+    // because setting the text after an edit ends the field's binding.
+    property <string> colour-text: data.border-color;
+    changed colour-text => { colour.text = colour-text; }
+    // The picker's popover hides the preview layer while it is open, like a menu.
+    property <bool> picker-open: picker.open;
+    changed picker-open => { Studio.overlays += picker-open ? 1 : -1; Studio.overlays-changed(); }
+    spacing: Tokens.space-3;
+    Text {
+        text: @tr("Shape and border");
+        color: Theme.text-primary;
+        font-size: Tokens.type-label-size;
+        font-weight: Tokens.type-label-weight;
+        accessible-role: none;
+    }
+    Field {
+        label: @tr("Shape");
+        SegmentedControl {
+            label: @tr("Shape of {}", data.name);
+            options: [@tr("Rectangle"), @tr("Circle"), @tr("Ellipse")];
+            index: data.shape;
+            selected(i) => {
+                Studio.set-source-style(data.id, i, i == 0 ? data.radius : 0, data.border, data.border-width, data.border-color);
+            }
+        }
+    }
+    Shown {
+        shown: data.shape == 0;
+        Field {
+            label: @tr("Corner radius");
+            NumberField {
+                label: @tr("Corner radius of {}", data.name);
+                value: data.radius;
+                edited(v) => {
+                    Studio.set-source-style(data.id, 0, max(v, 0), data.border, data.border-width, data.border-color);
+                }
+            }
+        }
+    }
+    Hint {
+        text: data.shape == 1
+            ? @tr("The largest circle that fits in the box, centred. Make the box square for a full circle of the picture.")
+            : data.shape == 2 ? @tr("The ellipse that fills the box.")
+            : @tr("In canvas pixels. 0 keeps square corners; half the shorter side makes round ends.");
+    }
+    Checkbox {
+        text: @tr("Border");
+        checked: data.border;
+        toggled(on) => {
+            Studio.set-source-style(data.id, data.shape, data.radius, on, data.border-width, data.border-color);
+        }
+    }
+    Shown {
+        shown: data.border;
+        HorizontalLayout {
+            spacing: Tokens.space-2;
+            Field {
+                horizontal-stretch: 1;
+                preferred-width: 0;
+                label: @tr("Width");
+                NumberField {
+                    label: @tr("Border width of {}", data.name);
+                    value: data.border-width;
+                    edited(v) => {
+                        if v > 0 {
+                            Studio.set-source-style(data.id, data.shape, data.radius, true, v, data.border-color);
+                        }
+                    }
+                }
+            }
+            Field {
+                horizontal-stretch: 1;
+                preferred-width: 0;
+                label: @tr("Colour");
+                HorizontalLayout {
+                    spacing: Tokens.space-2;
+                    // The colour as a swatch that opens the colour picker, beside its
+                    // text (never colour alone, U7).
+                    picker := ColorPicker {
+                        label: @tr("Choose the border colour of {}", data.name);
+                        value: data.border-swatch;
+                        picked(c) => {
+                            if c != data.border-color {
+                                Studio.set-source-style(data.id, data.shape, data.radius, true, data.border-width, c);
+                            }
+                        }
+                    }
+                    colour := TextField {
+                        label: @tr("Border colour of {}", data.name);
+                        text: data.border-color;
+                        accepted(t) => {
+                            if t != data.border-color {
+                                Studio.set-source-style(data.id, data.shape, data.radius, true, data.border-width, t);
+                            }
+                            // A refused colour goes back to the one that stands; an
+                            // accepted one arrives through `colour-text`.
+                            self.text = data.border-color;
+                        }
+                    }
+                }
+            }
+        }
+        Hint {
+            text: @tr("Drawn inside the edge, so the box stays the same. Colour as #rrggbb, or #rrggbbaa with transparency.");
+        }
+    }
+}
+
 component TransformFields inherits VerticalLayout {
     in property <SourceData> data;
     spacing: Tokens.space-3;
@@ -1062,6 +1182,7 @@ component TransformFields inherits VerticalLayout {
     if data.picture: Hint {
         text: @tr("In canvas pixels, from the top-left corner. Up and Down arrows change a value by 1, with Shift by 10.");
     }
+    if data.picture: StyleFields { data: data; }
 }
 
 export component PropertiesPanel inherits Rectangle {

@@ -24,7 +24,7 @@ use rbs_app::user_session::{RECORDING, STREAM, UserSession};
 use rbs_audio::LevelMeter;
 use rbs_record::Link;
 use rbs_remote_settings::{self as remote_profile, Access, RemoteProfile};
-use rbs_scene::model::SourceId;
+use rbs_scene::model::{Border, ItemStyle, Shape, SourceId};
 use rbs_transport::Secret;
 use rbs_ui::meter::{self, Meter, SCALE_MARKS_DB};
 use rbs_ui::transform::{DragKeys, MAX_MARKS, Mark, MarkKind, SourceBox};
@@ -1110,6 +1110,46 @@ impl StudioUi {
     pub fn set_source_box(&mut self, id: i32, x: f32, y: f32, w: f32, h: f32) {
         self.deleted.clear();
         self.send_box(0, id, SourceBox::new([x, y], [w, h]), 0);
+    }
+
+    /// Shape and border of a video source's picture (the Properties fields). `shape`:
+    /// 0 rectangle, 1 circle, 2 ellipse. A colour that is not `#rrggbb` or `#rrggbbaa`
+    /// changes nothing.
+    pub fn set_source_style(
+        &mut self,
+        id: i32,
+        shape: i32,
+        radius: f32,
+        border: bool,
+        width: f32,
+        color: &str,
+    ) {
+        let Some(color) = rbs_api::types::parse_color(color.trim()) else {
+            return;
+        };
+        let shape = match shape {
+            1 => Shape::Circle,
+            2 => Shape::Ellipse,
+            _ => Shape::Rectangle { radius },
+        };
+        // The shadow is not in the panel yet; keep one an API client set.
+        let shadow = self.rows_style(id).and_then(|s| s.shadow);
+        let style = ItemStyle::new(shape)
+            .with_border(border.then_some(Border::new(width, color)))
+            .with_shadow(shadow);
+        self.deleted.clear();
+        self.send(Command::SetSourceStyle {
+            gesture: 0,
+            id: SourceId::from_raw(id as u32),
+            style,
+        });
+    }
+
+    fn rows_style(&self, id: i32) -> Option<ItemStyle> {
+        self.rows
+            .iter()
+            .find(|r| r.id.get() as i32 == id)
+            .and_then(|r| r.layout.map(|l| l.style))
     }
 
     fn send_box(&mut self, seq: u64, id: i32, b: SourceBox, gesture: u64) {
@@ -2427,6 +2467,18 @@ impl StudioUi {
                 let (x, y, w, h) = r.layout.map_or((0.0, 0.0, 0.0, 0.0), |l| {
                     (l.position[0], l.position[1], l.size[0], l.size[1])
                 });
+                let style = r.layout.map(|l| l.style).unwrap_or_default();
+                let (shape, radius) = match style.shape {
+                    Shape::Circle => (1, 0.0),
+                    Shape::Ellipse => (2, 0.0),
+                    Shape::Rectangle { radius } => (0, radius),
+                    _ => (0, 0.0),
+                };
+                // Turning a border on starts from these.
+                let border = style
+                    .border
+                    .unwrap_or(Border::new(DEFAULT_BORDER_WIDTH, [255, 255, 255, 255]));
+                let [cr, cg, cb, ca] = border.color;
                 SourceData {
                     id: r.id.get() as i32,
                     name: r.name.as_str().into(),
@@ -2441,6 +2493,12 @@ impl StudioUi {
                     // Rows are top first.
                     can_up: r.layout.is_some() && pictures.first().is_some_and(|f| *f < i),
                     can_down: r.layout.is_some() && pictures.last().is_some_and(|l| *l > i),
+                    shape,
+                    radius,
+                    border: style.border.is_some(),
+                    border_width: border.width,
+                    border_color: color_text(border.color).into(),
+                    border_swatch: slint::Color::from_argb_u8(ca, cr, cg, cb),
                 }
             })
             .collect();
@@ -2697,8 +2755,21 @@ pub fn stat_lines(stats: &Stats) -> Vec<StatLine> {
     lines
 }
 
+/// A border's width when it is turned on.
+const DEFAULT_BORDER_WIDTH: f32 = 4.0;
+
+/// `#rrggbb` for an opaque colour, else `#rrggbbaa`.
+fn color_text(c: [u8; 4]) -> String {
+    if c[3] == 255 {
+        format!("#{:02x}{:02x}{:02x}", c[0], c[1], c[2])
+    } else {
+        rbs_api::types::format_color(c)
+    }
+}
+
 /// The Studio global's `undo-kind` / `redo-kind` code and the source's name for a
-/// step: 0 nothing, 1 add, 2 delete, 3 layer order, 4 move or resize.
+/// step: 0 nothing, 1 add, 2 delete, 3 layer order, 4 move or resize, 5 shape or
+/// border.
 fn step_view(step: Option<&StepInfo>) -> (i32, &str) {
     match step {
         None => (0, ""),
@@ -2708,6 +2779,7 @@ fn step_view(step: Option<&StepInfo>) -> (i32, &str) {
                 EditKind::Delete => 2,
                 EditKind::Order => 3,
                 EditKind::Place => 4,
+                EditKind::Style => 5,
             },
             s.name.as_str(),
         ),
