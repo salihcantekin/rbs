@@ -544,6 +544,61 @@ impl Default for RecordProfile {
     }
 }
 
+impl Encoding {
+    /// These settings as the control API's encoding (stream settings).
+    pub fn to_api(&self) -> rbs_api::types::Encoding {
+        use rbs_api::types as api;
+        api::Encoding {
+            encoder: self.encoder.clone(),
+            rate_control: match self.rate_control {
+                RateMode::Cbr => api::RateMode::Cbr,
+                RateMode::Vbr => api::RateMode::Vbr,
+                RateMode::ConstantQuality => api::RateMode::ConstantQuality,
+            },
+            video_kbps: self.video_kbps,
+            max_video_kbps: self.max_video_kbps,
+            quality: self.quality,
+            keyframe_seconds: self.keyframe_seconds,
+            profile: self.profile.clone(),
+            preset: match self.preset {
+                Preset::Quality => api::Preset::Quality,
+                Preset::Balanced => api::Preset::Balanced,
+                Preset::Speed => api::Preset::Speed,
+            },
+            b_frames: self.b_frames,
+            cbr_padding: self.cbr_padding,
+            audio_kbps: self.audio_kbps,
+        }
+    }
+
+    /// Settings from the control API's encoding. The caller checks
+    /// [`Encoding::problem`].
+    pub fn from_api(e: &rbs_api::types::Encoding) -> Self {
+        use rbs_api::types as api;
+        Self {
+            encoder: e.encoder.clone(),
+            rate_control: match e.rate_control {
+                api::RateMode::Cbr => RateMode::Cbr,
+                api::RateMode::Vbr => RateMode::Vbr,
+                api::RateMode::ConstantQuality => RateMode::ConstantQuality,
+            },
+            video_kbps: e.video_kbps,
+            max_video_kbps: e.max_video_kbps,
+            quality: e.quality,
+            keyframe_seconds: e.keyframe_seconds,
+            profile: e.profile.clone(),
+            preset: match e.preset {
+                api::Preset::Quality => Preset::Quality,
+                api::Preset::Balanced => Preset::Balanced,
+                api::Preset::Speed => Preset::Speed,
+            },
+            b_frames: e.b_frames,
+            cbr_padding: e.cbr_padding,
+            audio_kbps: e.audio_kbps,
+        }
+    }
+}
+
 /// The user's videos folder: `%USERPROFILE%\Videos` on Windows, `~/Movies` on macOS,
 /// `~/Videos` elsewhere; the current directory if no home is known.
 pub fn default_folder() -> PathBuf {

@@ -63,7 +63,7 @@ Rules:
 - No operation runs on the UI thread for more than 8 ms. Long work runs in the engine or in the background with progress shown.
 - The UI renders at the display refresh rate during interaction and animation. Input-to-visual-feedback latency must be under 50 ms.
 - When nothing changes on screen, the UI does not redraw. Meters animate only while visible and while their audio is active; the preview redraws at the canvas frame rate only while visible.
-- Panels that are hidden or collapsed do no rendering and no polling. Hidden plugin panels go to Standby (P13, ADR-0013).
+- Panels that are hidden or collapsed do no rendering and no polling, except that a collapsed panel renders its declared compact view, if it has one ([ADR-0049](../adr/0049-main-window-areas-panel-states-and-sizes.md)). Hidden plugin panels go to Standby (P13, ADR-0013).
 - The desktop preview and program use the engine's shared GPU surface, not frames copied over IPC (ADR-0008). Remote clients receive a reduced-rate encoded preview instead.
 
 ## U6. One design system, no exceptions
@@ -174,6 +174,7 @@ The user decides what is on screen. RBS ships good defaults, never a fixed layou
 - **Automatic switching (opt-in):** the user can choose a workspace that is applied when going live and another when the stream ends. The switch shows a toast with a one-click way back, and the switch itself is in the layout undo history.
 - **Per-display memory:** a workspace remembers which monitor each floating window and projector was on. If that monitor is missing, the window docks back into the main window instead of opening off-screen. Floating windows follow the same minimum size rules as the main window (U11) and are reachable by focus cycling (F6 moves between the main window and floating windows; every window has an accessible name).
 - **Per-canvas panels:** with several canvases (U15), the preview and program panels can be opened once per canvas, for example a horizontal and a vertical program side by side.
+- **Out of the way without closing** ([ADR-0049](../adr/0049-main-window-areas-panel-states-and-sizes.md)): any docked panel can collapse to its title row, auto-hide to a tab on the window edge, or be maximized, and the left, right and bottom areas can be hidden and shown with one interaction each. Sizes between panels can be dragged within each panel's limits and are kept with the workspace.
 - **Hidden means idle:** closed and hidden panels do no rendering and no polling, and plugin panels go to Standby (U5, ADR-0013). A lean live workspace really is cheaper to run.
 - **Locked layout:** a workspace can be locked so panels cannot be moved, resized or closed by accident with the mouse; unlocking is one interaction. Commands (palette, shortcut, control API) still work.
 - Plugin panels follow the same rules; a plugin cannot force its panel to stay open or float on top.
@@ -191,5 +192,5 @@ The user decides what is on screen. RBS ships good defaults, never a fixed layou
 | U15-U19 | `ui-review` checklist; usability tests for canvas switching and the mixer |
 | U18 | Automated test: no modal dialog opens automatically while live |
 | U20 | Test that every UI command maps to a control API command |
-| U21 | Automated tests: every panel can be closed and reopened with the keyboard alone; workspace round-trip (save, switch, export, import); missing-monitor fallback; switch time under 100 ms; a hidden panel performs zero redraws and zero polls (counted frames and polls); automatic switching on go live sends no command to sources or outputs; the live indicator shows state, duration and outputs in every built-in workspace. Usability test for building a custom live workspace |
+| U21 | Automated tests: every panel can be closed and reopened with the keyboard alone; workspace round-trip (save, switch, export, import); missing-monitor fallback; switch time under 100 ms; a hidden panel performs zero redraws and zero polls, and a collapsed panel redraws only its declared compact view at its declared rate (counted frames and polls); automatic switching on go live sends no command to sources or outputs; the live indicator shows state, duration and outputs in every built-in workspace. Usability test for building a custom live workspace |
 | All | `ui-review` skill checklist on every UI pull request, with light and dark screenshots |

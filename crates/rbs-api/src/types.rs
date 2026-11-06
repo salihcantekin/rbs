@@ -220,6 +220,65 @@ pub struct RecordingProfile {
     pub audio_kbps: u32,
 }
 
+/// How a stream is encoded (`settings.get`, `settings.set`; protocol 1.2). The same
+/// fields as a [`RecordingProfile`]'s encoding.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Encoding {
+    /// The video encoder's adapter id, or `null` for the best one.
+    pub encoder: Option<String>,
+    /// Rate control.
+    pub rate_control: RateMode,
+    /// Video bitrate in kbit/s: the CBR rate, or the VBR target.
+    pub video_kbps: u32,
+    /// VBR peak in kbit/s; `null` is 1.5 times the target.
+    pub max_video_kbps: Option<u32>,
+    /// Constant-quality level, 0 (best) to 51.
+    pub quality: u8,
+    /// Seconds between keyframes.
+    pub keyframe_seconds: u32,
+    /// Codec profile (`high`, `main`, `baseline`); `null` lets the encoder pick.
+    pub profile: Option<String>,
+    /// Speed versus quality.
+    pub preset: Preset,
+    /// Most B-frames.
+    pub b_frames: u32,
+    /// With CBR, pad the video to its full bitrate.
+    pub cbr_padding: bool,
+    /// Audio bitrate in kbit/s.
+    pub audio_kbps: u32,
+}
+
+/// The stream settings (`settings.get`; protocol 1.2). The server's address is not
+/// part of them: only the local user enters it, in the app, so an API client can neither
+/// read it nor send the program and the stream key elsewhere. The key is never shown.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StreamSettings {
+    /// The saved server's protocol, or `null` when no server is saved.
+    pub protocol: Option<StreamProtocol>,
+    /// A stream key is saved in the system's credential store.
+    pub key_saved: bool,
+    /// Reconnect when the connection drops.
+    pub reconnect: bool,
+    /// SRT latency in ms; `null`: the transport's default (120 ms).
+    pub srt_latency_ms: Option<u16>,
+    /// How the stream is encoded.
+    pub encoding: Encoding,
+}
+
+/// The stream settings an API client may change (`settings.set`; protocol 1.2): all of
+/// them but the server and the key. Unknown fields are ignored, so the
+/// [`StreamSettings`] that `settings.get` returned can be sent back changed.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StreamSettingsPatch {
+    /// Reconnect when the connection drops.
+    pub reconnect: bool,
+    /// SRT latency in ms (1 or more); `null`: the transport's default.
+    #[serde(default)]
+    pub srt_latency_ms: Option<u16>,
+    /// How the stream is encoded.
+    pub encoding: Encoding,
+}
+
 /// Settings the control thread owns.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Settings {
@@ -227,6 +286,10 @@ pub struct Settings {
     pub profiles: Vec<RecordingProfile>,
     /// The canvas.
     pub canvas: Canvas,
+    /// The stream settings (protocol 1.2); absent while the app is still starting and
+    /// from servers that do not stream.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stream: Option<StreamSettings>,
 }
 
 /// What a recording is doing.

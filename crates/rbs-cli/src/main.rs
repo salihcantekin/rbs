@@ -16,6 +16,7 @@
 
 #![allow(clippy::print_stdout, clippy::print_stderr)] // A command-line program prints.
 
+mod app;
 mod args;
 mod control;
 mod permissions;
@@ -62,6 +63,23 @@ fn main() -> ExitCode {
                 Ok(()) => ExitCode::SUCCESS,
                 Err(e) => {
                     eprintln!("token: {e}");
+                    ExitCode::FAILURE
+                }
+            }
+        }
+        Ok(Command::App(c)) => {
+            let what = match c {
+                args::AppCommand::Stream(args::StreamControl::Start) => "app stream start",
+                args::AppCommand::Stream(args::StreamControl::Stop) => "app stream stop",
+                args::AppCommand::Stream(args::StreamControl::Status { .. }) => "app stream status",
+            };
+            let result = rbs_api_ipc::Endpoint::for_current_user()
+                .map_err(|e| format!("the local control endpoint is not known ({e})"))
+                .and_then(|ipc| app::run(&ipc, &c, &mut std::io::stdout()));
+            match result {
+                Ok(()) => ExitCode::SUCCESS,
+                Err(e) => {
+                    eprintln!("{what}: {e}");
                     ExitCode::FAILURE
                 }
             }

@@ -28,3 +28,10 @@ UI text uses these terms and no synonyms (rule U13). Code may use different inte
 | Access token | A secret one app uses for remote control, with a name and an access level (View only, Control, Full control). Shown once; can be revoked | Password, key, API key | `rbs_api::Token` with its scopes |
 | Access from other computers | Remote control by apps on other computers on the network, over an encrypted connection. Off by default | Network mode, LAN access, remote access | Network access, TLS (`WsConfig::network`, ADR-0046) |
 | Key pin | What apps on other computers check before they send an access token: `sha256//` and the hash of RBS's public key. Stays the same when the certificate is renewed | Fingerprint, thumbprint | SPKI SHA-256 pin (`TlsIdentity::key_pin`) |
+| Area | One of the three regions around the centre of the main window (left, right, bottom) that can be shown or hidden with its button. Hiding an area keeps its panels | Dock, sidebar, region | Main window area (`left`, `right`, `bottom`, ADR-0049) |
+| Edge tab | A tab at the window edge for a panel that is set to auto-hide; pointing at it or pressing it opens the panel | Side tab, pin tab | Auto-hide group tab |
+| Collapse / Expand | Shrink a panel to its title row (or a narrow strip) and back, without closing it | Minimize, fold | Stack state `collapsed` |
+| Auto-hide / Pin | Move a panel to an edge tab so it opens only when needed / put it back in place | Unpin, slide-out | Stack state `auto-hide` / `docked` |
+| Maximize / Restore | Let one panel fill the main window for a while / bring the other panels back. Not saved in the workspace | Full screen, zoom | Transient maximize |
+| Toolbar | The row of command buttons under the menu bar, which the user chooses in Customize toolbar | Ribbon, action bar | Workspace `toolbar` (ADR-0050) |
+| Menu bar | The menus at the top of the window (or of the screen on macOS) that hold every command | App menu, main menu | Slint `MenuBar` built from the command registry |

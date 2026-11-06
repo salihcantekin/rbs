@@ -30,6 +30,32 @@ fn canvas() -> Canvas {
     }
 }
 
+fn encoding() -> Encoding {
+    Encoding {
+        encoder: None,
+        rate_control: RateMode::Cbr,
+        video_kbps: 6_000,
+        max_video_kbps: None,
+        quality: 23,
+        keyframe_seconds: 2,
+        profile: Some("high".into()),
+        preset: Preset::Balanced,
+        b_frames: 0,
+        cbr_padding: true,
+        audio_kbps: 160,
+    }
+}
+
+fn stream_settings() -> StreamSettings {
+    StreamSettings {
+        protocol: Some(StreamProtocol::Rtmp),
+        key_saved: true,
+        reconnect: true,
+        srt_latency_ms: None,
+        encoding: encoding(),
+    }
+}
+
 fn profile() -> RecordingProfile {
     RecordingProfile {
         id: "default".into(),
@@ -107,6 +133,11 @@ fn every_request() -> Vec<Request> {
         c(Command::SettingsSet(SettingsPatch {
             profiles: Some(vec![profile()]),
             canvas: Some(canvas()),
+            stream: Some(StreamSettingsPatch {
+                reconnect: false,
+                srt_latency_ms: Some(500),
+                encoding: encoding(),
+            }),
         })),
         c(Command::EventsSubscribe(Subscribe {
             topics: vec![Topic::RecordState, Topic::AudioLevels],
@@ -249,6 +280,7 @@ fn every_result_and_event_type_round_trips() {
         data: Settings {
             profiles: vec![profile()],
             canvas: canvas(),
+            stream: Some(stream_settings()),
         },
     });
     round_trip(&StreamStarted {
@@ -280,6 +312,7 @@ fn every_result_and_event_type_round_trips() {
         EventPayload::SettingsChanged(Settings {
             profiles: vec![],
             canvas: canvas(),
+            stream: None,
         }),
         EventPayload::AudioLevels(vec![SourceLevels {
             source: 2,
@@ -441,5 +474,32 @@ fn stream_state_has_a_stable_wire_form() {
     assert_eq!(
         rbs_api::request::topic_scope(Topic::StreamState),
         Scope::Read
+    );
+}
+
+/// Protocol 1.2 added the stream settings: a 1.1 `settings.set` without them still
+/// parses, settings without them leave the field out, and the settings `settings.get`
+/// returned can be sent back as the patch (the read-only fields are ignored).
+#[test]
+fn stream_settings_are_a_minor_addition() {
+    let old: SettingsPatch = serde_json::from_value(json!({"canvas": null})).unwrap();
+    assert_eq!(old.stream, None);
+    let text = serde_json::to_value(Settings {
+        profiles: vec![],
+        canvas: canvas(),
+        stream: None,
+    })
+    .unwrap();
+    assert!(text.get("stream").is_none(), "{text}");
+    let got = serde_json::to_value(stream_settings()).unwrap();
+    assert!(got.get("server").is_none(), "{got}");
+    let back: StreamSettingsPatch = serde_json::from_value(got).unwrap();
+    assert_eq!(
+        back,
+        StreamSettingsPatch {
+            reconnect: true,
+            srt_latency_ms: None,
+            encoding: encoding(),
+        }
     );
 }

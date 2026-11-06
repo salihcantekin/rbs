@@ -1,6 +1,6 @@
 # ADR-0015: Binding UI design rules and a single design system
 
-- Status: Accepted, amended by [ADR-0017](0017-flexible-panels-and-workspaces.md)
+- Status: Accepted, amended by [ADR-0017](0017-flexible-panels-and-workspaces.md) and [ADR-0049](0049-main-window-areas-panel-states-and-sizes.md) (U5)
 - Date: 2026-11-02
 - Amends: ADR-0014 (adds core UI flows, new UI components and token names to the architecture review scope)
 

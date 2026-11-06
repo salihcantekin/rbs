@@ -256,8 +256,16 @@ fn stop_is_not_held_by_peers_that_do_not_read() {
         let TransportEvent::Connected { mut sender, .. } = next(&inbox, &wake) else {
             panic!("expected Connected");
         };
-        while sender.try_send(&chunk).is_ok() {}
-        assert_eq!(sender.try_send(&chunk), Err(SendError::Full));
+        // Fill the queue until it refuses. `Full` is not final: the writer thread can
+        // still move a message into the socket buffer and make room until the peer's
+        // buffer is full too, so a second `try_send` may succeed. The peers never read,
+        // so the writes end up stalled whatever the timing; `stop` must not wait for them.
+        assert!(
+            std::iter::repeat_with(|| sender.try_send(&chunk))
+                .take(1024)
+                .any(|r| r == Err(SendError::Full)),
+            "the queue never filled"
+        );
         senders.push(sender);
     }
     let started = std::time::Instant::now();
