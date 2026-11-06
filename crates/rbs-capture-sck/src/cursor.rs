@@ -22,6 +22,12 @@ pub(crate) const POLL: Duration = Duration::from_millis(50);
 #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 pub(crate) const STILL_POLLS: u32 = 6;
 
+/// Window level of the Dock (`kCGDockWindowLevel`). The Dock's window spans the whole
+/// display, opaque by its alpha, though only the Dock itself is drawn, so it would
+/// cover every pointer position. It is ignored: over the visible Dock the captured
+/// cursor can still show.
+pub(crate) const DOCK_LAYER: i64 = 20;
+
 /// A rectangle in global display points, origin top left (Quartz window bounds).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct Rect {
@@ -43,6 +49,8 @@ pub(crate) struct Above {
     pub bounds: Rect,
     /// Window alpha; fully transparent windows hide nothing.
     pub alpha: f64,
+    /// Window level (`kCGWindowLayer`).
+    pub layer: i64,
 }
 
 /// Whether a window above the captured one is under the pointer at `(x, y)`, so the
@@ -51,7 +59,7 @@ pub(crate) struct Above {
 pub(crate) fn covered(x: f64, y: f64, above: impl IntoIterator<Item = Above>) -> bool {
     above
         .into_iter()
-        .any(|w| w.alpha > 0.0 && w.bounds.contains(x, y))
+        .any(|w| w.alpha > 0.0 && w.layer != DOCK_LAYER && w.bounds.contains(x, y))
 }
 
 /// When the watcher reads the window list: whenever the pointer moved, and at least
@@ -74,6 +82,7 @@ mod tests {
                 height,
             },
             alpha: 1.0,
+            layer: 0,
         }
     }
 
@@ -107,6 +116,18 @@ mod tests {
         let mut clear = window(0.0, 0.0, 100.0, 100.0);
         clear.alpha = 0.0;
         assert!(!covered(50.0, 50.0, [clear]));
+    }
+
+    #[test]
+    fn the_full_screen_dock_window_does_not_cover() {
+        // As seen on macOS 26: the Dock's window spans the display above all normal
+        // windows, alpha 1.
+        let mut dock = window(0.0, 0.0, 1800.0, 1169.0);
+        dock.layer = DOCK_LAYER;
+        let mut menu_bar = window(0.0, 0.0, 1800.0, 39.0);
+        menu_bar.layer = 24;
+        assert!(!covered(986.0, 1032.0, [menu_bar, dock]));
+        assert!(covered(900.0, 10.0, [menu_bar, dock]));
     }
 
     #[test]

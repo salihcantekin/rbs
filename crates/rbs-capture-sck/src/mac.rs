@@ -22,7 +22,7 @@ use objc2_core_graphics::{
     CGDisplayCopyDisplayMode, CGDisplayMode, CGEvent, CGMainDisplayID,
     CGPreflightScreenCaptureAccess, CGRectMakeWithDictionaryRepresentation,
     CGRequestScreenCaptureAccess, CGWindowListCopyWindowInfo, CGWindowListOption,
-    kCGColorSpaceSRGB, kCGWindowAlpha, kCGWindowBounds,
+    kCGColorSpaceSRGB, kCGWindowAlpha, kCGWindowBounds, kCGWindowLayer,
 };
 use objc2_core_media::{CMSampleBuffer, CMTime, CMTimeFlags};
 use objc2_core_video::{
@@ -1193,7 +1193,13 @@ fn windows_above(window: u32) -> Vec<Above> {
         &*(&*list as *const CFArray).cast::<NSArray<NSDictionary<NSString, AnyObject>>>()
     };
     // SAFETY: the keys are immutable framework constants.
-    let (bounds_key, alpha_key) = unsafe { (ns_key(kCGWindowBounds), ns_key(kCGWindowAlpha)) };
+    let (bounds_key, alpha_key, layer_key) = unsafe {
+        (
+            ns_key(kCGWindowBounds),
+            ns_key(kCGWindowAlpha),
+            ns_key(kCGWindowLayer),
+        )
+    };
     list.iter()
         .filter_map(|info| {
             let bounds = info
@@ -1208,6 +1214,7 @@ fn windows_above(window: u32) -> Vec<Above> {
                 CGRectMakeWithDictionaryRepresentation(Some(cf), &mut rect)
             };
             let alpha = number(&info, alpha_key).map_or(1.0, |n| n.doubleValue());
+            let layer = number(&info, layer_key).map_or(0, |n| n.integerValue() as i64);
             ok.then_some(Above {
                 bounds: cursor::Rect {
                     x: rect.origin.x,
@@ -1216,6 +1223,7 @@ fn windows_above(window: u32) -> Vec<Above> {
                     height: rect.size.height,
                 },
                 alpha,
+                layer,
             })
         })
         .collect()
