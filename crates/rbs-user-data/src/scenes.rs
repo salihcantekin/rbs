@@ -1,0 +1,464 @@
+//! The scene collection document (glossary: Scene collection): the on-disk form of
+//! [`rbs_scene::SceneCollection`], mapping one-to-one onto the model (ADR-0021).
+//!
+//! ```toml
+//! format = 1
+//! kind = "scene-collection"
+//! name = "Main show"
+//!
+//! [next]                       # ids issued next, so ids are never reused
+//! canvas = 1
+//! source = 1
+//! scene = 1
+//! item = 1
+//! filter = 0
+//!
+//! [[canvases]]
+//! id = 0
+//! name = "Main"
+//! width = 1920
+//! height = 1080
+//! frame_rate = [30, 1]         # numerator, denominator
+//! program = 0                  # scene id; optional, like preview
+//!
+//! [[sources]]
+//! id = 0
+//! name = "Display"
+//! type = "org.rbs.source.display"
+//! settings = { cursor = true }
+//!
+//! [[scenes]]
+//! id = 0
+//! name = "Scene"
+//! # canvas = 0                 # only that canvas shows it; absent: shared
+//!
+//! [[scenes.items]]
+//! id = 0
+//! source = 0                   # or: scene = <id> for a nested scene
+//! layout = { position = [0.0, 0.0], size = [1920.0, 1080.0] }
+//! ```
+//!
+//! Layouts may also have `rotation` (degrees), `crop` (`[left, top, right, bottom]`
+//! source pixels) and `opacity`; items `visible = false` and
+//! `overrides = [{ canvas = 1, layout = {...} }]`; sources `filters = [{ id, type,
+//! enabled, settings }]`. Setting values are TOML booleans, integers, floats or
+//! strings. Loading validates the whole collection
+//! ([`SceneCollection::from_parts`]).
+
+use std::collections::BTreeMap;
+
+use rbs_core::media::Size;
+use rbs_core::timing::FrameRate;
+use rbs_graph::node::NodeTypeId;
+use rbs_scene::model::{
+    Canvas, CanvasId, Crop, Filter, FilterId, ItemContent, ItemId, Layout, Scene, SceneId,
+    SceneItem, SceneScope, SettingValue, Settings, Source, SourceId,
+};
+use rbs_scene::{IdCounters, SceneCollection};
+use serde::{Deserialize, Serialize};
+
+use crate::document::{self, Document};
+
+#[derive(Serialize, Deserialize, Default)]
+#[serde(deny_unknown_fields)]
+struct Body {
+    #[serde(default)]
+    next: Next,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    canvases: Vec<CanvasDoc>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    sources: Vec<SourceDoc>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    scenes: Vec<SceneDoc>,
+}
+
+#[derive(Serialize, Deserialize, Default)]
+#[serde(deny_unknown_fields)]
+struct Next {
+    #[serde(default)]
+    canvas: u32,
+    #[serde(default)]
+    source: u32,
+    #[serde(default)]
+    scene: u32,
+    #[serde(default)]
+    item: u32,
+    #[serde(default)]
+    filter: u32,
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct CanvasDoc {
+    id: u32,
+    name: String,
+    width: u32,
+    height: u32,
+    frame_rate: [u32; 2],
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    program: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    preview: Option<u32>,
+}
+
+#[derive(Serialize, Deserialize, Clone)]
+#[serde(untagged)]
+enum Value {
+    Bool(bool),
+    Int(i64),
+    Float(f64),
+    Text(String),
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SourceDoc {
+    id: u32,
+    name: String,
+    #[serde(rename = "type")]
+    type_id: String,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    settings: BTreeMap<String, Value>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    filters: Vec<FilterDoc>,
+}
+
+fn yes() -> bool {
+    true
+}
+
+fn is_true(v: &bool) -> bool {
+    *v
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct FilterDoc {
+    id: u32,
+    #[serde(rename = "type")]
+    type_id: String,
+    #[serde(default = "yes", skip_serializing_if = "is_true")]
+    enabled: bool,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    settings: BTreeMap<String, Value>,
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SceneDoc {
+    id: u32,
+    name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    canvas: Option<u32>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    items: Vec<ItemDoc>,
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ItemDoc {
+    id: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    source: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    scene: Option<u32>,
+    #[serde(default = "yes", skip_serializing_if = "is_true")]
+    visible: bool,
+    layout: LayoutDoc,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    overrides: Vec<OverrideDoc>,
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct OverrideDoc {
+    canvas: u32,
+    layout: LayoutDoc,
+}
+
+fn one() -> f64 {
+    1.0
+}
+
+fn is_zero(v: &f64) -> bool {
+    *v == 0.0
+}
+
+fn is_one(v: &f64) -> bool {
+    *v == 1.0
+}
+
+fn no_crop(v: &[u32; 4]) -> bool {
+    *v == [0; 4]
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct LayoutDoc {
+    position: [f64; 2],
+    size: [f64; 2],
+    #[serde(default, skip_serializing_if = "is_zero")]
+    rotation: f64,
+    #[serde(default, skip_serializing_if = "no_crop")]
+    crop: [u32; 4],
+    #[serde(default = "one", skip_serializing_if = "is_one")]
+    opacity: f64,
+}
+
+/// An `f32` as the shortest `f64` that reads back as the same `f32` (so `0.1` is
+/// written as `0.1`, not `0.10000000149011612`).
+fn wide(v: f32) -> f64 {
+    format!("{v}").parse().unwrap_or(f64::from(v))
+}
+
+impl LayoutDoc {
+    fn of(l: &Layout) -> Self {
+        let c = l.crop;
+        Self {
+            position: l.position.map(wide),
+            size: l.size.map(wide),
+            rotation: wide(l.rotation),
+            crop: [c.left, c.top, c.right, c.bottom],
+            opacity: wide(l.opacity),
+        }
+    }
+
+    fn layout(&self) -> Layout {
+        let [left, top, right, bottom] = self.crop;
+        Layout::new(self.position.map(|v| v as f32), self.size.map(|v| v as f32))
+            .with_rotation(self.rotation as f32)
+            .with_crop(Crop::new(left, top, right, bottom))
+            .with_opacity(self.opacity as f32)
+    }
+}
+
+fn settings_doc(s: &Settings) -> Result<BTreeMap<String, Value>, String> {
+    s.iter()
+        .map(|(k, v)| {
+            let v = match v {
+                SettingValue::Bool(b) => Value::Bool(*b),
+                SettingValue::Int(i) => Value::Int(*i),
+                SettingValue::Float(f) => Value::Float(*f),
+                SettingValue::Text(t) => Value::Text(t.clone()),
+                _ => return Err(format!("setting {k:?} has a type documents cannot hold")),
+            };
+            Ok((k.clone(), v))
+        })
+        .collect()
+}
+
+fn settings(s: BTreeMap<String, Value>) -> Settings {
+    s.into_iter()
+        .map(|(k, v)| {
+            let v = match v {
+                Value::Bool(b) => SettingValue::Bool(b),
+                Value::Int(i) => SettingValue::Int(i),
+                Value::Float(f) => SettingValue::Float(f),
+                Value::Text(t) => SettingValue::Text(t),
+            };
+            (k, v)
+        })
+        .collect()
+}
+
+impl Document for SceneCollection {
+    const KIND: &'static str = "scene-collection";
+    const FORMAT: u32 = 1;
+
+    fn to_body(&self) -> Result<toml::Table, String> {
+        let n = self.id_counters();
+        let canvases = self
+            .canvases()
+            .map(|c| {
+                let r = c.frame_rate.per_second();
+                CanvasDoc {
+                    id: c.id.get(),
+                    name: c.name.clone(),
+                    width: c.size.width,
+                    height: c.size.height,
+                    frame_rate: [r.num(), r.den()],
+                    program: c.program.map(SceneId::get),
+                    preview: c.preview.map(SceneId::get),
+                }
+            })
+            .collect();
+        let sources = self
+            .sources()
+            .map(|s| {
+                Ok(SourceDoc {
+                    id: s.id.get(),
+                    name: s.name.clone(),
+                    type_id: s.type_id.as_str().to_owned(),
+                    settings: settings_doc(&s.settings)?,
+                    filters: s
+                        .filters
+                        .iter()
+                        .map(|f| {
+                            Ok(FilterDoc {
+                                id: f.id.get(),
+                                type_id: f.type_id.as_str().to_owned(),
+                                enabled: f.enabled,
+                                settings: settings_doc(&f.settings)?,
+                            })
+                        })
+                        .collect::<Result<_, String>>()?,
+                })
+            })
+            .collect::<Result<_, String>>()?;
+        let scenes = self
+            .scenes()
+            .map(|s| {
+                let canvas = match s.scope {
+                    SceneScope::Shared => None,
+                    SceneScope::Canvas(c) => Some(c.get()),
+                    _ => return Err(format!("{} has a scope documents cannot hold", s.id)),
+                };
+                let items = s
+                    .items
+                    .iter()
+                    .map(|i| {
+                        let (source, scene) = match i.content {
+                            ItemContent::Source(id) => (Some(id.get()), None),
+                            ItemContent::Scene(id) => (None, Some(id.get())),
+                            _ => {
+                                return Err(format!(
+                                    "{} places content documents cannot hold",
+                                    i.id
+                                ));
+                            }
+                        };
+                        Ok(ItemDoc {
+                            id: i.id.get(),
+                            source,
+                            scene,
+                            visible: i.visible,
+                            layout: LayoutDoc::of(&i.layout),
+                            overrides: i
+                                .overrides
+                                .iter()
+                                .map(|(c, l)| OverrideDoc {
+                                    canvas: c.get(),
+                                    layout: LayoutDoc::of(l),
+                                })
+                                .collect(),
+                        })
+                    })
+                    .collect::<Result<_, String>>()?;
+                Ok(SceneDoc {
+                    id: s.id.get(),
+                    name: s.name.clone(),
+                    canvas,
+                    items,
+                })
+            })
+            .collect::<Result<_, String>>()?;
+        document::body_of(&Body {
+            next: Next {
+                canvas: n.canvas,
+                source: n.source,
+                scene: n.scene,
+                item: n.item,
+                filter: n.filter,
+            },
+            canvases,
+            sources,
+            scenes,
+        })
+    }
+
+    fn from_body(body: toml::Table) -> Result<Self, String> {
+        let b: Body = document::from_body(body)?;
+        let canvases = b
+            .canvases
+            .into_iter()
+            .map(|c| {
+                let [num, den] = c.frame_rate;
+                let rate = FrameRate::new(num, den)
+                    .ok_or_else(|| format!("canvas {:?}: frame rate {num}/{den}", c.name))?;
+                let mut canvas = Canvas::new(
+                    CanvasId::from_raw(c.id),
+                    &c.name,
+                    Size::new(c.width, c.height),
+                    rate,
+                );
+                canvas.program = c.program.map(SceneId::from_raw);
+                canvas.preview = c.preview.map(SceneId::from_raw);
+                Ok(canvas)
+            })
+            .collect::<Result<Vec<_>, String>>()?;
+        let sources = b
+            .sources
+            .into_iter()
+            .map(|s| {
+                let mut source = Source::new(
+                    SourceId::from_raw(s.id),
+                    &s.name,
+                    NodeTypeId::new(s.type_id),
+                    settings(s.settings),
+                );
+                source.filters = s
+                    .filters
+                    .into_iter()
+                    .map(|f| {
+                        let mut filter = Filter::new(
+                            FilterId::from_raw(f.id),
+                            NodeTypeId::new(f.type_id),
+                            settings(f.settings),
+                        );
+                        filter.enabled = f.enabled;
+                        filter
+                    })
+                    .collect();
+                source
+            })
+            .collect();
+        let scenes = b
+            .scenes
+            .into_iter()
+            .map(|s| {
+                let scope = s.canvas.map_or(SceneScope::Shared, |c| {
+                    SceneScope::Canvas(CanvasId::from_raw(c))
+                });
+                let mut scene = Scene::new(SceneId::from_raw(s.id), &s.name, scope);
+                scene.items = s
+                    .items
+                    .into_iter()
+                    .map(|i| {
+                        let content = match (i.source, i.scene) {
+                            (Some(id), None) => ItemContent::Source(SourceId::from_raw(id)),
+                            (None, Some(id)) => ItemContent::Scene(SceneId::from_raw(id)),
+                            _ => {
+                                return Err(format!(
+                                    "item {} in scene {:?} must have either source or scene",
+                                    i.id, s.name
+                                ));
+                            }
+                        };
+                        let mut item =
+                            SceneItem::new(ItemId::from_raw(i.id), content, i.layout.layout());
+                        item.visible = i.visible;
+                        for o in i.overrides {
+                            let canvas = CanvasId::from_raw(o.canvas);
+                            if item.overrides.insert(canvas, o.layout.layout()).is_some() {
+                                return Err(format!(
+                                    "item {} has two layouts for canvas {}",
+                                    i.id, o.canvas
+                                ));
+                            }
+                        }
+                        Ok(item)
+                    })
+                    .collect::<Result<_, String>>()?;
+                Ok(scene)
+            })
+            .collect::<Result<Vec<_>, String>>()?;
+        let n = b.next;
+        SceneCollection::from_parts(
+            canvases,
+            sources,
+            scenes,
+            IdCounters::new(n.canvas, n.source, n.scene, n.item, n.filter),
+        )
+        .map_err(|e| e.to_string())
+    }
+}

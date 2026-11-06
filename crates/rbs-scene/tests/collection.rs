@@ -782,3 +782,129 @@ fn fit_keeps_the_aspect_ratio_and_centres() {
         Layout::new([0.0, 0.0], [1920.0, 1080.0])
     );
 }
+
+fn parts(
+    col: &SceneCollection,
+) -> (
+    Vec<rbs_scene::model::Canvas>,
+    Vec<rbs_scene::model::Source>,
+    Vec<rbs_scene::model::Scene>,
+) {
+    (
+        col.canvases().cloned().collect(),
+        col.sources().cloned().collect(),
+        col.scenes().cloned().collect(),
+    )
+}
+
+#[test]
+fn from_parts_rebuilds_an_equal_collection_with_its_counters() {
+    let mut s = studio();
+    let (scene, _) = s.col.add_scene("Talk", SceneScope::Shared).unwrap();
+    let (item, _) = s
+        .col
+        .add_item(
+            scene,
+            ItemContent::Source(s.cam),
+            full(1920.0, 1080.0),
+            None,
+        )
+        .unwrap();
+    s.col
+        .set_item_layout(item, Some(s.tall), full(1080.0, 1920.0))
+        .unwrap();
+    s.col.set_program(s.wide, Some(scene)).unwrap();
+    // A deleted object's id stays issued.
+    let (gone, _) = s.col.add_scene("Gone", SceneScope::Shared).unwrap();
+    s.col.remove_scene(gone).unwrap();
+
+    let (c, src, sc) = parts(&s.col);
+    let loaded = SceneCollection::from_parts(c, src, sc, s.col.id_counters()).unwrap();
+    assert_eq!(loaded, s.col);
+    assert_eq!(loaded.id_counters(), s.col.id_counters());
+    // The next scene does not reuse the deleted one's id.
+    let mut loaded = loaded;
+    let (next, _) = loaded.add_scene("Next", SceneScope::Shared).unwrap();
+    assert!(next.get() > gone.get());
+}
+
+#[test]
+fn from_parts_raises_stale_counters_and_trims_names() {
+    let mut s = studio();
+    let (scene, _) = s.col.add_scene("Talk", SceneScope::Shared).unwrap();
+    s.col
+        .add_item(scene, ItemContent::Source(s.cam), full(1.0, 1.0), None)
+        .unwrap();
+    let (c, mut src, sc) = parts(&s.col);
+    src[0].name = "  Camera  ".to_owned();
+    let mut loaded =
+        SceneCollection::from_parts(c, src, sc, rbs_scene::IdCounters::default()).unwrap();
+    assert_eq!(loaded, s.col);
+    let n = loaded.id_counters();
+    assert_eq!(n, s.col.id_counters());
+    let (cam2, _) = loaded
+        .add_source("Camera 2", ty("camera"), Settings::new())
+        .unwrap();
+    assert!(cam2.get() > s.screen.get());
+}
+
+#[test]
+fn from_parts_refuses_duplicate_ids_and_broken_invariants() {
+    let mut s = studio();
+    let (scene, _) = s.col.add_scene("Talk", SceneScope::Shared).unwrap();
+    s.col
+        .add_item(scene, ItemContent::Source(s.cam), full(1.0, 1.0), None)
+        .unwrap();
+    let counters = s.col.id_counters();
+
+    let (mut c, src, sc) = parts(&s.col);
+    c.push(c[0].clone());
+    assert_eq!(
+        SceneCollection::from_parts(c, src, sc, counters),
+        Err(SceneError::DuplicateId(s.wide.to_string()))
+    );
+
+    // The same item id in two scenes.
+    let (c, src, mut sc) = parts(&s.col);
+    let mut copy = sc[0].clone();
+    copy.id = SceneId::from_raw(99);
+    copy.name = "Copy".to_owned();
+    sc.push(copy);
+    let item = sc[0].items[0].id;
+    assert_eq!(
+        SceneCollection::from_parts(c, src, sc, counters),
+        Err(SceneError::DuplicateId(item.to_string()))
+    );
+
+    // An item placing a source that is not there.
+    let (c, _, sc) = parts(&s.col);
+    assert_eq!(
+        SceneCollection::from_parts(c, Vec::new(), sc, counters),
+        Err(SceneError::UnknownSource(s.cam))
+    );
+
+    // A canvas showing another canvas's scene (U15).
+    let (mut c, src, mut sc) = parts(&s.col);
+    sc[0].scope = SceneScope::Canvas(s.tall);
+    c[0].program = Some(scene);
+    assert_eq!(
+        SceneCollection::from_parts(c, src, sc, counters),
+        Err(SceneError::ScopeViolation(scene))
+    );
+
+    // Duplicate names.
+    let (c, mut src, sc) = parts(&s.col);
+    src[1].name = "Camera".to_owned();
+    assert_eq!(
+        SceneCollection::from_parts(c, src, sc, counters),
+        Err(SceneError::DuplicateName("Camera".to_owned()))
+    );
+
+    // An id at the very top cannot leave a next id.
+    let (mut c, src, sc) = parts(&s.col);
+    c[1].id = CanvasId::from_raw(u32::MAX);
+    assert_eq!(
+        SceneCollection::from_parts(c, src, sc, counters),
+        Err(SceneError::IdsExhausted)
+    );
+}
