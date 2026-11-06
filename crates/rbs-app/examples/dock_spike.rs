@@ -23,7 +23,10 @@
     clippy::expect_used
 )] // A spike: generated types are undocumented.
 
-use slint::{ComponentHandle, DataTransfer, SharedString};
+use std::cell::RefCell;
+use std::rc::Rc;
+
+use slint::{ComponentHandle, DataTransfer, ModelRc, SharedString, VecModel};
 
 slint::slint! {
 
@@ -100,7 +103,8 @@ slint::slint! {
     }
 
     export component SpikeMain inherits Window {
-        title: "RBS dock spike";
+        in property <string> status: "drag a tab";
+        title: "RBS dock spike: " + root.status;
         width: 760px; height: 420px;
         background: #121417;
         in-out property <[string]> left: ["Scenes", "Sources", "Mixer"];
@@ -174,44 +178,114 @@ fn payload(name: SharedString) -> DataTransfer {
     d
 }
 
-fn report_drop(d: DataTransfer, stack: SharedString, target: SharedString) {
-    let name = d.plain_text().unwrap_or_default();
-    println!("DROP {name} on {stack}, target {target}");
+/// Where each tab is: the three stacks of the spike.
+#[derive(Default)]
+struct Tabs {
+    left: Vec<SharedString>,
+    right: Vec<SharedString>,
+    second: Vec<SharedString>,
+}
+
+impl Tabs {
+    fn place(&mut self, name: &SharedString, stack: &str, target: &str) {
+        for v in [&mut self.left, &mut self.right, &mut self.second] {
+            v.retain(|t| t != name);
+        }
+        let v = match stack {
+            "Left stack" => &mut self.left,
+            "Right stack" => &mut self.right,
+            _ => &mut self.second,
+        };
+        if target == "top" || target == "left" {
+            v.insert(0, name.clone());
+        } else {
+            v.push(name.clone());
+        }
+    }
+}
+
+fn model(v: &[SharedString]) -> ModelRc<SharedString> {
+    ModelRc::new(VecModel::from(v.to_vec()))
 }
 
 fn main() -> Result<(), slint::PlatformError> {
     let main = SpikeMain::new()?;
     let second = SpikeSecond::new()?;
-    let size = main.window().size();
-    println!(
-        "SPIKE start: main window {}x{} physical px",
-        size.width, size.height
-    );
-
-    main.on_make_data(payload);
-    main.on_dropped_on(report_drop);
-    main.on_log(|s| println!("LOG {s}"));
-    let weak = main.as_weak();
-    main.on_tear(move |name, x, y, up| {
-        let Some(w) = weak.upgrade() else { return };
-        let scale = w.window().scale_factor();
-        let size = w.window().size().to_logical(scale);
-        let outside = x < 0.0 || y < 0.0 || x > size.width || y > size.height;
-        if up {
-            println!("TEAR released {name} at ({x:.0}, {y:.0}) outside={outside}");
-        } else if outside {
-            println!("TEAR moving {name} outside the window at ({x:.0}, {y:.0})");
-        }
-    });
+    println!("SPIKE start");
+    let tabs = Rc::new(RefCell::new(Tabs {
+        left: vec!["Scenes".into(), "Sources".into(), "Mixer".into()],
+        right: vec!["Inspector".into()],
+        second: Vec::new(),
+    }));
+    let main_weak = main.as_weak();
     let second_weak = second.as_weak();
-    main.on_open_second(move || {
-        if let Some(s) = second_weak.upgrade() {
-            let _ = s.show();
+    let refresh = {
+        let tabs = tabs.clone();
+        let (mw, sw) = (main_weak.clone(), second_weak.clone());
+        Rc::new(move |status: String| {
+            let t = tabs.borrow();
+            if let Some(m) = mw.upgrade() {
+                m.set_left(model(&t.left));
+                m.set_right(model(&t.right));
+                m.set_status(status.clone().into());
+            }
+            if let Some(s) = sw.upgrade() {
+                s.set_tabs(model(&t.second));
+            }
+            println!(
+                "STATE {status} | left {:?} right {:?} second {:?}",
+                t.left, t.right, t.second
+            );
+        })
+    };
+    refresh("drag a tab".into());
+
+    let on_drop = {
+        let (tabs, refresh) = (tabs.clone(), refresh.clone());
+        move |d: DataTransfer, stack: SharedString, target: SharedString| {
+            let name = d.plain_text().unwrap_or_default();
+            println!("DROP {name} on {stack}, target {target}");
+            tabs.borrow_mut().place(&name, &stack, &target);
+            refresh(format!("{name} dropped on {stack} ({target})"));
+        }
+    };
+    main.on_make_data(payload);
+    main.on_dropped_on(on_drop.clone());
+    main.on_log(|s| println!("LOG {s}"));
+    {
+        let (tabs, refresh, mw) = (tabs.clone(), refresh.clone(), main_weak.clone());
+        main.on_tear(move |name, x, y, up| {
+            let Some(w) = mw.upgrade() else { return };
+            let scale = w.window().scale_factor();
+            let size = w.window().size().to_logical(scale);
+            let outside = x < 0.0 || y < 0.0 || x > size.width || y > size.height;
+            if up {
+                println!("TEAR released {name} at ({x:.0}, {y:.0}) outside={outside}");
+                if outside {
+                    tabs.borrow_mut().place(&name, "Second window", "centre");
+                    refresh(format!("{name} torn off into the second window"));
+                } else {
+                    w.set_status(
+                        format!("grip released inside the window at ({x:.0}, {y:.0})").into(),
+                    );
+                }
+            } else if outside {
+                println!("TEAR moving {name} outside the window at ({x:.0}, {y:.0})");
+                w.set_status(format!("pointer outside the window at ({x:.0}, {y:.0})").into());
+            }
+        });
+    }
+    main.on_open_second({
+        let sw = second_weak.clone();
+        move || {
+            if let Some(s) = sw.upgrade() {
+                let _ = s.show();
+            }
         }
     });
 
     second.on_make_data(payload);
-    second.on_dropped_on(report_drop);
+    second.on_dropped_on(on_drop);
     second.on_log(|s| println!("LOG {s}"));
     second.on_tear(|name, x, y, up| {
         if up {
