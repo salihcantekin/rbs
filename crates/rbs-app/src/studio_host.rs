@@ -318,13 +318,16 @@ pub enum Command {
     },
     /// The output profiles and scene collections with the ones in use, for
     /// `profile.list` and `collection.list`. Sent at start and after every change of
-    /// the libraries or of the ones in use, and after each
-    /// [`Update::SwitchRequested`] (also when the UI refused it).
+    /// the libraries or of the ones in use; after an [`Update::SwitchRequested`] once
+    /// the switch is done or refused (for an output profile after its settings and
+    /// key account were sent, for a scene collection after the studio answered).
     SetLibrary {
         /// The output profiles.
         profiles: api::Library,
         /// The scene collections.
         collections: api::Library,
+        /// The `seq` of the [`Update::SwitchRequested`] this answers, if any.
+        answered: Option<u64>,
     },
 }
 
@@ -616,6 +619,8 @@ pub enum Update {
     /// the UI switches as its File menu does, then answers with
     /// [`Command::SetLibrary`].
     SwitchRequested {
+        /// The request's number, echoed in [`Command::SetLibrary`]'s `answered`.
+        seq: u64,
         /// Scene collections, else output profiles.
         collection: bool,
         /// The entry's id.
@@ -1012,9 +1017,11 @@ struct Host {
     /// The output profiles and scene collections as the UI listed them last; `None`
     /// until the UI sent them.
     library: Option<(api::Library, api::Library)>,
-    /// A switch asked for through the control API is with the UI, which has not
-    /// answered with [`Command::SetLibrary`] yet.
-    switch_pending: bool,
+    /// The `seq` of a switch asked for through the control API that the UI has not
+    /// answered yet ([`Command::SetLibrary`]). Outputs cannot start meanwhile.
+    switch_pending: Option<u64>,
+    /// The last `seq` given to [`Update::SwitchRequested`].
+    switch_seq: u64,
     /// The running stream, as the control API reports it.
     stream_state: api::StreamState,
     /// When the Stats panel's counters go out next, on `clock`; `None` while no
@@ -1355,7 +1362,8 @@ fn start(
             record_state: api::RecordState::Idle { last: None },
             stream_profile: None,
             library: None,
-            switch_pending: false,
+            switch_pending: None,
+            switch_seq: 0,
             stream_state: api::StreamState::Idle { last: None },
             inbox: Weak::new(),
         },
@@ -1507,9 +1515,12 @@ impl Host {
             Command::SetLibrary {
                 profiles,
                 collections,
+                answered,
             } => {
                 self.library = Some((profiles, collections));
-                self.switch_pending = false;
+                if answered.is_some() && answered == self.switch_pending {
+                    self.switch_pending = None;
+                }
             }
         }
     }
@@ -2562,12 +2573,14 @@ impl Host {
         let (profiles, collections) = self
             .library
             .as_ref()
-            .ok_or_else(|| failed("the app is still reading its user data; try again"))?;
-        Ok(Response::Library(if collection {
+            .ok_or_else(|| failed("no output profiles or scene collections are loaded yet"))?;
+        let mut library = if collection {
             collections.clone()
         } else {
             profiles.clone()
-        }))
+        };
+        library.pending = self.switch_pending.is_some();
+        Ok(Response::Library(library))
     }
 
     /// `profile.switch` (`collection` false) or `collection.switch`: checked here,
@@ -2581,7 +2594,7 @@ impl Host {
         let (profiles, collections) = self
             .library
             .as_ref()
-            .ok_or_else(|| failed("the app is still reading its user data; try again"))?;
+            .ok_or_else(|| failed("no output profiles or scene collections are loaded yet"))?;
         let (library, what, doing) = if collection {
             (
                 collections,
@@ -2607,11 +2620,16 @@ impl Host {
         if self.streaming.is_some() {
             return conflict(format!("end the stream before {doing}"));
         }
-        if self.switch_pending {
+        if self.switch_pending.is_some() {
             return conflict("another switch is still being made; try again".to_owned());
         }
-        self.switch_pending = true;
-        notify(Update::SwitchRequested { collection, id });
+        self.switch_seq += 1;
+        self.switch_pending = Some(self.switch_seq);
+        notify(Update::SwitchRequested {
+            seq: self.switch_seq,
+            collection,
+            id,
+        });
         Ok(Response::Done(Empty {}))
     }
 }
@@ -2670,6 +2688,18 @@ impl ApiTarget<'_> {
         use rbs_api::Command as C;
         let notify = self.notify;
         let host = &mut *self.host;
+        // An output started now would run with what the switch replaces.
+        if host.switch_pending.is_some()
+            && matches!(
+                command,
+                C::RecordStart(_) | C::RecordStartToFile(_) | C::StreamStart
+            )
+        {
+            return Err(ApiError::new(
+                ErrorKind::Conflict,
+                "a switch of output profiles or scene collections is still being made; try again",
+            ));
+        }
         match command {
             C::StudioGet => Ok(Response::Studio(api::Snapshot {
                 seq: host.events.seq_map([Topic::CanvasChanged]),

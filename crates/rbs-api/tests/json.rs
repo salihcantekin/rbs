@@ -226,6 +226,7 @@ fn every_result_and_event_type_round_trips() {
             name: "Talk show".into(),
         }],
         current: "talk-show".into(),
+        pending: true,
     });
     round_trip(&HelloResult {
         protocol: "1.0".into(),

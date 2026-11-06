@@ -291,6 +291,7 @@ fn a_control_api_client_drives_the_studio() {
             })
             .collect(),
         current: current.into(),
+        pending: false,
     };
     let profiles = library(&[("default", "Default"), ("live", "Live")], "default");
     let collections = library(
@@ -300,11 +301,12 @@ fn a_control_api_client_drives_the_studio() {
     host.send(Command::SetLibrary {
         profiles: profiles.clone(),
         collections: collections.clone(),
+        answered: None,
     });
     let listed = c.call("collection.list", json!({}));
     assert_eq!(
         listed["result"],
-        json!({"entries": [{"id": "default", "name": "Default"}, {"id": "talk-show", "name": "Talk show"}], "current": "default"})
+        json!({"entries": [{"id": "default", "name": "Default"}, {"id": "talk-show", "name": "Talk show"}], "current": "default", "pending": false})
     );
     let listed = c.call("profile.list", json!({}));
     assert_eq!(listed["result"]["entries"][1]["id"], "live", "{listed}");
@@ -314,31 +316,63 @@ fn a_control_api_client_drives_the_studio() {
     assert_eq!(missing["error"]["data"]["kind"], "not_found", "{missing}");
     let switch = c.call("collection.switch", json!({"id": "talk-show"}));
     assert!(switch["result"].is_object(), "{switch}");
-    next(&updates, |u| match u {
-        Update::SwitchRequested { collection, id } => {
+    let seq = next(&updates, |u| match u {
+        Update::SwitchRequested {
+            seq,
+            collection,
+            id,
+        } => {
             assert!(collection);
             assert_eq!(id, "talk-show");
-            Some(())
+            Some(seq)
         }
         _ => None,
     });
-    // Until the UI answered, another switch waits its turn.
+    // Until the UI answered this request: another switch and outputs wait, and the
+    // list says a switch is being made. A list sent for something else does not end
+    // it.
     let busy = c.call("profile.switch", json!({"id": "live"}));
     assert_eq!(busy["error"]["data"]["kind"], "conflict", "{busy}");
+    let stream = c.call("stream.start", json!({}));
+    assert_eq!(stream["error"]["data"]["kind"], "conflict", "{stream}");
+    host.send(Command::SetLibrary {
+        profiles: profiles.clone(),
+        collections: collections.clone(),
+        answered: None,
+    });
+    let listed = c.call("collection.list", json!({}));
+    assert_eq!(listed["result"]["pending"], true, "{listed}");
+    // Refused by the app: answered, and the one in use stays.
     host.send(Command::SetLibrary {
         profiles,
         collections,
+        answered: Some(seq),
     });
+    let listed = c.call("collection.list", json!({}));
+    assert_eq!(listed["result"]["pending"], false, "{listed}");
+    assert_eq!(listed["result"]["current"], "default", "{listed}");
     let switch = c.call("profile.switch", json!({"id": "live"}));
     assert!(switch["result"].is_object(), "{switch}");
-    next(&updates, |u| match u {
-        Update::SwitchRequested { collection, id } => {
+    let seq = next(&updates, |u| match u {
+        Update::SwitchRequested {
+            seq,
+            collection,
+            id,
+        } => {
             assert!(!collection);
             assert_eq!(id, "live");
-            Some(())
+            Some(seq)
         }
         _ => None,
     });
+    host.send(Command::SetLibrary {
+        profiles: library(&[("default", "Default"), ("live", "Live")], "live"),
+        collections: library(&[("default", "Default")], "default"),
+        answered: Some(seq),
+    });
+    let listed = c.call("profile.list", json!({}));
+    assert_eq!(listed["result"]["current"], "live", "{listed}");
+    assert_eq!(listed["result"]["pending"], false, "{listed}");
 
     // No encoder: the recording is refused with the reason, and nothing records.
     let rec = c.call("record.start", json!({"profile": "default"}));

@@ -500,4 +500,9 @@ pub struct Library {
     pub entries: Vec<LibraryEntry>,
     /// The id of the one in use.
     pub current: String,
+    /// A switch asked for through the control API is still being made. Once it is
+    /// false, a `current` other than the id asked for means the app refused the
+    /// switch or could not load the entry (its error line says why).
+    #[serde(default)]
+    pub pending: bool,
 }
