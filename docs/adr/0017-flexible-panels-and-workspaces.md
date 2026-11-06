@@ -1,6 +1,6 @@
 # ADR-0017: Flexible panels and saved workspaces
 
-- Status: Accepted
+- Status: Accepted, amended by [ADR-0049](0049-main-window-areas-panel-states-and-sizes.md) (workspace format 2)
 - Date: 2026-11-02
 - Amends: ADR-0015 (replaces the layout part of rule U11 with the new rule U21)
 
