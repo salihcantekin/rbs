@@ -211,6 +211,67 @@ pub fn tray_state(state: LiveState) -> (TrayGlyph, bool) {
     (glyph, state.problem)
 }
 
+/// Width and height of the tray icon's pixels.
+pub const TRAY_ICON_SIZE: u32 = 32;
+
+/// The tray icon's RGBA pixels (ADR-0056 decision 7): a neutral disc for RBS, a filled
+/// dot while recording, a dot with a ring around it (broadcast) while live, and a
+/// warning triangle for a problem. The marks differ in shape, not only in colour (U7).
+pub fn tray_pixels(glyph: TrayGlyph, warning: bool) -> Vec<u8> {
+    const NEUTRAL: [u8; 4] = [0x9c, 0xa3, 0xaf, 0xff];
+    const OUTLINE: [u8; 4] = [0x37, 0x41, 0x51, 0xff];
+    const LIVE: [u8; 4] = [0xe5, 0x48, 0x4d, 0xff];
+    const WARN: [u8; 4] = [0xf5, 0xa5, 0x24, 0xff];
+    const WHITE: [u8; 4] = [0xff, 0xff, 0xff, 0xff];
+    let n = TRAY_ICON_SIZE as usize;
+    let mut px = vec![0u8; n * n * 4];
+    let dist = |x: usize, y: usize, cx: f32, cy: f32| {
+        let (dx, dy) = (x as f32 + 0.5 - cx, y as f32 + 0.5 - cy);
+        (dx * dx + dy * dy).sqrt()
+    };
+    for y in 0..n {
+        for x in 0..n {
+            let mut c = [0u8; 4];
+            // RBS: a disc with an outline.
+            let d = dist(x, y, 14.0, 14.0);
+            if d <= 13.0 {
+                c = if d > 11.5 { OUTLINE } else { NEUTRAL };
+            }
+            // The live state, bottom right, on a white backing so it reads on any
+            // taskbar.
+            let b = dist(x, y, 24.0, 24.0);
+            match glyph {
+                TrayGlyph::Idle => {}
+                TrayGlyph::Recording => {
+                    if b <= 8.0 {
+                        c = if b > 6.0 { WHITE } else { LIVE };
+                    }
+                }
+                TrayGlyph::Live => {
+                    if b <= 8.0 {
+                        c = if b <= 3.0 || (5.0..=7.0).contains(&b) {
+                            LIVE
+                        } else {
+                            WHITE
+                        };
+                    }
+                }
+            }
+            // A problem: a triangle at the top right.
+            if warning {
+                let (fx, fy) = (x as f32 + 0.5, y as f32 + 0.5);
+                // Apex (25, 1), base y = 13 from x = 18 to 32.
+                if (1.0..=13.0).contains(&fy) && (fx - 25.0).abs() <= (fy - 1.0) * 7.0 / 12.0 {
+                    c = WARN;
+                }
+            }
+            let i = (y * n + x) * 4;
+            px[i..i + 4].copy_from_slice(&c);
+        }
+    }
+    px
+}
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used)] // Tests fail by panicking.
 mod tests {
@@ -319,6 +380,36 @@ mod tests {
             (TrayGlyph::Recording, false)
         );
         assert_eq!(tray_state(s(false, false, true)), (TrayGlyph::Idle, true));
+    }
+
+    #[test]
+    fn tray_variants_differ_in_shape() {
+        let n = TRAY_ICON_SIZE as usize;
+        let len = n * n * 4;
+        // Opaque pixels only, so colour alone cannot tell the variants apart.
+        let shape = |px: &[u8]| -> Vec<bool> { px.chunks(4).map(|p| p[3] != 0).collect() };
+        let colours =
+            |px: &[u8]| -> Vec<[u8; 3]> { px.chunks(4).map(|p| [p[0], p[1], p[2]]).collect() };
+        let idle = tray_pixels(TrayGlyph::Idle, false);
+        let rec = tray_pixels(TrayGlyph::Recording, false);
+        let live = tray_pixels(TrayGlyph::Live, false);
+        let warn = tray_pixels(TrayGlyph::Live, true);
+        for p in [&idle, &rec, &live, &warn] {
+            assert_eq!(p.len(), len);
+        }
+        assert_ne!(shape(&idle), shape(&rec));
+        assert_ne!(shape(&idle), shape(&warn));
+        // Recording and live share an outline, so their inner shapes must differ:
+        // count the live-coloured pixels.
+        let red = |px: &[u8]| {
+            colours(px)
+                .iter()
+                .filter(|c| **c == [0xe5, 0x48, 0x4d])
+                .count()
+        };
+        assert_ne!(red(&rec), red(&live));
+        // The warning keeps the live mark.
+        assert!(red(&warn) > 0);
     }
 
     #[test]

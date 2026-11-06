@@ -147,6 +147,9 @@ struct App {
     preview_endpoint: Option<rbs_gpu::share::PreviewEndpoint>,
     /// What the Dock badge or tray icon shows now; changed only when it differs.
     bg_state: background::LiveState,
+    /// The tray icon and the second-launch event while Keep RBS running is set.
+    #[cfg(windows)]
+    tray: Option<(rbs_app::win::Tray, Option<rbs_app::win::ShowEvent>)>,
     demo_since: Option<Instant>,
     studio: studio_ui::StudioUi,
     /// The Settings window while it is open (U17).
@@ -424,6 +427,11 @@ impl Ctx {
         live.elapsed_secs = elapsed.as_secs();
         let text: slint::SharedString = live.duration_text().into();
         app.session.set_live(live);
+        // The tray tooltip's time, only while no window shows it (ADR-0056 decision 5).
+        #[cfg(windows)]
+        if app.hidden {
+            Self::sync_tray_text(&mut app);
+        }
         app.main.global::<Shell>().set_live_duration(text.clone());
         for f in &app.floats {
             f.window.global::<Shell>().set_live_duration(text.clone());
@@ -684,6 +692,61 @@ impl Ctx {
         }
         #[cfg(not(target_os = "macos"))]
         let _ = new_problem;
+        #[cfg(windows)]
+        Self::sync_tray_text(app);
+    }
+
+    /// Makes or drops the tray icon and the second-launch event as the setting asks
+    /// (ADR-0056 decision 9: nothing exists while Quit RBS is set).
+    #[cfg(windows)]
+    fn sync_tray(app: &mut App) {
+        let want = app.bg.on_close == OnClose::KeepRunning && Self::way_back();
+        match (&app.tray, want) {
+            (None, true) => {
+                let (status, tooltip) = Self::tray_text(app);
+                match rbs_app::win::Tray::new(app.bg_state, &status, &tooltip) {
+                    Ok(tray) => {
+                        let event = rbs_app::win::ShowEvent::create(show_from_system);
+                        app.tray = Some((tray, event));
+                    }
+                    Err(e) => {
+                        // No way back: Close quits, and the setting's hint says so.
+                        studio_ui::log(&format!("tray icon: {e}; closing the window quits"));
+                        WAY_BACK.with(|w| w.set(false));
+                    }
+                }
+            }
+            (Some(_), false) => app.tray = None,
+            _ => {}
+        }
+    }
+
+    /// The tray menu's status line and the icon's tooltip, in words (U4).
+    #[cfg(windows)]
+    fn tray_text(app: &App) -> (String, String) {
+        let clock = |d: Duration| {
+            let s = d.as_secs();
+            format!("{:02}:{:02}:{:02}", s / 3600, s / 60 % 60, s % 60)
+        };
+        let mut status = match (app.studio.streaming_for(), app.studio.recording_for()) {
+            (Some((d, host, _)), _) => format!("Live on {host}, {}", clock(d)),
+            (None, Some((d, _))) => format!("Recording, {}", clock(d)),
+            (None, None) => "Not live".to_owned(),
+        };
+        if app.bg_state.problem {
+            status.push_str(" - a problem needs your attention");
+        }
+        let tooltip = format!("RBS: {status}");
+        (status, tooltip)
+    }
+
+    #[cfg(windows)]
+    fn sync_tray_text(app: &mut App) {
+        let (status, tooltip) = Self::tray_text(app);
+        let state = app.bg_state;
+        if let Some((tray, _)) = &mut app.tray {
+            tray.set_state(state, &status, &tooltip);
+        }
     }
 
     /// Whether a hidden main window can be brought back on this platform now
@@ -812,6 +875,8 @@ impl Ctx {
             return;
         }
         self.sync_live(&mut app);
+        #[cfg(windows)]
+        Self::sync_tray(&mut app);
         Self::sync_background(&mut app);
         // Nothing to draw while hidden; the windows catch up when they show (U5).
         if app.hidden {
@@ -1527,6 +1592,14 @@ fn install_studio(g: &Studio<'_>, ctx: &Ctx) {
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let config = config::config_dir();
+    // A second launch while RBS keeps running brings that RBS forward and ends here
+    // (ADR-0056 decision 6).
+    #[cfg(windows)]
+    if background::load(&config).0.on_close == OnClose::KeepRunning
+        && rbs_app::win::signal_running()
+    {
+        return Ok(());
+    }
     // Crash reports and the running marker (ADR-0055 decisions 4 and 5): a report for
     // every panic on the UI thread, and a notice when the last session ended badly.
     rbs_crash::report_panics_on_this_thread();
@@ -1549,9 +1622,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     run(config, notice)
 }
 
-/// The system asked the app to quit (macOS `terminate:`): Quit (ADR-0056 decision 3),
-/// once AppKit's call has returned.
-#[cfg(target_os = "macos")]
+/// The system asked the app to quit (macOS `terminate:`, the tray menu's Quit RBS on
+/// Windows): Quit (ADR-0056 decision 3), once the system's call has returned.
+#[cfg(any(target_os = "macos", windows))]
 fn quit_from_system() {
     let _ = entry::invoke(|| {
         let ctx = CTX.with(|c| c.borrow().clone());
@@ -1561,9 +1634,9 @@ fn quit_from_system() {
     });
 }
 
-/// The Dock icon or Cmd+Tab asked for the hidden main window (ADR-0056 decision 6),
-/// once AppKit's call has returned.
-#[cfg(target_os = "macos")]
+/// The Dock icon or Cmd+Tab (macOS), the tray icon or a second launch (Windows) asked
+/// for the main window (ADR-0056 decision 6), once the system's call has returned.
+#[cfg(any(target_os = "macos", windows))]
 fn show_from_system() {
     let _ = entry::invoke(|| {
         let ctx = CTX.with(|c| c.borrow().clone());
@@ -1661,6 +1734,8 @@ fn run(config: PathBuf, notice: Option<String>) -> Result<(), Box<dyn std::error
             bg,
             preview_endpoint: None,
             bg_state: background::LiveState::default(),
+            #[cfg(windows)]
+            tray: None,
             settings: None,
             demo_since: demo_live.then(Instant::now),
             studio: studio_ui::StudioUi::new(&studio_config, keys.as_ref(), user, first_canvas),
@@ -1807,6 +1882,13 @@ fn run(config: PathBuf, notice: Option<String>) -> Result<(), Box<dyn std::error
     // without that way back, Close quits.
     #[cfg(target_os = "macos")]
     WAY_BACK.with(|w| w.set(rbs_app::native::route_show(show_from_system)));
+    // Windows: the tray icon is the way back, made while Keep RBS running is set;
+    // `sync_tray` clears this when it cannot be made.
+    #[cfg(windows)]
+    {
+        rbs_app::win::install_handlers(show_from_system, quit_from_system);
+        WAY_BACK.with(|w| w.set(true));
+    }
     if !WAY_BACK.with(Cell::get) && OnClose::KeepRunning.supported() {
         eprintln!("rbs: no way back to a hidden window here; closing the window quits");
     }
