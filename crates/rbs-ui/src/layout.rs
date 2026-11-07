@@ -27,6 +27,13 @@ pub const EDGE_SHARE: f32 = 0.25;
 /// Width of the Transition rail between the two pictures (ADR-0064).
 pub const RAIL_BETWEEN: f32 = 156.0;
 
+/// Least height for the rail between the pictures; a shorter split puts it below.
+pub const RAIL_BETWEEN_MIN_H: f32 = 240.0;
+
+/// Least width of each picture beside the rail between them; a narrower split puts
+/// the rail below, so the pictures are not squeezed into slivers.
+pub const RAIL_BETWEEN_MIN_PICTURE: f32 = 160.0;
+
 /// Height of the Transition rail below the two pictures (ADR-0064).
 pub const RAIL_BELOW: f32 = 56.0;
 
@@ -917,7 +924,12 @@ fn flatten_studio(
     let share = s.ratios.first().copied().unwrap_or(0.5).clamp(0.0, 1.0);
     // Too narrow for a column between two usable pictures: the rail goes below.
     let at = match s.studio {
-        Some(RailAt::Between) if r.w >= RAIL_BETWEEN + 2.0 * MIN_PANE => RailAt::Between,
+        Some(RailAt::Between)
+            if r.w >= RAIL_BETWEEN + 2.0 * RAIL_BETWEEN_MIN_PICTURE
+                && r.h >= RAIL_BETWEEN_MIN_H =>
+        {
+            RailAt::Between
+        }
         _ => RailAt::Below,
     };
     match at {
@@ -1227,10 +1239,12 @@ mod tests {
         assert!(below.resize(&on.handles[0], 50.0));
         // Too narrow for a column between two usable pictures: below instead.
         let narrow = n.flatten_in(
-            Rect::sized(RAIL_BETWEEN + 2.0 * MIN_PANE - 1.0, 400.0),
+            Rect::sized(RAIL_BETWEEN + 2.0 * RAIL_BETWEEN_MIN_PICTURE - 1.0, 400.0),
             true,
         );
         assert_eq!(narrow.rail.unwrap().1, RailAt::Below);
+        let short = n.flatten_in(Rect::sized(1000.0, RAIL_BETWEEN_MIN_H - 1.0), true);
+        assert_eq!(short.rail.unwrap().1, RailAt::Below);
     }
 
     #[test]

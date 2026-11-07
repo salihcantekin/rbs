@@ -16,7 +16,7 @@ export enum IconName {
     none, more, chevron-down, chevron-up, chevron-left, chevron-right, check, close, dot, ring,
     plus, pin, panel-left, panel-right, panel-bottom, bolt, grid, copy, window, search,
     monitor, camera, mic, speaker, eye, eye-off, expand, lock, unlock, speaker-off,
-    sliders, palette, keyboard, broadcast, link, gear, globe,
+    sliders, palette, keyboard, broadcast, link, gear, globe, rail-between, rail-below,
 }
 
 // Vector icon. Icons are paths, not font glyphs, so they look the same on every OS
@@ -41,6 +41,10 @@ export component Icon inherits Rectangle {
         : name == IconName.panel-left ? "M 2.5 3 L 13.5 3 L 13.5 13 L 2.5 13 Z M 6.5 3 L 6.5 13"
         : name == IconName.panel-right ? "M 2.5 3 L 13.5 3 L 13.5 13 L 2.5 13 Z M 9.5 3 L 9.5 13"
         : name == IconName.panel-bottom ? "M 2.5 3 L 13.5 3 L 13.5 13 L 2.5 13 Z M 2.5 9.5 L 13.5 9.5"
+        // Two pictures with the Transition rail between them, or below them (ADR-0064),
+        // drawn like the docking guide's targets.
+        : name == IconName.rail-between ? "M 1.5 3.5 L 6 3.5 L 6 12.5 L 1.5 12.5 Z M 10 3.5 L 14.5 3.5 L 14.5 12.5 L 10 12.5 Z M 8 3.5 L 8 12.5"
+        : name == IconName.rail-below ? "M 1.5 2.5 L 7.5 2.5 L 7.5 9.5 L 1.5 9.5 Z M 8.5 2.5 L 14.5 2.5 L 14.5 9.5 L 8.5 9.5 Z M 1.5 13 L 14.5 13"
         : name == IconName.bolt ? "M 9 1.5 L 3.5 9 L 7.5 9 L 7 14.5 L 12.5 7 L 8.5 7 Z"
         : name == IconName.grid ? "M 2.5 2.5 L 7 2.5 L 7 7 L 2.5 7 Z M 9 2.5 L 13.5 2.5 L 13.5 7 L 9 7 Z M 2.5 9 L 7 9 L 7 13.5 L 2.5 13.5 Z M 9 9 L 13.5 9 L 13.5 13.5 L 9 13.5 Z"
         : name == IconName.copy ? "M 5.5 2.5 L 13.5 2.5 L 13.5 10.5 L 5.5 10.5 Z M 2.5 5.5 L 2.5 13.5 L 10.5 13.5"

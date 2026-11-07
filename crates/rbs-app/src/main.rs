@@ -1390,8 +1390,16 @@ impl Ctx {
             app.studio.studio_mode,
         );
         app.main_models.update(stacks, handles);
+        let rail_shown = rail.shown;
         if app.main.get_rail() != rail {
             app.main.set_rail(rail);
+        }
+        if rail_shown {
+            let keys = self.keys.borrow().label_for("canvas.transition");
+            let shell = app.main.global::<Shell>();
+            if shell.get_transition_keys() != keys.as_str() {
+                shell.set_transition_keys(keys.into());
+            }
         }
 
         self.sync_floats(&mut app);
