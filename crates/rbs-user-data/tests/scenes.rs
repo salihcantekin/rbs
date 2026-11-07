@@ -50,6 +50,8 @@ fn show() -> SceneCollection {
     let (mic, _) = col
         .add_source("Mic", ty("audio-input"), Settings::new())
         .unwrap();
+    col.set_source_volume(mic, 0.3).unwrap();
+    col.set_source_muted(mic, true).unwrap();
 
     let (talk, _) = col.add_scene("Talk", SceneScope::Shared).unwrap();
     let (cam_item, _) = col
@@ -104,6 +106,7 @@ fn show() -> SceneCollection {
         )
         .unwrap();
     col.set_item_visible(pip, false).unwrap();
+    col.set_item_locked(pip, true).unwrap();
     col.set_program(wide, Some(game)).unwrap();
     col.set_preview(wide, Some(talk)).unwrap();
     col.set_program(tall, Some(talk)).unwrap();
@@ -133,7 +136,10 @@ fn a_collection_round_trips_exactly_with_its_counters() {
         "enabled = false",
         "visible = false",
         "canvas = 0",
-        "format = 2",
+        "format = 3",
+        "locked = true",
+        "volume = 0.3",
+        "muted = true",
         "shape = \"circle\"",
         "color = \"#ff0080c8\"",
         "radius = 24.0",
@@ -368,7 +374,7 @@ fn every_state_of_a_long_edit_sequence_round_trips() {
             .flat_map(|s| s.items.iter().map(|i| i.id))
             .collect();
         // Refused edits are fine: the collection stays valid either way.
-        let _ = match rng.next(10) {
+        let _ = match rng.next(11) {
             0 => col
                 .add_source(&format!("S{step}"), ty("camera"), Settings::new())
                 .map(|_| ()),
@@ -415,6 +421,9 @@ fn every_state_of_a_long_edit_sequence_round_trips() {
                 .set_program(pick(&mut rng, &canvases), Some(pick(&mut rng, &scenes)))
                 .map(|_| ()),
             8 if !scenes.is_empty() => col.remove_scene(pick(&mut rng, &scenes)).map(|_| ()),
+            10 if !items.is_empty() => col
+                .set_item_locked(pick(&mut rng, &items), rng.next(2) == 0)
+                .map(|_| ()),
             _ if !items.is_empty() => col
                 .set_item_visible(pick(&mut rng, &items), rng.next(2) == 0)
                 .map(|_| ()),

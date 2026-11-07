@@ -435,3 +435,59 @@ fn audio_sync_offsets_apply_from_the_start_and_while_it_runs() {
     let (_, errors) = studio.shutdown();
     assert!(errors.is_empty(), "{errors:?}");
 }
+
+#[test]
+fn volume_and_mute_reach_the_mixer_without_a_rebind() {
+    let Some(gpu) = gpu() else { return };
+    let r = rig();
+    let (mut col, canvas) = scene();
+    let mic = col.sources().find(|s| s.name == "Microphone").unwrap().id;
+    let system = col.sources().find(|s| s.name == "System audio").unwrap().id;
+    let (engine, clock) = engine_at_start();
+    let mut studio = Studio::start(
+        engine,
+        gpu,
+        &col,
+        &r.adapters.sources,
+        &StudioSettings::new(canvas),
+    )
+    .unwrap();
+    let blocks = |s: &Studio| s.engine().worker_stats(AUDIO).unwrap().ticks();
+    let peak = |s: &Studio, id| s.meter(id).unwrap().take().peak(0);
+    // The strip meters are post-fader: both inputs are heard.
+    let t = blocks(&studio);
+    assert!(run_until(&mut studio, &clock, |s| blocks(s) >= t + 10));
+    assert!(peak(&studio, mic) > 0.0);
+    assert!(peak(&studio, system) > 0.0);
+    let sources = studio.sources();
+
+    // Mute the microphone on the light path: after the ramp it is silent, the other
+    // input is not, and no source was opened or closed again.
+    col.set_source_muted(mic, true).unwrap();
+    assert!(studio.set_mix(&col));
+    let t = blocks(&studio);
+    assert!(run_until(&mut studio, &clock, |s| blocks(s) >= t + 5));
+    let _ = (peak(&studio, mic), peak(&studio, system));
+    let t = blocks(&studio);
+    assert!(run_until(&mut studio, &clock, |s| blocks(s) >= t + 10));
+    assert_eq!(peak(&studio, mic), 0.0, "muted after the ramp");
+    assert!(peak(&studio, system) > 0.0);
+    assert_eq!(studio.sources(), sources);
+    assert_eq!(r.audio.active_streams(), 2);
+
+    // A scene edit afterwards keeps the levels (the update reads them too), and a
+    // volume of 0 is silent like a mute.
+    col.set_source_muted(mic, false).unwrap();
+    col.set_source_volume(system, 0.0).unwrap();
+    studio.update(&col, &r.adapters.sources).unwrap();
+    let t = blocks(&studio);
+    assert!(run_until(&mut studio, &clock, |s| blocks(s) >= t + 5));
+    let _ = (peak(&studio, mic), peak(&studio, system));
+    let t = blocks(&studio);
+    assert!(run_until(&mut studio, &clock, |s| blocks(s) >= t + 10));
+    assert!(peak(&studio, mic) > 0.0, "unmuted");
+    assert_eq!(peak(&studio, system), 0.0, "volume 0");
+    assert_eq!(studio.mixer_anomalies(), 0);
+    let (_, errors) = studio.shutdown();
+    assert!(errors.is_empty(), "{errors:?}");
+}
