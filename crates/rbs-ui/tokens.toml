@@ -122,6 +122,14 @@ format = 2
 # the button says "Go" and the studio mode hint is hidden.
 "size.transition.narrow" = 40
 "size.transition.short" = 120
+"size.transition.between" = 156
+"size.transition.below" = 44
+"size.transition.min-picture" = 160
+"size.transition.min-h" = 240
+"size.transition.type" = 112
+"size.transition.type-min" = 72
+"size.transition.duration" = 88
+"size.transition.compact" = 600
 
 # Milliseconds. Every animation is off under "reduce motion".
 [duration]
