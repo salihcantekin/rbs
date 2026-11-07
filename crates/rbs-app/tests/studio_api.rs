@@ -17,7 +17,7 @@ use rbs_api::thread::ApiOptions;
 use rbs_api::transport::{CloseReason, ConnectionHandle, ConnectionSender, PeerInfo, SendError};
 use rbs_api::types::{Library, LibraryEntry};
 use rbs_api::{ApiServer, TokenStore};
-use rbs_app::studio_host::{Command, HostConfig, StudioHost, Update};
+use rbs_app::studio_host::{Command, HostConfig, SourceKind, StudioHost, Update};
 use rbs_audio_io_test::TestAudioBackend;
 use rbs_capture_test::TestCaptureFactory;
 use rbs_core::time::TestClock;
@@ -112,6 +112,19 @@ fn next<T>(rx: &Receiver<Update>, mut pick: impl FnMut(Update) -> Option<T>) -> 
             return t;
         }
     }
+}
+
+/// Sends a UI command and waits until the control thread took it. UI commands and API
+/// requests reach the control thread on separate queues, so a request sent after a
+/// command may still be served first; a `ListTargets` sent behind the command is
+/// answered only after it.
+fn send_and_wait(host: &StudioHost, updates: &Receiver<Update>, command: Command) {
+    host.send(command);
+    host.send(Command::ListTargets(SourceKind::Screen));
+    next(updates, |u| match u {
+        Update::Targets(SourceKind::Screen, _) => Some(()),
+        _ => None,
+    });
 }
 
 #[test]
@@ -298,11 +311,15 @@ fn a_control_api_client_drives_the_studio() {
         &[("default", "Default"), ("talk-show", "Talk show")],
         "default",
     );
-    host.send(Command::SetLibrary {
-        profiles: profiles.clone(),
-        collections: collections.clone(),
-        answered: None,
-    });
+    send_and_wait(
+        &host,
+        &updates,
+        Command::SetLibrary {
+            profiles: profiles.clone(),
+            collections: collections.clone(),
+            answered: None,
+        },
+    );
     let listed = c.call("collection.list", json!({}));
     assert_eq!(
         listed["result"],
@@ -335,19 +352,27 @@ fn a_control_api_client_drives_the_studio() {
     assert_eq!(busy["error"]["data"]["kind"], "conflict", "{busy}");
     let stream = c.call("stream.start", json!({}));
     assert_eq!(stream["error"]["data"]["kind"], "conflict", "{stream}");
-    host.send(Command::SetLibrary {
-        profiles: profiles.clone(),
-        collections: collections.clone(),
-        answered: None,
-    });
+    send_and_wait(
+        &host,
+        &updates,
+        Command::SetLibrary {
+            profiles: profiles.clone(),
+            collections: collections.clone(),
+            answered: None,
+        },
+    );
     let listed = c.call("collection.list", json!({}));
     assert_eq!(listed["result"]["pending"], true, "{listed}");
     // Refused by the app: answered, and the one in use stays.
-    host.send(Command::SetLibrary {
-        profiles,
-        collections,
-        answered: Some(seq),
-    });
+    send_and_wait(
+        &host,
+        &updates,
+        Command::SetLibrary {
+            profiles,
+            collections,
+            answered: Some(seq),
+        },
+    );
     let listed = c.call("collection.list", json!({}));
     assert_eq!(listed["result"]["pending"], false, "{listed}");
     assert_eq!(listed["result"]["current"], "default", "{listed}");
@@ -365,11 +390,15 @@ fn a_control_api_client_drives_the_studio() {
         }
         _ => None,
     });
-    host.send(Command::SetLibrary {
-        profiles: library(&[("default", "Default"), ("live", "Live")], "live"),
-        collections: library(&[("default", "Default")], "default"),
-        answered: Some(seq),
-    });
+    send_and_wait(
+        &host,
+        &updates,
+        Command::SetLibrary {
+            profiles: library(&[("default", "Default"), ("live", "Live")], "live"),
+            collections: library(&[("default", "Default")], "default"),
+            answered: Some(seq),
+        },
+    );
     let listed = c.call("profile.list", json!({}));
     assert_eq!(listed["result"]["current"], "live", "{listed}");
     assert_eq!(listed["result"]["pending"], false, "{listed}");
