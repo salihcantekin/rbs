@@ -11,12 +11,64 @@ export component FocusRing inherits Rectangle {
     border-radius: Tokens.radius-sm;
 }
 
-// The icon set (docs/specs/ui-design-system.md, "Icons").
+// BEGIN generated icon set (icons.rs; do not edit)
+// The icon set (docs/specs/ui-design-system.md, "Icons"; rbs_ui::icon::ICONS).
 export enum IconName {
-    none, more, chevron-down, chevron-up, chevron-left, chevron-right, check, close, dot, ring,
-    plus, pin, panel-left, panel-right, panel-bottom, bolt, grid, copy, window, search,
-    monitor, camera, mic, speaker, eye, eye-off, expand, lock, unlock, speaker-off,
-    sliders, palette, keyboard, broadcast, link, gear, globe, rail-between, rail-below,
+    none,
+    more,
+    chevron-down,
+    chevron-up,
+    chevron-left,
+    chevron-right,
+    check,
+    close,
+    dot,
+    ring,
+    plus,
+    pin,
+    panel-left,
+    panel-right,
+    panel-bottom,
+    bolt,
+    grid,
+    copy,
+    window,
+    search,
+    monitor,
+    camera,
+    mic,
+    speaker,
+    eye,
+    eye-off,
+    expand,
+    lock,
+    unlock,
+    speaker-off,
+    sliders,
+    palette,
+    keyboard,
+    broadcast,
+    link,
+    globe,
+    gear,
+    user,
+    folder,
+    undo,
+    redo,
+    layout,
+    panel-all,
+    panel-none,
+    reset,
+    refresh,
+    image,
+    pencil,
+    trash,
+    transition,
+    arrow-left,
+    arrow-right,
+    menu,
+    rail-between,
+    rail-below,
 }
 
 // Vector icon. Icons are paths, not font glyphs, so they look the same on every OS
@@ -35,16 +87,13 @@ export component Icon inherits Rectangle {
         : name == IconName.chevron-right ? "M 6 4 L 10 8 L 6 12"
         : name == IconName.check ? "M 3.5 8.5 L 6.5 11.5 L 12.5 4.5"
         : name == IconName.close ? "M 4.5 4.5 L 11.5 11.5 M 11.5 4.5 L 4.5 11.5"
-        : name == IconName.dot || name == IconName.ring ? "M 4 8 a 4 4 0 1 0 8 0 a 4 4 0 1 0 -8 0 Z"
+        : name == IconName.dot ? "M 4 8 a 4 4 0 1 0 8 0 a 4 4 0 1 0 -8 0 Z"
+        : name == IconName.ring ? "M 4 8 a 4 4 0 1 0 8 0 a 4 4 0 1 0 -8 0 Z"
         : name == IconName.plus ? "M 8 3 L 8 13 M 3 8 L 13 8"
         : name == IconName.pin ? "M 5.5 2.5 L 10.5 2.5 M 6.5 2.5 L 6.5 6.5 L 4.5 9.5 L 11.5 9.5 L 9.5 6.5 L 9.5 2.5 M 8 9.5 L 8 14"
         : name == IconName.panel-left ? "M 2.5 3 L 13.5 3 L 13.5 13 L 2.5 13 Z M 6.5 3 L 6.5 13"
         : name == IconName.panel-right ? "M 2.5 3 L 13.5 3 L 13.5 13 L 2.5 13 Z M 9.5 3 L 9.5 13"
         : name == IconName.panel-bottom ? "M 2.5 3 L 13.5 3 L 13.5 13 L 2.5 13 Z M 2.5 9.5 L 13.5 9.5"
-        // Two pictures with the Transition rail between them, or below them (ADR-0064),
-        // drawn like the docking guide's targets.
-        : name == IconName.rail-between ? "M 1.5 3.5 L 6 3.5 L 6 12.5 L 1.5 12.5 Z M 10 3.5 L 14.5 3.5 L 14.5 12.5 L 10 12.5 Z M 8 3.5 L 8 12.5"
-        : name == IconName.rail-below ? "M 1.5 2.5 L 7.5 2.5 L 7.5 9.5 L 1.5 9.5 Z M 8.5 2.5 L 14.5 2.5 L 14.5 9.5 L 8.5 9.5 Z M 1.5 13 L 14.5 13"
         : name == IconName.bolt ? "M 9 1.5 L 3.5 9 L 7.5 9 L 7 14.5 L 12.5 7 L 8.5 7 Z"
         : name == IconName.grid ? "M 2.5 2.5 L 7 2.5 L 7 7 L 2.5 7 Z M 9 2.5 L 13.5 2.5 L 13.5 7 L 9 7 Z M 2.5 9 L 7 9 L 7 13.5 L 2.5 13.5 Z M 9 9 L 13.5 9 L 13.5 13.5 L 9 13.5 Z"
         : name == IconName.copy ? "M 5.5 2.5 L 13.5 2.5 L 13.5 10.5 L 5.5 10.5 Z M 2.5 5.5 L 2.5 13.5 L 10.5 13.5"
@@ -67,6 +116,24 @@ export component Icon inherits Rectangle {
         : name == IconName.link ? "M 6.5 9.5 L 9.5 6.5 M 7 4.5 L 8.5 3 C 9.75 1.75 11.75 1.75 13 3 C 14.25 4.25 14.25 6.25 13 7.5 L 11.5 9 M 9 11.5 L 7.5 13 C 6.25 14.25 4.25 14.25 3 13 C 1.75 11.75 1.75 9.75 3 8.5 L 4.5 7"
         : name == IconName.globe ? "M 2 8 a 6 6 0 1 0 12 0 a 6 6 0 1 0 -12 0 Z M 2 8 L 14 8 M 8 2 C 5.75 4 5.75 12 8 14 M 8 2 C 10.25 4 10.25 12 8 14"
         : name == IconName.gear ? "M 12.68 6.24 L 14.47 6.69 L 14.47 9.31 L 12.68 9.76 L 12.55 10.06 L 13.50 11.65 L 11.65 13.50 L 10.06 12.55 L 9.76 12.68 L 9.31 14.47 L 6.69 14.47 L 6.24 12.68 L 5.94 12.55 L 4.35 13.50 L 2.50 11.65 L 3.45 10.06 L 3.32 9.76 L 1.53 9.31 L 1.53 6.69 L 3.32 6.24 L 3.45 5.94 L 2.50 4.35 L 4.35 2.50 L 5.94 3.45 L 6.24 3.32 L 6.69 1.53 L 9.31 1.53 L 9.76 3.32 L 10.06 3.45 L 11.65 2.50 L 13.50 4.35 L 12.55 5.94 Z M 6 8 a 2 2 0 1 0 4 0 a 2 2 0 1 0 -4 0 Z"
+        : name == IconName.user ? "M 5.5 5 a 2.5 2.5 0 1 0 5 0 a 2.5 2.5 0 1 0 -5 0 Z M 2.5 14 C 2.5 9.5 13.5 9.5 13.5 14"
+        : name == IconName.folder ? "M 1.5 3.5 L 6 3.5 L 7.5 5 L 14.5 5 L 14.5 12.5 L 1.5 12.5 Z"
+        : name == IconName.undo ? "M 5.5 3.5 L 2.5 6.5 L 5.5 9.5 M 2.5 6.5 L 10 6.5 C 14 6.5 14 12.5 10 12.5 L 7 12.5"
+        : name == IconName.redo ? "M 10.5 3.5 L 13.5 6.5 L 10.5 9.5 M 13.5 6.5 L 6 6.5 C 2 6.5 2 12.5 6 12.5 L 9 12.5"
+        : name == IconName.layout ? "M 2.5 3 L 13.5 3 L 13.5 13 L 2.5 13 Z M 2.5 6 L 13.5 6 M 6.5 6 L 6.5 13"
+        : name == IconName.panel-all ? "M 2.5 3 L 13.5 3 L 13.5 13 L 2.5 13 Z M 5.5 3 L 5.5 10 M 10.5 3 L 10.5 10 M 2.5 10 L 13.5 10"
+        : name == IconName.panel-none ? "M 2.5 3 L 13.5 3 L 13.5 13 L 2.5 13 Z M 5.5 6 L 10.5 6 L 10.5 10 L 5.5 10 Z"
+        : name == IconName.reset ? "M 3.5 8 a 4.5 4.5 0 1 0 1.32 -3.18 M 4.82 2.3 L 4.82 4.82 L 7.3 4.82"
+        : name == IconName.refresh ? "M 12.5 8 a 4.5 4.5 0 1 1 -1.32 -3.18 M 11.18 2.3 L 11.18 4.82 L 8.7 4.82"
+        : name == IconName.image ? "M 2 3 L 14 3 L 14 13 L 2 13 Z M 2 11 L 6 7.5 L 9 10 L 11 8.5 L 14 11 M 10 5.75 a 1 1 0 1 0 2 0 a 1 1 0 1 0 -2 0 Z"
+        : name == IconName.pencil ? "M 10.5 2.5 L 13.5 5.5 L 5.5 13.5 L 2.5 13.5 L 2.5 10.5 Z M 9 4 L 12 7"
+        : name == IconName.trash ? "M 2.5 4 L 13.5 4 M 6 4 L 6 2.5 L 10 2.5 L 10 4 M 4 4 L 4.75 13.5 L 11.25 13.5 L 12 4 M 6.75 6.5 L 6.75 11 M 9.25 6.5 L 9.25 11"
+        : name == IconName.transition ? "M 1.5 4.5 L 7 4.5 L 7 11.5 L 1.5 11.5 Z M 9 4.5 L 14.5 4.5 L 14.5 11.5 L 9 11.5 Z M 7 8 L 9 8"
+        : name == IconName.arrow-left ? "M 13 8 L 3 8 M 7 4 L 3 8 L 7 12"
+        : name == IconName.arrow-right ? "M 3 8 L 13 8 M 9 4 L 13 8 L 9 12"
+        : name == IconName.menu ? "M 2.5 4 L 13.5 4 M 2.5 8 L 13.5 8 M 2.5 12 L 13.5 12"
+        : name == IconName.rail-between ? "M 1.5 3.5 L 6 3.5 L 6 12.5 L 1.5 12.5 Z M 10 3.5 L 14.5 3.5 L 14.5 12.5 L 10 12.5 Z M 8 3.5 L 8 12.5"
+        : name == IconName.rail-below ? "M 1.5 2.5 L 7.5 2.5 L 7.5 9.5 L 1.5 9.5 Z M 8.5 2.5 L 14.5 2.5 L 14.5 9.5 L 8.5 9.5 Z M 1.5 13 L 14.5 13"
         : "";
     width: Tokens.size-icon-box;
     height: Tokens.size-icon-box;
@@ -87,30 +154,64 @@ export component Icon inherits Rectangle {
 export global Icons {
     // Slint has no string to enum conversion; unknown names draw nothing.
     public pure function named(name: string) -> IconName {
-        return name == "bolt" ? IconName.bolt
+        return name == "more" ? IconName.more
+        : name == "chevron-down" ? IconName.chevron-down
+        : name == "chevron-up" ? IconName.chevron-up
+        : name == "chevron-left" ? IconName.chevron-left
+        : name == "chevron-right" ? IconName.chevron-right
+        : name == "check" ? IconName.check
+        : name == "close" ? IconName.close
         : name == "dot" ? IconName.dot
+        : name == "ring" ? IconName.ring
+        : name == "plus" ? IconName.plus
+        : name == "pin" ? IconName.pin
         : name == "panel-left" ? IconName.panel-left
         : name == "panel-right" ? IconName.panel-right
         : name == "panel-bottom" ? IconName.panel-bottom
+        : name == "bolt" ? IconName.bolt
         : name == "grid" ? IconName.grid
         : name == "copy" ? IconName.copy
         : name == "window" ? IconName.window
-        : name == "plus" ? IconName.plus
-        : name == "pin" ? IconName.pin
+        : name == "search" ? IconName.search
         : name == "monitor" ? IconName.monitor
         : name == "camera" ? IconName.camera
         : name == "mic" ? IconName.mic
         : name == "speaker" ? IconName.speaker
+        : name == "eye" ? IconName.eye
+        : name == "eye-off" ? IconName.eye-off
+        : name == "expand" ? IconName.expand
+        : name == "lock" ? IconName.lock
+        : name == "unlock" ? IconName.unlock
+        : name == "speaker-off" ? IconName.speaker-off
         : name == "sliders" ? IconName.sliders
         : name == "palette" ? IconName.palette
         : name == "keyboard" ? IconName.keyboard
         : name == "broadcast" ? IconName.broadcast
         : name == "link" ? IconName.link
-        : name == "gear" ? IconName.gear
         : name == "globe" ? IconName.globe
+        : name == "gear" ? IconName.gear
+        : name == "user" ? IconName.user
+        : name == "folder" ? IconName.folder
+        : name == "undo" ? IconName.undo
+        : name == "redo" ? IconName.redo
+        : name == "layout" ? IconName.layout
+        : name == "panel-all" ? IconName.panel-all
+        : name == "panel-none" ? IconName.panel-none
+        : name == "reset" ? IconName.reset
+        : name == "refresh" ? IconName.refresh
+        : name == "image" ? IconName.image
+        : name == "pencil" ? IconName.pencil
+        : name == "trash" ? IconName.trash
+        : name == "transition" ? IconName.transition
+        : name == "arrow-left" ? IconName.arrow-left
+        : name == "arrow-right" ? IconName.arrow-right
+        : name == "menu" ? IconName.menu
+        : name == "rail-between" ? IconName.rail-between
+        : name == "rail-below" ? IconName.rail-below
         : IconName.none;
     }
 }
+// END generated icon set
 
 // Button: kinds "primary", "secondary", "ghost", and "live" (only for stopping a live
 // or recording output: the fixed live colour, rule U12). Activated by click, Enter or
