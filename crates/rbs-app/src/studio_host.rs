@@ -18,7 +18,10 @@ use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
 use std::thread::JoinHandle;
 use std::time::Duration;
 
-use rbs_api::request::{Empty, ProfileList, RecordStarted, SourceAdded, StreamStarted, TargetList};
+use rbs_api::request::{
+    Empty, ItemAdded, ProfileList, RecordStarted, SceneAdded, SourceAdded, StreamStarted,
+    TargetList,
+};
 use rbs_api::types as api;
 use rbs_api::{
     ApiError, ControlEndpoint, ControlTarget, ErrorKind, EventPayload, EventPublisher, Response,
@@ -43,7 +46,7 @@ use rbs_record::{
 use rbs_scene::SceneCollection;
 use rbs_scene::model::{
     Border, CanvasId, Crop, ItemContent, ItemId, ItemStyle, Layout, SceneId, SceneItem, SceneScope,
-    SettingValue, Settings, Shadow, Shape, SourceId,
+    SettingValue, Settings, Shadow, Shape, SourceAudio, SourceId,
 };
 use rbs_scene::{SceneError, Undo};
 use rbs_sources::types::{self, keys};
@@ -193,6 +196,10 @@ pub struct SourceRow {
     pub picture: Option<(u32, u32)>,
     /// Shown in the program scene (a hidden source is not drawn or heard).
     pub visible: bool,
+    /// Locked: the picture panel does not select, move, resize or crop it (ADR-0059).
+    pub locked: bool,
+    /// The source's volume, a linear factor from 0 to 1, and its mute (ADR-0059).
+    pub audio: SourceAudio,
 }
 
 impl PartialEq for SourceRow {
@@ -205,6 +212,8 @@ impl PartialEq for SourceRow {
             && self.item == other.item
             && self.picture == other.picture
             && self.visible == other.visible
+            && self.locked == other.locked
+            && self.audio == other.audio
             && match (&self.meter, &other.meter) {
                 (Some(a), Some(b)) => Arc::ptr_eq(a, b),
                 (None, None) => true,
@@ -309,6 +318,54 @@ pub enum Command {
         /// The source whose place it takes.
         to: SourceId,
     },
+    /// Lock or unlock a source in the program scene (one undo step, ADR-0059).
+    SetSourceLocked {
+        /// The source.
+        id: SourceId,
+        /// Locked.
+        locked: bool,
+    },
+    /// A source's volume, a linear factor from 0 to 1 (ADR-0059). A live control: not
+    /// on the undo stack, and it reaches the mixer without rebinding the scene.
+    SetSourceVolume {
+        /// The source.
+        id: SourceId,
+        /// From 0 to 1.
+        volume: f32,
+    },
+    /// Mute or unmute a source's sound (ADR-0059). A live control: not on the undo
+    /// stack.
+    SetSourceMuted {
+        /// The source.
+        id: SourceId,
+        /// Muted.
+        muted: bool,
+    },
+    /// Rename a source (one undo step). Names are unique in the collection.
+    RenameSource {
+        /// The source.
+        id: SourceId,
+        /// The new name.
+        name: String,
+    },
+    /// Place a source the collection already has into the program scene, on top (one
+    /// undo step); it runs as one instance in every scene that places it.
+    AddExistingSource(SourceId),
+    /// Add an empty scene the canvas may show (one undo step); `None` names it
+    /// "Scene", "Scene 2", ... It does not go on air.
+    AddScene(Option<String>),
+    /// Remove a scene (one undo step). Refused for the last scene the canvas may show;
+    /// the scene on air is first switched away from (not undone with the removal).
+    RemoveScene(SceneId),
+    /// Rename a scene (one undo step).
+    RenameScene {
+        /// The scene.
+        id: SceneId,
+        /// The new name.
+        name: String,
+    },
+    /// Put a scene on air (a cut). A live action: not on the undo stack (ADR-0021).
+    SwitchScene(SceneId),
     /// Show or hide a source in the program scene (one undo step).
     SetSourceVisible {
         /// The source.
@@ -632,9 +689,78 @@ pub enum StreamUpdate {
     },
 }
 
+/// A scene the canvas may show, as the Scenes panel lists it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SceneRow {
+    /// Its id.
+    pub id: SceneId,
+    /// Its name.
+    pub name: String,
+}
+
+/// A source of the collection, for "Add existing source".
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SourceEntry {
+    /// Its id.
+    pub id: SourceId,
+    /// Its name.
+    pub name: String,
+    /// Its kind; `None` for a type this build does not know.
+    pub kind: Option<SourceKind>,
+}
+
+/// The scenes and sources of the collection, as the Scenes panel and the source
+/// pickers show them (ADR-0059).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SceneList {
+    /// The scenes the canvas may show, in panel order.
+    pub scenes: Vec<SceneRow>,
+    /// The one on air.
+    pub program: SceneId,
+    /// Every source of the collection, by name.
+    pub sources: Vec<SourceEntry>,
+}
+
+/// Why a scene, item or source edit was refused (ADR-0059): words for the UI, and the
+/// control API's error kind.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Refusal {
+    /// The object does not exist (any more).
+    NotFound(String),
+    /// The request is not valid (an empty name, a volume out of range).
+    Invalid(String),
+    /// It conflicts with the state (a taken name, the last scene).
+    Conflict(String),
+    /// Something else went wrong.
+    Failed(String),
+}
+
+impl Refusal {
+    /// In words.
+    pub fn text(&self) -> &str {
+        match self {
+            Self::NotFound(s) | Self::Invalid(s) | Self::Conflict(s) | Self::Failed(s) => s,
+        }
+    }
+
+    fn of(e: &SceneError) -> Self {
+        match e {
+            SceneError::UnknownSource(_)
+            | SceneError::UnknownScene(_)
+            | SceneError::UnknownItem(_) => Self::NotFound(edit_error(e)),
+            SceneError::DuplicateName(_) => Self::Conflict(edit_error(e)),
+            SceneError::EmptyName | SceneError::InvalidVolume => Self::Invalid(edit_error(e)),
+            _ => Self::Failed(edit_error(e)),
+        }
+    }
+}
+
 /// What the studio tells the UI.
 #[derive(Debug, Clone)]
 pub enum Update {
+    /// The scenes, the one on air and the collection's sources, after any change of
+    /// them (ADR-0059).
+    Scenes(SceneList),
     /// The answer to [`Command::SetSourceBox`] number `seq`: `ok` when the box is the
     /// source's now (changed or already so), else it was refused (an
     /// [`Update::Error`] says why).
@@ -1076,8 +1202,12 @@ struct Host {
     adapters: RecordAdapters,
     collection: SceneCollection,
     canvas: CanvasId,
+    /// The canvas's program scene: the one the Sources panel and the source commands
+    /// edit (kept in step by [`Host::keep_program`]).
     scene: SceneId,
     rows: Vec<SourceRow>,
+    /// The scene list as last sent.
+    scenes_shown: Option<SceneList>,
     /// The last picture size seen per video source (ADR-0058).
     sizes: BTreeMap<SourceId, (u32, u32)>,
     /// The user's undo history of scene edits, shared with control API clients.
@@ -1447,6 +1577,7 @@ fn start(
             canvas,
             scene,
             rows: Vec::new(),
+            scenes_shown: None,
             sizes: BTreeMap::new(),
             history: History::new(),
             history_shown: (None, None),
@@ -1528,6 +1659,46 @@ impl Host {
                 Ok(false) => {}
                 Err(e) => notify(Update::Error(e)),
             },
+            Command::SetSourceLocked { id, locked } => {
+                let done = self
+                    .item_of(id)
+                    .map_err(Refusal::NotFound)
+                    .map(|(_, i)| i.id)
+                    .and_then(|item| self.set_item_locked(item, locked));
+                self.answer(done, notify);
+            }
+            Command::SetSourceVolume { id, volume } => {
+                let done = self.set_source_audio(id, Some(volume), None);
+                self.answer_live(done, notify);
+            }
+            Command::SetSourceMuted { id, muted } => {
+                let done = self.set_source_audio(id, None, Some(muted));
+                self.answer_live(done, notify);
+            }
+            Command::RenameSource { id, name } => {
+                let done = self.rename_source(id, &name);
+                self.answer(done, notify);
+            }
+            Command::AddExistingSource(id) => {
+                let done = self.add_existing(id).map(|_| true);
+                self.answer(done, notify);
+            }
+            Command::AddScene(name) => {
+                let done = self.add_scene(name.as_deref()).map(|_| true);
+                self.answer(done, notify);
+            }
+            Command::RemoveScene(id) => {
+                let done = self.remove_scene(id).map(|()| true);
+                self.answer(done, notify);
+            }
+            Command::RenameScene { id, name } => {
+                let done = self.rename_scene(id, &name);
+                self.answer(done, notify);
+            }
+            Command::SwitchScene(id) => {
+                let done = self.switch_scene(id);
+                self.answer(done, notify);
+            }
             Command::SetSourceVisible { id, visible } => {
                 match self.set_source_visible(id, visible) {
                     Ok(true) => self.apply(notify),
@@ -2483,6 +2654,19 @@ impl Host {
     /// One step of the history; the error says whether there was nothing to do
     /// (`true`) and why it failed.
     fn undo_or_redo(&mut self, back: bool) -> Result<(), (bool, String)> {
+        let program = self.scene;
+        let result = self.undo_or_redo_records(back);
+        // Undo and redo never change what is on air (ADR-0059): a record that put a
+        // scene back on air is overruled, and a removed program is replaced.
+        let now = self.collection.canvas(self.canvas).and_then(|c| c.program);
+        if now != Some(program) && self.collection.scene(program).is_some() {
+            let _ = self.collection.set_program(self.canvas, Some(program));
+        }
+        self.keep_program();
+        result
+    }
+
+    fn undo_or_redo_records(&mut self, back: bool) -> Result<(), (bool, String)> {
         let collection = &mut self.collection;
         let apply = |r: Undo| collection.undo(r);
         let done = if back {
@@ -2586,18 +2770,301 @@ impl Host {
     /// Show or hide a source's item in the program scene; `Ok(false)` when it already is.
     fn set_source_visible(&mut self, id: SourceId, visible: bool) -> Result<bool, String> {
         let (_, item) = self.item_of(id)?;
-        if item.visible == visible {
+        let item = item.id;
+        self.set_item_visible(item, visible)
+            .map_err(|e| e.text().to_owned())
+    }
+
+    /// Locks or unlocks an item (ADR-0059); `Ok(false)` when it already is.
+    fn set_item_locked(&mut self, item: ItemId, locked: bool) -> Result<bool, Refusal> {
+        let (_, found) = self
+            .collection
+            .item(item)
+            .ok_or_else(|| Refusal::NotFound(format!("There is no item {}.", item.get())))?;
+        if found.locked == locked {
             return Ok(false);
         }
-        let item = item.id;
+        let name = self.item_name(found);
+        let undo = self
+            .collection
+            .set_item_locked(item, locked)
+            .map_err(|e| Refusal::of(&e))?;
+        self.history.record(EditKind::Lock, &name, 0, vec![undo]);
+        Ok(true)
+    }
+
+    /// Shows or hides an item; `Ok(false)` when it already is.
+    fn set_item_visible(&mut self, item: ItemId, visible: bool) -> Result<bool, Refusal> {
+        let (_, found) = self
+            .collection
+            .item(item)
+            .ok_or_else(|| Refusal::NotFound(format!("There is no item {}.", item.get())))?;
+        if found.visible == visible {
+            return Ok(false);
+        }
+        let name = self.item_name(found);
         let undo = self
             .collection
             .set_item_visible(item, visible)
-            .map_err(|e| edit_error(&e))?;
-        let name = self.name_of(id);
+            .map_err(|e| Refusal::of(&e))?;
         self.history
             .record(EditKind::Visibility, &name, 0, vec![undo]);
         Ok(true)
+    }
+
+    /// The name of what an item places.
+    fn item_name(&self, item: &SceneItem) -> String {
+        match item.content {
+            ItemContent::Source(id) => self.name_of(id),
+            ItemContent::Scene(id) => self
+                .collection
+                .scene(id)
+                .map(|s| s.name.clone())
+                .unwrap_or_default(),
+            _ => String::new(),
+        }
+    }
+
+    /// A source's volume or mute (ADR-0059): a live control, not on the undo stack,
+    /// sent to the mixer without rebinding. `Ok(false)` when nothing changed.
+    fn set_source_audio(
+        &mut self,
+        id: SourceId,
+        volume: Option<f32>,
+        muted: Option<bool>,
+    ) -> Result<bool, Refusal> {
+        let now = self
+            .collection
+            .source(id)
+            .ok_or_else(|| Refusal::NotFound(format!("There is no source {}.", id.get())))?
+            .audio;
+        let mut changed = false;
+        if let Some(v) = volume.filter(|v| *v != now.volume) {
+            self.collection
+                .set_source_volume(id, v)
+                .map_err(|e| Refusal::of(&e))?;
+            changed = true;
+        }
+        if let Some(m) = muted.filter(|m| *m != now.muted) {
+            self.collection
+                .set_source_muted(id, m)
+                .map_err(|e| Refusal::of(&e))?;
+            changed = true;
+        }
+        if changed {
+            self.studio.set_mix(&self.collection);
+        }
+        Ok(changed)
+    }
+
+    /// Renames a source (one undo step); `Ok(false)` when it has that name.
+    fn rename_source(&mut self, id: SourceId, name: &str) -> Result<bool, Refusal> {
+        let old = self
+            .collection
+            .source(id)
+            .ok_or_else(|| Refusal::NotFound(format!("There is no source {}.", id.get())))?
+            .name
+            .clone();
+        if old == name.trim() {
+            return Ok(false);
+        }
+        let undo = self
+            .collection
+            .rename_source(id, name)
+            .map_err(|e| Refusal::of(&e))?;
+        self.history
+            .record(EditKind::RenameSource, &old, 0, vec![undo]);
+        Ok(true)
+    }
+
+    /// Places a source the collection has on top of the program scene (one step).
+    fn add_existing(&mut self, id: SourceId) -> Result<ItemId, Refusal> {
+        let source = self
+            .collection
+            .source(id)
+            .ok_or_else(|| Refusal::NotFound(format!("There is no source {}.", id.get())))?;
+        let name = source.name.clone();
+        let kind = SourceKind::of(&source.type_id);
+        // The same box as the source has elsewhere, else the whole canvas.
+        let layout = self
+            .collection
+            .placements_of(id)
+            .first()
+            .and_then(|(_, item)| self.collection.item(*item))
+            .map(|(_, i)| *i.layout_on(self.canvas))
+            .unwrap_or_else(|| {
+                let c = self.collection.canvas(self.canvas);
+                let (w, h) = c.map_or((1.0, 1.0), |c| (c.size.width as f32, c.size.height as f32));
+                if kind.is_some_and(SourceKind::is_audio) {
+                    Layout::new([0.0, 0.0], [1.0, 1.0])
+                } else {
+                    Layout::new([0.0, 0.0], [w, h])
+                }
+            });
+        let (item, undo) = self
+            .collection
+            .add_item(self.scene, ItemContent::Source(id), layout, None)
+            .map_err(|e| Refusal::of(&e))?;
+        self.history.record(EditKind::Add, &name, 0, vec![undo]);
+        Ok(item)
+    }
+
+    /// The scenes the canvas may show, in panel order.
+    fn panel_scenes(&self) -> Vec<SceneId> {
+        self.collection
+            .scenes_for(self.canvas)
+            .map(|s| s.id)
+            .collect()
+    }
+
+    /// Adds an empty shared scene (one undo step); it does not go on air.
+    fn add_scene(&mut self, name: Option<&str>) -> Result<SceneId, Refusal> {
+        let name = match name.map(str::trim) {
+            Some(n) if !n.is_empty() => n.to_owned(),
+            Some(_) => return Err(Refusal::Invalid("A scene needs a name.".to_owned())),
+            None => unique_scene_name(&self.collection, "Scene"),
+        };
+        let (id, undo) = self
+            .collection
+            .add_scene(&name, SceneScope::Shared)
+            .map_err(|e| Refusal::of(&e))?;
+        self.history
+            .record(EditKind::AddScene, &name, 0, vec![undo]);
+        Ok(id)
+    }
+
+    /// Removes a scene (one undo step). The last scene the canvas may show stays; the
+    /// scene on air is first switched away from, outside the undo stack (ADR-0059).
+    fn remove_scene(&mut self, id: SceneId) -> Result<(), Refusal> {
+        let name = self
+            .collection
+            .scene(id)
+            .ok_or_else(|| Refusal::NotFound(format!("There is no scene {}.", id.get())))?
+            .name
+            .clone();
+        let panel = self.panel_scenes();
+        let Some(at) = panel.iter().position(|s| *s == id) else {
+            return Err(Refusal::NotFound(format!(
+                "The canvas cannot show the scene {name:?}."
+            )));
+        };
+        if panel.len() < 2 {
+            return Err(Refusal::Conflict(
+                "The last scene cannot be removed.".to_owned(),
+            ));
+        }
+        if self.scene == id {
+            let next = if at > 0 { panel[at - 1] } else { panel[at + 1] };
+            self.switch_scene(next)?;
+        }
+        let undo = self
+            .collection
+            .remove_scene(id)
+            .map_err(|e| Refusal::of(&e))?;
+        self.history
+            .record(EditKind::RemoveScene, &name, 0, vec![undo]);
+        Ok(())
+    }
+
+    /// Renames a scene (one undo step); `Ok(false)` when it has that name.
+    fn rename_scene(&mut self, id: SceneId, name: &str) -> Result<bool, Refusal> {
+        let old = self
+            .collection
+            .scene(id)
+            .ok_or_else(|| Refusal::NotFound(format!("There is no scene {}.", id.get())))?
+            .name
+            .clone();
+        if old == name.trim() {
+            return Ok(false);
+        }
+        let undo = self
+            .collection
+            .rename_scene(id, name)
+            .map_err(|e| Refusal::of(&e))?;
+        self.history
+            .record(EditKind::RenameScene, &old, 0, vec![undo]);
+        Ok(true)
+    }
+
+    /// Puts a scene on air: a live action, not on the undo stack (ADR-0021).
+    /// `Ok(false)` when it is on air already.
+    fn switch_scene(&mut self, id: SceneId) -> Result<bool, Refusal> {
+        if self.collection.scene(id).is_none() {
+            return Err(Refusal::NotFound(format!(
+                "There is no scene {}.",
+                id.get()
+            )));
+        }
+        if self.scene == id {
+            return Ok(false);
+        }
+        self.collection
+            .set_program(self.canvas, Some(id))
+            .map_err(|e| Refusal::of(&e))?;
+        self.scene = id;
+        Ok(true)
+    }
+
+    /// Keeps a program scene on the canvas and [`Host::scene`] on it: after an undo or
+    /// redo removed the scene on air, the first scene the canvas may show goes on air
+    /// (a new one if there is none), outside the undo stack (ADR-0059).
+    fn keep_program(&mut self) {
+        let program = self
+            .collection
+            .canvas(self.canvas)
+            .and_then(|c| c.program)
+            .filter(|s| self.collection.scene(*s).is_some());
+        let scene = match program {
+            Some(s) => s,
+            None => {
+                let first = self.panel_scenes().first().copied();
+                let scene = match first {
+                    Some(s) => s,
+                    None => {
+                        let name = unique_scene_name(&self.collection, "Scene");
+                        match self.collection.add_scene(&name, SceneScope::Shared) {
+                            Ok((s, _)) => s,
+                            Err(_) => return,
+                        }
+                    }
+                };
+                if self
+                    .collection
+                    .set_program(self.canvas, Some(scene))
+                    .is_err()
+                {
+                    return;
+                }
+                scene
+            }
+        };
+        self.scene = scene;
+    }
+
+    /// The scenes and sources as the UI and `scene.list` show them.
+    fn scene_list(&self) -> SceneList {
+        let mut sources: Vec<SourceEntry> = self
+            .collection
+            .sources()
+            .map(|s| SourceEntry {
+                id: s.id,
+                name: s.name.clone(),
+                kind: SourceKind::of(&s.type_id),
+            })
+            .collect();
+        sources.sort_by_key(|s| s.name.to_lowercase());
+        SceneList {
+            scenes: self
+                .collection
+                .scenes_for(self.canvas)
+                .map(|s| SceneRow {
+                    id: s.id,
+                    name: s.name.clone(),
+                })
+                .collect(),
+            program: self.scene,
+            sources,
+        }
     }
 
     fn name_of(&self, id: SourceId) -> String {
@@ -2808,6 +3275,28 @@ impl Host {
     }
 
     /// Runs the edited collection.
+    /// Runs the studio with a change, or says why it was refused.
+    fn answer(&mut self, done: Result<bool, Refusal>, notify: &dyn Fn(Update)) {
+        match done {
+            Ok(true) => self.apply(notify),
+            Ok(false) => {}
+            Err(e) => {
+                notify(Update::Error(e.text().to_owned()));
+                // A switch made before a refused removal is still news.
+                self.publish(notify);
+            }
+        }
+    }
+
+    /// Like [`Host::answer`] for volume and mute, which reached the mixer already.
+    fn answer_live(&mut self, done: Result<bool, Refusal>, notify: &dyn Fn(Update)) {
+        match done {
+            Ok(true) => self.publish(notify),
+            Ok(false) => {}
+            Err(e) => notify(Update::Error(e.text().to_owned())),
+        }
+    }
+
     fn apply(&mut self, notify: &dyn Fn(Update)) {
         match self.studio.update(&self.collection, &self.adapters.sources) {
             Ok(u) => {
@@ -2829,6 +3318,16 @@ impl Host {
     fn publish(&mut self, notify: &dyn Fn(Update)) {
         self.publish_save();
         self.refresh_sizes();
+        let scenes = self.scene_list();
+        if self.scenes_shown.as_ref() != Some(&scenes) {
+            self.scenes_shown = Some(scenes.clone());
+            let listed = api_scenes(&scenes);
+            self.events
+                .changed(StateKey::topic(Topic::SceneChanged), || {
+                    EventPayload::SceneChanged(listed)
+                });
+            notify(Update::Scenes(scenes));
+        }
         let rows = self.rows();
         if rows != self.rows {
             self.rows = rows.clone();
@@ -2890,6 +3389,8 @@ impl Host {
                         .flatten(),
                     picture: self.sizes.get(&s.id).copied(),
                     visible: item.visible,
+                    locked: item.locked,
+                    audio: s.audio,
                     status,
                 }
             })
@@ -3103,6 +3604,93 @@ impl ApiTarget<'_> {
                 host.delete(id).map_err(failed)?;
                 host.apply(notify);
                 notify(Update::Deleted(name));
+                Ok(Response::Done(Empty {}))
+            }
+            C::SceneList => Ok(Response::Scenes(api::Snapshot {
+                seq: host.events.seq_map([Topic::SceneChanged]),
+                data: api_scenes(&host.scene_list()),
+            })),
+            C::SceneAdd(p) => {
+                let name = p.name.as_deref();
+                let id = host.add_scene(name).map_err(|e| refused(&e))?;
+                host.apply(notify);
+                Ok(Response::SceneAdded(SceneAdded { scene: id.get() }))
+            }
+            C::SceneRemove(p) => {
+                let done = host.remove_scene(SceneId::from_raw(p.scene));
+                // A switch made before a refusal still reaches the studio.
+                host.apply(notify);
+                done.map_err(|e| refused(&e))?;
+                Ok(Response::Done(Empty {}))
+            }
+            C::SceneRename(p) => {
+                let changed = host
+                    .rename_scene(SceneId::from_raw(p.scene), &p.name)
+                    .map_err(|e| refused(&e))?;
+                if changed {
+                    host.apply(notify);
+                }
+                Ok(Response::Done(Empty {}))
+            }
+            C::SceneSwitch(p) => {
+                let changed = host
+                    .switch_scene(SceneId::from_raw(p.scene))
+                    .map_err(|e| refused(&e))?;
+                if changed {
+                    host.apply(notify);
+                }
+                Ok(Response::Done(Empty {}))
+            }
+            C::SourceRename(p) => {
+                let changed = host
+                    .rename_source(SourceId::from_raw(p.source), &p.name)
+                    .map_err(|e| refused(&e))?;
+                if changed {
+                    host.apply(notify);
+                }
+                Ok(Response::Done(Empty {}))
+            }
+            C::SourceSetVolume(p) => {
+                let changed = host
+                    .set_source_audio(SourceId::from_raw(p.source), Some(p.volume), None)
+                    .map_err(|e| refused(&e))?;
+                if changed {
+                    host.publish(notify);
+                }
+                Ok(Response::Done(Empty {}))
+            }
+            C::SourceSetMuted(p) => {
+                let changed = host
+                    .set_source_audio(SourceId::from_raw(p.source), None, Some(p.muted))
+                    .map_err(|e| refused(&e))?;
+                if changed {
+                    host.publish(notify);
+                }
+                Ok(Response::Done(Empty {}))
+            }
+            C::ItemAdd(p) => {
+                let item = host
+                    .add_existing(SourceId::from_raw(p.source))
+                    .map_err(|e| refused(&e))?;
+                host.apply(notify);
+                Ok(Response::ItemAdded(ItemAdded { item: item.get() }))
+            }
+            C::ItemSetVisible(p) => {
+                let changed = host
+                    .set_item_visible(ItemId::from_raw(p.item), p.visible)
+                    .map_err(|e| refused(&e))?;
+                if changed {
+                    host.apply(notify);
+                }
+                Ok(Response::Done(Empty {}))
+            }
+            C::ItemSetLocked(p) => {
+                let changed = host
+                    .set_item_locked(ItemId::from_raw(p.item), p.locked)
+                    .map_err(|e| refused(&e))?;
+                if changed {
+                    host.apply(notify);
+                }
                 Ok(Response::Done(Empty {}))
             }
             C::ItemSetCrop(p) => {
@@ -3570,6 +4158,10 @@ fn api_source(row: &SourceRow) -> api::SourceInfo {
             style: api_style(&l.style),
         }),
         picture_size: row.picture.map(|(w, h)| [w, h]),
+        visible: row.visible,
+        locked: row.locked,
+        volume: row.audio.volume,
+        muted: row.audio.muted,
         id: row.id.get(),
         name: row.name.clone(),
         kind: row.kind.map(api_kind),
@@ -3581,6 +4173,43 @@ fn api_source(row: &SourceRow) -> api::SourceInfo {
             },
         },
     }
+}
+
+/// `scene.list` and `scene.changed` (protocol 1.6).
+fn api_scenes(list: &SceneList) -> api::SceneList {
+    api::SceneList {
+        scenes: list
+            .scenes
+            .iter()
+            .map(|s| api::SceneInfo {
+                id: s.id.get(),
+                name: s.name.clone(),
+            })
+            .collect(),
+        program: list.program.get(),
+        sources: list
+            .sources
+            .iter()
+            .map(|s| api::SourceEntry {
+                id: s.id.get(),
+                name: s.name.clone(),
+                kind: s.kind.map(api_kind),
+            })
+            .collect(),
+    }
+}
+
+/// A control API error for a refused edit.
+fn refused(e: &Refusal) -> ApiError {
+    ApiError::new(
+        match e {
+            Refusal::NotFound(_) => ErrorKind::NotFound,
+            Refusal::Invalid(_) => ErrorKind::InvalidParams,
+            Refusal::Conflict(_) => ErrorKind::Conflict,
+            Refusal::Failed(_) => ErrorKind::Failed,
+        },
+        e.text(),
+    )
 }
 
 /// A registry with only the encoder `id` of `all`, probed.
@@ -3610,6 +4239,18 @@ fn os_name() -> &'static str {
 }
 
 /// `base`, or `base 2`, `base 3`... whichever no source has yet.
+/// `base`, else `base 2`, `base 3`, ...: the first name no scene has.
+fn unique_scene_name(collection: &SceneCollection, base: &str) -> String {
+    let taken = |n: &str| collection.scenes().any(|s| s.name == n);
+    if !taken(base) {
+        return base.to_owned();
+    }
+    (2..)
+        .map(|i| format!("{base} {i}"))
+        .find(|n| !taken(n))
+        .unwrap_or_else(|| base.to_owned())
+}
+
 fn unique_name(collection: &SceneCollection, base: &str) -> String {
     let base = if base.trim().is_empty() {
         "Source"

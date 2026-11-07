@@ -94,6 +94,31 @@ fn source() -> SourceInfo {
             style: style(),
         }),
         picture_size: Some([1920, 1080]),
+        visible: false,
+        locked: true,
+        volume: 0.5,
+        muted: true,
+    }
+}
+
+fn scenes() -> SceneList {
+    SceneList {
+        scenes: vec![
+            SceneInfo {
+                id: 0,
+                name: "Talk".into(),
+            },
+            SceneInfo {
+                id: 2,
+                name: "Game".into(),
+            },
+        ],
+        program: 2,
+        sources: vec![SourceEntry {
+            id: 3,
+            name: "Camera".into(),
+            kind: Some(SourceKind::Camera),
+        }],
     }
 }
 
@@ -144,6 +169,35 @@ fn every_request() -> Vec<Request> {
             item: 7,
             crop: [760, 180, 760, 180],
             keep_scale: false,
+        })),
+        c(Command::SceneList),
+        c(Command::SceneAdd(AddScene { name: None })),
+        c(Command::SceneRemove(SceneRef { scene: 2 })),
+        c(Command::SceneRename(RenameScene {
+            scene: 2,
+            name: "Game".into(),
+        })),
+        c(Command::SceneSwitch(SceneRef { scene: 0 })),
+        c(Command::SourceRename(RenameSource {
+            source: 3,
+            name: "Webcam".into(),
+        })),
+        c(Command::SourceSetVolume(SetSourceVolume {
+            source: 3,
+            volume: 0.25,
+        })),
+        c(Command::SourceSetMuted(SetSourceMuted {
+            source: 3,
+            muted: true,
+        })),
+        c(Command::ItemAdd(AddItem { source: 3 })),
+        c(Command::ItemSetVisible(SetItemVisible {
+            item: 7,
+            visible: false,
+        })),
+        c(Command::ItemSetLocked(SetItemLocked {
+            item: 7,
+            locked: true,
         })),
         c(Command::EditUndo),
         c(Command::EditRedo),
@@ -350,6 +404,7 @@ fn every_result_and_event_type_round_trips() {
     round_trip(&ApiError::new(ErrorKind::UndoConflict, "x"));
     for payload in [
         EventPayload::SourceChanged(vec![source()]),
+        EventPayload::SceneChanged(scenes()),
         EventPayload::RecordState(RecordState::Recording {
             profile: Some("default".into()),
             video_encoder: "VT".into(),
@@ -589,4 +644,37 @@ fn set_crop_keeps_the_scale_unless_told_and_refuses_unknown_keys() {
             .is_err()
     );
     assert!(serde_json::from_value::<SetItemCrop>(json!({"item": 7, "crop": [0, 0, 0]})).is_err());
+}
+
+#[test]
+fn scenes_lock_and_volume_are_a_minor_addition() {
+    // A 1.5 row reads as shown, unlocked, at full volume, not muted.
+    let old: SourceInfo = serde_json::from_value(json!({
+        "id": 1, "name": "Mic", "kind": "audio_input", "status": {"state": "running"}
+    }))
+    .unwrap();
+    assert!(old.visible && !old.locked && !old.muted);
+    assert!((old.volume - 1.0).abs() < f32::EPSILON);
+    round_trip(&source());
+    round_trip(&Snapshot {
+        seq: SeqMap::new(),
+        data: scenes(),
+    });
+    round_trip(&SceneAdded { scene: 4 });
+    round_trip(&ItemAdded { item: 9 });
+    let add: Request =
+        serde_json::from_value(json!({"method": "scene.add", "params": {}})).unwrap();
+    assert_eq!(
+        add,
+        Request::Command(Command::SceneAdd(AddScene { name: None }))
+    );
+    assert_eq!(add.scope(), Some(Scope::Control));
+    let list: Request =
+        serde_json::from_value(json!({"method": "scene.list", "params": {}})).unwrap();
+    assert_eq!(list.scope(), Some(Scope::Read));
+    assert!(
+        serde_json::from_value::<SetItemLocked>(json!({"item": 1, "locked": true, "x": 0}))
+            .is_err()
+    );
+    assert!(serde_json::from_value::<SetSourceVolume>(json!({"source": 1})).is_err());
 }

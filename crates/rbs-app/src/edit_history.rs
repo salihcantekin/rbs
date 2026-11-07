@@ -35,9 +35,20 @@ pub enum EditKind {
     Crop,
     /// A source was shown or hidden in the scene.
     Visibility,
+    /// A source was locked or unlocked (ADR-0059).
+    Lock,
+    /// A source was renamed (the name is the old one).
+    RenameSource,
+    /// A scene was added (the name is the scene's).
+    AddScene,
+    /// A scene was removed.
+    RemoveScene,
+    /// A scene was renamed (the name is the old one).
+    RenameScene,
 }
 
-/// The step the next undo or redo applies: its kind and the source's name.
+/// The step the next undo or redo applies: its kind and the name of the source or
+/// scene it changed.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StepInfo {
     /// What it did.

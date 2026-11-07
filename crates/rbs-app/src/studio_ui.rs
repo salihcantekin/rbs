@@ -17,15 +17,17 @@ use rbs_app::remote_control::{NetworkOptions, RemoteOptions, RemoteServer};
 use rbs_app::stream_key::{self, KeyStore};
 use rbs_app::stream_profile::{self, SRT_DEFAULT_LATENCY_MS, SRT_LATENCIES_MS, StreamProfile};
 use rbs_app::studio_host::{
-    Command, CropRegion, EncoderInfo, EncoderOptions, RecordRequest, RecordingUpdate, SourceKind,
-    SourceRow, SourceStatus, Stats, StreamRequest, StreamUpdate, StudioHost, Target, Update,
+    Command, CropRegion, EncoderInfo, EncoderOptions, RecordRequest, RecordingUpdate, SceneList,
+    SourceKind, SourceRow, SourceStatus, Stats, StreamRequest, StreamUpdate, StudioHost, Target,
+    Update,
 };
 use rbs_app::user_session::{RECORDING, STREAM, UserSession};
 use rbs_audio::LevelMeter;
 use rbs_record::Link;
 use rbs_remote_settings::{self as remote_profile, Access, RemoteProfile};
-use rbs_scene::model::{Border, ItemStyle, Shape, SourceId};
+use rbs_scene::model::{Border, ItemStyle, SceneId, Shape, SourceId};
 use rbs_transport::Secret;
+use rbs_ui::fader;
 use rbs_ui::meter::{self, Meter, SCALE_MARKS_DB};
 use rbs_ui::transform::{DragKeys, MAX_MARKS, Mark, MarkKind, SourceBox};
 use rbs_user_data::EntryId;
@@ -33,8 +35,8 @@ use slint::{Model, ModelRc, SharedString, VecModel};
 
 use crate::preview_edit::{Effect, Placed, PreviewEdit};
 use crate::ui::{
-    EncoderData, EntryRow, KindData, MarkData, MeterRow, ScaleMark, SourceData, StackData, StatRow,
-    Studio, TargetData, TokenRow,
+    EncoderData, EntryRow, ExistingData, KindData, MarkData, MeterRow, ScaleMark, SceneData,
+    SourceData, StackData, StatRow, Studio, TargetData, TokenRow,
 };
 
 /// Meter refresh while the Mixer is visible (U16: 30 Hz).
@@ -103,6 +105,10 @@ pub struct StudioUi {
     pub failure: String,
     rows: Vec<SourceRow>,
     sources: Rc<VecModel<SourceData>>,
+    /// The scenes and sources as the host last sent them (ADR-0059).
+    scene_list: Option<SceneList>,
+    scenes: Rc<VecModel<SceneData>>,
+    existing: Rc<VecModel<ExistingData>>,
     /// The selected source's id (-1 none), shown in every window's Properties.
     pub selected: i32,
     /// An Add source is on its way: the next new source is selected.
@@ -285,6 +291,9 @@ impl StudioUi {
             failure: String::new(),
             rows: Vec::new(),
             sources: Rc::new(VecModel::default()),
+            scene_list: None,
+            scenes: Rc::new(VecModel::default()),
+            existing: Rc::new(VecModel::default()),
             selected: -1,
             adding: false,
             edit: PreviewEdit::default(),
@@ -370,6 +379,8 @@ impl StudioUi {
     /// Gives a window's `Studio` global the shared models (once per window).
     pub fn attach_models(&self, g: &Studio<'_>) {
         g.set_sources(ModelRc::from(self.sources.clone()));
+        g.set_scenes(ModelRc::from(self.scenes.clone()));
+        g.set_existing(ModelRc::from(self.existing.clone()));
         g.set_marks(ModelRc::from(self.marks.clone()));
         g.set_kinds(ModelRc::from(self.kinds.clone()));
         g.set_targets(ModelRc::from(self.targets.clone()));
@@ -1100,6 +1111,90 @@ impl StudioUi {
         self.send(Command::DeleteSource(SourceId::from_raw(id as u32)));
     }
 
+    /// Lock or unlock a source on the picture panel (the Sources row's lock button).
+    pub fn set_source_locked(&mut self, id: i32, locked: bool) {
+        self.deleted.clear();
+        self.send(Command::SetSourceLocked {
+            id: SourceId::from_raw(id as u32),
+            locked,
+        });
+    }
+
+    /// Mute or unmute a source's sound (the Mixer row's speaker, Properties' Mute).
+    pub fn set_source_muted(&mut self, id: i32, muted: bool) {
+        self.send(Command::SetSourceMuted {
+            id: SourceId::from_raw(id as u32),
+            muted,
+        });
+    }
+
+    /// A source's volume from the fader position (0 to 1, ADR-0059 fader law). Each
+    /// pointer move sends one change; the host sends it on to the mixer at once.
+    pub fn set_source_volume(&mut self, id: i32, position: f32) {
+        self.send(Command::SetSourceVolume {
+            id: SourceId::from_raw(id as u32),
+            volume: fader::volume_at(position),
+        });
+    }
+
+    pub fn rename_source(&mut self, id: i32, name: &str) {
+        self.deleted.clear();
+        self.send(Command::RenameSource {
+            id: SourceId::from_raw(id as u32),
+            name: name.to_owned(),
+        });
+    }
+
+    /// Places a source of another scene into the scene on air (Add source, Existing
+    /// source); it is selected once it is there.
+    pub fn add_existing_source(&mut self, id: i32) {
+        self.deleted.clear();
+        self.adding = true;
+        self.send(Command::AddExistingSource(SourceId::from_raw(id as u32)));
+    }
+
+    /// Puts a scene on air (a click in the Scenes panel).
+    pub fn switch_scene(&mut self, id: i32) {
+        self.send(Command::SwitchScene(SceneId::from_raw(id as u32)));
+    }
+
+    pub fn add_scene(&mut self) {
+        self.deleted.clear();
+        self.send(Command::AddScene(None));
+    }
+
+    pub fn remove_scene(&mut self, id: i32) {
+        self.deleted.clear();
+        self.send(Command::RemoveScene(SceneId::from_raw(id as u32)));
+    }
+
+    pub fn rename_scene(&mut self, id: i32, name: &str) {
+        self.deleted.clear();
+        self.send(Command::RenameScene {
+            id: SceneId::from_raw(id as u32),
+            name: name.to_owned(),
+        });
+    }
+
+    /// The sources Add source can place again: those of the collection the scene on
+    /// air does not have yet.
+    fn refresh_existing(&mut self) {
+        let Some(list) = &self.scene_list else {
+            return;
+        };
+        let data: Vec<ExistingData> = list
+            .sources
+            .iter()
+            .filter(|s| !self.rows.iter().any(|r| r.id == s.id))
+            .map(|s| ExistingData {
+                id: s.id.get() as i32,
+                name: s.name.as_str().into(),
+                icon: source_icon(s.kind).into(),
+            })
+            .collect();
+        set_rows(&self.existing, data);
+    }
+
     /// One layer up (drawn over the source above it in the list) or down.
     /// Show or hide a source in the program scene (the Sources row's eye button).
     pub fn set_source_visible(&mut self, id: i32, visible: bool) {
@@ -1232,7 +1327,8 @@ impl StudioUi {
         let mut v: Vec<Placed> = self
             .sources
             .iter()
-            .filter(|d| d.picture)
+            // Locked sources are not picked or moved on the picture panel (ADR-0059).
+            .filter(|d| d.picture && !d.locked)
             .map(|d| Placed {
                 id: d.id,
                 at: SourceBox::new([d.x, d.y], [d.w, d.h]),
@@ -2429,7 +2525,24 @@ impl StudioUi {
             }
             Update::Sources(rows) => {
                 self.set_rows(rows);
+                self.refresh_existing();
                 self.refresh_marks();
+            }
+            Update::Scenes(list) => {
+                let data: Vec<SceneData> = list
+                    .scenes
+                    .iter()
+                    .enumerate()
+                    .map(|(i, s)| SceneData {
+                        id: s.id.get() as i32,
+                        name: s.name.as_str().into(),
+                        live: s.id == list.program,
+                        number: i as i32 + 1,
+                    })
+                    .collect();
+                set_rows(&self.scenes, data);
+                self.scene_list = Some(list);
+                self.refresh_existing();
             }
             Update::Targets(kind, list) => {
                 self.targets_kind = SourceKind::ALL
@@ -2640,6 +2753,11 @@ impl StudioUi {
                     crop_b: crop.bottom as i32,
                     pic_w: r.picture.map_or(0, |p| p.0 as i32),
                     pic_h: r.picture.map_or(0, |p| p.1 as i32),
+                    locked: r.locked,
+                    audio: r.kind.is_some_and(SourceKind::is_audio),
+                    muted: r.audio.muted,
+                    volume: fader::position_of(r.audio.volume),
+                    volume_text: fader::volume_text(r.audio.volume).into(),
                 }
             })
             .collect();
@@ -2673,6 +2791,8 @@ impl StudioUi {
             .iter()
             .filter(|r| r.meter.is_some())
             .map(|r| MeterRow {
+                id: r.id.get() as i32,
+                muted: r.audio.muted,
                 name: r.name.as_str().into(),
                 icon: source_icon(r.kind).into(),
                 value: "silent".into(),
@@ -2938,7 +3058,8 @@ fn source_icon(kind: Option<SourceKind>) -> &'static str {
 
 /// The Studio global's `undo-kind` / `redo-kind` code and the source's name for a
 /// step: 0 nothing, 1 add, 2 delete, 3 layer order, 4 move or resize, 5 shape or
-/// border, 6 crop, 7 shown or hidden.
+/// border, 6 crop, 7 shown or hidden, 8 lock, 9 source rename, 10 scene added, 11
+/// scene removed, 12 scene renamed (the name is the scene's, or the old name).
 fn step_view(step: Option<&StepInfo>) -> (i32, &str) {
     match step {
         None => (0, ""),
@@ -2951,6 +3072,11 @@ fn step_view(step: Option<&StepInfo>) -> (i32, &str) {
                 EditKind::Style => 5,
                 EditKind::Crop => 6,
                 EditKind::Visibility => 7,
+                EditKind::Lock => 8,
+                EditKind::RenameSource => 9,
+                EditKind::AddScene => 10,
+                EditKind::RemoveScene => 11,
+                EditKind::RenameScene => 12,
             },
             s.name.as_str(),
         ),
