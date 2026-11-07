@@ -7,9 +7,10 @@ import { SettingsNavItem, SettingsNavGroup, SettingsHeader } from "settings.slin
 import { Appearance, AppearanceSettings, ThemeOption, ThemeTokenRow } from "appearance.slint";
 import { Shortcuts, ShortcutsSettings, ShortcutRow, ShortcutChip } from "shortcuts.slint";
 import { ContextMenus, ContextItem, ContextChoice } from "context_menu.slint";
+import { AppMenus, AppMenuRow, AppMenuChip, AppMenu, AppMenuButton } from "app_menu.slint";
 import { Studio, EntryRow, SourceData, FilterData, FilterFieldData, MarkData, KindData, TargetData, MeterRow, ScaleMark, EncoderData, ProgramPanel, ScenesPanel, SourcesPanel, PropertiesPanel, MixerPanel, LiveControlsPanel, TransitionPanel, OutputsPanel, StatsPanel, RecordingSettings, StreamSettings, VideoSettings, RemoteControlSettings, GeneralSettings, GlobalSourcesSettings } from "studio.slint";
 
-export { ContextMenus, ContextItem, ContextChoice, Theme, Tokens, Appearance, ThemeOption, ThemeTokenRow, Shortcuts, ShortcutRow, ShortcutChip, Studio, EntryRow, SourceData, FilterData, FilterFieldData, MarkData, KindData, TargetData, MeterRow, ScaleMark, EncoderData }
+export { AppMenus, AppMenuRow, AppMenuChip, ContextMenus, ContextItem, ContextChoice, Theme, Tokens, Appearance, ThemeOption, ThemeTokenRow, Shortcuts, ShortcutRow, ShortcutChip, Studio, EntryRow, SourceData, FilterData, FilterFieldData, MarkData, KindData, TargetData, MeterRow, ScaleMark, EncoderData }
 
 export struct TabData { id: string, title: string, known: bool, icon: string }
 export struct StackData { window: int, stack: int, x: length, y: length, w: length, h: length, tabs: [TabData], active: int, collapsed: bool, can-collapse: bool, can-hide: bool }
@@ -56,6 +57,12 @@ export global Menus {
 }
 
 export global Shell {
+    // The menu bar shows: macOS's system menu bar. Windows and Linux use the RBS menu
+    // (ADR-0069). A binding, so every window (main and floating) gets it.
+    out property <bool> native-menu-bar: Platform.os == OperatingSystemType.macos;
+    // Counts `ui.app_menu.open` runs and F10 presses: each opens the RBS menu with its
+    // search field.
+    in-out property <int> app-menu-asked;
     // 0 not live, 1 live, 2 recording, 3 live and recording.
     in property <int> live-state;
     in property <string> live-duration;
@@ -1044,6 +1051,11 @@ component FrameBar inherits Rectangle {
         padding-top: Tokens.space-1;
         padding-bottom: Tokens.space-1;
         spacing: Tokens.space-2;
+        // The RBS menu (spec, "RBS menu"): every command, with search. Part of the
+        // frame, not a toolbar item, so it cannot be removed.
+        rbs := AppMenuButton {
+            clicked => { root.open-app-menu(); }
+        }
         // The workspace's toolbar items (ADR-0050); hidden, the row stays with the
         // live indicator at its right end.
         for item in Shell.toolbar-visible ? Shell.toolbar : []: ToolbarCell {
@@ -1107,6 +1119,13 @@ component FrameBar inherits Rectangle {
         x: root.ws-menu-x;
         y: parent.height;
     }
+    app-menu := AppMenu {
+        x: Tokens.space-2;
+        y: parent.height;
+    }
+    function open-app-menu() { app-menu.show(); }
+    property <int> asked: Shell.app-menu-asked;
+    changed asked => { open-app-menu(); }
 }
 
 // A status bar item that opens a menu: "<label> <value>".
@@ -1277,7 +1296,7 @@ export component MainWindow inherits Window {
     in property <[HandleData]> handles;
     forward-focus: edit-keys;
     // BEGIN generated menu bar (menu_bar.rs; do not edit)
-    MenuBar {
+    if Shell.native-menu-bar: MenuBar {
         Menu {
             title: @tr("File");
             Menu {
@@ -1314,8 +1333,8 @@ export component MainWindow inherits Window {
             MenuItem { title: Menus.titles[8]; icon: Menus.icons[8]; enabled: Menus.enabled[8]; checkable: true; checked: Menus.checked[8]; activated => { Menus.run("ui.area.toggle?area=bottom"); } }
             MenuItem { title: Menus.titles[9]; icon: Menus.icons[9]; enabled: Menus.enabled[9]; activated => { Menus.run("ui.area.hide_all"); } }
             MenuItem { title: Menus.titles[10]; icon: Menus.icons[10]; enabled: Menus.enabled[10]; activated => { Menus.run("ui.area.show_all"); } }
-            MenuSeparator { }
             MenuItem { title: Menus.titles[11]; icon: Menus.icons[11]; enabled: Menus.enabled[11]; activated => { Menus.run("ui.layout.reset_sizes"); } }
+            MenuSeparator { }
             MenuItem { title: Menus.titles[12]; icon: Menus.icons[12]; enabled: Menus.enabled[12]; activated => { Menus.run("ui.toolbar.reset"); } }
             MenuSeparator { }
             MenuItem { title: Menus.titles[13]; icon: Menus.icons[13]; enabled: Menus.enabled[13]; activated => { Menus.run("ui.theme.reload"); } }
@@ -1328,7 +1347,6 @@ export component MainWindow inherits Window {
                 enabled: Menus.enabled[14];
                 for c in Menus.choices[3]: MenuItem { title: c.title; checkable: true; checked: c.checked; activated => { Menus.run(c.id); } }
             }
-            MenuSeparator { }
             MenuItem { title: Menus.titles[15]; icon: Menus.icons[15]; enabled: Menus.enabled[15]; activated => { Menus.run("scene.previous"); } }
             MenuItem { title: Menus.titles[16]; icon: Menus.icons[16]; enabled: Menus.enabled[16]; activated => { Menus.run("scene.next"); } }
             MenuSeparator { }
@@ -1372,6 +1390,10 @@ export component MainWindow inherits Window {
             MenuSeparator { }
             MenuItem { title: Menus.titles[32]; icon: Menus.icons[32]; enabled: Menus.enabled[32]; checkable: true; checked: Menus.checked[32]; activated => { Menus.run("ui.panel.maximize?id=rbs.preview"); } }
         }
+        Menu {
+            title: @tr("Help");
+            MenuItem { title: Menus.titles[33]; icon: Menus.icons[33]; enabled: Menus.enabled[33]; activated => { Menus.run("ui.app_menu.open"); } }
+        }
     }
     // END generated menu bar
     // Shortcuts (ADR-0060): keys a focused control does not take come up here, and a
@@ -1385,6 +1407,11 @@ export component MainWindow inherits Window {
             // (ADR-0056); reserved there, free on Windows.
             if Studio.platform == 0 && e.modifiers.control && !e.modifiers.shift && !e.modifiers.alt && !e.modifiers.meta && (e.text == "w" || e.text == "W") {
                 Shell.close-main();
+                return accept;
+            }
+            // F10 opens the RBS menu where it replaces the menu bar (Windows, Linux).
+            if !Shell.native-menu-bar && e.text == Key.F10 && !e.modifiers.control && !e.modifiers.alt && !e.modifiers.shift && !e.modifiers.meta {
+                Shell.app-menu-asked += 1;
                 return accept;
             }
             if Shortcuts.press(e.text, e.modifiers.control, e.modifiers.alt, e.modifiers.shift, e.modifiers.meta, e.repeat) { return accept; }
@@ -1506,7 +1533,7 @@ export component FloatWindow inherits Window {
     title: @tr("RBS – {}", panel-names);
     forward-focus: edit-keys;
     // BEGIN generated menu bar (menu_bar.rs; do not edit)
-    MenuBar {
+    if Shell.native-menu-bar: MenuBar {
         Menu {
             title: @tr("File");
             Menu {
@@ -1543,8 +1570,8 @@ export component FloatWindow inherits Window {
             MenuItem { title: Menus.titles[8]; icon: Menus.icons[8]; enabled: Menus.enabled[8]; checkable: true; checked: Menus.checked[8]; activated => { Menus.run("ui.area.toggle?area=bottom"); } }
             MenuItem { title: Menus.titles[9]; icon: Menus.icons[9]; enabled: Menus.enabled[9]; activated => { Menus.run("ui.area.hide_all"); } }
             MenuItem { title: Menus.titles[10]; icon: Menus.icons[10]; enabled: Menus.enabled[10]; activated => { Menus.run("ui.area.show_all"); } }
-            MenuSeparator { }
             MenuItem { title: Menus.titles[11]; icon: Menus.icons[11]; enabled: Menus.enabled[11]; activated => { Menus.run("ui.layout.reset_sizes"); } }
+            MenuSeparator { }
             MenuItem { title: Menus.titles[12]; icon: Menus.icons[12]; enabled: Menus.enabled[12]; activated => { Menus.run("ui.toolbar.reset"); } }
             MenuSeparator { }
             MenuItem { title: Menus.titles[13]; icon: Menus.icons[13]; enabled: Menus.enabled[13]; activated => { Menus.run("ui.theme.reload"); } }
@@ -1557,7 +1584,6 @@ export component FloatWindow inherits Window {
                 enabled: Menus.enabled[14];
                 for c in Menus.choices[3]: MenuItem { title: c.title; checkable: true; checked: c.checked; activated => { Menus.run(c.id); } }
             }
-            MenuSeparator { }
             MenuItem { title: Menus.titles[15]; icon: Menus.icons[15]; enabled: Menus.enabled[15]; activated => { Menus.run("scene.previous"); } }
             MenuItem { title: Menus.titles[16]; icon: Menus.icons[16]; enabled: Menus.enabled[16]; activated => { Menus.run("scene.next"); } }
             MenuSeparator { }
@@ -1600,6 +1626,10 @@ export component FloatWindow inherits Window {
             }
             MenuSeparator { }
             MenuItem { title: Menus.titles[32]; icon: Menus.icons[32]; enabled: Menus.enabled[32]; checkable: true; checked: Menus.checked[32]; activated => { Menus.run("ui.panel.maximize?id=rbs.preview"); } }
+        }
+        Menu {
+            title: @tr("Help");
+            MenuItem { title: Menus.titles[33]; icon: Menus.icons[33]; enabled: Menus.enabled[33]; activated => { Menus.run("ui.app_menu.open"); } }
         }
     }
     // END generated menu bar
