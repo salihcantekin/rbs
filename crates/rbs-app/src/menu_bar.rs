@@ -268,6 +268,28 @@ impl CommandState for Shown<'_> {
                 }
             }
             "source.add" => self.running(),
+            "scene.select" => {
+                self.running()?;
+                match id.param("collection") {
+                    Some(c) if s.current_collection().as_deref() != Some(c) => {
+                        Err("In another scene collection.".to_owned())
+                    }
+                    _ => Ok(()),
+                }
+            }
+            "scene.position" => {
+                self.running()?;
+                scene_position(id)
+                    .and_then(|n| s.scene_at(n))
+                    .map(|_| ())
+                    .ok_or_else(|| "No scene is at this position.".to_owned())
+            }
+            "scene.next" | "scene.previous" => {
+                self.running()?;
+                s.scene_step(1)
+                    .map(|_| ())
+                    .ok_or_else(|| "There is only one scene.".to_owned())
+            }
             "ui.panel.maximize" => match panel_of(id) {
                 Some(p) if self.workspace.is_open(&p) => Ok(()),
                 _ => Err("The panel is not open.".to_owned()),
@@ -331,6 +353,7 @@ impl CommandState for Shown<'_> {
             "ui.panel.select" => self.panels.clone(),
             "profile.select" => self.studio.library_choices(false),
             "collection.select" => self.studio.library_choices(true),
+            "scene.select" => self.studio.scene_choices(),
             "source.add" => self
                 .studio
                 .kind_codes()
@@ -343,6 +366,17 @@ impl CommandState for Shown<'_> {
             _ => Vec::new(),
         }
     }
+
+    fn context(&self, id: &CommandId) -> Vec<(&'static str, String)> {
+        match (id.base(), self.studio.current_collection()) {
+            ("scene.select", Some(c)) => vec![("collection", c)],
+            _ => Vec::new(),
+        }
+    }
+}
+
+fn scene_position(id: &CommandId) -> Option<usize> {
+    id.param("n")?.parse().ok()
 }
 
 /// One toolbar item as the frame draws it.
@@ -478,6 +512,8 @@ pub enum Run {
     Profile(String),
     /// Run the scene collection with this id.
     Collection(String),
+    /// Put the scene with this id on air.
+    Scene(i32),
     /// A layout change.
     Layout(rbs_ui::LayoutCommand),
     /// Maximize the panel (`true`) or restore the layout.
@@ -513,6 +549,7 @@ pub fn run(text: &str, state: &Shown<'_>) -> Option<Run> {
             "ui.panel.select" => Run::Panel(value),
             "profile.select" => Run::Profile(value),
             "collection.select" => Run::Collection(value),
+            "scene.select" => Run::Scene(value.parse().ok()?),
             _ => return None,
         });
     }
@@ -529,6 +566,9 @@ pub fn run(text: &str, state: &Shown<'_>) -> Option<Run> {
         "ui.layout.reset_sizes" => Run::Layout(L::ResetSizes),
         "ui.toolbar.reset" => Run::Layout(L::ResetToolbar),
         "ui.panel.maximize" => Run::Maximize(panel_of(&id)?, !on),
+        "scene.position" => Run::Scene(state.studio.scene_at(scene_position(&id)?)?),
+        "scene.next" => Run::Scene(state.studio.scene_step(1)?),
+        "scene.previous" => Run::Scene(state.studio.scene_step(-1)?),
         "stream.toggle" if on => Run::AskEndStream,
         "stream.toggle" => Run::GoLive,
         "record.toggle" if on => Run::StopRecording,

@@ -88,6 +88,9 @@ rbs-audio-io-test = { path = "../rbs-audio-io-test", optional = true }
 # objc2 and windows-sys already bring; Linux has no dialog in RBS until a Linux machine
 # is available to test one (xdg portal).
 rfd = { version = "0.17.2", default-features = false }
+# Global shortcuts (src/hotkeys.rs, ADR-0060 decision 7): Carbon RegisterEventHotKey on
+# macOS, RegisterHotKey on Windows. From the project of muda and tray-icon.
+global-hotkey = "=0.9.0"
 
 [target.'cfg(windows)'.dependencies]
 # The tray icon while RBS keeps running without a window (src/win, ADR-0056 decision 9).

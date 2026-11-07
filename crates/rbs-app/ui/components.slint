@@ -995,3 +995,39 @@ export component NumberField inherits Rectangle {
     property <bool> focused: input.has-focus;
     changed focused => { if !focused { root.commit(); } }
 }
+
+// KeyboardShortcutHint (design system): a chord shown as a key chip, for example in
+// Settings › Shortcuts and menus. `tag` adds a small second text ("Global").
+export component KeyboardShortcutHint inherits Rectangle {
+    in property <string> keys;
+    in property <string> tag;
+    height: Tokens.size-control-sm;
+    min-width: row.preferred-width;
+    border-radius: Tokens.radius-sm;
+    border-width: Tokens.size-border;
+    border-color: Theme.border-strong;
+    background: Theme.surface-sunken;
+    accessible-role: text;
+    accessible-label: tag == "" ? keys : keys + ", " + tag;
+    row := HorizontalLayout {
+        padding-left: Tokens.space-2;
+        padding-right: Tokens.space-2;
+        spacing: Tokens.space-1;
+        Text {
+            text: root.keys;
+            color: Theme.text-primary;
+            font-size: Tokens.type-label-size;
+            font-weight: Tokens.type-label-weight;
+            vertical-alignment: center;
+            accessible-role: none;
+        }
+        if root.tag != "": Text {
+            text: root.tag;
+            color: Theme.accent;
+            font-size: Tokens.type-caption-size;
+            font-weight: Tokens.type-label-weight;
+            vertical-alignment: center;
+            accessible-role: none;
+        }
+    }
+}
