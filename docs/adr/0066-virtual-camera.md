@@ -119,3 +119,4 @@ Forces:
   5. (minor) The source DLL was tested on hardware only. Added an in-process COM test on the Windows CI runner (Consequences, spec).
 - 2026-11-07, final check by the same session: approve for the Windows scope; all items resolved (a wording slip in the spec's `consumer_busy` comment fixed). P15 measurements and the hardware checks (symbolic link kept after a format change, persistent lifetime) remain conditions before the code merges.
 - Owner approval: Salih, 2026-11-07 (decision card in the project thread), Windows scope.
+- 2026-11-07: decisions 7 (how the format reaches the source) and 9 (how the source learns its user, and what the elevated step does) are superseded by [ADR-0070](0070-virtual-camera-per-user-source-class.md): `AddProperty` and `AddRegistryEntry` need administrator rights, which would have brought the prompt back on every format change.

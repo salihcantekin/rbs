@@ -4993,6 +4993,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "rbs-vcam-mf-source"
+version = "0.0.1"
+dependencies = [
+ "rbs-vcam-ring",
+ "windows",
+ "windows-core",
+]
+
+[[package]]
 name = "rbs-vcam-ring"
 version = "0.0.1"
 

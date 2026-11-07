@@ -1,0 +1,41 @@
+[package]
+name = "rbs-vcam-mf-source"
+description = "The Media Foundation media source behind the RBS virtual camera on Windows: a COM DLL that Frame Server loads, reading frames from the shared ring (ADR-0066, ADR-0070)."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lib]
+# `cdylib`: the DLL Frame Server loads. `rlib`: the platform-neutral parts are tested
+# on every platform, and the in-process COM test links it directly.
+crate-type = ["cdylib", "rlib"]
+
+# ADR-0066 decision 9: std and the ring only, plus Microsoft's bindings on Windows.
+[dependencies]
+rbs-vcam-ring = { path = "../rbs-vcam-ring" }
+
+[target.'cfg(windows)'.dependencies]
+# Microsoft's official bindings (MIT OR Apache-2.0), same version as the other adapters.
+windows = { version = "0.62", features = [
+    "Win32_Foundation",
+    "Win32_Media_KernelStreaming",
+    "Win32_Media_MediaFoundation",
+    "Win32_Security",
+    "Win32_Security_Authorization",
+    "Win32_System_Com",
+    "Win32_System_Com_StructuredStorage",
+    "Win32_System_LibraryLoader",
+    "Win32_System_Memory",
+    "Win32_System_Registry",
+    "Win32_System_SystemInformation",
+    "Win32_System_Threading",
+    "Win32_System_Variant",
+    "Win32_UI_Shell",
+] }
+windows-core = "0.62"
+
+[lints]
+workspace = true
