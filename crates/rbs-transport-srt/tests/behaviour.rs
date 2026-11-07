@@ -121,6 +121,8 @@ fn sends_the_handshake_then_whole_chunks_in_order() {
     );
     assert!(stats.bytes_sent >= expected.len() as u64);
 
+    // The shutdown was sent before `finish` returned; wait until it was read.
+    server.wait_for_shutdowns(1);
     let sessions = server.finish();
     assert_eq!(sessions.len(), 1);
     let s = &sessions[0];
