@@ -224,6 +224,11 @@ fn is_oversized(e: &std::io::Error) -> bool {
 
 /// Sends one datagram. The socket blocks, but a UDP send waits only for room in the
 /// local buffer, never for the peer.
+fn debug_on() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var_os("RBS_SRT_DEBUG").is_some())
+}
+
 fn send_datagram(socket: &UdpSocket, data: &[u8], shared: &Shared) -> Result<(), Fail> {
     loop {
         match socket.send(data) {
@@ -238,7 +243,7 @@ fn send_datagram(socket: &UdpSocket, data: &[u8], shared: &Shared) -> Result<(),
             // The datagram is lost but kept for retransmission: a loss report
             // recovers it.
             Err(e) if is_icmp_echo(&e) || is_buffer_full(&e) => {
-                if std::env::var_os("RBS_SRT_DEBUG").is_some() {
+                if debug_on() {
                     eprintln!("DEBUG send swallowed {} bytes: {e:?}", data.len());
                 }
                 return Ok(());
@@ -1031,7 +1036,7 @@ impl Io {
                 // the time to deliver it: close. libsrt discards what it holds back
                 // for its latency once the peer closes.
                 let r = conn.send_control(ctrl::SHUTDOWN, 0, &shared);
-                if std::env::var_os("RBS_SRT_DEBUG").is_some() {
+                if debug_on() {
                     eprintln!("DEBUG shutdown sent to {}: ok={}", conn.peer_id, r.is_ok());
                 }
                 return r;
