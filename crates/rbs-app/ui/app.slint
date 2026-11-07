@@ -162,22 +162,27 @@ export global Shell {
     callback dismiss-error();
 }
 
-// Live indicator (rules U4, U21): state, duration and outputs in text, never colour alone.
+// Live indicator (rules U4, U21): state, duration and outputs in text, never colour
+// alone. Calm on purpose: no filled box. Idle it is a ring and "Not live" in small
+// secondary text; live or recording a small dot in the live colour (U12), the short
+// state and the duration, then the outputs in secondary text, cut with an ellipsis
+// when long (the accessible name keeps the whole text).
 component LiveIndicator inherits Rectangle {
     property <bool> active: Shell.live-state != 0;
     property <string> state-text: Shell.live-state == 1 ? @tr("Live")
         : Shell.live-state == 2 ? @tr("Recording")
         : Shell.live-state == 3 ? @tr("Live and recording")
         : @tr("Not live");
+    // What the row shows: short words that read at a glance (the scene row's badge).
+    property <string> short-text: Shell.live-state == 1 ? @tr("Live")
+        : Shell.live-state == 2 ? @tr("REC")
+        : Shell.live-state == 3 ? @tr("Live · REC")
+        : @tr("Not live");
     property <string> full: active
         ? state-text + " " + Shell.live-duration + (Shell.live-outputs != "" ? " · " + Shell.live-outputs : "")
         : state-text;
     height: Tokens.size-control-md;
-    width: content.preferred-width + 2 * Tokens.space-3;
-    border-radius: Tokens.radius-sm;
-    background: active ? Theme.state-live : transparent;
-    border-width: active ? 0px : Tokens.size-border;
-    border-color: Theme.border-strong;
+    width: content.preferred-width;
     accessible-role: AccessibleRole.text;
     accessible-label: @tr("Live status: {}", full);
     content := HorizontalLayout {
@@ -187,15 +192,26 @@ component LiveIndicator inherits Rectangle {
             alignment: center;
             Icon {
                 name: active ? IconName.dot : IconName.ring;
-                ink: active ? Theme.text-on-live : Theme.text-secondary;
+                ink: active ? Theme.state-live : Theme.text-secondary;
             }
         }
         Text {
-            text: full;
-            color: active ? Theme.text-on-live : Theme.text-secondary;
-            font-size: Tokens.type-label-size;
-            font-weight: Tokens.type-label-weight;
+            text: active ? short-text + " " + Shell.live-duration : short-text;
+            color: active ? Theme.text-primary : Theme.text-secondary;
+            font-size: active ? Tokens.type-label-size : Tokens.type-caption-size;
+            font-weight: active ? Tokens.type-label-weight : Tokens.type-body-weight;
             vertical-alignment: center;
+            accessible-role: none;
+        }
+        if active && Shell.live-outputs != "": Text {
+            // Long file names end in an ellipsis; the menu width is the cap.
+            max-width: Tokens.size-menu-sm;
+            text: "· " + Shell.live-outputs;
+            color: Theme.text-secondary;
+            font-size: Tokens.type-caption-size;
+            vertical-alignment: center;
+            overflow: elide;
+            accessible-role: none;
         }
     }
 }
@@ -1165,7 +1181,8 @@ component WorkspacePicker inherits Rectangle {
 }
 
 // One toolbar item: a command button with its icon (a toggle that is on is tinted;
-// one that stops a live output is in the live colour, U12), the workspace picker, a
+// one that stops a live output is a normal button whose stop square is in the live
+// colour, U12: the state shows, the toolbar stays calm), the workspace picker, a
 // separator or the flexible space. Go live is the one primary button.
 component ToolbarCell inherits HorizontalLayout {
     in property <ToolbarData> item;
@@ -1178,20 +1195,21 @@ component ToolbarCell inherits HorizontalLayout {
         width: Tokens.size-control-lg;
         accessible-name: item.title;
         lead: Icons.named(item.icon);
-        lead-ink: item.checked ? Theme.text-primary : Theme.text-secondary;
+        lead-ink: item.live && self.enabled ? Theme.state-live
+            : item.checked ? Theme.text-primary : Theme.text-secondary;
         kind: "ghost";
         enabled: item.enabled;
-        checked: item.checked;
+        checked: item.checked && !item.live;
         clicked => { Menus.run(item.id); }
     }
     if (item.kind == 0 || item.kind == 4) && !item.icon-only: Button {
         text: item.title;
         lead: Icons.named(item.icon);
-        // Checked means recording, and then the button itself is in the live colour.
-        lead-ink: record && !item.checked ? Theme.state-live : self.ink;
+        // Record's dot, and the stop square of a running output, in the live colour.
+        lead-ink: (record || item.live) && self.enabled ? Theme.state-live : self.ink;
         enabled: item.enabled;
         checked: item.checked && !item.live;
-        kind: item.live ? "live" : go-live ? "primary" : record ? "secondary" : "ghost";
+        kind: go-live ? "primary" : record || item.live ? "secondary" : "ghost";
         clicked => { Menus.run(item.id); }
     }
     if item.kind == 1: WorkspacePicker {

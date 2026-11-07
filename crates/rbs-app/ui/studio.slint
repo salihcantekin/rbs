@@ -797,10 +797,10 @@ component SceneRowView inherits Rectangle {
     // the scene on air actually goes out (streaming or recording, U12).
     property <bool> studio: Studio.studio-mode;
     property <bool> marked: studio ? data.preview : data.live;
-    property <bool> on-air: data.live && root.live-state != 0;
     background: marked ? Theme.accent-subtle : touch.has-hover ? Theme.surface-overlay : transparent;
-    border-width: marked || on-air ? Tokens.size-border : 0px;
-    border-color: on-air ? Theme.state-live : Theme.accent;
+    // The selection marking only: the badge says the scene is on air (calm, U12).
+    border-width: marked ? Tokens.size-border : 0px;
+    border-color: Theme.accent;
     accessible-role: list-item;
     accessible-label: @tr("{}{}{}", data.name,
         studio && data.preview ? @tr(", in preview") : "",
@@ -902,22 +902,20 @@ component SceneRowView inherits Rectangle {
                 }
             }
         }
-        // On air: in words and in the live colour (U7, U12), only while it goes out.
-        if data.live && root.live-state != 0 && !root.editing: VerticalLayout {
-            alignment: center;
-            Rectangle {
-                height: Tokens.type-caption-line;
-                width: live-text.preferred-width + 2 * Tokens.space-2;
-                border-radius: self.height / 2;
-                background: Theme.state-live;
-                live-text := Text {
-                    text: root.live-state == 1 ? @tr("Live") : root.live-state == 2 ? @tr("REC") : @tr("Live · REC");
-                    color: Theme.text-on-live;
-                    font-size: Tokens.type-caption-size;
-                    font-weight: Tokens.type-label-weight;
-                    vertical-alignment: center;
-                    horizontal-alignment: center;
-                }
+        // On air: in words with a small dot in the live colour (U7, U12), only while
+        // it goes out. No filled badge: the live indicator already carries the state.
+        if data.live && root.live-state != 0 && !root.editing: HorizontalLayout {
+            spacing: Tokens.space-1 / 2;
+            VerticalLayout {
+                alignment: center;
+                Icon { name: IconName.dot; ink: Theme.state-live; }
+            }
+            Text {
+                text: root.live-state == 1 ? @tr("Live") : root.live-state == 2 ? @tr("REC") : @tr("Live · REC");
+                color: Theme.text-secondary;
+                font-size: Tokens.type-caption-size;
+                font-weight: Tokens.type-label-weight;
+                vertical-alignment: center;
             }
         }
         if !root.editing: VerticalLayout {
