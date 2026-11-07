@@ -5,6 +5,11 @@ name: stress windows gpu group
 on:
   pull_request:
 
+# A new push cancels the older stress runs of the same PR.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
 env:
   CARGO_TERM_COLOR: always
   RUSTFLAGS: -D warnings
