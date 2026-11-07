@@ -163,8 +163,11 @@ fn the_owner_check_works_with_the_access_the_source_grants() {
 
     let user = super::sys::current_user().unwrap();
     let access = rbs_vcam_mf_source::SECTION_USER_ACCESS;
-    // The owner's implicit READ_CONTROL is taken away, so only the user entry counts.
-    let sddl = HSTRING::from(format!("D:P(A;;0x{access:x};;;{user})(A;;0x6;;;OW)"));
+    // The owner is set to the user (an elevated token would default to Administrators),
+    // and its implicit READ_CONTROL is taken away, so only the user entry counts.
+    let sddl = HSTRING::from(format!(
+        "O:{user}D:P(A;;0x{access:x};;;{user})(A;;0x6;;;OW)"
+    ));
     let mut psd = PSECURITY_DESCRIPTOR::default();
     // SAFETY: a valid SDDL string; `psd` is freed below.
     unsafe {
