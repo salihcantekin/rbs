@@ -251,3 +251,74 @@ fn upload_decodes_nv12_to_linear_rgb() {
     assert_eq!(pool.allocated(), allocated);
     up.release(&mut pool);
 }
+
+/// ADR-0066 decision 4: a wide canvas fitted into a 4:3 output keeps its aspect ratio,
+/// with black bars above and below and the picture's colour in the middle.
+#[test]
+fn a_scaled_download_fits_the_canvas_with_black_bars() {
+    let Some(ctx) = common::gpu() else { return };
+    let mut pool = TexturePool::new();
+    // 32 x 16 (2:1) into 16 x 16: the picture is 16 x 8, centred, rows 4..12.
+    let canvas = solid(ctx, &mut pool, W, H, [0.5, 0.5, 0.5, 1.0]);
+    let (ow, oh) = (16u32, 16u32);
+    let mut down =
+        YuvDownload::scaled(ctx, YuvFormat::Nv12, W, H, ow, oh, DOWNLOAD_BUFFERS + 4).unwrap();
+    assert_eq!(down.format().size, Size::new(ow, oh));
+    assert!(
+        down.submit(ctx, &pool, &canvas_frame(&pool, canvas, 1))
+            .unwrap()
+    );
+    ctx.wait_idle().unwrap();
+    ctx.poll();
+    let frame = down.take_ready(ctx).unwrap().expect("a completed frame");
+    let FramePayload::System(sys) = frame.payload() else {
+        panic!("not a system frame");
+    };
+    let (luma, ls) = sys.plane(0).unwrap();
+    let (chroma, cs) = sys.plane(1).unwrap();
+    let grey = (16.0 + 219.0 * (1.099 * 0.5f64.powf(0.45) - 0.099)).round() as u8;
+    for y in 0..oh as usize {
+        let inside = (4..12).contains(&y);
+        for x in 0..ow as usize {
+            let want = if inside { grey } else { 16 };
+            // The picture's edge rows mix with black through the filter.
+            if y == 4 || y == 11 {
+                continue;
+            }
+            assert!(
+                luma[y * ls + x].abs_diff(want) <= 1,
+                "luma at {x},{y}: {}",
+                luma[y * ls + x]
+            );
+        }
+    }
+    for y in 0..oh as usize / 2 {
+        for x in 0..ow as usize {
+            assert!(chroma[y * cs + x].abs_diff(128) <= 1, "chroma at {x},{y}");
+        }
+    }
+}
+
+#[test]
+fn the_same_size_through_scaled_is_the_one_to_one_path() {
+    let Some(ctx) = common::gpu() else { return };
+    let mut pool = TexturePool::new();
+    let canvas = solid(ctx, &mut pool, W, H, [0.2, 0.4, 0.6, 1.0]);
+    let read = |down: &mut YuvDownload| {
+        assert!(
+            down.submit(ctx, &pool, &canvas_frame(&pool, canvas, 1))
+                .unwrap()
+        );
+        ctx.wait_idle().unwrap();
+        ctx.poll();
+        let f = down.take_ready(ctx).unwrap().unwrap();
+        let FramePayload::System(sys) = f.payload() else {
+            panic!()
+        };
+        sys.data().to_vec()
+    };
+    let mut a = YuvDownload::new(ctx, YuvFormat::Nv12, W, H).unwrap();
+    let mut b = YuvDownload::scaled(ctx, YuvFormat::Nv12, W, H, W, H, 3).unwrap();
+    assert_eq!(read(&mut a), read(&mut b));
+    assert!(YuvDownload::scaled(ctx, YuvFormat::Nv12, W, H, W, H, 1).is_err());
+}

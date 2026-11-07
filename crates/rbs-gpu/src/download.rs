@@ -102,7 +102,28 @@ impl YuvDownload {
         width: u32,
         height: u32,
     ) -> Result<Self, GpuError> {
-        let converter = YuvConverter::new(ctx, format, width, height)?;
+        Self::scaled(ctx, format, width, height, width, height, DOWNLOAD_BUFFERS)
+    }
+
+    /// A download of `src_width x src_height` canvases to `width x height` frames
+    /// (fitted with the aspect ratio kept, [`YuvConverter::scaled`]) with `buffers` frame
+    /// buffers (at least 2): enough for every frame the consumers may hold at once plus
+    /// one, so recycling never allocates (ADR-0066 decision 3).
+    pub fn scaled(
+        ctx: &GpuContext,
+        format: YuvFormat,
+        src_width: u32,
+        src_height: u32,
+        width: u32,
+        height: u32,
+        buffers: usize,
+    ) -> Result<Self, GpuError> {
+        if buffers < 2 {
+            return Err(GpuError::Unsupported(
+                "a download needs at least 2 frame buffers",
+            ));
+        }
+        let converter = YuvConverter::scaled(ctx, format, src_width, src_height, width, height)?;
         let sample = match format {
             YuvFormat::Nv12 => 1,
             YuvFormat::P010 => 2,
@@ -149,7 +170,7 @@ impl YuvDownload {
             })
             .collect();
         let size = usize::try_from(len).map_err(|_| GpuError::InvalidSize { width, height })?;
-        let buffers = (0..DOWNLOAD_BUFFERS).map(|_| shared_buffer(size)).collect();
+        let buffers = (0..buffers).map(|_| shared_buffer(size)).collect();
         Ok(Self {
             converter,
             format: VideoFormat::new(

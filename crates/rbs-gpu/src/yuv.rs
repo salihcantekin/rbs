@@ -128,6 +128,9 @@ pub struct YuvConverter {
     format: YuvFormat,
     width: u32,
     height: u32,
+    /// Canvas size; equal to the output size except for scaled converters.
+    src_width: u32,
+    src_height: u32,
     luma: wgpu::RenderPipeline,
     chroma: wgpu::RenderPipeline,
     /// Software adapters only: planes and a buffer for the staged surface path.
@@ -241,6 +244,22 @@ impl YuvConverter {
         width: u32,
         height: u32,
     ) -> Result<Self, GpuError> {
+        Self::scaled(ctx, format, width, height, width, height)
+    }
+
+    /// Creates a converter from `src_width x src_height` canvases to `width x height`
+    /// planes. With equal sizes it is [`YuvConverter::new`] (pixel for pixel). Otherwise
+    /// the canvas is fitted into the output with its aspect ratio kept and bilinear
+    /// filtering, and the rest is black (ADR-0066 decision 4). Every size must be even
+    /// and non-zero.
+    pub fn scaled(
+        ctx: &GpuContext,
+        format: YuvFormat,
+        src_width: u32,
+        src_height: u32,
+        width: u32,
+        height: u32,
+    ) -> Result<Self, GpuError> {
         if format == YuvFormat::P010 && !ctx.has(&CAP_P010) {
             return Err(GpuError::Unsupported(
                 "P010 needs 16-bit normalized render targets (gpu.p010)",
@@ -256,6 +275,19 @@ impl YuvConverter {
         {
             return Err(GpuError::InvalidSize { width, height });
         }
+        if src_width == 0
+            || src_height == 0
+            || !src_width.is_multiple_of(2)
+            || !src_height.is_multiple_of(2)
+            || src_width > max
+            || src_height > max
+        {
+            return Err(GpuError::InvalidSize {
+                width: src_width,
+                height: src_height,
+            });
+        }
+        let one_to_one = src_width == width && src_height == height;
         let device = ctx.device();
         let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("rbs-gpu yuv"),
@@ -266,7 +298,16 @@ impl YuvConverter {
             bind_group_layouts: &[Some(&ctx.sampled_layout)],
             immediate_size: 0,
         });
-        let constants = format.constants();
+        let mut constants: Vec<(&str, f64)> = format.constants().to_vec();
+        if !one_to_one {
+            let fit = fit_rect(src_width, src_height, width, height);
+            constants.extend([
+                ("fit_x", fit[0]),
+                ("fit_y", fit[1]),
+                ("fit_w", fit[2]),
+                ("fit_h", fit[3]),
+            ]);
+        }
         let pipeline = |entry: &str, target: wgpu::TextureFormat| {
             device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
                 label: Some("rbs-gpu yuv"),
@@ -301,12 +342,19 @@ impl YuvConverter {
             YuvFormat::Nv12 => &CAP_NV12_SURFACE,
             YuvFormat::P010 => &CAP_P010_SURFACE,
         };
+        let (luma_entry, chroma_entry) = if one_to_one {
+            ("fs_luma", "fs_chroma")
+        } else {
+            ("fs_luma_scaled", "fs_chroma_scaled")
+        };
         Ok(Self {
             format,
             width,
             height,
-            luma: pipeline("fs_luma", format.luma_format()),
-            chroma: pipeline("fs_chroma", format.chroma_format()),
+            src_width,
+            src_height,
+            luma: pipeline(luma_entry, format.luma_format()),
+            chroma: pipeline(chroma_entry, format.chroma_format()),
             staged: (ctx.has(surface_cap) && ctx.has(&CAP_SOFTWARE))
                 .then(|| Staged::new(ctx, format, width, height)),
         })
@@ -402,7 +450,9 @@ impl YuvConverter {
         canvas_tex
             .sampled_bind_group()
             .filter(|_| {
-                d.format == crate::CANVAS_FORMAT && d.width == self.width && d.height == self.height
+                d.format == crate::CANVAS_FORMAT
+                    && d.width == self.src_width
+                    && d.height == self.src_height
             })
             .ok_or(GpuError::TargetMismatch(canvas))
     }
@@ -443,6 +493,16 @@ impl YuvConverter {
         }
         encoder
     }
+}
+
+/// The picture's rectangle `[x, y, w, h]` in output pixels when a `src` canvas is fitted
+/// into a `dst` output with its aspect ratio kept and centred.
+pub fn fit_rect(src_width: u32, src_height: u32, width: u32, height: u32) -> [f64; 4] {
+    let (sw, sh) = (f64::from(src_width), f64::from(src_height));
+    let (dw, dh) = (f64::from(width), f64::from(height));
+    let scale = (dw / sw).min(dh / sh);
+    let (w, h) = (sw * scale, sh * scale);
+    [(dw - w) / 2.0, (dh - h) / 2.0, w, h]
 }
 
 fn plane<'p>(

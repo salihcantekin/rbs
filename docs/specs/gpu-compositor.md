@@ -139,6 +139,12 @@ pub enum YuvFormat { Nv12, P010 }
 impl YuvConverter {
     /// P010 needs `gpu.p010`; otherwise `GpuError::Unsupported`.
     pub fn new(ctx: &GpuContext, format: YuvFormat, width: u32, height: u32) -> Result<YuvConverter, GpuError>;
+    /// `src` canvases to `width x height` planes (ADR-0066 decision 4). Equal sizes are `new`
+    /// (pixel for pixel, `textureLoad`); otherwise the canvas is fitted with its aspect ratio
+    /// kept (`fit_rect`, centred), sampled bilinearly, and the rest is black (Y 16, C 128).
+    /// Chroma averages four bilinear samples at the luma pixel centres of its 2x2 block.
+    pub fn scaled(ctx: &GpuContext, format: YuvFormat, src_width: u32, src_height: u32, width: u32, height: u32)
+        -> Result<YuvConverter, GpuError>;
     /// Both return the submission of their GPU work, so callers can tell when it completed.
     pub fn convert(&mut self, ctx: &GpuContext, pool: &TexturePool, canvas: TextureId, luma: TextureId, chroma: TextureId)
         -> Result<wgpu::SubmissionIndex, GpuError>;
@@ -224,6 +230,11 @@ pub const DOWNLOAD_RING: usize = 4;      // staging buffers in flight
 pub const DOWNLOAD_BUFFERS: usize = 6;   // recycled frame buffers
 impl YuvDownload {
     pub fn new(ctx: &GpuContext, format: YuvFormat, width: u32, height: u32) -> Result<YuvDownload, GpuError>;
+    /// Scaled (`YuvConverter::scaled`) with `buffers` (>= 2) frame buffers: enough for
+    /// every frame consumers may hold at once plus one, so recycling never allocates
+    /// (the virtual camera holds up to five: ADR-0066 decision 3).
+    pub fn scaled(ctx: &GpuContext, format: YuvFormat, src_width: u32, src_height: u32, width: u32, height: u32,
+        buffers: usize) -> Result<YuvDownload, GpuError>;
     pub fn format(&self) -> &VideoFormat;  // size, NV12/P010, BT709_LIMITED
     pub fn stride(&self) -> usize;         // bytes per row of both planes, a multiple of 256
     /// Converts and starts the readback; `Ok(false)` (counted `busy`) when every staging

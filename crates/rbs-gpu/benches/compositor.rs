@@ -137,6 +137,23 @@ fn bench(c: &mut Criterion) {
             ctx.wait_idle().expect("wait");
         });
     });
+    // Scaled conversion for the virtual camera (ADR-0066): the 1080p canvas to 720p NV12.
+    let mut scaled =
+        YuvConverter::scaled(&ctx, YuvFormat::Nv12, W, H, 1280, 720).expect("scaled nv12");
+    let luma720 = pool
+        .acquire(&ctx, &yuv::luma_desc(YuvFormat::Nv12, 1280, 720))
+        .expect("luma 720");
+    let chroma720 = pool
+        .acquire(&ctx, &yuv::chroma_desc(YuvFormat::Nv12, 1280, 720))
+        .expect("chroma 720");
+    group.bench_function("nv12_planes_scaled_to_720p", |b| {
+        b.iter(|| {
+            scaled
+                .convert(&ctx, &pool, canvas, luma720, chroma720)
+                .expect("convert");
+            ctx.wait_idle().expect("wait");
+        });
+    });
     // Source decode (camera / native NV12 import): planes back to a canvas-format texture.
     let mut decoder = rbs_gpu::YuvDecoder::new(&ctx);
     let decoded = pool
