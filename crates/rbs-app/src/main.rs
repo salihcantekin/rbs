@@ -156,6 +156,9 @@ struct App {
     error: Option<UiError>,
     /// `ui.theme.reload` ran; the next sync reads the theme files again.
     reload_themes: bool,
+    /// `ui.settings.open` ran; the next sync shows Settings, at this section when
+    /// given.
+    open_settings: Option<Option<i32>>,
     save_due: bool,
     exiting: bool,
     /// Every window is hidden by Close with Keep RBS running (ADR-0056).
@@ -401,6 +404,8 @@ impl App {
             Run::StopRecording => self.studio.stop_recording(),
             // Needs the look and the Appearance page, which the next sync has.
             Run::ReloadThemes => self.reload_themes = true,
+            // Making the window needs the shell's context, which the next sync has.
+            Run::OpenSettings(section) => self.open_settings = Some(section),
         }
     }
 
@@ -602,6 +607,7 @@ struct Ctx {
 /// Sections of the Settings window (`SettingsWindow.section`).
 const SECTION_RECORDING: i32 = 1;
 const SECTION_STREAM: i32 = 2;
+const SECTION_GENERAL: i32 = 4;
 const SECTION_APPEARANCE: i32 = 5;
 const SECTION_SHORTCUTS: i32 = 6;
 
@@ -1256,6 +1262,13 @@ impl Ctx {
         }
         if std::mem::take(&mut app.reload_themes) {
             appearance_page::reload(self, &mut app);
+        }
+        if let Some(section) = app.open_settings.take() {
+            // Without a section: where the open window is, else General (listed first).
+            let section = section
+                .or_else(|| app.settings.as_ref().map(|w| w.get_section()))
+                .unwrap_or(SECTION_GENERAL);
+            self.open_settings(section);
         }
         self.sync_live(&mut app);
         #[cfg(windows)]
@@ -2368,6 +2381,7 @@ fn run(config: PathBuf, notice: Option<String>) -> Result<(), Box<dyn std::error
             toast_serial: 0,
             error,
             reload_themes: false,
+            open_settings: None,
             save_due: false,
             exiting: false,
             hidden: false,

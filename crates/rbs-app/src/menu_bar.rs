@@ -384,6 +384,20 @@ impl CommandState for Shown<'_> {
     }
 }
 
+/// The `SettingsWindow.section` number of a `ui.settings.open` section name.
+pub fn settings_section(name: &str) -> Option<i32> {
+    Some(match name {
+        "video" => 0,
+        "recording" => 1,
+        "stream" => 2,
+        "remote_control" => 3,
+        "general" => 4,
+        "appearance" => 5,
+        "shortcuts" => 6,
+        _ => return None,
+    })
+}
+
 fn scene_position(id: &CommandId) -> Option<usize> {
     id.param("n")?.parse().ok()
 }
@@ -490,7 +504,7 @@ pub fn toolbar(state: &Shown<'_>) -> (Vec<ToolItem>, bool, bool) {
                 };
                 let icon = rbs_ui::command::icon(&id, entry).unwrap_or_default();
                 let icon_only = !icon.is_empty()
-                    && (bar.style == ToolbarStyle::Icons || id.base() == "ui.area.toggle");
+                    && (bar.style == ToolbarStyle::Icons || rbs_ui::command::icon_only(&id));
                 ToolItem {
                     id: id.to_string(),
                     title,
@@ -513,6 +527,9 @@ pub fn toolbar(state: &Shown<'_>) -> (Vec<ToolItem>, bool, bool) {
 pub enum Run {
     /// Read the token, appearance and theme files again (`ui.theme.reload`).
     ReloadThemes,
+    /// Show the Settings window, at this section (`SettingsWindow.section`) when
+    /// given (`ui.settings.open`).
+    OpenSettings(Option<i32>),
     /// Scene edit undo (`true`) or redo.
     UndoEdit(bool),
     /// Load and switch to the named workspace.
@@ -581,6 +598,10 @@ pub fn run(text: &str, state: &Shown<'_>) -> Option<Run> {
         "ui.layout.reset_sizes" => Run::Layout(L::ResetSizes),
         "ui.toolbar.reset" => Run::Layout(L::ResetToolbar),
         "ui.theme.reload" => Run::ReloadThemes,
+        "ui.settings.open" => Run::OpenSettings(match id.param("section") {
+            Some(name) => Some(settings_section(name)?),
+            None => None,
+        }),
         "ui.panel.maximize" => Run::Maximize(panel_of(&id)?, !on),
         "canvas.studio_mode.toggle" => Run::StudioMode(!on),
         "canvas.transition" => Run::Transition,
@@ -635,6 +656,17 @@ mod tests {
         }
         assert_eq!(v.enabled.len(), v.titles.len());
         assert_eq!(v.checked.len(), v.titles.len());
+    }
+
+    #[test]
+    fn every_settings_section_has_its_window_number() {
+        let mut seen: Vec<i32> = rbs_ui::command::SETTINGS_SECTIONS
+            .iter()
+            .map(|s| settings_section(s).expect("known section"))
+            .collect();
+        seen.sort_unstable();
+        assert_eq!(seen, (0..7).collect::<Vec<_>>());
+        assert_eq!(settings_section("audio"), None);
     }
 
     #[test]
