@@ -3,7 +3,8 @@
 //! `register <SID>` writes the user's class key under `HKLM` and the user's format
 //! file with its access list; `unregister <SID>` deletes both. The SID must be a user
 //! account and the user signed in to the tool's own session, whoever approved the
-//! prompt. Nothing else is accepted.
+//! prompt. `register` also refuses (exit code 5) when the source DLL next to the tool
+//! is not in the Program Files folder.
 
 use std::path::Path;
 
@@ -30,7 +31,8 @@ use windows::Win32::System::RemoteDesktop::{
 use windows_core::{BOOL, HSTRING, PCWSTR, PWSTR};
 
 use super::sys::{
-    FRIENDLY_NAME, SOURCE_DLL, class_key, format_dir, format_path, install_dir, sid_string,
+    FRIENDLY_NAME, SOURCE_DLL, class_key, format_dir, format_path, install_dir, resolved,
+    sid_string, trusted_location,
 };
 
 /// Exit codes.
@@ -41,6 +43,8 @@ pub const USAGE: i32 = 2;
 pub const REFUSED: i32 = 3;
 /// A system call failed.
 pub const FAILED: i32 = 4;
+/// The source DLL is not in the Program Files folder, so it is not registered.
+pub const NOT_INSTALLED: i32 = 5;
 
 /// The tool's `main`: returns the exit code.
 pub fn run(args: &[String]) -> i32 {
@@ -54,7 +58,15 @@ pub fn run(args: &[String]) -> i32 {
         return REFUSED;
     }
     let done = if verb == "register" {
-        register(sid)
+        // The registered path is the resolved one, so no junction or link in the
+        // folder the tool ran from can later point the class elsewhere.
+        let Some(dll) = install_dir().and_then(|d| resolved(&d.join(SOURCE_DLL))) else {
+            return NOT_INSTALLED;
+        };
+        if !trusted_location(&dll) {
+            return NOT_INSTALLED;
+        }
+        register(sid, &dll)
     } else {
         unregister(sid)
     };
@@ -194,8 +206,7 @@ fn secure(path: &Path, sddl: &str) -> Option<()> {
 /// `FILE_GENERIC_READ | FILE_WRITE_DATA`: what the user may do with their format file.
 const USER_FILE_ACCESS: u32 = 0x0012_0089 | 0x0002;
 
-fn register(sid: &str) -> Option<()> {
-    let dll = install_dir()?.join(SOURCE_DLL);
+fn register(sid: &str, dll: &Path) -> Option<()> {
     let key = class_key(sid);
     let class = reg_create(&key)?;
     let ok =

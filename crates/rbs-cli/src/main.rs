@@ -556,8 +556,17 @@ fn start_camera(
 fn camera_line(state: &rbs_record::VirtualCameraState) -> String {
     let s = &state.stats;
     let n = |c: &std::sync::atomic::AtomicU64| c.load(Ordering::Relaxed);
+    let delivered = state.session.as_ref().map_or_else(String::new, |c| {
+        let c = c.snapshot();
+        format!(
+            "{} delivered, {} with no app reading, {} waiting for a format change; ",
+            c.sent(),
+            c.consumer_absent(),
+            c.format_pending()
+        )
+    });
     format!(
-        "{} sent, {} skipped (app behind), {} skipped (readback busy), {} lost, {} refused, {} failed",
+        "{delivered}{} handed over, {} skipped (app behind), {} skipped (readback busy), {} lost, {} refused, {} failed",
         n(&s.sent),
         n(&s.consumer_busy),
         n(&s.busy),
