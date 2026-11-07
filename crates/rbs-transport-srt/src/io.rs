@@ -329,6 +329,21 @@ impl Conn {
         Ok(())
     }
 
+    /// Sends the shutdown, the connection's last packet; the socket is closed next.
+    /// On Windows a send returns once the datagram is in the socket's send buffer,
+    /// and closing the socket right after can discard it: under load the listener
+    /// then never got the shutdown. Without a send buffer the send returns only
+    /// once the datagram has left (and every earlier one before it), so closing
+    /// cannot lose it.
+    fn send_shutdown(&mut self, shared: &Shared) -> Result<(), Fail> {
+        #[cfg(windows)]
+        {
+            // Best effort: if the option is refused, the send is as before.
+            let _ = socket2::SockRef::from(&self.socket).set_send_buffer_size(0);
+        }
+        self.send_control(ctrl::SHUTDOWN, 0, shared)
+    }
+
     fn send_control(&mut self, kind: u16, info: u32, shared: &Shared) -> Result<(), Fail> {
         let ts = self.now_ts(Instant::now());
         self.out.clear();
@@ -1001,7 +1016,7 @@ impl Io {
         loop {
             if shared.abort.load(Ordering::Acquire) {
                 // Best effort, so the listener does not wait for its idle timeout.
-                let _ = conn.send_control(ctrl::SHUTDOWN, 0, &shared);
+                let _ = conn.send_shutdown(&shared);
                 return Err(Fail::Aborted);
             }
             conn.retransmit(&shared)?;
@@ -1025,7 +1040,7 @@ impl Io {
                 // Everything was acknowledged (or expired) and the listener has had
                 // the time to deliver it: close. libsrt discards what it holds back
                 // for its latency once the peer closes.
-                return conn.send_control(ctrl::SHUTDOWN, 0, &shared);
+                return conn.send_shutdown(&shared);
             }
             let busy = !conn.loss.is_empty() || (!idle && conn.window_open());
             if busy {

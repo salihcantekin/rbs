@@ -16,6 +16,11 @@ rbs-transport = { path = "../rbs-transport" }
 # used by rbs-transport-file and rbs-transport-rtmp.
 rtrb = "0.4"
 
+[target.'cfg(windows)'.dependencies]
+# Unbuffered send of the final shutdown, so closing the socket cannot drop it
+# (`io.rs`, `send_shutdown`). Already used by rbs-api-ws; MIT or Apache-2.0.
+socket2 = "0.6"
+
 [dev-dependencies]
 rbs-transport = { path = "../rbs-transport", features = ["conformance"] }
 # The interop test muxes real H.264 and AAC into MPEG-TS chunks, as the engine does.
