@@ -14,7 +14,7 @@ use rbs_audio::{
 };
 use rbs_codec::{AudioEncoderConfig, EncoderTuning, VideoEncoderConfig};
 use rbs_core::lifecycle::Lifecycle;
-use rbs_core::media::{ContainerId, MemoryKind, StreamDescriptor};
+use rbs_core::media::{ContainerId, MemoryKind, PixelFormat, StreamDescriptor};
 use rbs_core::time::Timestamp;
 use rbs_core::timing::{Cadence, FrameRate};
 use rbs_engine::{Applied, DEFAULT_DOORBELL_TIMER, Engine, Pacing, Serviced, WorkerStats};
@@ -30,7 +30,10 @@ use rbs_nodes::capture::CaptureNodeStats;
 use rbs_nodes::encode::EncoderNodeStats;
 use rbs_nodes::export::{ExportEnd, ExportNodeStats};
 use rbs_nodes::output::OutputNodeStats;
-use rbs_nodes::{OutputNode, PreviewNode, PreviewNodeStats, VideoEncoderNode, VideoExportNode};
+use rbs_nodes::{
+    OutputNode, PreviewNode, PreviewNodeStats, VideoEncoderNode, VideoExportNode,
+    VirtualCameraNode, VirtualCameraNodeStats,
+};
 use rbs_scene::SceneCollection;
 use rbs_scene::binder::{BindProblem, BindReport, BoundCompositor, BoundMixer, Role, SceneBinder};
 use rbs_scene::model::{CanvasId, FilterId, SourceAudio, SourceId};
@@ -38,6 +41,7 @@ use rbs_sources::{
     InstanceContext, SourceInstance, SourceTypes, filter_values_lenient, node_layers,
 };
 use rbs_transport::{ReconnectPolicy, Secret, TransportConfig, TransportInput};
+use rbs_vcam::{CameraFormat, VcamError, VirtualCameraConfig, VirtualCameraFactory};
 
 use crate::recording::{
     AudioSettings, FinishReport, Partitions, Progress, RENDER, RecordAdapters, RecordError,
@@ -251,6 +255,51 @@ struct Added {
 
 /// Outputs a studio runs at once (ADR-0047): a recording and a live stream.
 pub const MAX_OUTPUTS: usize = 2;
+
+/// What the virtual camera announces and RBS sends (ADR-0066 decision 7): NV12 at this
+/// size (both even) and rate.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct VirtualCameraSettings {
+    /// Width in pixels.
+    pub width: u32,
+    /// Height in pixels.
+    pub height: u32,
+    /// Frames per second the camera announces; RBS sends at this rate, or at the canvas
+    /// rate when that is lower.
+    pub rate: FrameRate,
+}
+
+impl VirtualCameraSettings {
+    /// A camera of `width x height` at `rate`.
+    pub fn new(width: u32, height: u32, rate: FrameRate) -> Self {
+        Self {
+            width,
+            height,
+            rate,
+        }
+    }
+}
+
+/// The virtual camera while it sends ([`Studio::virtual_camera`]).
+#[derive(Debug, Clone)]
+#[non_exhaustive]
+pub struct VirtualCameraState {
+    /// The configuration its session was opened with.
+    pub config: VirtualCameraConfig,
+    /// Its node's counters.
+    pub stats: Arc<VirtualCameraNodeStats>,
+    /// Why its node failed, until it runs again. The studio runs on either way.
+    pub failure: Option<String>,
+}
+
+/// The virtual camera's node while it sends.
+struct CameraRun {
+    node: Added,
+    config: VirtualCameraConfig,
+    stats: Arc<VirtualCameraNodeStats>,
+    failure: Option<String>,
+}
 
 /// One of a studio's running outputs, from [`Studio::start_output`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -561,6 +610,9 @@ pub struct Studio {
     filters: Vec<FilterEntry>,
     /// Stored filter settings adjusted on load.
     filter_problems: Vec<FilterSettingsAdjusted>,
+    /// The virtual camera while it sends (ADR-0066 decision 6); `None` otherwise, so
+    /// nothing of it runs.
+    camera: Option<CameraRun>,
 }
 
 impl fmt::Debug for Studio {
@@ -778,6 +830,7 @@ impl Studio {
             mix: mix_of(collection),
             filters: Vec::new(),
             filter_problems: Vec::new(),
+            camera: None,
         };
         if let Some(p) = recording
             && let Err(e) = studio.add_output(p)
@@ -1457,12 +1510,18 @@ impl Studio {
                                 }
                             }
                         }
+                    } else if let Some(c) = self.camera.as_mut().filter(|c| c.node.node == *node) {
+                        // Not essential: the studio and its outputs run on (ADR-0066).
+                        c.failure = Some(format!("{cause:?}"));
                     } else if let Some(e) = self.entries.iter_mut().find(|e| e.state.node == *node)
                     {
                         e.state.failed = Some(format!("{cause:?}"));
                     }
                 }
                 RuntimeEvent::Restarted { node, .. } | RuntimeEvent::Recovered { node } => {
+                    if let Some(c) = self.camera.as_mut().filter(|c| c.node.node == *node) {
+                        c.failure = None;
+                    }
                     if let Some(e) = self.entries.iter_mut().find(|e| e.state.node == *node) {
                         e.state.failed = None;
                     }
@@ -2227,10 +2286,102 @@ impl Studio {
         p
     }
 
+    /// Starts sending the program to a virtual camera (ADR-0066 decision 6): opens a
+    /// session of `factory` for `settings` on this (the control) thread, then adds a
+    /// [`VirtualCameraNode`] on [`RENDER`] after the program compositor and applies. It
+    /// is not one of the [`MAX_OUTPUTS`] outputs and touches none of them. Fails with
+    /// `InvalidConfig` while the camera already sends; an engine or graph refusal is
+    /// `Os { code: 0, .. }`, and nothing of the camera stays.
+    pub fn start_virtual_camera(
+        &mut self,
+        factory: &dyn VirtualCameraFactory,
+        settings: VirtualCameraSettings,
+    ) -> Result<(), VcamError> {
+        if self.camera.is_some() {
+            return Err(VcamError::InvalidConfig(
+                "the virtual camera already sends".into(),
+            ));
+        }
+        let config = VirtualCameraConfig::new(
+            CameraFormat::new(
+                settings.width,
+                settings.height,
+                settings.rate,
+                PixelFormat::Nv12,
+            ),
+            MemoryKind::System,
+        );
+        let session = factory.open(&config)?;
+        let (width, height) = self.size;
+        let node = VirtualCameraNode::new(session, config, width, height);
+        let stats = node.stats();
+        let engine_error = |e: String| VcamError::Os {
+            code: 0,
+            message: e,
+        };
+        let mut graph = self.graph.clone();
+        let id = add_active(&mut graph, Node::<GpuRuntime>::descriptor(&node), RENDER)
+            .map_err(|e| engine_error(e.to_string()))?;
+        graph
+            .connect(self.compositor, "canvas", id, "canvas")
+            .map_err(|e| engine_error(e.to_string()))?;
+        // A refused adoption drops the node, and with it the session, here.
+        self.engine
+            .adopt::<GpuRuntime>(RENDER, id, Box::new(node))
+            .map_err(|e| engine_error(e.to_string()))?;
+        let added = Added {
+            node: id,
+            partition: RENDER,
+            gpu: true,
+        };
+        if let Err(e) = self.engine.apply(&graph) {
+            if !take(&mut self.engine, added) {
+                self.pending_takes.push((added, None));
+            }
+            return Err(engine_error(e.to_string()));
+        }
+        self.graph = graph;
+        self.camera = Some(CameraRun {
+            node: added,
+            config,
+            stats,
+            failure: None,
+        });
+        Ok(())
+    }
+
+    /// Stops sending to the virtual camera: removes its node with a plain swap. The node
+    /// comes back through the pending takes and is dropped here, on the control thread,
+    /// with its session (whose drop joins the adapter's sender thread), never on
+    /// [`RENDER`]. The camera itself stays installed. False when it was not sending.
+    pub fn stop_virtual_camera(&mut self) -> bool {
+        let Some(run) = self.camera.take() else {
+            return false;
+        };
+        let _ = self.graph.set_state(run.node.node, Lifecycle::Standby);
+        let _ = self.graph.remove_node(run.node.node);
+        // An apply error leaves the node to the pending takes like any other.
+        let _ = self.engine.apply(&self.graph);
+        if !take(&mut self.engine, run.node) {
+            self.pending_takes.push((run.node, None));
+        }
+        true
+    }
+
+    /// The virtual camera while it sends: its configuration, counters and failure.
+    pub fn virtual_camera(&self) -> Option<VirtualCameraState> {
+        self.camera.as_ref().map(|c| VirtualCameraState {
+            config: c.config,
+            stats: Arc::clone(&c.stats),
+            failure: c.failure.clone(),
+        })
+    }
+
     /// Stops every output in one draining apply (a shared encoder is flushed for all
     /// of them), then the engine. Returns each output's report, in start order, and the
     /// shutdown's errors.
     pub fn shutdown(&mut self) -> (Vec<(OutputId, FinishReport)>, Vec<String>) {
+        self.stop_virtual_camera();
         let ids = self.outputs();
         let (removed, errors) = self.detach_all(&ids, true);
         let reports = removed

@@ -24,6 +24,7 @@ mod platform;
 mod remote;
 mod scene;
 mod token;
+mod vcam;
 
 use std::io::{BufRead, IsTerminal};
 use std::process::ExitCode;
@@ -80,6 +81,16 @@ fn main() -> ExitCode {
                 Ok(()) => ExitCode::SUCCESS,
                 Err(e) => {
                     eprintln!("{what}: {e}");
+                    ExitCode::FAILURE
+                }
+            }
+        }
+        Ok(Command::Vcam(c)) => {
+            let factory = platform::virtual_camera();
+            match vcam::run(factory.as_deref(), c, &mut std::io::stdout()) {
+                Ok(()) => ExitCode::SUCCESS,
+                Err(e) => {
+                    eprintln!("vcam: {e}");
                     ExitCode::FAILURE
                 }
             }
@@ -342,6 +353,12 @@ fn record(a: &RecordArgs) -> Result<(), String> {
         }
     }
 
+    // Kept for the whole run: the session's adapter lives as long as the camera sends.
+    let camera = match a.vcam {
+        Some(f) => Some(start_camera(&mut recording, f)?),
+        None => None,
+    };
+
     let stop = Arc::new(AtomicBool::new(false));
     // The URL never holds the stream key, so it can be printed.
     let destination = match (&file, &a.stream) {
@@ -410,6 +427,9 @@ fn record(a: &RecordArgs) -> Result<(), String> {
                     " | not connected"
                 });
             }
+            if let Some(state) = recording.virtual_camera() {
+                text.push_str(&format!(" | camera {}", camera_line(&state)));
+            }
             println!("{text}");
         }
         let wait = serviced.wait.unwrap_or(Duration::from_millis(50));
@@ -427,6 +447,7 @@ fn record(a: &RecordArgs) -> Result<(), String> {
             std::thread::sleep(Duration::from_millis(5));
         }
     }
+    let camera_end = recording.virtual_camera();
     let report = recording.finish();
     let p = &report.progress;
     println!(
@@ -470,6 +491,12 @@ fn record(a: &RecordArgs) -> Result<(), String> {
             p.connects, p.reconnect_attempts, p.transport_drops
         );
     }
+    if let (Some(_), Some(state)) = (&camera, &camera_end) {
+        println!("virtual camera: {}", camera_line(state));
+        if let Some(why) = &state.failure {
+            println!("virtual camera failed: {why}");
+        }
+    }
     if let Some(out) = &file {
         let size = std::fs::metadata(out).map(|m| m.len()).unwrap_or(0);
         println!("file: {} ({size} bytes)", out.display());
@@ -493,6 +520,51 @@ fn record(a: &RecordArgs) -> Result<(), String> {
         None if !report.shutdown_errors.is_empty() => Err("the engine did not stop cleanly".into()),
         None => Ok(()),
     }
+}
+
+/// Sets the camera's format and starts sending the program to it (`--vcam`). Returns
+/// the factory, which must outlive the camera's session.
+fn start_camera(
+    recording: &mut Recording,
+    f: args::VcamFormat,
+) -> Result<Box<dyn rbs_vcam::VirtualCameraFactory>, String> {
+    let factory = platform::virtual_camera()
+        .ok_or("--vcam: the virtual camera is not available on this platform")?;
+    let format = vcam::camera_format(f)?;
+    if !factory
+        .set_format(&format)
+        .map_err(|e| format!("--vcam: {e}"))?
+    {
+        println!(
+            "virtual camera: an app is using the camera; it shows the still picture until it opens the camera again"
+        );
+    }
+    recording
+        .start_virtual_camera(
+            factory.as_ref(),
+            rbs_record::VirtualCameraSettings::new(f.size.width, f.size.height, format.rate),
+        )
+        .map_err(|e| format!("--vcam: {e}"))?;
+    println!(
+        "virtual camera: sending {}x{} at {} fps",
+        f.size.width, f.size.height, f.fps
+    );
+    Ok(factory)
+}
+
+/// The camera's counters in one line.
+fn camera_line(state: &rbs_record::VirtualCameraState) -> String {
+    let s = &state.stats;
+    let n = |c: &std::sync::atomic::AtomicU64| c.load(Ordering::Relaxed);
+    format!(
+        "{} sent, {} skipped (app behind), {} skipped (readback busy), {} lost, {} refused, {} failed",
+        n(&s.sent),
+        n(&s.consumer_busy),
+        n(&s.busy),
+        n(&s.lost),
+        n(&s.refused),
+        n(&s.failed)
+    )
 }
 
 /// A node failure or restart the engine reported, in words; `None` for what is not

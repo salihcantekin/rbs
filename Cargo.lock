@@ -4585,6 +4585,9 @@ dependencies = [
  "rbs-transport-file",
  "rbs-transport-rtmp",
  "rbs-transport-srt",
+ "rbs-vcam",
+ "rbs-vcam-mf",
+ "rbs-vcam-test",
  "serde_json",
 ]
 
@@ -4849,6 +4852,8 @@ dependencies = [
  "rbs-mux-matroska",
  "rbs-transport",
  "rbs-transport-file",
+ "rbs-vcam",
+ "rbs-vcam-test",
  "wgpu",
 ]
 
@@ -4871,6 +4876,8 @@ dependencies = [
  "rbs-scene",
  "rbs-sources",
  "rbs-transport",
+ "rbs-vcam",
+ "rbs-vcam-test",
 ]
 
 [[package]]
@@ -4990,6 +4997,19 @@ dependencies = [
  "allocation-counter",
  "bytes",
  "rbs-core",
+]
+
+[[package]]
+name = "rbs-vcam-mf"
+version = "0.0.1"
+dependencies = [
+ "bytes",
+ "rbs-core",
+ "rbs-vcam",
+ "rbs-vcam-mf-source",
+ "rbs-vcam-ring",
+ "windows",
+ "windows-core",
 ]
 
 [[package]]

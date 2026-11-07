@@ -323,6 +323,42 @@ fn header_matches(region: &Region, layout: &Layout) -> Result<(), RingError> {
     }
 }
 
+/// What a ring's header says, for the writer's side to report: the announced size and
+/// the reader's heartbeat. Nothing in it is used to address memory.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct HeaderInfo {
+    /// Width the consumer announced.
+    pub width: u32,
+    /// Height the consumer announced.
+    pub height: u32,
+    /// The reader's last heartbeat (milliseconds of the shared monotonic clock).
+    pub reader_heartbeat_ms: u64,
+}
+
+impl HeaderInfo {
+    /// Whether a reader's heartbeat is at most [`STALE_MS`] old at `now_ms`: an app
+    /// reads the camera.
+    pub fn reader_active(&self, now_ms: u64) -> bool {
+        self.reader_heartbeat_ms != 0 && now_ms.saturating_sub(self.reader_heartbeat_ms) <= STALE_MS
+    }
+}
+
+/// The header of `region`, or `None` when the region is smaller than a header, not
+/// initialised, or of another layout version. Each field is read once.
+pub fn header_info(region: &Region) -> Option<HeaderInfo> {
+    if region.len < HEADER_LEN || region.u64_at(OFF_MAGIC).load(Ordering::Acquire) != MAGIC {
+        return None;
+    }
+    if region.u32_at(OFF_VERSION).load(Ordering::Relaxed) != VERSION {
+        return None;
+    }
+    Some(HeaderInfo {
+        width: region.u32_at(OFF_WIDTH).load(Ordering::Relaxed),
+        height: region.u32_at(OFF_HEIGHT).load(Ordering::Relaxed),
+        reader_heartbeat_ms: region.u64_at(OFF_READER_HB).load(Ordering::Acquire),
+    })
+}
+
 /// Writes a fresh header and frees every slot. Run by the creator of the region (the
 /// consumer) each time it creates or resets the ring, with a generation different from
 /// the last one, so a writer still attached starts over ([`WriteOutcome::Reset`]).

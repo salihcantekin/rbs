@@ -55,3 +55,39 @@ fn fs_chroma(@builtin(position) pos: vec4<f32>) -> @location(0) vec2<f32> {
     let cr = (p.r - yp) / 1.5748;
     return round(vec2<f32>(c_mid) + c_range * vec2<f32>(cb, cr)) * code_scale;
 }
+
+// Scaled conversion (ADR-0066 decision 4): the canvas is fitted into the output with its
+// aspect ratio kept and bilinear filtering; the rest of the output is black. Used only
+// by converters whose output size differs from the canvas; the entries above are the
+// one-to-one path and are unchanged.
+// The picture's rectangle in output pixels, set per pipeline.
+override fit_x: f32 = 0.0;
+override fit_y: f32 = 0.0;
+override fit_w: f32 = 1.0;
+override fit_h: f32 = 1.0;
+
+fn sample_prime(p: vec2<f32>) -> vec3<f32> {
+    let uv = (p - vec2<f32>(fit_x, fit_y)) / vec2<f32>(fit_w, fit_h);
+    if (any(uv < vec2<f32>(0.0)) || any(uv > vec2<f32>(1.0))) {
+        return vec3<f32>(0.0);
+    }
+    return oetf_709(textureSampleLevel(canvas, unused_sampler, uv, 0.0).rgb);
+}
+
+@fragment
+fn fs_luma_scaled(@builtin(position) pos: vec4<f32>) -> @location(0) f32 {
+    let p = sample_prime(pos.xy);
+    return round(y_black + y_range * luma(p)) * code_scale;
+}
+
+@fragment
+fn fs_chroma_scaled(@builtin(position) pos: vec4<f32>) -> @location(0) vec2<f32> {
+    // The four luma pixel centres of this chroma sample's 2x2 block.
+    let c = floor(pos.xy) * 2.0;
+    let p = (sample_prime(c + vec2<f32>(0.5, 0.5)) + sample_prime(c + vec2<f32>(1.5, 0.5))
+        + sample_prime(c + vec2<f32>(0.5, 1.5)) + sample_prime(c + vec2<f32>(1.5, 1.5))) * 0.25;
+    let yp = luma(p);
+    let cb = (p.b - yp) / 1.8556;
+    let cr = (p.r - yp) / 1.5748;
+    return round(vec2<f32>(c_mid) + c_range * vec2<f32>(cb, cr)) * code_scale;
+}

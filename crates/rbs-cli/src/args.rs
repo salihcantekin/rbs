@@ -23,6 +23,8 @@ pub enum Command {
     /// `rbs-cli remote fingerprint`: print the key pin and certificate fingerprint
     /// clients on other computers check (ADR-0046).
     RemoteFingerprint,
+    /// `rbs-cli vcam ...`: the RBS virtual camera (ADR-0066, Windows).
+    Vcam(VcamCommand),
     /// `rbs-cli help` or `--help`.
     Help,
 }
@@ -45,6 +47,43 @@ pub enum TokenCommand {
         /// The token's name.
         name: String,
     },
+}
+
+/// The virtual camera's announced format, one of ADR-0066 decision 11.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct VcamFormat {
+    /// Size in pixels.
+    pub size: Size,
+    /// Frames per second.
+    pub fps: u32,
+}
+
+impl Default for VcamFormat {
+    fn default() -> Self {
+        Self {
+            size: Size::new(1280, 720),
+            fps: 30,
+        }
+    }
+}
+
+/// Sizes the virtual camera can announce (ADR-0066 decision 11).
+pub const VCAM_SIZES: [(u32, u32); 3] = [(1920, 1080), (1280, 720), (640, 360)];
+/// Frame rates the virtual camera can announce (ADR-0066 decision 11).
+pub const VCAM_RATES: [u32; 4] = [15, 24, 30, 60];
+
+/// `rbs-cli vcam ...`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum VcamCommand {
+    /// `vcam status`: whether the camera is added, in words.
+    Status,
+    /// `vcam add [--size WxH] [--fps N]`: adds the camera (one administrator prompt the
+    /// first time) and sets its format.
+    Add(VcamFormat),
+    /// `vcam format [--size WxH] [--fps N]`: changes the format it announces.
+    Format(VcamFormat),
+    /// `vcam remove`: removes the camera (the class registration stays).
+    Remove,
 }
 
 /// `rbs-cli app ...`: what to ask a running RBS desktop app (control API over local
@@ -156,6 +195,8 @@ pub struct RecordArgs {
     pub system_audio_offset_ms: i32,
     /// Replace an existing file.
     pub overwrite: bool,
+    /// `--vcam`: also send the program to the virtual camera, in this format.
+    pub vcam: Option<VcamFormat>,
 }
 
 /// The usage text.
@@ -169,6 +210,7 @@ usage:
   rbs-cli token revoke <name>
   rbs-cli remote fingerprint
   rbs-cli app stream start|stop|status [--json]
+  rbs-cli vcam status|add|format|remove [--size WxH] [--fps N]
 
 record options:
   --seconds N          stop after N seconds (default: press Enter to stop)
@@ -200,6 +242,11 @@ record options:
   --system-audio-offset MS
                        the same for the system audio
   --overwrite          replace the file if it exists (record only)
+  --vcam               also send the program to the RBS virtual camera (Windows;
+                       add it first with `vcam add`)
+  --vcam-size WxH      the camera's size: 1920x1080, 1280x720 or 640x360
+                       (default 1280x720)
+  --vcam-fps N         the camera's frame rate: 15, 24, 30 or 60 (default 30)
 
 stream options (the record options above apply too, except --overwrite; the
 default video bitrate is 6000 kbit/s):
@@ -222,7 +269,16 @@ its Settings, Remote control):
                        the app's Settings, Stream
   stream stop          end the stream (the app does not ask first)
   stream status        the stream's state and connection; --json prints it as
-                       the control API's JSON";
+                       the control API's JSON
+
+vcam commands (the RBS virtual camera that meeting apps can pick; Windows 11):
+  status               whether the camera is added
+  add                  add the camera; Windows asks for administrator approval
+                       the first time only. --size and --fps as for format
+  format               change what the camera announces: --size 1920x1080,
+                       1280x720 or 640x360 (default 1280x720), --fps 15, 24, 30
+                       or 60 (default 30); applies when no app uses the camera
+  remove               remove the camera";
 
 fn value<'a>(it: &mut impl Iterator<Item = &'a str>, flag: &str) -> Result<&'a str, String> {
     it.next().ok_or_else(|| format!("{flag} needs a value"))
@@ -407,6 +463,7 @@ pub fn parse<'a>(args: impl IntoIterator<Item = &'a str>) -> Result<Command, Str
         Some("stream") => record(it, true).map(|a| Command::Record(Box::new(a))),
         Some("token") => token(it).map(Command::Token),
         Some("app") => app(it).map(Command::App),
+        Some("vcam") => vcam(it).map(Command::Vcam),
         Some("remote") => match (it.next(), it.next()) {
             (Some("fingerprint"), None) => Ok(Command::RemoteFingerprint),
             (Some("fingerprint"), Some(extra)) => {
@@ -416,6 +473,48 @@ pub fn parse<'a>(args: impl IntoIterator<Item = &'a str>) -> Result<Command, Str
             (None, _) => Err("remote needs fingerprint".into()),
         },
         Some(other) => Err(format!("unknown command {other:?}")),
+    }
+}
+
+fn vcam_size(text: &str, flag: &str) -> Result<Size, String> {
+    let s = size(text).map_err(|e| e.replacen("--size", flag, 1))?;
+    if VCAM_SIZES.contains(&(s.width, s.height)) {
+        Ok(s)
+    } else {
+        Err(format!(
+            "{flag}: {text} is not 1920x1080, 1280x720 or 640x360"
+        ))
+    }
+}
+
+fn vcam_fps(text: &str, flag: &str) -> Result<u32, String> {
+    let n = positive(text, flag)?;
+    if VCAM_RATES.contains(&n) {
+        Ok(n)
+    } else {
+        Err(format!("{flag}: {n} is not 15, 24, 30 or 60"))
+    }
+}
+
+fn vcam<'a>(mut it: impl Iterator<Item = &'a str>) -> Result<VcamCommand, String> {
+    let verb = it
+        .next()
+        .ok_or("vcam needs status, add, format or remove")?;
+    let takes_format = matches!(verb, "add" | "format");
+    let mut format = VcamFormat::default();
+    while let Some(arg) = it.next() {
+        match arg {
+            "--size" if takes_format => format.size = vcam_size(value(&mut it, arg)?, arg)?,
+            "--fps" if takes_format => format.fps = vcam_fps(value(&mut it, arg)?, arg)?,
+            extra => return Err(format!("vcam {verb}: unexpected {extra:?}")),
+        }
+    }
+    match verb {
+        "status" => Ok(VcamCommand::Status),
+        "add" => Ok(VcamCommand::Add(format)),
+        "format" => Ok(VcamCommand::Format(format)),
+        "remove" => Ok(VcamCommand::Remove),
+        other => Err(format!("vcam: unknown command {other:?}")),
     }
 }
 
@@ -522,7 +621,11 @@ fn record<'a>(mut it: impl Iterator<Item = &'a str>, stream: bool) -> Result<Rec
         mic_offset_ms: 0,
         system_audio_offset_ms: 0,
         overwrite: false,
+        vcam: None,
     };
+    let mut vcam = false;
+    let mut vcam_format = VcamFormat::default();
+    let mut vcam_options = false;
     while let Some(arg) = it.next() {
         match arg {
             "--seconds" => {
@@ -574,6 +677,15 @@ fn record<'a>(mut it: impl Iterator<Item = &'a str>, stream: bool) -> Result<Rec
                 a.system_audio_offset_ms = offset(value(&mut it, arg)?, arg)?;
             }
             "--overwrite" if !stream => a.overwrite = true,
+            "--vcam" => vcam = true,
+            "--vcam-size" => {
+                vcam_format.size = vcam_size(value(&mut it, arg)?, arg)?;
+                vcam_options = true;
+            }
+            "--vcam-fps" => {
+                vcam_format.fps = vcam_fps(value(&mut it, arg)?, arg)?;
+                vcam_options = true;
+            }
             "--key-env" if stream => {
                 let name = value(&mut it, arg)?;
                 if name.is_empty() || name.contains('=') {
@@ -594,6 +706,10 @@ fn record<'a>(mut it: impl Iterator<Item = &'a str>, stream: bool) -> Result<Rec
         }
     }
     a.rate_control = rate.rate_control()?;
+    if vcam_options && !vcam {
+        return Err("--vcam-size and --vcam-fps need --vcam".into());
+    }
+    a.vcam = vcam.then_some(vcam_format);
     if stream {
         let url = out.ok_or("stream: the URL is missing (rtmp://host/app or srt://host:port)")?;
         let input = stream_input(url)?;
@@ -1028,5 +1144,67 @@ mod tests {
         t.finish(Duration::from_secs(5)).unwrap();
         assert_eq!(std::fs::read(&path).unwrap(), b"rbs");
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn vcam_commands() {
+        let p = |a: &[&str]| parse(a.iter().copied());
+        assert_eq!(
+            p(&["vcam", "status"]),
+            Ok(Command::Vcam(VcamCommand::Status))
+        );
+        assert_eq!(
+            p(&["vcam", "remove"]),
+            Ok(Command::Vcam(VcamCommand::Remove))
+        );
+        assert_eq!(
+            p(&["vcam", "add"]),
+            Ok(Command::Vcam(VcamCommand::Add(VcamFormat::default())))
+        );
+        assert_eq!(
+            p(&["vcam", "format", "--size", "1920x1080", "--fps", "60"]),
+            Ok(Command::Vcam(VcamCommand::Format(VcamFormat {
+                size: Size::new(1920, 1080),
+                fps: 60
+            })))
+        );
+        for bad in [
+            &["vcam"][..],
+            &["vcam", "start"],
+            &["vcam", "status", "--fps", "30"],
+            &["vcam", "remove", "--size", "1280x720"],
+            &["vcam", "format", "--size", "1000x500"],
+            &["vcam", "format", "--fps", "25"],
+            &["vcam", "add", "--size"],
+        ] {
+            assert!(p(bad).is_err(), "{bad:?}");
+        }
+    }
+
+    #[test]
+    fn record_with_the_virtual_camera() {
+        assert_eq!(parse_record(&["a.mkv"]).unwrap().vcam, None);
+        assert_eq!(
+            parse_record(&["a.mkv", "--vcam"]).unwrap().vcam,
+            Some(VcamFormat::default())
+        );
+        assert_eq!(
+            parse_stream(&[
+                "rtmp://h/app",
+                "--vcam",
+                "--vcam-size",
+                "640x360",
+                "--vcam-fps",
+                "15"
+            ])
+            .unwrap()
+            .vcam,
+            Some(VcamFormat {
+                size: Size::new(640, 360),
+                fps: 15
+            })
+        );
+        assert!(parse_record(&["a.mkv", "--vcam-fps", "30"]).is_err());
+        assert!(parse_record(&["a.mkv", "--vcam", "--vcam-size", "1920x1200"]).is_err());
     }
 }

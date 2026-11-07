@@ -156,8 +156,15 @@ impl Studio {
     pub fn node_name(&self, node: NodeId) -> Option<&str>;
     pub fn settings(&self) -> &StudioSettings;
     pub fn engine(&self) -> &Engine;
+    pub fn start_virtual_camera(&mut self, factory: &dyn VirtualCameraFactory,
+        settings: VirtualCameraSettings) -> Result<(), VcamError>; // ADR-0066
+    pub fn stop_virtual_camera(&mut self) -> bool;    // false when not sending
+    pub fn virtual_camera(&self) -> Option<VirtualCameraState>; // while sending
     pub fn shutdown(&mut self) -> (Vec<(OutputId, FinishReport)>, Vec<String>);
 }
+pub struct VirtualCameraSettings { pub width: u32, pub height: u32, pub rate: FrameRate } // ::new(w, h, rate)
+pub struct VirtualCameraState { pub config: VirtualCameraConfig,
+    pub stats: Arc<VirtualCameraNodeStats>, pub failure: Option<String> }
 impl Recording { pub fn studio(&self) -> &Studio; }
 // RecordError gains TooManyOutputs and OutputFinishing (ADR-0047; they replace ADR-0041's AlreadyRecording).
 // StartReport gains video_shared and audio_shared: the encoder ran already for another output.
@@ -228,6 +235,15 @@ Without audio (`audio: None`) the two audio partitions are not added: three work
 
 `Recording::start` is a studio without a preview, in a strict mode, with the recording's nodes added before the first apply: a binder problem that leaves out a source of the program scene fails the start (`Problems`) and a source the recording schedules (video and audio) that cannot be instantiated fails it (`Source`), both before any device opens (test `a_video_source_that_cannot_be_instantiated_fails_the_start_before_any_device_opens`). `finish` is `Studio::shutdown`; its `shutdown_errors` hold the draining apply's errors and the engine shutdown's.
 
+### Virtual camera (ADR-0066)
+
+- **Not an output.** The camera is none of the `MAX_OUTPUTS` outputs: it has no encoder or output partition and runs alongside recordings and streams without touching them. It shows the program compositor's canvas, whatever studio mode shows (ADR-0066 decision 5).
+- **Start.** `start_virtual_camera` fails with `InvalidConfig` while the camera already sends. It opens the session (`factory.open` with NV12, system memory, the settings' size and rate) on the calling control thread, so `NotInstalled` and the adapter's other refusals come back before anything is added. Then a `VirtualCameraNode` for the canvas size is added Active on `RENDER`, linked from the program compositor's "canvas", adopted and applied on a copy of the graph. An adoption or apply refusal is `Os { code: 0, .. }`, and the node is taken back (the session drops with it, on this thread).
+- **Running.** The node keeps the program compositor scheduled, so the render worker and the program's video sources run while the camera sends, even with no preview and no output. The node is not essential: its failure is kept in `VirtualCameraState::failure` (cleared when it runs again), never in `failure()` or an output's failure.
+- **Stop.** `stop_virtual_camera` removes the node with a plain apply, then takes it back. If the render partition still runs it, the take is queued in the pending takes, and `service` completes it. Either way the node, and with it the session whose drop joins the adapter's sender thread, is dropped on the control thread, never on `RENDER`. `shutdown` stops the camera first. Stopping never uninstalls the camera.
+
+`Recording` passes `start_virtual_camera`, `stop_virtual_camera` and `virtual_camera` through to its studio; `finish` stops the camera with the rest.
+
 ### Invariants
 
 1. Engine code names no adapter: `rbs-record` depends on ports, node crates, the scene and the engine only (P1), and selects by capability (P3).
@@ -246,6 +262,8 @@ Without audio (`audio: None`) the two audio partitions are not added: three work
 - Exit code 0 when the recording ran and stopped cleanly with packets muxed (`Progress::packets_muxed`); 1 when start failed, the recording failed while running, the engine did not stop cleanly, or no packet was muxed.
 - `rbs-cli stream <rtmp://host[:port]/app | srt://host:port> [options]`: the same scene and options as `record` except `--overwrite`, with `--bitrate` defaulting to 6000 kbit/s. `rtmp://` sends H.264 and AAC packets to the RTMP transport (no muxer); `srt://` muxes MPEG-TS for the SRT transport; any other scheme (`rtmps` included, not supported yet) is refused when the arguments are parsed. The stream key (RTMP, required) or stream id (SRT, optional) is read from the environment variable `RBS_STREAM_KEY`, or the one `--key-env NAME` names, never from the command line, and is trimmed; a missing RTMP key fails before any device is opened or permission asked; it goes into `RecordSettings::secret` only, so it is in no URL, log line or report. `--srt-latency MS` (0 to 65535, SRT only) becomes the `latency_ms` transport option. Reconnect is on by default (`Backoff`, 1 s doubling to 30 s, 10 attempts; with the transports' rule that attempts restart after a connection that reached publish), `--no-reconnect` turns it off; a server that rejects the key is not retried and stops the stream with the error. Lines and summary as for `record`, with the URL instead of the file; each connection change is printed once when it happens (`connected to <url>`, `connected to <url> again (n times)`, `not connected, trying again (attempt n)`), the per-second line ends with `live` or `not connected`, and the summary adds connections, reconnect attempts and transport drops. Exit code 1 also when no packet reached the stream, or when the stream never connected (`never connected to <url>`, followed by the cause when the output failed, such as the connection error with `--no-reconnect`).
 - Stream adapters on every platform: the MPEG-TS muxer, the RTMP and SRT transports (pure Rust, no FFmpeg).
+- `rbs-cli vcam status|add|format|remove` (ADR-0066, ADR-0070; Windows 11, elsewhere it exits with code 1 and "not available on this platform"): `status` prints the camera's state in words (`added`, `not added`, `update needed: <reason>`, `not available on this computer: <reason>`); `add [--size WxH] [--fps N]` adds the camera (`install`: one administrator prompt when the source class is not registered yet) and then sets its format; `format [--size WxH] [--fps N]` changes the format (`set_format`) and says when it applies only once no app uses the camera; `remove` removes the camera (`uninstall`; the class registration stays). Sizes are 1920x1080, 1280x720 (default) or 640x360, rates 15, 24, 30 (default) or 60 (ADR-0066 decision 11); anything else exits with code 2. The adapter keeps the camera's symbolic link in `vcam-link.txt` in the RBS settings folder (the `LinkStore`). `rbs-vcam-setup.exe` and `rbs_vcam_mf_source.dll` must be next to `rbs-cli.exe` (build `-p rbs-cli -p rbs-vcam-mf -p rbs-vcam-mf-source`).
+- `record` and `stream` take `--vcam` (with `--vcam-size WxH` and `--vcam-fps N`, same values and defaults as `vcam format`): after the start, the camera's format is set and `Recording::start_virtual_camera` sends the program to the camera for the whole run; a camera that is not added fails the command before it records (`--vcam: not installed`). The per-second line adds `camera <n> sent, <n> skipped (app behind), <n> skipped (readback busy), <n> lost, <n> refused, <n> failed`, and the summary repeats it with the node's failure, if any. This is how the P15 measurements (camera off and on next to a recording) and the hardware test run without the desktop app.
 - `rbs-cli devices` lists installed source types with numbered targets, and every registered adapter as available or unavailable.
 
 ## Errors and failure behaviour
@@ -258,6 +276,7 @@ Control-thread only; the graph's hot paths are the nodes' and keep their budgets
 
 ## Conformance tests
 
+- `crates/rbs-record/tests/vcam.rs` (one test, with `rbs-vcam-test`): a camera that is not installed fails the start and leaves nothing; while not sending, no node, render worker or camera thread; a second start fails; the camera is not an output and schedules the program on its own; a recording starts and stops while it sends and it keeps sending, frames in order; after stop no render worker and no camera thread (Linux lists threads by name).
 - `crates/rbs-record/tests/studio.rs` (same rig and clock driver as `record.rs`, shared in `tests/support`):
   - `recordings_start_and_stop_while_the_studio_keeps_running`: without a preview no render worker and no capture open while the meters run; two recordings in a row on one engine, each with its trailer and finished transport, the recording partitions stopped and video sources closed afterwards.
   - `a_recording_that_cannot_start_leaves_the_studio_running`: `NoAdapter` for a container without a muxer; an output that cannot open its destination fails with `Start` naming the output, nothing records, the studio runs, the next recording works.
@@ -278,6 +297,8 @@ Control-thread only; the graph's hot paths are the nodes' and keep their budgets
   - `a_transport_that_does_not_take_the_input_is_not_chosen`: packets to a transport that takes only Matroska chunks, and Matroska to one that takes only packets, fail with `NoAdapter { port: Transport }` before anything opens.
   - `an_unknown_canvas_or_a_missing_encoder_fails_before_anything_runs`: `NoAdapter` for the video encoder and the muxer, `UnknownCanvas`; no capture buffer or audio stream was opened.
 - `crates/rbs-cli` unit tests: argument parsing and refusals (`record` and `stream`: URL schemes, stream-only options, the stream bitrate default), file URLs (drive, UNC, verbatim on Windows; a write through the file transport to the URL's path), the scene (sources present, left out on request, bad indices refused, camera rectangle, sync offsets per audio source in ns, none for a source left out; offsets beyond ±200 ms refused).
+- `crates/rbs-cli` unit tests for `vcam` and `--vcam`: parsing and refusals (sizes and rates outside ADR-0066 decision 11, `--vcam-size` without `--vcam`), and `vcam` against the test adapter (`rbs-vcam-test`): add, format pending while an app reads, remove.
+- Hardware (manual, Windows 11): `rbs-cli vcam add` (one administrator prompt), the Windows Camera app and a meeting app list "RBS Virtual Camera" and show the still picture; `rbs-cli record <file> --seconds 60 --vcam` shows the program in those apps, then `vcam format --size 1920x1080` while an app reads says it applies later, and the app keeps the camera after it reopens it (same symbolic link); `vcam remove` takes it out of the apps' lists; `vcam add` again asks for no approval.
 - Hardware (manual, Windows and macOS): `rbs-cli stream rtmp://127.0.0.1/live --seconds 30` with `RBS_STREAM_KEY` set, to `ffmpeg -listen 1 -i rtmp://127.0.0.1/live/<key> -c copy out.flv` (FLV with H.264 and AAC, a decode pass, video and audio durations within a frame of the run); the same with `srt://127.0.0.1:<port>` to `ffmpeg -i "srt://:<port>?mode=listener" -c copy out.ts`; a listener started after the stream (reconnect) and a wrong key (the stream stops with the server's error).
 - Hardware (manual, Windows): `rbs-cli record <file> --seconds 20` to `.mkv` and `.mp4`, with NVENC and with `--encoder amf`; `ffprobe` streams, packet steps and a decode pass; an A/V sync measurement with a clip that flashes the screen white and beeps at the same time every second, played full screen while recording display and system audio.
 

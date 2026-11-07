@@ -30,5 +30,5 @@ pub use recording::{
 pub use select::{Chosen, scheme_of};
 pub use studio::{
     END_TAIL_LIMIT, FilterSettingsAdjusted, Link, MAX_LAYERS, MAX_OUTPUTS, OutputId,
-    OutputSettings, Studio, StudioSettings, Updated,
+    OutputSettings, Studio, StudioSettings, Updated, VirtualCameraSettings, VirtualCameraState,
 };

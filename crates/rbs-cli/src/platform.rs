@@ -129,3 +129,20 @@ pub fn adapters() -> (RecordAdapters, Vec<String>) {
     }
     (a, errors)
 }
+
+/// The virtual camera adapter of this platform, if it has one (ADR-0066: Windows only).
+/// The camera's symbolic link is kept in `vcam-link.txt` in the RBS settings folder.
+pub fn virtual_camera() -> Option<Box<dyn rbs_vcam::VirtualCameraFactory>> {
+    #[cfg(windows)]
+    {
+        let dir = rbs_remote_settings::config_dir();
+        // A missing folder only means the link is not kept; `status` then says not added.
+        let _ = std::fs::create_dir_all(&dir);
+        let links = rbs_vcam_mf::FileLinkStore::new(dir.join("vcam-link.txt"));
+        Some(Box::new(rbs_vcam_mf::MfVcamFactory::new(Box::new(links))))
+    }
+    #[cfg(not(windows))]
+    {
+        None
+    }
+}

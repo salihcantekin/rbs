@@ -1,0 +1,43 @@
+[package]
+name = "rbs-vcam-mf"
+description = "RBS virtual camera adapter for Windows (Media Foundation virtual camera, ADR-0066, ADR-0070): adds the camera, and a sender thread writes frames into the shared ring the media source reads."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+rbs-core = { path = "../rbs-core" }
+rbs-vcam = { path = "../rbs-vcam" }
+rbs-vcam-ring = { path = "../rbs-vcam-ring" }
+# The CLSID derivation, the announced formats and the ring layout the source uses.
+rbs-vcam-mf-source = { path = "../rbs-vcam-mf-source" }
+
+[target.'cfg(windows)'.dependencies]
+# Microsoft's official bindings (MIT OR Apache-2.0), same version as the other adapters.
+windows = { version = "0.62", features = [
+    "Win32_Devices_DeviceAndDriverInstallation",
+    "Win32_Devices_Properties",
+    "Win32_Foundation",
+    "Win32_Media_MediaFoundation",
+    "Win32_Security",
+    "Win32_Security_Authorization",
+    "Win32_Storage_FileSystem",
+    "Win32_System_Com",
+    "Win32_System_Memory",
+    "Win32_System_Registry",
+    "Win32_System_RemoteDesktop",
+    "Win32_System_SystemInformation",
+    "Win32_System_Threading",
+    "Win32_UI_Shell",
+    "Win32_UI_WindowsAndMessaging",
+] }
+windows-core = "0.62"
+
+[dev-dependencies]
+bytes = "1.9"
+
+[lints]
+workspace = true
