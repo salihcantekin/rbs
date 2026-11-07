@@ -285,11 +285,3 @@ fn stop_works_after_the_socket_file_was_deleted() {
     std::fs::remove_file(&t.endpoint().0).unwrap();
     t.stop();
 }
-
-/// TEMPORARY (removed before merge): repeats the suite to catch a macOS-only hang.
-#[test]
-fn tmp_repeat_the_suite_to_catch_the_macos_hang() {
-    for _ in 0..500 {
-        conformance::run_all(&mut IpcHarness::default());
-    }
-}
