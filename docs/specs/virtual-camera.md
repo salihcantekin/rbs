@@ -1,13 +1,13 @@
 # Spec: Virtual camera port
 
 - Status: Draft
-- Owner crate(s): `rbs-vcam` (port, conformance), `rbs-vcam-ring` (adapter support: shared frame ring), `rbs-vcam-test` (test adapter), adapters `rbs-vcam-cmio` (macOS), `rbs-vcam-mf` (Windows); companion binaries `rbs-vcam-cmio-extension`, `rbs-vcam-mf-source`; the node in `rbs-nodes`
+- Owner crate(s): `rbs-vcam` (port, conformance), `rbs-vcam-ring` (adapter support: shared frame ring), `rbs-vcam-test` (test adapter), adapter `rbs-vcam-mf` (Windows) and its companion DLL `rbs-vcam-mf-source`; macOS and Linux adapters later (ADR-0066 decision 8); the node in `rbs-nodes`
 - Related ADRs: [0066](../adr/0066-virtual-camera.md), [0003](../adr/0003-ports-and-adapters.md), [0013](../adr/0013-zero-cost-when-unused.md), [0025](../adr/0025-encoder-surface-export.md), [0028](../adr/0028-cross-process-preview-surfaces.md), [0031](../adr/0031-adapter-support-crates.md), [0038](../adr/0038-io-graph-nodes.md), [0047](../adr/0047-several-outputs-per-canvas.md), [0050](../adr/0050-command-registry-menus-and-toolbar.md), [0061](../adr/0061-studio-mode-in-the-desktop-app.md)
 - Related specs: [backend-ports.md](backend-ports.md), [media-types.md](media-types.md), [io-nodes.md](io-nodes.md), [recording.md](recording.md)
 
 ## Purpose
 
-The port through which RBS offers its picture to other apps as a camera. Every OS mechanism (CoreMediaIO Camera Extension on macOS, `MFCreateVirtualCamera` on Windows, `v4l2loopback` on Linux later) is an adapter behind this one contract; the engine sends frames and never sees the OS API.
+The port through which RBS offers its picture to other apps as a camera. Every OS mechanism (`MFCreateVirtualCamera` on Windows now; a CoreMediaIO Camera Extension on macOS and `v4l2loopback` on Linux later) is an adapter behind this one contract; the engine sends frames and never sees the OS API.
 
 ## Scope
 
@@ -77,19 +77,25 @@ impl VirtualCameraConfig { pub fn new(format: CameraFormat, memory: MemoryKind) 
 
 ```rust
 pub trait VirtualCameraSession: Send {
-    /// Hands `frame` to the adapter's sender thread and returns at once. Never waits and
-    /// never allocates in steady state: one atomic exchange into a fixed triple buffer
-    /// and one non-blocking doorbell wake (the only system call, an exception like
-    /// ADR-0028's). A frame not yet taken by the sender is replaced and counted
-    /// (`replaced`); the sender thread, never the caller, drops it.
+    /// One atomic load: true when a slot is empty and `send` would take a frame.
+    /// The node asks before any GPU work and skips the camera frame when false
+    /// (counted as `consumer_busy`), so the render thread never drops a frame.
+    fn ready(&self) -> bool;
+    /// Moves `frame` into an empty one of three fixed slots (states `Empty`,
+    /// `Full(seq)`, `Taken`), marks it `Full(seq)` and wakes the sender thread. Never
+    /// waits and never allocates in steady state; the doorbell wake is the only system
+    /// call (an exception like ADR-0028's). The sender takes the newest `Full` slot
+    /// and drops older `Full` slots itself (`replaced`); the caller never drops a frame.
+    /// Called without an empty slot, it gives the frame back in `Err(Busy(frame))`
+    /// (a caller bug: check `ready` first).
     /// Errors only for a frame that breaks the config (size, format, memory kind);
     /// the frame is dropped and counted. Consumer and OS problems never fail `send`:
     /// they show in `stats`.
     fn send(&mut self, frame: VideoFrame) -> Result<(), VcamError>;
     fn stats(&self) -> VcamStats;   // atomics, no lock
 }
-// Drop stops the sender thread and joins it; the camera shows its still picture
-// within 1 s. Thread count returns to its value before `open`.
+// Drop stops the sender thread and joins it (on the control thread, never on the
+// render thread); the camera shows its still picture within 1 s. Thread count returns to its value before `open`.
 
 /// A snapshot of the session's atomic counters. Read through accessors; new
 /// counters are added without breaking callers.
@@ -102,6 +108,7 @@ impl VcamStats {
     pub fn refused(&self) -> u64;         // send() errors
     pub fn consumer_busy(&self) -> u64;   // no free slot, or surface still in use outside RBS
     pub fn consumer_absent(&self) -> u64; // frames taken while no app reads the camera
+    pub fn format_pending(&self) -> u64;  // frames sent while a format change waits for apps to close the camera
     pub fn os_errors(&self) -> u64;
     /// The last OS error, stored as a non-zero `u32` code in an atomic (0 = none).
     pub fn last_os_error(&self) -> Option<u32>;
@@ -111,7 +118,7 @@ impl VcamStats {
 Invariants (each a conformance test):
 
 1. `send` returns whatever the consumer does (stalled, absent, crashed): checked with a stalled test consumer under a hang guard, never with a timing assertion (ADR-0032), and it performs no allocation after the first frame of a size (allocation counter).
-2. The sender delivers the newest frame: after `send(a); send(b)` with the sender stalled, `b` is delivered, `a` is counted in `replaced` and dropped on the sender thread.
+2. The sender delivers the newest frame: after `send(a); send(b)` with the sender stalled, `b` is delivered, `a` is counted in `replaced` and dropped on the sender thread. With all three slots full, `ready` is false.
 3. A native frame is the adapter's single consumer's (ADR-0025): it is dropped (its lease released) once the consumer side no longer reads its surface, never earlier and never on the render thread.
 4. No thread, timer or OS handle exists before `open` or after the session is dropped (P13).
 5. `install` and `uninstall` are idempotent; `status` after them reports what they returned.
@@ -138,6 +145,8 @@ An adapter support crate (ADR-0031) for adapters whose consumer lives in another
 - The reader takes the newest `Ready` slot by CAS to `Reading`, copies it, and frees it. It never sees a slot while it is written.
 - The reader never trusts the header: it computes the layout (size, stride, slot count, offsets) from the format it announced, bounds every index by its own values, reads each shared field once per use, and treats any disagreement as "no frames".
 - Either side treats a wrong magic or layout version as "no frames"; the app reports `NeedsUpdate`.
+- "No frames" on the reader's side always means the source shows its still picture ("RBS Virtual Camera is off"): no writer heartbeat for 1 s, a header that disagrees with the announced format (for example during a pending format change; RBS counts those frames in `format_pending`), or a version mismatch.
+- The section is named `Global\\org.rbs.vcam.<user SID>`, created by the source, writable only by that SID (ADR-0066 decision 9). `rbs-vcam-ring` depends on `std` only.
 
 ## Errors and failure behaviour
 
@@ -150,6 +159,7 @@ pub enum VcamError {
     PermissionDenied(String),// the user or OS refused (UAC cancelled, extension denied)
     InvalidConfig(String),
     InvalidFrame(&'static str),
+    Busy(VideoFrame),        // send() without an empty slot; the frame is given back
     Os { code: i64, message: String },
 }
 ```
@@ -162,14 +172,15 @@ The node never fails a tick because of the camera; the studio reports the camera
 
 ## Conformance tests
 
-`rbs_vcam::conformance` runs against every adapter with a test consumer (the adapters provide one: an in-process reader of the ring for system memory, a surface-use probe for IOSurfaces):
+`rbs_vcam::conformance` runs against every adapter with a test consumer (the adapters provide one: an in-process reader of the ring for system memory):
 
 - `send_never_blocks_with_a_stalled_consumer`
+- `full_session_is_not_ready`
 - `newest_frame_wins`
 - `refuses_frames_that_break_the_config`
 - `no_threads_before_open_or_after_drop`
 - `replaced_frames_are_dropped_by_the_sender`
-- `native_frames_are_released_off_the_render_thread`
+- `native_frames_are_released_off_the_render_thread` (adapters taking native memory)
 - `set_format_applies_when_no_app_reads`
 - `install_and_uninstall_are_idempotent` (hardware-gated where the OS prompts: `RBS_VCAM_HW=1`)
 
