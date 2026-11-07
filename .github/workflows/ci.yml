@@ -46,8 +46,11 @@ jobs:
         with:
           command: check bans licenses
 
+  # Tests and lints run as separate jobs per platform so they run side by side: the test
+  # job is the critical path and no longer waits for clippy and rustdoc. The job id
+  # `check` is kept so it keeps restoring the cache main already saved under that id.
   check:
-    name: clippy, test, doc (${{ matrix.os }})
+    name: test (${{ matrix.os }})
     strategy:
       fail-fast: false
       matrix:
@@ -57,29 +60,44 @@ jobs:
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
         with:
-          components: clippy
+          fetch-depth: 2
+      # Documentation-only pull requests skip every step below (RBS_CODE=false).
+      - name: what changed
+        shell: bash
+        run: bash .github/scripts/code-changed.sh
+      - if: env.RBS_CODE == 'true'
+        uses: dtolnay/rust-toolchain@stable
       # Only main saves the cache; pull requests restore main's. Saving per pull request
       # cost minutes per run on Windows and evicted main's cache (10 GB repo limit).
-      - uses: Swatinem/rust-cache@v2
+      - if: env.RBS_CODE == 'true'
+        uses: Swatinem/rust-cache@v2
         with:
           save-if: ${{ github.ref == 'refs/heads/main' }}
       # Per-test timeouts, no retries and per-test timings (ADR-0032, .config/nextest.toml).
-      - uses: taiki-e/install-action@v2
+      - if: env.RBS_CODE == 'true'
+        uses: taiki-e/install-action@v2
         with:
           tool: cargo-nextest
-      # Software Vulkan (lavapipe) so rbs-gpu golden image tests run instead of skipping.
-      # rbs-app (Slint, Skia renderer) links fontconfig and loads xkbcommon on Linux.
-      # PipeWire and libdbus headers build rbs-capture-pipewire; the daemon and
-      # WirePlumber let its tests link a test source to a capture stream, and its portal
-      # test runs a private session bus with dbus-daemon.
-      - if: runner.os == 'Linux'
-        run: >-
-          sudo apt-get update && sudo apt-get install -y mesa-vulkan-drivers
-          libfontconfig1-dev libxkbcommon-dev
-          libpipewire-0.3-dev libdbus-1-dev pipewire wireplumber dbus-daemon
-      - if: runner.os == 'Linux'
+      # The .deb files are cached (main saves them) because the mirror is sometimes slow.
+      # Keyed by runner image and package list, so each new image starts a fresh cache.
+      - if: runner.os == 'Linux' && env.RBS_CODE == 'true'
+        id: apt-key
+        run: echo "key=apt-$ImageOS-$ImageVersion-${{ hashFiles('.github/scripts/apt-install.sh') }}" >> "$GITHUB_OUTPUT"
+      - if: runner.os == 'Linux' && env.RBS_CODE == 'true'
+        id: apt-cache
+        uses: actions/cache/restore@v4
+        with:
+          path: ~/apt-archives
+          key: ${{ steps.apt-key.outputs.key }}
+      - if: runner.os == 'Linux' && env.RBS_CODE == 'true'
+        run: bash .github/scripts/apt-install.sh ~/apt-archives
+      - if: runner.os == 'Linux' && env.RBS_CODE == 'true' && github.ref == 'refs/heads/main' && steps.apt-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: ~/apt-archives
+          key: ${{ steps.apt-cache.outputs.cache-primary-key }}
+      - if: runner.os == 'Linux' && env.RBS_CODE == 'true'
         name: start a private PipeWire daemon
         run: |
           dir="$RUNNER_TEMP/pipewire"
@@ -93,12 +111,12 @@ jobs:
           # WirePlumber is ready once it shows up as a client of the daemon.
           for _ in $(seq 100); do pw-cli ls Client 2>/dev/null | grep -qi wireplumber && break; sleep 0.1; done
           pw-cli ls Client | grep -qi wireplumber || { cat "$RUNNER_TEMP/wireplumber.log"; exit 1; }
-      - run: cargo clippy --workspace --all-targets -- -D warnings
-      - name: fast tests
+      - if: env.RBS_CODE == 'true'
+        name: fast tests
+        shell: bash
         run: |
           cargo nextest run --workspace --profile ci --no-tests=pass
           cp target/nextest/ci/junit.xml fast-junit.xml
-        shell: bash
         env:
           # Every runner has a GPU adapter (lavapipe, WARP, Metal); GPU tests must not skip.
           RBS_REQUIRE_GPU: "1"
@@ -108,7 +126,8 @@ jobs:
           RBS_REQUIRE_VIDEOTOOLBOX: ${{ runner.os == 'macOS' && '1' || '' }}
       # The slow tier: `#[ignore = "slow: ..."]` tests named `slow_*`. Other ignored tests
       # (child-process helpers, tool-dependent `ffmpeg_interop`) are not selected.
-      - name: slow tests
+      - if: env.RBS_CODE == 'true'
+        name: slow tests
         shell: bash
         run: >-
           cargo nextest run --workspace --profile ci --run-ignored only --no-tests=pass
@@ -119,17 +138,59 @@ jobs:
           RBS_REQUIRE_NV12_SURFACE: ${{ runner.os == 'Linux' && '1' || '' }}
           RBS_REQUIRE_PIPEWIRE: ${{ runner.os == 'Linux' && '1' || '' }}
           RBS_REQUIRE_VIDEOTOOLBOX: ${{ runner.os == 'macOS' && '1' || '' }}
-      - run: cargo test --workspace --doc
+      - if: env.RBS_CODE == 'true'
+        run: cargo test --workspace --doc
       - name: test timings
-        if: always()
+        if: always() && env.RBS_CODE == 'true'
         shell: bash
         run: >-
           python3 .github/scripts/slowest-tests.py "Slowest tests (${{ runner.os }})"
           fast-junit.xml target/nextest/ci/junit.xml
-      - run: cargo doc --workspace --no-deps
+
+  lint:
+    name: clippy, doc (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+      - name: what changed
+        shell: bash
+        run: bash .github/scripts/code-changed.sh
+      - if: env.RBS_CODE == 'true'
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      # Its own cache (check builds share nothing with test builds); only main saves it.
+      - if: env.RBS_CODE == 'true'
+        uses: Swatinem/rust-cache@v2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      # The same .deb cache as the test job, which is the one that saves it.
+      # Keyed by runner image and package list, so each new image starts a fresh cache.
+      - if: runner.os == 'Linux' && env.RBS_CODE == 'true'
+        id: apt-key
+        run: echo "key=apt-$ImageOS-$ImageVersion-${{ hashFiles('.github/scripts/apt-install.sh') }}" >> "$GITHUB_OUTPUT"
+      - if: runner.os == 'Linux' && env.RBS_CODE == 'true'
+        uses: actions/cache/restore@v4
+        with:
+          path: ~/apt-archives
+          key: ${{ steps.apt-key.outputs.key }}
+      - if: runner.os == 'Linux' && env.RBS_CODE == 'true'
+        run: bash .github/scripts/apt-install.sh ~/apt-archives
+      - if: env.RBS_CODE == 'true'
+        run: cargo clippy --workspace --all-targets -- -D warnings
+      - if: env.RBS_CODE == 'true'
+        run: cargo doc --workspace --no-deps
         env:
           RUSTDOCFLAGS: -D warnings
       # Feature-gated modules (conformance suites) are public API too.
-      - run: cargo doc --workspace --no-deps --all-features
+      - if: env.RBS_CODE == 'true'
+        run: cargo doc --workspace --no-deps --all-features
         env:
           RUSTDOCFLAGS: -D warnings
