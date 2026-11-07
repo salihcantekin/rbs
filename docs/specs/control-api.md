@@ -199,7 +199,7 @@ The first slice covers what the desktop app does today; the full catalogue follo
 | `source.targets` | `control` | Capture targets of a kind (window titles can be private) |
 | `source.add`, `source.delete`, `edit.undo`, `edit.redo` | `control` | Edit the program scene |
 | `item.set_style {item, style}` | `control` | Shape, border and shadow of a source item (protocol 1.3, ADR-0053) |
-| `item.set_crop {item, crop, keep_scale?}` | `control` | Source pixels cut from each edge of a source item's picture (protocol 1.4, ADR-0057) |
+| `item.set_crop {item, crop, keep_scale?}` | `control` | Source pixels cut from each edge of a source item's picture (protocol 1.4, ADR-0058) |
 | `output.profiles` | `read` | Recording profiles: id, name, container, encoder, bitrates (folders only through `settings.get`) |
 | `record.start {profile}`, `record.stop` | `control` | Record with a configured profile into its folder |
 | `record.start_to_file {profile, path}` | `admin` | Record to an explicit file; refused if it exists |
@@ -220,7 +220,7 @@ The first slice covers what the desktop app does today; the full catalogue follo
 
 ### Crop (protocol 1.4)
 
-`source.list` rows, and the rows of `source.changed`, carry `picture_size: [width, height]` for a video source whose picture the studio has seen in this run (ADR-0057; absent before it ran, and for sound-only sources). `item.set_crop {item, crop: [left, top, right, bottom], keep_scale?}` sets the crop of the item's layout on the studio's canvas, with the `item.set_style` rule (its override for that canvas when it has one, else its default layout). With `keep_scale` (default `true`) the box changes too, so a source pixel keeps its size on the canvas and the part that stays keeps its place; `false` sets only the crop and what stays fills the box. Refusals: `not_found` for an unknown item; `invalid_params` for an item that places a scene, a crop that leaves less than one pixel of the known picture, or unknown keys; `failed` for `keep_scale` while the picture size was never seen. Each call is one undo step and publishes `source.changed`; the crop the item already has changes nothing. A 1.3 server answers `method_not_found`.
+`source.list` rows, and the rows of `source.changed`, carry `picture_size: [width, height]` for a video source whose picture the studio has seen in this run (ADR-0058; absent before it ran, and for sound-only sources). `item.set_crop {item, crop: [left, top, right, bottom], keep_scale?}` sets the crop of the item's layout on the studio's canvas, with the `item.set_style` rule (its override for that canvas when it has one, else its default layout). With `keep_scale` (default `true`) the box changes too, so a source pixel keeps its size on the canvas and the part that stays keeps its place; `false` sets only the crop and what stays fills the box. Refusals: `not_found` for an unknown item; `invalid_params` for an item that places a scene, a crop that leaves less than one pixel of the known picture, or unknown keys; `failed` for `keep_scale` while the picture size was never seen. Each call is one undo step and publishes `source.changed`; the crop the item already has changes nothing. A 1.3 server answers `method_not_found`.
 
 ### Streaming (protocol 1.1)
 

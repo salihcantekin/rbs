@@ -1113,7 +1113,7 @@ impl StudioUi {
     }
 
     /// Source pixels cut from each edge of a video source's picture (the Properties
-    /// fields, ADR-0057); the box changes so the picture keeps its scale.
+    /// fields, ADR-0058); the box changes so the picture keeps its scale.
     pub fn set_source_crop(&mut self, id: i32, crop: [i32; 4]) {
         if self.host.is_none() {
             return;

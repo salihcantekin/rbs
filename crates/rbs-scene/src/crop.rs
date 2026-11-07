@@ -1,4 +1,4 @@
-//! Crop edits that keep the picture's scale (ADR-0057).
+//! Crop edits that keep the picture's scale (ADR-0058).
 
 use crate::flatten::Affine2;
 use crate::model::{Crop, Layout};

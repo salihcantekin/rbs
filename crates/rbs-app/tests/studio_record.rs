@@ -562,7 +562,7 @@ fn a_crop_keeps_the_scale_is_one_undo_step_and_regions_fit_the_canvas() {
     rows_where(&rx, |r| r.len() == 1);
     host.send(Command::StartRecording(request(dir.join("crop.mkv"), None)));
     assert!(matches!(recording(&rx), RecordingUpdate::Started { .. }));
-    // The picture size arrives once the capture opened (ADR-0057).
+    // The picture size arrives once the capture opened (ADR-0058).
     let rows = rows_where(&rx, |r| r.len() == 1 && r[0].picture.is_some());
     let (id, (w, h)) = (rows[0].id, rows[0].picture.unwrap());
     let before = rows[0].layout.unwrap();

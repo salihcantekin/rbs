@@ -189,7 +189,7 @@ pub struct SourceRow {
     /// Its item in the program scene.
     pub item: ItemId,
     /// Width and height in pixels of its picture, as last seen while it ran (video
-    /// sources, ADR-0057); `None` before it ran.
+    /// sources, ADR-0058); `None` before it ran.
     pub picture: Option<(u32, u32)>,
 }
 
@@ -210,7 +210,7 @@ impl PartialEq for SourceRow {
     }
 }
 
-/// A part of a source's picture the Region menu shows (ADR-0057).
+/// A part of a source's picture the Region menu shows (ADR-0058).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CropRegion {
     /// The whole picture: no crop, fitted to the canvas like a new source.
@@ -316,7 +316,7 @@ pub enum Command {
         /// Width and height.
         size: [f32; 2],
     },
-    /// Cut source pixels from the edges of a video source's picture (ADR-0057), on the
+    /// Cut source pixels from the edges of a video source's picture (ADR-0058), on the
     /// layout the canvas shows. With `keep_scale`, the box changes so a source pixel
     /// keeps its size and what stays keeps its place. Always answered with
     /// [`Update::CropPlaced`] carrying `seq`, also when nothing changed; a refusal is
@@ -335,7 +335,7 @@ pub enum Command {
         keep_scale: bool,
     },
     /// Show a part of a video source's picture filling as much of the canvas as fits
-    /// (ADR-0057, Properties' Show buttons). One undo step.
+    /// (ADR-0058, Properties' Show buttons). One undo step.
     SetSourceRegion {
         /// The source.
         id: SourceId,
@@ -1035,7 +1035,7 @@ struct Host {
     canvas: CanvasId,
     scene: SceneId,
     rows: Vec<SourceRow>,
-    /// The last picture size seen per video source (ADR-0057).
+    /// The last picture size seen per video source (ADR-0058).
     sizes: BTreeMap<SourceId, (u32, u32)>,
     /// The user's undo history of scene edits, shared with control API clients.
     history: History<Undo>,
@@ -2612,7 +2612,7 @@ impl Host {
         Ok(true)
     }
 
-    /// A new crop for an item's layout on the studio's canvas (ADR-0057); `Ok(false)`
+    /// A new crop for an item's layout on the studio's canvas (ADR-0058); `Ok(false)`
     /// when it already has it.
     fn set_item_crop(
         &mut self,
@@ -2679,7 +2679,7 @@ impl Host {
         self.write_crop(item, source, own, old, layout, 0)
     }
 
-    /// Remembers the picture size of every running video source (ADR-0057 decision 2)
+    /// Remembers the picture size of every running video source (ADR-0058 decision 2)
     /// and forgets sources that are gone.
     fn refresh_sizes(&mut self) {
         let collection = &self.collection;

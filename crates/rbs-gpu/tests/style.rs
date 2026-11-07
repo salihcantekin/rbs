@@ -297,7 +297,7 @@ fn boxes_without_area_draw_nothing() {
 
 #[test]
 fn a_crop_that_leaves_no_picture_draws_nothing_plain_or_styled() {
-    // ADR-0057: a reversed or empty crop (a window that shrank under its crop) is
+    // ADR-0058: a reversed or empty crop (a window that shrank under its crop) is
     // skipped, not drawn as a mirrored strip.
     for shape in [LayerShape::Box, LayerShape::Rounded { radius: 8.0 }] {
         let Some(px) = render(|ctx, pool| {

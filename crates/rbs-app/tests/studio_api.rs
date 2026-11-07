@@ -251,7 +251,7 @@ fn a_control_api_client_drives_the_studio() {
         d[0]["layout"]["style"]["shape"] == "rectangle"
     });
 
-    // Crop (protocol 1.4, ADR-0057). Nothing shows or records the display here, so
+    // Crop (protocol 1.4, ADR-0058). Nothing shows or records the display here, so
     // its picture size was never seen: keeping the scale is refused, a plain crop is
     // taken and undone like any edit.
     assert!(row.get("picture_size").is_none(), "{row}");

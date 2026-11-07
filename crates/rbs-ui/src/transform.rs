@@ -253,7 +253,7 @@ pub struct DragKeys {
     pub free: bool,
     /// No snapping to the canvas's edges and centre (Ctrl held; Cmd on macOS).
     pub no_snap: bool,
-    /// A handle crops instead of resizing (Alt held; Option on macOS; ADR-0057).
+    /// A handle crops instead of resizing (Alt held; Option on macOS; ADR-0058).
     pub crop: bool,
 }
 
@@ -395,7 +395,7 @@ fn resize(r: Rect, h: Handle, dx: f32, dy: f32, canvas: [f32; 2], snap: f32, fre
     }
 }
 
-/// A crop drag (Alt or Option held on a handle, ADR-0057): the crop that makes `from`,
+/// A crop drag (Alt or Option held on a handle, ADR-0058): the crop that makes `from`,
 /// a box showing a `picture` (width, height in source pixels) cut by `crop` (left, top,
 /// right, bottom), into `to`, a box with the same scale and some edges moved (from
 /// [`Drag::update`] with a handle and free corners). Returns the crop and the box it

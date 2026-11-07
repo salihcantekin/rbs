@@ -272,7 +272,7 @@ fn scene_edits_open_and_close_sources_while_it_runs() {
     });
     assert!(reached, "{:?}", studio.progress());
     assert_eq!(studio.mixer_anomalies(), 0);
-    // The camera's capture reports its picture size (ADR-0057); sound has none.
+    // The camera's capture reports its picture size (ADR-0058); sound has none.
     let size = studio.picture_size(cam).expect("the camera's picture size");
     assert!(size.0 > 0 && size.1 > 0, "{size:?}");
     assert_eq!(studio.picture_size(mic), None);

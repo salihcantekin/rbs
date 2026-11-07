@@ -1,5 +1,5 @@
 //! Selecting, moving, resizing and cropping sources on the picture panel (ADR-0048,
-//! ADR-0057): the pointer and keys become source boxes or crops, sent to the studio one
+//! ADR-0058): the pointer and keys become source boxes or crops, sent to the studio one
 //! at a time, and the selection becomes marks. The geometry is `rbs_ui::transform`; this keeps the state of one drag
 //! and of the boxes on their way to the studio.
 //!

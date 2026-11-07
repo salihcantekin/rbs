@@ -97,7 +97,7 @@ pub struct SetItemStyle {
     pub style: ItemStyle,
 }
 
-/// `item.set_crop` (protocol 1.4, ADR-0057): the source pixels cut from each edge of
+/// `item.set_crop` (protocol 1.4, ADR-0058): the source pixels cut from each edge of
 /// an item's picture, on the item's layout on the studio's canvas.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]

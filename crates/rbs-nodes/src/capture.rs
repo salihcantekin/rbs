@@ -46,7 +46,7 @@ pub struct CaptureNodeStats {
     /// Frames lost to an import or upload error.
     pub gpu_errors: AtomicU64,
     /// Size of the picture put on the output: width in the high 32 bits, height in the
-    /// low 32 bits, 0 while unknown (ADR-0057). Read it with [`Self::picture_size`].
+    /// low 32 bits, 0 while unknown (ADR-0058). Read it with [`Self::picture_size`].
     pub picture_size: AtomicU64,
 }
 

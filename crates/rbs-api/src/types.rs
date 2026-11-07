@@ -93,7 +93,7 @@ pub struct SourceInfo {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub layout: Option<ItemLayout>,
     /// Width and height in pixels of the picture it delivers, as last seen while it ran
-    /// (protocol 1.4, ADR-0057); absent for sound-only sources and before it ran.
+    /// (protocol 1.4, ADR-0058); absent for sound-only sources and before it ran.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub picture_size: Option<[u32; 2]>,
 }

@@ -26,7 +26,7 @@ pub fn complete_request(ctx: &GpuContext, request: CaptureRequest) -> CaptureReq
 impl CaptureSourceNode {                                      // Node<GpuRuntime>
     pub fn new(factory: Arc<dyn CaptureFactory>, request: CaptureRequest) -> Self;
     pub fn stats(&self) -> Arc<CaptureNodeStats>;             // frames, imported, uploaded, gpu_errors,
-                                                              // picture_size() (ADR-0057)
+                                                              // picture_size() (ADR-0058)
 }
 
 // rbs_nodes::export

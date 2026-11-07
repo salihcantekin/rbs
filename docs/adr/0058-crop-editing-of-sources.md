@@ -1,4 +1,4 @@
-# ADR-0057: Crop editing of sources: keep the scale, read the picture size from the capture node
+# ADR-0058: Crop editing of sources: keep the scale, read the picture size from the capture node
 
 - Status: Accepted
 - Date: 2026-11-06

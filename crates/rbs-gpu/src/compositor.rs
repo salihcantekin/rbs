@@ -171,7 +171,7 @@ pub struct RenderStats {
     /// Layers skipped because their texture was stale, unknown or not sampleable (P7).
     pub skipped_layers: u32,
     /// Layers skipped because their crop leaves no picture (`u1 <= u0` or `v1 <= v0`,
-    /// ADR-0057).
+    /// ADR-0058).
     pub empty_crop_layers: u32,
 }
 
@@ -396,7 +396,7 @@ impl Compositor {
             let t = &layer.transform;
             let c = &layer.crop;
             // A crop larger than the picture (a window that shrank under it) draws
-            // nothing rather than a mirrored strip (ADR-0057).
+            // nothing rather than a mirrored strip (ADR-0058).
             if !has_picture(c) {
                 stats.empty_crop_layers += 1;
                 continue;

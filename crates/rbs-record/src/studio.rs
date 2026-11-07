@@ -1099,7 +1099,7 @@ impl Studio {
     }
 
     /// Width and height in pixels of the picture a video source delivers now (its
-    /// capture node's report, ADR-0057); `None` for an audio source, a source that is
+    /// capture node's report, ADR-0058); `None` for an audio source, a source that is
     /// not running, or before its capture opened.
     pub fn picture_size(&self, source: SourceId) -> Option<(u32, u32)> {
         let entry = self.entries.iter().find(|e| e.source == source)?;

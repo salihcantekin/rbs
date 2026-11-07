@@ -83,7 +83,7 @@ export global Studio {
     callback set-source-box(int /* id */, float /* x */, float /* y */, float /* w */, float /* h */);
     // Shape and border of a video source (ADR-0053); a colour that is not #rrggbb or
     // #rrggbbaa is ignored.
-    // Source pixels cut from each edge (ADR-0057); the box changes so the scale stays.
+    // Source pixels cut from each edge (ADR-0058); the box changes so the scale stays.
     callback set-source-crop(int /* id */, int /* left */, int /* top */, int /* right */, int /* bottom */);
     // 0 full picture, 1 canvas size centred, 2 left half, 3 right half.
     callback set-source-region(int /* id */, int /* region */);
@@ -93,7 +93,7 @@ export global Studio {
     in property <[MarkData]> marks;
     // Pointer on the picture panel (panel coordinates, logical pixels; `w`, `h` the
     // panel's size). Shift: free resize at corners; Ctrl or Cmd: no snapping.
-    // `crop`: Alt (Option) held, a handle crops instead of resizing (ADR-0057).
+    // `crop`: Alt (Option) held, a handle crops instead of resizing (ADR-0058).
     callback preview-press(float /* x */, float /* y */, float /* w */, float /* h */, bool /* shift */, bool /* no-snap */, bool /* crop */);
     callback preview-drag(float /* x */, float /* y */);
     callback preview-release();
@@ -1112,7 +1112,7 @@ component StyleFields inherits VerticalLayout {
     }
 }
 
-// Crop of a picture in source pixels (ADR-0057), under its position and size. Every
+// Crop of a picture in source pixels (ADR-0058), under its position and size. Every
 // change is one undo step and keeps the picture's scale; the Region buttons show a part
 // of the picture as large as the canvas allows.
 component CropFields inherits VerticalLayout {
