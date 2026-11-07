@@ -16,12 +16,14 @@
 //! - [`live`]: the live indicator.
 //! - [`tokens`]: design tokens and their contrast checks.
 //! - [`meter`]: the audio meter's scale, peak hold and clip latch.
+//! - [`shortcut`]: key chords bound to commands, defaults, conflicts (ADR-0060).
 //!
 //! Spec: `docs/specs/ui-design-system.md`. Rules: `docs/ui/principles.md`.
 
 pub mod builtin;
 pub mod command;
 pub mod display;
+pub mod fader;
 pub mod frame;
 pub mod history;
 pub mod layout;
@@ -29,6 +31,7 @@ pub mod live;
 pub mod meter;
 pub mod panel;
 pub mod session;
+pub mod shortcut;
 pub mod store;
 pub mod tokens;
 pub mod transform;

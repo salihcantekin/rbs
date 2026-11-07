@@ -15,6 +15,7 @@
 
 use std::fmt;
 
+use crate::panel::{PanelId, built_in};
 use crate::workspace::{Toolbar, ToolbarItem, ToolbarStyle};
 
 /// Longest command id in bytes, counting the percent-encoded form.
@@ -311,6 +312,98 @@ pub const ENTRIES: &[Entry] = &[
         checkable: false,
     },
     Entry {
+        id: "ui.panel.maximize",
+        title: "Maximize",
+        tooltip: "Show a panel over the whole window, or restore the layout",
+        icon: Some("expand"),
+        shortcut: None,
+        menu: Menu::Window,
+        kind: Kind::Toggle {
+            on: "ui.panel.maximize",
+            off: "ui.panel.restore",
+        },
+        params: &[Param {
+            name: "id",
+            ty: ParamType::Text,
+            required: true,
+        }],
+        checkable: true,
+    },
+    Entry {
+        id: "scene.select",
+        title: "Scene",
+        tooltip: "Put a scene on air",
+        icon: None,
+        shortcut: None,
+        menu: Menu::Scene,
+        kind: Kind::Picker {
+            method: "scene.switch",
+            param: "scene",
+        },
+        params: &[
+            choice("scene"),
+            // Scene ids are unique only within a collection: a shortcut names its
+            // collection and runs nothing while another one is in use (ADR-0060).
+            Param {
+                name: "collection",
+                ty: ParamType::Text,
+                required: false,
+            },
+        ],
+        checkable: false,
+    },
+    Entry {
+        id: "scene.position",
+        title: "Scene at position",
+        tooltip: "Put the scene at this position in the Scenes panel on air",
+        icon: None,
+        shortcut: None,
+        menu: Menu::Scene,
+        kind: action("scene.switch"),
+        params: &[Param {
+            name: "n",
+            ty: ParamType::OneOf(&["1", "2", "3", "4", "5", "6", "7", "8", "9"]),
+            required: true,
+        }],
+        checkable: false,
+    },
+    Entry {
+        id: "scene.next",
+        title: "Next scene",
+        tooltip: "Put the scene after the one on air on air",
+        icon: None,
+        shortcut: None,
+        menu: Menu::Scene,
+        kind: action("scene.switch"),
+        params: &[],
+        checkable: false,
+    },
+    Entry {
+        id: "scene.previous",
+        title: "Previous scene",
+        tooltip: "Put the scene before the one on air on air",
+        icon: None,
+        shortcut: None,
+        menu: Menu::Scene,
+        kind: action("scene.switch"),
+        params: &[],
+        checkable: false,
+    },
+    Entry {
+        id: "source.add",
+        title: "Add source",
+        tooltip: "Add a screen, window, camera or audio source to the scene",
+        icon: Some("plus"),
+        shortcut: None,
+        menu: Menu::Source,
+        kind: Kind::Picker {
+            method: "source.add",
+            param: "kind",
+        },
+        params: &[choice("kind")],
+        checkable: false,
+    },
+    Entry {
         id: "stream.toggle",
         title: "Go live",
         tooltip: "Start or end the stream",
@@ -460,6 +553,18 @@ impl CommandId {
         })
     }
 
+    /// The id of `base` with `params` (decoded values), checked like a parsed id.
+    pub fn with_params(base: &str, params: &[(&str, &str)]) -> Result<CommandId, CommandIdError> {
+        let mut text = base.to_owned();
+        for (i, (k, v)) in params.iter().enumerate() {
+            text.push(if i == 0 { '?' } else { '&' });
+            text.push_str(k);
+            text.push('=');
+            text.push_str(&encode(v));
+        }
+        CommandId::parse(&text)
+    }
+
     /// A command without parameters.
     pub fn plain(base: &str) -> Result<CommandId, CommandIdError> {
         CommandId::parse(base).and_then(|id| {
@@ -545,6 +650,12 @@ pub trait CommandState {
     fn checked(&self, id: &CommandId) -> bool;
     /// For pickers: the choices as `(title, value, is the current one)`, in order.
     fn choices(&self, id: &CommandId) -> Vec<(String, String, bool)>;
+    /// For pickers: parameters that pin a choice to where it was made, added to the
+    /// choice's id when it is bound to a shortcut (`scene.select`: the scene
+    /// collection in use). A menu runs choices at once and leaves them out.
+    fn context(&self, _id: &CommandId) -> Vec<(&'static str, String)> {
+        Vec::new()
+    }
 }
 
 /// One item of a built menu.
@@ -593,9 +704,21 @@ pub const MENU_LAYOUT: &[(Menu, &[&str])] = &[
             "ui.toolbar.reset",
         ],
     ),
+    (
+        Menu::Scene,
+        &["scene.select", "|", "scene.previous", "scene.next"],
+    ),
+    (Menu::Source, &["source.add"]),
     (Menu::Output, &["stream.toggle", "record.toggle"]),
-    (Menu::Window, &["ui.panel.select"]),
+    (
+        Menu::Window,
+        &["ui.panel.select", "|", "ui.panel.maximize?id=rbs.preview"],
+    ),
 ];
+
+/// Entries no menu lists: `scene.position` is for shortcuts and the palette (the
+/// Scene menu lists the scenes through `scene.select`).
+pub const NOT_IN_MENU: &[&str] = &["scene.position"];
 
 /// The icon an id shows, from the design system's icon set: the entry's, or for an
 /// area toggle the panel icon of its area.
@@ -608,13 +731,23 @@ pub fn icon(id: &CommandId, e: &Entry) -> Option<&'static str> {
     }
 }
 
-/// The title an id shows: the entry's, with the area named for area toggles.
+/// The title an id shows: the entry's, with the area named for area toggles, the
+/// panel for maximize and the position for `scene.position`.
 pub fn title(id: &CommandId, e: &Entry) -> String {
+    if let ("scene.position", Some(n)) = (e.id, id.param("n")) {
+        return format!("Scene at position {n}");
+    }
     match (e.id, id.param("area")) {
         ("ui.area.toggle", Some("left")) => "Left area".to_owned(),
         ("ui.area.toggle", Some("right")) => "Right area".to_owned(),
         ("ui.area.toggle", Some("bottom")) => "Bottom area".to_owned(),
-        _ => e.title.to_owned(),
+        _ => match (e.id, id.param("id").and_then(|p| PanelId::parse(p).ok())) {
+            ("ui.panel.maximize", Some(p)) => {
+                let name = built_in(&p).map_or(p.as_str(), |i| i.title);
+                format!("Maximize {name}")
+            }
+            _ => e.title.to_owned(),
+        },
     }
 }
 
@@ -680,6 +813,8 @@ pub fn menus(state: &dyn CommandState) -> Vec<(Menu, Vec<MenuItem>)> {
 pub fn default_toolbar() -> Toolbar {
     let items = [
         "ui.workspace.select",
+        "|",
+        "source.add",
         "~",
         "ui.area.toggle?area=left",
         "ui.area.toggle?area=bottom",
@@ -737,6 +872,10 @@ mod tests {
         let b = CommandId::parse("x.y?a=2&b=1").unwrap();
         assert_eq!(a, b);
         assert_eq!(a.to_string(), "x.y?a=2&b=1");
+        assert_eq!(
+            CommandId::with_params("ui.workspace.switch", &[("name", "Live show")]).unwrap(),
+            id
+        );
         let turkish = CommandId::parse("ui.workspace.switch?name=%C3%87anl%C4%B1").unwrap();
         assert_eq!(turkish.param("name"), Some("Çanlı"));
         assert_eq!(CommandId::parse(&turkish.to_string()).unwrap(), turkish);
@@ -804,7 +943,12 @@ mod tests {
                     m.title()
                 })
                 .collect();
-            assert!(!placed.is_empty(), "{} is in no menu", e.id);
+            assert_eq!(
+                placed.is_empty(),
+                NOT_IN_MENU.contains(&e.id),
+                "{} is in no menu, or in one and in NOT_IN_MENU",
+                e.id
+            );
         }
         for (_, items) in MENU_LAYOUT {
             for i in *items {
@@ -818,10 +962,28 @@ mod tests {
     }
 
     #[test]
+    fn maximize_names_its_panel_and_add_source_is_on_the_default_toolbar() {
+        let id = CommandId::parse("ui.panel.maximize?id=rbs.preview").unwrap();
+        let e = id.resolve().unwrap().unwrap();
+        assert_eq!(title(&id, e), "Maximize Preview");
+        assert_eq!(icon(&id, e), Some("expand"));
+        assert!(
+            default_toolbar()
+                .items
+                .contains(&ToolbarItem::Command("source.add".into()))
+        );
+    }
+
+    #[test]
     fn menus_follow_state() {
         let m = menus(&Fake);
         let titles: Vec<&str> = m.iter().map(|(m, _)| m.title()).collect();
-        assert_eq!(titles, ["File", "Edit", "View", "Output", "Window"]);
+        assert_eq!(
+            titles,
+            [
+                "File", "Edit", "View", "Scene", "Source", "Output", "Window"
+            ]
+        );
         let file = &m[0].1;
         let MenuItem::Choices { title, choices } = &file[1] else {
             panic!("scene collection picker")

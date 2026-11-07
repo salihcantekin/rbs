@@ -4,9 +4,10 @@
 import { Theme, Tokens } from "tokens.slint";
 import { Button, IconButton, Icon, IconName, Icons, FocusRing, MenuItem as MenuRow, MenuSurface, EmptyState } from "components.slint";
 import { Appearance, AppearanceSettings, ThemeOption, ThemeTokenRow } from "appearance.slint";
-import { Studio, EntryRow, SourceData, MarkData, KindData, TargetData, MeterRow, ScaleMark, EncoderData, ProgramPanel, SourcesPanel, PropertiesPanel, MixerPanel, LiveControlsPanel, OutputsPanel, StatsPanel, RecordingSettings, StreamSettings, VideoSettings, RemoteControlSettings, GeneralSettings } from "studio.slint";
+import { Shortcuts, ShortcutsSettings, ShortcutRow, ShortcutChip } from "shortcuts.slint";
+import { Studio, EntryRow, SourceData, MarkData, KindData, TargetData, MeterRow, ScaleMark, EncoderData, ProgramPanel, ScenesPanel, SourcesPanel, PropertiesPanel, MixerPanel, LiveControlsPanel, OutputsPanel, StatsPanel, RecordingSettings, StreamSettings, VideoSettings, RemoteControlSettings, GeneralSettings } from "studio.slint";
 
-export { Theme, Tokens, Appearance, ThemeOption, ThemeTokenRow, Studio, EntryRow, SourceData, MarkData, KindData, TargetData, MeterRow, ScaleMark, EncoderData }
+export { Theme, Tokens, Appearance, ThemeOption, ThemeTokenRow, Shortcuts, ShortcutRow, ShortcutChip, Studio, EntryRow, SourceData, MarkData, KindData, TargetData, MeterRow, ScaleMark, EncoderData }
 
 export struct TabData { id: string, title: string, known: bool, icon: string }
 export struct StackData { window: int, stack: int, x: length, y: length, w: length, h: length, tabs: [TabData], active: int, collapsed: bool, can-collapse: bool, can-hide: bool }
@@ -110,6 +111,8 @@ export global Shell {
     callback drag-over(int /* window */, data-transfer, length, length);
     callback drag-drop(int /* window */, data-transfer, length, length);
     callback drag-leave();
+    // The maximized panel's id, or empty (ADR-0049 decision 2; not saved).
+    in property <string> maximized;
     in property <int> drop-window: -1;
     in property <Cover> drop-guide;
     // The guide in window surface coordinates while it shows: the preview layer cuts it out.
@@ -184,13 +187,18 @@ component LiveIndicator inherits Rectangle {
 // A panel's content: the panels connected to the studio, a placeholder for the others.
 component PanelContent inherits Rectangle {
     in property <TabData> tab;
-    property <bool> connected: tab.id == "rbs.program" || tab.id == "rbs.sources" || tab.id == "rbs.properties" || tab.id == "rbs.mixer" || tab.id == "rbs.preview" || tab.id == "rbs.live-controls" || tab.id == "rbs.outputs" || tab.id == "rbs.stats";
+    property <bool> connected: tab.id == "rbs.program" || tab.id == "rbs.scenes" || tab.id == "rbs.sources" || tab.id == "rbs.properties" || tab.id == "rbs.mixer" || tab.id == "rbs.preview" || tab.id == "rbs.live-controls" || tab.id == "rbs.outputs" || tab.id == "rbs.stats";
     background: Theme.surface-raised;
     if tab.id == "rbs.program" || tab.id == "rbs.preview": ProgramPanel {
         width: parent.width;
         height: parent.height;
         panel: tab.id;
         title: tab.title;
+    }
+    if tab.id == "rbs.scenes": ScenesPanel {
+        width: parent.width;
+        height: parent.height;
+        live-state: Shell.live-state;
     }
     if tab.id == "rbs.sources": SourcesPanel {
         width: parent.width;
@@ -243,6 +251,10 @@ component PanelMenu inherits PopupWindow {
             padding: Tokens.space-1;
             if can-collapse: MenuRow { text: collapsed ? @tr("Expand") : @tr("Collapse"); activated => { Shell.collapse(panel, !collapsed); root.close(); } }
             if can-hide: MenuRow { text: @tr("Auto-hide to the edge"); activated => { Shell.auto-hide(panel); root.close(); } }
+            MenuRow {
+                text: Shell.maximized == panel ? @tr("Restore layout") : @tr("Maximize {}", title);
+                activated => { Menus.run("ui.panel.maximize?id=" + panel); root.close(); }
+            }
             MenuRow { autofocus: true; text: @tr("Move to left edge"); activated => { Shell.move-edge(panel, window, Edges.left); root.close(); } }
             MenuRow { text: @tr("Move to right edge"); activated => { Shell.move-edge(panel, window, Edges.right); root.close(); } }
             MenuRow { text: @tr("Move to top edge"); activated => { Shell.move-edge(panel, window, Edges.top); root.close(); } }
@@ -263,12 +275,14 @@ component Tab inherits Rectangle {
     callback activate();
     callback open-menu();
     callback close();
+    // Double-click, or Shift+Escape (Escape alone stays with dialogs and fields).
+    callback maximize();
     height: Tokens.size-control-lg;
     width: title.preferred-width + 2 * Tokens.space-2;
     accessible-role: AccessibleRole.tab;
     accessible-label: tab.title;
     accessible-item-selected: selected;
-    accessible-description: @tr("Menu key or Shift+F10 opens panel actions; Delete or Backspace closes it");
+    accessible-description: @tr("Menu key or Shift+F10 opens panel actions; Delete or Backspace closes it; Shift+Escape maximizes or restores it");
     accessible-action-default => { activate(); }
     forward-focus: focus;
     focus := FocusScope {
@@ -276,6 +290,7 @@ component Tab inherits Rectangle {
             if e.text == Key.Return || e.text == " " { activate(); return accept; }
             if e.text == Key.Menu || (e.text == Key.F10 && e.modifiers.shift) { open-menu(); return accept; }
             if e.text == Key.Delete || e.text == Key.Backspace { close(); return accept; }
+            if e.text == Key.Escape && e.modifiers.shift { maximize(); return accept; }
             reject
         }
     }
@@ -288,6 +303,7 @@ component Tab inherits Rectangle {
         data: Shell.panel-data(tab.id);
         touch := TouchArea {
             clicked => { focus.focus(); activate(); }
+            double-clicked => { maximize(); }
             pointer-event(e) => {
                 if e.kind == PointerEventKind.down && e.button == PointerEventButton.right { open-menu(); }
             }
@@ -356,6 +372,7 @@ component StackView inherits Rectangle {
                             Shell.activate-tab(data.window, data.stack, i);
                         }
                         close => { Shell.close-panel(t.id); }
+                        maximize => { Menus.run("ui.panel.maximize?id=" + t.id); }
                         open-menu => {
                             menu-panel = t.id;
                             menu-title = t.title;
@@ -370,18 +387,31 @@ component StackView inherits Rectangle {
                 padding-top: (bar - Tokens.size-control-sm) / 2;
                 padding-bottom: (bar - Tokens.size-control-sm) / 2;
                 // A panel's own action in its title row: Add source on Sources.
+                if active-id == "rbs.scenes" && !data.collapsed: IconButton {
+                    icon: IconName.plus;
+                    name: @tr("Add scene");
+                    enabled: Studio.state == 1;
+                    clicked => { Studio.add-scene-asked += 1; }
+                }
                 if active-id == "rbs.sources" && !data.collapsed: IconButton {
                     icon: IconName.plus;
                     name: @tr("Add source");
                     enabled: Studio.state == 1;
-                    clicked => { Studio.add-source-asked += 1; }
+                    clicked => { Studio.picker-kind = -1; Studio.add-source-asked += 1; }
                 }
-                if data.can-hide: IconButton {
+                // Picture panels: Maximize or Restore in the title row, as in design E.
+                if (active-id == "rbs.preview" || active-id == "rbs.program") && !data.collapsed: IconButton {
+                    icon: IconName.expand;
+                    name: Shell.maximized == active-id ? @tr("Restore layout") : @tr("Maximize {}", active-title);
+                    checked: Shell.maximized == active-id;
+                    clicked => { Menus.run("ui.panel.maximize?id=" + active-id); }
+                }
+                if data.can-hide && Shell.maximized == "": IconButton {
                     icon: IconName.pin;
                     name: @tr("Auto-hide {}", active-title);
                     clicked => { Shell.auto-hide(active-id); }
                 }
-                if data.can-collapse: IconButton {
+                if data.can-collapse && Shell.maximized == "": IconButton {
                     icon: data.collapsed ? IconName.chevron-right : IconName.chevron-down;
                     name: data.collapsed ? @tr("Expand {}", active-title) : @tr("Collapse {}", active-title);
                     accessible-expandable: true;
@@ -1273,30 +1303,57 @@ export component MainWindow inherits Window {
             MenuItem { title: Menus.titles[11]; enabled: Menus.enabled[11]; activated => { Menus.run("ui.toolbar.reset"); } }
         }
         Menu {
+            title: @tr("Scene");
+            Menu {
+                title: Menus.titles[12];
+                enabled: Menus.enabled[12];
+                for c in Menus.choices[3]: MenuItem { title: c.title; checkable: true; checked: c.checked; activated => { Menus.run(c.id); } }
+            }
+            MenuSeparator { }
+            MenuItem { title: Menus.titles[13]; enabled: Menus.enabled[13]; activated => { Menus.run("scene.previous"); } }
+            MenuItem { title: Menus.titles[14]; enabled: Menus.enabled[14]; activated => { Menus.run("scene.next"); } }
+        }
+        Menu {
+            title: @tr("Source");
+            Menu {
+                title: Menus.titles[15];
+                enabled: Menus.enabled[15];
+                for c in Menus.choices[4]: MenuItem { title: c.title; checkable: true; checked: c.checked; activated => { Menus.run(c.id); } }
+            }
+        }
+        Menu {
             title: @tr("Output");
-            MenuItem { title: Menus.titles[12]; enabled: Menus.enabled[12]; checkable: true; checked: Menus.checked[12]; activated => { Menus.run("stream.toggle"); } }
-            MenuItem { title: Menus.titles[13]; enabled: Menus.enabled[13]; checkable: true; checked: Menus.checked[13]; activated => { Menus.run("record.toggle"); } }
+            MenuItem { title: Menus.titles[16]; enabled: Menus.enabled[16]; checkable: true; checked: Menus.checked[16]; activated => { Menus.run("stream.toggle"); } }
+            MenuItem { title: Menus.titles[17]; enabled: Menus.enabled[17]; checkable: true; checked: Menus.checked[17]; activated => { Menus.run("record.toggle"); } }
         }
         Menu {
             title: @tr("Window");
             Menu {
-                title: Menus.titles[14];
-                enabled: Menus.enabled[14];
-                for c in Menus.choices[3]: MenuItem { title: c.title; checkable: true; checked: c.checked; activated => { Menus.run(c.id); } }
+                title: Menus.titles[18];
+                enabled: Menus.enabled[18];
+                for c in Menus.choices[5]: MenuItem { title: c.title; checkable: true; checked: c.checked; activated => { Menus.run(c.id); } }
             }
+            MenuSeparator { }
+            MenuItem { title: Menus.titles[19]; enabled: Menus.enabled[19]; checkable: true; checked: Menus.checked[19]; activated => { Menus.run("ui.panel.maximize?id=rbs.preview"); } }
         }
     }
     // END generated menu bar
-    // Scene edit undo and redo from any panel of this window (U4): keys a focused
-    // control does not take come up here, and a click where no control takes it
-    // focuses this scope, so the keys work there too. Text fields keep their own undo.
+    // Shortcuts (ADR-0060): keys a focused control does not take come up here, and a
+    // click where no control takes it focuses this scope, so they work from any panel
+    // of this window. Text fields keep their own editing keys. No KeyBinding here: a
+    // KeyBinding accepts its keys even when it does nothing.
     edit-keys := FocusScope {
         focus-on-tab-navigation: false;
-        KeyBinding { keys: @keys(Control + Z); activated => { Studio.undo-edit(true); } }
-        KeyBinding { keys: @keys(Control + Shift + Z); activated => { Studio.undo-edit(false); } }
-        KeyBinding { keys: @keys(Control + Y); activated => { Studio.undo-edit(false); } }
-        // Cmd+W closes the main window on macOS, as its close button does (ADR-0056).
-        KeyBinding { keys: @keys(Control + W); activated => { if Studio.platform == 0 { Shell.close-main(); } } }
+        key-pressed(e) => {
+            // Cmd+W closes the main window on macOS, as its close button does
+            // (ADR-0056); reserved there, free on Windows.
+            if Studio.platform == 0 && e.modifiers.control && !e.modifiers.shift && !e.modifiers.alt && !e.modifiers.meta && (e.text == "w" || e.text == "W") {
+                Shell.close-main();
+                return accept;
+            }
+            if Shortcuts.press(e.text, e.modifiers.control, e.modifiers.alt, e.modifiers.shift, e.modifiers.meta, e.repeat) { return accept; }
+            reject
+        }
         VerticalLayout {
             frame := FrameBar { }
             HorizontalLayout {
@@ -1450,17 +1507,38 @@ export component FloatWindow inherits Window {
             MenuItem { title: Menus.titles[11]; enabled: Menus.enabled[11]; activated => { Menus.run("ui.toolbar.reset"); } }
         }
         Menu {
+            title: @tr("Scene");
+            Menu {
+                title: Menus.titles[12];
+                enabled: Menus.enabled[12];
+                for c in Menus.choices[3]: MenuItem { title: c.title; checkable: true; checked: c.checked; activated => { Menus.run(c.id); } }
+            }
+            MenuSeparator { }
+            MenuItem { title: Menus.titles[13]; enabled: Menus.enabled[13]; activated => { Menus.run("scene.previous"); } }
+            MenuItem { title: Menus.titles[14]; enabled: Menus.enabled[14]; activated => { Menus.run("scene.next"); } }
+        }
+        Menu {
+            title: @tr("Source");
+            Menu {
+                title: Menus.titles[15];
+                enabled: Menus.enabled[15];
+                for c in Menus.choices[4]: MenuItem { title: c.title; checkable: true; checked: c.checked; activated => { Menus.run(c.id); } }
+            }
+        }
+        Menu {
             title: @tr("Output");
-            MenuItem { title: Menus.titles[12]; enabled: Menus.enabled[12]; checkable: true; checked: Menus.checked[12]; activated => { Menus.run("stream.toggle"); } }
-            MenuItem { title: Menus.titles[13]; enabled: Menus.enabled[13]; checkable: true; checked: Menus.checked[13]; activated => { Menus.run("record.toggle"); } }
+            MenuItem { title: Menus.titles[16]; enabled: Menus.enabled[16]; checkable: true; checked: Menus.checked[16]; activated => { Menus.run("stream.toggle"); } }
+            MenuItem { title: Menus.titles[17]; enabled: Menus.enabled[17]; checkable: true; checked: Menus.checked[17]; activated => { Menus.run("record.toggle"); } }
         }
         Menu {
             title: @tr("Window");
             Menu {
-                title: Menus.titles[14];
-                enabled: Menus.enabled[14];
-                for c in Menus.choices[3]: MenuItem { title: c.title; checkable: true; checked: c.checked; activated => { Menus.run(c.id); } }
+                title: Menus.titles[18];
+                enabled: Menus.enabled[18];
+                for c in Menus.choices[5]: MenuItem { title: c.title; checkable: true; checked: c.checked; activated => { Menus.run(c.id); } }
             }
+            MenuSeparator { }
+            MenuItem { title: Menus.titles[19]; enabled: Menus.enabled[19]; checkable: true; checked: Menus.checked[19]; activated => { Menus.run("ui.panel.maximize?id=rbs.preview"); } }
         }
     }
     // END generated menu bar
@@ -1468,14 +1546,13 @@ export component FloatWindow inherits Window {
     preferred-height: Tokens.size-floating-h;
     background: Theme.surface-sunken;
     default-font-size: Tokens.type-body-size;
-    // Scene edit undo and redo from any panel of this window (U4): keys a focused
-    // control does not take come up here, and a click where no control takes it
-    // focuses this scope, so the keys work there too. Text fields keep their own undo.
+    // Shortcuts (ADR-0060), as in the main window.
     edit-keys := FocusScope {
         focus-on-tab-navigation: false;
-        KeyBinding { keys: @keys(Control + Z); activated => { Studio.undo-edit(true); } }
-        KeyBinding { keys: @keys(Control + Shift + Z); activated => { Studio.undo-edit(false); } }
-        KeyBinding { keys: @keys(Control + Y); activated => { Studio.undo-edit(false); } }
+        key-pressed(e) => {
+            if Shortcuts.press(e.text, e.modifiers.control, e.modifiers.alt, e.modifiers.shift, e.modifiers.meta, e.repeat) { return accept; }
+            reject
+        }
         VerticalLayout {
             Rectangle {
                 height: Tokens.size-control-md + 2 * Tokens.space-1;
@@ -1507,7 +1584,7 @@ export component SettingsWindow inherits Window {
     background: Theme.surface-raised;
     default-font-size: Tokens.type-body-size;
     // 0 Video, 1 Recording, 2 Stream, 3 Remote control, 4 General (listed first),
-    // 5 Appearance (second).
+    // 5 Appearance (second), 6 Shortcuts (third).
     in-out property <int> section: 1;
     // Escape was pressed: the window closes, as with its close button.
     callback dismiss();
@@ -1544,6 +1621,11 @@ export component SettingsWindow inherits Window {
                         activated => { root.section = 5; }
                     }
                     MenuRow {
+                        text: @tr("Shortcuts");
+                        checked: root.section == 6;
+                        activated => { root.section = 6; }
+                    }
+                    MenuRow {
                         text: @tr("Video");
                         checked: root.section == 0;
                         activated => { root.section = 0; }
@@ -1572,7 +1654,7 @@ export component SettingsWindow inherits Window {
                     spacing: Tokens.space-3;
                     alignment: start;
                     Text {
-                        text: root.section == 0 ? @tr("Video") : root.section == 1 ? @tr("Recording") : root.section == 2 ? @tr("Stream") : root.section == 3 ? @tr("Remote control") : root.section == 5 ? @tr("Appearance") : @tr("General");
+                        text: root.section == 0 ? @tr("Video") : root.section == 1 ? @tr("Recording") : root.section == 2 ? @tr("Stream") : root.section == 3 ? @tr("Remote control") : root.section == 5 ? @tr("Appearance") : root.section == 6 ? @tr("Shortcuts") : @tr("General");
                         color: Theme.text-primary;
                         font-size: Tokens.type-heading-size;
                         font-weight: Tokens.type-heading-weight;
@@ -1584,6 +1666,7 @@ export component SettingsWindow inherits Window {
                     if root.section == 3: RemoteControlSettings { }
                     if root.section == 4: GeneralSettings { }
                     if root.section == 5: AppearanceSettings { }
+                    if root.section == 6: ShortcutsSettings { }
                 }
             }
         }

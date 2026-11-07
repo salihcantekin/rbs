@@ -3,14 +3,18 @@
 // Rust pushes state into the `Studio` global of every window and handles its callbacks
 // by sending commands to the studio's control thread.
 import { Theme, Tokens } from "tokens.slint";
-import { Button, Checkbox, ColorPicker, FocusRing, Icon, IconButton, IconName, Icons, MenuItem, MenuSurface, EmptyState, NumberField, Select, SegmentedControl, TextField } from "components.slint";
+import { Button, Checkbox, ColorPicker, FocusRing, Icon, IconButton, IconName, Icons, MenuItem, MenuSurface, EmptyState, NumberField, Select, SegmentedControl, Slider, TextField } from "components.slint";
 
 // `picture`: a video source; `x`, `y`, `w`, `h` place its box on the canvas (canvas
 // pixels). `can-up` / `can-down`: another source with a picture is above / below it.
 // Style (ADR-0053): `shape` 0 rectangle, 1 circle, 2 ellipse; `radius` for rectangles;
 // `border` on or off, its `border-width`, its colour as `#rrggbb` or `#rrggbbaa` text
 // and as a swatch (the values a border gets when turned on while it is off).
-export struct SourceData { id: int, name: string, kind: string, icon: string, status: string, ok: bool, picture: bool, visible: bool, x: float, y: float, w: float, h: float, can-up: bool, can-down: bool, shape: int, radius: float, border: bool, border-width: float, border-color: string, border-swatch: color, crop-l: int, crop-t: int, crop-r: int, crop-b: int, pic-w: int, pic-h: int }
+export struct SourceData { id: int, name: string, kind: string, icon: string, status: string, ok: bool, picture: bool, visible: bool, x: float, y: float, w: float, h: float, can-up: bool, can-down: bool, shape: int, radius: float, border: bool, border-width: float, border-color: string, border-swatch: color, crop-l: int, crop-t: int, crop-r: int, crop-b: int, pic-w: int, pic-h: int, locked: bool, audio: bool, muted: bool, volume: float, volume-text: string }
+// A scene in the Scenes panel (ADR-0059): `live` on air, `number` its place (1 up).
+export struct SceneData { id: int, name: string, live: bool, number: int }
+// A source of the collection for Add source's "Existing source" list.
+export struct ExistingData { id: int, name: string, icon: string }
 export struct KindData { code: int, label: string }
 // A filled rectangle of the selection on the preview (outline or handle), in the
 // panel's coordinates; kind 0 outline, 1 handle border, 2 handle inside.
@@ -19,6 +23,9 @@ export struct TargetData { name: string, is-default: bool }
 // One meter's moving parts as fractions of the bar (rbs_ui::meter::MeterView::zones),
 // its peak-hold position and zone, the clip latch and the accessible value (U16).
 export struct MeterRow {
+    // The source's id and whether its sound is muted (ADR-0059).
+    id: int,
+    muted: bool,
     name: string,
     icon: string,
     lo-from: float, lo-to: float, mi-from: float, mi-to: float, hi-from: float, hi-to: float,
@@ -90,6 +97,23 @@ export global Studio {
     in-out property <int> add-source-asked;
     // Show or hide a source in the program scene.
     callback set-source-visible(int /* id */, bool /* visible */);
+    // Lock a source so the picture panel does not move it (ADR-0059).
+    callback set-source-locked(int /* id */, bool /* locked */);
+    // A source's sound: mute, and the volume as a fader position from 0 to 1.
+    callback set-source-muted(int /* id */, bool /* muted */);
+    callback set-source-volume(int /* id */, float /* position */);
+    callback rename-source(int /* id */, string /* name */);
+    // The scenes the canvas may show, in panel order, and what Add source can place
+    // again (every source of the collection that the scene does not have yet).
+    in property <[SceneData]> scenes;
+    in property <[ExistingData]> existing;
+    callback switch-scene(int /* id */);
+    callback add-scene();
+    callback remove-scene(int /* id */);
+    callback rename-scene(int /* id */, string /* name */);
+    callback add-existing-source(int /* id */);
+    // The Scenes panel's `+` in its card title row; each press adds one.
+    in-out property <int> add-scene-asked;
     // A video source's box on the canvas, in canvas pixels.
     callback set-source-box(int /* id */, float /* x */, float /* y */, float /* w */, float /* h */);
     // Shape and border of a video source (ADR-0053); a colour that is not #rrggbb or
@@ -316,6 +340,11 @@ export component AddSourceMenu inherits PopupWindow {
                         Studio.list-targets(k.code);
                     }
                 }
+                // A source another scene has: the same device, one instance.
+                if Studio.existing.length > 0: MenuItem {
+                    text: @tr("Existing source");
+                    activated => { Studio.picker-kind = 1000; kind-label = @tr("existing source"); }
+                }
                 if Studio.kinds.length == 0: Text {
                     text: Studio.state == 0 ? @tr("The studio is starting.") : @tr("No source types are available on this system.");
                     color: Theme.text-secondary;
@@ -323,7 +352,23 @@ export component AddSourceMenu inherits PopupWindow {
                     wrap: word-wrap;
                 }
             }
-            if Studio.picker-kind >= 0: VerticalLayout {
+            if Studio.picker-kind == 1000: VerticalLayout {
+                spacing: Tokens.space-1;
+                MenuItem {
+                    text: @tr("Back to source types");
+                    activated => { Studio.picker-kind = -1; }
+                }
+                Rectangle { height: Tokens.size-border; background: Theme.border-subtle; }
+                for e[i] in Studio.existing: MenuItem {
+                    autofocus: i == 0;
+                    text: e.name;
+                    activated => {
+                        Studio.add-existing-source(e.id);
+                        root.close();
+                    }
+                }
+            }
+            if Studio.picker-kind >= 0 && Studio.picker-kind != 1000: VerticalLayout {
                 spacing: Tokens.space-1;
                 MenuItem {
                     autofocus: Studio.targets-kind != Studio.picker-kind || Studio.targets.length == 0;
@@ -452,7 +497,7 @@ component SourceRowView inherits Rectangle {
     border-width: selected ? Tokens.size-border : 0px;
     border-color: Theme.accent;
     accessible-role: list-item;
-    accessible-label: @tr("{}, {}, {}{}", data.name, data.kind, data.status, data.visible ? "" : @tr(", hidden"));
+    accessible-label: @tr("{}, {}, {}{}{}", data.name, data.kind, data.status, data.visible ? "" : @tr(", hidden"), data.locked ? @tr(", locked") : "");
     accessible-description: data.picture ? @tr("Alt+Up or Alt+Down changes the layer, Delete removes it") : @tr("Delete removes it");
     accessible-item-selectable: true;
     accessible-item-selected: selected;
@@ -556,6 +601,16 @@ component SourceRowView inherits Rectangle {
                         clicked => { Studio.set-source-visible(data.id, !data.visible); }
                     }
                 }
+                // Locked on the picture panel (sources with a picture only).
+                if data.picture: VerticalLayout {
+                    alignment: center;
+                    IconButton {
+                        icon: data.locked ? IconName.lock : IconName.unlock;
+                        name: data.locked ? @tr("Unlock {}", data.name) : @tr("Lock {}", data.name);
+                        checked: data.locked;
+                        clicked => { Studio.set-source-locked(data.id, !data.locked); }
+                    }
+                }
             }
         }
     }
@@ -568,14 +623,169 @@ component SourceRowView inherits Rectangle {
     FocusRing { show: focus.has-focus; border-radius: Tokens.radius-md; }
 }
 
+// One scene in the Scenes panel: its number, its name and, on air, a Live badge
+// (mockup E). A click puts it on air; Rename and Remove show on hover, and F2 and
+// Delete do the same on a focused row.
+component SceneRowView inherits Rectangle {
+    in property <SceneData> data;
+    in property <bool> can-remove;
+    // 0 nothing goes out, 1 streaming, 2 recording, 3 both (the shell's live state).
+    in property <int> live-state;
+    callback leaving();
+    property <bool> tools: touch.has-hover || editing;
+    in-out property <bool> editing;
+    height: Tokens.size-control-md;
+    border-radius: Tokens.radius-md;
+    // The scene the canvas shows is marked like a selected row; the live colour and
+    // a badge only while it actually goes out (streaming or recording, U12).
+    background: data.live ? Theme.accent-subtle : touch.has-hover ? Theme.surface-overlay : transparent;
+    border-width: data.live ? Tokens.size-border : 0px;
+    border-color: root.live-state != 0 ? Theme.state-live : Theme.accent;
+    accessible-role: list-item;
+    accessible-label: !data.live ? data.name
+        : root.live-state == 0 ? @tr("{}, shown", data.name)
+        : root.live-state == 2 ? @tr("{}, shown and recording", data.name)
+        : @tr("{}, on air", data.name);
+    accessible-description: @tr("Return puts it on air, F2 renames it, Delete removes it");
+    accessible-item-selectable: true;
+    accessible-item-selected: data.live;
+    accessible-action-default => { Studio.switch-scene(data.id); }
+    focus := FocusScope {
+        key-pressed(e) => {
+            if e.text == Key.Return || e.text == " " { Studio.switch-scene(data.id); return accept; }
+            if e.text == Key.F2 { root.editing = true; return accept; }
+            if (e.text == Key.Delete || e.text == Key.Backspace) && root.can-remove {
+                root.leaving(); Studio.remove-scene(data.id); return accept;
+            }
+            reject
+        }
+    }
+    // The row's buttons sit inside its TouchArea, so pointing at them keeps the row
+    // hovered; their space is always reserved, so the Live badge never moves (ADR-0059).
+    touch := TouchArea {
+        clicked => { focus.focus(); Studio.switch-scene(data.id); }
+        double-clicked => { root.editing = true; }
+    HorizontalLayout {
+        padding-left: Tokens.space-2;
+        padding-right: Tokens.space-1;
+        spacing: Tokens.space-2;
+        Text {
+            min-width: Tokens.size-icon-box;
+            text: data.number;
+            color: Theme.text-secondary;
+            font-size: Tokens.type-caption-size;
+            vertical-alignment: center;
+            accessible-role: none;
+        }
+        if !root.editing: Text {
+            horizontal-stretch: 1;
+            text: data.name;
+            color: Theme.text-primary;
+            font-size: Tokens.type-body-size;
+            vertical-alignment: center;
+            overflow: elide;
+        }
+        if root.editing: VerticalLayout {
+            horizontal-stretch: 1;
+            alignment: center;
+            name-field := TextField {
+                label: @tr("Name of the scene {}", data.name);
+                text: data.name;
+                init => { self.focus(); }
+                accepted(t) => {
+                    root.editing = false;
+                    if t != data.name { Studio.rename-scene(data.id, t); }
+                }
+            }
+        }
+        // On air: in words and in the live colour (U7, U12), only while it goes out.
+        if data.live && root.live-state != 0 && !root.editing: VerticalLayout {
+            alignment: center;
+            Rectangle {
+                height: Tokens.type-caption-line;
+                width: live-text.preferred-width + 2 * Tokens.space-2;
+                border-radius: self.height / 2;
+                background: Theme.state-live;
+                live-text := Text {
+                    text: root.live-state == 1 ? @tr("Live") : root.live-state == 2 ? @tr("REC") : @tr("Live · REC");
+                    color: Theme.text-on-live;
+                    font-size: Tokens.type-caption-size;
+                    font-weight: Tokens.type-label-weight;
+                    vertical-alignment: center;
+                    horizontal-alignment: center;
+                }
+            }
+        }
+        if !root.editing: VerticalLayout {
+            alignment: center;
+            IconButton {
+                visible: root.tools;
+                icon: IconName.more;
+                name: @tr("Rename {}", data.name);
+                clicked => { root.editing = true; }
+            }
+        }
+        if !root.editing: VerticalLayout {
+            alignment: center;
+            IconButton {
+                visible: root.tools && root.can-remove;
+                icon: IconName.close;
+                name: @tr("Remove scene {}", data.name);
+                clicked => { root.leaving(); Studio.remove-scene(data.id); }
+            }
+        }
+    }
+    }
+    FocusRing { show: focus.has-focus; border-radius: Tokens.radius-md; }
+}
+
+// The scenes the canvas may show (ADR-0059). A click puts one on air (a cut); the `+`
+// in the card title row adds one. Removing the scene on air first puts the one
+// before it on air; the last scene cannot be removed.
+export component ScenesPanel inherits Rectangle {
+    background: Theme.surface-raised;
+    in property <int> live-state;
+    property <int> asked: Studio.add-scene-asked;
+    changed asked => { if Studio.state == 1 { Studio.add-scene(); } }
+    if Studio.scenes.length == 0: EmptyState {
+        width: parent.width;
+        height: parent.height;
+        title: @tr("No scenes yet");
+        message: Studio.state == 0 ? @tr("The studio is starting.") : @tr("The studio is not running.");
+    }
+    if Studio.scenes.length > 0: Flickable {
+        width: parent.width;
+        height: parent.height;
+        content-height: rows.preferred-height;
+        rows := VerticalLayout {
+            padding: Tokens.space-2;
+            spacing: Tokens.space-1;
+            alignment: start;
+            for sc in Studio.scenes: SceneRowView {
+                data: sc;
+                can-remove: Studio.scenes.length > 1;
+                live-state: root.live-state;
+                leaving => { list-focus.focus(); }
+            }
+        }
+    }
+    list-focus := FocusScope {
+        width: 0;
+        height: 0;
+        focus-on-click: false;
+        focus-on-tab-navigation: false;
+    }
+}
+
 export component SourcesPanel inherits Rectangle {
     background: Theme.surface-raised;
     // Add source lives in the panel card's title row; undo and redo in the Edit menu
     // and the usual keys (U4).
     property <length> header: 0px;
     property <int> asked: Studio.add-source-asked;
+    // Whoever asks sets `picker-kind` first: -1 for the list of types, or a type.
     changed asked => {
-        if Studio.state == 1 { Studio.picker-kind = -1; add-menu.show(); }
+        if Studio.state == 1 { add-menu.show(); }
     }
     if Studio.sources.length == 0: EmptyState {
         y: header;
@@ -634,11 +844,11 @@ component MeterView inherits Rectangle {
             spacing: Tokens.space-2;
             VerticalLayout {
                 alignment: center;
-                Icon { name: Icons.named(data.icon); ink: Theme.text-secondary; }
+                Icon { name: data.muted ? IconName.speaker-off : Icons.named(data.icon); ink: data.muted ? Theme.text-disabled : Theme.text-secondary; }
             }
             Text {
                 text: data.name;
-                color: Theme.text-primary;
+                color: data.muted ? Theme.text-disabled : Theme.text-primary;
                 font-size: Tokens.type-body-size;
                 vertical-alignment: center;
                 overflow: elide;
@@ -673,6 +883,16 @@ component MeterView inherits Rectangle {
             accessible-label: data.clipped ? @tr("Clipped. Reset the clip indicator of {}", data.name) : @tr("Not clipped: {}", data.name);
             accessible-action-default => { root.reset(); }
             TouchArea { clicked => { root.reset(); } }
+        }
+        // Mute (ADR-0059): the icon and the accessible state both say it (U7).
+        VerticalLayout {
+            alignment: center;
+            IconButton {
+                icon: data.muted ? IconName.speaker-off : IconName.speaker;
+                name: data.muted ? @tr("Unmute {}", data.name) : @tr("Mute {}", data.name);
+                checked: data.muted;
+                clicked => { Studio.set-source-muted(data.id, !data.muted); }
+            }
         }
     }
 }
@@ -714,6 +934,7 @@ export component MixerPanel inherits Rectangle {
                     }
                 }
                 Rectangle { width: Tokens.size-icon-box; }
+                Rectangle { width: Tokens.size-control-sm; }
             }
         }
     }
@@ -1300,6 +1521,38 @@ component TransformFields inherits VerticalLayout {
             font-size: Tokens.type-caption-size;
             vertical-alignment: center;
         }
+    }
+    SectionTitle { title: @tr("Name"); }
+    TextField {
+        label: @tr("Name of {}", data.name);
+        text: data.name;
+        accepted(t) => { if t != data.name { Studio.rename-source(data.id, t); } }
+    }
+    if data.audio: SectionTitle { title: @tr("Sound"); }
+    if data.audio: HorizontalLayout {
+        spacing: Tokens.space-2;
+        Slider {
+            horizontal-stretch: 1;
+            label: @tr("Volume of {}", data.name);
+            value: data.volume;
+            value-text: data.volume-text;
+            enabled: !data.muted;
+            moved(v) => { Studio.set-source-volume(data.id, v); }
+        }
+        Text {
+            min-width: Tokens.size-control-md * 1.5;
+            text: data.volume-text;
+            color: Theme.text-secondary;
+            font-size: Tokens.type-caption-size;
+            horizontal-alignment: right;
+            vertical-alignment: center;
+            accessible-role: none;
+        }
+    }
+    if data.audio: Checkbox {
+        text: @tr("Mute");
+        checked: data.muted;
+        toggled(on) => { Studio.set-source-muted(data.id, on); }
     }
     if !data.picture: Hint {
         text: @tr("This source has sound only, so it has no place on the canvas.");

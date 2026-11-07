@@ -10,8 +10,9 @@ use crate::event::Topic;
 use crate::scope::{Scope, ScopeSet};
 use crate::types::ItemStyle;
 use crate::types::{
-    Canvas, CaptureTarget, Library, OutputProfile, RecordState, RecordingProfile, SeqMap, Settings,
-    Snapshot, SourceInfo, SourceKind, StreamSettingsPatch, StreamState, StudioInfo,
+    Canvas, CaptureTarget, Library, OutputProfile, RecordState, RecordingProfile, SceneList,
+    SeqMap, Settings, Snapshot, SourceInfo, SourceKind, StreamSettingsPatch, StreamState,
+    StudioInfo,
 };
 
 /// Parameters of a method that takes none. Unknown fields are ignored.
@@ -122,6 +123,92 @@ fn is_true(v: &bool) -> bool {
     *v
 }
 
+/// `scene.add` (protocol 1.6): an empty shared scene, not on air.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AddScene {
+    /// Its name; `null` lets the server pick "Scene", "Scene 2", ...
+    #[serde(default)]
+    pub name: Option<String>,
+}
+
+/// `scene.remove` and `scene.switch` (protocol 1.6).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SceneRef {
+    /// The scene's id (`scene.list`).
+    pub scene: u32,
+}
+
+/// `scene.rename` (protocol 1.6).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RenameScene {
+    /// The scene's id.
+    pub scene: u32,
+    /// The new name, unique among scenes.
+    pub name: String,
+}
+
+/// `source.rename` (protocol 1.6).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RenameSource {
+    /// The source's id.
+    pub source: u32,
+    /// The new name, unique among sources.
+    pub name: String,
+}
+
+/// `source.set_volume` (protocol 1.6).
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SetSourceVolume {
+    /// The source's id.
+    pub source: u32,
+    /// A linear factor from 0 to 1.
+    pub volume: f32,
+}
+
+/// `source.set_muted` (protocol 1.6).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SetSourceMuted {
+    /// The source's id.
+    pub source: u32,
+    /// Muted.
+    pub muted: bool,
+}
+
+/// `item.add` (protocol 1.6): a source the collection has, placed on top of the
+/// program scene.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AddItem {
+    /// The source's id (`scene.list` lists every source).
+    pub source: u32,
+}
+
+/// `item.set_visible` (protocol 1.6).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SetItemVisible {
+    /// The item's id (`source.list`).
+    pub item: u32,
+    /// Shown.
+    pub visible: bool,
+}
+
+/// `item.set_locked` (protocol 1.6).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SetItemLocked {
+    /// The item's id (`source.list`).
+    pub item: u32,
+    /// Locked.
+    pub locked: bool,
+}
+
 /// `record.start`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RecordStart {
@@ -210,6 +297,28 @@ pub enum Command {
     ItemSetStyle(SetItemStyle),
     /// `item.set_crop` (protocol 1.5).
     ItemSetCrop(SetItemCrop),
+    /// `scene.list` (protocol 1.6).
+    SceneList,
+    /// `scene.add` (protocol 1.6).
+    SceneAdd(AddScene),
+    /// `scene.remove` (protocol 1.6).
+    SceneRemove(SceneRef),
+    /// `scene.rename` (protocol 1.6).
+    SceneRename(RenameScene),
+    /// `scene.switch` (protocol 1.6).
+    SceneSwitch(SceneRef),
+    /// `source.rename` (protocol 1.6).
+    SourceRename(RenameSource),
+    /// `source.set_volume` (protocol 1.6).
+    SourceSetVolume(SetSourceVolume),
+    /// `source.set_muted` (protocol 1.6).
+    SourceSetMuted(SetSourceMuted),
+    /// `item.add` (protocol 1.6).
+    ItemAdd(AddItem),
+    /// `item.set_visible` (protocol 1.6).
+    ItemSetVisible(SetItemVisible),
+    /// `item.set_locked` (protocol 1.6).
+    ItemSetLocked(SetItemLocked),
     /// `edit.undo`.
     EditUndo,
     /// `edit.redo`.
@@ -264,6 +373,17 @@ impl Command {
             Command::SourceDelete(_) => "source.delete",
             Command::ItemSetStyle(_) => "item.set_style",
             Command::ItemSetCrop(_) => "item.set_crop",
+            Command::SceneList => "scene.list",
+            Command::SceneAdd(_) => "scene.add",
+            Command::SceneRemove(_) => "scene.remove",
+            Command::SceneRename(_) => "scene.rename",
+            Command::SceneSwitch(_) => "scene.switch",
+            Command::SourceRename(_) => "source.rename",
+            Command::SourceSetVolume(_) => "source.set_volume",
+            Command::SourceSetMuted(_) => "source.set_muted",
+            Command::ItemAdd(_) => "item.add",
+            Command::ItemSetVisible(_) => "item.set_visible",
+            Command::ItemSetLocked(_) => "item.set_locked",
             Command::EditUndo => "edit.undo",
             Command::EditRedo => "edit.redo",
             Command::OutputProfiles => "output.profiles",
@@ -343,6 +463,17 @@ pub const METHODS: &[MethodInfo] = &[
     m("source.delete", Some(Scope::Control)),
     m("item.set_style", Some(Scope::Control)),
     m("item.set_crop", Some(Scope::Control)),
+    m("scene.list", Some(Scope::Read)),
+    m("scene.add", Some(Scope::Control)),
+    m("scene.remove", Some(Scope::Control)),
+    m("scene.rename", Some(Scope::Control)),
+    m("scene.switch", Some(Scope::Control)),
+    m("source.rename", Some(Scope::Control)),
+    m("source.set_volume", Some(Scope::Control)),
+    m("source.set_muted", Some(Scope::Control)),
+    m("item.add", Some(Scope::Control)),
+    m("item.set_visible", Some(Scope::Control)),
+    m("item.set_locked", Some(Scope::Control)),
     m("edit.undo", Some(Scope::Control)),
     m("edit.redo", Some(Scope::Control)),
     m("output.profiles", Some(Scope::Read)),
@@ -437,6 +568,28 @@ enum WireRequest {
     ItemSetStyle(SetItemStyle),
     #[serde(rename = "item.set_crop")]
     ItemSetCrop(SetItemCrop),
+    #[serde(rename = "scene.list")]
+    SceneList(Empty),
+    #[serde(rename = "scene.add")]
+    SceneAdd(AddScene),
+    #[serde(rename = "scene.remove")]
+    SceneRemove(SceneRef),
+    #[serde(rename = "scene.rename")]
+    SceneRename(RenameScene),
+    #[serde(rename = "scene.switch")]
+    SceneSwitch(SceneRef),
+    #[serde(rename = "source.rename")]
+    SourceRename(RenameSource),
+    #[serde(rename = "source.set_volume")]
+    SourceSetVolume(SetSourceVolume),
+    #[serde(rename = "source.set_muted")]
+    SourceSetMuted(SetSourceMuted),
+    #[serde(rename = "item.add")]
+    ItemAdd(AddItem),
+    #[serde(rename = "item.set_visible")]
+    ItemSetVisible(SetItemVisible),
+    #[serde(rename = "item.set_locked")]
+    ItemSetLocked(SetItemLocked),
     #[serde(rename = "edit.undo")]
     EditUndo(Empty),
     #[serde(rename = "edit.redo")]
@@ -496,6 +649,17 @@ impl From<WireRequest> for Request {
             WireRequest::SourceDelete(p) => Request::Command(C::SourceDelete(p)),
             WireRequest::ItemSetStyle(p) => Request::Command(C::ItemSetStyle(p)),
             WireRequest::ItemSetCrop(p) => Request::Command(C::ItemSetCrop(p)),
+            WireRequest::SceneList(_) => Request::Command(C::SceneList),
+            WireRequest::SceneAdd(p) => Request::Command(C::SceneAdd(p)),
+            WireRequest::SceneRemove(p) => Request::Command(C::SceneRemove(p)),
+            WireRequest::SceneRename(p) => Request::Command(C::SceneRename(p)),
+            WireRequest::SceneSwitch(p) => Request::Command(C::SceneSwitch(p)),
+            WireRequest::SourceRename(p) => Request::Command(C::SourceRename(p)),
+            WireRequest::SourceSetVolume(p) => Request::Command(C::SourceSetVolume(p)),
+            WireRequest::SourceSetMuted(p) => Request::Command(C::SourceSetMuted(p)),
+            WireRequest::ItemAdd(p) => Request::Command(C::ItemAdd(p)),
+            WireRequest::ItemSetVisible(p) => Request::Command(C::ItemSetVisible(p)),
+            WireRequest::ItemSetLocked(p) => Request::Command(C::ItemSetLocked(p)),
             WireRequest::EditUndo(_) => Request::Command(C::EditUndo),
             WireRequest::EditRedo(_) => Request::Command(C::EditRedo),
             WireRequest::OutputProfiles(_) => Request::Command(C::OutputProfiles),
@@ -536,6 +700,17 @@ impl From<Request> for WireRequest {
                 C::SourceDelete(p) => WireRequest::SourceDelete(p),
                 C::ItemSetStyle(p) => WireRequest::ItemSetStyle(p),
                 C::ItemSetCrop(p) => WireRequest::ItemSetCrop(p),
+                C::SceneList => WireRequest::SceneList(Empty {}),
+                C::SceneAdd(p) => WireRequest::SceneAdd(p),
+                C::SceneRemove(p) => WireRequest::SceneRemove(p),
+                C::SceneRename(p) => WireRequest::SceneRename(p),
+                C::SceneSwitch(p) => WireRequest::SceneSwitch(p),
+                C::SourceRename(p) => WireRequest::SourceRename(p),
+                C::SourceSetVolume(p) => WireRequest::SourceSetVolume(p),
+                C::SourceSetMuted(p) => WireRequest::SourceSetMuted(p),
+                C::ItemAdd(p) => WireRequest::ItemAdd(p),
+                C::ItemSetVisible(p) => WireRequest::ItemSetVisible(p),
+                C::ItemSetLocked(p) => WireRequest::ItemSetLocked(p),
                 C::EditUndo => WireRequest::EditUndo(Empty {}),
                 C::EditRedo => WireRequest::EditRedo(Empty {}),
                 C::OutputProfiles => WireRequest::OutputProfiles(Empty {}),
@@ -617,6 +792,20 @@ pub struct TargetList {
 pub struct SourceAdded {
     /// The new source's id.
     pub source: u32,
+}
+
+/// `scene.add`'s answer (protocol 1.6).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SceneAdded {
+    /// The new scene's id.
+    pub scene: u32,
+}
+
+/// `item.add`'s answer (protocol 1.6).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ItemAdded {
+    /// The new item's id.
+    pub item: u32,
 }
 
 /// `output.profiles`' answer.
@@ -708,6 +897,12 @@ pub enum Response {
     Targets(TargetList),
     /// `source.add`.
     SourceAdded(SourceAdded),
+    /// `scene.list` (protocol 1.6).
+    Scenes(Snapshot<SceneList>),
+    /// `scene.add` (protocol 1.6).
+    SceneAdded(SceneAdded),
+    /// `item.add` (protocol 1.6).
+    ItemAdded(ItemAdded),
     /// `output.profiles`.
     Profiles(ProfileList),
     /// `record.start`, `record.start_to_file`.
@@ -730,6 +925,7 @@ pub enum Response {
     TokenCreated(TokenCreated),
     /// Methods with nothing to return: `source.delete`, `edit.undo`, `edit.redo`,
     /// `record.stop`, `stream.stop`, `events.unsubscribe`, `tokens.revoke`,
-    /// `profile.switch`, `collection.switch`.
+    /// `profile.switch`, `collection.switch`, and the protocol 1.6 edits other than
+    /// `scene.add` and `item.add`.
     Done(Empty),
 }

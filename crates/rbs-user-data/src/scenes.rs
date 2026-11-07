@@ -2,7 +2,7 @@
 //! [`rbs_scene::SceneCollection`], mapping one-to-one onto the model (ADR-0021).
 //!
 //! ```toml
-//! format = 2
+//! format = 3
 //! kind = "scene-collection"
 //! name = "Main show"
 //!
@@ -41,9 +41,10 @@
 //! Layouts may also have `rotation` (degrees), `crop` (`[left, top, right, bottom]`
 //! source pixels), `opacity` and `style` (ADR-0053, format 2: `shape = "rectangle" |
 //! "circle" | "ellipse"`, `radius` for rectangles, `border = { width, color =
-//! "#rrggbbaa" }`, `shadow = { offset = [x, y], blur, color }`); items `visible = false` and
-//! `overrides = [{ canvas = 1, layout = {...} }]`; sources `filters = [{ id, type,
-//! enabled, settings }]`. Setting values are TOML booleans, integers, floats or
+//! "#rrggbbaa" }`, `shadow = { offset = [x, y], blur, color }`); items `visible = false`,
+//! `locked = true` (format 3) and `overrides = [{ canvas = 1, layout = {...} }]`; sources `filters = [{ id, type,
+//! enabled, settings }]`, `volume` (0 to 1, default 1) and `muted = true` (format 3,
+//! ADR-0059). Setting values are TOML booleans, integers, floats or
 //! strings. Loading validates the whole collection
 //! ([`SceneCollection::from_parts`]).
 
@@ -54,7 +55,8 @@ use rbs_core::timing::FrameRate;
 use rbs_graph::node::NodeTypeId;
 use rbs_scene::model::{
     Border, Canvas, CanvasId, Crop, Filter, FilterId, ItemContent, ItemId, ItemStyle, Layout,
-    Scene, SceneId, SceneItem, SceneScope, SettingValue, Settings, Shadow, Shape, Source, SourceId,
+    Scene, SceneId, SceneItem, SceneScope, SettingValue, Settings, Shadow, Shape, Source,
+    SourceAudio, SourceId,
 };
 use rbs_scene::{IdCounters, SceneCollection};
 use serde::{Deserialize, Serialize};
@@ -123,6 +125,14 @@ struct SourceDoc {
     settings: BTreeMap<String, Value>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     filters: Vec<FilterDoc>,
+    #[serde(default = "one", skip_serializing_if = "is_one")]
+    volume: f64,
+    #[serde(default, skip_serializing_if = "is_false")]
+    muted: bool,
+}
+
+fn is_false(v: &bool) -> bool {
+    !*v
 }
 
 fn yes() -> bool {
@@ -166,6 +176,8 @@ struct ItemDoc {
     scene: Option<u32>,
     #[serde(default = "yes", skip_serializing_if = "is_true")]
     visible: bool,
+    #[serde(default, skip_serializing_if = "is_false")]
+    locked: bool,
     layout: LayoutDoc,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     overrides: Vec<OverrideDoc>,
@@ -389,14 +401,16 @@ fn settings(s: BTreeMap<String, Value>) -> Settings {
 
 impl Document for SceneCollection {
     const KIND: &'static str = "scene-collection";
-    const FORMAT: u32 = 2;
+    const FORMAT: u32 = 3;
 
     /// Format 2 adds the optional layout `style` (ADR-0053); a format 1 body is a
-    /// format 2 body without styles.
+    /// format 2 body without styles. Format 3 adds the optional item `locked` and
+    /// source `volume` and `muted` (ADR-0059); a format 2 body is a format 3 body
+    /// without them.
     fn upgrade(from: u32, body: &mut toml::Table) -> Result<(), String> {
         let _ = body;
         match from {
-            1 => Ok(()),
+            1 | 2 => Ok(()),
             _ => Err(format!("format {from} cannot be read")),
         }
     }
@@ -438,6 +452,8 @@ impl Document for SceneCollection {
                             })
                         })
                         .collect::<Result<_, String>>()?,
+                    volume: wide(s.audio.volume),
+                    muted: s.audio.muted,
                 })
             })
             .collect::<Result<_, String>>()?;
@@ -468,6 +484,7 @@ impl Document for SceneCollection {
                             source,
                             scene,
                             visible: i.visible,
+                            locked: i.locked,
                             layout: LayoutDoc::of(&i.layout),
                             overrides: i
                                 .overrides
@@ -545,6 +562,7 @@ impl Document for SceneCollection {
                         filter
                     })
                     .collect();
+                source.audio = SourceAudio::new(s.volume as f32, s.muted);
                 source
             })
             .collect();
@@ -573,6 +591,7 @@ impl Document for SceneCollection {
                         let mut item =
                             SceneItem::new(ItemId::from_raw(i.id), content, i.layout.layout()?);
                         item.visible = i.visible;
+                        item.locked = i.locked;
                         for o in i.overrides {
                             let canvas = CanvasId::from_raw(o.canvas);
                             if item.overrides.insert(canvas, o.layout.layout()?).is_some() {

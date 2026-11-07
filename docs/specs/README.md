@@ -18,6 +18,7 @@ Specs are the current contracts of RBS. Code must match them; a PR that changes 
 | [scene-model.md](scene-model.md) | Draft | `rbs-scene` (model, edits, undo, flattening, graph binding, validating loader) |
 | [user-data.md](user-data.md) | Draft | `rbs-user-data` (versioned documents, libraries, output profiles, scene collection document; ADR-0051) |
 | [gpu-compositor.md](gpu-compositor.md) | Draft | `rbs-gpu` |
+| [video-filters.md](video-filters.md) | Draft | `rbs-filters` (filter type trait, filter node, catalogue, conformance), `rbs-sources`, `rbs-record` (ADR-0062) |
 | [scene-sources.md](scene-sources.md) | Draft | `rbs-sources` (built-in source types, adapter registry for sources, instances for bound sources) |
 | [io-nodes.md](io-nodes.md) | Draft | `rbs-nodes` (capture source, video export, video encoder and output nodes), `rbs-gpu` (`upload`, `download`) |
 | [recording.md](recording.md) | Draft | `rbs-record` (scene to encoders and a muxed output on the engine), `rbs-cli` (`record`, `devices`) |
@@ -29,5 +30,6 @@ Specs are the current contracts of RBS. Code must match them; a PR that changes 
 | [testing-strategy.md](testing-strategy.md) | Draft | CI, conformance suites |
 | [ui-design-system.md](ui-design-system.md) | Draft | `rbs-ui-tokens`, `rbs-app` (planned) |
 | [themes.md](themes.md) | Draft | `rbs-ui` (`tokens`), `rbs-user-data`, `rbs-app` (user themes, Settings › Appearance; ADR-0057) |
+| [shortcuts.md](shortcuts.md) | Draft | `rbs-ui` (`shortcut`), `rbs-user-data`, `rbs-app` (shortcuts, global shortcuts, Settings › Shortcuts; ADR-0060) |
 
 New specs start from [template.md](template.md).
