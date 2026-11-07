@@ -1,5 +1,5 @@
 # TEMPORARY experiment (deleted before any PR): UDP receive-timeout loss on Windows.
-name: exp udp timeout
+name: exp udp close
 on:
   push:
     branches: [claude/project-thread-f59gxt]
