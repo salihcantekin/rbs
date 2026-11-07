@@ -18,6 +18,7 @@ Specs are the current contracts of RBS. Code must match them; a PR that changes 
 | [scene-model.md](scene-model.md) | Draft | `rbs-scene` (model, edits, undo, flattening, graph binding, validating loader) |
 | [user-data.md](user-data.md) | Draft | `rbs-user-data` (versioned documents, libraries, output profiles, scene collection document; ADR-0051) |
 | [gpu-compositor.md](gpu-compositor.md) | Draft | `rbs-gpu` |
+| [video-filters.md](video-filters.md) | Draft | `rbs-filters` (filter type trait, filter node, catalogue, conformance), `rbs-sources`, `rbs-record` (ADR-0062) |
 | [scene-sources.md](scene-sources.md) | Draft | `rbs-sources` (built-in source types, adapter registry for sources, instances for bound sources) |
 | [io-nodes.md](io-nodes.md) | Draft | `rbs-nodes` (capture source, video export, video encoder and output nodes), `rbs-gpu` (`upload`, `download`) |
 | [recording.md](recording.md) | Draft | `rbs-record` (scene to encoders and a muxed output on the engine), `rbs-cli` (`record`, `devices`) |
