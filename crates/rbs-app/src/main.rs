@@ -384,6 +384,7 @@ impl App {
                 let done = self.studio.switch_collection(&id, close_preview);
                 self.library_done(done);
             }
+            Run::Scene(id) => self.studio.switch_scene(id),
             Run::Layout(c) => self.command(c, Origin::Command),
             Run::Maximize(id, on) => self.maximized = on.then_some(id),
             Run::AddSource(kind) => self.ask_add_source(kind),

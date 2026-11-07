@@ -330,6 +330,66 @@ pub const ENTRIES: &[Entry] = &[
         checkable: true,
     },
     Entry {
+        id: "scene.select",
+        title: "Scene",
+        tooltip: "Put a scene on air",
+        icon: None,
+        shortcut: None,
+        menu: Menu::Scene,
+        kind: Kind::Picker {
+            method: "scene.switch",
+            param: "scene",
+        },
+        params: &[
+            choice("scene"),
+            // Scene ids are unique only within a collection: a shortcut names its
+            // collection and runs nothing while another one is in use (ADR-0060).
+            Param {
+                name: "collection",
+                ty: ParamType::Text,
+                required: false,
+            },
+        ],
+        checkable: false,
+    },
+    Entry {
+        id: "scene.position",
+        title: "Scene at position",
+        tooltip: "Put the scene at this position in the Scenes panel on air",
+        icon: None,
+        shortcut: None,
+        menu: Menu::Scene,
+        kind: action("scene.switch"),
+        params: &[Param {
+            name: "n",
+            ty: ParamType::OneOf(&["1", "2", "3", "4", "5", "6", "7", "8", "9"]),
+            required: true,
+        }],
+        checkable: false,
+    },
+    Entry {
+        id: "scene.next",
+        title: "Next scene",
+        tooltip: "Put the scene after the one on air on air",
+        icon: None,
+        shortcut: None,
+        menu: Menu::Scene,
+        kind: action("scene.switch"),
+        params: &[],
+        checkable: false,
+    },
+    Entry {
+        id: "scene.previous",
+        title: "Previous scene",
+        tooltip: "Put the scene before the one on air on air",
+        icon: None,
+        shortcut: None,
+        menu: Menu::Scene,
+        kind: action("scene.switch"),
+        params: &[],
+        checkable: false,
+    },
+    Entry {
         id: "source.add",
         title: "Add source",
         tooltip: "Add a screen, window, camera or audio source to the scene",
@@ -590,6 +650,12 @@ pub trait CommandState {
     fn checked(&self, id: &CommandId) -> bool;
     /// For pickers: the choices as `(title, value, is the current one)`, in order.
     fn choices(&self, id: &CommandId) -> Vec<(String, String, bool)>;
+    /// For pickers: parameters that pin a choice to where it was made, added to the
+    /// choice's id when it is bound to a shortcut (`scene.select`: the scene
+    /// collection in use). A menu runs choices at once and leaves them out.
+    fn context(&self, _id: &CommandId) -> Vec<(&'static str, String)> {
+        Vec::new()
+    }
 }
 
 /// One item of a built menu.
@@ -638,6 +704,10 @@ pub const MENU_LAYOUT: &[(Menu, &[&str])] = &[
             "ui.toolbar.reset",
         ],
     ),
+    (
+        Menu::Scene,
+        &["scene.select", "|", "scene.previous", "scene.next"],
+    ),
     (Menu::Source, &["source.add"]),
     (Menu::Output, &["stream.toggle", "record.toggle"]),
     (
@@ -645,6 +715,10 @@ pub const MENU_LAYOUT: &[(Menu, &[&str])] = &[
         &["ui.panel.select", "|", "ui.panel.maximize?id=rbs.preview"],
     ),
 ];
+
+/// Entries no menu lists: `scene.position` is for shortcuts and the palette (the
+/// Scene menu lists the scenes through `scene.select`).
+pub const NOT_IN_MENU: &[&str] = &["scene.position"];
 
 /// The icon an id shows, from the design system's icon set: the entry's, or for an
 /// area toggle the panel icon of its area.
@@ -657,8 +731,12 @@ pub fn icon(id: &CommandId, e: &Entry) -> Option<&'static str> {
     }
 }
 
-/// The title an id shows: the entry's, with the area named for area toggles.
+/// The title an id shows: the entry's, with the area named for area toggles, the
+/// panel for maximize and the position for `scene.position`.
 pub fn title(id: &CommandId, e: &Entry) -> String {
+    if let ("scene.position", Some(n)) = (e.id, id.param("n")) {
+        return format!("Scene at position {n}");
+    }
     match (e.id, id.param("area")) {
         ("ui.area.toggle", Some("left")) => "Left area".to_owned(),
         ("ui.area.toggle", Some("right")) => "Right area".to_owned(),
@@ -865,7 +943,12 @@ mod tests {
                     m.title()
                 })
                 .collect();
-            assert!(!placed.is_empty(), "{} is in no menu", e.id);
+            assert_eq!(
+                placed.is_empty(),
+                NOT_IN_MENU.contains(&e.id),
+                "{} is in no menu, or in one and in NOT_IN_MENU",
+                e.id
+            );
         }
         for (_, items) in MENU_LAYOUT {
             for i in *items {
@@ -897,7 +980,9 @@ mod tests {
         let titles: Vec<&str> = m.iter().map(|(m, _)| m.title()).collect();
         assert_eq!(
             titles,
-            ["File", "Edit", "View", "Source", "Output", "Window"]
+            [
+                "File", "Edit", "View", "Scene", "Source", "Output", "Window"
+            ]
         );
         let file = &m[0].1;
         let MenuItem::Choices { title, choices } = &file[1] else {

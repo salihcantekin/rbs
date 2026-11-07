@@ -290,6 +290,12 @@ pub fn install_press(g: &Shortcuts<'_>, ctx: &Ctx) {
 
 /// The rows of the page: every command by menu, picker choices and parameter values
 /// as rows of their own, then bound commands that have no row.
+/// The id pins a context (`collection`) other than the one in use.
+fn other_context(id: &CommandId, now: &[(&'static str, String)]) -> bool {
+    now.iter()
+        .any(|(k, v)| id.param(k).is_some_and(|p| p != v.as_str()))
+}
+
 fn rows(keys: &Keys, state: &dyn CommandState) -> Vec<RowSrc> {
     let mut out: Vec<RowSrc> = Vec::new();
     for menu in Menu::ALL {
@@ -299,8 +305,11 @@ fn rows(keys: &Keys, state: &dyn CommandState) -> Vec<RowSrc> {
                 let Ok(bare) = CommandId::plain(e.id) else {
                     continue;
                 };
+                let context = state.context(&bare);
                 for (title, value, _) in state.choices(&bare) {
-                    if let Ok(id) = CommandId::with_params(e.id, &[(param, &value)]) {
+                    let mut params: Vec<(&str, &str)> = vec![(param, &value)];
+                    params.extend(context.iter().map(|(k, v)| (*k, v.as_str())));
+                    if let Ok(id) = CommandId::with_params(e.id, &params) {
                         out.push(RowSrc {
                             group,
                             command: id.to_string(),
@@ -361,8 +370,12 @@ fn rows(keys: &Keys, state: &dyn CommandState) -> Vec<RowSrc> {
                     }
                     _ => command::title(&id, e),
                 },
+                missing: Some(if other_context(&id, &state.context(&id)) {
+                    "In another scene collection: runs nothing until it is in use."
+                } else {
+                    "Not found: this choice does not exist now."
+                }),
                 command,
-                missing: Some("Not found: this choice does not exist now."),
             },
             None => RowSrc {
                 group: "Other",
@@ -747,6 +760,13 @@ mod tests {
                     ("Edit".into(), "Edit".into(), true),
                     ("Live show".into(), "Live show".into(), false),
                 ],
+                "scene.select" => vec![("Intro".into(), "7".into(), true)],
+                _ => Vec::new(),
+            }
+        }
+        fn context(&self, id: &CommandId) -> Vec<(&'static str, String)> {
+            match id.base() {
+                "scene.select" => vec![("collection", "c1".into())],
                 _ => Vec::new(),
             }
         }
@@ -774,10 +794,28 @@ mod tests {
             Chord::parse("Ctrl+J").unwrap(),
             Scope::App,
         );
+        doc.add(
+            "scene.select?collection=c2&scene=3",
+            Chord::parse("Ctrl+K").unwrap(),
+            Scope::App,
+        );
         let k = keys_with(doc);
         let r = rows(&k, &State);
         let find = |c: &str| r.iter().find(|x| x.command == c).unwrap();
         assert_eq!(find("edit.undo").group, "Edit");
+        // A scene choice names its collection; one of another collection is kept.
+        assert_eq!(
+            find("scene.select?collection=c1&scene=7").title,
+            "Scene: Intro"
+        );
+        assert!(
+            find("scene.select?collection=c2&scene=3")
+                .missing
+                .unwrap()
+                .starts_with("In another scene collection")
+        );
+        assert_eq!(find("scene.position?n=3").title, "Scene at position 3");
+        assert_eq!(find("scene.next").group, "Scene");
         assert_eq!(
             find("ui.workspace.select?name=Live%20show").title,
             "Workspace: Live show"

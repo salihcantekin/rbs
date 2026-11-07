@@ -108,7 +108,7 @@ format = 1
 kind = "shortcuts"
 
 [[binding]]
-command = "scene.select?collection=3f2a9c&id=7"
+command = "scene.select?collection=3f2a9c&scene=7"
 keys = "Ctrl+Shift+F7"
 scope = "global"          # "app" (default) or "global"
 
@@ -153,9 +153,9 @@ Scene menu, acting on the canvas the main window shows, switching the program sc
 
 | Id | Kind | Parameters | Runs |
 | --- | --- | --- | --- |
-| `scene.select` | picker over the canvas's scenes in panel order | `collection` (collection id), `id` (scene id) | `scene.switch {scene}` when `collection` is the one in use; else disabled: "In another scene collection" |
-| `scene.position` | action | `n` (1-based) | the scene at that position; disabled when there is none |
-| `scene.next`, `scene.previous` | action | none | the scene after or before the program scene, wrapping |
+| `scene.select` | picker over the canvas's scenes in panel order; the Scene menu lists them | `scene` (scene id, the picker's choice), `collection` (collection id, added from `CommandState::context` when a choice is bound) | `scene.switch {scene}` when `collection` is absent or the one in use; else disabled: "In another scene collection." and the page lists the row as "In another scene collection: runs nothing until it is in use." |
+| `scene.position` | action, in no menu (`NOT_IN_MENU`) | `n`, one of `1`…`9` | the scene at that position; disabled when there is none ("No scene is at this position.") |
+| `scene.next`, `scene.previous` | action | none | the scene after or before the program scene, wrapping; disabled with one scene ("There is only one scene.") |
 
 ### Settings › Shortcuts (`rbs-app`)
 
