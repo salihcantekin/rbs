@@ -364,6 +364,39 @@ impl Chord {
         Ok(Chord { mods, key })
     }
 
+    /// The chord of a key press that typed `c` (the toolkit's text for the key) with
+    /// `mods` (ADR-0060 decision 2). Letters are ASCII only and upper-cased; a digit or
+    /// known punctuation character drops Shift, so AZERTY's Shift+`&` (which types `1`)
+    /// reads as the digit key. Anything else is not a chord, with the reason.
+    pub fn from_typed(c: char, mods: Mods) -> Result<Chord, &'static str> {
+        if let Some(k) = Key::letter(c) {
+            return Ok(Chord { mods, key: k });
+        }
+        let no_shift = Mods {
+            shift: false,
+            ..mods
+        };
+        if let Some(d) = c.to_digit(10).filter(|_| c.is_ascii_digit()) {
+            return Ok(Chord {
+                mods: no_shift,
+                key: Key::Digit(d as u8),
+            });
+        }
+        if let Some(n) = Named::from_punctuation(c) {
+            return Ok(Chord {
+                mods: no_shift,
+                key: Key::Named(n),
+            });
+        }
+        if c == ' ' {
+            return Ok(Chord {
+                mods,
+                key: Key::Named(Named::Space),
+            });
+        }
+        Err("This key cannot be used in a shortcut; use A to Z, 0 to 9, F1 to F24 or a named key")
+    }
+
     /// Parses chord text: modifiers in any order and case, then one key.
     pub fn parse(s: &str) -> Result<Chord, ChordError> {
         let err = |m: &str| Err(ChordError(format!("shortcut {s:?}: {m}")));
@@ -462,6 +495,10 @@ impl Chord {
         };
         let named = |n| self.key == Key::Named(n);
         let letter = |c: u8| self.key == Key::Letter(c);
+        let arrow = matches!(
+            self.key,
+            Key::Named(Named::Left | Named::Right | Named::Up | Named::Down)
+        );
         match platform {
             Platform::MacOs => {
                 let cmd = only(true, false, false, false);
@@ -474,23 +511,30 @@ impl Chord {
                         || named(Named::Tab)
                         || named(Named::Space)
                         || named(Named::Backquote)))
-                    || (only(true, true, false, false) && named(Named::Escape));
+                    || (only(true, true, false, false) && named(Named::Escape))
+                    || (only(true, false, false, true) && letter(b'Q'))
+                    || (only(false, false, false, true) && (named(Named::Space) || arrow));
                 reserved.then_some("macOS uses this shortcut")
             }
             Platform::Windows | Platform::Linux => {
+                let win = platform == Platform::Windows;
                 if m.meta {
-                    return Some(if platform == Platform::Windows {
+                    return Some(if win {
                         "Windows keeps shortcuts with the Windows key"
                     } else {
                         "The desktop keeps shortcuts with the Super key"
                     });
                 }
                 let alt = only(false, true, false, false);
-                let reserved = (alt && (self.key == Key::F(4) || named(Named::Tab)))
-                    || (platform == Platform::Windows
-                        && only(true, false, false, false)
-                        && named(Named::Escape));
-                reserved.then_some(if platform == Platform::Windows {
+                let reserved = (alt
+                    && (self.key == Key::F(4) || named(Named::Tab) || named(Named::Space)))
+                    || (win
+                        && ((only(true, false, false, false) && named(Named::Escape))
+                            || (only(true, false, true, false) && named(Named::Escape))
+                            || ((only(false, false, false, false)
+                                || only(false, false, true, false))
+                                && self.key == Key::F(10))));
+                reserved.then_some(if win {
                     "Windows uses this shortcut"
                 } else {
                     "The desktop uses this shortcut"
@@ -499,9 +543,44 @@ impl Chord {
         }
     }
 
-    /// A global chord must not swallow typing: it has Ctrl, Alt or Meta, or is F13-F24.
-    pub fn global_ok(&self) -> bool {
-        self.mods.ctrl || self.mods.alt || self.mods.meta || matches!(self.key, Key::F(13..=24))
+    /// Why this chord cannot be global on `platform`: it would take typing away from
+    /// every app (ADR-0060 decision 5). `None` when it can.
+    pub fn global_problem(&self, platform: Platform) -> Option<&'static str> {
+        let m = self.mods;
+        let bare_f =
+            |max| m == Mods::NONE && matches!(self.key, Key::F(n) if (13..=max).contains(&n));
+        match platform {
+            Platform::MacOs => {
+                if matches!(self.key, Key::F(21..=24)) {
+                    return Some("macOS has no global shortcuts for F21 to F24");
+                }
+                (!(m.ctrl || m.meta || bare_f(20)))
+                    .then_some("A global shortcut needs Command or Control (or F13 to F20 alone)")
+            }
+            Platform::Windows | Platform::Linux => (!((m.ctrl && !m.alt)
+                || (m.alt && m.shift && !m.ctrl)
+                || bare_f(24)))
+            .then_some(
+                "A global shortcut needs Ctrl without Alt, or Alt with Shift (or F13 to F24 alone); Ctrl+Alt types characters on many layouts",
+            ),
+        }
+    }
+
+    /// Why this chord cannot work in app scope on `platform`, if so: on macOS, Option
+    /// without Command or Control changes the character the key types.
+    pub fn app_problem(&self, platform: Platform) -> Option<&'static str> {
+        let m = self.mods;
+        let typed = matches!(self.key, Key::Letter(_) | Key::Digit(_))
+            || matches!(self.key, Key::Named(n) if n.punctuation().is_some() || n == Named::Space);
+        (platform == Platform::MacOs && m.alt && !m.ctrl && !m.meta && typed).then_some(
+            "Option with this key types a character; add Command or Control, or make it global",
+        )
+    }
+
+    /// A global chord other apps commonly use: allowed, with a warning.
+    pub fn common_in_other_apps(&self) -> bool {
+        self.mods == Mods::CTRL
+            && matches!(self.key, Key::Letter(c) if b"CVXZASFNOPTW".contains(&c))
     }
 }
 
@@ -745,8 +824,8 @@ pub enum ProblemKind {
     Conflict(String),
     /// The platform keeps the chord; the reason.
     Reserved(&'static str),
-    /// A global chord without Ctrl, Alt or Meta.
-    NeedsModifier,
+    /// Unsafe or impossible in its scope on this platform; the reason.
+    Scope(&'static str),
     /// Global shortcuts do not exist on this platform.
     NoGlobal,
     /// The command has more than [`MAX_PER_COMMAND`] bindings.
@@ -761,9 +840,7 @@ impl ProblemKind {
                 format!("Also bound to {}; this one does nothing.", title(c))
             }
             ProblemKind::Reserved(why) => format!("{why}."),
-            ProblemKind::NeedsModifier => {
-                "A global shortcut needs Ctrl, Alt or Meta (or F13 to F24).".to_owned()
-            }
+            ProblemKind::Scope(why) => format!("{why}."),
             ProblemKind::NoGlobal => {
                 "Global shortcuts are not available on this system yet.".to_owned()
             }
@@ -799,6 +876,15 @@ pub enum Check {
     },
     /// It cannot be bound in this scope; the reason.
     Refused(String),
+    /// It can be bound, but the user should know this.
+    Warn(String),
+}
+
+fn scope_problem(chord: &Chord, scope: Scope, platform: Platform) -> Option<&'static str> {
+    match scope {
+        Scope::App => chord.app_problem(platform),
+        Scope::Global => chord.global_problem(platform),
+    }
 }
 
 /// The bindings in force: defaults with the user's changes (spec: Keymap).
@@ -833,10 +919,10 @@ impl Keymap {
         for (command, chord, scope) in user {
             let kind = if let Some(why) = chord.reserved(platform) {
                 Some(ProblemKind::Reserved(why))
-            } else if scope == Scope::Global && !chord.global_ok() {
-                Some(ProblemKind::NeedsModifier)
             } else if scope == Scope::Global && !platform.has_global() {
                 Some(ProblemKind::NoGlobal)
+            } else if let Some(why) = scope_problem(&chord, scope, platform) {
+                Some(ProblemKind::Scope(why))
             } else if let Some(&i) = k.by_chord.get(&chord) {
                 Some(ProblemKind::Conflict(k.bindings[i].command.clone()))
             } else if k.count(&command) >= MAX_PER_COMMAND {
@@ -865,6 +951,7 @@ impl Keymap {
             if removed.iter().any(|(c, ch)| *c == command && *ch == chord)
                 || k.by_chord.contains_key(&chord)
                 || chord.reserved(platform).is_some()
+                || chord.app_problem(platform).is_some()
                 || k.count(&command)
                     + with_defaults
                         .iter()
@@ -951,14 +1038,17 @@ impl Keymap {
         if scope == Scope::Global && !platform.has_global() {
             return Check::Refused(ProblemKind::NoGlobal.text(&|c| c.to_owned()));
         }
-        if scope == Scope::Global && !chord.global_ok() {
-            return Check::Refused(ProblemKind::NeedsModifier.text(&|c| c.to_owned()));
+        if let Some(why) = scope_problem(chord, scope, platform) {
+            return Check::Refused(format!("{why}."));
         }
         match self.holder(chord) {
             Some(b) => Check::Taken {
                 command: b.command.clone(),
                 scope: b.scope,
             },
+            None if scope == Scope::Global && chord.common_in_other_apps() => Check::Warn(
+                "Other apps use this shortcut; while it is global they will not get it.".into(),
+            ),
             None => Check::Free,
         }
     }
@@ -1035,6 +1125,25 @@ mod tests {
     }
 
     #[test]
+    fn typed_keys_make_chords() {
+        let shift_ctrl = Mods {
+            ctrl: true,
+            shift: true,
+            ..Mods::NONE
+        };
+        assert_eq!(Chord::from_typed('a', Mods::CTRL), Ok(c("Ctrl+A")));
+        assert_eq!(Chord::from_typed('A', shift_ctrl), Ok(c("Ctrl+Shift+A")));
+        // AZERTY: Shift on the top row types the digit.
+        assert_eq!(Chord::from_typed('1', shift_ctrl), Ok(c("Ctrl+1")));
+        assert_eq!(Chord::from_typed('/', shift_ctrl), Ok(c("Ctrl+Slash")));
+        assert_eq!(Chord::from_typed(' ', Mods::CTRL), Ok(c("Ctrl+Space")));
+        // ASCII only: Turkish dotless i is not I.
+        for bad in ['ı', 'İ', 'ş', '!', 'å', '¡'] {
+            assert!(Chord::from_typed(bad, Mods::CTRL).is_err(), "{bad}");
+        }
+    }
+
+    #[test]
     fn labels_follow_the_platform() {
         assert_eq!(c("Ctrl+Shift+Z").label(Platform::MacOs), "⇧⌘Z");
         assert_eq!(c("Ctrl+Alt+Shift+Meta+Up").label(Platform::MacOs), "⌃⌥⇧⌘↑");
@@ -1053,10 +1162,32 @@ mod tests {
         assert!(c("Meta+D").reserved(Platform::MacOs).is_none());
         assert!(c("Ctrl+Escape").reserved(Platform::Windows).is_some());
         assert!(c("Ctrl+Shift+Q").reserved(Platform::MacOs).is_none());
-        assert!(c("Ctrl+1").global_ok());
-        assert!(c("F13").global_ok());
-        assert!(!c("F12").global_ok());
-        assert!(!c("Shift+A").global_ok());
+        assert!(c("Ctrl+Shift+Escape").reserved(Platform::Windows).is_some());
+        assert!(c("F10").reserved(Platform::Windows).is_some());
+        assert!(c("Alt+Space").reserved(Platform::Windows).is_some());
+        assert!(c("Meta+Space").reserved(Platform::MacOs).is_some());
+        assert!(c("Meta+Left").reserved(Platform::MacOs).is_some());
+        assert!(c("Ctrl+Meta+Q").reserved(Platform::MacOs).is_some());
+        for p in PLATFORMS {
+            assert!(c("Ctrl+1").global_problem(p).is_none(), "{p:?}");
+            assert!(c("F13").global_problem(p).is_none(), "{p:?}");
+            assert!(c("F12").global_problem(p).is_some(), "{p:?}");
+            assert!(c("Shift+A").global_problem(p).is_some(), "{p:?}");
+        }
+        // Option-only types characters on macOS; Ctrl+Alt is AltGr on Windows.
+        assert!(c("Alt+Q").global_problem(Platform::MacOs).is_some());
+        assert!(c("Meta+Alt+Q").global_problem(Platform::MacOs).is_none());
+        assert!(c("Ctrl+Alt+7").global_problem(Platform::Windows).is_some());
+        assert!(c("Ctrl+Alt+7").global_problem(Platform::MacOs).is_none());
+        assert!(c("Alt+Shift+K").global_problem(Platform::Windows).is_none());
+        assert!(c("Alt+K").global_problem(Platform::Windows).is_some());
+        assert!(c("F21").global_problem(Platform::MacOs).is_some());
+        assert!(c("F21").global_problem(Platform::Windows).is_none());
+        assert!(c("Alt+A").app_problem(Platform::MacOs).is_some());
+        assert!(c("Alt+F5").app_problem(Platform::MacOs).is_none());
+        assert!(c("Ctrl+Alt+A").app_problem(Platform::MacOs).is_none());
+        assert!(c("Alt+A").app_problem(Platform::Windows).is_none());
+        assert!(c("Ctrl+S").common_in_other_apps());
     }
 
     #[test]
@@ -1146,7 +1277,7 @@ mod tests {
         assert_eq!(kinds.len(), 3);
         assert_eq!(kinds[0], &ProblemKind::Conflict("record.toggle".into()));
         assert!(matches!(kinds[1], ProblemKind::Reserved(_)));
-        assert_eq!(kinds[2], &ProblemKind::NeedsModifier);
+        assert!(matches!(kinds[2], ProblemKind::Scope(_)));
 
         let k = Keymap::resolve(&d, Platform::Linux);
         assert_eq!(k.problems()[0].kind, ProblemKind::NoGlobal);
@@ -1187,6 +1318,11 @@ mod tests {
             Check::Refused(_)
         ));
         assert!(matches!(k.check(&c("K"), Scope::Global), Check::Refused(_)));
+        assert!(matches!(
+            k.check(&c("Ctrl+S"), Scope::Global),
+            Check::Warn(_)
+        ));
+        assert_eq!(k.check(&c("Ctrl+S"), Scope::App), Check::Free);
         let linux = Keymap::resolve(&ShortcutsDoc::default(), Platform::Linux);
         assert!(matches!(
             linux.check(&c("Ctrl+K"), Scope::Global),
@@ -1297,6 +1433,8 @@ mod tests {
             "Alt+F4",
             "Meta+K",
             "Ctrl+Alt+R",
+            "Alt+Q",
+            "F21",
         ];
         let mut seed: u64 = 0x9E37_79B9_7F4A_7C15;
         let mut next = |n: usize| {
@@ -1334,7 +1472,11 @@ mod tests {
                 assert_eq!(seen.len(), n);
                 for b in k.bindings() {
                     assert!(b.chord.reserved(p).is_none());
-                    assert!(b.scope == Scope::App || (b.chord.global_ok() && p.has_global()));
+                    assert!(
+                        b.scope == Scope::App
+                            || (b.chord.global_problem(p).is_none() && p.has_global())
+                    );
+                    assert!(b.scope == Scope::Global || b.chord.app_problem(p).is_none());
                     assert_eq!(k.holder(&b.chord), Some(b));
                 }
                 for cmd in commands {
