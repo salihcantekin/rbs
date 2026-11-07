@@ -2,7 +2,7 @@
 // theme library and the theme editor. Rust (`appearance_page`) pushes state into the
 // `Appearance` global of the Settings window and handles its callbacks.
 import { Theme, Tokens } from "tokens.slint";
-import { Button, Checkbox, ColorPicker, FocusRing, MenuItem, NumberField, Select, TextField, Toggle } from "components.slint";
+import { Button, Checkbox, ColorPicker, FocusRing, IconName, MenuItem, MenuSurface, NumberField, Select, TextField, Toggle } from "components.slint";
 import { SettingsCard, SettingRow, SettingBlock, SettingsNotice, SettingsCallout } from "settings.slint";
 
 // One theme in the library: built-in themes first, then user themes by name.
@@ -72,6 +72,10 @@ export global Appearance {
     // one slot holds it. Save is on while it is set and applies it first, so a value
     // being typed is saved without leaving the field.
     in-out property <int> pending-kind: -1;
+    // The font menu's list: installed families whose names contain its filter
+    // (`find-fonts` fills it when the menu opens and as the filter changes).
+    in property <[string]> font-names;
+    callback find-fonts(string);
     in-out property <string> pending-name;
     in-out property <int> pending-part;
     in-out property <string> pending-text;
@@ -186,6 +190,66 @@ component KeepLook inherits Rectangle {
     }
 }
 
+// "Add font": a menu of the fonts this computer has, with a filter field. The list is
+// read when the menu first opens (nothing is read while the editor is unused, P13).
+// A pick is reported with `picked`; the row puts it first in the family list.
+component FontMenu inherits Button {
+    in property <string> for-label;
+    callback picked(string);
+    text: @tr("Add font");
+    accessible-name: @tr("Add a font to {}", root.for-label);
+    icon: IconName.chevron-down;
+    dense: true;
+    clicked => {
+        Appearance.find-fonts("");
+        menu.show();
+    }
+    menu := PopupWindow {
+        close-policy: close-on-click-outside;
+        x: root.width - Tokens.size-menu-md;
+        y: root.height;
+        width: Tokens.size-menu-md;
+        MenuSurface {
+            width: Tokens.size-menu-md;
+            height: lay.preferred-height;
+            accessible-role: groupbox;
+            accessible-label: @tr("Fonts on this computer");
+            lay := VerticalLayout {
+                padding: Tokens.space-2;
+                spacing: Tokens.space-2;
+                TextField {
+                    label: @tr("Filter fonts");
+                    placeholder: @tr("Filter");
+                    edited(t) => { Appearance.find-fonts(t); }
+                }
+                if Appearance.font-names.length == 0: Text {
+                    text: @tr("No font on this computer has that in its name.");
+                    color: Theme.text-secondary;
+                    font-size: Tokens.type-caption-size;
+                    wrap: word-wrap;
+                }
+                if Appearance.font-names.length > 0: Flickable {
+                    height: min(list.preferred-height, Tokens.size-menu-md);
+                    content-height: list.preferred-height;
+                    content-width: self.width;
+                    list := VerticalLayout {
+                        spacing: Tokens.space-1;
+                        accessible-role: AccessibleRole.list;
+                        accessible-label: @tr("Fonts on this computer");
+                        for f in Appearance.font-names: MenuItem {
+                            text: f;
+                            activated => {
+                                root.picked(f);
+                                menu.close();
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
 // One token in the editor, as a setting row: its name (and what to type, and its
 // problem) on the left, its fields and Reset on the right. A value being typed is held
 // in `Appearance.pending-*` so Save sees it before Enter or leaving the field.
@@ -216,20 +280,29 @@ component TokenEditorRow inherits Rectangle {
             }
             if item.kind == 2: Hint { text: @tr("Size, line height, weight"); }
             if item.kind == 3: Hint {
-                text: Appearance.font-in-use == "" ? @tr("Names separated by commas; the first one this computer has is used. In use: the system font.") : @tr("Names separated by commas; the first one this computer has is used. In use: {}.", Appearance.font-in-use);
+                text: Appearance.font-in-use == "" ? @tr("Type names separated by commas, or pick one with Add font; the first one this computer has is used. In use: the system font.") : @tr("Type names separated by commas, or pick one with Add font; the first one this computer has is used. In use: {}.", Appearance.font-in-use);
             }
             // The font family list is long text: its field takes the row's width,
             // under the name.
             if item.kind == 3: HorizontalLayout {
                 spacing: Tokens.space-2;
-                TextField {
+                fonts-field := TextField {
                     horizontal-stretch: 1;
                     label: item.label;
+                    placeholder: @tr("System font");
                     text: item.fonts;
                     edited(t) => { Appearance.hold(3, item.name, 0, t); }
                     accepted(t) => {
                         Appearance.pending-kind = -1;
                         if t != item.fonts { Appearance.set-fonts(t); }
+                    }
+                }
+                FontMenu {
+                    horizontal-stretch: 0;
+                    for-label: item.label;
+                    picked(name) => {
+                        Appearance.pending-kind = -1;
+                        Appearance.set-fonts(fonts-field.text == "" ? name : name + ", " + fonts-field.text);
                     }
                 }
                 Button {
@@ -345,9 +418,8 @@ component EditorActions inherits HorizontalLayout {
     }
 }
 
-// The theme editor: its title with Save and Cancel at the top (the token list is
-// long), the group picker, the group's tokens as rows, and Save and Cancel again at
-// the end.
+// The theme editor: its title with Save and Cancel (or Close) at the top, the group
+// picker and the group's tokens as rows.
 component ThemeEditor inherits VerticalLayout {
     spacing: Tokens.space-3;
     HorizontalLayout {
@@ -384,7 +456,6 @@ component ThemeEditor inherits VerticalLayout {
         label: @tr("Not used by this version");
         for n in Appearance.unknown-tokens: Hint { text: n; }
     }
-    EditorActions { }
 }
 
 // One theme in the library list: its swatch, its name, "Built in" for the built-in
