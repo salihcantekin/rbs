@@ -10,7 +10,7 @@ Keep this list current. When a new crate or module lands on one of these paths, 
 | --- | --- | --- |
 | Audio thread: device callbacks, audio graph, audio filters | Every block (10 ms) | `crates/rbs-audio` (`input.rs`, `resample.rs`, `mixer.rs`, `meter.rs`, `sink.rs`; `encoder.rs` on the encoder worker), audio adapters in `crates/rbs-audio-io-*` |
 | Audio input hand-off: `AudioInputStream::read`, the sample ring (`RingProducer` pushes in OS callbacks, `RingConsumer::read`) and `EdgeClock` | Every OS packet and every block per Active audio input | `crates/rbs-audio-io/src/ring.rs`, `crates/rbs-audio-io/src/edge.rs`, adapters in `crates/rbs-audio-io-*` |
-| Render loop: compositor, GPU filters, transitions | Every frame per canvas | `crates/rbs-graph/src/runtime` (executor tick and swap), `crates/rbs-gpu` |
+| Render loop: compositor, GPU filters, transitions | Every frame per canvas | `crates/rbs-graph/src/runtime` (executor tick and swap), `crates/rbs-gpu`, `crates/rbs-filters` (`FilterNode::process` and the pass recording it calls; `FilterType::uniforms` of every built-in type) |
 | `Node::process` of every node type | Every frame or block | Wherever nodes are implemented |
 | Parameter reads by running nodes: `ParamReceiver::update` | Every frame or block per node with parameters | `crates/rbs-graph/src/runtime/param.rs` |
 | Queue endpoints between partitions | Every frame, block or packet per crossing link | `crates/rbs-graph/src/runtime/queue.rs` (video, packet and audio queues) |
