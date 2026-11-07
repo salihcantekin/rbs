@@ -1,0 +1,20 @@
+[package]
+name = "rbs-vcam-test"
+description = "In-process virtual camera adapter for RBS tests: a consumer that records frames, with stall control (ADR-0066)."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+rbs-core = { path = "../rbs-core" }
+rbs-vcam = { path = "../rbs-vcam" }
+
+[dev-dependencies]
+allocation-counter = "0.8"
+bytes = "1.9"
+
+[lints]
+workspace = true

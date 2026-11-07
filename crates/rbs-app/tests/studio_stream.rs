@@ -19,6 +19,7 @@ use rbs_api::session::ServerConfig;
 use rbs_api::thread::ApiOptions;
 use rbs_api::transport::{CloseReason, ConnectionHandle, ConnectionSender, PeerInfo, SendError};
 use rbs_api::{ApiServer, TokenStore};
+use rbs_app::record_profile::RecordProfile;
 use rbs_app::stream_key::{ACCOUNT, KeyStore, MemoryKeyStore};
 use rbs_app::stream_profile::StreamProfile;
 use rbs_app::studio_host::{
@@ -548,6 +549,240 @@ fn a_stream_the_server_refuses_ends_with_its_reason() {
         _ => None,
     });
     drop(host);
+}
+
+/// The next recording update.
+fn recording(rx: &Receiver<Update>) -> RecordingUpdate {
+    next(rx, |u| match u {
+        Update::Recording(r) => Some(r),
+        _ => None,
+    })
+}
+
+/// Recording settings that record into a new folder of their own.
+fn record_profile(name: &str) -> RecordProfile {
+    let folder = std::env::temp_dir().join(format!("rbs-auto-{name}-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&folder);
+    let mut p = RecordProfile::new();
+    p.folder = folder;
+    p
+}
+
+/// Moves the clock past the recording tail, then waits for two answers in a row: a
+/// recording asked to stop would have stopped in the round after the first one, so no
+/// recording update may come before the second.
+fn no_recording_stops(host: &StudioHost, rx: &Receiver<Update>, clock: &TestClock) {
+    clock.advance(END_TAIL_LIMIT * 2);
+    for _ in 0..2 {
+        host.send(Command::SaveStreamKey(Some(rbs_transport::Secret::new(
+            "live_abc",
+        ))));
+        next(rx, |u| match u {
+            Update::StreamKey(_) => Some(()),
+            Update::Recording(r) => panic!("the recording changed: {r:?}"),
+            _ => None,
+        });
+    }
+}
+
+/// The end of the stream, skipping connection changes.
+fn ended(rx: &Receiver<Update>) -> Option<String> {
+    next(rx, |u| match u {
+        Update::Stream(StreamUpdate::Link(_)) => None,
+        Update::Stream(StreamUpdate::Ended { failure, .. }) => Some(failure),
+        Update::Stream(other) => panic!("{other:?}"),
+        _ => None,
+    })
+}
+
+#[test]
+fn record_when_the_stream_starts_records_with_the_stream_and_stops_with_it() {
+    let Some(gpu) = gpu() else { return };
+    let keys = Arc::new(MemoryKeyStore::new());
+    keys.write(ACCOUNT, &rbs_transport::Secret::new("live_abc"))
+        .unwrap();
+    let server = Arc::new(Server::default());
+    let clock = TestClock::new();
+    let (host, rx) = host(gpu, keys, Arc::clone(&server), &clock);
+    add_display(&host, &rx);
+    let mut stream_profile = StreamProfile::new();
+    stream_profile.server = URL.into();
+    stream_profile.key_saved = true;
+
+    // Off (the default): going live records nothing.
+    host.send(Command::SetStreamProfile(stream_profile.clone()));
+    host.send(Command::StartStream(request()));
+    assert!(matches!(stream(&rx), StreamUpdate::Started { .. }));
+    no_recording_stops(&host, &rx, &clock);
+    host.send(Command::EndStream);
+    assert_eq!(ended(&rx), None);
+
+    // On: the recording starts right after the stream, with the recording settings.
+    let first = record_profile("first");
+    host.send(Command::SetProfile(first.clone()));
+    stream_profile.auto_record = true;
+    host.send(Command::SetStreamProfile(stream_profile.clone()));
+    host.send(Command::StartStream(request()));
+    assert!(matches!(stream(&rx), StreamUpdate::Started { .. }));
+    match recording(&rx) {
+        RecordingUpdate::Started { path, .. } => assert!(path.starts_with(&first.folder)),
+        other => panic!("{other:?}"),
+    }
+    // Ending the stream stops it, after its tail (ADR-0045).
+    host.send(Command::EndStream);
+    assert_eq!(ended(&rx), None);
+    let stopped = next_while(
+        &rx,
+        || clock.advance(END_TAIL_LIMIT),
+        |u| match u {
+            Update::Recording(r) => Some(r),
+            _ => None,
+        },
+    );
+    assert!(
+        matches!(stopped, RecordingUpdate::Stopped { failure: None, .. }),
+        "{stopped:?}"
+    );
+
+    // A recording the user started keeps running when the stream ends, and no second
+    // one starts.
+    let manual = std::env::temp_dir().join(format!("rbs-auto-manual-{}.mkv", std::process::id()));
+    let _ = std::fs::remove_file(&manual);
+    host.send(Command::StartRecording(RecordRequest {
+        path: manual.clone(),
+        container: ContainerId::Matroska,
+        encoder: None,
+        video: VideoSettings::default(),
+        audio_bitrate_bps: 128_000,
+    }));
+    assert!(matches!(recording(&rx), RecordingUpdate::Started { .. }));
+    host.send(Command::StartStream(request()));
+    assert!(matches!(stream(&rx), StreamUpdate::Started { .. }));
+    host.send(Command::EndStream);
+    assert_eq!(ended(&rx), None);
+    no_recording_stops(&host, &rx, &clock);
+    host.send(Command::StopRecording);
+    let stopped = next_while(
+        &rx,
+        || clock.advance(END_TAIL_LIMIT),
+        |u| match u {
+            Update::Recording(r) => Some(r),
+            _ => None,
+        },
+    );
+    match stopped {
+        RecordingUpdate::Stopped { path, .. } => assert_eq!(path, manual),
+        other => panic!("{other:?}"),
+    }
+    let _ = std::fs::remove_file(&manual);
+
+    // A stream that fails leaves its recording running: it is the copy of what the
+    // viewers missed.
+    let second = record_profile("second");
+    host.send(Command::SetProfile(second.clone()));
+    host.send(Command::StartStream(request()));
+    assert!(matches!(stream(&rx), StreamUpdate::Started { .. }));
+    assert!(matches!(recording(&rx), RecordingUpdate::Started { .. }));
+    link_where(&rx, |l| l.connected);
+    server
+        .events
+        .lock()
+        .unwrap()
+        .push(TransportEvent::Disconnected {
+            error: TransportError::Rejected("unknown stream key".into()),
+        });
+    assert!(ended(&rx).is_some());
+    no_recording_stops(&host, &rx, &clock);
+    // Going live again does not start another one, and ending that stream leaves the
+    // recording to the user.
+    host.send(Command::StartStream(request()));
+    assert!(matches!(stream(&rx), StreamUpdate::Started { .. }));
+    host.send(Command::EndStream);
+    assert_eq!(ended(&rx), None);
+    no_recording_stops(&host, &rx, &clock);
+    host.send(Command::StopRecording);
+    next_while(
+        &rx,
+        || clock.advance(END_TAIL_LIMIT),
+        |u| match u {
+            Update::Recording(RecordingUpdate::Stopped { .. }) => Some(()),
+            Update::Recording(other) => panic!("{other:?}"),
+            _ => None,
+        },
+    );
+    drop(host);
+    for p in [first, second] {
+        let _ = std::fs::remove_dir_all(&p.folder);
+    }
+}
+
+#[test]
+fn a_control_api_client_turns_on_record_when_the_stream_starts_and_ends_both() {
+    let Some(gpu) = gpu() else { return };
+    let keys = Arc::new(MemoryKeyStore::new());
+    keys.write(ACCOUNT, &rbs_transport::Secret::new("live_abc"))
+        .unwrap();
+    let server = Arc::new(Server::default());
+    let clock = TestClock::new();
+    let (host, rx) = host(gpu, keys, Arc::clone(&server), &clock);
+    add_display(&host, &rx);
+    let folder = record_profile("api");
+    host.send(Command::SetProfile(folder.clone()));
+    let mut profile = StreamProfile::new();
+    profile.server = URL.into();
+    profile.key_saved = true;
+    host.send(Command::SetStreamProfile(profile));
+    let (api, mut c) = api_client(&host);
+    let none = serde_json::json!({});
+
+    let got = c.call("settings.get", none.clone());
+    let stream = got["result"]["data"]["stream"].clone();
+    assert_eq!(stream["auto_record"], false, "{got}");
+    let mut on = serde_json::json!({"stream": stream.clone()});
+    on["stream"]["auto_record"] = true.into();
+    let set = c.call("settings.set", on);
+    assert_eq!(
+        set["result"]["data"]["stream"]["auto_record"], true,
+        "{set}"
+    );
+    // A patch without it (a 1.2 client) leaves it on.
+    let mut old = serde_json::json!({"stream": stream});
+    old["stream"].as_object_mut().unwrap().remove("auto_record");
+    let set = c.call("settings.set", old);
+    assert_eq!(
+        set["result"]["data"]["stream"]["auto_record"], true,
+        "{set}"
+    );
+    // The UI is told, to show and save it.
+    next(&rx, |u| match u {
+        Update::StreamProfile(p) if p.auto_record => Some(()),
+        _ => None,
+    });
+
+    let started = c.call("stream.start", none.clone());
+    assert!(started.get("result").is_some(), "{started}");
+    match recording(&rx) {
+        RecordingUpdate::Started { path, .. } => assert!(path.starts_with(&folder.folder)),
+        other => panic!("{other:?}"),
+    }
+    let stopped = c.call("stream.stop", none);
+    assert!(stopped.get("result").is_some(), "{stopped}");
+    let stopped = next_while(
+        &rx,
+        || clock.advance(END_TAIL_LIMIT),
+        |u| match u {
+            Update::Recording(r) => Some(r),
+            _ => None,
+        },
+    );
+    assert!(
+        matches!(stopped, RecordingUpdate::Stopped { failure: None, .. }),
+        "{stopped:?}"
+    );
+    drop(c);
+    drop(api);
+    drop(host);
+    let _ = std::fs::remove_dir_all(&folder.folder);
 }
 
 struct ChannelSender(Sender<serde_json::Value>);

@@ -504,6 +504,10 @@ pub struct StreamSettings {
     pub srt_latency_ms: Option<u16>,
     /// How the stream is encoded.
     pub encoding: Encoding,
+    /// Record when the stream starts, with the recording settings; ending the stream
+    /// stops that recording (protocol 1.11; `false` from older servers).
+    #[serde(default)]
+    pub auto_record: bool,
 }
 
 /// The stream settings an API client may change (`settings.set`; protocol 1.2): all of
@@ -518,6 +522,10 @@ pub struct StreamSettingsPatch {
     pub srt_latency_ms: Option<u16>,
     /// How the stream is encoded.
     pub encoding: Encoding,
+    /// Record when the stream starts (protocol 1.11); absent: unchanged, so a 1.2
+    /// client's patch never turns it off.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub auto_record: Option<bool>,
 }
 
 /// Settings the control thread owns.

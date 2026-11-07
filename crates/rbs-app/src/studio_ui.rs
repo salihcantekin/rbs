@@ -1981,6 +1981,12 @@ impl StudioUi {
         }
     }
 
+    /// "Record when the stream starts".
+    pub fn set_auto_record(&mut self, on: bool) {
+        self.stream.auto_record = on;
+        self.save_stream();
+    }
+
     pub fn set_reconnect(&mut self, on: bool) {
         self.stream.reconnect = on;
         self.save_stream();
@@ -2071,6 +2077,12 @@ impl StudioUi {
         g.set_st_key_place(self.key_hint.as_str().into());
         g.set_st_key_serial(self.key_serial as i32);
         g.set_st_reconnect(st.reconnect);
+        g.set_st_auto_record(st.auto_record);
+        let record = self.profile.encoding();
+        let same_encoder = self.encoder_id(&record) == self.encoder_id(&st.encoding);
+        g.set_st_auto_record_note(
+            stream_profile::auto_record_note(&record, &st.encoding, same_encoder).into(),
+        );
         let parsed = st.parsed();
         g.set_st_srt(
             parsed
@@ -2899,6 +2911,7 @@ impl StudioUi {
                 self.stream.reconnect = p.reconnect;
                 self.stream.srt_latency_ms = p.srt_latency_ms;
                 self.stream.encoding = p.encoding;
+                self.stream.auto_record = p.auto_record;
                 self.save_stream();
             }
             // `rbs-cli token` over local IPC made or revoked a token; the control
@@ -2945,6 +2958,11 @@ impl StudioUi {
                 self.rec_state = rec_state::RECORDING;
                 self.rec_file = Some((path, Instant::now()));
                 self.set_note(format!("Video encoder: {video_encoder}"), false);
+            }
+            // A recording started with the stream (or by a control API client) runs
+            // while Record was on its way: the recording that runs is shown already.
+            RecordingUpdate::NotStarted(why) if self.rec_state != rec_state::STARTING => {
+                log(&format!("record refused: {why}"));
             }
             RecordingUpdate::NotStarted(why) => {
                 self.rec_state = rec_state::OFF;
@@ -3511,6 +3529,33 @@ mod tests {
         // As after `Update::Started`: Go live is possible.
         ui.cannot_record = None;
         (ui, d)
+    }
+
+    #[test]
+    fn a_refused_record_keeps_showing_the_recording_that_started_with_the_stream() {
+        let (mut ui, d) = ui("auto-record");
+        let path = d.join("auto.mkv");
+        // Record was pressed while the stream's own recording was on its way.
+        ui.rec_state = rec_state::STARTING;
+        ui.apply(Update::Recording(RecordingUpdate::Started {
+            path: path.clone(),
+            video_encoder: "x".into(),
+            audio_encoder: None,
+        }));
+        ui.apply(Update::Recording(RecordingUpdate::NotStarted(
+            "A recording is already running.".into(),
+        )));
+        assert_eq!(ui.rec_state, rec_state::RECORDING);
+        assert_eq!(ui.rec_file.as_ref().map(|(p, _)| p), Some(&path));
+        assert!(!ui.rec_note_bad);
+        // A refusal while Record waits for its own answer is shown.
+        ui.rec_state = rec_state::OFF;
+        ui.rec_file = None;
+        ui.rec_state = rec_state::STARTING;
+        ui.apply(Update::Recording(RecordingUpdate::NotStarted("no".into())));
+        assert_eq!(ui.rec_state, rec_state::OFF);
+        assert!(ui.rec_note_bad);
+        let _ = std::fs::remove_dir_all(&d);
     }
 
     #[test]
