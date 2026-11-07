@@ -233,6 +233,11 @@ fn the_source_runs_in_process_through_its_class_factory() {
     let sgen: IMFMediaEventGenerator = stream.cast().unwrap();
     assert_eq!(event(&sgen).0, MEStreamStarted.0 as u32);
 
+    // The section the stream will create can be created here (reports why if not).
+    let probe = section::Section::create(&user, &pump::layout(&format).unwrap());
+    assert!(probe.is_ok(), "creating the section: {probe:?}");
+    drop(probe);
+
     // Nothing writes the ring yet: the still picture.
     // SAFETY: a sample request on a running stream.
     unsafe { stream.RequestSample(None).unwrap() };
@@ -248,7 +253,7 @@ fn the_source_runs_in_process_through_its_class_factory() {
     // SAFETY: opens the section the stream created, read and write as the user.
     let handle: HANDLE =
         unsafe { OpenFileMappingW((FILE_MAP_READ | FILE_MAP_WRITE).0, false, &name) }
-            .expect("the stream created the section (needs SeCreateGlobalPrivilege)");
+            .expect("the stream created the section");
     let layout = pump::layout(&format).unwrap();
     // SAFETY: maps the whole section; unmapped below after the writer is gone.
     let view: MEMORY_MAPPED_VIEW_ADDRESS = unsafe {

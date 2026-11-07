@@ -34,9 +34,12 @@ const USER_ACCESS: u32 = 0x0004 | 0x0002;
 /// `ACCESS_ALLOWED_ACE_TYPE`.
 const ACCESS_ALLOWED: u8 = 0;
 
-/// The section's name for `sid`.
+/// The section's name for `sid`. The in-process test uses the session namespace:
+/// creating a `Global\` object needs `SeCreateGlobalPrivilege`, which Frame Server has
+/// and a test process may not.
 pub(crate) fn name(sid: &str) -> String {
-    format!("Global\\org.rbs.vcam.{sid}")
+    let space = if cfg!(test) { "Local" } else { "Global" };
+    format!("{space}\\org.rbs.vcam.{sid}")
 }
 
 /// A mapped section with a freshly initialised ring.
