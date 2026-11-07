@@ -1088,6 +1088,18 @@ impl StudioUi {
         }
     }
 
+    /// The source kinds this system offers: `(code, label)`, code being the index in
+    /// `SourceKind::ALL` (the Add source menu's).
+    pub fn kind_codes(&self) -> Vec<(i32, &'static str)> {
+        self.kind_list
+            .iter()
+            .filter_map(|k| {
+                let code = SourceKind::ALL.iter().position(|a| a == k)?;
+                Some((code as i32, k.label()))
+            })
+            .collect()
+    }
+
     pub fn list_targets(&mut self, code: i32) {
         let Some(kind) = SourceKind::ALL.get(code as usize).copied() else {
             return;

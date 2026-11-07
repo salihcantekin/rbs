@@ -147,6 +147,9 @@ struct App {
     next_group: u64,
     /// The drop guide shown while a tab is dragged: its window and rectangle.
     drop_guide: Option<(usize, Rect)>,
+    /// The maximized panel: a view state, not saved and not in the layout history
+    /// (ADR-0049 decision 2).
+    maximized: Option<PanelId>,
     toast: Option<Toast>,
     toast_serial: u64,
     error: Option<UiError>,
@@ -291,6 +294,11 @@ impl App {
         }
         match self.session.apply(c, origin) {
             Ok(toast) => {
+                // A maximized panel that was closed or switched away is not any more.
+                let ws = self.session.workspace();
+                if self.maximized.as_ref().is_some_and(|m| !ws.is_open(m)) {
+                    self.maximized = None;
+                }
                 // A toast's undo always means the latest change, so any later
                 // change replaces or removes it.
                 self.set_toast(toast);
@@ -338,6 +346,7 @@ impl App {
             workspace: self.session.workspace(),
             workspaces: &self.workspaces,
             studio: &self.studio,
+            maximized: self.maximized.as_ref(),
             panels: view::panel_entries(self.session.workspace())
                 .into_iter()
                 .map(|p| (p.title.into(), p.id.into(), p.open))
@@ -368,10 +377,48 @@ impl App {
                 self.library_done(done);
             }
             Run::Layout(c) => self.command(c, Origin::Command),
+            Run::Maximize(id, on) => self.maximized = on.then_some(id),
+            Run::AddSource(kind) => self.ask_add_source(kind),
             Run::GoLive => self.studio.go_live(),
             Run::AskEndStream => self.confirm_end = true,
             Run::Record => self.studio.record(),
             Run::StopRecording => self.studio.stop_recording(),
+        }
+    }
+
+    /// Opens the Sources panel's Add source menu, at the list of `kind`'s targets when
+    /// given (toolbar, Source menu). The panel is opened or expanded first.
+    fn ask_add_source(&mut self, kind: Option<i32>) {
+        let Some(sources) = panel("rbs.sources") else {
+            return;
+        };
+        self.command(LayoutCommand::OpenPanel(sources.clone()), Origin::Command);
+        let ws = self.session.workspace();
+        let collapsed = ws
+            .find(&sources)
+            .and_then(|(w, s, _)| ws.windows[w].stack(s))
+            .is_some_and(|t| t.collapsed);
+        if collapsed {
+            let c = LayoutCommand::SetCollapsed {
+                panel: sources.clone(),
+                collapsed: false,
+            };
+            self.command(c, Origin::Command);
+        }
+        // A maximized panel that is not Sources would cover the menu.
+        if self.maximized.as_ref().is_some_and(|m| *m != sources) {
+            self.maximized = None;
+        }
+        if let Some(code) = kind {
+            self.studio.list_targets(code);
+        }
+        let ask = |g: Studio<'_>| {
+            g.set_picker_kind(kind.unwrap_or(-1));
+            g.set_add_source_asked(g.get_add_source_asked() + 1);
+        };
+        ask(self.main.global::<Studio>());
+        for f in &self.floats {
+            ask(f.window.global::<Studio>());
         }
     }
 
@@ -433,7 +480,8 @@ impl App {
     fn drop_at(&self, window: usize, panel: &PanelId, x: f32, y: f32) -> Option<DropTarget> {
         let area = self.area(window);
         let w = self.session.workspace().windows.get(window)?;
-        drop_target(&w.flatten(area), area, panel, x, y)
+        let flat = view::shown_flat(w, area, self.maximized.as_ref());
+        drop_target(&flat, area, panel, x, y)
     }
 
     /// A tab is dragged over window `window`'s dock area: show where it would go.
@@ -1110,8 +1158,12 @@ impl Ctx {
         Self::push_general(&app);
 
         // Main window.
-        let (stacks, handles) =
-            view::window_view(0, &app.session.workspace().windows[0], app.area(0));
+        let (stacks, handles) = view::window_view(
+            0,
+            &app.session.workspace().windows[0],
+            app.area(0),
+            app.maximized.as_ref(),
+        );
         app.main_models.update(stacks, handles);
 
         self.sync_floats(&mut app);
@@ -1193,6 +1245,7 @@ impl Ctx {
             g.set_toolbar_visible(toolbar_visible);
             g.set_toolbar_has_space(toolbar_space);
             g.set_gap(rbs_ui::layout::HANDLE_THICKNESS);
+            g.set_maximized(app.maximized.as_ref().map_or("", |p| p.as_str()).into());
             g.set_edge_ids(edge_ids.as_str().into());
             g.set_left_tabs(edge_models[0].clone());
             g.set_right_tabs(edge_models[1].clone());
@@ -1289,8 +1342,12 @@ impl Ctx {
             let Some(layout) = app.session.workspace().windows[w].layout() else {
                 continue;
             };
-            let (stacks, handles) =
-                view::window_view(w, &app.session.workspace().windows[w], app.area(w));
+            let (stacks, handles) = view::window_view(
+                w,
+                &app.session.workspace().windows[w],
+                app.area(w),
+                app.maximized.as_ref(),
+            );
             slot.models.update(stacks, handles);
             slot.window.set_window(w as i32);
             slot.window.set_panel_names(view::panel_names(layout));
@@ -2147,6 +2204,7 @@ fn run(config: PathBuf, notice: Option<String>) -> Result<(), Box<dyn std::error
             main_origin: (0.0, 0.0),
             drag_group: None,
             drop_guide: None,
+            maximized: None,
             next_group: 0,
             toast: None,
             toast_serial: 0,
