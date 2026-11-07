@@ -66,6 +66,31 @@ export global Appearance {
     in property <bool> changed;
     // The family the window uses now ("" the system font).
     in property <string> font-in-use;
+    // A value typed in the editor and not yet confirmed (Enter or leaving the field):
+    // `pending-kind` is the row's kind (1 number, 2 text style, 3 font family) or -1
+    // for none, `pending-part` the text style's part. Only the focused field types, so
+    // one slot holds it. Save is on while it is set and applies it first, so a value
+    // being typed is saved without leaving the field.
+    in-out property <int> pending-kind: -1;
+    in-out property <string> pending-name;
+    in-out property <int> pending-part;
+    in-out property <string> pending-text;
+    public function hold(kind: int, name: string, part: int, text: string) {
+        pending-kind = kind;
+        pending-name = name;
+        pending-part = part;
+        pending-text = text;
+    }
+    public function apply-pending() {
+        if pending-kind == 1 && pending-text.is-float() {
+            set-number(pending-name, pending-text.to-float());
+        } else if pending-kind == 2 && pending-text.is-float() {
+            set-style(pending-name, pending-part, pending-text.to-float());
+        } else if pending-kind == 3 {
+            set-fonts(pending-text);
+        }
+        pending-kind = -1;
+    }
     // 0 dark, 1 light, 2 the one theme.
     callback pick(int, int);
     callback set-follow-system(bool);
@@ -161,110 +186,205 @@ component KeepLook inherits Rectangle {
     }
 }
 
-component TokenEditorRow inherits VerticalLayout {
+// One token in the editor, as a setting row: its name (and what to type, and its
+// problem) on the left, its fields and Reset on the right. A value being typed is held
+// in `Appearance.pending-*` so Save sees it before Enter or leaving the field.
+component TokenEditorRow inherits Rectangle {
     in property <ThemeTokenRow> item;
-    spacing: Tokens.space-1;
-    Text {
-            text: item.kind == 1 ? item.label + " (" + item.unit + ")" : item.label;
-            color: Theme.text-primary;
-            vertical-alignment: center;
-            wrap: word-wrap;
-            accessible-role: none;
+    in property <bool> divider: true;
+    min-height: lay.min-height;
+    preferred-height: lay.preferred-height;
+    if root.divider: Rectangle {
+        y: 0;
+        height: Tokens.size-border;
+        background: Theme.border-subtle;
     }
-    HorizontalLayout {
-        spacing: Tokens.space-2;
-        alignment: start;
-        if item.kind == 0: ColorPicker {
-            label: item.label;
-            value: item.color;
-            picked(hex) => { Appearance.set-color(item.name, hex); }
+    lay := HorizontalLayout {
+        padding-top: Tokens.space-2;
+        padding-bottom: Tokens.space-2;
+        spacing: Tokens.space-3;
+        VerticalLayout {
+            horizontal-stretch: 1;
+            alignment: center;
+            spacing: Tokens.space-1;
+            Text {
+                text: item.kind == 1 ? item.label + " (" + item.unit + ")" : item.label;
+                color: Theme.text-primary;
+                font-size: Tokens.type-label-size;
+                wrap: word-wrap;
+                accessible-role: none;
+            }
+            if item.kind == 2: Hint { text: @tr("Size, line height, weight"); }
+            if item.kind == 3: Hint {
+                text: Appearance.font-in-use == "" ? @tr("Names separated by commas; the first one this computer has is used. In use: the system font.") : @tr("Names separated by commas; the first one this computer has is used. In use: {}.", Appearance.font-in-use);
+            }
+            // The font family list is long text: its field takes the row's width,
+            // under the name.
+            if item.kind == 3: HorizontalLayout {
+                spacing: Tokens.space-2;
+                TextField {
+                    horizontal-stretch: 1;
+                    label: item.label;
+                    text: item.fonts;
+                    edited(t) => { Appearance.hold(3, item.name, 0, t); }
+                    accepted(t) => {
+                        Appearance.pending-kind = -1;
+                        if t != item.fonts { Appearance.set-fonts(t); }
+                    }
+                }
+                Button {
+                    horizontal-stretch: 0;
+                    text: @tr("Reset");
+                    accessible-name: @tr("Reset {}", item.label);
+                    kind: "ghost";
+                    dense: true;
+                    enabled: item.overridden;
+                    clicked => { Appearance.reset(item.name); }
+                }
+            }
+            if item.problem != "": Problem { text: item.problem; }
         }
-        if item.kind == 1: NumberField {
-            width: Tokens.size-menu-sm / 2;
-            label: item.label;
-            value: item.number;
-            step: item.step;
-            edited(v) => { Appearance.set-number(item.name, v); }
-        }
-        if item.kind == 2: HorizontalLayout {
+        if item.kind != 3: HorizontalLayout {
+            horizontal-stretch: 0;
             spacing: Tokens.space-2;
-            NumberField {
-                width: Tokens.size-menu-sm / 3;
-                label: @tr("{} size", item.label);
-                value: item.size;
-                edited(v) => { Appearance.set-style(item.name, 0, v); }
+            alignment: end;
+            if item.kind == 0: VerticalLayout {
+                alignment: center;
+                ColorPicker {
+                    label: item.label;
+                    value: item.color;
+                    picked(hex) => { Appearance.set-color(item.name, hex); }
+                }
             }
-            NumberField {
-                width: Tokens.size-menu-sm / 3;
-                label: @tr("{} line height", item.label);
-                value: item.line;
-                edited(v) => { Appearance.set-style(item.name, 1, v); }
+            if item.kind == 1: VerticalLayout {
+                alignment: center;
+                NumberField {
+                    width: Tokens.size-menu-sm / 2;
+                    label: item.label;
+                    value: item.number;
+                    step: item.step;
+                    typed(t) => { Appearance.hold(1, item.name, 0, t); }
+                    edited(v) => {
+                        Appearance.pending-kind = -1;
+                        Appearance.set-number(item.name, v);
+                    }
+                }
             }
-            NumberField {
-                width: Tokens.size-menu-sm / 3;
-                label: @tr("{} weight", item.label);
-                value: item.weight;
-                step: 100;
-                edited(v) => { Appearance.set-style(item.name, 2, v); }
+            if item.kind == 2: VerticalLayout {
+                alignment: center;
+                HorizontalLayout {
+                    spacing: Tokens.space-2;
+                    NumberField {
+                        width: Tokens.size-menu-sm / 3;
+                        label: @tr("{} size", item.label);
+                        value: item.size;
+                        typed(t) => { Appearance.hold(2, item.name, 0, t); }
+                        edited(v) => {
+                            Appearance.pending-kind = -1;
+                            Appearance.set-style(item.name, 0, v);
+                        }
+                    }
+                    NumberField {
+                        width: Tokens.size-menu-sm / 3;
+                        label: @tr("{} line height", item.label);
+                        value: item.line;
+                        typed(t) => { Appearance.hold(2, item.name, 1, t); }
+                        edited(v) => {
+                            Appearance.pending-kind = -1;
+                            Appearance.set-style(item.name, 1, v);
+                        }
+                    }
+                    NumberField {
+                        width: Tokens.size-menu-sm / 3;
+                        label: @tr("{} weight", item.label);
+                        value: item.weight;
+                        step: 100;
+                        typed(t) => { Appearance.hold(2, item.name, 2, t); }
+                        edited(v) => {
+                            Appearance.pending-kind = -1;
+                            Appearance.set-style(item.name, 2, v);
+                        }
+                    }
+                }
             }
-        }
-        if item.kind == 3: TextField {
-            width: Tokens.size-menu-md;
-            label: item.label;
-            text: item.fonts;
-            accepted(t) => { Appearance.set-fonts(t); }
-        }
-        Button {
-            text: @tr("Reset");
-            accessible-name: @tr("Reset {}", item.label);
-            kind: "ghost";
-            dense: true;
-            enabled: item.overridden;
-            clicked => { Appearance.reset(item.name); }
+            VerticalLayout {
+                alignment: center;
+                Button {
+                    text: @tr("Reset");
+                    accessible-name: @tr("Reset {}", item.label);
+                    kind: "ghost";
+                    dense: true;
+                    enabled: item.overridden;
+                    clicked => { Appearance.reset(item.name); }
+                }
+            }
         }
     }
-    if item.kind == 2: Hint { text: @tr("Size, line height and weight"); }
-    if item.kind == 3: Hint {
-        text: Appearance.font-in-use == "" ? @tr("Names separated by commas, then Enter; the first one this computer has is used. In use: the system font.") : @tr("Names separated by commas, then Enter; the first one this computer has is used. In use: {}.", Appearance.font-in-use);
-    }
-    if item.problem != "": Problem { text: item.problem; }
 }
 
+// Save and Cancel (or Close) of the editor. Save applies a value still being typed
+// first, so it never needs Enter or leaving the field.
+component EditorActions inherits HorizontalLayout {
+    spacing: Tokens.space-2;
+    alignment: end;
+    Button {
+        text: @tr("Save");
+        kind: "primary";
+        enabled: Appearance.can-save || Appearance.pending-kind >= 0;
+        clicked => {
+            Appearance.apply-pending();
+            Appearance.save();
+        }
+    }
+    Button {
+        text: Appearance.changed || Appearance.pending-kind >= 0 ? @tr("Cancel") : @tr("Close");
+        clicked => {
+            Appearance.pending-kind = -1;
+            Appearance.cancel();
+        }
+    }
+}
+
+// The theme editor: its title with Save and Cancel at the top (the token list is
+// long), the group picker, the group's tokens as rows, and Save and Cancel again at
+// the end.
 component ThemeEditor inherits VerticalLayout {
     spacing: Tokens.space-3;
-    Text {
-        text: @tr("Edit {}", Appearance.editor-name);
-        color: Theme.text-primary;
-        font-size: Tokens.type-title-size;
-        font-weight: Tokens.type-title-weight;
+    HorizontalLayout {
+        spacing: Tokens.space-3;
+        Text {
+            horizontal-stretch: 1;
+            text: @tr("Edit {}", Appearance.editor-name);
+            color: Theme.text-primary;
+            font-size: Tokens.type-title-size;
+            font-weight: Tokens.type-title-weight;
+            vertical-alignment: center;
+            overflow: elide;
+        }
+        EditorActions { horizontal-stretch: 0; }
     }
     Hint { text: @tr("Changes show in every window as you make them. A change that breaks a rule is shown with its problem and not used."); }
     for p in Appearance.general-problems: Problem { text: p; }
-    Select {
+    SettingRow {
+        divider: false;
         label: @tr("Group");
-        options: Appearance.groups;
-        index: Appearance.group;
-        selected(i) => { Appearance.set-group(i); }
+        control-width: Tokens.size-menu-sm;
+        Select {
+            label: @tr("Group");
+            options: Appearance.groups;
+            index: Appearance.group;
+            selected(i) => { Appearance.set-group(i); }
+        }
     }
-    for r in Appearance.rows: TokenEditorRow { item: r; }
+    VerticalLayout {
+        spacing: 0px;
+        for r in Appearance.rows: TokenEditorRow { item: r; }
+    }
     if Appearance.unknown-tokens.length > 0: Field {
         label: @tr("Not used by this version");
         for n in Appearance.unknown-tokens: Hint { text: n; }
     }
-    HorizontalLayout {
-        spacing: Tokens.space-2;
-        alignment: start;
-        Button {
-            text: @tr("Save");
-            kind: "primary";
-            enabled: Appearance.can-save;
-            clicked => { Appearance.save(); }
-        }
-        Button {
-            text: Appearance.changed ? @tr("Cancel") : @tr("Close");
-            clicked => { Appearance.cancel(); }
-        }
-    }
+    EditorActions { }
 }
 
 // One theme in the library list: its swatch, its name, "Built in" for the built-in
@@ -275,6 +395,9 @@ component ThemeListRow inherits Rectangle {
     in property <ThemeOption> theme;
     in property <bool> selected;
     in property <bool> enabled: true;
+    // Beside the editor: the name gets the room, the "Built in" chip is left out (the
+    // accessible name still says it).
+    in property <bool> compact;
     callback activated();
     min-height: row.min-height;
     preferred-height: row.preferred-height;
@@ -301,6 +424,7 @@ component ThemeListRow inherits Rectangle {
         padding-left: Tokens.space-3;
         spacing: Tokens.space-3;
         VerticalLayout {
+            horizontal-stretch: 0;
             alignment: center;
             Swatch {
                 surface: root.theme.surface;
@@ -323,7 +447,8 @@ component ThemeListRow inherits Rectangle {
             }
             if !root.theme.usable: Problem { text: @tr("Cannot be used: {}", root.theme.problem); }
         }
-        if !root.theme.user: VerticalLayout {
+        if !root.theme.user && !root.compact: VerticalLayout {
+            horizontal-stretch: 0;
             alignment: center;
             Rectangle {
                 border-radius: self.height / 2;
@@ -409,97 +534,104 @@ export component AppearanceSettings inherits Rectangle {
             }
         }
         // The theme list on the left, the editor on the right (owner's choice, ADR-0057
-        // decision 6).
+        // decision 6). The list keeps its own height at the top: it is short and the
+        // editor is long, so it is never stretched to the editor's height.
         HorizontalLayout {
             spacing: Tokens.space-4;
             alignment: stretch;
-            SettingsCard {
-                title: @tr("Themes");
-                description: Appearance.editing ? "" : @tr("Pick a theme to use, edit or share it. Built-in themes cannot be changed: duplicate one to make your own.");
-                min-width: Appearance.editing ? Tokens.size-menu-md : 0px;
+            VerticalLayout {
+                alignment: start;
+                // Beside the editor the list is a narrow column; alone it takes the width.
+                min-width: Appearance.editing ? Tokens.size-menu-sm : 0px;
+                max-width: Appearance.editing ? Tokens.size-menu-sm : 100000px;
                 horizontal-stretch: Appearance.editing ? 0 : 1;
-                VerticalLayout {
-                    spacing: Tokens.space-1;
-                    padding-bottom: Tokens.space-2;
-                    accessible-role: list;
-                    accessible-label: @tr("Themes");
-                    for t[i] in Appearance.themes: ThemeListRow {
-                        theme: t;
-                        selected: Appearance.selected == i;
-                        enabled: !Appearance.editing;
-                        activated => { Appearance.select(i); }
+                SettingsCard {
+                    title: @tr("Themes");
+                    description: Appearance.editing ? "" : @tr("Pick a theme to use, edit or share it. Built-in themes cannot be changed: duplicate one to make your own.");
+                    VerticalLayout {
+                        spacing: Tokens.space-1;
+                        padding-bottom: Tokens.space-2;
+                        accessible-role: list;
+                        accessible-label: @tr("Themes");
+                        for t[i] in Appearance.themes: ThemeListRow {
+                            theme: t;
+                            selected: Appearance.selected == i;
+                            enabled: !Appearance.editing;
+                            compact: Appearance.editing;
+                            activated => { Appearance.select(i); }
+                        }
                     }
-                }
-                if !Appearance.editing && root.current.user: SettingRow {
-                    label: @tr("Name");
-                    TextField {
+                    if !Appearance.editing && root.current.user: SettingRow {
                         label: @tr("Name");
-                        text: root.current.name;
-                        accepted(t) => { Appearance.rename(t); }
-                    }
-                }
-                if !Appearance.editing && !root.confirming-delete: SettingBlock {
-                    HorizontalLayout {
-                        spacing: Tokens.space-2;
-                        alignment: start;
-                        Button {
-                            text: @tr("Use");
-                            kind: "primary";
-                            enabled: root.has-selection && root.current.usable;
-                            clicked => { Appearance.use-selected(); }
-                        }
-                        Button {
-                            text: root.current.user || !root.has-selection ? @tr("Edit") : @tr("Duplicate to edit");
-                            enabled: root.has-selection;
-                            clicked => { Appearance.edit(); }
-                        }
-                        Button {
-                            text: @tr("Duplicate");
-                            enabled: root.has-selection;
-                            clicked => { Appearance.duplicate(); }
-                        }
-                        Button {
-                            text: @tr("Delete");
-                            kind: "ghost";
-                            enabled: root.has-selection && root.current.user;
-                            clicked => { root.confirming-delete = true; }
-                        }
-                        Rectangle { horizontal-stretch: 1; }
-                        Button {
-                            text: @tr("Import…");
-                            kind: "ghost";
-                            clicked => { Appearance.import(); }
-                        }
-                        Button {
-                            text: @tr("Export…");
-                            kind: "ghost";
-                            enabled: root.has-selection && root.current.user;
-                            clicked => { Appearance.export(); }
+                        TextField {
+                            label: @tr("Name");
+                            text: root.current.name;
+                            accepted(t) => { Appearance.rename(t); }
                         }
                     }
-                }
-                if !Appearance.editing && root.confirming-delete: SettingBlock {
-                    SettingsCallout {
-                        label: @tr("Delete {}?", root.current.name);
-                        Text {
-                            text: @tr("Delete {}? You can get it back from the deleted folder.", root.current.name);
-                            color: Theme.text-primary;
-                            wrap: word-wrap;
-                        }
+                    if !Appearance.editing && !root.confirming-delete: SettingBlock {
                         HorizontalLayout {
                             spacing: Tokens.space-2;
                             alignment: start;
                             Button {
-                                text: @tr("Delete");
+                                text: @tr("Use");
                                 kind: "primary";
-                                clicked => {
-                                    root.confirming-delete = false;
-                                    Appearance.delete();
-                                }
+                                enabled: root.has-selection && root.current.usable;
+                                clicked => { Appearance.use-selected(); }
                             }
                             Button {
-                                text: @tr("Cancel");
-                                clicked => { root.confirming-delete = false; }
+                                text: root.current.user || !root.has-selection ? @tr("Edit") : @tr("Duplicate to edit");
+                                enabled: root.has-selection;
+                                clicked => { Appearance.edit(); }
+                            }
+                            Button {
+                                text: @tr("Duplicate");
+                                enabled: root.has-selection;
+                                clicked => { Appearance.duplicate(); }
+                            }
+                            Button {
+                                text: @tr("Delete");
+                                kind: "ghost";
+                                enabled: root.has-selection && root.current.user;
+                                clicked => { root.confirming-delete = true; }
+                            }
+                            Rectangle { horizontal-stretch: 1; }
+                            Button {
+                                text: @tr("Import…");
+                                kind: "ghost";
+                                clicked => { Appearance.import(); }
+                            }
+                            Button {
+                                text: @tr("Export…");
+                                kind: "ghost";
+                                enabled: root.has-selection && root.current.user;
+                                clicked => { Appearance.export(); }
+                            }
+                        }
+                    }
+                    if !Appearance.editing && root.confirming-delete: SettingBlock {
+                        SettingsCallout {
+                            label: @tr("Delete {}?", root.current.name);
+                            Text {
+                                text: @tr("Delete {}? You can get it back from the deleted folder.", root.current.name);
+                                color: Theme.text-primary;
+                                wrap: word-wrap;
+                            }
+                            HorizontalLayout {
+                                spacing: Tokens.space-2;
+                                alignment: start;
+                                Button {
+                                    text: @tr("Delete");
+                                    kind: "primary";
+                                    clicked => {
+                                        root.confirming-delete = false;
+                                        Appearance.delete();
+                                    }
+                                }
+                                Button {
+                                    text: @tr("Cancel");
+                                    clicked => { root.confirming-delete = false; }
+                                }
                             }
                         }
                     }

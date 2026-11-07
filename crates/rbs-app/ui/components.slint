@@ -944,6 +944,45 @@ export component Slider inherits Rectangle {
     FocusRing { show: focus.has-focus; border-radius: Tokens.radius-sm; }
 }
 
+// One half of a NumberField's stepper column: a chevron button. Pressed, it steps
+// once; held, it keeps stepping after a short pause. It never takes the focus, so a
+// value being typed stays in the field and steps from what is typed.
+component StepButton inherits Rectangle {
+    in property <IconName> icon;
+    in property <bool> enabled: true;
+    callback step();
+    property <bool> repeating;
+    background: !root.enabled ? transparent
+        : touch.pressed ? Theme.surface-raised
+        : touch.has-hover ? Theme.surface-overlay : transparent;
+    accessible-role: none;
+    Icon {
+        width: Tokens.size-icon-box * 0.75;
+        height: Tokens.size-icon-box * 0.75;
+        name: root.icon;
+        ink: root.enabled ? Theme.text-secondary : Theme.text-disabled;
+    }
+    touch := TouchArea {
+        enabled: root.enabled;
+        pointer-event(e) => {
+            if e.kind == PointerEventKind.down && e.button == PointerEventButton.left {
+                root.repeating = false;
+                root.step();
+            }
+        }
+    }
+    Timer {
+        interval: 400ms;
+        running: touch.pressed && !root.repeating;
+        triggered => { root.repeating = true; }
+    }
+    Timer {
+        interval: 80ms;
+        running: touch.pressed && root.repeating;
+        triggered => { root.step(); }
+    }
+}
+
 export component NumberField inherits Rectangle {
     in property <string> label;
     // A short visible label inside the field, before the value (X, Y, W, H...); the
@@ -953,6 +992,9 @@ export component NumberField inherits Rectangle {
     in property <float> step: 1;
     in property <bool> enabled: true;
     callback edited(float);
+    // Each change of the typed text, before it is confirmed (a form whose Save button
+    // must see a value still being typed).
+    callback typed(string);
     function shown(v: float) -> string {
         return round(v);
     }
@@ -995,7 +1037,7 @@ export component NumberField inherits Rectangle {
     }
     input := TextInput {
         x: Tokens.space-2;
-        width: parent.width - 2 * Tokens.space-2;
+        width: parent.width - 2 * Tokens.space-2 - steppers.width;
         height: parent.height;
         text: shown(root.value);
         enabled: root.enabled;
@@ -1016,6 +1058,34 @@ export component NumberField inherits Rectangle {
             reject
         }
         accepted => { root.commit(); }
+        edited => { root.typed(self.text); }
+    }
+    // The stepper column: the arrow keys' up and down as buttons, so the field shows
+    // that it steps (U2). A divider line separates it from the value.
+    steppers := Rectangle {
+        x: parent.width - self.width - Tokens.size-border;
+        y: Tokens.size-border;
+        width: Tokens.size-icon-box;
+        height: parent.height - 2 * Tokens.size-border;
+        Rectangle {
+            x: 0;
+            width: Tokens.size-border;
+            background: Theme.border-subtle;
+        }
+        VerticalLayout {
+            StepButton {
+                icon: IconName.chevron-up;
+                enabled: root.enabled;
+                border-top-right-radius: Tokens.radius-sm;
+                step => { root.step-by(1); }
+            }
+            StepButton {
+                icon: IconName.chevron-down;
+                enabled: root.enabled;
+                border-bottom-right-radius: Tokens.radius-sm;
+                step => { root.step-by(-1); }
+            }
+        }
     }
     property <bool> focused: input.has-focus;
     changed focused => { if !focused { root.commit(); } }
