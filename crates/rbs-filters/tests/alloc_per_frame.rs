@@ -45,7 +45,14 @@ static GLOBAL: Counting = Counting;
 
 const W: u32 = 320;
 const H: u32 = 180;
-const FRAMES: u64 = 200;
+/// Ticks per measured window, after `WARM_UP` ticks. Every rendering tick draws on the
+/// CPU on the CI's software adapters (WARP, lavapipe), so the counts stay small: at
+/// 50 + 2 x 200 ticks per filter and path the test took 24 to 60 s on the Windows
+/// runners and was killed at 60 s. The counts per tick are steady after a few ticks
+/// (lavapipe: the same averages, within 0.2, for 60- and 200-tick windows), so the
+/// short windows still show any growth.
+const FRAMES: u64 = 60;
+const WARM_UP: u64 = 20;
 
 /// Two value sets that differ in the first number field, so every tick renders.
 fn two_values(ty: &dyn FilterType) -> (Values, Values) {
@@ -78,7 +85,7 @@ fn per_tick(rig: &mut Rig, values: (Values, Values), render: bool) -> (f64, f64)
         n += 1;
         rig.tick();
     };
-    for _ in 0..50 {
+    for _ in 0..WARM_UP {
         tick(rig);
     }
     let mut window = |rig: &mut Rig| {
