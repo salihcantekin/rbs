@@ -20,6 +20,7 @@ mod appearance_page;
 mod config;
 mod context_menu;
 mod entry;
+mod icons;
 mod look;
 mod menu_bar;
 #[cfg(any(target_os = "macos", windows))]
@@ -189,6 +190,7 @@ struct App {
 #[derive(Default)]
 struct MenuModels {
     titles: Rc<VecModel<slint::SharedString>>,
+    icons: Rc<VecModel<slint::Image>>,
     enabled: Rc<VecModel<bool>>,
     checked: Rc<VecModel<bool>>,
     choices: Rc<VecModel<ModelRc<MenuChoice>>>,
@@ -205,6 +207,12 @@ impl MenuModels {
             &self.titles,
             v.titles.iter().map(|t| t.as_str().into()).collect(),
         );
+        if self.shown.as_ref().map(|s| &s.icons) != Some(&v.icons) {
+            set_rows(
+                &self.icons,
+                v.icons.iter().map(|n| icons::menu_image(n)).collect(),
+            );
+        }
         set_rows(&self.enabled, v.enabled.clone());
         set_rows(&self.checked, v.checked.clone());
         if self.shown.as_ref().map(|s| &s.choices) != Some(&v.choices) {
@@ -230,6 +238,7 @@ impl MenuModels {
 
     fn push(&self, g: &Menus<'_>) {
         g.set_titles(ModelRc::from(self.titles.clone()));
+        g.set_icons(ModelRc::from(self.icons.clone()));
         g.set_enabled(ModelRc::from(self.enabled.clone()));
         g.set_checked(ModelRc::from(self.checked.clone()));
         g.set_choices(ModelRc::from(self.choices.clone()));
@@ -1870,6 +1879,7 @@ fn context_row(i: context_menu::Item) -> ContextItem {
     ContextItem {
         kind: i.kind as i32,
         title: i.title.into(),
+        icon: icons::menu_image(i.icon),
         id: i.id.into(),
         enabled: i.enabled,
         checkable: i.checkable,

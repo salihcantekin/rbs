@@ -17,6 +17,8 @@
 use rbs_ui::command::MAX_CONTEXT_ITEMS;
 use rbs_ui::command::{CommandId, CommandState, Context, MenuItem, context_menu};
 
+use crate::menu_bar::item_icon;
+
 /// What a slot draws (`ContextItem.kind`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Kind {
@@ -30,6 +32,8 @@ pub enum Kind {
 pub struct Item {
     pub kind: Kind,
     pub title: String,
+    /// Icon name from the set; empty while a checkmark takes its place.
+    pub icon: &'static str,
     /// The registry id a click runs; empty for separators and submenus.
     pub id: String,
     pub enabled: bool,
@@ -59,19 +63,26 @@ pub fn items(context: Context, target: &[(String, String)], state: &dyn CommandS
                 title,
                 disabled,
                 checked,
+                icon,
                 ..
             } => Item {
                 kind: Kind::Command,
                 title,
+                icon: item_icon(icon, checked),
                 id: id.to_string(),
                 enabled: disabled.is_none(),
                 checkable: checked.is_some(),
                 checked: checked.unwrap_or(false),
                 choices: Vec::new(),
             },
-            MenuItem::Choices { title, choices } => Item {
+            MenuItem::Choices {
+                title,
+                icon,
+                choices,
+            } => Item {
                 kind: Kind::Choices,
                 title,
+                icon: item_icon(icon, None),
                 id: String::new(),
                 enabled: !choices.is_empty(),
                 checkable: false,
@@ -84,6 +95,7 @@ pub fn items(context: Context, target: &[(String, String)], state: &dyn CommandS
             MenuItem::Separator => Item {
                 kind: Kind::Separator,
                 title: String::new(),
+                icon: "",
                 id: String::new(),
                 enabled: true,
                 checkable: false,
@@ -103,13 +115,13 @@ pub fn slint_text(indent: &str) -> String {
     for i in 0..MAX_CONTEXT_ITEMS {
         let it = format!("ContextMenus.items[{i}]");
         out.push_str(&format!(
-            "{indent}for _ in {it}.kind == 1 ? 1 : 0: MenuItem {{ title: {it}.title; enabled: {it}.enabled; checkable: {it}.checkable; checked: {it}.checked; activated => {{ ContextMenus.run({it}.id); }} }}\n"
+            "{indent}for _ in {it}.kind == 1 ? 1 : 0: MenuItem {{ title: {it}.title; icon: {it}.icon; enabled: {it}.enabled; checkable: {it}.checkable; checked: {it}.checked; activated => {{ ContextMenus.run({it}.id); }} }}\n"
         ));
         out.push_str(&format!(
             "{indent}for _ in {it}.kind == 2 ? 1 : 0: MenuSeparator {{ }}\n"
         ));
         out.push_str(&format!(
-            "{indent}for _ in {it}.kind == 3 ? 1 : 0: Menu {{ title: {it}.title; enabled: {it}.enabled; for c in {it}.choices: MenuItem {{ title: c.title; checkable: true; checked: c.checked; activated => {{ ContextMenus.run(c.id); }} }} }}\n"
+            "{indent}for _ in {it}.kind == 3 ? 1 : 0: Menu {{ title: {it}.title; icon: {it}.icon; enabled: {it}.enabled; for c in {it}.choices: MenuItem {{ title: c.title; checkable: true; checked: c.checked; activated => {{ ContextMenus.run(c.id); }} }} }}\n"
         ));
     }
     out
@@ -206,6 +218,12 @@ mod tests {
         let source = items(Context::Source, &target, &All);
         assert_eq!(source[0].id, "item.visible.toggle?item=3");
         assert!(source[0].checkable && source[0].checked);
+        assert_eq!(source[0].icon, "", "a checkmark takes the icon's place");
+        assert!(
+            source
+                .iter()
+                .all(|i| i.kind == Kind::Separator || i.checked || !i.icon.is_empty())
+        );
         assert!(source.iter().any(|i| i.id == "source.delete?source=2"));
         let sources = items(Context::Sources, &[], &All);
         assert_eq!(sources[0].kind, Kind::Choices);
