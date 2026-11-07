@@ -1371,11 +1371,27 @@ impl StudioUi {
 
     /// The video sources as the picture panel places them, bottom first.
     fn placed(&self) -> Vec<Placed> {
+        self.placed_where(|d| !d.locked)
+    }
+
+    /// The source whose picture is under `at` on the picture panel of size `size`,
+    /// locked ones included (a right-click there offers Unlock); it becomes the
+    /// selection. `None` (and no selection) where no picture is.
+    pub fn preview_source_at(&mut self, at: [f32; 2], size: [f32; 2]) -> Option<i32> {
+        self.edit.set_panel(size[0], size[1]);
+        let placed = self.placed_where(|_| true);
+        let hit = self.edit.source_at(at, self.canvas_px(), &placed);
+        self.selected = hit.unwrap_or(-1);
+        self.refresh_marks();
+        hit
+    }
+
+    fn placed_where(&self, keep: impl Fn(&SourceData) -> bool) -> Vec<Placed> {
         let mut v: Vec<Placed> = self
             .sources
             .iter()
             // Locked sources are not picked or moved on the picture panel (ADR-0059).
-            .filter(|d| d.picture && !d.locked)
+            .filter(|d| d.picture && keep(d))
             .map(|d| Placed {
                 id: d.id,
                 at: SourceBox::new([d.x, d.y], [d.w, d.h]),
@@ -2252,6 +2268,53 @@ impl StudioUi {
         })
     }
 
+    /// The scene `scene` names if the canvas has it, else (`None`) the scene being
+    /// worked on: the one on air, or in studio mode the preview scene.
+    pub fn scene_target(&self, scene: Option<&str>) -> Option<i32> {
+        let l = self.scene_list.as_ref()?;
+        let id = match scene {
+            Some(text) => {
+                let raw: u32 = text.parse().ok()?;
+                l.scenes.iter().find(|s| s.id.get() == raw)?.id
+            }
+            None => l.preview.unwrap_or(l.program),
+        };
+        Some(id.get() as i32)
+    }
+
+    /// How many scenes the canvas has.
+    pub fn scene_count(&self) -> usize {
+        self.scene_list.as_ref().map_or(0, |l| l.scenes.len())
+    }
+
+    /// A source of the scene being edited, by its source id, by its item's id (both
+    /// as id parameter text), or (both `None`) the selected source.
+    pub fn source_facts(&self, source: Option<&str>, item: Option<&str>) -> Option<SourceFacts> {
+        let row = match (source, item) {
+            (Some(text), _) => {
+                let raw: u32 = text.parse().ok()?;
+                self.rows.iter().find(|r| r.id.get() == raw)?
+            }
+            (None, Some(text)) => {
+                let raw: u32 = text.parse().ok()?;
+                self.rows.iter().find(|r| r.item.get() == raw)?
+            }
+            (None, None) => self
+                .rows
+                .iter()
+                .find(|r| r.id.get() as i32 == self.selected)?,
+        };
+        Some(SourceFacts {
+            id: row.id.get() as i32,
+            item: row.item.get(),
+            visible: row.visible,
+            locked: row.locked,
+            muted: row.audio.muted,
+            picture: row.layout.is_some(),
+            audio: row.kind.is_some_and(SourceKind::is_audio),
+        })
+    }
+
     /// The id of the scene at 1-based position `n` in panel order.
     pub fn scene_at(&self, n: usize) -> Option<i32> {
         let l = self.scene_list.as_ref()?;
@@ -3021,6 +3084,22 @@ fn strings(items: impl IntoIterator<Item = String>) -> ModelRc<SharedString> {
             .map(SharedString::from)
             .collect::<Vec<_>>(),
     )))
+}
+
+/// One source of the scene being edited, as the command registry asks about it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SourceFacts {
+    /// Its source id (the UI's and the control API's).
+    pub id: i32,
+    /// Its item in the scene (the control API's `item`).
+    pub item: u32,
+    pub visible: bool,
+    pub locked: bool,
+    pub muted: bool,
+    /// It has a picture (it can be locked on the picture panel).
+    pub picture: bool,
+    /// It makes sound only (it can be muted in the Mixer).
+    pub audio: bool,
 }
 
 /// Rows are replaced only where they changed, so unchanged rows keep their views.
