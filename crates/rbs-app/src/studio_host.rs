@@ -41,7 +41,7 @@ use rbs_gpu::share::{PreviewDesc, PreviewEndpoint};
 use rbs_graph::node::NodeTypeId;
 use rbs_record::{
     AudioSettings, Link, OutputId, OutputSettings, Progress, RecordAdapters, Studio,
-    StudioSettings, VideoSettings,
+    StudioSettings, VideoSettings, VirtualCameraSettings,
 };
 use rbs_scene::SceneCollection;
 use rbs_scene::model::{
@@ -52,6 +52,7 @@ use rbs_scene::{SceneError, Undo};
 use rbs_sources::types::{self, keys};
 use rbs_sources::{SourceError, SourceTarget};
 use rbs_transport::{ReconnectPolicy, Secret, TransportInput};
+use rbs_vcam::{VcamStats, VirtualCameraFactory};
 
 pub mod filters;
 
@@ -556,6 +557,19 @@ pub enum Command {
     StartStream(StreamRequest),
     /// End the running stream ([`StreamUpdate::Ended`] when it has).
     EndStream,
+    /// Start sending the program to the virtual camera (ADR-0066 decision 12) at this
+    /// size and rate; answered with [`Update::VirtualCamera`], and an
+    /// [`Update::Error`] when it did not start.
+    StartVirtualCamera {
+        /// Width in pixels.
+        width: u32,
+        /// Height in pixels.
+        height: u32,
+        /// Frames per second.
+        fps: FrameRate,
+    },
+    /// Stop sending to the virtual camera; answered with [`Update::VirtualCamera`].
+    StopVirtualCamera,
     /// The stream settings as saved: what `stream.start` uses for control API clients.
     /// Sent at start and after each change.
     SetStreamProfile(StreamProfile),
@@ -969,6 +983,9 @@ pub enum Update {
     /// The running outputs' counters for the Stats panel, once a second while any
     /// output runs.
     Stats(Stats),
+    /// The virtual camera started or stopped sending (`None`), and its counters once a
+    /// second while it sends.
+    VirtualCamera(Option<CameraStatus>),
     /// [`Command::SwitchCollection`] with this `seq` is done: `Ok` the new collection
     /// runs, `Err` why the one before still runs.
     CollectionSwitched {
@@ -1056,6 +1073,31 @@ impl Stats {
     }
 }
 
+/// The virtual camera while RBS sends to it ([`Update::VirtualCamera`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CameraStatus {
+    /// Width in pixels.
+    pub width: u32,
+    /// Height in pixels.
+    pub height: u32,
+    /// Frames per second, rounded.
+    pub rate: u32,
+    /// What its session did with the frames, when the adapter shares its counters.
+    pub counters: Option<VcamStats>,
+    /// Why its node failed, until it runs again.
+    pub failure: Option<String>,
+}
+
+/// The platform's virtual camera ([`HostConfig::virtual_camera`]).
+#[derive(Clone)]
+pub struct CameraFactory(pub Arc<dyn VirtualCameraFactory>);
+
+impl std::fmt::Debug for CameraFactory {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_tuple("CameraFactory").field(&self.0.id()).finish()
+    }
+}
+
 /// What the control thread receives.
 enum Msg {
     Ui(Command),
@@ -1089,6 +1131,9 @@ pub struct HostConfig {
     /// Saves the collection after every change (on the user data writer thread);
     /// `None`: changes are not saved.
     pub autosave: Option<CollectionSaver>,
+    /// The platform's virtual camera, `None` where there is none: the studio sends
+    /// to it on [`Command::StartVirtualCamera`].
+    pub virtual_camera: Option<CameraFactory>,
     /// A step to panic at once (tests only, ADR-0055).
     #[cfg(feature = "fault-injection")]
     #[doc(hidden)]
@@ -1115,6 +1160,7 @@ impl HostConfig {
             key_account: stream_key::ACCOUNT.to_owned(),
             collection: None,
             autosave: None,
+            virtual_camera: None,
             #[cfg(feature = "fault-injection")]
             fault: None,
         }
@@ -1414,6 +1460,12 @@ struct Host {
     stats_due: Option<Timestamp>,
     /// The studio's master clock (the engine's), for the stats interval.
     clock: Arc<dyn Clock>,
+    /// The platform's virtual camera.
+    camera_factory: Option<Arc<dyn VirtualCameraFactory>>,
+    /// What the virtual camera sends while it sends: started again after a restart.
+    camera: Option<VirtualCameraSettings>,
+    /// When the camera's counters go out next; `None` while it does not send.
+    camera_due: Option<Timestamp>,
 }
 
 fn run(
@@ -1613,6 +1665,9 @@ fn round(
     if let Some(left) = host.report_stats(now, notify) {
         wait = wait.min(left);
     }
+    if let Some(left) = host.report_camera(now, notify) {
+        wait = wait.min(left);
+    }
     host.publish(notify);
     wait
 }
@@ -1735,6 +1790,9 @@ fn start(
             auto_recording: false,
             stats_due: None,
             clock,
+            camera_factory: config.virtual_camera.map(|f| f.0),
+            camera: None,
+            camera_due: None,
             streaming: None,
             keys,
             key_account: config.key_account,
@@ -2041,6 +2099,20 @@ impl Host {
             Command::EndStream => {
                 self.end_stream_asked(notify);
                 self.publish(notify);
+            }
+            Command::StartVirtualCamera { width, height, fps } => {
+                let settings = VirtualCameraSettings::new(width, height, fps);
+                match self.start_camera(settings) {
+                    Ok(()) => self.camera_due = None,
+                    Err(why) => notify(Update::Error(why)),
+                }
+                notify(Update::VirtualCamera(self.camera_status()));
+            }
+            Command::StopVirtualCamera => {
+                self.studio.stop_virtual_camera();
+                self.camera = None;
+                self.camera_due = None;
+                notify(Update::VirtualCamera(None));
             }
             Command::SetStreamProfile(profile) => {
                 if self.stream_profile.as_ref() != Some(&profile) {
@@ -2469,6 +2541,11 @@ impl Host {
         if streaming.is_some_and(|id| !running.contains(&id)) {
             let _ = rbs_crash::contain(|| self.end_stream(Some(WHY.into()), notify));
         }
+        if self.camera.is_some() != self.studio.virtual_camera().is_some() {
+            self.studio.stop_virtual_camera();
+            self.camera = None;
+            notify(Update::VirtualCamera(None));
+        }
         if in_row >= CAUGHT_LIMIT && failed.is_none() {
             let why = String::from(
                 "RBS stopped the studio after repeated internal errors (reports were saved).",
@@ -2510,6 +2587,13 @@ impl Host {
         self.studio = studio;
         self.clock = clock;
         self.waiting = self.studio.waiting();
+        // The camera keeps sending across a canvas change; when it cannot, the next
+        // round says so.
+        if let Some(settings) = self.camera.take()
+            && self.start_camera(settings).is_err()
+        {
+            self.camera_due = Some(self.clock.now());
+        }
         Ok(())
     }
 
@@ -2803,6 +2887,58 @@ impl Host {
             counters(recording).as_ref(),
             counters(stream).as_ref(),
         )));
+        Some(STATS_INTERVAL)
+    }
+
+    /// Starts sending to the virtual camera with `settings`.
+    fn start_camera(&mut self, settings: VirtualCameraSettings) -> Result<(), String> {
+        let factory = self
+            .camera_factory
+            .clone()
+            .ok_or("The virtual camera is not available on this computer.")?;
+        self.studio
+            .start_virtual_camera(&*factory, settings)
+            .map_err(|e| format!("The virtual camera did not start: {e}"))?;
+        self.camera = Some(settings);
+        Ok(())
+    }
+
+    /// The virtual camera while it sends.
+    fn camera_status(&self) -> Option<CameraStatus> {
+        let state = self.studio.virtual_camera()?;
+        let format = state.config.format;
+        let rate = format.rate.per_second();
+        Some(CameraStatus {
+            width: format.width,
+            height: format.height,
+            rate: (u64::from(rate.num()) + u64::from(rate.den()) / 2)
+                .checked_div(u64::from(rate.den()))
+                .map_or(0, |r| u32::try_from(r).unwrap_or(u32::MAX)),
+            counters: state.session.map(|s| s.snapshot()),
+            failure: state.failure,
+        })
+    }
+
+    /// Sends the virtual camera's counters once every [`STATS_INTERVAL`] while it
+    /// sends (no timer otherwise: ADR-0013), and says once when it stopped by itself
+    /// (it could not start again after a restart). Returns the time until the next.
+    fn report_camera(&mut self, now: Timestamp, notify: &dyn Fn(Update)) -> Option<Duration> {
+        if self.camera.is_none() {
+            if self.camera_due.take().is_some() {
+                notify(Update::Error(
+                    "The virtual camera stopped: it could not start again with the new canvas."
+                        .into(),
+                ));
+                notify(Update::VirtualCamera(None));
+            }
+            return None;
+        }
+        let due = *self.camera_due.get_or_insert(now);
+        if now < due {
+            return Some(due.saturating_since(now));
+        }
+        self.camera_due = Some(now + STATS_INTERVAL);
+        notify(Update::VirtualCamera(self.camera_status()));
         Some(STATS_INTERVAL)
     }
 

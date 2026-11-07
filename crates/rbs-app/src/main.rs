@@ -30,6 +30,7 @@ mod preview_edit;
 mod shortcuts_page;
 mod studio_ui;
 mod title_bar;
+mod vcam_page;
 mod view;
 
 use std::cell::{Cell, RefCell};
@@ -190,6 +191,8 @@ struct App {
     toolbar_end_model: Rc<VecModel<ToolbarData>>,
     /// End stream was picked in the menu bar: the frame asks first (U4).
     confirm_end: bool,
+    /// Settings › Virtual camera (ADR-0066).
+    vcam: vcam_page::Camera,
 }
 
 /// The `Menus` global's models, shared by every window (`menu_bar`).
@@ -726,6 +729,7 @@ const SECTION_STREAM: i32 = 2;
 const SECTION_GENERAL: i32 = 4;
 const SECTION_APPEARANCE: i32 = 5;
 const SECTION_SHORTCUTS: i32 = 6;
+const SECTION_VIRTUAL_CAMERA: i32 = 8;
 
 thread_local! {
     /// The shell's context, for updates the studio's control thread hands to the UI
@@ -863,6 +867,9 @@ impl Ctx {
                     ctx.connect_scene_preview(endpoint);
                 }
             }
+            if let Some(camera) = applied.camera {
+                app.vcam.sending(camera);
+            }
             if let Some((collection, id)) = applied.switch {
                 let done = if collection {
                     app.studio.switch_collection(&id, close_preview)
@@ -924,6 +931,9 @@ impl Ctx {
                 if section == SECTION_SHORTCUTS {
                     shortcuts_page::opened(&ctx, app);
                 }
+                if section == SECTION_VIRTUAL_CAMERA {
+                    vcam_page::opened(app);
+                }
                 return;
             }
             let Ok(w) = SettingsWindow::new() else {
@@ -969,8 +979,12 @@ impl Ctx {
             });
             appearance_page::install(&w.global::<Appearance>(), &ctx);
             shortcuts_page::install(&w.global::<Shortcuts>(), &ctx);
+            vcam_page::install(&w.global::<VirtualCamera>(), &ctx);
             let c = ctx.clone();
             w.on_section_shown(move |s| {
+                if s == SECTION_VIRTUAL_CAMERA {
+                    c.update(vcam_page::opened);
+                }
                 if s == SECTION_APPEARANCE {
                     let ctx = c.clone();
                     c.update(move |app| appearance_page::opened(&ctx, app));
@@ -990,6 +1004,9 @@ impl Ctx {
             }
             if section == SECTION_SHORTCUTS {
                 shortcuts_page::opened(&ctx, app);
+            }
+            if section == SECTION_VIRTUAL_CAMERA {
+                vcam_page::opened(app);
             }
         });
     }
@@ -1406,6 +1423,7 @@ impl Ctx {
             return;
         }
         Self::push_general(&app);
+        vcam_page::push(&app);
 
         // Main window.
         let (stacks, handles, rail) = view::window_view(
@@ -2606,6 +2624,8 @@ fn run(config: PathBuf, notice: Option<String>) -> Result<(), Box<dyn std::error
     // What closing the main window does (ADR-0056); a bad file means the default.
     let (bg, bg_note) = background::load(&config);
     user_notes.extend(bg_note);
+    let (vcam, vcam_note) = vcam_page::Camera::load(&config);
+    user_notes.extend(vcam_note);
     let first_canvas = rbs_app::user_session::first_canvas(&collection);
     let autosave = user.collection_saver();
     let key_account = rbs_app::stream_key::account(user.profile_id.as_str());
@@ -2685,6 +2705,7 @@ fn run(config: PathBuf, notice: Option<String>) -> Result<(), Box<dyn std::error
             toolbar_model: Rc::new(VecModel::default()),
             toolbar_end_model: Rc::new(VecModel::default()),
             confirm_end: false,
+            vcam,
             demo_since: demo_live.then(Instant::now),
             studio: studio_ui::StudioUi::new(&studio_config, keys.as_ref(), user, first_canvas),
         })),
@@ -2713,6 +2734,7 @@ fn run(config: PathBuf, notice: Option<String>) -> Result<(), Box<dyn std::error
         config.collection = Some(collection);
         config.autosave = autosave;
         config.key_account = key_account;
+        config.virtual_camera = ctx.app.borrow().vcam.factory();
         config
     };
     match studio_host::StudioHost::spawn(

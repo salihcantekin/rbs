@@ -20,6 +20,7 @@
 //! - [`remote_control`]: the control API server while remote control is on.
 //! - [`user_session`]: the output profile and scene collection in use, and their one
 //!   writer thread (ADR-0051).
+//! - [`vcam_settings`]: Settings › Virtual camera and `vcam.toml` (ADR-0066).
 //! - `native::MeterBridgeLayer` (macOS): audio meters as Core Animation layers, so meter
 //!   updates do not make the toolkit redraw the window (ADR-0035).
 
@@ -40,5 +41,6 @@ pub mod stream_key;
 pub mod stream_profile;
 pub mod studio_host;
 pub mod user_session;
+pub mod vcam_settings;
 #[cfg(windows)]
 pub mod win;

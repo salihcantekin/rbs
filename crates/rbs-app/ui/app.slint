@@ -6,11 +6,12 @@ import { Button, IconButton, Icon, IconName, Icons, FocusRing, MenuItem as MenuR
 import { SettingsNavItem, SettingsNavGroup, SettingsHeader } from "settings.slint";
 import { Appearance, AppearanceSettings, ThemeOption, ThemeTokenRow } from "appearance.slint";
 import { Shortcuts, ShortcutsSettings, ShortcutRow, ShortcutChip } from "shortcuts.slint";
+import { VirtualCamera, VirtualCameraSettings } from "vcam.slint";
 import { ContextMenus, ContextItem, ContextChoice } from "context_menu.slint";
 import { AppMenus, AppMenuRow, AppMenuChip, AppMenu, AppMenuButton } from "app_menu.slint";
 import { Studio, EntryRow, SourceData, FilterData, FilterFieldData, MarkData, KindData, TargetData, MeterRow, ScaleMark, EncoderData, ProgramPanel, ScenesPanel, SourcesPanel, PropertiesPanel, MixerPanel, LiveControlsPanel, TransitionPanel, OutputsPanel, StatsPanel, RecordingSettings, StreamSettings, VideoSettings, RemoteControlSettings, GeneralSettings, GlobalSourcesSettings } from "studio.slint";
 
-export { AppMenus, AppMenuRow, AppMenuChip, ContextMenus, ContextItem, ContextChoice, Theme, Tokens, Appearance, ThemeOption, ThemeTokenRow, Shortcuts, ShortcutRow, ShortcutChip, Studio, EntryRow, SourceData, FilterData, FilterFieldData, MarkData, KindData, TargetData, MeterRow, ScaleMark, EncoderData }
+export { AppMenus, AppMenuRow, AppMenuChip, ContextMenus, ContextItem, ContextChoice, Theme, Tokens, Appearance, ThemeOption, ThemeTokenRow, Shortcuts, ShortcutRow, ShortcutChip, VirtualCamera, Studio, EntryRow, SourceData, FilterData, FilterFieldData, MarkData, KindData, TargetData, MeterRow, ScaleMark, EncoderData }
 
 export struct TabData { id: string, title: string, known: bool, icon: string }
 export struct StackData { window: int, stack: int, x: length, y: length, w: length, h: length, tabs: [TabData], active: int, collapsed: bool, can-collapse: bool, can-hide: bool }
@@ -1996,7 +1997,7 @@ export component SettingsWindow inherits Window {
     background: Theme.surface-base;
     default-font-size: Tokens.type-body-size;
     // 0 Video, 1 Recording, 2 Stream, 3 Remote control, 4 General (listed first),
-    // 5 Appearance (second), 6 Shortcuts (third).
+    // 5 Appearance (second), 6 Shortcuts (third), 7 Global sources, 8 Virtual camera.
     in-out property <int> section: 1;
     // The section list shows icons only (the collapse button at its top).
     in-out property <bool> nav-collapsed;
@@ -2107,6 +2108,13 @@ export component SettingsWindow inherits Window {
                         current: root.section == 2;
                         activated => { root.section = 2; }
                     }
+                    SettingsNavItem {
+                        text: @tr("Virtual camera");
+                        icon: IconName.camera;
+                        compact: root.nav-collapsed;
+                        current: root.section == 8;
+                        activated => { root.section = 8; }
+                    }
                     Rectangle { height: Tokens.space-2; }
                     if !root.nav-collapsed: SettingsNavGroup { title: @tr("Control"); }
                     if root.nav-collapsed: Rectangle { height: Tokens.size-border; background: Theme.border-subtle; }
@@ -2127,7 +2135,7 @@ export component SettingsWindow inherits Window {
                     spacing: Tokens.space-4;
                     alignment: start;
                     SettingsHeader {
-                        title: root.section == 0 ? @tr("Video") : root.section == 1 ? @tr("Recording") : root.section == 2 ? @tr("Stream") : root.section == 3 ? @tr("Remote control") : root.section == 5 ? @tr("Appearance") : root.section == 6 ? @tr("Shortcuts") : root.section == 7 ? @tr("Global sources") : @tr("General");
+                        title: root.section == 0 ? @tr("Video") : root.section == 1 ? @tr("Recording") : root.section == 2 ? @tr("Stream") : root.section == 3 ? @tr("Remote control") : root.section == 5 ? @tr("Appearance") : root.section == 6 ? @tr("Shortcuts") : root.section == 7 ? @tr("Global sources") : root.section == 8 ? @tr("Virtual camera") : @tr("General");
                         subtitle: root.section == 0 ? @tr("The canvas every scene is drawn on.")
                             : root.section == 1 ? @tr("Where recordings are saved and how they are encoded. Changes are saved at once.")
                             : root.section == 2 ? @tr("Where Go live sends the program and how it is encoded. Changes are saved at once.")
@@ -2135,6 +2143,7 @@ export component SettingsWindow inherits Window {
                             : root.section == 5 ? @tr("Themes for every RBS window, and your own themes.")
                             : root.section == 6 ? @tr("Keys that run commands, in RBS and, for global shortcuts, in any app.")
                             : root.section == 7 ? @tr("Sources heard and shown in every scene, such as your microphone.")
+                            : root.section == 8 ? @tr("Meeting apps can pick RBS as a camera.")
                             : @tr("How RBS behaves on this computer.");
                     }
                     if root.section == 0: VideoSettings { }
@@ -2145,6 +2154,7 @@ export component SettingsWindow inherits Window {
                     if root.section == 5: AppearanceSettings { }
                     if root.section == 6: ShortcutsSettings { }
                     if root.section == 7: GlobalSourcesSettings { }
+                    if root.section == 8: VirtualCameraSettings { }
                 }
             }
         }
