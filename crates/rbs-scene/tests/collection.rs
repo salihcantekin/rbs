@@ -489,7 +489,8 @@ fn random_edit(col: &mut SceneCollection, rng: &mut Lcg) -> Result<Undo, SceneEr
     let len = scene
         .and_then(|s| col.scene(s))
         .map_or(0, |s| s.items.len());
-    match rng.below(29) {
+    match rng.below(30) {
+        29 => col.set_globals(canvas.ok_or(missing)?, scene),
         14 => {
             let (s, f) = filter.ok_or(missing)?;
             col.remove_filter(s, f)
@@ -1132,4 +1133,230 @@ fn filter_settings_are_one_undo_step() {
     bad.insert("radius".to_owned(), SettingValue::Float(f64::NAN));
     assert!(s.col.set_filter_settings(s.cam, f, bad).is_err());
     assert_eq!(s.col, before);
+}
+
+#[test]
+fn a_global_scene_is_drawn_above_every_scene_and_wanted_with_it() {
+    let mut s = studio();
+    let (live, _) = s.col.add_scene("Live", SceneScope::Shared).unwrap();
+    let (next, _) = s.col.add_scene("Next", SceneScope::Shared).unwrap();
+    let (globals, _) = s
+        .col
+        .add_scene("Global sources", SceneScope::Canvas(s.wide))
+        .unwrap();
+    let (mic, _) = s
+        .col
+        .add_source("Mic", ty("audio-input"), Settings::new())
+        .unwrap();
+    s.col
+        .add_item(
+            live,
+            ItemContent::Source(s.screen),
+            full(1920.0, 1080.0),
+            None,
+        )
+        .unwrap();
+    let (cam_item, _) = s
+        .col
+        .add_item(
+            globals,
+            ItemContent::Source(s.cam),
+            full(320.0, 180.0),
+            None,
+        )
+        .unwrap();
+    s.col
+        .add_item(globals, ItemContent::Source(mic), full(1.0, 1.0), None)
+        .unwrap();
+    s.col.set_program(s.wide, Some(live)).unwrap();
+    s.col.set_preview(s.wide, Some(next)).unwrap();
+    // No global scene yet: only the shown scenes.
+    assert_eq!(s.col.wanted_sources(), BTreeSet::from([s.screen]));
+    let before = s.col.flatten(s.wide, live).unwrap();
+
+    s.col.set_globals(s.wide, Some(globals)).unwrap();
+    assert_eq!(s.col.globals_of(s.wide), Some(globals));
+    assert!(s.col.is_global_scene(globals));
+    let flat = s.col.flatten(s.wide, live).unwrap();
+    assert_eq!(flat.len(), 3);
+    assert_eq!(flat[0], before[0]);
+    // Above the scene, with the global item at the start of its path.
+    assert_eq!(flat[1].source, s.cam);
+    assert_eq!(flat[1].path, vec![cam_item]);
+    assert_eq!(flat[2].source, mic);
+    // In every scene the canvas shows, also an empty one.
+    let preview: Vec<SourceId> = s
+        .col
+        .flatten(s.wide, next)
+        .unwrap()
+        .iter()
+        .map(|l| l.source)
+        .collect();
+    assert_eq!(preview, vec![s.cam, mic]);
+    assert_eq!(
+        s.col.visible_sources(s.wide, live).unwrap(),
+        BTreeSet::from([s.screen, s.cam, mic])
+    );
+    assert_eq!(
+        s.col.wanted_sources(),
+        BTreeSet::from([s.screen, s.cam, mic])
+    );
+    // Drawn once when the global scene itself is flattened.
+    assert_eq!(s.col.flatten(s.wide, globals).unwrap().len(), 2);
+    // Not on the other canvas.
+    s.col.set_program(s.tall, Some(next)).unwrap();
+    assert!(s.col.flatten(s.tall, next).unwrap().is_empty());
+    assert!(s.col.visible_sources(s.tall, next).unwrap().is_empty());
+    // A hidden global item is neither drawn nor wanted.
+    s.col.set_item_visible(cam_item, false).unwrap();
+    assert_eq!(s.col.wanted_sources(), BTreeSet::from([s.screen, mic]));
+    assert_eq!(s.col.flatten(s.wide, live).unwrap().len(), 2);
+}
+
+#[test]
+fn global_scenes_are_never_shown_nested_shared_or_nesting() {
+    let mut s = studio();
+    let (live, _) = s.col.add_scene("Live", SceneScope::Shared).unwrap();
+    let (shared, _) = s.col.add_scene("Shared", SceneScope::Shared).unwrap();
+    let (tall_only, _) = s
+        .col
+        .add_scene("Tall only", SceneScope::Canvas(s.tall))
+        .unwrap();
+    let (globals, _) = s
+        .col
+        .add_scene("Globals", SceneScope::Canvas(s.wide))
+        .unwrap();
+    let refused = |r: Result<Undo, SceneError>| match r {
+        Err(SceneError::GlobalScene(_)) => {}
+        other => panic!("expected GlobalScene, got {other:?}"),
+    };
+    // Scoped to its own canvas only.
+    refused(s.col.set_globals(s.wide, Some(shared)));
+    refused(s.col.set_globals(s.wide, Some(tall_only)));
+    // Shown as program or preview.
+    s.col.set_program(s.wide, Some(live)).unwrap();
+    refused(s.col.set_globals(s.wide, Some(live)));
+    s.col.set_globals(s.wide, Some(globals)).unwrap();
+    refused(s.col.set_program(s.wide, Some(globals)));
+    refused(s.col.set_preview(s.wide, Some(globals)));
+    // Nested, or nesting.
+    let (wide_scene, _) = s
+        .col
+        .add_scene("Wide scene", SceneScope::Canvas(s.wide))
+        .unwrap();
+    refused(
+        s.col
+            .add_item(
+                wide_scene,
+                ItemContent::Scene(globals),
+                full(1.0, 1.0),
+                None,
+            )
+            .map(|x| x.1),
+    );
+    refused(
+        s.col
+            .add_item(globals, ItemContent::Scene(shared), full(1.0, 1.0), None)
+            .map(|x| x.1),
+    );
+    // Its scope cannot change away from its canvas.
+    refused(s.col.set_scene_scope(globals, SceneScope::Shared));
+    // A canvas that owns its global scene cannot be removed until the scene goes.
+    assert!(matches!(
+        s.col.remove_canvas(s.wide),
+        Err(SceneError::CanvasHasScenes(_))
+    ));
+}
+
+#[test]
+fn removing_a_global_scene_clears_it_and_undo_restores_it() {
+    let mut s = studio();
+    let (globals, _) = s
+        .col
+        .add_scene("Globals", SceneScope::Canvas(s.wide))
+        .unwrap();
+    s.col
+        .add_item(globals, ItemContent::Source(s.cam), full(1.0, 1.0), None)
+        .unwrap();
+    let set = s.col.set_globals(s.wide, Some(globals)).unwrap();
+    let before = s.col.clone();
+    let undo = s.col.remove_scene(globals).unwrap();
+    assert_eq!(s.col.globals_of(s.wide), None);
+    assert!(s.col.scene(globals).is_none());
+    let redo = s.col.undo(undo).unwrap();
+    assert_eq!(s.col, before);
+    assert_eq!(s.col.globals_of(s.wide), Some(globals));
+    s.col.undo(redo).unwrap();
+    assert_eq!(s.col.globals_of(s.wide), None);
+    // Clearing it is a canvas edit with its own undo.
+    let mut col = before.clone();
+    let clear = col.set_globals(s.wide, None).unwrap();
+    assert_eq!(col.globals_of(s.wide), None);
+    col.undo(clear).unwrap();
+    assert_eq!(col, before);
+    drop(set);
+}
+
+#[test]
+fn a_canvas_takes_its_global_scene_with_it_and_its_name_is_free() {
+    let mut s = studio();
+    let (globals, _) = s
+        .col
+        .add_scene("Global sources", SceneScope::Canvas(s.tall))
+        .unwrap();
+    s.col
+        .add_item(globals, ItemContent::Source(s.cam), full(1.0, 1.0), None)
+        .unwrap();
+    s.col.set_globals(s.tall, Some(globals)).unwrap();
+    // The hidden scene's name does not take one from the user.
+    let (mine, _) = s
+        .col
+        .add_scene("Global sources", SceneScope::Shared)
+        .unwrap();
+    assert_eq!(
+        s.col
+            .showable_scenes(s.tall)
+            .map(|x| x.id)
+            .collect::<Vec<_>>(),
+        vec![mine]
+    );
+    let before = s.col.clone();
+    let undo = s.col.remove_canvas(s.tall).unwrap();
+    assert!(s.col.scene(globals).is_none());
+    assert!(s.col.canvas(s.tall).is_none());
+    s.col.undo(undo).unwrap();
+    assert_eq!(s.col, before);
+}
+
+#[test]
+fn a_scene_and_the_global_scene_together_stay_within_the_layer_limit() {
+    use rbs_scene::model::{Scene, SceneItem};
+    let s = studio();
+    let (mut canvases, sources, _) = parts(&s.col);
+    canvases[0].globals = Some(SceneId::from_raw(1));
+    let build = |own: usize| {
+        let mut live = Scene::new(SceneId::from_raw(0), "Live", SceneScope::Shared);
+        let mut globals = Scene::new(SceneId::from_raw(1), "Globals", SceneScope::Canvas(s.wide));
+        let mut next = 0;
+        let mut item = |content| {
+            next += 1;
+            SceneItem::new(ItemId::from_raw(next), content, full(1.0, 1.0))
+        };
+        globals.items.push(item(ItemContent::Source(s.cam)));
+        for _ in 0..own {
+            live.items.push(item(ItemContent::Source(s.screen)));
+        }
+        SceneCollection::from_parts(
+            canvases.clone(),
+            sources.clone(),
+            vec![live, globals],
+            s.col.id_counters(),
+        )
+    };
+    let limit = usize::try_from(MAX_LAYERS).unwrap();
+    assert!(build(limit - 1).is_ok());
+    assert!(matches!(
+        build(limit),
+        Err(SceneError::TooManyLayers(id)) if id == SceneId::from_raw(0)
+    ));
 }

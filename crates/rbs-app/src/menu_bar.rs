@@ -304,7 +304,7 @@ impl CommandState for Shown<'_> {
                     Err("The last scene cannot be removed.".to_owned())
                 }
             }
-            "item.visible.toggle" | "source.rename" | "source.delete" => {
+            "item.visible.toggle" | "source.rename" | "source.delete" | "item.remove" => {
                 self.running()?;
                 self.source(id).map(|_| ())
             }
@@ -444,7 +444,12 @@ impl CommandState for Shown<'_> {
             ("scene.rename", Some(_)) => Some("Rename".to_owned()),
             ("scene.remove", Some(_)) => Some("Remove".to_owned()),
             ("source.rename", _) if id.param("source").is_some() => Some("Rename".to_owned()),
-            ("source.delete", _) if id.param("source").is_some() => Some("Delete".to_owned()),
+            ("source.delete", _) if id.param("source").is_some() => {
+                Some("Delete everywhere".to_owned())
+            }
+            ("item.remove", _) if id.param("source").is_some() => {
+                Some("Remove from this scene".to_owned())
+            }
             _ => None,
         }
     }
@@ -480,6 +485,7 @@ pub fn settings_section(name: &str) -> Option<i32> {
         "general" => 4,
         "appearance" => 5,
         "shortcuts" => 6,
+        "global_sources" => 7,
         _ => return None,
     })
 }
@@ -648,6 +654,7 @@ pub enum Run {
     RenameSource(i32, Option<String>),
     /// Delete the source with this id.
     DeleteSource(i32),
+    RemoveFromScene(i32),
     /// Show (`true`) or hide the source with this id in the scene.
     SourceVisible(i32, bool),
     /// Lock (`true`) or unlock the source with this id.
@@ -717,6 +724,7 @@ pub fn run(text: &str, state: &Shown<'_>) -> Option<Run> {
             id.param("name").map(str::to_owned),
         ),
         "source.delete" => Run::DeleteSource(state.source(&id).ok()?.id),
+        "item.remove" => Run::RemoveFromScene(state.source(&id).ok()?.id),
         "item.visible.toggle" => Run::SourceVisible(state.source(&id).ok()?.id, !on),
         "item.locked.toggle" => Run::SourceLocked(state.source(&id).ok()?.id, !on),
         "source.muted.toggle" => Run::SourceMuted(state.source(&id).ok()?.id, !on),
@@ -777,7 +785,7 @@ mod tests {
             .map(|s| settings_section(s).expect("known section"))
             .collect();
         seen.sort_unstable();
-        assert_eq!(seen, (0..7).collect::<Vec<_>>());
+        assert_eq!(seen, (0..8).collect::<Vec<_>>());
         assert_eq!(settings_section("audio"), None);
         let run = |t: &str| open_settings(&CommandId::parse(t).expect("id"));
         assert_eq!(run("ui.settings.open"), Some(Run::OpenSettings(None)));

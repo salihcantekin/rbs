@@ -69,14 +69,14 @@ Every library write (`create`, `save`, `rename`, `duplicate`, `delete`, `import`
 
 The body is a set of sections, each a TOML table; section names are lowercase ASCII letters, digits, `-`, `_` and `.`, and not `format`, `kind` or `name`. `get::<S>(section)` deserialises one (`Ok(None)` if absent, `Invalid` if it does not fit), `set(section, &value)` replaces one (must serialise to a table; refused with `Newer` when the section present has a higher integer `format_version`, `SECTION_VERSION`, than the new value), `remove(section)`. Unknown sections are kept on save. A section that does not load is left alone by the app until the user resets it. A profile never holds a secret.
 
-### Scene collection document (`kind = "scene-collection"`, format 4)
+### Scene collection document (`kind = "scene-collection"`, format 5)
 
 `rbs_scene::SceneCollection` implements `Document`. Body:
 
 | Key | Type | Notes |
 | --- | --- | --- |
 | `next` | table `canvas`, `source`, `scene`, `item`, `filter` (integers, default 0) | Next ids (`SceneCollection::id_counters`) |
-| `canvases` | array of tables `id`, `name`, `width`, `height`, `frame_rate = [num, den]`, `program?`, `preview?` | `program` and `preview` are scene ids |
+| `canvases` | array of tables `id`, `name`, `width`, `height`, `frame_rate = [num, den]`, `program?`, `preview?`, `globals?` | `program`, `preview` and `globals` (format 5, ADR-0065: the canvas's global scene) are scene ids |
 | `sources` | array of tables `id`, `name`, `type`, `settings?`, `filters?`, `volume?` (1), `muted?` (false), `sync_offset_ms?` (0) | `type` is the node type id; `volume` is a linear factor in `0..=1` (format 3, ADR-0059); `sync_offset_ms` an integer in `-200..=200` (format 4, ADR-0062); out of range refuses the document, as an out-of-range `volume` does |
 | `sources.filters` | array of tables `id`, `type`, `enabled?` (default true), `settings?` | In order; built-in types keep numbers as floats and colours as `"#rrggbb"` / `"#rrggbbaa"` strings ([video-filters.md](video-filters.md)) |
 | `scenes` | array of tables `id`, `name`, `canvas?`, `items?` | `canvas` = scope `Canvas(id)`; absent = `Shared` |
@@ -86,7 +86,7 @@ The body is a set of sections, each a TOML table; section names are lowercase AS
 | `overrides` | array of tables `canvas`, `layout` | At most one per canvas |
 | `settings` | table of booleans, integers, floats and strings | Other TOML types are refused |
 
-Format 1, 2 and 3 documents load unchanged (format 2 only adds `style`, format 3 only adds `volume`, `muted` and `locked`, format 4 only adds `sync_offset_ms`); the app writes format 4, which builds that know only an older format refuse without touching the file (ADR-0053 decision 11, ADR-0059, ADR-0062). Defaults are left out when written. Floats are written as the shortest decimal that reads back as the same `f32` (`0.1`, not `0.10000000149011612`). Unknown keys are refused. Loading builds the model and calls `SceneCollection::from_parts(canvases, sources, scenes, counters)`, which:
+Format 1 to 4 documents load unchanged (format 2 only adds `style`, format 3 only adds `volume`, `muted` and `locked`, format 4 only adds `sync_offset_ms`, format 5 only adds `globals`); the app writes format 5, which builds that know only an older format refuse without touching the file (ADR-0053 decision 11, ADR-0059, ADR-0062, ADR-0065). Defaults are left out when written. Floats are written as the shortest decimal that reads back as the same `f32` (`0.1`, not `0.10000000149011612`). Unknown keys are refused. Loading builds the model and calls `SceneCollection::from_parts(canvases, sources, scenes, counters)`, which:
 
 - trims names like edits do;
 - refuses two canvases, sources, scenes or items (across all scenes) with one id (`SceneError::DuplicateId`), and filter ids used twice (`DuplicateFilter`);

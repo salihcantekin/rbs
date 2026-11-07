@@ -163,7 +163,7 @@ fn sources_are_added_deleted_and_restored_through_the_host() {
     // Delete, then undo.
     host.send(Command::DeleteSource(mic_id));
     let name = next(&rx, |u| match u {
-        Update::Deleted(n) => Some(n),
+        Update::Deleted { name: n, .. } => Some(n),
         _ => None,
     });
     assert_eq!(name, rows[1].name);

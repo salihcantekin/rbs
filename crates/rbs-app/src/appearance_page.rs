@@ -18,6 +18,8 @@ use crate::ui::{Appearance, ThemeOption, ThemeTokenRow};
 pub struct Page {
     ui: AppearanceUi,
     fonts: look::SystemFonts,
+    /// The installed families, read the first time the font menu opens (P13).
+    families: Option<Vec<String>>,
     /// List positions of the usable themes (the pickers' options).
     usable: Vec<usize>,
     /// A theme in use could not be used, or an action failed.
@@ -160,6 +162,28 @@ pub fn install(g: &Appearance<'_>, ctx: &Ctx) {
     on!(on_set_fonts, |_app, page, file, text: SharedString| {
         edited(page.ui.set_fonts(&file, &text, Instant::now()))
     });
+    // The font menu: the installed families whose names contain the filter. It only
+    // fills the menu's list, so the editor's rows (and the open menu) stay as they are.
+    {
+        let ctx = ctx.clone();
+        g.on_find_fonts(move |filter: SharedString| {
+            let c = ctx.clone();
+            ctx.update(move |app: &mut App| {
+                let Some(w) = &app.settings else { return };
+                let mut page = c.page.borrow_mut();
+                let page: &mut Page = &mut page;
+                let all = page
+                    .families
+                    .get_or_insert_with(|| look::FontCatalog::families(&mut page.fonts));
+                let names: Vec<SharedString> = look::matching_families(all, &filter)
+                    .into_iter()
+                    .map(SharedString::from)
+                    .collect();
+                w.global::<Appearance>()
+                    .set_font_names(ModelRc::new(VecModel::from(names)));
+            });
+        });
+    }
     on!(on_reset, |_app, page, file, name: SharedString| {
         edited(page.ui.reset(&file, &name))
     });
