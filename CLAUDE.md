@@ -23,6 +23,9 @@ A headless live production engine in Rust (capture, compose, encode, stream, rec
 13. **UI follows binding rules.** Any UI work follows [UI principles](docs/ui/principles.md) (U1-U21), uses only design tokens and library components from the [design system](docs/specs/ui-design-system.md), and uses [glossary](docs/ui/glossary.md) terms ([ADR-0015](docs/adr/0015-ui-design-rules.md)). Run the `ui-review` skill.
 14. **Tests are fast and deterministic.** No flaky or hanging test: one that fails without a code change blocks all other work until its root cause is fixed; never retry, ignore or re-run to get green. Time-dependent logic uses an injected clock (`TestClock`), tests never sleep for timing, wait for conditions or tick indices instead of durations, and bound real time only as hang guards. Unit tests run in milliseconds; slow ones are `#[ignore = "slow: ..."]` and named `slow_*`. Run the tests of the crates you touch, not the whole suite each time ([ADR-0032](docs/adr/0032-fast-deterministic-tests.md), `test-reliability` skill).
 
+15. **No hard-coded visual values in UI.** Every size, spacing, padding, margin, radius, line width, font size, font weight, duration and colour in new or edited UI comes from a design token (rule U6, [design system](docs/specs/ui-design-system.md#tokens), user themes in [ADR-0057](docs/adr/0057-user-themes-and-appearance-settings.md) and the [themes spec](docs/specs/themes.md)). In `.slint` files use `Tokens.*` and `Theme.*`; in Rust, read the resolved theme (`rbs-app` `look`), never a literal `px` value or `#rrggbb`. If no token fits, add one in the same change (how: `ui-review` skill, "Adding a token"); do not reuse an unrelated token because its value happens to match. The only literals allowed are listed in the `ui-review` skill.
+16. **Visual UI changes are approved before merge.** Any change a user can see (layout, sizes, colours, icons, text placement, new or restyled windows) follows three steps: first propose what will change and how to the owner, then implement it and share screenshots in dark, light and high-contrast (or ask the owner to test locally), and start CI and merge only after the owner approves the result. Docs-only and non-visual changes skip this.
+
 ## Workspace layout
 
 - `crates/rbs-core`: time and clocks, capability model, adapter registry. Foundation for everything.
@@ -52,7 +55,7 @@ A task is done when all four pass, the acceptance criteria are met, and specs ar
 | `risky-review` | Before finishing any change with `unsafe`, FFI, GPU interop, threads or public API changes |
 | `hot-path-review` | Any change in or called from a hot path |
 | `architecture-review` | Reviewing someone else's ADR, port or contract change (never your own) |
-| `ui-review` | Any change to UI code, tokens, components, UI text or plugin UI |
+| `ui-review` | Any change to UI code, tokens, components, UI text or plugin UI (includes adding a missing token and the approval steps) |
 | `test-reliability` | Writing or changing tests, or a test that failed, hung or got slow |
 
 ## How to work

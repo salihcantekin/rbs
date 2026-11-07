@@ -121,6 +121,7 @@ export global Shell {
     // End stream from the menu bar: the frame asks first (U4).
     in property <bool> end-stream-confirm;
     // The gap between panel cards and around them: the layout's divider thickness.
+    // literal: Rust sets it to rbs_ui::layout::HANDLE_THICKNESS, which the frame geometry also uses
     in property <length> gap: 6px;
     // Edge tabs of auto-hidden panels on the left, right and bottom edges.
     in property <[EdgeTabData]> left-tabs;
