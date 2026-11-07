@@ -20,8 +20,8 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        threads: [2, 4]
-        runner: [1, 2, 3]
+        threads: [2]
+        runner: [1, 2, 3, 4, 5, 6]
     runs-on: windows-latest
     timeout-minutes: 90
     steps:
