@@ -253,6 +253,8 @@ pub struct DragKeys {
     pub free: bool,
     /// No snapping to the canvas's edges and centre (Ctrl held; Cmd on macOS).
     pub no_snap: bool,
+    /// A handle crops instead of resizing (Alt held; Option on macOS; ADR-0058).
+    pub crop: bool,
 }
 
 /// A drag that started on a grip of a box.
@@ -391,6 +393,77 @@ fn resize(r: Rect, h: Handle, dx: f32, dy: f32, canvas: [f32; 2], snap: f32, fre
         w: x1 - x0,
         h: y1 - y0,
     }
+}
+
+/// A crop drag (Alt or Option held on a handle, ADR-0058): the crop that makes `from`,
+/// a box showing a `picture` (width, height in source pixels) cut by `crop` (left, top,
+/// right, bottom), into `to`, a box with the same scale and some edges moved (from
+/// [`Drag::update`] with a handle and free corners). Returns the crop and the box it
+/// gives. Each moved edge cuts or uncuts source pixels at the box's scale, rounded to
+/// whole pixels; a crop never goes below 0 (the picture ends there) and always leaves
+/// at least one pixel. A flipped box crops the source edge shown on that side. `None`
+/// when `from` has no area or the crop already leaves no picture.
+pub fn crop_for(
+    from: SourceBox,
+    crop: [u32; 4],
+    picture: (u32, u32),
+    to: SourceBox,
+) -> Option<([u32; 4], SourceBox)> {
+    let [l, t, r, b] = crop.map(i64::from);
+    let (w, h) = (i64::from(picture.0), i64::from(picture.1));
+    let (shown_w, shown_h) = (w - l - r, h - t - b);
+    let a = from.visual();
+    if shown_w < 1 || shown_h < 1 || !(a.w > 0.0 && a.h > 0.0) {
+        return None;
+    }
+    let (kx, ky) = (a.w / shown_w as f32, a.h / shown_h as f32);
+    let z = to.visual();
+    // Source pixels cut (positive) at each visible edge.
+    let px = |canvas: f32, k: f32| (canvas / k).round() as i64;
+    let (vl, vr) = (px(z.x - a.x, kx), px((a.x + a.w) - (z.x + z.w), kx));
+    let (vt, vb) = (px(z.y - a.y, ky), px((a.y + a.h) - (z.y + z.h), ky));
+    // A flipped box shows the source's right (bottom) edge on its left (top).
+    let (dl, dr) = if from.size[0] < 0.0 {
+        (vr, vl)
+    } else {
+        (vl, vr)
+    };
+    let (dt, db) = if from.size[1] < 0.0 {
+        (vb, vt)
+    } else {
+        (vt, vb)
+    };
+    let side = |c: i64, d: i64, other: i64, total: i64| (c + d).clamp(0, total - 1 - other);
+    let nl = side(l, dl, r, w);
+    let nr = side(r, dr, nl, w);
+    let nt = side(t, dt, b, h);
+    let nb = side(b, db, nt, h);
+    // The box of that crop at the same scale, measured from the edges that stay.
+    let (cl, cr) = if from.size[0] < 0.0 {
+        (nr - r, nl - l)
+    } else {
+        (nl - l, nr - r)
+    };
+    let (ct, cb) = if from.size[1] < 0.0 {
+        (nb - b, nt - t)
+    } else {
+        (nt - t, nb - b)
+    };
+    let x0 = a.x + cl as f32 * kx;
+    let x1 = a.x + a.w - cr as f32 * kx;
+    let y0 = a.y + ct as f32 * ky;
+    let y1 = a.y + a.h - cb as f32 * ky;
+    let shown = Rect {
+        x: x0,
+        y: y0,
+        w: x1 - x0,
+        h: y1 - y0,
+    };
+    let to_u32 = |v: i64| u32::try_from(v).unwrap_or(0);
+    Some((
+        [to_u32(nl), to_u32(nt), to_u32(nr), to_u32(nb)],
+        from.with_visual(shown),
+    ))
 }
 
 /// One filled rectangle of the selection drawing, window coordinates.
@@ -678,5 +751,45 @@ mod tests {
             &mut out,
         );
         assert!(out.is_empty());
+    }
+
+    #[test]
+    fn a_crop_drag_cuts_source_pixels_at_the_box_scale() {
+        // A 3440 x 1440 picture shown at half size.
+        let from = SourceBox::new([100.0, 50.0], [1720.0, 720.0]);
+        let picture = (3440, 1440);
+        // The left edge 380 canvas px in: 760 source px cut, the right edge stays.
+        let to = SourceBox::new([480.0, 50.0], [1340.0, 720.0]);
+        let (crop, shown) = crop_for(from, [0; 4], picture, to).unwrap();
+        assert_eq!(crop, [760, 0, 0, 0]);
+        assert_eq!(shown, to);
+        // Dragging past the picture's edge uncuts only what was cut.
+        let back = SourceBox::new([0.0, 50.0], [1820.0, 720.0]);
+        let (crop, shown) = crop_for(to, [760, 0, 0, 0], picture, back).unwrap();
+        assert_eq!(crop, [0; 4]);
+        assert_eq!(shown, from);
+    }
+
+    #[test]
+    fn a_crop_drag_leaves_one_pixel_and_follows_flips() {
+        let picture = (100, 100);
+        let from = SourceBox::new([0.0, 0.0], [100.0, 100.0]);
+        // The bottom edge dragged above the top: one row stays.
+        let to = SourceBox::new([0.0, 0.0], [100.0, -50.0]);
+        let (crop, shown) = crop_for(from, [0; 4], picture, to).unwrap();
+        assert_eq!(crop, [0, 0, 0, 99]);
+        assert_eq!(shown.visual().h, 1.0);
+        // Flipped left to right: the visible left edge is the source's right edge.
+        let flipped = SourceBox::new([100.0, 0.0], [-100.0, 100.0]);
+        let to = flipped.with_visual(Rect {
+            x: 10.0,
+            y: 0.0,
+            w: 90.0,
+            h: 100.0,
+        });
+        let (crop, _) = crop_for(flipped, [0; 4], picture, to).unwrap();
+        assert_eq!(crop, [0, 0, 10, 0]);
+        // Nothing to show already: no crop.
+        assert!(crop_for(from, [50, 0, 50, 0], picture, from).is_none());
     }
 }

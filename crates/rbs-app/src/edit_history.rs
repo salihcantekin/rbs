@@ -31,6 +31,8 @@ pub enum EditKind {
     Place,
     /// A source's shape or border changed (ADR-0053).
     Style,
+    /// A source's picture was cropped (ADR-0058).
+    Crop,
 }
 
 /// The step the next undo or redo applies: its kind and the source's name.

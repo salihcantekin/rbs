@@ -15,8 +15,9 @@ use rbs_api::request::ClientInfo;
 use rbs_api::session::ServerConfig;
 use rbs_api::thread::ApiOptions;
 use rbs_api::transport::{CloseReason, ConnectionHandle, ConnectionSender, PeerInfo, SendError};
+use rbs_api::types::{Library, LibraryEntry};
 use rbs_api::{ApiServer, TokenStore};
-use rbs_app::studio_host::{Command, HostConfig, StudioHost, Update};
+use rbs_app::studio_host::{Command, HostConfig, SourceKind, StudioHost, Update};
 use rbs_audio_io_test::TestAudioBackend;
 use rbs_capture_test::TestCaptureFactory;
 use rbs_core::time::TestClock;
@@ -111,6 +112,19 @@ fn next<T>(rx: &Receiver<Update>, mut pick: impl FnMut(Update) -> Option<T>) -> 
             return t;
         }
     }
+}
+
+/// Sends a UI command and waits until the control thread took it. UI commands and API
+/// requests reach the control thread on separate queues, so a request sent after a
+/// command may still be served first; a `ListTargets` sent behind the command is
+/// answered only after it.
+fn send_and_wait(host: &StudioHost, updates: &Receiver<Update>, command: Command) {
+    host.send(command);
+    host.send(Command::ListTargets(SourceKind::Screen));
+    next(updates, |u| match u {
+        Update::Targets(SourceKind::Screen, _) => Some(()),
+        _ => None,
+    });
 }
 
 #[test]
@@ -251,6 +265,39 @@ fn a_control_api_client_drives_the_studio() {
         d[0]["layout"]["style"]["shape"] == "rectangle"
     });
 
+    // Crop (protocol 1.5, ADR-0058). Nothing shows or records the display here, so
+    // its picture size was never seen: keeping the scale is refused, a plain crop is
+    // taken and undone like any edit.
+    assert!(row.get("picture_size").is_none(), "{row}");
+    let kept = c.call(
+        "item.set_crop",
+        json!({"item": item, "crop": [10, 0, 0, 0]}),
+    );
+    assert_eq!(kept["error"]["data"]["kind"], "failed", "{kept}");
+    let set = c.call(
+        "item.set_crop",
+        json!({"item": item, "crop": [10, 20, 30, 40], "keep_scale": false}),
+    );
+    assert!(set["result"].is_object(), "{set}");
+    c.event("source.changed", |d| {
+        d[0]["layout"]["crop"] == json!([10, 20, 30, 40])
+    });
+    for (params, kind) in [
+        (json!({"item": 999, "crop": [0, 0, 0, 0]}), "not_found"),
+        (
+            json!({"item": item, "crop": [0, 0, 0, 0], "scale": 1}),
+            "invalid_params",
+        ),
+    ] {
+        let bad = c.call("item.set_crop", params.clone());
+        assert_eq!(bad["error"]["data"]["kind"], kind, "{params}: {bad}");
+    }
+    let undo = c.call("edit.undo", json!({}));
+    assert!(undo["result"].is_object(), "{undo}");
+    c.event("source.changed", |d| {
+        d[0]["layout"]["crop"] == json!([0, 0, 0, 0])
+    });
+
     let unknown = c.call(
         "source.add",
         json!({"kind": "screen", "adapter": "nope", "target": "x"}),
@@ -275,6 +322,119 @@ fn a_control_api_client_drives_the_studio() {
     profile["audio_kbps"] = json!(100);
     let bad = c.call("settings.set", json!({"profiles": [profile]}));
     assert_eq!(bad["error"]["data"]["kind"], "invalid_params");
+
+    // Output profiles and scene collections (protocol 1.4): `failed` until the UI
+    // sent its libraries, then listed; a switch is checked here and handed to the UI,
+    // which answers with the libraries again.
+    let early = c.call("profile.list", json!({}));
+    assert_eq!(early["error"]["data"]["kind"], "failed", "{early}");
+    let library = |ids: &[(&str, &str)], current: &str| Library {
+        entries: ids
+            .iter()
+            .map(|(id, name)| LibraryEntry {
+                id: (*id).into(),
+                name: (*name).into(),
+            })
+            .collect(),
+        current: current.into(),
+        pending: false,
+    };
+    let profiles = library(&[("default", "Default"), ("live", "Live")], "default");
+    let collections = library(
+        &[("default", "Default"), ("talk-show", "Talk show")],
+        "default",
+    );
+    send_and_wait(
+        &host,
+        &updates,
+        Command::SetLibrary {
+            profiles: profiles.clone(),
+            collections: collections.clone(),
+            answered: None,
+        },
+    );
+    let listed = c.call("collection.list", json!({}));
+    assert_eq!(
+        listed["result"],
+        json!({"entries": [{"id": "default", "name": "Default"}, {"id": "talk-show", "name": "Talk show"}], "current": "default", "pending": false})
+    );
+    let listed = c.call("profile.list", json!({}));
+    assert_eq!(listed["result"]["entries"][1]["id"], "live", "{listed}");
+    let same = c.call("collection.switch", json!({"id": "default"}));
+    assert!(same["result"].is_object(), "{same}");
+    let missing = c.call("profile.switch", json!({"id": "nope"}));
+    assert_eq!(missing["error"]["data"]["kind"], "not_found", "{missing}");
+    let switch = c.call("collection.switch", json!({"id": "talk-show"}));
+    assert!(switch["result"].is_object(), "{switch}");
+    let seq = next(&updates, |u| match u {
+        Update::SwitchRequested {
+            seq,
+            collection,
+            id,
+        } => {
+            assert!(collection);
+            assert_eq!(id, "talk-show");
+            Some(seq)
+        }
+        _ => None,
+    });
+    // Until the UI answered this request: another switch and outputs wait, and the
+    // list says a switch is being made. A list sent for something else does not end
+    // it.
+    let busy = c.call("profile.switch", json!({"id": "live"}));
+    assert_eq!(busy["error"]["data"]["kind"], "conflict", "{busy}");
+    let stream = c.call("stream.start", json!({}));
+    assert_eq!(stream["error"]["data"]["kind"], "conflict", "{stream}");
+    send_and_wait(
+        &host,
+        &updates,
+        Command::SetLibrary {
+            profiles: profiles.clone(),
+            collections: collections.clone(),
+            answered: None,
+        },
+    );
+    let listed = c.call("collection.list", json!({}));
+    assert_eq!(listed["result"]["pending"], true, "{listed}");
+    // Refused by the app: answered, and the one in use stays.
+    send_and_wait(
+        &host,
+        &updates,
+        Command::SetLibrary {
+            profiles,
+            collections,
+            answered: Some(seq),
+        },
+    );
+    let listed = c.call("collection.list", json!({}));
+    assert_eq!(listed["result"]["pending"], false, "{listed}");
+    assert_eq!(listed["result"]["current"], "default", "{listed}");
+    let switch = c.call("profile.switch", json!({"id": "live"}));
+    assert!(switch["result"].is_object(), "{switch}");
+    let seq = next(&updates, |u| match u {
+        Update::SwitchRequested {
+            seq,
+            collection,
+            id,
+        } => {
+            assert!(!collection);
+            assert_eq!(id, "live");
+            Some(seq)
+        }
+        _ => None,
+    });
+    send_and_wait(
+        &host,
+        &updates,
+        Command::SetLibrary {
+            profiles: library(&[("default", "Default"), ("live", "Live")], "live"),
+            collections: library(&[("default", "Default")], "default"),
+            answered: Some(seq),
+        },
+    );
+    let listed = c.call("profile.list", json!({}));
+    assert_eq!(listed["result"]["current"], "live", "{listed}");
+    assert_eq!(listed["result"]["pending"], false, "{listed}");
 
     // No encoder: the recording is refused with the reason, and nothing records.
     let rec = c.call("record.start", json!({"profile": "default"}));

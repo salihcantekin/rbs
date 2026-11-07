@@ -92,6 +92,10 @@ pub struct SourceInfo {
     /// before protocol 1.3.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub layout: Option<ItemLayout>,
+    /// Width and height in pixels of the picture it delivers, as last seen while it ran
+    /// (protocol 1.5, ADR-0058); absent for sound-only sources and before it ran.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub picture_size: Option<[u32; 2]>,
 }
 
 /// A picture's place on the canvas (protocol 1.3): the layout the studio's canvas
@@ -481,4 +485,28 @@ pub struct SourceLevels {
     pub peak_db: Vec<f32>,
     /// RMS per channel in dBFS.
     pub rms_db: Vec<f32>,
+}
+
+/// One entry of a user data library (`profile.list`, `collection.list`; protocol 1.4).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LibraryEntry {
+    /// Its stable id, passed to `profile.switch` and `collection.switch`.
+    pub id: String,
+    /// Its name, unique in the library ignoring case.
+    pub name: String,
+}
+
+/// The output profiles or scene collections (`profile.list`, `collection.list`;
+/// protocol 1.4).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Library {
+    /// Every entry, by name.
+    pub entries: Vec<LibraryEntry>,
+    /// The id of the one in use.
+    pub current: String,
+    /// A switch asked for through the control API is still being made. Once it is
+    /// false, a `current` other than the id asked for means the app refused the
+    /// switch or could not load the entry (its error line says why).
+    #[serde(default)]
+    pub pending: bool,
 }
