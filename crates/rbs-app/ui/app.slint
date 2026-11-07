@@ -162,22 +162,21 @@ export global Shell {
     callback dismiss-error();
 }
 
-// Live indicator (rules U4, U21): state, duration and outputs in text, never colour
-// alone. Calm on purpose: no filled box. Idle it is a ring and "Not live" in small
-// secondary text; live or recording a small dot in the live colour (U12), the short
-// state and the duration, then the outputs in secondary text, cut with an ellipsis
-// when long (the accessible name keeps the whole text).
+// Live indicator (rules U4, U21): the state in words, never colour alone. Compact on
+// purpose: idle it takes no room (the status bar says "Not live · not recording");
+// live or recording a small chip in the live colour (U12) with a dot and "REC",
+// "LIVE" or "LIVE · REC".
+// The duration and the outputs are in the status bar under the window (spec Frame);
+// the accessible name keeps the whole text.
 component LiveIndicator inherits Rectangle {
     property <bool> active: Shell.live-state != 0;
     property <string> state-text: Shell.live-state == 1 ? @tr("Live")
         : Shell.live-state == 2 ? @tr("Recording")
         : Shell.live-state == 3 ? @tr("Live and recording")
         : @tr("Not live");
-    // What the row shows: short words that read at a glance (the scene row's badge).
-    property <string> short-text: Shell.live-state == 1 ? @tr("Live")
+    property <string> short-text: Shell.live-state == 1 ? @tr("LIVE")
         : Shell.live-state == 2 ? @tr("REC")
-        : Shell.live-state == 3 ? @tr("Live · REC")
-        : @tr("Not live");
+        : @tr("LIVE · REC");
     property <string> full: active
         ? state-text + " " + Shell.live-duration + (Shell.live-outputs != "" ? " · " + Shell.live-outputs : "")
         : state-text;
@@ -187,31 +186,31 @@ component LiveIndicator inherits Rectangle {
     accessible-label: @tr("Live status: {}", full);
     content := HorizontalLayout {
         alignment: center;
-        spacing: Tokens.space-1;
-        VerticalLayout {
+        if active: VerticalLayout {
             alignment: center;
-            Icon {
-                name: active ? IconName.dot : IconName.ring;
-                ink: active ? Theme.state-live : Theme.text-secondary;
+            Rectangle {
+                height: Tokens.type-caption-line + Tokens.space-1;
+                width: chip.preferred-width;
+                border-radius: Tokens.radius-sm;
+                background: Theme.state-live;
+                chip := HorizontalLayout {
+                    padding-left: Tokens.space-1;
+                    padding-right: Tokens.space-2;
+                    spacing: Tokens.space-1 / 2;
+                    VerticalLayout {
+                        alignment: center;
+                        Icon { name: IconName.dot; ink: Theme.text-on-live; }
+                    }
+                    Text {
+                        text: short-text;
+                        color: Theme.text-on-live;
+                        font-size: Tokens.type-caption-size;
+                        font-weight: Tokens.type-label-weight;
+                        vertical-alignment: center;
+                        accessible-role: none;
+                    }
+                }
             }
-        }
-        Text {
-            text: active ? short-text + " " + Shell.live-duration : short-text;
-            color: active ? Theme.text-primary : Theme.text-secondary;
-            font-size: active ? Tokens.type-label-size : Tokens.type-caption-size;
-            font-weight: active ? Tokens.type-label-weight : Tokens.type-body-weight;
-            vertical-alignment: center;
-            accessible-role: none;
-        }
-        if active && Shell.live-outputs != "": Text {
-            // Long file names end in an ellipsis; the menu width is the cap.
-            max-width: Tokens.size-menu-sm;
-            text: "· " + Shell.live-outputs;
-            color: Theme.text-secondary;
-            font-size: Tokens.type-caption-size;
-            vertical-alignment: center;
-            overflow: elide;
-            accessible-role: none;
         }
     }
 }
@@ -1369,9 +1368,12 @@ component StatusPicker inherits Rectangle {
 // and Scene collection in use (each opens its menu), and the canvas. It shows values
 // the app already has; it polls nothing (P13).
 component StatusBar inherits Rectangle {
-    property <string> state-text: Shell.live-state == 1 ? @tr("Live {} · not recording", Shell.live-duration)
-        : Shell.live-state == 2 ? @tr("Not live · recording {}", Shell.live-duration)
-        : Shell.live-state == 3 ? @tr("Live and recording {}", Shell.live-duration)
+    // The duration and the outputs (file name, server) live here, not in the
+    // frame's compact live indicator.
+    property <string> outputs: Shell.live-outputs != "" ? " · " + Shell.live-outputs : "";
+    property <string> state-text: Shell.live-state == 1 ? @tr("Live {} · not recording", Shell.live-duration) + outputs
+        : Shell.live-state == 2 ? @tr("Recording {}", Shell.live-duration) + outputs
+        : Shell.live-state == 3 ? @tr("Live and recording {}", Shell.live-duration) + outputs
         : @tr("Not live · not recording");
     height: Tokens.size-control-sm + 2 * Tokens.size-border;
     background: Theme.surface-sunken;
@@ -1385,12 +1387,19 @@ component StatusBar inherits Rectangle {
         padding-right: Tokens.space-3;
         padding-top: Tokens.size-border;
         spacing: Tokens.space-4;
-        Text {
+        HorizontalLayout {
             horizontal-stretch: 0;
-            text: state-text;
-            color: Shell.live-state != 0 ? Theme.text-primary : Theme.text-secondary;
-            font-size: Tokens.type-caption-size;
-            vertical-alignment: center;
+            spacing: Tokens.space-1;
+            if Shell.live-state != 0: VerticalLayout {
+                alignment: center;
+                Icon { name: IconName.dot; ink: Theme.state-live; }
+            }
+            Text {
+                text: state-text;
+                color: Shell.live-state != 0 ? Theme.text-primary : Theme.text-secondary;
+                font-size: Tokens.type-caption-size;
+                vertical-alignment: center;
+            }
         }
         if Studio.st-text != "": Text {
             horizontal-stretch: 0;
