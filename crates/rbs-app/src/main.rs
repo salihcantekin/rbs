@@ -24,6 +24,7 @@ mod menu_bar;
 #[cfg(any(target_os = "macos", windows))]
 mod preview;
 mod preview_edit;
+mod shortcuts_page;
 mod studio_ui;
 mod view;
 
@@ -354,8 +355,15 @@ impl App {
         }
     }
 
-    /// Runs a command registry id from the menu bar (ADR-0050).
+    /// Runs a command registry id from the menu bar or an app-scope shortcut
+    /// (ADR-0050, ADR-0060), with the menu's confirmations.
     fn run_command(&mut self, id: &str) {
+        self.run_command_as(id, true);
+    }
+
+    /// Runs a command registry id; `confirm` false acts as a control surface does
+    /// (`ui.command.run`, a global shortcut): ending the stream does not ask.
+    fn run_command_as(&mut self, id: &str, confirm: bool) {
         use menu_bar::Run;
         let Some(run) = menu_bar::run(id, &self.shown()) else {
             return;
@@ -376,11 +384,13 @@ impl App {
                 let done = self.studio.switch_collection(&id, close_preview);
                 self.library_done(done);
             }
+            Run::Scene(id) => self.studio.switch_scene(id),
             Run::Layout(c) => self.command(c, Origin::Command),
             Run::Maximize(id, on) => self.maximized = on.then_some(id),
             Run::AddSource(kind) => self.ask_add_source(kind),
             Run::GoLive => self.studio.go_live(),
-            Run::AskEndStream => self.confirm_end = true,
+            Run::AskEndStream if confirm => self.confirm_end = true,
+            Run::AskEndStream => self.studio.end_stream(),
             Run::Record => self.studio.record(),
             Run::StopRecording => self.studio.stop_recording(),
         }
@@ -562,6 +572,8 @@ struct Ctx {
     look: Rc<RefCell<Option<look::Look>>>,
     /// Settings › Appearance (ADR-0057).
     page: Rc<RefCell<appearance_page::Page>>,
+    /// Shortcuts: the keymap, global shortcuts and Settings › Shortcuts (ADR-0060).
+    keys: Rc<RefCell<shortcuts_page::Keys>>,
     /// Changes asked for while the state was borrowed; applied before the next sync.
     queue: Rc<RefCell<Vec<Op>>>,
     pending: Rc<Cell<bool>>,
@@ -583,6 +595,7 @@ struct Ctx {
 const SECTION_RECORDING: i32 = 1;
 const SECTION_STREAM: i32 = 2;
 const SECTION_APPEARANCE: i32 = 5;
+const SECTION_SHORTCUTS: i32 = 6;
 
 thread_local! {
     /// The shell's context, for updates the studio's control thread hands to the UI
@@ -743,6 +756,9 @@ impl Ctx {
                 if section == SECTION_APPEARANCE {
                     appearance_page::opened(&ctx, app);
                 }
+                if section == SECTION_SHORTCUTS {
+                    shortcuts_page::opened(&ctx, app);
+                }
                 return;
             }
             let Ok(w) = SettingsWindow::new() else {
@@ -762,6 +778,7 @@ impl Ctx {
             app.studio.attach_models(&w.global::<Studio>());
             let c = ctx.clone();
             entry::on_close_requested(w.window(), move || {
+                shortcuts_page::closed(&c);
                 c.update(|app| {
                     app.settings = None;
                     app.studio.settings_closed();
@@ -778,6 +795,7 @@ impl Ctx {
                         return;
                     };
                     let _ = w.hide();
+                    shortcuts_page::closed(&c);
                     c.update(|app| {
                         app.settings = None;
                         app.studio.settings_closed();
@@ -785,11 +803,18 @@ impl Ctx {
                 });
             });
             appearance_page::install(&w.global::<Appearance>(), &ctx);
+            shortcuts_page::install(&w.global::<Shortcuts>(), &ctx);
             let c = ctx.clone();
             w.on_section_shown(move |s| {
                 if s == SECTION_APPEARANCE {
                     let ctx = c.clone();
                     c.update(move |app| appearance_page::opened(&ctx, app));
+                }
+                if s == SECTION_SHORTCUTS {
+                    let ctx = c.clone();
+                    c.update(move |app| shortcuts_page::opened(&ctx, app));
+                } else {
+                    shortcuts_page::closed(&c);
                 }
             });
             w.set_section(section);
@@ -797,6 +822,9 @@ impl Ctx {
             app.settings = Some(w);
             if section == SECTION_APPEARANCE {
                 appearance_page::opened(&ctx, app);
+            }
+            if section == SECTION_SHORTCUTS {
+                shortcuts_page::opened(&ctx, app);
             }
         });
     }
@@ -1364,6 +1392,7 @@ impl Ctx {
         let fw = FloatWindow::new().ok()?;
         install(&fw.global::<Shell>(), self);
         install_menus(&fw.global::<Menus>(), self);
+        shortcuts_page::install_press(&fw.global::<Shortcuts>(), self);
         install_studio(&fw.global::<Studio>(), self);
         look::apply(
             &fw.global::<Theme>(),
@@ -2190,6 +2219,7 @@ fn run(config: PathBuf, notice: Option<String>) -> Result<(), Box<dyn std::error
     let ctx = Ctx {
         look: Rc::new(RefCell::new(look)),
         page: Rc::default(),
+        keys: Rc::default(),
         app: Rc::new(RefCell::new(App {
             session,
             store,
@@ -2236,6 +2266,7 @@ fn run(config: PathBuf, notice: Option<String>) -> Result<(), Box<dyn std::error
     };
     install(&main.global::<Shell>(), &ctx);
     install_menus(&main.global::<Menus>(), &ctx);
+    shortcuts_page::install_press(&main.global::<Shortcuts>(), &ctx);
     install_studio(&main.global::<Studio>(), &ctx);
     CTX.with(|c| *c.borrow_mut() = Some(ctx.clone()));
     // The studio: its own control thread (ADR-0041 decision 7), on the saved canvas.
@@ -2286,6 +2317,11 @@ fn run(config: PathBuf, notice: Option<String>) -> Result<(), Box<dyn std::error
         }),
     }
     ctx.update(App::refresh_list);
+    // Shortcuts: the user's file, and global shortcuts if any are bound (ADR-0060).
+    {
+        let c = ctx.clone();
+        ctx.update(move |app| shortcuts_page::load(&c, app));
+    }
     // Entries that could not be read, or read-only mode: in the error bar once.
     if !user_notes.is_empty() {
         deliver(studio_host::Update::Error(user_notes.join("\n")));

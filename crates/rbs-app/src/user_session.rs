@@ -567,6 +567,12 @@ impl UserSession {
         self.data.themes().export(id, to).map_err(|e| e.to_string())
     }
 
+    /// Records the user's shortcut changes (ADR-0060).
+    pub fn set_shortcuts(&self, doc: &rbs_ui::shortcut::ShortcutsDoc) -> Result<(), String> {
+        let doc = doc.clone();
+        self.run(move |data, lock, _| data.set_shortcuts(lock, &doc).map_err(|e| e.to_string()))?
+    }
+
     /// Records the appearance choice.
     pub fn set_appearance(&self, appearance: &Appearance) -> Result<(), String> {
         let appearance = appearance.clone();

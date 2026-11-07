@@ -30,5 +30,6 @@ Specs are the current contracts of RBS. Code must match them; a PR that changes 
 | [testing-strategy.md](testing-strategy.md) | Draft | CI, conformance suites |
 | [ui-design-system.md](ui-design-system.md) | Draft | `rbs-ui-tokens`, `rbs-app` (planned) |
 | [themes.md](themes.md) | Draft | `rbs-ui` (`tokens`), `rbs-user-data`, `rbs-app` (user themes, Settings › Appearance; ADR-0057) |
+| [shortcuts.md](shortcuts.md) | Draft | `rbs-ui` (`shortcut`), `rbs-user-data`, `rbs-app` (shortcuts, global shortcuts, Settings › Shortcuts; ADR-0060) |
 
 New specs start from [template.md](template.md).

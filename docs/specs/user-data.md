@@ -26,6 +26,7 @@ Out of scope, later changes: workspaces (ADR-0017 and ADR-0049, owned by `rbs-ui
 | `scenes/<id>.toml` | Scene collections (`UserData::scene_collections()`) |
 | `current.toml` | `Current { profile, scene_collection }`: ids of the entries in use (`current()`, `set_current()`) |
 | `themes/<id>.toml`, `appearance.toml` | User themes (`UserData::themes()`) and the appearance choice (`appearance()`, `set_appearance()`), [themes spec](themes.md), ADR-0057 |
+| `shortcuts.toml` | The user's changes to the default shortcuts (`UserData::shortcuts()`, `set_shortcuts()`), [shortcuts spec](shortcuts.md), ADR-0060 |
 | `workspaces/`, `library/` | Reserved (`WORKSPACES_DIR`, `LIBRARY_DIR`) |
 
 `current()` returns an unset selection and the reason when `current.toml` cannot be read; an id that names no entry is treated as unset by the caller.
