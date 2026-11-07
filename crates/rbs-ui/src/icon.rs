@@ -201,6 +201,14 @@ pub const ICONS: &[Icon] = &[
         "transition",
         "M 1.5 4.5 L 7 4.5 L 7 11.5 L 1.5 11.5 Z M 9 4.5 L 14.5 4.5 L 14.5 11.5 L 9 11.5 Z M 7 8 L 9 8",
     ),
+    line(
+        "export",
+        "M 8 10 L 8 2.5 M 5 5.5 L 8 2.5 L 11 5.5 M 2.5 9.5 L 2.5 13.5 L 13.5 13.5 L 13.5 9.5",
+    ),
+    line(
+        "import",
+        "M 8 2.5 L 8 10 M 5 7 L 8 10 L 11 7 M 2.5 9.5 L 2.5 13.5 L 13.5 13.5 L 13.5 9.5",
+    ),
     line("arrow-left", "M 13 8 L 3 8 M 7 4 L 3 8 L 7 12"),
     line("arrow-right", "M 3 8 L 13 8 M 9 4 L 13 8 L 9 12"),
     line(
