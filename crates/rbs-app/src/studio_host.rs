@@ -191,6 +191,8 @@ pub struct SourceRow {
     /// Width and height in pixels of its picture, as last seen while it ran (video
     /// sources, ADR-0058); `None` before it ran.
     pub picture: Option<(u32, u32)>,
+    /// Shown in the program scene (a hidden source is not drawn or heard).
+    pub visible: bool,
 }
 
 impl PartialEq for SourceRow {
@@ -202,6 +204,7 @@ impl PartialEq for SourceRow {
             && self.layout == other.layout
             && self.item == other.item
             && self.picture == other.picture
+            && self.visible == other.visible
             && match (&self.meter, &other.meter) {
                 (Some(a), Some(b)) => Arc::ptr_eq(a, b),
                 (None, None) => true,
@@ -297,6 +300,13 @@ pub enum Command {
         id: SourceId,
         /// Up, else down.
         up: bool,
+    },
+    /// Show or hide a source in the program scene (one undo step).
+    SetSourceVisible {
+        /// The source.
+        id: SourceId,
+        /// Shown.
+        visible: bool,
     },
     /// Place a video source's picture: the box's top-left corner and size in canvas
     /// pixels. Rotation, crop and opacity stay. A size of zero or a value that is not
@@ -1505,6 +1515,13 @@ impl Host {
                 Ok(false) => {}
                 Err(e) => notify(Update::Error(e)),
             },
+            Command::SetSourceVisible { id, visible } => {
+                match self.set_source_visible(id, visible) {
+                    Ok(true) => self.apply(notify),
+                    Ok(false) => {}
+                    Err(e) => notify(Update::Error(e)),
+                }
+            }
             Command::SetSourceBox {
                 seq,
                 gesture,
@@ -2537,6 +2554,23 @@ impl Host {
         Ok(true)
     }
 
+    /// Show or hide a source's item in the program scene; `Ok(false)` when it already is.
+    fn set_source_visible(&mut self, id: SourceId, visible: bool) -> Result<bool, String> {
+        let (_, item) = self.item_of(id)?;
+        if item.visible == visible {
+            return Ok(false);
+        }
+        let item = item.id;
+        let undo = self
+            .collection
+            .set_item_visible(item, visible)
+            .map_err(|e| edit_error(&e))?;
+        let name = self.name_of(id);
+        self.history
+            .record(EditKind::Visibility, &name, 0, vec![undo]);
+        Ok(true)
+    }
+
     fn name_of(&self, id: SourceId) -> String {
         self.collection
             .source(id)
@@ -2826,6 +2860,7 @@ impl Host {
                         .then(|| self.studio.meter(s.id).cloned())
                         .flatten(),
                     picture: self.sizes.get(&s.id).copied(),
+                    visible: item.visible,
                     status,
                 }
             })

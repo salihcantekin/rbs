@@ -2,7 +2,7 @@
 // crate: Slint has no recursive components, so Rust flattens each window's
 // layout tree into tab stacks and splitter handles with absolute positions.
 import { Theme, Tokens } from "tokens.slint";
-import { Button, IconButton, Icon, IconName, FocusRing, MenuItem as MenuRow, MenuSurface, EmptyState } from "components.slint";
+import { Button, IconButton, Icon, IconName, Icons, FocusRing, MenuItem as MenuRow, MenuSurface, EmptyState } from "components.slint";
 import { Studio, EntryRow, SourceData, MarkData, KindData, TargetData, MeterRow, ScaleMark, EncoderData, ProgramPanel, SourcesPanel, PropertiesPanel, MixerPanel, LiveControlsPanel, OutputsPanel, StatsPanel, RecordingSettings, StreamSettings, VideoSettings, RemoteControlSettings, GeneralSettings } from "studio.slint";
 
 export { Theme, Tokens, Studio, EntryRow, SourceData, MarkData, KindData, TargetData, MeterRow, ScaleMark, EncoderData }
@@ -214,24 +214,6 @@ component PanelContent inherits Rectangle {
         height: parent.height;
         title: tab.title;
         message: @tr("This panel comes from a plugin that is not installed. Close it from its tab menu.");
-    }
-}
-
-// An icon by its name in the icon set, as Rust passes it (registry and panel icons).
-global Icons {
-    // Slint has no string to enum conversion; unknown names draw nothing.
-    public pure function named(name: string) -> IconName {
-        return name == "bolt" ? IconName.bolt
-        : name == "dot" ? IconName.dot
-        : name == "panel-left" ? IconName.panel-left
-        : name == "panel-right" ? IconName.panel-right
-        : name == "panel-bottom" ? IconName.panel-bottom
-        : name == "grid" ? IconName.grid
-        : name == "copy" ? IconName.copy
-        : name == "window" ? IconName.window
-        : name == "plus" ? IconName.plus
-        : name == "pin" ? IconName.pin
-        : IconName.none;
     }
 }
 

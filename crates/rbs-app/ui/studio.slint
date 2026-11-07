@@ -3,14 +3,14 @@
 // Rust pushes state into the `Studio` global of every window and handles its callbacks
 // by sending commands to the studio's control thread.
 import { Theme, Tokens } from "tokens.slint";
-import { Button, Checkbox, ColorPicker, FocusRing, IconButton, IconName, MenuItem, MenuSurface, EmptyState, NumberField, Select, SegmentedControl, TextField } from "components.slint";
+import { Button, Checkbox, ColorPicker, FocusRing, Icon, IconButton, IconName, Icons, MenuItem, MenuSurface, EmptyState, NumberField, Select, SegmentedControl, TextField } from "components.slint";
 
 // `picture`: a video source; `x`, `y`, `w`, `h` place its box on the canvas (canvas
 // pixels). `can-up` / `can-down`: another source with a picture is above / below it.
 // Style (ADR-0053): `shape` 0 rectangle, 1 circle, 2 ellipse; `radius` for rectangles;
 // `border` on or off, its `border-width`, its colour as `#rrggbb` or `#rrggbbaa` text
 // and as a swatch (the values a border gets when turned on while it is off).
-export struct SourceData { id: int, name: string, kind: string, status: string, ok: bool, picture: bool, x: float, y: float, w: float, h: float, can-up: bool, can-down: bool, shape: int, radius: float, border: bool, border-width: float, border-color: string, border-swatch: color, crop-l: int, crop-t: int, crop-r: int, crop-b: int, pic-w: int, pic-h: int }
+export struct SourceData { id: int, name: string, kind: string, icon: string, status: string, ok: bool, picture: bool, visible: bool, x: float, y: float, w: float, h: float, can-up: bool, can-down: bool, shape: int, radius: float, border: bool, border-width: float, border-color: string, border-swatch: color, crop-l: int, crop-t: int, crop-r: int, crop-b: int, pic-w: int, pic-h: int }
 export struct KindData { code: int, label: string }
 // A filled rectangle of the selection on the preview (outline or handle), in the
 // panel's coordinates; kind 0 outline, 1 handle border, 2 handle inside.
@@ -20,6 +20,7 @@ export struct TargetData { name: string, is-default: bool }
 // its peak-hold position and zone, the clip latch and the accessible value (U16).
 export struct MeterRow {
     name: string,
+    icon: string,
     lo-from: float, lo-to: float, mi-from: float, mi-to: float, hi-from: float, hi-to: float,
     peak: float, peak-zone: int, clipped: bool, value: string,
 }
@@ -79,6 +80,8 @@ export global Studio {
     callback select-source(int /* id */);
     // One layer up (over the source above it in the list) or down.
     callback move-source(int /* id */, bool /* up */);
+    // Show or hide a source in the program scene.
+    callback set-source-visible(int /* id */, bool /* visible */);
     // A video source's box on the canvas, in canvas pixels.
     callback set-source-box(int /* id */, float /* x */, float /* y */, float /* w */, float /* h */);
     // Shape and border of a video source (ADR-0053); a colour that is not #rrggbb or
@@ -420,17 +423,23 @@ export component ProgramPanel inherits Rectangle {
     }
 }
 
+// One row of the Sources list (spec Frame, mockup E): the kind's icon, the name (the
+// state below it only when something is wrong), and on the right Show/Hide, then on the
+// selected row Move up, Move down and Delete source.
 component SourceRowView inherits Rectangle {
     in property <SourceData> data;
     // Move up, Move down or Delete source was activated: the list is made again, so
     // the row's buttons and their focus are about to go.
     callback leaving();
     property <bool> selected: Studio.selected-source == data.id;
-    height: Tokens.size-control-lg + Tokens.space-2;
+    property <color> ink: data.visible ? Theme.text-primary : Theme.text-disabled;
+    height: data.ok ? Tokens.size-control-lg : Tokens.size-control-lg + Tokens.type-caption-line;
     border-radius: Tokens.radius-sm;
-    background: selected ? Theme.accent-subtle : touch.has-hover ? Theme.surface-overlay : transparent;
+    background: selected ? Theme.surface-overlay : touch.has-hover ? Theme.surface-overlay : transparent;
+    border-width: selected ? Tokens.size-border : 0px;
+    border-color: Theme.accent;
     accessible-role: list-item;
-    accessible-label: @tr("{}, {}, {}", data.name, data.kind, data.status);
+    accessible-label: @tr("{}, {}, {}{}", data.name, data.kind, data.status, data.visible ? "" : @tr(", hidden"));
     accessible-item-selectable: true;
     accessible-item-selected: selected;
     accessible-action-default => { Studio.select-source(data.id); }
@@ -446,36 +455,33 @@ component SourceRowView inherits Rectangle {
         clicked => { focus.focus(); Studio.select-source(data.id); }
     }
     FocusRing { show: focus.has-focus; }
-    // Selection is shown by a bar at the start too, not by colour alone (U7).
-    if selected: Rectangle {
-        x: 0;
-        y: Tokens.space-1;
-        width: Tokens.size-focus-ring;
-        height: parent.height - 2 * Tokens.space-1;
-        background: Theme.accent;
-    }
     HorizontalLayout {
         padding-left: Tokens.space-2;
-        spacing: Tokens.space-1;
+        padding-right: Tokens.space-1;
+        spacing: Tokens.space-2;
         VerticalLayout {
             alignment: center;
+            Icon { name: Icons.named(data.icon); ink: data.visible ? Theme.text-secondary : Theme.text-disabled; }
+        }
+        VerticalLayout {
+            alignment: center;
+            horizontal-stretch: 1;
             Text {
                 text: data.name;
-                color: Theme.text-primary;
-                font-size: Tokens.type-label-size;
-                font-weight: Tokens.type-label-weight;
+                color: root.ink;
+                font-size: Tokens.type-body-size;
                 overflow: elide;
             }
-            Text {
-                // State in words, never colour alone (U7).
+            // State in words, never colour alone (U7); shown when it needs attention.
+            if !data.ok: Text {
                 text: @tr("{} · {}", data.kind, data.status);
-                color: data.ok ? Theme.text-secondary : Theme.state-error;
+                color: Theme.state-error;
                 font-size: Tokens.type-caption-size;
                 overflow: elide;
             }
         }
         // Order matters for pictures only: sound has no layer to stack. Shown on the
-        // selected row only, so names and states keep their room.
+        // selected row only, so names keep their room.
         if data.picture && selected: VerticalLayout {
             alignment: center;
             IconButton {
@@ -494,12 +500,22 @@ component SourceRowView inherits Rectangle {
                 clicked => { root.leaving(); Studio.move-source(data.id, false); }
             }
         }
-        VerticalLayout {
+        if selected: VerticalLayout {
             alignment: center;
             IconButton {
                 icon: IconName.close;
                 name: @tr("Delete source {}", data.name);
                 clicked => { root.leaving(); Studio.delete-source(data.id); }
+            }
+        }
+        // Shown or hidden in the scene: the icon and the accessible state both say it.
+        VerticalLayout {
+            alignment: center;
+            IconButton {
+                icon: data.visible ? IconName.eye : IconName.eye-off;
+                name: data.visible ? @tr("Hide {}", data.name) : @tr("Show {}", data.name);
+                checked: !data.visible;
+                clicked => { Studio.set-source-visible(data.id, !data.visible); }
             }
         }
     }
@@ -532,6 +548,7 @@ export component SourcesPanel inherits Rectangle {
                 : Studio.undo-kind == 4 ? @tr("Undo moving or resizing {}", Studio.undo-name)
                 : Studio.undo-kind == 5 ? @tr("Undo the shape or border of {}", Studio.undo-name)
                 : Studio.undo-kind == 6 ? @tr("Undo cropping {}", Studio.undo-name)
+                : Studio.undo-kind == 7 ? @tr("Undo showing or hiding {}", Studio.undo-name)
                 : @tr("Undo");
             clicked => { Studio.undo-edit(true); }
         }
@@ -545,6 +562,7 @@ export component SourcesPanel inherits Rectangle {
                 : Studio.redo-kind == 4 ? @tr("Redo moving or resizing {}", Studio.redo-name)
                 : Studio.redo-kind == 5 ? @tr("Redo the shape or border of {}", Studio.redo-name)
                 : Studio.redo-kind == 6 ? @tr("Redo cropping {}", Studio.redo-name)
+                : Studio.redo-kind == 7 ? @tr("Redo showing or hiding {}", Studio.redo-name)
                 : @tr("Redo");
             clicked => { Studio.undo-edit(false); }
         }
@@ -593,21 +611,34 @@ export component SourcesPanel inherits Rectangle {
 component MeterView inherits Rectangle {
     in property <MeterRow> data;
     callback reset();
-    height: Tokens.size-control-sm;
+    // The name column: the kind's icon and the name, as wide as a third of a menu
+    // at most (the scale under the bars lines up with it).
+    in property <length> name-width;
+    height: Tokens.size-control-md;
     accessible-role: progress-indicator;
     accessible-label: data.name;
     accessible-value: data.value;
     HorizontalLayout {
         spacing: Tokens.space-2;
-        Text {
-            width: 30%;
-            text: data.name;
-            color: Theme.text-primary;
-            font-size: Tokens.type-caption-size;
-            vertical-alignment: center;
-            overflow: elide;
+        HorizontalLayout {
+            width: root.name-width;
+            spacing: Tokens.space-2;
+            VerticalLayout {
+                alignment: center;
+                Icon { name: Icons.named(data.icon); ink: Theme.text-secondary; }
+            }
+            Text {
+                text: data.name;
+                color: Theme.text-primary;
+                font-size: Tokens.type-body-size;
+                vertical-alignment: center;
+                overflow: elide;
+            }
         }
-        bar := Rectangle {
+        VerticalLayout {
+            alignment: center;
+            bar := Rectangle {
+            height: Tokens.space-3;
             background: Theme.surface-sunken;
             border-radius: Tokens.radius-sm;
             clip: true;
@@ -619,9 +650,12 @@ component MeterView inherits Rectangle {
                 width: 2px;
                 background: data.peak-zone == 2 ? Theme.meter-high : data.peak-zone == 1 ? Theme.meter-mid : Theme.meter-low;
             }
+            }
         }
         clip-box := Rectangle {
             width: Tokens.size-icon-box;
+            height: Tokens.size-icon-box;
+            y: (root.height - self.height) / 2;
             border-width: Tokens.size-border;
             border-color: Theme.border-strong;
             border-radius: Tokens.radius-sm;
@@ -653,6 +687,7 @@ export component MixerPanel inherits Rectangle {
             spacing: Tokens.space-1;
             alignment: start;
             for m[i] in Studio.meters: MeterView {
+                name-width: min(root.width * 0.3, Tokens.size-menu-sm * 0.75);
                 data: m;
                 reset => { Studio.reset-clip(i); }
             }
@@ -660,7 +695,7 @@ export component MixerPanel inherits Rectangle {
             HorizontalLayout {
                 spacing: Tokens.space-2;
                 height: Tokens.type-caption-line;
-                Rectangle { width: 30%; }
+                Rectangle { width: min(root.width * 0.3, Tokens.size-menu-sm * 0.75); }
                 scale-row := Rectangle {
                     for mark in Studio.scale: Text {
                         x: parent.width * mark.at - self.width / 2;
@@ -812,6 +847,19 @@ component Hint inherits Text {
     color: Theme.text-secondary;
     font-size: Tokens.type-caption-size;
     wrap: word-wrap;
+}
+
+// A section title in the Properties panel (mockup E): small, secondary, upper case.
+// Screen readers get the title as written, so it is not spelled out letter by letter.
+component SectionTitle inherits Text {
+    in property <string> title;
+    text: title.to-uppercase();
+    color: Theme.text-secondary;
+    font-size: Tokens.type-caption-size;
+    font-weight: Tokens.type-label-weight;
+    letter-spacing: 0.5px;
+    accessible-role: AccessibleRole.text;
+    accessible-label: title;
 }
 
 component Field inherits VerticalLayout {
@@ -1021,14 +1069,8 @@ component StyleFields inherits VerticalLayout {
     // because setting the text after an edit ends the field's binding.
     property <string> colour-text: data.border-color;
     changed colour-text => { colour.text = colour-text; }
-    spacing: Tokens.space-3;
-    Text {
-        text: @tr("Shape and border");
-        color: Theme.text-primary;
-        font-size: Tokens.type-label-size;
-        font-weight: Tokens.type-label-weight;
-        accessible-role: none;
-    }
+    spacing: Tokens.space-2;
+    SectionTitle { title: @tr("Shape and border"); }
     Field {
         label: @tr("Shape");
         SegmentedControl {
@@ -1128,62 +1170,48 @@ component StyleFields inherits VerticalLayout {
 component CropFields inherits VerticalLayout {
     in property <SourceData> data;
     property <bool> known: data.pic-w > 0;
-    spacing: Tokens.space-3;
-    Text {
-        text: @tr("Crop");
-        color: Theme.text-primary;
-        font-size: Tokens.type-label-size;
-        font-weight: Tokens.type-label-weight;
-        accessible-role: none;
-    }
+    spacing: Tokens.space-2;
+    SectionTitle { title: @tr("Crop"); }
     HorizontalLayout {
         spacing: Tokens.space-2;
-        Field {
+        NumberField {
             horizontal-stretch: 1;
             preferred-width: 0;
-            label: @tr("Left");
-            NumberField {
-                label: @tr("Crop left of {}", data.name);
-                value: data.crop-l;
-                enabled: known;
-                edited(v) => { Studio.set-source-crop(data.id, max(v, 0), data.crop-t, data.crop-r, data.crop-b); }
-            }
+            prefix: @tr("Left");
+            label: @tr("Crop left of {}", data.name);
+            value: data.crop-l;
+            enabled: known;
+            edited(v) => { Studio.set-source-crop(data.id, max(v, 0), data.crop-t, data.crop-r, data.crop-b); }
         }
-        Field {
+        NumberField {
             horizontal-stretch: 1;
             preferred-width: 0;
-            label: @tr("Right");
-            NumberField {
-                label: @tr("Crop right of {}", data.name);
-                value: data.crop-r;
-                enabled: known;
-                edited(v) => { Studio.set-source-crop(data.id, data.crop-l, data.crop-t, max(v, 0), data.crop-b); }
-            }
+            prefix: @tr("Right");
+            label: @tr("Crop right of {}", data.name);
+            value: data.crop-r;
+            enabled: known;
+            edited(v) => { Studio.set-source-crop(data.id, data.crop-l, data.crop-t, max(v, 0), data.crop-b); }
         }
     }
     HorizontalLayout {
         spacing: Tokens.space-2;
-        Field {
+        NumberField {
             horizontal-stretch: 1;
             preferred-width: 0;
-            label: @tr("Top");
-            NumberField {
-                label: @tr("Crop top of {}", data.name);
-                value: data.crop-t;
-                enabled: known;
-                edited(v) => { Studio.set-source-crop(data.id, data.crop-l, max(v, 0), data.crop-r, data.crop-b); }
-            }
+            prefix: @tr("Top");
+            label: @tr("Crop top of {}", data.name);
+            value: data.crop-t;
+            enabled: known;
+            edited(v) => { Studio.set-source-crop(data.id, data.crop-l, max(v, 0), data.crop-r, data.crop-b); }
         }
-        Field {
+        NumberField {
             horizontal-stretch: 1;
             preferred-width: 0;
-            label: @tr("Bottom");
-            NumberField {
-                label: @tr("Crop bottom of {}", data.name);
-                value: data.crop-b;
-                enabled: known;
-                edited(v) => { Studio.set-source-crop(data.id, data.crop-l, data.crop-t, data.crop-r, max(v, 0)); }
-            }
+            prefix: @tr("Bottom");
+            label: @tr("Crop bottom of {}", data.name);
+            value: data.crop-b;
+            enabled: known;
+            edited(v) => { Studio.set-source-crop(data.id, data.crop-l, data.crop-t, data.crop-r, max(v, 0)); }
         }
     }
     Text {
@@ -1239,64 +1267,72 @@ component CropFields inherits VerticalLayout {
 
 component TransformFields inherits VerticalLayout {
     in property <SourceData> data;
-    spacing: Tokens.space-3;
+    spacing: Tokens.space-2;
     alignment: start;
-    Text {
-        text: data.name;
-        color: Theme.text-primary;
-        font-size: Tokens.type-label-size;
-        font-weight: Tokens.type-label-weight;
-        overflow: elide;
+    // The source: its kind's icon, its name and its kind.
+    HorizontalLayout {
+        spacing: Tokens.space-2;
+        VerticalLayout {
+            alignment: center;
+            Icon { name: Icons.named(data.icon); ink: Theme.text-primary; }
+        }
+        Text {
+            horizontal-stretch: 1;
+            text: data.name;
+            color: Theme.text-primary;
+            font-size: Tokens.type-label-size;
+            font-weight: Tokens.type-title-weight;
+            vertical-alignment: center;
+            overflow: elide;
+        }
+        Text {
+            text: data.kind;
+            color: Theme.text-secondary;
+            font-size: Tokens.type-caption-size;
+            vertical-alignment: center;
+        }
     }
     if !data.picture: Hint {
         text: @tr("This source has sound only, so it has no place on the canvas.");
     }
+    if data.picture: SectionTitle { title: @tr("Position and size"); }
     if data.picture: HorizontalLayout {
         spacing: Tokens.space-2;
-        // Equal columns, whatever the labels' lengths.
-        Field {
+        // Equal columns, whatever the values' lengths.
+        NumberField {
             horizontal-stretch: 1;
             preferred-width: 0;
-            label: @tr("X");
-            NumberField {
-                label: @tr("Position X of {}", data.name);
-                value: data.x;
-                edited(v) => { Studio.set-source-box(data.id, v, data.y, data.w, data.h); }
-            }
+            prefix: @tr("X");
+            label: @tr("Position X of {}", data.name);
+            value: data.x;
+            edited(v) => { Studio.set-source-box(data.id, v, data.y, data.w, data.h); }
         }
-        Field {
+        NumberField {
             horizontal-stretch: 1;
             preferred-width: 0;
-            label: @tr("Y");
-            NumberField {
-                label: @tr("Position Y of {}", data.name);
-                value: data.y;
-                edited(v) => { Studio.set-source-box(data.id, data.x, v, data.w, data.h); }
-            }
+            prefix: @tr("Y");
+            label: @tr("Position Y of {}", data.name);
+            value: data.y;
+            edited(v) => { Studio.set-source-box(data.id, data.x, v, data.w, data.h); }
         }
     }
     if data.picture: HorizontalLayout {
         spacing: Tokens.space-2;
-        // Equal columns, whatever the labels' lengths.
-        Field {
+        NumberField {
             horizontal-stretch: 1;
             preferred-width: 0;
-            label: @tr("Width");
-            NumberField {
-                label: @tr("Width of {}", data.name);
-                value: data.w;
-                edited(v) => { Studio.set-source-box(data.id, data.x, data.y, v, data.h); }
-            }
+            prefix: @tr("W");
+            label: @tr("Width of {}", data.name);
+            value: data.w;
+            edited(v) => { Studio.set-source-box(data.id, data.x, data.y, v, data.h); }
         }
-        Field {
+        NumberField {
             horizontal-stretch: 1;
             preferred-width: 0;
-            label: @tr("Height");
-            NumberField {
-                label: @tr("Height of {}", data.name);
-                value: data.h;
-                edited(v) => { Studio.set-source-box(data.id, data.x, data.y, data.w, v); }
-            }
+            prefix: @tr("H");
+            label: @tr("Height of {}", data.name);
+            value: data.h;
+            edited(v) => { Studio.set-source-box(data.id, data.x, data.y, data.w, v); }
         }
     }
     if data.picture: Hint {
@@ -1323,6 +1359,7 @@ export component PropertiesPanel inherits Rectangle {
             padding: Tokens.space-3;
             alignment: start;
             for s in Studio.sources: VerticalLayout {
+                spacing: Tokens.space-4;
                 if s.id == Studio.selected-source: TransformFields { data: s; }
             }
         }

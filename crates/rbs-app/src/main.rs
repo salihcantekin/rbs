@@ -1590,6 +1590,9 @@ fn install_studio(g: &Studio<'_>, ctx: &Ctx) {
         app.studio.selected = -1;
         app.studio.refresh_marks();
     });
+    on!(on_set_source_visible, |app, id: i32, visible: bool| {
+        app.studio.set_source_visible(id, visible);
+    });
     on!(on_move_source, |app, id: i32, up: bool| {
         app.studio.move_source(id, up);
     });
