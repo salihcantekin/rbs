@@ -87,6 +87,8 @@ pub const LENGTHS: &[&str] = &[
     "size.window.min-h",
     "size.floating.w",
     "size.floating.h",
+    "size.settings.w",
+    "size.settings.h",
     "step.nudge",
     "step.nudge-large",
 ];
@@ -289,9 +291,20 @@ pub const THEME_CONTRAST_RULES: &[(&str, &str, f64, f64)] = &[
     ("color.accent", "color.surface.overlay", 3.0, 3.0),
     ("color.accent", "color.surface.sunken", 3.0, 3.0),
     ("color.text.secondary", "color.accent.subtle", 4.5, 7.0),
+    // Pairs the desktop UI draws (`rbs-app` test `every_drawn_pair_has_a_contrast_rule`).
+    // Error messages are text, so they need the text minimum.
+    ("color.state.error", "color.surface.base", 4.5, 7.0),
+    ("color.state.error", "color.surface.raised", 4.5, 7.0),
+    ("color.state.error", "color.surface.overlay", 4.5, 7.0),
+    ("color.state.error", "color.surface.sunken", 4.5, 7.0),
+    ("color.state.error", "color.accent.subtle", 4.5, 7.0),
+    ("color.border.focus", "color.accent.subtle", 3.0, 3.0),
+    ("color.border.strong", "color.surface.base", 3.0, 3.0),
+    ("color.border.strong", "color.surface.sunken", 3.0, 3.0),
 ];
 
-/// Surfaces `color.state.live` must stand out from (3:1).
+/// Surfaces `color.state.live` must stand out from (3:1). Not `surface.raised` or
+/// `.overlay`: the fixed live colour is not a theme's to fix (ADR-0057 review, item 1).
 pub const LIVE_SURFACES: &[&str] = &["color.surface.base", "color.surface.sunken"];
 
 /// Smallest CIEDE2000 difference between any theme colour and `color.state.live`, so

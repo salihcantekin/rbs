@@ -3,7 +3,8 @@
 // windows. Rust (`shortcuts_page`) pushes state into the `Shortcuts` global and
 // handles its callbacks.
 import { Theme, Tokens } from "tokens.slint";
-import { Button, Checkbox, IconButton, IconName, KeyboardShortcutHint, Select, TextField } from "components.slint";
+import { Button, Checkbox, Icon, IconButton, IconName, KeyboardShortcutHint, Select, TextField } from "components.slint";
+import { SettingsCard, SettingsCallout, SettingsNotice } from "settings.slint";
 
 // One shortcut of a row: its label ("⇧⌘Z"), canonical text, and scope.
 export struct ShortcutChip {
@@ -160,8 +161,13 @@ component CommandRow inherits VerticalLayout {
     in property <ShortcutRow> item;
     in property <int> index;
     spacing: Tokens.space-1;
+    // A group starts with a divider (but the first) and its name, as a card title.
+    if item.group != "" && index > 0: Rectangle {
+        height: Tokens.space-2 + Tokens.size-border;
+        Rectangle { y: Tokens.space-2; height: Tokens.size-border; background: Theme.border-subtle; }
+    }
     if item.group != "": Text {
-        text: item.group;
+        text: item.group.to-uppercase();
         color: Theme.text-secondary;
         font-size: Tokens.type-caption-size;
         font-weight: Tokens.type-title-weight;
@@ -242,18 +248,15 @@ component CommandRow inherits VerticalLayout {
 }
 
 export component ShortcutsSettings inherits VerticalLayout {
-    spacing: Tokens.space-3;
+    spacing: Tokens.space-4;
     alignment: start;
-    Hint { text: Shortcuts.hint; }
-    if Shortcuts.note != "": Problem { text: Shortcuts.note; }
+    if Shortcuts.hint != "": SettingsNotice { text: Shortcuts.hint; }
+    if Shortcuts.note != "": SettingsNotice { text: Shortcuts.note; problem: true; }
     HorizontalLayout {
         spacing: Tokens.space-2;
-        Text {
-            text: @tr("Search");
-            color: Theme.text-secondary;
-            font-size: Tokens.type-caption-size;
-            vertical-alignment: center;
-            accessible-role: none;
+        VerticalLayout {
+            alignment: center;
+            Icon { name: IconName.search; ink: Theme.text-secondary; }
         }
         TextField {
             horizontal-stretch: 1;
@@ -266,15 +269,9 @@ export component ShortcutsSettings inherits VerticalLayout {
             clicked => { Shortcuts.ask-reset-all(); }
         }
     }
-    if Shortcuts.confirm-reset-all: Rectangle {
-        background: Theme.surface-overlay;
-        border-radius: Tokens.radius-sm;
-        border-width: Tokens.size-border;
-        border-color: Theme.border-subtle;
-        accessible-role: groupbox;
-        accessible-label: @tr("Reset every shortcut to its default?");
+    if Shortcuts.confirm-reset-all: SettingsCallout {
+        label: @tr("Reset every shortcut to its default?");
         HorizontalLayout {
-            padding: Tokens.space-2;
             spacing: Tokens.space-2;
             Text {
                 horizontal-stretch: 1;
@@ -294,11 +291,14 @@ export component ShortcutsSettings inherits VerticalLayout {
             }
         }
     }
-    VerticalLayout {
-        spacing: Tokens.space-1;
-        accessible-role: list;
-        accessible-label: @tr("Commands and their shortcuts");
-        for r[i] in Shortcuts.rows: CommandRow { item: r; index: i; }
-        if Shortcuts.rows.length == 0: Hint { text: @tr("No command or shortcut matches the search."); }
+    SettingsCard {
+        VerticalLayout {
+            spacing: Tokens.space-1;
+            padding-bottom: Tokens.space-2;
+            accessible-role: list;
+            accessible-label: @tr("Commands and their shortcuts");
+            for r[i] in Shortcuts.rows: CommandRow { item: r; index: i; }
+            if Shortcuts.rows.length == 0: Hint { text: @tr("No command or shortcut matches the search."); }
+        }
     }
 }

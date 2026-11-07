@@ -43,7 +43,7 @@ format = 2
 "color.text.disabled" = "#9aa0a8"
 "color.text.inverse" = "#ffffff"
 "color.border.subtle" = "#dde0e5"
-"color.border.strong" = "#868c96"
+"color.border.strong" = "#7a808a"
 "color.border.focus" = "#1f6feb"
 "color.accent" = "#1f6feb"
 "color.accent.hover" = "#1a5fcc"
@@ -107,6 +107,8 @@ format = 2
 "size.window.min-h" = 720
 "size.floating.w" = 640
 "size.floating.h" = 420
+"size.settings.w" = 920
+"size.settings.h" = 680
 "step.nudge" = 8
 "step.nudge-large" = 128
 

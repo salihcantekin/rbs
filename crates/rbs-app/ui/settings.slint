@@ -1,0 +1,324 @@
+// The Settings window's layout parts (docs/specs/ui-design-system.md, "Settings
+// window"): the section list on the left, and on the right a page with a header and
+// cards of setting rows. Each row has its name and a one-line explanation on the left
+// and its control on the right (U2: every option explains itself), or under them for
+// wide content. Every value comes from the tokens (U6).
+import { Theme, Tokens } from "tokens.slint";
+import { FocusRing, Icon, IconName } from "components.slint";
+
+// One entry of the section list. The section in use has the accent-tinted row with an
+// accent bar at its left edge (mockup E's selected row) and is marked checked for
+// screen readers, so it is never shown by colour alone (U7).
+export component SettingsNavItem inherits Rectangle {
+    in property <string> text;
+    in property <IconName> icon;
+    in property <bool> current;
+    callback activated();
+    height: Tokens.size-control-lg;
+    border-radius: Tokens.radius-md;
+    background: root.current ? Theme.accent-subtle
+        : touch.has-hover ? Theme.surface-overlay : transparent;
+    accessible-role: list-item;
+    accessible-label: text;
+    accessible-checked: current;
+    accessible-item-selectable: true;
+    accessible-item-selected: current;
+    accessible-action-default => { activated(); }
+    forward-focus: focus;
+    if root.current: Rectangle {
+        x: 0;
+        width: Tokens.size-focus-ring;
+        height: parent.height - Tokens.space-2 * 2;
+        y: Tokens.space-2;
+        border-radius: self.width / 2;
+        background: Theme.accent;
+    }
+    HorizontalLayout {
+        padding-left: Tokens.space-3;
+        padding-right: Tokens.space-2;
+        spacing: Tokens.space-2;
+        VerticalLayout {
+            alignment: center;
+            Icon {
+                name: root.icon;
+                ink: root.current ? Theme.text-primary : Theme.text-secondary;
+            }
+        }
+        Text {
+            text: root.text;
+            color: Theme.text-primary;
+            font-size: Tokens.type-body-size;
+            font-weight: root.current ? Tokens.type-label-weight : Tokens.type-body-weight;
+            vertical-alignment: center;
+            overflow: elide;
+        }
+    }
+    focus := FocusScope {
+        key-pressed(e) => {
+            if e.text == Key.Return || e.text == " " { root.activated(); return accept; }
+            reject
+        }
+    }
+    // A click does not focus the entry (no focus ring after a click); Tab does.
+    touch := TouchArea {
+        clicked => { root.activated(); }
+    }
+    FocusRing { show: focus.has-focus; border-radius: Tokens.radius-md; }
+}
+
+// A group name in the section list: small, secondary, upper case (mockup E).
+export component SettingsNavGroup inherits Text {
+    in property <string> title;
+    text: title.to-uppercase();
+    color: Theme.text-secondary;
+    font-size: Tokens.type-caption-size;
+    font-weight: Tokens.type-label-weight;
+    letter-spacing: 0.5px;
+    accessible-role: AccessibleRole.text;
+    accessible-label: title;
+}
+
+// The page header: the section's name and what it is for.
+export component SettingsHeader inherits VerticalLayout {
+    in property <string> title;
+    in property <string> subtitle;
+    spacing: Tokens.space-1;
+    Text {
+        text: root.title;
+        color: Theme.text-primary;
+        font-size: Tokens.type-heading-size;
+        font-weight: Tokens.type-heading-weight;
+        accessible-role: none;
+    }
+    if root.subtitle != "": Text {
+        text: root.subtitle;
+        color: Theme.text-secondary;
+        font-size: Tokens.type-body-size;
+        wrap: word-wrap;
+    }
+}
+
+// A card: one group of related settings, with a title (small, secondary, upper case,
+// as section titles in mockup E) and an optional line saying what the group is for.
+// The rows inside draw the dividers between them.
+export component SettingsCard inherits Rectangle {
+    in property <string> title;
+    in property <string> description;
+    background: Theme.surface-raised;
+    border-radius: Tokens.radius-lg;
+    border-width: Tokens.size-border;
+    border-color: Theme.border-subtle;
+    accessible-role: groupbox;
+    accessible-label: title;
+    min-height: body.min-height;
+    preferred-height: body.preferred-height;
+    body := VerticalLayout {
+        padding-left: Tokens.space-4;
+        padding-right: Tokens.space-4;
+        padding-top: Tokens.space-3;
+        padding-bottom: Tokens.space-1;
+        if root.title != "" || root.description != "": VerticalLayout {
+            spacing: Tokens.space-1;
+            padding-bottom: Tokens.space-2;
+            if root.title != "": Text {
+                text: root.title.to-uppercase();
+                color: Theme.text-secondary;
+                font-size: Tokens.type-caption-size;
+                font-weight: Tokens.type-title-weight;
+                letter-spacing: 0.5px;
+                accessible-role: none;
+            }
+            if root.description != "": Text {
+                text: root.description;
+                color: Theme.text-secondary;
+                font-size: Tokens.type-caption-size;
+                wrap: word-wrap;
+            }
+        }
+        @children
+    }
+}
+
+// One setting: its name and explanation on the left, its control on the right. A
+// divider line separates it from the row above; the first row of a card without a
+// title sets `divider: false`.
+export component SettingRow inherits Rectangle {
+    in property <string> label;
+    in property <string> help;
+    // The help is a problem (error colour), not an explanation.
+    in property <bool> help-is-problem;
+    in property <bool> divider: true;
+    // Off: the label shows in the disabled colour (the control is disabled too).
+    in property <bool> enabled: true;
+    // The width of the control column.
+    in property <length> control-width: Tokens.size-menu-md;
+    // The control fills the column (fields, lists to pick from); off, it keeps its own
+    // width at the column's right edge (toggles, segmented controls, buttons).
+    in property <bool> fill: true;
+    min-height: lay.min-height;
+    preferred-height: lay.preferred-height;
+    if root.divider: Rectangle {
+        y: 0;
+        height: Tokens.size-border;
+        background: Theme.border-subtle;
+    }
+    lay := HorizontalLayout {
+        padding-top: Tokens.space-3;
+        padding-bottom: Tokens.space-3;
+        spacing: Tokens.space-4;
+        VerticalLayout {
+            horizontal-stretch: 1;
+            alignment: center;
+            spacing: Tokens.space-1;
+            if root.label != "": Text {
+                text: root.label;
+                color: root.enabled ? Theme.text-primary : Theme.text-disabled;
+                font-size: Tokens.type-label-size;
+                font-weight: Tokens.type-label-weight;
+                wrap: word-wrap;
+                accessible-role: none;
+            }
+            if root.help != "": Text {
+                text: root.help;
+                color: root.help-is-problem ? Theme.state-error : Theme.text-secondary;
+                font-size: Tokens.type-caption-size;
+                wrap: word-wrap;
+            }
+        }
+        VerticalLayout {
+            horizontal-stretch: 0;
+            width: root.fill ? root.control-width : min(root.control-width, controls.preferred-width);
+            alignment: center;
+            controls := HorizontalLayout {
+                alignment: root.fill ? LayoutAlignment.stretch : LayoutAlignment.end;
+                spacing: Tokens.space-2;
+                @children
+            }
+        }
+    }
+}
+
+// A setting whose content takes the card's width (a key pin, a list, a group of
+// buttons): its name and explanation on top, the content under them.
+export component SettingBlock inherits Rectangle {
+    in property <string> label;
+    in property <string> help;
+    in property <bool> divider: true;
+    min-height: lay.min-height;
+    preferred-height: lay.preferred-height;
+    if root.divider: Rectangle {
+        y: 0;
+        height: Tokens.size-border;
+        background: Theme.border-subtle;
+    }
+    lay := VerticalLayout {
+        padding-top: Tokens.space-3;
+        padding-bottom: Tokens.space-3;
+        spacing: Tokens.space-2;
+        if root.label != "" || root.help != "": VerticalLayout {
+            spacing: Tokens.space-1;
+            if root.label != "": Text {
+                text: root.label;
+                color: Theme.text-primary;
+                font-size: Tokens.type-label-size;
+                font-weight: Tokens.type-label-weight;
+                wrap: word-wrap;
+                accessible-role: none;
+            }
+            if root.help != "": Text {
+                text: root.help;
+                color: Theme.text-secondary;
+                font-size: Tokens.type-caption-size;
+                wrap: word-wrap;
+            }
+        }
+        @children
+    }
+}
+
+// A line of state inside a card: a dot in the state's colour and the text. `tone`:
+// 0 neutral, 1 healthy (running), 2 problem. The words carry the state; the dot only
+// repeats it (U7).
+export component SettingsStatus inherits Rectangle {
+    in property <string> text;
+    in property <int> tone;
+    min-height: row.min-height;
+    preferred-height: row.preferred-height;
+    row := HorizontalLayout {
+        padding-top: Tokens.space-2;
+        padding-bottom: Tokens.space-2;
+        spacing: Tokens.space-2;
+        VerticalLayout {
+            alignment: start;
+            padding-top: (Tokens.type-body-line - Tokens.space-2) / 2;
+            Rectangle {
+                width: Tokens.space-2;
+                height: Tokens.space-2;
+                border-radius: self.width / 2;
+                background: root.tone == 1 ? Theme.state-healthy
+                    : root.tone == 2 ? Theme.state-error : Theme.text-secondary;
+            }
+        }
+        Text {
+            horizontal-stretch: 1;
+            text: root.text;
+            color: root.tone == 2 ? Theme.state-error : Theme.text-primary;
+            font-size: Tokens.type-body-size;
+            wrap: word-wrap;
+        }
+    }
+}
+
+// A note across the top of a page or card, such as "Changes apply to the next
+// recording": an accent bar on the left and the text. `problem` uses the error
+// colour for a setting that could not be used.
+export component SettingsNotice inherits Rectangle {
+    in property <string> text;
+    in property <bool> problem;
+    background: root.problem ? transparent : Theme.accent-subtle;
+    border-radius: Tokens.radius-md;
+    border-width: root.problem ? Tokens.size-border : 0px;
+    border-color: Theme.state-error;
+    min-height: row.min-height;
+    preferred-height: row.preferred-height;
+    accessible-role: AccessibleRole.text;
+    accessible-label: text;
+    Rectangle {
+        x: 0;
+        width: Tokens.size-focus-ring * 2;
+        border-radius: Tokens.size-focus-ring;
+        background: root.problem ? Theme.state-error : Theme.accent;
+    }
+    row := HorizontalLayout {
+        padding-left: Tokens.space-4;
+        padding-right: Tokens.space-3;
+        padding-top: Tokens.space-2;
+        padding-bottom: Tokens.space-2;
+        Text {
+            text: root.text;
+            color: root.problem ? Theme.state-error : Theme.text-primary;
+            font-size: Tokens.type-body-size;
+            wrap: word-wrap;
+            accessible-role: none;
+        }
+    }
+}
+
+// A bordered group that asks before an action or shows something once (a new access
+// token): stronger border on the overlay surface.
+export component SettingsCallout inherits Rectangle {
+    in property <string> label;
+    background: Theme.surface-overlay;
+    border-radius: Tokens.radius-md;
+    border-width: Tokens.size-border;
+    border-color: Theme.border-strong;
+    accessible-role: groupbox;
+    accessible-label: label;
+    min-height: inner.min-height;
+    preferred-height: inner.preferred-height;
+    inner := VerticalLayout {
+        padding: Tokens.space-3;
+        spacing: Tokens.space-2;
+        @children
+    }
+}

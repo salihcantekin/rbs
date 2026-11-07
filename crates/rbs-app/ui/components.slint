@@ -16,6 +16,7 @@ export enum IconName {
     none, more, chevron-down, chevron-up, chevron-left, chevron-right, check, close, dot, ring,
     plus, pin, panel-left, panel-right, panel-bottom, bolt, grid, copy, window, search,
     monitor, camera, mic, speaker, eye, eye-off, expand, lock, unlock, speaker-off,
+    sliders, palette, keyboard, broadcast, link,
 }
 
 // Vector icon. Icons are paths, not font glyphs, so they look the same on every OS
@@ -55,6 +56,11 @@ export component Icon inherits Rectangle {
         : name == IconName.lock ? "M 3.5 7 L 12.5 7 L 12.5 13.5 L 3.5 13.5 Z M 5.5 7 L 5.5 5 C 5.5 1.75 10.5 1.75 10.5 5 L 10.5 7"
         : name == IconName.unlock ? "M 3.5 7 L 12.5 7 L 12.5 13.5 L 3.5 13.5 Z M 5.5 7 L 5.5 5 C 5.5 2 9.5 1.5 10.3 4"
         : name == IconName.speaker-off ? "M 2.5 6 L 5 6 L 8.5 3 L 8.5 13 L 5 10 L 2.5 10 Z M 11 6 L 14 10 M 14 6 L 11 10"
+        : name == IconName.sliders ? "M 2.5 4.5 L 4 4.5 M 7 4.5 L 13.5 4.5 M 4 4.5 a 1.5 1.5 0 1 0 3 0 a 1.5 1.5 0 1 0 -3 0 Z M 2.5 11.5 L 9 11.5 M 12 11.5 L 13.5 11.5 M 9 11.5 a 1.5 1.5 0 1 0 3 0 a 1.5 1.5 0 1 0 -3 0 Z"
+        : name == IconName.palette ? "M 8 2 C 4.5 2 2 4.5 2 7.75 C 2 11 4.5 14 7.5 14 C 8.5 14 9 13.25 8.75 12.5 C 8.25 11.25 9 10 10.25 10 L 11.5 10 C 13 10 14 9 14 7.5 C 14 4.5 11.25 2 8 2 Z M 4.75 7.5 a 0.75 0.75 0 1 0 1.5 0 a 0.75 0.75 0 1 0 -1.5 0 Z M 7 4.75 a 0.75 0.75 0 1 0 1.5 0 a 0.75 0.75 0 1 0 -1.5 0 Z M 9.75 6 a 0.75 0.75 0 1 0 1.5 0 a 0.75 0.75 0 1 0 -1.5 0 Z"
+        : name == IconName.keyboard ? "M 1.5 4 L 14.5 4 L 14.5 12 L 1.5 12 Z M 4 6.75 L 4.5 6.75 M 6.5 6.75 L 7 6.75 M 9 6.75 L 9.5 6.75 M 11.5 6.75 L 12 6.75 M 5 9.5 L 11 9.5"
+        : name == IconName.broadcast ? "M 6.75 8 a 1.25 1.25 0 1 0 2.5 0 a 1.25 1.25 0 1 0 -2.5 0 Z M 5.25 5.25 C 3.75 6.75 3.75 9.25 5.25 10.75 M 10.75 5.25 C 12.25 6.75 12.25 9.25 10.75 10.75 M 3.25 3.25 C 0.75 5.75 0.75 10.25 3.25 12.75 M 12.75 3.25 C 15.25 5.75 15.25 10.25 12.75 12.75"
+        : name == IconName.link ? "M 6.5 9.5 L 9.5 6.5 M 7 4.5 L 8.5 3 C 9.75 1.75 11.75 1.75 13 3 C 14.25 4.25 14.25 6.25 13 7.5 L 11.5 9 M 9 11.5 L 7.5 13 C 6.25 14.25 4.25 14.25 3 13 C 1.75 11.75 1.75 9.75 3 8.5 L 4.5 7"
         : "";
     width: Tokens.size-icon-box;
     height: Tokens.size-icon-box;
@@ -89,6 +95,11 @@ export global Icons {
         : name == "camera" ? IconName.camera
         : name == "mic" ? IconName.mic
         : name == "speaker" ? IconName.speaker
+        : name == "sliders" ? IconName.sliders
+        : name == "palette" ? IconName.palette
+        : name == "keyboard" ? IconName.keyboard
+        : name == "broadcast" ? IconName.broadcast
+        : name == "link" ? IconName.link
         : IconName.none;
     }
 }
@@ -287,15 +298,54 @@ export component Select inherits Rectangle {
     out property <bool> open: menu.is-open;
     callback selected(int);
     height: Tokens.size-control-md;
-    Button {
-        width: root.width;
-        height: root.height;
-        text: root.options[root.index];
-        accessible-name: @tr("{}: {}", root.label, root.options[root.index]);
-        icon: IconName.chevron-down;
-        enabled: root.enabled;
-        clicked => { menu.show(); }
+    min-width: Tokens.size-menu-sm / 2;
+    // A field (mockup E's drop-downs): the option on the left, the chevron on the right,
+    // so a column of them lines up with text fields.
+    border-radius: Tokens.radius-sm;
+    border-width: Tokens.size-border;
+    border-color: !root.enabled ? Theme.border-subtle
+        : touch.has-hover || root.open ? Theme.border-strong : Theme.border-subtle;
+    background: !root.enabled ? transparent
+        : touch.pressed ? Theme.surface-overlay : Theme.surface-sunken;
+    accessible-role: combobox;
+    accessible-label: @tr("{}: {}", root.label, root.options[root.index]);
+    accessible-enabled: root.enabled;
+    accessible-expanded: root.open;
+    accessible-action-default => { if root.enabled { menu.show(); } }
+    forward-focus: focus;
+    HorizontalLayout {
+        padding-left: Tokens.space-2;
+        padding-right: Tokens.space-2;
+        spacing: Tokens.space-2;
+        Text {
+            horizontal-stretch: 1;
+            text: root.options[root.index];
+            color: root.enabled ? Theme.text-primary : Theme.text-disabled;
+            font-size: Tokens.type-body-size;
+            vertical-alignment: center;
+            overflow: elide;
+            accessible-role: none;
+        }
+        VerticalLayout {
+            alignment: center;
+            Icon {
+                name: IconName.chevron-down;
+                ink: root.enabled ? Theme.text-secondary : Theme.text-disabled;
+            }
+        }
     }
+    focus := FocusScope {
+        enabled: root.enabled;
+        key-pressed(e) => {
+            if e.text == Key.Return || e.text == " " || e.text == Key.DownArrow { menu.show(); return accept; }
+            reject
+        }
+    }
+    touch := TouchArea {
+        enabled: root.enabled;
+        clicked => { focus.focus(); menu.show(); }
+    }
+    FocusRing { show: focus.has-focus; }
     menu := PopupWindow {
         close-policy: close-on-click-outside;
         y: root.height;
@@ -379,7 +429,125 @@ export component Checkbox inherits Rectangle {
     FocusRing { show: focus.has-focus; }
 }
 
-// SegmentedControl: a few mutually exclusive options side by side.
+// Toggle: an on/off setting that applies at once, drawn as a switch. The label beside
+// it is optional (a settings row shows its label on the left and passes it as
+// `label`, the accessible name). The knob's side shows the state as well as the
+// fill (never colour alone, U7). Toggled by click, Space or Enter. States: off, on,
+// hover (accent border), focused (focus ring) and disabled (subtle border, disabled
+// ink, no input).
+export component Toggle inherits Rectangle {
+    in property <string> label;
+    // Shown beside the switch; empty when the owner shows the label itself.
+    in property <string> text;
+    in property <bool> checked;
+    in property <bool> enabled: true;
+    callback toggled(bool);
+    min-height: Tokens.size-control-md;
+    accessible-role: switch;
+    accessible-label: label != "" ? label : text;
+    accessible-checked: checked;
+    accessible-enabled: enabled;
+    accessible-action-default => { if enabled { toggled(!checked); } }
+    forward-focus: focus;
+    // The track is two knobs wide; the knob sits one focus-ring width inside it.
+    property <length> track-h: Tokens.size-icon-box + Tokens.space-1;
+    property <length> inset: Tokens.size-focus-ring;
+    HorizontalLayout {
+        spacing: Tokens.space-2;
+        alignment: start;
+        VerticalLayout {
+            alignment: center;
+            track := Rectangle {
+                width: root.track-h * 2 - root.inset * 2;
+                height: root.track-h;
+                border-radius: self.height / 2;
+                border-width: root.checked && root.enabled ? 0px : Tokens.size-border;
+                border-color: !root.enabled ? Theme.border-subtle
+                    : touch.has-hover ? Theme.accent : Theme.border-strong;
+                background: !root.enabled ? Theme.surface-sunken
+                    : root.checked ? (touch.has-hover ? Theme.accent-hover : Theme.accent)
+                    : Theme.surface-sunken;
+                animate background { duration: Tokens.motion-fast; }
+                knob := Rectangle {
+                    width: root.track-h - root.inset * 2;
+                    height: self.width;
+                    y: root.inset;
+                    x: root.checked ? parent.width - self.width - root.inset : root.inset;
+                    animate x { duration: Tokens.motion-fast; easing: ease-out; }
+                    border-radius: self.height / 2;
+                    background: !root.enabled ? Theme.text-disabled
+                        : root.checked ? Theme.text-inverse : Theme.text-secondary;
+                }
+            }
+        }
+        if root.text != "": Text {
+            text: root.text;
+            color: root.enabled ? Theme.text-primary : Theme.text-disabled;
+            font-size: Tokens.type-body-size;
+            vertical-alignment: center;
+            wrap: word-wrap;
+        }
+    }
+    focus := FocusScope {
+        enabled: root.enabled;
+        key-pressed(e) => {
+            if e.text == Key.Return || e.text == " " { root.toggled(!root.checked); return accept; }
+            reject
+        }
+    }
+    touch := TouchArea {
+        enabled: root.enabled;
+        clicked => { focus.focus(); root.toggled(!root.checked); }
+    }
+    FocusRing { show: focus.has-focus; border-radius: track.height / 2; }
+}
+
+// One option of a SegmentedControl.
+component Segment inherits Rectangle {
+    in property <string> text;
+    in property <string> accessible-name;
+    in property <bool> checked;
+    in property <bool> enabled: true;
+    callback clicked();
+    min-width: label.preferred-width + Tokens.space-3 * 2;
+    border-radius: Tokens.radius-sm;
+    background: root.checked ? (root.enabled ? Theme.surface-overlay : Theme.surface-raised)
+        : touch.has-hover ? Theme.surface-raised : transparent;
+    border-width: root.checked ? Tokens.size-border : 0px;
+    border-color: root.enabled ? Theme.border-strong : Theme.border-subtle;
+    accessible-role: button;
+    accessible-label: root.accessible-name;
+    accessible-checked: root.checked;
+    accessible-enabled: root.enabled;
+    accessible-action-default => { if root.enabled { root.clicked(); } }
+    forward-focus: focus;
+    label := Text {
+        text: root.text;
+        color: !root.enabled ? Theme.text-disabled
+            : root.checked ? Theme.text-primary : Theme.text-secondary;
+        font-size: Tokens.type-label-size;
+        font-weight: root.checked ? Tokens.type-title-weight : Tokens.type-label-weight;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+        accessible-role: none;
+    }
+    focus := FocusScope {
+        enabled: root.enabled;
+        key-pressed(e) => {
+            if e.text == Key.Return || e.text == " " { root.clicked(); return accept; }
+            reject
+        }
+    }
+    touch := TouchArea {
+        enabled: root.enabled;
+        clicked => { focus.focus(); root.clicked(); }
+    }
+    FocusRing { show: focus.has-focus; }
+}
+
+// SegmentedControl: a few mutually exclusive options side by side, in a sunken track
+// with the chosen one raised (mockup E). The chosen option is also bold and marked
+// checked for screen readers, so it is never shown by colour alone (U7).
 export component SegmentedControl inherits Rectangle {
     in property <string> label;
     in property <[string]> options;
@@ -387,12 +555,17 @@ export component SegmentedControl inherits Rectangle {
     in property <bool> enabled: true;
     callback selected(int);
     height: Tokens.size-control-md;
+    border-radius: Tokens.radius-md;
+    border-width: Tokens.size-border;
+    border-color: Theme.border-subtle;
+    background: Theme.surface-sunken;
     accessible-role: groupbox;
     accessible-label: label;
     HorizontalLayout {
-        spacing: Tokens.space-1;
+        padding: Tokens.size-focus-ring;
+        spacing: Tokens.size-focus-ring;
         alignment: start;
-        for o[i] in root.options: Button {
+        for o[i] in root.options: Segment {
             text: o;
             accessible-name: @tr("{}: {}", root.label, o);
             checked: i == root.index;
@@ -850,7 +1023,8 @@ export component KeyboardShortcutHint inherits Rectangle {
         }
         if root.tag != "": Text {
             text: root.tag;
-            color: Theme.accent;
+            // Not accent: accent text on sunken is 3.9:1 in Light, under the 4.5:1 for text.
+            color: Theme.text-secondary;
             font-size: Tokens.type-caption-size;
             font-weight: Tokens.type-label-weight;
             vertical-alignment: center;
