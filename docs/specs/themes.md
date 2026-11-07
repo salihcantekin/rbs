@@ -31,6 +31,7 @@ Out of scope, later changes: themes in `.rbspack` packs; font files; a curated a
 | | `size.focus-ring` | logical px | 2 to 6 (U7) |
 | Icons | `size.icon.box` / `size.icon.stroke` | logical px | 12 to 32 / 1 to 3 (U7) |
 | Menus | `size.menu.sm` / `.md` | logical px | 160 to 480 |
+| RBS menu | `size.app-menu.w` / `.categories` / `.list-h` | logical px | 480 to 960 / 120 to 320 / 240 to 720 |
 | Motion | `motion.fast` / `motion.normal` | ms | 120 to 200 (U12; reduce motion turns motion off) |
 
 `THEMEABLE` lists them with metadata for the editor: name, label in words, group, value kind, bounds. Not themeable, refused in a theme: `color.state.live`, `color.text.on-live` (U12), `size.window.*`, `size.floating.*`, `size.settings.*`, `step.*`.
