@@ -665,7 +665,7 @@ mod tests {
         assert!(ui.to_save().is_some());
 
         // A failing edit stays in the editor with its problem and is not applied.
-        assert!(ui.set_color(&file, "color.accent", "#c4262e"));
+        assert!(ui.set_color(&file, "color.accent", "#db2d35"));
         ui.group = 0;
         let row = ui
             .rows(&file)
@@ -677,7 +677,7 @@ mod tests {
         assert_eq!(slots[0].length["radius.md"], 8.0, "saved theme still used");
         assert_ne!(
             slots[0].colors["color.accent"],
-            Color::parse("#c4262e").unwrap()
+            Color::parse("#db2d35").unwrap()
         );
         assert!(ui.to_save().is_none());
 

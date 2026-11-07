@@ -196,6 +196,9 @@ pub fn apply(theme: &Theme<'_>, tokens: &Tokens<'_>, look: Option<&Look>) {
 }
 
 #[cfg(test)]
+mod drawn;
+
+#[cfg(test)]
 mod tests {
     #![allow(clippy::expect_used, clippy::unwrap_used)] // Tests fail by panicking.
 
@@ -412,7 +415,7 @@ mod tests {
         let mut failing = ThemeBody::new(Base::HighContrast);
         failing
             .colors
-            .insert("color.accent".into(), Color::parse("#c4262e").unwrap());
+            .insert("color.accent".into(), Color::parse("#db2d35").unwrap());
         let id = data.themes().create(&lock, "Loud", &failing).unwrap();
         let r = resolve(&file, &data, &ThemeId::User(id), Base::Dark, &mut notes);
         assert_eq!(r, file.built_in_theme(Base::HighContrast));

@@ -6,7 +6,7 @@ format = 2
 
 # Live and recording colours are the same in every theme (rule U12): themes cannot change them.
 [fixed]
-"color.state.live" = "#c4262e"
+"color.state.live" = "#db2d35"
 "color.text.on-live" = "#ffffff"
 
 [themes.dark]
@@ -43,7 +43,7 @@ format = 2
 "color.text.disabled" = "#9aa0a8"
 "color.text.inverse" = "#ffffff"
 "color.border.subtle" = "#dde0e5"
-"color.border.strong" = "#868c96"
+"color.border.strong" = "#7a808a"
 "color.border.focus" = "#1f6feb"
 "color.accent" = "#1f6feb"
 "color.accent.hover" = "#1a5fcc"

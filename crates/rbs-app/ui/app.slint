@@ -990,7 +990,8 @@ component ToolbarCell inherits HorizontalLayout {
     if (item.kind == 0 || item.kind == 4) && !item.icon-only: Button {
         text: item.title;
         lead: Icons.named(item.icon);
-        lead-ink: record ? Theme.state-live : self.ink;
+        // Checked means recording, and then the button itself is in the live colour.
+        lead-ink: record && !item.checked ? Theme.state-live : self.ink;
         enabled: item.enabled;
         checked: item.checked && !item.live;
         kind: item.live ? "live" : go-live ? "primary" : record ? "secondary" : "ghost";

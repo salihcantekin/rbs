@@ -267,7 +267,7 @@ fn high_contrast_base_uses_the_stricter_thresholds() {
 
 #[test]
 fn no_theme_colour_may_look_like_live() {
-    let live = color("#c4262e");
+    let live = color("#db2d35");
     for name in ["color.accent", "color.meter.high", "color.state.warning"] {
         let mut theme = ThemeBody::new(Base::Dark);
         theme.colors.insert(name.into(), live);

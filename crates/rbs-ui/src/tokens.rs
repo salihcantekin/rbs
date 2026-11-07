@@ -47,7 +47,7 @@ pub const THEME_COLORS: &[&str] = &[
 /// Colour tokens that are the same in every theme, with their only allowed
 /// values. A custom token file must repeat them unchanged (rule U12).
 pub const FIXED: &[(&str, &str)] = &[
-    ("color.state.live", "#c4262e"),
+    ("color.state.live", "#db2d35"),
     ("color.text.on-live", "#ffffff"),
 ];
 
@@ -289,10 +289,25 @@ pub const THEME_CONTRAST_RULES: &[(&str, &str, f64, f64)] = &[
     ("color.accent", "color.surface.overlay", 3.0, 3.0),
     ("color.accent", "color.surface.sunken", 3.0, 3.0),
     ("color.text.secondary", "color.accent.subtle", 4.5, 7.0),
+    // Pairs the desktop UI draws (`rbs-app` test `every_drawn_pair_has_a_contrast_rule`).
+    // Error messages are text, so they need the text minimum.
+    ("color.state.error", "color.surface.base", 4.5, 7.0),
+    ("color.state.error", "color.surface.raised", 4.5, 7.0),
+    ("color.state.error", "color.surface.overlay", 4.5, 7.0),
+    ("color.state.error", "color.surface.sunken", 4.5, 7.0),
+    ("color.state.error", "color.accent.subtle", 4.5, 7.0),
+    ("color.border.focus", "color.accent.subtle", 3.0, 3.0),
+    ("color.border.strong", "color.surface.base", 3.0, 3.0),
+    ("color.border.strong", "color.surface.sunken", 3.0, 3.0),
 ];
 
-/// Surfaces `color.state.live` must stand out from (3:1).
-pub const LIVE_SURFACES: &[&str] = &["color.surface.base", "color.surface.sunken"];
+/// Surfaces `color.state.live` must stand out from (3:1): every surface.
+pub const LIVE_SURFACES: &[&str] = &[
+    "color.surface.base",
+    "color.surface.raised",
+    "color.surface.overlay",
+    "color.surface.sunken",
+];
 
 /// Smallest CIEDE2000 difference between any theme colour and `color.state.live`, so
 /// no other colour reads as "live red" (rule U12, ADR-0057).
@@ -510,7 +525,7 @@ mod tests {
                 .contains("unknown colour")
         );
 
-        let other_live = base.replacen("#c4262e", "#ff0000", 1);
+        let other_live = base.replacen("#db2d35", "#ff0000", 1);
         assert!(Tokens::parse(&other_live).unwrap_err().0.contains("fixed"));
 
         let alpha = base.replacen("\"#121417\"", "\"#12141780\"", 1);
