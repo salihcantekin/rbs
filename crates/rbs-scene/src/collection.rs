@@ -74,6 +74,9 @@ pub enum SceneError {
     InvalidVolume,
     /// A source sync offset is outside `-200..=200` ms (ADR-0062).
     InvalidSyncOffset,
+    /// A global scene (ADR-0063) would be shown as program or preview, nested, nest a
+    /// scene, or not be scoped to its own canvas.
+    GlobalScene(SceneId),
 }
 
 /// Most levels of scenes in a nesting chain, counting the shown scene. Bounds the
@@ -116,6 +119,10 @@ impl fmt::Display for SceneError {
             SceneError::ScopeViolation(id) => write!(f, "{id} is not allowed here by its scope"),
             SceneError::IndexOutOfRange(i) => write!(f, "index {i} out of range"),
             SceneError::CanvasHasScenes(id) => write!(f, "{id} still owns scenes"),
+            SceneError::GlobalScene(id) => write!(
+                f,
+                "{id} is a global scene: it belongs to its canvas, is never shown or nested, and holds only sources"
+            ),
             SceneError::UndoConflict => f.write_str("undo record conflicts with the collection"),
             SceneError::IdsExhausted => f.write_str("ids exhausted"),
             SceneError::NestingTooDeep(id) => {
@@ -160,6 +167,8 @@ enum Op {
     InsertCanvas {
         canvas: Canvas,
         overrides: Vec<(ItemId, Layout)>,
+        /// Its global scene, removed with it (ADR-0063).
+        globals: Option<Scene>,
     },
     RemoveCanvas(CanvasId),
     /// Replaces a canvas only if it currently equals `expected`, so an undo used out
@@ -188,6 +197,8 @@ enum Op {
         scene: Scene,
         placements: Vec<(SceneId, usize, SceneItem)>,
         shown: Vec<(CanvasId, bool, bool)>,
+        /// Canvases whose global scene it was (ADR-0063).
+        globals: Vec<CanvasId>,
     },
     RemoveScene(SceneId),
     ReplaceSceneHeader {
@@ -464,11 +475,13 @@ impl SceneCollection {
             frame_rate,
             program: None,
             preview: None,
+            globals: None,
         };
         let undo = self.apply_with(
             Op::InsertCanvas {
                 canvas,
                 overrides: Vec::new(),
+                globals: None,
             },
             next,
         )?;
@@ -522,6 +535,39 @@ impl SceneCollection {
         let mut c = self.get_canvas(canvas)?.clone();
         c.preview = scene;
         self.replace_canvas(c)
+    }
+
+    /// Makes `scene` the global scene of `canvas` (ADR-0063), or clears it with
+    /// `None`. The scene must be scoped to that canvas, shown nowhere, nested nowhere
+    /// and hold only sources (`GlobalScene`).
+    pub fn set_globals(
+        &mut self,
+        canvas: CanvasId,
+        scene: Option<SceneId>,
+    ) -> Result<Undo, SceneError> {
+        let mut c = self.get_canvas(canvas)?.clone();
+        c.globals = scene;
+        self.replace_canvas(c)
+    }
+
+    /// The scenes `canvas` may show as program or preview, in id order: those
+    /// `scenes_for` gives, without global scenes (ADR-0063). Scene lists, switching
+    /// and program fallbacks use this; code that must reach every item of the canvas
+    /// (a rescale) uses `scenes_for`.
+    pub fn showable_scenes(&self, canvas: CanvasId) -> impl Iterator<Item = &Scene> {
+        let globals = self.globals_of(canvas);
+        self.scenes_for(canvas)
+            .filter(move |s| Some(s.id) != globals)
+    }
+
+    /// The global scene of `canvas`, if it has one (ADR-0063).
+    pub fn globals_of(&self, canvas: CanvasId) -> Option<SceneId> {
+        self.canvases.get(&canvas).and_then(|c| c.globals)
+    }
+
+    /// True when `scene` is the global scene of some canvas.
+    pub fn is_global_scene(&self, scene: SceneId) -> bool {
+        self.canvases.values().any(|c| c.globals == Some(scene))
     }
 
     /// Adds a source that is not yet placed in any scene.
@@ -705,6 +751,7 @@ impl SceneCollection {
                 scene,
                 placements: Vec::new(),
                 shown: Vec::new(),
+                globals: Vec::new(),
             },
             next,
         )?;
@@ -955,10 +1002,22 @@ impl SceneCollection {
 
     fn perform(&mut self, op: Op) -> Result<Op, SceneError> {
         match op {
-            Op::InsertCanvas { canvas, overrides } => {
+            Op::InsertCanvas {
+                canvas,
+                overrides,
+                globals,
+            } => {
                 let id = canvas.id;
                 Self::restorable(self.next.canvas, id.0, self.canvases.contains_key(&id))?;
                 self.canvases.insert(id, canvas);
+                if let Some(scene) = globals {
+                    let sid = scene.id;
+                    Self::restorable(self.next.scene, sid.0, self.scenes.contains_key(&sid))?;
+                    for item in &scene.items {
+                        Self::restorable(self.next.item, item.id.0, self.item(item.id).is_some())?;
+                    }
+                    self.scenes.insert(sid, scene);
+                }
                 for (item, layout) in overrides {
                     let item = self.item_mut(item)?;
                     item.overrides.insert(id, layout);
@@ -970,6 +1029,9 @@ impl SceneCollection {
                     .canvases
                     .remove(&id)
                     .ok_or(SceneError::UnknownCanvas(id))?;
+                // Its global scene goes with it (ADR-0063): the user never sees it as
+                // a scene of its own. Validation keeps it nested nowhere.
+                let globals = canvas.globals.and_then(|g| self.scenes.remove(&g));
                 if self
                     .scenes
                     .values()
@@ -985,7 +1047,11 @@ impl SceneCollection {
                         }
                     }
                 }
-                Ok(Op::InsertCanvas { canvas, overrides })
+                Ok(Op::InsertCanvas {
+                    canvas,
+                    overrides,
+                    globals,
+                })
             }
             Op::ReplaceCanvas { expected, new } => {
                 let slot = self
@@ -1070,6 +1136,7 @@ impl SceneCollection {
                 scene,
                 placements,
                 shown,
+                globals,
             } => {
                 let id = scene.id;
                 Self::restorable(self.next.scene, id.0, self.scenes.contains_key(&id))?;
@@ -1087,6 +1154,17 @@ impl SceneCollection {
                         c.preview = Some(id);
                     }
                 }
+                for canvas in globals {
+                    let c = self
+                        .canvases
+                        .get_mut(&canvas)
+                        .ok_or(SceneError::UndoConflict)?;
+                    // Never replace a global scene set since.
+                    if c.globals.is_some() {
+                        return Err(SceneError::UndoConflict);
+                    }
+                    c.globals = Some(id);
+                }
                 Ok(Op::RemoveScene(id))
             }
             Op::RemoveScene(id) => {
@@ -1096,7 +1174,12 @@ impl SceneCollection {
                     .ok_or(SceneError::UnknownScene(id))?;
                 let placements = self.remove_items(ItemContent::Scene(id));
                 let mut shown = Vec::new();
+                let mut globals = Vec::new();
                 for c in self.canvases.values_mut() {
+                    if c.globals == Some(id) {
+                        c.globals = None;
+                        globals.push(c.id);
+                    }
                     let program = c.program == Some(id);
                     let preview = c.preview == Some(id);
                     if program {
@@ -1113,6 +1196,7 @@ impl SceneCollection {
                     scene,
                     placements,
                     shown,
+                    globals,
                 })
             }
             Op::ReplaceSceneHeader { id, expected, new } => {
@@ -1207,6 +1291,7 @@ impl SceneCollection {
                 }
             }
         }
+        self.check_globals()?;
         let mut names = BTreeSet::new();
         let mut filters = BTreeSet::new();
         for s in self.sources.values() {
@@ -1231,9 +1316,12 @@ impl SceneCollection {
             }
         }
         let mut names = BTreeSet::new();
+        let globals: BTreeSet<SceneId> = self.canvases.values().filter_map(|c| c.globals).collect();
         for s in self.scenes.values() {
             check_name(&s.name)?;
-            if !names.insert(s.name.as_str()) {
+            // A global scene is never listed, so its name never takes one from the
+            // user (ADR-0063).
+            if !globals.contains(&s.id) && !names.insert(s.name.as_str()) {
                 return Err(SceneError::DuplicateName(s.name.clone()));
             }
             if let SceneScope::Canvas(c) = s.scope {
@@ -1278,6 +1366,44 @@ impl SceneCollection {
         self.check_size()
     }
 
+    /// The global-scene invariants (ADR-0063): scoped to its own canvas, shown and
+    /// nested nowhere, nesting nothing.
+    fn check_globals(&self) -> Result<(), SceneError> {
+        let globals: BTreeSet<SceneId> = self.canvases.values().filter_map(|c| c.globals).collect();
+        if globals.is_empty() {
+            return Ok(());
+        }
+        for c in self.canvases.values() {
+            let Some(g) = c.globals else { continue };
+            let scene = self.get_scene(g)?;
+            if scene.scope != SceneScope::Canvas(c.id)
+                || scene
+                    .items
+                    .iter()
+                    .any(|i| matches!(i.content, ItemContent::Scene(_)))
+            {
+                return Err(SceneError::GlobalScene(g));
+            }
+        }
+        for c in self.canvases.values() {
+            for shown in [c.program, c.preview].into_iter().flatten() {
+                if globals.contains(&shown) {
+                    return Err(SceneError::GlobalScene(shown));
+                }
+            }
+        }
+        for s in self.scenes.values() {
+            for item in &s.items {
+                if let ItemContent::Scene(child) = item.content
+                    && globals.contains(&child)
+                {
+                    return Err(SceneError::GlobalScene(child));
+                }
+            }
+        }
+        Ok(())
+    }
+
     /// Nesting depth and flattened layer count per scene, memoised; recursion is cut
     /// off at the depth limit, so it is bounded.
     fn check_size(&self) -> Result<(), SceneError> {
@@ -1317,6 +1443,25 @@ impl SceneCollection {
         let mut memo = BTreeMap::new();
         for &scene in self.scenes.keys() {
             measure(self, scene, 1, &mut memo)?;
+        }
+        // A scene a canvas may show is drawn with that canvas's global scene
+        // (ADR-0063): together they stay within the limit.
+        for c in self.canvases.values() {
+            let Some(g) = c.globals else { continue };
+            let extra = memo.get(&g).map_or(0, |m| m.1);
+            if extra == 0 {
+                continue;
+            }
+            for s in self
+                .scenes
+                .values()
+                .filter(|s| s.id != g && allowed_on(s.scope, c.id))
+            {
+                let own = memo.get(&s.id).map_or(0, |m| m.1);
+                if own.saturating_add(extra) > MAX_LAYERS {
+                    return Err(SceneError::TooManyLayers(s.id));
+                }
+            }
         }
         Ok(())
     }

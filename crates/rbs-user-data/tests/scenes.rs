@@ -111,6 +111,21 @@ fn show() -> SceneCollection {
     col.set_program(wide, Some(game)).unwrap();
     col.set_preview(wide, Some(talk)).unwrap();
     col.set_program(tall, Some(talk)).unwrap();
+    // A global source on the wide canvas (format 5, ADR-0063).
+    let (desk, _) = col
+        .add_source("Desk mic", ty("audio-input"), Settings::new())
+        .unwrap();
+    let (globals, _) = col
+        .add_scene("Global sources", SceneScope::Canvas(wide))
+        .unwrap();
+    col.add_item(
+        globals,
+        ItemContent::Source(desk),
+        Layout::new([0.0, 0.0], [1.0, 1.0]),
+        None,
+    )
+    .unwrap();
+    col.set_globals(wide, Some(globals)).unwrap();
     // An issued, then removed, id.
     let (gone, _) = col.add_scene("Gone", SceneScope::Shared).unwrap();
     col.remove_scene(gone).unwrap();
@@ -137,7 +152,8 @@ fn a_collection_round_trips_exactly_with_its_counters() {
         "enabled = false",
         "visible = false",
         "canvas = 0",
-        "format = 4",
+        "format = 5",
+        "globals = ",
         "sync_offset_ms = -40",
         "locked = true",
         "volume = 0.3",
@@ -344,6 +360,17 @@ fn every_scene_model_invariant_is_checked_on_load() {
     // Canvas bounds: shared files are untrusted input.
     assert!(invalid("[[canvases]]\nid = 0\nname = \"M\"\nwidth = 4294967295\nheight = 2\nframe_rate = [30, 1]\n").contains("at most"));
     assert!(invalid("[[canvases]]\nid = 0\nname = \"M\"\nwidth = 2\nheight = 2\nframe_rate = [4294967295, 1]\n").contains("at most"));
+    // A global scene (ADR-0063) that is shared, or that is also the program.
+    let shared_globals = format!(
+        "[[canvases]]\nid = 0\nname = \"M\"\nwidth = 2\nheight = 2\nframe_rate = [30, 1]\nglobals = 0\n{}",
+        scene(0, "")
+    );
+    assert!(invalid(&shared_globals).contains("global scene"));
+    let shown_globals = format!(
+        "[[canvases]]\nid = 0\nname = \"M\"\nwidth = 2\nheight = 2\nframe_rate = [30, 1]\nprogram = 0\nglobals = 0\n{}",
+        scene(0, "canvas = 0\n")
+    );
+    assert!(invalid(&shown_globals).contains("global scene"));
     // An id with no next id left.
     invalid(
         "[[canvases]]\nid = 4294967295\nname = \"M\"\nwidth = 2\nheight = 2\nframe_rate = [30, 1]\n",

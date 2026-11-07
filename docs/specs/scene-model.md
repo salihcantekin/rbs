@@ -25,7 +25,7 @@ Out of scope, later changes:
 | Type | Contract |
 | --- | --- |
 | `CanvasId`, `SourceId`, `SceneId`, `ItemId`, `FilterId` | Issued in increasing order per kind, never reused, so an undo restores an object under its old id. `from_raw` / `get` convert for documents and commands; the document must also store the id counters, or ids could be reused after a reload |
-| `Canvas` | Name, `Size`, `FrameRate`, `program` scene, `preview` scene (studio mode when set) |
+| `Canvas` | Name, `Size`, `FrameRate`, `program` scene, `preview` scene (studio mode when set), `globals` scene (ADR-0063: the canvas's global scene, whose items are drawn above and heard with every scene the canvas shows; `None` when it has none) |
 | `Source` | Name, node `type_id`, `Settings`, ordered `filters`, `audio: SourceAudio { volume, muted, sync_offset_ms }` (ADR-0059: `volume` a linear amplitude factor in `0.0..=MAX_SOURCE_VOLUME` (1.0), default 1.0 and not muted; ADR-0062: `sync_offset_ms` in `-MAX_SYNC_OFFSET_MS..=MAX_SYNC_OFFSET_MS` (200), default 0, positive delays the sound). One source can be placed in many scenes and canvases; it runs as one instance, so it has one volume |
 | `Filter` | Node `type_id`, `enabled`, `Settings` (built-in filter types and their settings: [video-filters.md](video-filters.md)) |
 | `SceneScope` | `Canvas(id)`: only that canvas shows it, directly or nested. `Shared`: every canvas may show it (U15) |
@@ -42,7 +42,7 @@ Out of scope, later changes:
 
 ### Edits (`SceneCollection`)
 
-Canvases: `add_canvas`, `remove_canvas`, `rename_canvas`, `set_canvas_format`, `set_program`, `set_preview`. Sources: `add_source`, `delete_source` (removes it from every scene), `rename_source`, `set_source_settings`, `add_filter`, `remove_filter`, `set_filter_enabled`, `move_filter`, `set_filter_settings` (ADR-0062), `set_source_volume`, `set_source_muted` (ADR-0059), `set_source_sync_offset` (ADR-0062). Scenes: `add_scene`, `remove_scene`, `rename_scene`, `set_scene_scope`. Items: `add_item` (at an index or on top), `remove_item` (from this scene only), `move_item`, `set_item_visible`, `set_item_locked`, `set_item_layout` (default or for one canvas), `clear_item_layout`.
+Canvases: `add_canvas`, `remove_canvas`, `rename_canvas`, `set_canvas_format`, `set_program`, `set_preview`, `set_globals` (ADR-0063; `globals_of(canvas)` and `is_global_scene(scene)` read it; `showable_scenes(canvas)` is `scenes_for(canvas)` without the global scene, for scene lists, switching and program fallbacks). Sources: `add_source`, `delete_source` (removes it from every scene), `rename_source`, `set_source_settings`, `add_filter`, `remove_filter`, `set_filter_enabled`, `move_filter`, `set_filter_settings` (ADR-0062), `set_source_volume`, `set_source_muted` (ADR-0059), `set_source_sync_offset` (ADR-0062). Scenes: `add_scene`, `remove_scene`, `rename_scene`, `set_scene_scope`. Items: `add_item` (at an index or on top), `remove_item` (from this scene only), `move_item`, `set_item_visible`, `set_item_locked`, `set_item_layout` (default or for one canvas), `clear_item_layout`.
 
 Every edit returns an `Undo`. `SceneCollection::undo(record)` applies it and returns the record that redoes it. Records form a stack: applied in reverse order they restore every earlier state exactly. Every record carries the state it expects to find (for replacements, the whole current canvas, source, scene header or item; for moves, the current index), so a record used out of order is refused with `UndoConflict` instead of reverting later changes, never applied half-way. `Undo` is opaque for now; a serialisable operation type comes with the control API schema.
 
@@ -66,7 +66,8 @@ Checked after every edit on the would-be result; a refused edit leaves the colle
 6. Nesting is acyclic, at most `MAX_NESTING_DEPTH` (16) scenes deep, and no scene flattens to more than `MAX_LAYERS` (4096) layers, counting hidden items (so showing an item never fails). Diamond-shaped nesting multiplies layers, so the bound is checked on every edit; it also bounds the recursion of `flatten`.
 7. Scope (U15): a canvas shows only its own and shared scenes as program or preview. A scene scoped to canvas C may nest shared scenes and scenes of C; a shared scene may nest only shared scenes, because it can be shown anywhere.
 8. Per-canvas layouts exist only for canvases that may show the scene (a scene scoped to canvas C has overrides for C only). Filter ids are unique across the collection.
-9. Removing a canvas is refused while scenes are scoped to it; its per-canvas layouts are dropped (and restored by undo). Removing a scene removes the items that nest it and clears it from program and preview (restored by undo). Deleting a source removes all its items (restored in their original positions by undo).
+9. Removing a canvas is refused while scenes are scoped to it; its per-canvas layouts are dropped (and restored by undo). Removing a scene removes the items that nest it and clears it from program and preview (restored by undo). Deleting a source removes all its items (restored in their original positions by undo). Removing a global scene clears the canvas's `globals` (restored by undo, refused with `UndoConflict` when the canvas has another global scene by then). Removing a canvas removes its global scene with it (restored by undo); other scenes scoped to it still block the removal.
+10. Global scenes (ADR-0063): the global scene of canvas C is scoped `Canvas(C)`, is not the program or preview scene of any canvas, is nested by no item and nests no scene (`GlobalScene`). A scene the canvas may show and the global scene together flatten to at most `MAX_LAYERS` layers (`TooManyLayers`). The global scene's name is left out of the scene-name check (rule 1), since it is never listed.
 
 A property test applies random sequences of every edit kind, checks that refused edits change nothing and every reachable state flattens on every canvas, then undoes everything back to the start and redoes it to the end, comparing every intermediate state. Another test checks that each kind of record is refused when used out of order.
 
@@ -78,10 +79,11 @@ A property test applies random sequences of every edit kind, checks that refused
 - Hidden items, everything inside a hidden nested scene, and items whose effective opacity is 0 are left out.
 - A nested scene's canvas-sized coordinate space is scaled into its item's box; transforms compose, opacities multiply.
 - `flatten` refuses a scene the canvas may not show (`ScopeViolation`).
+- When the canvas has a global scene (ADR-0063), its layers follow the scene's, so global sources are drawn above every scene; their `path` starts with the global item. Flattening the global scene itself draws it once.
 - Opacity of a nested scene multiplies into each of its layers; this is not group opacity (overlapping layers inside a half-transparent nested scene show through each other). Nested content outside the nested scene's canvas area is not clipped to the item's box, and crop is not available on nested scenes. Group opacity, clipping and crop of nested scenes need render-to-texture for nested scenes, a later decision.
 - A crop that leaves no picture of the source as it is now (a window that shrank under its crop) is not drawn (gpu-compositor spec, ADR-0058). The crop is not re-derived when the picture changes size: the box stays and the picture is rescaled into it.
 
-`visible_sources(canvas, scene)` is the set of sources of visible items (not inside a hidden nested scene), whatever their opacity: a fade from 0, or a source used for its audio, still needs it running. `wanted_sources()` is the union over every canvas of its program and preview scenes: the sources the scenes want Active for video (media graph spec, Lifecycle). Projectors, outputs and audio-only use add to it in the graph binder; a source wanted by none of them is Standby.
+`visible_sources(canvas, scene)` is the set of sources of visible items (not inside a hidden nested scene), whatever their opacity: a fade from 0, or a source used for its audio, still needs it running; with a global scene on the canvas its visible sources are included (ADR-0063), so they are Active, linked to every compositor of the canvas and, sound-only ones, mixed with the program. `wanted_sources()` is the union over every canvas of its program and preview scenes: the sources the scenes want Active for video (media graph spec, Lifecycle). Projectors, outputs and audio-only use add to it in the graph binder; a source wanted by none of them is Standby.
 
 ### Graph binding (`rbs_scene::binder`)
 
@@ -101,7 +103,7 @@ Tests in `crates/rbs-scene/tests/binder.rs` cover audio sources feeding the mixe
 
 ## Errors and failure behaviour
 
-`SceneError` (non-exhaustive): unknown ids, `DuplicateName`, `DuplicateId`, `CanvasTooLarge`, `FrameRateTooHigh`, `EmptyName`, `BadTypeId`, `EmptyCanvas`, `InvalidLayout`, `InvalidSetting`, `CropOnScene`, `StyleOnScene`, `NestingCycle`, `NestingTooDeep`, `TooManyLayers`, `DuplicateFilter`, `ScopeViolation`, `IndexOutOfRange`, `CanvasHasScenes`, `UndoConflict`, `IdsExhausted`. Edits never panic.
+`SceneError` (non-exhaustive): unknown ids, `DuplicateName`, `DuplicateId`, `CanvasTooLarge`, `FrameRateTooHigh`, `EmptyName`, `BadTypeId`, `EmptyCanvas`, `InvalidLayout`, `InvalidSetting`, `CropOnScene`, `StyleOnScene`, `NestingCycle`, `NestingTooDeep`, `TooManyLayers`, `DuplicateFilter`, `ScopeViolation`, `IndexOutOfRange`, `CanvasHasScenes`, `GlobalScene` (ADR-0063), `UndoConflict`, `IdsExhausted`. Edits never panic.
 
 ## Performance requirements
 
