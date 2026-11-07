@@ -96,6 +96,69 @@ pub struct SourceInfo {
     /// (protocol 1.5, ADR-0058); absent for sound-only sources and before it ran.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub picture_size: Option<[u32; 2]>,
+    /// The item is shown (protocol 1.6, ADR-0059; absent before, meaning shown).
+    #[serde(default = "shown", skip_serializing_if = "is_shown")]
+    pub visible: bool,
+    /// The item is locked on the picture panel (protocol 1.6).
+    #[serde(default, skip_serializing_if = "is_unlocked")]
+    pub locked: bool,
+    /// The source's volume, a linear factor from 0 to 1 (protocol 1.6).
+    #[serde(default = "full_volume")]
+    pub volume: f32,
+    /// The source's sound is muted (protocol 1.6).
+    #[serde(default)]
+    pub muted: bool,
+}
+
+fn shown() -> bool {
+    true
+}
+
+#[allow(clippy::trivially_copy_pass_by_ref)] // serde passes a reference.
+fn is_shown(v: &bool) -> bool {
+    *v
+}
+
+#[allow(clippy::trivially_copy_pass_by_ref)] // serde passes a reference.
+fn is_unlocked(v: &bool) -> bool {
+    !*v
+}
+
+fn full_volume() -> f32 {
+    1.0
+}
+
+/// A scene as `scene.list` lists it (protocol 1.6, ADR-0059).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SceneInfo {
+    /// Its id in the scene collection.
+    pub id: u32,
+    /// Its name, unique in the collection.
+    pub name: String,
+}
+
+/// A source of the collection, wherever it is placed (protocol 1.6).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SourceEntry {
+    /// Its id.
+    pub id: u32,
+    /// Its name.
+    pub name: String,
+    /// Its kind; `null` for a type this server cannot add.
+    pub kind: Option<SourceKind>,
+}
+
+/// `scene.list` and `scene.changed` (protocol 1.6): the scenes the studio's canvas may
+/// show in the Scenes panel's order, the one on air, and every source of the
+/// collection by name (what `item.add` can place).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SceneList {
+    /// The scenes.
+    pub scenes: Vec<SceneInfo>,
+    /// The id of the scene on air.
+    pub program: u32,
+    /// Every source of the collection.
+    pub sources: Vec<SourceEntry>,
 }
 
 /// A picture's place on the canvas (protocol 1.3): the layout the studio's canvas

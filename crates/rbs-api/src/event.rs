@@ -6,7 +6,9 @@ use std::fmt;
 
 use serde::{Deserialize, Serialize};
 
-use crate::types::{Canvas, RecordState, Settings, SourceInfo, SourceLevels, StreamState};
+use crate::types::{
+    Canvas, RecordState, SceneList, Settings, SourceInfo, SourceLevels, StreamState,
+};
 
 /// An event topic. Subscriptions and the subscriber mask are per topic.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
@@ -29,17 +31,21 @@ pub enum Topic {
     /// The stream state (state): started, connected, reconnecting, ended.
     #[serde(rename = "stream.state")]
     StreamState,
+    /// The scenes, the one on air and the collection's sources (state, protocol 1.6).
+    #[serde(rename = "scene.changed")]
+    SceneChanged,
 }
 
 impl Topic {
     /// Every topic.
-    pub const ALL: [Topic; 6] = [
+    pub const ALL: [Topic; 7] = [
         Topic::SourceChanged,
         Topic::RecordState,
         Topic::CanvasChanged,
         Topic::SettingsChanged,
         Topic::AudioLevels,
         Topic::StreamState,
+        Topic::SceneChanged,
     ];
 
     /// Its name on the wire.
@@ -51,6 +57,7 @@ impl Topic {
             Topic::SettingsChanged => "settings.changed",
             Topic::AudioLevels => "audio.levels",
             Topic::StreamState => "stream.state",
+            Topic::SceneChanged => "scene.changed",
         }
     }
 
@@ -193,6 +200,9 @@ pub enum EventPayload {
     /// The stream state.
     #[serde(rename = "stream.state")]
     StreamState(StreamState),
+    /// The scenes (protocol 1.6).
+    #[serde(rename = "scene.changed")]
+    SceneChanged(SceneList),
 }
 
 impl EventPayload {
@@ -205,6 +215,7 @@ impl EventPayload {
             EventPayload::SettingsChanged(_) => Topic::SettingsChanged,
             EventPayload::AudioLevels(_) => Topic::AudioLevels,
             EventPayload::StreamState(_) => Topic::StreamState,
+            EventPayload::SceneChanged(_) => Topic::SceneChanged,
         }
     }
 }

@@ -4,7 +4,7 @@
 import { Theme, Tokens } from "tokens.slint";
 import { Button, IconButton, Icon, IconName, Icons, FocusRing, MenuItem as MenuRow, MenuSurface, EmptyState } from "components.slint";
 import { Appearance, AppearanceSettings, ThemeOption, ThemeTokenRow } from "appearance.slint";
-import { Studio, EntryRow, SourceData, MarkData, KindData, TargetData, MeterRow, ScaleMark, EncoderData, ProgramPanel, SourcesPanel, PropertiesPanel, MixerPanel, LiveControlsPanel, OutputsPanel, StatsPanel, RecordingSettings, StreamSettings, VideoSettings, RemoteControlSettings, GeneralSettings } from "studio.slint";
+import { Studio, EntryRow, SourceData, MarkData, KindData, TargetData, MeterRow, ScaleMark, EncoderData, ProgramPanel, ScenesPanel, SourcesPanel, PropertiesPanel, MixerPanel, LiveControlsPanel, OutputsPanel, StatsPanel, RecordingSettings, StreamSettings, VideoSettings, RemoteControlSettings, GeneralSettings } from "studio.slint";
 
 export { Theme, Tokens, Appearance, ThemeOption, ThemeTokenRow, Studio, EntryRow, SourceData, MarkData, KindData, TargetData, MeterRow, ScaleMark, EncoderData }
 
@@ -186,13 +186,18 @@ component LiveIndicator inherits Rectangle {
 // A panel's content: the panels connected to the studio, a placeholder for the others.
 component PanelContent inherits Rectangle {
     in property <TabData> tab;
-    property <bool> connected: tab.id == "rbs.program" || tab.id == "rbs.sources" || tab.id == "rbs.properties" || tab.id == "rbs.mixer" || tab.id == "rbs.preview" || tab.id == "rbs.live-controls" || tab.id == "rbs.outputs" || tab.id == "rbs.stats";
+    property <bool> connected: tab.id == "rbs.program" || tab.id == "rbs.scenes" || tab.id == "rbs.sources" || tab.id == "rbs.properties" || tab.id == "rbs.mixer" || tab.id == "rbs.preview" || tab.id == "rbs.live-controls" || tab.id == "rbs.outputs" || tab.id == "rbs.stats";
     background: Theme.surface-raised;
     if tab.id == "rbs.program" || tab.id == "rbs.preview": ProgramPanel {
         width: parent.width;
         height: parent.height;
         panel: tab.id;
         title: tab.title;
+    }
+    if tab.id == "rbs.scenes": ScenesPanel {
+        width: parent.width;
+        height: parent.height;
+        live-state: Shell.live-state;
     }
     if tab.id == "rbs.sources": SourcesPanel {
         width: parent.width;
@@ -381,6 +386,12 @@ component StackView inherits Rectangle {
                 padding-top: (bar - Tokens.size-control-sm) / 2;
                 padding-bottom: (bar - Tokens.size-control-sm) / 2;
                 // A panel's own action in its title row: Add source on Sources.
+                if active-id == "rbs.scenes" && !data.collapsed: IconButton {
+                    icon: IconName.plus;
+                    name: @tr("Add scene");
+                    enabled: Studio.state == 1;
+                    clicked => { Studio.add-scene-asked += 1; }
+                }
                 if active-id == "rbs.sources" && !data.collapsed: IconButton {
                     icon: IconName.plus;
                     name: @tr("Add source");
