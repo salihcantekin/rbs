@@ -163,17 +163,16 @@ component KeepLook inherits Rectangle {
 component TokenEditorRow inherits VerticalLayout {
     in property <ThemeTokenRow> item;
     spacing: Tokens.space-1;
-    HorizontalLayout {
-        spacing: Tokens.space-2;
-        alignment: start;
-        Text {
-            width: Tokens.size-menu-sm;
+    Text {
             text: item.kind == 1 ? item.label + " (" + item.unit + ")" : item.label;
             color: Theme.text-primary;
             vertical-alignment: center;
             wrap: word-wrap;
             accessible-role: none;
-        }
+    }
+    HorizontalLayout {
+        spacing: Tokens.space-2;
+        alignment: start;
         if item.kind == 0: ColorPicker {
             label: item.label;
             value: item.color;
@@ -189,19 +188,19 @@ component TokenEditorRow inherits VerticalLayout {
         if item.kind == 2: HorizontalLayout {
             spacing: Tokens.space-2;
             NumberField {
-                width: Tokens.size-menu-sm / 2;
+                width: Tokens.size-menu-sm / 3;
                 label: @tr("{} size", item.label);
                 value: item.size;
                 edited(v) => { Appearance.set-style(item.name, 0, v); }
             }
             NumberField {
-                width: Tokens.size-menu-sm / 2;
+                width: Tokens.size-menu-sm / 3;
                 label: @tr("{} line height", item.label);
                 value: item.line;
                 edited(v) => { Appearance.set-style(item.name, 1, v); }
             }
             NumberField {
-                width: Tokens.size-menu-sm / 2;
+                width: Tokens.size-menu-sm / 3;
                 label: @tr("{} weight", item.label);
                 value: item.weight;
                 step: 100;
@@ -315,7 +314,17 @@ export component AppearanceSettings inherits Rectangle {
                 selected(i) => { Appearance.pick(2, i); }
             }
         }
-        if !Appearance.editing: Field {
+        // The theme list on the left, the editor on the right (owner's choice, ADR-0057
+        // decision 6).
+        HorizontalLayout {
+          spacing: Tokens.space-4;
+          alignment: start;
+          VerticalLayout {
+            spacing: Tokens.space-3;
+            alignment: start;
+            min-width: Appearance.editing ? Tokens.size-menu-md : 0px;
+            horizontal-stretch: Appearance.editing ? 0 : 1;
+        Field {
             label: @tr("Themes");
             VerticalLayout {
                 accessible-role: list;
@@ -331,9 +340,10 @@ export component AppearanceSettings inherits Rectangle {
                             y: (parent.height - self.preferred-height) / 2;
                         }
                         MenuItem {
-                            width: Tokens.size-menu-md;
+                            width: Tokens.size-menu-sm;
                             text: t.user ? t.name : @tr("{} (built in)", t.name);
                             checked: Appearance.selected == i;
+                            enabled: !Appearance.editing;
                             activated => { Appearance.select(i); }
                         }
                     }
@@ -408,7 +418,9 @@ export component AppearanceSettings inherits Rectangle {
                 clicked => { Appearance.export(); }
             }
         }
-        if Appearance.editing: ThemeEditor { }
+          }
+            if Appearance.editing: ThemeEditor { horizontal-stretch: 1; }
+        }
     }
     height: form.preferred-height;
 }
