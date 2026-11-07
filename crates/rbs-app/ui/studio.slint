@@ -10,7 +10,16 @@ import { Button, Checkbox, ColorPicker, FocusRing, Icon, IconButton, IconName, I
 // Style (ADR-0053): `shape` 0 rectangle, 1 circle, 2 ellipse; `radius` for rectangles;
 // `border` on or off, its `border-width`, its colour as `#rrggbb` or `#rrggbbaa` text
 // and as a swatch (the values a border gets when turned on while it is off).
-export struct SourceData { id: int, name: string, kind: string, icon: string, status: string, ok: bool, picture: bool, visible: bool, x: float, y: float, w: float, h: float, can-up: bool, can-down: bool, shape: int, radius: float, border: bool, border-width: float, border-color: string, border-swatch: color, crop-l: int, crop-t: int, crop-r: int, crop-b: int, pic-w: int, pic-h: int, locked: bool, audio: bool, muted: bool, volume: float, volume-text: string }
+// One field of a filter in the Filters tab (ADR-0062), generated from its type's
+// schema: `kind` 0 a number (`position` from 0 to 1 on its slider, `step` one step
+// there, `value-text` the value with its unit; `min`, `max`, `snap` (the value's step),
+// `decimals` and `suffix` (the unit with its space) for the text while dragging), 1 a colour (`colour` as #rrggbb or
+// #rrggbbaa, `swatch` the same colour).
+export struct FilterFieldData { label: string, kind: int, position: float, step: float, value-text: string, min: float, max: float, snap: float, decimals: int, suffix: string, colour: string, swatch: color }
+// One filter of a source's chain: `known` false for a type this version lacks (it can
+// only be removed); `can-up` / `can-down` false at the ends of the chain.
+export struct FilterData { id: int, name: string, enabled: bool, known: bool, can-up: bool, can-down: bool, fields: [FilterFieldData] }
+export struct SourceData { id: int, name: string, kind: string, icon: string, status: string, ok: bool, picture: bool, visible: bool, x: float, y: float, w: float, h: float, can-up: bool, can-down: bool, shape: int, radius: float, border: bool, border-width: float, border-color: string, border-swatch: color, crop-l: int, crop-t: int, crop-r: int, crop-b: int, pic-w: int, pic-h: int, locked: bool, audio: bool, muted: bool, volume: float, volume-text: string, filters: [FilterData], selected-filter: int, sync-offset: int }
 // A scene in the Scenes panel (ADR-0059): `live` on air, `number` its place (1 up).
 export struct SceneData { id: int, name: string, live: bool, number: int }
 // A source of the collection for Add source's "Existing source" list.
@@ -103,6 +112,24 @@ export global Studio {
     callback set-source-muted(int /* id */, bool /* muted */);
     callback set-source-volume(int /* id */, float /* position */);
     callback rename-source(int /* id */, string /* name */);
+    // The sync offset of a source's sound in milliseconds (ADR-0062): a live control.
+    callback set-source-sync-offset(int /* id */, int /* ms */);
+    // Filters (ADR-0062). The catalogue by name, in the order Add filter lists it.
+    in property <[string]> filter-types;
+    // The Properties tab picked last: 0 Transform, 1 Filters, 2 Audio.
+    in-out property <int> properties-tab;
+    callback add-filter(int /* source */, int /* type */);
+    callback select-filter(int /* source */, int /* filter */);
+    callback remove-filter(int /* filter */);
+    callback move-filter(int /* filter */, int /* index */);
+    callback set-filter-enabled(int /* filter */, bool /* on */);
+    // A slider drag shows on the picture; release commits it as one undo step, cancel
+    // puts the stored values back.
+    callback preview-filter(int /* filter */, int /* field */, float /* position */);
+    callback commit-filter(int /* filter */);
+    callback cancel-filter(int /* filter */);
+    callback set-filter-colour(int /* filter */, int /* field */, string /* colour */);
+    callback reset-filter(int /* filter */);
     // The scenes the canvas may show, in panel order, and what Add source can place
     // again (every source of the collection that the scene does not have yet).
     in property <[SceneData]> scenes;
@@ -1495,68 +1522,11 @@ component CropFields inherits VerticalLayout {
     }
 }
 
+// The Transform tab: where the picture is on the canvas, its crop, shape and border.
 component TransformFields inherits VerticalLayout {
     in property <SourceData> data;
     spacing: Tokens.space-2;
     alignment: start;
-    // The source: its kind's icon, its name and its kind.
-    HorizontalLayout {
-        spacing: Tokens.space-2;
-        VerticalLayout {
-            alignment: center;
-            Icon { name: Icons.named(data.icon); ink: Theme.text-primary; }
-        }
-        Text {
-            horizontal-stretch: 1;
-            text: data.name;
-            color: Theme.text-primary;
-            font-size: Tokens.type-label-size;
-            font-weight: Tokens.type-title-weight;
-            vertical-alignment: center;
-            overflow: elide;
-        }
-        Text {
-            text: data.kind;
-            color: Theme.text-secondary;
-            font-size: Tokens.type-caption-size;
-            vertical-alignment: center;
-        }
-    }
-    SectionTitle { title: @tr("Name"); }
-    TextField {
-        label: @tr("Name of {}", data.name);
-        text: data.name;
-        accepted(t) => { if t != data.name { Studio.rename-source(data.id, t); } }
-    }
-    if data.audio: SectionTitle { title: @tr("Sound"); }
-    if data.audio: HorizontalLayout {
-        spacing: Tokens.space-2;
-        Slider {
-            horizontal-stretch: 1;
-            label: @tr("Volume of {}", data.name);
-            value: data.volume;
-            value-text: data.volume-text;
-            enabled: !data.muted;
-            moved(v) => { Studio.set-source-volume(data.id, v); }
-        }
-        Text {
-            min-width: Tokens.size-control-md * 1.5;
-            text: data.volume-text;
-            color: Theme.text-secondary;
-            font-size: Tokens.type-caption-size;
-            horizontal-alignment: right;
-            vertical-alignment: center;
-            accessible-role: none;
-        }
-    }
-    if data.audio: Checkbox {
-        text: @tr("Mute");
-        checked: data.muted;
-        toggled(on) => { Studio.set-source-muted(data.id, on); }
-    }
-    if !data.picture: Hint {
-        text: @tr("This source has sound only, so it has no place on the canvas.");
-    }
     if data.picture: SectionTitle { title: @tr("Position and size"); }
     if data.picture: HorizontalLayout {
         spacing: Tokens.space-2;
@@ -1604,7 +1574,375 @@ component TransformFields inherits VerticalLayout {
     if data.picture: StyleFields { data: data; }
 }
 
+// The sound of a source and its sync offset: the Audio tab (ADR-0059, ADR-0062).
+// Volume, mute and the offset are live controls, not undo steps.
+component AudioFields inherits VerticalLayout {
+    in property <SourceData> data;
+    spacing: Tokens.space-2;
+    alignment: start;
+    SectionTitle { title: @tr("Sound"); }
+    HorizontalLayout {
+        spacing: Tokens.space-2;
+        Slider {
+            horizontal-stretch: 1;
+            label: @tr("Volume of {}", data.name);
+            value: data.volume;
+            value-text: data.volume-text;
+            enabled: !data.muted;
+            moved(v) => { Studio.set-source-volume(data.id, v); }
+        }
+        Text {
+            min-width: Tokens.size-control-md * 1.5;
+            text: data.volume-text;
+            color: Theme.text-secondary;
+            font-size: Tokens.type-caption-size;
+            horizontal-alignment: right;
+            vertical-alignment: center;
+            accessible-role: none;
+        }
+    }
+    Checkbox {
+        text: @tr("Mute");
+        checked: data.muted;
+        toggled(on) => { Studio.set-source-muted(data.id, on); }
+    }
+    SectionTitle { title: @tr("Sync offset"); }
+    HorizontalLayout {
+        spacing: Tokens.space-2;
+        NumberField {
+            horizontal-stretch: 1;
+            preferred-width: 0;
+            label: @tr("Sync offset of {} in milliseconds", data.name);
+            value: data.sync-offset;
+            step: 10;
+            edited(v) => { Studio.set-source-sync-offset(data.id, round(max(-200, min(200, v)))); }
+        }
+        Text {
+            text: @tr("ms");
+            color: Theme.text-secondary;
+            font-size: Tokens.type-body-size;
+            vertical-alignment: center;
+            accessible-role: none;
+        }
+    }
+    Hint {
+        text: @tr("Delays this source's sound (positive) or plays it earlier (negative) to match the picture, from -200 to 200 ms. Playing it earlier is limited by the audio latency.");
+    }
+}
+
+// One filter in the chain: its on/off Checkbox named after it, then Move up, Move down
+// and Remove. A click on the row selects it, so its fields show below the list.
+component FilterRowView inherits Rectangle {
+    in property <SourceData> source;
+    in property <FilterData> data;
+    in property <int> index;
+    in property <bool> selected;
+    height: max(Tokens.size-control-md, row.preferred-height);
+    border-radius: Tokens.radius-sm;
+    background: selected ? Theme.accent-subtle : touch.has-hover ? Theme.surface-overlay : transparent;
+    touch := TouchArea {
+        clicked => { Studio.select-filter(source.id, data.id); }
+    }
+    row := HorizontalLayout {
+        padding-left: Tokens.space-2;
+        padding-right: Tokens.space-1;
+        spacing: Tokens.space-1;
+        if data.known: VerticalLayout {
+            horizontal-stretch: 1;
+            alignment: center;
+            Checkbox {
+                text: data.name;
+                checked: data.enabled;
+                accessible-label: @tr("Turn {} on or off", data.name);
+                toggled(on) => {
+                    Studio.select-filter(source.id, data.id);
+                    Studio.set-filter-enabled(data.id, on);
+                }
+            }
+        }
+        if !data.known: VerticalLayout {
+            horizontal-stretch: 1;
+            alignment: center;
+            Text {
+                text: data.name;
+                color: Theme.text-primary;
+                font-size: Tokens.type-body-size;
+                overflow: elide;
+            }
+            Text {
+                text: @tr("Not available in this version");
+                color: Theme.text-secondary;
+                font-size: Tokens.type-caption-size;
+            }
+        }
+        VerticalLayout {
+            alignment: center;
+            IconButton {
+                icon: IconName.chevron-up;
+                name: @tr("Move {} up", data.name);
+                enabled: data.can-up;
+                clicked => { Studio.move-filter(data.id, index - 1); }
+            }
+        }
+        VerticalLayout {
+            alignment: center;
+            IconButton {
+                icon: IconName.chevron-down;
+                name: @tr("Move {} down", data.name);
+                enabled: data.can-down;
+                clicked => { Studio.move-filter(data.id, index + 1); }
+            }
+        }
+        VerticalLayout {
+            alignment: center;
+            IconButton {
+                icon: IconName.close;
+                name: @tr("Remove {}", data.name);
+                clicked => { Studio.remove-filter(data.id); }
+            }
+        }
+    }
+}
+
+// One field of the selected filter, generated from its type's schema.
+component FilterFieldView inherits VerticalLayout {
+    in property <SourceData> source;
+    in property <FilterData> filter;
+    in property <FilterFieldData> data;
+    in property <int> index;
+    // The position while a drag is on, so the value beside the slider follows it.
+    property <float> dragged: -1;
+    property <bool> dragging: dragged >= 0;
+    // The value at a slider position, as the host stores it (on its step).
+    function text-at(p: float) -> string {
+        let raw = data.min + max(0, min(1, p)) * (data.max - data.min);
+        let v = data.snap > 0 ? max(data.min, min(data.max, data.min + round((raw - data.min) / data.snap) * data.snap)) : raw;
+        return v.to-fixed(data.decimals) + data.suffix;
+    }
+    property <string> colour-text: data.colour;
+    changed colour-text => { colour.text = colour-text; }
+    spacing: Tokens.space-1;
+    Text {
+        text: data.label;
+        color: Theme.text-secondary;
+        font-size: Tokens.type-caption-size;
+        accessible-role: none;
+    }
+    if data.kind == 0: HorizontalLayout {
+        spacing: Tokens.space-2;
+        Slider {
+            horizontal-stretch: 1;
+            label: @tr("{} of {}", data.label, filter.name);
+            value: dragging ? dragged : data.position;
+            value-text: dragging ? root.text-at(dragged) : data.value-text;
+            step: data.step;
+            enabled: filter.known;
+            moved(v) => {
+                root.dragged = v;
+                Studio.preview-filter(filter.id, index, v);
+            }
+            released => {
+                root.dragged = -1;
+                Studio.commit-filter(filter.id);
+            }
+            cancelled => {
+                root.dragged = -1;
+                Studio.cancel-filter(filter.id);
+            }
+        }
+        Text {
+            min-width: Tokens.size-control-md * 1.5;
+            text: dragging ? root.text-at(dragged) : data.value-text;
+            color: Theme.text-secondary;
+            font-size: Tokens.type-caption-size;
+            horizontal-alignment: right;
+            vertical-alignment: center;
+            accessible-role: none;
+        }
+    }
+    Shown {
+        shown: data.kind == 1;
+        HorizontalLayout {
+            spacing: Tokens.space-2;
+            ColorPicker {
+                label: @tr("Choose the {} of {}", data.label, filter.name);
+                value: data.swatch;
+                picked(c) => {
+                    if c != data.colour { Studio.set-filter-colour(filter.id, index, c); }
+                }
+            }
+            colour := TextField {
+                horizontal-stretch: 1;
+                label: @tr("{} of {}", data.label, filter.name);
+                text: data.colour;
+                accepted(t) => {
+                    if t != data.colour { Studio.set-filter-colour(filter.id, index, t); }
+                    self.text = data.colour;
+                }
+            }
+        }
+    }
+}
+
+// Add filter: a menu button listing the filter types by name. The new filter goes at
+// the end of the chain and is selected.
+component AddFilterButton inherits Rectangle {
+    in property <SourceData> source;
+    height: Tokens.size-control-md;
+    Button {
+        width: root.width;
+        height: root.height;
+        text: @tr("Add filter");
+        accessible-name: @tr("Add a filter to {}", source.name);
+        lead: IconName.plus;
+        icon: IconName.chevron-down;
+        clicked => { menu.show(); }
+    }
+    menu := PopupWindow {
+        close-policy: close-on-click-outside;
+        y: root.height;
+        width: root.width;
+        MenuSurface {
+            width: root.width;
+            accessible-role: list;
+            accessible-label: @tr("Add a filter to {}", source.name);
+            VerticalLayout {
+                padding: Tokens.space-2;
+                spacing: Tokens.space-1;
+                for t[i] in Studio.filter-types: MenuItem {
+                    text: t;
+                    autofocus: i == 0;
+                    activated => { Studio.add-filter(source.id, i); menu.close(); }
+                }
+            }
+        }
+    }
+}
+
+// The Filters tab: the chain in order, Add filter, and the selected filter's fields.
+component FiltersFields inherits VerticalLayout {
+    in property <SourceData> data;
+    spacing: Tokens.space-2;
+    alignment: start;
+    SectionTitle { title: @tr("Filters"); }
+    if data.filters.length == 0: Rectangle {
+        height: empty.preferred-height;
+        empty := EmptyState {
+            width: parent.width;
+            title: @tr("No filters");
+            message: @tr("Add filter to change colours, key out a green screen, blur or sharpen this source.");
+        }
+    }
+    for f[i] in data.filters: FilterRowView {
+        source: data;
+        data: f;
+        index: i;
+        selected: f.id == data.selected-filter;
+    }
+    AddFilterButton { source: data; }
+    for f[i] in data.filters: VerticalLayout {
+        spacing: Tokens.space-2;
+        if f.id == data.selected-filter && f.known: VerticalLayout {
+            spacing: Tokens.space-2;
+            SectionTitle { title: f.name; }
+            for field[j] in f.fields: FilterFieldView {
+                source: data;
+                filter: f;
+                data: field;
+                index: j;
+            }
+            HorizontalLayout {
+                alignment: start;
+                Button {
+                    text: @tr("Reset to defaults");
+                    kind: "secondary";
+                    accessible-name: @tr("Reset {} to defaults", f.name);
+                    clicked => { Studio.reset-filter(f.id); }
+                }
+            }
+        }
+    }
+}
+
+component SourceProperties inherits VerticalLayout {
+    in property <SourceData> data;
+    in property <int> live-state;
+    // 0 Transform, 1 Filters, 2 Audio.
+    property <int> tab: !data.picture ? 2 : Studio.properties-tab == 1 ? 1 : 0;
+    spacing: Tokens.space-3;
+    alignment: start;
+    // The source: its kind's icon, its name and its kind.
+    HorizontalLayout {
+        spacing: Tokens.space-2;
+        VerticalLayout {
+            alignment: center;
+            Icon { name: Icons.named(data.icon); ink: Theme.text-primary; }
+        }
+        Text {
+            horizontal-stretch: 1;
+            text: data.name;
+            color: Theme.text-primary;
+            font-size: Tokens.type-label-size;
+            font-weight: Tokens.type-title-weight;
+            vertical-alignment: center;
+            overflow: elide;
+        }
+        Text {
+            text: data.kind;
+            color: Theme.text-secondary;
+            font-size: Tokens.type-caption-size;
+            vertical-alignment: center;
+        }
+    }
+    TextField {
+        label: @tr("Name of {}", data.name);
+        text: data.name;
+        accepted(t) => { if t != data.name { Studio.rename-source(data.id, t); } }
+    }
+    if data.picture: SegmentedControl {
+        label: @tr("Properties of {}", data.name);
+        options: [@tr("Transform"), @tr("Filters")];
+        index: tab;
+        selected(i) => { Studio.properties-tab = i; }
+    }
+    // Filters and the sync offset belong to the source: an edit shows on air at once.
+    if live-state != 0 && tab != 0: HorizontalLayout {
+        spacing: Tokens.space-2;
+        Rectangle {
+            width: on-air.preferred-width + 2 * Tokens.space-2;
+            height: Tokens.type-caption-line;
+            border-radius: self.height / 2;
+            background: Theme.state-live;
+            on-air := Text {
+                text: @tr("On air");
+                color: Theme.text-on-live;
+                font-size: Tokens.type-caption-size;
+                font-weight: Tokens.type-label-weight;
+                vertical-alignment: center;
+                horizontal-alignment: center;
+            }
+        }
+        Text {
+            horizontal-stretch: 1;
+            text: @tr("Changes here show in the program at once.");
+            color: Theme.text-secondary;
+            font-size: Tokens.type-caption-size;
+            vertical-alignment: center;
+            wrap: word-wrap;
+        }
+    }
+    if tab == 0: TransformFields { data: data; }
+    if tab == 1: FiltersFields { data: data; }
+    if tab == 2: AudioFields { data: data; }
+}
+
+// The selected source's properties (mockup E): its icon, name and type, its name as a
+// field, then the Transform, Filters and Audio tabs (ADR-0062). A source without a
+// picture has only the Audio tab, so no tab control shows. The tab picked last applies
+// to whichever source is selected. `live-state`: 0 nothing goes out, else the program
+// is on air, and Filters and Audio say that their edits show at once.
 export component PropertiesPanel inherits Rectangle {
+    in property <int> live-state;
     background: Theme.surface-raised;
     property <bool> any: Studio.selected-source >= 0;
     if !any: EmptyState {
@@ -1621,12 +1959,16 @@ export component PropertiesPanel inherits Rectangle {
             padding: Tokens.space-3;
             alignment: start;
             for s in Studio.sources: VerticalLayout {
-                spacing: Tokens.space-4;
-                if s.id == Studio.selected-source: TransformFields { data: s; }
+                spacing: Tokens.space-3;
+                if s.id == Studio.selected-source: SourceProperties {
+                    data: s;
+                    live-state: root.live-state;
+                }
             }
         }
     }
 }
+
 
 // The recording's settings (glossary: output profile): the Recording section of the
 // Settings window (U17). They apply to the next recording and are saved at once. The

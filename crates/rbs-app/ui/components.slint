@@ -672,7 +672,10 @@ export component ColorPicker inherits Rectangle {
 // Slider: a value from 0 to 1 along a track (the volume fader). Dragging or clicking
 // the track reports every new position through `moved`; Left and Right (Up and Down)
 // move by `step`, Shift by ten steps, Home and End go to the ends. `value-text` is the
-// value in words for the label and screen readers (U16).
+// value in words for the label and screen readers (U16). `released` ends a gesture: the
+// pointer let go, or a key step (which reports `moved` then `released`). Escape during
+// a drag, or the focus leaving it, reports `cancelled` instead, and the rest of that
+// drag moves nothing.
 export component Slider inherits Rectangle {
     in property <string> label;
     in property <float> value;
@@ -680,6 +683,10 @@ export component Slider inherits Rectangle {
     in property <bool> enabled: true;
     in property <float> step: 0.02;
     callback moved(float);
+    callback released();
+    callback cancelled();
+    // A drag was cancelled; moves are ignored until the pointer is let go.
+    property <bool> dropped;
     height: Tokens.size-control-sm;
     min-width: Tokens.size-control-md * 2;
     accessible-role: slider;
@@ -689,11 +696,18 @@ export component Slider inherits Rectangle {
     accessible-value-maximum: 1;
     accessible-value-step: step;
     accessible-enabled: enabled;
-    accessible-action-increment => { root.go(root.value + root.step); }
-    accessible-action-decrement => { root.go(root.value - root.step); }
+    accessible-action-increment => { root.step-to(root.value + root.step); }
+    accessible-action-decrement => { root.step-to(root.value - root.step); }
     forward-focus: focus;
     function go(v: float) {
         if root.enabled { root.moved(max(0, min(1, v))); }
+    }
+    // A key step: one whole gesture.
+    function step-to(v: float) {
+        if root.enabled { root.go(v); root.released(); }
+    }
+    function cancel() {
+        if touch.pressed && !root.dropped { root.dropped = true; root.cancelled(); }
     }
     property <length> knob: Tokens.space-3;
     property <length> span: root.width - knob;
@@ -724,12 +738,14 @@ export component Slider inherits Rectangle {
     focus := FocusScope {
         enabled: root.enabled;
         key-pressed(e) => {
-            if e.text == Key.RightArrow || e.text == Key.UpArrow { root.go(root.value + (e.modifiers.shift ? 10 : 1) * root.step); return accept; }
-            if e.text == Key.LeftArrow || e.text == Key.DownArrow { root.go(root.value - (e.modifiers.shift ? 10 : 1) * root.step); return accept; }
-            if e.text == Key.Home { root.go(0); return accept; }
-            if e.text == Key.End { root.go(1); return accept; }
+            if e.text == Key.Escape && touch.pressed { root.cancel(); return accept; }
+            if e.text == Key.RightArrow || e.text == Key.UpArrow { root.step-to(root.value + (e.modifiers.shift ? 10 : 1) * root.step); return accept; }
+            if e.text == Key.LeftArrow || e.text == Key.DownArrow { root.step-to(root.value - (e.modifiers.shift ? 10 : 1) * root.step); return accept; }
+            if e.text == Key.Home { root.step-to(0); return accept; }
+            if e.text == Key.End { root.step-to(1); return accept; }
             reject
         }
+        changed has-focus => { if !self.has-focus { root.cancel(); } }
     }
     touch := TouchArea {
         enabled: root.enabled;
@@ -737,10 +753,17 @@ export component Slider inherits Rectangle {
             if e.kind == PointerEventKind.down { focus.focus(); }
         }
         changed pressed => {
-            if self.pressed { root.go((self.mouse-x - knob / 2) / span); }
+            if self.pressed {
+                root.dropped = false;
+                root.go((self.mouse-x - knob / 2) / span);
+            } else if root.dropped {
+                root.dropped = false;
+            } else {
+                root.released();
+            }
         }
         moved => {
-            if self.pressed { root.go((self.mouse-x - knob / 2) / span); }
+            if self.pressed && !root.dropped { root.go((self.mouse-x - knob / 2) / span); }
         }
     }
     FocusRing { show: focus.has-focus; border-radius: Tokens.radius-sm; }
