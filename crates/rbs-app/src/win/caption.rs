@@ -47,9 +47,11 @@ pub enum Event {
 /// The window buttons' actions.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Button {
+    /// Minimize.
     Minimize,
     /// Maximize, or Restore while maximized.
     Maximize,
+    /// Close (ADR-0056's close path).
     Close,
 }
 
