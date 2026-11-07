@@ -11,6 +11,7 @@
 //! - [`Current`]: which profile and collection are in use.
 //! - [`theme`]: user themes (a library of `rbs_ui::tokens::ThemeBody`) and the
 //!   [`Appearance`] choice (ADR-0057).
+//! - [`shortcuts`]: the user's changes to the default shortcuts (ADR-0060).
 //! - [`UserData`]: where each of them lives under the config directory.
 //!
 //! Application layer: used by the composition roots (`rbs-app`, `rbs-cli`); no engine,
@@ -21,6 +22,7 @@ pub mod document;
 pub mod library;
 pub mod profile;
 pub mod scenes;
+pub mod shortcuts;
 pub mod theme;
 
 use std::path::{Path, PathBuf};
@@ -43,6 +45,8 @@ pub const WORKSPACES_DIR: &str = "workspaces";
 pub const THEMES_DIR: &str = "themes";
 /// File holding the appearance choice (ADR-0057).
 pub const APPEARANCE_FILE: &str = "appearance.toml";
+/// File holding the user's shortcut changes (ADR-0060).
+pub const SHORTCUTS_FILE: &str = "shortcuts.toml";
 /// Reserved: the asset library (format to be decided).
 pub const LIBRARY_DIR: &str = "library";
 
@@ -110,6 +114,25 @@ impl UserData {
         let to = document::aside_path(&path, "reset");
         std::fs::rename(&path, &to)?;
         Ok(Some(to))
+    }
+
+    /// The user's shortcut changes; none if the file is missing, or if it cannot be
+    /// read (with the reason; the file is left as it is until the next change).
+    pub fn shortcuts(&self) -> (rbs_ui::shortcut::ShortcutsDoc, Option<DataError>) {
+        match document::read(&self.root.join(SHORTCUTS_FILE)) {
+            Ok(Some(r)) => (r.document, None),
+            Ok(None) => (Default::default(), None),
+            Err(e) => (Default::default(), Some(e)),
+        }
+    }
+
+    /// Records the user's shortcut changes.
+    pub fn set_shortcuts(
+        &self,
+        _lock: &WriterLock,
+        shortcuts: &rbs_ui::shortcut::ShortcutsDoc,
+    ) -> Result<(), DataError> {
+        document::write(&self.root.join(SHORTCUTS_FILE), shortcuts, None)
     }
 
     /// Which profile and collection are in use; unset if the file is missing or cannot

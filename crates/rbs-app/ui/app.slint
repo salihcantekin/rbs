@@ -4,9 +4,10 @@
 import { Theme, Tokens } from "tokens.slint";
 import { Button, IconButton, Icon, IconName, Icons, FocusRing, MenuItem as MenuRow, MenuSurface, EmptyState } from "components.slint";
 import { Appearance, AppearanceSettings, ThemeOption, ThemeTokenRow } from "appearance.slint";
+import { Shortcuts, ShortcutsSettings, ShortcutRow, ShortcutChip } from "shortcuts.slint";
 import { Studio, EntryRow, SourceData, MarkData, KindData, TargetData, MeterRow, ScaleMark, EncoderData, ProgramPanel, ScenesPanel, SourcesPanel, PropertiesPanel, MixerPanel, LiveControlsPanel, TransitionPanel, OutputsPanel, StatsPanel, RecordingSettings, StreamSettings, VideoSettings, RemoteControlSettings, GeneralSettings } from "studio.slint";
 
-export { Theme, Tokens, Appearance, ThemeOption, ThemeTokenRow, Studio, EntryRow, SourceData, MarkData, KindData, TargetData, MeterRow, ScaleMark, EncoderData }
+export { Theme, Tokens, Appearance, ThemeOption, ThemeTokenRow, Shortcuts, ShortcutRow, ShortcutChip, Studio, EntryRow, SourceData, MarkData, KindData, TargetData, MeterRow, ScaleMark, EncoderData }
 
 export struct TabData { id: string, title: string, known: bool, icon: string }
 export struct StackData { window: int, stack: int, x: length, y: length, w: length, h: length, tabs: [TabData], active: int, collapsed: bool, can-collapse: bool, can-hide: bool }
@@ -1307,44 +1308,59 @@ export component MainWindow inherits Window {
         }
         Menu {
             title: @tr("Scene");
-            MenuItem { title: Menus.titles[12]; enabled: Menus.enabled[12]; checkable: true; checked: Menus.checked[12]; activated => { Menus.run("canvas.studio_mode.toggle"); } }
-            MenuItem { title: Menus.titles[13]; enabled: Menus.enabled[13]; activated => { Menus.run("canvas.transition"); } }
+            Menu {
+                title: Menus.titles[12];
+                enabled: Menus.enabled[12];
+                for c in Menus.choices[3]: MenuItem { title: c.title; checkable: true; checked: c.checked; activated => { Menus.run(c.id); } }
+            }
+            MenuSeparator { }
+            MenuItem { title: Menus.titles[13]; enabled: Menus.enabled[13]; activated => { Menus.run("scene.previous"); } }
+            MenuItem { title: Menus.titles[14]; enabled: Menus.enabled[14]; activated => { Menus.run("scene.next"); } }
+            MenuSeparator { }
+            MenuItem { title: Menus.titles[15]; enabled: Menus.enabled[15]; checkable: true; checked: Menus.checked[15]; activated => { Menus.run("canvas.studio_mode.toggle"); } }
+            MenuItem { title: Menus.titles[16]; enabled: Menus.enabled[16]; activated => { Menus.run("canvas.transition"); } }
         }
         Menu {
             title: @tr("Source");
-            Menu {
-                title: Menus.titles[14];
-                enabled: Menus.enabled[14];
-                for c in Menus.choices[3]: MenuItem { title: c.title; checkable: true; checked: c.checked; activated => { Menus.run(c.id); } }
-            }
-        }
-        Menu {
-            title: @tr("Output");
-            MenuItem { title: Menus.titles[15]; enabled: Menus.enabled[15]; checkable: true; checked: Menus.checked[15]; activated => { Menus.run("stream.toggle"); } }
-            MenuItem { title: Menus.titles[16]; enabled: Menus.enabled[16]; checkable: true; checked: Menus.checked[16]; activated => { Menus.run("record.toggle"); } }
-        }
-        Menu {
-            title: @tr("Window");
             Menu {
                 title: Menus.titles[17];
                 enabled: Menus.enabled[17];
                 for c in Menus.choices[4]: MenuItem { title: c.title; checkable: true; checked: c.checked; activated => { Menus.run(c.id); } }
             }
+        }
+        Menu {
+            title: @tr("Output");
+            MenuItem { title: Menus.titles[18]; enabled: Menus.enabled[18]; checkable: true; checked: Menus.checked[18]; activated => { Menus.run("stream.toggle"); } }
+            MenuItem { title: Menus.titles[19]; enabled: Menus.enabled[19]; checkable: true; checked: Menus.checked[19]; activated => { Menus.run("record.toggle"); } }
+        }
+        Menu {
+            title: @tr("Window");
+            Menu {
+                title: Menus.titles[20];
+                enabled: Menus.enabled[20];
+                for c in Menus.choices[5]: MenuItem { title: c.title; checkable: true; checked: c.checked; activated => { Menus.run(c.id); } }
+            }
             MenuSeparator { }
-            MenuItem { title: Menus.titles[18]; enabled: Menus.enabled[18]; checkable: true; checked: Menus.checked[18]; activated => { Menus.run("ui.panel.maximize?id=rbs.preview"); } }
+            MenuItem { title: Menus.titles[21]; enabled: Menus.enabled[21]; checkable: true; checked: Menus.checked[21]; activated => { Menus.run("ui.panel.maximize?id=rbs.preview"); } }
         }
     }
     // END generated menu bar
-    // Scene edit undo and redo from any panel of this window (U4): keys a focused
-    // control does not take come up here, and a click where no control takes it
-    // focuses this scope, so the keys work there too. Text fields keep their own undo.
+    // Shortcuts (ADR-0060): keys a focused control does not take come up here, and a
+    // click where no control takes it focuses this scope, so they work from any panel
+    // of this window. Text fields keep their own editing keys. No KeyBinding here: a
+    // KeyBinding accepts its keys even when it does nothing.
     edit-keys := FocusScope {
         focus-on-tab-navigation: false;
-        KeyBinding { keys: @keys(Control + Z); activated => { Studio.undo-edit(true); } }
-        KeyBinding { keys: @keys(Control + Shift + Z); activated => { Studio.undo-edit(false); } }
-        KeyBinding { keys: @keys(Control + Y); activated => { Studio.undo-edit(false); } }
-        // Cmd+W closes the main window on macOS, as its close button does (ADR-0056).
-        KeyBinding { keys: @keys(Control + W); activated => { if Studio.platform == 0 { Shell.close-main(); } } }
+        key-pressed(e) => {
+            // Cmd+W closes the main window on macOS, as its close button does
+            // (ADR-0056); reserved there, free on Windows.
+            if Studio.platform == 0 && e.modifiers.control && !e.modifiers.shift && !e.modifiers.alt && !e.modifiers.meta && (e.text == "w" || e.text == "W") {
+                Shell.close-main();
+                return accept;
+            }
+            if Shortcuts.press(e.text, e.modifiers.control, e.modifiers.alt, e.modifiers.shift, e.modifiers.meta, e.repeat) { return accept; }
+            reject
+        }
         VerticalLayout {
             frame := FrameBar { }
             HorizontalLayout {
@@ -1499,31 +1515,40 @@ export component FloatWindow inherits Window {
         }
         Menu {
             title: @tr("Scene");
-            MenuItem { title: Menus.titles[12]; enabled: Menus.enabled[12]; checkable: true; checked: Menus.checked[12]; activated => { Menus.run("canvas.studio_mode.toggle"); } }
-            MenuItem { title: Menus.titles[13]; enabled: Menus.enabled[13]; activated => { Menus.run("canvas.transition"); } }
+            Menu {
+                title: Menus.titles[12];
+                enabled: Menus.enabled[12];
+                for c in Menus.choices[3]: MenuItem { title: c.title; checkable: true; checked: c.checked; activated => { Menus.run(c.id); } }
+            }
+            MenuSeparator { }
+            MenuItem { title: Menus.titles[13]; enabled: Menus.enabled[13]; activated => { Menus.run("scene.previous"); } }
+            MenuItem { title: Menus.titles[14]; enabled: Menus.enabled[14]; activated => { Menus.run("scene.next"); } }
+            MenuSeparator { }
+            MenuItem { title: Menus.titles[15]; enabled: Menus.enabled[15]; checkable: true; checked: Menus.checked[15]; activated => { Menus.run("canvas.studio_mode.toggle"); } }
+            MenuItem { title: Menus.titles[16]; enabled: Menus.enabled[16]; activated => { Menus.run("canvas.transition"); } }
         }
         Menu {
             title: @tr("Source");
-            Menu {
-                title: Menus.titles[14];
-                enabled: Menus.enabled[14];
-                for c in Menus.choices[3]: MenuItem { title: c.title; checkable: true; checked: c.checked; activated => { Menus.run(c.id); } }
-            }
-        }
-        Menu {
-            title: @tr("Output");
-            MenuItem { title: Menus.titles[15]; enabled: Menus.enabled[15]; checkable: true; checked: Menus.checked[15]; activated => { Menus.run("stream.toggle"); } }
-            MenuItem { title: Menus.titles[16]; enabled: Menus.enabled[16]; checkable: true; checked: Menus.checked[16]; activated => { Menus.run("record.toggle"); } }
-        }
-        Menu {
-            title: @tr("Window");
             Menu {
                 title: Menus.titles[17];
                 enabled: Menus.enabled[17];
                 for c in Menus.choices[4]: MenuItem { title: c.title; checkable: true; checked: c.checked; activated => { Menus.run(c.id); } }
             }
+        }
+        Menu {
+            title: @tr("Output");
+            MenuItem { title: Menus.titles[18]; enabled: Menus.enabled[18]; checkable: true; checked: Menus.checked[18]; activated => { Menus.run("stream.toggle"); } }
+            MenuItem { title: Menus.titles[19]; enabled: Menus.enabled[19]; checkable: true; checked: Menus.checked[19]; activated => { Menus.run("record.toggle"); } }
+        }
+        Menu {
+            title: @tr("Window");
+            Menu {
+                title: Menus.titles[20];
+                enabled: Menus.enabled[20];
+                for c in Menus.choices[5]: MenuItem { title: c.title; checkable: true; checked: c.checked; activated => { Menus.run(c.id); } }
+            }
             MenuSeparator { }
-            MenuItem { title: Menus.titles[18]; enabled: Menus.enabled[18]; checkable: true; checked: Menus.checked[18]; activated => { Menus.run("ui.panel.maximize?id=rbs.preview"); } }
+            MenuItem { title: Menus.titles[21]; enabled: Menus.enabled[21]; checkable: true; checked: Menus.checked[21]; activated => { Menus.run("ui.panel.maximize?id=rbs.preview"); } }
         }
     }
     // END generated menu bar
@@ -1531,14 +1556,13 @@ export component FloatWindow inherits Window {
     preferred-height: Tokens.size-floating-h;
     background: Theme.surface-sunken;
     default-font-size: Tokens.type-body-size;
-    // Scene edit undo and redo from any panel of this window (U4): keys a focused
-    // control does not take come up here, and a click where no control takes it
-    // focuses this scope, so the keys work there too. Text fields keep their own undo.
+    // Shortcuts (ADR-0060), as in the main window.
     edit-keys := FocusScope {
         focus-on-tab-navigation: false;
-        KeyBinding { keys: @keys(Control + Z); activated => { Studio.undo-edit(true); } }
-        KeyBinding { keys: @keys(Control + Shift + Z); activated => { Studio.undo-edit(false); } }
-        KeyBinding { keys: @keys(Control + Y); activated => { Studio.undo-edit(false); } }
+        key-pressed(e) => {
+            if Shortcuts.press(e.text, e.modifiers.control, e.modifiers.alt, e.modifiers.shift, e.modifiers.meta, e.repeat) { return accept; }
+            reject
+        }
         VerticalLayout {
             Rectangle {
                 height: Tokens.size-control-md + 2 * Tokens.space-1;
@@ -1570,7 +1594,7 @@ export component SettingsWindow inherits Window {
     background: Theme.surface-raised;
     default-font-size: Tokens.type-body-size;
     // 0 Video, 1 Recording, 2 Stream, 3 Remote control, 4 General (listed first),
-    // 5 Appearance (second).
+    // 5 Appearance (second), 6 Shortcuts (third).
     in-out property <int> section: 1;
     // Escape was pressed: the window closes, as with its close button.
     callback dismiss();
@@ -1607,6 +1631,11 @@ export component SettingsWindow inherits Window {
                         activated => { root.section = 5; }
                     }
                     MenuRow {
+                        text: @tr("Shortcuts");
+                        checked: root.section == 6;
+                        activated => { root.section = 6; }
+                    }
+                    MenuRow {
                         text: @tr("Video");
                         checked: root.section == 0;
                         activated => { root.section = 0; }
@@ -1635,7 +1664,7 @@ export component SettingsWindow inherits Window {
                     spacing: Tokens.space-3;
                     alignment: start;
                     Text {
-                        text: root.section == 0 ? @tr("Video") : root.section == 1 ? @tr("Recording") : root.section == 2 ? @tr("Stream") : root.section == 3 ? @tr("Remote control") : root.section == 5 ? @tr("Appearance") : @tr("General");
+                        text: root.section == 0 ? @tr("Video") : root.section == 1 ? @tr("Recording") : root.section == 2 ? @tr("Stream") : root.section == 3 ? @tr("Remote control") : root.section == 5 ? @tr("Appearance") : root.section == 6 ? @tr("Shortcuts") : @tr("General");
                         color: Theme.text-primary;
                         font-size: Tokens.type-heading-size;
                         font-weight: Tokens.type-heading-weight;
@@ -1647,6 +1676,7 @@ export component SettingsWindow inherits Window {
                     if root.section == 3: RemoteControlSettings { }
                     if root.section == 4: GeneralSettings { }
                     if root.section == 5: AppearanceSettings { }
+                    if root.section == 6: ShortcutsSettings { }
                 }
             }
         }

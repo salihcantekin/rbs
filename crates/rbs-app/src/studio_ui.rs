@@ -2228,6 +2228,44 @@ impl StudioUi {
             .collect()
     }
 
+    /// The id of the scene collection in use, if known.
+    pub fn current_collection(&self) -> Option<String> {
+        self.collection_rows
+            .iter()
+            .find(|r| r.current)
+            .map(|r| r.id.to_string())
+    }
+
+    /// The canvas's scenes as picker choices `(name, id, on air)`, in panel order.
+    pub fn scene_choices(&self) -> Vec<(String, String, bool)> {
+        self.scene_list.as_ref().map_or_else(Vec::new, |l| {
+            l.scenes
+                .iter()
+                .map(|s| (s.name.clone(), s.id.get().to_string(), s.id == l.program))
+                .collect()
+        })
+    }
+
+    /// The id of the scene at 1-based position `n` in panel order.
+    pub fn scene_at(&self, n: usize) -> Option<i32> {
+        let l = self.scene_list.as_ref()?;
+        let s = l.scenes.get(n.checked_sub(1)?)?;
+        Some(s.id.get() as i32)
+    }
+
+    /// The id of the scene `step` places after (or, negative, before) the one on
+    /// air, wrapping; `None` with fewer than two scenes.
+    pub fn scene_step(&self, step: isize) -> Option<i32> {
+        let l = self.scene_list.as_ref()?;
+        let len = l.scenes.len();
+        if len < 2 {
+            return None;
+        }
+        let at = l.scenes.iter().position(|s| s.id == l.program).unwrap_or(0);
+        let next = (at as isize + step).rem_euclid(len as isize) as usize;
+        Some(l.scenes.get(next)?.id.get() as i32)
+    }
+
     /// Refused, in words, while a recording or stream runs: `doing` is what would
     /// change ("switching output profiles").
     fn idle_for(&self, doing: &str) -> Result<(), String> {
