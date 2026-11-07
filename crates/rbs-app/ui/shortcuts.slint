@@ -56,6 +56,10 @@ export global Shortcuts {
     in property <[string]> key-names;
     in property <int> rec-key: -1;
     callback add(int);
+    // Double-click on a chip (row, chip): the recorder opens with that shortcut, and
+    // Save replaces it.
+    callback edit(int, int);
+    in property <bool> rec-editing;
     // A key press in the recorder: true when taken.
     callback rec-press(string, bool, bool, bool, bool) -> bool;
     callback rec-set-mod(int, bool);
@@ -85,7 +89,7 @@ component Recorder inherits Rectangle {
     border-width: Tokens.size-border;
     border-color: keys.has-focus ? Theme.border-focus : Theme.border-subtle;
     accessible-role: groupbox;
-    accessible-label: @tr("New shortcut for {}", title);
+    accessible-label: Shortcuts.rec-editing ? @tr("Edit shortcut for {}", title) : @tr("New shortcut for {}", title);
     forward-focus: keys;
     init => { keys.focus(); }
     keys := FocusScope {
@@ -147,7 +151,7 @@ component Recorder inherits Rectangle {
                 spacing: Tokens.space-2;
                 alignment: start;
                 Button {
-                    text: Shortcuts.rec-state == 2 ? @tr("Replace") : @tr("Add");
+                    text: Shortcuts.rec-state == 2 ? @tr("Replace") : Shortcuts.rec-editing ? @tr("Save") : @tr("Add");
                     kind: "primary";
                     enabled: Shortcuts.rec-state == 1 || Shortcuts.rec-state == 2 || Shortcuts.rec-state == 4;
                     clicked => { Shortcuts.rec-confirm(); }
@@ -206,6 +210,13 @@ component CommandRow inherits VerticalLayout {
                         KeyboardShortcutHint {
                             keys: chip.label;
                             tag: chip.global ? @tr("Global") : "";
+                            accessible-role: button;
+                            accessible-label: @tr("Edit {}", chip.label);
+                            accessible-action-default => { Shortcuts.edit(index, ci); }
+                            TouchArea {
+                                mouse-cursor: pointer;
+                                double-clicked => { Shortcuts.edit(index, ci); }
+                            }
                         }
                     }
                     IconButton {
