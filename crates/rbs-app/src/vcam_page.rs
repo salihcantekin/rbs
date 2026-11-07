@@ -60,72 +60,84 @@ impl Camera {
 pub fn install(g: &VirtualCamera<'_>, ctx: &Ctx) {
     let c = ctx.clone();
     g.on_toggle(move |on| {
-        c.update(move |app| {
-            app.vcam.page.note = None;
-            if on {
-                app.vcam.page.confirming = true;
-            } else {
-                app.vcam.page.confirming = false;
-                set_enabled(app, false);
-                run(app, Work::Removing);
-            }
-        });
+        entry::guard(|| {
+            c.update(move |app| {
+                app.vcam.page.note = None;
+                if on {
+                    app.vcam.page.confirming = true;
+                } else {
+                    app.vcam.page.confirming = false;
+                    set_enabled(app, false);
+                    run(app, Work::Removing);
+                }
+            });
+        })
     });
     let c = ctx.clone();
     g.on_add(move || {
-        c.update(move |app| {
-            app.vcam.page.confirming = false;
-            app.vcam.page.note = None;
-            run(app, Work::Adding);
-        });
+        entry::guard(|| {
+            c.update(move |app| {
+                app.vcam.page.confirming = false;
+                app.vcam.page.note = None;
+                run(app, Work::Adding);
+            });
+        })
     });
     let c = ctx.clone();
-    g.on_cancel(move || c.update(|app| app.vcam.page.confirming = false));
+    g.on_cancel(move || entry::guard(|| c.update(|app| app.vcam.page.confirming = false)));
     let c = ctx.clone();
     g.on_set_size(move |i| {
-        c.update(move |app| {
-            if let Some((w, h)) = usize::try_from(i).ok().and_then(|i| SIZES.get(i)) {
-                let s = &mut app.vcam.page.settings;
-                (s.width, s.height) = (*w, *h);
-                format_changed(app);
-            }
-        });
+        entry::guard(|| {
+            c.update(move |app| {
+                if let Some((w, h)) = usize::try_from(i).ok().and_then(|i| SIZES.get(i)) {
+                    let s = &mut app.vcam.page.settings;
+                    (s.width, s.height) = (*w, *h);
+                    format_changed(app);
+                }
+            });
+        })
     });
     let c = ctx.clone();
     g.on_set_rate(move |i| {
-        c.update(move |app| {
-            if let Some(r) = usize::try_from(i).ok().and_then(|i| RATES.get(i)) {
-                app.vcam.page.settings.rate = *r;
-                format_changed(app);
-            }
-        });
+        entry::guard(|| {
+            c.update(move |app| {
+                if let Some(r) = usize::try_from(i).ok().and_then(|i| RATES.get(i)) {
+                    app.vcam.page.settings.rate = *r;
+                    format_changed(app);
+                }
+            });
+        })
     });
     let c = ctx.clone();
     g.on_send(move |on| {
-        c.update(move |app| {
-            let page = &mut app.vcam.page;
-            page.note = None;
-            if on {
-                let s = page.settings;
-                page.starting = true;
-                app.studio.send(Command::StartVirtualCamera {
-                    width: s.width,
-                    height: s.height,
-                    fps: s.frame_rate(),
-                });
-            } else {
-                app.studio.send(Command::StopVirtualCamera);
-            }
-        });
+        entry::guard(|| {
+            c.update(move |app| {
+                let page = &mut app.vcam.page;
+                page.note = None;
+                if on {
+                    let s = page.settings;
+                    page.starting = true;
+                    app.studio.send(Command::StartVirtualCamera {
+                        width: s.width,
+                        height: s.height,
+                        fps: s.frame_rate(),
+                    });
+                } else {
+                    app.studio.send(Command::StopVirtualCamera);
+                }
+            });
+        })
     });
     let c = ctx.clone();
     g.on_remove_all(move || {
-        c.update(move |app| {
-            app.vcam.page.note = None;
-            app.vcam.page.confirming = false;
-            set_enabled(app, false);
-            run(app, Work::RemovingAll);
-        });
+        entry::guard(|| {
+            c.update(move |app| {
+                app.vcam.page.note = None;
+                app.vcam.page.confirming = false;
+                set_enabled(app, false);
+                run(app, Work::RemovingAll);
+            });
+        })
     });
 }
 
