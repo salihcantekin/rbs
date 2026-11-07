@@ -57,10 +57,12 @@ export global Menus {
 }
 
 export global Shell {
-    // The menu bar shows: macOS's system menu bar. Windows and Linux use the RBS menu.
-    in property <bool> native-menu-bar;
-    // Counts `ui.app_menu.open` runs: each opens the RBS menu with its search field.
-    in property <int> app-menu-asked;
+    // The menu bar shows: macOS's system menu bar. Windows and Linux use the RBS menu
+    // (ADR-0069). A binding, so every window (main and floating) gets it.
+    out property <bool> native-menu-bar: Platform.os == OperatingSystemType.macos;
+    // Counts `ui.app_menu.open` runs and F10 presses: each opens the RBS menu with its
+    // search field.
+    in-out property <int> app-menu-asked;
     // 0 not live, 1 live, 2 recording, 3 live and recording.
     in property <int> live-state;
     in property <string> live-duration;
@@ -1404,6 +1406,11 @@ export component MainWindow inherits Window {
             // (ADR-0056); reserved there, free on Windows.
             if Studio.platform == 0 && e.modifiers.control && !e.modifiers.shift && !e.modifiers.alt && !e.modifiers.meta && (e.text == "w" || e.text == "W") {
                 Shell.close-main();
+                return accept;
+            }
+            // F10 opens the RBS menu where it replaces the menu bar (Windows, Linux).
+            if !Shell.native-menu-bar && e.text == Key.F10 && !e.modifiers.control && !e.modifiers.alt && !e.modifiers.shift && !e.modifiers.meta {
+                Shell.app-menu-asked += 1;
                 return accept;
             }
             if Shortcuts.press(e.text, e.modifiers.control, e.modifiers.alt, e.modifiers.shift, e.modifiers.meta, e.repeat) { return accept; }

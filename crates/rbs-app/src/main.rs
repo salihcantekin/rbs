@@ -1371,9 +1371,10 @@ impl Ctx {
             appearance_page::reload(self, &mut app);
         }
         if std::mem::take(&mut app.open_app_menu) {
+            // Out of the background first (ADR-0056), so the window is current.
+            self.show_all(&mut app);
             let s = app.main.global::<Shell>();
             s.set_app_menu_asked(s.get_app_menu_asked().wrapping_add(1));
-            let _ = app.main.show();
         }
         if let Some(section) = app.open_settings.take() {
             // Without a section: where the open window is, else General (listed first).
@@ -1426,8 +1427,11 @@ impl Ctx {
             .collect::<Vec<_>>()
             .join("\n");
         let edge_models = edges.map(|v| ModelRc::new(VecModel::from(v)));
-        let values = menu_bar::values(&app.shown());
-        app.menus.update(values);
+        // Only macOS shows a menu bar (ADR-0069); elsewhere its values go unused (P13).
+        if cfg!(target_os = "macos") {
+            let values = menu_bar::values(&app.shown());
+            app.menus.update(values);
+        }
         let (tools, toolbar_visible, toolbar_space) = menu_bar::toolbar(&app.shown());
         set_rows(
             &app.toolbar_model,
@@ -1865,7 +1869,9 @@ fn install_app_menu(g: &AppMenus<'_>, ctx: &Ctx) {
     g.on_prepare(move || {
         let Some(main) = main.upgrade() else { return };
         let g = main.global::<AppMenus>();
-        let keys = c.keys.borrow();
+        let Ok(keys) = c.keys.try_borrow() else {
+            return;
+        };
         if let Ok(app) = c.app.try_borrow() {
             entry::guard(|| {
                 let shown = app.shown();
@@ -1890,9 +1896,8 @@ fn install_app_menu(g: &AppMenus<'_>, ctx: &Ctx) {
     });
     let c = ctx.clone();
     g.on_rows(move |category, picker, query| {
-        let keys = c.keys.borrow();
-        let rows = match c.app.try_borrow() {
-            Ok(app) => entry::guard_or(Vec::new, || {
+        let rows = match (c.app.try_borrow(), c.keys.try_borrow()) {
+            (Ok(app), Ok(keys)) => entry::guard_or(Vec::new, || {
                 app_menu::rows(
                     &app.shown(),
                     usize::try_from(category).unwrap_or(0),
@@ -1901,7 +1906,7 @@ fn install_app_menu(g: &AppMenus<'_>, ctx: &Ctx) {
                     &|id| keys.label(id),
                 )
             }),
-            Err(_) => Vec::new(),
+            _ => Vec::new(),
         };
         let rows: Vec<AppMenuRow> = rows
             .into_iter()
@@ -2650,8 +2655,6 @@ fn run(config: PathBuf, notice: Option<String>) -> Result<(), Box<dyn std::error
     install_menus(&main.global::<Menus>(), &ctx);
     install_context_menus(&main.global::<ContextMenus>(), &ctx);
     install_app_menu(&main.global::<AppMenus>(), &ctx);
-    main.global::<Shell>()
-        .set_native_menu_bar(cfg!(target_os = "macos"));
     shortcuts_page::install_press(&main.global::<Shortcuts>(), &ctx);
     install_studio(&main.global::<Studio>(), &ctx);
     CTX.with(|c| *c.borrow_mut() = Some(ctx.clone()));

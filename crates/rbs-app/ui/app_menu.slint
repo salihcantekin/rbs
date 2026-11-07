@@ -105,10 +105,10 @@ component ItemRow inherits Rectangle {
     accessible-checked: data.checked;
     accessible-enabled: data.enabled;
     accessible-action-default => { if data.enabled { activated(); } }
+    // Enabled even for a disabled row: hovering makes it current, so its reason shows.
     TouchArea {
-        enabled: data.enabled;
         changed has-hover => { if self.has-hover { root.hovered(); } }
-        clicked => { root.activated(); }
+        clicked => { if data.enabled { root.activated(); } }
     }
     HorizontalLayout {
         padding-left: Tokens.space-2;
@@ -208,6 +208,14 @@ export component AppMenu inherits PopupWindow {
     function live(i: int) -> bool {
         return shown[i].kind == 1 || shown[i].kind == 4 || shown[i].kind == 5;
     }
+    // Scrolls the item column so a row at `y` (`h` high) is in view.
+    function reveal(y: length, h: length) {
+        if y + item-list.viewport-y < 0 {
+            item-list.viewport-y = -y;
+        } else if y + h + item-list.viewport-y > item-list.height {
+            item-list.viewport-y = item-list.height - y - h;
+        }
+    }
     function move(step: int) {
         if column == 1 {
             pick-category(Math.mod(category + step + AppMenus.categories.length, AppMenus.categories.length));
@@ -245,6 +253,7 @@ export component AppMenu inherits PopupWindow {
             capture-key-pressed(e) => {
                 if e.text == Key.DownArrow { move(1); return accept; }
                 if e.text == Key.UpArrow { move(-1); return accept; }
+                if e.text == Key.Return && column == 1 { column = 0; return accept; }
                 if e.text == Key.Return { activate(current); return accept; }
                 if e.text == Key.RightArrow && column == 0 && current >= 0 && shown[current].kind == 4 { activate(current); return accept; }
                 if e.text == Key.RightArrow && column == 1 { column = 0; return accept; }
@@ -332,7 +341,7 @@ export component AppMenu inherits PopupWindow {
                         }
                     }
                     if query.text == "": Rectangle { width: Tokens.size-border; background: Theme.border-subtle; }
-                    Flickable {
+                    item-list := Flickable {
                         height: min(rows.preferred-height, Tokens.size-menu-md * 1.5);
                         content-height: rows.preferred-height;
                         rows := VerticalLayout {
@@ -372,6 +381,8 @@ export component AppMenu inherits PopupWindow {
                                     width: parent.width;
                                     data: r;
                                     current: i == root.current && root.column == 0;
+                                    // The current row stays in view as the keys move it.
+                                    changed current => { if self.current { root.reveal(parent.y, parent.height); } }
                                     hovered => { root.column = 0; root.current = i; }
                                     activated => { root.activate(i); }
                                 }
@@ -439,18 +450,16 @@ export component AppMenu inherits PopupWindow {
 
 // The RBS button at the start of the toolbar row: opens the RBS menu.
 export component AppMenuButton inherits Rectangle {
-    in property <bool> open;
     callback clicked();
     width: row.preferred-width;
     height: Tokens.size-control-md;
     border-radius: Tokens.radius-sm;
     border-width: Tokens.size-border;
     border-color: Theme.border-subtle;
-    background: open ? Theme.accent-subtle : touch.has-hover ? Theme.surface-overlay : Theme.surface-raised;
+    background: touch.has-hover ? Theme.surface-overlay : Theme.surface-raised;
     accessible-role: button;
     accessible-label: @tr("RBS menu");
     accessible-description: @tr("Every command, with search");
-    accessible-expanded: open;
     accessible-action-default => { clicked(); }
     forward-focus: focus;
     focus := FocusScope {

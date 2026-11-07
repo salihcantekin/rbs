@@ -1,6 +1,6 @@
 # ADR-0069: The RBS menu: an app menu with command search, and the menu bar only on macOS
 
-- Status: Proposed
+- Status: Accepted
 - Date: 2026-11-07
 - Deciders: Salih (owner)
 - Amends: ADR-0050 decision 4 (menus) and its rejected alternative "An app menu button instead of a menu bar"
@@ -27,16 +27,16 @@ On Windows the native menu bar follows the OS theme, not ours (ADR-0050's own co
    Picking an item runs its registry id as the menu bar does, with the same confirmations. A disabled item shows why under the list while it is the current row (ADR-0050 decision 4's reason, which native menus could not show).
 2. **Command search is the RBS menu's search field.** A new registry entry `ui.app_menu.open` ("Search commands", Help menu, icon `search`, default shortcut Ctrl/Cmd+K, client-scoped control API method of the same name) opens the menu with the field focused. A query matches every command whose menu and title hold all its words, each picker choice as "Picker: Choice" and each Settings section as "Settings: Section", in menu order, at most 40.
 3. **Section headings in `MENU_LAYOUT`.** A `#Heading` entry starts a titled section. The RBS menu shows the title; the menu bar draws it as a separator (none at a menu's start). Separators and headings that would lead, end or double are dropped.
-4. **The menu bar only on macOS.** Main and floating windows keep declaring the generated menu bar, shown only where the OS has a system menu bar (macOS, `Shell.native-menu-bar`). On Windows and Linux there is no menu bar row; the RBS menu takes its place. This replaces ADR-0050 decision 4's "On Windows and Linux only the main window draws it".
+4. **The menu bar only on macOS.** Main and floating windows keep declaring the generated menu bar, shown only where the OS has a system menu bar (macOS; `Shell.native-menu-bar` is bound to the platform in every window). On Windows and Linux there is no menu bar row; the RBS menu takes its place, and F10 (the platform's key for the menu bar) opens it. Floating windows have no RBS button; they had no menu bar on Windows and Linux before either. This replaces ADR-0050 decision 4's "On Windows and Linux only the main window draws it".
 5. **Zero cost when unused.** The menu's rows are built from the registry when it opens or its view changes (category, picker, query), never while it is closed; no state is kept besides the last category.
 6. **Preview.** The RBS menu is an in-window popup, which the preview layer already treats as a cover (ADR-0054).
 
 ## Consequences
 
-- One row less on Windows and Linux, and one look on every platform. Windows users lose Alt-key access to a native menu bar; Ctrl+K and the button (Tab-reachable, Return, Space or Down opens it) replace it.
+- One row less on Windows and Linux, and one look on every platform. Windows users lose Alt-letter access to a native menu bar; F10, Ctrl+K and the button (Tab-reachable, Return, Space or Down opens it) replace it.
 - Commands are one click deeper than in a menu bar on Windows and Linux, as ADR-0050 warned; the search field and shortcuts offset it, and core flows never depended on menus (U1).
 - macOS keeps the system menu bar and gains the RBS menu as well.
-- The control API gains the client-scoped `ui.app_menu.open` (in `UI_METHODS`).
+- The control API gains the client-scoped `ui.app_menu.open` (`control`, no parameters; in `UI_METHODS`). Run from a control surface while RBS runs in the background (ADR-0056), it brings the windows back first.
 - Tests: rows, sections, pickers, search and profile chips are unit-tested from a fake state (`rbs-app` `app_menu.rs`); the registry tests check headings and icons.
 
 ## Alternatives considered
@@ -47,4 +47,5 @@ On Windows the native menu bar follows the OS theme, not ours (ADR-0050's own co
 
 ## Review
 
-Independent review per ADR-0014: pending.
+- 2026-11-07, independent AI session (proposal, specs and code of PR #191): changes requested. Resolved: floating windows on macOS lost the menu bar (the flag is now a Slint binding on the platform, so every window has it); `ui.app_menu.open` from the background showed a stale window (now brings the windows back as the tray does); the control API text lacked scope, parameters and result (added, credited to this ADR); keyboard moves now scroll the current row into view; hovering a disabled row shows its reason; Return in the category column returns to the items; menu bar values are no longer computed where no menu bar shows (P13); the key callbacks no longer borrow shortcut state with a panicking borrow; spec drift fixed (palette wording, `NOT_IN_MENU`, the toolbar example, "contains"); F10 opens the menu on Windows and Linux; floating windows' lack of an RBS button is stated. Left as stated in the spec: the button reports no expanded state, since the popup has no close notification.
+- 2026-11-07: Accepted by the project thread under the owner's standing ADR policy, after the review above with every blocking and major finding resolved; the owner approved the design and the screenshots.

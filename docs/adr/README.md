@@ -78,4 +78,4 @@ An ADR records one decision that is hard to reverse or affects more than one cra
 | [0063](0063-hold-the-program-while-its-scene-is-edited-in-preview.md) | Hold the program while its scene is edited in preview (studio mode) | Accepted |
 | [0065](0065-global-sources-and-safe-source-removal.md) | Global sources as a global scene per canvas, and safe source removal | Accepted |
 | [0066](0066-virtual-camera.md) | Virtual camera on Windows: the program as a camera for meeting apps, off by default | Accepted |
-| [0069](0069-rbs-menu-and-command-search.md) | The RBS menu: an app menu with command search, and the menu bar only on macOS | Proposed |
+| [0069](0069-rbs-menu-and-command-search.md) | The RBS menu: an app menu with command search, and the menu bar only on macOS | Accepted |
