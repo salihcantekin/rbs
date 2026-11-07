@@ -27,6 +27,13 @@ pub trait FontCatalog {
     /// True when `family` is installed and its default face maps every character of
     /// `sample`.
     fn has_family(&mut self, family: &str, sample: &str) -> bool;
+
+    /// Every installed family a user can name, sorted by name without regard to case
+    /// (the theme editor's font menu). Families whose names start with a dot are the
+    /// OS's own and are left out.
+    fn families(&mut self) -> Vec<String> {
+        Vec::new()
+    }
 }
 
 /// The fonts of this computer, read only when a theme names a family (P13).
@@ -52,6 +59,33 @@ impl FontCatalog for SystemFonts {
         };
         sample.chars().all(|c| map.map(c).is_some_and(|g| g != 0))
     }
+
+    fn families(&mut self) -> Vec<String> {
+        let fonts = self.0.get_or_insert_with(|| {
+            fontique::Collection::new(fontique::CollectionOptions::default())
+        });
+        sorted_families(fonts.family_names())
+    }
+}
+
+/// The names a user can pick, sorted without regard to case, each once.
+fn sorted_families<'a>(names: impl Iterator<Item = &'a str>) -> Vec<String> {
+    let mut out: Vec<String> = names
+        .filter(|n| !n.is_empty() && !n.starts_with('.'))
+        .map(str::to_owned)
+        .collect();
+    out.sort_by_cached_key(|n| n.to_lowercase());
+    out.dedup_by(|a, b| a.eq_ignore_ascii_case(b));
+    out
+}
+
+/// The families of `all` whose names contain `filter`, without regard to case.
+pub fn matching_families<'a>(all: &'a [String], filter: &str) -> Vec<&'a str> {
+    let filter = filter.trim().to_lowercase();
+    all.iter()
+        .filter(|n| filter.is_empty() || n.to_lowercase().contains(&filter))
+        .map(String::as_str)
+        .collect()
 }
 
 /// The first family of `families` the catalogue has with `sample`; empty (the OS UI
@@ -214,8 +248,21 @@ mod tests {
     use rbs_user_data::{Appearance, AppearanceMode, EntryId, ThemeId, UserData};
     use slint::{ComponentHandle, Model};
 
-    use super::{FontCatalog, Look, SLOT_TOKENS, apply_tokens, choose_font, resolve, slot};
+    use super::{
+        FontCatalog, Look, SLOT_TOKENS, apply_tokens, choose_font, matching_families, resolve,
+        slot, sorted_families,
+    };
     use crate::ui::{MainWindow, Theme, Tokens};
+
+    #[test]
+    fn the_font_menu_lists_families_sorted_once_without_hidden_ones() {
+        let names = ["menlo", ".SF NS", "Inter", "Arial", "inter", ""];
+        let all = sorted_families(names.into_iter());
+        assert_eq!(all, ["Arial", "Inter", "menlo"]);
+        assert_eq!(matching_families(&all, " IN "), ["Inter"]);
+        assert_eq!(matching_families(&all, ""), ["Arial", "Inter", "menlo"]);
+        assert!(matching_families(&all, "zz").is_empty());
+    }
 
     fn window() -> MainWindow {
         i_slint_backend_testing::init_no_event_loop();
