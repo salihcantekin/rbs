@@ -110,6 +110,8 @@ export global Shell {
     callback drag-over(int /* window */, data-transfer, length, length);
     callback drag-drop(int /* window */, data-transfer, length, length);
     callback drag-leave();
+    // The maximized panel's id, or empty (ADR-0049 decision 2; not saved).
+    in property <string> maximized;
     in property <int> drop-window: -1;
     in property <Cover> drop-guide;
     // The guide in window surface coordinates while it shows: the preview layer cuts it out.
@@ -243,6 +245,10 @@ component PanelMenu inherits PopupWindow {
             padding: Tokens.space-1;
             if can-collapse: MenuRow { text: collapsed ? @tr("Expand") : @tr("Collapse"); activated => { Shell.collapse(panel, !collapsed); root.close(); } }
             if can-hide: MenuRow { text: @tr("Auto-hide to the edge"); activated => { Shell.auto-hide(panel); root.close(); } }
+            MenuRow {
+                text: Shell.maximized == panel ? @tr("Restore layout") : @tr("Maximize {}", title);
+                activated => { Menus.run("ui.panel.maximize?id=" + panel); root.close(); }
+            }
             MenuRow { autofocus: true; text: @tr("Move to left edge"); activated => { Shell.move-edge(panel, window, Edges.left); root.close(); } }
             MenuRow { text: @tr("Move to right edge"); activated => { Shell.move-edge(panel, window, Edges.right); root.close(); } }
             MenuRow { text: @tr("Move to top edge"); activated => { Shell.move-edge(panel, window, Edges.top); root.close(); } }
@@ -263,12 +269,14 @@ component Tab inherits Rectangle {
     callback activate();
     callback open-menu();
     callback close();
+    // Double-click, or Shift+Escape (Escape alone stays with dialogs and fields).
+    callback maximize();
     height: Tokens.size-control-lg;
     width: title.preferred-width + 2 * Tokens.space-2;
     accessible-role: AccessibleRole.tab;
     accessible-label: tab.title;
     accessible-item-selected: selected;
-    accessible-description: @tr("Menu key or Shift+F10 opens panel actions; Delete or Backspace closes it");
+    accessible-description: @tr("Menu key or Shift+F10 opens panel actions; Delete or Backspace closes it; Shift+Escape maximizes or restores it");
     accessible-action-default => { activate(); }
     forward-focus: focus;
     focus := FocusScope {
@@ -276,6 +284,7 @@ component Tab inherits Rectangle {
             if e.text == Key.Return || e.text == " " { activate(); return accept; }
             if e.text == Key.Menu || (e.text == Key.F10 && e.modifiers.shift) { open-menu(); return accept; }
             if e.text == Key.Delete || e.text == Key.Backspace { close(); return accept; }
+            if e.text == Key.Escape && e.modifiers.shift { maximize(); return accept; }
             reject
         }
     }
@@ -288,6 +297,7 @@ component Tab inherits Rectangle {
         data: Shell.panel-data(tab.id);
         touch := TouchArea {
             clicked => { focus.focus(); activate(); }
+            double-clicked => { maximize(); }
             pointer-event(e) => {
                 if e.kind == PointerEventKind.down && e.button == PointerEventButton.right { open-menu(); }
             }
@@ -356,6 +366,7 @@ component StackView inherits Rectangle {
                             Shell.activate-tab(data.window, data.stack, i);
                         }
                         close => { Shell.close-panel(t.id); }
+                        maximize => { Menus.run("ui.panel.maximize?id=" + t.id); }
                         open-menu => {
                             menu-panel = t.id;
                             menu-title = t.title;
@@ -374,14 +385,21 @@ component StackView inherits Rectangle {
                     icon: IconName.plus;
                     name: @tr("Add source");
                     enabled: Studio.state == 1;
-                    clicked => { Studio.add-source-asked += 1; }
+                    clicked => { Studio.picker-kind = -1; Studio.add-source-asked += 1; }
                 }
-                if data.can-hide: IconButton {
+                // Picture panels: Maximize or Restore in the title row, as in design E.
+                if (active-id == "rbs.preview" || active-id == "rbs.program") && !data.collapsed: IconButton {
+                    icon: IconName.expand;
+                    name: Shell.maximized == active-id ? @tr("Restore layout") : @tr("Maximize {}", active-title);
+                    checked: Shell.maximized == active-id;
+                    clicked => { Menus.run("ui.panel.maximize?id=" + active-id); }
+                }
+                if data.can-hide && Shell.maximized == "": IconButton {
                     icon: IconName.pin;
                     name: @tr("Auto-hide {}", active-title);
                     clicked => { Shell.auto-hide(active-id); }
                 }
-                if data.can-collapse: IconButton {
+                if data.can-collapse && Shell.maximized == "": IconButton {
                     icon: data.collapsed ? IconName.chevron-right : IconName.chevron-down;
                     name: data.collapsed ? @tr("Expand {}", active-title) : @tr("Collapse {}", active-title);
                     accessible-expandable: true;
@@ -1273,17 +1291,27 @@ export component MainWindow inherits Window {
             MenuItem { title: Menus.titles[11]; enabled: Menus.enabled[11]; activated => { Menus.run("ui.toolbar.reset"); } }
         }
         Menu {
+            title: @tr("Source");
+            Menu {
+                title: Menus.titles[12];
+                enabled: Menus.enabled[12];
+                for c in Menus.choices[3]: MenuItem { title: c.title; checkable: true; checked: c.checked; activated => { Menus.run(c.id); } }
+            }
+        }
+        Menu {
             title: @tr("Output");
-            MenuItem { title: Menus.titles[12]; enabled: Menus.enabled[12]; checkable: true; checked: Menus.checked[12]; activated => { Menus.run("stream.toggle"); } }
-            MenuItem { title: Menus.titles[13]; enabled: Menus.enabled[13]; checkable: true; checked: Menus.checked[13]; activated => { Menus.run("record.toggle"); } }
+            MenuItem { title: Menus.titles[13]; enabled: Menus.enabled[13]; checkable: true; checked: Menus.checked[13]; activated => { Menus.run("stream.toggle"); } }
+            MenuItem { title: Menus.titles[14]; enabled: Menus.enabled[14]; checkable: true; checked: Menus.checked[14]; activated => { Menus.run("record.toggle"); } }
         }
         Menu {
             title: @tr("Window");
             Menu {
-                title: Menus.titles[14];
-                enabled: Menus.enabled[14];
-                for c in Menus.choices[3]: MenuItem { title: c.title; checkable: true; checked: c.checked; activated => { Menus.run(c.id); } }
+                title: Menus.titles[15];
+                enabled: Menus.enabled[15];
+                for c in Menus.choices[4]: MenuItem { title: c.title; checkable: true; checked: c.checked; activated => { Menus.run(c.id); } }
             }
+            MenuSeparator { }
+            MenuItem { title: Menus.titles[16]; enabled: Menus.enabled[16]; checkable: true; checked: Menus.checked[16]; activated => { Menus.run("ui.panel.maximize?id=rbs.preview"); } }
         }
     }
     // END generated menu bar
@@ -1450,17 +1478,27 @@ export component FloatWindow inherits Window {
             MenuItem { title: Menus.titles[11]; enabled: Menus.enabled[11]; activated => { Menus.run("ui.toolbar.reset"); } }
         }
         Menu {
+            title: @tr("Source");
+            Menu {
+                title: Menus.titles[12];
+                enabled: Menus.enabled[12];
+                for c in Menus.choices[3]: MenuItem { title: c.title; checkable: true; checked: c.checked; activated => { Menus.run(c.id); } }
+            }
+        }
+        Menu {
             title: @tr("Output");
-            MenuItem { title: Menus.titles[12]; enabled: Menus.enabled[12]; checkable: true; checked: Menus.checked[12]; activated => { Menus.run("stream.toggle"); } }
-            MenuItem { title: Menus.titles[13]; enabled: Menus.enabled[13]; checkable: true; checked: Menus.checked[13]; activated => { Menus.run("record.toggle"); } }
+            MenuItem { title: Menus.titles[13]; enabled: Menus.enabled[13]; checkable: true; checked: Menus.checked[13]; activated => { Menus.run("stream.toggle"); } }
+            MenuItem { title: Menus.titles[14]; enabled: Menus.enabled[14]; checkable: true; checked: Menus.checked[14]; activated => { Menus.run("record.toggle"); } }
         }
         Menu {
             title: @tr("Window");
             Menu {
-                title: Menus.titles[14];
-                enabled: Menus.enabled[14];
-                for c in Menus.choices[3]: MenuItem { title: c.title; checkable: true; checked: c.checked; activated => { Menus.run(c.id); } }
+                title: Menus.titles[15];
+                enabled: Menus.enabled[15];
+                for c in Menus.choices[4]: MenuItem { title: c.title; checkable: true; checked: c.checked; activated => { Menus.run(c.id); } }
             }
+            MenuSeparator { }
+            MenuItem { title: Menus.titles[16]; enabled: Menus.enabled[16]; checkable: true; checked: Menus.checked[16]; activated => { Menus.run("ui.panel.maximize?id=rbs.preview"); } }
         }
     }
     // END generated menu bar
