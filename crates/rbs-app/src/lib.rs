@@ -14,6 +14,7 @@
 //! - [`stream_profile`]: where Go live sends the program, and how; [`stream_key`]: the
 //!   stream key in the system's credential store.
 //! - [`encoder_form`]: the encoder settings' choices, from the encoders' capabilities.
+//! - [`hotkeys`]: key presses as shortcut chords, and global shortcuts (ADR-0060).
 //! - [`remote_control`]: the control API server while remote control is on.
 //! - [`user_session`]: the output profile and scene collection in use, and their one
 //!   writer thread (ADR-0051).
@@ -24,6 +25,7 @@ pub mod background;
 pub mod canvas_profile;
 pub mod edit_history;
 pub mod encoder_form;
+pub mod hotkeys;
 #[cfg(target_os = "macos")]
 pub mod native;
 pub mod network_access;
