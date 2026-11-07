@@ -83,13 +83,16 @@ jobs:
       # Keyed by runner image and package list, so each new image starts a fresh cache.
       - if: runner.os == 'Linux' && env.RBS_CODE == 'true'
         id: apt-key
-        run: echo "key=apt-$ImageOS-$ImageVersion-${{ hashFiles('.github/scripts/apt-install.sh') }}" >> "$GITHUB_OUTPUT"
+        run: echo "key=apt-${{ runner.os }}-$ImageOS-$ImageVersion-${{ hashFiles('.github/scripts/apt-install.sh') }}" >> "$GITHUB_OUTPUT"
       - if: runner.os == 'Linux' && env.RBS_CODE == 'true'
         id: apt-cache
         uses: actions/cache/restore@v4
         with:
           path: ~/apt-archives
           key: ${{ steps.apt-key.outputs.key }}
+          # A new runner image starts from the previous image's packages; apt then
+          # downloads only what changed.
+          restore-keys: apt-${{ runner.os }}-
       - if: runner.os == 'Linux' && env.RBS_CODE == 'true'
         run: bash .github/scripts/apt-install.sh ~/apt-archives
       - if: runner.os == 'Linux' && env.RBS_CODE == 'true' && github.ref == 'refs/heads/main' && steps.apt-cache.outputs.cache-hit != 'true'
@@ -171,18 +174,22 @@ jobs:
         uses: Swatinem/rust-cache@v2
         with:
           save-if: ${{ github.ref == 'refs/heads/main' }}
-      # The same .deb cache as the test job, which is the one that saves it.
+      # The same .deb cache as the test job, which is the one that saves it; only the
+      # build's headers and libraries are installed here.
       # Keyed by runner image and package list, so each new image starts a fresh cache.
       - if: runner.os == 'Linux' && env.RBS_CODE == 'true'
         id: apt-key
-        run: echo "key=apt-$ImageOS-$ImageVersion-${{ hashFiles('.github/scripts/apt-install.sh') }}" >> "$GITHUB_OUTPUT"
+        run: echo "key=apt-${{ runner.os }}-$ImageOS-$ImageVersion-${{ hashFiles('.github/scripts/apt-install.sh') }}" >> "$GITHUB_OUTPUT"
       - if: runner.os == 'Linux' && env.RBS_CODE == 'true'
         uses: actions/cache/restore@v4
         with:
           path: ~/apt-archives
           key: ${{ steps.apt-key.outputs.key }}
+          # A new runner image starts from the previous image's packages; apt then
+          # downloads only what changed.
+          restore-keys: apt-${{ runner.os }}-
       - if: runner.os == 'Linux' && env.RBS_CODE == 'true'
-        run: bash .github/scripts/apt-install.sh ~/apt-archives
+        run: bash .github/scripts/apt-install.sh ~/apt-archives --build-only
       - if: env.RBS_CODE == 'true'
         run: cargo clippy --workspace --all-targets -- -D warnings
       - if: env.RBS_CODE == 'true'
