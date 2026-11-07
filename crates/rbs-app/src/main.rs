@@ -1864,6 +1864,21 @@ fn install_studio(g: &Studio<'_>, ctx: &Ctx) {
     on!(on_delete_source, |app, id: i32| {
         app.studio.delete_source(id);
     });
+    on!(on_remove_from_scene, |app, id: i32| {
+        app.studio.remove_from_scene(id);
+    });
+    on!(on_set_global, |app, id: i32, global: bool| {
+        app.studio.set_global(id, global);
+    });
+    on!(on_remove_global, |app, id: i32| {
+        app.studio.remove_global(id);
+    });
+    on!(on_pick_global_kind, |app, index: i32| {
+        app.studio.pick_global_kind(index);
+    });
+    on!(on_add_global, |app, option: i32| {
+        app.studio.add_global(option);
+    });
     on!(on_select_source, |app, id: i32| {
         app.studio.selected = id;
         app.studio.refresh_marks();

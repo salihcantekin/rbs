@@ -19,8 +19,8 @@ use std::thread::JoinHandle;
 use std::time::Duration;
 
 use rbs_api::request::{
-    Empty, ItemAdded, ProfileList, RecordStarted, SceneAdded, SceneSourceList, SourceAdded,
-    StreamStarted, TargetList,
+    Empty, GlobalSourceList, ItemAdded, ItemRemoved, ProfileList, RecordStarted, SceneAdded,
+    SceneSourceList, SourceAdded, StreamStarted, TargetList,
 };
 use rbs_api::types as api;
 use rbs_api::{
@@ -205,6 +205,13 @@ pub struct SourceRow {
     pub audio: SourceAudio,
     /// Its filters in chain order (ADR-0062).
     pub filters: Vec<filters::FilterRow>,
+    /// A global source's row (ADR-0063): its item is in the canvas's global scene.
+    pub global: bool,
+    /// The other scenes that place the source, by name, in the Scenes panel's order;
+    /// `in_globals` says whether it is also a global source.
+    pub also_in: Vec<String>,
+    /// The source is also a global source (on a scene row of a source that is both).
+    pub in_globals: bool,
 }
 
 impl PartialEq for SourceRow {
@@ -220,6 +227,9 @@ impl PartialEq for SourceRow {
             && self.locked == other.locked
             && self.audio == other.audio
             && self.filters == other.filters
+            && self.global == other.global
+            && self.also_in == other.also_in
+            && self.in_globals == other.in_globals
             && match (&self.meter, &other.meter) {
                 (Some(a), Some(b)) => Arc::ptr_eq(a, b),
                 (None, None) => true,
@@ -304,8 +314,32 @@ pub enum Command {
         /// What it captures.
         target: Target,
     },
-    /// Delete a source from every scene (glossary: "Delete source").
+    /// Delete a source from every scene and the global sources (glossary: "Delete
+    /// source").
     DeleteSource(SourceId),
+    /// Remove a source's item from the edited scene, or its global item (glossary:
+    /// "Remove from scene", ADR-0063); the source goes too when that was its last
+    /// placement.
+    RemoveFromScene(SourceId),
+    /// Make a source global on the studio's canvas (`true`: it leaves the canvas's
+    /// scenes, ADR-0063) or move its global item into the edited scene (`false`).
+    SetGlobal {
+        /// The source.
+        id: SourceId,
+        /// Global, else back in the edited scene.
+        global: bool,
+    },
+    /// Remove a source from the global sources (Settings › Global sources); the
+    /// source goes too when that was its last placement.
+    RemoveGlobal(SourceId),
+    /// Add a new source of `kind` capturing `target` as a global source (one undo
+    /// step).
+    AddGlobalSource {
+        /// Its kind.
+        kind: SourceKind,
+        /// What it captures.
+        target: Target,
+    },
     /// The toast's Undo after a delete: undoes the newest edit if it is a delete, else
     /// nothing (another edit came after it).
     UndoDelete,
@@ -776,6 +810,8 @@ pub struct SourceEntry {
     pub name: String,
     /// Its kind; `None` for a type this build does not know.
     pub kind: Option<SourceKind>,
+    /// A global source of the studio's canvas (ADR-0063).
+    pub global: bool,
 }
 
 /// The scenes and sources of the collection, as the Scenes panel and the source
@@ -896,8 +932,14 @@ pub enum Update {
     ScenePreview(Option<PreviewEndpoint>),
     /// What a kind can capture, in OS order.
     Targets(SourceKind, Vec<Target>),
-    /// A source was deleted; [`Command::UndoDelete`] brings it back.
-    Deleted(String),
+    /// A source was deleted, or (`from_scene`) removed from one scene;
+    /// [`Command::UndoDelete`] brings it back.
+    Deleted {
+        /// The source's name.
+        name: String,
+        /// Only its item in one scene went (Remove from scene, ADR-0063).
+        from_scene: bool,
+    },
     /// What [`Command::Undo`] and [`Command::Redo`] would apply now (`None`: nothing).
     /// Sent when it changes.
     History {
@@ -1289,6 +1331,8 @@ struct Host {
     rows: Vec<SourceRow>,
     /// The program scene's rows last published (the Mixer and `source.changed`).
     heard: Vec<SourceRow>,
+    /// The global sources last published to the Mixer (ADR-0063).
+    globals_shown: Vec<SourceRow>,
     /// Scene sources an API call places into, instead of the edited scene.
     into: Option<SceneId>,
     /// The preview scene's picture endpoint last sent to the UI.
@@ -1667,6 +1711,7 @@ fn start(
             scene,
             rows: Vec::new(),
             heard: Vec::new(),
+            globals_shown: Vec::new(),
             into: None,
             scene_preview_sent: None,
             scenes_shown: None,
@@ -1726,15 +1771,51 @@ impl Host {
             Command::DeleteSource(id) => match self.delete(id) {
                 Ok(name) => {
                     self.apply(notify);
-                    notify(Update::Deleted(name));
+                    notify(Update::Deleted {
+                        name,
+                        from_scene: false,
+                    });
                 }
                 Err(e) => notify(Update::Error(e)),
             },
+            Command::RemoveFromScene(id) => {
+                let done = self
+                    .item_of(id)
+                    .map_err(Refusal::NotFound)
+                    .map(|(_, i)| i.id)
+                    .and_then(|item| self.remove_from_scene(item));
+                match done {
+                    Ok((name, deleted)) => {
+                        self.apply(notify);
+                        notify(Update::Deleted {
+                            name,
+                            from_scene: !deleted,
+                        });
+                    }
+                    Err(e) => notify(Update::Error(e.text().to_owned())),
+                }
+            }
+            Command::SetGlobal { id, global } => {
+                let done = if global {
+                    self.make_global(id).map(|_| true)
+                } else {
+                    self.unmake_global(id, true).map(|_| true)
+                };
+                self.answer(done, notify);
+            }
+            Command::RemoveGlobal(id) => {
+                let done = self.unmake_global(id, false).map(|_| true);
+                self.answer(done, notify);
+            }
+            Command::AddGlobalSource { kind, target } => {
+                let done = self.add_global(kind, &target).map(|_| true);
+                self.answer(done, notify);
+            }
             Command::UndoDelete => {
                 if self
                     .history
                     .next_undo()
-                    .is_some_and(|s| s.kind == EditKind::Delete)
+                    .is_some_and(|s| matches!(s.kind, EditKind::Delete | EditKind::Remove))
                 {
                     self.step(true, notify);
                 }
@@ -2697,6 +2778,16 @@ impl Host {
 
     /// Adds a source of `kind` for `target` to the program scene, on top.
     fn add(&mut self, kind: SourceKind, target: &Target) -> Result<SourceId, String> {
+        // A screen or window is as large as fits with its own aspect ratio, centred
+        // (a 21:9 display is not squeezed into a 16:9 canvas); audio has no picture,
+        // the item only places it in the scene.
+        let (settings, layout) = self.new_source(kind, target)?;
+        let name = unique_name(&self.collection, &target.name);
+        self.add_named(kind, &name, settings, layout)
+    }
+
+    /// Settings and layout a new source of `kind` capturing `target` gets.
+    fn new_source(&self, kind: SourceKind, target: &Target) -> Result<(Settings, Layout), String> {
         let canvas = self
             .collection
             .canvas(self.canvas)
@@ -2715,8 +2806,6 @@ impl Host {
         let layout = match kind {
             SourceKind::Screen | SourceKind::Window => {
                 settings.insert(keys::FPS.into(), SettingValue::Int(fps));
-                // As large as fits with its own aspect ratio, centred: a 21:9 display
-                // is not squeezed into a 16:9 canvas.
                 match target.size {
                     Some((sw, sh)) => Layout::fit(w, h, sw, sh),
                     None => Layout::new([0.0, 0.0], [w as f32, h as f32]),
@@ -2729,11 +2818,273 @@ impl Host {
                 settings.insert(keys::FPS.into(), SettingValue::Int(cfps));
                 camera_layout(w, h)
             }
-            // Audio has no picture; the item only places it in the scene.
             _ => Layout::new([0.0, 0.0], [1.0, 1.0]),
         };
+        Ok((settings, layout))
+    }
+
+    /// The layout a new source of `kind` gets, with no target known.
+    fn default_layout(&self, kind: Option<SourceKind>) -> Layout {
+        let (w, h) = self
+            .collection
+            .canvas(self.canvas)
+            .map_or((1, 1), |c| (c.size.width, c.size.height));
+        match kind {
+            Some(SourceKind::Camera) => camera_layout(w, h),
+            Some(k) if k.is_audio() => Layout::new([0.0, 0.0], [1.0, 1.0]),
+            _ => Layout::new([0.0, 0.0], [w as f32, h as f32]),
+        }
+    }
+
+    // ----- global sources and safe removal (ADR-0063) -----
+
+    /// The canvas's global scene.
+    fn globals(&self) -> Option<SceneId> {
+        self.collection.globals_of(self.canvas)
+    }
+
+    /// A scene the UI and the API list: it exists and is not a global scene.
+    fn listed(&self, id: SceneId) -> bool {
+        self.collection.scene(id).is_some() && !self.collection.is_global_scene(id)
+    }
+
+    /// The global item of a source on the studio's canvas.
+    fn global_item(&self, id: SourceId) -> Option<ItemId> {
+        let scene = self.collection.scene(self.globals()?)?;
+        scene
+            .items
+            .iter()
+            .find(|i| i.content == ItemContent::Source(id))
+            .map(|i| i.id)
+    }
+
+    /// The canvas's global scene, made (with its records) when it has none yet.
+    fn ensure_globals(&mut self, records: &mut Vec<Undo>) -> Result<SceneId, Refusal> {
+        if let Some(g) = self.globals() {
+            return Ok(g);
+        }
+        let name = unique_scene_name(&self.collection, "Global sources");
+        let (id, undo) = self
+            .collection
+            .add_scene(&name, SceneScope::Canvas(self.canvas))
+            .map_err(|e| Refusal::of(&e))?;
+        records.push(undo);
+        let undo = self
+            .collection
+            .set_globals(self.canvas, Some(id))
+            .map_err(|e| Refusal::of(&e))?;
+        records.push(undo);
+        Ok(id)
+    }
+
+    /// Puts back what `records` did, newest first, after a step failed half-way.
+    fn roll_back(&mut self, records: Vec<Undo>) {
+        for r in records.into_iter().rev() {
+            let _ = self.collection.undo(r);
+        }
+    }
+
+    /// Scenes reachable from `scene` through nesting, itself included.
+    fn reachable(&self, scene: SceneId) -> std::collections::BTreeSet<SceneId> {
+        let mut seen = std::collections::BTreeSet::new();
+        let mut stack = vec![scene];
+        while let Some(s) = stack.pop() {
+            if !seen.insert(s) {
+                continue;
+            }
+            if let Some(sc) = self.collection.scene(s) {
+                stack.extend(sc.items.iter().filter_map(|i| match i.content {
+                    ItemContent::Scene(n) => Some(n),
+                    _ => None,
+                }));
+            }
+        }
+        seen
+    }
+
+    /// Remove from scene (ADR-0063 decision 7): the item goes; the source too when it
+    /// was its last placement. Returns the source's name and whether it was deleted.
+    fn remove_from_scene(&mut self, item: ItemId) -> Result<(String, bool), Refusal> {
+        let gone = || Refusal::NotFound(format!("There is no item {}.", item.get()));
+        let (_, it) = self.collection.item(item).ok_or_else(gone)?;
+        let ItemContent::Source(source) = it.content else {
+            return Err(Refusal::Invalid(
+                "Only a source can be removed from a scene here.".to_owned(),
+            ));
+        };
+        let name = self.name_of(source);
+        let last = self.collection.placements_of(source).len() <= 1;
+        let (kind, undo) = if last {
+            (EditKind::Delete, self.collection.delete_source(source))
+        } else {
+            (EditKind::Remove, self.collection.remove_item(item))
+        };
+        let undo = undo.map_err(|e| Refusal::of(&e))?;
+        self.history.record(kind, &name, 0, vec![undo]);
+        Ok((name, last))
+    }
+
+    /// Makes a source global on the studio's canvas (ADR-0063 decision 5): one item in
+    /// the global scene, its items in the canvas's scenes removed; one undo step.
+    fn make_global(&mut self, id: SourceId) -> Result<ItemId, Refusal> {
+        let source = self
+            .collection
+            .source(id)
+            .ok_or_else(|| Refusal::NotFound(format!("There is no source {}.", id.get())))?;
+        let name = source.name.clone();
+        let kind = SourceKind::of(&source.type_id);
+        if self.global_item(id).is_some() {
+            return Err(Refusal::Conflict(format!(
+                "{name} is already a global source."
+            )));
+        }
+        let globals = self.globals();
+        let leaving: Vec<(SceneId, ItemId)> = self
+            .collection
+            .placements_of(id)
+            .into_iter()
+            .filter(|(scene, _)| {
+                Some(*scene) != globals
+                    && self
+                        .collection
+                        .showable_scenes(self.canvas)
+                        .any(|s| s.id == *scene)
+            })
+            .collect();
+        // No other canvas may lose a source it shows.
+        for c in self.collection.canvases().filter(|c| c.id != self.canvas) {
+            for shown in [c.program, c.preview].into_iter().flatten() {
+                let reach = self.reachable(shown);
+                if leaving.iter().any(|(s, _)| reach.contains(s)) {
+                    return Err(Refusal::Conflict(format!(
+                        "{name} is on air on {}.",
+                        c.name
+                    )));
+                }
+            }
+        }
+        let edited = self.edited();
+        let layout = leaving
+            .iter()
+            .find(|(s, _)| *s == edited)
+            .or_else(|| leaving.first())
+            .and_then(|(_, item)| self.collection.item(*item))
+            .map(|(_, i)| *i.layout_on(self.canvas))
+            .unwrap_or_else(|| self.default_layout(kind));
+        let mut records = Vec::new();
+        let done = (|| {
+            let g = self.ensure_globals(&mut records)?;
+            for (_, item) in &leaving {
+                let undo = self
+                    .collection
+                    .remove_item(*item)
+                    .map_err(|e| Refusal::of(&e))?;
+                records.push(undo);
+            }
+            let (item, undo) = self
+                .collection
+                .add_item(g, ItemContent::Source(id), layout, None)
+                .map_err(|e| Refusal::of(&e))?;
+            records.push(undo);
+            Ok(item)
+        })();
+        match done {
+            Ok(item) => {
+                self.history.record(EditKind::Global, &name, 0, records);
+                Ok(item)
+            }
+            Err(e) => {
+                self.roll_back(records);
+                Err(e)
+            }
+        }
+    }
+
+    /// Takes a source out of the global sources: with `keep` its item moves into the
+    /// edited scene with its layout (answers the new item), else it is removed and the
+    /// source too when that was its last placement (answers `None`). One undo step.
+    fn unmake_global(&mut self, id: SourceId, keep: bool) -> Result<Option<ItemId>, Refusal> {
+        let name = self.name_of(id);
+        let Some(item) = self.global_item(id) else {
+            return Err(if self.collection.source(id).is_none() {
+                Refusal::NotFound(format!("There is no source {}.", id.get()))
+            } else {
+                Refusal::Invalid(format!("{name} is not a global source."))
+            });
+        };
+        if !keep {
+            self.remove_from_scene(item)?;
+            return Ok(None);
+        }
+        let layout = self
+            .collection
+            .item(item)
+            .map(|(_, i)| *i.layout_on(self.canvas))
+            .unwrap_or_else(|| self.default_layout(None));
+        let mut records = Vec::new();
+        let done = (|| {
+            let undo = self
+                .collection
+                .remove_item(item)
+                .map_err(|e| Refusal::of(&e))?;
+            records.push(undo);
+            let (new, undo) = self
+                .collection
+                .add_item(self.edited(), ItemContent::Source(id), layout, None)
+                .map_err(|e| Refusal::of(&e))?;
+            records.push(undo);
+            Ok(new)
+        })();
+        match done {
+            Ok(new) => {
+                self.history.record(EditKind::Global, &name, 0, records);
+                Ok(Some(new))
+            }
+            Err(e) => {
+                self.roll_back(records);
+                Err(e)
+            }
+        }
+    }
+
+    /// Adds a new source as a global source (Settings › Global sources, `source.add`
+    /// with `global`); one undo step.
+    fn add_global(&mut self, kind: SourceKind, target: &Target) -> Result<SourceId, Refusal> {
+        let (settings, layout) = self.new_source(kind, target).map_err(Refusal::Failed)?;
         let name = unique_name(&self.collection, &target.name);
-        self.add_named(kind, &name, settings, layout)
+        let mut records = Vec::new();
+        let done = (|| {
+            let g = self.ensure_globals(&mut records)?;
+            let (id, undo) = self
+                .collection
+                .add_source(&name, kind.type_id(), settings)
+                .map_err(|e| Refusal::of(&e))?;
+            records.push(undo);
+            let (_, undo) = self
+                .collection
+                .add_item(g, ItemContent::Source(id), layout, None)
+                .map_err(|e| Refusal::of(&e))?;
+            records.push(undo);
+            Ok(id)
+        })();
+        match done {
+            Ok(id) => {
+                self.history.record(EditKind::Add, &name, 0, records);
+                Ok(id)
+            }
+            Err(e) => {
+                self.roll_back(records);
+                Err(e)
+            }
+        }
+    }
+
+    /// The canvas's global sources, top first (ADR-0063).
+    fn global_rows(&self) -> Vec<SourceRow> {
+        match self.globals() {
+            Some(g) => self.rows_of(g),
+            None => Vec::new(),
+        }
     }
 
     fn add_named(
@@ -2857,13 +3208,23 @@ impl Host {
     /// The program scene's item that places `id`, and its index (0 is the bottom).
     fn item_of(&self, id: SourceId) -> Result<(usize, &SceneItem), String> {
         let gone = || "This source is not in the scene any more.".to_owned();
-        let scene = self.collection.scene(self.edited()).ok_or_else(gone)?;
-        scene
-            .items
-            .iter()
-            .enumerate()
-            .find(|(_, i)| i.content == ItemContent::Source(id))
+        let find = |scene: SceneId| {
+            self.collection.scene(scene).and_then(|s| {
+                s.items
+                    .iter()
+                    .enumerate()
+                    .find(|(_, i)| i.content == ItemContent::Source(id))
+            })
+        };
+        // A global source's item is in the canvas's global scene (ADR-0063).
+        find(self.edited())
+            .or_else(|| self.globals().and_then(find))
             .ok_or_else(gone)
+    }
+
+    /// The scene that holds an item.
+    fn scene_of(&self, item: ItemId) -> Option<SceneId> {
+        self.collection.item(item).map(|(s, _)| s)
     }
 
     /// True when the item shows a picture (a source that is not sound only).
@@ -2886,7 +3247,11 @@ impl Host {
         }
         let (_, item) = self.item_of(id)?;
         let item = item.id;
-        let (index, _) = self.item_of(to)?;
+        let (index, other) = self.item_of(to)?;
+        // Layers move within one scene: global sources among themselves.
+        if self.scene_of(item) != self.scene_of(other.id) {
+            return Ok(false);
+        }
         let undo = self
             .collection
             .move_item(item, index)
@@ -2899,7 +3264,7 @@ impl Host {
     fn move_source(&mut self, id: SourceId, up: bool) -> Result<bool, String> {
         let (index, item) = self.item_of(id)?;
         let item = item.id;
-        let Some(scene) = self.collection.scene(self.edited()) else {
+        let Some(scene) = self.scene_of(item).and_then(|s| self.collection.scene(s)) else {
             return Ok(false);
         };
         let mut others = scene
@@ -3041,6 +3406,11 @@ impl Host {
             .ok_or_else(|| Refusal::NotFound(format!("There is no source {}.", id.get())))?;
         let name = source.name.clone();
         let kind = SourceKind::of(&source.type_id);
+        if self.global_item(id).is_some() {
+            return Err(Refusal::Conflict(format!(
+                "{name} is a global source: it is already in every scene."
+            )));
+        }
         // The same box as the source has elsewhere, else the whole canvas.
         let layout = self
             .collection
@@ -3068,7 +3438,7 @@ impl Host {
     /// The scenes the canvas may show, in panel order.
     fn panel_scenes(&self) -> Vec<SceneId> {
         self.collection
-            .scenes_for(self.canvas)
+            .showable_scenes(self.canvas)
             .map(|s| s.id)
             .collect()
     }
@@ -3095,6 +3465,7 @@ impl Host {
         let name = self
             .collection
             .scene(id)
+            .filter(|_| self.listed(id))
             .ok_or_else(|| Refusal::NotFound(format!("There is no scene {}.", id.get())))?
             .name
             .clone();
@@ -3133,6 +3504,7 @@ impl Host {
         let old = self
             .collection
             .scene(id)
+            .filter(|_| self.listed(id))
             .ok_or_else(|| Refusal::NotFound(format!("There is no scene {}.", id.get())))?
             .name
             .clone();
@@ -3151,7 +3523,7 @@ impl Host {
     /// Puts a scene on air: a live action, not on the undo stack (ADR-0021).
     /// `Ok(false)` when it is on air already.
     fn switch_scene(&mut self, id: SceneId) -> Result<bool, Refusal> {
-        if self.collection.scene(id).is_none() {
+        if !self.listed(id) {
             return Err(Refusal::NotFound(format!(
                 "There is no scene {}.",
                 id.get()
@@ -3190,7 +3562,7 @@ impl Host {
             None => self.scene,
             Some(raw) => {
                 let id = SceneId::from_raw(raw);
-                if self.collection.scene(id).is_none() {
+                if !self.listed(id) {
                     return Err(ApiError::new(
                         ErrorKind::NotFound,
                         format!("no scene {raw}"),
@@ -3221,7 +3593,7 @@ impl Host {
     /// Makes a scene the preview scene (studio mode only; a live action).
     /// `Ok(false)` when it is the preview scene already.
     fn set_preview_scene(&mut self, id: SceneId) -> Result<bool, Refusal> {
-        if self.collection.scene(id).is_none() {
+        if !self.listed(id) {
             return Err(Refusal::NotFound(format!(
                 "There is no scene {}.",
                 id.get()
@@ -3303,13 +3675,14 @@ impl Host {
                 id: s.id,
                 name: s.name.clone(),
                 kind: SourceKind::of(&s.type_id),
+                global: self.global_item(s.id).is_some(),
             })
             .collect();
         sources.sort_by_key(|s| s.name.to_lowercase());
         SceneList {
             scenes: self
                 .collection
-                .scenes_for(self.canvas)
+                .showable_scenes(self.canvas)
                 .map(|s| SceneRow {
                     id: s.id,
                     name: s.name.clone(),
@@ -3584,14 +3957,21 @@ impl Host {
         }
         // `source.changed` and the Mixer: the program scene (ADR-0061 decision 8).
         let heard = self.rows_of(self.scene);
-        if heard != self.heard {
+        let globals = self.global_rows();
+        if heard != self.heard || globals != self.globals_shown {
+            if heard != self.heard {
+                let listed: Vec<api::SourceInfo> = heard.iter().map(api_source).collect();
+                self.events
+                    .changed(StateKey::topic(Topic::SourceChanged), || {
+                        EventPayload::SourceChanged(listed)
+                    });
+            }
             self.heard = heard.clone();
-            let listed: Vec<api::SourceInfo> = heard.iter().map(api_source).collect();
-            self.events
-                .changed(StateKey::topic(Topic::SourceChanged), || {
-                    EventPayload::SourceChanged(listed)
-                });
-            notify(Update::Heard(heard));
+            self.globals_shown = globals.clone();
+            // The Mixer hears the global sources with the program (ADR-0063).
+            let mut mixed = globals;
+            mixed.extend(heard);
+            notify(Update::Heard(mixed));
         }
         let rows = self.rows();
         if rows != self.rows {
@@ -3620,15 +4000,21 @@ impl Host {
     /// The edited scene's sources, top first (the program scene; in studio mode the
     /// preview scene, ADR-0061).
     fn rows(&self) -> Vec<SourceRow> {
-        self.rows_of(self.edited())
+        let mut rows = self.global_rows();
+        rows.extend(self.rows_of(self.edited()));
+        rows
     }
 
     /// A scene's sources, top first.
     fn rows_of(&self, scene: SceneId) -> Vec<SourceRow> {
         let states = self.studio.sources();
+        let globals = self.globals();
+        let global = Some(scene) == globals;
+        let panel = self.panel_scenes();
         let Some(scene) = self.collection.scene(scene) else {
             return Vec::new();
         };
+        let this = scene.id;
         scene
             .items
             .iter()
@@ -3664,6 +4050,22 @@ impl Host {
                     audio: s.audio,
                     filters: filters::rows(s),
                     status,
+                    global,
+                    also_in: {
+                        let places = self.collection.placements_of(s.id);
+                        panel
+                            .iter()
+                            .filter(|p| **p != this && places.iter().any(|(sc, _)| sc == *p))
+                            .filter_map(|p| self.collection.scene(*p).map(|x| x.name.clone()))
+                            .collect()
+                    },
+                    in_globals: !global
+                        && globals.is_some_and(|g| {
+                            self.collection
+                                .placements_of(s.id)
+                                .iter()
+                                .any(|(sc, _)| *sc == g)
+                        }),
                 }
             })
             .collect()
@@ -3863,7 +4265,18 @@ impl ApiTarget<'_> {
                 if let Some(name) = p.name.filter(|n| !n.trim().is_empty()) {
                     target.name = name;
                 }
-                let id = host.placing_into(p.scene, |h| h.add(kind, &target).map_err(failed))?;
+                let id = if p.global {
+                    // A global source (ADR-0063): in every scene, so no scene is named.
+                    if p.scene.is_some() {
+                        return Err(ApiError::new(
+                            ErrorKind::InvalidParams,
+                            "a global source is in every scene: leave out scene",
+                        ));
+                    }
+                    host.add_global(kind, &target).map_err(|e| refused(&e))?
+                } else {
+                    host.placing_into(p.scene, |h| h.add(kind, &target).map_err(failed))?
+                };
                 host.apply(notify);
                 Ok(Response::SourceAdded(SourceAdded { source: id.get() }))
             }
@@ -3877,7 +4290,10 @@ impl ApiTarget<'_> {
                 };
                 host.delete(id).map_err(failed)?;
                 host.apply(notify);
-                notify(Update::Deleted(name));
+                notify(Update::Deleted {
+                    name,
+                    from_scene: false,
+                });
                 Ok(Response::Done(Empty {}))
             }
             C::SceneList => Ok(Response::Scenes(api::Snapshot {
@@ -3908,7 +4324,7 @@ impl ApiTarget<'_> {
             }
             C::SceneSources(p) => {
                 let id = SceneId::from_raw(p.scene);
-                if host.collection.scene(id).is_none() {
+                if !host.listed(id) {
                     return Err(ApiError::new(
                         ErrorKind::NotFound,
                         format!("no scene {}", p.scene),
@@ -3925,7 +4341,7 @@ impl ApiTarget<'_> {
                     Some(raw) => {
                         let id = SceneId::from_raw(raw);
                         if host.preview().is_none() {
-                            if host.collection.scene(id).is_none() {
+                            if !host.listed(id) {
                                 return Err(refused(&Refusal::NotFound(format!(
                                     "There is no scene {raw}."
                                 ))));
@@ -4039,6 +4455,40 @@ impl ApiTarget<'_> {
                     host.publish(notify);
                 }
                 Ok(Response::Done(Empty {}))
+            }
+            C::ItemRemove(p) => {
+                let (_, deleted) = host
+                    .remove_from_scene(ItemId::from_raw(p.item))
+                    .map_err(|e| refused(&e))?;
+                host.apply(notify);
+                Ok(Response::ItemRemoved(ItemRemoved {
+                    source_deleted: deleted,
+                }))
+            }
+            C::GlobalList => Ok(Response::GlobalSources(GlobalSourceList {
+                sources: host.global_rows().iter().map(api_source).collect(),
+            })),
+            C::GlobalAdd(p) => {
+                let item = host
+                    .make_global(SourceId::from_raw(p.source))
+                    .map_err(|e| refused(&e))?;
+                host.apply(notify);
+                Ok(Response::ItemAdded(ItemAdded { item: item.get() }))
+            }
+            C::GlobalRemove(p) => {
+                let done = host
+                    .unmake_global(SourceId::from_raw(p.source), p.keep)
+                    .map_err(|e| refused(&e))?;
+                host.apply(notify);
+                Ok(match done {
+                    Some(item) => Response::ItemAdded(ItemAdded { item: item.get() }),
+                    None => Response::ItemRemoved(ItemRemoved {
+                        source_deleted: host
+                            .collection
+                            .source(SourceId::from_raw(p.source))
+                            .is_none(),
+                    }),
+                })
             }
             C::ItemAdd(p) => {
                 let item = host.placing_into(p.scene, |h| {
@@ -4570,6 +5020,7 @@ fn api_scenes(list: &SceneList) -> api::SceneList {
                 id: s.id.get(),
                 name: s.name.clone(),
                 kind: s.kind.map(api_kind),
+                global: s.global,
             })
             .collect(),
     }
@@ -4745,7 +5196,7 @@ fn shown_scene(
         }
     };
     let program = collection.canvas(canvas).and_then(|c| c.program);
-    let allowed = collection.scenes_for(canvas).next().map(|s| s.id);
+    let allowed = collection.showable_scenes(canvas).next().map(|s| s.id);
     let scene = match program.or(allowed) {
         Some(s) => s,
         None => {

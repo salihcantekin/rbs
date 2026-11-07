@@ -215,6 +215,10 @@ pub struct SourceEntry {
     pub name: String,
     /// Its kind; `null` for a type this server cannot add.
     pub kind: Option<SourceKind>,
+    /// A global source of the studio's canvas (protocol 1.10, ADR-0063): `item.add`
+    /// refuses it. Absent when false.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub global: bool,
 }
 
 /// `scene.list` and `scene.changed` (protocol 1.6): the scenes the studio's canvas may

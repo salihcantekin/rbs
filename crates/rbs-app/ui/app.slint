@@ -6,7 +6,7 @@ import { Button, IconButton, Icon, IconName, Icons, FocusRing, MenuItem as MenuR
 import { SettingsNavItem, SettingsNavGroup, SettingsHeader } from "settings.slint";
 import { Appearance, AppearanceSettings, ThemeOption, ThemeTokenRow } from "appearance.slint";
 import { Shortcuts, ShortcutsSettings, ShortcutRow, ShortcutChip } from "shortcuts.slint";
-import { Studio, EntryRow, SourceData, FilterData, FilterFieldData, MarkData, KindData, TargetData, MeterRow, ScaleMark, EncoderData, ProgramPanel, ScenesPanel, SourcesPanel, PropertiesPanel, MixerPanel, LiveControlsPanel, TransitionPanel, OutputsPanel, StatsPanel, RecordingSettings, StreamSettings, VideoSettings, RemoteControlSettings, GeneralSettings } from "studio.slint";
+import { Studio, EntryRow, SourceData, FilterData, FilterFieldData, MarkData, KindData, TargetData, MeterRow, ScaleMark, EncoderData, ProgramPanel, ScenesPanel, SourcesPanel, PropertiesPanel, MixerPanel, LiveControlsPanel, TransitionPanel, OutputsPanel, StatsPanel, RecordingSettings, StreamSettings, VideoSettings, RemoteControlSettings, GeneralSettings, GlobalSourcesSettings } from "studio.slint";
 
 export { Theme, Tokens, Appearance, ThemeOption, ThemeTokenRow, Shortcuts, ShortcutRow, ShortcutChip, Studio, EntryRow, SourceData, FilterData, FilterFieldData, MarkData, KindData, TargetData, MeterRow, ScaleMark, EncoderData }
 
@@ -1445,7 +1445,7 @@ export component MainWindow inherits Window {
     if Studio.deleted != "" && Shell.toast-kind == 0: Toast {
         x: (parent.width - self.width) / 2;
         y: parent.height - self.height - Tokens.space-6;
-        text: @tr("{} deleted.", Studio.deleted);
+        text: Studio.deleted-from-scene ? @tr("{} removed from this scene.", Studio.deleted) : @tr("{} deleted.", Studio.deleted);
         action: @tr("Undo");
         act => { Studio.undo-delete(); }
         dismiss => { Studio.dismiss-deleted(); }
@@ -1676,6 +1676,12 @@ export component SettingsWindow inherits Window {
                         activated => { root.section = 0; }
                     }
                     SettingsNavItem {
+                        text: @tr("Global sources");
+                        icon: IconName.globe;
+                        current: root.section == 7;
+                        activated => { root.section = 7; }
+                    }
+                    SettingsNavItem {
                         text: @tr("Recording");
                         icon: IconName.dot;
                         current: root.section == 1;
@@ -1705,13 +1711,14 @@ export component SettingsWindow inherits Window {
                     spacing: Tokens.space-4;
                     alignment: start;
                     SettingsHeader {
-                        title: root.section == 0 ? @tr("Video") : root.section == 1 ? @tr("Recording") : root.section == 2 ? @tr("Stream") : root.section == 3 ? @tr("Remote control") : root.section == 5 ? @tr("Appearance") : root.section == 6 ? @tr("Shortcuts") : @tr("General");
+                        title: root.section == 0 ? @tr("Video") : root.section == 1 ? @tr("Recording") : root.section == 2 ? @tr("Stream") : root.section == 3 ? @tr("Remote control") : root.section == 5 ? @tr("Appearance") : root.section == 6 ? @tr("Shortcuts") : root.section == 7 ? @tr("Global sources") : @tr("General");
                         subtitle: root.section == 0 ? @tr("The canvas every scene is drawn on.")
                             : root.section == 1 ? @tr("Where recordings are saved and how they are encoded. Changes are saved at once.")
                             : root.section == 2 ? @tr("Where Go live sends the program and how it is encoded. Changes are saved at once.")
                             : root.section == 3 ? @tr("Let Stream Deck, panels and your own scripts control RBS.")
                             : root.section == 5 ? @tr("Themes for every RBS window, and your own themes.")
                             : root.section == 6 ? @tr("Keys that run commands, in RBS and, for global shortcuts, in any app.")
+                            : root.section == 7 ? @tr("Sources heard and shown in every scene, such as your microphone.")
                             : @tr("How RBS behaves on this computer.");
                     }
                     if root.section == 0: VideoSettings { }
@@ -1721,6 +1728,7 @@ export component SettingsWindow inherits Window {
                     if root.section == 4: GeneralSettings { }
                     if root.section == 5: AppearanceSettings { }
                     if root.section == 6: ShortcutsSettings { }
+                    if root.section == 7: GlobalSourcesSettings { }
                 }
             }
         }

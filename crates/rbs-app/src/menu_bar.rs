@@ -402,6 +402,7 @@ pub fn settings_section(name: &str) -> Option<i32> {
         "general" => 4,
         "appearance" => 5,
         "shortcuts" => 6,
+        "global_sources" => 7,
         _ => return None,
     })
 }
