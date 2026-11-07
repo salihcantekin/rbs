@@ -2488,7 +2488,13 @@ fn install_studio(g: &Studio<'_>, ctx: &Ctx) {
     {
         if let Ok(app) = ctx.app.try_borrow() {
             let main = app.main.as_weak();
-            let set = entry::set_rendering_notifier(app.main.window(), move |state, _| {
+            let set = entry::set_rendering_notifier(app.main.window(), move |state, api| {
+                // Once per surface: which graphics API Slint draws with. Slint's CPU
+                // surface calls no notifier at all, so a log without this line means
+                // that fallback.
+                if matches!(state, slint::RenderingState::RenderingSetup) {
+                    studio_ui::log(&format!("ui: Slint renders with {}", graphics_api(api)));
+                }
                 if matches!(state, slint::RenderingState::BeforeRendering)
                     && let Some(main) = main.upgrade()
                 {
@@ -2499,6 +2505,18 @@ fn install_studio(g: &Studio<'_>, ctx: &Ctx) {
                 studio_ui::log(&format!("preview: no rendering notifier: {e:?}"));
             }
         }
+    }
+}
+
+/// The name of the graphics API Slint renders with, for the log.
+#[cfg(any(target_os = "macos", windows))]
+fn graphics_api(api: &slint::GraphicsAPI<'_>) -> &'static str {
+    match api {
+        slint::GraphicsAPI::NativeOpenGL { .. } => "OpenGL",
+        // Windows asks for Direct3D only (see `run`).
+        slint::GraphicsAPI::WGPU30 { .. } if cfg!(windows) => "wgpu on Direct3D 12",
+        slint::GraphicsAPI::WGPU30 { .. } => "wgpu",
+        _ => "another graphics API",
     }
 }
 
@@ -2615,10 +2633,16 @@ fn run(config: PathBuf, notice: Option<String>) -> Result<(), Box<dyn std::error
         .flatten();
     // Before the user session takes the writer lock.
     forget_deleted_themes(&config);
-    slint::BackendSelector::new()
+    let selector = slint::BackendSelector::new()
         .backend_name("winit".into())
-        .renderer_name("skia".into())
-        .select()?;
+        .renderer_name("skia".into());
+    // Skia on Direct3D 12 (ADR-0022 decision 1). Left to choose, wgpu takes the Vulkan
+    // adapter it lists first, which Skia is not built for on Windows, and Slint falls
+    // back to its CPU surface: the whole window drawn on the CPU and no rendering
+    // notifier, so the preview layer stops following popups (ADR-0054).
+    #[cfg(windows)]
+    let selector = selector.require_d3d();
+    selector.select()?;
 
     // The stream key's store: read only when a stream starts (src/stream_key.rs).
     let keys = rbs_app::stream_key::system();
