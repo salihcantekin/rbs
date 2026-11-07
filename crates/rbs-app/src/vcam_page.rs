@@ -209,14 +209,12 @@ pub fn sync_host(app: &mut App) {
     let page = &app.vcam.page;
     let s = page.settings;
     let setup = CameraSetup {
-        // Never added in RBS and not read yet: as Settings says, not added.
-        state: page
-            .state
-            .clone()
-            .or((!s.enabled && page.work.is_none()).then_some(InstallState::NotInstalled)),
+        // Not read yet stays unknown: it may have been added outside RBS.
+        state: page.state.clone(),
         width: s.width,
         height: s.height,
         fps: s.frame_rate(),
+        busy: page.work.is_some_and(|w| w != Work::Checking),
     };
     if app.vcam.told.as_ref() != Some(&setup) && app.studio.host.is_some() {
         app.studio.send(Command::SetVirtualCamera(setup.clone()));

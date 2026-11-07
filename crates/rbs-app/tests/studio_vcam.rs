@@ -272,6 +272,7 @@ fn set_up(host: &StudioHost, rx: &Receiver<Update>, state: InstallState) {
         width: 640,
         height: 360,
         fps: FrameRate::new(15, 1).unwrap(),
+        busy: false,
     }));
     host.send(Command::StopVirtualCamera);
     stopped(rx);
@@ -325,8 +326,21 @@ fn a_control_api_client_starts_and_stops_the_camera() {
     let stop = c.call0("vcam.stop");
     assert_eq!(kind(&stop), "conflict", "{stop}");
 
-    // Added: it starts with the saved format, and the app sees it as its own start.
+    // Settings is changing the camera: no start meanwhile.
     factory.install().unwrap();
+    host.send(Command::SetVirtualCamera(CameraSetup {
+        state: Some(InstallState::Installed),
+        width: 640,
+        height: 360,
+        fps: FrameRate::new(15, 1).unwrap(),
+        busy: true,
+    }));
+    host.send(Command::StopVirtualCamera);
+    stopped(&rx);
+    let busy = c.call0("vcam.start");
+    assert_eq!(kind(&busy), "conflict", "{busy}");
+
+    // Added: it starts with the saved format, and the app sees it as its own start.
     set_up(&host, &rx, InstallState::Installed);
     c.changed(|d| d["state"] == "added" && d["sending"] == false);
     let started = c.call0("vcam.start");
@@ -361,6 +375,14 @@ fn a_control_api_client_starts_and_stops_the_camera() {
     start(&host);
     assert!(camera(&rx).is_some());
     c.changed(|d| d["sending"] == true);
+    // A second start (the app's button losing a race to an API client) shows the
+    // camera that runs, with no error.
+    start(&host);
+    next(&rx, |u| match u {
+        Update::Error(e) => panic!("{e}"),
+        Update::VirtualCamera(Some(_)) => Some(()),
+        _ => None,
+    });
     drop(c);
     drop(api);
 }

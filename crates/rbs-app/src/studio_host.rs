@@ -1102,6 +1102,8 @@ pub struct CameraSetup {
     pub height: u32,
     /// The saved frame rate.
     pub fps: FrameRate,
+    /// Settings is adding, removing or reformatting the camera now: no start.
+    pub busy: bool,
 }
 
 /// The platform's virtual camera ([`HostConfig::virtual_camera`]).
@@ -2123,8 +2125,13 @@ impl Host {
                 self.publish(notify);
             }
             Command::StartVirtualCamera { width, height, fps } => {
-                let settings = VirtualCameraSettings::new(width, height, fps);
-                let _ = self.start_camera_asked(settings, notify, true);
+                // An API client started it first: show the camera that runs, no error.
+                if self.camera.is_some() {
+                    notify(Update::VirtualCamera(self.camera_status()));
+                } else {
+                    let settings = VirtualCameraSettings::new(width, height, fps);
+                    let _ = self.start_camera_asked(settings, notify, true);
+                }
             }
             Command::StopVirtualCamera => self.stop_camera(notify),
             Command::SetVirtualCamera(setup) => {
@@ -2612,6 +2619,7 @@ impl Host {
         {
             self.camera_due = Some(self.clock.now());
         }
+        self.camera_changed();
         Ok(())
     }
 
@@ -5004,7 +5012,11 @@ impl ApiTarget<'_> {
                 data: host.stream_state.clone(),
             })),
             C::VcamStatus => Ok(Response::VcamStatus(api::Snapshot {
-                seq: host.events.seq_map([Topic::VcamChanged]),
+                // The state as it is now, so the data and its `seq` match.
+                seq: {
+                    host.camera_changed();
+                    host.events.seq_map([Topic::VcamChanged])
+                },
                 data: host.api_camera(true),
             })),
             C::VcamStart => {
@@ -5022,6 +5034,12 @@ impl ApiTarget<'_> {
                 let Some(setup) = &host.camera_setup else {
                     return Err(failed("the studio is still starting; try again"));
                 };
+                if setup.busy {
+                    return Err(ApiError::new(
+                        ErrorKind::Conflict,
+                        "the virtual camera is being changed in Settings; try again",
+                    ));
+                }
                 match &setup.state {
                     Some(InstallState::NotInstalled) => {
                         return Err(failed(
