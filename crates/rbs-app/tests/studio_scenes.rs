@@ -553,7 +553,7 @@ fn with_the_program_scene_in_preview_the_program_is_held_until_the_transition() 
         return;
     };
     let one = scenes(&mut c)["program"].as_u64().unwrap();
-    add(&mut c, "screen", "Main screen");
+    let screen = add(&mut c, "screen", "Main screen");
     // Studio mode with the program scene in preview: the program is held (ADR-0063).
     ok(&c.call("canvas.set_preview", json!({"scene": one})));
     // An edit of that scene: the scene changes, the held copy is never listed.
@@ -563,6 +563,9 @@ fn with_the_program_scene_in_preview_the_program_is_held_until_the_transition() 
     assert_eq!(list["program"], one);
     assert_eq!(list["preview"], one);
     assert_eq!(sources(&mut c).len(), 2);
+    // A source the held copy shows is deleted: the copy lets it go and stays on air.
+    ok(&c.call("source.delete", json!({"source": screen})));
+    assert_eq!(sources(&mut c).len(), 1);
     // The transition puts the edits on air; the studio runs on without an error.
     ok(&c.call("canvas.transition", json!({})));
     ok(&c.call("canvas.transition", json!({})));

@@ -1294,7 +1294,7 @@ struct Host {
     /// In studio mode with the program scene also in preview: the copy of the program
     /// scene the program shows until the next transition, so edits stay off air
     /// (ADR-0063). Never saved, never listed.
-    held: Option<Scene>,
+    held: Option<Held>,
     /// The preview scene's picture endpoint last sent to the UI.
     scene_preview_sent: Option<PreviewEndpoint>,
     /// The scene list as last sent.
@@ -2140,6 +2140,8 @@ impl Host {
             std::mem::replace(&mut self.canvas, canvas),
             std::mem::replace(&mut self.scene, scene),
         );
+        // A copy of the old collection's program never goes on air in the new one.
+        let old_held = self.held.take();
         let _ = self.studio.shutdown();
         let result = match self.restart() {
             Ok(()) => {
@@ -2150,6 +2152,7 @@ impl Host {
             }
             Err(why) => {
                 (self.collection, self.canvas, self.scene) = old;
+                self.held = old_held;
                 if let Err(again) = self.restart() {
                     self.dead = Some(again);
                 }
@@ -2301,6 +2304,16 @@ impl Host {
             );
             let _ = self.collection.set_item_layout(id, None, moved);
         }
+        let held_before = self.held.clone();
+        if let Some(held) = &mut self.held {
+            for item in &mut held.scene.items {
+                item.layout = rescale_layout(
+                    &item.layout,
+                    (old_size.width, old_size.height),
+                    (size.width, size.height),
+                );
+            }
+        }
         self.restarting = true;
         let _ = self.studio.shutdown();
         let restarted = self.restart();
@@ -2314,6 +2327,7 @@ impl Host {
             }
             Err(why) => {
                 self.collection = before;
+                self.held = held_before;
                 self.restarting = true;
                 let again = self.restart();
                 self.restarting = false;
@@ -2400,11 +2414,7 @@ impl Host {
         settings.preview = self.preview_surfaces.map(|n| preview_desc(canvas.size, n));
         settings.scene_preview = SCENE_PICTURE;
         settings.audio_offsets = filters::audio_offsets(&self.collection);
-        self.sync_held();
-        let run = self
-            .held
-            .as_ref()
-            .and_then(|h| run_copy(&self.collection, self.canvas, h));
+        let run = self.run_collection();
         let engine = (self.engine)();
         let clock = engine.clock();
         let studio = Studio::start(
@@ -3276,11 +3286,25 @@ impl Host {
     /// it go otherwise. A copy is taken only when the hold starts, so later edits to
     /// the scene reach the program only through a transition.
     fn sync_held(&mut self) {
-        if self.preview() != Some(self.scene) {
-            self.held = None;
-        } else if self.held.is_none() {
-            self.held = held_copy(&self.collection, self.canvas);
+        self.held = next_held(self.held.take(), &self.collection, self.canvas);
+    }
+
+    /// The collection the studio runs: the user's own, or with the program held
+    /// (ADR-0063) a run collection with the copy on air. A copy that no longer fits
+    /// (a duplicate name, say) is taken again from the scene as it is now; if even a
+    /// fresh copy does not fit, nothing is held.
+    fn run_collection(&mut self) -> Option<SceneCollection> {
+        self.sync_held();
+        let held = self.held.as_ref()?;
+        if let Some(run) = run_copy(&self.collection, self.canvas, held) {
+            return Some(run);
         }
+        self.held = held_copy(&self.collection, self.canvas);
+        let run = run_copy(&self.collection, self.canvas, self.held.as_ref()?);
+        if run.is_none() {
+            self.held = None;
+        }
+        run
     }
 
     /// Keeps a program scene on the canvas and [`Host::scene`] on it: after an undo or
@@ -3577,11 +3601,7 @@ impl Host {
     }
 
     fn apply(&mut self, notify: &dyn Fn(Update)) {
-        self.sync_held();
-        let run = self
-            .held
-            .as_ref()
-            .and_then(|h| run_copy(&self.collection, self.canvas, h));
+        let run = self.run_collection();
         let running = run.as_ref().unwrap_or(&self.collection);
         match self.studio.update(running, &self.adapters.sources) {
             Ok(u) => {
@@ -4795,14 +4815,24 @@ fn shown_scene(
 }
 
 /// Ids of the held program copy (ADR-0063): far above any id a collection issues, so
-/// they never meet one, and the same for every hold, so the program's compositor and
-/// layers keep their nodes from one hold to the next.
+/// they never meet one, and the same for every hold of the same scene, so the program's
+/// compositor and layers keep their nodes from one hold to the next. A copy's item has
+/// the id of the item it copies plus this.
 const HELD_IDS: u32 = 0xF000_0000;
+
+/// The program as it was when its scene went into preview too (ADR-0063).
+#[derive(Clone, Debug)]
+struct Held {
+    /// The program scene the copy was taken from.
+    from: SceneId,
+    /// The copy, with ids from [`HELD_IDS`].
+    scene: Scene,
+}
 
 /// A copy of the canvas's program scene, for the program to show while the same scene
 /// is edited in preview; `None` unless the canvas is in studio mode with its program
 /// scene in preview.
-fn held_copy(collection: &SceneCollection, canvas: CanvasId) -> Option<Scene> {
+fn held_copy(collection: &SceneCollection, canvas: CanvasId) -> Option<Held> {
     let c = collection.canvas(canvas)?;
     let program = c.program?;
     if c.preview != Some(program) {
@@ -4811,34 +4841,59 @@ fn held_copy(collection: &SceneCollection, canvas: CanvasId) -> Option<Scene> {
     let scene = collection.scene(program)?;
     let mut held = scene.clone();
     held.id = SceneId::from_raw(HELD_IDS);
-    held.name = format!("{} (held {HELD_IDS:x})", scene.name);
-    for (n, item) in held.items.iter_mut().enumerate() {
-        let n = u32::try_from(n).ok()?;
-        item.id = ItemId::from_raw(HELD_IDS.checked_add(1)?.checked_add(n)?);
+    // Unique in the run collection; read only if a failure names the scene.
+    held.name = format!("{} (on air)", scene.name);
+    for item in &mut held.items {
+        item.id = ItemId::from_raw(HELD_IDS.checked_add(item.id.get())?);
     }
-    Some(held)
+    Some(Held {
+        from: program,
+        scene: held,
+    })
+}
+
+/// What is held after a change (ADR-0063): nothing unless the program scene is also
+/// the preview scene; the copy kept while it is a copy of that scene, less the items
+/// whose source or nested scene is gone from the collection; a new copy otherwise
+/// (the hold starts, or an undo or redo put another scene on air).
+fn next_held(held: Option<Held>, collection: &SceneCollection, canvas: CanvasId) -> Option<Held> {
+    let c = collection.canvas(canvas)?;
+    let program = c.program?;
+    if c.preview != Some(program) {
+        return None;
+    }
+    match held {
+        Some(mut h) if h.from == program => {
+            h.scene.items.retain(|i| match i.content {
+                ItemContent::Source(id) => collection.source(id).is_some(),
+                ItemContent::Scene(id) => collection.scene(id).is_some(),
+                _ => true,
+            });
+            Some(h)
+        }
+        _ => held_copy(collection, canvas),
+    }
 }
 
 /// The collection the studio runs while the program is held: `collection` with the
-/// held copy added and on air on `canvas`. `None` (the studio then runs `collection`
-/// itself) when the copy does not fit, which a valid collection never causes.
+/// held copy added and on air on `canvas`. `None` when the copy does not fit.
 fn run_copy(
     collection: &SceneCollection,
     canvas: CanvasId,
-    held: &Scene,
+    held: &Held,
 ) -> Option<SceneCollection> {
     let canvases = collection
         .canvases()
         .map(|c| {
             let mut c = c.clone();
             if c.id == canvas {
-                c.program = Some(held.id);
+                c.program = Some(held.scene.id);
             }
             c
         })
         .collect();
     let mut scenes: Vec<Scene> = collection.scenes().cloned().collect();
-    scenes.push(held.clone());
+    scenes.push(held.scene.clone());
     SceneCollection::from_parts(
         canvases,
         collection.sources().cloned().collect(),
@@ -4852,8 +4907,10 @@ fn run_copy(
 mod tests {
     use super::*;
 
-    #[test]
-    fn a_held_program_keeps_the_scene_as_it_was_and_is_never_listed() {
+    /// A collection with a program scene holding one audio item, in studio mode with
+    /// the program scene in preview too.
+    #[allow(clippy::unwrap_used)] // Tests fail by panicking.
+    fn held_collection() -> (SceneCollection, CanvasId, SceneId, SourceId) {
         let d = HostConfig::desktop();
         let mut col = SceneCollection::new();
         let (canvas, scene) = shown_scene(&mut col, d.size, d.fps).unwrap();
@@ -4867,7 +4924,16 @@ mod tests {
             None,
         )
         .unwrap();
+        col.set_preview(canvas, Some(scene)).unwrap();
+        (col, canvas, scene, src)
+    }
+
+    #[test]
+    #[allow(clippy::unwrap_used)] // Tests fail by panicking.
+    fn a_held_program_keeps_the_scene_as_it_was_and_is_never_listed() {
+        let (mut col, canvas, scene, _) = held_collection();
         // Outside studio mode, or with another scene in preview: nothing is held.
+        col.set_preview(canvas, None).unwrap();
         assert!(held_copy(&col, canvas).is_none());
         let (other, _) = col.add_scene("Other", SceneScope::Shared).unwrap();
         col.set_preview(canvas, Some(other)).unwrap();
@@ -4876,13 +4942,20 @@ mod tests {
         // The program scene in preview too: the program shows a copy of it.
         col.set_preview(canvas, Some(scene)).unwrap();
         let held = held_copy(&col, canvas).unwrap();
-        assert_eq!(held.items.len(), 1);
+        assert_eq!(held.from, scene);
+        assert_eq!(held.scene.items.len(), 1);
         // An edit made after the hold reaches the scene, not the copy on air.
         let item = col.scene(scene).unwrap().items[0].id;
+        assert_eq!(
+            held.scene.items[0].id.get(),
+            HELD_IDS + item.get(),
+            "an item's copy keeps its id, offset"
+        );
         col.remove_item(item).unwrap();
+        let held = next_held(Some(held), &col, canvas).unwrap();
         let run = run_copy(&col, canvas, &held).unwrap();
         let program = run.canvas(canvas).unwrap().program.unwrap();
-        assert_eq!(program, held.id);
+        assert_eq!(program, held.scene.id);
         assert_eq!(run.scene(program).unwrap().items.len(), 1, "as it was");
         assert_eq!(
             run.scene(scene).unwrap().items.len(),
@@ -4891,10 +4964,35 @@ mod tests {
         );
         assert_eq!(run.canvas(canvas).unwrap().preview, Some(scene));
         // The user's collection never holds the copy.
-        assert!(col.scene(held.id).is_none());
+        assert!(col.scene(held.scene.id).is_none());
         assert_eq!(col.canvas(canvas).unwrap().program, Some(scene));
-        // The same ids for every hold, so the program keeps its nodes.
-        assert_eq!(held_copy(&col, canvas).unwrap().id, held.id);
+        assert_eq!(col.scenes().count(), 2);
+        // The same scene id for every hold, so the program keeps its nodes.
+        assert_eq!(held_copy(&col, canvas).unwrap().scene.id, held.scene.id);
+        // Leaving studio mode lets the copy go.
+        col.set_preview(canvas, None).unwrap();
+        assert!(next_held(Some(held), &col, canvas).is_none());
+    }
+
+    #[test]
+    #[allow(clippy::unwrap_used)] // Tests fail by panicking.
+    fn a_held_copy_never_outlives_its_scene_or_its_sources() {
+        let (mut col, canvas, scene, src) = held_collection();
+        let held = held_copy(&col, canvas).unwrap();
+        // A source deleted while held leaves the copy, which still fits.
+        let item = col.scene(scene).unwrap().items[0].id;
+        col.remove_item(item).unwrap();
+        col.delete_source(src).unwrap();
+        let kept = next_held(Some(held.clone()), &col, canvas).unwrap();
+        assert!(kept.scene.items.is_empty());
+        assert!(run_copy(&col, canvas, &kept).is_some());
+        // Another scene on air in studio mode with itself in preview (as after an
+        // undo removed the held scene): a new copy of that scene.
+        let (other, _) = col.add_scene("Other", SceneScope::Shared).unwrap();
+        col.set_program(canvas, Some(other)).unwrap();
+        col.set_preview(canvas, Some(other)).unwrap();
+        let next = next_held(Some(held), &col, canvas).unwrap();
+        assert_eq!(next.from, other);
     }
 
     #[test]
