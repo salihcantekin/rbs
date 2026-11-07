@@ -91,16 +91,22 @@ pub(crate) fn caller_allowed(caller: &str, class_user: &str) -> bool {
     caller == class_user || caller == LOCAL_SERVICE || caller == SYSTEM
 }
 
-/// The configuration of `clsid` for the calling process: its user and format.
-pub(crate) fn lookup(root: HKEY, clsid: &GUID, caller: &str) -> Option<SourceConfig> {
+/// The user of `clsid` if the calling process, running as `caller`, may use it.
+pub(crate) fn lookup(root: HKEY, clsid: &GUID, caller: &str) -> Option<String> {
     let sid = class_user(root, clsid)?;
-    if !caller_allowed(caller, &sid) {
-        return None;
-    }
+    caller_allowed(caller, &sid).then_some(sid)
+}
+
+/// What the source needs for `sid`, with the format read from the user's file now:
+/// called at each activation (ADR-0070 decisions 3 and 4).
+pub(crate) fn source_config(sid: &str) -> SourceConfig {
     let format = program_data()
-        .map(|dir| read_format(dir.join(crate::announced::format_file(&sid))))
+        .map(|dir| read_format(dir.join(crate::announced::format_file(sid))))
         .unwrap_or_default();
-    Some(SourceConfig { sid, format })
+    SourceConfig {
+        sid: sid.to_owned(),
+        format,
+    }
 }
 
 /// `%ProgramData%`, from the shell's known folder (not the environment, which the

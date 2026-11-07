@@ -122,8 +122,14 @@ impl MediaStream {
     }
 
     /// The allocator Frame Server provides (`IMFSampleAllocatorControl`).
-    pub(crate) fn set_allocator(&self, allocator: Option<IMFVideoSampleAllocatorEx>) {
-        self.lock().allocator = allocator;
+    /// Sets the allocator Frame Server provides; `MF_E_SHUTDOWN` after shutdown.
+    pub(crate) fn set_allocator(&self, allocator: Option<IMFVideoSampleAllocatorEx>) -> Result<()> {
+        let mut st = self.lock();
+        if st.queue.is_none() {
+            return Err(MF_E_SHUTDOWN.into());
+        }
+        st.allocator = allocator;
+        Ok(())
     }
 
     /// Starts the stream: creates the section and the pump, prepares the allocator and
@@ -136,8 +142,12 @@ impl MediaStream {
             .ok_or(windows_core::Error::from(MF_E_SHUTDOWN))?;
         if st.running.is_none() {
             // No section (squatted name, no rights): the still picture only.
-            let ring = pump::layout(&self.format)
-                .ok()
+            // Only Frame Server's stream opens the ring (ADR-0070 decision 2): a stream
+            // started by another process (Frame Server Monitor, an elevated tool)
+            // would create a section Frame Server then refuses as squatted.
+            let ring = (cfg!(test) || in_frame_server())
+                .then(|| pump::layout(&self.format).ok())
+                .flatten()
                 .and_then(|layout| Section::create(&self.sid, &layout).ok());
             let (section, region) = match ring {
                 Some((s, r)) => (Some(s), Some(r)),
@@ -193,6 +203,18 @@ impl MediaStream {
             )?
         };
         Ok(())
+    }
+
+    /// Stops a deselected stream without an event: releases the pump, the section and
+    /// the pool.
+    pub(crate) fn stop_quietly(&self) {
+        let mut st = self.lock();
+        st.running = None;
+        if let Some(a) = &st.allocator {
+            // SAFETY: our pool; samples still out are released by their holders.
+            let _ = unsafe { a.UninitializeSampleAllocator() };
+        }
+        st.stream_state = MF_STREAM_STATE_STOPPED;
     }
 
     /// Shuts the stream down for good.
@@ -251,6 +273,13 @@ impl MediaStream {
     }
 }
 
+/// Whether this process runs as `LocalService`, the account of Frame Server.
+fn in_frame_server() -> bool {
+    super::section::TokenSid::current()
+        .and_then(|t| t.to_string())
+        .is_ok_and(|s| s == super::config::LOCAL_SERVICE)
+}
+
 /// Copies tightly packed NV12 `picture` into `buffer`, honouring a 2D buffer's pitch.
 fn copy_nv12(buffer: &IMFMediaBuffer, picture: &[u8], format: &Announced) -> Result<()> {
     let (w, h) = (format.width() as usize, format.height() as usize);
@@ -288,11 +317,15 @@ fn copy_nv12(buffer: &IMFMediaBuffer, picture: &[u8], format: &Announced) -> Res
         }
         // SAFETY: locked above.
         unsafe { two_d.Unlock2D()? };
-        return if fits {
-            Ok(())
-        } else {
-            Err(E_INVALIDARG.into())
-        };
+        if !fits {
+            return Err(E_INVALIDARG.into());
+        }
+        // SAFETY: plain calls on our pooled buffer; the length is that of its data.
+        unsafe {
+            let n = two_d.GetContiguousLength()?;
+            buffer.SetCurrentLength(n)?;
+        }
+        return Ok(());
     }
     let mut ptr: *mut u8 = std::ptr::null_mut();
     let mut max = 0u32;
@@ -411,7 +444,10 @@ impl IMFMediaStream_Impl for MediaStream_Impl {
     }
 
     fn GetStreamDescriptor(&self) -> Result<IMFStreamDescriptor> {
-        guard(|| Ok(self.descriptor.clone()))
+        guard(|| {
+            self.queue()?;
+            Ok(self.descriptor.clone())
+        })
     }
 
     fn RequestSample(&self, token: Ref<IUnknown>) -> Result<()> {

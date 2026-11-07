@@ -9,26 +9,27 @@ use windows::Win32::System::Com::StructuredStorage::PROPVARIANT;
 use windows_core::{BOOL, GUID, IUnknown, Interface, PCWSTR, PWSTR, Ref, Result, implement};
 
 use super::com::{Alive, guard};
-use super::config::SourceConfig;
+use super::config;
 use super::source;
 
 /// The activate object: an attribute store plus the source it creates once.
 #[implement(IMFActivate)]
 pub(crate) struct Activate {
-    config: SourceConfig,
+    /// The class's user.
+    sid: String,
     attributes: IMFAttributes,
     source: Mutex<Option<IMFMediaSourceEx>>,
     _alive: Alive,
 }
 
 impl Activate {
-    /// The activate object for `config`, with an empty attribute store.
-    pub(crate) fn new(config: SourceConfig) -> Result<Self> {
+    /// The activate object for `sid`'s class, with an empty attribute store.
+    pub(crate) fn new(sid: String) -> Result<Self> {
         let mut attributes = None;
         // SAFETY: creates an empty attribute store.
         unsafe { MFCreateAttributes(&mut attributes, 4)? };
         Ok(Self {
-            config,
+            sid,
             attributes: attributes.ok_or(windows_core::Error::from(E_POINTER))?,
             source: Mutex::new(None),
             _alive: Alive::new(),
@@ -50,7 +51,9 @@ impl IMFActivate_Impl for Activate_Impl {
             let source = match slot.as_ref() {
                 Some(s) => s.clone(),
                 None => {
-                    let s = source::create(&self.config, Some(&self.attributes))?;
+                    // The format file is read at each activation (ADR-0070 decision 3).
+                    let config = config::source_config(&self.sid);
+                    let s = source::create(&config, Some(&self.attributes))?;
                     *slot = Some(s.clone());
                     s
                 }

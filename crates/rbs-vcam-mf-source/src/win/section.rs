@@ -34,6 +34,16 @@ const USER_ACCESS: u32 = 0x0004 | 0x0002;
 /// `ACCESS_ALLOWED_ACE_TYPE`.
 const ACCESS_ALLOWED: u8 = 0;
 
+/// The ring size of the largest format the source offers (ADR-0066 decision 11).
+fn largest_len() -> usize {
+    crate::announced::SIZES
+        .iter()
+        .filter_map(|&(w, h)| Layout::nv12(w, h, w).ok())
+        .map(|l| l.total_len())
+        .max()
+        .unwrap_or(0)
+}
+
 /// The section's name for `sid`. The in-process test uses the session namespace:
 /// creating a `Global\` object needs `SeCreateGlobalPrivilege`, which Frame Server has
 /// and a test process may not.
@@ -83,7 +93,10 @@ impl Section {
             lpSecurityDescriptor: psd.0,
             bInheritHandle: false.into(),
         };
-        let len = layout.total_len();
+        // Sized for the largest format the source offers, not the announced one: a
+        // writer still holding the section from a smaller format keeps it alive, and
+        // the next stream must still fit in it.
+        let len = layout.total_len().max(largest_len());
         let size = len as u64;
         let name = HSTRING::from(name(sid));
         // SAFETY: a pagefile-backed section (no file handle) with the attributes above,

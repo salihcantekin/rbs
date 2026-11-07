@@ -13,10 +13,13 @@ pub(crate) fn guard<T>(body: impl FnOnce() -> Result<T>) -> Result<T> {
     catch_unwind(AssertUnwindSafe(body)).unwrap_or_else(|_| Err(E_UNEXPECTED.into()))
 }
 
-/// Objects alive plus server locks; `DllCanUnloadNow` answers from it.
+/// Objects alive; `DllCanUnloadNow` answers from it and [`LOCKS`].
 static LIVE: AtomicUsize = AtomicUsize::new(0);
+/// Server locks (`IClassFactory::LockServer`), counted apart so an unbalanced unlock
+/// never takes a live object's count.
+static LOCKS: AtomicUsize = AtomicUsize::new(0);
 
-/// Counts one live object (or server lock) until dropped.
+/// Counts one live object until dropped.
 #[derive(Debug)]
 pub(crate) struct Alive(());
 
@@ -36,12 +39,12 @@ impl Drop for Alive {
 /// Adds or removes a server lock (`IClassFactory::LockServer`).
 pub(crate) fn lock_server(lock: bool) {
     if lock {
-        LIVE.fetch_add(1, Ordering::AcqRel);
+        LOCKS.fetch_add(1, Ordering::AcqRel);
     } else {
         // Never below zero, whatever a caller does.
-        let mut n = LIVE.load(Ordering::Acquire);
+        let mut n = LOCKS.load(Ordering::Acquire);
         while let Some(less) = n.checked_sub(1) {
-            match LIVE.compare_exchange_weak(n, less, Ordering::AcqRel, Ordering::Acquire) {
+            match LOCKS.compare_exchange_weak(n, less, Ordering::AcqRel, Ordering::Acquire) {
                 Ok(_) => break,
                 Err(now) => n = now,
             }
@@ -51,7 +54,7 @@ pub(crate) fn lock_server(lock: bool) {
 
 /// Whether nothing of this DLL is in use.
 pub(crate) fn idle() -> bool {
-    LIVE.load(Ordering::Acquire) == 0
+    LIVE.load(Ordering::Acquire) == 0 && LOCKS.load(Ordering::Acquire) == 0
 }
 
 #[cfg(test)]

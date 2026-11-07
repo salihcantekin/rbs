@@ -92,18 +92,22 @@ impl MediaSource {
         // SAFETY: index 0 of the caller's descriptor (ours has exactly one stream).
         unsafe { pd.GetStreamDescriptorByIndex(0, &mut selected, &mut sd)? };
         let queue = self.queue()?;
-        let mut st = self.lock();
-        let first = !st.started_once;
-        st.started_once = true;
-        drop(st);
-        let unk: IUnknown = self.stream.to_interface();
-        // SAFETY: our own queue; the stream's reference is kept by the event.
-        unsafe {
-            let met = if first { MENewStream } else { MEUpdatedStream };
-            queue.QueueEventParamUnk(met.0 as u32, &GUID::zeroed(), S_OK, &unk)?;
-        }
         if selected.as_bool() {
+            // Started first, so a failed start leaves no stream event behind.
             self.stream.start()?;
+            let mut st = self.lock();
+            let first = !st.started_once;
+            st.started_once = true;
+            drop(st);
+            let unk: IUnknown = self.stream.to_interface();
+            // SAFETY: our own queue; the stream's reference is kept by the event.
+            unsafe {
+                let met = if first { MENewStream } else { MEUpdatedStream };
+                queue.QueueEventParamUnk(met.0 as u32, &GUID::zeroed(), S_OK, &unk)?;
+            }
+        } else {
+            // A deselected stream sends nothing.
+            self.stream.stop_quietly();
         }
         // SAFETY: the start position is the caller's PROPVARIANT, passed on unchanged.
         unsafe {
@@ -213,11 +217,15 @@ impl IMFMediaSource_Impl for MediaSource_Impl {
 
 impl IMFMediaSourceEx_Impl for MediaSource_Impl {
     fn GetSourceAttributes(&self) -> Result<IMFAttributes> {
-        guard(|| Ok(self.attributes.clone()))
+        guard(|| {
+            self.queue()?;
+            Ok(self.attributes.clone())
+        })
     }
 
     fn GetStreamAttributes(&self, id: u32) -> Result<IMFAttributes> {
         guard(|| {
+            self.queue()?;
             if id != 0 {
                 return Err(MF_E_INVALIDSTREAMNUMBER.into());
             }
@@ -227,7 +235,7 @@ impl IMFMediaSourceEx_Impl for MediaSource_Impl {
 
     fn SetD3DManager(&self, _manager: Ref<IUnknown>) -> Result<()> {
         // Frames are copied on the CPU (ADR-0066 decision 9); a D3D manager is not used.
-        guard(|| Ok(()))
+        guard(|| self.queue().map(drop))
     }
 }
 
@@ -286,8 +294,7 @@ impl IMFSampleAllocatorControl_Impl for MediaSource_Impl {
             let a = allocator
                 .as_ref()
                 .and_then(|a| a.cast::<IMFVideoSampleAllocatorEx>().ok());
-            self.stream.set_allocator(a);
-            Ok(())
+            self.stream.set_allocator(a)
         })
     }
 

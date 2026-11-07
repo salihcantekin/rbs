@@ -12,13 +12,14 @@ use windows_core::{BOOL, GUID, HRESULT, IUnknown, Interface, Ref, Result, implem
 
 use super::activate::Activate;
 use super::com::{Alive, guard, idle, lock_server};
-use super::config::{self, SourceConfig};
+use super::config;
 use super::section::TokenSid;
 
 /// The class factory for one user's class.
 #[implement(IClassFactory)]
 struct Factory {
-    config: SourceConfig,
+    /// The class's user.
+    sid: String,
     _alive: Alive,
 }
 
@@ -38,7 +39,7 @@ impl IClassFactory_Impl for Factory_Impl {
             if outer.is_some() {
                 return Err(CLASS_E_NOAGGREGATION.into());
             }
-            let activate: IUnknown = Activate::new(self.config.clone())?.into();
+            let activate: IUnknown = Activate::new(self.sid.clone())?.into();
             // SAFETY: both pointers checked; `query` writes an AddRef'd interface or null.
             unsafe { activate.query(riid, ppv.cast()).ok() }
         })
@@ -52,8 +53,8 @@ impl IClassFactory_Impl for Factory_Impl {
     }
 }
 
-/// The configuration for `clsid` in this process, or `CLASS_E_CLASSNOTAVAILABLE`.
-fn config_for(clsid: &GUID) -> Result<SourceConfig> {
+/// The user of `clsid` if this process may use it, or `CLASS_E_CLASSNOTAVAILABLE`.
+fn user_for(clsid: &GUID) -> Result<String> {
     let caller = TokenSid::current()?.to_string()?;
     config::lookup(config::root(), clsid, &caller).ok_or_else(|| CLASS_E_CLASSNOTAVAILABLE.into())
 }
@@ -70,9 +71,9 @@ fn class_object(
     // SAFETY: checked non-null; cleared before anything can fail.
     unsafe { *ppv = std::ptr::null_mut() };
     // SAFETY: checked non-null; the caller's GUID.
-    let config = config_for(unsafe { &*clsid })?;
+    let sid = user_for(unsafe { &*clsid })?;
     let factory: IClassFactory = Factory {
-        config,
+        sid,
         _alive: Alive::new(),
     }
     .into();
