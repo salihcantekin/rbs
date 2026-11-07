@@ -716,6 +716,75 @@ fn record_when_the_stream_starts_records_with_the_stream_and_stops_with_it() {
     }
 }
 
+#[test]
+fn a_control_api_client_turns_on_record_when_the_stream_starts_and_ends_both() {
+    let Some(gpu) = gpu() else { return };
+    let keys = Arc::new(MemoryKeyStore::new());
+    keys.write(ACCOUNT, &rbs_transport::Secret::new("live_abc"))
+        .unwrap();
+    let server = Arc::new(Server::default());
+    let clock = TestClock::new();
+    let (host, rx) = host(gpu, keys, Arc::clone(&server), &clock);
+    add_display(&host, &rx);
+    let folder = record_profile("api");
+    host.send(Command::SetProfile(folder.clone()));
+    let mut profile = StreamProfile::new();
+    profile.server = URL.into();
+    profile.key_saved = true;
+    host.send(Command::SetStreamProfile(profile));
+    let (api, mut c) = api_client(&host);
+    let none = serde_json::json!({});
+
+    let got = c.call("settings.get", none.clone());
+    let stream = got["result"]["data"]["stream"].clone();
+    assert_eq!(stream["auto_record"], false, "{got}");
+    let mut on = serde_json::json!({"stream": stream.clone()});
+    on["stream"]["auto_record"] = true.into();
+    let set = c.call("settings.set", on);
+    assert_eq!(
+        set["result"]["data"]["stream"]["auto_record"], true,
+        "{set}"
+    );
+    // A patch without it (a 1.2 client) leaves it on.
+    let mut old = serde_json::json!({"stream": stream});
+    old["stream"].as_object_mut().unwrap().remove("auto_record");
+    let set = c.call("settings.set", old);
+    assert_eq!(
+        set["result"]["data"]["stream"]["auto_record"], true,
+        "{set}"
+    );
+    // The UI is told, to show and save it.
+    next(&rx, |u| match u {
+        Update::StreamProfile(p) if p.auto_record => Some(()),
+        _ => None,
+    });
+
+    let started = c.call("stream.start", none.clone());
+    assert!(started.get("result").is_some(), "{started}");
+    match recording(&rx) {
+        RecordingUpdate::Started { path, .. } => assert!(path.starts_with(&folder.folder)),
+        other => panic!("{other:?}"),
+    }
+    let stopped = c.call("stream.stop", none);
+    assert!(stopped.get("result").is_some(), "{stopped}");
+    let stopped = next_while(
+        &rx,
+        || clock.advance(END_TAIL_LIMIT),
+        |u| match u {
+            Update::Recording(r) => Some(r),
+            _ => None,
+        },
+    );
+    assert!(
+        matches!(stopped, RecordingUpdate::Stopped { failure: None, .. }),
+        "{stopped:?}"
+    );
+    drop(c);
+    drop(api);
+    drop(host);
+    let _ = std::fs::remove_dir_all(&folder.folder);
+}
+
 struct ChannelSender(Sender<serde_json::Value>);
 
 impl ConnectionSender for ChannelSender {

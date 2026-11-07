@@ -301,37 +301,46 @@ impl StreamProfile {
     }
 }
 
-/// What "Record when the stream starts" costs, for the note under the setting: with
-/// the same encoder settings the recording joins the stream's encoders (ADR-0047),
-/// otherwise every frame is encoded twice; either way the file grows on disk for as
-/// long as the stream runs (about so many GB an hour with a bitrate, VBR peaks aside).
-pub fn auto_record_note(record: &Encoding, stream: &Encoding) -> String {
-    let load = if record == stream {
-        "The recording and the stream have the same encoder settings, so they share one \
-         encoder and the extra processor and graphics load is small."
-            .to_owned()
-    } else {
-        "The recording and the stream have different encoder settings, so every frame is \
-         encoded twice: expect more processor or graphics load while live. Use the same \
-         settings in Recording and Stream to share one encoder."
-            .to_owned()
-    };
-    let disk = match record.rate_control {
-        RateMode::ConstantQuality => {
-            "The recording also needs free disk space for as long as the stream runs.".to_owned()
-        }
+/// What "Record when the stream starts" costs, for the notice under the setting.
+/// `same_encoder`: both pick the same encoder (both automatic, or the same one). With
+/// the same video settings as well the recording joins the stream's video encoder
+/// (ADR-0047 decision 3), otherwise every frame is encoded twice. Either way the file
+/// grows for as long as the stream runs: about so many GB an hour at the recording's
+/// bitrate (VBR peaks aside; not known for constant quality). Each variant is one whole
+/// text, so it can be translated as one (U86).
+pub fn auto_record_note(record: &Encoding, stream: &Encoding, same_encoder: bool) -> String {
+    let shared = same_encoder && record.video_settings() == stream.video_settings();
+    let gb = match record.rate_control {
+        RateMode::ConstantQuality => None,
         _ => {
-            // kbit/s for an hour: kbit/s * 3600 / 8 kB, shown in GB with one decimal.
+            // kbit/s for an hour is kbit/s * 3600 / 8 kB; GB with one decimal.
             let kbps = u64::from(record.video_kbps) + u64::from(record.audio_kbps);
             let tenths = (kbps * 3600 / 8 + 50_000) / 100_000;
-            format!(
-                "The recording also needs about {}.{} GB of disk space for each hour of streaming.",
-                tenths / 10,
-                tenths % 10
-            )
+            Some(format!("{}.{}", tenths / 10, tenths % 10))
         }
     };
-    format!("{load} {disk}")
+    match (shared, gb) {
+        (true, Some(gb)) => format!(
+            "The recording and the stream have the same video settings, so they share one \
+             encoder and the extra processor and graphics load is small. The recording needs \
+             about {gb} GB of disk space for each hour of streaming."
+        ),
+        (true, None) => "The recording and the stream have the same video settings, so they \
+             share one encoder and the extra processor and graphics load is small. The \
+             recording needs free disk space for as long as the stream runs."
+            .to_owned(),
+        (false, Some(gb)) => format!(
+            "The recording and the stream have different video settings, so every frame is \
+             encoded twice: expect more processor or graphics load while live. Use the same \
+             settings in Recording and Stream to share one encoder. The recording needs about \
+             {gb} GB of disk space for each hour of streaming."
+        ),
+        (false, None) => "The recording and the stream have different video settings, so \
+             every frame is encoded twice: expect more processor or graphics load while live. \
+             Use the same settings in Recording and Stream to share one encoder. The recording \
+             needs free disk space for as long as the stream runs."
+            .to_owned(),
+    }
 }
 
 impl Default for StreamProfile {
@@ -488,16 +497,23 @@ mod tests {
     fn the_auto_record_note_says_whether_frames_are_encoded_twice_and_the_disk_use() {
         let record = crate::record_profile::RecordProfile::new().encoding();
         let stream = StreamProfile::new().encoding;
-        let note = auto_record_note(&record, &stream);
+        let note = auto_record_note(&record, &stream, true);
         assert!(note.contains("encoded twice"), "{note}");
         // 12000 + 160 kbit/s for an hour: 5.47 GB.
         assert!(note.contains("about 5.5 GB"), "{note}");
-        let note = auto_record_note(&stream, &stream);
+        let note = auto_record_note(&stream, &stream, true);
         assert!(note.contains("share one encoder"), "{note}");
         assert!(note.contains("about 2.8 GB"), "{note}");
+        // Shared as ADR-0047 shares: fields that do nothing in this mode and the audio
+        // bitrate do not count; another encoder does.
+        let mut other = stream.clone();
+        other.quality = 30;
+        other.audio_kbps = 192;
+        assert!(auto_record_note(&other, &stream, true).contains("share one encoder"));
+        assert!(auto_record_note(&stream, &stream, false).contains("encoded twice"));
         let mut cq = stream.clone();
         cq.rate_control = RateMode::ConstantQuality;
-        let note = auto_record_note(&cq, &stream);
+        let note = auto_record_note(&cq, &stream, true);
         assert!(!note.contains("GB"), "{note}");
     }
 

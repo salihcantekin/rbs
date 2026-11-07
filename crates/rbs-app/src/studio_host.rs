@@ -2593,8 +2593,10 @@ impl Host {
     /// a recording that started with it stops too.
     fn end_stream_asked(&mut self, notify: &dyn Fn(Update)) {
         let with_stream = self.auto_recording;
-        self.end_stream(None, notify);
-        if with_stream && self.recording.is_some() {
+        // A stream that failed before it was asked to end keeps its recording, as one
+        // the round finds failed does.
+        let failure = self.end_stream(None, notify);
+        if with_stream && failure.is_none() && self.recording.is_some() {
             self.end_recording(notify);
         }
     }
@@ -2755,12 +2757,10 @@ impl Host {
         }
     }
 
-    /// Ends the stream, if one runs, and says so.
-    fn end_stream(&mut self, failure: Option<String>, notify: &dyn Fn(Update)) {
+    /// Ends the stream, if one runs, and says so; returns why it failed, if it did.
+    fn end_stream(&mut self, failure: Option<String>, notify: &dyn Fn(Update)) -> Option<String> {
         // Tracked until the end, as in `stop_recording`.
-        let Some((_, _, id)) = self.streaming.clone() else {
-            return;
-        };
+        let (_, _, id) = self.streaming.clone()?;
         let report = self.studio.stop_output(id);
         let (frames, dropped, connects, failed) = report.map_or((0, 0, 0, None), |r| {
             let p = &r.progress;
@@ -2785,11 +2785,12 @@ impl Host {
             }),
         });
         notify(Update::Stream(StreamUpdate::Ended {
-            failure,
+            failure: failure.clone(),
             frames,
             dropped,
             connects,
         }));
+        failure
     }
 
     /// Adds a source of `kind` for `target` to the program scene, on top.
@@ -4501,7 +4502,11 @@ impl ApiTarget<'_> {
                     video_encoder,
                     audio_encoder,
                 }));
-                host.record_with_stream(notify);
+                // The stream runs: a panic while its recording starts must not turn
+                // the answer into an error (the round recovers the host).
+                if rbs_crash::contain(|| host.record_with_stream(notify)).is_err() {
+                    host.caught = true;
+                }
                 host.publish(notify);
                 Ok(Response::StreamStarted(started))
             }
