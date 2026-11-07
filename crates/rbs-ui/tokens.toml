@@ -8,6 +8,9 @@ format = 2
 [fixed]
 "color.state.live" = "#c4262e"
 "color.text.on-live" = "#ffffff"
+# The Windows close button's hover, as the OS draws it (ADR-0071): fixed as well.
+"color.caption.close-hover" = "#c42b1c"
+"color.caption.close-text" = "#ffffff"
 
 [themes.dark]
 "color.surface.base" = "#121417"
@@ -104,6 +107,7 @@ format = 2
 "size.app-menu.w" = 600
 "size.app-menu.categories" = 165
 "size.app-menu.list-h" = 450
+"size.caption.w" = 46
 "size.window.w" = 1440
 "size.window.h" = 900
 "size.window.min-w" = 1280

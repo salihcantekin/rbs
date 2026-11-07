@@ -544,7 +544,8 @@ pub struct ToolItem {
     pub enabled: bool,
     /// A toggle or area toggle that is on.
     pub checked: bool,
-    /// It stops a live output now (drawn in the live colour, U12).
+    /// It stops a live output now (a normal button with a `stop` icon in the live
+    /// colour, U12).
     pub live: bool,
     /// Icon name from the design system's icon set, or empty.
     pub icon: String,
@@ -564,9 +565,44 @@ pub enum ToolKind {
     Unknown = 4,
 }
 
-/// The workspace's toolbar (its own or the default one): items, shown, and whether it
-/// has the flexible space.
-pub fn toolbar(state: &Shown<'_>) -> (Vec<ToolItem>, bool, bool) {
+/// The toolbar row's two groups (ADR-0071): the items before the flexible space and
+/// the items after it.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Row {
+    pub lead: Vec<ToolItem>,
+    pub end: Vec<ToolItem>,
+}
+
+/// Splits items at the first flexible space (later ones are dropped) and drops the
+/// separators that would lead, end or double within a group. Without a space, every
+/// item leads.
+pub fn split_row(items: Vec<ToolItem>) -> Row {
+    let mut row = Row::default();
+    let mut after = false;
+    for item in items {
+        if item.kind == ToolKind::Space {
+            after = true;
+            continue;
+        }
+        let group = if after { &mut row.end } else { &mut row.lead };
+        let sep = item.kind == ToolKind::Separator;
+        let last_sep = group.last().is_none_or(|l| l.kind == ToolKind::Separator);
+        if sep && last_sep {
+            continue;
+        }
+        group.push(item);
+    }
+    for group in [&mut row.lead, &mut row.end] {
+        if group.last().is_some_and(|l| l.kind == ToolKind::Separator) {
+            group.pop();
+        }
+    }
+    row
+}
+
+/// The workspace's toolbar (its own or the default one), split into the row's groups,
+/// and whether it is shown.
+pub fn toolbar(state: &Shown<'_>) -> (Row, bool) {
     use rbs_ui::workspace::{ToolbarItem, ToolbarStyle};
     let default;
     let bar = match &state.workspace.toolbar {
@@ -634,7 +670,13 @@ pub fn toolbar(state: &Shown<'_>) -> (Vec<ToolItem>, bool, bool) {
                     ("record.toggle", true) => ("Stop recording".to_owned(), true),
                     _ => (title, false),
                 };
-                let icon = rbs_ui::command::icon(&id, entry).unwrap_or_default();
+                // A running output's toggle shows a stop square in the live colour; the
+                // button itself stays a normal one (U12: calm, red only as a mark).
+                let icon = if live {
+                    "stop"
+                } else {
+                    rbs_ui::command::icon(&id, entry).unwrap_or_default()
+                };
                 let icon_only = !icon.is_empty()
                     && (bar.style == ToolbarStyle::Icons || rbs_ui::command::icon_only(&id));
                 ToolItem {
@@ -650,8 +692,7 @@ pub fn toolbar(state: &Shown<'_>) -> (Vec<ToolItem>, bool, bool) {
             }
         })
         .collect();
-    let has_space = bar.items.contains(&ToolbarItem::Space);
-    (items, bar.visible, has_space)
+    (split_row(items), bar.visible)
 }
 
 /// What running an id from the menu bar does.
@@ -838,6 +879,49 @@ mod tests {
             Some(Run::OpenSettings(Some(6)))
         );
         assert_eq!(run("ui.settings.open?section=audio"), None);
+    }
+
+    #[test]
+    fn the_row_splits_at_the_space_and_tidies_separators() {
+        let item = |kind, id: &str| ToolItem {
+            id: id.to_owned(),
+            title: id.to_owned(),
+            kind,
+            enabled: true,
+            checked: false,
+            live: false,
+            icon: String::new(),
+            icon_only: false,
+        };
+        let c = |id: &str| item(ToolKind::Command, id);
+        let sep = || item(ToolKind::Separator, "");
+        let space = || item(ToolKind::Space, "");
+        let ids = |v: &[ToolItem]| {
+            v.iter()
+                .map(|i| if i.id.is_empty() { "|" } else { i.id.as_str() })
+                .collect::<Vec<_>>()
+                .join(" ")
+        };
+        let row = split_row(vec![
+            sep(),
+            c("a"),
+            sep(),
+            sep(),
+            c("b"),
+            sep(),
+            space(),
+            sep(),
+            c("c"),
+            space(),
+            c("d"),
+            sep(),
+        ]);
+        assert_eq!(ids(&row.lead), "a | b");
+        assert_eq!(ids(&row.end), "c d");
+        let row = split_row(vec![c("a"), sep(), c("b")]);
+        assert_eq!(ids(&row.lead), "a | b");
+        assert!(row.end.is_empty());
+        assert_eq!(split_row(vec![sep(), space(), sep()]), Row::default());
     }
 
     #[test]

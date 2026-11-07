@@ -44,6 +44,7 @@ pub const ICONS: &[Icon] = &[
     line("close", "M 4.5 4.5 L 11.5 11.5 M 11.5 4.5 L 4.5 11.5"),
     fill("dot", "M 4 8 a 4 4 0 1 0 8 0 a 4 4 0 1 0 -8 0 Z"),
     line("ring", "M 4 8 a 4 4 0 1 0 8 0 a 4 4 0 1 0 -8 0 Z"),
+    fill("stop", "M 4.5 4.5 L 11.5 4.5 L 11.5 11.5 L 4.5 11.5 Z"),
     line("plus", "M 8 3 L 8 13 M 3 8 L 13 8"),
     line(
         "pin",
@@ -222,6 +223,15 @@ pub const ICONS: &[Icon] = &[
     line(
         "rail-below",
         "M 1.5 2.5 L 7.5 2.5 L 7.5 9.5 L 1.5 9.5 Z M 8.5 2.5 L 14.5 2.5 L 14.5 9.5 L 8.5 9.5 Z M 1.5 13 L 14.5 13",
+    ),
+    line("window-minimize", "M 3.5 8 L 12.5 8"),
+    line(
+        "window-maximize",
+        "M 3.5 3.5 L 12.5 3.5 L 12.5 12.5 L 3.5 12.5 Z",
+    ),
+    line(
+        "window-restore",
+        "M 3.5 5.5 L 10.5 5.5 L 10.5 12.5 L 3.5 12.5 Z M 5.5 5.5 L 5.5 3.5 L 12.5 3.5 L 12.5 10.5 L 10.5 10.5",
     ),
 ];
 

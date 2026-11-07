@@ -24,6 +24,9 @@ demo-sources = ["dep:rbs-capture-test", "dep:rbs-audio-io-test"]
 
 [dependencies]
 rbs-ui = { path = "../rbs-ui" }
+# The code Slint generates from ui/ and the token setters (its build.rs), compiled once
+# per build instead of once for the binary and again for its unit tests.
+rbs-app-ui = { path = "../rbs-app-ui" }
 # Exact pin (ADR-0022, decision 5). Skia renderer (decision 1). `unstable-wgpu-30`
 # lets the preview display engine surfaces imported on rbs-gpu's device (decision 2,
 # ADR-0028); it must track rbs-gpu's wgpu major.
@@ -99,9 +102,10 @@ global-hotkey = "=0.9.0"
 # The tray icon while RBS keeps running without a window (src/win, ADR-0056 decision 9).
 # 0.24 is the line that uses muda 0.19, which Slint already builds: one copy of muda.
 tray-icon = { version = "=0.24.2", default-features = false }
-# The named event a second launch signals (src/win/show_event.rs, ADR-0056 decision 6);
+# The named event a second launch signals (src/win/show_event.rs, ADR-0056 decision 6)
+# and the toolbar row as the title bar (src/win/caption.rs, ADR-0071);
 # the version Slint and wgpu already build.
-windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Security", "Win32_Security_Authorization", "Win32_System_Threading", "Win32_UI_WindowsAndMessaging"] }
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Security", "Win32_Security_Authorization", "Win32_System_Threading", "Win32_UI_WindowsAndMessaging", "Win32_UI_Shell", "Win32_UI_HiDpi", "Win32_UI_Controls", "Win32_UI_Input_KeyboardAndMouse", "Win32_Graphics_Dwm", "Win32_Graphics_Gdi"] }
 # The stream key in the Windows Credential Manager (src/stream_key.rs).
 keyring = { version = "3.6.3", default-features = false, features = ["windows-native"] }
 rbs-capture-wgc = { path = "../rbs-capture-wgc" }
@@ -168,10 +172,6 @@ libc = "0.2.180"
 # The demo's self-measurement reads process CPU time and peak working set; the version
 # rbs-gpu and wgpu-hal already build.
 windows = { version = "0.62", features = ["Win32_Foundation", "Win32_System_ProcessStatus", "Win32_System_Threading"] }
-
-[build-dependencies]
-rbs-ui = { path = "../rbs-ui" }
-slint-build = "=1.18.1"
 
 [lints]
 workspace = true

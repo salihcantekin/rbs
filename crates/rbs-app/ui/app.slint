@@ -100,10 +100,24 @@ export global Shell {
     callback close-main();
     callback quit-end-stream();
     callback quit-keep();
-    // The toolbar's items, whether it is shown, and whether it has a flexible space.
+    // The toolbar row's groups (ADR-0071): the items before its flexible space and the
+    // items after it, and whether the toolbar is shown.
     in property <[ToolbarData]> toolbar;
+    in property <[ToolbarData]> toolbar-end;
     in property <bool> toolbar-visible: true;
-    in property <bool> toolbar-has-space;
+    // Windows (ADR-0071): the toolbar row is the title bar and ends with the window
+    // buttons. Set once the window's caption is removed.
+    in property <bool> custom-caption;
+    in property <bool> window-maximized;
+    // The maximize button gets its mouse through the OS (snap layouts): its hover and
+    // pressed state come from there.
+    in property <bool> caption-max-hover;
+    in property <bool> caption-max-pressed;
+    // 0 minimize, 1 maximize or restore, 2 close.
+    callback caption(int);
+    // Where the row's groups and the maximize button are, in the window (logical px):
+    // the hit test's regions. Sent whenever one moves.
+    callback caption-regions(length /* lead end */, length /* end start */, length /* max x */, length /* max width */, length /* row height */);
     // End stream from the menu bar: the frame asks first (U4).
     in property <bool> end-stream-confirm;
     // The gap between panel cards and around them: the layout's divider thickness.
@@ -162,40 +176,55 @@ export global Shell {
     callback dismiss-error();
 }
 
-// Live indicator (rules U4, U21): state, duration and outputs in text, never colour alone.
+// Live indicator (rules U4, U21): the state in words, never colour alone. Compact on
+// purpose: idle it takes no room (the status bar says "Not live · not recording");
+// live or recording a small chip in the live colour (U12) with a dot and "REC",
+// "LIVE" or "LIVE · REC".
+// The duration and the outputs are in the status bar under the window (spec Frame);
+// the accessible name keeps the whole text.
 component LiveIndicator inherits Rectangle {
     property <bool> active: Shell.live-state != 0;
     property <string> state-text: Shell.live-state == 1 ? @tr("Live")
         : Shell.live-state == 2 ? @tr("Recording")
         : Shell.live-state == 3 ? @tr("Live and recording")
         : @tr("Not live");
+    property <string> short-text: Shell.live-state == 1 ? @tr("LIVE")
+        : Shell.live-state == 2 ? @tr("REC")
+        : @tr("LIVE · REC");
     property <string> full: active
         ? state-text + " " + Shell.live-duration + (Shell.live-outputs != "" ? " · " + Shell.live-outputs : "")
         : state-text;
     height: Tokens.size-control-md;
-    width: content.preferred-width + 2 * Tokens.space-3;
-    border-radius: Tokens.radius-sm;
-    background: active ? Theme.state-live : transparent;
-    border-width: active ? 0px : Tokens.size-border;
-    border-color: Theme.border-strong;
+    width: content.preferred-width;
     accessible-role: AccessibleRole.text;
     accessible-label: @tr("Live status: {}", full);
     content := HorizontalLayout {
         alignment: center;
-        spacing: Tokens.space-1;
-        VerticalLayout {
+        if active: VerticalLayout {
             alignment: center;
-            Icon {
-                name: active ? IconName.dot : IconName.ring;
-                ink: active ? Theme.text-on-live : Theme.text-secondary;
+            Rectangle {
+                height: Tokens.type-caption-line + Tokens.space-1;
+                width: chip.preferred-width;
+                border-radius: Tokens.radius-sm;
+                background: Theme.state-live;
+                chip := HorizontalLayout {
+                    padding-left: Tokens.space-1;
+                    padding-right: Tokens.space-2;
+                    spacing: Tokens.space-1 / 2;
+                    VerticalLayout {
+                        alignment: center;
+                        Icon { name: IconName.dot; ink: Theme.text-on-live; }
+                    }
+                    Text {
+                        text: short-text;
+                        color: Theme.text-on-live;
+                        font-size: Tokens.type-caption-size;
+                        font-weight: Tokens.type-label-weight;
+                        vertical-alignment: center;
+                        accessible-role: none;
+                    }
+                }
             }
-        }
-        Text {
-            text: full;
-            color: active ? Theme.text-on-live : Theme.text-secondary;
-            font-size: Tokens.type-label-size;
-            font-weight: Tokens.type-label-weight;
-            vertical-alignment: center;
         }
     }
 }
@@ -1165,7 +1194,8 @@ component WorkspacePicker inherits Rectangle {
 }
 
 // One toolbar item: a command button with its icon (a toggle that is on is tinted;
-// one that stops a live output is in the live colour, U12), the workspace picker, a
+// one that stops a live output is a normal button whose stop square is in the live
+// colour, U12: the state shows, the toolbar stays calm), the workspace picker, a
 // separator or the flexible space. Go live is the one primary button.
 component ToolbarCell inherits HorizontalLayout {
     in property <ToolbarData> item;
@@ -1178,20 +1208,21 @@ component ToolbarCell inherits HorizontalLayout {
         width: Tokens.size-control-lg;
         accessible-name: item.title;
         lead: Icons.named(item.icon);
-        lead-ink: item.checked ? Theme.text-primary : Theme.text-secondary;
+        lead-ink: item.live && self.enabled ? Theme.state-live
+            : item.checked ? Theme.text-primary : Theme.text-secondary;
         kind: "ghost";
         enabled: item.enabled;
-        checked: item.checked;
+        checked: item.checked && !item.live;
         clicked => { Menus.run(item.id); }
     }
     if (item.kind == 0 || item.kind == 4) && !item.icon-only: Button {
         text: item.title;
         lead: Icons.named(item.icon);
-        // Checked means recording, and then the button itself is in the live colour.
-        lead-ink: record && !item.checked ? Theme.state-live : self.ink;
+        // Record's dot, and the stop square of a running output, in the live colour.
+        lead-ink: (record || item.live) && self.enabled ? Theme.state-live : self.ink;
         enabled: item.enabled;
         checked: item.checked && !item.live;
-        kind: item.live ? "live" : go-live ? "primary" : record ? "secondary" : "ghost";
+        kind: go-live ? "primary" : record || item.live ? "secondary" : "ghost";
         clicked => { Menus.run(item.id); }
     }
     if item.kind == 1: WorkspacePicker {
@@ -1209,12 +1240,55 @@ component ToolbarCell inherits HorizontalLayout {
     if item.kind == 3: Rectangle { }
 }
 
+// A window button on Windows (ADR-0071): minimize, maximize or restore, close. Not a
+// Tab stop, as the OS's own are not; Alt+Space, Win+arrows and Alt+F4 stay.
+component CaptionButton inherits Rectangle {
+    in property <IconName> icon;
+    in property <string> name;
+    in property <bool> close;
+    // For maximize, whose mouse the OS handles: its state from there.
+    in property <bool> outside-hover;
+    in property <bool> outside-pressed;
+    in property <bool> outside: false;
+    callback clicked();
+    property <bool> hot: outside ? outside-hover || outside-pressed : touch.has-hover || touch.pressed;
+    width: Tokens.size-caption-w;
+    background: !hot ? transparent : close ? Theme.caption-close-hover : Theme.surface-overlay;
+    accessible-role: button;
+    accessible-label: name;
+    accessible-action-default => { root.clicked(); }
+    Icon {
+        name: root.icon;
+        ink: hot && close ? Theme.caption-close-text : Theme.text-primary;
+    }
+    touch := TouchArea {
+        enabled: !root.outside;
+        clicked => { root.clicked(); }
+    }
+}
+
 // The window frame's toolbar row (ADR-0049, ADR-0050): the workspace's toolbar items
 // and, at its right end, the live indicator (U4, U21). It stays in every workspace,
 // even with every panel closed.
 component FrameBar inherits Rectangle {
     // Where the workspace menu opens: under the toolbar's Workspace item.
     property <length> ws-menu-x;
+    // The hit test's regions on Windows (ADR-0071), in the window: where the leading
+    // group ends, where the end group starts, and the maximize button (the second of
+    // the three window buttons at the row's right end). Sent when one moves.
+    property <length> lead-end: lead.absolute-position.x + lead.width;
+    property <length> end-start: end.absolute-position.x;
+    property <length> max-x: root.absolute-position.x + root.width - 2 * Tokens.size-caption-w;
+    function publish-regions() {
+        if Shell.custom-caption {
+            Shell.caption-regions(lead-end, end-start, max-x, Tokens.size-caption-w, root.height);
+        }
+    }
+    changed lead-end => { publish-regions(); }
+    changed end-start => { publish-regions(); }
+    changed max-x => { publish-regions(); }
+    property <bool> caption-on: Shell.custom-caption;
+    changed caption-on => { publish-regions(); }
     height: Tokens.size-control-md + 2 * Tokens.space-1 + Tokens.size-border;
     background: Theme.surface-base;
     Rectangle {
@@ -1226,73 +1300,121 @@ component FrameBar inherits Rectangle {
         height: parent.height - Tokens.size-border;
         y: 0;
         padding-left: Tokens.space-2;
-        padding-right: Tokens.space-2;
-        padding-top: Tokens.space-1;
-        padding-bottom: Tokens.space-1;
-        spacing: Tokens.space-2;
-        // The RBS menu (spec, "RBS menu"): every command, with search. Part of the
-        // frame, not a toolbar item, so it cannot be removed.
-        rbs := AppMenuButton {
-            clicked => { root.open-app-menu(); }
-        }
-        // The workspace's toolbar items (ADR-0050); hidden, the row stays with the
-        // live indicator at its right end.
-        for item in Shell.toolbar-visible ? Shell.toolbar : []: ToolbarCell {
-            item: item;
-            open-workspaces(x) => {
-                root.ws-menu-x = x - root.absolute-position.x;
-                ws-menu.show();
-            }
-        }
-        // Closing while live ends the stream: asked first, in the frame (U4).
-        if Shell.quit-confirm: HorizontalLayout {
+        // The window buttons end the row with no padding (ADR-0071).
+        padding-right: Shell.custom-caption ? 0 : Tokens.space-2;
+        spacing: 0;
+        // The leading group: the RBS button, the items before the flexible space,
+        // the in-row prompts and status texts.
+        lead := HorizontalLayout {
             horizontal-stretch: 0;
+            padding-top: Tokens.space-1;
+            padding-bottom: Tokens.space-1;
             spacing: Tokens.space-2;
-            accessible-role: groupbox;
-            accessible-label: @tr("End the stream and quit?");
-            init => { keep-live.focus(); }
-            Text {
-                text: @tr("End the stream and quit?");
-                color: Theme.text-primary;
-                font-size: Tokens.type-body-size;
+            // The RBS menu (spec, "RBS menu"): every command, with search. Part of the
+            // frame, not a toolbar item, so it cannot be removed.
+            rbs := AppMenuButton {
+                clicked => { root.open-app-menu(); }
+            }
+            // The workspace's toolbar items (ADR-0050); hidden, the row stays with the
+            // live indicator at its right end.
+            for item in Shell.toolbar-visible ? Shell.toolbar : []: ToolbarCell {
+                item: item;
+                open-workspaces(x) => {
+                    root.ws-menu-x = x - root.absolute-position.x;
+                    ws-menu.show();
+                }
+            }
+            // Closing while live ends the stream: asked first, in the frame (U4).
+            if Shell.quit-confirm: HorizontalLayout {
+                horizontal-stretch: 0;
+                spacing: Tokens.space-2;
+                accessible-role: groupbox;
+                accessible-label: @tr("End the stream and quit?");
+                init => { keep-live.focus(); }
+                Text {
+                    text: @tr("End the stream and quit?");
+                    color: Theme.text-primary;
+                    font-size: Tokens.type-body-size;
+                    vertical-alignment: center;
+                }
+                Button {
+                    text: @tr("End stream and quit");
+                    kind: "live";
+                    clicked => { Shell.quit-end-stream(); }
+                }
+                keep-live := Button {
+                    text: @tr("Keep streaming");
+                    clicked => { Shell.quit-keep(); }
+                }
+            }
+            // End stream from the menu bar asks first, in the frame (U4).
+            if Shell.end-stream-confirm && !Shell.quit-confirm: EndStreamConfirm { }
+            // Network access (ADR-0046 decision 7): shown in every workspace while other
+            // computers can connect, in words.
+            if Studio.rc-network-on: Text {
+                horizontal-stretch: 0;
+                text: @tr("Reachable from other computers");
+                color: Theme.text-secondary;
+                font-size: Tokens.type-caption-size;
+                vertical-alignment: center;
+                accessible-role: AccessibleRole.text;
+                accessible-label: @tr("Remote control: reachable from other computers");
+            }
+            if Shell.locked: Text {
+                horizontal-stretch: 0;
+                text: @tr("Layout locked");
+                color: Theme.text-secondary;
+                font-size: Tokens.type-caption-size;
                 vertical-alignment: center;
             }
-            Button {
-                text: @tr("End stream and quit");
-                kind: "live";
-                clicked => { Shell.quit-end-stream(); }
-            }
-            keep-live := Button {
-                text: @tr("Keep streaming");
-                clicked => { Shell.quit-keep(); }
-            }
         }
-        // End stream from the menu bar asks first, in the frame (U4).
-        if Shell.end-stream-confirm && !Shell.quit-confirm: EndStreamConfirm { }
-        // Network access (ADR-0046 decision 7): shown in every workspace while other
-        // computers can connect, in words.
-        if Studio.rc-network-on: Text {
-            horizontal-stretch: 0;
-            text: @tr("Reachable from other computers");
-            color: Theme.text-secondary;
-            font-size: Tokens.type-caption-size;
-            vertical-alignment: center;
-            accessible-role: AccessibleRole.text;
-            accessible-label: @tr("Remote control: reachable from other computers");
-        }
-        if Shell.locked: Text {
-            horizontal-stretch: 0;
-            text: @tr("Layout locked");
-            color: Theme.text-secondary;
-            font-size: Tokens.type-caption-size;
-            vertical-alignment: center;
-        }
-        // Takes the free width unless the toolbar has its own flexible space.
+        // The flexible space: on Windows it moves the window (ADR-0071).
         Rectangle {
-            horizontal-stretch: Shell.toolbar-visible && Shell.toolbar-has-space ? 0 : 1;
+            horizontal-stretch: 1;
+            min-width: Tokens.space-2;
         }
-        // Live indicator (U4, U21): the right end of this row in every workspace.
-        LiveIndicator { horizontal-stretch: 0; }
+        // The end group: the items after the flexible space, then the live indicator
+        // while live or recording (U4, U21). An item not shown takes no width and no
+        // spacing.
+        end := HorizontalLayout {
+            horizontal-stretch: 0;
+            padding-top: Tokens.space-1;
+            padding-bottom: Tokens.space-1;
+            spacing: Tokens.space-2;
+            for item in Shell.toolbar-visible ? Shell.toolbar-end : []: ToolbarCell {
+                item: item;
+                open-workspaces(x) => {
+                    root.ws-menu-x = x - root.absolute-position.x;
+                    ws-menu.show();
+                }
+            }
+            // Idle it is not in the layout at all (the status bar says "Not live").
+            if Shell.live-state != 0: LiveIndicator { horizontal-stretch: 0; }
+        }
+        // Windows: the window buttons end the row (ADR-0071).
+        if Shell.custom-caption: HorizontalLayout {
+            horizontal-stretch: 0;
+            padding-left: Tokens.space-2;
+            CaptionButton {
+                icon: IconName.window-minimize;
+                name: @tr("Minimize");
+                clicked => { Shell.caption(0); }
+            }
+            max := CaptionButton {
+                icon: Shell.window-maximized ? IconName.window-restore : IconName.window-maximize;
+                name: Shell.window-maximized ? @tr("Restore") : @tr("Maximize");
+                outside: true;
+                outside-hover: Shell.caption-max-hover;
+                outside-pressed: Shell.caption-max-pressed;
+                clicked => { Shell.caption(1); }
+            }
+            CaptionButton {
+                icon: IconName.close;
+                name: @tr("Close");
+                close: true;
+                clicked => { Shell.caption(2); }
+            }
+        }
     }
     ws-menu := WorkspaceMenu {
         x: root.ws-menu-x;
@@ -1351,9 +1473,12 @@ component StatusPicker inherits Rectangle {
 // and Scene collection in use (each opens its menu), and the canvas. It shows values
 // the app already has; it polls nothing (P13).
 component StatusBar inherits Rectangle {
-    property <string> state-text: Shell.live-state == 1 ? @tr("Live {} · not recording", Shell.live-duration)
-        : Shell.live-state == 2 ? @tr("Not live · recording {}", Shell.live-duration)
-        : Shell.live-state == 3 ? @tr("Live and recording {}", Shell.live-duration)
+    // The duration and the outputs (file name, server) live here, not in the
+    // frame's compact live indicator.
+    property <string> outputs: Shell.live-outputs != "" ? " · " + Shell.live-outputs : "";
+    property <string> state-text: Shell.live-state == 1 ? @tr("Live {} · not recording", Shell.live-duration) + outputs
+        : Shell.live-state == 2 ? @tr("Recording {}", Shell.live-duration) + outputs
+        : Shell.live-state == 3 ? @tr("Live and recording {}", Shell.live-duration) + outputs
         : @tr("Not live · not recording");
     height: Tokens.size-control-sm + 2 * Tokens.size-border;
     background: Theme.surface-sunken;
@@ -1367,12 +1492,19 @@ component StatusBar inherits Rectangle {
         padding-right: Tokens.space-3;
         padding-top: Tokens.size-border;
         spacing: Tokens.space-4;
-        Text {
+        HorizontalLayout {
             horizontal-stretch: 0;
-            text: state-text;
-            color: Shell.live-state != 0 ? Theme.text-primary : Theme.text-secondary;
-            font-size: Tokens.type-caption-size;
-            vertical-alignment: center;
+            spacing: Tokens.space-1;
+            if Shell.live-state != 0: VerticalLayout {
+                alignment: center;
+                Icon { name: IconName.dot; ink: Theme.state-live; }
+            }
+            Text {
+                text: state-text;
+                color: Shell.live-state != 0 ? Theme.text-primary : Theme.text-secondary;
+                font-size: Tokens.type-caption-size;
+                vertical-alignment: center;
+            }
         }
         if Studio.st-text != "": Text {
             horizontal-stretch: 0;

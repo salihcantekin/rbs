@@ -4311,6 +4311,7 @@ dependencies = [
  "rbs-api-ipc",
  "rbs-api-ws",
  "rbs-app",
+ "rbs-app-ui",
  "rbs-audio",
  "rbs-audio-io",
  "rbs-audio-io-coreaudio",
@@ -4358,11 +4359,19 @@ dependencies = [
  "serde",
  "serde_json",
  "slint",
- "slint-build",
  "toml 0.9.12+spec-1.1.0",
  "tray-icon",
  "windows",
  "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "rbs-app-ui"
+version = "0.0.1"
+dependencies = [
+ "rbs-ui",
+ "slint",
+ "slint-build",
 ]
 
 [[package]]
@@ -4985,6 +4994,15 @@ dependencies = [
  "allocation-counter",
  "bytes",
  "rbs-core",
+]
+
+[[package]]
+name = "rbs-vcam-mf-source"
+version = "0.0.1"
+dependencies = [
+ "rbs-vcam-ring",
+ "windows",
+ "windows-core",
 ]
 
 [[package]]
