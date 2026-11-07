@@ -39,7 +39,13 @@ pub(crate) fn lock_server(lock: bool) {
         LIVE.fetch_add(1, Ordering::AcqRel);
     } else {
         // Never below zero, whatever a caller does.
-        let _ = LIVE.fetch_update(Ordering::AcqRel, Ordering::Acquire, |n| n.checked_sub(1));
+        let mut n = LIVE.load(Ordering::Acquire);
+        while let Some(less) = n.checked_sub(1) {
+            match LIVE.compare_exchange_weak(n, less, Ordering::AcqRel, Ordering::Acquire) {
+                Ok(_) => break,
+                Err(now) => n = now,
+            }
+        }
     }
 }
 
