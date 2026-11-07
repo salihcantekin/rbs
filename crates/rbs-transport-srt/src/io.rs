@@ -224,11 +224,6 @@ fn is_oversized(e: &std::io::Error) -> bool {
 
 /// Sends one datagram. The socket blocks, but a UDP send waits only for room in the
 /// local buffer, never for the peer.
-fn debug_on() -> bool {
-    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *ON.get_or_init(|| std::env::var_os("RBS_SRT_DEBUG").is_some())
-}
-
 fn send_datagram(socket: &UdpSocket, data: &[u8], shared: &Shared) -> Result<(), Fail> {
     loop {
         match socket.send(data) {
@@ -242,12 +237,7 @@ fn send_datagram(socket: &UdpSocket, data: &[u8], shared: &Shared) -> Result<(),
             Err(e) if e.kind() == ErrorKind::Interrupted => {}
             // The datagram is lost but kept for retransmission: a loss report
             // recovers it.
-            Err(e) if is_icmp_echo(&e) || is_buffer_full(&e) => {
-                if debug_on() {
-                    eprintln!("DEBUG send swallowed {} bytes: {e:?}", data.len());
-                }
-                return Ok(());
-            }
+            Err(e) if is_icmp_echo(&e) || is_buffer_full(&e) => return Ok(()),
             Err(e) => return Err(connection("send", &e)),
         }
     }
@@ -337,6 +327,21 @@ impl Conn {
         send_datagram(&self.socket, &self.out, shared)?;
         self.last_sent = Instant::now();
         Ok(())
+    }
+
+    /// Sends the shutdown, the connection's last packet; the socket is closed next.
+    /// On Windows a send returns once the datagram is in the socket's send buffer,
+    /// and closing the socket right after can discard it: under load the listener
+    /// then never got the shutdown. Without a send buffer the send returns only
+    /// once the datagram has left (and every earlier one before it), so closing
+    /// cannot lose it.
+    fn send_shutdown(&mut self, shared: &Shared) -> Result<(), Fail> {
+        #[cfg(windows)]
+        {
+            // Best effort: if the option is refused, the send is as before.
+            let _ = socket2::SockRef::from(&self.socket).set_send_buffer_size(0);
+        }
+        self.send_control(ctrl::SHUTDOWN, 0, shared)
     }
 
     fn send_control(&mut self, kind: u16, info: u32, shared: &Shared) -> Result<(), Fail> {
@@ -711,7 +716,6 @@ impl Io {
     /// Resolves the listener, binds a socket and runs the caller handshake
     /// (induction, then conclusion with the HSREQ and stream id extensions).
     fn connect(&mut self) -> Result<Conn, Fail> {
-        let _ = debug_on();
         let url = &self.config.url;
         let addr = (url.host.as_str(), url.port)
             .to_socket_addrs()
@@ -1012,7 +1016,7 @@ impl Io {
         loop {
             if shared.abort.load(Ordering::Acquire) {
                 // Best effort, so the listener does not wait for its idle timeout.
-                let _ = conn.send_control(ctrl::SHUTDOWN, 0, &shared);
+                let _ = conn.send_shutdown(&shared);
                 return Err(Fail::Aborted);
             }
             conn.retransmit(&shared)?;
@@ -1036,11 +1040,7 @@ impl Io {
                 // Everything was acknowledged (or expired) and the listener has had
                 // the time to deliver it: close. libsrt discards what it holds back
                 // for its latency once the peer closes.
-                let r = conn.send_control(ctrl::SHUTDOWN, 0, &shared);
-                if debug_on() {
-                    eprintln!("DEBUG shutdown sent to {}: ok={}", conn.peer_id, r.is_ok());
-                }
-                return r;
+                return conn.send_shutdown(&shared);
             }
             let busy = !conn.loss.is_empty() || (!idle && conn.window_open());
             if busy {

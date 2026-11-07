@@ -128,8 +128,6 @@ pub struct TestServer {
 #[derive(Default)]
 struct Shutdowns {
     count: Mutex<usize>,
-    /// DEBUG (temporary): recent events.
-    log: Mutex<Vec<String>>,
     changed: Condvar,
 }
 
@@ -170,12 +168,7 @@ impl TestServer {
             .changed
             .wait_timeout_while(count, Duration::from_secs(10), |c| *c < n)
             .unwrap();
-        assert!(
-            *count >= n,
-            "{} of {n} shutdowns within 10 s; recent: {:?}",
-            *count,
-            self.shutdowns.log.lock().unwrap()
-        );
+        assert!(*count >= n, "{} of {n} shutdowns within 10 s", *count);
     }
 
     pub fn url(&self) -> String {
@@ -231,7 +224,6 @@ fn serve(
     let mut out = Vec::with_capacity(2048);
     let mut next_id = 1000_u32;
     let mut ever_connected = 0_usize;
-    let debug = std::env::var_os("RBS_SRT_DEBUG").is_some();
     if let Some(gate) = &b.accept_gate {
         gate.wait();
     }
@@ -252,31 +244,6 @@ fn serve(
             })
         {
             break;
-        }
-        match &received {
-            _ if !debug => {}
-            Err(e)
-                if !matches!(
-                    e.kind(),
-                    std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
-                ) =>
-            {
-                let mut l = shutdowns.log.lock().unwrap();
-                l.push(format!("recv err {e:?}"));
-                let k = l.len().saturating_sub(40);
-                l.drain(..k);
-            }
-            Ok((n, _)) if *n >= 16 && buf[0] & 0x80 != 0 => {
-                let mut l = shutdowns.log.lock().unwrap();
-                l.push(format!(
-                    "ctrl {} dest {}",
-                    (word(&buf, 0) >> 16) & 0x7FFF,
-                    word(&buf, 3)
-                ));
-                let k = l.len().saturating_sub(40);
-                l.drain(..k);
-            }
-            _ => {}
         }
         if let Ok((n, from)) = received {
             let p = &buf[..n];
