@@ -9,7 +9,7 @@
 use std::collections::BTreeMap;
 use std::net::{SocketAddr, UdpSocket};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Condvar, Mutex};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
@@ -121,6 +121,14 @@ pub struct TestServer {
     stop: Arc<AtomicBool>,
     thread: Option<JoinHandle<()>>,
     sessions: Arc<Mutex<Vec<Session>>>,
+    shutdowns: Arc<Shutdowns>,
+}
+
+/// Shutdown packets received so far, for tests that wait for them.
+#[derive(Default)]
+struct Shutdowns {
+    count: Mutex<usize>,
+    changed: Condvar,
 }
 
 impl TestServer {
@@ -132,17 +140,35 @@ impl TestServer {
         let addr = socket.local_addr().unwrap();
         let stop = Arc::new(AtomicBool::new(false));
         let sessions = Arc::new(Mutex::new(Vec::new()));
+        let shutdowns = Arc::new(Shutdowns::default());
         let thread = {
             let stop = Arc::clone(&stop);
             let sessions = Arc::clone(&sessions);
-            thread::spawn(move || serve(&socket, &behaviour, &stop, &sessions))
+            let shutdowns = Arc::clone(&shutdowns);
+            thread::spawn(move || serve(&socket, &behaviour, &stop, &sessions, &shutdowns))
         };
         Self {
             addr,
             stop,
             thread: Some(thread),
             sessions,
+            shutdowns,
         }
+    }
+
+    /// Waits until the listener has received `n` shutdown packets. A sent datagram
+    /// is not necessarily readable yet when `send_to` returns (Windows loopback
+    /// under load), so a test that checks the caller's shutdown waits for it here
+    /// instead of relying on [`finish`](Self::finish)'s last short read. The
+    /// timeout is a hang guard only.
+    pub fn wait_for_shutdowns(&self, n: usize) {
+        let count = self.shutdowns.count.lock().unwrap();
+        let (count, _) = self
+            .shutdowns
+            .changed
+            .wait_timeout_while(count, Duration::from_secs(10), |c| *c < n)
+            .unwrap();
+        assert!(*count >= n, "{} of {n} shutdowns within 10 s", *count);
     }
 
     pub fn url(&self) -> String {
@@ -186,7 +212,13 @@ fn words(out: &mut Vec<u8>, ws: &[u32]) {
     }
 }
 
-fn serve(socket: &UdpSocket, b: &Behaviour, stop: &AtomicBool, sessions: &Mutex<Vec<Session>>) {
+fn serve(
+    socket: &UdpSocket,
+    b: &Behaviour,
+    stop: &AtomicBool,
+    sessions: &Mutex<Vec<Session>>,
+    shutdowns: &Shutdowns,
+) {
     let mut conns: Vec<Conn> = Vec::with_capacity(8);
     let mut buf = vec![0_u8; 2048];
     let mut out = Vec::with_capacity(2048);
@@ -199,9 +231,18 @@ fn serve(socket: &UdpSocket, b: &Behaviour, stop: &AtomicBool, sessions: &Mutex<
         // Once stopped, the packets already received are still read (a client's last
         // shutdown may be queued when `finish` is called); the loop ends at the first
         // read that finds none.
+        // Only an empty read ends it: Windows also reports an earlier datagram's ICMP
+        // "port unreachable" as an error on a later read (ConnectionReset).
         let stopping = stop.load(Ordering::SeqCst);
         let received = socket.recv_from(&mut buf);
-        if stopping && received.is_err() {
+        if stopping
+            && received.as_ref().is_err_and(|e| {
+                matches!(
+                    e.kind(),
+                    std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+                )
+            })
+        {
             break;
         }
         if let Ok((n, from)) = received {
@@ -223,7 +264,11 @@ fn serve(socket: &UdpSocket, b: &Behaviour, stop: &AtomicBool, sessions: &Mutex<
                 } else if let Some(c) = conns.iter_mut().find(|c| c.own_id == dest && !c.closed) {
                     match kind {
                         1 => c.session.keepalives += 1,
-                        5 => c.session.shutdown = true,
+                        5 => {
+                            c.session.shutdown = true;
+                            *shutdowns.count.lock().unwrap() += 1;
+                            shutdowns.changed.notify_all();
+                        }
                         6 => c.session.ackacks += 1,
                         7 if n >= 24 => c
                             .session
