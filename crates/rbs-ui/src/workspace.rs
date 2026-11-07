@@ -1143,6 +1143,50 @@ impl Workspace {
         Ok(())
     }
 
+    /// Move a panel into a new stack on the `edge` side of window stack `stack` of
+    /// window `window` (a drop on that side of the five-way guide, ADR-0049 decision
+    /// 5). Dropping the only tab of a stack beside that same stack changes nothing.
+    pub fn move_beside(
+        &mut self,
+        id: &PanelId,
+        window: usize,
+        stack: usize,
+        edge: Edge,
+    ) -> Result<(), WorkspaceError> {
+        let target = self
+            .windows
+            .get(window)
+            .and_then(|w| w.stack(stack))
+            .ok_or(WorkspaceError::NoTarget)?;
+        // The target is found again by one of its other panels once `id` is out.
+        let Some(anchor) = target.tabs.iter().find(|p| *p != id).cloned() else {
+            return Ok(());
+        };
+        let w = self
+            .window_of(id)
+            .ok_or_else(|| WorkspaceError::NotOpen(id.clone()))?;
+        self.windows[w].remove(id);
+        self.drop_empty_floating();
+        let (w, stack, _) = self.find(&anchor).ok_or(WorkspaceError::NoTarget)?;
+        let win = &mut self.windows[w];
+        let (tree, local) = win.locate(stack).ok_or(WorkspaceError::NoTarget)?;
+        let new = Tabs {
+            tabs: vec![id.clone()],
+            active: 0,
+            collapsed: false,
+        };
+        let done = win
+            .trees_mut()
+            .into_iter()
+            .nth(tree)
+            .is_some_and(|t| t.insert_beside(local, new, edge));
+        if done {
+            Ok(())
+        } else {
+            Err(WorkspaceError::NoTarget)
+        }
+    }
+
     /// Collapse (`ui.panel.collapse`) or expand (`ui.panel.expand`) the stack holding
     /// panel `id`, in any window. The centre keeps one stack that is not collapsed.
     pub fn set_collapsed(&mut self, id: &PanelId, collapsed: bool) -> Result<(), WorkspaceError> {
@@ -1874,6 +1918,37 @@ layout = { tabs = ["rbs.status-bar"] }
         assert!(main_of(&w).auto_hide.is_empty());
         w.move_to_edge(&id("rbs.properties"), 0, Edge::Left)
             .unwrap();
+        w.validate().unwrap();
+    }
+
+    #[test]
+    fn move_beside_splits_the_target_stack() {
+        let mut w = builtin::edit();
+        let (mixer, scenes) = (id("rbs.mixer"), id("rbs.scenes"));
+        let before = w.windows[0].stack_count();
+        let (_, s, _) = w.find(&scenes).unwrap();
+        w.move_beside(&mixer, 0, s, Edge::Right).unwrap();
+        w.validate().unwrap();
+        // Mixer was the bottom area's only panel: it left that stack and has its own,
+        // right after Scenes.
+        let (_, m, _) = w.find(&mixer).unwrap();
+        let (_, s2, _) = w.find(&scenes).unwrap();
+        assert_eq!(m, s2 + 1);
+        assert_eq!(w.windows[0].stack_count(), before);
+        // The only tab of a stack dropped beside that stack: nothing changes.
+        let same = w.clone();
+        w.move_beside(&mixer, 0, m, Edge::Top).unwrap();
+        assert_eq!(w, same);
+        // From a floating window: the floating window goes away.
+        let f = w.float(&id("rbs.stats")).unwrap();
+        let (_, s, _) = w.find(&scenes).unwrap();
+        w.move_beside(&id("rbs.stats"), 0, s, Edge::Bottom).unwrap();
+        assert_eq!(w.windows.len(), f);
+        assert_eq!(w.find(&id("rbs.stats")).map(|l| l.1), Some(s + 1));
+        assert_eq!(
+            w.move_beside(&mixer, 0, 99, Edge::Left),
+            Err(WorkspaceError::NoTarget)
+        );
         w.validate().unwrap();
     }
 

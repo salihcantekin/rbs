@@ -48,6 +48,16 @@ pub enum Edge {
     Bottom,
 }
 
+/// The split axis along an edge, and whether the edge's side comes first in it.
+fn edge_axis(edge: Edge) -> (Axis, bool) {
+    match edge {
+        Edge::Left => (Axis::Horizontal, true),
+        Edge::Right => (Axis::Horizontal, false),
+        Edge::Top => (Axis::Vertical, true),
+        Edge::Bottom => (Axis::Vertical, false),
+    }
+}
+
 /// A split: two or more children with one ratio each. Ratios are positive and sum to 1.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Split {
@@ -432,12 +442,7 @@ impl Node {
             *self = new;
             return;
         }
-        let (axis, first) = match edge {
-            Edge::Left => (Axis::Horizontal, true),
-            Edge::Right => (Axis::Horizontal, false),
-            Edge::Top => (Axis::Vertical, true),
-            Edge::Bottom => (Axis::Vertical, false),
-        };
+        let (axis, first) = edge_axis(edge);
         match self {
             Node::Split(s) if s.axis == axis => {
                 s.ratios.iter_mut().for_each(|r| *r *= 1.0 - EDGE_SHARE);
@@ -544,6 +549,55 @@ impl Node {
             return false;
         }
         go(self, anchor, &mut Some(stack), axis)
+    }
+
+    /// Put `stack` on the `edge` side of stack number `index` (a drop on that side of
+    /// the five-way guide, ADR-0049 decision 5). The two share the old stack's place
+    /// half and half: inside its parent split when that split runs along the edge's
+    /// axis, else in a new split in its place. Returns false (and leaves the tree
+    /// alone) when there is no such stack or `stack` has no tabs.
+    pub fn insert_beside(&mut self, index: usize, stack: Tabs, edge: Edge) -> bool {
+        fn go(n: &mut Node, index: &mut usize, new: &mut Option<Tabs>, edge: Edge) -> bool {
+            let (axis, first) = edge_axis(edge);
+            match n {
+                Node::Tabs(_) if *index == 0 => {
+                    let Some(t) = new.take() else { return false };
+                    let old = std::mem::replace(n, Node::empty());
+                    let parts = if first {
+                        vec![(0.5, Node::Tabs(t)), (0.5, old)]
+                    } else {
+                        vec![(0.5, old), (0.5, Node::Tabs(t))]
+                    };
+                    *n = Node::split(axis, parts);
+                    true
+                }
+                Node::Tabs(_) => {
+                    *index -= 1;
+                    false
+                }
+                Node::Split(s) => {
+                    for i in 0..s.children.len() {
+                        if *index == 0 && s.axis == axis && matches!(s.children[i], Node::Tabs(_)) {
+                            let Some(t) = new.take() else { return false };
+                            let half = s.ratios[i] / 2.0;
+                            s.ratios[i] = half;
+                            let at = if first { i } else { i + 1 };
+                            s.ratios.insert(at, half);
+                            s.children.insert(at, Node::Tabs(t));
+                            return true;
+                        }
+                        if go(&mut s.children[i], index, new, edge) {
+                            return true;
+                        }
+                    }
+                    false
+                }
+            }
+        }
+        if stack.tabs.is_empty() {
+            return false;
+        }
+        go(self, &mut { index }, &mut Some(stack), edge)
     }
 
     /// Make tab `tab` of stack `stack` visible. Returns false when out of range.
@@ -726,6 +780,53 @@ mod tests {
                 (0.3, Node::tabs(vec![id("rbs.mixer")])),
             ],
         )
+    }
+
+    fn one(p: &'static str) -> Tabs {
+        Tabs {
+            tabs: vec![id(p)],
+            active: 0,
+            collapsed: false,
+        }
+    }
+
+    #[test]
+    fn insert_beside_shares_the_stack_place() {
+        // Along the parent split's axis: a sibling taking half of the stack's share.
+        let mut n = sample();
+        assert!(n.insert_beside(2, one("rbs.stats"), Edge::Bottom));
+        let Node::Split(s) = &n else { panic!() };
+        assert_eq!(s.children.len(), 3);
+        assert_eq!(s.ratios, vec![0.7, 0.15, 0.15]);
+        assert_eq!(n.find(&id("rbs.stats")), Some((3, 0)));
+        // Across it: a new split in the stack's place, the new stack first on the left.
+        let mut n = sample();
+        assert!(n.insert_beside(2, one("rbs.stats"), Edge::Left));
+        assert_eq!(n.depth(), 2);
+        assert_eq!(n.find(&id("rbs.stats")), Some((2, 0)));
+        assert_eq!(n.find(&id("rbs.mixer")), Some((3, 0)));
+        // Inside the inner horizontal split, before the Program stack.
+        let mut n = sample();
+        assert!(n.insert_beside(1, one("rbs.stats"), Edge::Left));
+        assert_eq!(n.find(&id("rbs.stats")), Some((1, 0)));
+        assert_eq!(n.find(&id("rbs.program")), Some((2, 0)));
+        // A root stack becomes a split.
+        let mut n = Node::tabs(vec![id("rbs.program")]);
+        assert!(n.insert_beside(0, one("rbs.stats"), Edge::Top));
+        assert_eq!(n.find(&id("rbs.stats")), Some((0, 0)));
+        // No such stack, or nothing to insert: unchanged.
+        let mut n = sample();
+        assert!(!n.insert_beside(3, one("rbs.stats"), Edge::Top));
+        assert!(!n.insert_beside(
+            0,
+            Tabs {
+                tabs: Vec::new(),
+                active: 0,
+                collapsed: false
+            },
+            Edge::Top
+        ));
+        assert_eq!(n, sample());
     }
 
     #[test]

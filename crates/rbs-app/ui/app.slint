@@ -102,6 +102,18 @@ export global Shell {
     in-out property <Cover> flyout;
     callback end-stream-answer(bool /* end */);
 
+    // Dragging a tab (ADR-0049 decision 5): the payload names the panel; the dock area
+    // under the pointer reports moves and the drop in its own coordinates, and Rust
+    // answers with the guide: the part of window <drop-window> the drop would fill.
+    pure callback panel-data(string /* panel */) -> data-transfer;
+    callback drag-over(int /* window */, data-transfer, length, length);
+    callback drag-drop(int /* window */, data-transfer, length, length);
+    callback drag-leave();
+    in property <int> drop-window: -1;
+    in property <Cover> drop-guide;
+    // The guide in window surface coordinates while it shows: the preview layer cuts it out.
+    in-out property <bool> drop-open;
+    in-out property <Cover> drop-cover;
     // A window's dock area: its position in the window and its size.
     callback relayout(int /* window */, length, length, length, length);
     callback collapse(string, bool /* collapsed */);
@@ -268,10 +280,16 @@ component Tab inherits Rectangle {
     }
     // The TouchArea comes after the FocusScope so it is on top: a FocusScope
     // under the pointer takes the press for itself (focus-on-click).
-    touch := TouchArea {
-        clicked => { focus.focus(); activate(); }
-        pointer-event(e) => {
-            if e.kind == PointerEventKind.down && e.button == PointerEventButton.right { open-menu(); }
+    // Dragging the tab moves the panel (ADR-0049 decision 5); a press without a drag
+    // reaches the TouchArea inside as a click. Not while the layout is locked.
+    drag := DragArea {
+        allow-move: !Shell.locked;
+        data: Shell.panel-data(tab.id);
+        touch := TouchArea {
+            clicked => { focus.focus(); activate(); }
+            pointer-event(e) => {
+                if e.kind == PointerEventKind.down && e.button == PointerEventButton.right { open-menu(); }
+            }
         }
     }
     title := Text {
@@ -485,6 +503,21 @@ component DockArea inherits Rectangle {
     function report() {
         Shell.relayout(window, ax, ay, self.width, self.height);
     }
+    // Under the stacks: the stacks' own items ignore drag events, so every drag over
+    // the dock area reaches it.
+    drop := DropArea {
+        can-drop(e) => {
+            Shell.drag-over(root.window, e.data, e.position.x, e.position.y);
+            return DragAction.move;
+        }
+        dropped(e) => {
+            Shell.drag-drop(root.window, e.data, e.position.x, e.position.y);
+            return DragAction.move;
+        }
+        changed has-drag => {
+            if !self.has-drag { Shell.drag-leave(); }
+        }
+    }
     for s in stacks: StackView {
         x: s.x;
         y: s.y;
@@ -499,6 +532,20 @@ component DockArea inherits Rectangle {
         width: h.w;
         height: h.h;
         data: h;
+    }
+    // The drop guide: the part of the window the drop would fill.
+    if drop.has-drag && Shell.drop-window == root.window && Shell.drop-guide.width > 0: Rectangle {
+        x: Shell.drop-guide.x;
+        y: Shell.drop-guide.y;
+        width: Shell.drop-guide.width;
+        height: Shell.drop-guide.height;
+        property <Cover> rect: { x: self.absolute-position.x, y: self.absolute-position.y, width: self.width, height: self.height };
+        init => { Shell.drop-cover = rect; Shell.drop-open = true; }
+        changed rect => { Shell.drop-cover = rect; }
+        background: Theme.accent-subtle.with-alpha(0.6);
+        border-radius: Tokens.radius-md;
+        border-width: Tokens.size-focus-ring;
+        border-color: Theme.accent;
     }
 }
 

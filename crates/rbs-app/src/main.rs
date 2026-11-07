@@ -30,6 +30,7 @@ use std::time::{Duration, Instant};
 
 use rbs_app::background::{self, Action, OnClose, Request};
 use rbs_app::studio_host;
+use rbs_ui::frame::{DropPlace, DropTarget, drop_target};
 use rbs_ui::layout::{Axis, Edge, Rect};
 use rbs_ui::session::CommandError;
 use rbs_ui::store::{StoreError, WorkspaceStore};
@@ -140,6 +141,8 @@ struct App {
     main_origin: (f32, f32),
     drag_group: Option<u64>,
     next_group: u64,
+    /// The drop guide shown while a tab is dragged: its window and rectangle.
+    drop_guide: Option<(usize, Rect)>,
     toast: Option<Toast>,
     toast_serial: u64,
     error: Option<UiError>,
@@ -420,6 +423,75 @@ impl App {
             group: Some(group),
         };
         self.command(c, Origin::Pointer);
+    }
+
+    /// Where panel `panel` dragged to `(x, y)` in window `window`'s dock area would go.
+    fn drop_at(&self, window: usize, panel: &PanelId, x: f32, y: f32) -> Option<DropTarget> {
+        let area = self.area(window);
+        let w = self.session.workspace().windows.get(window)?;
+        drop_target(&w.flatten(area), area, panel, x, y)
+    }
+
+    /// A tab is dragged over window `window`'s dock area: show where it would go.
+    fn drag_over(&mut self, window: usize, panel: Option<PanelId>, x: f32, y: f32) {
+        let guide = panel
+            .and_then(|p| self.drop_at(window, &p, x, y))
+            .map(|t| (window, t.guide));
+        self.show_drop_guide(guide);
+    }
+
+    /// A tab is dropped on window `window`'s dock area.
+    fn drag_drop(&mut self, window: usize, panel: Option<PanelId>, x: f32, y: f32) {
+        self.show_drop_guide(None);
+        let Some(panel) = panel else { return };
+        let Some(t) = self.drop_at(window, &panel, x, y) else {
+            return;
+        };
+        let c = match t.place {
+            DropPlace::Into(stack) => LayoutCommand::MoveToStack {
+                panel,
+                window,
+                stack,
+            },
+            DropPlace::Beside(stack, edge) => LayoutCommand::MoveBeside {
+                panel,
+                window,
+                stack,
+                edge,
+            },
+            DropPlace::WindowEdge(edge) => LayoutCommand::MoveToEdge {
+                panel,
+                window,
+                edge,
+            },
+        };
+        self.command(c, Origin::Pointer);
+    }
+
+    fn show_drop_guide(&mut self, guide: Option<(usize, Rect)>) {
+        if guide == self.drop_guide {
+            return;
+        }
+        self.drop_guide = guide;
+        let set = |s: Shell<'_>| match guide {
+            Some((w, r)) => {
+                s.set_drop_window(w as i32);
+                s.set_drop_guide(Cover {
+                    x: r.x,
+                    y: r.y,
+                    width: r.w,
+                    height: r.h,
+                });
+            }
+            None => {
+                s.set_drop_window(-1);
+                s.set_drop_open(false);
+            }
+        };
+        set(self.main.global::<Shell>());
+        for f in &self.floats {
+            set(f.window.global::<Shell>());
+        }
     }
 
     fn end_drag(&mut self) {
@@ -1278,6 +1350,30 @@ fn install(g: &Shell<'_>, ctx: &Ctx) {
         }
         app.set_area(window as usize, Rect::sized(w, h));
     });
+    g.on_panel_data(|id| {
+        let mut d = slint::DataTransfer::default();
+        d.set_plain_text(id);
+        d
+    });
+    on!(on_drag_over, |app,
+                       window: i32,
+                       data: slint::DataTransfer,
+                       x: f32,
+                       y: f32| {
+        let p = data.plain_text().ok().and_then(|t| panel(&t));
+        app.drag_over(window as usize, p, x, y);
+    });
+    on!(on_drag_drop, |app,
+                       window: i32,
+                       data: slint::DataTransfer,
+                       x: f32,
+                       y: f32| {
+        let p = data.plain_text().ok().and_then(|t| panel(&t));
+        app.drag_drop(window as usize, p, x, y);
+    });
+    on!(on_drag_leave, |app| {
+        app.show_drop_guide(None);
+    });
     on!(on_collapse, |app,
                       id: slint::SharedString,
                       collapsed: bool| {
@@ -1959,6 +2055,7 @@ fn run(config: PathBuf, notice: Option<String>) -> Result<(), Box<dyn std::error
             areas: Vec::new(),
             main_origin: (0.0, 0.0),
             drag_group: None,
+            drop_guide: None,
             next_group: 0,
             toast: None,
             toast_serial: 0,
