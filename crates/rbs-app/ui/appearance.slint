@@ -2,7 +2,8 @@
 // theme library and the theme editor. Rust (`appearance_page`) pushes state into the
 // `Appearance` global of the Settings window and handles its callbacks.
 import { Theme, Tokens } from "tokens.slint";
-import { Button, Checkbox, ColorPicker, MenuItem, NumberField, Select, TextField } from "components.slint";
+import { Button, Checkbox, ColorPicker, FocusRing, MenuItem, NumberField, Select, TextField, Toggle } from "components.slint";
+import { SettingsCard, SettingRow, SettingBlock, SettingsNotice, SettingsCallout } from "settings.slint";
 
 // One theme in the library: built-in themes first, then user themes by name.
 // `surface`, `text`, `accent`: its swatch. `usable`: it passes every rule; else
@@ -266,160 +267,248 @@ component ThemeEditor inherits VerticalLayout {
     }
 }
 
+// One theme in the library list: its swatch, its name, "Built in" for the built-in
+// ones, and its first problem when it cannot be used. The selected one has the
+// accent-tinted row with the accent bar (as in the section list) and is marked
+// selected for screen readers (U7).
+component ThemeListRow inherits Rectangle {
+    in property <ThemeOption> theme;
+    in property <bool> selected;
+    in property <bool> enabled: true;
+    callback activated();
+    min-height: row.min-height;
+    preferred-height: row.preferred-height;
+    border-radius: Tokens.radius-md;
+    background: root.selected ? Theme.accent-subtle
+        : touch.has-hover && root.enabled ? Theme.surface-overlay : transparent;
+    accessible-role: list-item;
+    accessible-label: root.theme.user ? root.theme.name : @tr("{} (built in)", root.theme.name);
+    accessible-item-selectable: true;
+    accessible-item-selected: root.selected;
+    accessible-enabled: root.enabled;
+    accessible-action-default => { if root.enabled { root.activated(); } }
+    forward-focus: focus;
+    if root.selected: Rectangle {
+        x: 0;
+        width: Tokens.size-focus-ring;
+        height: parent.height - Tokens.space-2 * 2;
+        y: Tokens.space-2;
+        border-radius: self.width / 2;
+        background: Theme.accent;
+    }
+    row := HorizontalLayout {
+        padding: Tokens.space-2;
+        padding-left: Tokens.space-3;
+        spacing: Tokens.space-3;
+        VerticalLayout {
+            alignment: center;
+            Swatch {
+                surface: root.theme.surface;
+                text: root.theme.text;
+                accent: root.theme.accent;
+            }
+        }
+        VerticalLayout {
+            horizontal-stretch: 1;
+            alignment: center;
+            spacing: Tokens.space-1;
+            Text {
+                text: root.theme.name;
+                color: root.enabled ? Theme.text-primary : Theme.text-disabled;
+                font-size: Tokens.type-label-size;
+                font-weight: root.selected ? Tokens.type-title-weight : Tokens.type-label-weight;
+                horizontal-alignment: left;
+                overflow: elide;
+                accessible-role: none;
+            }
+            if !root.theme.usable: Problem { text: @tr("Cannot be used: {}", root.theme.problem); }
+        }
+        if !root.theme.user: VerticalLayout {
+            alignment: center;
+            Rectangle {
+                border-radius: self.height / 2;
+                border-width: Tokens.size-border;
+                border-color: Theme.border-strong;
+                height: chip.preferred-height + Tokens.space-1;
+                width: chip.preferred-width + Tokens.space-2 * 2;
+                chip := Text {
+                    text: @tr("Built in");
+                    color: Theme.text-secondary;
+                    font-size: Tokens.type-caption-size;
+                    accessible-role: none;
+                }
+            }
+        }
+    }
+    focus := FocusScope {
+        enabled: root.enabled;
+        key-pressed(e) => {
+            if e.text == Key.Return || e.text == " " { root.activated(); return accept; }
+            reject
+        }
+    }
+    touch := TouchArea {
+        enabled: root.enabled;
+        clicked => { root.activated(); }
+    }
+    FocusRing { show: focus.has-focus; border-radius: Tokens.radius-md; }
+}
+
 export component AppearanceSettings inherits Rectangle {
     property <bool> confirming-delete;
     property <ThemeOption> current: Appearance.selected >= 0 ? Appearance.themes[Appearance.selected] : { name: "" };
     property <bool> has-selection: Appearance.selected >= 0;
     changed has-selection => { confirming-delete = false; }
     form := VerticalLayout {
-        spacing: Tokens.space-3;
+        spacing: Tokens.space-4;
         alignment: start;
-        if Appearance.dev-override: Hint {
+        if Appearance.dev-override: SettingsNotice {
             text: @tr("A development override (RBS_TOKENS or RBS_THEME) is in effect: the themes chosen here are saved but not all of them are shown.");
         }
-        if Appearance.note != "": Problem { text: Appearance.note; }
+        if Appearance.note != "": SettingsNotice { text: Appearance.note; problem: true; }
         if Appearance.keep-asking: KeepLook { }
-        VerticalLayout {
-            spacing: Tokens.space-1;
-            Checkbox {
-                text: @tr("Follow the system's light or dark setting");
-                checked: Appearance.follow-system;
-                toggled(on) => { Appearance.set-follow-system(on); }
+        SettingsCard {
+            title: @tr("Theme in use");
+            SettingRow {
+                divider: false;
+                label: @tr("Follow the system's light or dark setting");
+                help: @tr("Uses one theme while the system is dark and another while it is light.");
+                fill: false;
+                Toggle {
+                    label: @tr("Follow the system's light or dark setting");
+                    checked: Appearance.follow-system;
+                    toggled(on) => { Appearance.set-follow-system(on); }
+                }
             }
-        }
-        if Appearance.follow-system: Field {
-            label: @tr("When the system is dark");
-            Select {
+            if Appearance.follow-system: SettingRow {
                 label: @tr("When the system is dark");
-                options: Appearance.usable-names;
-                index: Appearance.dark-index;
-                selected(i) => { Appearance.pick(0, i); }
+                Select {
+                    label: @tr("When the system is dark");
+                    options: Appearance.usable-names;
+                    index: Appearance.dark-index;
+                    selected(i) => { Appearance.pick(0, i); }
+                }
             }
-        }
-        if Appearance.follow-system: Field {
-            label: @tr("When the system is light");
-            Select {
+            if Appearance.follow-system: SettingRow {
                 label: @tr("When the system is light");
-                options: Appearance.usable-names;
-                index: Appearance.light-index;
-                selected(i) => { Appearance.pick(1, i); }
+                Select {
+                    label: @tr("When the system is light");
+                    options: Appearance.usable-names;
+                    index: Appearance.light-index;
+                    selected(i) => { Appearance.pick(1, i); }
+                }
             }
-        }
-        if !Appearance.follow-system: Field {
-            label: @tr("Theme");
-            Select {
+            if !Appearance.follow-system: SettingRow {
                 label: @tr("Theme");
-                options: Appearance.usable-names;
-                index: Appearance.theme-index;
-                selected(i) => { Appearance.pick(2, i); }
+                Select {
+                    label: @tr("Theme");
+                    options: Appearance.usable-names;
+                    index: Appearance.theme-index;
+                    selected(i) => { Appearance.pick(2, i); }
+                }
             }
         }
         // The theme list on the left, the editor on the right (owner's choice, ADR-0057
         // decision 6).
         HorizontalLayout {
-          spacing: Tokens.space-4;
-          alignment: start;
-          VerticalLayout {
-            spacing: Tokens.space-3;
-            alignment: start;
-            min-width: Appearance.editing ? Tokens.size-menu-md : 0px;
-            horizontal-stretch: Appearance.editing ? 0 : 1;
-        Field {
-            label: @tr("Themes");
-            VerticalLayout {
-                accessible-role: list;
-                accessible-label: @tr("Themes");
-                for t[i] in Appearance.themes: VerticalLayout {
+            spacing: Tokens.space-4;
+            alignment: stretch;
+            SettingsCard {
+                title: @tr("Themes");
+                description: Appearance.editing ? "" : @tr("Pick a theme to use, edit or share it. Built-in themes cannot be changed: duplicate one to make your own.");
+                min-width: Appearance.editing ? Tokens.size-menu-md : 0px;
+                horizontal-stretch: Appearance.editing ? 0 : 1;
+                VerticalLayout {
+                    spacing: Tokens.space-1;
+                    padding-bottom: Tokens.space-2;
+                    accessible-role: list;
+                    accessible-label: @tr("Themes");
+                    for t[i] in Appearance.themes: ThemeListRow {
+                        theme: t;
+                        selected: Appearance.selected == i;
+                        enabled: !Appearance.editing;
+                        activated => { Appearance.select(i); }
+                    }
+                }
+                if !Appearance.editing && root.current.user: SettingRow {
+                    label: @tr("Name");
+                    TextField {
+                        label: @tr("Name");
+                        text: root.current.name;
+                        accepted(t) => { Appearance.rename(t); }
+                    }
+                }
+                if !Appearance.editing && !root.confirming-delete: SettingBlock {
                     HorizontalLayout {
                         spacing: Tokens.space-2;
                         alignment: start;
-                        Swatch {
-                            surface: t.surface;
-                            text: t.text;
-                            accent: t.accent;
-                            y: (parent.height - self.preferred-height) / 2;
+                        Button {
+                            text: @tr("Use");
+                            kind: "primary";
+                            enabled: root.has-selection && root.current.usable;
+                            clicked => { Appearance.use-selected(); }
                         }
-                        MenuItem {
-                            width: Tokens.size-menu-sm;
-                            text: t.user ? t.name : @tr("{} (built in)", t.name);
-                            checked: Appearance.selected == i;
-                            enabled: !Appearance.editing;
-                            activated => { Appearance.select(i); }
+                        Button {
+                            text: root.current.user || !root.has-selection ? @tr("Edit") : @tr("Duplicate to edit");
+                            enabled: root.has-selection;
+                            clicked => { Appearance.edit(); }
+                        }
+                        Button {
+                            text: @tr("Duplicate");
+                            enabled: root.has-selection;
+                            clicked => { Appearance.duplicate(); }
+                        }
+                        Button {
+                            text: @tr("Delete");
+                            kind: "ghost";
+                            enabled: root.has-selection && root.current.user;
+                            clicked => { root.confirming-delete = true; }
+                        }
+                        Rectangle { horizontal-stretch: 1; }
+                        Button {
+                            text: @tr("Import…");
+                            kind: "ghost";
+                            clicked => { Appearance.import(); }
+                        }
+                        Button {
+                            text: @tr("Export…");
+                            kind: "ghost";
+                            enabled: root.has-selection && root.current.user;
+                            clicked => { Appearance.export(); }
                         }
                     }
-                    if !t.usable: Problem { text: @tr("Cannot be used: {}", t.problem); }
+                }
+                if !Appearance.editing && root.confirming-delete: SettingBlock {
+                    SettingsCallout {
+                        label: @tr("Delete {}?", root.current.name);
+                        Text {
+                            text: @tr("Delete {}? You can get it back from the deleted folder.", root.current.name);
+                            color: Theme.text-primary;
+                            wrap: word-wrap;
+                        }
+                        HorizontalLayout {
+                            spacing: Tokens.space-2;
+                            alignment: start;
+                            Button {
+                                text: @tr("Delete");
+                                kind: "primary";
+                                clicked => {
+                                    root.confirming-delete = false;
+                                    Appearance.delete();
+                                }
+                            }
+                            Button {
+                                text: @tr("Cancel");
+                                clicked => { root.confirming-delete = false; }
+                            }
+                        }
+                    }
                 }
             }
-        }
-        if !Appearance.editing: HorizontalLayout {
-            spacing: Tokens.space-2;
-            alignment: start;
-            Button {
-                text: @tr("Use");
-                enabled: root.has-selection && root.current.usable;
-                clicked => { Appearance.use-selected(); }
+            if Appearance.editing: SettingsCard {
+                horizontal-stretch: 1;
+                ThemeEditor { padding-bottom: Tokens.space-3; }
             }
-            Button {
-                text: root.current.user || !root.has-selection ? @tr("Edit") : @tr("Duplicate to edit");
-                enabled: root.has-selection;
-                clicked => { Appearance.edit(); }
-            }
-            Button {
-                text: @tr("Duplicate");
-                enabled: root.has-selection;
-                clicked => { Appearance.duplicate(); }
-            }
-            Button {
-                text: @tr("Delete");
-                enabled: root.has-selection && root.current.user;
-                clicked => { root.confirming-delete = true; }
-            }
-        }
-        if !Appearance.editing && root.confirming-delete: HorizontalLayout {
-            spacing: Tokens.space-2;
-            alignment: start;
-            Text {
-                text: @tr("Delete {}? You can get it back from the deleted folder.", root.current.name);
-                color: Theme.text-primary;
-                vertical-alignment: center;
-                wrap: word-wrap;
-            }
-            Button {
-                text: @tr("Delete");
-                kind: "primary";
-                clicked => {
-                    root.confirming-delete = false;
-                    Appearance.delete();
-                }
-            }
-            Button {
-                text: @tr("Cancel");
-                clicked => { root.confirming-delete = false; }
-            }
-        }
-        if !Appearance.editing && root.current.user: Field {
-            label: @tr("Name");
-            TextField {
-                label: @tr("Name");
-                text: root.current.name;
-                accepted(t) => { Appearance.rename(t); }
-            }
-        }
-        if !Appearance.editing: HorizontalLayout {
-            spacing: Tokens.space-2;
-            alignment: start;
-            Button {
-                text: @tr("Import…");
-                clicked => { Appearance.import(); }
-            }
-            Button {
-                text: @tr("Export…");
-                enabled: root.has-selection && root.current.user;
-                clicked => { Appearance.export(); }
-            }
-        }
-          }
-            if Appearance.editing: ThemeEditor { horizontal-stretch: 1; }
         }
     }
     height: form.preferred-height;
