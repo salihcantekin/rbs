@@ -10,6 +10,7 @@
 //! library or adapter (principle P1).
 
 pub mod caps;
+pub mod conformance;
 mod error;
 mod handoff;
 pub mod mailbox;

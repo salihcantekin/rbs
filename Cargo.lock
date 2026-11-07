@@ -4988,6 +4988,16 @@ name = "rbs-vcam-ring"
 version = "0.0.1"
 
 [[package]]
+name = "rbs-vcam-test"
+version = "0.0.1"
+dependencies = [
+ "allocation-counter",
+ "bytes",
+ "rbs-core",
+ "rbs-vcam",
+]
+
+[[package]]
 name = "rcgen"
 version = "0.14.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"

@@ -333,17 +333,23 @@ fn threads_never_see_a_torn_frame() {
         }
     });
     let mut out = vec![0; l.frame_len()];
-    let mut read = 0;
-    // Bounded: a hang guard, not a timing assumption.
-    for t in 0..200_000u64 {
+    // Read while the writer runs (bounded: a hang guard, not a timing assumption).
+    for _ in 0..1_000_000u64 {
         if let Ok(Some(info)) = rd.read_newest(0, &mut out) {
             assert!(is_frame_of(&out, info.seq));
-            read += 1;
         }
-        if writer.is_finished() && t > 1000 {
+        if writer.is_finished() {
             break;
         }
     }
     writer.join().unwrap();
-    assert!(read > 0);
+    // Once the writer is done its last frame is there to read, whole, unless the loop
+    // above already read it.
+    match rd.read_newest(0, &mut out).unwrap() {
+        Some(info) => {
+            assert_eq!(info.seq, 2000);
+            assert!(is_frame_of(&out, 2000));
+        }
+        None => assert!(is_frame_of(&out, 2000)),
+    }
 }
