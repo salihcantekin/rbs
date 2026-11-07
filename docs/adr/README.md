@@ -81,3 +81,4 @@ An ADR records one decision that is hard to reverse or affects more than one cra
 | [0066](0066-virtual-camera.md) | Virtual camera on Windows: the program as a camera for meeting apps, off by default | Accepted |
 | [0069](0069-rbs-menu-and-command-search.md) | The RBS menu: an app menu with command search, and the menu bar only on macOS | Accepted |
 | [0070](0070-virtual-camera-per-user-source-class.md) | Virtual camera on Windows: a per-user source class instead of camera properties | Accepted |
+| [0071](0071-merged-title-bar-on-windows.md) | The toolbar row is the title bar on Windows, and the row leaves no gaps | Accepted |
