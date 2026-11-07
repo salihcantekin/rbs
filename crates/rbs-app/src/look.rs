@@ -14,9 +14,10 @@ use rbs_ui::tokens::{Base, ResolvedTheme, Tokens as TokenFile};
 use rbs_user_data::theme::read_base;
 use rbs_user_data::{Appearance, ThemeId, UserData};
 
-use crate::ui::{Theme, ThemeSlot, Tokens};
+use crate::ui::{Theme, Tokens};
 
-include!(concat!(env!("OUT_DIR"), "/tokens_apply.rs"));
+// `slot`, `apply_tokens` and `SLOT_TOKENS`, generated from the token file.
+pub use rbs_app_ui::tokens_apply::*;
 
 /// Text a font must draw for the UI language (English until Fluent strings exist):
 /// a family without these glyphs is skipped (rule U8).

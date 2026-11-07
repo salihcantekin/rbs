@@ -1,7 +1,7 @@
 # Spec: UI design system
 
 - Status: Draft
-- Owner crate(s): `rbs-ui` (toolkit-neutral model: panels, layout, workspaces, layout undo, tokens, live indicator), `rbs-app` (Slint desktop shell; `ui/tokens.slint` is generated from the token file at build time and its values are set at run time, `ui/components.slint` is the component library)
+- Owner crate(s): `rbs-ui` (toolkit-neutral model: panels, layout, workspaces, layout undo, tokens, live indicator), `rbs-app` (Slint desktop shell; `tokens.slint` is generated from the token file at build time by `rbs-app-ui`, which compiles `rbs-app/ui` into Rust once per build and its values are set at run time, `ui/components.slint` is the component library)
 - Related ADRs: [0008](../adr/0008-ui-as-api-client.md), [0013](../adr/0013-zero-cost-when-unused.md), [0015](../adr/0015-ui-design-rules.md), [0016](../adr/0016-native-desktop-ui.md), [0017](../adr/0017-flexible-panels-and-workspaces.md), [0022](../adr/0022-native-ui-toolkit.md), [0049](../adr/0049-main-window-areas-panel-states-and-sizes.md), [0050](../adr/0050-command-registry-menus-and-toolbar.md)
 - Rules: [UI principles](../ui/principles.md)
 

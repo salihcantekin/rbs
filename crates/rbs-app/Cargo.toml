@@ -24,6 +24,9 @@ demo-sources = ["dep:rbs-capture-test", "dep:rbs-audio-io-test"]
 
 [dependencies]
 rbs-ui = { path = "../rbs-ui" }
+# The code Slint generates from ui/ and the token setters (its build.rs), compiled once
+# per build instead of once for the binary and again for its unit tests.
+rbs-app-ui = { path = "../rbs-app-ui" }
 # Exact pin (ADR-0022, decision 5). Skia renderer (decision 1). `unstable-wgpu-30`
 # lets the preview display engine surfaces imported on rbs-gpu's device (decision 2,
 # ADR-0028); it must track rbs-gpu's wgpu major.
@@ -168,10 +171,6 @@ libc = "0.2.180"
 # The demo's self-measurement reads process CPU time and peak working set; the version
 # rbs-gpu and wgpu-hal already build.
 windows = { version = "0.62", features = ["Win32_Foundation", "Win32_System_ProcessStatus", "Win32_System_Threading"] }
-
-[build-dependencies]
-rbs-ui = { path = "../rbs-ui" }
-slint-build = "=1.18.1"
 
 [lints]
 workspace = true
