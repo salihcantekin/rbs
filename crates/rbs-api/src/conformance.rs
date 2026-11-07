@@ -124,7 +124,9 @@ impl Rig {
         }
     }
 
-    /// The next inbox event, waiting at most [`LIMIT`].
+    /// The next inbox event, waiting at most [`LIMIT`]. A hang names the caller's line
+    /// (the check and step), as CI failures come without a backtrace.
+    #[track_caller]
     pub fn next(&self) -> TransportEvent {
         let deadline = Instant::now() + LIMIT;
         loop {
@@ -138,6 +140,7 @@ impl Rig {
     }
 
     /// Waits for the next `Connected` event and returns its parts.
+    #[track_caller]
     pub fn connected(&self) -> Connected {
         match self.next() {
             TransportEvent::Connected {
@@ -175,6 +178,7 @@ pub struct Connected {
     pub sender: Box<dyn ConnectionSender>,
 }
 
+#[track_caller]
 fn recv<C: Client>(c: &mut C) -> ClientEvent {
     c.recv(LIMIT)
         .expect("the client got something within the limit")
