@@ -237,7 +237,12 @@ fn send_datagram(socket: &UdpSocket, data: &[u8], shared: &Shared) -> Result<(),
             Err(e) if e.kind() == ErrorKind::Interrupted => {}
             // The datagram is lost but kept for retransmission: a loss report
             // recovers it.
-            Err(e) if is_icmp_echo(&e) || is_buffer_full(&e) => return Ok(()),
+            Err(e) if is_icmp_echo(&e) || is_buffer_full(&e) => {
+                if std::env::var_os("RBS_SRT_DEBUG").is_some() {
+                    eprintln!("DEBUG send swallowed {} bytes: {e:?}", data.len());
+                }
+                return Ok(());
+            }
             Err(e) => return Err(connection("send", &e)),
         }
     }
@@ -1025,7 +1030,11 @@ impl Io {
                 // Everything was acknowledged (or expired) and the listener has had
                 // the time to deliver it: close. libsrt discards what it holds back
                 // for its latency once the peer closes.
-                return conn.send_control(ctrl::SHUTDOWN, 0, &shared);
+                let r = conn.send_control(ctrl::SHUTDOWN, 0, &shared);
+                if std::env::var_os("RBS_SRT_DEBUG").is_some() {
+                    eprintln!("DEBUG shutdown sent to {}: ok={}", conn.peer_id, r.is_ok());
+                }
+                return r;
             }
             let busy = !conn.loss.is_empty() || (!idle && conn.window_open());
             if busy {

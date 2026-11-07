@@ -12,6 +12,7 @@ env:
   CARGO_PROFILE_TEST_DEBUG: line-tables-only
   RBS_REQUIRE_GPU: "1"
   RBS_REQUIRE_D3D12: "1"
+  RBS_SRT_DEBUG: "1"
 
 jobs:
   stress:
@@ -45,7 +46,7 @@ jobs:
           for i in 1 2 3 4 5 6; do
             start=$SECONDS
             if ! cargo nextest run --workspace --profile ci --no-tests=pass > "run-$i.log" 2>&1; then
-              fails=$((fails+1)); echo "RUN $i FAST TIER FAILED"; grep -E "FAIL|TIMEOUT|SIGSEGV|ABORT" "run-$i.log" | head -20
+              fails=$((fails+1)); echo "RUN $i FAST TIER FAILED"; grep -E "FAIL|TIMEOUT|SIGSEGV|ABORT|DEBUG|recent" "run-$i.log" | head -60
             fi
             grep -E "Summary" "run-$i.log" | sed 's/\x1b\[[0-9;]*m//g'
             if ! cargo nextest run --workspace --profile ci --run-ignored only --no-tests=pass -E 'test(/^slow_/)' > "slow-$i.log" 2>&1; then
