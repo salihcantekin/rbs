@@ -424,7 +424,7 @@ type Op = Box<dyn FnOnce(&mut App)>;
 struct Ctx {
     app: Rc<RefCell<App>>,
     /// The token file every window gets when it opens (`look`).
-    look: Rc<Option<rbs_ui::tokens::Tokens>>,
+    look: Rc<Option<look::Look>>,
     /// Changes asked for while the state was borrowed; applied before the next sync.
     queue: Rc<RefCell<Vec<Op>>>,
     pending: Rc<Cell<bool>>,
@@ -1848,7 +1848,10 @@ fn run(config: PathBuf, notice: Option<String>) -> Result<(), Box<dyn std::error
         });
     }
 
-    let (look, look_error) = look::load();
+    let (look, look_error) = look::load(
+        &rbs_user_data::UserData::new(&config),
+        &mut look::SystemFonts::default(),
+    );
     if let Some(why) = look_error {
         error = error.or(Some(UiError::Other(why)));
     }

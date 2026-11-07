@@ -4268,6 +4268,7 @@ name = "rbs-app"
 version = "0.0.1"
 dependencies = [
  "chrono",
+ "fontique",
  "i-slint-backend-testing",
  "i-slint-core",
  "keyring",
