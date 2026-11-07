@@ -511,6 +511,8 @@ pub fn toolbar(state: &Shown<'_>) -> (Vec<ToolItem>, bool, bool) {
 /// What running an id from the menu bar does.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Run {
+    /// Read the token, appearance and theme files again (`ui.theme.reload`).
+    ReloadThemes,
     /// Scene edit undo (`true`) or redo.
     UndoEdit(bool),
     /// Load and switch to the named workspace.
@@ -578,6 +580,7 @@ pub fn run(text: &str, state: &Shown<'_>) -> Option<Run> {
         "ui.area.show_all" => Run::Layout(L::SetAllAreasVisible(true)),
         "ui.layout.reset_sizes" => Run::Layout(L::ResetSizes),
         "ui.toolbar.reset" => Run::Layout(L::ResetToolbar),
+        "ui.theme.reload" => Run::ReloadThemes,
         "ui.panel.maximize" => Run::Maximize(panel_of(&id)?, !on),
         "canvas.studio_mode.toggle" => Run::StudioMode(!on),
         "canvas.transition" => Run::Transition,
