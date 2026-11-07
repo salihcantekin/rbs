@@ -294,3 +294,28 @@ fn boxes_without_area_draw_nothing() {
     assert_close(at(&px, W, 32, 32), RED, TOL);
     assert_close(at(&px, W, 1, 1), RED, TOL);
 }
+
+#[test]
+fn a_crop_that_leaves_no_picture_draws_nothing_plain_or_styled() {
+    // ADR-0058: a reversed or empty crop (a window that shrank under its crop) is
+    // skipped, not drawn as a mirrored strip.
+    for shape in [LayerShape::Box, LayerShape::Rounded { radius: 8.0 }] {
+        let Some(px) = render(|ctx, pool| {
+            let mut layer = half_red(ctx, pool, shape);
+            layer.crop = UvRect {
+                u0: 0.75,
+                v0: 0.0,
+                u1: 0.25,
+                v1: 1.0,
+            };
+            let mut empty = half_red(ctx, pool, shape);
+            empty.crop.u1 = empty.crop.u0;
+            vec![layer, empty]
+        }) else {
+            return;
+        };
+        for (x, y) in [(2, 2), (32, 32), (60, 60)] {
+            assert_close(at(&px, W, x, y), NONE, TOL);
+        }
+    }
+}

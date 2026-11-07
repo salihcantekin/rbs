@@ -9,7 +9,7 @@ use rbs_capture::{
     SyncKind,
 };
 use rbs_core::capability::CapabilityValue;
-use rbs_core::media::{FramePayload, MemoryKind, PixelFormat};
+use rbs_core::media::{FramePayload, MemoryKind, PixelFormat, Size};
 use rbs_gpu::context::CAP_P010;
 use rbs_gpu::node::GpuRuntime;
 use rbs_gpu::upload::{SourceUpload, UPLOAD_FORMATS};
@@ -32,7 +32,9 @@ pub fn capture_descriptor() -> NodeDescriptor {
     )
 }
 
-/// Counters of a capture source node, readable from any thread.
+/// Counters of a capture source node, readable from any thread. Made by the node only
+/// (`non_exhaustive`, so fields can be added).
+#[non_exhaustive]
 #[derive(Debug, Default)]
 pub struct CaptureNodeStats {
     /// Frames put on the video output.
@@ -43,6 +45,25 @@ pub struct CaptureNodeStats {
     pub uploaded: AtomicU64,
     /// Frames lost to an import or upload error.
     pub gpu_errors: AtomicU64,
+    /// Size of the picture put on the output: width in the high 32 bits, height in the
+    /// low 32 bits, 0 while unknown (ADR-0058). Read it with [`Self::picture_size`].
+    pub picture_size: AtomicU64,
+}
+
+impl CaptureNodeStats {
+    /// Width and height in pixels of the picture the node delivers: the session's
+    /// format once it is open, then the size of the newest frame. `None` before the
+    /// session opened.
+    pub fn picture_size(&self) -> Option<(u32, u32)> {
+        let packed = self.picture_size.load(Ordering::Relaxed);
+        let (w, h) = ((packed >> 32) as u32, packed as u32);
+        (w > 0 && h > 0).then_some((w, h))
+    }
+}
+
+/// `size` packed as [`CaptureNodeStats::picture_size`] stores it.
+fn pack(size: Size) -> u64 {
+    (u64::from(size.width) << 32) | u64::from(size.height)
 }
 
 fn add(counter: &AtomicU64) {
@@ -116,6 +137,8 @@ pub struct CaptureSourceNode {
     session: Option<Box<dyn CaptureSession>>,
     upload: SourceUpload,
     stats: Arc<CaptureNodeStats>,
+    /// The size last stored in `stats.picture_size`, packed.
+    shown_size: u64,
 }
 
 impl CaptureSourceNode {
@@ -130,6 +153,7 @@ impl CaptureSourceNode {
             session: None,
             upload: SourceUpload::new(),
             stats: Arc::default(),
+            shown_size: 0,
         }
     }
 
@@ -168,6 +192,10 @@ impl Node<GpuRuntime> for CaptureSourceNode {
             e if !e.is_recoverable() => capture_error(&e),
             e => NodeError::Failed(format!("capture start: {e}")),
         })?;
+        self.shown_size = pack(session.format().size);
+        self.stats
+            .picture_size
+            .store(self.shown_size, Ordering::Relaxed);
         self.session = Some(session);
         Ok(())
     }
@@ -180,6 +208,12 @@ impl Node<GpuRuntime> for CaptureSourceNode {
             Ok(Some(frame)) => frame,
             Err(e) => return Err(capture_error(&e)),
         };
+        // A resized target: one comparison per new frame, one store per resize.
+        let size = pack(frame.format().size);
+        if size != self.shown_size {
+            self.shown_size = size;
+            self.stats.picture_size.store(size, Ordering::Relaxed);
+        }
         let gpu = ctx.shared();
         let (_, outputs, local) = ctx.parts();
         let texture = match frame.payload() {
@@ -228,6 +262,8 @@ impl Node<GpuRuntime> for CaptureSourceNode {
         if let Some(mut session) = self.session.take() {
             session.stop();
         }
+        self.shown_size = 0;
+        self.stats.picture_size.store(0, Ordering::Relaxed);
         // The decoder's pipelines and bind groups go too: nothing GPU-side in Standby
         // (P13). `cool` already returned the plane textures.
         self.upload = SourceUpload::new();

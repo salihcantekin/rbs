@@ -170,6 +170,9 @@ pub struct RenderStats {
     pub drawn_layers: u32,
     /// Layers skipped because their texture was stale, unknown or not sampleable (P7).
     pub skipped_layers: u32,
+    /// Layers skipped because their crop leaves no picture (`u1 <= u0` or `v1 <= v0`,
+    /// ADR-0058).
+    pub empty_crop_layers: u32,
 }
 
 #[repr(C)]
@@ -392,6 +395,12 @@ impl Compositor {
             }
             let t = &layer.transform;
             let c = &layer.crop;
+            // A crop larger than the picture (a window that shrank under it) draws
+            // nothing rather than a mirrored strip (ADR-0058).
+            if !has_picture(c) {
+                stats.empty_crop_layers += 1;
+                continue;
+            }
             // A singular transform (a nested scene of no size) has no pixel to grow
             // the quad by: the plain pipeline draws it, which draws nothing.
             let singular = (t.a * t.d - t.b * t.c).abs() < 1e-6;
@@ -464,6 +473,10 @@ impl Compositor {
                 let Some(bind_group) = sampled(pool, layer.texture) else {
                     continue;
                 };
+                // Skipped in the loop above, so the record indices stay in step.
+                if !has_picture(&layer.crop) {
+                    continue;
+                }
                 let styled = self.styled_flags[instance as usize];
                 if styled != bound_styled {
                     pass.set_pipeline(if styled { &self.styled } else { &self.pipeline });
@@ -477,6 +490,11 @@ impl Compositor {
         ctx.queue().submit(Some(encoder.finish()));
         Ok(stats)
     }
+}
+
+/// True when `crop` leaves an area of the texture; `!(a > b)` is also true for NaN.
+fn has_picture(crop: &UvRect) -> bool {
+    crop.u1 > crop.u0 && crop.v1 > crop.v0
 }
 
 fn sampled(pool: &TexturePool, id: TextureId) -> Option<&wgpu::BindGroup> {
