@@ -299,6 +299,10 @@ pub const THEME_CONTRAST_RULES: &[(&str, &str, f64, f64)] = &[
     ("color.border.focus", "color.accent.subtle", 3.0, 3.0),
     ("color.border.strong", "color.surface.base", 3.0, 3.0),
     ("color.border.strong", "color.surface.sunken", 3.0, 3.0),
+    // A Checkbox on a hovered or selected row (Properties, Filters tab; ADR-0062).
+    ("color.border.strong", "color.surface.overlay", 3.0, 3.0),
+    ("color.border.strong", "color.accent.subtle", 3.0, 3.0),
+    ("color.accent", "color.accent.subtle", 3.0, 3.0),
 ];
 
 /// Surfaces `color.state.live` must stand out from (3:1). Not `surface.raised` or
