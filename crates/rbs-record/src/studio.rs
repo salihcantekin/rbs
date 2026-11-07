@@ -739,7 +739,7 @@ impl Studio {
             audio_worker,
             pending_takes: Vec::new(),
             strips: Vec::new(),
-            mix: mix_of(&collection),
+            mix: mix_of(collection),
         };
         if let Some(p) = recording
             && let Err(e) = studio.add_output(p)

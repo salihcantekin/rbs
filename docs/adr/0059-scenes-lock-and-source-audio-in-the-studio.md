@@ -1,6 +1,6 @@
 # ADR-0059: Scenes, item lock and source volume in the studio
 
-- Status: Proposed
+- Status: Accepted
 - Date: 2026-11-07
 - Deciders: Salih (owner)
 - Builds on: ADR-0021 (scene collection model), ADR-0037 (audio graph), ADR-0039 (scene source types), ADR-0044 (control API), ADR-0048 (preview handles), ADR-0051 (user data), ADR-0052 (API parity), ADR-0013 (zero cost when unused)
@@ -31,12 +31,13 @@ Other gaps (transitions other than a cut, a studio mode UI, scene thumbnails, sc
    - **There is always a program scene on the studio's canvas.** The rules are per canvas and respect scope (U15): removing a scene is refused when the studio's canvas may show no other scene. Removing the scene on air first switches the program, outside the undo stack and before the studio updates (`Studio::update` refuses a canvas without a program), to the scene before it among those the canvas may show (else the one after it); the removal is then the undo step. Other canvases of the collection that showed the removed scene lose it as the model says (the app runs one canvas). If an undo or redo leaves the canvas without a program (undoing the add of the scene on air), the host switches to the first scene the canvas may show, outside the undo stack, so the program never goes black because of an undo.
    - The undo history is kept across scene switches (the records name objects by id, not by "the current scene").
 5. **Control API 1.6.** New methods, all following the existing rules (each edit publishes its topic, refusals as below):
-   - `scene.list` (`read`): `{scenes: [{id, name}], program}`, the scenes the studio's canvas may show, in the order the Scenes panel shows them (for now creation order; reordering is a later minor version).
+   - `scene.list` (`read`): `{scenes: [{id, name}], program, sources: [{id, name, kind}]}`, the scenes the studio's canvas may show, in the order the Scenes panel shows them (for now creation order; reordering is a later minor version), and every source of the collection.
    - `scene.add {name?}`, `scene.remove {scene}`, `scene.rename {scene, name}` (`control`, one undo step each), `scene.switch {scene}` (`control`, live). `not_found` for an unknown scene, `invalid_params` for an empty name, `conflict` for a taken name (as `tokens.create`) and for removing the last scene the canvas may show; switching to the program scene changes nothing. `scene.remove` of the scene on air switches first (decision 4); that switch is not undone by `edit.undo`.
    - `item.set_visible {item, visible}`, `item.set_locked {item, locked}` (`control`, one undo step each).
    - `source.rename {source, name}` (`control`, one undo step).
+   - `item.add {source}` (`control`, one undo step): places a source the collection already has in the program scene, so one source (one microphone, one camera) can be on several scenes; the app offers it as "Existing source" in the Add source menu (host command `AddExistingSource`).
    - `source.set_volume {source, volume}` and `source.set_muted {source, muted}` (`control`, live, not undoable): `invalid_params` for a volume outside `0..=1` or not finite.
-   - `source.list` rows and `source.changed` stay one row per source item of the program scene (a source placed twice has two rows with their own `item`), and gain that item's `visible` and `locked` and the source's `volume` and `muted`. A new topic `scene.changed` carries the `scene.list` answer whenever a scene is added, removed or renamed, or the program changes.
+   - `source.list` rows and `source.changed` stay one row per source item of the program scene (a source placed twice has two rows with their own `item`), and gain that item's `visible` and `locked` and the source's `volume` and `muted`. A new topic `scene.changed` carries the `scene.list` answer whenever a scene is added, removed or renamed, a source is added, deleted or renamed, or the program changes.
    - Effects (ADR-0052 decision 4, when effects join the schema): `scene.list` `read`; the undoable ones `edit`; `scene.switch`, `source.set_volume` and `source.set_muted` `edit` with the on-air check (they change what is on air, but nothing is lost and another call reverses them); `scene.add`, `scene.remove`, `scene.rename` and the item edits `edit`, with the on-air check when they touch the program scene (`scene.remove` of the scene on air always does). `item.set_locked` is not enforced on the API side: the API may move a locked item, as Properties may.
 6. **Zero cost.** Nothing runs per frame or per audio block that did not before: the flags are read on the control thread when the collection changes, and the mixer already applies gains per strip. A hidden or switched-away source goes Standby as before (binder). A scene that is not on air costs nothing (no thumbnails here: rendering scenes that are not on air needs its own decision, because it makes their sources Active).
 
@@ -71,4 +72,4 @@ Independent review per ADR-0014.
   7. ADR-0052 effects incomplete for `scene.remove` on air: stated (decision 5).
   8. Missing alternative (mute as a record undo skips): added.
 - Optional suggestions taken: `EditKind`s and step names for scene edits; fader law in the UI spec; `item.set_locked` not enforced by the API, noted for the parity test; the 0..=1 limit lives in the model only (the mixer's `sanitize` accepts more).
-- Owner: pending.
+- Owner: accepted by the project thread under the standing ADR policy (threads may mark ADRs Accepted), 2026-11-07.

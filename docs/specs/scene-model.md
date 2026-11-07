@@ -26,11 +26,11 @@ Out of scope, later changes:
 | --- | --- |
 | `CanvasId`, `SourceId`, `SceneId`, `ItemId`, `FilterId` | Issued in increasing order per kind, never reused, so an undo restores an object under its old id. `from_raw` / `get` convert for documents and commands; the document must also store the id counters, or ids could be reused after a reload |
 | `Canvas` | Name, `Size`, `FrameRate`, `program` scene, `preview` scene (studio mode when set) |
-| `Source` | Name, node `type_id`, `Settings`, ordered `filters`. One source can be placed in many scenes and canvases; it runs as one instance |
+| `Source` | Name, node `type_id`, `Settings`, ordered `filters`, `audio: SourceAudio { volume, muted }` (ADR-0059: `volume` a linear amplitude factor in `0.0..=MAX_SOURCE_VOLUME` (1.0), default 1.0 and not muted). One source can be placed in many scenes and canvases; it runs as one instance, so it has one volume |
 | `Filter` | Node `type_id`, `enabled`, `Settings` |
 | `SceneScope` | `Canvas(id)`: only that canvas shows it, directly or nested. `Shared`: every canvas may show it (U15) |
 | `Scene` | Name, `scope`, `items` bottom first |
-| `SceneItem` | `content` (`Source` or nested `Scene`), `visible`, default `layout`, `overrides: BTreeMap<CanvasId, Layout>`; `layout_on(canvas)` picks the override or the default |
+| `SceneItem` | `content` (`Source` or nested `Scene`), `visible`, `locked` (ADR-0059: the item cannot be selected, moved, resized or cropped with the pointer on the picture panel; Properties, the control API, undo and layer order still change it; no effect on flattening, binding or the engine), default `layout`, `overrides: BTreeMap<CanvasId, Layout>`; `layout_on(canvas)` picks the override or the default |
 | `Layout` | Box at `position` (top-left, canvas pixels) of `size` (negative flips), rotated clockwise by `rotation` degrees about its centre; `crop` in source pixels; `opacity` 0..=1; `style: ItemStyle` (ADR-0053): `shape` (`Shape::Rectangle { radius }`, `Circle`: the largest circle centred in the box, `Ellipse`: fills the box), `border: Option<Border { width, color }>`, `shadow: Option<Shadow { offset, blur, color }>` (saved, not drawn yet); lengths in the item's box units (those of `size`), colours sRGB `[u8; 4]` with straight alpha; `ItemStyle::is_valid` (finite, radius and blur not negative, border width above 0), `is_plain` (the default). `Layout::fit(box_w, box_h, source_w, source_h)` is the largest centred box with the source's aspect ratio (letterbox or pillarbox). `Layout::recrop(source, crop)` (ADR-0058) is the same layout with a new crop on a `source` (width, height) picture, the box changed so a source pixel keeps its size on the canvas and the part that stays keeps its place (rotation and flips included); `None` for a crop that leaves less than one pixel (`Crop::fits`), an empty source or values that are not finite; when the current crop does not fit the source, the scale comes from the whole picture and the box keeps its centre |
 | `Settings` | `BTreeMap<String, SettingValue>`; values `Bool`, `Int`, `Float` (finite), `Text`. Schemas come with the plugin SDK |
 
@@ -42,13 +42,15 @@ Out of scope, later changes:
 
 ### Edits (`SceneCollection`)
 
-Canvases: `add_canvas`, `remove_canvas`, `rename_canvas`, `set_canvas_format`, `set_program`, `set_preview`. Sources: `add_source`, `delete_source` (removes it from every scene), `rename_source`, `set_source_settings`, `add_filter`, `remove_filter`, `set_filter_enabled`, `move_filter`. Scenes: `add_scene`, `remove_scene`, `rename_scene`, `set_scene_scope`. Items: `add_item` (at an index or on top), `remove_item` (from this scene only), `move_item`, `set_item_visible`, `set_item_layout` (default or for one canvas), `clear_item_layout`.
+Canvases: `add_canvas`, `remove_canvas`, `rename_canvas`, `set_canvas_format`, `set_program`, `set_preview`. Sources: `add_source`, `delete_source` (removes it from every scene), `rename_source`, `set_source_settings`, `add_filter`, `remove_filter`, `set_filter_enabled`, `move_filter`, `set_source_volume`, `set_source_muted` (ADR-0059). Scenes: `add_scene`, `remove_scene`, `rename_scene`, `set_scene_scope`. Items: `add_item` (at an index or on top), `remove_item` (from this scene only), `move_item`, `set_item_visible`, `set_item_locked`, `set_item_layout` (default or for one canvas), `clear_item_layout`.
 
 Every edit returns an `Undo`. `SceneCollection::undo(record)` applies it and returns the record that redoes it. Records form a stack: applied in reverse order they restore every earlier state exactly. Every record carries the state it expects to find (for replacements, the whole current canvas, source, scene header or item; for moves, the current index), so a record used out of order is refused with `UndoConflict` instead of reverting later changes, never applied half-way. `Undo` is opaque for now; a serialisable operation type comes with the control API schema.
 
 Names are trimmed of surrounding whitespace on input.
 
 `set_program` and `set_preview` change the document (which scene a canvas shows is saved) and return an `Undo` like any edit, but they are live actions: the control API does not put them on the user's undo stack, so undoing a layout change can never cut the program (ADR-0021).
+
+Volume and mute (ADR-0059) are live controls too: `set_source_volume` and `set_source_muted` return an `Undo` with a record of their own that expects and replaces only the source's `audio`, and the application keeps them off the user's undo stack. Every other source record (rename, settings, filters, the whole-source replacement) ignores `audio` when it checks the state it expects and keeps the current `audio` when it applies, so a fader move or mute between an edit and its undo neither makes the undo conflict nor brings the old volume back. The binder ignores `audio` (no new source node); the application sends it to the mixer strip of the source (recording spec, `Studio::set_mix`).
 
 Equality of collections compares content and ignores id counters (undo does not wind them back).
 
@@ -57,7 +59,7 @@ Equality of collections compares content and ignores id counters (undo does not 
 Checked after every edit on the would-be result; a refused edit leaves the collection unchanged. Each is covered by a test in `crates/rbs-scene/tests/collection.rs`.
 
 1. Names are non-blank and unique among canvases, among sources and among scenes.
-2. Node type ids are reverse-DNS; float settings are finite.
+2. Node type ids are reverse-DNS; float settings are finite. A source's volume is finite and in `0..=1` (`InvalidVolume`).
 3. Canvases are at least 1x1, at most `MAX_CANVAS_SIDE` (16384) pixels on a side and at most `MAX_FRAME_RATE` (1000) frames per second (`CanvasTooLarge`, `FrameRateTooHigh`).
 4. Every item refers to an existing source or scene; every override and canvas scope refers to an existing canvas.
 5. Layouts are finite with opacity in 0..=1 and a valid style. Crop and a style other than the default are only set on source items (a nested scene cannot be cropped or shaped by a flat layer list; `CropOnScene`, `StyleOnScene`), on the default layout and on every per-canvas override.
