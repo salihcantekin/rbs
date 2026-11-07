@@ -216,7 +216,19 @@ impl Listener {
         if s.set_write_timeout(Some(WRITE_STALL)).is_err() {
             return Ok(None);
         }
-        Ok(Some(Box::new(UnixIo(s))))
+        // The reader's wake-up: `shutdown` alone does not reliably end a `read`
+        // another thread is blocked in on macOS, so the reader waits on this too.
+        let Ok((wake_rx, wake_tx)) = UnixStream::pair() else {
+            return Ok(None);
+        };
+        if wake_tx.set_nonblocking(true).is_err() {
+            return Ok(None);
+        }
+        Ok(Some(Box::new(UnixIo {
+            s,
+            wake_rx,
+            wake_tx,
+        })))
     }
 
     /// Makes a blocked `accept` (or `wait_after_error`) return; the stop flag is set
@@ -243,19 +255,65 @@ impl Listener {
     }
 }
 
-struct UnixIo(UnixStream);
+/// An accepted connection. `read` waits for the socket or the wake-up, so
+/// `shutdown` ends a read blocked on the reader thread on every Unix: on macOS
+/// `shutdown` on a Unix socket does not always wake a thread already in `read`
+/// (the conformance suite's "server closes" check then never saw the close).
+struct UnixIo {
+    s: UnixStream,
+    /// Polled with the socket; one byte from `shutdown` makes every later read end.
+    wake_rx: UnixStream,
+    wake_tx: UnixStream,
+}
+
+impl UnixIo {
+    /// Waits until the socket has something to read (or hung up): false when woken.
+    fn wait_readable(&self) -> io::Result<bool> {
+        let mut fds = [
+            libc::pollfd {
+                fd: self.wake_rx.as_raw_fd(),
+                events: libc::POLLIN,
+                revents: 0,
+            },
+            libc::pollfd {
+                fd: self.s.as_raw_fd(),
+                events: libc::POLLIN,
+                revents: 0,
+            },
+        ];
+        loop {
+            // SAFETY: `fds` holds two initialised entries whose descriptors are owned
+            // by `self` and stay open for the call.
+            let r = unsafe { libc::poll(fds.as_mut_ptr(), 2, -1) };
+            if r >= 0 {
+                break;
+            }
+            let e = io::Error::last_os_error();
+            if e.kind() != io::ErrorKind::Interrupted {
+                return Err(e);
+            }
+        }
+        Ok(fds[0].revents == 0)
+    }
+}
 
 impl Stream for UnixIo {
     fn read(&self, buf: &mut [u8]) -> io::Result<usize> {
-        (&self.0).read(buf)
+        if !self.wait_readable()? {
+            // Shut down: the end of the stream.
+            return Ok(0);
+        }
+        (&self.s).read(buf)
     }
 
     fn write_all(&self, buf: &[u8]) -> io::Result<()> {
-        (&self.0).write_all(buf)
+        (&self.s).write_all(buf)
     }
 
     fn shutdown(&self) {
-        let _ = self.0.shutdown(Shutdown::Both);
+        // The byte is never read, so the wake-up stays set.
+        let _ = (&self.wake_tx).write(&[1]);
+        let _ = self.s.shutdown(Shutdown::Both);
     }
 }
 
