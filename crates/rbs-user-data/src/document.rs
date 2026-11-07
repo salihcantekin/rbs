@@ -30,6 +30,9 @@ pub trait Document: Sized {
     /// The format version this build writes. Files with a higher version are refused;
     /// files with a lower one are upgraded with [`Document::upgrade`].
     const FORMAT: u32;
+    /// Largest file of this kind read or written, in bytes; at most [`MAX_FILE`]. Kinds
+    /// that are small by nature and often shared (themes) set a lower limit.
+    const MAX_SIZE: u64 = MAX_FILE;
 
     /// Upgrades `body` (the file without `format`, `kind` and `name`) from format `from`
     /// to `from + 1`. The default refuses: a kind starts at format 1 with nothing to
@@ -217,9 +220,10 @@ pub fn render<T: Document>(document: &T, name: Option<&str>) -> Result<String, D
     }
     let text = toml::to_string(&table).map_err(|e| DataError::Invalid(e.to_string()))?;
     // Never write what could not be read back.
-    if text.len() as u64 > MAX_FILE {
+    let max = T::MAX_SIZE.min(MAX_FILE);
+    if text.len() as u64 > max {
         return Err(DataError::Invalid(format!(
-            "the document would be {} bytes; at most {MAX_FILE} are allowed",
+            "the document would be {} bytes; at most {max} are allowed",
             text.len()
         )));
     }
@@ -230,22 +234,28 @@ pub fn render<T: Document>(document: &T, name: Option<&str>) -> Result<String, D
 /// collection with thousands of objects is well below this.
 pub const MAX_FILE: u64 = 16 * 1024 * 1024;
 
-/// The text of a file; `Ok(None)` if there is none. Files larger than [`MAX_FILE`] are
-/// refused.
-fn read_text(path: &Path) -> Result<Option<String>, DataError> {
+/// The text of a file; `Ok(None)` if there is none. Files larger than `max` (at most
+/// [`MAX_FILE`]) are refused.
+fn read_text(path: &Path, max: u64) -> Result<Option<String>, DataError> {
+    let max = max.min(MAX_FILE);
     let f = match fs::File::open(path) {
         Ok(f) => f,
         Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(None),
         Err(e) => return Err(e.into()),
     };
     let len = f.metadata()?.len();
-    if len > MAX_FILE {
+    if len > max {
         return Err(DataError::Invalid(format!(
-            "the file is {len} bytes; at most {MAX_FILE} are read"
+            "the file is {len} bytes; at most {max} are read"
         )));
     }
     let mut text = String::new();
-    io::Read::read_to_string(&mut io::Read::take(f, MAX_FILE + 1), &mut text)?;
+    io::Read::read_to_string(&mut io::Read::take(f, max + 1), &mut text)?;
+    if text.len() as u64 > max {
+        return Err(DataError::Invalid(format!(
+            "the file is larger than {max} bytes"
+        )));
+    }
     Ok(Some(text))
 }
 
@@ -274,7 +284,7 @@ const HEAD_BYTES: u64 = 4096;
 
 /// Reads a document file; `Ok(None)` if there is none.
 pub fn read<T: Document>(path: &Path) -> Result<Option<Read<T>>, DataError> {
-    match read_text(path)? {
+    match read_text(path, T::MAX_SIZE)? {
         Some(text) => parse(&text).map(Some),
         None => Ok(None),
     }
@@ -320,7 +330,7 @@ pub fn scan_format(text: &str) -> Option<u32> {
 /// the kind and refusing newer formats, without building the body. `Ok(None)` if
 /// there is no file. A file whose body is broken can pass; [`read`] reports it.
 pub fn peek<T: Document>(path: &Path) -> Result<Option<Envelope>, DataError> {
-    let Some(text) = read_text(path)? else {
+    let Some(text) = read_text(path, T::MAX_SIZE)? else {
         return Ok(None);
     };
     if let Some(found) = scan_format(&text)
