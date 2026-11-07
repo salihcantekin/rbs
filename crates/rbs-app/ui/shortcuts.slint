@@ -1,0 +1,279 @@
+// Settings › Shortcuts (ADR-0060, docs/specs/shortcuts.md): every command with its
+// shortcuts, a recorder to add one, and the key press handler of the main and floating
+// windows. Rust (`shortcuts_page`) pushes state into the `Shortcuts` global and
+// handles its callbacks.
+import { Theme, Tokens } from "tokens.slint";
+import { Button, Checkbox, IconButton, IconName, KeyboardShortcutHint, Select, TextField } from "components.slint";
+
+// One shortcut of a row: its label ("⇧⌘Z"), canonical text, and scope.
+export struct ShortcutChip {
+    label: string,
+    keys: string,
+    global: bool,
+}
+
+// One command (or picker choice). `group` is set on the first row of a menu group.
+// `problem`: why one of its shortcuts does nothing; `note`: what a global shortcut of
+// it does without asking.
+export struct ShortcutRow {
+    group: string,
+    command: string,
+    title: string,
+    chips: [ShortcutChip],
+    changed: bool,
+    problem: string,
+    note: string,
+}
+
+export global Shortcuts {
+    // A key press no control took in a main or floating window: true when it ran a
+    // shortcut. Arguments: text, Ctrl (Cmd on macOS), Alt, Shift, Meta, repeat.
+    callback press(string, bool, bool, bool, bool, bool) -> bool;
+
+    in property <[ShortcutRow]> rows;
+    in property <string> hint;
+    in property <string> note;
+    in-out property <string> search;
+    callback set-search(string);
+    callback remove(int, int);
+    callback reset(int);
+    in property <bool> confirm-reset-all;
+    callback ask-reset-all();
+    callback answer-reset-all(bool);
+
+    // The recorder: the row it adds to (-1 none).
+    in property <int> recording: -1;
+    // Its chord, as a label; "" until a key is pressed.
+    in property <string> rec-label;
+    // 0 nothing yet, 1 free, 2 taken (Replace), 3 refused, 4 warning.
+    in property <int> rec-state;
+    in property <string> rec-message;
+    in property <bool> rec-global;
+    in property <bool> rec-global-available;
+    in property <[bool]> rec-mods: [false, false, false, false];
+    in property <[string]> mod-names: ["Ctrl", "Alt", "Shift", "Meta"];
+    in property <[string]> key-names;
+    in property <int> rec-key: -1;
+    callback add(int);
+    // A key press in the recorder: true when taken.
+    callback rec-press(string, bool, bool, bool, bool) -> bool;
+    callback rec-set-mod(int, bool);
+    callback rec-set-key(int);
+    callback rec-set-global(bool);
+    callback rec-confirm();
+    callback rec-cancel();
+}
+
+component Hint inherits Text {
+    color: Theme.text-secondary;
+    font-size: Tokens.type-caption-size;
+    wrap: word-wrap;
+}
+
+component Problem inherits Text {
+    color: Theme.state-error;
+    font-size: Tokens.type-caption-size;
+    wrap: word-wrap;
+}
+
+// Adds a shortcut to one row: press the keys, or pick them.
+component Recorder inherits Rectangle {
+    in property <string> title;
+    background: Theme.surface-overlay;
+    border-radius: Tokens.radius-sm;
+    border-width: Tokens.size-border;
+    border-color: keys.has-focus ? Theme.border-focus : Theme.border-subtle;
+    accessible-role: groupbox;
+    accessible-label: @tr("New shortcut for {}", title);
+    forward-focus: keys;
+    init => { keys.focus(); }
+    keys := FocusScope {
+        key-pressed(e) => {
+            if e.text == Key.Escape && !e.modifiers.control && !e.modifiers.alt && !e.modifiers.shift && !e.modifiers.meta {
+                Shortcuts.rec-cancel();
+                return accept;
+            }
+            // Tab and Shift+Tab move focus to the pickers below.
+            if (e.text == Key.Tab || e.text == Key.Backtab) && !e.modifiers.control && !e.modifiers.alt && !e.modifiers.meta { return reject; }
+            if Shortcuts.rec-press(e.text, e.modifiers.control, e.modifiers.alt, e.modifiers.shift, e.modifiers.meta) { return accept; }
+            reject
+        }
+        VerticalLayout {
+            padding: Tokens.space-2;
+            spacing: Tokens.space-2;
+            HorizontalLayout {
+                spacing: Tokens.space-2;
+                alignment: start;
+                if Shortcuts.rec-label == "": Text {
+                    text: @tr("Press the keys. Escape cancels.");
+                    color: Theme.text-secondary;
+                    vertical-alignment: center;
+                }
+                if Shortcuts.rec-label != "": KeyboardShortcutHint {
+                    keys: Shortcuts.rec-label;
+                    tag: Shortcuts.rec-global ? @tr("Global") : "";
+                }
+            }
+            HorizontalLayout {
+                spacing: Tokens.space-3;
+                alignment: start;
+                for name[i] in Shortcuts.mod-names: Checkbox {
+                    text: name;
+                    checked: Shortcuts.rec-mods[i];
+                    toggled(on) => { Shortcuts.rec-set-mod(i, on); }
+                }
+                Select {
+                    width: Tokens.size-menu-sm / 2;
+                    label: @tr("Key");
+                    options: Shortcuts.key-names;
+                    index: Shortcuts.rec-key;
+                    selected(i) => { Shortcuts.rec-set-key(i); }
+                }
+            }
+            Checkbox {
+                text: @tr("Works when RBS is in the background (global)");
+                enabled: Shortcuts.rec-global-available;
+                checked: Shortcuts.rec-global;
+                toggled(on) => { Shortcuts.rec-set-global(on); }
+            }
+            if Shortcuts.rec-message != "" && (Shortcuts.rec-state == 3): Problem { text: Shortcuts.rec-message; }
+            if Shortcuts.rec-message != "" && (Shortcuts.rec-state != 3): Hint { text: Shortcuts.rec-message; }
+            HorizontalLayout {
+                spacing: Tokens.space-2;
+                alignment: start;
+                Button {
+                    text: Shortcuts.rec-state == 2 ? @tr("Replace") : @tr("Add");
+                    kind: "primary";
+                    enabled: Shortcuts.rec-state == 1 || Shortcuts.rec-state == 2 || Shortcuts.rec-state == 4;
+                    clicked => { Shortcuts.rec-confirm(); }
+                }
+                Button {
+                    text: @tr("Cancel");
+                    clicked => { Shortcuts.rec-cancel(); }
+                }
+            }
+        }
+    }
+}
+
+component CommandRow inherits VerticalLayout {
+    in property <ShortcutRow> item;
+    in property <int> index;
+    spacing: Tokens.space-1;
+    if item.group != "": Text {
+        text: item.group;
+        color: Theme.text-secondary;
+        font-size: Tokens.type-caption-size;
+        font-weight: Tokens.type-label-weight;
+        accessible-role: none;
+    }
+    Rectangle {
+        min-height: Tokens.size-control-md;
+        border-radius: Tokens.radius-sm;
+        background: hover.has-hover ? Theme.surface-overlay : transparent;
+        hover := TouchArea { }
+        HorizontalLayout {
+            padding-left: Tokens.space-2;
+            padding-right: Tokens.space-1;
+            spacing: Tokens.space-2;
+            Text {
+                horizontal-stretch: 1;
+                min-width: Tokens.size-menu-sm / 2;
+                text: item.title;
+                color: Theme.text-primary;
+                vertical-alignment: center;
+                overflow: elide;
+            }
+            for chip[ci] in item.chips: HorizontalLayout {
+                spacing: 0px;
+                alignment: center;
+                VerticalLayout {
+                    alignment: center;
+                    KeyboardShortcutHint {
+                        keys: chip.label;
+                        tag: chip.global ? @tr("Global") : "";
+                    }
+                }
+                IconButton {
+                    name: @tr("Remove {}", chip.label);
+                    icon: IconName.close;
+                    clicked => { Shortcuts.remove(index, ci); }
+                }
+            }
+            if item.changed: Button {
+                text: @tr("Reset");
+                accessible-name: @tr("Reset {}", item.title);
+                kind: "ghost";
+                dense: true;
+                clicked => { Shortcuts.reset(index); }
+            }
+            Button {
+                text: @tr("Add");
+                accessible-name: @tr("Add a shortcut for {}", item.title);
+                kind: "ghost";
+                dense: true;
+                icon: IconName.plus;
+                enabled: Shortcuts.recording != index && item.chips.length < 4;
+                clicked => { Shortcuts.add(index); }
+            }
+        }
+    }
+    if item.problem != "": Problem { text: item.problem; }
+    if item.note != "": Hint { text: item.note; }
+    if Shortcuts.recording == index: Recorder { title: item.title; }
+}
+
+export component ShortcutsSettings inherits VerticalLayout {
+    spacing: Tokens.space-3;
+    alignment: start;
+    Hint { text: Shortcuts.hint; }
+    if Shortcuts.note != "": Problem { text: Shortcuts.note; }
+    HorizontalLayout {
+        spacing: Tokens.space-2;
+        TextField {
+            horizontal-stretch: 1;
+            label: @tr("Search commands or keys");
+            text <=> Shortcuts.search;
+            edited(t) => { Shortcuts.set-search(t); }
+        }
+        Button {
+            text: @tr("Reset all");
+            clicked => { Shortcuts.ask-reset-all(); }
+        }
+    }
+    if Shortcuts.confirm-reset-all: Rectangle {
+        background: Theme.surface-overlay;
+        border-radius: Tokens.radius-sm;
+        border-width: Tokens.size-border;
+        border-color: Theme.border-subtle;
+        accessible-role: groupbox;
+        accessible-label: @tr("Reset every shortcut to its default?");
+        HorizontalLayout {
+            padding: Tokens.space-2;
+            spacing: Tokens.space-2;
+            Text {
+                horizontal-stretch: 1;
+                text: @tr("Reset every shortcut to its default?");
+                color: Theme.text-primary;
+                vertical-alignment: center;
+                wrap: word-wrap;
+            }
+            Button {
+                text: @tr("Reset all");
+                kind: "primary";
+                clicked => { Shortcuts.answer-reset-all(true); }
+            }
+            Button {
+                text: @tr("Cancel");
+                clicked => { Shortcuts.answer-reset-all(false); }
+            }
+        }
+    }
+    VerticalLayout {
+        spacing: Tokens.space-1;
+        accessible-role: list;
+        accessible-label: @tr("Commands and their shortcuts");
+        for r[i] in Shortcuts.rows: CommandRow { item: r; index: i; }
+        if Shortcuts.rows.length == 0: Hint { text: @tr("No command or shortcut matches the search."); }
+    }
+}

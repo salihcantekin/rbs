@@ -493,6 +493,18 @@ impl CommandId {
         })
     }
 
+    /// The id of `base` with `params` (decoded values), checked like a parsed id.
+    pub fn with_params(base: &str, params: &[(&str, &str)]) -> Result<CommandId, CommandIdError> {
+        let mut text = base.to_owned();
+        for (i, (k, v)) in params.iter().enumerate() {
+            text.push(if i == 0 { '?' } else { '&' });
+            text.push_str(k);
+            text.push('=');
+            text.push_str(&encode(v));
+        }
+        CommandId::parse(&text)
+    }
+
     /// A command without parameters.
     pub fn plain(base: &str) -> Result<CommandId, CommandIdError> {
         CommandId::parse(base).and_then(|id| {
@@ -782,6 +794,10 @@ mod tests {
         let b = CommandId::parse("x.y?a=2&b=1").unwrap();
         assert_eq!(a, b);
         assert_eq!(a.to_string(), "x.y?a=2&b=1");
+        assert_eq!(
+            CommandId::with_params("ui.workspace.switch", &[("name", "Live show")]).unwrap(),
+            id
+        );
         let turkish = CommandId::parse("ui.workspace.switch?name=%C3%87anl%C4%B1").unwrap();
         assert_eq!(turkish.param("name"), Some("Çanlı"));
         assert_eq!(CommandId::parse(&turkish.to_string()).unwrap(), turkish);
