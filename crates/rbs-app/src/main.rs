@@ -8,11 +8,15 @@
 //! (ADR-0041 decision 7); the other panels show placeholders until they are connected.
 //!
 //! Options: `--demo-live` shows a made-up live and recording state, to check
-//! the live indicator without an engine. `RBS_THEME=dark|light|high-contrast`
+//! the live indicator without an engine. `--reset-appearance` moves
+//! `appearance.toml` aside and starts with the default look (themes spec).
+//! `RBS_THEME=dark|light|high-contrast`
 //! overrides the OS theme. `RBS_TOKENS=<file>` uses another token file
 //! (development aid, see `look`). `RBS_CONFIG_DIR` overrides the config directory.
 #![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
 
+mod appearance;
+mod appearance_page;
 mod config;
 mod entry;
 mod look;
@@ -24,7 +28,7 @@ mod studio_ui;
 mod view;
 
 use std::cell::{Cell, RefCell};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::time::{Duration, Instant};
 
@@ -435,7 +439,9 @@ type Op = Box<dyn FnOnce(&mut App)>;
 struct Ctx {
     app: Rc<RefCell<App>>,
     /// The token file every window gets when it opens (`look`).
-    look: Rc<Option<rbs_ui::tokens::Tokens>>,
+    look: Rc<RefCell<Option<look::Look>>>,
+    /// Settings › Appearance (ADR-0057).
+    page: Rc<RefCell<appearance_page::Page>>,
     /// Changes asked for while the state was borrowed; applied before the next sync.
     queue: Rc<RefCell<Vec<Op>>>,
     pending: Rc<Cell<bool>>,
@@ -456,6 +462,7 @@ struct Ctx {
 /// Sections of the Settings window (`SettingsWindow.section`).
 const SECTION_RECORDING: i32 = 1;
 const SECTION_STREAM: i32 = 2;
+const SECTION_APPEARANCE: i32 = 5;
 
 thread_local! {
     /// The shell's context, for updates the studio's control thread hands to the UI
@@ -613,6 +620,9 @@ impl Ctx {
             if let Some(w) = &app.settings {
                 w.set_section(section);
                 let _ = w.show();
+                if section == SECTION_APPEARANCE {
+                    appearance_page::opened(&ctx, app);
+                }
                 return;
             }
             let Ok(w) = SettingsWindow::new() else {
@@ -624,7 +634,7 @@ impl Ctx {
             look::apply(
                 &w.global::<Theme>(),
                 &w.global::<Tokens>(),
-                ctx.look.as_ref().as_ref(),
+                ctx.look.borrow().as_ref(),
             );
             install_studio(&w.global::<Studio>(), &ctx);
             // `install_studio` cannot borrow the app here (this runs inside an update):
@@ -654,9 +664,20 @@ impl Ctx {
                     });
                 });
             });
+            appearance_page::install(&w.global::<Appearance>(), &ctx);
+            let c = ctx.clone();
+            w.on_section_shown(move |s| {
+                if s == SECTION_APPEARANCE {
+                    let ctx = c.clone();
+                    c.update(move |app| appearance_page::opened(&ctx, app));
+                }
+            });
             w.set_section(section);
             let _ = w.show();
             app.settings = Some(w);
+            if section == SECTION_APPEARANCE {
+                appearance_page::opened(&ctx, app);
+            }
         });
     }
 
@@ -1218,7 +1239,7 @@ impl Ctx {
         look::apply(
             &fw.global::<Theme>(),
             &fw.global::<Tokens>(),
-            self.look.as_ref().as_ref(),
+            self.look.borrow().as_ref(),
         );
         let models = DockModels::new();
         fw.set_stacks(ModelRc::from(models.stacks.clone()));
@@ -1885,8 +1906,30 @@ fn crash_notice(unclean: &[rbs_crash::Unclean]) -> Option<String> {
     Some(text)
 }
 
+/// Moves `appearance.toml` aside; returns what to tell the user, if anything failed.
+fn reset_appearance(config: &Path) -> Option<String> {
+    let data = rbs_user_data::UserData::new(config);
+    let result = match data.try_lock() {
+        Ok(Some(lock)) => data
+            .reset_appearance(&lock)
+            .map(|_| ())
+            .map_err(|e| e.to_string()),
+        Ok(None) => Err("another RBS is running".to_owned()),
+        Err(e) => Err(e.to_string()),
+    };
+    result
+        .err()
+        .map(|why| format!("The appearance could not be reset: {why}"))
+}
+
 fn run(config: PathBuf, notice: Option<String>) -> Result<(), Box<dyn std::error::Error>> {
     let demo_live = std::env::args().any(|a| a == "--demo-live");
+    // `--reset-appearance` (themes spec): back to the default look when a theme made
+    // the app hard to use. Done before anything else takes the user data lock.
+    let reset_note = std::env::args()
+        .any(|a| a == "--reset-appearance")
+        .then(|| reset_appearance(&config))
+        .flatten();
     slint::BackendSelector::new()
         .backend_name("winit".into())
         .renderer_name("skia".into())
@@ -1928,8 +1971,11 @@ fn run(config: PathBuf, notice: Option<String>) -> Result<(), Box<dyn std::error
         });
     }
 
-    let (look, look_error) = look::load();
-    if let Some(why) = look_error {
+    let (look, look_error) = look::load(
+        &rbs_user_data::UserData::new(&config),
+        &mut look::SystemFonts::default(),
+    );
+    if let Some(why) = look_error.or(reset_note) {
         error = error.or(Some(UiError::Other(why)));
     }
     let main = MainWindow::new()?;
@@ -1942,7 +1988,8 @@ fn run(config: PathBuf, notice: Option<String>) -> Result<(), Box<dyn std::error
     main.set_stacks(ModelRc::from(main_models.stacks.clone()));
     main.set_handles(ModelRc::from(main_models.handles.clone()));
     let ctx = Ctx {
-        look: Rc::new(look),
+        look: Rc::new(RefCell::new(look)),
+        page: Rc::default(),
         app: Rc::new(RefCell::new(App {
             session,
             store,

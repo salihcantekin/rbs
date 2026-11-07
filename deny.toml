@@ -10,6 +10,8 @@ deny = [
     { name = "webkit2gtk", reason = "ADR-0016: no web view UI" },
     # CEF renders the browser source as video in a separate process (ADR-0006); only that adapter may use it.
     { name = "cef", wrappers = ["rbs-source-browser"], reason = "ADR-0016: CEF only for the browser source" },
+    # The UI toolkit stays in the desktop shell: rbs-ui and rbs-user-data are toolkit-free (ADR-0022, ADR-0057).
+    { name = "slint", wrappers = ["rbs-app"], reason = "ADR-0057: only rbs-app uses the UI toolkit" },
     # TLS uses rustls on the ring provider: no CMake, NASM or system OpenSSL in the build.
     { name = "aws-lc-sys", reason = "ADR-0046: rustls on the ring provider" },
     { name = "aws-lc-fips-sys", reason = "ADR-0046: rustls on the ring provider" },
