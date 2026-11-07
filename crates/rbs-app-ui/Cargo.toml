@@ -1,0 +1,33 @@
+[package]
+name = "rbs-app-ui"
+description = "The Rust code Slint generates from the RBS desktop app's UI files (rbs-app/ui), in its own crate so it is compiled once per build."
+version.workspace = true
+edition.workspace = true
+# Slint 1.18 needs Rust 1.92 (ADR-0022, decision 6), as for rbs-app.
+rust-version = "1.92"
+repository.workspace = true
+license.workspace = true
+publish.workspace = true
+
+# Part of the desktop app (application layer, docs/architecture/overview.md); only
+# rbs-app depends on it. The UI files stay in crates/rbs-app/ui. Slint turns them into
+# about 23 MB of Rust. Inside the `rbs` binary that code was compiled twice by every
+# `cargo test` (the binary and its unit-test harness) and was most of every CI test
+# build (9 of 10 minutes on macOS). A library is compiled once and linked into both.
+[lib]
+# No tests, examples or docs of its own: the code is generated, and rbs-app tests it.
+test = false
+doctest = false
+doc = false
+
+[dependencies]
+rbs-ui = { path = "../rbs-ui" }
+# The same exact pin and features as rbs-app (ADR-0022, decisions 1, 2 and 5).
+slint = { version = "=1.18.1", default-features = false, features = ["std", "backend-winit", "renderer-skia", "accessibility", "compat-1-2", "unstable-wgpu-30", "raw-window-handle-06"] }
+
+[build-dependencies]
+rbs-ui = { path = "../rbs-ui" }
+slint-build = "=1.18.1"
+
+[lints]
+workspace = true
