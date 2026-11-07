@@ -69,6 +69,8 @@ export enum IconName {
     arrow-left,
     arrow-right,
     menu,
+    rail-between,
+    rail-below,
 }
 
 // Vector icon. Icons are paths, not font glyphs, so they look the same on every OS
@@ -134,6 +136,8 @@ export component Icon inherits Rectangle {
         : name == IconName.arrow-left ? "M 13 8 L 3 8 M 7 4 L 3 8 L 7 12"
         : name == IconName.arrow-right ? "M 3 8 L 13 8 M 9 4 L 13 8 L 9 12"
         : name == IconName.menu ? "M 2.5 4 L 13.5 4 M 2.5 8 L 13.5 8 M 2.5 12 L 13.5 12"
+        : name == IconName.rail-between ? "M 1.5 3.5 L 6 3.5 L 6 12.5 L 1.5 12.5 Z M 10 3.5 L 14.5 3.5 L 14.5 12.5 L 10 12.5 Z M 8 3.5 L 8 12.5"
+        : name == IconName.rail-below ? "M 1.5 2.5 L 7.5 2.5 L 7.5 9.5 L 1.5 9.5 Z M 8.5 2.5 L 14.5 2.5 L 14.5 9.5 L 8.5 9.5 Z M 1.5 13 L 14.5 13"
         : "";
     width: Tokens.size-icon-box;
     height: Tokens.size-icon-box;
@@ -208,6 +212,8 @@ export global Icons {
         : name == "arrow-left" ? IconName.arrow-left
         : name == "arrow-right" ? IconName.arrow-right
         : name == "menu" ? IconName.menu
+        : name == "rail-between" ? IconName.rail-between
+        : name == "rail-below" ? IconName.rail-below
         : IconName.none;
     }
 }
