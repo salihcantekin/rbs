@@ -25,7 +25,7 @@ pub const MIN_PANE: f32 = 48.0;
 pub const EDGE_SHARE: f32 = 0.25;
 
 /// Width of the Transition rail between the two pictures (ADR-0064).
-pub const RAIL_BETWEEN: f32 = 132.0;
+pub const RAIL_BETWEEN: f32 = 156.0;
 
 /// Height of the Transition rail below the two pictures (ADR-0064).
 pub const RAIL_BELOW: f32 = 56.0;

@@ -2,7 +2,7 @@
 // crate: Slint has no recursive components, so Rust flattens each window's
 // layout tree into tab stacks and splitter handles with absolute positions.
 import { Theme, Tokens } from "tokens.slint";
-import { Button, IconButton, Icon, IconName, Icons, FocusRing, MenuItem as MenuRow, MenuSurface, EmptyState } from "components.slint";
+import { Button, IconButton, Icon, IconName, Icons, FocusRing, MenuItem as MenuRow, MenuSurface, EmptyState, SegmentedControl } from "components.slint";
 import { SettingsNavItem, SettingsNavGroup, SettingsHeader } from "settings.slint";
 import { Appearance, AppearanceSettings, ThemeOption, ThemeTokenRow } from "appearance.slint";
 import { Shortcuts, ShortcutsSettings, ShortcutRow, ShortcutChip } from "shortcuts.slint";
@@ -535,11 +535,35 @@ component Splitter inherits Rectangle {
 // The Transition rail (ADR-0064): between Preview and Program, or below them with its
 // controls centred; only in studio mode, and only beside the two pictures. Its move
 // button puts it in the other place (`ui.layout.studio_rail`).
+// Where the rail sits, as a labelled two-way choice apart from the Transition
+// button, so it reads as a setting and is not pressed by mistake.
+component RailPlace inherits VerticalLayout {
+    in property <bool> below;
+    spacing: Tokens.space-1;
+    alignment: center;
+    Text {
+        text: @tr("Rail position");
+        color: Theme.text-secondary;
+        font-size: Tokens.type-caption-size;
+        horizontal-alignment: center;
+        accessible-role: none;
+    }
+    HorizontalLayout {
+        alignment: center;
+        SegmentedControl {
+            label: @tr("Transition rail position");
+            options: [@tr("Middle"), @tr("Below")];
+            index: root.below ? 1 : 0;
+            selected(i) => {
+                Menus.run(i == 1 ? "ui.layout.studio_rail?at=below" : "ui.layout.studio_rail?at=between");
+            }
+        }
+    }
+}
+
 component TransitionRail inherits Rectangle {
     in property <bool> below;
     property <bool> can: Studio.studio-mode && Studio.state == 1;
-    property <string> move-id: below ? "ui.layout.studio_rail?at=between" : "ui.layout.studio_rail?at=below";
-    property <string> move-name: below ? @tr("Move Transition between the pictures") : @tr("Move Transition below the pictures");
     background: Theme.surface-raised;
     border-color: Theme.border-subtle;
     border-width: Tokens.size-border;
@@ -549,7 +573,7 @@ component TransitionRail inherits Rectangle {
     if !below: VerticalLayout {
         padding: Tokens.space-2;
         spacing: Tokens.space-2;
-        alignment: center;
+        Rectangle { }
         Text {
             text: @tr("Cut");
             color: Theme.text-secondary;
@@ -564,20 +588,17 @@ component TransitionRail inherits Rectangle {
             accessible-name: @tr("Transition: put the preview scene on air");
             clicked => { Studio.transition(); }
         }
-        HorizontalLayout {
-            alignment: center;
-            IconButton {
-                icon: IconName.chevron-down;
-                name: root.move-name;
-                clicked => { Menus.run(root.move-id); }
-            }
-        }
+        Rectangle { }
+        Rectangle { height: Tokens.size-border; background: Theme.border-subtle; }
+        RailPlace { below: false; }
     }
+    // Below: Cut and Transition centred under the two pictures, the position choice
+    // at the right end behind a divider.
     if below: HorizontalLayout {
-        padding-left: Tokens.space-2;
-        padding-right: Tokens.space-2;
-        spacing: Tokens.space-3;
+        width: root.width;
+        height: root.height;
         alignment: center;
+        spacing: Tokens.space-3;
         Text {
             text: @tr("Cut");
             color: Theme.text-secondary;
@@ -595,12 +616,29 @@ component TransitionRail inherits Rectangle {
                 clicked => { Studio.transition(); }
             }
         }
+    }
+    if below: place := HorizontalLayout {
+        x: root.width - self.preferred-width - Tokens.space-3;
+        width: self.preferred-width;
+        height: root.height;
+        spacing: Tokens.space-2;
+        Rectangle { width: Tokens.size-border; background: Theme.border-subtle; }
+        Text {
+            text: @tr("Rail position");
+            color: Theme.text-secondary;
+            font-size: Tokens.type-caption-size;
+            vertical-alignment: center;
+            accessible-role: none;
+        }
         VerticalLayout {
             alignment: center;
-            IconButton {
-                icon: IconName.chevron-up;
-                name: root.move-name;
-                clicked => { Menus.run(root.move-id); }
+            SegmentedControl {
+                label: @tr("Transition rail position");
+                options: [@tr("Middle"), @tr("Below")];
+                index: 1;
+                selected(i) => {
+                    if i == 0 { Menus.run("ui.layout.studio_rail?at=between"); }
+                }
             }
         }
     }
