@@ -267,7 +267,15 @@ impl CommandState for Shown<'_> {
                     Err("No area beside the centre has panels.".to_owned())
                 }
             }
-            "source.add" => self.running(),
+            "source.add" | "canvas.studio_mode.toggle" => self.running(),
+            "canvas.transition" => {
+                self.running()?;
+                if s.studio_mode {
+                    Ok(())
+                } else {
+                    Err("Studio mode is off.".to_owned())
+                }
+            }
             "scene.select" => {
                 self.running()?;
                 match id.param("collection") {
@@ -331,6 +339,7 @@ impl CommandState for Shown<'_> {
                 side(id).is_some_and(|sd| self.areas().any(|(a, has, v)| a == sd && has && v))
             }
             "ui.panel.maximize" => panel_of(id).is_some_and(|p| self.maximized == Some(&p)),
+            "canvas.studio_mode.toggle" => self.studio.studio_mode,
             "stream.toggle" => matches!(self.studio.st_state, st_state::LIVE | st_state::STARTING),
             "record.toggle" => matches!(
                 self.studio.rec_state,
@@ -522,6 +531,10 @@ pub enum Run {
     Maximize(PanelId, bool),
     /// Open the Add source menu, at the targets of this kind code when given.
     AddSource(Option<i32>),
+    /// Turn studio mode on (`true`) or off (ADR-0061).
+    StudioMode(bool),
+    /// Put the preview scene on air (ADR-0061).
+    Transition,
     GoLive,
     /// Ask first, then end the stream (U4).
     AskEndStream,
@@ -569,6 +582,8 @@ pub fn run(text: &str, state: &Shown<'_>) -> Option<Run> {
         "ui.toolbar.reset" => Run::Layout(L::ResetToolbar),
         "ui.theme.reload" => Run::ReloadThemes,
         "ui.panel.maximize" => Run::Maximize(panel_of(&id)?, !on),
+        "canvas.studio_mode.toggle" => Run::StudioMode(!on),
+        "canvas.transition" => Run::Transition,
         "scene.position" => Run::Scene(state.studio.scene_at(scene_position(&id)?)?),
         "scene.next" => Run::Scene(state.studio.scene_step(1)?),
         "scene.previous" => Run::Scene(state.studio.scene_step(-1)?),

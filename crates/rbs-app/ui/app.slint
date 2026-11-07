@@ -6,7 +6,7 @@ import { Button, IconButton, Icon, IconName, Icons, FocusRing, MenuItem as MenuR
 import { SettingsNavItem, SettingsNavGroup, SettingsHeader } from "settings.slint";
 import { Appearance, AppearanceSettings, ThemeOption, ThemeTokenRow } from "appearance.slint";
 import { Shortcuts, ShortcutsSettings, ShortcutRow, ShortcutChip } from "shortcuts.slint";
-import { Studio, EntryRow, SourceData, FilterData, FilterFieldData, MarkData, KindData, TargetData, MeterRow, ScaleMark, EncoderData, ProgramPanel, ScenesPanel, SourcesPanel, PropertiesPanel, MixerPanel, LiveControlsPanel, OutputsPanel, StatsPanel, RecordingSettings, StreamSettings, VideoSettings, RemoteControlSettings, GeneralSettings } from "studio.slint";
+import { Studio, EntryRow, SourceData, FilterData, FilterFieldData, MarkData, KindData, TargetData, MeterRow, ScaleMark, EncoderData, ProgramPanel, ScenesPanel, SourcesPanel, PropertiesPanel, MixerPanel, LiveControlsPanel, TransitionPanel, OutputsPanel, StatsPanel, RecordingSettings, StreamSettings, VideoSettings, RemoteControlSettings, GeneralSettings } from "studio.slint";
 
 export { Theme, Tokens, Appearance, ThemeOption, ThemeTokenRow, Shortcuts, ShortcutRow, ShortcutChip, Studio, EntryRow, SourceData, FilterData, FilterFieldData, MarkData, KindData, TargetData, MeterRow, ScaleMark, EncoderData }
 
@@ -188,7 +188,7 @@ component LiveIndicator inherits Rectangle {
 // A panel's content: the panels connected to the studio, a placeholder for the others.
 component PanelContent inherits Rectangle {
     in property <TabData> tab;
-    property <bool> connected: tab.id == "rbs.program" || tab.id == "rbs.scenes" || tab.id == "rbs.sources" || tab.id == "rbs.properties" || tab.id == "rbs.mixer" || tab.id == "rbs.preview" || tab.id == "rbs.live-controls" || tab.id == "rbs.outputs" || tab.id == "rbs.stats";
+    property <bool> connected: tab.id == "rbs.program" || tab.id == "rbs.transition" || tab.id == "rbs.scenes" || tab.id == "rbs.sources" || tab.id == "rbs.properties" || tab.id == "rbs.mixer" || tab.id == "rbs.preview" || tab.id == "rbs.live-controls" || tab.id == "rbs.outputs" || tab.id == "rbs.stats";
     background: Theme.surface-raised;
     if tab.id == "rbs.program" || tab.id == "rbs.preview": ProgramPanel {
         width: parent.width;
@@ -211,6 +211,10 @@ component PanelContent inherits Rectangle {
         live-state: Shell.live-state;
     }
     if tab.id == "rbs.mixer": MixerPanel {
+        width: parent.width;
+        height: parent.height;
+    }
+    if tab.id == "rbs.transition": TransitionPanel {
         width: parent.width;
         height: parent.height;
     }
@@ -1317,29 +1321,32 @@ export component MainWindow inherits Window {
             MenuSeparator { }
             MenuItem { title: Menus.titles[14]; enabled: Menus.enabled[14]; activated => { Menus.run("scene.previous"); } }
             MenuItem { title: Menus.titles[15]; enabled: Menus.enabled[15]; activated => { Menus.run("scene.next"); } }
+            MenuSeparator { }
+            MenuItem { title: Menus.titles[16]; enabled: Menus.enabled[16]; checkable: true; checked: Menus.checked[16]; activated => { Menus.run("canvas.studio_mode.toggle"); } }
+            MenuItem { title: Menus.titles[17]; enabled: Menus.enabled[17]; activated => { Menus.run("canvas.transition"); } }
         }
         Menu {
             title: @tr("Source");
             Menu {
-                title: Menus.titles[16];
-                enabled: Menus.enabled[16];
+                title: Menus.titles[18];
+                enabled: Menus.enabled[18];
                 for c in Menus.choices[4]: MenuItem { title: c.title; checkable: true; checked: c.checked; activated => { Menus.run(c.id); } }
             }
         }
         Menu {
             title: @tr("Output");
-            MenuItem { title: Menus.titles[17]; enabled: Menus.enabled[17]; checkable: true; checked: Menus.checked[17]; activated => { Menus.run("stream.toggle"); } }
-            MenuItem { title: Menus.titles[18]; enabled: Menus.enabled[18]; checkable: true; checked: Menus.checked[18]; activated => { Menus.run("record.toggle"); } }
+            MenuItem { title: Menus.titles[19]; enabled: Menus.enabled[19]; checkable: true; checked: Menus.checked[19]; activated => { Menus.run("stream.toggle"); } }
+            MenuItem { title: Menus.titles[20]; enabled: Menus.enabled[20]; checkable: true; checked: Menus.checked[20]; activated => { Menus.run("record.toggle"); } }
         }
         Menu {
             title: @tr("Window");
             Menu {
-                title: Menus.titles[19];
-                enabled: Menus.enabled[19];
+                title: Menus.titles[21];
+                enabled: Menus.enabled[21];
                 for c in Menus.choices[5]: MenuItem { title: c.title; checkable: true; checked: c.checked; activated => { Menus.run(c.id); } }
             }
             MenuSeparator { }
-            MenuItem { title: Menus.titles[20]; enabled: Menus.enabled[20]; checkable: true; checked: Menus.checked[20]; activated => { Menus.run("ui.panel.maximize?id=rbs.preview"); } }
+            MenuItem { title: Menus.titles[22]; enabled: Menus.enabled[22]; checkable: true; checked: Menus.checked[22]; activated => { Menus.run("ui.panel.maximize?id=rbs.preview"); } }
         }
     }
     // END generated menu bar
@@ -1523,29 +1530,32 @@ export component FloatWindow inherits Window {
             MenuSeparator { }
             MenuItem { title: Menus.titles[14]; enabled: Menus.enabled[14]; activated => { Menus.run("scene.previous"); } }
             MenuItem { title: Menus.titles[15]; enabled: Menus.enabled[15]; activated => { Menus.run("scene.next"); } }
+            MenuSeparator { }
+            MenuItem { title: Menus.titles[16]; enabled: Menus.enabled[16]; checkable: true; checked: Menus.checked[16]; activated => { Menus.run("canvas.studio_mode.toggle"); } }
+            MenuItem { title: Menus.titles[17]; enabled: Menus.enabled[17]; activated => { Menus.run("canvas.transition"); } }
         }
         Menu {
             title: @tr("Source");
             Menu {
-                title: Menus.titles[16];
-                enabled: Menus.enabled[16];
+                title: Menus.titles[18];
+                enabled: Menus.enabled[18];
                 for c in Menus.choices[4]: MenuItem { title: c.title; checkable: true; checked: c.checked; activated => { Menus.run(c.id); } }
             }
         }
         Menu {
             title: @tr("Output");
-            MenuItem { title: Menus.titles[17]; enabled: Menus.enabled[17]; checkable: true; checked: Menus.checked[17]; activated => { Menus.run("stream.toggle"); } }
-            MenuItem { title: Menus.titles[18]; enabled: Menus.enabled[18]; checkable: true; checked: Menus.checked[18]; activated => { Menus.run("record.toggle"); } }
+            MenuItem { title: Menus.titles[19]; enabled: Menus.enabled[19]; checkable: true; checked: Menus.checked[19]; activated => { Menus.run("stream.toggle"); } }
+            MenuItem { title: Menus.titles[20]; enabled: Menus.enabled[20]; checkable: true; checked: Menus.checked[20]; activated => { Menus.run("record.toggle"); } }
         }
         Menu {
             title: @tr("Window");
             Menu {
-                title: Menus.titles[19];
-                enabled: Menus.enabled[19];
+                title: Menus.titles[21];
+                enabled: Menus.enabled[21];
                 for c in Menus.choices[5]: MenuItem { title: c.title; checkable: true; checked: c.checked; activated => { Menus.run(c.id); } }
             }
             MenuSeparator { }
-            MenuItem { title: Menus.titles[20]; enabled: Menus.enabled[20]; checkable: true; checked: Menus.checked[20]; activated => { Menus.run("ui.panel.maximize?id=rbs.preview"); } }
+            MenuItem { title: Menus.titles[22]; enabled: Menus.enabled[22]; checkable: true; checked: Menus.checked[22]; activated => { Menus.run("ui.panel.maximize?id=rbs.preview"); } }
         }
     }
     // END generated menu bar

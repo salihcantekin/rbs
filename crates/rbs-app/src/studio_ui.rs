@@ -140,6 +140,12 @@ pub struct StudioUi {
     pub preview_failed: bool,
     /// The layer exists.
     pub preview_ready: bool,
+    /// Studio mode (ADR-0061): the canvas has a preview scene.
+    pub studio_mode: bool,
+    /// The preview scene's picture layer exists (studio mode).
+    pub scene_preview_ready: bool,
+    /// The preview scene's picture layer could not be made in this session.
+    pub scene_preview_failed: bool,
     pub deleted: String,
     pub deleted_serial: u64,
     /// What Undo and Redo would apply now (the studio's undo history).
@@ -318,6 +324,9 @@ impl StudioUi {
             preview_offered: false,
             preview_failed: false,
             preview_ready: false,
+            studio_mode: false,
+            scene_preview_ready: false,
+            scene_preview_failed: false,
             deleted: String::new(),
             deleted_serial: 0,
             next_undo: None,
@@ -399,7 +408,15 @@ impl StudioUi {
     }
 
     /// Pushes the scalar state into a window's `Studio` global.
-    pub fn push(&self, g: &Studio<'_>, preview_state: i32, picture_panel: &str) {
+    pub fn push(
+        &self,
+        g: &Studio<'_>,
+        preview_state: i32,
+        scene_preview_state: i32,
+        picture_panel: &str,
+    ) {
+        g.set_studio_mode(self.studio_mode);
+        g.set_scene_preview_state(scene_preview_state);
         g.set_selected_source(self.selected);
         g.set_profile_name(self.user.profile_name.as_str().into());
         g.set_collection_name(self.user.collection_name.as_str().into());
@@ -1171,9 +1188,21 @@ impl StudioUi {
         self.send(Command::AddExistingSource(SourceId::from_raw(id as u32)));
     }
 
-    /// Puts a scene on air (a click in the Scenes panel).
+    /// Puts a scene on air (a click in the Scenes panel); in studio mode, in preview.
     pub fn switch_scene(&mut self, id: i32) {
         self.send(Command::SwitchScene(SceneId::from_raw(id as u32)));
+    }
+
+    /// Turns studio mode on or off (ADR-0061).
+    pub fn set_studio_mode(&mut self, on: bool) {
+        self.send(Command::SetStudioMode(on));
+    }
+
+    /// The transition: the preview scene goes on air (ADR-0061).
+    pub fn transition(&mut self) {
+        if self.studio_mode {
+            self.send(Command::Transition);
+        }
     }
 
     pub fn add_scene(&mut self) {
@@ -2153,6 +2182,8 @@ impl StudioUi {
         close_preview();
         self.preview_ready = false;
         self.preview_failed = false;
+        self.scene_preview_ready = false;
+        self.scene_preview_failed = false;
         self.canvas_restarting = true;
         self.send(Command::SetCanvas {
             size: next.size(),
@@ -2389,6 +2420,8 @@ impl StudioUi {
         close_preview();
         self.preview_ready = false;
         self.preview_failed = false;
+        self.scene_preview_ready = false;
+        self.scene_preview_failed = false;
         self.canvas_restarting = true;
         self.switching = Some(Switching {
             seq: self.switch_seq,
@@ -2579,6 +2612,12 @@ impl StudioUi {
                 self.failure = why.clone();
                 out.error = Some(format!("The studio stopped: {why}"));
             }
+            Update::Heard(rows) => self.set_heard(&rows),
+            Update::ScenePreview(endpoint) => {
+                self.scene_preview_ready = false;
+                self.scene_preview_failed = false;
+                out.scene_preview = Some(endpoint);
+            }
             Update::Sources(rows) => {
                 self.set_rows(rows);
                 self.refresh_existing();
@@ -2593,10 +2632,19 @@ impl StudioUi {
                         id: s.id.get() as i32,
                         name: s.name.as_str().into(),
                         live: s.id == list.program,
+                        preview: Some(s.id) == list.preview,
                         number: i as i32 + 1,
                     })
                     .collect();
                 set_rows(&self.scenes, data);
+                let studio = list.preview.is_some();
+                if studio != self.studio_mode {
+                    self.studio_mode = studio;
+                    out.studio_mode_started = studio;
+                    // The picture handles move between the panels.
+                    self.selected = -1;
+                    self.refresh_marks();
+                }
                 self.scene_list = Some(list);
                 self.refresh_existing();
             }
@@ -2839,10 +2887,16 @@ impl StudioUi {
             self.selected = -1;
         }
         set_rows(&self.sources, data);
+        self.rows = rows;
+    }
+
+    /// The Mixer: what is heard, the program scene's audio (ADR-0061; the edited scene's
+    /// outside studio mode).
+    fn set_heard(&mut self, rows: &[SourceRow]) {
         // Meters: one per playing audio source, in list order; ballistics survive for
         // sources that stay.
         let mut old: Vec<MeterSlot> = std::mem::take(&mut self.slots);
-        for r in &rows {
+        for r in rows {
             let Some(level) = &r.meter else { continue };
             let slot = match old.iter().position(|s| s.source == r.id) {
                 Some(i) if Arc::ptr_eq(&old[i].level, level) => old.swap_remove(i),
@@ -2867,7 +2921,6 @@ impl StudioUi {
             })
             .collect();
         set_rows(&self.meters, meters);
-        self.rows = rows;
     }
 
     /// True while meters need refreshing.
@@ -2919,6 +2972,11 @@ impl StudioUi {
 pub struct Applied {
     pub error: Option<String>,
     pub preview: Option<rbs_gpu::share::PreviewEndpoint>,
+    /// The preview scene's picture endpoint changed (studio mode, ADR-0061): connect to
+    /// it, or close that picture for `None`.
+    pub scene_preview: Option<Option<rbs_gpu::share::PreviewEndpoint>>,
+    /// Studio mode just started: a closed Preview panel opens (UI spec, Studio mode).
+    pub studio_mode_started: bool,
     /// A control API client asked to switch: scene collections (`true`) or output
     /// profiles to the entry with this id. The caller switches as the File menu
     /// does and then calls [`StudioUi::refresh_library`], which answers the host.

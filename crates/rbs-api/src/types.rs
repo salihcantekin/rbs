@@ -226,6 +226,9 @@ pub struct SceneList {
     pub scenes: Vec<SceneInfo>,
     /// The id of the scene on air.
     pub program: u32,
+    /// The preview scene in studio mode (protocol 1.9, ADR-0061); absent outside it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub preview: Option<u32>,
     /// Every source of the collection.
     pub sources: Vec<SourceEntry>,
 }

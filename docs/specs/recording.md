@@ -103,6 +103,7 @@ pub const MAX_OUTPUTS: usize = 2;      // outputs running at once
     pub canvas: CanvasId, pub audio: bool, pub audio_graph: AudioGraphConfig,
     pub partitions: Partitions, pub preview: Option<PreviewDesc>,
     pub audio_offsets: BTreeMap<SourceId, i64>, // sync offset ns per audio source; empty
+    pub scene_preview: bool, // ADR-0061: in studio mode, the preview scene's own picture; off
 }
 impl StudioSettings { pub fn new(canvas: CanvasId) -> Self; } // audio on, no preview
 #[non_exhaustive] pub struct OutputSettings { // a recording or a live stream
@@ -146,6 +147,8 @@ impl Studio {
     pub fn link(&self, id: OutputId) -> Option<Link>; // an output's connection; reads no meter
     pub fn preview(&self) -> Option<PreviewEndpoint>; // once the preview node is prepared
     pub fn preview_stats(&self) -> Option<&Arc<PreviewNodeStats>>;
+    pub fn scene_preview(&self) -> Option<PreviewEndpoint>; // ADR-0061: the preview scene's picture
+    pub fn studio_mode(&self) -> bool; // the canvas has a preview scene
     pub fn meter(&self, source: SourceId) -> Option<&Arc<LevelMeter>>;
     pub fn set_audio_offset(&mut self, source: SourceId, offset_ns: i64) -> bool; // true: a running input got it
     pub fn master_meter(&self) -> Option<&Arc<LevelMeter>>;

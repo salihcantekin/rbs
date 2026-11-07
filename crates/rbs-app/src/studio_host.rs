@@ -19,8 +19,8 @@ use std::thread::JoinHandle;
 use std::time::Duration;
 
 use rbs_api::request::{
-    Empty, ItemAdded, ProfileList, RecordStarted, SceneAdded, SourceAdded, StreamStarted,
-    TargetList,
+    Empty, ItemAdded, ProfileList, RecordStarted, SceneAdded, SceneSourceList, SourceAdded,
+    StreamStarted, TargetList,
 };
 use rbs_api::types as api;
 use rbs_api::{
@@ -284,6 +284,12 @@ impl CropRefusal {
     }
 }
 
+/// Whether the app shows the preview scene's own picture in studio mode (ADR-0061):
+/// macOS, where each picture is its own Core Animation layer. Windows waits for one
+/// DirectComposition target shared by both pictures (a window has one topmost target).
+const SCENE_PICTURE: bool = cfg!(target_os = "macos");
+
+const STUDIO_MODE_OFF: &str = "Studio mode is off: there is no preview scene.";
 const NO_AREA: &str = "The crop must leave at least one pixel of the picture in each direction.";
 
 /// What the UI asks the studio to do.
@@ -420,8 +426,15 @@ pub enum Command {
         /// The new name.
         name: String,
     },
-    /// Put a scene on air (a cut). A live action: not on the undo stack (ADR-0021).
+    /// Put a scene on air (a cut); in studio mode, make it the preview scene instead
+    /// (ADR-0061). A live action: not on the undo stack (ADR-0021).
     SwitchScene(SceneId),
+    /// Enter (`true`) or leave studio mode (ADR-0061): the preview scene starts as the
+    /// program scene. A live action.
+    SetStudioMode(bool),
+    /// Move the preview scene to air and the old program scene to preview (a cut that
+    /// swaps; ADR-0061). Refused outside studio mode. A live action.
+    Transition,
     /// Show or hide a source in the program scene (one undo step).
     SetSourceVisible {
         /// The source.
@@ -773,6 +786,8 @@ pub struct SceneList {
     pub scenes: Vec<SceneRow>,
     /// The one on air.
     pub program: SceneId,
+    /// The preview scene in studio mode (ADR-0061); `None` outside it.
+    pub preview: Option<SceneId>,
     /// Every source of the collection, by name.
     pub sources: Vec<SourceEntry>,
 }
@@ -873,6 +888,12 @@ pub enum Update {
     Failed(String),
     /// The program scene's sources changed or one changed state.
     Sources(Vec<SourceRow>),
+    /// The program scene's sources, top first: what is heard and recorded, for the
+    /// Mixer. The same as [`Update::Sources`] outside studio mode (ADR-0061).
+    Heard(Vec<SourceRow>),
+    /// Where the UI connects to the preview scene's picture in studio mode (ADR-0061),
+    /// each time it appears (`Some`) or goes (`None`).
+    ScenePreview(Option<PreviewEndpoint>),
     /// What a kind can capture, in OS order.
     Targets(SourceKind, Vec<Target>),
     /// A source was deleted; [`Command::UndoDelete`] brings it back.
@@ -1266,6 +1287,12 @@ struct Host {
     /// edit (kept in step by [`Host::keep_program`]).
     scene: SceneId,
     rows: Vec<SourceRow>,
+    /// The program scene's rows last published (the Mixer and `source.changed`).
+    heard: Vec<SourceRow>,
+    /// Scene sources an API call places into, instead of the edited scene.
+    into: Option<SceneId>,
+    /// The preview scene's picture endpoint last sent to the UI.
+    scene_preview_sent: Option<PreviewEndpoint>,
     /// The scene list as last sent.
     scenes_shown: Option<SceneList>,
     /// The last picture size seen per video source (ADR-0058).
@@ -1561,6 +1588,7 @@ fn start(
         .map_or((config.size, config.fps), |c| (c.size, c.frame_rate));
     let mut settings = StudioSettings::new(canvas);
     settings.preview = config.preview;
+    settings.scene_preview = SCENE_PICTURE;
     settings.audio_offsets = filters::audio_offsets(&collection);
     let first = engine();
     let clock = first.clock();
@@ -1638,6 +1666,9 @@ fn start(
             canvas,
             scene,
             rows: Vec::new(),
+            heard: Vec::new(),
+            into: None,
+            scene_preview_sent: None,
             scenes_shown: None,
             sizes: BTreeMap::new(),
             history: History::new(),
@@ -1793,7 +1824,19 @@ impl Host {
                 self.answer(done, notify);
             }
             Command::SwitchScene(id) => {
-                let done = self.switch_scene(id);
+                let done = if self.preview().is_some() {
+                    self.set_preview_scene(id)
+                } else {
+                    self.switch_scene(id)
+                };
+                self.answer(done, notify);
+            }
+            Command::SetStudioMode(on) => {
+                let done = self.set_studio_mode(on);
+                self.answer(done, notify);
+            }
+            Command::Transition => {
+                let done = self.transition();
                 self.answer(done, notify);
             }
             Command::SetSourceVisible { id, visible } => {
@@ -2125,6 +2168,8 @@ impl Host {
             fps,
         });
         self.rows.clear();
+        self.heard.clear();
+        self.scene_preview_sent = None;
         self.publish(notify);
         let now = self.api_canvas();
         if now != before {
@@ -2346,6 +2391,7 @@ impl Host {
             .ok_or("the canvas is gone")?;
         let mut settings = StudioSettings::new(self.canvas);
         settings.preview = self.preview_surfaces.map(|n| preview_desc(canvas.size, n));
+        settings.scene_preview = SCENE_PICTURE;
         settings.audio_offsets = filters::audio_offsets(&self.collection);
         let engine = (self.engine)();
         let clock = engine.clock();
@@ -2703,7 +2749,7 @@ impl Host {
             .map_err(|e| format!("{e:?}"))?;
         match self
             .collection
-            .add_item(self.scene, ItemContent::Source(id), layout, None)
+            .add_item(self.edited(), ItemContent::Source(id), layout, None)
         {
             Ok((_, item)) => {
                 self.history
@@ -2753,14 +2799,26 @@ impl Host {
     /// (`true`) and why it failed.
     fn undo_or_redo(&mut self, back: bool) -> Result<(), (bool, String)> {
         let program = self.scene;
+        let preview = self.preview();
         let result = self.undo_or_redo_records(back);
-        // Undo and redo never change what is on air (ADR-0059): a record that put a
-        // scene back on air is overruled, and a removed program is replaced.
+        // Undo and redo never change what is on air (ADR-0059) or the preview scene
+        // (ADR-0061): a record that put a scene back on air or in preview is
+        // overruled, and a removed program is replaced.
         let now = self.collection.canvas(self.canvas).and_then(|c| c.program);
         if now != Some(program) && self.collection.scene(program).is_some() {
             let _ = self.collection.set_program(self.canvas, Some(program));
         }
         self.keep_program();
+        let kept = preview.filter(|p| self.collection.scene(*p).is_some());
+        let restored = match (preview, kept) {
+            (None, _) => None,
+            (Some(_), Some(p)) => Some(p),
+            // The preview scene went away: studio mode stays, with the program.
+            (Some(_), None) => Some(self.scene),
+        };
+        if self.preview() != restored {
+            let _ = self.collection.set_preview(self.canvas, restored);
+        }
         result
     }
 
@@ -2799,7 +2857,7 @@ impl Host {
     /// The program scene's item that places `id`, and its index (0 is the bottom).
     fn item_of(&self, id: SourceId) -> Result<(usize, &SceneItem), String> {
         let gone = || "This source is not in the scene any more.".to_owned();
-        let scene = self.collection.scene(self.scene).ok_or_else(gone)?;
+        let scene = self.collection.scene(self.edited()).ok_or_else(gone)?;
         scene
             .items
             .iter()
@@ -2841,7 +2899,7 @@ impl Host {
     fn move_source(&mut self, id: SourceId, up: bool) -> Result<bool, String> {
         let (index, item) = self.item_of(id)?;
         let item = item.id;
-        let Some(scene) = self.collection.scene(self.scene) else {
+        let Some(scene) = self.collection.scene(self.edited()) else {
             return Ok(false);
         };
         let mut others = scene
@@ -3001,7 +3059,7 @@ impl Host {
             });
         let (item, undo) = self
             .collection
-            .add_item(self.scene, ItemContent::Source(id), layout, None)
+            .add_item(self.edited(), ItemContent::Source(id), layout, None)
             .map_err(|e| Refusal::of(&e))?;
         self.history.record(EditKind::Add, &name, 0, vec![undo]);
         Ok(item)
@@ -3055,6 +3113,12 @@ impl Host {
             let next = if at > 0 { panel[at - 1] } else { panel[at + 1] };
             self.switch_scene(next)?;
         }
+        // Studio mode keeps a preview scene (ADR-0061): the program takes its place.
+        if self.preview() == Some(id) {
+            self.collection
+                .set_preview(self.canvas, Some(self.scene))
+                .map_err(|e| Refusal::of(&e))?;
+        }
         let undo = self
             .collection
             .remove_scene(id)
@@ -3100,6 +3164,97 @@ impl Host {
             .set_program(self.canvas, Some(id))
             .map_err(|e| Refusal::of(&e))?;
         self.scene = id;
+        Ok(true)
+    }
+
+    /// The preview scene while the canvas is in studio mode (ADR-0061).
+    fn preview(&self) -> Option<SceneId> {
+        self.collection.canvas(self.canvas).and_then(|c| c.preview)
+    }
+
+    /// The scene source and item edits act on: the preview scene in studio mode, else
+    /// the program scene (ADR-0061 decision 4).
+    fn edited(&self) -> SceneId {
+        self.into.or(self.preview()).unwrap_or(self.scene)
+    }
+
+    /// Runs `f` with source and item additions going to `scene` (an API call's
+    /// `scene`, ADR-0061 decision 8); `None` keeps them in the program scene, as in
+    /// protocol 1.6.
+    fn placing_into<T>(
+        &mut self,
+        scene: Option<u32>,
+        f: impl FnOnce(&mut Self) -> Result<T, ApiError>,
+    ) -> Result<T, ApiError> {
+        let scene = match scene {
+            None => self.scene,
+            Some(raw) => {
+                let id = SceneId::from_raw(raw);
+                if self.collection.scene(id).is_none() {
+                    return Err(ApiError::new(
+                        ErrorKind::NotFound,
+                        format!("no scene {raw}"),
+                    ));
+                }
+                id
+            }
+        };
+        let old = self.into.replace(scene);
+        let done = f(self);
+        self.into = old;
+        done
+    }
+
+    /// Enters or leaves studio mode (ADR-0061): a live action. Entering puts the
+    /// program scene in preview. `Ok(false)` when it is in that mode already.
+    fn set_studio_mode(&mut self, on: bool) -> Result<bool, Refusal> {
+        if self.preview().is_some() == on {
+            return Ok(false);
+        }
+        let scene = on.then_some(self.scene);
+        self.collection
+            .set_preview(self.canvas, scene)
+            .map_err(|e| Refusal::of(&e))?;
+        Ok(true)
+    }
+
+    /// Makes a scene the preview scene (studio mode only; a live action).
+    /// `Ok(false)` when it is the preview scene already.
+    fn set_preview_scene(&mut self, id: SceneId) -> Result<bool, Refusal> {
+        if self.collection.scene(id).is_none() {
+            return Err(Refusal::NotFound(format!(
+                "There is no scene {}.",
+                id.get()
+            )));
+        }
+        let Some(preview) = self.preview() else {
+            return Err(Refusal::Conflict(STUDIO_MODE_OFF.to_owned()));
+        };
+        if preview == id {
+            return Ok(false);
+        }
+        self.collection
+            .set_preview(self.canvas, Some(id))
+            .map_err(|e| Refusal::of(&e))?;
+        Ok(true)
+    }
+
+    /// The transition (a cut, ADR-0061 decision 3): the preview scene goes on air and
+    /// the old program scene to preview. A live action; `Ok(false)` when both are the
+    /// same scene.
+    fn transition(&mut self) -> Result<bool, Refusal> {
+        let Some(preview) = self.preview() else {
+            return Err(Refusal::Conflict(STUDIO_MODE_OFF.to_owned()));
+        };
+        let program = self.scene;
+        if preview == program {
+            return Ok(false);
+        }
+        self.collection
+            .set_program(self.canvas, Some(preview))
+            .map_err(|e| Refusal::of(&e))?;
+        self.scene = preview;
+        let _ = self.collection.set_preview(self.canvas, Some(program));
         Ok(true)
     }
 
@@ -3161,6 +3316,7 @@ impl Host {
                 })
                 .collect(),
             program: self.scene,
+            preview: self.preview(),
             sources,
         }
     }
@@ -3426,15 +3582,26 @@ impl Host {
                 });
             notify(Update::Scenes(scenes));
         }
-        let rows = self.rows();
-        if rows != self.rows {
-            self.rows = rows.clone();
-            let listed: Vec<api::SourceInfo> = rows.iter().map(api_source).collect();
+        // `source.changed` and the Mixer: the program scene (ADR-0061 decision 8).
+        let heard = self.rows_of(self.scene);
+        if heard != self.heard {
+            self.heard = heard.clone();
+            let listed: Vec<api::SourceInfo> = heard.iter().map(api_source).collect();
             self.events
                 .changed(StateKey::topic(Topic::SourceChanged), || {
                     EventPayload::SourceChanged(listed)
                 });
+            notify(Update::Heard(heard));
+        }
+        let rows = self.rows();
+        if rows != self.rows {
+            self.rows = rows.clone();
             notify(Update::Sources(rows));
+        }
+        let picture = self.studio.scene_preview();
+        if picture != self.scene_preview_sent {
+            self.scene_preview_sent = picture.clone();
+            notify(Update::ScenePreview(picture));
         }
         // After the rows, so the UI sees the edit before what undoes it.
         let shown = (
@@ -3450,10 +3617,16 @@ impl Host {
         }
     }
 
-    /// The program scene's sources, top first.
+    /// The edited scene's sources, top first (the program scene; in studio mode the
+    /// preview scene, ADR-0061).
     fn rows(&self) -> Vec<SourceRow> {
+        self.rows_of(self.edited())
+    }
+
+    /// A scene's sources, top first.
+    fn rows_of(&self, scene: SceneId) -> Vec<SourceRow> {
         let states = self.studio.sources();
-        let Some(scene) = self.collection.scene(self.scene) else {
+        let Some(scene) = self.collection.scene(scene) else {
             return Vec::new();
         };
         scene
@@ -3654,7 +3827,7 @@ impl ApiTarget<'_> {
             })),
             C::SourceList => Ok(Response::Sources(api::Snapshot {
                 seq: host.events.seq_map([Topic::SourceChanged]),
-                data: host.rows.iter().map(api_source).collect(),
+                data: host.heard.iter().map(api_source).collect(),
             })),
             C::SourceTargets(p) => {
                 let kind = app_kind(p.kind);
@@ -3690,7 +3863,7 @@ impl ApiTarget<'_> {
                 if let Some(name) = p.name.filter(|n| !n.trim().is_empty()) {
                     target.name = name;
                 }
-                let id = host.add(kind, &target).map_err(failed)?;
+                let id = host.placing_into(p.scene, |h| h.add(kind, &target).map_err(failed))?;
                 host.apply(notify);
                 Ok(Response::SourceAdded(SourceAdded { source: id.get() }))
             }
@@ -3728,6 +3901,51 @@ impl ApiTarget<'_> {
                 let changed = host
                     .rename_scene(SceneId::from_raw(p.scene), &p.name)
                     .map_err(|e| refused(&e))?;
+                if changed {
+                    host.apply(notify);
+                }
+                Ok(Response::Done(Empty {}))
+            }
+            C::SceneSources(p) => {
+                let id = SceneId::from_raw(p.scene);
+                if host.collection.scene(id).is_none() {
+                    return Err(ApiError::new(
+                        ErrorKind::NotFound,
+                        format!("no scene {}", p.scene),
+                    ));
+                }
+                Ok(Response::SceneSources(SceneSourceList {
+                    scene: p.scene,
+                    sources: host.rows_of(id).iter().map(api_source).collect(),
+                }))
+            }
+            C::CanvasSetPreview(p) => {
+                let changed = match p.scene {
+                    None => host.set_studio_mode(false),
+                    Some(raw) => {
+                        let id = SceneId::from_raw(raw);
+                        if host.preview().is_none() {
+                            if host.collection.scene(id).is_none() {
+                                return Err(refused(&Refusal::NotFound(format!(
+                                    "There is no scene {raw}."
+                                ))));
+                            }
+                            host.set_studio_mode(true)
+                                .and_then(|_| host.set_preview_scene(id))
+                                .map(|_| true)
+                        } else {
+                            host.set_preview_scene(id)
+                        }
+                    }
+                }
+                .map_err(|e| refused(&e))?;
+                if changed {
+                    host.apply(notify);
+                }
+                Ok(Response::Done(Empty {}))
+            }
+            C::CanvasTransition => {
+                let changed = host.transition().map_err(|e| refused(&e))?;
                 if changed {
                     host.apply(notify);
                 }
@@ -3823,9 +4041,10 @@ impl ApiTarget<'_> {
                 Ok(Response::Done(Empty {}))
             }
             C::ItemAdd(p) => {
-                let item = host
-                    .add_existing(SourceId::from_raw(p.source))
-                    .map_err(|e| refused(&e))?;
+                let item = host.placing_into(p.scene, |h| {
+                    h.add_existing(SourceId::from_raw(p.source))
+                        .map_err(|e| refused(&e))
+                })?;
                 host.apply(notify);
                 Ok(Response::ItemAdded(ItemAdded { item: item.get() }))
             }
@@ -4343,6 +4562,7 @@ fn api_scenes(list: &SceneList) -> api::SceneList {
             })
             .collect(),
         program: list.program.get(),
+        preview: list.preview.map(SceneId::get),
         sources: list
             .sources
             .iter()

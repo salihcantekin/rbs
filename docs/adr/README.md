@@ -73,4 +73,5 @@ An ADR records one decision that is hard to reverse or affects more than one cra
 | [0058](0058-crop-editing-of-sources.md) | Crop editing of sources: keep the scale, read the picture size from the capture node | Accepted |
 | [0059](0059-scenes-lock-and-source-audio-in-the-studio.md) | Scenes, item lock and source volume in the studio | Accepted |
 | [0060](0060-shortcuts-in-app-and-global.md) | Shortcuts bind registry commands to key chords, in the app or globally; Settings › Shortcuts edits them | Accepted |
+| [0061](0061-studio-mode-in-the-desktop-app.md) | Studio mode in the desktop app: preview scene picture, cut transition, control API 1.9 | Accepted |
 | [0062](0062-built-in-video-filters-and-properties-tabs.md) | Built-in video filters: one filter node behind a filter type trait, settings through parameter channels, and the Properties tabs | Accepted |

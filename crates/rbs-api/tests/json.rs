@@ -126,6 +126,7 @@ fn scenes() -> SceneList {
             },
         ],
         program: 2,
+        preview: Some(2),
         sources: vec![SourceEntry {
             id: 3,
             name: "Camera".into(),
@@ -171,6 +172,7 @@ fn every_request() -> Vec<Request> {
             adapter: "wgc".into(),
             target: "display-1".into(),
             name: None,
+            scene: None,
         })),
         c(Command::SourceDelete(SourceRef { source: 4 })),
         c(Command::ItemSetStyle(SetItemStyle {
@@ -202,7 +204,13 @@ fn every_request() -> Vec<Request> {
             source: 3,
             muted: true,
         })),
-        c(Command::ItemAdd(AddItem { source: 3 })),
+        c(Command::ItemAdd(AddItem {
+            source: 3,
+            scene: None,
+        })),
+        c(Command::SceneSources(SceneRef { scene: 2 })),
+        c(Command::CanvasSetPreview(SetPreview { scene: Some(2) })),
+        c(Command::CanvasTransition),
         c(Command::ItemSetVisible(SetItemVisible {
             item: 7,
             visible: false,
@@ -729,4 +737,35 @@ fn scenes_lock_and_volume_are_a_minor_addition() {
             .is_err()
     );
     assert!(serde_json::from_value::<SetSourceVolume>(json!({"source": 1})).is_err());
+}
+
+#[test]
+fn studio_mode_is_a_minor_addition() {
+    // A 1.6 scene list and 1.6 requests still read, meaning the program scene.
+    let old: SceneList = serde_json::from_value(json!({
+        "scenes": [{"id": 0, "name": "Talk"}], "program": 0, "sources": []
+    }))
+    .unwrap();
+    assert_eq!(old.preview, None);
+    let add: AddItem = serde_json::from_value(json!({"source": 3})).unwrap();
+    assert_eq!(add.scene, None);
+    let off: Request =
+        serde_json::from_value(json!({"method": "canvas.set_preview", "params": {"scene": null}}))
+            .unwrap();
+    assert_eq!(
+        off,
+        Request::Command(Command::CanvasSetPreview(SetPreview { scene: None }))
+    );
+    assert_eq!(off.scope(), Some(Scope::Control));
+    let cut: Request =
+        serde_json::from_value(json!({"method": "canvas.transition", "params": {}})).unwrap();
+    assert_eq!(cut, Request::Command(Command::CanvasTransition));
+    let sources: Request =
+        serde_json::from_value(json!({"method": "scene.sources", "params": {"scene": 1}})).unwrap();
+    assert_eq!(sources.scope(), Some(Scope::Read));
+    assert!(serde_json::from_value::<SetPreview>(json!({"scene": 1, "x": 0})).is_err());
+    round_trip(&SceneSourceList {
+        scene: 2,
+        sources: vec![source()],
+    });
 }
