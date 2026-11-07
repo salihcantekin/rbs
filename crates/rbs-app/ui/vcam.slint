@@ -1,0 +1,168 @@
+// Settings › Virtual camera (ADR-0066 decisions 11 and 12, docs/specs/virtual-camera.md):
+// add the camera after a warning, its size and frame rate, sending, and removing it.
+// Rust (`vcam_page`) pushes state into the `VirtualCamera` global and handles its
+// callbacks; the texts it pushes come from `rbs_app::vcam_settings::Page::view`.
+import { Theme, Tokens } from "tokens.slint";
+import { Button, Select, SegmentedControl, Toggle } from "components.slint";
+import { SettingsCard, SettingRow, SettingBlock, SettingsStatus, SettingsCallout } from "settings.slint";
+
+export global VirtualCamera {
+    // The camera can be added on this computer.
+    in property <bool> available;
+    // The toggle: added, or being added.
+    in property <bool> added;
+    in property <bool> can-toggle;
+    // The state in words; `tone` 0 neutral, 1 good, 2 problem.
+    in property <string> state;
+    in property <int> tone;
+    // The warning before adding is shown.
+    in property <bool> confirming;
+    in property <[string]> sizes;
+    in property <int> size;
+    in property <[string]> rates;
+    in property <int> rate;
+    in property <bool> can-format;
+    in property <string> format-help;
+    in property <bool> sending;
+    in property <bool> can-send;
+    in property <string> sending-text;
+    in property <bool> can-remove-all;
+    // The toggle: on shows the warning, off removes the camera.
+    callback toggle(bool);
+    callback add();
+    callback cancel();
+    callback set-size(int);
+    callback set-rate(int);
+    // Start or stop sending.
+    callback send(bool);
+    callback remove-all();
+}
+
+export component VirtualCameraSettings inherits Rectangle {
+    form := VerticalLayout {
+        spacing: Tokens.space-4;
+        alignment: start;
+        SettingsCard {
+            title: @tr("Camera");
+            description: @tr("Shows the program in meeting and streaming apps. Video only.");
+            SettingRow {
+                divider: false;
+                label: @tr("Virtual camera");
+                help: @tr("Off by default. Turning it off removes the camera from the apps' camera lists.");
+                enabled: VirtualCamera.can-toggle;
+                fill: false;
+                Toggle {
+                    label: @tr("Virtual camera");
+                    checked: VirtualCamera.added;
+                    enabled: VirtualCamera.can-toggle;
+                    toggled(on) => { VirtualCamera.toggle(on); }
+                }
+            }
+            SettingsStatus {
+                text: VirtualCamera.state;
+                tone: VirtualCamera.tone;
+            }
+            if VirtualCamera.confirming: SettingBlock {
+                divider: false;
+                SettingsCallout {
+                    label: @tr("Add the virtual camera");
+                    Text {
+                        text: @tr("RBS adds a camera named \"RBS Virtual Camera\" that every app on this computer can list. An app you allow to use cameras sees what RBS sends while it sends, and so could another account on this computer.");
+                        color: Theme.text-primary;
+                        font-size: Tokens.type-body-size;
+                        wrap: word-wrap;
+                    }
+                    Text {
+                        text: @tr("Windows asks for administrator approval once, now, and never again while you use the camera. Sending costs one more GPU pass and two copies of each camera frame. It is video only: meeting apps keep using your microphone.");
+                        color: Theme.text-primary;
+                        font-size: Tokens.type-body-size;
+                        wrap: word-wrap;
+                    }
+                    Text {
+                        text: @tr("Turning the setting off removes the camera. Removing RBS's part from Windows completely asks for administrator approval once more, under Remove completely.");
+                        color: Theme.text-secondary;
+                        font-size: Tokens.type-body-size;
+                        wrap: word-wrap;
+                    }
+                    HorizontalLayout {
+                        spacing: Tokens.space-2;
+                        alignment: start;
+                        Button {
+                            text: @tr("Add the camera");
+                            kind: "primary";
+                            clicked => { VirtualCamera.add(); }
+                        }
+                        cancel := Button {
+                            text: @tr("Cancel");
+                            clicked => { VirtualCamera.cancel(); }
+                        }
+                    }
+                    // Cancel is focused (ADR-0066 decision 11).
+                    init => { cancel.focus(); }
+                }
+            }
+        }
+        if VirtualCamera.available: SettingsCard {
+            title: @tr("Picture");
+            SettingRow {
+                divider: false;
+                label: @tr("Size");
+                help: VirtualCamera.format-help;
+                enabled: VirtualCamera.can-format;
+                Select {
+                    label: @tr("Size");
+                    options: VirtualCamera.sizes;
+                    index: VirtualCamera.size;
+                    enabled: VirtualCamera.can-format;
+                    selected(i) => { VirtualCamera.set-size(i); }
+                }
+            }
+            SettingRow {
+                label: @tr("Frame rate");
+                help: @tr("Frames per second. RBS sends at the canvas rate when that is lower.");
+                enabled: VirtualCamera.can-format;
+                fill: false;
+                SegmentedControl {
+                    label: @tr("Frame rate");
+                    options: VirtualCamera.rates;
+                    index: VirtualCamera.rate;
+                    enabled: VirtualCamera.can-format;
+                    selected(i) => { VirtualCamera.set-rate(i); }
+                }
+            }
+        }
+        if VirtualCamera.available: SettingsCard {
+            title: @tr("Sending");
+            SettingRow {
+                divider: false;
+                label: VirtualCamera.sending ? @tr("Sending the program") : @tr("Not sending");
+                help: VirtualCamera.sending-text;
+                enabled: VirtualCamera.can-send;
+                fill: false;
+                Button {
+                    text: VirtualCamera.sending ? @tr("Stop virtual camera") : @tr("Start virtual camera");
+                    kind: VirtualCamera.sending ? "secondary" : "primary";
+                    enabled: VirtualCamera.can-send;
+                    clicked => { VirtualCamera.send(!VirtualCamera.sending); }
+                }
+            }
+        }
+        if VirtualCamera.available: SettingsCard {
+            title: @tr("Removal");
+            SettingRow {
+                divider: false;
+                label: @tr("Remove completely");
+                help: @tr("Removes the camera and RBS's part from Windows. Windows asks for administrator approval once more.");
+                enabled: VirtualCamera.can-remove-all;
+                fill: false;
+                Button {
+                    text: @tr("Remove completely");
+                    enabled: VirtualCamera.can-remove-all;
+                    clicked => { VirtualCamera.remove-all(); }
+                }
+            }
+        }
+    }
+    preferred-height: form.preferred-height;
+    min-height: form.min-height;
+}

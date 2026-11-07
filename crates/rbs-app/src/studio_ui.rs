@@ -1128,7 +1128,7 @@ impl StudioUi {
         };
     }
 
-    fn send(&self, c: Command) {
+    pub fn send(&self, c: Command) {
         if let Some(h) = &self.host {
             h.send(c);
         }
@@ -2776,6 +2776,7 @@ impl StudioUi {
                 out.preview = preview;
             }
             Update::Failed(why) => {
+                out.camera = Some(None);
                 self.state = 2;
                 self.cannot_record = Some(format!("The studio stopped: {why}"));
                 if self.rec_state != rec_state::OFF {
@@ -2927,6 +2928,7 @@ impl StudioUi {
                 self.api_switch = Some(seq);
                 out.switch = Some((collection, id));
             }
+            Update::VirtualCamera(status) => out.camera = Some(status),
             Update::Stats(stats) => {
                 let rows: Vec<StatRow> = stat_lines(&stats)
                     .into_iter()
@@ -3199,6 +3201,8 @@ pub struct Applied {
     /// profiles to the entry with this id. The caller switches as the File menu
     /// does and then calls [`StudioUi::refresh_library`], which answers the host.
     pub switch: Option<(bool, String)>,
+    /// The virtual camera started or stopped sending (`Some(None)`: it does not send).
+    pub camera: Option<Option<rbs_app::studio_host::CameraStatus>>,
 }
 
 /// A library as `profile.list` and `collection.list` show it.
