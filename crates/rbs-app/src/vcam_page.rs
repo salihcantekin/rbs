@@ -10,19 +10,21 @@
 use std::path::Path;
 
 use rbs_app::platform::VirtualCamera as Platform;
-use rbs_app::studio_host::{self, CameraStatus, Command};
+use rbs_app::studio_host::{self, CameraSetup, CameraStatus, Command};
 use rbs_app::vcam_settings::{self, Done, Page, RATES, SIZES, Sending, VcamSettings, Work};
 use rbs_core::media::PixelFormat;
 use rbs_vcam::{CameraFormat, InstallState, VcamError};
 use slint::{Model, ModelRc, SharedString, VecModel};
 
 use super::{App, CTX, Ctx, entry};
-use crate::ui::VirtualCamera;
+use crate::ui::{Studio, VirtualCamera};
 
 /// The section's state and the platform's camera.
 pub struct Camera {
     page: Page,
     platform: Option<Platform>,
+    /// What the studio's control thread was last told ([`Command::SetVirtualCamera`]).
+    told: Option<CameraSetup>,
 }
 
 impl Camera {
@@ -35,7 +37,54 @@ impl Camera {
             Err(why) => (None, Some(why)),
         };
         let page = Page::new(settings, no_adapter);
-        (Self { page, platform }, note)
+        (
+            Self {
+                page,
+                platform,
+                told: None,
+            },
+            note,
+        )
+    }
+
+    /// RBS sends the program to the camera now.
+    pub fn is_sending(&self) -> bool {
+        self.page.sending.is_some()
+    }
+
+    /// The camera as `vcam.toggle` sees it.
+    pub fn shown(&self) -> crate::menu_bar::CameraShown {
+        crate::menu_bar::CameraShown {
+            available: self.platform.is_some() && self.page.view().available,
+            ready: self.platform.is_some() && self.page.view().can_send,
+            sending: self.is_sending(),
+        }
+    }
+
+    /// Live controls' part (ADR-0066 decision 12): shown where the platform has a
+    /// camera; `running` is whether the studio runs.
+    pub fn push_live(&self, g: &Studio<'_>, running: bool) {
+        let v = self.page.view();
+        g.set_vcam_shown(self.platform.is_some());
+        g.set_vcam_on(self.is_sending());
+        g.set_vcam_can(running && v.can_send);
+        g.set_vcam_text(self.live_text(&v).into());
+    }
+
+    /// Live controls' line under the button.
+    fn live_text(&self, v: &vcam_settings::View) -> String {
+        match &self.page.sending {
+            Some(s) => format!(
+                "Virtual camera on: {} x {} at {} fps.",
+                s.width, s.height, s.rate
+            ),
+            None if self.page.starting => "Starting the virtual camera…".into(),
+            None if !v.available || self.page.state.is_none() => String::new(),
+            None if self.page.state != Some(InstallState::Installed) => {
+                "Add the virtual camera in Settings, Virtual camera.".into()
+            }
+            None => String::new(),
+        }
     }
 
     /// The camera for the studio's control thread.
@@ -109,25 +158,7 @@ pub fn install(g: &VirtualCamera<'_>, ctx: &Ctx) {
         })
     });
     let c = ctx.clone();
-    g.on_send(move |on| {
-        entry::guard(|| {
-            c.update(move |app| {
-                let page = &mut app.vcam.page;
-                page.note = None;
-                if on {
-                    let s = page.settings;
-                    page.starting = true;
-                    app.studio.send(Command::StartVirtualCamera {
-                        width: s.width,
-                        height: s.height,
-                        fps: s.frame_rate(),
-                    });
-                } else {
-                    app.studio.send(Command::StopVirtualCamera);
-                }
-            });
-        })
-    });
+    g.on_send(move |on| entry::guard(|| c.update(move |app| send(app, on))));
     let c = ctx.clone();
     g.on_remove_all(move || {
         entry::guard(|| {
@@ -139,6 +170,58 @@ pub fn install(g: &VirtualCamera<'_>, ctx: &Ctx) {
             });
         })
     });
+}
+
+/// Start (`on`) or stop sending: the Sending card, Live controls and `vcam.toggle`.
+pub fn send(app: &mut App, on: bool) {
+    let page = &mut app.vcam.page;
+    page.note = None;
+    if on {
+        if page.sending.is_some() || page.starting {
+            return;
+        }
+        let s = page.settings;
+        page.starting = true;
+        app.studio.send(Command::StartVirtualCamera {
+            width: s.width,
+            height: s.height,
+            fps: s.frame_rate(),
+        });
+    } else if page.sending.is_some() {
+        app.studio.send(Command::StopVirtualCamera);
+    }
+}
+
+/// The studio started: read the camera's state once when the user added it in RBS,
+/// so `vcam.toggle` and `vcam.start` know it (nothing runs otherwise, P13).
+pub fn studio_started(app: &mut App) {
+    if app.vcam.page.settings.enabled {
+        run(app, Work::Checking);
+    }
+}
+
+/// Tells the studio's control thread what `vcam.start` and `vcam.status` use, when it
+/// changed.
+pub fn sync_host(app: &mut App) {
+    if app.vcam.platform.is_none() {
+        return;
+    }
+    let page = &app.vcam.page;
+    let s = page.settings;
+    let setup = CameraSetup {
+        // Never added in RBS and not read yet: as Settings says, not added.
+        state: page
+            .state
+            .clone()
+            .or((!s.enabled && page.work.is_none()).then_some(InstallState::NotInstalled)),
+        width: s.width,
+        height: s.height,
+        fps: s.frame_rate(),
+    };
+    if app.vcam.told.as_ref() != Some(&setup) && app.studio.host.is_some() {
+        app.studio.send(Command::SetVirtualCamera(setup.clone()));
+        app.vcam.told = Some(setup);
+    }
 }
 
 /// The section was shown: read the camera's state again (it may have changed outside

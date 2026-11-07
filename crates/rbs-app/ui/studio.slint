@@ -270,6 +270,16 @@ export global Studio {
     in property <bool> st-needs-setup;
     callback go-live();
     callback end-stream();
+
+    // The virtual camera in Live controls (ADR-0066 decision 12): shown where this
+    // platform has one; `vcam-can` while it is added (or sends) and the studio runs.
+    in property <bool> vcam-shown;
+    in property <bool> vcam-can;
+    in property <bool> vcam-on;
+    // Its state in words under the button; empty when the button says enough.
+    in property <string> vcam-text;
+    // Start (true) or stop sending.
+    callback vcam-toggle(bool);
     // Opens the Settings window at its Stream section.
     callback open-stream-settings();
     // Stream settings: the server URL field's text, bumped serial when Rust sets it.
@@ -1286,7 +1296,7 @@ export component MixerPanel inherits Rectangle {
 
 // Live controls: Go live and End stream, Record and Stop recording. The stream and the
 // recording run at the same time or alone (ADR-0047). End stream asks first (U4: it
-// cannot be undone).
+// cannot be undone). Under them, Start and Stop virtual camera (ADR-0066).
 // The transition rail or panel (ADR-0061, UI spec Studio mode): the transition's name
 // ("Cut", the only one for now) and, in studio mode, the Transition button that puts
 // the preview scene on air. Narrower than 40 px it is only the button, floating over
@@ -1434,6 +1444,24 @@ export component LiveControlsPanel inherits Rectangle {
             text: Studio.rec-note;
             color: Theme.text-secondary;
             font-size: Tokens.type-caption-size;
+            wrap: word-wrap;
+        }
+        // The virtual camera: stopping asks nothing, the camera then shows its still
+        // picture (ADR-0066 decision 12).
+        if Studio.vcam-shown: HorizontalLayout {
+            alignment: start;
+            Button {
+                text: Studio.vcam-on ? @tr("Stop virtual camera") : @tr("Start virtual camera");
+                kind: Studio.vcam-on ? "live" : "secondary";
+                enabled: Studio.vcam-can;
+                clicked => { Studio.vcam-toggle(!Studio.vcam-on); }
+            }
+        }
+        if Studio.vcam-shown && Studio.vcam-text != "": Text {
+            // State in words (U4); the live indicator says "Virtual camera on" too.
+            text: Studio.vcam-text;
+            color: Theme.text-secondary;
+            font-size: Tokens.type-body-size;
             wrap: word-wrap;
         }
     }
