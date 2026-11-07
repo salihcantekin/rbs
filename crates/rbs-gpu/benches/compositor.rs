@@ -252,6 +252,48 @@ fn bench(c: &mut Criterion) {
             pool.release(id).expect("release");
         });
     });
+    // `trim_idle` at the end of a steady tick: eight descriptions in use every tick
+    // (ADR-0062 decision 5; nothing turns idle, so nothing is dropped).
+    let descs: Vec<TextureDesc> = (1..=8).map(|i| TextureDesc::canvas(32 * i, 32)).collect();
+    c.bench_function("pool_steady_tick_8_descriptions_trim_idle", |b| {
+        b.iter(|| {
+            for d in &descs {
+                let id = pool.acquire(&ctx, d).expect("acquire");
+                pool.release(id).expect("release");
+            }
+            pool.trim_idle(120);
+        });
+    });
+    // A tick that creates the textures of a new 1080p size, and one that drops them
+    // (a filter's input changed size, ADR-0062 decision 5).
+    let big = TextureDesc::canvas(W, H);
+    c.bench_function("pool_create_1080p_texture", |b| {
+        b.iter_custom(|iters| {
+            let mut spent = std::time::Duration::ZERO;
+            for _ in 0..iters {
+                let t = std::time::Instant::now();
+                let id = pool.acquire(&ctx, &big).expect("acquire");
+                spent += t.elapsed();
+                pool.release(id).expect("release");
+                pool.forget(&big, 1);
+            }
+            spent
+        });
+    });
+    c.bench_function("pool_drop_1080p_texture", |b| {
+        b.iter_custom(|iters| {
+            let mut spent = std::time::Duration::ZERO;
+            for _ in 0..iters {
+                let id = pool.acquire(&ctx, &big).expect("acquire");
+                pool.release(id).expect("release");
+                let t = std::time::Instant::now();
+                pool.forget(&big, 1);
+                spent += t.elapsed();
+            }
+            spent
+        });
+    });
+    ctx.wait_idle().expect("wait");
     let lease = pool.lease(canvas).expect("lease");
     c.bench_function("lease_clone_drop", |b| {
         b.iter(|| drop(std::hint::black_box(lease.clone())));

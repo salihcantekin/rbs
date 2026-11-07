@@ -25,6 +25,9 @@ pub const LAYERS_PIN: usize = 0;
 pub const CANVAS_PIN: usize = 0;
 /// Canvas textures kept on the pool's free list by `warm`.
 const CANVAS_RING: usize = 3;
+/// Ticks a texture description may go unused before the pool drops its free textures
+/// (ADR-0062 decision 5): two seconds at 60 frames per second.
+pub const POOL_IDLE_TICKS: u64 = 120;
 
 /// The render executor's runtime: the GPU context is shared, the pool and importer are
 /// owned by the render thread.
@@ -45,6 +48,7 @@ impl Runtime for GpuRuntime {
 
     fn end_tick(shared: &GpuContext, local: &mut RenderLocal, tick: Tick) {
         local.importer.retire(shared, &mut local.pool, tick.time);
+        local.pool.trim_idle(POOL_IDLE_TICKS);
         shared.poll();
     }
 }
