@@ -207,6 +207,15 @@ pub const ICONS: &[Icon] = &[
         "menu",
         "M 2.5 4 L 13.5 4 M 2.5 8 L 13.5 8 M 2.5 12 L 13.5 12",
     ),
+    line("window-minimize", "M 3.5 8 L 12.5 8"),
+    line(
+        "window-maximize",
+        "M 3.5 3.5 L 12.5 3.5 L 12.5 12.5 L 3.5 12.5 Z",
+    ),
+    line(
+        "window-restore",
+        "M 3.5 5.5 L 10.5 5.5 L 10.5 12.5 L 3.5 12.5 Z M 5.5 5.5 L 5.5 3.5 L 12.5 3.5 L 12.5 10.5 L 10.5 10.5",
+    ),
 ];
 
 /// The icon named `name`, if the set has it.
