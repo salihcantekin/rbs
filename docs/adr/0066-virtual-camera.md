@@ -117,4 +117,5 @@ Forces:
   3. (minor) macOS states, errors, the `metal` memory kind and the native-frame invariant left in a Windows-only contract. Removed; they come with the macOS ADR (non-exhaustive enums).
   4. (minor) The predictable section name could be squatted by a holder of the global-object privilege. Fixed: an existing section is used only with the expected owner and access list (decision 9, spec).
   5. (minor) The source DLL was tested on hardware only. Added an in-process COM test on the Windows CI runner (Consequences, spec).
-- Status: stays Proposed until the reviewer confirms these and the owner approves.
+- 2026-11-07, final check by the same session: approve for the Windows scope; all items resolved (a wording slip in the spec's `consumer_busy` comment fixed). P15 measurements and the hardware checks (symbolic link kept after a format change, persistent lifetime) remain conditions before the code merges.
+- Owner approval: pending.

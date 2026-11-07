@@ -105,7 +105,7 @@ impl VcamStats {
     pub fn sent(&self) -> u64;            // frames handed to the consumer side
     pub fn replaced(&self) -> u64;        // newer frame came before the sender took this one
     pub fn refused(&self) -> u64;         // send() errors
-    pub fn consumer_busy(&self) -> u64;   // no free slot, or surface still in use outside RBS
+    pub fn consumer_busy(&self) -> u64;   // no free slot: camera frame skipped before conversion
     pub fn consumer_absent(&self) -> u64; // frames taken while no app reads the camera
     pub fn format_pending(&self) -> u64;  // frames sent while a format change waits for apps to close the camera
     pub fn os_errors(&self) -> u64;
