@@ -21,7 +21,9 @@ export struct FilterFieldData { label: string, kind: int, position: float, step:
 // One filter of a source's chain: `known` false for a type this version lacks (it can
 // only be removed); `can-up` / `can-down` false at the ends of the chain.
 export struct FilterData { id: int, name: string, enabled: bool, known: bool, can-up: bool, can-down: bool, fields: [FilterFieldData] }
-export struct SourceData { id: int, name: string, kind: string, icon: string, status: string, ok: bool, picture: bool, visible: bool, x: float, y: float, w: float, h: float, can-up: bool, can-down: bool, shape: int, radius: float, border: bool, border-width: float, border-color: string, border-swatch: color, crop-l: int, crop-t: int, crop-r: int, crop-b: int, pic-w: int, pic-h: int, locked: bool, audio: bool, muted: bool, volume: float, volume-text: string, filters: [FilterData], selected-filter: int, sync-offset: int }
+export struct SourceData { id: int, name: string, kind: string, icon: string, status: string, ok: bool, picture: bool, visible: bool, x: float, y: float, w: float, h: float, can-up: bool, can-down: bool, shape: int, radius: float, border: bool, border-width: float, border-color: string, border-swatch: color, crop-l: int, crop-t: int, crop-r: int, crop-b: int, pic-w: int, pic-h: int, locked: bool, audio: bool, muted: bool, volume: float, volume-text: string, filters: [FilterData], selected-filter: int, sync-offset: int, global: bool, also-in: string, in-globals: bool, places: int }
+// `global`: a global source's row (ADR-0065). `also-in`: the other scenes that place it,
+// by name; `in-globals`: it is a global source too; `places`: how many items place it.
 // A scene in the Scenes panel (ADR-0059): `live` on air, `number` its place (1 up).
 // `live`: the scene on air; `preview`: the preview scene in studio mode (ADR-0061).
 export struct SceneData { id: int, name: string, live: bool, preview: bool, number: int }
@@ -83,8 +85,12 @@ export global Studio {
     // 0 shown, 1 starting, 2 not on this platform yet, 3 not in this session (remote
     // desktop), 4 shown only in the main window, 5 the studio is not running.
     in property <int> preview-state: 1;
-    // Name of the source just deleted (an undo toast shows while it is set).
+    // Name of the source just deleted (an undo toast shows while it is set);
+    // `deleted-from-scene`: only removed from one scene (ADR-0065).
     in property <string> deleted;
+    in property <bool> deleted-from-scene;
+    // Something goes out (a recording or a stream): edits to what is on air show at once.
+    out property <bool> on-air: self.rec-state != 0 || self.st-state != 0;
     // The add-source picker's chosen kind; -1 shows the list of types.
     in-out property <int> picker-kind: -1;
     // The panel the picture shows in: "rbs.program", else "rbs.preview" (without studio
@@ -100,7 +106,32 @@ export global Studio {
     callback transition();
     callback list-targets(int /* kind */);
     callback add-source(int /* kind */, int /* target */);
+    // Delete source: from every scene and the global sources (ADR-0065).
     callback delete-source(int /* id */);
+    // Remove from scene: this scene only (the global sources for a global row); the
+    // source goes too when it was its last placement.
+    callback remove-from-scene(int /* id */);
+    // Show in every scene (ADR-0065): on makes the source global, off moves it into the
+    // edited scene.
+    callback set-global(int /* id */, bool /* global */);
+    // Settings › Global sources: the global sources (rows of `sources` with `global`),
+    // the kind picked (an index into `kinds`, -1 none), the Source field's options (the
+    // kind's devices, then the collection's sources of that kind that are not global)
+    // and how many of them are devices.
+    in-out property <int> global-kind: -1;
+    in property <[string]> global-options;
+    in property <int> global-devices;
+    // The kinds Add source offers, by name, for the Kind field; how many global
+    // sources there are.
+    in property <[string]> global-kind-names;
+    in property <int> global-count;
+    // The Sources panel's Global group is open (ADR-0065): closed when the app starts,
+    // kept per window while it runs.
+    in-out property <bool> globals-open: false;
+    in-out property <int> global-option: -1;
+    callback pick-global-kind(int /* kind index */);
+    callback add-global(int /* option */);
+    callback remove-global(int /* id */);
     // The source selected in the Sources panel (its id; -1 none). Properties shows it;
     // every window shows the same selection.
     in property <int> selected-source: -1;
@@ -564,7 +595,8 @@ component SourceRowView inherits Rectangle {
     border-color: Theme.accent;
     accessible-role: list-item;
     accessible-label: @tr("{}, {}, {}{}{}", data.name, data.kind, data.status, data.visible ? "" : @tr(", hidden"), data.locked ? @tr(", locked") : "");
-    accessible-description: data.picture ? @tr("Alt+Up or Alt+Down changes the layer, F2 renames it, Delete removes it, the Menu key or Shift+F10 opens its menu") : @tr("F2 renames it, Delete removes it, the Menu key or Shift+F10 opens its menu");
+    accessible-description: (data.global ? @tr("In every scene. ") : data.in-globals ? @tr("Also in every scene. ") : data.also-in != "" ? @tr("Also in {}. ", data.also-in) : "")
+        + (data.picture ? @tr("Alt+Up or Alt+Down changes the layer, F2 renames it, Delete removes it from this scene, the Menu key or Shift+F10 opens its menu") : @tr("F2 renames it, Delete removes it from this scene, the Menu key or Shift+F10 opens its menu"));
     accessible-item-selectable: true;
     accessible-item-selected: selected;
     accessible-action-default => { Studio.select-source(data.id); }
@@ -597,7 +629,7 @@ component SourceRowView inherits Rectangle {
                 root.leaving(); Studio.move-source(data.id, false); return accept;
             }
             if e.text == Key.Delete || e.text == Key.Backspace {
-                root.leaving(); Studio.delete-source(data.id); return accept;
+                root.leaving(); Studio.remove-from-scene(data.id); return accept;
             }
             reject
         }
@@ -654,11 +686,27 @@ component SourceRowView inherits Rectangle {
                 if !root.editing: VerticalLayout {
                     alignment: center;
                     horizontal-stretch: 1;
-                    Text {
-                        text: data.name;
-                        color: root.ink;
-                        font-size: Tokens.type-body-size;
-                        overflow: elide;
+                    HorizontalLayout {
+                        spacing: Tokens.space-1;
+                        Text {
+                            text: data.name;
+                            color: root.ink;
+                            font-size: Tokens.type-body-size;
+                            overflow: elide;
+                            horizontal-stretch: 1;
+                        }
+                        // In every scene, or also in other scenes (ADR-0065): one
+                        // source, one device; the words are in the accessible
+                        // description (U7). Hidden while the row tools show, so the
+                        // name keeps its room.
+                        if !tools && (data.global || data.in-globals): VerticalLayout {
+                            alignment: center;
+                            Icon { name: IconName.globe; ink: Theme.text-secondary; }
+                        }
+                        if !tools && !data.global && !data.in-globals && data.also-in != "": VerticalLayout {
+                            alignment: center;
+                            Icon { name: IconName.link; ink: Theme.text-secondary; }
+                        }
                     }
                     // State in words, never colour alone (U7); shown when it needs attention.
                     if !data.ok: Text {
@@ -691,8 +739,8 @@ component SourceRowView inherits Rectangle {
                     alignment: center;
                     IconButton {
                         icon: IconName.close;
-                        name: @tr("Delete source {}", data.name);
-                        clicked => { root.leaving(); Studio.delete-source(data.id); }
+                        name: data.global ? @tr("Remove {} from global sources", data.name) : @tr("Remove {} from this scene", data.name);
+                        clicked => { root.leaving(); Studio.remove-from-scene(data.id); }
                     }
                 }
                 // Shown or hidden in the scene: the icon and the accessible state both say it.
@@ -951,6 +999,91 @@ export component ScenesPanel inherits Rectangle {
     }
 }
 
+// A heading in the Sources list: the global sources, then the scene's. While the
+// studio is on air the Global heading says that its sources are on air in every scene,
+// also while studio mode edits the preview scene (U4).
+component SourcesGroup inherits Rectangle {
+    in property <string> heading;
+    min-height: lay.min-height;
+    preferred-height: lay.preferred-height;
+    accessible-role: text;
+    accessible-label: heading;
+    lay := HorizontalLayout {
+        padding-left: Tokens.space-2;
+        padding-top: Tokens.space-1;
+        Text {
+            text: root.heading;
+            color: Theme.text-secondary;
+            font-size: Tokens.type-caption-size;
+            font-weight: Tokens.type-label-weight;
+            vertical-alignment: center;
+            horizontal-stretch: 1;
+            accessible-role: none;
+        }
+    }
+}
+
+// The Global group's header (ADR-0065): a disclosure button with the count, folded by
+// default, so the user knows global sources exist without them taking the list.
+component GlobalsFold inherits Rectangle {
+    in property <string> heading;
+    property <bool> global: true;
+    min-height: lay.min-height;
+    preferred-height: lay.preferred-height;
+    accessible-role: button;
+    accessible-label: !global ? heading
+        : Studio.on-air ? @tr("{} ({}), on air in every scene", heading, Studio.global-count)
+        : @tr("{} ({})", heading, Studio.global-count);
+    accessible-expanded: global && Studio.globals-open;
+    accessible-action-default => { if global { Studio.globals-open = !Studio.globals-open; } }
+    background: global && fold.has-hover ? Theme.surface-raised : transparent;
+    border-radius: Tokens.radius-sm;
+    fold := TouchArea {
+        enabled: root.global;
+        mouse-cursor: root.global ? MouseCursor.pointer : MouseCursor.default;
+        clicked => { Studio.globals-open = !Studio.globals-open; }
+    }
+    lay := HorizontalLayout {
+        padding-left: Tokens.space-2;
+        padding-right: Tokens.space-2;
+        padding-top: Tokens.space-1;
+        padding-bottom: global ? Tokens.space-1 : 0;
+        spacing: Tokens.space-2;
+        if global: VerticalLayout {
+            alignment: center;
+            Icon { name: Studio.globals-open ? IconName.chevron-down : IconName.chevron-right; ink: Theme.text-secondary; }
+        }
+        if global: VerticalLayout {
+            alignment: center;
+            Icon { name: IconName.globe; ink: Theme.text-secondary; }
+        }
+        Text {
+            text: root.global ? @tr("{} ({})", root.heading, Studio.global-count) : root.heading;
+            color: Theme.text-secondary;
+            font-size: Tokens.type-caption-size;
+            font-weight: Tokens.type-label-weight;
+            vertical-alignment: center;
+            horizontal-stretch: 1;
+            accessible-role: none;
+        }
+        if global && Studio.on-air: Rectangle {
+            width: air.preferred-width + 2 * Tokens.space-2;
+            height: Tokens.type-caption-line;
+            border-radius: self.height / 2;
+            background: Theme.state-live;
+            air := Text {
+                text: @tr("On air");
+                color: Theme.text-on-live;
+                font-size: Tokens.type-caption-size;
+                font-weight: Tokens.type-label-weight;
+                vertical-alignment: center;
+                horizontal-alignment: center;
+                accessible-role: none;
+            }
+        }
+    }
+}
+
 export component SourcesPanel inherits Rectangle {
     background: Theme.surface-raised;
     // Add source lives in the panel card's title row; undo and redo in the Edit menu
@@ -999,11 +1132,20 @@ export component SourcesPanel inherits Rectangle {
         }
         rows := VerticalLayout {
             padding: Tokens.space-2;
-            spacing: Tokens.space-1;
+            // Each entry spaces itself, so a folded global row takes no room.
+            spacing: 0;
             alignment: start;
-            for s in Studio.sources: SourceRowView {
-                data: s;
-                leaving => { list-focus.focus(); }
+            for s[i] in Studio.sources: VerticalLayout {
+                spacing: Tokens.space-1;
+                padding-bottom: !s.global || Studio.globals-open || Studio.selected-source == s.id || i == 0 ? Tokens.space-1 : 0;
+                // Global sources come first, under their own heading (ADR-0065): they
+                // are drawn above every scene. The group is folded unless opened.
+                if s.global && i == 0: GlobalsFold { heading: @tr("Global"); }
+                if !s.global && i > 0 && Studio.sources[i - 1].global: SourcesGroup { heading: @tr("This scene"); }
+                if !s.global || Studio.globals-open || Studio.selected-source == s.id: SourceRowView {
+                    data: s;
+                    leaving => { list-focus.focus(); }
+                }
             }
         }
     }
@@ -2090,6 +2232,9 @@ component FiltersFields inherits VerticalLayout {
 
 component SourceProperties inherits VerticalLayout {
     in property <SourceData> data;
+    // Delete source asks first (ADR-0065).
+    property <bool> confirm;
+    changed data => { if confirm && Studio.selected-source != data.id { confirm = false; } }
     in property <int> live-state;
     // 0 Transform, 1 Filters, 2 Audio.
     property <int> tab: !data.picture ? 2 : Studio.properties-tab == 1 ? 1 : 0;
@@ -2122,6 +2267,60 @@ component SourceProperties inherits VerticalLayout {
         label: @tr("Name of {}", data.name);
         text: data.name;
         accepted(t) => { if t != data.name { Studio.rename-source(data.id, t); } }
+    }
+    // Global sources (ADR-0065): on, the source is shown and heard in every scene.
+    Toggle {
+        text: @tr("Show in every scene");
+        label: @tr("Show {} in every scene", data.name);
+        checked: data.global;
+        toggled(on) => { Studio.set-global(data.id, on); }
+    }
+    Text {
+        text: data.global
+            ? @tr("Turning this off moves it into this scene only, and off air until the next transition in studio mode.")
+            : @tr("It then leaves the scenes that have it and is drawn above every scene.");
+        color: Theme.text-secondary;
+        font-size: Tokens.type-caption-size;
+        wrap: word-wrap;
+    }
+    // Delete source: every scene. With more than one placement it asks first.
+    if !confirm: HorizontalLayout {
+        alignment: start;
+        Button {
+            text: @tr("Delete source");
+            accessible-name: @tr("Delete source {}", data.name);
+            kind: "danger";
+            dense: true;
+            clicked => {
+                if data.places > 1 { confirm = true; } else { Studio.delete-source(data.id); }
+            }
+        }
+    }
+    if confirm: SettingsCallout {
+        label: @tr("Delete {} from every scene?", data.name);
+        Text {
+            text: data.global || data.in-globals
+                ? (data.places > 2 ? @tr("{} is in every scene and {} more. Delete it from all of them?", data.name, data.places - 1) : data.places == 2 ? @tr("{} is in every scene and 1 more. Delete it from all of them?", data.name) : @tr("{} is in every scene. Delete it?", data.name))
+                : @tr("{} is in {} scenes. Delete it from all of them?", data.name, data.places);
+            color: Theme.text-primary;
+            font-size: Tokens.type-body-size;
+            wrap: word-wrap;
+        }
+        HorizontalLayout {
+            spacing: Tokens.space-2;
+            alignment: start;
+            Button {
+                text: @tr("Delete source");
+                kind: "danger";
+                dense: true;
+                clicked => { confirm = false; Studio.delete-source(data.id); }
+            }
+            Button {
+                text: @tr("Cancel");
+                dense: true;
+                clicked => { confirm = false; }
+            }
+        }
     }
     if data.picture: SegmentedControl {
         label: @tr("Properties of {}", data.name);
@@ -2453,6 +2652,95 @@ export component GeneralSettings inherits Rectangle {
 // Remote control (glossary): the Remote control section of the Settings window (U17).
 // Apps on this computer, such as Stream Deck or the user's scripts, control RBS through
 // the control API with an access token each. Changes apply at once.
+// Settings, Global sources (ADR-0065): sources shown and heard in every scene of the
+// canvas. The list, then Add a global source: a kind, then one of its devices or a
+// source the scenes already have. Every change is one undo step of the main window.
+export component GlobalSourcesSettings inherits Rectangle {
+    property <bool> running: Studio.state == 1;
+    property <bool> existing-picked: Studio.global-option >= Studio.global-devices;
+    form := VerticalLayout {
+        spacing: Tokens.space-4;
+        alignment: start;
+        if Studio.on-air: SettingsNotice {
+            text: @tr("On air: changes here show in the program at once.");
+        }
+        SettingsCard {
+            title: @tr("Global sources");
+            description: @tr("Heard and shown in every scene, above the scene's own sources.");
+            if !running: SettingRow {
+                divider: false;
+                label: @tr("The studio is not running");
+                help: @tr("Global sources can be changed once it runs.");
+            }
+            if running && Studio.global-count == 0: SettingRow {
+                divider: false;
+                label: @tr("No global sources yet");
+                help: @tr("A global source is heard and shown in every scene.");
+            }
+            for s[i] in Studio.sources: VerticalLayout {
+                if s.global: SettingRow {
+                    divider: i > 0;
+                    label: s.name;
+                    help: s.kind;
+                    fill: false;
+                    Button {
+                        text: @tr("Remove");
+                        accessible-name: @tr("Remove {} from global sources", s.name);
+                        dense: true;
+                        clicked => { Studio.remove-global(s.id); }
+                    }
+                }
+            }
+        }
+        SettingsCard {
+            title: @tr("Add a global source");
+            SettingRow {
+                divider: false;
+                label: @tr("Kind");
+                help: @tr("What kind of source to add.");
+                enabled: running;
+                Select {
+                    label: @tr("Kind");
+                    options: Studio.global-kind-names;
+                    index: Studio.global-kind;
+                    placeholder: @tr("Choose a kind");
+                    enabled: running && Studio.global-kind-names.length > 0;
+                    selected(i) => { Studio.pick-global-kind(i); }
+                }
+            }
+            SettingRow {
+                label: @tr("Source");
+                help: Studio.global-kind < 0 ? @tr("Pick a kind first.")
+                    : Studio.global-options.length == 0 ? @tr("Nothing of this kind is available.")
+                    : existing-picked ? @tr("A source marked (in scenes) leaves the scenes that have it, since it is then in every scene.")
+                    : @tr("A device of this kind, or a source the scenes already have.");
+                enabled: running && Studio.global-options.length > 0;
+                Select {
+                    label: @tr("Source");
+                    options: Studio.global-options;
+                    index: Studio.global-option;
+                    placeholder: Studio.global-kind < 0 ? "" : @tr("Choose a source");
+                    enabled: running && Studio.global-options.length > 0;
+                    selected(i) => { Studio.global-option = i; }
+                }
+            }
+            SettingRow {
+                label: "";
+                fill: false;
+                Button {
+                    text: @tr("Add");
+                    accessible-name: @tr("Add as a global source");
+                    kind: "primary";
+                    enabled: running && Studio.global-option >= 0 && Studio.global-option < Studio.global-options.length;
+                    clicked => { Studio.add-global(Studio.global-option); }
+                }
+            }
+        }
+    }
+    preferred-height: form.preferred-height;
+    min-height: form.min-height;
+}
+
 export component RemoteControlSettings inherits Rectangle {
     // The access picked for the next token: 1 Control, the default.
     property <int> access: 1;

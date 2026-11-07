@@ -106,7 +106,8 @@ pub struct FlatLayer {
 
 impl SceneCollection {
     /// The layers that draw `scene` on `canvas`, bottom first, with nested scenes
-    /// expanded and per-canvas layouts applied (U15). Hidden items, and everything
+    /// expanded and per-canvas layouts applied (U15), then the layers of the canvas's
+    /// global scene (ADR-0065), whose paths start with the global item. Hidden items, and everything
     /// inside a hidden nested scene, are left out; so are fully transparent ones.
     ///
     /// A nested scene is drawn into its item's box: its own canvas-sized coordinate
@@ -131,6 +132,18 @@ impl SceneCollection {
             &mut path,
             &mut out,
         );
+        // Global sources (ADR-0065) are drawn above every scene the canvas shows.
+        if let Some(globals) = c.globals.filter(|g| *g != scene) {
+            self.flatten_into(
+                canvas,
+                globals,
+                size,
+                Affine2::IDENTITY,
+                1.0,
+                &mut path,
+                &mut out,
+            );
+        }
         Ok(out)
     }
 
@@ -176,10 +189,11 @@ impl SceneCollection {
         }
     }
 
-    /// Sources visible in `scene` on `canvas`, including nested scenes: every source
-    /// item that is visible and not inside a hidden nested scene, whatever its opacity
-    /// (a fade from 0, or a source used for its audio, still needs it running). This is
-    /// what the scene needs Active.
+    /// Sources visible in `scene` on `canvas`, including nested scenes and the
+    /// canvas's global scene (ADR-0065): every source item that is visible and not
+    /// inside a hidden nested scene, whatever its opacity (a fade from 0, or a source
+    /// used for its audio, still needs it running). This is what the scene needs
+    /// Active.
     pub fn visible_sources(
         &self,
         canvas: CanvasId,
@@ -194,7 +208,8 @@ impl SceneCollection {
         }
         let mut found = BTreeSet::new();
         let mut seen = BTreeSet::new();
-        let mut stack = vec![scene];
+        // Global sources (ADR-0065) are part of every scene the canvas shows.
+        let mut stack: Vec<SceneId> = c.globals.into_iter().chain([scene]).collect();
         while let Some(id) = stack.pop() {
             if !seen.insert(id) {
                 continue;

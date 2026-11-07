@@ -20,6 +20,7 @@ mod appearance_page;
 mod config;
 mod context_menu;
 mod entry;
+mod icons;
 mod look;
 mod menu_bar;
 #[cfg(any(target_os = "macos", windows))]
@@ -189,6 +190,7 @@ struct App {
 #[derive(Default)]
 struct MenuModels {
     titles: Rc<VecModel<slint::SharedString>>,
+    icons: Rc<VecModel<slint::Image>>,
     enabled: Rc<VecModel<bool>>,
     checked: Rc<VecModel<bool>>,
     choices: Rc<VecModel<ModelRc<MenuChoice>>>,
@@ -205,6 +207,12 @@ impl MenuModels {
             &self.titles,
             v.titles.iter().map(|t| t.as_str().into()).collect(),
         );
+        if self.shown.as_ref().map(|s| &s.icons) != Some(&v.icons) {
+            set_rows(
+                &self.icons,
+                v.icons.iter().map(|n| icons::menu_image(n)).collect(),
+            );
+        }
         set_rows(&self.enabled, v.enabled.clone());
         set_rows(&self.checked, v.checked.clone());
         if self.shown.as_ref().map(|s| &s.choices) != Some(&v.choices) {
@@ -230,6 +238,7 @@ impl MenuModels {
 
     fn push(&self, g: &Menus<'_>) {
         g.set_titles(ModelRc::from(self.titles.clone()));
+        g.set_icons(ModelRc::from(self.icons.clone()));
         g.set_enabled(ModelRc::from(self.enabled.clone()));
         g.set_checked(ModelRc::from(self.checked.clone()));
         g.set_choices(ModelRc::from(self.choices.clone()));
@@ -408,6 +417,7 @@ impl App {
             Run::RenameSource(id, Some(name)) => self.studio.rename_source(id, &name),
             Run::RenameSource(id, None) => self.ask_rename(id, false),
             Run::DeleteSource(id) => self.studio.delete_source(id),
+            Run::RemoveFromScene(id) => self.studio.remove_from_scene(id),
             Run::SourceVisible(id, on) => self.studio.set_source_visible(id, on),
             Run::SourceLocked(id, on) => self.studio.set_source_locked(id, on),
             Run::SourceMuted(id, on) => self.studio.set_source_muted(id, on),
@@ -1869,6 +1879,7 @@ fn context_row(i: context_menu::Item) -> ContextItem {
     ContextItem {
         kind: i.kind as i32,
         title: i.title.into(),
+        icon: icons::menu_image(i.icon),
         id: i.id.into(),
         enabled: i.enabled,
         checkable: i.checkable,
@@ -1996,6 +2007,21 @@ fn install_studio(g: &Studio<'_>, ctx: &Ctx) {
     });
     on!(on_delete_source, |app, id: i32| {
         app.studio.delete_source(id);
+    });
+    on!(on_remove_from_scene, |app, id: i32| {
+        app.studio.remove_from_scene(id);
+    });
+    on!(on_set_global, |app, id: i32, global: bool| {
+        app.studio.set_global(id, global);
+    });
+    on!(on_remove_global, |app, id: i32| {
+        app.studio.remove_global(id);
+    });
+    on!(on_pick_global_kind, |app, index: i32| {
+        app.studio.pick_global_kind(index);
+    });
+    on!(on_add_global, |app, option: i32| {
+        app.studio.add_global(option);
     });
     on!(on_select_source, |app, id: i32| {
         app.studio.selected = id;
