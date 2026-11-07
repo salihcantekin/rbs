@@ -653,10 +653,11 @@ component SceneRowView inherits Rectangle {
             reject
         }
     }
+    // The row's buttons sit inside its TouchArea, so pointing at them keeps the row
+    // hovered; their space is always reserved, so the Live badge never moves (ADR-0059).
     touch := TouchArea {
         clicked => { focus.focus(); Studio.switch-scene(data.id); }
         double-clicked => { root.editing = true; }
-    }
     HorizontalLayout {
         padding-left: Tokens.space-2;
         padding-right: Tokens.space-1;
@@ -708,22 +709,25 @@ component SceneRowView inherits Rectangle {
                 }
             }
         }
-        if tools && !root.editing: VerticalLayout {
+        if !root.editing: VerticalLayout {
             alignment: center;
             IconButton {
+                visible: root.tools;
                 icon: IconName.more;
                 name: @tr("Rename {}", data.name);
                 clicked => { root.editing = true; }
             }
         }
-        if tools && !root.editing && root.can-remove: VerticalLayout {
+        if !root.editing: VerticalLayout {
             alignment: center;
             IconButton {
+                visible: root.tools && root.can-remove;
                 icon: IconName.close;
                 name: @tr("Remove scene {}", data.name);
                 clicked => { root.leaving(); Studio.remove-scene(data.id); }
             }
         }
+    }
     }
     FocusRing { show: focus.has-focus; border-radius: Tokens.radius-md; }
 }
