@@ -662,7 +662,9 @@ impl Tokens {
         let mut out = self.built_in_theme(theme.base);
         let not_themeable = |name: &str, problems: &mut Vec<ThemeProblem>| {
             let why = if FIXED.iter().any(|(n, _)| *n == name) {
-                format!("{name} is the live colour; no theme can change it (rule U12)")
+                format!(
+                    "{name} is the same in every theme; no theme can change it (rule U12, ADR-0071)"
+                )
             } else {
                 format!("{name} is not part of a theme")
             };

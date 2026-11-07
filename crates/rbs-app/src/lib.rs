@@ -7,6 +7,8 @@
 //! - [`edit_history`]: the undo history of scene edits (U4).
 //! - [`platform`]: the platform's adapters (the composition root's list, P1).
 //! - [`popups`]: the popups Slint draws inside a window, as rectangles.
+//! - [`caption`]: the merged title bar's hit test on Windows (ADR-0071); `win` has its
+//!   Win32 part.
 //! - [`canvas_profile`]: the canvas size and frame rate (and `video.toml`, which older
 //!   versions kept).
 //! - [`record_profile`]: the recording's output settings (a section of the output
@@ -23,6 +25,7 @@
 
 pub mod background;
 pub mod canvas_profile;
+pub mod caption;
 pub mod edit_history;
 pub mod encoder_form;
 pub mod hotkeys;

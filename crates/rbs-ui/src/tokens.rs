@@ -45,10 +45,13 @@ pub const THEME_COLORS: &[&str] = &[
 ];
 
 /// Colour tokens that are the same in every theme, with their only allowed
-/// values. A custom token file must repeat them unchanged (rule U12).
+/// values. A custom token file must repeat them unchanged: the live colours (rule
+/// U12) and the Windows close button's hover, as the OS draws it (ADR-0071).
 pub const FIXED: &[(&str, &str)] = &[
     ("color.state.live", "#c4262e"),
     ("color.text.on-live", "#ffffff"),
+    ("color.caption.close-hover", "#c42b1c"),
+    ("color.caption.close-text", "#ffffff"),
 ];
 
 /// Lengths a token file may not set below these values: the focus ring must stay
@@ -84,6 +87,7 @@ pub const LENGTHS: &[&str] = &[
     "size.app-menu.w",
     "size.app-menu.categories",
     "size.app-menu.list-h",
+    "size.caption.w",
     "size.window.w",
     "size.window.h",
     "size.window.min-w",
@@ -94,6 +98,10 @@ pub const LENGTHS: &[&str] = &[
     "size.settings.h",
     "step.nudge",
     "step.nudge-large",
+    "size.tracking.caps",
+    "size.meter.peak",
+    "size.transition.narrow",
+    "size.transition.short",
     "size.transition.between",
     "size.transition.below",
     "size.transition.min-picture",
@@ -105,7 +113,12 @@ pub const LENGTHS: &[&str] = &[
 ];
 
 /// Duration tokens every file defines (milliseconds).
-pub const DURATIONS: &[&str] = &["motion.fast", "motion.normal"];
+pub const DURATIONS: &[&str] = &[
+    "motion.fast",
+    "motion.normal",
+    "delay.repeat-start",
+    "delay.repeat",
+];
 
 /// Text styles every file defines.
 pub const TYPE_STYLES: &[&str] = &[
@@ -458,6 +471,14 @@ impl Tokens {
             return Err(TokenError(format!(
                 "color.text.on-live on color.state.live has contrast {:.2}, needs 4.5",
                 live.contrast(on_live)
+            )));
+        }
+        let close = self.fixed["color.caption.close-hover"];
+        let close_text = self.fixed["color.caption.close-text"];
+        if close.contrast(close_text) < 4.5 {
+            return Err(TokenError(format!(
+                "color.caption.close-text on color.caption.close-hover has contrast {:.2}, needs 4.5",
+                close.contrast(close_text)
             )));
         }
         for (theme, colors) in &self.themes {
