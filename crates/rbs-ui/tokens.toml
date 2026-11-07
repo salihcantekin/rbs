@@ -104,6 +104,7 @@ format = 2
 "size.icon.stroke" = 1.5
 "size.menu.sm" = 220
 "size.menu.md" = 300
+"size.select.list-h" = 320
 "size.app-menu.w" = 600
 "size.app-menu.categories" = 165
 "size.app-menu.list-h" = 450

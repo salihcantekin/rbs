@@ -480,19 +480,47 @@ export component Select inherits Rectangle {
         close-policy: close-on-click-outside;
         y: root.height;
         width: root.width;
+        // Its own height, or the popup takes the whole list's height and the toolkit
+        // moves it up to fit the window.
+        height: scroller.height;
         MenuSurface {
             width: root.width;
+            height: scroller.height;
             accessible-role: list;
             accessible-label: root.label;
-            VerticalLayout {
-                padding: Tokens.space-2;
-                spacing: Tokens.space-1;
-                for o[i] in root.options: MenuItem {
-                    text: o;
-                    checked: i == root.index;
-                    autofocus: i == root.index;
-                    activated => { root.selected(i); menu.close(); }
+            // A long list (the Key list of a shortcut) scrolls instead of growing past
+            // the window: at most `size.select.list-h`, the chosen option in view.
+            scroller := Flickable {
+                height: min(options.preferred-height, Tokens.size-select-list-h);
+                content-height: options.preferred-height;
+                content-width: self.width;
+                init => {
+                    if root.chosen && options.preferred-height > self.height {
+                        self.content-y = max(self.height - options.preferred-height,
+                            min(0px, self.height / 2 - (root.index + 0.5) * options.preferred-height / root.options.length));
+                    }
                 }
+                options := VerticalLayout {
+                    padding: Tokens.space-2;
+                    spacing: Tokens.space-1;
+                    for o[i] in root.options: MenuItem {
+                        text: o;
+                        checked: i == root.index;
+                        autofocus: i == root.index;
+                        activated => { root.selected(i); menu.close(); }
+                    }
+                }
+            }
+            // Where the visible part is in a list that scrolls: a thin thumb on the right
+            // (the list scrolls with the wheel or a touch drag).
+            if options.preferred-height > scroller.height: Rectangle {
+                x: parent.width - self.width - Tokens.space-1;
+                y: scroller.y + (-scroller.content-y) * scroller.height / options.preferred-height;
+                width: Tokens.space-1;
+                height: scroller.height * scroller.height / options.preferred-height;
+                border-radius: Tokens.radius-sm;
+                background: Theme.border-strong;
+                accessible-role: none;
             }
         }
     }
