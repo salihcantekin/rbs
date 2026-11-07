@@ -25,6 +25,44 @@ pub const GROUPS: [Group; 6] = [
     Group::Motion,
 ];
 
+/// The choice with every slot that names a user theme `gone` replaced by the
+/// built-in theme `base_of` gives for the slot (0 dark, 1 light, 2 the one theme);
+/// `None` when no slot names one.
+pub fn forget_themes(
+    choice: &Appearance,
+    gone: impl Fn(&EntryId) -> bool,
+    base_of: impl Fn(usize) -> Base,
+) -> Option<Appearance> {
+    let mut next = choice.clone();
+    for (slot, id) in [&mut next.dark, &mut next.light, &mut next.theme]
+        .into_iter()
+        .enumerate()
+    {
+        if let ThemeId::User(e) = id
+            && gone(e)
+        {
+            *id = ThemeId::BuiltIn(base_of(slot));
+        }
+    }
+    (next != *choice).then_some(next)
+}
+
+/// At start: slots that name a user theme whose file is gone (deleted, or removed by
+/// hand) take the built-in Dark (dark and the one theme) or Light theme, so a
+/// deleted theme is never reported as unreadable (themes spec, "Deleting").
+pub fn forget_missing(data: &UserData) -> Option<Appearance> {
+    let (choice, err) = data.appearance();
+    if err.is_some() {
+        return None;
+    }
+    let themes = data.themes();
+    forget_themes(
+        &choice,
+        |id| !themes.path(id).exists(),
+        |slot| if slot == 1 { Base::Light } else { Base::Dark },
+    )
+}
+
 /// A theme in the list: a built-in one or a user theme.
 #[derive(Debug, Clone)]
 pub struct ThemeEntry {
@@ -181,6 +219,21 @@ impl AppearanceUi {
             look::resolve(file, data, id, fallback, notes)
         };
         [one(dark, Base::Dark, notes), one(light, Base::Light, notes)]
+    }
+
+    /// Whether a slot of the choice uses `id` (dark and light while following the
+    /// system, the one theme otherwise).
+    pub fn in_use(&self, id: &ThemeId) -> bool {
+        self.choice.slots().contains(&id)
+    }
+
+    /// After `id` was deleted: the slots that named it take the built-in theme of
+    /// their base. Returns the choice to save, if it changed (no "Keep this look?":
+    /// the theme is gone).
+    pub fn forget(&mut self, id: &EntryId, base: Base) -> Option<Appearance> {
+        let next = forget_themes(&self.choice, |e| e == id, |_| base)?;
+        self.choice = next.clone();
+        Some(next)
     }
 
     /// Picks the theme at `index` for a slot: 0 dark, 1 light, 2 the fixed theme.
@@ -349,8 +402,11 @@ impl AppearanceUi {
             return false;
         };
         let before = ed.draft.font_family.clone();
+        let in_use = self.in_use(&ThemeId::User(ed.id.clone()));
         let changed = self.change(file, |d| d.font_family = Some(list));
+        // Only a theme in use changes the look, so only then is "Keep this look?" asked.
         if changed
+            && in_use
             && !matches!(
                 self.keep,
                 Some(KeepLook {
@@ -620,6 +676,39 @@ mod tests {
     }
 
     #[test]
+    fn a_deleted_theme_leaves_the_slots_that_named_it() {
+        let (_d, data, _file, mut ui, id) = setup("forget");
+        ui.choice.dark = ThemeId::User(id.clone());
+        ui.choice.theme = ThemeId::User(id.clone());
+        let next = ui.forget(&id, Base::HighContrast).unwrap();
+        assert_eq!(next.dark, ThemeId::BuiltIn(Base::HighContrast));
+        assert_eq!(next.theme, ThemeId::BuiltIn(Base::HighContrast));
+        assert_eq!(next.light, ThemeId::BuiltIn(Base::Light));
+        assert!(ui.forget(&id, Base::Dark).is_none());
+        assert!(ui.keep.is_none());
+
+        // At start: a slot naming a theme whose file is gone takes the slot's default.
+        let lock = data.try_lock().unwrap().unwrap();
+        let mut choice = data.appearance().0;
+        choice.light = ThemeId::User(EntryId::parse("gone").unwrap());
+        choice.dark = ThemeId::User(id);
+        data.set_appearance(&lock, &choice).unwrap();
+        let healed = forget_missing(&data).unwrap();
+        assert_eq!(healed.light, ThemeId::BuiltIn(Base::Light));
+        assert_eq!(healed.dark, choice.dark);
+    }
+
+    #[test]
+    fn a_font_change_asks_to_keep_only_for_a_theme_in_use() {
+        let (_d, _data, file, mut ui, id) = setup("font-not-in-use");
+        ui.selected = Some(3);
+        assert!(ui.edit(&file));
+        assert!(ui.set_fonts(&file, "Inter", Instant::now()));
+        assert!(ui.keep.is_none());
+        assert!(!ui.in_use(&ThemeId::User(id)));
+    }
+
+    #[test]
     fn the_list_has_built_in_themes_first_then_user_themes() {
         let (_d, _data, _file, ui, id) = setup("list");
         let names: Vec<_> = ui.entries.iter().map(|e| e.name.as_str()).collect();
@@ -723,6 +812,8 @@ mod tests {
     #[test]
     fn a_font_change_asks_to_keep_and_undo_restores_it() {
         let (_d, _data, file, mut ui, id) = setup("fonts");
+        // The theme is in use (dark slot, following the system).
+        ui.choice.dark = ThemeId::User(id.clone());
         ui.selected = ui.index_of(&ThemeId::User(id));
         ui.edit(&file);
         let t0 = Instant::now();
