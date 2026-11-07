@@ -10,9 +10,9 @@ use crate::event::Topic;
 use crate::scope::{Scope, ScopeSet};
 use crate::types::ItemStyle;
 use crate::types::{
-    Canvas, CaptureTarget, Library, OutputProfile, RecordState, RecordingProfile, SceneList,
-    SeqMap, Settings, Snapshot, SourceInfo, SourceKind, StreamSettingsPatch, StreamState,
-    StudioInfo,
+    Canvas, CaptureTarget, FilterTypeList, Library, OutputProfile, RecordState, RecordingProfile,
+    SceneList, SeqMap, Settings, Snapshot, SourceInfo, SourceKind, StreamSettingsPatch,
+    StreamState, StudioInfo,
 };
 
 /// Parameters of a method that takes none. Unknown fields are ignored.
@@ -180,6 +180,69 @@ pub struct SetSourceMuted {
     pub muted: bool,
 }
 
+/// `filter.add` (protocol 1.8, ADR-0062): a filter at the end of a source's chain.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AddFilter {
+    /// The source's id.
+    pub source: u32,
+    /// The filter type, `org.rbs.filter.<name>` (see `filter.types`).
+    #[serde(rename = "type")]
+    pub type_id: String,
+    /// Settings by key; missing keys take their defaults. Numbers are JSON numbers,
+    /// colours `"#rrggbb"` or `"#rrggbbaa"`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub settings: Option<BTreeMap<String, serde_json::Value>>,
+}
+
+/// `filter.remove` (protocol 1.8).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct FilterRef {
+    /// The filter's id (unique in the collection).
+    pub filter: u32,
+}
+
+/// `filter.move` (protocol 1.8).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct MoveFilter {
+    /// The filter's id.
+    pub filter: u32,
+    /// Its new position in the chain, from 0.
+    pub index: u32,
+}
+
+/// `filter.set_enabled` (protocol 1.8).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SetFilterEnabled {
+    /// The filter's id.
+    pub filter: u32,
+    /// Applied or not.
+    pub enabled: bool,
+}
+
+/// `filter.set_settings` (protocol 1.8): a patch on the settings on air.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SetFilterSettings {
+    /// The filter's id.
+    pub filter: u32,
+    /// The keys to replace; the others stay.
+    pub settings: BTreeMap<String, serde_json::Value>,
+}
+
+/// `source.set_sync_offset` (protocol 1.8).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SetSourceSyncOffset {
+    /// The source's id.
+    pub source: u32,
+    /// Milliseconds, `-200..=200`: positive delays the sound, negative advances it.
+    pub offset_ms: i32,
+}
+
 /// `item.add` (protocol 1.6): a source the collection has, placed on top of the
 /// program scene.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -315,6 +378,20 @@ pub enum Command {
     SourceSetMuted(SetSourceMuted),
     /// `item.add` (protocol 1.6).
     ItemAdd(AddItem),
+    /// `filter.types` (protocol 1.8).
+    FilterTypes,
+    /// `filter.add` (protocol 1.8).
+    FilterAdd(AddFilter),
+    /// `filter.remove` (protocol 1.8).
+    FilterRemove(FilterRef),
+    /// `filter.move` (protocol 1.8).
+    FilterMove(MoveFilter),
+    /// `filter.set_enabled` (protocol 1.8).
+    FilterSetEnabled(SetFilterEnabled),
+    /// `filter.set_settings` (protocol 1.8).
+    FilterSetSettings(SetFilterSettings),
+    /// `source.set_sync_offset` (protocol 1.8).
+    SourceSetSyncOffset(SetSourceSyncOffset),
     /// `item.set_visible` (protocol 1.6).
     ItemSetVisible(SetItemVisible),
     /// `item.set_locked` (protocol 1.6).
@@ -382,6 +459,13 @@ impl Command {
             Command::SourceSetVolume(_) => "source.set_volume",
             Command::SourceSetMuted(_) => "source.set_muted",
             Command::ItemAdd(_) => "item.add",
+            Command::FilterTypes => "filter.types",
+            Command::FilterAdd(_) => "filter.add",
+            Command::FilterRemove(_) => "filter.remove",
+            Command::FilterMove(_) => "filter.move",
+            Command::FilterSetEnabled(_) => "filter.set_enabled",
+            Command::FilterSetSettings(_) => "filter.set_settings",
+            Command::SourceSetSyncOffset(_) => "source.set_sync_offset",
             Command::ItemSetVisible(_) => "item.set_visible",
             Command::ItemSetLocked(_) => "item.set_locked",
             Command::EditUndo => "edit.undo",
@@ -472,6 +556,13 @@ pub const METHODS: &[MethodInfo] = &[
     m("source.set_volume", Some(Scope::Control)),
     m("source.set_muted", Some(Scope::Control)),
     m("item.add", Some(Scope::Control)),
+    m("filter.types", Some(Scope::Read)),
+    m("filter.add", Some(Scope::Control)),
+    m("filter.remove", Some(Scope::Control)),
+    m("filter.move", Some(Scope::Control)),
+    m("filter.set_enabled", Some(Scope::Control)),
+    m("filter.set_settings", Some(Scope::Control)),
+    m("source.set_sync_offset", Some(Scope::Control)),
     m("item.set_visible", Some(Scope::Control)),
     m("item.set_locked", Some(Scope::Control)),
     m("edit.undo", Some(Scope::Control)),
@@ -586,6 +677,20 @@ enum WireRequest {
     SourceSetMuted(SetSourceMuted),
     #[serde(rename = "item.add")]
     ItemAdd(AddItem),
+    #[serde(rename = "filter.types")]
+    FilterTypes(Empty),
+    #[serde(rename = "filter.add")]
+    FilterAdd(AddFilter),
+    #[serde(rename = "filter.remove")]
+    FilterRemove(FilterRef),
+    #[serde(rename = "filter.move")]
+    FilterMove(MoveFilter),
+    #[serde(rename = "filter.set_enabled")]
+    FilterSetEnabled(SetFilterEnabled),
+    #[serde(rename = "filter.set_settings")]
+    FilterSetSettings(SetFilterSettings),
+    #[serde(rename = "source.set_sync_offset")]
+    SourceSetSyncOffset(SetSourceSyncOffset),
     #[serde(rename = "item.set_visible")]
     ItemSetVisible(SetItemVisible),
     #[serde(rename = "item.set_locked")]
@@ -658,6 +763,13 @@ impl From<WireRequest> for Request {
             WireRequest::SourceSetVolume(p) => Request::Command(C::SourceSetVolume(p)),
             WireRequest::SourceSetMuted(p) => Request::Command(C::SourceSetMuted(p)),
             WireRequest::ItemAdd(p) => Request::Command(C::ItemAdd(p)),
+            WireRequest::FilterTypes(_) => Request::Command(C::FilterTypes),
+            WireRequest::FilterAdd(p) => Request::Command(C::FilterAdd(p)),
+            WireRequest::FilterRemove(p) => Request::Command(C::FilterRemove(p)),
+            WireRequest::FilterMove(p) => Request::Command(C::FilterMove(p)),
+            WireRequest::FilterSetEnabled(p) => Request::Command(C::FilterSetEnabled(p)),
+            WireRequest::FilterSetSettings(p) => Request::Command(C::FilterSetSettings(p)),
+            WireRequest::SourceSetSyncOffset(p) => Request::Command(C::SourceSetSyncOffset(p)),
             WireRequest::ItemSetVisible(p) => Request::Command(C::ItemSetVisible(p)),
             WireRequest::ItemSetLocked(p) => Request::Command(C::ItemSetLocked(p)),
             WireRequest::EditUndo(_) => Request::Command(C::EditUndo),
@@ -709,6 +821,13 @@ impl From<Request> for WireRequest {
                 C::SourceSetVolume(p) => WireRequest::SourceSetVolume(p),
                 C::SourceSetMuted(p) => WireRequest::SourceSetMuted(p),
                 C::ItemAdd(p) => WireRequest::ItemAdd(p),
+                C::FilterTypes => WireRequest::FilterTypes(Empty {}),
+                C::FilterAdd(p) => WireRequest::FilterAdd(p),
+                C::FilterRemove(p) => WireRequest::FilterRemove(p),
+                C::FilterMove(p) => WireRequest::FilterMove(p),
+                C::FilterSetEnabled(p) => WireRequest::FilterSetEnabled(p),
+                C::FilterSetSettings(p) => WireRequest::FilterSetSettings(p),
+                C::SourceSetSyncOffset(p) => WireRequest::SourceSetSyncOffset(p),
                 C::ItemSetVisible(p) => WireRequest::ItemSetVisible(p),
                 C::ItemSetLocked(p) => WireRequest::ItemSetLocked(p),
                 C::EditUndo => WireRequest::EditUndo(Empty {}),
@@ -808,6 +927,13 @@ pub struct ItemAdded {
     pub item: u32,
 }
 
+/// `filter.add`'s answer (protocol 1.8).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FilterAdded {
+    /// The new filter's id.
+    pub filter: u32,
+}
+
 /// `output.profiles`' answer.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ProfileList {
@@ -903,6 +1029,10 @@ pub enum Response {
     SceneAdded(SceneAdded),
     /// `item.add` (protocol 1.6).
     ItemAdded(ItemAdded),
+    /// `filter.types` (protocol 1.8).
+    FilterTypes(FilterTypeList),
+    /// `filter.add` (protocol 1.8).
+    FilterAdded(FilterAdded),
     /// `output.profiles`.
     Profiles(ProfileList),
     /// `record.start`, `record.start_to_file`.

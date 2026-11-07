@@ -98,6 +98,18 @@ fn source() -> SourceInfo {
         locked: true,
         volume: 0.5,
         muted: true,
+        filters: vec![FilterInfo {
+            id: 2,
+            type_id: "org.rbs.filter.chroma-key".into(),
+            enabled: true,
+            settings: [
+                ("key_color".to_owned(), serde_json::json!("#00ff00")),
+                ("similarity".to_owned(), serde_json::json!(0.4)),
+            ]
+            .into_iter()
+            .collect(),
+        }],
+        sync_offset_ms: -40,
     }
 }
 
@@ -244,6 +256,29 @@ fn every_request() -> Vec<Request> {
         c(Command::TokensRevoke(TokenRef {
             name: "Stream Deck".into(),
         })),
+        c(Command::FilterTypes),
+        c(Command::FilterAdd(AddFilter {
+            source: 3,
+            type_id: "org.rbs.filter.blur".into(),
+            settings: Some(BTreeMap::from([("radius".to_owned(), json!(4.0))])),
+        })),
+        c(Command::FilterRemove(FilterRef { filter: 2 })),
+        c(Command::FilterMove(MoveFilter {
+            filter: 2,
+            index: 0,
+        })),
+        c(Command::FilterSetEnabled(SetFilterEnabled {
+            filter: 2,
+            enabled: false,
+        })),
+        c(Command::FilterSetSettings(SetFilterSettings {
+            filter: 2,
+            settings: BTreeMap::from([("key_color".to_owned(), json!("#0000ff"))]),
+        })),
+        c(Command::SourceSetSyncOffset(SetSourceSyncOffset {
+            source: 3,
+            offset_ms: -40,
+        })),
     ]
 }
 
@@ -288,6 +323,23 @@ fn every_result_and_event_type_round_trips() {
         current: "talk-show".into(),
         pending: true,
     });
+    round_trip(&FilterTypeList {
+        types: vec![FilterTypeInfo {
+            type_id: "org.rbs.filter.blur".into(),
+            name: "Blur".into(),
+            fields: vec![FilterField {
+                key: "radius".into(),
+                label: "Radius".into(),
+                kind: "number".into(),
+                min: Some(0.0),
+                max: Some(64.0),
+                step: Some(1.0),
+                unit: Some("px".into()),
+                default: json!(8.0),
+            }],
+        }],
+    });
+    round_trip(&FilterAdded { filter: 4 });
     round_trip(&HelloResult {
         protocol: "1.0".into(),
         instance: "ab".into(),

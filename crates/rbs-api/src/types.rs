@@ -108,6 +108,75 @@ pub struct SourceInfo {
     /// The source's sound is muted (protocol 1.6).
     #[serde(default)]
     pub muted: bool,
+    /// Its filters in chain order (protocol 1.8, ADR-0062; absent when none).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub filters: Vec<FilterInfo>,
+    /// Sync offset of its sound in milliseconds (protocol 1.8; absent when 0).
+    #[serde(default, skip_serializing_if = "is_zero_ms")]
+    pub sync_offset_ms: i32,
+}
+
+#[allow(clippy::trivially_copy_pass_by_ref)] // serde passes a reference.
+fn is_zero_ms(v: &i32) -> bool {
+    *v == 0
+}
+
+/// One filter of a source (protocol 1.8, ADR-0062).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct FilterInfo {
+    /// Its id, unique in the collection.
+    pub id: u32,
+    /// Its type, `org.rbs.filter.<name>`.
+    #[serde(rename = "type")]
+    pub type_id: String,
+    /// Applied or not.
+    pub enabled: bool,
+    /// Its settings as it runs them on air (every field of a built-in type).
+    pub settings: BTreeMap<String, serde_json::Value>,
+}
+
+/// `filter.types`' answer (protocol 1.8).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct FilterTypeList {
+    /// The built-in filter types, in the order the app lists them.
+    pub types: Vec<FilterTypeInfo>,
+}
+
+/// A filter type and its settings schema.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct FilterTypeInfo {
+    /// `org.rbs.filter.<name>`.
+    #[serde(rename = "type")]
+    pub type_id: String,
+    /// English display name.
+    pub name: String,
+    /// Its settings, in display order.
+    pub fields: Vec<FilterField>,
+}
+
+/// One setting of a filter type.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct FilterField {
+    /// Settings key.
+    pub key: String,
+    /// English label.
+    pub label: String,
+    /// `"number"` or `"color"`.
+    pub kind: String,
+    /// Smallest number.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub min: Option<f32>,
+    /// Largest number.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max: Option<f32>,
+    /// The UI's increment.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub step: Option<f32>,
+    /// Shown after the value; absent when none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub unit: Option<String>,
+    /// The default: a number, or a `"#rrggbb"` / `"#rrggbbaa"` string.
+    pub default: serde_json::Value,
 }
 
 fn shown() -> bool {
