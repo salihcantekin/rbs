@@ -1,0 +1,51 @@
+# TEMPORARY verification (deleted before any PR): loops the SRT shutdown test on
+# Windows under CPU load, main's code ("old") against this branch ("new").
+name: exp srt shutdown verify
+on:
+  push:
+    branches: [claude/project-thread-f59gxt]
+concurrency:
+  group: exp-udp
+  cancel-in-progress: true
+jobs:
+  verify:
+    runs-on: windows-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: check
+          save-if: false
+      - name: build new and old
+        shell: bash
+        run: |
+          cargo test -p rbs-transport-srt --test behaviour --no-run 2>&1 | tee new.txt
+          cp "$(grep -o 'target[^)]*behaviour-[^)]*\.exe' new.txt | head -1 | tr '\\' '/')" new.exe
+          git checkout origin/main -- crates/rbs-transport-srt/src/io.rs
+          cargo test -p rbs-transport-srt --test behaviour --no-run 2>&1 | tee old.txt
+          cp "$(grep -o 'target[^)]*behaviour-[^)]*\.exe' old.txt | head -1 | tr '\\' '/')" old.exe
+          git checkout HEAD -- crates/rbs-transport-srt/src/io.rs
+          ls -la new.exe old.exe
+      - name: loop under load
+        shell: bash
+        run: |
+          burn() { while :; do :; done; }
+          for i in 1 2 3 4; do burn & done
+          run() {
+            local exe=$1 tag=$2 fails=0
+            for n in $(seq 1 200); do
+              ./$exe --exact sends_the_handshake_then_whole_chunks_in_order > /dev/null 2>&1 || fails=$((fails+1))
+            done
+            echo "$tag $fails" >> results.txt
+          }
+          for v in old new; do
+            rm -f results.txt
+            for w in 1 2 3 4 5 6 7 8; do run $v.exe $v-$w & pids="$pids $!"; done
+            wait $pids; pids=""
+            echo "RESULT $v: $(awk '{s+=$2} END {print s}' results.txt) failures of 1600 runs"; cat results.txt
+          done
+          kill $(jobs -p) 2>/dev/null || true
