@@ -2248,6 +2248,9 @@ fn install_studio(g: &Studio<'_>, ctx: &Ctx) {
     on!(on_remove_key, |app| {
         app.studio.remove_key();
     });
+    on!(on_set_auto_record, |app, on: bool| {
+        app.studio.set_auto_record(on);
+    });
     on!(on_set_reconnect, |app, on: bool| {
         app.studio.set_reconnect(on);
     });
