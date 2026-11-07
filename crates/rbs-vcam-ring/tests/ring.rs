@@ -4,8 +4,8 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)] // Tests fail by panicking.
 
 use rbs_vcam_ring::{
-    FrameInfo, Layout, NoFrames, Reader, Region, RingError, SLOTS, STALE_MS, WriteOutcome, Writer,
-    initialize,
+    FrameInfo, HeaderInfo, Layout, NoFrames, Reader, Region, RingError, SLOTS, STALE_MS,
+    WriteOutcome, Writer, header_info, initialize,
 };
 
 const W: u32 = 16;
@@ -352,4 +352,28 @@ fn threads_never_see_a_torn_frame() {
         }
         None => assert!(is_frame_of(&out, 2000)),
     }
+}
+
+#[test]
+fn the_header_tells_the_writer_side_the_size_and_whether_an_app_reads() {
+    assert_eq!(
+        header_info(&Region::owned(64)),
+        None,
+        "smaller than a header"
+    );
+    let l = layout();
+    assert_eq!(
+        header_info(&Region::owned(l.total_len())),
+        None,
+        "not initialised"
+    );
+    let (r, l) = ring(3);
+    let info = header_info(&r).unwrap();
+    assert_eq!((info.width, info.height), (W, H));
+    assert!(!info.reader_active(5_000), "no reader heartbeat yet");
+    let reader = Reader::new(r.clone(), l).unwrap();
+    reader.heartbeat(5_000);
+    let info: HeaderInfo = header_info(&r).unwrap();
+    assert!(info.reader_active(5_000 + STALE_MS));
+    assert!(!info.reader_active(5_001 + STALE_MS));
 }

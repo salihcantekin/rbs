@@ -4997,6 +4997,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "rbs-vcam-mf"
+version = "0.0.1"
+dependencies = [
+ "bytes",
+ "rbs-core",
+ "rbs-vcam",
+ "rbs-vcam-mf-source",
+ "rbs-vcam-ring",
+ "windows",
+ "windows-core",
+]
+
+[[package]]
 name = "rbs-vcam-mf-source"
 version = "0.0.1"
 dependencies = [

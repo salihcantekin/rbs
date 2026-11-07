@@ -60,22 +60,7 @@ pub(crate) const LOCAL_SERVICE: &str = "S-1-5-19";
 /// `SYSTEM` (Frame Server Monitor).
 pub(crate) const SYSTEM: &str = "S-1-5-18";
 
-/// Whether `sid` has the form of a user account: local or domain (`S-1-5-21-` and four
-/// numbers) or Entra ID (`S-1-12-1-` and four numbers). Group and well-known SIDs are
-/// refused (ADR-0070 decision 2).
-pub(crate) fn is_user_sid(sid: &str) -> bool {
-    let Some(rest) = sid
-        .strip_prefix("S-1-5-21-")
-        .or_else(|| sid.strip_prefix("S-1-12-1-"))
-    else {
-        return false;
-    };
-    let parts: Vec<&str> = rest.split('-').collect();
-    parts.len() == 4
-        && parts
-            .iter()
-            .all(|p| !p.is_empty() && p.len() <= 10 && p.bytes().all(|c| c.is_ascii_digit()))
-}
+use crate::clsid::is_user_sid;
 
 /// The user `clsid` belongs to, if it is an RBS user class under `root`: its key
 /// names a user SID and the CLSID is the one derived from it. `None` otherwise.
@@ -192,28 +177,6 @@ pub(crate) fn root() -> HKEY {
 #[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn only_user_account_sids_pass() {
-        assert!(is_user_sid("S-1-5-21-1004336348-1177238915-682003330-1001"));
-        for bad in [
-            "S-1-1-0",
-            "S-1-5-19",
-            "S-1-5-32-544",
-            "S-1-5-21-1-2-3",
-            "S-1-5-21-1-2-3-4-5",
-            "S-1-5-21-1-2-x-1001",
-            "S-1-5-21-1-2--1001",
-            "S-1-12-1-1-2-3",
-            "S-1-12-2-1-2-3-4",
-            "",
-        ] {
-            assert!(!is_user_sid(bad), "{bad}");
-        }
-        assert!(is_user_sid(
-            "S-1-12-1-3570597712-1263000215-2283146672-3291235463"
-        ));
-    }
 
     #[test]
     fn only_the_user_and_frame_server_may_use_a_class() {

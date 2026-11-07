@@ -37,6 +37,23 @@ pub fn braced(uuid: &[u8; 16]) -> String {
     )
 }
 
+/// Whether `sid` has the form of a user account: local or domain (`S-1-5-21-` and four
+/// numbers) or Entra ID (`S-1-12-1-` and four numbers). Group and well-known SIDs are
+/// refused (ADR-0070 decisions 2 and 5).
+pub fn is_user_sid(sid: &str) -> bool {
+    let Some(rest) = sid
+        .strip_prefix("S-1-5-21-")
+        .or_else(|| sid.strip_prefix("S-1-12-1-"))
+    else {
+        return false;
+    };
+    let parts: Vec<&str> = rest.split('-').collect();
+    parts.len() == 4
+        && parts
+            .iter()
+            .all(|p| !p.is_empty() && p.len() <= 10 && p.bytes().all(|c| c.is_ascii_digit()))
+}
+
 /// SHA-1 (FIPS 180-4). Used only to derive a stable id, not for security: the binding
 /// of class to user is protected by the registry key's access list (ADR-0070).
 fn sha1(data: &[u8]) -> [u8; 20] {
@@ -157,5 +174,27 @@ mod tests {
             braced(&for_sid("S-1-5-21-1-2-3-1001")),
             "{AA0E7BC1-FADC-559C-92B3-0272623DF480}"
         );
+    }
+
+    #[test]
+    fn only_user_account_sids_pass() {
+        assert!(is_user_sid("S-1-5-21-1004336348-1177238915-682003330-1001"));
+        for bad in [
+            "S-1-1-0",
+            "S-1-5-19",
+            "S-1-5-32-544",
+            "S-1-5-21-1-2-3",
+            "S-1-5-21-1-2-3-4-5",
+            "S-1-5-21-1-2-x-1001",
+            "S-1-5-21-1-2--1001",
+            "S-1-12-1-1-2-3",
+            "S-1-12-2-1-2-3-4",
+            "",
+        ] {
+            assert!(!is_user_sid(bad), "{bad}");
+        }
+        assert!(is_user_sid(
+            "S-1-12-1-3570597712-1263000215-2283146672-3291235463"
+        ));
     }
 }
