@@ -82,6 +82,10 @@ pub struct AddSource {
     /// The scene it is placed in (protocol 1.9); absent: the program scene.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub scene: Option<u32>,
+    /// Add it as a global source of the studio's canvas instead (protocol 1.10,
+    /// ADR-0065): shown and heard in every scene; `scene` is then not allowed.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub global: bool,
 }
 
 /// `source.delete`.
@@ -258,6 +262,34 @@ pub struct AddItem {
     pub scene: Option<u32>,
 }
 
+/// `item.remove` (protocol 1.10, ADR-0065): Remove from scene.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ItemRef {
+    /// The item's id.
+    pub item: u32,
+}
+
+/// `global.add` (protocol 1.10, ADR-0065).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AddGlobal {
+    /// The source's id.
+    pub source: u32,
+}
+
+/// `global.remove` (protocol 1.10, ADR-0065).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RemoveGlobal {
+    /// The source's id.
+    pub source: u32,
+    /// Move it into the program scene (in studio mode the preview scene) instead of
+    /// removing it.
+    #[serde(default)]
+    pub keep: bool,
+}
+
 /// `canvas.set_preview` (protocol 1.9, ADR-0061): a scene enters studio mode with it in
 /// preview, or changes the preview scene; `null` leaves studio mode.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -417,6 +449,14 @@ pub enum Command {
     CanvasSetPreview(SetPreview),
     /// `canvas.transition` (protocol 1.9).
     CanvasTransition,
+    /// `item.remove` (protocol 1.10).
+    ItemRemove(ItemRef),
+    /// `global.list` (protocol 1.10).
+    GlobalList,
+    /// `global.add` (protocol 1.10).
+    GlobalAdd(AddGlobal),
+    /// `global.remove` (protocol 1.10).
+    GlobalRemove(RemoveGlobal),
     /// `edit.undo`.
     EditUndo,
     /// `edit.redo`.
@@ -490,6 +530,10 @@ impl Command {
             Command::SceneSources(_) => "scene.sources",
             Command::CanvasSetPreview(_) => "canvas.set_preview",
             Command::CanvasTransition => "canvas.transition",
+            Command::ItemRemove(_) => "item.remove",
+            Command::GlobalList => "global.list",
+            Command::GlobalAdd(_) => "global.add",
+            Command::GlobalRemove(_) => "global.remove",
             Command::ItemSetVisible(_) => "item.set_visible",
             Command::ItemSetLocked(_) => "item.set_locked",
             Command::EditUndo => "edit.undo",
@@ -592,6 +636,10 @@ pub const METHODS: &[MethodInfo] = &[
     m("scene.sources", Some(Scope::Read)),
     m("canvas.set_preview", Some(Scope::Control)),
     m("canvas.transition", Some(Scope::Control)),
+    m("item.remove", Some(Scope::Control)),
+    m("global.list", Some(Scope::Read)),
+    m("global.add", Some(Scope::Control)),
+    m("global.remove", Some(Scope::Control)),
     m("edit.undo", Some(Scope::Control)),
     m("edit.redo", Some(Scope::Control)),
     m("output.profiles", Some(Scope::Read)),
@@ -730,6 +778,14 @@ enum WireRequest {
     CanvasSetPreview(SetPreview),
     #[serde(rename = "canvas.transition")]
     CanvasTransition(Empty),
+    #[serde(rename = "item.remove")]
+    ItemRemove(ItemRef),
+    #[serde(rename = "global.list")]
+    GlobalList(Empty),
+    #[serde(rename = "global.add")]
+    GlobalAdd(AddGlobal),
+    #[serde(rename = "global.remove")]
+    GlobalRemove(RemoveGlobal),
     #[serde(rename = "edit.undo")]
     EditUndo(Empty),
     #[serde(rename = "edit.redo")]
@@ -808,6 +864,10 @@ impl From<WireRequest> for Request {
             WireRequest::SceneSources(p) => Request::Command(C::SceneSources(p)),
             WireRequest::CanvasSetPreview(p) => Request::Command(C::CanvasSetPreview(p)),
             WireRequest::CanvasTransition(_) => Request::Command(C::CanvasTransition),
+            WireRequest::ItemRemove(p) => Request::Command(C::ItemRemove(p)),
+            WireRequest::GlobalList(_) => Request::Command(C::GlobalList),
+            WireRequest::GlobalAdd(p) => Request::Command(C::GlobalAdd(p)),
+            WireRequest::GlobalRemove(p) => Request::Command(C::GlobalRemove(p)),
             WireRequest::ItemSetVisible(p) => Request::Command(C::ItemSetVisible(p)),
             WireRequest::ItemSetLocked(p) => Request::Command(C::ItemSetLocked(p)),
             WireRequest::EditUndo(_) => Request::Command(C::EditUndo),
@@ -869,6 +929,10 @@ impl From<Request> for WireRequest {
                 C::SceneSources(p) => WireRequest::SceneSources(p),
                 C::CanvasSetPreview(p) => WireRequest::CanvasSetPreview(p),
                 C::CanvasTransition => WireRequest::CanvasTransition(Empty {}),
+                C::ItemRemove(p) => WireRequest::ItemRemove(p),
+                C::GlobalList => WireRequest::GlobalList(Empty {}),
+                C::GlobalAdd(p) => WireRequest::GlobalAdd(p),
+                C::GlobalRemove(p) => WireRequest::GlobalRemove(p),
                 C::ItemSetVisible(p) => WireRequest::ItemSetVisible(p),
                 C::ItemSetLocked(p) => WireRequest::ItemSetLocked(p),
                 C::EditUndo => WireRequest::EditUndo(Empty {}),
@@ -975,6 +1039,21 @@ pub struct SceneAdded {
 pub struct ItemAdded {
     /// The new item's id.
     pub item: u32,
+}
+
+/// `item.remove`'s answer, and `global.remove`'s without `keep` (protocol 1.10).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ItemRemoved {
+    /// The source was deleted too: it was its last placement.
+    pub source_deleted: bool,
+}
+
+/// `global.list`'s answer (protocol 1.10): the global sources of the studio's canvas,
+/// top first, as `source.list` rows.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct GlobalSourceList {
+    /// One row per global source.
+    pub sources: Vec<SourceInfo>,
 }
 
 /// `filter.add`'s answer (protocol 1.8).
@@ -1085,6 +1164,10 @@ pub enum Response {
     FilterAdded(FilterAdded),
     /// `scene.sources` (protocol 1.9).
     SceneSources(SceneSourceList),
+    /// `global.list` (protocol 1.10).
+    GlobalSources(GlobalSourceList),
+    /// `item.remove`, `global.remove` (protocol 1.10).
+    ItemRemoved(ItemRemoved),
     /// `output.profiles`.
     Profiles(ProfileList),
     /// `record.start`, `record.start_to_file`.

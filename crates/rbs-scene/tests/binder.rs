@@ -826,6 +826,12 @@ fn random_edits(audio: bool) {
             "org.rbs.source.mic",
             "org.rbs.source.camera-mic",
         ];
+        // A global scene on the wide canvas (ADR-0065), switched on and off below.
+        let (globals, _) = s
+            .col
+            .add_scene("Globals", SceneScope::Canvas(s.wide))
+            .unwrap();
+        s.col.set_globals(s.wide, Some(globals)).unwrap();
         // Instances the application would hold, from the reports alone.
         let mut instances = std::collections::BTreeSet::new();
         for step in 0..80 {
@@ -839,7 +845,17 @@ fn random_edits(audio: bool) {
             let pick_src = sources.get(rng.below(sources.len())).copied();
             let pick_scene = scenes.get(rng.below(scenes.len())).copied();
             let pick_item = items.get(rng.below(items.len())).copied();
-            let _ = match rng.below(15) {
+            let _ = match rng.below(17) {
+                // The global scene on and off, and a source placed in it.
+                15 => {
+                    let on = s.col.globals_of(s.wide).is_none();
+                    s.col.set_globals(s.wide, on.then_some(globals)).map(|_| ())
+                }
+                16 => pick_src.map_or(Ok(()), |src| {
+                    s.col
+                        .add_item(globals, ItemContent::Source(src), full(), None)
+                        .map(|_| ())
+                }),
                 // Someone else removes a source or filter node.
                 14 => {
                     let nodes: Vec<NodeId> = s
@@ -982,6 +998,24 @@ fn has_audio(s: &Setup, src: SourceId) -> bool {
     )
 }
 
+/// The sources of the visible items of a canvas's global scene, read from the items.
+fn direct_globals(s: &Setup, canvas: rbs_scene::model::CanvasId) -> Vec<SourceId> {
+    s.col
+        .globals_of(canvas)
+        .and_then(|g| s.col.scene(g))
+        .map(|g| {
+            g.items
+                .iter()
+                .filter(|i| i.visible)
+                .filter_map(|i| match i.content {
+                    ItemContent::Source(src) => Some(src),
+                    _ => None,
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
 /// Checks the graph against the collection without using the binder's own report for
 /// the expectations.
 fn check_consistent(s: &Setup, report: &rbs_scene::binder::BindReport, seed: u64, step: usize) {
@@ -1086,6 +1120,16 @@ fn check_consistent(s: &Setup, report: &rbs_scene::binder::BindReport, seed: u64
                 .into_iter()
                 .filter_map(tail_of)
                 .collect();
+            // Global sources (ADR-0065) are on every compositor of their canvas,
+            // checked from the global scene's items directly.
+            for src in direct_globals(s, canvas.id) {
+                if let Some(t) = tail_of(src) {
+                    assert!(
+                        expected.contains(&t),
+                        "seed {seed} step {step}: global source not drawn"
+                    );
+                }
+            }
             expected.sort();
             expected.dedup();
             let mut linked: Vec<NodeId> = s
@@ -1117,6 +1161,17 @@ fn check_consistent(s: &Setup, report: &rbs_scene::binder::BindReport, seed: u64
             .filter(|src| has_audio(s, *src) && !has_video(s, *src))
             .filter_map(|src| s.binder.source_node(src))
             .collect();
+        if canvas.program.is_some() {
+            for src in direct_globals(s, canvas.id) {
+                if has_audio(s, src) && !has_video(s, src) {
+                    let node = s.binder.source_node(src);
+                    assert!(
+                        node.is_none_or(|n| expected.contains(&n)),
+                        "seed {seed} step {step}: global sound not mixed"
+                    );
+                }
+            }
+        }
         expected.sort();
         expected.dedup();
         let mut linked: Vec<NodeId> = s

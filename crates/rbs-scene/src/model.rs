@@ -94,6 +94,9 @@ pub struct Canvas {
     pub program: Option<SceneId>,
     /// Scene in preview (studio mode); `None` when studio mode is off.
     pub preview: Option<SceneId>,
+    /// The canvas's global scene (ADR-0065): its items are drawn above, and heard
+    /// with, every scene the canvas shows. `None` when the canvas has none.
+    pub globals: Option<SceneId>,
 }
 
 impl Canvas {
@@ -107,6 +110,7 @@ impl Canvas {
             frame_rate,
             program: None,
             preview: None,
+            globals: None,
         }
     }
 }

@@ -172,11 +172,12 @@ const SECTION: Param = Param {
 
 /// The sections of the Settings window, as `ui.settings.open {section}` names them,
 /// in the order of the window's section list.
-pub const SETTINGS_SECTIONS: [&str; 7] = [
+pub const SETTINGS_SECTIONS: [&str; 8] = [
     "general",
     "appearance",
     "shortcuts",
     "video",
+    "global_sources",
     "recording",
     "stream",
     "remote_control",
@@ -566,6 +567,18 @@ pub const ENTRIES: &[Entry] = &[
         checkable: false,
     },
     Entry {
+        id: "item.remove",
+        title: "Remove from scene",
+        tooltip: "Remove the source from this scene; it is deleted only when no other scene has it",
+        icon: Some("close"),
+        shortcut: None,
+        menu: Menu::Source,
+        kind: action("item.remove"),
+        // Without `item`: the selected source's item in the scene (ADR-0065).
+        params: &[target("item"), COLLECTION],
+        checkable: false,
+    },
+    Entry {
         id: "source.delete",
         title: "Delete source",
         tooltip: "Delete the source from the scene collection",
@@ -952,6 +965,7 @@ pub const MENU_LAYOUT: &[(Menu, &[&str])] = &[
             "source.muted.toggle",
             "|",
             "source.rename",
+            "item.remove",
             "source.delete",
         ],
     ),
@@ -1150,6 +1164,7 @@ pub const CONTEXT_LAYOUT: &[(Context, &[&str])] = &[
             "source.rename",
             "ui.panel.select?id=rbs.properties",
             "|",
+            "item.remove",
             "source.delete",
         ],
     ),
@@ -1547,6 +1562,7 @@ mod tests {
                 "source.rename?source=12",
                 "ui.panel.select?id=rbs.properties",
                 "|",
+                "item.remove?item=40",
                 "source.delete?source=12"
             ]
         );

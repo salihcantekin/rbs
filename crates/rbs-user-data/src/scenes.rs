@@ -2,7 +2,7 @@
 //! [`rbs_scene::SceneCollection`], mapping one-to-one onto the model (ADR-0021).
 //!
 //! ```toml
-//! format = 4
+//! format = 5
 //! kind = "scene-collection"
 //! name = "Main show"
 //!
@@ -20,6 +20,7 @@
 //! height = 1080
 //! frame_rate = [30, 1]         # numerator, denominator
 //! program = 0                  # scene id; optional, like preview
+//! # globals = 2                # the canvas's global scene (format 5, ADR-0065)
 //!
 //! [[sources]]
 //! id = 0
@@ -103,6 +104,9 @@ struct CanvasDoc {
     program: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     preview: Option<u32>,
+    /// The canvas's global scene (format 5, ADR-0065).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    globals: Option<u32>,
 }
 
 #[derive(Serialize, Deserialize, Clone)]
@@ -407,17 +411,18 @@ fn settings(s: BTreeMap<String, Value>) -> Settings {
 
 impl Document for SceneCollection {
     const KIND: &'static str = "scene-collection";
-    const FORMAT: u32 = 4;
+    const FORMAT: u32 = 5;
 
     /// Format 2 adds the optional layout `style` (ADR-0053); a format 1 body is a
     /// format 2 body without styles. Format 3 adds the optional item `locked` and
     /// source `volume` and `muted` (ADR-0059); a format 2 body is a format 3 body
     /// without them. Format 4 adds the optional source `sync_offset_ms` (ADR-0062); a
-    /// format 3 body is a format 4 body without it.
+    /// format 3 body is a format 4 body without it. Format 5 adds the optional canvas
+    /// `globals` (ADR-0065); a format 4 body is a format 5 body without it.
     fn upgrade(from: u32, body: &mut toml::Table) -> Result<(), String> {
         let _ = body;
         match from {
-            1..=3 => Ok(()),
+            1..=4 => Ok(()),
             _ => Err(format!("format {from} cannot be read")),
         }
     }
@@ -436,6 +441,7 @@ impl Document for SceneCollection {
                     frame_rate: [r.num(), r.den()],
                     program: c.program.map(SceneId::get),
                     preview: c.preview.map(SceneId::get),
+                    globals: c.globals.map(SceneId::get),
                 }
             })
             .collect();
@@ -544,6 +550,7 @@ impl Document for SceneCollection {
                 );
                 canvas.program = c.program.map(SceneId::from_raw);
                 canvas.preview = c.preview.map(SceneId::from_raw);
+                canvas.globals = c.globals.map(SceneId::from_raw);
                 Ok(canvas)
             })
             .collect::<Result<Vec<_>, String>>()?;
