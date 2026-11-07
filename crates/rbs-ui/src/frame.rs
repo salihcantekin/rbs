@@ -260,6 +260,24 @@ pub fn resized_area(m: &MainLayout, content: Rect, side: Side, delta: f32) -> u3
     limited(side, wanted, content).round() as u32
 }
 
+/// The window as shown while panel `panel` is maximized (ADR-0049 decision 2): the
+/// stack holding it alone over the whole content, with the panel as its shown tab, and
+/// no dividers. `None` when no stack shown in this window holds the panel.
+pub fn maximized(flat: &WindowFlat, content: Rect, panel: &PanelId) -> Option<WindowFlat> {
+    let s = flat.stacks.iter().find(|s| s.tabs.contains(panel))?;
+    let active = s.tabs.iter().position(|p| p == panel)?;
+    Some(WindowFlat {
+        stacks: vec![StackRect {
+            stack: s.stack,
+            rect: content,
+            tabs: s.tabs.clone(),
+            active,
+            collapsed: false,
+        }],
+        handles: Vec::new(),
+    })
+}
+
 /// How close to a window's edge, in logical pixels, a drop goes to that edge of the
 /// window rather than into the stack under the pointer.
 pub const EDGE_TARGET: f32 = 16.0;
@@ -603,5 +621,22 @@ mod tests {
             t.map(|t| t.place),
             Some(DropPlace::Beside(_, Edge::Bottom))
         ));
+    }
+
+    #[test]
+    fn a_maximized_panel_fills_the_window_alone() {
+        let w = Window {
+            content: WindowContent::Main(Box::new(layout(true, true, true))),
+            placement: None,
+        };
+        let flat = flatten_window(&w, WINDOW);
+        let sources = PanelId::parse("rbs.sources").expect("id");
+        let m = maximized(&flat, WINDOW, &sources).expect("shown");
+        assert_eq!(m.stacks.len(), 1);
+        assert_eq!(m.stacks[0].rect, WINDOW);
+        assert_eq!(m.stacks[0].tabs[m.stacks[0].active], sources);
+        assert!(m.handles.is_empty());
+        let closed = PanelId::parse("rbs.stats").expect("id");
+        assert_eq!(maximized(&flat, WINDOW, &closed), None);
     }
 }
