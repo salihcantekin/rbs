@@ -4843,6 +4843,9 @@ fn held_copy(collection: &SceneCollection, canvas: CanvasId) -> Option<Held> {
     held.id = SceneId::from_raw(HELD_IDS);
     // Unique in the run collection; read only if a failure names the scene.
     held.name = format!("{} (on air)", scene.name);
+    while collection.scenes().any(|s| s.name == held.name) {
+        held.name.push('*');
+    }
     for item in &mut held.items {
         item.id = ItemId::from_raw(HELD_IDS.checked_add(item.id.get())?);
     }
