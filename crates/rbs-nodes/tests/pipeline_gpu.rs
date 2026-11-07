@@ -19,6 +19,7 @@ use rbs_graph::node::{LinkKind, NodeDescriptor, NodeKind, NodeTypeId, Pin};
 use rbs_graph::runtime::{
     Controller, Executor, Node, NodeError, PrepareCtx, ProcessCtx, Tick, channel,
 };
+use rbs_nodes::capture::CaptureNodeStats;
 use rbs_nodes::{CaptureSourceNode, ExportEnd, VideoExportNode};
 
 const W: u32 = 128;
@@ -128,6 +129,20 @@ fn pipeline(
     size: Option<Size>,
     formats: &[PixelFormat],
 ) -> Option<(Rig, Frames, NodeId, Arc<ExportEnd>)> {
+    pipeline_from(Arc::new(TestCaptureFactory::new()), target, size, formats)
+        .map(|(rig, frames, export, end, _)| (rig, frames, export, end))
+}
+
+/// A pipeline, its frames, the export node, its end and the capture node's counters.
+type Built = (Rig, Frames, NodeId, Arc<ExportEnd>, Arc<CaptureNodeStats>);
+
+/// [`pipeline`] capturing from `factory`; also returns the capture node's counters.
+fn pipeline_from(
+    factory: Arc<TestCaptureFactory>,
+    target: &str,
+    size: Option<Size>,
+    formats: &[PixelFormat],
+) -> Option<Built> {
     let ctx = gpu()?;
     let (ctl, exec) = channel::<GpuRuntime>(Arc::clone(&ctx), RenderLocal::default());
     let clock = TestClock::new();
@@ -147,10 +162,9 @@ fn pipeline(
     if !formats.is_empty() {
         request = request.with_pixel_formats(formats);
     }
-    let capture = rig.add(Box::new(CaptureSourceNode::new(
-        Arc::new(TestCaptureFactory::new()),
-        request,
-    )));
+    let capture = CaptureSourceNode::new(factory, request);
+    let stats = capture.stats();
+    let capture = rig.add(Box::new(capture));
     let (comp, _layers) = CompositorNode::new(
         CanvasDesc {
             width: W,
@@ -181,7 +195,7 @@ fn pipeline(
     assert!(report.failed.is_empty(), "{report:?}");
     rig.exec.swap_pending();
     let _ = rig.ctl.collect();
-    Some((rig, frames, export, end))
+    Some((rig, frames, export, end, stats))
 }
 
 /// The luma and chroma bytes at the centre of an NV12 system frame.
@@ -312,4 +326,30 @@ fn an_ended_export_passes_on_every_canvas_up_to_the_end_and_none_after() {
     assert!(end.ended());
     let health = rig.exec.health(export).unwrap();
     assert_eq!(health.errors, 0, "{health:?}");
+}
+
+#[test]
+fn the_capture_node_reports_its_picture_size_and_follows_a_resize() {
+    let factory = Arc::new(TestCaptureFactory::new());
+    let Some((mut rig, _, _, _, stats)) = pipeline_from(
+        Arc::clone(&factory),
+        "test-window-0",
+        None,
+        &[PixelFormat::Bgra8],
+    ) else {
+        return;
+    };
+    let first = stats.picture_size().expect("known once the session opened");
+    rig.tick();
+    assert_eq!(stats.picture_size(), Some(first));
+    let (w, h) = (first.0 / 2, first.1 / 2);
+    assert!(factory.resize_target(&TargetId::new("test-window-0"), w, h));
+    // The new size arrives with the first frame captured after the resize.
+    for _ in 0..4 {
+        rig.tick();
+        if stats.picture_size() == Some((w, h)) {
+            return;
+        }
+    }
+    panic!("still {:?} after the resize", stats.picture_size());
 }

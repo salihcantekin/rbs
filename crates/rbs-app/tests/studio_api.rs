@@ -251,6 +251,39 @@ fn a_control_api_client_drives_the_studio() {
         d[0]["layout"]["style"]["shape"] == "rectangle"
     });
 
+    // Crop (protocol 1.4, ADR-0057). Nothing shows or records the display here, so
+    // its picture size was never seen: keeping the scale is refused, a plain crop is
+    // taken and undone like any edit.
+    assert!(row.get("picture_size").is_none(), "{row}");
+    let kept = c.call(
+        "item.set_crop",
+        json!({"item": item, "crop": [10, 0, 0, 0]}),
+    );
+    assert_eq!(kept["error"]["data"]["kind"], "failed", "{kept}");
+    let set = c.call(
+        "item.set_crop",
+        json!({"item": item, "crop": [10, 20, 30, 40], "keep_scale": false}),
+    );
+    assert!(set["result"].is_object(), "{set}");
+    c.event("source.changed", |d| {
+        d[0]["layout"]["crop"] == json!([10, 20, 30, 40])
+    });
+    for (params, kind) in [
+        (json!({"item": 999, "crop": [0, 0, 0, 0]}), "not_found"),
+        (
+            json!({"item": item, "crop": [0, 0, 0, 0], "scale": 1}),
+            "invalid_params",
+        ),
+    ] {
+        let bad = c.call("item.set_crop", params.clone());
+        assert_eq!(bad["error"]["data"]["kind"], kind, "{params}: {bad}");
+    }
+    let undo = c.call("edit.undo", json!({}));
+    assert!(undo["result"].is_object(), "{undo}");
+    c.event("source.changed", |d| {
+        d[0]["layout"]["crop"] == json!([0, 0, 0, 0])
+    });
+
     let unknown = c.call(
         "source.add",
         json!({"kind": "screen", "adapter": "nope", "target": "x"}),

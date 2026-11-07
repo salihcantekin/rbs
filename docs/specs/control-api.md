@@ -199,6 +199,7 @@ The first slice covers what the desktop app does today; the full catalogue follo
 | `source.targets` | `control` | Capture targets of a kind (window titles can be private) |
 | `source.add`, `source.delete`, `edit.undo`, `edit.redo` | `control` | Edit the program scene |
 | `item.set_style {item, style}` | `control` | Shape, border and shadow of a source item (protocol 1.3, ADR-0053) |
+| `item.set_crop {item, crop, keep_scale?}` | `control` | Source pixels cut from each edge of a source item's picture (protocol 1.4, ADR-0057) |
 | `output.profiles` | `read` | Recording profiles: id, name, container, encoder, bitrates (folders only through `settings.get`) |
 | `record.start {profile}`, `record.stop` | `control` | Record with a configured profile into its folder |
 | `record.start_to_file {profile, path}` | `admin` | Record to an explicit file; refused if it exists |
@@ -216,6 +217,10 @@ The first slice covers what the desktop app does today; the full catalogue follo
 `source.list` rows, and the rows of `source.changed`, carry `item` (the source's item id in the program scene) and, for video sources, `layout`: `{position, size, rotation, crop: [left, top, right, bottom], opacity, style}`, the layout the studio's canvas shows. `style` is `{shape: "rectangle" | "circle" | "ellipse", radius, border?: {width, color}, shadow?: {offset, blur, color}}`; lengths are in the item's box units (canvas pixels for an item on the canvas), colours `#rrggbb` or `#rrggbbaa` (answers use `#rrggbbaa`), and `{}` is the plain picture. A 1.2 client ignores the new fields.
 
 `item.set_style {item, style}` replaces the whole style of the item's layout on the studio's canvas: its override for that canvas when it has one, else its default layout, which every canvas without an override shows (as the app's Properties panel does). Refusals: `not_found` for an unknown item; `invalid_params` for an item that places a scene, a radius on a circle or ellipse, a colour in another form, a negative radius or blur, a border width of 0 or less, numbers that are not finite, or unknown keys. Each call is one undo step on the shared stack and publishes `source.changed`; setting the style an item already has changes nothing. The shadow is saved and returned but not drawn yet.
+
+### Crop (protocol 1.4)
+
+`source.list` rows, and the rows of `source.changed`, carry `picture_size: [width, height]` for a video source whose picture the studio has seen in this run (ADR-0057; absent before it ran, and for sound-only sources). `item.set_crop {item, crop: [left, top, right, bottom], keep_scale?}` sets the crop of the item's layout on the studio's canvas, with the `item.set_style` rule (its override for that canvas when it has one, else its default layout). With `keep_scale` (default `true`) the box changes too, so a source pixel keeps its size on the canvas and the part that stays keeps its place; `false` sets only the crop and what stays fills the box. Refusals: `not_found` for an unknown item; `invalid_params` for an item that places a scene, a crop that leaves less than one pixel of the known picture, or unknown keys; `failed` for `keep_scale` while the picture size was never seen. Each call is one undo step and publishes `source.changed`; the crop the item already has changes nothing. A 1.3 server answers `method_not_found`.
 
 ### Streaming (protocol 1.1)
 
@@ -237,7 +242,7 @@ Some commands change the state of one UI client, not of the engine: for example 
 
 ## Undo
 
-One user undo stack for the scene collection, shared by all clients. `edit.undo` from a panel can undo the desktop user's last edit, as in a shared document. An undo record used out of order returns `undo_conflict`. `edit.undo` with nothing to undo returns `conflict`, and so does `edit.redo` with nothing to redo. A step is one user action (in `rbs-app`: adding, deleting, a layer move or a source box; all the boxes of one drag on the picture panel are one step); a new edit clears what is left to redo. `rbs-app` keeps at least 100 steps and clears the history when the canvas changes. The serialisable operation type joins the schema as a minor addition with the scene document format ADR.
+One user undo stack for the scene collection, shared by all clients. `edit.undo` from a panel can undo the desktop user's last edit, as in a shared document. An undo record used out of order returns `undo_conflict`. `edit.undo` with nothing to undo returns `conflict`, and so does `edit.redo` with nothing to redo. A step is one user action (in `rbs-app`: adding, deleting, a layer move, a source box, a style or a crop; all the boxes of one drag on the picture panel are one step); a new edit clears what is left to redo. `rbs-app` keeps at least 100 steps and clears the history when the canvas changes. The serialisable operation type joins the schema as a minor addition with the scene document format ADR.
 
 ## Compatibility
 

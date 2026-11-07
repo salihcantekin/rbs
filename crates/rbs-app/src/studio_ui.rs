@@ -17,8 +17,8 @@ use rbs_app::remote_control::{NetworkOptions, RemoteOptions, RemoteServer};
 use rbs_app::stream_key::{self, KeyStore};
 use rbs_app::stream_profile::{self, SRT_DEFAULT_LATENCY_MS, SRT_LATENCIES_MS, StreamProfile};
 use rbs_app::studio_host::{
-    Command, EncoderInfo, EncoderOptions, RecordRequest, RecordingUpdate, SourceKind, SourceRow,
-    SourceStatus, Stats, StreamRequest, StreamUpdate, StudioHost, Target, Update,
+    Command, CropRegion, EncoderInfo, EncoderOptions, RecordRequest, RecordingUpdate, SourceKind,
+    SourceRow, SourceStatus, Stats, StreamRequest, StreamUpdate, StudioHost, Target, Update,
 };
 use rbs_app::user_session::{RECORDING, STREAM, UserSession};
 use rbs_audio::LevelMeter;
@@ -1110,6 +1110,42 @@ impl StudioUi {
     pub fn set_source_box(&mut self, id: i32, x: f32, y: f32, w: f32, h: f32) {
         self.deleted.clear();
         self.send_box(0, id, SourceBox::new([x, y], [w, h]), 0);
+    }
+
+    /// Source pixels cut from each edge of a video source's picture (the Properties
+    /// fields, ADR-0057); the box changes so the picture keeps its scale.
+    pub fn set_source_crop(&mut self, id: i32, crop: [i32; 4]) {
+        if self.host.is_none() {
+            return;
+        }
+        self.deleted.clear();
+        self.send(Command::SetSourceCrop {
+            seq: 0,
+            gesture: 0,
+            id: SourceId::from_raw(id as u32),
+            crop: crop.map(|v| v.max(0) as u32),
+            keep_scale: true,
+        });
+    }
+
+    /// Shows a part of a video source's picture (Properties' Show buttons): 0 the whole
+    /// picture, 1 canvas size centred, 2 left half, 3 right half.
+    pub fn set_source_region(&mut self, id: i32, region: i32) {
+        let region = match region {
+            0 => CropRegion::Full,
+            1 => CropRegion::CanvasCentred,
+            2 => CropRegion::LeftHalf,
+            3 => CropRegion::RightHalf,
+            _ => return,
+        };
+        if self.host.is_none() {
+            return;
+        }
+        self.deleted.clear();
+        self.send(Command::SetSourceRegion {
+            id: SourceId::from_raw(id as u32),
+            region,
+        });
     }
 
     /// Shape and border of a video source's picture (the Properties fields). `shape`:
@@ -2235,6 +2271,8 @@ impl StudioUi {
                 let next = self.edit.answered(seq, ok);
                 self.run(next);
             }
+            // Crops from the Properties fields are not numbered.
+            Update::CropPlaced { .. } => {}
             Update::Started {
                 preview,
                 kinds,
@@ -2470,6 +2508,7 @@ impl StudioUi {
                     (l.position[0], l.position[1], l.size[0], l.size[1])
                 });
                 let style = r.layout.map(|l| l.style).unwrap_or_default();
+                let crop = r.layout.map(|l| l.crop).unwrap_or_default();
                 let (shape, radius) = match style.shape {
                     Shape::Circle => (1, 0.0),
                     Shape::Ellipse => (2, 0.0),
@@ -2501,6 +2540,12 @@ impl StudioUi {
                     border_width: border.width,
                     border_color: color_text(border.color).into(),
                     border_swatch: slint::Color::from_argb_u8(ca, cr, cg, cb),
+                    crop_l: crop.left as i32,
+                    crop_t: crop.top as i32,
+                    crop_r: crop.right as i32,
+                    crop_b: crop.bottom as i32,
+                    pic_w: r.picture.map_or(0, |p| p.0 as i32),
+                    pic_h: r.picture.map_or(0, |p| p.1 as i32),
                 }
             })
             .collect();
@@ -2771,7 +2816,7 @@ fn color_text(c: [u8; 4]) -> String {
 
 /// The Studio global's `undo-kind` / `redo-kind` code and the source's name for a
 /// step: 0 nothing, 1 add, 2 delete, 3 layer order, 4 move or resize, 5 shape or
-/// border.
+/// border, 6 crop.
 fn step_view(step: Option<&StepInfo>) -> (i32, &str) {
     match step {
         None => (0, ""),
@@ -2782,6 +2827,7 @@ fn step_view(step: Option<&StepInfo>) -> (i32, &str) {
                 EditKind::Order => 3,
                 EditKind::Place => 4,
                 EditKind::Style => 5,
+                EditKind::Crop => 6,
             },
             s.name.as_str(),
         ),

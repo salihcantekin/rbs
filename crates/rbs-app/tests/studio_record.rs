@@ -11,8 +11,9 @@ use std::sync::mpsc::{self, Receiver};
 use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
+use rbs_app::edit_history::EditKind;
 use rbs_app::studio_host::{
-    Command, Fault, HostConfig, RecordRequest, RecordingUpdate, SourceKind, SourceRow,
+    Command, CropRegion, Fault, HostConfig, RecordRequest, RecordingUpdate, SourceKind, SourceRow,
     SourceStatus, StudioHost, Update,
 };
 use rbs_audio_io_test::TestAudioBackend;
@@ -532,6 +533,109 @@ fn a_stop_that_panics_half_way_still_ends_the_recording() {
         other => panic!("{other:?}"),
     }
     let _ = stop_recording(&host, &rx, &clock);
+    drop(host);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn a_crop_keeps_the_scale_is_one_undo_step_and_regions_fit_the_canvas() {
+    let Some(gpu) = gpu() else { return };
+    let dir = std::env::temp_dir().join(format!("rbs-app-crop-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let clock = TestClock::new();
+    // A recording keeps the display running, so its capture reports a picture size.
+    let (host, rx) = host(gpu, &clock);
+    next(&rx, |u| match u {
+        Update::Started { .. } => Some(()),
+        Update::Failed(e) => panic!("{e}"),
+        _ => None,
+    });
+    host.send(Command::ListTargets(SourceKind::Screen));
+    let display = next(&rx, |u| match u {
+        Update::Targets(SourceKind::Screen, t) => Some(t[0].clone()),
+        _ => None,
+    });
+    host.send(Command::AddSource {
+        kind: SourceKind::Screen,
+        target: display,
+    });
+    rows_where(&rx, |r| r.len() == 1);
+    host.send(Command::StartRecording(request(dir.join("crop.mkv"), None)));
+    assert!(matches!(recording(&rx), RecordingUpdate::Started { .. }));
+    // The picture size arrives once the capture opened (ADR-0057).
+    let rows = rows_where(&rx, |r| r.len() == 1 && r[0].picture.is_some());
+    let (id, (w, h)) = (rows[0].id, rows[0].picture.unwrap());
+    let before = rows[0].layout.unwrap();
+    let scale = before.size[0] / w as f32;
+
+    // The right half cut: half as wide, same scale, the left edge stays.
+    let right = w - w / 2;
+    host.send(Command::SetSourceCrop {
+        seq: 1,
+        gesture: 0,
+        id,
+        crop: [0, 0, right, 0],
+        keep_scale: true,
+    });
+    let rows = rows_where(&rx, |r| r[0].layout.is_some_and(|l| l.crop.right == right));
+    let cut = rows[0].layout.unwrap();
+    assert!(
+        (cut.size[0] - (w / 2) as f32 * scale).abs() < 0.01,
+        "{cut:?}"
+    );
+    assert_eq!(cut.size[1], before.size[1]);
+    assert_eq!(cut.position, before.position);
+    // The rows, then the undo history, then the answer.
+    let undo = next(&rx, |u| match u {
+        Update::History { undo, .. } => Some(undo),
+        _ => None,
+    });
+    assert_eq!(undo.map(|s| s.kind), Some(EditKind::Crop));
+    assert!(next(&rx, |u| match u {
+        Update::CropPlaced { seq: 1, ok } => Some(ok),
+        _ => None,
+    }));
+
+    // A crop that leaves nothing is refused and answered.
+    host.send(Command::SetSourceCrop {
+        seq: 2,
+        gesture: 0,
+        id,
+        crop: [w / 2, 0, w - w / 2, 0],
+        keep_scale: true,
+    });
+    next(&rx, |u| match u {
+        Update::Error(_) => Some(()),
+        Update::Sources(r) => panic!("a refused crop changed the rows: {r:?}"),
+        _ => None,
+    });
+    assert!(!next(&rx, |u| match u {
+        Update::CropPlaced { seq: 2, ok } => Some(ok),
+        _ => None,
+    }));
+
+    // Undo brings the whole picture and its box back.
+    host.send(Command::Undo);
+    let rows = rows_where(&rx, |r| r[0].layout.is_some_and(|l| l.crop.right == 0));
+    assert_eq!(rows[0].layout.unwrap(), before);
+
+    // The right half, fitted to the canvas.
+    host.send(Command::SetSourceRegion {
+        id,
+        region: CropRegion::RightHalf,
+    });
+    let rows = rows_where(&rx, |r| r[0].layout.is_some_and(|l| l.crop.left == w / 2));
+    let half = rows[0].layout.unwrap();
+    let (cw, ch) = (1920.0, 1080.0);
+    let (hw, hh) = ((w - w / 2) as f32, h as f32);
+    let k = (cw / hw).min(ch / hh);
+    assert!((half.size[0] - hw * k).abs() < 0.01, "{half:?}");
+    assert!((half.size[1] - hh * k).abs() < 0.01, "{half:?}");
+    assert!(
+        (half.position[0] - (cw - hw * k) / 2.0).abs() < 0.01,
+        "{half:?}"
+    );
+    stop_recording(&host, &rx, &clock);
     drop(host);
     let _ = std::fs::remove_dir_all(&dir);
 }

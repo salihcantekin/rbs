@@ -1285,6 +1285,17 @@ fn install_studio(g: &Studio<'_>, ctx: &Ctx) {
                             h: f32| {
         app.studio.set_source_box(id, x, y, w, h);
     });
+    on!(on_set_source_crop, |app,
+                             id: i32,
+                             l: i32,
+                             t: i32,
+                             r: i32,
+                             b: i32| {
+        app.studio.set_source_crop(id, [l, t, r, b]);
+    });
+    on!(on_set_source_region, |app, id: i32, region: i32| {
+        app.studio.set_source_region(id, region);
+    });
     on!(
         on_set_source_style,
         |app,

@@ -1098,6 +1098,17 @@ impl Studio {
         sent
     }
 
+    /// Width and height in pixels of the picture a video source delivers now (its
+    /// capture node's report, ADR-0057); `None` for an audio source, a source that is
+    /// not running, or before its capture opened.
+    pub fn picture_size(&self, source: SourceId) -> Option<(u32, u32)> {
+        let entry = self.entries.iter().find(|e| e.source == source)?;
+        match &entry.instance.as_ref()?.watch {
+            Watch::Video(stats) => stats.picture_size(),
+            _ => None,
+        }
+    }
+
     /// The level meter of a source's mixer strip.
     pub fn meter(&self, source: SourceId) -> Option<&Arc<LevelMeter>> {
         self.meters.get(&source)

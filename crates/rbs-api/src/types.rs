@@ -92,6 +92,10 @@ pub struct SourceInfo {
     /// before protocol 1.3.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub layout: Option<ItemLayout>,
+    /// Width and height in pixels of the picture it delivers, as last seen while it ran
+    /// (protocol 1.4, ADR-0057); absent for sound-only sources and before it ran.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub picture_size: Option<[u32; 2]>,
 }
 
 /// A picture's place on the canvas (protocol 1.3): the layout the studio's canvas
