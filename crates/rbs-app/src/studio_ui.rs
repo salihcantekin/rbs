@@ -147,10 +147,10 @@ pub struct StudioUi {
     /// The preview scene's picture layer could not be made in this session.
     pub scene_preview_failed: bool,
     pub deleted: String,
-    /// The toast's source was only removed from one scene (ADR-0063).
+    /// The toast's source was only removed from one scene (ADR-0065).
     pub deleted_from_scene: bool,
     pub deleted_serial: u64,
-    /// Settings › Global sources (ADR-0063): the kind picked (an index into
+    /// Settings › Global sources (ADR-0065): the kind picked (an index into
     /// [`Self::kind_codes`], -1 none), its devices and the collection's sources of that
     /// kind that are not global, in the Source field's order.
     pub global_kind: i32,
@@ -1169,13 +1169,13 @@ impl StudioUi {
         self.send(Command::DeleteSource(SourceId::from_raw(id as u32)));
     }
 
-    /// Remove from scene (ADR-0063): the Sources row's remove button and Delete key.
+    /// Remove from scene (ADR-0065): the Sources row's remove button and Delete key.
     pub fn remove_from_scene(&mut self, id: i32) {
         self.deleted.clear();
         self.send(Command::RemoveFromScene(SourceId::from_raw(id as u32)));
     }
 
-    /// Show in every scene (Properties' Toggle, ADR-0063).
+    /// Show in every scene (Properties' Toggle, ADR-0065).
     pub fn set_global(&mut self, id: i32, global: bool) {
         self.deleted.clear();
         self.send(Command::SetGlobal {

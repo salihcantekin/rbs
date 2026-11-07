@@ -20,7 +20,7 @@
 //! height = 1080
 //! frame_rate = [30, 1]         # numerator, denominator
 //! program = 0                  # scene id; optional, like preview
-//! # globals = 2                # the canvas's global scene (format 5, ADR-0063)
+//! # globals = 2                # the canvas's global scene (format 5, ADR-0065)
 //!
 //! [[sources]]
 //! id = 0
@@ -104,7 +104,7 @@ struct CanvasDoc {
     program: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     preview: Option<u32>,
-    /// The canvas's global scene (format 5, ADR-0063).
+    /// The canvas's global scene (format 5, ADR-0065).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     globals: Option<u32>,
 }
@@ -418,7 +418,7 @@ impl Document for SceneCollection {
     /// source `volume` and `muted` (ADR-0059); a format 2 body is a format 3 body
     /// without them. Format 4 adds the optional source `sync_offset_ms` (ADR-0062); a
     /// format 3 body is a format 4 body without it. Format 5 adds the optional canvas
-    /// `globals` (ADR-0063); a format 4 body is a format 5 body without it.
+    /// `globals` (ADR-0065); a format 4 body is a format 5 body without it.
     fn upgrade(from: u32, body: &mut toml::Table) -> Result<(), String> {
         let _ = body;
         match from {

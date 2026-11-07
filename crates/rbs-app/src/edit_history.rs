@@ -26,10 +26,10 @@ pub enum EditKind {
     /// A source was deleted (glossary: Delete source).
     Delete,
     /// A source was removed from one scene and stays in others (glossary: Remove from
-    /// scene, ADR-0063).
+    /// scene, ADR-0065).
     Remove,
     /// A source was made global, or moved from the global sources into a scene
-    /// (ADR-0063).
+    /// (ADR-0065).
     Global,
     /// A source moved a layer up or down.
     Order,

@@ -781,7 +781,7 @@ fn studio_mode_is_a_minor_addition() {
 
 #[test]
 fn global_sources_and_item_remove_have_a_stable_wire_form() {
-    // Protocol 1.10 (ADR-0063).
+    // Protocol 1.10 (ADR-0065).
     let remove: Request =
         serde_json::from_value(json!({"method": "item.remove", "params": {"item": 4}})).unwrap();
     assert_eq!(

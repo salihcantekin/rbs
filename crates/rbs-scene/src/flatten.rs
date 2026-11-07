@@ -107,7 +107,7 @@ pub struct FlatLayer {
 impl SceneCollection {
     /// The layers that draw `scene` on `canvas`, bottom first, with nested scenes
     /// expanded and per-canvas layouts applied (U15), then the layers of the canvas's
-    /// global scene (ADR-0063), whose paths start with the global item. Hidden items, and everything
+    /// global scene (ADR-0065), whose paths start with the global item. Hidden items, and everything
     /// inside a hidden nested scene, are left out; so are fully transparent ones.
     ///
     /// A nested scene is drawn into its item's box: its own canvas-sized coordinate
@@ -132,7 +132,7 @@ impl SceneCollection {
             &mut path,
             &mut out,
         );
-        // Global sources (ADR-0063) are drawn above every scene the canvas shows.
+        // Global sources (ADR-0065) are drawn above every scene the canvas shows.
         if let Some(globals) = c.globals.filter(|g| *g != scene) {
             self.flatten_into(
                 canvas,
@@ -190,7 +190,7 @@ impl SceneCollection {
     }
 
     /// Sources visible in `scene` on `canvas`, including nested scenes and the
-    /// canvas's global scene (ADR-0063): every source item that is visible and not
+    /// canvas's global scene (ADR-0065): every source item that is visible and not
     /// inside a hidden nested scene, whatever its opacity (a fade from 0, or a source
     /// used for its audio, still needs it running). This is what the scene needs
     /// Active.
@@ -208,7 +208,7 @@ impl SceneCollection {
         }
         let mut found = BTreeSet::new();
         let mut seen = BTreeSet::new();
-        // Global sources (ADR-0063) are part of every scene the canvas shows.
+        // Global sources (ADR-0065) are part of every scene the canvas shows.
         let mut stack: Vec<SceneId> = c.globals.into_iter().chain([scene]).collect();
         while let Some(id) = stack.pop() {
             if !seen.insert(id) {

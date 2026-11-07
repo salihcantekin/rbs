@@ -556,7 +556,7 @@ fn globals(c: &mut Client) -> Vec<Value> {
 
 #[test]
 fn global_sources_are_in_every_scene_and_removal_from_a_scene_is_safe() {
-    // ADR-0063, protocol 1.10.
+    // ADR-0065, protocol 1.10.
     let Some((host, updates, _api, mut c)) = start() else {
         return;
     };
@@ -663,5 +663,39 @@ fn global_sources_are_in_every_scene_and_removal_from_a_scene_is_safe() {
             .iter()
             .all(|s| s["id"] != mic)
     );
+    drop(host);
+}
+
+#[test]
+fn with_the_program_scene_in_preview_the_program_is_held_until_the_transition() {
+    let Some((host, updates, _api, mut c)) = start() else {
+        return;
+    };
+    let one = scenes(&mut c)["program"].as_u64().unwrap();
+    let screen = add(&mut c, "screen", "Main screen");
+    // Studio mode with the program scene in preview: the program is held (ADR-0063).
+    ok(&c.call("canvas.set_preview", json!({"scene": one})));
+    // An edit of that scene: the scene changes, the held copy is never listed.
+    add(&mut c, "audio_input", "Mic");
+    let list = scenes(&mut c);
+    assert_eq!(names(&list), ["Scene"], "no copy is listed");
+    assert_eq!(list["program"], one);
+    assert_eq!(list["preview"], one);
+    assert_eq!(sources(&mut c).len(), 2);
+    // A source the held copy shows is deleted: the copy lets it go and stays on air.
+    ok(&c.call("source.delete", json!({"source": screen})));
+    assert_eq!(sources(&mut c).len(), 1);
+    // The transition puts the edits on air; the studio runs on without an error.
+    ok(&c.call("canvas.transition", json!({})));
+    ok(&c.call("canvas.transition", json!({})));
+    let list = scenes(&mut c);
+    assert_eq!(names(&list), ["Scene"]);
+    assert_eq!(list["program"], one);
+    ok(&c.call("canvas.set_preview", json!({"scene": null})));
+    while let Ok(u) = updates.try_recv() {
+        if let Update::Error(e) = u {
+            panic!("{e}");
+        }
+    }
     drop(host);
 }

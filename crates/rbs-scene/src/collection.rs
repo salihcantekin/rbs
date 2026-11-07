@@ -74,7 +74,7 @@ pub enum SceneError {
     InvalidVolume,
     /// A source sync offset is outside `-200..=200` ms (ADR-0062).
     InvalidSyncOffset,
-    /// A global scene (ADR-0063) would be shown as program or preview, nested, nest a
+    /// A global scene (ADR-0065) would be shown as program or preview, nested, nest a
     /// scene, or not be scoped to its own canvas.
     GlobalScene(SceneId),
 }
@@ -167,7 +167,7 @@ enum Op {
     InsertCanvas {
         canvas: Canvas,
         overrides: Vec<(ItemId, Layout)>,
-        /// Its global scene, removed with it (ADR-0063).
+        /// Its global scene, removed with it (ADR-0065).
         globals: Option<Scene>,
     },
     RemoveCanvas(CanvasId),
@@ -197,7 +197,7 @@ enum Op {
         scene: Scene,
         placements: Vec<(SceneId, usize, SceneItem)>,
         shown: Vec<(CanvasId, bool, bool)>,
-        /// Canvases whose global scene it was (ADR-0063).
+        /// Canvases whose global scene it was (ADR-0065).
         globals: Vec<CanvasId>,
     },
     RemoveScene(SceneId),
@@ -537,7 +537,7 @@ impl SceneCollection {
         self.replace_canvas(c)
     }
 
-    /// Makes `scene` the global scene of `canvas` (ADR-0063), or clears it with
+    /// Makes `scene` the global scene of `canvas` (ADR-0065), or clears it with
     /// `None`. The scene must be scoped to that canvas, shown nowhere, nested nowhere
     /// and hold only sources (`GlobalScene`).
     pub fn set_globals(
@@ -551,7 +551,7 @@ impl SceneCollection {
     }
 
     /// The scenes `canvas` may show as program or preview, in id order: those
-    /// `scenes_for` gives, without global scenes (ADR-0063). Scene lists, switching
+    /// `scenes_for` gives, without global scenes (ADR-0065). Scene lists, switching
     /// and program fallbacks use this; code that must reach every item of the canvas
     /// (a rescale) uses `scenes_for`.
     pub fn showable_scenes(&self, canvas: CanvasId) -> impl Iterator<Item = &Scene> {
@@ -560,7 +560,7 @@ impl SceneCollection {
             .filter(move |s| Some(s.id) != globals)
     }
 
-    /// The global scene of `canvas`, if it has one (ADR-0063).
+    /// The global scene of `canvas`, if it has one (ADR-0065).
     pub fn globals_of(&self, canvas: CanvasId) -> Option<SceneId> {
         self.canvases.get(&canvas).and_then(|c| c.globals)
     }
@@ -1029,7 +1029,7 @@ impl SceneCollection {
                     .canvases
                     .remove(&id)
                     .ok_or(SceneError::UnknownCanvas(id))?;
-                // Its global scene goes with it (ADR-0063): the user never sees it as
+                // Its global scene goes with it (ADR-0065): the user never sees it as
                 // a scene of its own. Validation keeps it nested nowhere.
                 let globals = canvas.globals.and_then(|g| self.scenes.remove(&g));
                 if self
@@ -1320,7 +1320,7 @@ impl SceneCollection {
         for s in self.scenes.values() {
             check_name(&s.name)?;
             // A global scene is never listed, so its name never takes one from the
-            // user (ADR-0063).
+            // user (ADR-0065).
             if !globals.contains(&s.id) && !names.insert(s.name.as_str()) {
                 return Err(SceneError::DuplicateName(s.name.clone()));
             }
@@ -1366,7 +1366,7 @@ impl SceneCollection {
         self.check_size()
     }
 
-    /// The global-scene invariants (ADR-0063): scoped to its own canvas, shown and
+    /// The global-scene invariants (ADR-0065): scoped to its own canvas, shown and
     /// nested nowhere, nesting nothing.
     fn check_globals(&self) -> Result<(), SceneError> {
         let globals: BTreeSet<SceneId> = self.canvases.values().filter_map(|c| c.globals).collect();
@@ -1445,7 +1445,7 @@ impl SceneCollection {
             measure(self, scene, 1, &mut memo)?;
         }
         // A scene a canvas may show is drawn with that canvas's global scene
-        // (ADR-0063): together they stay within the limit.
+        // (ADR-0065): together they stay within the limit.
         for c in self.canvases.values() {
             let Some(g) = c.globals else { continue };
             let extra = memo.get(&g).map_or(0, |m| m.1);

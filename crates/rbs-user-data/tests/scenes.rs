@@ -111,7 +111,7 @@ fn show() -> SceneCollection {
     col.set_program(wide, Some(game)).unwrap();
     col.set_preview(wide, Some(talk)).unwrap();
     col.set_program(tall, Some(talk)).unwrap();
-    // A global source on the wide canvas (format 5, ADR-0063).
+    // A global source on the wide canvas (format 5, ADR-0065).
     let (desk, _) = col
         .add_source("Desk mic", ty("audio-input"), Settings::new())
         .unwrap();
@@ -360,7 +360,7 @@ fn every_scene_model_invariant_is_checked_on_load() {
     // Canvas bounds: shared files are untrusted input.
     assert!(invalid("[[canvases]]\nid = 0\nname = \"M\"\nwidth = 4294967295\nheight = 2\nframe_rate = [30, 1]\n").contains("at most"));
     assert!(invalid("[[canvases]]\nid = 0\nname = \"M\"\nwidth = 2\nheight = 2\nframe_rate = [4294967295, 1]\n").contains("at most"));
-    // A global scene (ADR-0063) that is shared, or that is also the program.
+    // A global scene (ADR-0065) that is shared, or that is also the program.
     let shared_globals = format!(
         "[[canvases]]\nid = 0\nname = \"M\"\nwidth = 2\nheight = 2\nframe_rate = [30, 1]\nglobals = 0\n{}",
         scene(0, "")

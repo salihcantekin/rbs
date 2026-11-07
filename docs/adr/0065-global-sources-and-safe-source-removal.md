@@ -1,4 +1,4 @@
-# ADR-0063: Global sources as a global scene per canvas, and safe source removal
+# ADR-0065: Global sources as a global scene per canvas, and safe source removal
 
 - Status: Accepted
 - Date: 2026-11-07

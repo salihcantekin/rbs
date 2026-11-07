@@ -826,7 +826,7 @@ fn random_edits(audio: bool) {
             "org.rbs.source.mic",
             "org.rbs.source.camera-mic",
         ];
-        // A global scene on the wide canvas (ADR-0063), switched on and off below.
+        // A global scene on the wide canvas (ADR-0065), switched on and off below.
         let (globals, _) = s
             .col
             .add_scene("Globals", SceneScope::Canvas(s.wide))
@@ -1120,7 +1120,7 @@ fn check_consistent(s: &Setup, report: &rbs_scene::binder::BindReport, seed: u64
                 .into_iter()
                 .filter_map(tail_of)
                 .collect();
-            // Global sources (ADR-0063) are on every compositor of their canvas,
+            // Global sources (ADR-0065) are on every compositor of their canvas,
             // checked from the global scene's items directly.
             for src in direct_globals(s, canvas.id) {
                 if let Some(t) = tail_of(src) {

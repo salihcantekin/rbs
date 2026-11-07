@@ -83,7 +83,7 @@ pub struct AddSource {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub scene: Option<u32>,
     /// Add it as a global source of the studio's canvas instead (protocol 1.10,
-    /// ADR-0063): shown and heard in every scene; `scene` is then not allowed.
+    /// ADR-0065): shown and heard in every scene; `scene` is then not allowed.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub global: bool,
 }
@@ -262,7 +262,7 @@ pub struct AddItem {
     pub scene: Option<u32>,
 }
 
-/// `item.remove` (protocol 1.10, ADR-0063): Remove from scene.
+/// `item.remove` (protocol 1.10, ADR-0065): Remove from scene.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ItemRef {
@@ -270,7 +270,7 @@ pub struct ItemRef {
     pub item: u32,
 }
 
-/// `global.add` (protocol 1.10, ADR-0063).
+/// `global.add` (protocol 1.10, ADR-0065).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct AddGlobal {
@@ -278,7 +278,7 @@ pub struct AddGlobal {
     pub source: u32,
 }
 
-/// `global.remove` (protocol 1.10, ADR-0063).
+/// `global.remove` (protocol 1.10, ADR-0065).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct RemoveGlobal {
