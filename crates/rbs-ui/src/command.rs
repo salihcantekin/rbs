@@ -10,7 +10,8 @@
 //! through [`CommandState`], so this crate stays free of engine and toolkit types.
 //!
 //! Not yet: titles and tooltips are English text until the UI has Fluent messages
-//! (ADR-0050 decision 1), and no entry has an icon until the icon set grows.
+//! (ADR-0050 decision 1). Icons name the design system's icon set; an area toggle's
+//! icon depends on its area (see [`icon`]).
 
 use std::fmt;
 
@@ -285,7 +286,7 @@ pub const ENTRIES: &[Entry] = &[
         id: "stream.toggle",
         title: "Go live",
         tooltip: "Start or end the stream",
-        icon: None,
+        icon: Some("bolt"),
         shortcut: None,
         menu: Menu::Output,
         kind: Kind::Toggle {
@@ -299,7 +300,7 @@ pub const ENTRIES: &[Entry] = &[
         id: "record.toggle",
         title: "Record",
         tooltip: "Start or stop recording",
-        icon: None,
+        icon: Some("dot"),
         shortcut: None,
         menu: Menu::Output,
         kind: Kind::Toggle {
@@ -566,6 +567,17 @@ pub const MENU_LAYOUT: &[(Menu, &[&str])] = &[
     (Menu::Output, &["stream.toggle", "record.toggle"]),
     (Menu::Window, &["ui.panel.select"]),
 ];
+
+/// The icon an id shows, from the design system's icon set: the entry's, or for an
+/// area toggle the panel icon of its area.
+pub fn icon(id: &CommandId, e: &Entry) -> Option<&'static str> {
+    match (e.id, id.param("area")) {
+        ("ui.area.toggle", Some("left")) => Some("panel-left"),
+        ("ui.area.toggle", Some("right")) => Some("panel-right"),
+        ("ui.area.toggle", Some("bottom")) => Some("panel-bottom"),
+        _ => e.icon,
+    }
+}
 
 /// The title an id shows: the entry's, with the area named for area toggles.
 pub fn title(id: &CommandId, e: &Entry) -> String {

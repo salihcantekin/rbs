@@ -2,19 +2,22 @@
 // crate: Slint has no recursive components, so Rust flattens each window's
 // layout tree into tab stacks and splitter handles with absolute positions.
 import { Theme, Tokens } from "tokens.slint";
-import { Button, IconButton, Icon, IconName, MenuItem as MenuRow, MenuSurface, EmptyState } from "components.slint";
+import { Button, IconButton, Icon, IconName, FocusRing, MenuItem as MenuRow, MenuSurface, EmptyState } from "components.slint";
 import { Studio, EntryRow, SourceData, MarkData, KindData, TargetData, MeterRow, ScaleMark, EncoderData, ProgramPanel, SourcesPanel, PropertiesPanel, MixerPanel, LiveControlsPanel, OutputsPanel, StatsPanel, RecordingSettings, StreamSettings, VideoSettings, RemoteControlSettings, GeneralSettings } from "studio.slint";
 
 export { Theme, Tokens, Studio, EntryRow, SourceData, MarkData, KindData, TargetData, MeterRow, ScaleMark, EncoderData }
 
-export struct TabData { id: string, title: string, known: bool }
-export struct StackData { window: int, stack: int, x: length, y: length, w: length, h: length, tabs: [TabData], active: int }
+export struct TabData { id: string, title: string, known: bool, icon: string }
+export struct StackData { window: int, stack: int, x: length, y: length, w: length, h: length, tabs: [TabData], active: int, collapsed: bool, can-collapse: bool, can-hide: bool }
 export struct HandleData { window: int, index: int, x: length, y: length, w: length, h: length, horizontal: bool, percent: int }
 export struct PanelEntry { id: string, title: string, open: bool }
 export struct WorkspaceEntry { name: string, built-in: bool, current: bool }
 // A toolbar item (ADR-0050). kind: 0 command, 1 the workspace picker, 2 separator,
 // 3 flexible space, 4 an item this version cannot run (shown disabled).
-export struct ToolbarData { id: string, title: string, kind: int, enabled: bool, checked: bool, live: bool }
+export struct ToolbarData { id: string, title: string, kind: int, enabled: bool, checked: bool, live: bool, icon: string, icon-only: bool }
+// An auto-hidden panel's edge tab (ADR-0049 decision 2); `size` is its flyout's
+// width, or height on the bottom edge.
+export struct EdgeTabData { id: string, title: string, icon: string, size: length }
 
 // Edges, as passed to Shell.move-edge.
 export global Edges {
@@ -85,9 +88,25 @@ export global Shell {
     in property <bool> toolbar-has-space;
     // End stream from the menu bar: the frame asks first (U4).
     in property <bool> end-stream-confirm;
+    // The gap between panel cards and around them: the layout's divider thickness.
+    in property <length> gap: 6px;
+    // Edge tabs of auto-hidden panels on the left, right and bottom edges.
+    in property <[EdgeTabData]> left-tabs;
+    in property <[EdgeTabData]> right-tabs;
+    in property <[EdgeTabData]> bottom-tabs;
+    // Every edge tab's panel id, joined: changes when one is added, pinned or closed.
+    in property <string> edge-ids;
+    // The slid-out auto-hide panel's rectangle while one is out (the preview layer
+    // leaves it out, ADR-0054).
+    in-out property <bool> flyout-open;
+    in-out property <Cover> flyout;
     callback end-stream-answer(bool /* end */);
 
-    callback relayout(int /* window */, length, length);
+    // A window's dock area: its position in the window and its size.
+    callback relayout(int /* window */, length, length, length, length);
+    callback collapse(string, bool /* collapsed */);
+    callback auto-hide(string);
+    callback pin(string);
     callback activate-tab(int /* window */, int /* stack */, int /* tab */);
     callback close-panel(string);
     callback toggle-panel(string);
@@ -198,14 +217,37 @@ component PanelContent inherits Rectangle {
     }
 }
 
+// An icon by its name in the icon set, as Rust passes it (registry and panel icons).
+global Icons {
+    // Slint has no string to enum conversion; unknown names draw nothing.
+    public pure function named(name: string) -> IconName {
+        return name == "bolt" ? IconName.bolt
+        : name == "dot" ? IconName.dot
+        : name == "panel-left" ? IconName.panel-left
+        : name == "panel-right" ? IconName.panel-right
+        : name == "panel-bottom" ? IconName.panel-bottom
+        : name == "grid" ? IconName.grid
+        : name == "copy" ? IconName.copy
+        : name == "window" ? IconName.window
+        : name == "plus" ? IconName.plus
+        : name == "pin" ? IconName.pin
+        : IconName.none;
+    }
+}
+
 component PanelMenu inherits PopupWindow {
     in property <string> panel;
     in property <string> title;
     in property <bool> floating;
+    in property <bool> collapsed;
+    in property <bool> can-collapse;
+    in property <bool> can-hide;
     in property <int> window;
     MenuSurface {
         VerticalLayout {
             padding: Tokens.space-1;
+            if can-collapse: MenuRow { text: collapsed ? @tr("Expand") : @tr("Collapse"); activated => { Shell.collapse(panel, !collapsed); root.close(); } }
+            if can-hide: MenuRow { text: @tr("Auto-hide to the edge"); activated => { Shell.auto-hide(panel); root.close(); } }
             MenuRow { autofocus: true; text: @tr("Move to left edge"); activated => { Shell.move-edge(panel, window, Edges.left); root.close(); } }
             MenuRow { text: @tr("Move to right edge"); activated => { Shell.move-edge(panel, window, Edges.right); root.close(); } }
             MenuRow { text: @tr("Move to top edge"); activated => { Shell.move-edge(panel, window, Edges.top); root.close(); } }
@@ -218,16 +260,16 @@ component PanelMenu inherits PopupWindow {
     }
 }
 
+// A tab in a panel header: its title, underlined in the accent colour while it is the
+// shown one (no tab background, spec Frame).
 component Tab inherits Rectangle {
     in property <TabData> tab;
     in property <bool> selected;
     callback activate();
     callback open-menu();
     callback close();
-    height: Tokens.size-control-md;
-    width: title.preferred-width + menu-button.width + close-button.width + 2 * Tokens.space-2;
-    border-radius: Tokens.radius-sm;
-    background: selected ? Theme.surface-raised : touch.has-hover ? Theme.surface-overlay : transparent;
+    height: Tokens.size-control-lg;
+    width: title.preferred-width + 2 * Tokens.space-2;
     accessible-role: AccessibleRole.tab;
     accessible-label: tab.title;
     accessible-item-selected: selected;
@@ -244,28 +286,23 @@ component Tab inherits Rectangle {
     }
     // The TouchArea comes after the FocusScope so it is on top: a FocusScope
     // under the pointer takes the press for itself (focus-on-click).
-    touch := TouchArea { clicked => { focus.focus(); activate(); } }
-    HorizontalLayout {
-        padding-left: Tokens.space-2;
-        title := Text {
-            text: tab.title;
-            color: selected ? Theme.text-primary : Theme.text-secondary;
-            font-size: Tokens.type-label-size;
-            font-weight: Tokens.type-label-weight;
-            vertical-alignment: center;
-        }
-        menu-button := IconButton {
-            icon: IconName.more;
-            name: @tr("Actions for {}", tab.title);
-            clicked => { open-menu(); }
-        }
-        close-button := IconButton {
-            icon: IconName.close;
-            name: @tr("Close {}", tab.title);
-            clicked => { close(); }
+    touch := TouchArea {
+        clicked => { focus.focus(); activate(); }
+        pointer-event(e) => {
+            if e.kind == PointerEventKind.down && e.button == PointerEventButton.right { open-menu(); }
         }
     }
+    title := Text {
+        x: Tokens.space-2;
+        text: tab.title;
+        color: selected || touch.has-hover ? Theme.text-primary : Theme.text-secondary;
+        font-size: Tokens.type-label-size;
+        font-weight: selected ? Tokens.type-title-weight : Tokens.type-label-weight;
+        vertical-alignment: center;
+    }
     Rectangle {
+        x: Tokens.space-1;
+        width: parent.width - 2 * Tokens.space-1;
         y: parent.height - Tokens.size-focus-ring;
         height: Tokens.size-focus-ring;
         background: selected ? Theme.accent : transparent;
@@ -277,40 +314,117 @@ component Tab inherits Rectangle {
     }
 }
 
+// A panel card (spec Frame): a rounded card with a header of the stack's tabs and its
+// actions (auto-hide, collapse, more), then the shown panel. Collapsed, only the
+// header is drawn; in a horizontal split it is a strip as wide as the header is high.
 component StackView inherits Rectangle {
     in property <StackData> data;
     in property <bool> floating;
-    property <length> bar: Tokens.size-control-md + 2 * Tokens.space-1;
+    property <length> bar: Tokens.size-control-lg;
+    property <bool> strip: data.collapsed && data.h > data.w;
+    property <bool> has-tabs: data.tabs.length > 0;
+    property <string> active-id: has-tabs ? data.tabs[data.active].id : "";
+    property <string> active-title: has-tabs ? data.tabs[data.active].title : "";
     property <string> menu-panel;
     property <string> menu-title;
-    background: Theme.surface-base;
+    background: Theme.surface-raised;
     border-color: Theme.border-subtle;
     border-width: Tokens.size-border;
-    accessible-role: tab-list;
-    Flickable {
+    border-radius: Tokens.radius-md;
+    clip: true;
+    if !strip: Rectangle {
         x: Tokens.size-border;
-        y: Tokens.size-border;
+        y: 0;
         width: parent.width - 2 * Tokens.size-border;
         height: bar;
-        content-width: tabs.preferred-width;
-        tabs := HorizontalLayout {
-            padding: Tokens.space-1;
-            spacing: Tokens.space-1;
-            alignment: start;
-            for t[i] in data.tabs: Tab {
-                tab: t;
-                selected: i == data.active;
-                activate => { Shell.activate-tab(data.window, data.stack, i); }
-                close => { Shell.close-panel(t.id); }
-                open-menu => {
-                    menu-panel = t.id;
-                    menu-title = t.title;
-                    menu.show();
+        HorizontalLayout {
+            padding-left: Tokens.space-1;
+            padding-right: Tokens.space-1;
+            Flickable {
+                horizontal-stretch: 1;
+                content-width: tabs.preferred-width;
+                interactive: false;
+                tabs := HorizontalLayout {
+                    accessible-role: tab-list;
+                    alignment: start;
+                    for t[i] in data.tabs: Tab {
+                        tab: t;
+                        selected: i == data.active && !data.collapsed;
+                        activate => {
+                            if data.collapsed { Shell.collapse(t.id, false); }
+                            Shell.activate-tab(data.window, data.stack, i);
+                        }
+                        close => { Shell.close-panel(t.id); }
+                        open-menu => {
+                            menu-panel = t.id;
+                            menu-title = t.title;
+                            menu.show();
+                        }
+                    }
+                }
+            }
+            if has-tabs: HorizontalLayout {
+                horizontal-stretch: 0;
+                alignment: end;
+                padding-top: (bar - Tokens.size-control-sm) / 2;
+                padding-bottom: (bar - Tokens.size-control-sm) / 2;
+                if data.can-hide: IconButton {
+                    icon: IconName.pin;
+                    name: @tr("Auto-hide {}", active-title);
+                    clicked => { Shell.auto-hide(active-id); }
+                }
+                if data.can-collapse: IconButton {
+                    icon: data.collapsed ? IconName.chevron-right : IconName.chevron-down;
+                    name: data.collapsed ? @tr("Expand {}", active-title) : @tr("Collapse {}", active-title);
+                    accessible-expandable: true;
+                    accessible-expanded: !data.collapsed;
+                    clicked => { Shell.collapse(active-id, !data.collapsed); }
+                }
+                IconButton {
+                    icon: IconName.more;
+                    name: @tr("Actions for {}", active-title);
+                    clicked => {
+                        menu-panel = active-id;
+                        menu-title = active-title;
+                        menu.show();
+                    }
                 }
             }
         }
     }
-    if data.tabs.length > 0: PanelContent {
+    if !strip && !data.collapsed: Rectangle {
+        x: Tokens.size-border;
+        y: bar;
+        width: parent.width - 2 * Tokens.size-border;
+        height: Tokens.size-border;
+        background: Theme.border-subtle;
+    }
+    // A collapsed stack in a horizontal split: its expand button and the tabs' icons,
+    // named for screen readers (no rotated text).
+    if strip: VerticalLayout {
+        padding-top: (bar - Tokens.size-control-sm) / 2;
+        padding-left: (parent.width - Tokens.size-control-sm) / 2;
+        spacing: Tokens.space-2;
+        alignment: start;
+        accessible-role: groupbox;
+        accessible-label: active-title;
+        IconButton {
+            icon: IconName.chevron-right;
+            name: @tr("Expand {}", active-title);
+            accessible-expandable: true;
+            accessible-expanded: false;
+            clicked => { Shell.collapse(active-id, false); }
+        }
+        for t[i] in data.tabs: IconButton {
+            icon: Icons.named(t.icon);
+            name: t.title;
+            clicked => {
+                Shell.collapse(t.id, false);
+                Shell.activate-tab(data.window, data.stack, i);
+            }
+        }
+    }
+    if has-tabs && !data.collapsed: PanelContent {
         x: Tokens.size-border;
         y: bar + Tokens.size-border;
         width: parent.width - 2 * Tokens.size-border;
@@ -323,14 +437,19 @@ component StackView inherits Rectangle {
         panel: menu-panel;
         title: menu-title;
         floating: root.floating;
+        collapsed: data.collapsed;
+        can-collapse: data.can-collapse;
+        can-hide: data.can-hide;
         window: data.window;
     }
 }
 
-// Splitter between two panes: drag with the pointer, or focus it and use the arrow keys.
+// Splitter between two cards: the gap itself, shown in the accent colour while hovered,
+// dragged or focused. Drag with the pointer, or focus it and use the arrow keys.
 component Splitter inherits Rectangle {
     in property <HandleData> data;
-    background: focus.has-focus || touch.has-hover || touch.pressed ? Theme.accent : Theme.surface-sunken;
+    background: focus.has-focus || touch.has-hover || touch.pressed ? Theme.accent : transparent;
+    border-radius: Tokens.radius-sm;
     accessible-role: slider;
     accessible-label: data.horizontal ? @tr("Resize panes left and right") : @tr("Resize panes up and down");
     accessible-value: data.percent;
@@ -366,15 +485,24 @@ component Splitter inherits Rectangle {
     }
 }
 
+// A window's panel cards and dividers. It tells Rust where it is in the window (the
+// preview layer is placed from that) and how big it is (the layout is flattened to it).
 component DockArea inherits Rectangle {
     in property <int> window;
     in property <[StackData]> stacks;
     in property <[HandleData]> handles;
     in property <bool> floating;
-    changed window => { Shell.relayout(window, self.width, self.height); }
-    changed width => { Shell.relayout(window, self.width, self.height); }
-    changed height => { Shell.relayout(window, self.width, self.height); }
-    init => { Shell.relayout(window, self.width, self.height); }
+    property <length> ax: self.absolute-position.x;
+    property <length> ay: self.absolute-position.y;
+    changed window => { report(); }
+    changed width => { report(); }
+    changed height => { report(); }
+    changed ax => { report(); }
+    changed ay => { report(); }
+    init => { report(); }
+    function report() {
+        Shell.relayout(window, ax, ay, self.width, self.height);
+    }
     for s in stacks: StackView {
         x: s.x;
         y: s.y;
@@ -389,6 +517,150 @@ component DockArea inherits Rectangle {
         width: h.w;
         height: h.h;
         data: h;
+    }
+}
+
+// One edge tab of an auto-hidden panel (ADR-0049 decision 2): its icon and title, the
+// title turned to run along a left or right edge. Clicking it, or Enter or Space,
+// slides the panel out or back.
+component EdgeTab inherits Rectangle {
+    in property <EdgeTabData> data;
+    in property <bool> vertical;
+    in property <bool> open;
+    callback toggle();
+    property <length> along: label.preferred-width + Tokens.size-icon-box + 2 * Tokens.space-2 + Tokens.space-1;
+    width: vertical ? Tokens.size-control-md : along;
+    height: vertical ? along : Tokens.size-control-md;
+    border-radius: Tokens.radius-md;
+    border-width: Tokens.size-border;
+    border-color: Theme.border-subtle;
+    background: open ? Theme.accent-subtle : touch.has-hover ? Theme.surface-overlay : Theme.surface-raised;
+    accessible-role: AccessibleRole.tab;
+    accessible-label: data.title;
+    accessible-expandable: true;
+    accessible-expanded: open;
+    accessible-action-default => { toggle(); }
+    forward-focus: focus;
+    focus := FocusScope {
+        key-pressed(e) => {
+            if e.text == Key.Return || e.text == " " { toggle(); return accept; }
+            reject
+        }
+    }
+    touch := TouchArea { clicked => { focus.focus(); toggle(); } }
+    Icon {
+        x: vertical ? (parent.width - self.width) / 2 : Tokens.space-2;
+        y: vertical ? Tokens.space-2 : (parent.height - self.height) / 2;
+        name: Icons.named(data.icon);
+        ink: open ? Theme.text-primary : Theme.text-secondary;
+    }
+    label := Text {
+        // Laid out unturned, then turned about its centre.
+        width: self.preferred-width;
+        height: self.preferred-height;
+        x: vertical ? (parent.width - self.width) / 2 : Tokens.size-icon-box + Tokens.space-2 + Tokens.space-1;
+        y: vertical ? Tokens.size-icon-box + Tokens.space-2 + Tokens.space-1 + (self.width - self.height) / 2 : (parent.height - self.height) / 2;
+        transform-rotation: vertical ? 90deg : 0deg;
+        text: data.title;
+        color: open || touch.has-hover ? Theme.text-primary : Theme.text-secondary;
+        font-size: Tokens.type-caption-size;
+        font-weight: Tokens.type-label-weight;
+    }
+    FocusRing { show: focus.has-focus; border-radius: Tokens.radius-md; }
+}
+
+// The edge tabs on one edge. `open-id` is the slid-out panel, if it is on this edge.
+component EdgeStrip inherits Rectangle {
+    in property <[EdgeTabData]> tabs;
+    in property <bool> vertical;
+    in property <string> open-id;
+    callback toggle(EdgeTabData);
+    // Fixed across its edge, free along it.
+    min-width: vertical ? Tokens.size-control-md : 0px;
+    max-width: vertical ? Tokens.size-control-md : 100000px;
+    min-height: vertical ? 0px : Tokens.size-control-md;
+    max-height: vertical ? 100000px : Tokens.size-control-md;
+    accessible-role: tab-list;
+    if vertical: VerticalLayout {
+        spacing: Tokens.space-1;
+        alignment: start;
+        for t in tabs: EdgeTab {
+            data: t;
+            vertical: true;
+            open: t.id == open-id;
+            toggle => { root.toggle(t); }
+        }
+    }
+    if !vertical: HorizontalLayout {
+        spacing: Tokens.space-1;
+        alignment: start;
+        for t in tabs: EdgeTab {
+            data: t;
+            vertical: false;
+            open: t.id == open-id;
+            toggle => { root.toggle(t); }
+        }
+    }
+}
+
+// A slid-out auto-hide panel: a card over the dock area along its edge, with Pin and
+// Hide. Escape slides it back. A direct child of the window, so it reports its own
+// rectangle for the preview layer (ADR-0054).
+component Flyout inherits Rectangle {
+    in property <EdgeTabData> data;
+    callback hide();
+    // In window surface coordinates, as the preview layer is placed.
+    property <Cover> rect: { x: self.absolute-position.x, y: self.absolute-position.y, width: self.width, height: self.height };
+    init => { Shell.flyout = rect; Shell.flyout-open = true; focus.focus(); }
+    changed rect => { Shell.flyout = rect; }
+    background: Theme.surface-raised;
+    border-color: Theme.border-strong;
+    border-width: Tokens.size-border;
+    border-radius: Tokens.radius-md;
+    clip: true;
+    accessible-role: groupbox;
+    accessible-label: data.title;
+    focus := FocusScope {
+        key-pressed(e) => {
+            if e.text == Key.Escape { root.hide(); return accept; }
+            reject
+        }
+        VerticalLayout {
+            Rectangle {
+                height: Tokens.size-control-lg;
+                HorizontalLayout {
+                    padding-left: Tokens.space-3;
+                    padding-right: Tokens.space-1;
+                    spacing: Tokens.space-1;
+                    Text {
+                        text: data.title;
+                        color: Theme.text-primary;
+                        font-size: Tokens.type-label-size;
+                        font-weight: Tokens.type-title-weight;
+                        vertical-alignment: center;
+                        horizontal-stretch: 1;
+                    }
+                    VerticalLayout {
+                        alignment: center;
+                        IconButton {
+                            icon: IconName.pin;
+                            name: @tr("Pin {}", data.title);
+                            clicked => { Shell.pin(data.id); root.hide(); }
+                        }
+                    }
+                    VerticalLayout {
+                        alignment: center;
+                        IconButton {
+                            icon: IconName.close;
+                            name: @tr("Hide {}", data.title);
+                            clicked => { root.hide(); }
+                        }
+                    }
+                }
+            }
+            Rectangle { height: Tokens.size-border; background: Theme.border-subtle; }
+            PanelContent { tab: { id: data.id, title: data.title, known: true, icon: data.icon }; }
+        }
     }
 }
 
@@ -430,6 +702,10 @@ component WorkspaceMenu inherits PopupWindow {
                     background: Theme.surface-sunken;
                     height: Tokens.size-control-md;
                     name := TextInput {
+                        // Visible caret: see TextField.
+                        selection-background-color: Theme.accent;
+                        selection-foreground-color: Theme.text-inverse;
+                        text-cursor-width: Tokens.size-focus-ring;
                         x: Tokens.space-2;
                         width: parent.width - 2 * Tokens.space-2;
                         color: Theme.text-primary;
@@ -519,6 +795,10 @@ component EntryMenu inherits PopupWindow {
                 background: Theme.surface-sunken;
                 height: Tokens.size-control-md;
                 name := TextInput {
+                    // Visible caret: see TextField.
+                    selection-background-color: Theme.accent;
+                    selection-foreground-color: Theme.text-inverse;
+                    text-cursor-width: Tokens.size-focus-ring;
                     x: Tokens.space-2;
                     width: parent.width - 2 * Tokens.space-2;
                     color: Theme.text-primary;
@@ -575,29 +855,91 @@ component EndStreamConfirm inherits HorizontalLayout {
     }
 }
 
-// One toolbar item: a command button (a toggle shows its state; one that stops a
-// live output is in the live colour, U12), the workspace picker, a separator or the
-// flexible space.
+// The workspace picker in the toolbar: "Workspace" and the current one's name.
+component WorkspacePicker inherits Rectangle {
+    callback clicked();
+    height: Tokens.size-control-md;
+    min-width: row.preferred-width;
+    horizontal-stretch: 0;
+    border-radius: Tokens.radius-sm;
+    background: touch.has-hover ? Theme.surface-overlay : Theme.surface-raised;
+    border-width: Tokens.size-border;
+    border-color: Theme.border-subtle;
+    accessible-role: button;
+    accessible-label: @tr("Workspace: {}", Shell.workspace-name);
+    accessible-action-default => { clicked(); }
+    forward-focus: focus;
+    focus := FocusScope {
+        key-pressed(e) => {
+            if e.text == Key.Return || e.text == " " { root.clicked(); return accept; }
+            reject
+        }
+    }
+    touch := TouchArea { clicked => { focus.focus(); root.clicked(); } }
+    row := HorizontalLayout {
+        padding-left: Tokens.space-2;
+        padding-right: Tokens.space-2;
+        spacing: Tokens.space-2;
+        Text {
+            text: @tr("Workspace");
+            color: Theme.text-secondary;
+            font-size: Tokens.type-label-size;
+            vertical-alignment: center;
+        }
+        Text {
+            text: Shell.workspace-name;
+            color: Theme.text-primary;
+            font-size: Tokens.type-label-size;
+            font-weight: Tokens.type-label-weight;
+            vertical-alignment: center;
+        }
+        VerticalLayout {
+            alignment: center;
+            Icon { name: IconName.chevron-down; ink: Theme.text-secondary; }
+        }
+    }
+    FocusRing { show: focus.has-focus; }
+}
+
+// One toolbar item: a command button with its icon (a toggle that is on is tinted;
+// one that stops a live output is in the live colour, U12), the workspace picker, a
+// separator or the flexible space. Go live is the one primary button.
 component ToolbarCell inherits HorizontalLayout {
     in property <ToolbarData> item;
     // The workspace picker was clicked, at this window x.
     callback open-workspaces(length);
+    property <bool> go-live: item.id == "stream.toggle" && !item.live;
+    property <bool> record: item.id == "record.toggle" && !item.live;
     horizontal-stretch: item.kind == 3 ? 1 : 0;
-    if item.kind == 0 || item.kind == 4: Button {
-        text: item.title;
+    if (item.kind == 0 || item.kind == 4) && item.icon-only: Button {
+        width: Tokens.size-control-lg;
+        accessible-name: item.title;
+        lead: Icons.named(item.icon);
+        lead-ink: item.checked ? Theme.text-primary : Theme.text-secondary;
+        kind: "ghost";
         enabled: item.enabled;
-        checked: item.checked && !item.live;
-        kind: item.live ? "live" : "secondary";
+        checked: item.checked;
         clicked => { Menus.run(item.id); }
     }
-    if item.kind == 1: Button {
-        text: @tr("Workspace: {}", Shell.workspace-name);
-        icon: IconName.chevron-down;
+    if (item.kind == 0 || item.kind == 4) && !item.icon-only: Button {
+        text: item.title;
+        lead: Icons.named(item.icon);
+        lead-ink: record ? Theme.state-live : self.ink;
+        enabled: item.enabled;
+        checked: item.checked && !item.live;
+        kind: item.live ? "live" : go-live ? "primary" : record ? "secondary" : "ghost";
+        clicked => { Menus.run(item.id); }
+    }
+    if item.kind == 1: WorkspacePicker {
         clicked => { root.open-workspaces(self.absolute-position.x); }
     }
-    if item.kind == 2: Rectangle {
-        width: Tokens.size-border;
-        background: Theme.border-subtle;
+    if item.kind == 2: VerticalLayout {
+        padding-top: Tokens.space-1;
+        padding-bottom: Tokens.space-1;
+        Rectangle {
+            width: Tokens.size-border;
+            background: Theme.border-subtle;
+        }
     }
     // The flexible space: an empty layout cannot grow, a rectangle can.
     if item.kind == 3: Rectangle { }
@@ -609,10 +951,20 @@ component ToolbarCell inherits HorizontalLayout {
 component FrameBar inherits Rectangle {
     // Where the workspace menu opens: under the toolbar's Workspace item.
     property <length> ws-menu-x;
-    height: Tokens.size-control-md + 2 * Tokens.space-2;
-    background: Theme.surface-sunken;
+    height: Tokens.size-control-md + 2 * Tokens.space-1 + Tokens.size-border;
+    background: Theme.surface-base;
+    Rectangle {
+        y: parent.height - Tokens.size-border;
+        height: Tokens.size-border;
+        background: Theme.border-subtle;
+    }
     HorizontalLayout {
-        padding: Tokens.space-2;
+        height: parent.height - Tokens.size-border;
+        y: 0;
+        padding-left: Tokens.space-2;
+        padding-right: Tokens.space-2;
+        padding-top: Tokens.space-1;
+        padding-bottom: Tokens.space-1;
         spacing: Tokens.space-2;
         // The workspace's toolbar items (ADR-0050); hidden, the row stays with the
         // live indicator at its right end.
@@ -622,18 +974,6 @@ component FrameBar inherits Rectangle {
                 root.ws-menu-x = x - root.absolute-position.x;
                 ws-menu.show();
             }
-        }
-        profile-button := Button {
-            horizontal-stretch: 0;
-            text: @tr("Output profile: {}", Studio.profile-name);
-            icon: IconName.chevron-down;
-            clicked => { profile-menu.show(); }
-        }
-        collection-button := Button {
-            horizontal-stretch: 0;
-            text: @tr("Scene collection: {}", Studio.collection-name);
-            icon: IconName.chevron-down;
-            clicked => { collection-menu.show(); }
         }
         // Closing while live ends the stream: asked first, in the frame (U4).
         if Shell.quit-confirm: HorizontalLayout {
@@ -689,9 +1029,107 @@ component FrameBar inherits Rectangle {
         x: root.ws-menu-x;
         y: parent.height;
     }
+}
+
+// A status bar item that opens a menu: "<label> <value>".
+component StatusPicker inherits Rectangle {
+    in property <string> label;
+    in property <string> value;
+    callback clicked();
+    min-width: row.preferred-width;
+    horizontal-stretch: 0;
+    border-radius: Tokens.radius-sm;
+    background: touch.has-hover ? Theme.surface-overlay : transparent;
+    accessible-role: button;
+    accessible-label: @tr("{}: {}", label, value);
+    accessible-action-default => { clicked(); }
+    forward-focus: focus;
+    focus := FocusScope {
+        key-pressed(e) => {
+            if e.text == Key.Return || e.text == " " { root.clicked(); return accept; }
+            reject
+        }
+    }
+    touch := TouchArea { clicked => { focus.focus(); root.clicked(); } }
+    row := HorizontalLayout {
+        padding-left: Tokens.space-1;
+        padding-right: Tokens.space-1;
+        spacing: Tokens.space-1;
+        Text {
+            text: label;
+            color: Theme.text-secondary;
+            font-size: Tokens.type-caption-size;
+            vertical-alignment: center;
+        }
+        Text {
+            text: value;
+            color: Theme.text-primary;
+            font-size: Tokens.type-caption-size;
+            vertical-alignment: center;
+        }
+    }
+    FocusRing { show: focus.has-focus; }
+}
+
+// The status bar (spec Frame): live and recording state in words, the Output profile
+// and Scene collection in use (each opens its menu), and the canvas. It shows values
+// the app already has; it polls nothing (P13).
+component StatusBar inherits Rectangle {
+    property <string> state-text: Shell.live-state == 1 ? @tr("Live {} · not recording", Shell.live-duration)
+        : Shell.live-state == 2 ? @tr("Not live · recording {}", Shell.live-duration)
+        : Shell.live-state == 3 ? @tr("Live and recording {}", Shell.live-duration)
+        : @tr("Not live · not recording");
+    height: Tokens.size-control-sm + 2 * Tokens.size-border;
+    background: Theme.surface-sunken;
+    Rectangle {
+        y: 0;
+        height: Tokens.size-border;
+        background: Theme.border-subtle;
+    }
+    HorizontalLayout {
+        padding-left: Tokens.space-3;
+        padding-right: Tokens.space-3;
+        padding-top: Tokens.size-border;
+        spacing: Tokens.space-4;
+        Text {
+            horizontal-stretch: 0;
+            text: state-text;
+            color: Shell.live-state != 0 ? Theme.text-primary : Theme.text-secondary;
+            font-size: Tokens.type-caption-size;
+            vertical-alignment: center;
+        }
+        if Studio.st-text != "": Text {
+            horizontal-stretch: 0;
+            text: Studio.st-text;
+            color: Studio.st-bad ? Theme.state-error : Theme.text-secondary;
+            font-size: Tokens.type-caption-size;
+            vertical-alignment: center;
+        }
+        Rectangle { horizontal-stretch: 1; }
+        profile-button := StatusPicker {
+            label: @tr("Output profile");
+            value: Studio.profile-name;
+            clicked => { profile-menu.show(); }
+        }
+        collection-button := StatusPicker {
+            label: @tr("Scene collection");
+            value: Studio.collection-name;
+            clicked => { collection-menu.show(); }
+        }
+        if Studio.canvas-sizes.length > Studio.canvas-size && Studio.canvas-size >= 0: Text {
+            horizontal-stretch: 0;
+            text: Studio.canvas-rates.length > Studio.canvas-rate && Studio.canvas-rate >= 0
+                ? @tr("{} · {} fps", Studio.canvas-sizes[Studio.canvas-size], Studio.canvas-rates[Studio.canvas-rate])
+                : Studio.canvas-sizes[Studio.canvas-size];
+            color: Theme.text-secondary;
+            font-size: Tokens.type-caption-size;
+            vertical-alignment: center;
+        }
+    }
+    // The menus open upwards, over the dock area.
     profile-menu := EntryMenu {
-        x: profile-button.x;
-        y: parent.height;
+        x: min(profile-button.x, root.width - Tokens.size-menu-md);
+        y: -self.height;
         entries: Studio.profiles;
         current: Studio.profile-name;
         what: @tr("output profile");
@@ -699,8 +1137,8 @@ component FrameBar inherits Rectangle {
         act(a, text) => { Studio.profile-action(a, text); }
     }
     collection-menu := EntryMenu {
-        x: collection-button.x;
-        y: parent.height;
+        x: min(collection-button.x, root.width - Tokens.size-menu-md);
+        y: -self.height;
         entries: Studio.collections;
         current: Studio.collection-name;
         what: @tr("scene collection");
@@ -810,12 +1248,69 @@ export component MainWindow inherits Window {
         KeyBinding { keys: @keys(Control + W); activated => { if Studio.platform == 0 { Shell.close-main(); } } }
         VerticalLayout {
             frame := FrameBar { }
-            DockArea {
-                window: 0;
-                stacks: root.stacks;
-                handles: root.handles;
+            HorizontalLayout {
+                padding: Shell.gap;
+                spacing: Shell.gap;
+                if Shell.left-tabs.length > 0: EdgeStrip {
+                    tabs: Shell.left-tabs;
+                    vertical: true;
+                    open-id: root.flyout-edge == 0 ? root.flyout-tab.id : "";
+                    toggle(t) => { root.toggle-flyout(0, t); }
+                }
+                VerticalLayout {
+                    spacing: Shell.gap;
+                    dock := DockArea {
+                        window: 0;
+                        stacks: root.stacks;
+                        handles: root.handles;
+                    }
+                    if Shell.bottom-tabs.length > 0: EdgeStrip {
+                        tabs: Shell.bottom-tabs;
+                        vertical: false;
+                        open-id: root.flyout-edge == 2 ? root.flyout-tab.id : "";
+                        toggle(t) => { root.toggle-flyout(2, t); }
+                    }
+                }
+                if Shell.right-tabs.length > 0: EdgeStrip {
+                    tabs: Shell.right-tabs;
+                    vertical: true;
+                    open-id: root.flyout-edge == 1 ? root.flyout-tab.id : "";
+                    toggle(t) => { root.toggle-flyout(1, t); }
+                }
             }
+            StatusBar { }
         }
+    }
+    // The slid-out auto-hide panel, over the dock area along its edge (0 left, 1 right,
+    // 2 bottom; -1 none). Sliding out and back is not a layout change (ADR-0049).
+    property <int> flyout-edge: -1;
+    property <EdgeTabData> flyout-tab;
+    function toggle-flyout(edge: int, t: EdgeTabData) {
+        if flyout-edge == edge && flyout-tab.id == t.id {
+            hide-flyout();
+        } else {
+            flyout-tab = t;
+            flyout-edge = edge;
+        }
+    }
+    function hide-flyout() {
+        flyout-edge = -1;
+        Shell.flyout-open = false;
+    }
+    // Pinning, closing or adding an auto-hidden panel slides the flyout back.
+    property <string> edge-ids: Shell.edge-ids;
+    changed edge-ids => { hide-flyout(); }
+    if flyout-edge >= 0: Flyout {
+        property <length> size: min(flyout-tab.size, flyout-edge == 2 ? dock.height : dock.width);
+        // The dock area's place in the window, from the layout around it.
+        property <length> dock-x: Shell.gap + (Shell.left-tabs.length > 0 ? Tokens.size-control-md + Shell.gap : 0px);
+        property <length> dock-y: frame.height + Shell.gap;
+        x: flyout-edge == 1 ? dock-x + dock.width - size : dock-x;
+        y: flyout-edge == 2 ? dock-y + dock.height - size : dock-y;
+        width: flyout-edge == 2 ? dock.width : size;
+        height: flyout-edge == 2 ? size : dock.height;
+        data: flyout-tab;
+        hide => { root.hide-flyout(); }
     }
     if Shell.toast-kind != 0: Toast {
         x: (parent.width - self.width) / 2;

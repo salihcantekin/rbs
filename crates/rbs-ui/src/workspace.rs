@@ -13,7 +13,7 @@ use std::fmt;
 use serde::{Deserialize, Serialize};
 
 use crate::command::CommandId;
-use crate::layout::{Edge, MAX_DEPTH, Node, Tabs};
+use crate::layout::{Axis, Edge, MAX_DEPTH, Node, Rect, Tabs};
 use crate::panel::PanelId;
 
 /// The workspace file format this crate writes. Format 1 files are read and
@@ -1143,6 +1143,126 @@ impl Workspace {
         Ok(())
     }
 
+    /// Collapse (`ui.panel.collapse`) or expand (`ui.panel.expand`) the stack holding
+    /// panel `id`, in any window. The centre keeps one stack that is not collapsed.
+    pub fn set_collapsed(&mut self, id: &PanelId, collapsed: bool) -> Result<(), WorkspaceError> {
+        let (w, stack, _) = self
+            .find(id)
+            .ok_or_else(|| WorkspaceError::NotOpen(id.clone()))?;
+        let win = &mut self.windows[w];
+        let (tree, local) = win.locate(stack).ok_or(WorkspaceError::NoTarget)?;
+        let t = win
+            .trees_mut()
+            .into_iter()
+            .nth(tree)
+            .and_then(|t| t.stack_mut(local))
+            .ok_or(WorkspaceError::NoTarget)?;
+        t.collapsed = collapsed;
+        if collapsed && tree == 0 && win.is_main() && !win.trees()[0].has_expanded_stack() {
+            t_restore(win, tree, local);
+            return Err(WorkspaceError::Invalid(
+                "the centre keeps at least one tab stack that is not collapsed".into(),
+            ));
+        }
+        Ok(())
+    }
+
+    /// Auto-hide the stack holding panel `id` (`ui.panel.auto_hide`): it leaves the
+    /// main window's tree and becomes edge tabs on its area's edge, or for the centre
+    /// on the nearest of the left, right and bottom edges (ADR-0049 decision 2).
+    /// Floating windows have no edges to hide to, and the centre keeps a panel.
+    pub fn auto_hide(&mut self, id: &PanelId, content: Rect) -> Result<(), WorkspaceError> {
+        let (w, stack, _) = self
+            .find(id)
+            .ok_or_else(|| WorkspaceError::NotOpen(id.clone()))?;
+        if w != 0 {
+            return Err(WorkspaceError::NoTarget);
+        }
+        let edge = {
+            let win = &self.windows[0];
+            let (tree, local) = win.locate(stack).ok_or(WorkspaceError::NoTarget)?;
+            let m = win.main().ok_or(WorkspaceError::NoTarget)?;
+            let sides: Vec<Side> = Side::ALL
+                .into_iter()
+                .filter(|s| m.area(*s).layout.is_some())
+                .collect();
+            match tree.checked_sub(1).and_then(|t| sides.get(t)) {
+                Some(side) => *side,
+                None => {
+                    if matches!(m.centre, Node::Tabs(_)) {
+                        return Err(WorkspaceError::NoTarget);
+                    }
+                    let centre = crate::frame::main_rects(m, content).centre;
+                    let r = m
+                        .centre
+                        .flatten(centre)
+                        .stacks
+                        .iter()
+                        .find(|s| s.stack == local)
+                        .map_or(centre, |s| s.rect);
+                    nearest_edge(r, centre)
+                }
+            }
+        };
+        let m = self.main_layout_mut().ok_or(WorkspaceError::NoTarget)?;
+        let (tabs, anchor) = take_from_main(m, id).ok_or(WorkspaceError::NoTarget)?;
+        m.auto_hide.push(EdgeGroup {
+            edge,
+            active: tabs.active.min(tabs.tabs.len().saturating_sub(1)),
+            tabs: tabs.tabs,
+            size: DEFAULT_FLYOUT,
+            anchor,
+        });
+        Ok(())
+    }
+
+    /// Pin auto-hidden panel `id` (`ui.panel.pin`): its whole group docks back next to
+    /// its anchor when that panel is docked in the main window, else at the outer side
+    /// of the area of its edge, which is shown.
+    pub fn pin(&mut self, id: &PanelId) -> Result<(), WorkspaceError> {
+        let m = self.main_layout_mut().ok_or(WorkspaceError::NoTarget)?;
+        let g = m
+            .group_of(id)
+            .ok_or_else(|| WorkspaceError::NotOpen(id.clone()))?;
+        let group = m.auto_hide.remove(g);
+        let axis = match group.edge {
+            Side::Left | Side::Right => Axis::Vertical,
+            Side::Bottom => Axis::Horizontal,
+        };
+        let stack = Tabs {
+            active: group.active,
+            tabs: group.tabs,
+            collapsed: false,
+        };
+        if let Some(anchor) = &group.anchor {
+            let docked = std::iter::once(&mut m.centre).chain(
+                [&mut m.left, &mut m.right, &mut m.bottom]
+                    .into_iter()
+                    .filter_map(|a| a.layout.as_mut()),
+            );
+            for tree in docked {
+                if tree.find(anchor).is_some() {
+                    tree.insert_stack_beside(anchor, stack, axis);
+                    return Ok(());
+                }
+            }
+        }
+        let side = group.edge;
+        let edge = match side {
+            Side::Left => Edge::Left,
+            Side::Right => Edge::Right,
+            Side::Bottom => Edge::Bottom,
+        };
+        let area = m.area_mut(side);
+        area.visible = true;
+        let node = Node::Tabs(stack);
+        match &mut area.layout {
+            Some(l) => l.insert_node_at_edge(node, edge),
+            None => area.layout = Some(node),
+        }
+        Ok(())
+    }
+
     /// Move a panel into a new floating window. Returns its window index.
     pub fn float(&mut self, id: &PanelId) -> Result<usize, WorkspaceError> {
         self.close(id)?;
@@ -1192,6 +1312,53 @@ impl Workspace {
 }
 
 /// The main window's own rules (ADR-0049 decisions 1 and 2, spec "Workspace file").
+/// Undo a collapse that broke the centre rule.
+fn t_restore(win: &mut Window, tree: usize, local: usize) {
+    if let Some(t) = win
+        .trees_mut()
+        .into_iter()
+        .nth(tree)
+        .and_then(|t| t.stack_mut(local))
+    {
+        t.collapsed = false;
+    }
+}
+
+/// Take the stack holding `id` out of the centre or an area; an area left without
+/// panels becomes empty.
+fn take_from_main(m: &mut MainLayout, id: &PanelId) -> Option<(Tabs, Option<PanelId>)> {
+    if m.centre.find(id).is_some() {
+        return m.centre.take_stack_of(id);
+    }
+    for a in [&mut m.left, &mut m.right, &mut m.bottom] {
+        if let Some(l) = &mut a.layout {
+            if l.find(id).is_some() {
+                let out = l.take_stack_of(id);
+                if l.is_empty() {
+                    a.layout = None;
+                }
+                return out;
+            }
+        }
+    }
+    None
+}
+
+/// The edge of `outer` nearest to `r` among left, right and bottom; ties go in that
+/// order (ADR-0049 decision 2: there are no top edge tabs).
+fn nearest_edge(r: Rect, outer: Rect) -> Side {
+    let left = r.x - outer.x;
+    let right = (outer.x + outer.w) - (r.x + r.w);
+    let bottom = (outer.y + outer.h) - (r.y + r.h);
+    if left <= right && left <= bottom {
+        Side::Left
+    } else if right <= bottom {
+        Side::Right
+    } else {
+        Side::Bottom
+    }
+}
+
 fn validate_main(m: &MainLayout) -> Result<(), WorkspaceError> {
     let invalid = |m: String| Err(WorkspaceError::Invalid(m));
     if !m.centre.has_expanded_stack() {
@@ -1708,5 +1875,82 @@ layout = { tabs = ["rbs.status-bar"] }
         w.move_to_edge(&id("rbs.properties"), 0, Edge::Left)
             .unwrap();
         w.validate().unwrap();
+    }
+
+    #[test]
+    fn collapse_keeps_one_expanded_stack_in_the_centre() {
+        let mut ws = builtin::edit();
+        assert!(ws.set_collapsed(&id("rbs.properties"), true).is_ok());
+        let (_, stack, _) = ws.find(&id("rbs.properties")).unwrap();
+        assert!(ws.windows[0].stack(stack).unwrap().collapsed);
+        // Preview is the centre's only stack.
+        assert!(ws.set_collapsed(&id("rbs.preview"), true).is_err());
+        let (_, stack, _) = ws.find(&id("rbs.preview")).unwrap();
+        assert!(!ws.windows[0].stack(stack).unwrap().collapsed);
+        assert!(ws.set_collapsed(&id("rbs.properties"), false).is_ok());
+        assert!(ws.validate().is_ok());
+    }
+
+    #[test]
+    fn auto_hide_and_pin_round_trip_in_an_area() {
+        let mut ws = builtin::edit();
+        let before = ws.main_layout().unwrap().right.clone();
+        let content = Rect::sized(1440.0, 800.0);
+        ws.auto_hide(&id("rbs.transition"), content).unwrap();
+        let m = ws.main_layout().unwrap();
+        let g = &m.auto_hide[m.group_of(&id("rbs.transition")).unwrap()];
+        assert_eq!(g.edge, Side::Right);
+        assert_eq!(g.anchor, Some(id("rbs.live-controls")));
+        assert!(ws.validate().is_ok());
+        ws.pin(&id("rbs.transition")).unwrap();
+        let after = &ws.main_layout().unwrap().right;
+        // Back below Live controls, expanded.
+        assert_eq!(
+            after.layout.as_ref().unwrap().panels(),
+            before.layout.as_ref().unwrap().panels()
+        );
+        assert!(ws.validate().is_ok());
+    }
+
+    #[test]
+    fn pin_without_a_docked_anchor_goes_to_its_area() {
+        let mut ws = builtin::edit();
+        ws.main_layout_mut().unwrap().right.visible = false;
+        ws.pin(&id("rbs.stats")).unwrap();
+        let m = ws.main_layout().unwrap();
+        assert!(m.right.visible);
+        assert!(
+            m.right
+                .layout
+                .as_ref()
+                .unwrap()
+                .find(&id("rbs.outputs"))
+                .is_some()
+        );
+        assert!(m.auto_hide.is_empty());
+        assert!(ws.validate().is_ok());
+    }
+
+    #[test]
+    fn auto_hide_from_the_centre_picks_the_nearest_edge() {
+        let mut ws = builtin::live();
+        let content = Rect::sized(1440.0, 800.0);
+        // Live controls is in the centre's right column.
+        ws.auto_hide(&id("rbs.live-controls"), content).unwrap();
+        let m = ws.main_layout().unwrap();
+        assert_eq!(m.auto_hide[0].edge, Side::Right);
+        // A centre that is one stack keeps it.
+        let mut ws = builtin::edit();
+        assert!(ws.auto_hide(&id("rbs.preview"), content).is_err());
+    }
+
+    #[test]
+    fn floating_windows_do_not_auto_hide() {
+        let mut ws = builtin::edit();
+        ws.float(&id("rbs.properties")).unwrap();
+        assert_eq!(
+            ws.auto_hide(&id("rbs.properties"), Rect::sized(800.0, 600.0)),
+            Err(WorkspaceError::NoTarget)
+        );
     }
 }
