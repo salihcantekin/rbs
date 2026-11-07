@@ -1,7 +1,7 @@
 //! Small Windows helpers shared by the factory and the setup tool: who the user is,
 //! where the files are, and plain registry reads (`HKLM`, 64-bit view, query only).
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use rbs_vcam_mf_source::{announced, clsid};
 use windows::Win32::Foundation::{CloseHandle, ERROR_SUCCESS, HANDLE, HLOCAL, LocalFree};
@@ -13,7 +13,9 @@ use windows::Win32::System::Registry::{
     HKEY_LOCAL_MACHINE, REG_ROUTINE_FLAGS, RRF_RT_REG_SZ, RRF_SUBKEY_WOW6464KEY, RegGetValueW,
 };
 use windows::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
-use windows::Win32::UI::Shell::{FOLDERID_ProgramData, KF_FLAG_DEFAULT, SHGetKnownFolderPath};
+use windows::Win32::UI::Shell::{
+    FOLDERID_ProgramData, FOLDERID_ProgramFiles, KF_FLAG_DEFAULT, SHGetKnownFolderPath,
+};
 use windows_core::{HSTRING, PCWSTR, PWSTR};
 
 /// The media source DLL's file name, installed next to the app.
@@ -63,8 +65,13 @@ pub fn current_user() -> Option<String> {
 
 /// `%ProgramData%` from the shell's known folder.
 pub fn program_data() -> Option<PathBuf> {
+    known_folder(&FOLDERID_ProgramData)
+}
+
+/// A known folder's path.
+fn known_folder(id: &windows_core::GUID) -> Option<PathBuf> {
     // SAFETY: the returned string is CoTaskMemAlloc'd and freed below.
-    let p = unsafe { SHGetKnownFolderPath(&FOLDERID_ProgramData, KF_FLAG_DEFAULT, None) }.ok()?;
+    let p = unsafe { SHGetKnownFolderPath(id, KF_FLAG_DEFAULT, None) }.ok()?;
     // SAFETY: a null-terminated string from the call above.
     let s = unsafe { p.to_string() }.ok();
     // SAFETY: allocated by `SHGetKnownFolderPath`, freed once.
@@ -90,6 +97,40 @@ pub fn class_id(sid: &str) -> String {
 /// The user's class key under `HKLM`.
 pub fn class_key(sid: &str) -> String {
     format!("SOFTWARE\\Classes\\CLSID\\{}", class_id(sid))
+}
+
+/// `path` with every link and junction resolved, as a plain drive path (`C:\...`, the
+/// form a registry `InprocServer32` value takes); `None` for a path that does not
+/// exist, is not on a local drive, or does not resolve to itself again.
+pub fn resolved(path: &Path) -> Option<PathBuf> {
+    let full = std::fs::canonicalize(path).ok()?;
+    let text = full.to_str()?;
+    let plain = text.strip_prefix(r"\\?\").unwrap_or(text);
+    // A drive path only: `X:\...` (a UNC share is never trusted).
+    let drive = plain.as_bytes();
+    if drive.len() < 3 || !drive[0].is_ascii_alphabetic() || &drive[1..3] != b":\\" {
+        return None;
+    }
+    let plain = PathBuf::from(plain);
+    (std::fs::canonicalize(&plain).ok()? == full).then_some(plain)
+}
+
+/// Whether `dll` lies in the Program Files folder, the only place whose DLL may be
+/// registered machine-wide (ADR-0066 decision 9: a DLL in a user-writable folder would
+/// let any user-level process run code as `LocalService`). Both paths are resolved
+/// first, so links cannot point out of it. The `dev-any-location` feature (development
+/// builds on a test PC only) accepts any folder.
+pub fn trusted_location(dll: &Path) -> bool {
+    if cfg!(feature = "dev-any-location") {
+        return true;
+    }
+    let Some(root) = known_folder(&FOLDERID_ProgramFiles) else {
+        return false;
+    };
+    match (std::fs::canonicalize(dll), std::fs::canonicalize(root)) {
+        (Ok(dll), Ok(root)) => dll.starts_with(root),
+        _ => false,
+    }
 }
 
 /// The folder of this executable (the app or the setup tool).

@@ -233,6 +233,12 @@ impl VirtualCameraSession for TestSession {
     fn stats(&self) -> VcamStats {
         self.handoff.stats()
     }
+
+    fn counters(&self) -> Option<rbs_vcam::VcamCountersReader> {
+        Some(rbs_vcam::VcamCountersReader::new(std::sync::Arc::clone(
+            self.handoff.counters(),
+        )))
+    }
 }
 
 impl Drop for TestSession {

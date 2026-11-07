@@ -150,6 +150,9 @@ fn a_frame_crosses_processes_through_a_real_section() {
     assert!(written >= 1);
 }
 
+/// `OWNER RIGHTS`.
+const OWNER_RIGHTS: &str = "S-1-3-4";
+
 /// The writer's owner check works with exactly the access the source grants the user:
 /// a section whose owner has no implicit rights (an `OWNER RIGHTS` entry) and whose
 /// user entry is the source's, opened through `WinRing` with the owner required.
@@ -199,10 +202,16 @@ fn the_owner_check_works_with_the_access_the_source_grants() {
         let _ = LocalFree(Some(HLOCAL(psd.0)));
     }
     assert!(
-        WinRing::owned_by_for_test(&name, &user),
+        WinRing::trusted_for_test(&name, &user, &[&user, OWNER_RIGHTS]),
         "owner check failed"
     );
-    assert!(!WinRing::owned_by_for_test(&name, "S-1-5-19"));
+    assert!(!WinRing::trusted_for_test(
+        &name,
+        "S-1-5-19",
+        &["S-1-5-19", &user, OWNER_RIGHTS]
+    ));
+    // An access list naming another account is refused, whoever owns the section.
+    assert!(!WinRing::trusted_for_test(&name, &user, &[&user]));
     // SAFETY: our own handle.
     unsafe {
         let _ = CloseHandle(handle);

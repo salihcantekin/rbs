@@ -91,6 +91,9 @@ fn the_camera_sends_the_program_alongside_a_recording_and_stops_cleanly() {
     // Frames reached the camera's consumer side in order.
     let delivered = cam.consumer().delivered();
     assert!(!delivered.is_empty());
+    // The session's own counters are shared with the studio's state.
+    let shared = studio.virtual_camera().unwrap().session.unwrap();
+    assert!(shared.snapshot().sent() > 0);
     assert!(delivered.windows(2).all(|w| w[0] < w[1]), "{delivered:?}");
 
     // Stopping removes the node; the session (and its thread) is dropped on this thread

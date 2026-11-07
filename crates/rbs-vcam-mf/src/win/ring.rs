@@ -8,7 +8,11 @@ use std::ptr::NonNull;
 use rbs_vcam_ring::Region;
 use windows::Win32::Foundation::{CloseHandle, HANDLE, HLOCAL, LocalFree};
 use windows::Win32::Security::Authorization::{GetSecurityInfo, SE_KERNEL_OBJECT};
-use windows::Win32::Security::{OWNER_SECURITY_INFORMATION, PSECURITY_DESCRIPTOR, PSID};
+use windows::Win32::Security::{
+    ACCESS_ALLOWED_ACE, ACE_HEADER, ACL, ACL_SIZE_INFORMATION, AclSizeInformation,
+    DACL_SECURITY_INFORMATION, GetAce, GetAclInformation, OWNER_SECURITY_INFORMATION,
+    PSECURITY_DESCRIPTOR, PSID,
+};
 use windows::Win32::System::Memory::{
     FILE_MAP_READ, FILE_MAP_WRITE, MEMORY_BASIC_INFORMATION, MEMORY_MAPPED_VIEW_ADDRESS,
     MapViewOfFile, OpenFileMappingW, UnmapViewOfFile, VirtualQuery,
@@ -20,6 +24,9 @@ use crate::sender::{Keep, RingSource};
 
 /// `READ_CONTROL`: read the object's security descriptor (its owner).
 const READ_CONTROL: u32 = 0x0002_0000;
+
+/// `ACCESS_ALLOWED_ACE_TYPE`.
+const ACCESS_ALLOWED: u8 = 0;
 
 /// `LocalService`.
 const LOCAL_SERVICE: &str = "S-1-5-19";
@@ -52,24 +59,85 @@ impl Drop for Mapping {
     }
 }
 
-/// Whether the section behind `handle` is owned by `owner`.
-fn owned_by(handle: HANDLE, owner_sid: &str) -> bool {
+/// Who must have made a section: its owner, and the only accounts its access list
+/// may name.
+#[derive(Debug, Clone)]
+struct Trust {
+    owner: String,
+    allowed: Vec<String>,
+}
+
+impl Trust {
+    /// The source's section for `sid`: owned by `LocalService`, granting only
+    /// `LocalService` and the user (the access list the source sets).
+    fn source(sid: &str) -> Self {
+        Self {
+            owner: LOCAL_SERVICE.to_owned(),
+            allowed: vec![LOCAL_SERVICE.to_owned(), sid.to_owned()],
+        }
+    }
+}
+
+/// The SID strings of `dacl`'s entries; `None` when it is missing or holds anything
+/// other than access-allowed entries.
+fn dacl_sids(dacl: *mut ACL) -> Option<Vec<String>> {
+    if dacl.is_null() {
+        return None;
+    }
+    let mut info = ACL_SIZE_INFORMATION::default();
+    // SAFETY: `dacl` points into a descriptor the caller keeps alive for this call.
+    unsafe {
+        GetAclInformation(
+            dacl,
+            (&mut info as *mut ACL_SIZE_INFORMATION).cast(),
+            size_of::<ACL_SIZE_INFORMATION>() as u32,
+            AclSizeInformation,
+        )
+    }
+    .ok()?;
+    (0..info.AceCount)
+        .map(|i| {
+            let mut ace: *mut core::ffi::c_void = std::ptr::null_mut();
+            // SAFETY: `i` is below the list's entry count.
+            unsafe { GetAce(dacl, i, &mut ace) }.ok()?;
+            if ace.is_null() {
+                return None;
+            }
+            // SAFETY: every entry starts with an `ACE_HEADER`.
+            let header = unsafe { &*(ace as *const ACE_HEADER) };
+            if header.AceType != ACCESS_ALLOWED {
+                return None;
+            }
+            // SAFETY: an access-allowed entry; its SID starts at `SidStart`.
+            let sid = PSID(unsafe { &raw mut (*(ace as *mut ACCESS_ALLOWED_ACE)).SidStart }.cast());
+            sid_string(sid)
+        })
+        .collect()
+}
+
+/// Whether the section behind `handle` has `trust`'s owner and names no other account
+/// in its access list than `trust` allows (a squatter's section gets no frames).
+fn trusted(handle: HANDLE, trust: &Trust) -> bool {
     let mut owner = PSID::default();
+    let mut dacl: *mut ACL = std::ptr::null_mut();
     let mut psd = PSECURITY_DESCRIPTOR::default();
-    // SAFETY: queries our own handle; `owner` points into `psd`, freed below.
+    // SAFETY: queries our own handle; `owner` and `dacl` point into `psd`, freed below.
     let r = unsafe {
         GetSecurityInfo(
             handle,
             SE_KERNEL_OBJECT,
-            OWNER_SECURITY_INFORMATION,
+            OWNER_SECURITY_INFORMATION | DACL_SECURITY_INFORMATION,
             Some(&mut owner),
             None,
-            None,
+            Some(&mut dacl),
             None,
             Some(&mut psd),
         )
     };
-    let ok = r.is_ok() && !owner.is_invalid() && sid_string(owner).as_deref() == Some(owner_sid);
+    let ok = r.is_ok()
+        && !owner.is_invalid()
+        && sid_string(owner).as_deref() == Some(trust.owner.as_str())
+        && dacl_sids(dacl).is_some_and(|sids| sids.iter().all(|s| trust.allowed.contains(s)));
     if !psd.0.is_null() {
         // SAFETY: allocated by `GetSecurityInfo`, freed once.
         unsafe { LocalFree(Some(HLOCAL(psd.0))) };
@@ -77,16 +145,15 @@ fn owned_by(handle: HANDLE, owner_sid: &str) -> bool {
     ok
 }
 
-/// Opens and maps `name`, if it exists and the source made it (owned by
-/// `LocalService`).
-pub fn open(name: &str) -> Option<(Region, Keep)> {
-    open_owned(name, Some(LOCAL_SERVICE))
+/// Opens and maps the section of `sid`'s camera, if it exists and the source made it.
+pub fn open(sid: &str) -> Option<(Region, Keep)> {
+    open_trusted(&section_name(sid), Some(&Trust::source(sid)))
 }
 
-/// Opens and maps `name` if it exists and `owner` (when given) owns it.
-fn open_owned(name: &str, owner: Option<&str>) -> Option<(Region, Keep)> {
+/// Opens and maps `name` if it exists and `trust` (when given) holds for it.
+fn open_trusted(name: &str, trust: Option<&Trust>) -> Option<(Region, Keep)> {
     let name = HSTRING::from(name);
-    // `READ_CONTROL`, so `owned_by` can read the owner.
+    // `READ_CONTROL`, so `trusted` can read the owner and the access list.
     let access = FILE_MAP_READ.0 | FILE_MAP_WRITE.0 | READ_CONTROL;
     // SAFETY: opens a named section with read, write and read-control access (what the
     // source's access list grants the user).
@@ -95,7 +162,7 @@ fn open_owned(name: &str, owner: Option<&str>) -> Option<(Region, Keep)> {
         handle,
         view: MEMORY_MAPPED_VIEW_ADDRESS::default(),
     };
-    if owner.is_some_and(|o| !owned_by(handle, o)) {
+    if trust.is_some_and(|t| !trusted(handle, t)) {
         return None;
     }
     // SAFETY: maps the whole section we hold a handle to.
@@ -123,7 +190,7 @@ fn open_owned(name: &str, owner: Option<&str>) -> Option<(Region, Keep)> {
 /// The sender's ring source on Windows.
 pub struct WinRing {
     name: String,
-    owner: Option<&'static str>,
+    trust: Option<Trust>,
 }
 
 impl WinRing {
@@ -131,14 +198,19 @@ impl WinRing {
     pub fn new(sid: &str) -> Self {
         Self {
             name: section_name(sid),
-            owner: Some(LOCAL_SERVICE),
+            trust: Some(Trust::source(sid)),
         }
     }
 
-    /// Whether the section `name` opens with the writer's access and `owner` owns it.
+    /// Whether the section `name` opens with the writer's access, `owner` owns it and
+    /// its access list names only `allowed`.
     #[cfg(test)]
-    pub fn owned_by_for_test(name: &str, owner: &str) -> bool {
-        open_owned(name, Some(owner)).is_some()
+    pub fn trusted_for_test(name: &str, owner: &str, allowed: &[&str]) -> bool {
+        let trust = Trust {
+            owner: owner.to_owned(),
+            allowed: allowed.iter().map(|s| (*s).to_owned()).collect(),
+        };
+        open_trusted(name, Some(&trust)).is_some()
     }
 
     /// A ring of any name and owner (the two-process test's section).
@@ -146,13 +218,13 @@ impl WinRing {
     pub fn any_owner(name: &str) -> Self {
         Self {
             name: name.to_owned(),
-            owner: None,
+            trust: None,
         }
     }
 }
 
 impl RingSource for WinRing {
     fn map(&mut self) -> Option<(Region, Keep)> {
-        open_owned(&self.name, self.owner)
+        open_trusted(&self.name, self.trust.as_ref())
     }
 }

@@ -108,7 +108,32 @@ pub fn run(factory: &dyn VirtualCameraFactory, probe: &dyn Probe, o: &Options<'_
     if let Err(f) = set_format_reports_pending_or_applied(factory, o) {
         failures.push(f);
     }
+    if let Err(f) = shared_counters_match_stats(factory, o) {
+        failures.push(f);
+    }
     failures
+}
+
+/// A session that shares its counters shares the ones `stats` reads.
+fn shared_counters_match_stats(
+    f: &dyn VirtualCameraFactory,
+    o: &Options<'_>,
+) -> Result<(), Failure> {
+    const C: &str = "shared_counters_match_stats";
+    let s = open(f, &o.config, C)?;
+    // A refused frame (another session's slot) moves a counter without depending on
+    // the consumer.
+    let other = open(f, &o.config, C)?;
+    if let Some(foreign) = other.reserve() {
+        let _ = s.send(foreign, (o.frame)(1));
+    }
+    match s.counters() {
+        Some(c) if c.snapshot() != s.stats() => Err(fail(
+            C,
+            format!("counters {:?}, stats {:?}", c.snapshot(), s.stats()),
+        )),
+        _ => Ok(()),
+    }
 }
 
 fn install_and_uninstall_are_idempotent(

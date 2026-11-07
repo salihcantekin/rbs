@@ -36,6 +36,11 @@ windows = { version = "0.62", features = [
 ] }
 windows-core = "0.62"
 
+[features]
+# Development only: lets rbs-vcam-setup register a source DLL outside Program Files
+# (for example target\release on a test PC). Never enable it in a release build.
+dev-any-location = []
+
 [dev-dependencies]
 bytes = "1.9"
 
