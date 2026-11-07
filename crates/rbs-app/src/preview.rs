@@ -202,8 +202,8 @@ pub fn place(window: &MainWindow) {
             width: f64::from(r.w * scale),
             height: f64::from(r.h * scale),
         };
-        // What Slint draws over the layer: its in-window popups, the bottom toast and the
-        // error bar (ADR-0054 decision 2). The layer cuts them out.
+        // What Slint draws over the layer: its in-window popups, the bottom toast, the
+        // error bar and a slid-out auto-hide panel (ADR-0054 decision 2). The layer cuts them out.
         rbs_app::popups::open_in(window.window(), &mut st.covers);
         let shell = window.global::<Shell>();
         let toast = |c: crate::ui::Cover| Rect {
@@ -217,6 +217,10 @@ pub fn place(window: &MainWindow) {
         }
         if shell.get_error_kind() != 0 {
             st.covers.push(toast(shell.get_top_toast()));
+        }
+        // A slid-out auto-hide panel (ADR-0049) is drawn over the dock area too.
+        if shell.get_flyout_open() {
+            st.covers.push(toast(shell.get_flyout()));
         }
         st.cutouts.clear();
         st.cutouts.extend(st.covers.iter().map(|&c| in_layer(c)));

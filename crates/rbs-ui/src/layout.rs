@@ -14,6 +14,10 @@ pub const MAX_DEPTH: usize = 16;
 /// Thickness of a splitter handle in logical pixels.
 pub const HANDLE_THICKNESS: f32 = 6.0;
 
+/// Length of a collapsed tab stack along its split: its title row (`size.control.lg`)
+/// plus its border (ADR-0049 decision 2).
+pub const COLLAPSED_STACK: f32 = 33.0;
+
 /// Smallest length a pane can be dragged to, in logical pixels.
 pub const MIN_PANE: f32 = 48.0;
 
@@ -216,6 +220,8 @@ pub struct StackRect {
     pub tabs: Vec<PanelId>,
     /// Visible tab.
     pub active: usize,
+    /// Collapsed: only its title row (or strip, in a horizontal split) is drawn.
+    pub collapsed: bool,
 }
 
 /// A splitter handle between child `index` and `index + 1` of a split.
@@ -417,7 +423,11 @@ impl Node {
 
     /// Add `id` in a new stack along `edge` of the whole tree, taking [`EDGE_SHARE`].
     pub fn insert_at_edge(&mut self, id: PanelId, edge: Edge) {
-        let new = Node::tabs(vec![id]);
+        self.insert_node_at_edge(Node::tabs(vec![id]), edge);
+    }
+
+    /// Add `new` along `edge` of the whole tree, taking [`EDGE_SHARE`].
+    pub fn insert_node_at_edge(&mut self, new: Node, edge: Edge) {
         if self.is_empty() {
             *self = new;
             return;
@@ -449,6 +459,91 @@ impl Node {
                 *self = Node::split(axis, parts);
             }
         }
+    }
+
+    /// Remove the whole stack holding panel `id` and prune the tree. Returns the stack
+    /// (expanded again) and its anchor: a panel of the neighbour it shared a split
+    /// with, the one before it if there is one (ADR-0049 decision 2). The tree is
+    /// left empty when the stack was its root.
+    pub fn take_stack_of(&mut self, id: &PanelId) -> Option<(Tabs, Option<PanelId>)> {
+        fn go(n: &mut Node, id: &PanelId) -> Option<(Tabs, Option<PanelId>)> {
+            match n {
+                Node::Tabs(t) if t.tabs.contains(id) => {
+                    let mut taken = std::mem::replace(
+                        t,
+                        Tabs {
+                            tabs: Vec::new(),
+                            active: 0,
+                            collapsed: false,
+                        },
+                    );
+                    taken.collapsed = false;
+                    Some((taken, None))
+                }
+                Node::Tabs(_) => None,
+                Node::Split(s) => {
+                    let (i, (taken, anchor)) = s
+                        .children
+                        .iter_mut()
+                        .enumerate()
+                        .find_map(|(i, c)| go(c, id).map(|r| (i, r)))?;
+                    let anchor = anchor.or_else(|| {
+                        let before = i
+                            .checked_sub(1)
+                            .and_then(|b| s.children[b].panels().last().copied());
+                        let after = s
+                            .children
+                            .get(i + 1)
+                            .and_then(|c| c.panels().first().copied());
+                        before.or(after).cloned()
+                    });
+                    Some((taken, anchor))
+                }
+            }
+        }
+        let out = go(self, id)?;
+        self.prune();
+        Some(out)
+    }
+
+    /// Put `stack` back next to the stack holding `anchor`: after it in its parent
+    /// split when that split runs along `axis`, else in a new split along `axis`.
+    /// Returns false (and leaves the tree alone) when `anchor` is not here.
+    pub fn insert_stack_beside(&mut self, anchor: &PanelId, stack: Tabs, axis: Axis) -> bool {
+        fn go(n: &mut Node, anchor: &PanelId, stack: &mut Option<Tabs>, axis: Axis) -> bool {
+            match n {
+                Node::Tabs(t) if t.tabs.contains(anchor) => {
+                    let old = std::mem::replace(n, Node::empty());
+                    let new = Node::Tabs(stack.take().unwrap_or_else(|| Tabs {
+                        tabs: Vec::new(),
+                        active: 0,
+                        collapsed: false,
+                    }));
+                    *n = Node::split(axis, vec![(0.5, old), (0.5, new)]);
+                    true
+                }
+                Node::Tabs(_) => false,
+                Node::Split(s) => {
+                    let Some(i) = s.children.iter().position(|c| c.find(anchor).is_some()) else {
+                        return false;
+                    };
+                    if s.axis == axis && matches!(s.children[i], Node::Tabs(_)) {
+                        let share = 1.0 / (s.children.len() + 1) as f32;
+                        s.ratios.iter_mut().for_each(|r| *r *= 1.0 - share);
+                        s.ratios.insert(i + 1, share);
+                        if let Some(t) = stack.take() {
+                            s.children.insert(i + 1, Node::Tabs(t));
+                        }
+                        return true;
+                    }
+                    go(&mut s.children[i], anchor, stack, axis)
+                }
+            }
+        }
+        if stack.tabs.is_empty() {
+            return false;
+        }
+        go(self, anchor, &mut Some(stack), axis)
     }
 
     /// Make tab `tab` of stack `stack` visible. Returns false when out of range.
@@ -527,6 +622,10 @@ impl Node {
     }
 }
 
+fn is_collapsed(n: &Node) -> bool {
+    matches!(n, Node::Tabs(t) if t.collapsed)
+}
+
 fn flatten_node(node: &Node, r: Rect, path: &mut Vec<usize>, out: &mut Flat) {
     match node {
         Node::Tabs(t) => out.stacks.push(StackRect {
@@ -534,6 +633,7 @@ fn flatten_node(node: &Node, r: Rect, path: &mut Vec<usize>, out: &mut Flat) {
             rect: r,
             tabs: t.tabs.clone(),
             active: t.active,
+            collapsed: t.collapsed,
         }),
         Node::Split(s) => {
             let n = s.children.len();
@@ -542,9 +642,26 @@ fn flatten_node(node: &Node, r: Rect, path: &mut Vec<usize>, out: &mut Flat) {
                 Axis::Vertical => r.h,
             };
             let usable = (length - HANDLE_THICKNESS * n.saturating_sub(1) as f32).max(0.0);
+            // Collapsed stacks take their title row; the others share the rest by
+            // ratio, so a collapsed stack keeps its ratio for when it expands.
+            let collapsed = s.children.iter().filter(|c| is_collapsed(c)).count();
+            let free = (usable - COLLAPSED_STACK * collapsed as f32).max(0.0);
+            let open_share: f32 = s
+                .children
+                .iter()
+                .zip(&s.ratios)
+                .filter(|(c, _)| !is_collapsed(c))
+                .map(|(_, r)| *r)
+                .sum();
             let mut pos = 0.0;
             for (i, child) in s.children.iter().enumerate() {
-                let len = usable * s.ratios.get(i).copied().unwrap_or(0.0);
+                let len = if is_collapsed(child) {
+                    COLLAPSED_STACK.min(usable)
+                } else if open_share > 0.0 {
+                    free * s.ratios.get(i).copied().unwrap_or(0.0) / open_share
+                } else {
+                    0.0
+                };
                 let along = |at: f32, len: f32| match s.axis {
                     Axis::Horizontal => Rect {
                         x: r.x + at,
@@ -564,13 +681,21 @@ fn flatten_node(node: &Node, r: Rect, path: &mut Vec<usize>, out: &mut Flat) {
                 path.pop();
                 pos += len;
                 if i + 1 < n {
-                    out.handles.push(Handle {
-                        path: path.clone(),
-                        index: i,
-                        axis: s.axis,
-                        rect: along(pos, HANDLE_THICKNESS),
-                        extent: usable,
-                    });
+                    // A collapsed neighbour has no size to drag; its divider stays put.
+                    if !is_collapsed(child) && !is_collapsed(&s.children[i + 1]) {
+                        out.handles.push(Handle {
+                            path: path.clone(),
+                            index: i,
+                            axis: s.axis,
+                            rect: along(pos, HANDLE_THICKNESS),
+                            // Pixels per unit of ratio among the expanded children.
+                            extent: if open_share > 0.0 {
+                                free / open_share
+                            } else {
+                                0.0
+                            },
+                        });
+                    }
                     pos += HANDLE_THICKNESS;
                 }
             }

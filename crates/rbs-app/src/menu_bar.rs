@@ -324,6 +324,11 @@ pub struct ToolItem {
     pub checked: bool,
     /// It stops a live output now (drawn in the live colour, U12).
     pub live: bool,
+    /// Icon name from the design system's icon set, or empty.
+    pub icon: String,
+    /// Drawn as its icon alone (area toggles, and every item in the icons-only style);
+    /// the title stays its accessible name and tooltip.
+    pub icon_only: bool,
 }
 
 /// What a toolbar item is (`ToolbarData.kind`).
@@ -340,7 +345,7 @@ pub enum ToolKind {
 /// The workspace's toolbar (its own or the default one): items, shown, and whether it
 /// has the flexible space.
 pub fn toolbar(state: &Shown<'_>) -> (Vec<ToolItem>, bool, bool) {
-    use rbs_ui::workspace::ToolbarItem;
+    use rbs_ui::workspace::{ToolbarItem, ToolbarStyle};
     let default;
     let bar = match &state.workspace.toolbar {
         Some(t) => t,
@@ -356,6 +361,8 @@ pub fn toolbar(state: &Shown<'_>) -> (Vec<ToolItem>, bool, bool) {
         enabled: false,
         checked: false,
         live: false,
+        icon: String::new(),
+        icon_only: false,
     };
     let items = bar
         .items
@@ -393,6 +400,9 @@ pub fn toolbar(state: &Shown<'_>) -> (Vec<ToolItem>, bool, bool) {
                     ("record.toggle", true) => ("Stop recording".to_owned(), true),
                     _ => (title, false),
                 };
+                let icon = rbs_ui::command::icon(&id, entry).unwrap_or_default();
+                let icon_only = !icon.is_empty()
+                    && (bar.style == ToolbarStyle::Icons || id.base() == "ui.area.toggle");
                 ToolItem {
                     id: id.to_string(),
                     title,
@@ -400,6 +410,8 @@ pub fn toolbar(state: &Shown<'_>) -> (Vec<ToolItem>, bool, bool) {
                     enabled: state.enabled(&id).is_ok(),
                     checked: on,
                     live,
+                    icon: icon.to_owned(),
+                    icon_only,
                 }
             }
         })
