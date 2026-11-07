@@ -335,8 +335,10 @@ impl VirtualCameraSession for MfSession {
         self.handoff.stats()
     }
 
-    fn counters(&self) -> Option<std::sync::Arc<rbs_vcam::VcamCounters>> {
-        Some(std::sync::Arc::clone(self.handoff.counters()))
+    fn counters(&self) -> Option<rbs_vcam::VcamCountersReader> {
+        Some(rbs_vcam::VcamCountersReader::new(std::sync::Arc::clone(
+            self.handoff.counters(),
+        )))
     }
 }
 

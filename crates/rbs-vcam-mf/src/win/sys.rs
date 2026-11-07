@@ -99,6 +99,22 @@ pub fn class_key(sid: &str) -> String {
     format!("SOFTWARE\\Classes\\CLSID\\{}", class_id(sid))
 }
 
+/// `path` with every link and junction resolved, as a plain drive path (`C:\...`, the
+/// form a registry `InprocServer32` value takes); `None` for a path that does not
+/// exist, is not on a local drive, or does not resolve to itself again.
+pub fn resolved(path: &Path) -> Option<PathBuf> {
+    let full = std::fs::canonicalize(path).ok()?;
+    let text = full.to_str()?;
+    let plain = text.strip_prefix(r"\\?\").unwrap_or(text);
+    // A drive path only: `X:\...` (a UNC share is never trusted).
+    let drive = plain.as_bytes();
+    if drive.len() < 3 || !drive[0].is_ascii_alphabetic() || &drive[1..3] != b":\\" {
+        return None;
+    }
+    let plain = PathBuf::from(plain);
+    (std::fs::canonicalize(&plain).ok()? == full).then_some(plain)
+}
+
 /// Whether `dll` lies in the Program Files folder, the only place whose DLL may be
 /// registered machine-wide (ADR-0066 decision 9: a DLL in a user-writable folder would
 /// let any user-level process run code as `LocalService`). Both paths are resolved

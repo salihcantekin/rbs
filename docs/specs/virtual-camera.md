@@ -95,7 +95,7 @@ pub trait VirtualCameraSession: Send {
     fn stats(&self) -> VcamStats;   // atomics, no lock
     // The counters shared with the sender thread, for a status line after the session
     // moved into the node; default None.
-    fn counters(&self) -> Option<Arc<VcamCounters>> { None }
+    fn counters(&self) -> Option<VcamCountersReader> { None }   // snapshot() == stats()
 }
 // Drop stops the sender thread and joins it (on the control thread, never on the
 // render thread); the camera shows its still picture within 1 s. Thread count returns to its value before `open`.
@@ -144,12 +144,12 @@ The node picks the memory kind from `vcam.input.memory`, never from the platform
 
 ### Windows registration (ADR-0070)
 
-- **One source class per user.** The one elevated step, `rbs-vcam-setup.exe register <SID>` (the app's own token user, and only the user signed in to that session), writes `HKLM\SOFTWARE\Classes\CLSID\{CLSID}` with `InprocServer32` (the DLL, `ThreadingModel = Both`) and `RbsVcamUser` (the SID string). The CLSID is the RFC 9562 version 5 UUID of the SID string's UTF-8 bytes in namespace `6B2F0C41-935E-4B7A-8D13-52E90FA477C8`, built from big-endian fields. `register` refuses with exit code 5 when the source DLL next to the tool is not in the Program Files folder (both paths resolved first; ADR-0066 decision 9), and the app checks the same before it asks for the prompt (`Unsupported`, "Install RBS to add the virtual camera"). The cargo feature `dev-any-location` of `rbs-vcam-mf` lifts this for development builds on a test PC only. The app then creates the camera itself, without elevation: `MFCreateVirtualCamera` with that CLSID, `SoftwareCameraSource`, `System` lifetime, `CurrentUser` access, friendly name "RBS Virtual Camera".
+- **One source class per user.** The one elevated step, `rbs-vcam-setup.exe register <SID>` (the app's own token user, and only the user signed in to that session), writes `HKLM\SOFTWARE\Classes\CLSID\{CLSID}` with `InprocServer32` (the DLL, `ThreadingModel = Both`) and `RbsVcamUser` (the SID string). The CLSID is the RFC 9562 version 5 UUID of the SID string's UTF-8 bytes in namespace `6B2F0C41-935E-4B7A-8D13-52E90FA477C8`, built from big-endian fields. `register` refuses with exit code 5 when the source DLL next to the tool is not in the Program Files folder (both paths resolved first; ADR-0066 decision 9), and registers the resolved path, so a junction in the folder the tool ran from cannot later point the class elsewhere, and the app checks the same before it asks for the prompt (`Unsupported`, "Install RBS to add the virtual camera"). The cargo feature `dev-any-location` of `rbs-vcam-mf` lifts this for development builds on a test PC only. The app then creates the camera itself, without elevation: `MFCreateVirtualCamera` with that CLSID, `SoftwareCameraSource`, `System` lifetime, `CurrentUser` access, friendly name "RBS Virtual Camera".
 - **The class check.** `DllGetClassObject` reads the class key from `HKLM` (64-bit view, `KEY_QUERY_VALUE`, never `HKCR`). It returns `CLASS_E_CLASSNOTAVAILABLE` unless `RbsVcamUser` is a user SID (`S-1-5-21-` or `S-1-12-1-` and four numbers), the CLSID is the one derived from it, and the calling process's token user is that SID, `LocalService` (`S-1-5-19`) or `SYSTEM` (`S-1-5-18`).
 - **The format file.** `%ProgramData%\RBS\VirtualCamera\<SID>.fmt`, 16 bytes of little-endian `u32`: version 1, width, height, frames per second. The user may read and write its data only. The source reads at most 16 bytes at each activation and falls back to 1280 x 720 at 30 fps for anything missing, short, of another version or outside ADR-0066 decision 11. `set_format` writes it in one call at offset 0.
 - **Remembering the camera.** The adapter reads and writes the camera's symbolic link through a `LinkStore` the composition root passes to `MfVcamFactory::new`; the desktop app backs it with `vcam.toml`, and `FileLinkStore` (one small text file) serves the CLI and tests. The adapter never picks a settings path itself.
 - **`status`** is `NotInstalled` (no class key or format file, or no camera device; only the first needs the prompt), `NeedsUpdate` (the class names another DLL than this install's, or the ring's layout version differs) or `Installed`.
-- **Removal.** Turning the setting off removes the camera only. "Remove completely" also runs `unregister <SID>` (a second prompt). The uninstaller deletes every user's class and format file with `rbs-vcam-setup.exe unregister-all` (every user who has a format file, then the format folder); removing other users' camera devices waits for the hardware test to show which device property names the source class.
+- **Removal.** Turning the setting off removes the camera only. "Remove completely" also runs `unregister <SID>` (a second prompt). The uninstaller deletes every user's class and format file.
 - **Known risk, accepted by the owner (2026-11-07).** Another account on the computer can create a camera on this user's class and view what RBS sends, without the sender being told. The caller check above stops casual use only. The setting's dialog says so.
 
 ### Shared frame ring (`rbs-vcam-ring`)
@@ -190,6 +190,7 @@ The node never fails a tick because of the camera; the studio reports the camera
 `rbs_vcam::conformance` runs against every adapter with a test consumer (the adapters provide one: an in-process reader of the ring for system memory):
 
 - `send_never_blocks_with_a_stalled_consumer`
+- `shared_counters_match_stats`: a session whose `counters` returns a view shares the counters `stats` reads
 - `full_session_reserves_nothing`
 - `dropped_token_frees_its_slot`
 - `newest_frame_wins`

@@ -19,6 +19,6 @@ mod session;
 pub use error::VcamError;
 pub use handoff::{Handoff, HandoffReceiver, SlotToken};
 pub use session::{
-    CameraFormat, InstallState, VcamCounters, VcamStats, VirtualCameraConfig, VirtualCameraFactory,
-    VirtualCameraSession,
+    CameraFormat, InstallState, VcamCounters, VcamCountersReader, VcamStats, VirtualCameraConfig,
+    VirtualCameraFactory, VirtualCameraSession,
 };

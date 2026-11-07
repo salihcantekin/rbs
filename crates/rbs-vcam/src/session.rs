@@ -108,12 +108,28 @@ pub trait VirtualCameraSession: Send {
     fn send(&self, slot: SlotToken, frame: VideoFrame) -> Result<(), VcamError>;
     /// The counters.
     fn stats(&self) -> VcamStats;
-    /// The counters the session shares with its sender thread, for a reader that keeps
-    /// them after the session moved into a graph node (a status line in a UI or the
-    /// CLI). Read them with [`VcamCounters::snapshot`]. `None` when the adapter keeps
-    /// no shared counters.
-    fn counters(&self) -> Option<Arc<VcamCounters>> {
+    /// A read-only view of the counters the session shares with its sender thread, for
+    /// a reader that keeps it after the session moved into a graph node (a status line
+    /// in a UI or the CLI). Its snapshot equals [`stats`](Self::stats). `None` when the
+    /// adapter keeps no shared counters.
+    fn counters(&self) -> Option<VcamCountersReader> {
         None
+    }
+}
+
+/// A read-only view of a session's counters ([`VirtualCameraSession::counters`]).
+#[derive(Debug, Clone)]
+pub struct VcamCountersReader(Arc<VcamCounters>);
+
+impl VcamCountersReader {
+    /// A view of `counters`.
+    pub fn new(counters: Arc<VcamCounters>) -> Self {
+        Self(counters)
+    }
+
+    /// A snapshot.
+    pub fn snapshot(&self) -> VcamStats {
+        self.0.snapshot()
     }
 }
 

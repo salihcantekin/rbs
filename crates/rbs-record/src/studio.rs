@@ -292,7 +292,7 @@ pub struct VirtualCameraState {
     /// The session's counters, when the adapter shares them: what its sender did with
     /// the frames (`sent` to the consumer side, `consumer_absent` while no app reads,
     /// `format_pending`, `consumer_busy`).
-    pub session: Option<Arc<rbs_vcam::VcamCounters>>,
+    pub session: Option<rbs_vcam::VcamCountersReader>,
     /// Why its node failed, until it runs again. The studio runs on either way.
     pub failure: Option<String>,
 }
@@ -302,7 +302,7 @@ struct CameraRun {
     node: Added,
     config: VirtualCameraConfig,
     stats: Arc<VirtualCameraNodeStats>,
-    session: Option<Arc<rbs_vcam::VcamCounters>>,
+    session: Option<rbs_vcam::VcamCountersReader>,
     failure: Option<String>,
 }
 

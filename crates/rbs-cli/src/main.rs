@@ -559,11 +559,10 @@ fn camera_line(state: &rbs_record::VirtualCameraState) -> String {
     let delivered = state.session.as_ref().map_or_else(String::new, |c| {
         let c = c.snapshot();
         format!(
-            "{} delivered, {} with no app reading, {} waiting for a format change, {} app behind; ",
+            "{} delivered, {} with no app reading, {} waiting for a format change; ",
             c.sent(),
             c.consumer_absent(),
-            c.format_pending(),
-            c.consumer_busy()
+            c.format_pending()
         )
     });
     format!(

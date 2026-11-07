@@ -4,8 +4,7 @@
 //! file with its access list; `unregister <SID>` deletes both. The SID must be a user
 //! account and the user signed in to the tool's own session, whoever approved the
 //! prompt. `register` also refuses (exit code 5) when the source DLL next to the tool
-//! is not in the Program Files folder. `unregister-all` (no SID, for the uninstaller)
-//! unregisters every user who has a format file and removes the format folder.
+//! is not in the Program Files folder.
 
 use std::path::Path;
 
@@ -32,8 +31,8 @@ use windows::Win32::System::RemoteDesktop::{
 use windows_core::{BOOL, HSTRING, PCWSTR, PWSTR};
 
 use super::sys::{
-    FRIENDLY_NAME, SOURCE_DLL, class_key, format_dir, format_path, install_dir, sid_string,
-    trusted_location,
+    FRIENDLY_NAME, SOURCE_DLL, class_key, format_dir, format_path, install_dir, resolved,
+    sid_string, trusted_location,
 };
 
 /// Exit codes.
@@ -49,15 +48,6 @@ pub const NOT_INSTALLED: i32 = 5;
 
 /// The tool's `main`: returns the exit code.
 pub fn run(args: &[String]) -> i32 {
-    if let [verb] = args
-        && verb == "unregister-all"
-    {
-        return if unregister_all().is_some() {
-            OK
-        } else {
-            FAILED
-        };
-    }
     let [verb, sid] = args else {
         return USAGE;
     };
@@ -67,12 +57,16 @@ pub fn run(args: &[String]) -> i32 {
     if !is_user_sid(sid) || session_user().as_deref() != Some(sid.as_str()) {
         return REFUSED;
     }
-    let dll = install_dir().map(|d| d.join(SOURCE_DLL));
-    if verb == "register" && !dll.as_deref().is_some_and(trusted_location) {
-        return NOT_INSTALLED;
-    }
     let done = if verb == "register" {
-        register(sid)
+        // The registered path is the resolved one, so no junction or link in the
+        // folder the tool ran from can later point the class elsewhere.
+        let Some(dll) = install_dir().and_then(|d| resolved(&d.join(SOURCE_DLL))) else {
+            return NOT_INSTALLED;
+        };
+        if !trusted_location(&dll) {
+            return NOT_INSTALLED;
+        }
+        register(sid, &dll)
     } else {
         unregister(sid)
     };
@@ -212,8 +206,7 @@ fn secure(path: &Path, sddl: &str) -> Option<()> {
 /// `FILE_GENERIC_READ | FILE_WRITE_DATA`: what the user may do with their format file.
 const USER_FILE_ACCESS: u32 = 0x0012_0089 | 0x0002;
 
-fn register(sid: &str) -> Option<()> {
-    let dll = install_dir()?.join(SOURCE_DLL);
+fn register(sid: &str, dll: &Path) -> Option<()> {
     let key = class_key(sid);
     let class = reg_create(&key)?;
     let ok =
@@ -255,31 +248,4 @@ fn unregister(sid: &str) -> Option<()> {
         Err(e) if e.kind() != std::io::ErrorKind::NotFound => None,
         _ => Some(()),
     }
-}
-
-/// `unregister-all`, for the uninstaller: unregisters every user whose format file is
-/// in the format folder, then removes the folder. Other users' camera devices stay
-/// (ADR-0070 decision 7: which device property names the source class is still open).
-fn unregister_all() -> Option<()> {
-    let dir = format_dir()?;
-    let entries = match std::fs::read_dir(&dir) {
-        Ok(e) => e,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Some(()),
-        Err(_) => return None,
-    };
-    let mut ok = true;
-    for entry in entries.flatten() {
-        let name = entry.file_name();
-        let Some(sid) = name.to_str().and_then(|n| n.strip_suffix(".fmt")) else {
-            continue;
-        };
-        if is_user_sid(sid) {
-            ok &= unregister(sid).is_some();
-        }
-    }
-    ok &= match std::fs::remove_dir(&dir) {
-        Err(e) => e.kind() == std::io::ErrorKind::NotFound,
-        Ok(()) => true,
-    };
-    ok.then_some(())
 }
