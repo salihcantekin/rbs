@@ -80,6 +80,14 @@ export global Studio {
     callback select-source(int /* id */);
     // One layer up (over the source above it in the list) or down.
     callback move-source(int /* id */, bool /* up */);
+    // A Sources row dragged onto another row: it takes that row's place.
+    callback move-source-to(int /* id */, int /* to */);
+    // The source whose row is being dragged, or -1.
+    in-out property <int> dragging-source: -1;
+    pure callback source-data(int /* id */) -> data-transfer;
+    // Add source in the Sources panel's title row (the panel card's header) asks the
+    // panel to open its menu; each press adds one.
+    in-out property <int> add-source-asked;
     // Show or hide a source in the program scene.
     callback set-source-visible(int /* id */, bool /* visible */);
     // A video source's box on the canvas, in canvas pixels.
@@ -433,13 +441,19 @@ component SourceRowView inherits Rectangle {
     callback leaving();
     property <bool> selected: Studio.selected-source == data.id;
     property <color> ink: data.visible ? Theme.text-primary : Theme.text-disabled;
-    height: data.ok ? Tokens.size-control-lg : Tokens.size-control-lg + Tokens.type-caption-line;
-    border-radius: Tokens.radius-sm;
-    background: selected ? Theme.surface-overlay : touch.has-hover ? Theme.surface-overlay : transparent;
+    // Layer and delete buttons show while the pointer is over the row, so names keep
+    // their room; on a focused row Alt+Up, Alt+Down and Delete do the same.
+    property <bool> tools: touch.has-hover;
+    // Another row is dragged over this one: it would take this row's place.
+    property <bool> drop-here: drop.has-drag && Studio.dragging-source != data.id;
+    height: data.ok ? Tokens.size-control-md : Tokens.size-control-md + Tokens.type-caption-line;
+    border-radius: Tokens.radius-md;
+    background: selected ? Theme.accent-subtle : touch.has-hover ? Theme.surface-overlay : transparent;
     border-width: selected ? Tokens.size-border : 0px;
     border-color: Theme.accent;
     accessible-role: list-item;
     accessible-label: @tr("{}, {}, {}{}", data.name, data.kind, data.status, data.visible ? "" : @tr(", hidden"));
+    accessible-description: data.picture ? @tr("Alt+Up or Alt+Down changes the layer, Delete removes it") : @tr("Delete removes it");
     accessible-item-selectable: true;
     accessible-item-selected: selected;
     accessible-action-default => { Studio.select-source(data.id); }
@@ -448,124 +462,120 @@ component SourceRowView inherits Rectangle {
     focus := FocusScope {
         key-pressed(e) => {
             if e.text == Key.Return || e.text == " " { Studio.select-source(data.id); return accept; }
+            if e.modifiers.alt && e.text == Key.UpArrow && data.picture && data.can-up {
+                root.leaving(); Studio.move-source(data.id, true); return accept;
+            }
+            if e.modifiers.alt && e.text == Key.DownArrow && data.picture && data.can-down {
+                root.leaving(); Studio.move-source(data.id, false); return accept;
+            }
+            if e.text == Key.Delete || e.text == Key.Backspace {
+                root.leaving(); Studio.delete-source(data.id); return accept;
+            }
             reject
         }
     }
-    touch := TouchArea {
-        clicked => { focus.focus(); Studio.select-source(data.id); }
-    }
-    FocusRing { show: focus.has-focus; }
-    HorizontalLayout {
-        padding-left: Tokens.space-2;
-        padding-right: Tokens.space-1;
-        spacing: Tokens.space-2;
-        VerticalLayout {
-            alignment: center;
-            Icon { name: Icons.named(data.icon); ink: data.visible ? Theme.text-secondary : Theme.text-disabled; }
+    // Rows of sources with a picture can be dragged onto each other to change the
+    // layer order; a press without a drag selects the row.
+    drop := DropArea {
+        can-drop(e) => {
+            return data.picture && Studio.dragging-source >= 0 && Studio.dragging-source != data.id ? DragAction.move : DragAction.none;
         }
-        VerticalLayout {
-            alignment: center;
-            horizontal-stretch: 1;
-            Text {
-                text: data.name;
-                color: root.ink;
-                font-size: Tokens.type-body-size;
-                overflow: elide;
-            }
-            // State in words, never colour alone (U7); shown when it needs attention.
-            if !data.ok: Text {
-                text: @tr("{} · {}", data.kind, data.status);
-                color: Theme.state-error;
-                font-size: Tokens.type-caption-size;
-                overflow: elide;
-            }
-        }
-        // Order matters for pictures only: sound has no layer to stack. Shown on the
-        // selected row only, so names keep their room.
-        if data.picture && selected: VerticalLayout {
-            alignment: center;
-            IconButton {
-                icon: IconName.chevron-up;
-                name: @tr("Move {} up", data.name);
-                enabled: data.can-up;
-                clicked => { root.leaving(); Studio.move-source(data.id, true); }
-            }
-        }
-        if data.picture && selected: VerticalLayout {
-            alignment: center;
-            IconButton {
-                icon: IconName.chevron-down;
-                name: @tr("Move {} down", data.name);
-                enabled: data.can-down;
-                clicked => { root.leaving(); Studio.move-source(data.id, false); }
-            }
-        }
-        if selected: VerticalLayout {
-            alignment: center;
-            IconButton {
-                icon: IconName.close;
-                name: @tr("Delete source {}", data.name);
-                clicked => { root.leaving(); Studio.delete-source(data.id); }
-            }
-        }
-        // Shown or hidden in the scene: the icon and the accessible state both say it.
-        VerticalLayout {
-            alignment: center;
-            IconButton {
-                icon: data.visible ? IconName.eye : IconName.eye-off;
-                name: data.visible ? @tr("Hide {}", data.name) : @tr("Show {}", data.name);
-                checked: !data.visible;
-                clicked => { Studio.set-source-visible(data.id, !data.visible); }
-            }
+        dropped(e) => {
+            Studio.move-source-to(Studio.dragging-source, data.id);
+            Studio.dragging-source = -1;
+            return DragAction.move;
         }
     }
+    drag := DragArea {
+        allow-move: data.picture;
+        data: Studio.source-data(data.id);
+        changed dragging => {
+            if self.dragging { Studio.dragging-source = data.id; } else { Studio.dragging-source = -1; }
+        }
+        touch := TouchArea {
+            clicked => { focus.focus(); Studio.select-source(data.id); }
+            HorizontalLayout {
+                padding-left: Tokens.space-2;
+                padding-right: Tokens.space-1;
+                spacing: Tokens.space-2;
+                VerticalLayout {
+                    alignment: center;
+                    Icon { name: Icons.named(data.icon); ink: data.visible ? Theme.text-primary : Theme.text-disabled; }
+                }
+                VerticalLayout {
+                    alignment: center;
+                    horizontal-stretch: 1;
+                    Text {
+                        text: data.name;
+                        color: root.ink;
+                        font-size: Tokens.type-body-size;
+                        overflow: elide;
+                    }
+                    // State in words, never colour alone (U7); shown when it needs attention.
+                    if !data.ok: Text {
+                        text: @tr("{} · {}", data.kind, data.status);
+                        color: Theme.state-error;
+                        font-size: Tokens.type-caption-size;
+                        overflow: elide;
+                    }
+                }
+                // Order matters for pictures only: sound has no layer to stack.
+                if data.picture && tools: VerticalLayout {
+                    alignment: center;
+                    IconButton {
+                        icon: IconName.chevron-up;
+                        name: @tr("Move {} up", data.name);
+                        enabled: data.can-up;
+                        clicked => { root.leaving(); Studio.move-source(data.id, true); }
+                    }
+                }
+                if data.picture && tools: VerticalLayout {
+                    alignment: center;
+                    IconButton {
+                        icon: IconName.chevron-down;
+                        name: @tr("Move {} down", data.name);
+                        enabled: data.can-down;
+                        clicked => { root.leaving(); Studio.move-source(data.id, false); }
+                    }
+                }
+                if tools: VerticalLayout {
+                    alignment: center;
+                    IconButton {
+                        icon: IconName.close;
+                        name: @tr("Delete source {}", data.name);
+                        clicked => { root.leaving(); Studio.delete-source(data.id); }
+                    }
+                }
+                // Shown or hidden in the scene: the icon and the accessible state both say it.
+                VerticalLayout {
+                    alignment: center;
+                    IconButton {
+                        icon: data.visible ? IconName.eye : IconName.eye-off;
+                        name: data.visible ? @tr("Hide {}", data.name) : @tr("Show {}", data.name);
+                        checked: !data.visible;
+                        clicked => { Studio.set-source-visible(data.id, !data.visible); }
+                    }
+                }
+            }
+        }
+    }
+    // Where a dragged row would go: a line along this row's top.
+    if drop-here: Rectangle {
+        y: 0;
+        height: Tokens.size-focus-ring;
+        background: Theme.accent;
+    }
+    FocusRing { show: focus.has-focus; border-radius: Tokens.radius-md; }
 }
 
 export component SourcesPanel inherits Rectangle {
     background: Theme.surface-raised;
-    property <length> header: Tokens.size-control-md + 2 * Tokens.space-2;
-    HorizontalLayout {
-        y: 0;
-        height: header;
-        padding: Tokens.space-2;
-        alignment: start;
-        spacing: Tokens.space-1;
-        add-button := Button {
-            text: @tr("Add source");
-            icon: IconName.chevron-down;
-            enabled: Studio.state == 1;
-            clicked => { Studio.picker-kind = -1; add-menu.show(); }
-        }
-        // Scene edits (U4); Ctrl+Z / Cmd+Z and Ctrl+Shift+Z / Cmd+Shift+Z (Ctrl+Y)
-        // in any panel too. The accessible name says what they apply to.
-        Button {
-            text: @tr("Undo");
-            kind: "ghost";
-            enabled: Studio.state == 1 && Studio.undo-kind != 0;
-            accessible-name: Studio.undo-kind == 1 ? @tr("Undo adding {}", Studio.undo-name)
-                : Studio.undo-kind == 2 ? @tr("Undo deleting {}", Studio.undo-name)
-                : Studio.undo-kind == 3 ? @tr("Undo the layer change of {}", Studio.undo-name)
-                : Studio.undo-kind == 4 ? @tr("Undo moving or resizing {}", Studio.undo-name)
-                : Studio.undo-kind == 5 ? @tr("Undo the shape or border of {}", Studio.undo-name)
-                : Studio.undo-kind == 6 ? @tr("Undo cropping {}", Studio.undo-name)
-                : Studio.undo-kind == 7 ? @tr("Undo showing or hiding {}", Studio.undo-name)
-                : @tr("Undo");
-            clicked => { Studio.undo-edit(true); }
-        }
-        Button {
-            text: @tr("Redo");
-            kind: "ghost";
-            enabled: Studio.state == 1 && Studio.redo-kind != 0;
-            accessible-name: Studio.redo-kind == 1 ? @tr("Redo adding {}", Studio.redo-name)
-                : Studio.redo-kind == 2 ? @tr("Redo deleting {}", Studio.redo-name)
-                : Studio.redo-kind == 3 ? @tr("Redo the layer change of {}", Studio.redo-name)
-                : Studio.redo-kind == 4 ? @tr("Redo moving or resizing {}", Studio.redo-name)
-                : Studio.redo-kind == 5 ? @tr("Redo the shape or border of {}", Studio.redo-name)
-                : Studio.redo-kind == 6 ? @tr("Redo cropping {}", Studio.redo-name)
-                : Studio.redo-kind == 7 ? @tr("Redo showing or hiding {}", Studio.redo-name)
-                : @tr("Redo");
-            clicked => { Studio.undo-edit(false); }
-        }
+    // Add source lives in the panel card's title row; undo and redo in the Edit menu
+    // and the usual keys (U4).
+    property <length> header: 0px;
+    property <int> asked: Studio.add-source-asked;
+    changed asked => {
+        if Studio.state == 1 { Studio.picker-kind = -1; add-menu.show(); }
     }
     if Studio.sources.length == 0: EmptyState {
         y: header;
@@ -582,8 +592,7 @@ export component SourcesPanel inherits Rectangle {
         height: parent.height - header;
         content-height: rows.preferred-height;
         rows := VerticalLayout {
-            padding-left: Tokens.space-1;
-            padding-right: Tokens.space-1;
+            padding: Tokens.space-2;
             spacing: Tokens.space-1;
             alignment: start;
             for s in Studio.sources: SourceRowView {
@@ -602,7 +611,7 @@ export component SourcesPanel inherits Rectangle {
     }
     add-menu := AddSourceMenu {
         x: Tokens.space-2;
-        y: header;
+        y: Tokens.space-1;
     }
 }
 

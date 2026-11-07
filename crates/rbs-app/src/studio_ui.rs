@@ -1118,6 +1118,16 @@ impl StudioUi {
         });
     }
 
+    /// Puts source `id` where source `to` is in the layer order (a row dragged onto
+    /// another).
+    pub fn move_source_to(&mut self, id: i32, to: i32) {
+        self.deleted.clear();
+        self.send(Command::MoveSourceTo {
+            id: SourceId::from_raw(id as u32),
+            to: SourceId::from_raw(to as u32),
+        });
+    }
+
     /// A video source's box on the canvas, in canvas pixels (the Properties fields;
     /// the picture panel's drags go through [`PreviewEdit`], numbered).
     pub fn set_source_box(&mut self, id: i32, x: f32, y: f32, w: f32, h: f32) {

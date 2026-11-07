@@ -1692,6 +1692,14 @@ fn install_studio(g: &Studio<'_>, ctx: &Ctx) {
     on!(on_move_source, |app, id: i32, up: bool| {
         app.studio.move_source(id, up);
     });
+    g.on_source_data(|id| {
+        let mut d = slint::DataTransfer::default();
+        d.set_plain_text(id.to_string().into());
+        d
+    });
+    on!(on_move_source_to, |app, id: i32, to: i32| {
+        app.studio.move_source_to(id, to);
+    });
     on!(on_set_source_box, |app,
                             id: i32,
                             x: f32,

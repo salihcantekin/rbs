@@ -301,6 +301,14 @@ pub enum Command {
         /// Up, else down.
         up: bool,
     },
+    /// Move a source to where source `to` is in the program scene's layer order (a
+    /// row dragged onto another row of the Sources list); one undo step.
+    MoveSourceTo {
+        /// The source.
+        id: SourceId,
+        /// The source whose place it takes.
+        to: SourceId,
+    },
     /// Show or hide a source in the program scene (one undo step).
     SetSourceVisible {
         /// The source.
@@ -1515,6 +1523,11 @@ impl Host {
                 Ok(false) => {}
                 Err(e) => notify(Update::Error(e)),
             },
+            Command::MoveSourceTo { id, to } => match self.move_source_to(id, to) {
+                Ok(true) => self.apply(notify),
+                Ok(false) => {}
+                Err(e) => notify(Update::Error(e)),
+            },
             Command::SetSourceVisible { id, visible } => {
                 match self.set_source_visible(id, visible) {
                     Ok(true) => self.apply(notify),
@@ -2527,6 +2540,22 @@ impl Host {
 
     /// Over (`up`) or under the next source with a picture; sound-only items do not
     /// count, because they draw nothing. `Ok(false)` when there is none that way.
+    fn move_source_to(&mut self, id: SourceId, to: SourceId) -> Result<bool, String> {
+        if id == to {
+            return Ok(false);
+        }
+        let (_, item) = self.item_of(id)?;
+        let item = item.id;
+        let (index, _) = self.item_of(to)?;
+        let undo = self
+            .collection
+            .move_item(item, index)
+            .map_err(|e| edit_error(&e))?;
+        let name = self.name_of(id);
+        self.history.record(EditKind::Order, &name, 0, vec![undo]);
+        Ok(true)
+    }
+
     fn move_source(&mut self, id: SourceId, up: bool) -> Result<bool, String> {
         let (index, item) = self.item_of(id)?;
         let item = item.id;

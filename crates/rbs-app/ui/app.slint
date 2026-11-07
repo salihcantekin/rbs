@@ -368,6 +368,13 @@ component StackView inherits Rectangle {
                 alignment: end;
                 padding-top: (bar - Tokens.size-control-sm) / 2;
                 padding-bottom: (bar - Tokens.size-control-sm) / 2;
+                // A panel's own action in its title row: Add source on Sources.
+                if active-id == "rbs.sources" && !data.collapsed: IconButton {
+                    icon: IconName.plus;
+                    name: @tr("Add source");
+                    enabled: Studio.state == 1;
+                    clicked => { Studio.add-source-asked += 1; }
+                }
                 if data.can-hide: IconButton {
                     icon: IconName.pin;
                     name: @tr("Auto-hide {}", active-title);
