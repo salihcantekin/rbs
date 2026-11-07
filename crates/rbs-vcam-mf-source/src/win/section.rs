@@ -103,7 +103,7 @@ impl Section {
         // SAFETY: `psd` came from the conversion above and is not used again.
         unsafe { LocalFree(Some(HLOCAL(psd.0))) };
         let handle = created?;
-        let section = Self {
+        let mut section = Self {
             handle,
             view: MEMORY_MAPPED_VIEW_ADDRESS::default(),
             len,
@@ -116,7 +116,9 @@ impl Section {
         let Some(ptr) = NonNull::new(view.Value.cast::<u8>()) else {
             return Err(windows_core::Error::from_thread());
         };
-        let section = Self { view, ..section };
+        // Set in place: a second `Section` copying the handle would close it on drop,
+        // and a section whose last handle is closed loses its name.
+        section.view = view;
         // SAFETY: `ptr` is a mapping of `len` bytes that stays valid until `section`
         // is dropped; the caller drops every `Region` clone (the reader) before it.
         let region = unsafe { Region::from_raw(ptr, len) }

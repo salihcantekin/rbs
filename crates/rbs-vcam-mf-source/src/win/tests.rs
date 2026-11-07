@@ -213,6 +213,11 @@ fn the_source_runs_in_process_through_its_class_factory() {
     let format = Announced::default();
     let frame_len = format.frame_len();
 
+    // The section the stream creates on start can be created here (reports why if not).
+    let probe = section::Section::create(&user, &pump::layout(&format).unwrap());
+    assert!(probe.is_ok(), "creating the section: {probe:?}");
+    drop(probe);
+
     // SAFETY: plain COM calls on our source.
     let stream: IMFMediaStream = unsafe {
         let pd = source.CreatePresentationDescriptor().unwrap();
@@ -232,11 +237,6 @@ fn the_source_runs_in_process_through_its_class_factory() {
     };
     let sgen: IMFMediaEventGenerator = stream.cast().unwrap();
     assert_eq!(event(&sgen).0, MEStreamStarted.0 as u32);
-
-    // The section the stream will create can be created here (reports why if not).
-    let probe = section::Section::create(&user, &pump::layout(&format).unwrap());
-    assert!(probe.is_ok(), "creating the section: {probe:?}");
-    drop(probe);
 
     // Nothing writes the ring yet: the still picture.
     // SAFETY: a sample request on a running stream.
