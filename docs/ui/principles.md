@@ -68,7 +68,7 @@ Rules:
 
 ## U6. One design system, no exceptions
 
-- All colours, spacing, radii, typography, elevation and motion come from design tokens ([ui design system spec](../specs/ui-design-system.md)). Hard-coded values are not allowed in UI code.
+- All colours, spacing, radii, typography, elevation and motion come from design tokens ([ui design system spec](../specs/ui-design-system.md)). Hard-coded values are not allowed in UI code (`.slint` and Rust alike): sizes, spacing, padding, radii, line widths, font sizes and weights, durations and colours are all tokens, so user themes ([ADR-0057](../adr/0057-user-themes-and-appearance-settings.md)) reach every part of the UI. When no token fits, a new token is added to the token file, every built-in theme and the design system spec in the same change; the `ui-review` skill lists the steps and the few literals that are not design values (such as `0px`).
 - All UI is built from the shared component library. A new component is added to the library, documented and reviewed before it is used.
 - One icon set and one font family (with tabular figures for numbers). One accent colour per theme.
 
