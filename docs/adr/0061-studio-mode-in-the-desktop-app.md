@@ -32,7 +32,7 @@ The owner tested ADR-0059 on the Mac (2026-11-07) and asked where studio mode is
    - Entering studio mode opens a closed Preview panel where it opens by default, as the UI spec says (the only layout change studio mode makes).
    - Scenes panel in studio mode: the preview scene is marked like a selected row (`accent.subtle`, `accent` border, accessible "in preview"); the program scene carries a neutral "Program" badge (`surface.overlay`, `text.secondary`, accessible "program"), which becomes the live badge of ADR-0059 in `state.live` while streaming or recording. One scene in both shows both marks.
    - Toolbar and menus: the registry commands `canvas.studio_mode.toggle` and `canvas.transition` (owned by the command registry, ADR-0050) call the same host commands; the Live workspace's toolbar shows Studio mode as in the UI spec.
-8. **Control API 1.7** (a minor version: nothing of 1.6 changes meaning).
+8. **Control API 1.9** (a minor version: nothing earlier changes meaning; numbered 1.7 when proposed, renumbered because the filters of ADR-0062 shipped first as 1.8).
    - `scene.list` and `scene.changed` gain `preview` (a scene id, absent outside studio mode); `scene.changed` is also sent when the preview scene changes or studio mode starts or ends.
    - `canvas.set_preview {scene}` (`control`; the method name the UI spec planned): a scene id enters studio mode with that scene in preview, or changes the preview scene; `null` leaves studio mode (the preview choice is not kept: entering again starts from the program scene). `not_found` for an unknown scene, `invalid_params` for a scene the canvas may not show (scope), like `scene.switch`.
    - `canvas.transition {}` (`control`): the cut of decision 3; `conflict` outside studio mode; a preview scene that is the program changes nothing.
@@ -46,7 +46,7 @@ The owner tested ADR-0059 on the Mac (2026-11-07) and asked where studio mode is
 - `rbs_record::Studio` gains the preview compositor and `scene_preview()`; its spec (recording) says when they exist. Tests: entering and leaving studio mode creates and retires them, a cut changes only layers (no node added or removed), outputs stay on the program compositor.
 - `rbs-app`: host commands `SetStudioMode`, `Transition` (and `SwitchScene` sets the preview in studio mode); `SceneList` gains `preview`; the "edited scene" is the preview scene in studio mode; a new `Update::ScenePreview(Option<PreviewEndpoint>)` carries the second endpoint each time it appears or goes. Tests cover removing the preview scene, undo across a cut, and that a cut is not undone.
 - `rbs_app::preview` becomes per role; the UI sends two areas.
-- Specs: scene model (none), recording, control API 1.7, UI design system (Transition panel, Scenes marks, two pictures), user data (none: `preview` is already saved).
+- Specs: scene model (none), recording, control API 1.9, UI design system (Transition panel, Scenes marks, two pictures), user data (none: `preview` is already saved).
 - Follow-ups: fade and other transitions with T-bar and duration (own ADR, hot path); "duplicate scene into preview" and "swap off" options; studio mode per canvas when the app runs several canvases.
 
 ## Alternatives considered

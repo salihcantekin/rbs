@@ -45,13 +45,15 @@ use rbs_record::{
 };
 use rbs_scene::SceneCollection;
 use rbs_scene::model::{
-    Border, CanvasId, Crop, ItemContent, ItemId, ItemStyle, Layout, SceneId, SceneItem, SceneScope,
-    SettingValue, Settings, Shadow, Shape, SourceAudio, SourceId,
+    Border, CanvasId, Crop, FilterId, ItemContent, ItemId, ItemStyle, Layout, SceneId, SceneItem,
+    SceneScope, SettingValue, Settings, Shadow, Shape, SourceAudio, SourceId,
 };
 use rbs_scene::{SceneError, Undo};
 use rbs_sources::types::{self, keys};
 use rbs_sources::{SourceError, SourceTarget};
 use rbs_transport::{ReconnectPolicy, Secret, TransportInput};
+
+pub mod filters;
 
 use crate::canvas_profile::CanvasProfile;
 use crate::edit_history::{EditKind, History, HistoryError, StepInfo};
@@ -198,8 +200,11 @@ pub struct SourceRow {
     pub visible: bool,
     /// Locked: the picture panel does not select, move, resize or crop it (ADR-0059).
     pub locked: bool,
-    /// The source's volume, a linear factor from 0 to 1, and its mute (ADR-0059).
+    /// The source's volume, a linear factor from 0 to 1, its mute (ADR-0059) and its
+    /// sync offset (ADR-0062).
     pub audio: SourceAudio,
+    /// Its filters in chain order (ADR-0062).
+    pub filters: Vec<filters::FilterRow>,
 }
 
 impl PartialEq for SourceRow {
@@ -214,6 +219,7 @@ impl PartialEq for SourceRow {
             && self.visible == other.visible
             && self.locked == other.locked
             && self.audio == other.audio
+            && self.filters == other.filters
             && match (&self.meter, &other.meter) {
                 (Some(a), Some(b)) => Arc::ptr_eq(a, b),
                 (None, None) => true,
@@ -346,6 +352,56 @@ pub enum Command {
         id: SourceId,
         /// Muted.
         muted: bool,
+    },
+    /// Add a filter of a built-in type with its defaults at the end of a source's chain
+    /// (ADR-0062; one undo step).
+    AddFilter {
+        /// The source.
+        source: SourceId,
+        /// The filter type's id.
+        type_id: String,
+    },
+    /// Remove a filter (one undo step).
+    RemoveFilter(FilterId),
+    /// Move a filter to `index` in its chain (one undo step).
+    MoveFilter {
+        /// The filter.
+        filter: FilterId,
+        /// Its new place, 0 first.
+        index: usize,
+    },
+    /// Turn a filter on or off (one undo step).
+    SetFilterEnabled {
+        /// The filter.
+        filter: FilterId,
+        /// On.
+        enabled: bool,
+    },
+    /// Write a filter's full values (a released slider, a colour, Reset to defaults;
+    /// one undo step).
+    SetFilterValues {
+        /// The filter.
+        filter: FilterId,
+        /// Every field's value.
+        values: rbs_filters::Values,
+    },
+    /// Show values on the running filter without changing the collection (a slider
+    /// drag, ADR-0062 decision 3).
+    PreviewFilter {
+        /// The filter.
+        filter: FilterId,
+        /// Every field's value.
+        values: rbs_filters::Values,
+    },
+    /// Put the collection's values back on the running filter (a cancelled drag).
+    RestoreFilter(FilterId),
+    /// The sync offset of a source's sound in milliseconds (ADR-0062 decision 10): a
+    /// live control, not on the undo stack.
+    SetSourceSyncOffset {
+        /// The source.
+        id: SourceId,
+        /// Milliseconds; positive delays the sound.
+        offset_ms: i32,
     },
     /// Rename a source (one undo step). Names are unique in the collection.
     RenameSource {
@@ -762,9 +818,13 @@ impl Refusal {
         match e {
             SceneError::UnknownSource(_)
             | SceneError::UnknownScene(_)
-            | SceneError::UnknownItem(_) => Self::NotFound(edit_error(e)),
+            | SceneError::UnknownItem(_)
+            | SceneError::UnknownFilter(_) => Self::NotFound(edit_error(e)),
             SceneError::DuplicateName(_) => Self::Conflict(edit_error(e)),
-            SceneError::EmptyName | SceneError::InvalidVolume => Self::Invalid(edit_error(e)),
+            SceneError::EmptyName
+            | SceneError::InvalidVolume
+            | SceneError::InvalidSyncOffset
+            | SceneError::IndexOutOfRange(_) => Self::Invalid(edit_error(e)),
             _ => Self::Failed(edit_error(e)),
         }
     }
@@ -1529,6 +1589,7 @@ fn start(
     let mut settings = StudioSettings::new(canvas);
     settings.preview = config.preview;
     settings.scene_preview = SCENE_PICTURE;
+    settings.audio_offsets = filters::audio_offsets(&collection);
     let first = engine();
     let clock = first.clock();
     let studio = Studio::start(
@@ -1704,6 +1765,42 @@ impl Host {
             }
             Command::SetSourceMuted { id, muted } => {
                 let done = self.set_source_audio(id, None, Some(muted));
+                self.answer_live(done, notify);
+            }
+            Command::AddFilter { source, type_id } => {
+                let done = self
+                    .add_filter(source, &type_id, &std::collections::BTreeMap::new())
+                    .map(|_| true);
+                self.answer(done, notify);
+            }
+            Command::RemoveFilter(filter) => {
+                let done = self.remove_filter(filter).map(|()| true);
+                self.answer(done, notify);
+            }
+            Command::MoveFilter { filter, index } => {
+                let done = self.move_filter(filter, index);
+                self.answer(done, notify);
+            }
+            Command::SetFilterEnabled { filter, enabled } => {
+                let done = self.set_filter_enabled(filter, enabled);
+                self.answer(done, notify);
+            }
+            Command::SetFilterValues { filter, values } => {
+                let done = self.set_filter_values(filter, values);
+                // An unchanged release still puts the collection's values back on air.
+                if matches!(done, Ok(false)) {
+                    self.studio.restore_filter(filter);
+                }
+                self.answer(done, notify);
+            }
+            Command::PreviewFilter { filter, values } => {
+                self.studio.preview_filter(filter, values);
+            }
+            Command::RestoreFilter(filter) => {
+                self.studio.restore_filter(filter);
+            }
+            Command::SetSourceSyncOffset { id, offset_ms } => {
+                let done = self.set_source_sync_offset(id, offset_ms);
                 self.answer_live(done, notify);
             }
             Command::RenameSource { id, name } => {
@@ -2295,6 +2392,7 @@ impl Host {
         let mut settings = StudioSettings::new(self.canvas);
         settings.preview = self.preview_surfaces.map(|n| preview_desc(canvas.size, n));
         settings.scene_preview = SCENE_PICTURE;
+        settings.audio_offsets = filters::audio_offsets(&self.collection);
         let engine = (self.engine)();
         let clock = engine.clock();
         let studio = Studio::start(
@@ -3564,6 +3662,7 @@ impl Host {
                     visible: item.visible,
                     locked: item.locked,
                     audio: s.audio,
+                    filters: filters::rows(s),
                     status,
                 }
             })
@@ -3653,6 +3752,8 @@ fn edit_error(e: &SceneError) -> String {
         SceneError::UnknownItem(_) | SceneError::UnknownScene(_) | SceneError::UnknownSource(_) => {
             "This source is not in the scene any more.".to_owned()
         }
+        SceneError::InvalidSyncOffset | SceneError::InvalidVolume => format!("{e}."),
+        SceneError::UnknownFilter(_) => "This filter is not there any more.".to_owned(),
         other => format!("The scene could not be changed ({other:?}). Try again."),
     }
 }
@@ -3882,6 +3983,59 @@ impl ApiTarget<'_> {
                     .set_source_audio(SourceId::from_raw(p.source), None, Some(p.muted))
                     .map_err(|e| refused(&e))?;
                 if changed {
+                    host.publish(notify);
+                }
+                Ok(Response::Done(Empty {}))
+            }
+            C::FilterTypes => Ok(Response::FilterTypes(filters::api_types())),
+            C::FilterAdd(p) => {
+                let settings = p.settings.unwrap_or_default();
+                let id = host
+                    .add_filter(SourceId::from_raw(p.source), &p.type_id, &settings)
+                    .map_err(|e| refused(&e))?;
+                host.apply(notify);
+                Ok(Response::FilterAdded(rbs_api::request::FilterAdded {
+                    filter: id.get(),
+                }))
+            }
+            C::FilterRemove(p) => {
+                host.remove_filter(FilterId::from_raw(p.filter))
+                    .map_err(|e| refused(&e))?;
+                host.apply(notify);
+                Ok(Response::Done(Empty {}))
+            }
+            C::FilterMove(p) => {
+                if host
+                    .move_filter(FilterId::from_raw(p.filter), p.index as usize)
+                    .map_err(|e| refused(&e))?
+                {
+                    host.apply(notify);
+                }
+                Ok(Response::Done(Empty {}))
+            }
+            C::FilterSetEnabled(p) => {
+                if host
+                    .set_filter_enabled(FilterId::from_raw(p.filter), p.enabled)
+                    .map_err(|e| refused(&e))?
+                {
+                    host.apply(notify);
+                }
+                Ok(Response::Done(Empty {}))
+            }
+            C::FilterSetSettings(p) => {
+                if host
+                    .patch_filter(FilterId::from_raw(p.filter), &p.settings)
+                    .map_err(|e| refused(&e))?
+                {
+                    host.apply(notify);
+                }
+                Ok(Response::Done(Empty {}))
+            }
+            C::SourceSetSyncOffset(p) => {
+                if host
+                    .set_source_sync_offset(SourceId::from_raw(p.source), p.offset_ms)
+                    .map_err(|e| refused(&e))?
+                {
                     host.publish(notify);
                 }
                 Ok(Response::Done(Empty {}))
@@ -4381,6 +4535,8 @@ fn api_source(row: &SourceRow) -> api::SourceInfo {
         locked: row.locked,
         volume: row.audio.volume,
         muted: row.audio.muted,
+        filters: row.filters.iter().map(filters::api_row).collect(),
+        sync_offset_ms: row.audio.sync_offset_ms,
         id: row.id.get(),
         name: row.name.clone(),
         kind: row.kind.map(api_kind),

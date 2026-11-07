@@ -99,7 +99,10 @@ impl PooledTexture {
         }
     }
 
-    pub(crate) fn sampled_bind_group(&self) -> Option<&wgpu::BindGroup> {
+    /// The bind group of this texture and the context's linear clamp sampler for
+    /// [`GpuContext::sampled_layout`], when the texture is sampleable and filterable.
+    /// Filter nodes bind pool textures with it, as the compositor does (ADR-0062).
+    pub fn sampled_bind_group(&self) -> Option<&wgpu::BindGroup> {
         self.sampled.as_ref()
     }
 }
@@ -121,6 +124,9 @@ struct Slot {
     /// Wraps a texture the pool did not create (native import). Dropped instead of
     /// reused when it becomes free.
     external: bool,
+    /// Given back with [`TexturePool::forget_texture`]: dropped instead of reused when
+    /// it becomes free.
+    forgotten: bool,
 }
 
 /// Free slot indices for one texture description.
@@ -129,6 +135,9 @@ struct FreeList {
     slots: Vec<u32>,
     /// Textures of this description that hold GPU memory (free, in use or retired).
     total: usize,
+    /// The pool's tick (`trim_idle`) when `acquire` or `touch` last asked for this
+    /// description.
+    last_used: u64,
 }
 
 /// Lease counts, shared with consumers on other threads.
@@ -173,6 +182,8 @@ pub struct TexturePool {
     /// Slots released by their owner while leases were open.
     retired: Vec<u32>,
     leases: Arc<Leases>,
+    /// The tick `trim_idle` was last called with.
+    now: u64,
 }
 
 impl Default for TexturePool {
@@ -198,6 +209,7 @@ impl TexturePool {
             leases: Arc::new(Leases {
                 counts: (0..capacity).map(|_| AtomicU32::new(0)).collect(),
             }),
+            now: 0,
         }
     }
 
@@ -206,11 +218,15 @@ impl TexturePool {
     /// Reuse is O(distinct descriptions + retired slots) and does not allocate.
     pub fn acquire(&mut self, ctx: &GpuContext, desc: &TextureDesc) -> Result<TextureId, GpuError> {
         self.collect();
+        let now = self.now;
         if let Some(index) = self
             .free
             .iter_mut()
             .find(|f| f.desc == *desc)
-            .and_then(|f| f.slots.pop())
+            .and_then(|f| {
+                f.last_used = now;
+                f.slots.pop()
+            })
         {
             let slot = &mut self.slots[index as usize];
             slot.state = State::InUse;
@@ -238,21 +254,78 @@ impl TexturePool {
         let slot = &mut self.slots[index as usize];
         slot.state = State::Free;
         slot.generation = slot.generation.wrapping_add(1);
-        if slot.external {
+        if slot.external || slot.forgotten {
             // Not reusable: drop the wrapper and recycle the slot. Capacity of `empty`
             // is the pool capacity, so this push does not allocate.
-            slot.texture = None;
+            let desc = slot.texture.take().map(|t| t.desc);
+            let owned = !slot.external;
             slot.external = false;
+            slot.forgotten = false;
             self.empty.push(index);
+            if let (true, Some(desc)) = (owned, desc) {
+                self.uncount(&desc);
+            }
             return;
         }
         let Some(desc) = slot.texture.as_ref().map(|t| t.desc) else {
             return;
         };
-        if let Some(list) = self.free.iter_mut().find(|f| f.desc == desc) {
-            // Capacity was reserved in `create`, so this push does not allocate.
-            list.slots.push(index);
+        let Some(at) = self.free.iter().position(|f| f.desc == desc) else {
+            return;
+        };
+        // Capacity was reserved in `create`, so this push does not allocate.
+        self.free[at].slots.push(index);
+    }
+
+    /// One texture of `desc` the pool created is gone: count it out of its list and
+    /// remove the list when it holds none.
+    fn uncount(&mut self, desc: &TextureDesc) {
+        if let Some(at) = self.free.iter().position(|f| f.desc == *desc) {
+            let list = &mut self.free[at];
+            list.total = list.total.saturating_sub(1);
+            if list.total == 0 {
+                self.free.swap_remove(at);
+            }
         }
+    }
+
+    /// Drops every free texture of `self.free[at]`; removes the list when it holds no
+    /// texture any more. Does not allocate.
+    fn drop_free(&mut self, at: usize) {
+        let list = &mut self.free[at];
+        list.total -= list.slots.len();
+        for index in list.slots.drain(..) {
+            if let Some(slot) = self.slots.get_mut(index as usize) {
+                // Capacity of `empty` is the pool capacity, so this push does not
+                // allocate; dropping the texture frees its GPU memory.
+                slot.texture = None;
+                self.empty.push(index);
+            }
+        }
+        if list.total == 0 {
+            self.free.swap_remove(at);
+        }
+    }
+
+    /// Makes room for one texture when every slot holds one: drops the free textures
+    /// of the description acquired least recently, other than `keep` and never one
+    /// asked for in the current tick (so two busy descriptions never take turns
+    /// evicting each other). Returns whether a slot is now empty.
+    fn evict(&mut self, keep: &TextureDesc) -> bool {
+        while self.empty.is_empty() {
+            let victim = self
+                .free
+                .iter()
+                .enumerate()
+                .filter(|(_, f)| f.desc != *keep && !f.slots.is_empty() && f.last_used < self.now)
+                .min_by_key(|(_, f)| f.last_used)
+                .map(|(i, _)| i);
+            match victim {
+                Some(at) => self.drop_free(at),
+                None => return false,
+            }
+        }
+        true
     }
 
     fn create(&mut self, ctx: &GpuContext, desc: &TextureDesc) -> Result<TextureId, GpuError> {
@@ -263,7 +336,8 @@ impl TexturePool {
                 height: desc.height,
             });
         }
-        if self.empty.is_empty() && self.slots.len() >= self.capacity as usize {
+        if self.empty.is_empty() && self.slots.len() >= self.capacity as usize && !self.evict(desc)
+        {
             return Err(GpuError::PoolFull {
                 capacity: self.capacity,
             });
@@ -291,6 +365,7 @@ impl TexturePool {
                     desc: *desc,
                     slots: Vec::new(),
                     total: 0,
+                    last_used: self.now,
                 });
                 let last = self.free.len() - 1;
                 &mut self.free[last]
@@ -310,6 +385,7 @@ impl TexturePool {
                 slot.state = State::InUse;
                 slot.texture = Some(pooled);
                 slot.external = external;
+                slot.forgotten = false;
                 index
             }
             None => {
@@ -320,6 +396,7 @@ impl TexturePool {
                     state: State::InUse,
                     texture: Some(pooled),
                     external,
+                    forgotten: false,
                 });
                 index
             }
@@ -336,7 +413,8 @@ impl TexturePool {
         desc: TextureDesc,
     ) -> Result<TextureId, GpuError> {
         self.collect();
-        if self.empty.is_empty() && self.slots.len() >= self.capacity as usize {
+        if self.empty.is_empty() && self.slots.len() >= self.capacity as usize && !self.evict(&desc)
+        {
             return Err(GpuError::PoolFull {
                 capacity: self.capacity,
             });
@@ -411,15 +489,114 @@ impl TexturePool {
     /// Drops every free texture, releasing its GPU memory. Not for real-time threads.
     pub fn trim(&mut self) {
         self.collect();
-        for list in &mut self.free {
-            list.total -= list.slots.len();
-            for index in list.slots.drain(..) {
+        for at in (0..self.free.len()).rev() {
+            self.drop_free(at);
+        }
+    }
+
+    /// Ends a tick of the pool's own clock and drops the free textures of every
+    /// description that [`TexturePool::acquire`] or [`TexturePool::touch`] has not asked
+    /// for in the last `idle_ticks` calls (ADR-0062 decision 5); textures in use or
+    /// retired are kept, and so are descriptions asked for since. Retired textures whose
+    /// readers let go are freed first. The clock counts calls, not tick indices, so a
+    /// tick index that jumps after a stall never makes everything look idle at once;
+    /// `acquire` and `touch` stamp descriptions with it until the next call.
+    ///
+    /// Called by the render runtime at the end of every tick: one pass over the retired
+    /// list and one comparison per description; it frees GPU memory only on the call a
+    /// description turns idle (P13). Dropping a texture is the stated exception of
+    /// ADR-0062 decision 5, not a per-tick cost.
+    pub fn trim_idle(&mut self, idle_ticks: u64) {
+        self.now = self.now.wrapping_add(1);
+        let now = self.now;
+        self.collect();
+        let idle =
+            |f: &FreeList| !f.slots.is_empty() && now.saturating_sub(f.last_used) > idle_ticks;
+        if !self.free.iter().any(idle) {
+            return;
+        }
+        for at in (0..self.free.len()).rev() {
+            if idle(&self.free[at]) {
+                self.drop_free(at);
+            }
+        }
+    }
+
+    /// Marks `desc` as used now, so [`TexturePool::trim_idle`] keeps its free textures:
+    /// for a node that skips a tick but will acquire again. O(descriptions); does not
+    /// allocate.
+    pub fn touch(&mut self, desc: &TextureDesc) {
+        let now = self.now;
+        if let Some(list) = self.free.iter_mut().find(|f| f.desc == *desc) {
+            list.last_used = now;
+        }
+    }
+
+    /// Drops up to `count` free textures of `desc` a node no longer needs (the spares
+    /// of a size its input left). Textures are interchangeable, so a node gives back
+    /// the free ones it kept; see [`TexturePool::forget_texture`] for one still read.
+    /// Does not allocate.
+    pub fn forget(&mut self, desc: &TextureDesc, count: usize) {
+        self.collect();
+        let Some(at) = self.free.iter().position(|f| f.desc == *desc) else {
+            return;
+        };
+        let list = &mut self.free[at];
+        let drop = list.slots.len().min(count);
+        list.total -= drop;
+        for _ in 0..drop {
+            if let Some(index) = list.slots.pop() {
                 if let Some(slot) = self.slots.get_mut(index as usize) {
+                    // Capacity of `empty` is the pool capacity: no allocation.
                     slot.texture = None;
                     self.empty.push(index);
                 }
             }
         }
+        if list.total == 0 {
+            self.free.swap_remove(at);
+        }
+    }
+
+    /// Gives back the texture of `id`, which its owner released and readers may still
+    /// hold (a filter's last output): dropped at once if free, else when its last lease
+    /// goes, instead of returning to the free list. Other textures of its description
+    /// are not touched. A stale id does nothing. Does not allocate.
+    pub fn forget_texture(&mut self, id: TextureId) {
+        self.collect();
+        let Some(slot) = self.slots.get_mut(id.slot() as usize) else {
+            return;
+        };
+        if slot.texture.is_none() || slot.external {
+            return;
+        }
+        match slot.state {
+            State::InUse | State::Retired if slot.generation == id.generation() => {
+                slot.forgotten = true;
+            }
+            State::Free if slot.generation == id.generation().wrapping_add(1) => {
+                // Freed since the owner released it, and not reused: drop it now.
+                let desc = slot.texture.as_ref().map(|t| t.desc);
+                if let Some(desc) = desc {
+                    if let Some(at) = self.free.iter().position(|f| f.desc == desc) {
+                        if let Some(pos) = self.free[at].slots.iter().position(|&i| i == id.slot())
+                        {
+                            self.free[at].slots.swap_remove(pos);
+                            self.slots[id.slot() as usize].texture = None;
+                            self.empty.push(id.slot());
+                            self.uncount(&desc);
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// Descriptions the pool tracks (with at least one texture). For tests and
+    /// diagnostics.
+    pub fn descriptions(&self) -> usize {
+        self.free.len()
     }
 
     /// Number of textures that hold GPU memory (free, in use or retired).

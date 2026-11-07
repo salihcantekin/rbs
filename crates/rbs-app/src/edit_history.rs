@@ -45,6 +45,9 @@ pub enum EditKind {
     RemoveScene,
     /// A scene was renamed (the name is the old one).
     RenameScene,
+    /// A source's filters changed: added, removed, moved, turned on or off, or their
+    /// settings (ADR-0062).
+    Filter,
 }
 
 /// The step the next undo or redo applies: its kind and the name of the source or

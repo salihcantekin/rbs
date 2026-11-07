@@ -18,6 +18,7 @@ use rbs_core::media::{ContainerId, MemoryKind, StreamDescriptor};
 use rbs_core::time::Timestamp;
 use rbs_core::timing::{Cadence, FrameRate};
 use rbs_engine::{Applied, DEFAULT_DOORBELL_TIMER, Engine, Pacing, Serviced, WorkerStats};
+use rbs_filters::{FilterNode, FilterStats, FilterType, Values};
 use rbs_gpu::node::{CompositorNode, GpuRuntime, LayerSender, RenderLocal};
 use rbs_gpu::share::{PreviewDesc, PreviewEndpoint};
 use rbs_gpu::{CanvasDesc, GpuContext};
@@ -32,8 +33,10 @@ use rbs_nodes::output::OutputNodeStats;
 use rbs_nodes::{OutputNode, PreviewNode, PreviewNodeStats, VideoEncoderNode, VideoExportNode};
 use rbs_scene::SceneCollection;
 use rbs_scene::binder::{BindProblem, BindReport, BoundCompositor, BoundMixer, Role, SceneBinder};
-use rbs_scene::model::{CanvasId, SourceAudio, SourceId};
-use rbs_sources::{InstanceContext, SourceInstance, SourceTypes, node_layers};
+use rbs_scene::model::{CanvasId, FilterId, SourceAudio, SourceId};
+use rbs_sources::{
+    InstanceContext, SourceInstance, SourceTypes, filter_values_lenient, node_layers,
+};
 use rbs_transport::{ReconnectPolicy, Secret, TransportConfig, TransportInput};
 
 use crate::recording::{
@@ -216,6 +219,26 @@ struct Entry {
     instance: Option<Instance>,
     /// In the running plan.
     scheduled: bool,
+}
+
+/// One bound filter (ADR-0062 decision 8).
+struct FilterEntry {
+    filter: FilterId,
+    source: SourceId,
+    node: NodeId,
+    /// Its running instance's value channel and statistics.
+    instance: Option<(ParamSender<Values>, Arc<FilterStats>)>,
+}
+
+/// A filter's stored settings that were adjusted to run it (ADR-0062 decision 8): the
+/// key was unknown, out of range or of the wrong kind. The document keeps them until
+/// the user edits that filter.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FilterSettingsAdjusted {
+    /// The filter.
+    pub filter: FilterId,
+    /// The setting's key.
+    pub key: String,
 }
 
 /// A node the studio added to the graph, so it can be taken back.
@@ -534,6 +557,10 @@ pub struct Studio {
     /// Volume and mute per source, from the last [`Studio::update`] or
     /// [`Studio::set_mix`].
     mix: BTreeMap<SourceId, SourceAudio>,
+    /// Bound filters, with an instance once scheduled.
+    filters: Vec<FilterEntry>,
+    /// Stored filter settings adjusted on load.
+    filter_problems: Vec<FilterSettingsAdjusted>,
 }
 
 impl fmt::Debug for Studio {
@@ -749,6 +776,8 @@ impl Studio {
             pending_takes: Vec::new(),
             strips: Vec::new(),
             mix: mix_of(collection),
+            filters: Vec::new(),
+            filter_problems: Vec::new(),
         };
         if let Some(p) = recording
             && let Err(e) = studio.add_output(p)
@@ -839,6 +868,7 @@ impl Studio {
         if let Some(report) = &report {
             self.sync_scene_preview(report, &mut leaving)?;
         }
+        let mut gone_filters: Vec<FilterEntry> = Vec::new();
         let collection = &self.collection;
         if let Some(report) = report {
             if report.retired_compositors.contains(&self.compositor)
@@ -866,6 +896,40 @@ impl Studio {
                 .partition(|e| retired.contains(&e.state.node));
             self.entries = kept;
             gone = old;
+            let retired_filters: BTreeSet<NodeId> =
+                report.retired_filters.iter().copied().collect();
+            let (old_filters, kept_filters): (Vec<FilterEntry>, Vec<FilterEntry>) =
+                std::mem::take(&mut self.filters)
+                    .into_iter()
+                    .partition(|f| retired_filters.contains(&f.node));
+            self.filters = kept_filters;
+            gone_filters = old_filters;
+            for (filter, node) in &report.created_filters {
+                let Some(source) = collection
+                    .sources()
+                    .find(|s| s.filters.iter().any(|f| f.id == *filter))
+                else {
+                    continue;
+                };
+                self.filters.push(FilterEntry {
+                    filter: *filter,
+                    source: source.id,
+                    node: *node,
+                    instance: None,
+                });
+            }
+            for (filter, _) in &report.changed_filters {
+                let values = filter_of(collection, *filter)
+                    .map(|(ty, settings)| filter_values_lenient(ty, settings).0);
+                if let (Some(values), Some(entry)) = (
+                    values,
+                    self.filters.iter_mut().find(|f| f.filter == *filter),
+                ) {
+                    if let Some((sender, _)) = &mut entry.instance {
+                        sender.send(values);
+                    }
+                }
+            }
             for (source_id, node) in &report.created_sources {
                 let Some(source) = collection.source(*source_id) else {
                     continue;
@@ -986,6 +1050,37 @@ impl Studio {
             }
         }
 
+        // Instances for the filters the plan schedules, warmed for their source's size.
+        let mut adjusted = Vec::new();
+        for entry in &mut self.filters {
+            let Some((ty, settings)) = filter_of(collection, entry.filter) else {
+                continue;
+            };
+            let (values, keys) = filter_values_lenient(ty, settings);
+            adjusted.extend(keys.into_iter().map(|key| FilterSettingsAdjusted {
+                filter: entry.filter,
+                key,
+            }));
+            if entry.instance.is_some() || !scheduled.contains(&entry.node) {
+                continue;
+            }
+            let size = self
+                .entries
+                .iter()
+                .find(|e| e.source == entry.source)
+                .and_then(|e| match &e.instance.as_ref()?.watch {
+                    Watch::Video(stats) => stats.picture_size(),
+                    _ => None,
+                })
+                .map(|(w, h)| [w, h]);
+            let shared: Arc<dyn FilterType> = Arc::new(ty);
+            let (node, sender, stats) = FilterNode::new(shared, values, size);
+            self.engine
+                .adopt::<GpuRuntime>(RENDER, entry.node, Box::new(node))?;
+            entry.instance = Some((sender, stats));
+        }
+        self.filter_problems = adjusted;
+
         // Layers in link order of the final plan, strips per mixer input.
         let _ = self.layers.send(node_layers(&self.bound, &plan));
         if let Some(sp) = &mut self.scene_preview {
@@ -1060,6 +1155,18 @@ impl Studio {
         for a in leaving {
             if !take(&mut self.engine, a) {
                 self.pending_takes.push((a, None));
+            }
+        }
+        for f in gone_filters {
+            if f.instance.is_some() {
+                let a = Added {
+                    node: f.node,
+                    partition: RENDER,
+                    gpu: true,
+                };
+                if !take(&mut self.engine, a) {
+                    self.pending_takes.push((a, None));
+                }
             }
         }
         Ok((failed, self.problems.clone()))
@@ -1233,6 +1340,45 @@ impl Studio {
             sent = true;
         }
         sent
+    }
+
+    /// Sends `values` to a running filter without changing the collection (a slider
+    /// drag; ADR-0062 decision 3). The next [`Studio::update`] sends the collection's
+    /// values again. Returns true if a running instance got them.
+    pub fn preview_filter(&mut self, filter: FilterId, values: Values) -> bool {
+        match self
+            .filters
+            .iter_mut()
+            .find(|f| f.filter == filter)
+            .and_then(|f| f.instance.as_mut())
+        {
+            Some((sender, _)) => {
+                sender.send(values);
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// Sends the collection's values to a running filter again (a cancelled drag).
+    pub fn restore_filter(&mut self, filter: FilterId) -> bool {
+        let Some(values) =
+            filter_of(&self.collection, filter).map(|(ty, s)| filter_values_lenient(ty, s).0)
+        else {
+            return false;
+        };
+        self.preview_filter(filter, values)
+    }
+
+    /// Stored filter settings adjusted to run them, from the last start or update.
+    pub fn filter_problems(&self) -> &[FilterSettingsAdjusted] {
+        &self.filter_problems
+    }
+
+    /// Statistics of a running filter (its warm size and resizes).
+    pub fn filter_stats(&self, filter: FilterId) -> Option<&Arc<FilterStats>> {
+        let f = self.filters.iter().find(|f| f.filter == filter)?;
+        f.instance.as_ref().map(|(_, stats)| stats)
     }
 
     /// Width and height in pixels of the picture a video source delivers now (its
@@ -2132,6 +2278,19 @@ fn engine_failures(applied: &Applied) -> Vec<StartFailure> {
 
 /// Takes a retired source's instance back from its partition (it is dropped here). A
 /// take that fails is queued in `pending` with the source; returns whether it was taken.
+/// The built-in type and stored settings of a filter of the collection; `None` when the
+/// filter is gone or its type is not built in.
+fn filter_of(
+    collection: &SceneCollection,
+    filter: FilterId,
+) -> Option<(&'static dyn FilterType, &rbs_scene::model::Settings)> {
+    let f = collection
+        .sources()
+        .flat_map(|s| s.filters.iter())
+        .find(|f| f.id == filter)?;
+    Some((rbs_filters::find(f.type_id.as_str())?, &f.settings))
+}
+
 fn take_instance(
     engine: &mut Engine,
     entry: &mut Entry,

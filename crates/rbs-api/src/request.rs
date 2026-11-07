@@ -10,9 +10,9 @@ use crate::event::Topic;
 use crate::scope::{Scope, ScopeSet};
 use crate::types::ItemStyle;
 use crate::types::{
-    Canvas, CaptureTarget, Library, OutputProfile, RecordState, RecordingProfile, SceneList,
-    SeqMap, Settings, Snapshot, SourceInfo, SourceKind, StreamSettingsPatch, StreamState,
-    StudioInfo,
+    Canvas, CaptureTarget, FilterTypeList, Library, OutputProfile, RecordState, RecordingProfile,
+    SceneList, SeqMap, Settings, Snapshot, SourceInfo, SourceKind, StreamSettingsPatch,
+    StreamState, StudioInfo,
 };
 
 /// Parameters of a method that takes none. Unknown fields are ignored.
@@ -79,7 +79,7 @@ pub struct AddSource {
     /// Its name; `null` lets the server pick one.
     #[serde(default)]
     pub name: Option<String>,
-    /// The scene it is placed in (protocol 1.7); absent: the program scene.
+    /// The scene it is placed in (protocol 1.9); absent: the program scene.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub scene: Option<u32>,
 }
@@ -183,6 +183,69 @@ pub struct SetSourceMuted {
     pub muted: bool,
 }
 
+/// `filter.add` (protocol 1.8, ADR-0062): a filter at the end of a source's chain.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AddFilter {
+    /// The source's id.
+    pub source: u32,
+    /// The filter type, `org.rbs.filter.<name>` (see `filter.types`).
+    #[serde(rename = "type")]
+    pub type_id: String,
+    /// Settings by key; missing keys take their defaults. Numbers are JSON numbers,
+    /// colours `"#rrggbb"` or `"#rrggbbaa"`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub settings: Option<BTreeMap<String, serde_json::Value>>,
+}
+
+/// `filter.remove` (protocol 1.8).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct FilterRef {
+    /// The filter's id (unique in the collection).
+    pub filter: u32,
+}
+
+/// `filter.move` (protocol 1.8).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct MoveFilter {
+    /// The filter's id.
+    pub filter: u32,
+    /// Its new position in the chain, from 0.
+    pub index: u32,
+}
+
+/// `filter.set_enabled` (protocol 1.8).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SetFilterEnabled {
+    /// The filter's id.
+    pub filter: u32,
+    /// Applied or not.
+    pub enabled: bool,
+}
+
+/// `filter.set_settings` (protocol 1.8): a patch on the settings on air.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SetFilterSettings {
+    /// The filter's id.
+    pub filter: u32,
+    /// The keys to replace; the others stay.
+    pub settings: BTreeMap<String, serde_json::Value>,
+}
+
+/// `source.set_sync_offset` (protocol 1.8).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SetSourceSyncOffset {
+    /// The source's id.
+    pub source: u32,
+    /// Milliseconds, `-200..=200`: positive delays the sound, negative advances it.
+    pub offset_ms: i32,
+}
+
 /// `item.add` (protocol 1.6): a source the collection has, placed on top of the
 /// program scene.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -190,12 +253,12 @@ pub struct SetSourceMuted {
 pub struct AddItem {
     /// The source's id (`scene.list` lists every source).
     pub source: u32,
-    /// The scene it is placed in (protocol 1.7); absent: the program scene.
+    /// The scene it is placed in (protocol 1.9); absent: the program scene.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub scene: Option<u32>,
 }
 
-/// `canvas.set_preview` (protocol 1.7, ADR-0061): a scene enters studio mode with it in
+/// `canvas.set_preview` (protocol 1.9, ADR-0061): a scene enters studio mode with it in
 /// preview, or changes the preview scene; `null` leaves studio mode.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -330,15 +393,29 @@ pub enum Command {
     SourceSetMuted(SetSourceMuted),
     /// `item.add` (protocol 1.6).
     ItemAdd(AddItem),
+    /// `filter.types` (protocol 1.8).
+    FilterTypes,
+    /// `filter.add` (protocol 1.8).
+    FilterAdd(AddFilter),
+    /// `filter.remove` (protocol 1.8).
+    FilterRemove(FilterRef),
+    /// `filter.move` (protocol 1.8).
+    FilterMove(MoveFilter),
+    /// `filter.set_enabled` (protocol 1.8).
+    FilterSetEnabled(SetFilterEnabled),
+    /// `filter.set_settings` (protocol 1.8).
+    FilterSetSettings(SetFilterSettings),
+    /// `source.set_sync_offset` (protocol 1.8).
+    SourceSetSyncOffset(SetSourceSyncOffset),
     /// `item.set_visible` (protocol 1.6).
     ItemSetVisible(SetItemVisible),
     /// `item.set_locked` (protocol 1.6).
     ItemSetLocked(SetItemLocked),
-    /// `scene.sources` (protocol 1.7): the source items of any scene.
+    /// `scene.sources` (protocol 1.9): the source items of any scene.
     SceneSources(SceneRef),
-    /// `canvas.set_preview` (protocol 1.7).
+    /// `canvas.set_preview` (protocol 1.9).
     CanvasSetPreview(SetPreview),
-    /// `canvas.transition` (protocol 1.7).
+    /// `canvas.transition` (protocol 1.9).
     CanvasTransition,
     /// `edit.undo`.
     EditUndo,
@@ -403,6 +480,13 @@ impl Command {
             Command::SourceSetVolume(_) => "source.set_volume",
             Command::SourceSetMuted(_) => "source.set_muted",
             Command::ItemAdd(_) => "item.add",
+            Command::FilterTypes => "filter.types",
+            Command::FilterAdd(_) => "filter.add",
+            Command::FilterRemove(_) => "filter.remove",
+            Command::FilterMove(_) => "filter.move",
+            Command::FilterSetEnabled(_) => "filter.set_enabled",
+            Command::FilterSetSettings(_) => "filter.set_settings",
+            Command::SourceSetSyncOffset(_) => "source.set_sync_offset",
             Command::SceneSources(_) => "scene.sources",
             Command::CanvasSetPreview(_) => "canvas.set_preview",
             Command::CanvasTransition => "canvas.transition",
@@ -496,6 +580,13 @@ pub const METHODS: &[MethodInfo] = &[
     m("source.set_volume", Some(Scope::Control)),
     m("source.set_muted", Some(Scope::Control)),
     m("item.add", Some(Scope::Control)),
+    m("filter.types", Some(Scope::Read)),
+    m("filter.add", Some(Scope::Control)),
+    m("filter.remove", Some(Scope::Control)),
+    m("filter.move", Some(Scope::Control)),
+    m("filter.set_enabled", Some(Scope::Control)),
+    m("filter.set_settings", Some(Scope::Control)),
+    m("source.set_sync_offset", Some(Scope::Control)),
     m("item.set_visible", Some(Scope::Control)),
     m("item.set_locked", Some(Scope::Control)),
     m("scene.sources", Some(Scope::Read)),
@@ -614,6 +705,20 @@ enum WireRequest {
     SourceSetMuted(SetSourceMuted),
     #[serde(rename = "item.add")]
     ItemAdd(AddItem),
+    #[serde(rename = "filter.types")]
+    FilterTypes(Empty),
+    #[serde(rename = "filter.add")]
+    FilterAdd(AddFilter),
+    #[serde(rename = "filter.remove")]
+    FilterRemove(FilterRef),
+    #[serde(rename = "filter.move")]
+    FilterMove(MoveFilter),
+    #[serde(rename = "filter.set_enabled")]
+    FilterSetEnabled(SetFilterEnabled),
+    #[serde(rename = "filter.set_settings")]
+    FilterSetSettings(SetFilterSettings),
+    #[serde(rename = "source.set_sync_offset")]
+    SourceSetSyncOffset(SetSourceSyncOffset),
     #[serde(rename = "item.set_visible")]
     ItemSetVisible(SetItemVisible),
     #[serde(rename = "item.set_locked")]
@@ -692,6 +797,13 @@ impl From<WireRequest> for Request {
             WireRequest::SourceSetVolume(p) => Request::Command(C::SourceSetVolume(p)),
             WireRequest::SourceSetMuted(p) => Request::Command(C::SourceSetMuted(p)),
             WireRequest::ItemAdd(p) => Request::Command(C::ItemAdd(p)),
+            WireRequest::FilterTypes(_) => Request::Command(C::FilterTypes),
+            WireRequest::FilterAdd(p) => Request::Command(C::FilterAdd(p)),
+            WireRequest::FilterRemove(p) => Request::Command(C::FilterRemove(p)),
+            WireRequest::FilterMove(p) => Request::Command(C::FilterMove(p)),
+            WireRequest::FilterSetEnabled(p) => Request::Command(C::FilterSetEnabled(p)),
+            WireRequest::FilterSetSettings(p) => Request::Command(C::FilterSetSettings(p)),
+            WireRequest::SourceSetSyncOffset(p) => Request::Command(C::SourceSetSyncOffset(p)),
             WireRequest::SceneSources(p) => Request::Command(C::SceneSources(p)),
             WireRequest::CanvasSetPreview(p) => Request::Command(C::CanvasSetPreview(p)),
             WireRequest::CanvasTransition(_) => Request::Command(C::CanvasTransition),
@@ -746,6 +858,13 @@ impl From<Request> for WireRequest {
                 C::SourceSetVolume(p) => WireRequest::SourceSetVolume(p),
                 C::SourceSetMuted(p) => WireRequest::SourceSetMuted(p),
                 C::ItemAdd(p) => WireRequest::ItemAdd(p),
+                C::FilterTypes => WireRequest::FilterTypes(Empty {}),
+                C::FilterAdd(p) => WireRequest::FilterAdd(p),
+                C::FilterRemove(p) => WireRequest::FilterRemove(p),
+                C::FilterMove(p) => WireRequest::FilterMove(p),
+                C::FilterSetEnabled(p) => WireRequest::FilterSetEnabled(p),
+                C::FilterSetSettings(p) => WireRequest::FilterSetSettings(p),
+                C::SourceSetSyncOffset(p) => WireRequest::SourceSetSyncOffset(p),
                 C::SceneSources(p) => WireRequest::SceneSources(p),
                 C::CanvasSetPreview(p) => WireRequest::CanvasSetPreview(p),
                 C::CanvasTransition => WireRequest::CanvasTransition(Empty {}),
@@ -827,7 +946,7 @@ pub struct TargetList {
     pub targets: Vec<CaptureTarget>,
 }
 
-/// `scene.sources`' answer (protocol 1.7).
+/// `scene.sources`' answer (protocol 1.9).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SceneSourceList {
     /// The scene.
@@ -855,6 +974,13 @@ pub struct SceneAdded {
 pub struct ItemAdded {
     /// The new item's id.
     pub item: u32,
+}
+
+/// `filter.add`'s answer (protocol 1.8).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FilterAdded {
+    /// The new filter's id.
+    pub filter: u32,
 }
 
 /// `output.profiles`' answer.
@@ -952,7 +1078,11 @@ pub enum Response {
     SceneAdded(SceneAdded),
     /// `item.add` (protocol 1.6).
     ItemAdded(ItemAdded),
-    /// `scene.sources` (protocol 1.7).
+    /// `filter.types` (protocol 1.8).
+    FilterTypes(FilterTypeList),
+    /// `filter.add` (protocol 1.8).
+    FilterAdded(FilterAdded),
+    /// `scene.sources` (protocol 1.9).
     SceneSources(SceneSourceList),
     /// `output.profiles`.
     Profiles(ProfileList),
