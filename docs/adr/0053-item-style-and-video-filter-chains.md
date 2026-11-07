@@ -100,3 +100,5 @@ Concerns (non-blocking, all taken):
 6. Hit testing keeps the box. -> Noted in the UI design system spec.
 
 Owner approval: Salih asked for this design and its first step on 2026-11-06 ("evet bunu yap"); threads may mark ADRs Accepted under the project's ADR policy.
+
+Superseded in part (2026-11-07): the input-size clause of decision 6 ("`process` must not allocate" when the input's size changes, re-warm on the control thread) is replaced by ADR-0061 decision 5 (textures of the new size are acquired once in `process`, the input is still never shown unfiltered). The rest of this ADR stands.

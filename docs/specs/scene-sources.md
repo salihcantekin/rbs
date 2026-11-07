@@ -86,9 +86,10 @@ Unknown keys are ignored. A wrong value type or value is `InvalidSetting`.
 ### How the composition root uses it
 
 1. Register the platform's capture and audio adapters, `probe`.
-2. `SceneBinder::new(types.node_types()).with_audio(AUDIO)`; `sync`.
+2. `SceneBinder::new(types.node_types()).with_audio(AUDIO)`; `sync`. `node_types` also installs the descriptor of every built-in video filter type (`rbs_filters::catalogue`, [video-filters.md](video-filters.md)); filter settings convert with `filter_values` (edits, strict) and `filter_values_lenient` (documents).
 3. For each `report.created_sources`, `instantiate` and adopt the instance into the node's partition (`Video` into the render partition, `Audio` into the audio partition).
 4. Create the compositor (`node_layers`) and mixer instances, attach each canvas's encoders to `compositor(canvas, Program)` and `mixer(canvas)`. Mixer strips are kept per `SourceId` and rebuilt from `report.mixers[canvas].inputs` after every sync.
+4a. For each scheduled filter node without an instance, create a `FilterNode` of its type with the source's known picture size and adopt it into the render partition; send new values on `report.changed_filters` (ADR-0061).
 5. Apply and collect. Only then take back the instances of `retired_sources` and `retired_filters`: `Controller::take` returns idle instances only.
 6. Break-before-make for `report.replaced_sources`: an exclusive device (most cameras) cannot start the new instance while the old one runs. Apply first a copy of the graph with each replacing node moved to Standby, collect (the old instance is released), then apply the graph itself.
 

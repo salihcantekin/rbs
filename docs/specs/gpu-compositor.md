@@ -67,7 +67,11 @@ impl TexturePool {
     pub fn frame(&self, id: TextureId, format: VideoFormat, t: Timestamp) -> Result<VideoFrame, GpuError>;
     pub fn get(&self, id: TextureId) -> Option<&PooledTexture>;
     pub fn trim(&mut self);                                // drop every free texture
+    pub fn trim_idle(&mut self, tick: u64, idle_ticks: u64); // drop free textures of descriptions unused for idle_ticks (ADR-0061)
 }
+
+impl PooledTexture { pub fn sampled_bind_group(&self) -> Option<&wgpu::BindGroup>; } // public since ADR-0061
+impl GpuContext { pub fn sampled_layout(&self) -> &wgpu::BindGroupLayout; }         // the layout those bind groups match
 ```
 
 A slot is **Free**, **InUse** (handed out by `acquire`, owner holds it) or **Retired** (the owner released it while leases were open). Invariants (each has a test):
@@ -77,7 +81,8 @@ A slot is **Free**, **InUse** (handed out by `acquire`, owner holds it) or **Ret
 3. Leases implement `rbs_core::media::LeaseOwner` with one atomic counter per slot (token = slot index). A slot whose owner called `release` stays Retired, and its id stays valid, until the last lease is dropped; only then is it reused. Leases may be cloned and dropped on any thread. Because a slot is never reused while a lease exists, the token needs no generation. `frame` builds a `VideoFrame::texture` carrying such a lease; `VideoFrame::share` adds a reference.
 4. The pool holds at most its capacity of textures; past that `acquire` returns `GpuError::PoolFull`. A new pool owns no GPU memory, only one counter per slot. `trim` drops every free texture (P13); textures in use or retired are kept.
 5. The pool is owned and mutated by one render thread (`acquire`/`release` take `&mut self`). Other threads see pooled textures only through frames and leases. The engine drops a pool only after every consumer holding its leases has shut down, so the last reference to the lease counters is never dropped on a real-time thread (media-types spec, Lifetime).
-6. Every sampleable texture carries a bind group for the shared sampled-texture layout, created with the texture, so passes never create bind groups per frame.
+6. Every sampleable texture carries a bind group for the shared sampled-texture layout, created with the texture, so passes never create bind groups per frame. Both are public, so other engine crates' passes (video filters, ADR-0061) bind pool textures the same way.
+8. `trim_idle(tick, idle_ticks)` drops the free textures of every description that `acquire` has not asked for since `tick - idle_ticks`; textures in use or retired, and descriptions acquired since, are kept. `GpuRuntime::end_tick` calls it every tick with the tick index and `POOL_IDLE_TICKS` (120), so memory of sizes nobody draws any more (a removed filter, a resized source) is given back within about two seconds at 60 fps (P13). Cost per tick: one comparison per description; it drops textures only on the tick a description turns idle.
 7. A consumer that reads a leased texture with its own GPU work (an encoder on another queue or device) drops the lease only after that work has completed. Work on the engine's queue is ordered, so the compositor and converter need no extra fence.
 
 ### Compositor
