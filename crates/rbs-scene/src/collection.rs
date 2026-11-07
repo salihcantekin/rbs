@@ -8,8 +8,8 @@ use rbs_core::timing::FrameRate;
 use rbs_graph::node::NodeTypeId;
 
 use crate::model::{
-    Canvas, CanvasId, Filter, FilterId, ItemContent, ItemId, Layout, Scene, SceneId, SceneItem,
-    SceneScope, SettingValue, Settings, Source, SourceAudio, SourceId,
+    Canvas, CanvasId, Filter, FilterId, ItemContent, ItemId, Layout, MAX_SYNC_OFFSET_MS, Scene,
+    SceneId, SceneItem, SceneScope, SettingValue, Settings, Source, SourceAudio, SourceId,
 };
 
 /// Why an edit was refused. The collection is unchanged after any error.
@@ -72,6 +72,8 @@ pub enum SceneError {
     FrameRateTooHigh,
     /// A source volume is not finite or outside `0.0..=1.0` (ADR-0059).
     InvalidVolume,
+    /// A source sync offset is outside `-200..=200` ms (ADR-0062).
+    InvalidSyncOffset,
 }
 
 /// Most levels of scenes in a nesting chain, counting the shown scene. Bounds the
@@ -134,6 +136,10 @@ impl fmt::Display for SceneError {
                 )
             }
             SceneError::InvalidVolume => f.write_str("volume must be a number from 0 to 1"),
+            SceneError::InvalidSyncOffset => write!(
+                f,
+                "sync offset must be from -{MAX_SYNC_OFFSET_MS} to {MAX_SYNC_OFFSET_MS} ms"
+            ),
         }
     }
 }
@@ -172,7 +178,7 @@ enum Op {
         expected: Source,
         new: Source,
     },
-    /// Replaces only a source's volume and mute.
+    /// Replaces only a source's volume, mute and sync offset.
     SetSourceAudio {
         source: SourceId,
         expected: SourceAudio,
@@ -572,7 +578,7 @@ impl SceneCollection {
     /// otherwise). The binder ignores it: the source keeps its node.
     pub fn set_source_volume(&mut self, id: SourceId, volume: f32) -> Result<Undo, SceneError> {
         let expected = self.get_source(id)?.audio;
-        let new = SourceAudio::new(volume, expected.muted);
+        let new = SourceAudio { volume, ..expected };
         self.apply(Op::SetSourceAudio {
             source: id,
             expected,
@@ -583,12 +589,43 @@ impl SceneCollection {
     /// Mutes or unmutes a source's sound (ADR-0059); the volume is kept.
     pub fn set_source_muted(&mut self, id: SourceId, muted: bool) -> Result<Undo, SceneError> {
         let expected = self.get_source(id)?.audio;
-        let new = SourceAudio::new(expected.volume, muted);
+        let new = SourceAudio { muted, ..expected };
         self.apply(Op::SetSourceAudio {
             source: id,
             expected,
             new,
         })
+    }
+
+    /// Sets the sync offset of a source's sound in milliseconds (ADR-0062;
+    /// `InvalidSyncOffset` outside `-MAX_SYNC_OFFSET_MS..=MAX_SYNC_OFFSET_MS`). A live
+    /// control like the volume: the binder ignores it.
+    pub fn set_source_sync_offset(
+        &mut self,
+        id: SourceId,
+        sync_offset_ms: i32,
+    ) -> Result<Undo, SceneError> {
+        let expected = self.get_source(id)?.audio;
+        let new = expected.with_sync_offset(sync_offset_ms);
+        self.apply(Op::SetSourceAudio {
+            source: id,
+            expected,
+            new,
+        })
+    }
+
+    /// Replaces a filter's settings (ADR-0062). The model stores what it is given;
+    /// callers check them against the filter type first.
+    pub fn set_filter_settings(
+        &mut self,
+        source: SourceId,
+        id: FilterId,
+        settings: Settings,
+    ) -> Result<Undo, SceneError> {
+        let mut s = self.get_source(source)?.clone();
+        let index = Self::filter_index(&s, id)?;
+        s.filters[index].settings = settings;
+        self.replace_source(s, None)
     }
 
     /// Adds a filter at the end of a source's chain.
@@ -1179,8 +1216,11 @@ impl SceneCollection {
             }
             check_type(&s.type_id)?;
             check_settings(&s.settings)?;
-            if !s.audio.is_valid() {
+            if !s.audio.volume_is_valid() {
                 return Err(SceneError::InvalidVolume);
+            }
+            if !s.audio.sync_offset_is_valid() {
+                return Err(SceneError::InvalidSyncOffset);
             }
             for f in &s.filters {
                 if !filters.insert(f.id) {

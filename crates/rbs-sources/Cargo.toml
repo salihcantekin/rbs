@@ -20,6 +20,7 @@ rbs-capture = { path = "../rbs-capture" }
 rbs-audio-io = { path = "../rbs-audio-io" }
 rbs-audio = { path = "../rbs-audio" }
 rbs-nodes = { path = "../rbs-nodes" }
+rbs-filters = { path = "../rbs-filters" }
 
 [dev-dependencies]
 # Reference adapters of the capture and audio input ports (deterministic, no devices).

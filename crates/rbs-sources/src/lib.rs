@@ -19,10 +19,12 @@
 //! The crate never depends on an adapter (P1): adapters come in as port factory trait
 //! objects, and engine code never names a vendor (P3).
 
+mod filters;
 mod layers;
 mod registry;
 pub mod types;
 
+pub use filters::{filter_settings, filter_values, filter_values_lenient};
 pub use layers::node_layers;
 pub use registry::{
     AudioSource, InstanceContext, NodeTypeTable, SourceError, SourceInstance, SourcePicker,

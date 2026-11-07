@@ -160,7 +160,11 @@ pub struct Source {
 /// The largest source volume: 1.0 (0 dB), like a fader. A boost is an audio filter.
 pub const MAX_SOURCE_VOLUME: f32 = 1.0;
 
-/// Volume and mute of a source's sound (ADR-0059).
+/// The largest sync offset of a source's sound, either way, in milliseconds (ADR-0062).
+/// Equal to the audio input's default limit (`rbs_sources::DEFAULT_MAX_AUDIO_OFFSET`).
+pub const MAX_SYNC_OFFSET_MS: i32 = 200;
+
+/// Volume, mute and sync offset of a source's sound (ADR-0059, ADR-0062).
 #[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct SourceAudio {
@@ -168,20 +172,45 @@ pub struct SourceAudio {
     pub volume: f32,
     /// Muted sound is not mixed; the volume is kept.
     pub muted: bool,
+    /// Milliseconds in `-MAX_SYNC_OFFSET_MS..=MAX_SYNC_OFFSET_MS`: positive delays the
+    /// sound, negative advances it.
+    pub sync_offset_ms: i32,
 }
 
 impl SourceAudio {
-    /// `volume`, muted or not.
+    /// `volume`, muted or not, with no sync offset.
     pub const fn new(volume: f32, muted: bool) -> Self {
-        Self { volume, muted }
+        Self {
+            volume,
+            muted,
+            sync_offset_ms: 0,
+        }
+    }
+
+    /// The same sound with this sync offset.
+    pub const fn with_sync_offset(self, sync_offset_ms: i32) -> Self {
+        Self {
+            sync_offset_ms,
+            ..self
+        }
     }
 
     /// True if the volume is finite and in `0.0..=`[`MAX_SOURCE_VOLUME`].
-    pub fn is_valid(&self) -> bool {
+    pub fn volume_is_valid(&self) -> bool {
         self.volume.is_finite() && (0.0..=MAX_SOURCE_VOLUME).contains(&self.volume)
     }
 
-    /// True for full volume, not muted.
+    /// True if the sync offset is in range.
+    pub fn sync_offset_is_valid(&self) -> bool {
+        (-MAX_SYNC_OFFSET_MS..=MAX_SYNC_OFFSET_MS).contains(&self.sync_offset_ms)
+    }
+
+    /// True if every value is in range.
+    pub fn is_valid(&self) -> bool {
+        self.volume_is_valid() && self.sync_offset_is_valid()
+    }
+
+    /// True for full volume, not muted, no sync offset.
     pub fn is_default(&self) -> bool {
         *self == Self::default()
     }

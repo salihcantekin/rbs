@@ -237,6 +237,41 @@ fn filters_chain_in_order_and_follow_enable_and_removal() {
 }
 
 #[test]
+fn changed_filter_settings_keep_the_node_and_are_reported() {
+    let mut s = setup();
+    let (lut, _) = s
+        .col
+        .add_filter(s.cam, ty("org.rbs.filter.lut"), Settings::new())
+        .unwrap();
+    let report = s.binder.sync(&s.col, &mut s.graph).unwrap();
+    assert!(
+        report.changed_filters.is_empty(),
+        "a new filter is created, not changed"
+    );
+    let node = s.binder.filter_node(s.cam, lut).unwrap();
+    let mut settings = Settings::new();
+    settings.insert("amount".to_owned(), SettingValue::Float(0.5));
+    s.col.set_filter_settings(s.cam, lut, settings).unwrap();
+    let report = s.binder.sync(&s.col, &mut s.graph).unwrap();
+    assert_eq!(report.changed_filters, vec![(lut, node)]);
+    assert!(report.created_filters.is_empty() && report.retired_filters.is_empty());
+    assert_eq!(s.binder.filter_node(s.cam, lut), Some(node));
+    // Unchanged on the next sync, also across disable and enable.
+    assert!(
+        s.binder
+            .sync(&s.col, &mut s.graph)
+            .unwrap()
+            .changed_filters
+            .is_empty()
+    );
+    s.col.set_filter_enabled(s.cam, lut, false).unwrap();
+    s.col.set_filter_enabled(s.cam, lut, true).unwrap();
+    let report = s.binder.sync(&s.col, &mut s.graph).unwrap();
+    assert!(report.changed_filters.is_empty());
+    assert_eq!(s.binder.filter_node(s.cam, lut), Some(node));
+}
+
+#[test]
 fn deleting_sources_and_turning_studio_mode_off_removes_nodes() {
     let mut s = setup();
     s.col.set_preview(s.wide, Some(s.live)).unwrap();

@@ -8,8 +8,9 @@ use rbs_core::media::Size;
 use rbs_core::timing::FrameRate;
 use rbs_graph::node::NodeTypeId;
 use rbs_scene::model::{
-    Border, CanvasId, Crop, ItemContent, ItemId, ItemStyle, Layout, MAX_SOURCE_VOLUME, SceneId,
-    SceneScope, SettingValue, Settings, Shadow, Shape, SourceAudio, SourceId,
+    Border, CanvasId, Crop, FilterId, ItemContent, ItemId, ItemStyle, Layout, MAX_SOURCE_VOLUME,
+    MAX_SYNC_OFFSET_MS, SceneId, SceneScope, SettingValue, Settings, Shadow, Shape, SourceAudio,
+    SourceId,
 };
 use rbs_scene::{MAX_LAYERS, MAX_NESTING_DEPTH, SceneCollection, SceneError, Undo};
 
@@ -488,7 +489,7 @@ fn random_edit(col: &mut SceneCollection, rng: &mut Lcg) -> Result<Undo, SceneEr
     let len = scene
         .and_then(|s| col.scene(s))
         .map_or(0, |s| s.items.len());
-    match rng.below(27) {
+    match rng.below(29) {
         14 => {
             let (s, f) = filter.ok_or(missing)?;
             col.remove_filter(s, f)
@@ -521,6 +522,14 @@ fn random_edit(col: &mut SceneCollection, rng: &mut Lcg) -> Result<Undo, SceneEr
         // Every fifth volume is out of range and must be refused.
         25 => col.set_source_volume(source.ok_or(missing)?, (n % 5) as f32 * 0.3),
         26 => col.set_source_muted(source.ok_or(missing)?, n.is_multiple_of(2)),
+        // Every fourth offset is out of range and must be refused.
+        27 => col.set_source_sync_offset(source.ok_or(missing)?, (n % 4) as i32 * 100 - 150),
+        28 => {
+            let (s, f) = filter.ok_or(missing)?;
+            let mut settings = Settings::new();
+            settings.insert("amount".to_owned(), SettingValue::Float((n % 3) as f64));
+            col.set_filter_settings(s, f, settings)
+        }
         0 => col
             .add_canvas(&format!("C{n}"), Size::new(640, 360), FrameRate::FPS_30)
             .map(|x| x.1),
@@ -1063,4 +1072,64 @@ fn volume_and_mute_never_conflict_with_or_come_back_through_other_source_records
     let a = s.col.set_source_volume(s.cam, 0.2).unwrap();
     s.col.set_source_volume(s.cam, 0.4).unwrap();
     assert_eq!(s.col.undo(a), Err(SceneError::UndoConflict));
+}
+
+#[test]
+fn sync_offset_is_a_live_audio_value_kept_by_volume_and_mute() {
+    let mut s = studio();
+    let before = s.col.clone();
+    let late = s.col.set_source_sync_offset(s.cam, 120).unwrap();
+    s.col.set_source_volume(s.cam, 0.5).unwrap();
+    s.col.set_source_muted(s.cam, true).unwrap();
+    assert_eq!(
+        s.col.source(s.cam).unwrap().audio,
+        SourceAudio::new(0.5, true).with_sync_offset(120)
+    );
+    let unchanged = s.col.clone();
+    for bad in [MAX_SYNC_OFFSET_MS + 1, -MAX_SYNC_OFFSET_MS - 1, i32::MIN] {
+        assert_eq!(
+            s.col.set_source_sync_offset(s.cam, bad),
+            Err(SceneError::InvalidSyncOffset)
+        );
+    }
+    assert_eq!(s.col, unchanged);
+    // A rename's undo keeps the offset as it is now.
+    let rename = s.col.rename_source(s.cam, "Webcam").unwrap();
+    s.col.set_source_sync_offset(s.cam, -80).unwrap();
+    s.col.undo(rename).unwrap();
+    assert_eq!(s.col.source(s.cam).unwrap().audio.sync_offset_ms, -80);
+    // The record used out of order conflicts, like volume's.
+    assert_eq!(s.col.undo(late), Err(SceneError::UndoConflict));
+    s.col.set_source_sync_offset(s.cam, 0).unwrap();
+    s.col.set_source_volume(s.cam, 1.0).unwrap();
+    s.col.set_source_muted(s.cam, false).unwrap();
+    assert_eq!(s.col, before);
+}
+
+#[test]
+fn filter_settings_are_one_undo_step() {
+    let mut s = studio();
+    let (f, _) = s
+        .col
+        .add_filter(s.cam, ty("org.rbs.filter.blur"), Settings::new())
+        .unwrap();
+    let before = s.col.clone();
+    let mut settings = Settings::new();
+    settings.insert("radius".to_owned(), SettingValue::Float(4.0));
+    let undo = s
+        .col
+        .set_filter_settings(s.cam, f, settings.clone())
+        .unwrap();
+    assert_eq!(s.col.source(s.cam).unwrap().filters[0].settings, settings);
+    s.col.undo(undo).unwrap();
+    assert_eq!(s.col, before);
+    assert_eq!(
+        s.col
+            .set_filter_settings(s.cam, FilterId::from_raw(99), Settings::new()),
+        Err(SceneError::UnknownFilter(FilterId::from_raw(99)))
+    );
+    let mut bad = Settings::new();
+    bad.insert("radius".to_owned(), SettingValue::Float(f64::NAN));
+    assert!(s.col.set_filter_settings(s.cam, f, bad).is_err());
+    assert_eq!(s.col, before);
 }
