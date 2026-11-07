@@ -68,7 +68,11 @@ fn per_tick(rig: &mut Rig, values: (Values, Values), render: bool) -> (f64, f64)
     let mut n = 0u64;
     let mut tick = |rig: &mut Rig| {
         if render {
-            let v = if n.is_multiple_of(2) { values.0 } else { values.1 };
+            let v = if n.is_multiple_of(2) {
+                values.0
+            } else {
+                values.1
+            };
             rig.set_values(0, v).unwrap();
         }
         n += 1;
