@@ -21,6 +21,7 @@ File layout (format 2; format 1 is format 2 without `[font]` and is still read, 
 
 - text: `color.text.primary` and `.secondary` on every surface, `color.text.inverse` on `color.accent`, and `color.text.primary` on `color.accent.subtle`: at least 4.5:1 (7:1 in `high-contrast`); `color.text.on-live` on `color.state.live`: at least 4.5:1 in every theme, because both are fixed;
 - non-text: `color.border.focus` on `surface.base` and `.raised`, `color.border.strong`, `color.state.*` and `color.action.destructive` on `surface.raised`, `color.meter.*` on `surface.sunken`, and `color.state.live` on `surface.base`: at least 3:1;
+- the theme rules of the [themes spec](themes.md#theme-rules) add the pairs the UI draws besides (error text at 4.5:1, among others); a test reads the `.slint` files and fails on a drawn pair no rule covers;
 - `color.state.error`, `color.action.destructive` and `color.meter.clip` differ in hue from `color.state.live` by at least 45 degrees (rule U12).
 
 ### Colour (semantic names, per theme)
@@ -307,6 +308,7 @@ Toolbar items are command registry ids ([ADR-0050](../adr/0050-command-registry-
   | `ui.workspace.select` | picker | `ui.workspace.switch {name}` | View |
   | `ui.area.toggle?area=left\|right\|bottom` | action, checked while the area shows | `ui.area.toggle {area}` | View |
   | `ui.area.hide_all`, `ui.area.show_all`, `ui.layout.reset_sizes`, `ui.toolbar.reset` | action | the method of the same name | View |
+  | `ui.theme.reload` ("Reload themes") | action | the method of the same name: reads the token, appearance and theme files again ([themes spec](themes.md#applying-rbs-app-look)) | View |
   | `ui.panel.select` | picker | `ui.panel.open {id}` | Window |
   | `scene.select` | picker (a bound choice adds `collection`) | `scene.switch {scene}` (protocol 1.6) | Scene |
   | `scene.position?n=1`…`9` | action (Ctrl/Cmd+1…9), in no menu | `scene.switch` with the scene at that position | (none) |

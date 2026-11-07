@@ -79,17 +79,7 @@ pub struct Look {
 /// stopped parsing after the build). The `String` says what could not be used.
 pub fn load(data: &UserData, fonts: &mut dyn FontCatalog) -> (Option<Look>, Option<String>) {
     let mut notes = Vec::new();
-    let file = match std::env::var_os("RBS_TOKENS") {
-        Some(path) if !path.is_empty() => match read(Path::new(&path)) {
-            Ok(file) => Some(file),
-            Err(why) => {
-                notes.push(why);
-                TokenFile::built_in().ok()
-            }
-        },
-        _ => TokenFile::built_in().ok(),
-    };
-    let Some(file) = file else {
+    let Some(file) = token_file(&mut notes) else {
         return (None, join(notes));
     };
     let appearance = match dev_theme() {
@@ -124,6 +114,21 @@ pub fn load(data: &UserData, fonts: &mut dyn FontCatalog) -> (Option<Look>, Opti
         }),
         join(notes),
     )
+}
+
+/// The token file: `RBS_TOKENS` when set and usable, else the built-in one. Why a set
+/// file is not used goes to `notes`.
+pub fn token_file(notes: &mut Vec<String>) -> Option<TokenFile> {
+    match std::env::var_os("RBS_TOKENS") {
+        Some(path) if !path.is_empty() => match read(Path::new(&path)) {
+            Ok(file) => Some(file),
+            Err(why) => {
+                notes.push(why);
+                TokenFile::built_in().ok()
+            }
+        },
+        _ => TokenFile::built_in().ok(),
+    }
 }
 
 fn join(notes: Vec<String>) -> Option<String> {
@@ -194,6 +199,9 @@ pub fn apply(theme: &Theme<'_>, tokens: &Tokens<'_>, look: Option<&Look>) {
         crate::studio_ui::log(&format!("token file not applied: {why}"));
     }
 }
+
+#[cfg(test)]
+mod drawn;
 
 #[cfg(test)]
 mod tests {
