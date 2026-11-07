@@ -124,7 +124,8 @@ pub fn slint_text(indent: &str) -> String {
         out.push_str(text);
         out.push('\n');
     };
-    line(0, "MenuBar {");
+    // macOS only: Windows and Linux use the RBS menu instead (spec, "RBS menu").
+    line(0, "if Shell.native-menu-bar: MenuBar {");
     let mut index = 0usize;
     let mut picker = 0usize;
     for (menu, items) in menus(&Shape) {
@@ -661,6 +662,8 @@ pub enum Run {
     /// Show the Settings window, at this section (`SettingsWindow.section`) when
     /// given (`ui.settings.open`).
     OpenSettings(Option<i32>),
+    /// Open the RBS menu with its search field (`ui.app_menu.open`).
+    OpenAppMenu,
     /// Scene edit undo (`true`) or redo.
     UndoEdit(bool),
     /// Load and switch to the named workspace.
@@ -748,6 +751,7 @@ pub fn run(text: &str, state: &Shown<'_>) -> Option<Run> {
         "ui.toolbar.reset" => Run::Layout(L::ResetToolbar),
         "ui.theme.reload" => Run::ReloadThemes,
         "ui.settings.open" => open_settings(&id)?,
+        "ui.app_menu.open" => Run::OpenAppMenu,
         "ui.panel.maximize" => Run::Maximize(panel_of(&id)?, !on),
         "canvas.studio_mode.toggle" => Run::StudioMode(!on),
         "canvas.transition" => Run::Transition,
@@ -845,7 +849,9 @@ mod tests {
     fn refreshing_keeps_the_text_around_the_markers() {
         let text = format!("a\n    {BEGIN}\n    old\n    {END}\nb\n");
         let fresh = refreshed(&text).expect("markers");
-        assert!(fresh.starts_with(&format!("a\n    {BEGIN}\n    MenuBar {{\n")));
+        assert!(fresh.starts_with(&format!(
+            "a\n    {BEGIN}\n    if Shell.native-menu-bar: MenuBar {{\n"
+        )));
         assert!(fresh.ends_with(&format!("    }}\n    {END}\nb\n")));
         assert!(!fresh.contains("old"));
         assert_eq!(refreshed("no markers"), None);

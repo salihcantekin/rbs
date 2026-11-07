@@ -642,6 +642,17 @@ pub const ENTRIES: &[Entry] = &[
         params: &[],
         checkable: true,
     },
+    Entry {
+        id: "ui.app_menu.open",
+        title: "Search commands",
+        tooltip: "Open the RBS menu with its search field: every command, setting and panel",
+        icon: Some("search"),
+        shortcut: Some("Ctrl+K"),
+        menu: Menu::Help,
+        kind: action("ui.app_menu.open"),
+        params: &[],
+        checkable: false,
+    },
 ];
 
 /// The entry with id `base` (no parameters).
@@ -911,14 +922,17 @@ pub enum MenuItem {
     Separator,
 }
 
-/// What each menu holds, in order: command ids (with parameters) and `|` separators.
+/// What each menu holds, in order: command ids (with parameters), `|` separators and
+/// `#Heading` section headings. The menu bar draws a heading as a separator; the RBS
+/// menu shows its text ([`app_menu`]).
 pub const MENU_LAYOUT: &[(Menu, &[&str])] = &[
     (
         Menu::File,
         &[
+            "#Library",
             "profile.select",
             "collection.select",
-            "|",
+            "#App",
             "ui.settings.open",
         ],
     ),
@@ -926,6 +940,7 @@ pub const MENU_LAYOUT: &[(Menu, &[&str])] = &[
     (
         Menu::View,
         &[
+            "#Layout",
             "ui.workspace.select",
             "|",
             "ui.area.toggle?area=left",
@@ -933,28 +948,28 @@ pub const MENU_LAYOUT: &[(Menu, &[&str])] = &[
             "ui.area.toggle?area=bottom",
             "ui.area.hide_all",
             "ui.area.show_all",
-            "|",
             "ui.layout.reset_sizes",
+            "#Toolbar",
             "ui.toolbar.reset",
-            "|",
+            "#Transition",
             "ui.layout.studio_rail?at=between",
             "ui.layout.studio_rail?at=below",
-            "|",
+            "#Display",
             "ui.theme.reload",
         ],
     ),
     (
         Menu::Scene,
         &[
+            "#Scenes",
             "scene.select",
-            "|",
             "scene.previous",
             "scene.next",
             "|",
             "scene.add",
             "scene.rename",
             "scene.remove",
-            "|",
+            "#Studio mode",
             "canvas.studio_mode.toggle",
             "canvas.transition",
         ],
@@ -963,7 +978,7 @@ pub const MENU_LAYOUT: &[(Menu, &[&str])] = &[
         Menu::Source,
         &[
             "source.add",
-            "|",
+            "#Selected source",
             "item.visible.toggle",
             "item.locked.toggle",
             "source.muted.toggle",
@@ -978,6 +993,7 @@ pub const MENU_LAYOUT: &[(Menu, &[&str])] = &[
         Menu::Window,
         &["ui.panel.select", "|", "ui.panel.maximize?id=rbs.preview"],
     ),
+    (Menu::Help, &["ui.app_menu.open"]),
 ];
 
 /// Entries no menu lists: `scene.position` is for shortcuts and the palette (the
@@ -1069,31 +1085,170 @@ fn item(id: CommandId, e: &Entry, state: &dyn CommandState) -> MenuItem {
     }
 }
 
-/// The menu bar's menus with their items, from [`MENU_LAYOUT`] and the shell's state.
-/// Menus without items are left out.
-pub fn menus(state: &dyn CommandState) -> Vec<(Menu, Vec<MenuItem>)> {
+/// One row of a menu in the RBS menu: a section heading, a separator or an item.
+#[derive(Clone, Debug, PartialEq)]
+pub enum AppRow {
+    /// A section heading (`#Layout` in [`MENU_LAYOUT`]).
+    Heading(&'static str),
+    /// A separator.
+    Separator,
+    /// A command or a picker's submenu.
+    Item(MenuItem),
+}
+
+/// The menus of [`MENU_LAYOUT`] with their rows, for the shell's state, in menu bar
+/// order. Menus without items are left out, and so are headings and separators that
+/// would end a menu, lead it (a separator) or come twice (a separator after a
+/// heading, a heading or separator after a separator, the later one wins).
+pub fn app_menu(state: &dyn CommandState) -> Vec<(Menu, Vec<AppRow>)> {
     let mut out = Vec::new();
     for menu in Menu::ALL {
         let Some((_, ids)) = MENU_LAYOUT.iter().find(|(m, _)| *m == menu) else {
             continue;
         };
-        let mut items = Vec::new();
+        let mut rows: Vec<AppRow> = Vec::new();
         for text in *ids {
             if *text == "|" {
-                items.push(MenuItem::Separator);
+                if matches!(rows.last(), Some(AppRow::Item(_))) {
+                    rows.push(AppRow::Separator);
+                }
+                continue;
+            }
+            if let Some(h) = text.strip_prefix('#') {
+                if matches!(rows.last(), Some(AppRow::Heading(_) | AppRow::Separator)) {
+                    rows.pop();
+                }
+                rows.push(AppRow::Heading(h));
                 continue;
             }
             let Ok(id) = CommandId::parse(text) else {
                 continue;
             };
             if let Ok(Some(e)) = id.resolve() {
-                items.push(item(id, e, state));
+                rows.push(AppRow::Item(item(id, e, state)));
             }
         }
-        if !items.is_empty() {
-            out.push((menu, items));
+        while matches!(rows.last(), Some(AppRow::Heading(_) | AppRow::Separator)) {
+            rows.pop();
+        }
+        if !rows.is_empty() {
+            out.push((menu, rows));
         }
     }
+    out
+}
+
+/// The menu bar's menus with their items, from [`MENU_LAYOUT`] and the shell's state:
+/// the RBS menu's rows with each heading drawn as a separator (none at a menu's
+/// start). Menus without items are left out.
+pub fn menus(state: &dyn CommandState) -> Vec<(Menu, Vec<MenuItem>)> {
+    app_menu(state)
+        .into_iter()
+        .map(|(menu, rows)| {
+            let mut items = Vec::new();
+            for row in rows {
+                match row {
+                    AppRow::Item(i) => items.push(i),
+                    AppRow::Heading(_) | AppRow::Separator => {
+                        if !items.is_empty() {
+                            items.push(MenuItem::Separator);
+                        }
+                    }
+                }
+            }
+            (menu, items)
+        })
+        .collect()
+}
+
+/// Most results [`search`] gives.
+pub const MAX_SEARCH_RESULTS: usize = 40;
+
+/// The title of a Settings section (`remote_control` reads "Remote control").
+pub fn settings_section_title(section: &str) -> String {
+    let mut out = section.replace('_', " ");
+    if let Some(first) = out.get(0..1) {
+        let upper = first.to_ascii_uppercase();
+        out.replace_range(0..1, &upper);
+    }
+    out
+}
+
+/// The commands whose words hold every word of `query` (case-insensitive), for the
+/// RBS menu's search field: commands as the menus show them, each choice of a picker
+/// as its own command ("Workspace: Live"), and each Settings section ("Settings:
+/// Appearance"). A command's menu title counts as one of its words, so "view" finds
+/// the View menu's commands. In menu order; at most [`MAX_SEARCH_RESULTS`]; none for
+/// a blank query.
+pub fn search(state: &dyn CommandState, query: &str) -> Vec<MenuItem> {
+    let words: Vec<String> = query.split_whitespace().map(str::to_lowercase).collect();
+    if words.is_empty() {
+        return Vec::new();
+    }
+    let hit = |menu: Menu, title: &str| {
+        let text = format!("{} {}", menu.title(), title).to_lowercase();
+        words.iter().all(|w| text.contains(w.as_str()))
+    };
+    let mut out = Vec::new();
+    for (menu, rows) in app_menu(state) {
+        for row in rows {
+            let AppRow::Item(item) = row else { continue };
+            match item {
+                MenuItem::Command {
+                    ref id,
+                    ref title,
+                    ref disabled,
+                    icon,
+                    ..
+                } => {
+                    let plain = hit(menu, title);
+                    let mut sections = Vec::new();
+                    if id.base() == "ui.settings.open" && id.param("section").is_none() {
+                        for s in SETTINGS_SECTIONS {
+                            let title = format!("{title}: {}", settings_section_title(s));
+                            if hit(menu, &title) {
+                                let mut run = id.clone();
+                                run.params.push(("section".to_owned(), s.to_owned()));
+                                sections.push(MenuItem::Command {
+                                    id: run,
+                                    title,
+                                    shortcut: None,
+                                    disabled: disabled.clone(),
+                                    checked: None,
+                                    icon,
+                                });
+                            }
+                        }
+                    }
+                    if plain {
+                        out.push(item);
+                    }
+                    out.extend(sections);
+                }
+                MenuItem::Choices {
+                    title,
+                    icon,
+                    choices,
+                } => {
+                    for (choice, run, current) in choices {
+                        let title = format!("{title}: {choice}");
+                        if hit(menu, &title) {
+                            out.push(MenuItem::Command {
+                                id: run,
+                                title,
+                                shortcut: None,
+                                disabled: None,
+                                checked: Some(current),
+                                icon,
+                            });
+                        }
+                    }
+                }
+                MenuItem::Separator => {}
+            }
+        }
+    }
+    out.truncate(MAX_SEARCH_RESULTS);
     out
 }
 
@@ -1394,7 +1549,7 @@ mod tests {
         }
         for (_, items) in MENU_LAYOUT {
             for i in *items {
-                if *i != "|" {
+                if *i != "|" && !i.starts_with('#') {
                     let id = CommandId::parse(i).unwrap();
                     assert!(id.resolve().unwrap().is_some(), "{i}");
                     assert_eq!(id.to_string(), *i, "menu ids are written canonically");
@@ -1443,7 +1598,7 @@ mod tests {
         assert_eq!(
             titles,
             [
-                "File", "Edit", "View", "Scene", "Source", "Output", "Window"
+                "File", "Edit", "View", "Scene", "Source", "Output", "Window", "Help"
             ]
         );
         let file = &m[0].1;
@@ -1499,6 +1654,28 @@ mod tests {
         assert_eq!(Context::parse("nothing"), None);
     }
 
+    #[test]
+    fn headings_title_sections_and_are_separators_in_the_menu_bar() {
+        let app = app_menu(&Fake);
+        let (_, view) = app.iter().find(|(m, _)| *m == Menu::View).unwrap();
+        assert_eq!(view[0], AppRow::Heading("Layout"));
+        assert!(view.contains(&AppRow::Heading("Display")));
+        assert!(!matches!(
+            view.last(),
+            Some(AppRow::Heading(_) | AppRow::Separator)
+        ));
+        let bar = menus(&Fake);
+        let (_, view) = bar.iter().find(|(m, _)| *m == Menu::View).unwrap();
+        assert!(
+            !matches!(view[0], MenuItem::Separator),
+            "no separator leads a menu"
+        );
+        assert!(view.iter().any(|i| matches!(i, MenuItem::Separator)));
+        assert!(search(&Fake, " ").is_empty());
+        let found = search(&Fake, "SETTINGS stream");
+        assert!(found.iter().any(|i| matches!(i, MenuItem::Command { id, .. } if id.to_string() == "ui.settings.open?section=stream")));
+    }
+
     /// Every command has an icon from the set, so no menu item is blank (spec,
     /// "Icons": menus show an icon on every command).
     #[test]
@@ -1511,7 +1688,7 @@ mod tests {
             .iter()
             .flat_map(|(_, ids)| ids.iter())
             .chain(CONTEXT_LAYOUT.iter().flat_map(|(_, ids)| ids.iter()));
-        for text in layouts.filter(|t| **t != "|") {
+        for text in layouts.filter(|t| **t != "|" && !t.starts_with('#')) {
             let id = CommandId::parse(text).unwrap();
             let e = entry(id.base()).unwrap();
             let name = icon(&id, e).unwrap_or_else(|| panic!("{text} has no icon"));
