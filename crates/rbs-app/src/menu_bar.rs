@@ -258,6 +258,12 @@ impl Shown<'_> {
 impl CommandState for Shown<'_> {
     fn enabled(&self, id: &CommandId) -> Result<(), String> {
         let s = self.studio;
+        // Scene, source and item ids are unique only within a scene collection.
+        if let Some(c) = id.param("collection")
+            && s.current_collection().as_deref() != Some(c)
+        {
+            return Err("In another scene collection.".to_owned());
+        }
         match id.base() {
             "edit.undo" => {
                 self.running()?;
@@ -326,15 +332,7 @@ impl CommandState for Shown<'_> {
                     Err("Studio mode is off.".to_owned())
                 }
             }
-            "scene.select" => {
-                self.running()?;
-                match id.param("collection") {
-                    Some(c) if s.current_collection().as_deref() != Some(c) => {
-                        Err("In another scene collection.".to_owned())
-                    }
-                    _ => Ok(()),
-                }
-            }
+            "scene.select" => self.running(),
             "scene.position" => {
                 self.running()?;
                 scene_position(id)

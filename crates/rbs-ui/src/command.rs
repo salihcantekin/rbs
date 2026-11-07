@@ -201,6 +201,11 @@ const fn target(name: &'static str) -> Param {
     }
 }
 
+/// The scene collection a targeted id was made in: scene, source and item ids are
+/// unique only within one, so an id that names one runs nothing while another
+/// collection is in use (as `scene.select`'s, ADR-0060).
+const COLLECTION: Param = target("collection");
+
 const fn action(method: &'static str) -> Kind {
     Kind::Action { method }
 }
@@ -462,7 +467,7 @@ pub const ENTRIES: &[Entry] = &[
         kind: action("scene.rename"),
         // Without `scene`: the scene on air (in studio mode, the preview scene).
         // Without `name`: the UI asks for it (`ui.command.run` cannot run it).
-        params: &[target("scene"), target("name")],
+        params: &[target("scene"), target("name"), COLLECTION],
         checkable: false,
     },
     Entry {
@@ -473,7 +478,7 @@ pub const ENTRIES: &[Entry] = &[
         shortcut: None,
         menu: Menu::Scene,
         kind: action("scene.remove"),
-        params: &[target("scene")],
+        params: &[target("scene"), COLLECTION],
         checkable: false,
     },
     Entry {
@@ -502,7 +507,7 @@ pub const ENTRIES: &[Entry] = &[
             off: "item.set_visible",
         },
         // Without `item`: the selected source's item in the scene.
-        params: &[target("item")],
+        params: &[target("item"), COLLECTION],
         checkable: true,
     },
     Entry {
@@ -516,7 +521,7 @@ pub const ENTRIES: &[Entry] = &[
             on: "item.set_locked",
             off: "item.set_locked",
         },
-        params: &[target("item")],
+        params: &[target("item"), COLLECTION],
         checkable: true,
     },
     Entry {
@@ -530,7 +535,7 @@ pub const ENTRIES: &[Entry] = &[
             on: "source.set_muted",
             off: "source.set_muted",
         },
-        params: &[target("source")],
+        params: &[target("source"), COLLECTION],
         checkable: true,
     },
     Entry {
@@ -542,7 +547,7 @@ pub const ENTRIES: &[Entry] = &[
         menu: Menu::Source,
         kind: action("source.rename"),
         // Without `source`: the selected source. Without `name`: the UI asks for it.
-        params: &[target("source"), target("name")],
+        params: &[target("source"), target("name"), COLLECTION],
         checkable: false,
     },
     Entry {
@@ -553,7 +558,7 @@ pub const ENTRIES: &[Entry] = &[
         shortcut: None,
         menu: Menu::Source,
         kind: action("source.delete"),
-        params: &[target("source")],
+        params: &[target("source"), COLLECTION],
         checkable: false,
     },
     Entry {
@@ -1055,8 +1060,8 @@ pub enum Context {
     Source,
     /// The Sources panel outside its rows.
     Sources,
-    /// A picture panel (Preview or, in studio mode, Program) outside any source's
-    /// picture (target `id`, the panel).
+    /// The editable picture panel (Program, or in studio mode Preview) outside any
+    /// source's picture (target `id`, the panel).
     Preview,
 }
 

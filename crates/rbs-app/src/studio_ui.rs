@@ -3086,7 +3086,6 @@ fn strings(items: impl IntoIterator<Item = String>) -> ModelRc<SharedString> {
     )))
 }
 
-/// Rows are replaced only where they changed, so unchanged rows keep their views.
 /// One source of the scene being edited, as the command registry asks about it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct SourceFacts {
@@ -3103,6 +3102,7 @@ pub struct SourceFacts {
     pub audio: bool,
 }
 
+/// Rows are replaced only where they changed, so unchanged rows keep their views.
 fn set_rows<T: Clone + PartialEq + 'static>(model: &VecModel<T>, rows: Vec<T>) {
     if model.row_count() != rows.len() {
         model.set_vec(rows);

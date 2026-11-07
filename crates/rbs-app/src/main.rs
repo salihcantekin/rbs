@@ -400,6 +400,9 @@ impl App {
             Run::Transition => self.studio.transition(),
             Run::AddScene => self.studio.add_scene(),
             Run::RenameScene(id, Some(name)) => self.studio.rename_scene(id, &name),
+            // Asking for a name needs someone at the window: not from a control
+            // surface or a global shortcut (`ui.command.run` answers `invalid_params`).
+            Run::RenameScene(_, None) | Run::RenameSource(_, None) if !confirm => {}
             Run::RenameScene(id, None) => self.ask_rename(id, true),
             Run::RemoveScene(id) => self.studio.remove_scene(id),
             Run::RenameSource(id, Some(name)) => self.studio.rename_source(id, &name),
@@ -427,11 +430,15 @@ impl App {
         if let Some(p) = panel(name) {
             self.command(LayoutCommand::OpenPanel(p), Origin::Command);
         }
+        // The id says which row; the count makes each ask a change, also for the same
+        // row twice. A row made later (its panel was closed) checks the id when made.
         let ask = |g: Studio<'_>| {
             if scene {
                 g.set_renaming_scene(id);
+                g.set_rename_scene_asked(g.get_rename_scene_asked() + 1);
             } else {
                 g.set_renaming_source(id);
+                g.set_rename_source_asked(g.get_rename_source_asked() + 1);
             }
         };
         ask(self.main.global::<Studio>());
