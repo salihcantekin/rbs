@@ -76,3 +76,4 @@ An ADR records one decision that is hard to reverse or affects more than one cra
 | [0061](0061-studio-mode-in-the-desktop-app.md) | Studio mode in the desktop app: preview scene picture, cut transition, control API 1.9 | Accepted |
 | [0062](0062-built-in-video-filters-and-properties-tabs.md) | Built-in video filters: one filter node behind a filter type trait, settings through parameter channels, and the Properties tabs | Accepted |
 | [0063](0063-hold-the-program-while-its-scene-is-edited-in-preview.md) | Hold the program while its scene is edited in preview (studio mode) | Accepted |
+| [0064](0064-transition-rail-with-the-pictures.md) | The Transition rail sits with the pictures: between or below Preview and Program, only in studio mode | Accepted |

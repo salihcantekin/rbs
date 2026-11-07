@@ -318,6 +318,21 @@ pub const ENTRIES: &[Entry] = &[
         checkable: false,
     },
     Entry {
+        id: "ui.layout.studio_rail",
+        title: "Transition rail",
+        tooltip: "Put the Transition rail between or below Preview and Program",
+        icon: None,
+        shortcut: None,
+        menu: Menu::View,
+        kind: action("ui.layout.studio_rail"),
+        params: &[Param {
+            name: "at",
+            ty: ParamType::OneOf(&["between", "below"]),
+            required: true,
+        }],
+        checkable: true,
+    },
+    Entry {
         id: "ui.toolbar.reset",
         title: "Reset toolbar",
         tooltip: "Put the workspace's default toolbar back",
@@ -778,6 +793,9 @@ pub const MENU_LAYOUT: &[(Menu, &[&str])] = &[
             "ui.layout.reset_sizes",
             "ui.toolbar.reset",
             "|",
+            "ui.layout.studio_rail?at=between",
+            "ui.layout.studio_rail?at=below",
+            "|",
             "ui.theme.reload",
         ],
     ),
@@ -828,6 +846,15 @@ pub fn icon_only(id: &CommandId) -> bool {
 pub fn title(id: &CommandId, e: &Entry) -> String {
     if let ("scene.position", Some(n)) = (e.id, id.param("n")) {
         return format!("Scene at position {n}");
+    }
+    match (e.id, id.param("at")) {
+        ("ui.layout.studio_rail", Some("between")) => {
+            return "Transition between the pictures".to_owned();
+        }
+        ("ui.layout.studio_rail", Some("below")) => {
+            return "Transition below the pictures".to_owned();
+        }
+        _ => {}
     }
     match (e.id, id.param("area")) {
         ("ui.area.toggle", Some("left")) => "Left area".to_owned(),
