@@ -19,6 +19,7 @@ rbs-capture = { path = "../rbs-capture" }
 rbs-codec = { path = "../rbs-codec" }
 rbs-mux = { path = "../rbs-mux" }
 rbs-transport = { path = "../rbs-transport" }
+rbs-vcam = { path = "../rbs-vcam" }
 # Only to read the render device's graphics API (`wgpu::Backend`); same version and
 # features as rbs-gpu, so nothing new is built.
 wgpu = { version = "30.0.1", default-features = false, features = ["std", "parking_lot", "dx12", "metal", "vulkan", "wgsl"] }
@@ -26,6 +27,8 @@ wgpu = { version = "30.0.1", default-features = false, features = ["std", "parki
 [dev-dependencies]
 # Synthetic capture for the pipeline tests (deterministic, no threads).
 rbs-capture-test = { path = "../rbs-capture-test" }
+# Virtual camera adapter for tests (in process, records what it takes).
+rbs-vcam-test = { path = "../rbs-vcam-test" }
 # Allocation guard for the nodes' `process` (performance budgets: no allocation on hot paths).
 allocation-counter = "0.8"
 

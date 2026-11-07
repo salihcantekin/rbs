@@ -4840,6 +4840,8 @@ dependencies = [
  "rbs-mux-matroska",
  "rbs-transport",
  "rbs-transport-file",
+ "rbs-vcam",
+ "rbs-vcam-test",
  "wgpu",
 ]
 

@@ -180,13 +180,46 @@ Render partition, `GpuRuntime`. An `Output`, so a canvas that nothing records st
 
 Invariants: no CPU readback (P4); `process` does not allocate in RBS code and never waits (the publisher's hot-path rules); the endpoint is written only on the control thread; a restart creates a new endpoint (the UI reconnects).
 
+### Virtual camera node (ADR-0066)
+
+```rust
+// rbs_nodes::vcam
+pub const VIRTUAL_CAMERA_NODE_TYPE: &str = "org.rbs.virtual-camera";
+pub const CAMERA_BUFFERS: usize = 5;                  // node + 3 session slots + sender copy
+pub fn virtual_camera_descriptor() -> NodeDescriptor; // Output, input "canvas" (Video), no outputs
+impl VirtualCameraNode {
+    pub fn new(session: Box<dyn VirtualCameraSession>, config: VirtualCameraConfig,
+               canvas_width: u32, canvas_height: u32) -> Self; // owns the session
+    pub fn stats(&self) -> Arc<VirtualCameraNodeStats>;
+    pub fn session_stats(&self) -> VcamStats;
+}
+pub struct VirtualCameraNodeStats {                   // relaxed atomics
+    pub sent: AtomicU64, pub consumer_busy: AtomicU64, pub busy: AtomicU64,
+    pub lost: AtomicU64, pub refused: AtomicU64, pub failed: AtomicU64,
+}
+```
+
+Render partition, `GpuRuntime`, not essential. The session is opened by the studio on the control thread and handed in; the node is dropped (and the session with it, joining the adapter's sender thread) on the control thread after the studio takes it back (ADR-0066 decision 6). A canvas size change rebuilds the node; the camera keeps its size and rate.
+
+| Call | Does |
+| --- | --- |
+| `prepare` | Refuses anything but NV12 (`Failed`). Creates `YuvDownload::scaled` from the canvas size to the camera size with `CAMERA_BUFFERS` frame buffers; resets the cadence |
+| `process` | 1. `take_ready`: each submission that ended this tick (delivered, stale, no buffer, failed) gives its reserved token back in submission order; the delivered frame goes to `session.send` with the last one (`sent`, or `refused` when `send` errs), the others are dropped and free their slots (`lost`). 2. The newest canvas is taken only when a camera frame is due on `Cadence::frames(first canvas time, camera rate)` (index at or before the canvas time past the last one taken): a 60 fps canvas feeds a 30 fps camera every other tick, a slower canvas every tick. 3. A due frame first reserves a session slot; none free skips it before any GPU work (`consumer_busy`). Then `submit`; a full staging ring (`busy`) or a failed conversion (`failed`) drops the token. Always returns `Ok` |
+| `release` | Counts readbacks still in flight in `lost`, drops the download and the tokens |
+
+Invariants:
+
+1. Never waits for the GPU, the session or its consumer; nothing the camera does fails a tick or stops the studio's other outputs.
+2. A readback in flight holds a reserved session slot, so a completed one always has room; at most three tokens are held (the session's slot count).
+3. Frames sent are NV12, the camera's size (the canvas fitted with its aspect ratio kept, black bars), `BT709_LIMITED`, system memory, with the canvas frame's timestamp and sequence.
+
 ## Errors and failure behaviour
 
 Nodes report through `NodeError` (ADR-0020): `Permanent` for what retrying cannot fix (permissions, missing targets, unsupported formats, a changed encoder stream, a failed output), `Backend`/`Failed` for what may recover (a lost capture target, a busy device), which the controller restarts with back-off (ADR-0024).
 
 ## Performance requirements
 
-- Hot paths ([hot-paths.md](../architecture/hot-paths.md)): every `process` above (the preview node's is `PreviewPublisher::publish` and `tick` plus a key comparison), `SourceUpload::upload`, `YuvDownload::submit` and `take_ready`.
+- Hot paths ([hot-paths.md](../architecture/hot-paths.md)): every `process` above (the preview node's is `PreviewPublisher::publish` and `tick` plus a key comparison; the virtual camera node's is a cadence check, `reserve`, `YuvDownload::submit`/`take_ready` and `send`), `SourceUpload::upload`, `YuvDownload::submit` and `take_ready`.
 - Encoder and output `process` allocate nothing in steady state (test `steady_state_ticks_do_not_allocate`). The GPU nodes allocate nothing in RBS code for a format and size they have seen; wgpu allocates internally while recording command buffers and for the map callback.
 - The export's CPU copy is one `memcpy` of the frame (about 3 MB at 1080p NV12) per delivered frame on the render thread; measured in the PR that adds it.
 
@@ -194,6 +227,7 @@ Nodes report through `NodeError` (ADR-0020): `Permanent` for what retrying canno
 
 - `crates/rbs-nodes/tests/encode_output.rs`: frames submitted once; header, media and trailer in order; backlog on `QueueFull` delivered in order; backlog overflow is permanent; carry-over in order; carry overflow resumes at a keyframe and requests one; a changed stream after restart is permanent; no session while installed or in Standby; a refused frame loses no packet; an output that wrote media refuses to restart; a failure keeps its cause; `release` gives up on a full queue on the wait clock without sleeping; no allocation per tick.
 - `crates/rbs-nodes/tests/pipeline_gpu.rs` (any GPU adapter; CI uses lavapipe, WARP and Metal): a BGRA window and an NV12 camera from the synthetic adapter go through capture, compositor and export, and arrive as NV12 with the right format, times and luma; an ended export passes on every canvas up to the end and none after (ADR-0045).
+- `crates/rbs-nodes/tests/vcam_gpu.rs` (any GPU adapter, the `rbs-vcam-test` camera): a 60 fps canvas feeds a 30 fps camera on even ticks only, every due frame sent or counted, delivered in order; a stalled consumer fills the three slots and then skips before conversion without failing a tick, and on resume the newest frame wins; a frame the session refuses is counted and frees its slot.
 - `crates/rbs-gpu/tests/upload_download.rs`: download codes, busy ring, stale frames, buffer recycling, `frames_cpu_copied`; upload of padded BGRA rows and NV12.
 - Hardware (manual, `crates/rbs-nodes/examples/record.rs`): screen and camera to an H.264 Matroska file with the platform's adapters.
 
