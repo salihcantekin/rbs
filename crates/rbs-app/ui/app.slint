@@ -3,6 +3,7 @@
 // layout tree into tab stacks and splitter handles with absolute positions.
 import { Theme, Tokens } from "tokens.slint";
 import { Button, IconButton, Icon, IconName, Icons, FocusRing, MenuItem as MenuRow, MenuSurface, EmptyState } from "components.slint";
+import { SettingsNavItem, SettingsNavGroup, SettingsHeader } from "settings.slint";
 import { Appearance, AppearanceSettings, ThemeOption, ThemeTokenRow } from "appearance.slint";
 import { Shortcuts, ShortcutsSettings, ShortcutRow, ShortcutChip } from "shortcuts.slint";
 import { Studio, EntryRow, SourceData, MarkData, KindData, TargetData, MeterRow, ScaleMark, EncoderData, ProgramPanel, ScenesPanel, SourcesPanel, PropertiesPanel, MixerPanel, LiveControlsPanel, OutputsPanel, StatsPanel, RecordingSettings, StreamSettings, VideoSettings, RemoteControlSettings, GeneralSettings } from "studio.slint";
@@ -1583,10 +1584,11 @@ export component FloatWindow inherits Window {
 export component SettingsWindow inherits Window {
     default-font-family: Theme.font-family;
     title: @tr("RBS settings");
-    preferred-width: Tokens.size-floating-w;
-    preferred-height: Tokens.size-floating-h;
-    min-width: Tokens.size-menu-md * 2;
-    background: Theme.surface-raised;
+    preferred-width: Tokens.size-settings-w;
+    preferred-height: Tokens.size-settings-h;
+    min-width: Tokens.size-menu-sm + Tokens.size-floating-w / 2 + Tokens.size-menu-md;
+    min-height: Tokens.size-floating-h;
+    background: Theme.surface-base;
     default-font-size: Tokens.type-body-size;
     // 0 Video, 1 Recording, 2 Stream, 3 Remote control, 4 General (listed first),
     // 5 Appearance (second), 6 Shortcuts (third).
@@ -1607,63 +1609,95 @@ export component SettingsWindow inherits Window {
             reject
         }
         HorizontalLayout {
+            // The section list, in groups (U17: a flat list, never nested).
             Rectangle {
                 width: Tokens.size-menu-sm;
-                background: Theme.surface-base;
+                background: Theme.surface-raised;
+                Rectangle {
+                    x: parent.width - self.width;
+                    width: Tokens.size-border;
+                    background: Theme.border-subtle;
+                }
                 VerticalLayout {
-                    padding: Tokens.space-2;
+                    padding: Tokens.space-3;
+                    padding-top: Tokens.space-4;
+                    spacing: Tokens.space-1;
                     alignment: start;
                     accessible-role: list;
                     accessible-label: @tr("Settings sections");
-                    MenuRow {
+                    Text {
+                        text: @tr("Settings");
+                        color: Theme.text-primary;
+                        font-size: Tokens.type-title-size;
+                        font-weight: Tokens.type-title-weight;
+                        accessible-role: none;
+                    }
+                    Rectangle { height: Tokens.space-2; }
+                    SettingsNavGroup { title: @tr("App"); }
+                    SettingsNavItem {
                         text: @tr("General");
-                        checked: root.section == 4;
+                        icon: IconName.sliders;
+                        current: root.section == 4;
                         activated => { root.section = 4; }
                     }
-                    MenuRow {
+                    SettingsNavItem {
                         text: @tr("Appearance");
-                        checked: root.section == 5;
+                        icon: IconName.palette;
+                        current: root.section == 5;
                         activated => { root.section = 5; }
                     }
-                    MenuRow {
+                    SettingsNavItem {
                         text: @tr("Shortcuts");
-                        checked: root.section == 6;
+                        icon: IconName.keyboard;
+                        current: root.section == 6;
                         activated => { root.section = 6; }
                     }
-                    MenuRow {
+                    Rectangle { height: Tokens.space-2; }
+                    SettingsNavGroup { title: @tr("Output"); }
+                    SettingsNavItem {
                         text: @tr("Video");
-                        checked: root.section == 0;
+                        icon: IconName.monitor;
+                        current: root.section == 0;
                         activated => { root.section = 0; }
                     }
-                    MenuRow {
+                    SettingsNavItem {
                         text: @tr("Recording");
-                        checked: root.section == 1;
+                        icon: IconName.dot;
+                        current: root.section == 1;
                         activated => { root.section = 1; }
                     }
-                    MenuRow {
+                    SettingsNavItem {
                         text: @tr("Stream");
-                        checked: root.section == 2;
+                        icon: IconName.broadcast;
+                        current: root.section == 2;
                         activated => { root.section = 2; }
                     }
-                    MenuRow {
+                    Rectangle { height: Tokens.space-2; }
+                    SettingsNavGroup { title: @tr("Control"); }
+                    SettingsNavItem {
                         text: @tr("Remote control");
-                        checked: root.section == 3;
+                        icon: IconName.link;
+                        current: root.section == 3;
                         activated => { root.section = 3; }
                     }
                 }
             }
             Flickable {
                 content-height: page.preferred-height;
+                content-width: self.width;
                 page := VerticalLayout {
-                    padding: Tokens.space-4;
-                    spacing: Tokens.space-3;
+                    padding: Tokens.space-6;
+                    spacing: Tokens.space-4;
                     alignment: start;
-                    Text {
-                        text: root.section == 0 ? @tr("Video") : root.section == 1 ? @tr("Recording") : root.section == 2 ? @tr("Stream") : root.section == 3 ? @tr("Remote control") : root.section == 5 ? @tr("Appearance") : root.section == 6 ? @tr("Shortcuts") : @tr("General");
-                        color: Theme.text-primary;
-                        font-size: Tokens.type-heading-size;
-                        font-weight: Tokens.type-heading-weight;
-                        accessible-role: none;
+                    SettingsHeader {
+                        title: root.section == 0 ? @tr("Video") : root.section == 1 ? @tr("Recording") : root.section == 2 ? @tr("Stream") : root.section == 3 ? @tr("Remote control") : root.section == 5 ? @tr("Appearance") : root.section == 6 ? @tr("Shortcuts") : @tr("General");
+                        subtitle: root.section == 0 ? @tr("The canvas every scene is drawn on.")
+                            : root.section == 1 ? @tr("Where recordings are saved and how they are encoded. Changes are saved at once.")
+                            : root.section == 2 ? @tr("Where Go live sends the program and how it is encoded. Changes are saved at once.")
+                            : root.section == 3 ? @tr("Let Stream Deck, panels and your own scripts control RBS.")
+                            : root.section == 5 ? @tr("Themes for every RBS window, and your own themes.")
+                            : root.section == 6 ? @tr("Keys that run commands, in RBS and, for global shortcuts, in any app.")
+                            : @tr("How RBS behaves on this computer.");
                     }
                     if root.section == 0: VideoSettings { }
                     if root.section == 1: RecordingSettings { }
