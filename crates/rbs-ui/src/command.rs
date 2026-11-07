@@ -217,7 +217,7 @@ pub const ENTRIES: &[Entry] = &[
         id: "profile.select",
         title: "Output profile",
         tooltip: "Use another output profile: its recording and stream settings",
-        icon: None,
+        icon: Some("user"),
         shortcut: None,
         menu: Menu::File,
         kind: Kind::Picker {
@@ -231,7 +231,7 @@ pub const ENTRIES: &[Entry] = &[
         id: "collection.select",
         title: "Scene collection",
         tooltip: "Run another scene collection: its canvases, scenes and sources",
-        icon: None,
+        icon: Some("folder"),
         shortcut: None,
         menu: Menu::File,
         kind: Kind::Picker {
@@ -256,7 +256,7 @@ pub const ENTRIES: &[Entry] = &[
         id: "edit.undo",
         title: "Undo",
         tooltip: "Undo the last change to the scenes",
-        icon: None,
+        icon: Some("undo"),
         shortcut: Some("Ctrl+Z"),
         menu: Menu::Edit,
         kind: action("edit.undo"),
@@ -267,7 +267,7 @@ pub const ENTRIES: &[Entry] = &[
         id: "edit.redo",
         title: "Redo",
         tooltip: "Redo the last undone change to the scenes",
-        icon: None,
+        icon: Some("redo"),
         shortcut: Some("Ctrl+Shift+Z"),
         menu: Menu::Edit,
         kind: action("edit.redo"),
@@ -278,7 +278,7 @@ pub const ENTRIES: &[Entry] = &[
         id: "ui.workspace.select",
         title: "Workspace",
         tooltip: "Switch to another workspace",
-        icon: None,
+        icon: Some("layout"),
         shortcut: None,
         menu: Menu::View,
         kind: Kind::Picker {
@@ -292,7 +292,7 @@ pub const ENTRIES: &[Entry] = &[
         id: "ui.area.toggle",
         title: "Area",
         tooltip: "Show or hide an area of the window",
-        icon: None,
+        icon: Some("panel-left"),
         shortcut: None,
         menu: Menu::View,
         kind: action("ui.area.toggle"),
@@ -303,7 +303,7 @@ pub const ENTRIES: &[Entry] = &[
         id: "ui.area.hide_all",
         title: "Hide side panels",
         tooltip: "Hide the left, right and bottom areas",
-        icon: None,
+        icon: Some("panel-none"),
         shortcut: None,
         menu: Menu::View,
         kind: action("ui.area.hide_all"),
@@ -314,7 +314,7 @@ pub const ENTRIES: &[Entry] = &[
         id: "ui.area.show_all",
         title: "Show side panels",
         tooltip: "Show the left, right and bottom areas",
-        icon: None,
+        icon: Some("panel-all"),
         shortcut: None,
         menu: Menu::View,
         kind: action("ui.area.show_all"),
@@ -325,7 +325,7 @@ pub const ENTRIES: &[Entry] = &[
         id: "ui.layout.reset_sizes",
         title: "Reset panel sizes",
         tooltip: "Give every area and panel its default size",
-        icon: None,
+        icon: Some("reset"),
         shortcut: None,
         menu: Menu::View,
         kind: action("ui.layout.reset_sizes"),
@@ -336,7 +336,7 @@ pub const ENTRIES: &[Entry] = &[
         id: "ui.toolbar.reset",
         title: "Reset toolbar",
         tooltip: "Put the workspace's default toolbar back",
-        icon: None,
+        icon: Some("reset"),
         shortcut: None,
         menu: Menu::View,
         kind: action("ui.toolbar.reset"),
@@ -347,7 +347,7 @@ pub const ENTRIES: &[Entry] = &[
         id: "ui.theme.reload",
         title: "Reload themes",
         tooltip: "Read the theme files again and apply them",
-        icon: None,
+        icon: Some("refresh"),
         shortcut: None,
         menu: Menu::View,
         kind: action("ui.theme.reload"),
@@ -358,7 +358,7 @@ pub const ENTRIES: &[Entry] = &[
         id: "ui.panel.select",
         title: "Panels",
         tooltip: "Open a panel, or show it if it is open",
-        icon: None,
+        icon: Some("window"),
         shortcut: None,
         menu: Menu::Window,
         kind: Kind::Picker {
@@ -390,7 +390,7 @@ pub const ENTRIES: &[Entry] = &[
         id: "scene.select",
         title: "Scene",
         tooltip: "Put a scene on air",
-        icon: None,
+        icon: Some("image"),
         shortcut: None,
         menu: Menu::Scene,
         kind: Kind::Picker {
@@ -413,7 +413,7 @@ pub const ENTRIES: &[Entry] = &[
         id: "scene.position",
         title: "Scene at position",
         tooltip: "Put the scene at this position in the Scenes panel on air",
-        icon: None,
+        icon: Some("image"),
         shortcut: None,
         menu: Menu::Scene,
         kind: action("scene.switch"),
@@ -428,7 +428,7 @@ pub const ENTRIES: &[Entry] = &[
         id: "scene.next",
         title: "Next scene",
         tooltip: "Put the scene after the one on air on air",
-        icon: None,
+        icon: Some("arrow-right"),
         shortcut: None,
         menu: Menu::Scene,
         kind: action("scene.switch"),
@@ -439,7 +439,7 @@ pub const ENTRIES: &[Entry] = &[
         id: "scene.previous",
         title: "Previous scene",
         tooltip: "Put the scene before the one on air on air",
-        icon: None,
+        icon: Some("arrow-left"),
         shortcut: None,
         menu: Menu::Scene,
         kind: action("scene.switch"),
@@ -461,7 +461,7 @@ pub const ENTRIES: &[Entry] = &[
         id: "scene.rename",
         title: "Rename scene",
         tooltip: "Give the scene another name",
-        icon: None,
+        icon: Some("pencil"),
         shortcut: None,
         menu: Menu::Scene,
         kind: action("scene.rename"),
@@ -474,7 +474,7 @@ pub const ENTRIES: &[Entry] = &[
         id: "scene.remove",
         title: "Remove scene",
         tooltip: "Remove the scene; its sources stay in the scene collection",
-        icon: Some("close"),
+        icon: Some("trash"),
         shortcut: None,
         menu: Menu::Scene,
         kind: action("scene.remove"),
@@ -542,7 +542,7 @@ pub const ENTRIES: &[Entry] = &[
         id: "source.rename",
         title: "Rename source",
         tooltip: "Give the source another name",
-        icon: None,
+        icon: Some("pencil"),
         shortcut: None,
         menu: Menu::Source,
         kind: action("source.rename"),
@@ -554,7 +554,7 @@ pub const ENTRIES: &[Entry] = &[
         id: "source.delete",
         title: "Delete source",
         tooltip: "Delete the source from the scene collection",
-        icon: Some("close"),
+        icon: Some("trash"),
         shortcut: None,
         menu: Menu::Source,
         kind: action("source.delete"),
@@ -579,7 +579,7 @@ pub const ENTRIES: &[Entry] = &[
         id: "canvas.transition",
         title: "Transition",
         tooltip: "Put the preview scene on air (studio mode)",
-        icon: None,
+        icon: Some("transition"),
         shortcut: Some("Ctrl+Enter"),
         menu: Menu::Scene,
         kind: action("canvas.transition"),
@@ -867,11 +867,15 @@ pub enum MenuItem {
         disabled: Option<String>,
         /// `Some` for checkable entries.
         checked: Option<bool>,
+        /// Icon name from the icon set ([`icon`]).
+        icon: Option<&'static str>,
     },
     /// A submenu of a picker's choices; each is the picker's id with the choice.
     Choices {
         /// The picker's title.
         title: String,
+        /// Icon name from the icon set ([`icon`]).
+        icon: Option<&'static str>,
         /// `(title, id to run, checked)`.
         choices: Vec<(String, CommandId, bool)>,
     },
@@ -1007,6 +1011,7 @@ fn item(id: CommandId, e: &Entry, state: &dyn CommandState) -> MenuItem {
             .collect();
         return MenuItem::Choices {
             title: title(&id, e),
+            icon: icon(&id, e),
             choices,
         };
     }
@@ -1015,6 +1020,7 @@ fn item(id: CommandId, e: &Entry, state: &dyn CommandState) -> MenuItem {
         shortcut: e.shortcut,
         disabled: state.enabled(&id).err(),
         checked: e.checkable.then(|| state.checked(&id)),
+        icon: icon(&id, e),
         id,
     }
 }
@@ -1396,7 +1402,7 @@ mod tests {
             ]
         );
         let file = &m[0].1;
-        let MenuItem::Choices { title, choices } = &file[1] else {
+        let MenuItem::Choices { title, choices, .. } = &file[1] else {
             panic!("scene collection picker")
         };
         assert_eq!(title, "Scene collection");
@@ -1446,6 +1452,26 @@ mod tests {
             }
         }
         assert_eq!(Context::parse("nothing"), None);
+    }
+
+    /// Every command has an icon from the set, so no menu item is blank (spec,
+    /// "Icons": menus show an icon on every command).
+    #[test]
+    fn every_command_has_an_icon_from_the_set() {
+        for e in ENTRIES {
+            let name = e.icon.unwrap_or_else(|| panic!("{} has no icon", e.id));
+            assert!(crate::icon::find(name).is_some(), "{}: {name}", e.id);
+        }
+        let layouts = MENU_LAYOUT
+            .iter()
+            .flat_map(|(_, ids)| ids.iter())
+            .chain(CONTEXT_LAYOUT.iter().flat_map(|(_, ids)| ids.iter()));
+        for text in layouts.filter(|t| **t != "|") {
+            let id = CommandId::parse(text).unwrap();
+            let e = entry(id.base()).unwrap();
+            let name = icon(&id, e).unwrap_or_else(|| panic!("{text} has no icon"));
+            assert!(crate::icon::find(name).is_some(), "{text}: {name}");
+        }
     }
 
     /// Fills targets, leaves out what does not apply, and tidies separators.
