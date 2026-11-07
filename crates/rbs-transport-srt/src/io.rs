@@ -711,6 +711,7 @@ impl Io {
     /// Resolves the listener, binds a socket and runs the caller handshake
     /// (induction, then conclusion with the HSREQ and stream id extensions).
     fn connect(&mut self) -> Result<Conn, Fail> {
+        let _ = debug_on();
         let url = &self.config.url;
         let addr = (url.host.as_str(), url.port)
             .to_socket_addrs()
