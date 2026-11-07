@@ -1,7 +1,9 @@
 //! Turns the rbs-ui model into the plain data the Slint views draw.
 
-use rbs_ui::layout::{Axis, Flat, Node, Rect};
+use rbs_ui::frame::{HandleTarget, WindowFlat};
+use rbs_ui::layout::{Axis, Node, Rect};
 use rbs_ui::panel::{BUILT_IN_PANELS, PanelId, built_in};
+use rbs_ui::workspace::Window;
 use rbs_ui::{LiveState, LiveStatus, Workspace};
 use slint::{ModelRc, SharedString, VecModel};
 
@@ -16,9 +18,10 @@ pub fn title(id: &PanelId) -> String {
     }
 }
 
-/// Tab stacks and handles of one window, for its view.
-pub fn window_view(window: usize, layout: &Node, area: Rect) -> (Vec<StackData>, Vec<HandleData>) {
-    let Flat { stacks, handles } = layout.flatten(area);
+/// Tab stacks and dividers of one window, for its view.
+pub fn window_view(window: usize, win: &Window, area: Rect) -> (Vec<StackData>, Vec<HandleData>) {
+    let WindowFlat { stacks, handles } = win.flatten(area);
+    let trees = win.trees();
     let stacks = stacks
         .into_iter()
         .map(|s| StackData {
@@ -44,15 +47,27 @@ pub fn window_view(window: usize, layout: &Node, area: Rect) -> (Vec<StackData>,
     let handles = handles
         .into_iter()
         .enumerate()
-        .map(|(i, h)| HandleData {
-            window: window as i32,
-            index: i as i32,
-            x: h.rect.x,
-            y: h.rect.y,
-            w: h.rect.w,
-            h: h.rect.h,
-            horizontal: h.axis == Axis::Horizontal,
-            percent: percent_before(layout, &h),
+        .map(|(i, h)| {
+            let percent = match h.target {
+                HandleTarget::Tree(t) => trees.get(t).map_or(0, |l| percent_before(l, &h.handle)),
+                // An area's edge: its size as a share of the window's content.
+                HandleTarget::Area(side) => win.main().map_or(0, |m| {
+                    let size = m.area(side).size as f32;
+                    (100.0 * size / h.handle.extent.max(1.0))
+                        .round()
+                        .clamp(0.0, 100.0) as i32
+                }),
+            };
+            HandleData {
+                window: window as i32,
+                index: i as i32,
+                x: h.handle.rect.x,
+                y: h.handle.rect.y,
+                w: h.handle.rect.w,
+                h: h.handle.rect.h,
+                horizontal: h.handle.axis == Axis::Horizontal,
+                percent,
+            }
         })
         .collect();
     (stacks, handles)
@@ -145,8 +160,8 @@ mod tests {
     #[test]
     fn edit_workspace_view() {
         let ws = builtin::edit();
-        let (stacks, handles) = window_view(0, ws.main(), Rect::sized(1440.0, 860.0));
-        assert_eq!(stacks.len(), ws.main().stack_count());
+        let (stacks, handles) = window_view(0, &ws.windows[0], Rect::sized(1440.0, 860.0));
+        assert_eq!(stacks.len(), ws.windows[0].stack_count());
         assert!(!handles.is_empty());
         assert!(handles.iter().all(|h| (0..=100).contains(&h.percent)));
         let mixer = stacks
