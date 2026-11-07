@@ -2555,6 +2555,20 @@ fn reset_appearance(config: &Path) -> Option<String> {
         .map(|why| format!("The appearance could not be reset: {why}"))
 }
 
+/// Slots of `appearance.toml` that name a deleted theme take a built-in theme
+/// (themes spec, "Deleting"), so a deleted theme is not reported at every start.
+/// Read-only when another RBS holds the user data.
+fn forget_deleted_themes(config: &Path) {
+    let data = rbs_user_data::UserData::new(config);
+    let Some(next) = appearance::forget_missing(&data) else {
+        return;
+    };
+    if let Ok(Some(lock)) = data.try_lock() {
+        // On failure the start note says why the theme is not used, as before.
+        let _ = data.set_appearance(&lock, &next);
+    }
+}
+
 fn run(config: PathBuf, notice: Option<String>) -> Result<(), Box<dyn std::error::Error>> {
     let demo_live = std::env::args().any(|a| a == "--demo-live");
     // `--reset-appearance` (themes spec): back to the default look when a theme made
@@ -2563,6 +2577,8 @@ fn run(config: PathBuf, notice: Option<String>) -> Result<(), Box<dyn std::error
         .any(|a| a == "--reset-appearance")
         .then(|| reset_appearance(&config))
         .flatten();
+    // Before the user session takes the writer lock.
+    forget_deleted_themes(&config);
     slint::BackendSelector::new()
         .backend_name("winit".into())
         .renderer_name("skia".into())

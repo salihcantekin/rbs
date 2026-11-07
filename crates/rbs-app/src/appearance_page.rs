@@ -5,7 +5,7 @@
 use std::rc::Rc;
 use std::time::{Duration, Instant};
 
-use rbs_ui::tokens::{Color, Tokens as TokenFile};
+use rbs_ui::tokens::{Base, Color, Tokens as TokenFile};
 use rbs_user_data::{AppearanceMode, ThemeId};
 use slint::{ComponentHandle, ModelRc, SharedString, VecModel};
 
@@ -20,6 +20,12 @@ pub struct Page {
     fonts: look::SystemFonts,
     /// The installed families, read the first time the font menu opens (P13).
     families: Option<Vec<String>>,
+    /// The lists the page shows, changed row by row: a list set anew rebuilds its rows
+    /// and closes a menu open in one (the font menu while "Keep this look?" counts).
+    themes: Rc<VecModel<ThemeOption>>,
+    names: Rc<VecModel<SharedString>>,
+    groups: Rc<VecModel<SharedString>>,
+    rows: Rc<VecModel<ThemeTokenRow>>,
     /// List positions of the usable themes (the pickers' options).
     usable: Vec<usize>,
     /// A theme in use could not be used, or an action failed.
@@ -117,8 +123,22 @@ pub fn install(g: &Appearance<'_>, ctx: &Ctx) {
         let Some(ThemeId::User(id)) = selected_id(page) else {
             return;
         };
-        if let Err(why) = app.studio.user.delete_theme(&id) {
-            page.note = why;
+        let base = page
+            .ui
+            .index_of(&ThemeId::User(id.clone()))
+            .and_then(|i| page.ui.entries[i].body.as_ref())
+            .map_or(Base::Dark, |b| b.base);
+        match app.studio.user.delete_theme(&id) {
+            // A deleted theme in use: its slots take the built-in theme of its base
+            // and the choice is saved (themes spec, "Deleting").
+            Ok(()) => {
+                if let Some(next) = page.ui.forget(&id, base)
+                    && let Err(why) = app.studio.user.set_appearance(&next)
+                {
+                    page.note = why;
+                }
+            }
+            Err(why) => page.note = why,
         }
         page.ui.selected = None;
         page.ui.refresh(app.studio.user.data(), &file);
@@ -327,7 +347,15 @@ pub fn opened(ctx: &Ctx, app: &mut App) {
     {
         let mut page = ctx.page.borrow_mut();
         match &file {
-            Some(file) => page.ui.refresh(app.studio.user.data(), file),
+            Some(file) => {
+                page.ui.refresh(app.studio.user.data(), file);
+                // The list opens on the theme in use (the slot the windows show now).
+                if page.ui.selected.is_none() && page.ui.editor.is_none() {
+                    let active = app.main.global::<Theme>().get_active().clamp(0, 1) as usize;
+                    let id = page.ui.choice.slots()[active].clone();
+                    page.ui.selected = page.ui.index_of(&id);
+                }
+            }
             None => {
                 page.note = "Themes are not available: the token file cannot be read.".into();
             }
@@ -496,9 +524,14 @@ fn show(ctx: &Ctx, app: &App) {
         .filter(|(_, e)| e.resolved.is_ok())
         .map(|(i, _)| i)
         .collect();
-    let pos = |id: &ThemeId| {
-        ui.index_of(id)
-            .and_then(|i| usable.iter().position(|u| *u == i))
+    // A slot whose theme cannot be used shows the built-in theme used instead.
+    let pos = |id: &ThemeId, fallback: Base| {
+        let at = |id: &ThemeId| {
+            ui.index_of(id)
+                .and_then(|i| usable.iter().position(|u| *u == i))
+        };
+        at(id)
+            .or_else(|| at(&ThemeId::BuiltIn(fallback)))
             .map_or(-1, |p| p as i32)
     };
     let options: Vec<ThemeOption> = ui
@@ -529,17 +562,22 @@ fn show(ctx: &Ctx, app: &App) {
             }
         })
         .collect();
-    g.set_themes(ModelRc::new(VecModel::from(options)));
-    g.set_usable_names(ModelRc::new(VecModel::from(
+    super::set_rows(&page.themes, options);
+    super::set_rows(
+        &page.names,
         usable
             .iter()
             .map(|i| SharedString::from(ui.entries[*i].name.as_str()))
-            .collect::<Vec<_>>(),
-    )));
+            .collect(),
+    );
+    show_model(&g.get_themes(), &page.themes, |m| g.set_themes(m));
+    show_model(&g.get_usable_names(), &page.names, |m| {
+        g.set_usable_names(m)
+    });
     g.set_follow_system(ui.choice.mode == AppearanceMode::System);
-    g.set_dark_index(pos(&ui.choice.dark));
-    g.set_light_index(pos(&ui.choice.light));
-    g.set_theme_index(pos(&ui.choice.theme));
+    g.set_dark_index(pos(&ui.choice.dark, Base::Dark));
+    g.set_light_index(pos(&ui.choice.light, Base::Light));
+    g.set_theme_index(pos(&ui.choice.theme, Base::Dark));
     g.set_selected(ui.selected.map_or(-1, |i| i as i32));
     g.set_note(page.note.as_str().into());
     g.set_dev_override(
@@ -554,12 +592,14 @@ fn show(ctx: &Ctx, app: &App) {
             .ceil() as i32
     });
     g.set_keep_seconds(left);
-    g.set_groups(ModelRc::new(VecModel::from(
+    super::set_rows(
+        &page.groups,
         GROUPS
             .iter()
             .map(|g| SharedString::from(label(*g)))
-            .collect::<Vec<_>>(),
-    )));
+            .collect(),
+    );
+    show_model(&g.get_groups(), &page.groups, |m| g.set_groups(m));
     g.set_group(ui.group as i32);
     match (&ui.editor, look.as_ref()) {
         (Some(ed), Some(look)) => {
@@ -567,8 +607,9 @@ fn show(ctx: &Ctx, app: &App) {
             g.set_editor_name(ed.name.as_str().into());
             g.set_can_save(ui.to_save().is_some());
             g.set_changed(ed.draft != ed.saved);
+            g.set_editing_in_use(ui.in_use(&ThemeId::User(ed.id.clone())));
             let rows: Vec<ThemeTokenRow> = ui.rows(&look.file).into_iter().map(row).collect();
-            g.set_rows(ModelRc::new(VecModel::from(rows)));
+            super::set_rows(&page.rows, rows);
             g.set_general_problems(strings(ui.general_problems()));
             g.set_unknown_tokens(strings(ed.draft.unknown_names()));
             let active = app.main.global::<Theme>().get_active().clamp(0, 1) as usize;
@@ -576,10 +617,23 @@ fn show(ctx: &Ctx, app: &App) {
         }
         _ => {
             g.set_editing(false);
-            g.set_rows(ModelRc::default());
+            super::set_rows(&page.rows, Vec::new());
         }
     }
+    show_model(&g.get_rows(), &page.rows, |m| g.set_rows(m));
     page.usable = usable;
+}
+
+/// Gives the page `model` the first time (later changes go through it row by row).
+fn show_model<T: Clone + 'static>(
+    shown: &ModelRc<T>,
+    model: &Rc<VecModel<T>>,
+    set: impl FnOnce(ModelRc<T>),
+) {
+    let ours = ModelRc::from(model.clone());
+    if *shown != ours {
+        set(ours);
+    }
 }
 
 fn strings(v: Vec<String>) -> ModelRc<SharedString> {
