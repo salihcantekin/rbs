@@ -1356,6 +1356,10 @@ struct Host {
     /// Stop was asked for: the recording ended its video and stops once its tail is
     /// in (ADR-0045).
     ending: bool,
+    /// The running recording was started with the stream ("Record when the stream
+    /// starts"): ending the stream stops it too. Cleared when the recording stops or
+    /// the stream ends.
+    auto_recording: bool,
     /// The running stream: its URL, the connection last reported and its output.
     streaming: Option<(String, Link, OutputId)>,
     /// Where the stream key is kept.
@@ -1728,6 +1732,7 @@ fn start(
             waiting: false,
             recording: None,
             ending: false,
+            auto_recording: false,
             stats_due: None,
             clock,
             streaming: None,
@@ -2007,15 +2012,7 @@ impl Host {
                 self.publish(notify);
             }
             Command::StopRecording => {
-                // Ends the video now; the loop stops the recording once the frames
-                // still read back are in (ADR-0045).
-                if let Some((_, id)) = &self.recording
-                    && self.studio.end_output(*id)
-                {
-                    self.ending = true;
-                } else {
-                    self.stop_recording(None, notify);
-                }
+                self.end_recording(notify);
                 self.publish(notify);
             }
             Command::SetCanvas { size, fps } => {
@@ -2034,11 +2031,15 @@ impl Host {
                     Ok(update) => update,
                     Err(why) => StreamUpdate::NotStarted(why),
                 };
+                let started = matches!(update, StreamUpdate::Started { .. });
                 notify(Update::Stream(update));
+                if started {
+                    self.record_with_stream(notify);
+                }
                 self.publish(notify);
             }
             Command::EndStream => {
-                self.end_stream(None, notify);
+                self.end_stream_asked(notify);
                 self.publish(notify);
             }
             Command::SetStreamProfile(profile) => {
@@ -2575,6 +2576,7 @@ impl Host {
     /// Stops the recording, if one runs, and says so.
     fn stop_recording(&mut self, failure: Option<String>, notify: &dyn Fn(Update)) {
         self.ending = false;
+        self.auto_recording = false;
         // Tracked until the end: when a stop panics half-way, `Host::recover` finds the
         // recording still tracked and ends it again (ADR-0055 decision 3).
         let Some((path, id)) = self.recording.clone() else {
@@ -2606,6 +2608,78 @@ impl Host {
             dropped,
             flush_lost,
         }));
+    }
+
+    /// A recording to `path` with the saved recording settings, as `record.start` and
+    /// "Record when the stream starts" make it; refused in words when the settings
+    /// cannot be used.
+    fn profile_request(&self, path: PathBuf) -> Result<RecordRequest, String> {
+        let p = &self.profile;
+        if let Some(why) = p.problem() {
+            return Err(why);
+        }
+        // A saved encoder this system does not have falls back to the best one, as the
+        // UI's automatic choice does.
+        let encoder = p
+            .encoder
+            .clone()
+            .filter(|id| self.encoders.iter().any(|e| e.id == *id));
+        Ok(RecordRequest {
+            path,
+            container: p.format.container(),
+            encoder,
+            video: p.video_settings(),
+            audio_bitrate_bps: u64::from(p.audio_kbps) * 1000,
+        })
+    }
+
+    /// Asks the running recording to stop: its video ends now and the loop stops it
+    /// once the frames still read back are in (ADR-0045).
+    fn end_recording(&mut self, notify: &dyn Fn(Update)) {
+        if let Some((_, id)) = &self.recording
+            && self.studio.end_output(*id)
+        {
+            self.ending = true;
+        } else {
+            self.stop_recording(None, notify);
+        }
+    }
+
+    /// A stream just started: with "Record when the stream starts" on and no
+    /// recording running, records the program with the recording settings, as Record
+    /// would. The UI is told either way; a recording that cannot start leaves the
+    /// stream running.
+    fn record_with_stream(&mut self, notify: &dyn Fn(Update)) {
+        let on = self.stream_profile.as_ref().is_some_and(|p| p.auto_record);
+        if !on || self.recording.is_some() || self.streaming.is_none() {
+            return;
+        }
+        let started = match &self.cannot_record {
+            Some(why) => Err(why.clone()),
+            None => self
+                .profile_request(self.profile.file_for(chrono::Local::now().naive_local()))
+                .and_then(|r| self.start_recording(&r, Some(API_PROFILE_ID.into()))),
+        };
+        let update = match started {
+            Ok(update) => {
+                self.auto_recording = true;
+                update
+            }
+            Err(why) => RecordingUpdate::NotStarted(why),
+        };
+        notify(Update::Recording(update));
+    }
+
+    /// The user (End stream) or a control API client (`stream.stop`) ends the stream:
+    /// a recording that started with it stops too.
+    fn end_stream_asked(&mut self, notify: &dyn Fn(Update)) {
+        let with_stream = self.auto_recording;
+        // A stream that failed before it was asked to end keeps its recording, as one
+        // the round finds failed does.
+        let failure = self.end_stream(None, notify);
+        if with_stream && failure.is_none() && self.recording.is_some() {
+            self.end_recording(notify);
+        }
     }
 
     /// Goes live: reads the key (RTMP: required) from the key store, then attaches the
@@ -2764,12 +2838,10 @@ impl Host {
         }
     }
 
-    /// Ends the stream, if one runs, and says so.
-    fn end_stream(&mut self, failure: Option<String>, notify: &dyn Fn(Update)) {
+    /// Ends the stream, if one runs, and says so; returns why it failed, if it did.
+    fn end_stream(&mut self, failure: Option<String>, notify: &dyn Fn(Update)) -> Option<String> {
         // Tracked until the end, as in `stop_recording`.
-        let Some((_, _, id)) = self.streaming.clone() else {
-            return;
-        };
+        let (_, _, id) = self.streaming.clone()?;
         let report = self.studio.stop_output(id);
         let (frames, dropped, connects, failed) = report.map_or((0, 0, 0, None), |r| {
             let p = &r.progress;
@@ -2782,6 +2854,9 @@ impl Host {
         });
         let failure = failure.or(failed);
         self.streaming = None;
+        // A recording started with the stream outlives a stream that failed: it is the
+        // copy of what the viewers missed. From now on it is the user's to stop.
+        self.auto_recording = false;
         self.set_stream_state(api::StreamState::Idle {
             last: Some(api::StreamSummary {
                 failure: failure.clone(),
@@ -2791,11 +2866,12 @@ impl Host {
             }),
         });
         notify(Update::Stream(StreamUpdate::Ended {
-            failure,
+            failure: failure.clone(),
             frames,
             dropped,
             connects,
         }));
+        failure
     }
 
     /// Adds a source of `kind` for `target` to the program scene, on top.
@@ -4666,7 +4742,7 @@ impl ApiTarget<'_> {
                 if host.streaming.is_none() {
                     return Err(ApiError::new(ErrorKind::Conflict, "nothing streams"));
                 }
-                host.end_stream(None, notify);
+                host.end_stream_asked(notify);
                 host.publish(notify);
                 Ok(Response::Done(Empty {}))
             }
@@ -4801,23 +4877,7 @@ impl ApiTarget<'_> {
                 "a recording is already running",
             ));
         }
-        let p = &host.profile;
-        if let Some(why) = p.problem() {
-            return Err(failed(why));
-        }
-        // A saved encoder this system does not have falls back to the best one, as the
-        // UI's automatic choice does.
-        let encoder = p
-            .encoder
-            .clone()
-            .filter(|id| host.encoders.iter().any(|e| e.id == *id));
-        let request = RecordRequest {
-            path,
-            container: p.format.container(),
-            encoder,
-            video: p.video_settings(),
-            audio_bitrate_bps: u64::from(p.audio_kbps) * 1000,
-        };
+        let request = host.profile_request(path).map_err(failed)?;
         let profile = (!explicit).then(|| API_PROFILE_ID.to_owned());
         let result = host.start_recording(&request, profile);
         host.publish(notify);
@@ -4892,6 +4952,12 @@ impl ApiTarget<'_> {
                     video_encoder,
                     audio_encoder,
                 }));
+                // The stream runs: a panic while its recording starts must not turn
+                // the answer into an error (the round recovers the host).
+                if rbs_crash::contain(|| host.record_with_stream(notify)).is_err() {
+                    host.caught = true;
+                }
+                host.publish(notify);
                 Ok(Response::StreamStarted(started))
             }
             Ok(StreamUpdate::NoKey) => Err(failed(
