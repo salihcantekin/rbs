@@ -2,7 +2,7 @@
 
 - Status: Draft
 - Owner crate(s): `rbs-vcam` (port, conformance), `rbs-vcam-ring` (adapter support: shared frame ring), `rbs-vcam-test` (test adapter), adapter `rbs-vcam-mf` (Windows) and its companion DLL `rbs-vcam-mf-source`; macOS and Linux adapters later (ADR-0066 decision 8); the node in `rbs-nodes`
-- Related ADRs: [0066](../adr/0066-virtual-camera.md), [0003](../adr/0003-ports-and-adapters.md), [0013](../adr/0013-zero-cost-when-unused.md), [0025](../adr/0025-encoder-surface-export.md), [0028](../adr/0028-cross-process-preview-surfaces.md), [0031](../adr/0031-adapter-support-crates.md), [0038](../adr/0038-io-graph-nodes.md), [0047](../adr/0047-several-outputs-per-canvas.md), [0050](../adr/0050-command-registry-menus-and-toolbar.md), [0061](../adr/0061-studio-mode-in-the-desktop-app.md)
+- Related ADRs: [0066](../adr/0066-virtual-camera.md), [0070](../adr/0070-virtual-camera-per-user-source-class.md), [0003](../adr/0003-ports-and-adapters.md), [0013](../adr/0013-zero-cost-when-unused.md), [0025](../adr/0025-encoder-surface-export.md), [0028](../adr/0028-cross-process-preview-surfaces.md), [0031](../adr/0031-adapter-support-crates.md), [0038](../adr/0038-io-graph-nodes.md), [0047](../adr/0047-several-outputs-per-canvas.md), [0050](../adr/0050-command-registry-menus-and-toolbar.md), [0061](../adr/0061-studio-mode-in-the-desktop-app.md)
 - Related specs: [backend-ports.md](backend-ports.md), [media-types.md](media-types.md), [io-nodes.md](io-nodes.md), [recording.md](recording.md)
 
 ## Purpose
@@ -48,8 +48,9 @@ pub trait VirtualCameraFactory: Send + Sync {
     fn install(&self) -> Result<InstallState, VcamError>;
     /// Removes it. Idempotent; `NotInstalled` afterwards, or `NeedsRestart`.
     fn uninstall(&self) -> Result<InstallState, VcamError>;
-    /// The one format the camera announces to apps (ADR-0066 decision 7). Control
-    /// thread. Applies when no app reads the camera; `Ok(false)` means it is pending.
+    /// The one format the camera announces to apps (ADR-0066 decision 7, ADR-0070
+    /// decision 4). Control thread, no prompt. Applies when no app reads the camera
+    /// (reader heartbeat not fresh); `Ok(false)` means it is pending.
     fn set_format(&self, format: &CameraFormat) -> Result<bool, VcamError>;
     /// Opens a sending session. Fails with `NotInstalled` unless `status` is `Installed`.
     fn open(&self, config: &VirtualCameraConfig) -> Result<Box<dyn VirtualCameraSession>, VcamError>;
@@ -107,7 +108,7 @@ impl VcamStats {
     pub fn refused(&self) -> u64;         // send() errors
     pub fn consumer_busy(&self) -> u64;   // no free slot: camera frame skipped before conversion
     pub fn consumer_absent(&self) -> u64; // frames taken while no app reads the camera
-    pub fn format_pending(&self) -> u64;  // frames sent while a format change waits for apps to close the camera
+    pub fn format_pending(&self) -> u64;  // frames sent in the announced (old) format while a change waits for apps to close the camera
     pub fn os_errors(&self) -> u64;
     /// The last OS error, stored as a non-zero `u32` code in an atomic (0 = none).
     pub fn last_os_error(&self) -> Option<u32>;
@@ -138,6 +139,15 @@ Every adapter builds `reserve`, `send` and `stats` on `Handoff` and its `Handoff
 
 The node picks the memory kind from `vcam.input.memory`, never from the platform (P3). States, errors and memory kinds for macOS (approval, restart, camera permission, native IOSurface frames) are added by the macOS ADR; every enum here is `#[non_exhaustive]`, so that is not breaking.
 
+### Windows registration (ADR-0070)
+
+- **One source class per user.** The one elevated step, `rbs-vcam-setup.exe register <SID>` (the app's own token user, and only the user signed in to that session), writes `HKLM\SOFTWARE\Classes\CLSID\{CLSID}` with `InprocServer32` (the DLL, `ThreadingModel = Both`) and `RbsVcamUser` (the SID string). The CLSID is the RFC 9562 version 5 UUID of the SID string's UTF-8 bytes in namespace `6B2F0C41-935E-4B7A-8D13-52E90FA477C8`, built from big-endian fields. The app then creates the camera itself, without elevation: `MFCreateVirtualCamera` with that CLSID, `SoftwareCameraSource`, `System` lifetime, `CurrentUser` access, friendly name "RBS Virtual Camera".
+- **The class check.** `DllGetClassObject` reads the class key from `HKLM` (64-bit view, `KEY_QUERY_VALUE`, never `HKCR`). It returns `CLASS_E_CLASSNOTAVAILABLE` unless `RbsVcamUser` is a user SID (`S-1-5-21-` or `S-1-12-1-` and four numbers), the CLSID is the one derived from it, and the calling process's token user is that SID, `LocalService` (`S-1-5-19`) or `SYSTEM` (`S-1-5-18`).
+- **The format file.** `%ProgramData%\RBS\VirtualCamera\<SID>.fmt`, 16 bytes of little-endian `u32`: version 1, width, height, frames per second. The user may read and write its data only. The source reads at most 16 bytes at each activation and falls back to 1280 x 720 at 30 fps for anything missing, short, of another version or outside ADR-0066 decision 11. `set_format` writes it in one call at offset 0.
+- **`status`** is `NotInstalled` (no class key or format file, or no camera device; only the first needs the prompt), `NeedsUpdate` (the class names another DLL than this install's, or the ring's layout version differs) or `Installed`.
+- **Removal.** Turning the setting off removes the camera only. "Remove completely" also runs `unregister <SID>` (a second prompt). The uninstaller deletes every user's class and format file.
+- **Known risk, accepted by the owner (2026-11-07).** Another account on the computer can create a camera on this user's class and view what RBS sends, without the sender being told. The caller check above stops casual use only. The setting's dialog says so.
+
 ### Shared frame ring (`rbs-vcam-ring`)
 
 An adapter support crate (ADR-0031) for adapters whose consumer lives in another process and takes system memory; a marked low-level module (every `unsafe` block has a `// SAFETY:` comment). Laid out over a byte slice the creator maps (on Windows, the section the media source creates):
@@ -148,7 +158,7 @@ An adapter support crate (ADR-0031) for adapters whose consumer lives in another
 - The reader takes the newest `Ready` slot by CAS to `Reading`, copies it, and frees it. It never sees a slot while it is written.
 - The reader never trusts the header: it computes the layout (size, stride, slot count, offsets) from the format it announced, bounds every index by its own values, reads each shared field once per use, and treats any disagreement as "no frames".
 - Either side treats a wrong magic or layout version as "no frames"; the app reports `NeedsUpdate`.
-- "No frames" on the reader's side always means the source shows its still picture ("RBS Virtual Camera is off"): no writer heartbeat for 1 s, a header that disagrees with the announced format (for example during a pending format change; RBS counts those frames in `format_pending`), or a version mismatch.
+- "No frames" on the reader's side always means the source shows its still picture ("RBS Virtual Camera is off"): no writer heartbeat for 1 s, a header that disagrees with the announced format, or a version mismatch. During a pending format change the source writes the format it announced into the header and RBS keeps sending in that format (ADR-0070 decision 4), so a change never shows the still picture.
 - The section is named `Global\org.rbs.vcam.<user SID>`, created by the source, writable only by that SID (ADR-0066 decision 9). The source creates it with `CreateFileMapping`; `ERROR_ALREADY_EXISTS` for a section it did not create itself is accepted only when the section's owner is the Frame Server account and its access list is the one the source sets; otherwise the source shows the still picture and logs it (a squatted name never gets frames read from it). `rbs-vcam-ring` depends on `std` only.
 
 ## Errors and failure behaviour
@@ -185,6 +195,8 @@ The node never fails a tick because of the camera; the studio reports the camera
 - `set_format_applies_when_no_app_reads`
 - `install_and_uninstall_are_idempotent` (hardware-gated where the OS prompts: `RBS_VCAM_HW=1`)
 
+Windows registration tests: the CLSID derivation and the format file parsing are pure functions tested everywhere with the vectors in ADR-0070. The class check reads `HKEY_LOCAL_MACHINE`, which the in-process test redirects (`RegOverridePredefKey`) to a volatile per-process key under `HKCU`: a key without a SID, with a group SID or with a mismatched CLSID is refused; `S-1-5-21` and `S-1-12-1` user SIDs pass; a caller that is neither the user, `LocalService` nor `SYSTEM` is refused.
+
 Ring tests (in `rbs-vcam-ring`, run everywhere): property tests that a reader never observes a torn slot under any interleaving of one writer and one reader (loom in process), the writer never waits, published sequence numbers strictly increase, a stale reader's slot is taken back, a new generation resets the writer, and a corrupted header gives no frames; a fuzz target for the reader over arbitrary header and slot bytes; a two-process smoke test over a real mapped section on the Windows CI runner, in `rbs-vcam-mf` (the ring crate maps nothing itself).
 
-Source DLL test (Windows CI, no camera hardware): the test loads `rbs-vcam-mf-source` in process through its COM class factory, starts one stream, calls `RequestSample` against a ring written by a test writer, stops, and checks the samples' pixels, no allocation per sample, and that a panic injected into a COM entry point comes back as an `HRESULT`.
+Source DLL test (Windows CI, no camera hardware): the test loads `rbs-vcam-mf-source` in process through `DllGetClassObject` and its class factory, starts one stream, calls `RequestSample` before and after a test writer publishes a frame into the section, stops, shuts down, and checks the samples' pixels (the still picture, then the frame). A unit test checks that a panic in a COM entry point comes back as an `HRESULT`. Creating the `Global\\` section needs `SeCreateGlobalPrivilege`, which the CI runner has.
