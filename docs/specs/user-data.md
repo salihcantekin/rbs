@@ -77,7 +77,7 @@ The body is a set of sections, each a TOML table; section names are lowercase AS
 | --- | --- | --- |
 | `next` | table `canvas`, `source`, `scene`, `item`, `filter` (integers, default 0) | Next ids (`SceneCollection::id_counters`) |
 | `canvases` | array of tables `id`, `name`, `width`, `height`, `frame_rate = [num, den]`, `program?`, `preview?` | `program` and `preview` are scene ids |
-| `sources` | array of tables `id`, `name`, `type`, `settings?`, `filters?`, `volume?` (1), `muted?` (false), `sync_offset_ms?` (0) | `type` is the node type id; `volume` is a linear factor in `0..=1` (format 3, ADR-0059); `sync_offset_ms` an integer in `-200..=200` (format 4, ADR-0061) |
+| `sources` | array of tables `id`, `name`, `type`, `settings?`, `filters?`, `volume?` (1), `muted?` (false), `sync_offset_ms?` (0) | `type` is the node type id; `volume` is a linear factor in `0..=1` (format 3, ADR-0059); `sync_offset_ms` an integer in `-200..=200` (format 4, ADR-0061); out of range refuses the document, as an out-of-range `volume` does |
 | `sources.filters` | array of tables `id`, `type`, `enabled?` (default true), `settings?` | In order; built-in types keep numbers as floats and colours as `"#rrggbb"` / `"#rrggbbaa"` strings ([video-filters.md](video-filters.md)) |
 | `scenes` | array of tables `id`, `name`, `canvas?`, `items?` | `canvas` = scope `Canvas(id)`; absent = `Shared` |
 | `scenes.items` | array of tables `id`, `source?` or `scene?` (exactly one), `visible?` (default true), `locked?` (default false, format 3), `layout`, `overrides?` | Bottom first |
