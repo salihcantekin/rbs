@@ -299,7 +299,10 @@ export component Select inherits Rectangle {
     in property <[string]> options;
     in property <int> index;
     in property <bool> enabled: true;
+    // Shown in `text.secondary` while no option is chosen (`index` out of range).
+    in property <string> placeholder;
     out property <bool> open: menu.is-open;
+    property <bool> chosen: root.index >= 0 && root.index < root.options.length;
     callback selected(int);
     height: Tokens.size-control-md;
     min-width: Tokens.size-menu-sm / 2;
@@ -312,7 +315,7 @@ export component Select inherits Rectangle {
     background: !root.enabled ? transparent
         : touch.pressed ? Theme.surface-overlay : Theme.surface-sunken;
     accessible-role: combobox;
-    accessible-label: @tr("{}: {}", root.label, root.options[root.index]);
+    accessible-label: @tr("{}: {}", root.label, root.chosen ? root.options[root.index] : root.placeholder);
     accessible-enabled: root.enabled;
     accessible-expanded: root.open;
     accessible-action-default => { if root.enabled { menu.show(); } }
@@ -323,8 +326,8 @@ export component Select inherits Rectangle {
         spacing: Tokens.space-2;
         Text {
             horizontal-stretch: 1;
-            text: root.options[root.index];
-            color: root.enabled ? Theme.text-primary : Theme.text-disabled;
+            text: root.chosen ? root.options[root.index] : root.placeholder;
+            color: !root.enabled ? Theme.text-disabled : root.chosen ? Theme.text-primary : Theme.text-secondary;
             font-size: Tokens.type-body-size;
             vertical-alignment: center;
             overflow: elide;

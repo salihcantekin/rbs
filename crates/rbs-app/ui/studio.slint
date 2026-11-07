@@ -634,12 +634,13 @@ component SourceRowView inherits Rectangle {
                         }
                         // In every scene, or also in other scenes (ADR-0063): one
                         // source, one device; the words are in the accessible
-                        // description (U7).
-                        if data.global || data.in-globals: VerticalLayout {
+                        // description (U7). Hidden while the row tools show, so the
+                        // name keeps its room.
+                        if !tools && (data.global || data.in-globals): VerticalLayout {
                             alignment: center;
                             Icon { name: IconName.globe; ink: Theme.text-secondary; }
                         }
-                        if !data.global && !data.in-globals && data.also-in != "": VerticalLayout {
+                        if !tools && !data.global && !data.in-globals && data.also-in != "": VerticalLayout {
                             alignment: center;
                             Icon { name: IconName.link; ink: Theme.text-secondary; }
                         }
@@ -2532,6 +2533,7 @@ export component GlobalSourcesSettings inherits Rectangle {
                     label: @tr("Kind");
                     options: Studio.global-kind-names;
                     index: Studio.global-kind;
+                    placeholder: @tr("Choose a kind");
                     enabled: running && Studio.global-kind-names.length > 0;
                     selected(i) => { Studio.pick-global-kind(i); }
                 }
@@ -2547,6 +2549,7 @@ export component GlobalSourcesSettings inherits Rectangle {
                     label: @tr("Source");
                     options: Studio.global-options;
                     index: Studio.global-option;
+                    placeholder: Studio.global-kind < 0 ? "" : @tr("Choose a source");
                     enabled: running && Studio.global-options.length > 0;
                     selected(i) => { Studio.global-option = i; }
                 }
