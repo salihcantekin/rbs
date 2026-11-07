@@ -137,8 +137,12 @@ component Recorder inherits Rectangle {
                 checked: Shortcuts.rec-global;
                 toggled(on) => { Shortcuts.rec-set-global(on); }
             }
-            if Shortcuts.rec-message != "" && (Shortcuts.rec-state == 3): Problem { text: Shortcuts.rec-message; }
-            if Shortcuts.rec-message != "" && (Shortcuts.rec-state != 3): Hint { text: Shortcuts.rec-message; }
+            // The result of the check, as a notice that stands out: an error notice when
+            // the chord cannot be used, an accent notice when it is taken or a warning.
+            if Shortcuts.rec-message != "": SettingsNotice {
+                text: Shortcuts.rec-message;
+                problem: Shortcuts.rec-state == 3;
+            }
             HorizontalLayout {
                 spacing: Tokens.space-2;
                 alignment: start;
