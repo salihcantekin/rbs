@@ -1867,32 +1867,30 @@ fn install_app_menu(g: &AppMenus<'_>, ctx: &Ctx) {
     let c = ctx.clone();
     let main = ctx.app.borrow().main.as_weak();
     g.on_prepare(move || {
-        let Some(main) = main.upgrade() else { return };
-        let g = main.global::<AppMenus>();
-        let Ok(keys) = c.keys.try_borrow() else {
-            return;
-        };
-        if let Ok(app) = c.app.try_borrow() {
-            entry::guard(|| {
-                let shown = app.shown();
-                let cats: Vec<slint::SharedString> = app_menu::categories(&shown)
-                    .into_iter()
-                    .map(Into::into)
-                    .collect();
-                g.set_categories(ModelRc::new(VecModel::from(cats)));
-                let chips: Vec<AppMenuChip> = app_menu::profiles(&shown)
-                    .into_iter()
-                    .map(|(title, id, current)| AppMenuChip {
-                        title: title.into(),
-                        id: id.into(),
-                        current,
-                    })
-                    .collect();
-                g.set_profiles(ModelRc::new(VecModel::from(chips)));
-            });
-        }
-        g.set_search_shortcut(keys.label("ui.app_menu.open").unwrap_or_default().into());
-        g.set_settings_shortcut(keys.label("ui.settings.open").unwrap_or_default().into());
+        entry::guard(|| {
+            let Some(main) = main.upgrade() else { return };
+            let g = main.global::<AppMenus>();
+            let (Ok(app), Ok(keys)) = (c.app.try_borrow(), c.keys.try_borrow()) else {
+                return;
+            };
+            let shown = app.shown();
+            let cats: Vec<slint::SharedString> = app_menu::categories(&shown)
+                .into_iter()
+                .map(Into::into)
+                .collect();
+            g.set_categories(ModelRc::new(VecModel::from(cats)));
+            let chips: Vec<AppMenuChip> = app_menu::profiles(&shown)
+                .into_iter()
+                .map(|(title, id, current)| AppMenuChip {
+                    title: title.into(),
+                    id: id.into(),
+                    current,
+                })
+                .collect();
+            g.set_profiles(ModelRc::new(VecModel::from(chips)));
+            g.set_search_shortcut(keys.label("ui.app_menu.open").unwrap_or_default().into());
+            g.set_settings_shortcut(keys.label("ui.settings.open").unwrap_or_default().into());
+        })
     });
     let c = ctx.clone();
     g.on_rows(move |category, picker, query| {
