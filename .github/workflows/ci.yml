@@ -68,6 +68,8 @@ jobs:
         run: bash .github/scripts/code-changed.sh
       - if: env.RBS_CODE == 'true'
         uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
       # Only main saves the cache; pull requests restore main's. Saving per pull request
       # cost minutes per run on Windows and evicted main's cache (10 GB repo limit).
       - if: env.RBS_CODE == 'true'
@@ -149,13 +151,28 @@ jobs:
         run: >-
           python3 .github/scripts/slowest-tests.py "Slowest tests (${{ runner.os }})"
           fast-junit.xml target/nextest/ci/junit.xml
+      # macOS lints run here, after the tests, instead of in their own job: GitHub runs at
+      # most 5 macOS jobs at a time, so with two per run, a few pull requests updated
+      # together queued their macOS jobs for 10 to 16 minutes. Same steps as `lint`; they
+      # also run when a test failed, so one run shows every problem.
+      - if: ${{ !cancelled() && runner.os == 'macOS' && env.RBS_CODE == 'true' }}
+        run: cargo clippy --workspace --all-targets -- -D warnings
+      - if: ${{ !cancelled() && runner.os == 'macOS' && env.RBS_CODE == 'true' }}
+        run: cargo doc --workspace --no-deps
+        env:
+          RUSTDOCFLAGS: -D warnings
+      - if: ${{ !cancelled() && runner.os == 'macOS' && env.RBS_CODE == 'true' }}
+        run: cargo doc --workspace --no-deps --all-features
+        env:
+          RUSTDOCFLAGS: -D warnings
 
   lint:
     name: clippy, doc (${{ matrix.os }})
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-latest, macos-latest]
+        # macOS lints run at the end of the macOS test job (one macOS runner per run).
+        os: [ubuntu-latest, windows-latest]
     runs-on: ${{ matrix.os }}
     timeout-minutes: 60
     steps:
