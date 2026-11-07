@@ -27,7 +27,8 @@ use std::rc::Rc;
 
 use rbs_ui::tokens::{CONTRAST_RULES, FIXED, LIVE_SURFACES, THEME_COLORS, THEME_CONTRAST_RULES};
 
-const FILES: [(&str, &str); 4] = [
+/// Every `.slint` file of the app (`every_slint_file_is_read` checks the list).
+const FILES: [(&str, &str); 5] = [
     ("app.slint", include_str!("../../ui/app.slint")),
     (
         "appearance.slint",
@@ -37,6 +38,7 @@ const FILES: [(&str, &str); 4] = [
         "components.slint",
         include_str!("../../ui/components.slint"),
     ),
+    ("shortcuts.slint", include_str!("../../ui/shortcuts.slint")),
     ("studio.slint", include_str!("../../ui/studio.slint")),
 ];
 
@@ -44,6 +46,14 @@ const FILES: [(&str, &str); 4] = [
 /// and boundaries of inactive controls, and `color.border.subtle` draws dividers and
 /// resting outlines that never carry meaning alone (the design system's token table).
 const EXEMPT: [&str; 2] = ["color.text.disabled", "color.border.subtle"];
+
+/// Drawn pairs with no rule on purpose. The fixed live colour on `surface.raised` and
+/// `.overlay` (2.92:1 and 2.54:1 in Dark) is not a theme's to fix, and live is always
+/// shown with its words as well (U12; ADR-0057 review, item 1).
+const ACCEPTED: [(&str, &str); 2] = [
+    ("color.state.live", "color.surface.raised"),
+    ("color.state.live", "color.surface.overlay"),
+];
 
 /// What a foreground colour draws: text needs 4.5:1, the others 3:1 (U7).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -1119,7 +1129,7 @@ fn every_drawn_pair_has_a_contrast_rule() {
     }
     let mut missing = String::new();
     for ((ink, fg, bg), at) in &pairs {
-        if EXEMPT.contains(fg) || fg == bg {
+        if EXEMPT.contains(fg) || fg == bg || ACCEPTED.contains(&(*fg, *bg)) {
             continue;
         }
         let need = if *ink == Ink::Text { 4.5 } else { 3.0 };
@@ -1143,4 +1153,17 @@ fn every_drawn_pair_has_a_contrast_rule() {
         missing.is_empty(),
         "drawn pairs without a contrast rule:\n{missing}"
     );
+}
+
+#[test]
+fn every_slint_file_is_read() {
+    let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/ui");
+    let mut on_disk: Vec<String> = std::fs::read_dir(dir)
+        .unwrap()
+        .filter_map(|e| e.ok()?.file_name().into_string().ok())
+        .filter(|n| n.ends_with(".slint"))
+        .collect();
+    on_disk.sort();
+    let listed: Vec<&str> = FILES.iter().map(|(n, _)| *n).collect();
+    assert_eq!(on_disk, listed, "add the new .slint file to FILES");
 }

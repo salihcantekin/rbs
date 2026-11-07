@@ -6,7 +6,7 @@ format = 2
 
 # Live and recording colours are the same in every theme (rule U12): themes cannot change them.
 [fixed]
-"color.state.live" = "#db2d35"
+"color.state.live" = "#c4262e"
 "color.text.on-live" = "#ffffff"
 
 [themes.dark]

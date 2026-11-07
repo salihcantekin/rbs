@@ -47,7 +47,7 @@ pub const THEME_COLORS: &[&str] = &[
 /// Colour tokens that are the same in every theme, with their only allowed
 /// values. A custom token file must repeat them unchanged (rule U12).
 pub const FIXED: &[(&str, &str)] = &[
-    ("color.state.live", "#db2d35"),
+    ("color.state.live", "#c4262e"),
     ("color.text.on-live", "#ffffff"),
 ];
 
@@ -301,13 +301,9 @@ pub const THEME_CONTRAST_RULES: &[(&str, &str, f64, f64)] = &[
     ("color.border.strong", "color.surface.sunken", 3.0, 3.0),
 ];
 
-/// Surfaces `color.state.live` must stand out from (3:1): every surface.
-pub const LIVE_SURFACES: &[&str] = &[
-    "color.surface.base",
-    "color.surface.raised",
-    "color.surface.overlay",
-    "color.surface.sunken",
-];
+/// Surfaces `color.state.live` must stand out from (3:1). Not `surface.raised` or
+/// `.overlay`: the fixed live colour is not a theme's to fix (ADR-0057 review, item 1).
+pub const LIVE_SURFACES: &[&str] = &["color.surface.base", "color.surface.sunken"];
 
 /// Smallest CIEDE2000 difference between any theme colour and `color.state.live`, so
 /// no other colour reads as "live red" (rule U12, ADR-0057).
@@ -525,7 +521,7 @@ mod tests {
                 .contains("unknown colour")
         );
 
-        let other_live = base.replacen("#db2d35", "#ff0000", 1);
+        let other_live = base.replacen("#c4262e", "#ff0000", 1);
         assert!(Tokens::parse(&other_live).unwrap_err().0.contains("fixed"));
 
         let alpha = base.replacen("\"#121417\"", "\"#12141780\"", 1);

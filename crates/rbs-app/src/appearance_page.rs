@@ -318,18 +318,16 @@ pub fn opened(ctx: &Ctx, app: &mut App) {
 /// the app's error, as at start.
 pub fn reload(ctx: &Ctx, app: &mut App) {
     let mut notes = Vec::new();
-    let fresh = look::token_file(&mut notes);
+    let dev = look::dev_theme().is_some();
+    if dev || ctx.look.borrow().is_none() {
+        // As at start: `RBS_THEME` fills both slots from the new file.
+        let (loaded, note) = look::load(app.studio.user.data(), &mut look::SystemFonts::default());
+        notes.extend(note);
+        *ctx.look.borrow_mut() = loaded;
+    } else if let Some(file) = look::token_file(&mut notes)
+        && let Some(look) = ctx.look.borrow_mut().as_mut()
     {
-        let mut look = ctx.look.borrow_mut();
-        match (look.as_mut(), fresh) {
-            (Some(look), Some(file)) => look.file = file,
-            (None, Some(_)) => {
-                let (loaded, _) =
-                    look::load(app.studio.user.data(), &mut look::SystemFonts::default());
-                *look = loaded;
-            }
-            (_, None) => {}
-        }
+        look.file = file;
     }
     let file = ctx.look.borrow().as_ref().map(|l| l.file.clone());
     let Some(file) = file else {
@@ -340,9 +338,14 @@ pub fn reload(ctx: &Ctx, app: &mut App) {
     {
         let mut page = ctx.page.borrow_mut();
         page.ui.refresh(app.studio.user.data(), &file);
+        page.ui.recheck(&file);
         page.note.clear();
     }
-    relook(ctx, app);
+    if dev {
+        apply_all(ctx, app);
+    } else {
+        relook(ctx, app);
+    }
     let page_note = ctx.page.borrow().note.clone();
     if !page_note.is_empty() {
         notes.push(page_note);
@@ -385,6 +388,11 @@ fn relook(ctx: &Ctx, app: &mut App) {
             page.note = notes.join(" ");
         }
     }
+    apply_all(ctx, app);
+}
+
+/// Applies the current look to every open window.
+fn apply_all(ctx: &Ctx, app: &App) {
     let look = ctx.look.borrow();
     let look = look.as_ref();
     look::apply(

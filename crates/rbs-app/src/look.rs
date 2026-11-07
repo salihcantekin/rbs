@@ -420,7 +420,7 @@ mod tests {
         let mut failing = ThemeBody::new(Base::HighContrast);
         failing
             .colors
-            .insert("color.accent".into(), Color::parse("#db2d35").unwrap());
+            .insert("color.accent".into(), Color::parse("#c4262e").unwrap());
         let id = data.themes().create(&lock, "Loud", &failing).unwrap();
         let r = resolve(&file, &data, &ThemeId::User(id), Base::Dark, &mut notes);
         assert_eq!(r, file.built_in_theme(Base::HighContrast));
