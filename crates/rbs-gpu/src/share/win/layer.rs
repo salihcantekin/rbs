@@ -28,8 +28,8 @@ use windows::Win32::Graphics::Direct3D11::{
 };
 use windows::Win32::Graphics::DirectComposition::{
     DCOMPOSITION_BITMAP_INTERPOLATION_MODE_NEAREST_NEIGHBOR, DCompositionCreateDevice,
-    DCompositionCreateSurfaceHandle, IDCompositionDevice, IDCompositionSurface,
-    IDCompositionTarget, IDCompositionVisual,
+    DCompositionCreateSurfaceHandle, IDCompositionDevice, IDCompositionRectangleClip,
+    IDCompositionSurface, IDCompositionTarget, IDCompositionVisual,
 };
 use windows::Win32::Graphics::Dxgi::Common::{
     DXGI_ALPHA_MODE_IGNORE, DXGI_ALPHA_MODE_PREMULTIPLIED, DXGI_COLOR_SPACE_RGB_FULL_G22_NONE_P709,
@@ -40,11 +40,11 @@ use windows::Win32::Graphics::Dxgi::{
 };
 use windows::Win32::System::Threading::WaitForSingleObject;
 use windows::Win32::UI::WindowsAndMessaging::{GetSystemMetrics, SM_REMOTESESSION};
-use windows::core::Interface;
+use windows::core::{IUnknown, Interface};
 use windows_numerics::Matrix3x2;
 
 use super::super::geometry::{MAX_MARKS, Mark, snap};
-use super::super::region::{self, Edges, MAX_CUTOUTS, MAX_MARK_PIECES};
+use super::super::region::{self, Edges, MAX_CUTOUTS, MAX_MARK_PIECES, MAX_TILES};
 use super::pipe::Owned;
 use super::subscriber::{PreviewFrame, PreviewSubscriber};
 use crate::error::GpuError;
@@ -74,11 +74,11 @@ pub struct LayerRect {
 ///
 /// Not `Send`: create and use it on the thread that owns the window (the UI thread).
 /// The visual is in a topmost composition target, above everything the toolkit draws, so
-/// toolkit content drawn over the preview rectangle (an in-window menu, for example) is
-/// hidden while the layer shows; the UI passes such content's rectangles to
-/// [`PreviewLayer::set_cutouts`]. Marks are cut around them; the picture hides while
-/// one overlaps it, until sharing the surface between clipped visuals is checked on
-/// hardware (ADR-0054 decision 5).
+/// toolkit content drawn over the preview rectangle (an in-window menu, for example)
+/// would be hidden; the UI passes such content's rectangles to
+/// [`PreviewLayer::set_cutouts`], and the picture and the marks are cut around them
+/// (ADR-0054 decision 5): the picture is then shown as tiles, clipped visuals that share
+/// the composition swapchain surface.
 pub struct PreviewLayer {
     _d3d: ID3D11Device,
     /// Keep the engine's textures open as long as their buffers exist.
@@ -91,6 +91,17 @@ pub struct PreviewLayer {
     /// The target's root: the picture, and above it the marks (ADR-0048).
     root: IDCompositionVisual,
     visual: IDCompositionVisual,
+    /// The composition swapchain surface as visual content; the picture and every tile
+    /// show this one object, so a `Present` updates all of them.
+    content: IUnknown,
+    /// The picture's transform (scale and translation, physical pixels).
+    matrix: Matrix3x2,
+    /// Tiles, made on first use and reused (ADR-0054 decision 5).
+    tiles: Vec<Tile>,
+    /// Tiles showing the picture now (0: the picture visual shows it whole).
+    tiled: usize,
+    /// Scratch for the tiles' pieces; capacity kept.
+    tile_pieces: Vec<Edges>,
     target: Option<IDCompositionTarget>,
     /// Parent of the mark visuals, above the picture; made at the first `set_marks`.
     overlay: Option<IDCompositionVisual>,
@@ -122,8 +133,6 @@ pub struct PreviewLayer {
     cutouts: [Option<Edges>; MAX_CUTOUTS],
     /// A cover was not finite or there were too many: hidden.
     cut_bad: bool,
-    /// A cover overlaps the picture: hidden (ADR-0054 decision 5, Windows interim).
-    cut_over: bool,
     /// The marks last asked for, drawn again when the covers change.
     wanted: [Option<Mark>; MAX_MARKS],
     /// Scratch for mark pieces; capacity kept.
@@ -221,7 +230,7 @@ impl PreviewLayer {
         // SAFETY: creates a composition surface handle we own (closed on drop), a
         // presentation surface and composition objects bound to it, and a root visual of
         // our own device holding the picture visual.
-        let (surface_handle, surface, dcomp, root, visual) = unsafe {
+        let (surface_handle, surface, dcomp, root, visual, content) = unsafe {
             let handle = Owned(
                 DCompositionCreateSurfaceHandle(COMPOSITIONOBJECT_ALL_ACCESS, None)
                     .map_err(fail("DCompositionCreateSurfaceHandle failed"))?,
@@ -262,7 +271,7 @@ impl PreviewLayer {
             visual
                 .SetContent(&content)
                 .map_err(fail("SetContent failed"))?;
-            (handle, surface, dcomp, root, visual)
+            (handle, surface, dcomp, root, visual, content)
         };
         // SAFETY: a query of our own manager; the event stays owned by it.
         let lost_event = unsafe { manager.GetLostEvent() }.map_err(fail("GetLostEvent failed"))?;
@@ -281,6 +290,11 @@ impl PreviewLayer {
             dcomp,
             root,
             visual,
+            content,
+            matrix: Matrix3x2::identity(),
+            tiles: Vec::new(),
+            tiled: 0,
+            tile_pieces: Vec::with_capacity(region::MAX_PIECES),
             target: None,
             overlay: None,
             mark_visuals: Vec::new(),
@@ -294,7 +308,6 @@ impl PreviewLayer {
             hidden: Cell::new(false),
             cutouts: [None; MAX_CUTOUTS],
             cut_bad: false,
-            cut_over: false,
             wanted: [None; MAX_MARKS],
             pieces: Vec::with_capacity(region::MAX_PIECES),
             mark_pieces: Vec::with_capacity(MAX_MARK_PIECES),
@@ -395,6 +408,7 @@ impl PreviewLayer {
             M31: x.round() as f32,
             M32: y.round() as f32,
         };
+        self.matrix = m;
         // SAFETY: plain property changes of our own visual; `m` outlives the call.
         unsafe {
             let _ = self.visual.SetOffsetX2(0.0);
@@ -407,10 +421,10 @@ impl PreviewLayer {
 
     /// Leaves `cutouts` out: toolkit content drawn over the layer (in-window popups,
     /// toasts), in the same coordinates as [`PreviewLayer::set_rect`] (ADR-0054). Covers
-    /// grow to whole pixels. Marks are drawn around them; while one overlaps the picture
-    /// the layer hides (the Windows interim of ADR-0054 decision 5). A cover that is not
-    /// finite, or more than [`MAX_CUTOUTS`], hides the layer. Does nothing when the
-    /// covers did not change.
+    /// grow to whole pixels. The picture and the marks are drawn around them; while one
+    /// overlaps the picture, the picture is shown as tiles (ADR-0054 decision 5). A cover
+    /// that is not finite, or more than [`MAX_CUTOUTS`], hides the layer. Does nothing
+    /// when the covers did not change.
     pub fn set_cutouts(&mut self, cutouts: &[LayerRect]) {
         let mut wanted = [None; MAX_CUTOUTS];
         let mut bad = cutouts.len() > MAX_CUTOUTS;
@@ -427,21 +441,85 @@ impl PreviewLayer {
         self.commit();
     }
 
-    /// Hides the picture while a cover overlaps it and draws the marks around the covers.
+    /// Shows the picture whole, or as tiles around the covers that overlap it, and draws
+    /// the marks around the covers (ADR-0054 decisions 4 and 5).
     fn apply_cutouts(&mut self) {
-        let over = self.placed.is_some_and(|rect| {
-            let area = Edges {
-                x0: rect.x,
-                y0: rect.y,
-                x1: rect.x + rect.width.max(0.0),
-                y1: rect.y + rect.height.max(0.0),
-            };
-            let picture = region::picture(area, (self.width, self.height), 1.0);
-            self.cutouts.iter().flatten().any(|c| c.overlaps(&picture))
-        });
-        self.cut_over = over;
+        self.arrange_tiles();
         self.apply_root();
         self.draw_marks();
+    }
+
+    /// The picture's pieces outside the covers: one visual for the whole picture while
+    /// no cover overlaps it, else one tile per piece. Tiles are made on first use and
+    /// kept; a tile no longer needed loses its content.
+    fn arrange_tiles(&mut self) {
+        let mut pieces = std::mem::take(&mut self.tile_pieces);
+        pieces.clear();
+        let whole = match self.placed {
+            None => true,
+            Some(rect) => {
+                let area = Edges {
+                    x0: rect.x,
+                    y0: rect.y,
+                    x1: rect.x + rect.width.max(0.0),
+                    y1: rect.y + rect.height.max(0.0),
+                };
+                let picture = region::picture(area, (self.width, self.height), 1.0);
+                let mut covers = [picture; MAX_CUTOUTS];
+                let mut n = 0;
+                for (slot, c) in covers.iter_mut().zip(self.cutouts.iter().flatten()) {
+                    *slot = *c;
+                    n += 1;
+                }
+                let covers = covers.get(..n).unwrap_or(&[]);
+                if covers.iter().any(|c| c.overlaps(&picture)) {
+                    region::subtract(picture, covers, MAX_TILES, &mut pieces);
+                    false
+                } else {
+                    true
+                }
+            }
+        };
+        while !whole && self.tiles.len() < pieces.len() {
+            match Tile::new(&self.dcomp, &self.root, &self.visual) {
+                Some(t) => self.tiles.push(t),
+                None => break,
+            }
+        }
+        let tiled = if whole {
+            0
+        } else {
+            pieces.len().min(self.tiles.len())
+        };
+        // SAFETY: property changes of our own visuals and clips, with our own content;
+        // `self.matrix` outlives each call.
+        unsafe {
+            let _ = if tiled == 0 && whole {
+                self.visual.SetContent(&self.content)
+            } else {
+                self.visual.SetContent(None::<&IUnknown>)
+            };
+            for (i, tile) in self.tiles.iter().enumerate() {
+                match pieces.get(i).filter(|_| i < tiled) {
+                    Some(p) => {
+                        let _ = tile.clip.SetLeft2(p.x0 as f32);
+                        let _ = tile.clip.SetTop2(p.y0 as f32);
+                        let _ = tile.clip.SetRight2(p.x1 as f32);
+                        let _ = tile.clip.SetBottom2(p.y1 as f32);
+                        let _ = tile.picture.SetTransform2(&self.matrix);
+                        if i >= self.tiled {
+                            let _ = tile.picture.SetContent(&self.content);
+                        }
+                    }
+                    None if i < self.tiled => {
+                        let _ = tile.picture.SetContent(None::<&IUnknown>);
+                    }
+                    None => {}
+                }
+            }
+        }
+        self.tiled = tiled;
+        self.tile_pieces = pieces;
     }
 
     /// Draws `marks` over the picture (a selection's outline and handles, ADR-0048), in
@@ -472,12 +550,14 @@ impl PreviewLayer {
             return;
         }
         if self.overlay.is_none() {
-            // SAFETY: a new visual of our own device, added to our own root above the
-            // picture.
+            // SAFETY: a new visual of our own device, added to our own root on top, above
+            // the picture and its tiles.
             let made = unsafe {
-                self.dcomp
-                    .CreateVisual()
-                    .and_then(|o| self.root.AddVisual(&o, true, &self.visual).map(|()| o))
+                self.dcomp.CreateVisual().and_then(|o| {
+                    self.root
+                        .AddVisual(&o, false, None::<&IDCompositionVisual>)
+                        .map(|()| o)
+                })
             };
             match made {
                 Ok(o) => self.overlay = Some(o),
@@ -756,7 +836,7 @@ impl PreviewLayer {
         if let Some(target) = &self.target {
             // SAFETY: sets or clears the root of our own target to our own visual.
             let _ = unsafe {
-                if self.hidden.get() || self.cut_bad || self.cut_over {
+                if self.hidden.get() || self.cut_bad {
                     target.SetRoot(None::<&IDCompositionVisual>)
                 } else {
                     target.SetRoot(&self.root)
@@ -768,6 +848,41 @@ impl PreviewLayer {
     fn commit(&self) {
         // SAFETY: commits our own device's pending changes; does not wait.
         let _ = unsafe { self.dcomp.Commit() };
+    }
+}
+
+/// One piece of the picture while covers cut it (ADR-0054 decision 5): a visual clipped
+/// to the piece, holding a visual with the picture's transform and the shared content.
+struct Tile {
+    _clip_visual: IDCompositionVisual,
+    clip: IDCompositionRectangleClip,
+    picture: IDCompositionVisual,
+}
+
+impl Tile {
+    /// A tile under `root`, just above the whole picture's `visual` and so below the
+    /// marks; `None` if DirectComposition refuses one.
+    fn new(
+        dcomp: &IDCompositionDevice,
+        root: &IDCompositionVisual,
+        visual: &IDCompositionVisual,
+    ) -> Option<Self> {
+        // SAFETY: new objects of our own device, joined to our own root.
+        unsafe {
+            let outer = dcomp.CreateVisual().ok()?;
+            let clip = dcomp.CreateRectangleClip().ok()?;
+            outer.SetClip(&clip).ok()?;
+            let picture = dcomp.CreateVisual().ok()?;
+            outer
+                .AddVisual(&picture, true, None::<&IDCompositionVisual>)
+                .ok()?;
+            root.AddVisual(&outer, true, visual).ok()?;
+            Some(Self {
+                _clip_visual: outer,
+                clip,
+                picture,
+            })
+        }
     }
 }
 
