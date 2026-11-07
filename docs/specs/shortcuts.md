@@ -67,7 +67,7 @@ impl Keymap {
     pub fn bindings(&self) -> &[Active];          // in force, in a stable order
     pub fn problems(&self) -> &[Problem];         // bindings not in force, with why
     pub fn app(&self, chord: &Chord) -> Option<&str>;    // the command, app scope
-    pub fn global(&self) -> impl Iterator<Item = (&Chord, &str)>;
+    pub fn global(&self) -> impl Iterator<Item = &Active>;
     pub fn holder(&self, chord: &Chord) -> Option<&Active>;
     pub fn of(&self, command: &str) -> impl Iterator<Item = &Active>;
     pub fn check(&self, chord: &Chord, scope: Scope) -> Check; // for the editor
@@ -90,8 +90,8 @@ Refused in every scope (as RBS chord text; on macOS `Ctrl` is Command and `Meta`
 | Platform | Reserved |
 | --- | --- |
 | macOS | Ctrl+Q, Ctrl+W, Ctrl+H, Ctrl+M, Ctrl+Comma, Ctrl+Tab, Ctrl+Space, Ctrl+Backquote, Ctrl+Alt+Escape, Ctrl+Meta+Q, Meta+Space, Meta+Left, Meta+Right, Meta+Up, Meta+Down |
-| Windows | every chord with Meta, Alt+F4, Alt+Tab, Alt+Space, Ctrl+Escape, Ctrl+Shift+Escape, F10, Shift+F10 |
-| Linux | every chord with Meta, Alt+F4, Alt+Tab, Alt+Space |
+| Windows | every chord with Meta, Alt+F4, Alt+Tab, Alt+Shift+Tab, Alt+Space, Ctrl+Escape, Ctrl+Shift+Escape, F10, Shift+F10 |
+| Linux | every chord with Meta, Alt+F4, Alt+Tab, Alt+Shift+Tab, Alt+Space |
 
 macOS screenshot keys (Cmd+Shift+3, 4, 5) cannot be written at all (Shift with a digit).
 
@@ -118,7 +118,7 @@ keys = "Ctrl+Y"
 ```
 
 - At most 64 KiB and 512 `binding` plus `removed` entries; unknown keys are errors (ADR-0051). `keys` must parse and `command` must have the command id grammar. A file that breaks any of these fails as a whole (it is a hand edit; the user fixes it or resets).
-- A missing file is the defaults. A file that cannot be read gives the defaults and a note; RBS does not write the file until the user changes a shortcut, so the hand-edited file survives until then.
+- A missing file is the defaults. A file that cannot be read gives the defaults and a note; RBS does not write the file until the user changes a shortcut; that first write moves the unreadable file aside (the user-data "unreadable" path, ADR-0051) and writes a new one, so a hand edit is never silently lost.
 - `UserData::shortcuts() -> (ShortcutsDoc, Option<DataError>)`, `UserData::set_shortcuts(&WriterLock, &ShortcutsDoc)`.
 - Editing operations on `ShortcutsDoc` keep it minimal: adding a binding equal to a removed default deletes the `removed` entry instead; removing a user binding deletes it; removing a default adds a `removed` entry; Reset of one command deletes its `binding` and `removed` entries; Reset all empties both lists.
 

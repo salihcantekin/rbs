@@ -297,11 +297,14 @@ Toolbar items are command registry ids ([ADR-0050](../adr/0050-command-registry-
   | --- | --- | --- | --- |
   | `profile.select` | picker | `profile.switch {id}` (protocol 1.4) | File |
   | `collection.select` | picker | `collection.switch {id}` (protocol 1.4) | File |
-  | `edit.undo`, `edit.redo` | action (Ctrl/Cmd+Z, Ctrl/Cmd+Shift+Z) | the method of the same name | Edit |
+  | `edit.undo`, `edit.redo` | action (Ctrl/Cmd+Z; Ctrl/Cmd+Shift+Z and Ctrl/Cmd+Y) | the method of the same name | Edit |
   | `ui.workspace.select` | picker | `ui.workspace.switch {name}` | View |
   | `ui.area.toggle?area=left\|right\|bottom` | action, checked while the area shows | `ui.area.toggle {area}` | View |
   | `ui.area.hide_all`, `ui.area.show_all`, `ui.layout.reset_sizes`, `ui.toolbar.reset` | action | the method of the same name | View |
   | `ui.panel.select` | picker | `ui.panel.open {id}` | Window |
+  | `scene.select` | picker (a bound choice adds `collection`) | `scene.switch {scene}` (protocol 1.6) | Scene |
+  | `scene.position?n=1`…`9` | action (Ctrl/Cmd+1…9), in no menu | `scene.switch` with the scene at that position | (none) |
+  | `scene.next`, `scene.previous` | action | `scene.switch` with the scene after or before the one on air | Scene |
   | `stream.toggle`, `record.toggle` | toggle | `stream.start` / `stream.stop`, `record.start` / `record.stop` | Output |
 
   Pickers take their choice as an optional parameter (`name`, `id`); `ui.area.toggle` requires `area`. The `ui.*` methods entries may run are `rbs_api::request::UI_METHODS`. Not yet: titles and tooltips are English text until the UI has Fluent messages, entries have no icons, and no test yet checks that every UI command has an entry.

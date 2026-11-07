@@ -528,6 +528,8 @@ impl Chord {
                 let alt = only(false, true, false, false);
                 let reserved = (alt
                     && (self.key == Key::F(4) || named(Named::Tab) || named(Named::Space)))
+                    // Reverse task switching.
+                    || (only(false, true, true, false) && named(Named::Tab))
                     || (win
                         && ((only(true, false, false, false) && named(Named::Escape))
                             || (only(true, false, true, false) && named(Named::Escape))
@@ -1158,6 +1160,7 @@ mod tests {
         assert!(c("Ctrl+Q").reserved(Platform::Windows).is_none());
         assert!(c("Ctrl+Alt+Escape").reserved(Platform::MacOs).is_some());
         assert!(c("Alt+F4").reserved(Platform::Windows).is_some());
+        assert!(c("Alt+Shift+Tab").reserved(Platform::Windows).is_some());
         assert!(c("Meta+D").reserved(Platform::Windows).is_some());
         assert!(c("Meta+D").reserved(Platform::MacOs).is_none());
         assert!(c("Ctrl+Escape").reserved(Platform::Windows).is_some());

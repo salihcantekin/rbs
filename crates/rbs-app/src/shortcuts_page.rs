@@ -224,6 +224,9 @@ fn on_global_event(id: u32, pressed: bool) {
         };
         let command = {
             let Ok(mut keys) = ctx.keys.try_borrow_mut() else {
+                // Busy now (a callback holds the keys): try again on the next turn of
+                // the event loop, so a Released is never lost and the chord not stuck.
+                on_global_event(id, pressed);
                 return;
             };
             if !pressed {
