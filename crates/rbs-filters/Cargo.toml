@@ -1,0 +1,30 @@
+[package]
+name = "rbs-filters"
+description = "Built-in GPU video filters for RBS: the filter type trait, the filter node and the first catalogue (ADR-0062, spec video-filters.md)."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+# Engine crates only (ADR-0053 decision 6): never adapters or the scene model.
+rbs-core = { path = "../rbs-core" }
+rbs-graph = { path = "../rbs-graph" }
+rbs-gpu = { path = "../rbs-gpu" }
+# Same version and features as rbs-gpu, so nothing new is built.
+wgpu = { version = "30.0.1", default-features = false, features = ["std", "parking_lot", "dx12", "metal", "vulkan", "wgsl"] }
+bytemuck = { version = "1.25", features = ["derive"] }
+# Waits for the shader validation scope in `prepare` (control thread); as rbs-gpu.
+pollster = "0.4"
+
+[dev-dependencies]
+criterion = { version = "0.7", default-features = false }
+
+[[bench]]
+name = "filters"
+harness = false
+
+[lints]
+workspace = true
