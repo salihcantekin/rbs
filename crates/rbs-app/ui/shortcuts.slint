@@ -164,7 +164,8 @@ component CommandRow inherits VerticalLayout {
         text: item.group;
         color: Theme.text-secondary;
         font-size: Tokens.type-caption-size;
-        font-weight: Tokens.type-label-weight;
+        font-weight: Tokens.type-title-weight;
+        letter-spacing: 0.06 * Tokens.type-caption-size;
         accessible-role: none;
     }
     Rectangle {
@@ -184,42 +185,59 @@ component CommandRow inherits VerticalLayout {
                 vertical-alignment: center;
                 overflow: elide;
             }
-            for chip[ci] in item.chips: HorizontalLayout {
-                spacing: 0px;
-                alignment: center;
-                VerticalLayout {
-                    alignment: center;
-                    KeyboardShortcutHint {
-                        keys: chip.label;
-                        tag: chip.global ? @tr("Global") : "";
+            HorizontalLayout {
+                horizontal-stretch: 0;
+                spacing: Tokens.space-1;
+                alignment: end;
+                for chip[ci] in item.chips: HorizontalLayout {
+                    spacing: 0px;
+                    VerticalLayout {
+                        alignment: center;
+                        KeyboardShortcutHint {
+                            keys: chip.label;
+                            tag: chip.global ? @tr("Global") : "";
+                        }
+                    }
+                    IconButton {
+                        name: @tr("Remove {}", chip.label);
+                        icon: IconName.close;
+                        clicked => { Shortcuts.remove(index, ci); }
                     }
                 }
-                IconButton {
-                    name: @tr("Remove {}", chip.label);
-                    icon: IconName.close;
-                    clicked => { Shortcuts.remove(index, ci); }
+            }
+            // Reset and Add in a column of their own, so every row lines them up.
+            HorizontalLayout {
+                horizontal-stretch: 0;
+                width: Tokens.size-menu-sm * 0.6;
+                spacing: Tokens.space-1;
+                alignment: end;
+                if item.changed: Button {
+                    text: @tr("Reset");
+                    accessible-name: @tr("Reset {}", item.title);
+                    kind: "ghost";
+                    dense: true;
+                    clicked => { Shortcuts.reset(index); }
                 }
-            }
-            if item.changed: Button {
-                text: @tr("Reset");
-                accessible-name: @tr("Reset {}", item.title);
-                kind: "ghost";
-                dense: true;
-                clicked => { Shortcuts.reset(index); }
-            }
-            Button {
-                text: @tr("Add");
-                accessible-name: @tr("Add a shortcut for {}", item.title);
-                kind: "ghost";
-                dense: true;
-                icon: IconName.plus;
-                enabled: Shortcuts.recording != index && item.chips.length < 4;
-                clicked => { Shortcuts.add(index); }
+                Button {
+                    text: @tr("Add");
+                    accessible-name: @tr("Add a shortcut for {}", item.title);
+                    kind: "ghost";
+                    dense: true;
+                    lead: IconName.plus;
+                    enabled: Shortcuts.recording != index && item.chips.length < 4;
+                    clicked => { Shortcuts.add(index); }
+                }
             }
         }
     }
-    if item.problem != "": Problem { text: item.problem; }
-    if item.note != "": Hint { text: item.note; }
+    if item.problem != "": HorizontalLayout {
+        padding-left: Tokens.space-2;
+        Problem { text: item.problem; }
+    }
+    if item.note != "": HorizontalLayout {
+        padding-left: Tokens.space-2;
+        Hint { text: item.note; }
+    }
     if Shortcuts.recording == index: Recorder { title: item.title; }
 }
 
@@ -230,6 +248,13 @@ export component ShortcutsSettings inherits VerticalLayout {
     if Shortcuts.note != "": Problem { text: Shortcuts.note; }
     HorizontalLayout {
         spacing: Tokens.space-2;
+        Text {
+            text: @tr("Search");
+            color: Theme.text-secondary;
+            font-size: Tokens.type-caption-size;
+            vertical-alignment: center;
+            accessible-role: none;
+        }
         TextField {
             horizontal-stretch: 1;
             label: @tr("Search commands or keys");

@@ -460,7 +460,7 @@ pub fn refresh(ctx: &Ctx, app: &App) {
         };
         view.push(ShortcutRow {
             group: if r.group != last_group {
-                r.group.into()
+                r.group.to_uppercase().into()
             } else {
                 SharedString::new()
             },
@@ -753,11 +753,12 @@ mod tests {
     }
 
     fn keys_with(doc: ShortcutsDoc) -> Keys {
-        let mut k = Keys::default();
-        k.keymap = Keymap::resolve(&doc, Platform::Windows);
-        k.platform = Platform::Windows;
-        k.doc = doc;
-        k
+        Keys {
+            keymap: Keymap::resolve(&doc, Platform::Windows),
+            platform: Platform::Windows,
+            doc,
+            ..Keys::default()
+        }
     }
 
     #[test]

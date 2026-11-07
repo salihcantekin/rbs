@@ -50,7 +50,7 @@ fn special(c: char) -> Option<Key> {
         (SKey::PageUp, Named::PageUp),
         (SKey::PageDown, Named::PageDown),
     ];
-    if let Some((_, n)) = named.iter().find(|(k, _)| char::from(k.clone()) == c) {
+    if let Some((_, n)) = named.iter().find(|(k, _)| char::from(*k) == c) {
         return Some(Key::Named(*n));
     }
     let f1 = u32::from(char::from(SKey::F1));
@@ -65,7 +65,7 @@ pub fn read_key(text: &str, mods: Mods) -> Read {
     let (Some(c), None) = (chars.next(), chars.next()) else {
         return Read::Unusable("This key cannot be used in a shortcut");
     };
-    if MODIFIER_KEYS.iter().any(|k| char::from(k.clone()) == c) {
+    if MODIFIER_KEYS.iter().any(|k| char::from(*k) == c) {
         return Read::Modifier;
     }
     if char::from(SKey::Backtab) == c {
@@ -154,23 +154,20 @@ mod os {
     fn code(key: Key) -> Option<Code> {
         use Code::*;
         Some(match key {
-            Key::Letter(c) => [
+            Key::Letter(c) => *[
                 KeyA, KeyB, KeyC, KeyD, KeyE, KeyF, KeyG, KeyH, KeyI, KeyJ, KeyK, KeyL, KeyM, KeyN,
                 KeyO, KeyP, KeyQ, KeyR, KeyS, KeyT, KeyU, KeyV, KeyW, KeyX, KeyY, KeyZ,
             ]
-            .get(usize::from(c.checked_sub(b'A')?))?
-            .clone(),
-            Key::Digit(d) => [
+            .get(usize::from(c.checked_sub(b'A')?))?,
+            Key::Digit(d) => *[
                 Digit0, Digit1, Digit2, Digit3, Digit4, Digit5, Digit6, Digit7, Digit8, Digit9,
             ]
-            .get(usize::from(d))?
-            .clone(),
-            Key::F(n) => [
+            .get(usize::from(d))?,
+            Key::F(n) => *[
                 F1, F2, F3, F4, F5, F6, F7, F8, F9, F10, F11, F12, F13, F14, F15, F16, F17, F18,
                 F19, F20, F21, F22, F23, F24,
             ]
-            .get(usize::from(n.checked_sub(1)?))?
-            .clone(),
+            .get(usize::from(n.checked_sub(1)?))?,
             Key::Named(n) => match n {
                 Named::Space => Space,
                 Named::Enter => Enter,
@@ -202,14 +199,14 @@ mod os {
         })
     }
 
-    /// The crate's hotkey for `chord`. RBS `Ctrl` is Command (`SUPER`) on macOS and
+    /// The crate's hotkey for `chord`. RBS `Ctrl` is Command (`META`) on macOS and
     /// Control on Windows; `Meta` is the other one (ADR-0060 decision 7).
     fn hotkey(chord: &Chord) -> Option<HotKey> {
         let m = chord.mods;
         let (primary, other) = if cfg!(target_os = "macos") {
-            (Modifiers::SUPER, Modifiers::CONTROL)
+            (Modifiers::META, Modifiers::CONTROL)
         } else {
-            (Modifiers::CONTROL, Modifiers::SUPER)
+            (Modifiers::CONTROL, Modifiers::META)
         };
         let mut mods = Modifiers::empty();
         for (on, flag) in [
