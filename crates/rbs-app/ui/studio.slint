@@ -10,7 +10,7 @@ import { Button, Checkbox, ColorPicker, FocusRing, IconButton, IconName, MenuIte
 // Style (ADR-0053): `shape` 0 rectangle, 1 circle, 2 ellipse; `radius` for rectangles;
 // `border` on or off, its `border-width`, its colour as `#rrggbb` or `#rrggbbaa` text
 // and as a swatch (the values a border gets when turned on while it is off).
-export struct SourceData { id: int, name: string, kind: string, status: string, ok: bool, picture: bool, x: float, y: float, w: float, h: float, can-up: bool, can-down: bool, shape: int, radius: float, border: bool, border-width: float, border-color: string, border-swatch: color }
+export struct SourceData { id: int, name: string, kind: string, status: string, ok: bool, picture: bool, x: float, y: float, w: float, h: float, can-up: bool, can-down: bool, shape: int, radius: float, border: bool, border-width: float, border-color: string, border-swatch: color, crop-l: int, crop-t: int, crop-r: int, crop-b: int, pic-w: int, pic-h: int }
 export struct KindData { code: int, label: string }
 // A filled rectangle of the selection on the preview (outline or handle), in the
 // panel's coordinates; kind 0 outline, 1 handle border, 2 handle inside.
@@ -83,13 +83,18 @@ export global Studio {
     callback set-source-box(int /* id */, float /* x */, float /* y */, float /* w */, float /* h */);
     // Shape and border of a video source (ADR-0053); a colour that is not #rrggbb or
     // #rrggbbaa is ignored.
+    // Source pixels cut from each edge (ADR-0058); the box changes so the scale stays.
+    callback set-source-crop(int /* id */, int /* left */, int /* top */, int /* right */, int /* bottom */);
+    // 0 full picture, 1 canvas size centred, 2 left half, 3 right half.
+    callback set-source-region(int /* id */, int /* region */);
     callback set-source-style(int /* id */, int /* shape */, float /* radius */, bool /* border */, float /* width */, string /* colour */);
     // The selection drawn by the toolkit where no preview layer shows the picture (the
     // layer draws it itself otherwise, ADR-0048).
     in property <[MarkData]> marks;
     // Pointer on the picture panel (panel coordinates, logical pixels; `w`, `h` the
     // panel's size). Shift: free resize at corners; Ctrl or Cmd: no snapping.
-    callback preview-press(float /* x */, float /* y */, float /* w */, float /* h */, bool /* shift */, bool /* no-snap */);
+    // `crop`: Alt (Option) held, a handle crops instead of resizing (ADR-0058).
+    callback preview-press(float /* x */, float /* y */, float /* w */, float /* h */, bool /* shift */, bool /* no-snap */, bool /* crop */);
     callback preview-drag(float /* x */, float /* y */);
     callback preview-release();
     // Arrow keys on the picture panel: move the selected source by this many canvas
@@ -393,7 +398,7 @@ export component ProgramPanel inherits Rectangle {
             if e.button != PointerEventButton.left { return; }
             if e.kind == PointerEventKind.down {
                 keys.focus();
-                Studio.preview-press(self.mouse-x / 1px, self.mouse-y / 1px, self.width / 1px, self.height / 1px, e.modifiers.shift, e.modifiers.control || e.modifiers.meta);
+                Studio.preview-press(self.mouse-x / 1px, self.mouse-y / 1px, self.width / 1px, self.height / 1px, e.modifiers.shift, e.modifiers.control || e.modifiers.meta, e.modifiers.alt);
             }
             if e.kind == PointerEventKind.up { Studio.preview-release(); }
         }
@@ -526,6 +531,7 @@ export component SourcesPanel inherits Rectangle {
                 : Studio.undo-kind == 3 ? @tr("Undo the layer change of {}", Studio.undo-name)
                 : Studio.undo-kind == 4 ? @tr("Undo moving or resizing {}", Studio.undo-name)
                 : Studio.undo-kind == 5 ? @tr("Undo the shape or border of {}", Studio.undo-name)
+                : Studio.undo-kind == 6 ? @tr("Undo cropping {}", Studio.undo-name)
                 : @tr("Undo");
             clicked => { Studio.undo-edit(true); }
         }
@@ -538,6 +544,7 @@ export component SourcesPanel inherits Rectangle {
                 : Studio.redo-kind == 3 ? @tr("Redo the layer change of {}", Studio.redo-name)
                 : Studio.redo-kind == 4 ? @tr("Redo moving or resizing {}", Studio.redo-name)
                 : Studio.redo-kind == 5 ? @tr("Redo the shape or border of {}", Studio.redo-name)
+                : Studio.redo-kind == 6 ? @tr("Redo cropping {}", Studio.redo-name)
                 : @tr("Redo");
             clicked => { Studio.undo-edit(false); }
         }
@@ -1115,6 +1122,121 @@ component StyleFields inherits VerticalLayout {
     }
 }
 
+// Crop of a picture in source pixels (ADR-0058), under its position and size. Every
+// change is one undo step and keeps the picture's scale; the Region buttons show a part
+// of the picture as large as the canvas allows.
+component CropFields inherits VerticalLayout {
+    in property <SourceData> data;
+    property <bool> known: data.pic-w > 0;
+    spacing: Tokens.space-3;
+    Text {
+        text: @tr("Crop");
+        color: Theme.text-primary;
+        font-size: Tokens.type-label-size;
+        font-weight: Tokens.type-label-weight;
+        accessible-role: none;
+    }
+    HorizontalLayout {
+        spacing: Tokens.space-2;
+        Field {
+            horizontal-stretch: 1;
+            preferred-width: 0;
+            label: @tr("Left");
+            NumberField {
+                label: @tr("Crop left of {}", data.name);
+                value: data.crop-l;
+                enabled: known;
+                edited(v) => { Studio.set-source-crop(data.id, max(v, 0), data.crop-t, data.crop-r, data.crop-b); }
+            }
+        }
+        Field {
+            horizontal-stretch: 1;
+            preferred-width: 0;
+            label: @tr("Right");
+            NumberField {
+                label: @tr("Crop right of {}", data.name);
+                value: data.crop-r;
+                enabled: known;
+                edited(v) => { Studio.set-source-crop(data.id, data.crop-l, data.crop-t, max(v, 0), data.crop-b); }
+            }
+        }
+    }
+    HorizontalLayout {
+        spacing: Tokens.space-2;
+        Field {
+            horizontal-stretch: 1;
+            preferred-width: 0;
+            label: @tr("Top");
+            NumberField {
+                label: @tr("Crop top of {}", data.name);
+                value: data.crop-t;
+                enabled: known;
+                edited(v) => { Studio.set-source-crop(data.id, data.crop-l, max(v, 0), data.crop-r, data.crop-b); }
+            }
+        }
+        Field {
+            horizontal-stretch: 1;
+            preferred-width: 0;
+            label: @tr("Bottom");
+            NumberField {
+                label: @tr("Crop bottom of {}", data.name);
+                value: data.crop-b;
+                enabled: known;
+                edited(v) => { Studio.set-source-crop(data.id, data.crop-l, data.crop-t, data.crop-r, max(v, 0)); }
+            }
+        }
+    }
+    Text {
+        text: @tr("Show");
+        color: Theme.text-secondary;
+        font-size: Tokens.type-body-size;
+        accessible-role: none;
+    }
+    HorizontalLayout {
+        spacing: Tokens.space-2;
+        Button {
+            horizontal-stretch: 1;
+            text: @tr("Canvas size");
+            kind: "secondary";
+            enabled: known;
+            accessible-name: @tr("Show the centre of {} at canvas size", data.name);
+            clicked => { Studio.set-source-region(data.id, 1); }
+        }
+        Button {
+            horizontal-stretch: 1;
+            text: @tr("Whole picture");
+            kind: "secondary";
+            enabled: known;
+            accessible-name: @tr("Show all of {}, fitted to the canvas", data.name);
+            clicked => { Studio.set-source-region(data.id, 0); }
+        }
+    }
+    HorizontalLayout {
+        spacing: Tokens.space-2;
+        Button {
+            horizontal-stretch: 1;
+            text: @tr("Left half");
+            kind: "secondary";
+            enabled: known;
+            accessible-name: @tr("Show the left half of {}", data.name);
+            clicked => { Studio.set-source-region(data.id, 2); }
+        }
+        Button {
+            horizontal-stretch: 1;
+            text: @tr("Right half");
+            kind: "secondary";
+            enabled: known;
+            accessible-name: @tr("Show the right half of {}", data.name);
+            clicked => { Studio.set-source-region(data.id, 3); }
+        }
+    }
+    Hint {
+        text: known
+            ? @tr("In pixels of the {}x{} picture. The box changes so the picture keeps its scale. Alt-drag a handle on the picture panel to crop there.", data.pic-w, data.pic-h)
+            : @tr("Available once the source shows a picture.");
+    }
+}
+
 component TransformFields inherits VerticalLayout {
     in property <SourceData> data;
     spacing: Tokens.space-3;
@@ -1180,6 +1302,7 @@ component TransformFields inherits VerticalLayout {
     if data.picture: Hint {
         text: @tr("In canvas pixels, from the top-left corner. Up and Down arrows change a value by 1, with Shift by 10.");
     }
+    if data.picture: CropFields { data: data; }
     if data.picture: StyleFields { data: data; }
 }
 

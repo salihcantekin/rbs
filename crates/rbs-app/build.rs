@@ -1,7 +1,8 @@
 //! Generates `tokens.slint` from the design token file (rule U6) and compiles the UI.
 
 use std::fmt::Write as _;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+use std::time::SystemTime;
 
 use rbs_ui::tokens::{THEMES, Tokens};
 
@@ -181,8 +182,31 @@ fn generate_apply(t: &Tokens) -> Result<String, std::fmt::Error> {
     Ok(s)
 }
 
+/// Writes a generated file into `OUT_DIR` and gives it the token file's modification
+/// time. slint-build asks cargo to rerun this script when a file the UI includes changes,
+/// and `tokens.slint` is one of them: a file written during the run is newer than the run
+/// itself, so without the older time every cargo command saw rbs-app as changed and
+/// rebuilt it (about a minute per CI step). Backdating is safe: whenever the content can
+/// change, `tokens.toml` changed, the script runs again and rbs-app is rebuilt anyway.
+fn write_generated(path: &Path, text: &str, modified: SystemTime) {
+    if let Err(e) = std::fs::write(path, text) {
+        panic!("writing {}: {e}", path.display());
+    }
+    let file = match std::fs::File::options().write(true).open(path) {
+        Ok(f) => f,
+        Err(e) => panic!("opening {}: {e}", path.display()),
+    };
+    if let Err(e) = file.set_modified(modified) {
+        panic!("setting the modification time of {}: {e}", path.display());
+    }
+}
+
 fn main() {
     println!("cargo:rerun-if-changed=../rbs-ui/tokens.toml");
+    // The token file's own time (older than this run); the epoch if it cannot be read.
+    let modified = std::fs::metadata("../rbs-ui/tokens.toml")
+        .and_then(|m| m.modified())
+        .unwrap_or(SystemTime::UNIX_EPOCH);
     let tokens = match Tokens::built_in() {
         Ok(t) => t,
         Err(e) => panic!("{e}"),
@@ -192,16 +216,12 @@ fn main() {
         Ok(t) => t,
         Err(e) => panic!("generating tokens.slint: {e}"),
     };
-    if let Err(e) = std::fs::write(out.join("tokens.slint"), text) {
-        panic!("writing tokens.slint: {e}");
-    }
+    write_generated(&out.join("tokens.slint"), &text, modified);
     let apply = match generate_apply(&tokens) {
         Ok(t) => t,
         Err(e) => panic!("generating tokens_apply.rs: {e}"),
     };
-    if let Err(e) = std::fs::write(out.join("tokens_apply.rs"), apply) {
-        panic!("writing tokens_apply.rs: {e}");
-    }
+    write_generated(&out.join("tokens_apply.rs"), &apply, modified);
     let config = slint_build::CompilerConfiguration::new().with_include_paths(vec![out]);
     if let Err(e) = slint_build::compile_with_config("ui/app.slint", config) {
         panic!("{e}");

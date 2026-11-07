@@ -25,7 +25,7 @@ Out of scope:
 - Compressed camera modes (MJPEG, H.264). Most USB webcams deliver 1080p30 and above only compressed, so this limits early cameras to their uncompressed modes (typically up to 720p30, or 1080p at low rates over USB 2). They will be added in a later minor version as compressed `CameraMode`s delivered as packets to a decoder node through the codec port; the cost is one decode per camera frame, on the GPU where the platform allows.
 - Media files, browser sources, remote guests: separate source node types, not OS capture.
 - Device hot-plug watching: one shared watcher owned by the registry (ADR-0013 rule 2). The port only offers `enumerate` on demand.
-- Cropping (including region capture), scaling and colour conversion: compositor and filters.
+- Cropping (including region capture), scaling and colour conversion: compositor and filters. ADR-0058 keeps it so; a capture request region is a later minor version with its own ADR if a measurement shows the whole surface costs too much.
 
 ## Contract
 

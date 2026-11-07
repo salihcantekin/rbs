@@ -10,6 +10,7 @@
 //! UI command waiting, and state changes are published as events with a `seq` per
 //! state key. With no API attached this costs a counter increment per change.
 
+use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::Weak;
@@ -41,7 +42,7 @@ use rbs_record::{
 };
 use rbs_scene::SceneCollection;
 use rbs_scene::model::{
-    Border, CanvasId, ItemContent, ItemId, ItemStyle, Layout, SceneId, SceneItem, SceneScope,
+    Border, CanvasId, Crop, ItemContent, ItemId, ItemStyle, Layout, SceneId, SceneItem, SceneScope,
     SettingValue, Settings, Shadow, Shape, SourceId,
 };
 use rbs_scene::{SceneError, Undo};
@@ -187,6 +188,9 @@ pub struct SourceRow {
     pub layout: Option<Layout>,
     /// Its item in the program scene.
     pub item: ItemId,
+    /// Width and height in pixels of its picture, as last seen while it ran (video
+    /// sources, ADR-0058); `None` before it ran.
+    pub picture: Option<(u32, u32)>,
 }
 
 impl PartialEq for SourceRow {
@@ -197,6 +201,7 @@ impl PartialEq for SourceRow {
             && self.status == other.status
             && self.layout == other.layout
             && self.item == other.item
+            && self.picture == other.picture
             && match (&self.meter, &other.meter) {
                 (Some(a), Some(b)) => Arc::ptr_eq(a, b),
                 (None, None) => true,
@@ -204,6 +209,64 @@ impl PartialEq for SourceRow {
             }
     }
 }
+
+/// A part of a source's picture the Region menu shows (ADR-0058).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CropRegion {
+    /// The whole picture: no crop, fitted to the canvas like a new source.
+    Full,
+    /// The centre, as large as the canvas (or the picture, if smaller), shown 1:1 when
+    /// the picture is at least as large as the canvas.
+    CanvasCentred,
+    /// The left half.
+    LeftHalf,
+    /// The right half.
+    RightHalf,
+}
+
+impl CropRegion {
+    /// The crop that shows this part of a `w x h` picture on a `cw x ch` canvas.
+    pub fn crop(self, (w, h): (u32, u32), (cw, ch): (u32, u32)) -> Crop {
+        match self {
+            CropRegion::Full => Crop::default(),
+            CropRegion::CanvasCentred => {
+                let (sw, sh) = (cw.min(w), ch.min(h));
+                let (l, t) = ((w - sw) / 2, (h - sh) / 2);
+                Crop::new(l, t, w - sw - l, h - sh - t)
+            }
+            CropRegion::LeftHalf => Crop::new(0, 0, w - w / 2, 0),
+            CropRegion::RightHalf => Crop::new(w / 2, 0, 0, 0),
+        }
+    }
+}
+
+/// Why a crop was refused.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum CropRefusal {
+    /// No such item, or its source is gone.
+    NotFound(String),
+    /// The request cannot be met (a nested scene, a crop that leaves nothing).
+    Invalid(String),
+    /// The scale cannot be kept: the source never showed a picture.
+    NoPicture,
+    /// The scene refused the edit.
+    Failed(String),
+}
+
+impl CropRefusal {
+    fn text(&self) -> String {
+        match self {
+            CropRefusal::NotFound(t) | CropRefusal::Invalid(t) | CropRefusal::Failed(t) => {
+                t.clone()
+            }
+            CropRefusal::NoPicture => {
+                "This source has no picture yet, so its crop cannot keep the scale.".into()
+            }
+        }
+    }
+}
+
+const NO_AREA: &str = "The crop must leave at least one pixel of the picture in each direction.";
 
 /// What the UI asks the studio to do.
 #[derive(Debug, Clone)]
@@ -252,6 +315,32 @@ pub enum Command {
         position: [f32; 2],
         /// Width and height.
         size: [f32; 2],
+    },
+    /// Cut source pixels from the edges of a video source's picture (ADR-0058), on the
+    /// layout the canvas shows. With `keep_scale`, the box changes so a source pixel
+    /// keeps its size and what stays keeps its place. Always answered with
+    /// [`Update::CropPlaced`] carrying `seq`, also when nothing changed; a refusal is
+    /// also an [`Update::Error`].
+    SetSourceCrop {
+        /// The caller's number for this request.
+        seq: u64,
+        /// Crops with the same number other than 0 that follow each other are one undo
+        /// step (one drag on the picture panel); 0 is a step of its own.
+        gesture: u64,
+        /// The source.
+        id: SourceId,
+        /// Pixels cut from the left, top, right and bottom.
+        crop: [u32; 4],
+        /// Keep the scale (else the cropped picture fills the box).
+        keep_scale: bool,
+    },
+    /// Show a part of a video source's picture filling as much of the canvas as fits
+    /// (ADR-0058, Properties' Show buttons). One undo step.
+    SetSourceRegion {
+        /// The source.
+        id: SourceId,
+        /// Which part.
+        region: CropRegion,
     },
     /// Shape and border of a video source's picture (ADR-0053), replacing the whole
     /// style of the layout the canvas shows. A style that is not valid is refused with
@@ -315,6 +404,19 @@ pub enum Command {
         collection: Box<SceneCollection>,
         /// Saves it after every change; `None`: changes are not saved.
         autosave: Option<CollectionSaver>,
+    },
+    /// The output profiles and scene collections with the ones in use, for
+    /// `profile.list` and `collection.list`. Sent at start and after every change of
+    /// the libraries or of the ones in use; after an [`Update::SwitchRequested`] once
+    /// the switch is done or refused (for an output profile after its settings and
+    /// key account were sent, for a scene collection after the studio answered).
+    SetLibrary {
+        /// The output profiles.
+        profiles: api::Library,
+        /// The scene collections.
+        collections: api::Library,
+        /// The `seq` of the [`Update::SwitchRequested`] this answers, if any.
+        answered: Option<u64>,
     },
 }
 
@@ -524,6 +626,13 @@ pub enum Update {
         /// Taken.
         ok: bool,
     },
+    /// The answer to [`Command::SetSourceCrop`] number `seq`, as [`Update::BoxPlaced`].
+    CropPlaced {
+        /// The request's number.
+        seq: u64,
+        /// Taken.
+        ok: bool,
+    },
     /// The studio runs. `preview`: where the UI connects to the canvas preview (`None`
     /// where the platform has none). `kinds`: the kinds the adapters can add.
     Started {
@@ -600,6 +709,18 @@ pub enum Update {
         seq: u64,
         /// How it went.
         result: Result<(), String>,
+    },
+    /// A control API client asked to switch output profiles (`collection` false) or
+    /// scene collections to the entry `id` (`profile.switch`, `collection.switch`);
+    /// the UI switches as its File menu does, then answers with
+    /// [`Command::SetLibrary`].
+    SwitchRequested {
+        /// The request's number, echoed in [`Command::SetLibrary`]'s `answered`.
+        seq: u64,
+        /// Scene collections, else output profiles.
+        collection: bool,
+        /// The entry's id.
+        id: String,
     },
     /// After a caught panic: how many outputs the host did not track and stopped
     /// (tests only, ADR-0055).
@@ -939,6 +1060,8 @@ struct Host {
     canvas: CanvasId,
     scene: SceneId,
     rows: Vec<SourceRow>,
+    /// The last picture size seen per video source (ADR-0058).
+    sizes: BTreeMap<SourceId, (u32, u32)>,
     /// The user's undo history of scene edits, shared with control API clients.
     history: History<Undo>,
     /// The next undo and redo as last sent.
@@ -989,6 +1112,14 @@ struct Host {
     record_state: api::RecordState,
     /// The stream settings as the UI uses them; `None` until the UI sent them.
     stream_profile: Option<StreamProfile>,
+    /// The output profiles and scene collections as the UI listed them last; `None`
+    /// until the UI sent them.
+    library: Option<(api::Library, api::Library)>,
+    /// The `seq` of a switch asked for through the control API that the UI has not
+    /// answered yet ([`Command::SetLibrary`]). Outputs cannot start meanwhile.
+    switch_pending: Option<u64>,
+    /// The last `seq` given to [`Update::SwitchRequested`].
+    switch_seq: u64,
     /// The running stream, as the control API reports it.
     stream_state: api::StreamState,
     /// When the Stats panel's counters go out next, on `clock`; `None` while no
@@ -1298,6 +1429,7 @@ fn start(
             canvas,
             scene,
             rows: Vec::new(),
+            sizes: BTreeMap::new(),
             history: History::new(),
             history_shown: (None, None),
             waiting: false,
@@ -1328,6 +1460,9 @@ fn start(
             cannot_record,
             record_state: api::RecordState::Idle { last: None },
             stream_profile: None,
+            library: None,
+            switch_pending: None,
+            switch_seq: 0,
             stream_state: api::StreamState::Idle { last: None },
             inbox: Weak::new(),
         },
@@ -1390,6 +1525,39 @@ impl Host {
                 };
                 notify(Update::BoxPlaced { seq, ok });
             }
+            Command::SetSourceCrop {
+                seq,
+                gesture,
+                id,
+                crop,
+                keep_scale,
+            } => {
+                let [l, t, r, b] = crop;
+                let edit = self
+                    .item_of(id)
+                    .map_err(CropRefusal::NotFound)
+                    .map(|(_, item)| item.id)
+                    .and_then(|item| {
+                        self.set_item_crop(item, Crop::new(l, t, r, b), keep_scale, gesture)
+                    });
+                let ok = match edit {
+                    Ok(true) => {
+                        self.apply(notify);
+                        true
+                    }
+                    Ok(false) => true,
+                    Err(e) => {
+                        notify(Update::Error(e.text()));
+                        false
+                    }
+                };
+                notify(Update::CropPlaced { seq, ok });
+            }
+            Command::SetSourceRegion { id, region } => match self.set_source_region(id, region) {
+                Ok(true) => self.apply(notify),
+                Ok(false) => {}
+                Err(e) => notify(Update::Error(e.text())),
+            },
             Command::SetSourceStyle { gesture, id, style } => {
                 let edit = self
                     .item_of(id)
@@ -1473,8 +1641,25 @@ impl Host {
                 collection,
                 autosave,
             } => {
-                let result = self.switch_collection(*collection, autosave, notify);
+                // Answered also after a caught panic, so the UI's switch, and a control
+                // API switch waiting on it, end; the round then recovers the host.
+                let result =
+                    rbs_crash::contain(|| self.switch_collection(*collection, autosave, notify))
+                        .unwrap_or_else(|_| {
+                            self.caught = true;
+                            Err(rbs_crash::CAUGHT_TEXT.to_owned())
+                        });
                 notify(Update::CollectionSwitched { seq, result });
+            }
+            Command::SetLibrary {
+                profiles,
+                collections,
+                answered,
+            } => {
+                self.library = Some((profiles, collections));
+                if answered.is_some() && answered == self.switch_pending {
+                    self.switch_pending = None;
+                }
             }
         }
     }
@@ -2434,6 +2619,131 @@ impl Host {
         Ok(true)
     }
 
+    /// An item placing a source, anywhere in the collection, with its layout on the
+    /// studio's canvas and whether that is its own override there.
+    fn crop_target(
+        &self,
+        item: ItemId,
+    ) -> Result<(SourceId, Layout, Option<CanvasId>), CropRefusal> {
+        let found = self
+            .collection
+            .scenes()
+            .find_map(|s| s.items.iter().find(|i| i.id == item))
+            .ok_or_else(|| CropRefusal::NotFound(format!("no item {}", item.get())))?;
+        let ItemContent::Source(source) = found.content else {
+            return Err(CropRefusal::Invalid(
+                "crop is for source items, not nested scenes".into(),
+            ));
+        };
+        let own = found
+            .overrides
+            .contains_key(&self.canvas)
+            .then_some(self.canvas);
+        Ok((source, *found.layout_on(self.canvas), own))
+    }
+
+    /// Writes `layout` as one undo step of `kind`; `Ok(false)` when it is unchanged.
+    fn write_crop(
+        &mut self,
+        item: ItemId,
+        source: SourceId,
+        own: Option<CanvasId>,
+        old: Layout,
+        layout: Layout,
+        gesture: u64,
+    ) -> Result<bool, CropRefusal> {
+        if layout == old {
+            return Ok(false);
+        }
+        let undo = self
+            .collection
+            .set_item_layout(item, own, layout)
+            .map_err(|e| CropRefusal::Failed(edit_error(&e)))?;
+        let name = self.name_of(source);
+        self.history
+            .record(EditKind::Crop, &name, gesture, vec![undo]);
+        Ok(true)
+    }
+
+    /// A new crop for an item's layout on the studio's canvas (ADR-0058); `Ok(false)`
+    /// when it already has it.
+    fn set_item_crop(
+        &mut self,
+        item: ItemId,
+        crop: Crop,
+        keep_scale: bool,
+        gesture: u64,
+    ) -> Result<bool, CropRefusal> {
+        let (source, old, own) = self.crop_target(item)?;
+        let size = self.sizes.get(&source).copied();
+        let layout = if keep_scale {
+            let size = size.ok_or(CropRefusal::NoPicture)?;
+            if crop == old.crop {
+                return Ok(false);
+            }
+            old.recrop(size, crop)
+                .ok_or_else(|| CropRefusal::Invalid(NO_AREA.into()))?
+        } else {
+            if size.is_some_and(|(w, h)| !crop.fits(w, h)) {
+                return Err(CropRefusal::Invalid(NO_AREA.into()));
+            }
+            old.with_crop(crop)
+        };
+        self.write_crop(item, source, own, old, layout, gesture)
+    }
+
+    /// Shows `region` of a source's picture (Properties' Region menu).
+    fn set_source_region(&mut self, id: SourceId, region: CropRegion) -> Result<bool, CropRefusal> {
+        let item = self.item_of(id).map_err(CropRefusal::NotFound)?.1.id;
+        let (source, old, own) = self.crop_target(item)?;
+        let size = self
+            .sizes
+            .get(&source)
+            .copied()
+            .ok_or(CropRefusal::NoPicture)?;
+        let canvas = self
+            .collection
+            .canvas(self.canvas)
+            .map(|c| (c.size.width, c.size.height))
+            .ok_or_else(|| CropRefusal::Failed("the canvas is gone".into()))?;
+        let crop = region.crop(size, canvas);
+        let layout = {
+            if !crop.fits(size.0, size.1) {
+                return Err(CropRefusal::Invalid(NO_AREA.into()));
+            }
+            let w = size.0 - crop.left - crop.right;
+            let h = size.1 - crop.top - crop.bottom;
+            let fit = Layout::fit(canvas.0, canvas.1, w, h);
+            let mut layout = old.with_crop(crop);
+            layout.position = fit.position;
+            // A flipped picture stays flipped.
+            layout.size = [
+                fit.size[0].copysign(old.size[0]),
+                fit.size[1].copysign(old.size[1]),
+            ];
+            if layout.size[0] < 0.0 {
+                layout.position[0] -= layout.size[0];
+            }
+            if layout.size[1] < 0.0 {
+                layout.position[1] -= layout.size[1];
+            }
+            layout
+        };
+        self.write_crop(item, source, own, old, layout, 0)
+    }
+
+    /// Remembers the picture size of every running video source (ADR-0058 decision 2)
+    /// and forgets sources that are gone.
+    fn refresh_sizes(&mut self) {
+        let collection = &self.collection;
+        self.sizes.retain(|id, _| collection.source(*id).is_some());
+        for source in self.collection.sources() {
+            if let Some(size) = self.studio.picture_size(source.id) {
+                self.sizes.insert(source.id, size);
+            }
+        }
+    }
+
     /// Runs the edited collection.
     fn apply(&mut self, notify: &dyn Fn(Update)) {
         match self.studio.update(&self.collection, &self.adapters.sources) {
@@ -2455,6 +2765,7 @@ impl Host {
     /// write behind it, never a wait here).
     fn publish(&mut self, notify: &dyn Fn(Update)) {
         self.publish_save();
+        self.refresh_sizes();
         let rows = self.rows();
         if rows != self.rows {
             self.rows = rows.clone();
@@ -2514,10 +2825,78 @@ impl Host {
                     meter: matches!(status, SourceStatus::Running)
                         .then(|| self.studio.meter(s.id).cloned())
                         .flatten(),
+                    picture: self.sizes.get(&s.id).copied(),
                     status,
                 }
             })
             .collect()
+    }
+}
+
+impl Host {
+    /// `profile.list` (`collection` false) or `collection.list`.
+    fn library_list(&self, collection: bool) -> Result<Response, ApiError> {
+        let (profiles, collections) = self
+            .library
+            .as_ref()
+            .ok_or_else(|| failed("no output profiles or scene collections are loaded yet"))?;
+        let mut library = if collection {
+            collections.clone()
+        } else {
+            profiles.clone()
+        };
+        library.pending = self.switch_pending.is_some();
+        Ok(Response::Library(library))
+    }
+
+    /// `profile.switch` (`collection` false) or `collection.switch`: checked here,
+    /// then handed to the UI, which switches as its File menu does.
+    fn library_switch(
+        &mut self,
+        collection: bool,
+        id: String,
+        notify: &dyn Fn(Update),
+    ) -> Result<Response, ApiError> {
+        let (profiles, collections) = self
+            .library
+            .as_ref()
+            .ok_or_else(|| failed("no output profiles or scene collections are loaded yet"))?;
+        let (library, what, doing) = if collection {
+            (
+                collections,
+                "scene collection",
+                "switching scene collections",
+            )
+        } else {
+            (profiles, "output profile", "switching output profiles")
+        };
+        if !library.entries.iter().any(|e| e.id == id) {
+            return Err(ApiError::new(
+                ErrorKind::NotFound,
+                format!("there is no {what} with the id {id:?}"),
+            ));
+        }
+        if library.current == id {
+            return Ok(Response::Done(Empty {}));
+        }
+        let conflict = |m: String| Err(ApiError::new(ErrorKind::Conflict, m));
+        if self.recording.is_some() {
+            return conflict(format!("stop the recording before {doing}"));
+        }
+        if self.streaming.is_some() {
+            return conflict(format!("end the stream before {doing}"));
+        }
+        if self.switch_pending.is_some() {
+            return conflict("another switch is still being made; try again".to_owned());
+        }
+        self.switch_seq += 1;
+        self.switch_pending = Some(self.switch_seq);
+        notify(Update::SwitchRequested {
+            seq: self.switch_seq,
+            collection,
+            id,
+        });
+        Ok(Response::Done(Empty {}))
     }
 }
 
@@ -2575,6 +2954,18 @@ impl ApiTarget<'_> {
         use rbs_api::Command as C;
         let notify = self.notify;
         let host = &mut *self.host;
+        // An output started now would run with what the switch replaces.
+        if host.switch_pending.is_some()
+            && matches!(
+                command,
+                C::RecordStart(_) | C::RecordStartToFile(_) | C::StreamStart
+            )
+        {
+            return Err(ApiError::new(
+                ErrorKind::Conflict,
+                "a switch of output profiles or scene collections is still being made; try again",
+            ));
+        }
         match command {
             C::StudioGet => Ok(Response::Studio(api::Snapshot {
                 seq: host.events.seq_map([Topic::CanvasChanged]),
@@ -2649,6 +3040,26 @@ impl ApiTarget<'_> {
                 host.apply(notify);
                 notify(Update::Deleted(name));
                 Ok(Response::Done(Empty {}))
+            }
+            C::ItemSetCrop(p) => {
+                let [l, t, r, b] = p.crop;
+                let item = ItemId::from_raw(p.item);
+                match host.set_item_crop(item, Crop::new(l, t, r, b), p.keep_scale, 0) {
+                    Ok(changed) => {
+                        if changed {
+                            host.apply(notify);
+                        }
+                        Ok(Response::Done(Empty {}))
+                    }
+                    Err(e) => Err(ApiError::new(
+                        match e {
+                            CropRefusal::NotFound(_) => ErrorKind::NotFound,
+                            CropRefusal::Invalid(_) => ErrorKind::InvalidParams,
+                            CropRefusal::NoPicture | CropRefusal::Failed(_) => ErrorKind::Failed,
+                        },
+                        e.text(),
+                    )),
+                }
             }
             C::ItemSetStyle(p) => {
                 let style = scene_style(&p.style)
@@ -2826,6 +3237,10 @@ impl ApiTarget<'_> {
                     data: host.api_settings(),
                 }))
             }
+            C::ProfileList => host.library_list(false),
+            C::CollectionList => host.library_list(true),
+            C::ProfileSwitch(r) => host.library_switch(false, r.id, notify),
+            C::CollectionSwitch(r) => host.library_switch(true, r.id, notify),
             // Answered by the endpoint; never reaches a target.
             // `tokens.*` are answered before (`WithTokens`) when the API was attached
             // with the settings.
@@ -3090,6 +3505,7 @@ fn api_source(row: &SourceRow) -> api::SourceInfo {
             opacity: l.opacity,
             style: api_style(&l.style),
         }),
+        picture_size: row.picture.map(|(w, h)| [w, h]),
         id: row.id.get(),
         name: row.name.clone(),
         kind: row.kind.map(api_kind),

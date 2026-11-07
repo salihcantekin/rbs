@@ -89,6 +89,25 @@ pub enum LayoutCommand {
     ResetSizes,
     /// Put the workspace's default toolbar back (`ui.toolbar.reset`).
     ResetToolbar,
+    /// Collapse (`ui.panel.collapse`) or expand (`ui.panel.expand`) the stack holding
+    /// a panel. Allowed while locked: it hides without rearranging.
+    SetCollapsed {
+        /// Panel.
+        panel: PanelId,
+        /// Collapsed.
+        collapsed: bool,
+    },
+    /// Auto-hide the stack holding a panel to an edge of the main window
+    /// (`ui.panel.auto_hide`).
+    AutoHide {
+        /// Panel.
+        panel: PanelId,
+        /// The main window's content rectangle, which decides the nearest edge for a
+        /// stack in the centre.
+        content: Rect,
+    },
+    /// Dock an auto-hidden panel's group back (`ui.panel.pin`).
+    Pin(PanelId),
 }
 
 /// Who asked for a change. A locked workspace refuses pointer moves, resizes
@@ -191,6 +210,8 @@ impl LayoutSession {
                 | LayoutCommand::CloseWindow { .. }
                 | LayoutCommand::Resize { .. }
                 | LayoutCommand::ResetToolbar
+                | LayoutCommand::AutoHide { .. }
+                | LayoutCommand::Pin(_)
         );
         if origin == Origin::Pointer && self.workspace.locked && pointer_blocked {
             return Err(CommandError::Locked);
@@ -270,6 +291,11 @@ impl LayoutSession {
                 }
             }
             LayoutCommand::ResetToolbar => next.toolbar = None,
+            LayoutCommand::SetCollapsed { panel, collapsed } => {
+                next.set_collapsed(&panel, collapsed)?;
+            }
+            LayoutCommand::AutoHide { panel, content } => next.auto_hide(&panel, content)?,
+            LayoutCommand::Pin(panel) => next.pin(&panel)?,
             LayoutCommand::Switch(w) => {
                 closed.extend(
                     before
@@ -479,17 +505,31 @@ mod tests {
             s.apply(LayoutCommand::ClosePanel(id("rbs.stats")), Origin::Pointer),
             Err(CommandError::Locked)
         );
-        // Showing another tab is not a layout change the lock guards.
+        // Collapsing hides without rearranging, so the lock allows it (ADR-0049);
+        // auto-hide rearranges and is refused from the pointer.
         assert!(
             s.apply(
-                LayoutCommand::ActivateTab {
-                    window: 0,
-                    stack: 4,
-                    tab: 1
+                LayoutCommand::SetCollapsed {
+                    panel: id("rbs.properties"),
+                    collapsed: true
                 },
                 Origin::Pointer
             )
             .is_ok()
+        );
+        assert_eq!(
+            s.apply(
+                LayoutCommand::AutoHide {
+                    panel: id("rbs.properties"),
+                    content: Rect::sized(1440.0, 800.0)
+                },
+                Origin::Pointer
+            ),
+            Err(CommandError::Locked)
+        );
+        assert_eq!(
+            s.apply(LayoutCommand::Pin(id("rbs.stats")), Origin::Pointer),
+            Err(CommandError::Locked)
         );
         assert!(
             s.apply(LayoutCommand::ClosePanel(id("rbs.stats")), Origin::Command)

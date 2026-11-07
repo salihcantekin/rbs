@@ -10,7 +10,8 @@
 //! through [`CommandState`], so this crate stays free of engine and toolkit types.
 //!
 //! Not yet: titles and tooltips are English text until the UI has Fluent messages
-//! (ADR-0050 decision 1), and no entry has an icon until the icon set grows.
+//! (ADR-0050 decision 1). Icons name the design system's icon set; an area toggle's
+//! icon depends on its area (see [`icon`]).
 
 use std::fmt;
 
@@ -177,6 +178,34 @@ const fn action(method: &'static str) -> Kind {
 /// old id as an alias for at least one major version (ADR-0050 decision 2).
 pub const ENTRIES: &[Entry] = &[
     Entry {
+        id: "profile.select",
+        title: "Output profile",
+        tooltip: "Use another output profile: its recording and stream settings",
+        icon: None,
+        shortcut: None,
+        menu: Menu::File,
+        kind: Kind::Picker {
+            method: "profile.switch",
+            param: "id",
+        },
+        params: &[choice("id")],
+        checkable: false,
+    },
+    Entry {
+        id: "collection.select",
+        title: "Scene collection",
+        tooltip: "Run another scene collection: its canvases, scenes and sources",
+        icon: None,
+        shortcut: None,
+        menu: Menu::File,
+        kind: Kind::Picker {
+            method: "collection.switch",
+            param: "id",
+        },
+        params: &[choice("id")],
+        checkable: false,
+    },
+    Entry {
         id: "edit.undo",
         title: "Undo",
         tooltip: "Undo the last change to the scenes",
@@ -285,7 +314,7 @@ pub const ENTRIES: &[Entry] = &[
         id: "stream.toggle",
         title: "Go live",
         tooltip: "Start or end the stream",
-        icon: None,
+        icon: Some("bolt"),
         shortcut: None,
         menu: Menu::Output,
         kind: Kind::Toggle {
@@ -299,7 +328,7 @@ pub const ENTRIES: &[Entry] = &[
         id: "record.toggle",
         title: "Record",
         tooltip: "Start or stop recording",
-        icon: None,
+        icon: Some("dot"),
         shortcut: None,
         menu: Menu::Output,
         kind: Kind::Toggle {
@@ -547,6 +576,7 @@ pub enum MenuItem {
 
 /// What each menu holds, in order: command ids (with parameters) and `|` separators.
 pub const MENU_LAYOUT: &[(Menu, &[&str])] = &[
+    (Menu::File, &["profile.select", "collection.select"]),
     (Menu::Edit, &["edit.undo", "edit.redo"]),
     (
         Menu::View,
@@ -566,6 +596,17 @@ pub const MENU_LAYOUT: &[(Menu, &[&str])] = &[
     (Menu::Output, &["stream.toggle", "record.toggle"]),
     (Menu::Window, &["ui.panel.select"]),
 ];
+
+/// The icon an id shows, from the design system's icon set: the entry's, or for an
+/// area toggle the panel icon of its area.
+pub fn icon(id: &CommandId, e: &Entry) -> Option<&'static str> {
+    match (e.id, id.param("area")) {
+        ("ui.area.toggle", Some("left")) => Some("panel-left"),
+        ("ui.area.toggle", Some("right")) => Some("panel-right"),
+        ("ui.area.toggle", Some("bottom")) => Some("panel-bottom"),
+        _ => e.icon,
+    }
+}
 
 /// The title an id shows: the entry's, with the area named for area toggles.
 pub fn title(id: &CommandId, e: &Entry) -> String {
@@ -780,12 +821,18 @@ mod tests {
     fn menus_follow_state() {
         let m = menus(&Fake);
         let titles: Vec<&str> = m.iter().map(|(m, _)| m.title()).collect();
-        assert_eq!(titles, ["Edit", "View", "Output", "Window"]);
-        let edit = &m[0].1;
+        assert_eq!(titles, ["File", "Edit", "View", "Output", "Window"]);
+        let file = &m[0].1;
+        let MenuItem::Choices { title, choices } = &file[1] else {
+            panic!("scene collection picker")
+        };
+        assert_eq!(title, "Scene collection");
+        assert_eq!(choices[1].1.to_string(), "collection.select?id=Live%20show");
+        let edit = &m[1].1;
         assert!(
             matches!(&edit[1], MenuItem::Command { disabled: Some(r), .. } if r == "Nothing to redo")
         );
-        let view = &m[1].1;
+        let view = &m[2].1;
         let MenuItem::Choices { choices, .. } = &view[0] else {
             panic!("workspace picker")
         };

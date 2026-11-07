@@ -93,6 +93,7 @@ fn source() -> SourceInfo {
             opacity: 1.0,
             style: style(),
         }),
+        picture_size: Some([1920, 1080]),
     }
 }
 
@@ -139,6 +140,11 @@ fn every_request() -> Vec<Request> {
             item: 7,
             style: style(),
         })),
+        c(Command::ItemSetCrop(SetItemCrop {
+            item: 7,
+            crop: [760, 180, 760, 180],
+            keep_scale: false,
+        })),
         c(Command::EditUndo),
         c(Command::EditRedo),
         c(Command::OutputProfiles),
@@ -155,6 +161,14 @@ fn every_request() -> Vec<Request> {
         c(Command::StreamStop),
         c(Command::StreamStatus),
         c(Command::SettingsGet),
+        c(Command::ProfileList),
+        c(Command::ProfileSwitch(EntryRef {
+            id: "default".into(),
+        })),
+        c(Command::CollectionList),
+        c(Command::CollectionSwitch(EntryRef {
+            id: "talk-show".into(),
+        })),
         c(Command::SettingsSet(SettingsPatch {
             profiles: Some(vec![profile()]),
             canvas: Some(canvas()),
@@ -212,6 +226,14 @@ fn every_request_decodes_from_json_rpc() {
 #[test]
 fn every_result_and_event_type_round_trips() {
     let seq = SeqMap::from([("record.state".to_owned(), 4)]);
+    round_trip(&Library {
+        entries: vec![LibraryEntry {
+            id: "talk-show".into(),
+            name: "Talk show".into(),
+        }],
+        current: "talk-show".into(),
+        pending: true,
+    });
     round_trip(&HelloResult {
         protocol: "1.0".into(),
         instance: "ab".into(),
@@ -555,4 +577,16 @@ fn item_styles_are_a_minor_addition() {
         assert_eq!(parse_color(bad), None, "{bad}");
     }
     assert_eq!(format_color([255, 0, 128, 128]), "#ff008080");
+}
+
+#[test]
+fn set_crop_keeps_the_scale_unless_told_and_refuses_unknown_keys() {
+    let p: SetItemCrop = serde_json::from_value(json!({"item": 7, "crop": [1, 2, 3, 4]})).unwrap();
+    assert!(p.keep_scale);
+    assert_eq!(p.crop, [1, 2, 3, 4]);
+    assert!(
+        serde_json::from_value::<SetItemCrop>(json!({"item": 7, "crop": [0, 0, 0, 0], "x": 1}))
+            .is_err()
+    );
+    assert!(serde_json::from_value::<SetItemCrop>(json!({"item": 7, "crop": [0, 0, 0]})).is_err());
 }

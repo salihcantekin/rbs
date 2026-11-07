@@ -272,6 +272,10 @@ fn scene_edits_open_and_close_sources_while_it_runs() {
     });
     assert!(reached, "{:?}", studio.progress());
     assert_eq!(studio.mixer_anomalies(), 0);
+    // The camera's capture reports its picture size (ADR-0058); sound has none.
+    let size = studio.picture_size(cam).expect("the camera's picture size");
+    assert!(size.0 > 0 && size.1 > 0, "{size:?}");
+    assert_eq!(studio.picture_size(mic), None);
 
     // Removed again: closed, and the recording goes on.
     col.delete_source(mic).unwrap();
@@ -281,6 +285,7 @@ fn scene_edits_open_and_close_sources_while_it_runs() {
     assert_eq!(r.audio.active_streams(), 2);
     assert_eq!(r.capture.live_buffers(), buffers);
     assert!(studio.meter(mic).is_none());
+    assert_eq!(studio.picture_size(cam), None);
     let before = r.log.count(0);
     let reached = run_until(&mut studio, &clock, |_| r.log.count(0) >= before + 3);
     assert!(reached);
