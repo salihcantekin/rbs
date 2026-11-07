@@ -375,6 +375,7 @@ impl App {
             workspaces: &self.workspaces,
             studio: &self.studio,
             maximized: self.maximized.as_ref(),
+            camera: self.vcam.shown(),
             panels: view::panel_entries(self.session.workspace())
                 .into_iter()
                 .map(|p| (p.title.into(), p.id.into(), p.open))
@@ -436,6 +437,7 @@ impl App {
             Run::AskEndStream => self.studio.end_stream(),
             Run::Record => self.studio.record(),
             Run::StopRecording => self.studio.stop_recording(),
+            Run::VirtualCamera(on) => vcam_page::send(self, on),
             // Needs the look and the Appearance page, which the next sync has.
             Run::ReloadThemes => self.reload_themes = true,
             // Making the window needs the shell's context, which the next sync has.
@@ -1077,14 +1079,19 @@ impl Ctx {
                     })
                     .chain(rec.map(|(_, file)| file))
                     .collect(),
+                    camera: app.vcam.is_sending(),
                 },
                 (None, Some((d, file))) => LiveStatus {
                     live: false,
                     recording: true,
                     elapsed_secs: d.as_secs(),
                     outputs: vec![file],
+                    camera: app.vcam.is_sending(),
                 },
-                (None, None) => LiveStatus::default(),
+                (None, None) => LiveStatus {
+                    camera: app.vcam.is_sending(),
+                    ..LiveStatus::default()
+                },
             };
             if *app.session.live() != live {
                 app.session.set_live(live);
@@ -1168,9 +1175,12 @@ impl Ctx {
             _ if s.scene_preview_ready => ps::SHOWN,
             _ => ps::STARTING,
         };
+        let running = s.state == 1;
         s.push(&app.main.global::<Studio>(), state, scene_state, panel);
+        app.vcam.push_live(&app.main.global::<Studio>(), running);
         for f in &app.floats {
             s.push(&f.window.global::<Studio>(), state, scene_state, panel);
+            app.vcam.push_live(&f.window.global::<Studio>(), running);
         }
         if let Some(w) = &app.settings {
             s.push(&w.global::<Studio>(), state, scene_state, panel);
@@ -1453,6 +1463,7 @@ impl Ctx {
                 .unwrap_or(SECTION_GENERAL);
             self.open_settings(section);
         }
+        vcam_page::sync_host(&mut app);
         self.sync_live(&mut app);
         #[cfg(windows)]
         Self::sync_tray(&mut app);
@@ -1554,6 +1565,7 @@ impl Ctx {
             g.set_live_state(view::live_code(live));
             g.set_live_duration(live.duration_text().into());
             g.set_live_outputs(live.outputs_text().into());
+            g.set_live_camera(live.camera);
             g.set_panels(panels.clone());
             g.set_workspaces(workspaces.clone());
             g.set_workspace_name(ws.name.as_str().into());
@@ -2388,6 +2400,9 @@ fn install_studio(g: &Studio<'_>, ctx: &Ctx) {
     on!(on_end_stream, |app| {
         app.studio.end_stream();
     });
+    on!(on_vcam_toggle, |app, on: bool| {
+        vcam_page::send(app, on);
+    });
     on!(on_set_server, |app, text: slint::SharedString| {
         app.studio.set_server(&text);
     });
@@ -2714,6 +2729,7 @@ fn run(config: PathBuf, notice: Option<String>) -> Result<(), Box<dyn std::error
             recording: true,
             elapsed_secs: 0,
             outputs: vec!["Twitch".into(), "Recording".into()],
+            camera: false,
         });
     }
 
@@ -2836,6 +2852,7 @@ fn run(config: PathBuf, notice: Option<String>) -> Result<(), Box<dyn std::error
             app.studio.host = Some(host);
             // Remote control, if the user turned it on (off by default: nothing starts).
             app.studio.sync_remote();
+            vcam_page::studio_started(app);
         }),
         Err(e) => ctx.update(move |app| {
             app.studio.state = 2;

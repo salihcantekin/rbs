@@ -2,7 +2,8 @@
 //!
 //! It is not a panel and cannot be hidden. It always shows, in text and not
 //! colour alone, whether RBS is live and recording, how long, and the names of
-//! the active outputs. This module turns engine status into the parts the
+//! the active outputs, and whether it sends to the virtual camera (ADR-0066
+//! decision 12). This module turns engine status into the parts the
 //! shell shows; the shell supplies the translated words.
 
 /// Live and recording state as the engine reports it.
@@ -16,6 +17,9 @@ pub struct LiveStatus {
     pub elapsed_secs: u64,
     /// Display names of the active outputs.
     pub outputs: Vec<String>,
+    /// Sending the program to the virtual camera: apps may show it to other people.
+    /// It has no duration, so it needs no tick.
+    pub camera: bool,
 }
 
 /// What the indicator shows.
@@ -46,6 +50,11 @@ impl LiveStatus {
     /// duration; otherwise it needs none.
     pub fn is_active(&self) -> bool {
         self.live || self.recording
+    }
+
+    /// Is the indicator shown: live, recording or sending to the virtual camera.
+    pub fn is_shown(&self) -> bool {
+        self.is_active() || self.camera
     }
 
     /// Duration as `H:MM:SS` (hours grow past 9 as needed).
@@ -82,5 +91,16 @@ mod tests {
         assert_eq!(s.state(), LiveState::Recording);
         s.elapsed_secs = 11 * 3600;
         assert_eq!(s.duration_text(), "11:00:00");
+    }
+
+    #[test]
+    fn the_camera_shows_without_a_tick() {
+        let s = LiveStatus {
+            camera: true,
+            ..LiveStatus::default()
+        };
+        assert_eq!(s.state(), LiveState::Off);
+        assert!(s.is_shown());
+        assert!(!s.is_active(), "no duration, so no 1 Hz tick");
     }
 }

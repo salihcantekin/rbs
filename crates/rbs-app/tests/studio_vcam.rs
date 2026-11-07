@@ -1,24 +1,31 @@
-//! Sending to the virtual camera through the studio host (ADR-0066 decision 12) with
-//! the reference camera adapter: start and stop, a refused start, and sending on after
-//! a canvas change restarts the studio. The engine runs on a `TestClock` that never
+//! Sending to the virtual camera through the studio host (ADR-0066 decisions 12 and
+//! 13) with the reference camera adapter: start and stop, a refused start, sending on
+//! after a canvas change restarts the studio, and `vcam.*` from a control API client. The engine runs on a `TestClock` that never
 //! moves; the test waits for the host's updates, with a bound only as a hang guard
 //! (ADR-0032). Needs a GPU adapter (software is fine); skipped without one unless
 //! `RBS_REQUIRE_GPU` is set.
 
 #![allow(clippy::unwrap_used, clippy::expect_used)] // Tests fail by panicking.
 
-use std::sync::mpsc::{self, Receiver};
+use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
-use rbs_app::studio_host::{CameraFactory, CameraStatus, Command, HostConfig, StudioHost, Update};
+use rbs_api::request::ClientInfo;
+use rbs_api::session::ServerConfig;
+use rbs_api::thread::ApiOptions;
+use rbs_api::transport::{CloseReason, ConnectionHandle, ConnectionSender, PeerInfo, SendError};
+use rbs_api::{ApiServer, TokenStore};
+use rbs_app::studio_host::{
+    CameraFactory, CameraSetup, CameraStatus, Command, HostConfig, StudioHost, Update,
+};
 use rbs_core::media::Size;
 use rbs_core::time::TestClock;
 use rbs_core::timing::FrameRate;
 use rbs_engine::{Engine, EngineConfig};
 use rbs_gpu::{GpuContext, GpuError, GpuRequest};
 use rbs_record::RecordAdapters;
-use rbs_vcam::VirtualCameraFactory;
+use rbs_vcam::{InstallState, VirtualCameraFactory};
 use rbs_vcam_test::TestVcamFactory;
 
 /// Hang guard only: every wait ends as soon as its update arrives.
@@ -164,4 +171,233 @@ fn a_start_is_refused_without_the_camera() {
         "The virtual camera is not available on this computer."
     );
     assert_eq!(camera(&rx), None);
+}
+
+struct ChannelSender(Sender<serde_json::Value>);
+
+impl ConnectionSender for ChannelSender {
+    fn try_send(&mut self, text: &Arc<str>) -> Result<(), SendError> {
+        self.0
+            .send(serde_json::from_str(text).unwrap())
+            .map_err(|_| SendError::Closed)
+    }
+
+    fn close(&mut self, _reason: CloseReason) {}
+}
+
+/// A same-user IPC client of the control API, in memory.
+struct Client {
+    handle: ConnectionHandle,
+    rx: Receiver<serde_json::Value>,
+    next: i64,
+    events: Vec<serde_json::Value>,
+}
+
+impl Client {
+    /// Serves the control API from `host` and connects to it, after `session.hello`.
+    fn connect(host: &StudioHost) -> (ApiServer, Self) {
+        let config = ServerConfig::new(ClientInfo::new("rbs", "test")).unwrap();
+        let (api, endpoint) =
+            ApiServer::start(config, TokenStore::new(), ApiOptions::new(host.api_waker())).unwrap();
+        host.attach_api(endpoint, None);
+        let (out_tx, out_rx) = mpsc::channel();
+        let handle = api
+            .inbox()
+            .connect(
+                PeerInfo::same_user_ipc(),
+                Box::new(ChannelSender(out_tx)),
+                Box::new(|| {}),
+            )
+            .unwrap();
+        let mut c = Self {
+            handle,
+            rx: out_rx,
+            next: 1,
+            events: Vec::new(),
+        };
+        let hello = c.call(
+            "session.hello",
+            serde_json::json!({"protocols": ["1.12"], "client": {"name": "test", "version": "1"}}),
+        );
+        assert_eq!(hello["result"]["protocol"], "1.12", "{hello}");
+        (api, c)
+    }
+
+    /// Calls a method without parameters; events that arrive meanwhile are kept.
+    fn call0(&mut self, method: &str) -> serde_json::Value {
+        self.call(method, serde_json::json!({}))
+    }
+
+    /// Calls a method and returns its answer; events that arrive meanwhile are kept.
+    fn call(&mut self, method: &str, params: serde_json::Value) -> serde_json::Value {
+        let id = self.next;
+        self.next += 1;
+        let text =
+            serde_json::json!({"jsonrpc": "2.0", "id": id, "method": method, "params": params});
+        self.handle.push_message(text.to_string());
+        loop {
+            let v = self.rx.recv_timeout(LIMIT).expect("an answer");
+            if v["id"] == id {
+                return v;
+            }
+            self.events.push(v);
+        }
+    }
+
+    /// The next `vcam.changed` event whose data `ok` accepts; earlier ones are dropped.
+    fn changed(&mut self, ok: impl Fn(&serde_json::Value) -> bool) -> serde_json::Value {
+        let mine = |e: &serde_json::Value| {
+            e["params"]["topic"] == "vcam.changed" && ok(&e["params"]["data"])
+        };
+        while !self.events.is_empty() {
+            let e = self.events.remove(0);
+            if mine(&e) {
+                return e;
+            }
+        }
+        loop {
+            let v = self.rx.recv_timeout(LIMIT).expect("an event");
+            if mine(&v) {
+                return v;
+            }
+        }
+    }
+}
+
+/// Tells the host what Settings › Virtual camera knows, and waits until it has it (a
+/// stop answers after the setup was taken).
+fn set_up(host: &StudioHost, rx: &Receiver<Update>, state: InstallState) {
+    host.send(Command::SetVirtualCamera(CameraSetup {
+        state: Some(state),
+        width: 640,
+        height: 360,
+        fps: FrameRate::new(15, 1).unwrap(),
+        busy: false,
+    }));
+    host.send(Command::StopVirtualCamera);
+    stopped(rx);
+}
+
+/// Waits until the app is told the camera stopped; counters on the way are skipped.
+fn stopped(rx: &Receiver<Update>) {
+    next(rx, |u| {
+        matches!(u, Update::VirtualCamera(None)).then_some(())
+    });
+}
+
+fn kind(answer: &serde_json::Value) -> &str {
+    answer["error"]["data"]["kind"].as_str().unwrap_or("none")
+}
+
+fn message(answer: &serde_json::Value) -> &str {
+    answer["error"]["message"].as_str().unwrap_or("")
+}
+
+#[test]
+fn a_control_api_client_starts_and_stops_the_camera() {
+    let Some(gpu) = gpu() else { return };
+    let factory = Arc::new(TestVcamFactory::new());
+    let (host, rx) = studio(gpu, Some(Arc::clone(&factory)));
+    let (api, mut c) = Client::connect(&host);
+    let sub = c.call(
+        "events.subscribe",
+        serde_json::json!({"topics": ["vcam.changed"]}),
+    );
+    assert!(sub["result"]["seq"].is_object(), "{sub}");
+
+    // The app has not said what it knows yet: not guessed.
+    let status = c.call0("vcam.status");
+    let data = &status["result"]["data"];
+    assert_eq!(data["state"], serde_json::Value::Null, "{status}");
+    assert_eq!(data["sending"], false, "{status}");
+    let early = c.call0("vcam.start");
+    assert_eq!(kind(&early), "failed", "{early}");
+    assert!(message(&early).contains("starting"), "{early}");
+
+    // Not added: refused, saying where to add it.
+    set_up(&host, &rx, InstallState::NotInstalled);
+    c.changed(|d| d["state"] == "not_added" && d["width"] == 640 && d["rate"] == 15);
+    let refused = c.call0("vcam.start");
+    assert_eq!(kind(&refused), "failed", "{refused}");
+    assert!(
+        message(&refused).contains("Settings, Virtual camera"),
+        "{refused}"
+    );
+    let stop = c.call0("vcam.stop");
+    assert_eq!(kind(&stop), "conflict", "{stop}");
+
+    // Settings is changing the camera: no start meanwhile.
+    factory.install().unwrap();
+    host.send(Command::SetVirtualCamera(CameraSetup {
+        state: Some(InstallState::Installed),
+        width: 640,
+        height: 360,
+        fps: FrameRate::new(15, 1).unwrap(),
+        busy: true,
+    }));
+    host.send(Command::StopVirtualCamera);
+    stopped(&rx);
+    let busy = c.call0("vcam.start");
+    assert_eq!(kind(&busy), "conflict", "{busy}");
+
+    // Added: it starts with the saved format, and the app sees it as its own start.
+    set_up(&host, &rx, InstallState::Installed);
+    c.changed(|d| d["state"] == "added" && d["sending"] == false);
+    let started = c.call0("vcam.start");
+    assert!(started["result"].is_object(), "{started}");
+    let s = camera(&rx).expect("the app sees it sending");
+    assert_eq!((s.width, s.height, s.rate), (640, 360, 15));
+    let on = c.changed(|d| d["sending"] == true);
+    assert_eq!(
+        on["params"]["data"]["frames"],
+        serde_json::Value::Null,
+        "{on}"
+    );
+    let status = c.call0("vcam.status");
+    let data = &status["result"]["data"];
+    assert_eq!(data["sending"], true, "{status}");
+    assert!(data["frames"]["sent"].is_u64(), "{status}");
+    assert_eq!(
+        status["result"]["seq"]["vcam.changed"], on["params"]["seq"],
+        "{status}"
+    );
+    let again = c.call0("vcam.start");
+    assert_eq!(kind(&again), "conflict", "{again}");
+
+    let stop = c.call0("vcam.stop");
+    assert!(stop["result"].is_object(), "{stop}");
+    stopped(&rx);
+    c.changed(|d| d["sending"] == false && d["state"] == "added");
+    let stop = c.call0("vcam.stop");
+    assert_eq!(kind(&stop), "conflict", "{stop}");
+
+    // A start from the app reaches API clients too.
+    start(&host);
+    assert!(camera(&rx).is_some());
+    c.changed(|d| d["sending"] == true);
+    // A second start (the app's button losing a race to an API client) shows the
+    // camera that runs, with no error.
+    start(&host);
+    next(&rx, |u| match u {
+        Update::Error(e) => panic!("{e}"),
+        Update::VirtualCamera(Some(_)) => Some(()),
+        _ => None,
+    });
+    drop(c);
+    drop(api);
+}
+
+#[test]
+fn the_api_says_when_this_computer_has_no_camera() {
+    let Some(gpu) = gpu() else { return };
+    let (host, _rx) = studio(gpu, None);
+    let (api, mut c) = Client::connect(&host);
+    let status = c.call0("vcam.status");
+    assert_eq!(status["result"]["data"]["state"], "unavailable", "{status}");
+    assert!(status["result"]["data"]["reason"].is_string(), "{status}");
+    let refused = c.call0("vcam.start");
+    assert_eq!(kind(&refused), "failed", "{refused}");
+    assert!(message(&refused).contains("not available"), "{refused}");
+    drop(c);
+    drop(api);
 }

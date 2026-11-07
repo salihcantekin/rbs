@@ -644,6 +644,20 @@ pub const ENTRIES: &[Entry] = &[
         checkable: true,
     },
     Entry {
+        id: "vcam.toggle",
+        title: "Start virtual camera",
+        tooltip: "Start or stop sending the program to the virtual camera",
+        icon: Some("camera"),
+        shortcut: None,
+        menu: Menu::Output,
+        kind: Kind::Toggle {
+            on: "vcam.start",
+            off: "vcam.stop",
+        },
+        params: &[],
+        checkable: true,
+    },
+    Entry {
         id: "ui.app_menu.open",
         title: "Search commands",
         tooltip: "Open the RBS menu with its search field: every command, setting and panel",
@@ -989,7 +1003,10 @@ pub const MENU_LAYOUT: &[(Menu, &[&str])] = &[
             "source.delete",
         ],
     ),
-    (Menu::Output, &["stream.toggle", "record.toggle"]),
+    (
+        Menu::Output,
+        &["stream.toggle", "record.toggle", "|", "vcam.toggle"],
+    ),
     (
         Menu::Window,
         &["ui.panel.select", "|", "ui.panel.maximize?id=rbs.preview"],

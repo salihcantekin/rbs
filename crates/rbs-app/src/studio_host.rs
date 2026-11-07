@@ -52,7 +52,7 @@ use rbs_scene::{SceneError, Undo};
 use rbs_sources::types::{self, keys};
 use rbs_sources::{SourceError, SourceTarget};
 use rbs_transport::{ReconnectPolicy, Secret, TransportInput};
-use rbs_vcam::{VcamStats, VirtualCameraFactory};
+use rbs_vcam::{InstallState, VcamStats, VirtualCameraFactory};
 
 pub mod filters;
 
@@ -570,6 +570,9 @@ pub enum Command {
     },
     /// Stop sending to the virtual camera; answered with [`Update::VirtualCamera`].
     StopVirtualCamera,
+    /// The virtual camera as Settings › Virtual camera knows it: what `vcam.start` and
+    /// `vcam.status` use for control API clients. Sent at start and after each change.
+    SetVirtualCamera(CameraSetup),
     /// The stream settings as saved: what `stream.start` uses for control API clients.
     /// Sent at start and after each change.
     SetStreamProfile(StreamProfile),
@@ -1088,6 +1091,21 @@ pub struct CameraStatus {
     pub failure: Option<String>,
 }
 
+/// The virtual camera as the app knows it ([`Command::SetVirtualCamera`]).
+#[derive(Debug, Clone, PartialEq)]
+pub struct CameraSetup {
+    /// Whether it is added; `None` while the app has not read it yet.
+    pub state: Option<InstallState>,
+    /// The saved width in pixels.
+    pub width: u32,
+    /// The saved height in pixels.
+    pub height: u32,
+    /// The saved frame rate.
+    pub fps: FrameRate,
+    /// Settings is adding, removing or reformatting the camera now: no start.
+    pub busy: bool,
+}
+
 /// The platform's virtual camera ([`HostConfig::virtual_camera`]).
 #[derive(Clone)]
 pub struct CameraFactory(pub Arc<dyn VirtualCameraFactory>);
@@ -1466,6 +1484,10 @@ struct Host {
     camera: Option<VirtualCameraSettings>,
     /// When the camera's counters go out next; `None` while it does not send.
     camera_due: Option<Timestamp>,
+    /// The camera as the app's settings know it; `None` until the app sent it.
+    camera_setup: Option<CameraSetup>,
+    /// The `vcam.changed` state last published.
+    camera_published: Option<api::VcamStatus>,
 }
 
 fn run(
@@ -1793,6 +1815,8 @@ fn start(
             camera_factory: config.virtual_camera.map(|f| f.0),
             camera: None,
             camera_due: None,
+            camera_setup: None,
+            camera_published: None,
             streaming: None,
             keys,
             key_account: config.key_account,
@@ -2101,18 +2125,18 @@ impl Host {
                 self.publish(notify);
             }
             Command::StartVirtualCamera { width, height, fps } => {
-                let settings = VirtualCameraSettings::new(width, height, fps);
-                match self.start_camera(settings) {
-                    Ok(()) => self.camera_due = None,
-                    Err(why) => notify(Update::Error(why)),
+                // An API client started it first: show the camera that runs, no error.
+                if self.camera.is_some() {
+                    notify(Update::VirtualCamera(self.camera_status()));
+                } else {
+                    let settings = VirtualCameraSettings::new(width, height, fps);
+                    let _ = self.start_camera_asked(settings, notify, true);
                 }
-                notify(Update::VirtualCamera(self.camera_status()));
             }
-            Command::StopVirtualCamera => {
-                self.studio.stop_virtual_camera();
-                self.camera = None;
-                self.camera_due = None;
-                notify(Update::VirtualCamera(None));
+            Command::StopVirtualCamera => self.stop_camera(notify),
+            Command::SetVirtualCamera(setup) => {
+                self.camera_setup = Some(setup);
+                self.camera_changed();
             }
             Command::SetStreamProfile(profile) => {
                 if self.stream_profile.as_ref() != Some(&profile) {
@@ -2545,6 +2569,7 @@ impl Host {
             self.studio.stop_virtual_camera();
             self.camera = None;
             notify(Update::VirtualCamera(None));
+            self.camera_changed();
         }
         if in_row >= CAUGHT_LIMIT && failed.is_none() {
             let why = String::from(
@@ -2594,6 +2619,7 @@ impl Host {
         {
             self.camera_due = Some(self.clock.now());
         }
+        self.camera_changed();
         Ok(())
     }
 
@@ -2890,6 +2916,97 @@ impl Host {
         Some(STATS_INTERVAL)
     }
 
+    /// Starts sending to the virtual camera with `settings` for the user or an API
+    /// client, and tells the UI and `vcam.changed`; the UI gets the error when
+    /// `show_error` (an API client gets it in its answer instead).
+    fn start_camera_asked(
+        &mut self,
+        settings: VirtualCameraSettings,
+        notify: &dyn Fn(Update),
+        show_error: bool,
+    ) -> Result<(), String> {
+        let started = self.start_camera(settings);
+        match &started {
+            Ok(()) => self.camera_due = None,
+            Err(why) if show_error => notify(Update::Error(why.clone())),
+            Err(_) => {}
+        }
+        notify(Update::VirtualCamera(self.camera_status()));
+        self.camera_changed();
+        started
+    }
+
+    /// Stops sending to the virtual camera, and tells the UI and `vcam.changed`.
+    fn stop_camera(&mut self, notify: &dyn Fn(Update)) {
+        self.studio.stop_virtual_camera();
+        self.camera = None;
+        self.camera_due = None;
+        notify(Update::VirtualCamera(None));
+        self.camera_changed();
+    }
+
+    /// The camera for `vcam.status` (with its counters) and `vcam.changed` (without).
+    fn api_camera(&self, frames: bool) -> api::VcamStatus {
+        let sending = self.camera_status();
+        let (state, reason) = match self.camera_setup.as_ref().map(|s| &s.state) {
+            _ if self.camera_factory.is_none() => (
+                Some(api::VcamInstall::Unavailable),
+                Some("The virtual camera is not available on this computer".to_owned()),
+            ),
+            None | Some(None) => (None, None),
+            Some(Some(InstallState::Installed)) => (Some(api::VcamInstall::Added), None),
+            Some(Some(InstallState::NotInstalled)) => (Some(api::VcamInstall::NotAdded), None),
+            Some(Some(InstallState::NeedsUpdate { reason })) => {
+                (Some(api::VcamInstall::NeedsUpdate), Some(reason.clone()))
+            }
+            Some(Some(InstallState::Unsupported { reason })) => {
+                (Some(api::VcamInstall::Unavailable), Some(reason.clone()))
+            }
+            // A state a later port version adds: not known to this version.
+            Some(Some(_)) => (None, None),
+        };
+        let (width, height, rate) = match (&sending, &self.camera_setup) {
+            (Some(s), _) => (s.width, s.height, s.rate),
+            (None, Some(setup)) => (setup.width, setup.height, rounded_rate(setup.fps)),
+            (None, None) => (0, 0, 0),
+        };
+        api::VcamStatus {
+            state,
+            reason,
+            sending: sending.is_some(),
+            width,
+            height,
+            rate,
+            frames: sending
+                .as_ref()
+                .filter(|_| frames)
+                .and_then(|s| s.counters)
+                .map(|c| api::VcamFrames {
+                    sent: c.sent(),
+                    replaced: c.replaced(),
+                    refused: c.refused(),
+                    consumer_busy: c.consumer_busy(),
+                    consumer_absent: c.consumer_absent(),
+                    format_pending: c.format_pending(),
+                    os_errors: c.os_errors(),
+                }),
+            failure: sending.and_then(|s| s.failure),
+        }
+    }
+
+    /// Publishes `vcam.changed` when the camera's state differs from the last one.
+    fn camera_changed(&mut self) {
+        let now = self.api_camera(false);
+        if self.camera_published.as_ref() == Some(&now) {
+            return;
+        }
+        self.camera_published = Some(now.clone());
+        self.events
+            .changed(StateKey::topic(Topic::VcamChanged), || {
+                EventPayload::VcamChanged(now)
+            });
+    }
+
     /// Starts sending to the virtual camera with `settings`.
     fn start_camera(&mut self, settings: VirtualCameraSettings) -> Result<(), String> {
         let factory = self
@@ -2907,13 +3024,10 @@ impl Host {
     fn camera_status(&self) -> Option<CameraStatus> {
         let state = self.studio.virtual_camera()?;
         let format = state.config.format;
-        let rate = format.rate.per_second();
         Some(CameraStatus {
             width: format.width,
             height: format.height,
-            rate: (u64::from(rate.num()) + u64::from(rate.den()) / 2)
-                .checked_div(u64::from(rate.den()))
-                .map_or(0, |r| u32::try_from(r).unwrap_or(u32::MAX)),
+            rate: rounded_rate(format.rate),
             counters: state.session.map(|s| s.snapshot()),
             failure: state.failure,
         })
@@ -2930,6 +3044,7 @@ impl Host {
                         .into(),
                 ));
                 notify(Update::VirtualCamera(None));
+                self.camera_changed();
             }
             return None;
         }
@@ -2939,6 +3054,8 @@ impl Host {
         }
         self.camera_due = Some(now + STATS_INTERVAL);
         notify(Update::VirtualCamera(self.camera_status()));
+        // A failure of the camera's node, or its end, is a change of state.
+        self.camera_changed();
         Some(STATS_INTERVAL)
     }
 
@@ -4449,6 +4566,14 @@ impl ControlTarget for ApiTarget<'_> {
     }
 }
 
+/// Frames per second, rounded to the nearest whole number.
+fn rounded_rate(fps: FrameRate) -> u32 {
+    let rate = fps.per_second();
+    (u64::from(rate.num()) + u64::from(rate.den()) / 2)
+        .checked_div(u64::from(rate.den()))
+        .map_or(0, |r| u32::try_from(r).unwrap_or(u32::MAX))
+}
+
 fn failed(message: impl Into<String>) -> ApiError {
     ApiError::new(ErrorKind::Failed, message)
 }
@@ -4886,6 +5011,71 @@ impl ApiTarget<'_> {
                 seq: host.events.seq_map([Topic::StreamState]),
                 data: host.stream_state.clone(),
             })),
+            C::VcamStatus => Ok(Response::VcamStatus(api::Snapshot {
+                // The state as it is now, so the data and its `seq` match.
+                seq: {
+                    host.camera_changed();
+                    host.events.seq_map([Topic::VcamChanged])
+                },
+                data: host.api_camera(true),
+            })),
+            C::VcamStart => {
+                if host.camera.is_some() {
+                    return Err(ApiError::new(
+                        ErrorKind::Conflict,
+                        "the virtual camera already sends",
+                    ));
+                }
+                if host.camera_factory.is_none() {
+                    return Err(failed(
+                        "the virtual camera is not available on this computer",
+                    ));
+                }
+                let Some(setup) = &host.camera_setup else {
+                    return Err(failed("the studio is still starting; try again"));
+                };
+                if setup.busy {
+                    return Err(ApiError::new(
+                        ErrorKind::Conflict,
+                        "the virtual camera is being changed in Settings; try again",
+                    ));
+                }
+                match &setup.state {
+                    Some(InstallState::NotInstalled) => {
+                        return Err(failed(
+                            "the virtual camera is not added: add it in Settings, Virtual camera",
+                        ));
+                    }
+                    Some(InstallState::NeedsUpdate { .. }) => {
+                        return Err(failed(
+                            "the virtual camera needs an update: add it again in Settings, Virtual camera",
+                        ));
+                    }
+                    Some(InstallState::Unsupported { reason }) => {
+                        return Err(failed(format!(
+                            "the virtual camera is not available on this computer: {reason}"
+                        )));
+                    }
+                    // Not read yet: starting says whether it is added.
+                    _ => {}
+                }
+                let settings = VirtualCameraSettings::new(setup.width, setup.height, setup.fps);
+                host.start_camera_asked(settings, notify, false)
+                    .map_err(failed)?;
+                host.publish(notify);
+                Ok(Response::Done(Empty {}))
+            }
+            C::VcamStop => {
+                if host.camera.is_none() {
+                    return Err(ApiError::new(
+                        ErrorKind::Conflict,
+                        "the virtual camera does not send",
+                    ));
+                }
+                host.stop_camera(notify);
+                host.publish(notify);
+                Ok(Response::Done(Empty {}))
+            }
             C::SettingsGet => Ok(Response::Settings(api::Snapshot {
                 seq: host.events.seq_map([Topic::SettingsChanged]),
                 data: host.api_settings(),

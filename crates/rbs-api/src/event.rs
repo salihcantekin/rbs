@@ -7,7 +7,7 @@ use std::fmt;
 use serde::{Deserialize, Serialize};
 
 use crate::types::{
-    Canvas, RecordState, SceneList, Settings, SourceInfo, SourceLevels, StreamState,
+    Canvas, RecordState, SceneList, Settings, SourceInfo, SourceLevels, StreamState, VcamStatus,
 };
 
 /// An event topic. Subscriptions and the subscriber mask are per topic.
@@ -34,11 +34,14 @@ pub enum Topic {
     /// The scenes, the one on air and the collection's sources (state, protocol 1.6).
     #[serde(rename = "scene.changed")]
     SceneChanged,
+    /// The virtual camera, without its counters (state, protocol 1.12).
+    #[serde(rename = "vcam.changed")]
+    VcamChanged,
 }
 
 impl Topic {
     /// Every topic.
-    pub const ALL: [Topic; 7] = [
+    pub const ALL: [Topic; 8] = [
         Topic::SourceChanged,
         Topic::RecordState,
         Topic::CanvasChanged,
@@ -46,6 +49,7 @@ impl Topic {
         Topic::AudioLevels,
         Topic::StreamState,
         Topic::SceneChanged,
+        Topic::VcamChanged,
     ];
 
     /// Its name on the wire.
@@ -58,6 +62,7 @@ impl Topic {
             Topic::AudioLevels => "audio.levels",
             Topic::StreamState => "stream.state",
             Topic::SceneChanged => "scene.changed",
+            Topic::VcamChanged => "vcam.changed",
         }
     }
 
@@ -203,6 +208,9 @@ pub enum EventPayload {
     /// The scenes (protocol 1.6).
     #[serde(rename = "scene.changed")]
     SceneChanged(SceneList),
+    /// The virtual camera, `frames` always `null` (protocol 1.12).
+    #[serde(rename = "vcam.changed")]
+    VcamChanged(VcamStatus),
 }
 
 impl EventPayload {
@@ -216,6 +224,7 @@ impl EventPayload {
             EventPayload::AudioLevels(_) => Topic::AudioLevels,
             EventPayload::StreamState(_) => Topic::StreamState,
             EventPayload::SceneChanged(_) => Topic::SceneChanged,
+            EventPayload::VcamChanged(_) => Topic::VcamChanged,
         }
     }
 }

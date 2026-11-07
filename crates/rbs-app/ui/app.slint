@@ -73,6 +73,8 @@ export global Shell {
     in property <int> live-state;
     in property <string> live-duration;
     in property <string> live-outputs;
+    // RBS sends the program to the virtual camera (ADR-0066 decision 12).
+    in property <bool> live-camera;
     in property <[PanelEntry]> panels;
     in property <[WorkspaceEntry]> workspaces;
     in property <string> workspace-name;
@@ -181,21 +183,29 @@ export global Shell {
 // Live indicator (rules U4, U21): the state in words, never colour alone. Compact on
 // purpose: idle it takes no room (the status bar says "Not live · not recording");
 // live or recording a small chip in the live colour (U12) with a dot and "REC",
-// "LIVE" or "LIVE · REC".
+// "LIVE" or "LIVE · REC", and "CAM" while RBS sends to the virtual camera (an app may
+// be showing it to other people).
 // The duration and the outputs are in the status bar under the window (spec Frame);
 // the accessible name keeps the whole text.
 component LiveIndicator inherits Rectangle {
-    property <bool> active: Shell.live-state != 0;
+    property <bool> active: Shell.live-state != 0 || Shell.live-camera;
     property <string> state-text: Shell.live-state == 1 ? @tr("Live")
         : Shell.live-state == 2 ? @tr("Recording")
         : Shell.live-state == 3 ? @tr("Live and recording")
         : @tr("Not live");
-    property <string> short-text: Shell.live-state == 1 ? @tr("LIVE")
+    property <string> output-text: Shell.live-state == 1 ? @tr("LIVE")
         : Shell.live-state == 2 ? @tr("REC")
-        : @tr("LIVE · REC");
-    property <string> full: active
+        : Shell.live-state == 3 ? @tr("LIVE · REC")
+        : "";
+    property <string> short-text: !Shell.live-camera ? output-text
+        : output-text != "" ? @tr("{} · CAM", output-text)
+        : @tr("CAM");
+    property <string> outputs-full: Shell.live-state != 0
         ? state-text + " " + Shell.live-duration + (Shell.live-outputs != "" ? " · " + Shell.live-outputs : "")
         : state-text;
+    property <string> full: !Shell.live-camera ? outputs-full
+        : Shell.live-state == 0 ? @tr("Virtual camera on · not live · not recording")
+        : @tr("{} · virtual camera on", outputs-full);
     height: Tokens.size-control-md;
     width: content.preferred-width;
     accessible-role: AccessibleRole.text;
@@ -1391,7 +1401,7 @@ component FrameBar inherits Rectangle {
                 }
             }
             // Idle it is not in the layout at all (the status bar says "Not live").
-            if Shell.live-state != 0: LiveIndicator { horizontal-stretch: 0; }
+            if Shell.live-state != 0 || Shell.live-camera: LiveIndicator { horizontal-stretch: 0; }
         }
         // Windows: the window buttons end the row (ADR-0071).
         if Shell.custom-caption: HorizontalLayout {
@@ -1482,6 +1492,10 @@ component StatusBar inherits Rectangle {
         : Shell.live-state == 2 ? @tr("Recording {}", Shell.live-duration) + outputs
         : Shell.live-state == 3 ? @tr("Live and recording {}", Shell.live-duration) + outputs
         : @tr("Not live · not recording");
+    property <string> text-with-camera: !Shell.live-camera ? state-text
+        : Shell.live-state == 0 ? @tr("Virtual camera on · not live · not recording")
+        : @tr("{} · virtual camera on", state-text);
+    property <bool> on: Shell.live-state != 0 || Shell.live-camera;
     height: Tokens.size-control-sm + 2 * Tokens.size-border;
     background: Theme.surface-sunken;
     Rectangle {
@@ -1497,13 +1511,13 @@ component StatusBar inherits Rectangle {
         HorizontalLayout {
             horizontal-stretch: 0;
             spacing: Tokens.space-1;
-            if Shell.live-state != 0: VerticalLayout {
+            if on: VerticalLayout {
                 alignment: center;
                 Icon { name: IconName.dot; ink: Theme.state-live; }
             }
             Text {
-                text: state-text;
-                color: Shell.live-state != 0 ? Theme.text-primary : Theme.text-secondary;
+                text: text-with-camera;
+                color: on ? Theme.text-primary : Theme.text-secondary;
                 font-size: Tokens.type-caption-size;
                 vertical-alignment: center;
             }
@@ -1695,21 +1709,23 @@ export component MainWindow inherits Window {
             title: @tr("Output");
             MenuItem { title: Menus.titles[31]; icon: Menus.icons[31]; enabled: Menus.enabled[31]; checkable: true; checked: Menus.checked[31]; activated => { Menus.run("stream.toggle"); } }
             MenuItem { title: Menus.titles[32]; icon: Menus.icons[32]; enabled: Menus.enabled[32]; checkable: true; checked: Menus.checked[32]; activated => { Menus.run("record.toggle"); } }
+            MenuSeparator { }
+            MenuItem { title: Menus.titles[33]; icon: Menus.icons[33]; enabled: Menus.enabled[33]; checkable: true; checked: Menus.checked[33]; activated => { Menus.run("vcam.toggle"); } }
         }
         Menu {
             title: @tr("Window");
             Menu {
-                title: Menus.titles[33];
-                icon: Menus.icons[33];
-                enabled: Menus.enabled[33];
+                title: Menus.titles[34];
+                icon: Menus.icons[34];
+                enabled: Menus.enabled[34];
                 for c in Menus.choices[5]: MenuItem { title: c.title; checkable: true; checked: c.checked; activated => { Menus.run(c.id); } }
             }
             MenuSeparator { }
-            MenuItem { title: Menus.titles[34]; icon: Menus.icons[34]; enabled: Menus.enabled[34]; checkable: true; checked: Menus.checked[34]; activated => { Menus.run("ui.panel.maximize?id=rbs.preview"); } }
+            MenuItem { title: Menus.titles[35]; icon: Menus.icons[35]; enabled: Menus.enabled[35]; checkable: true; checked: Menus.checked[35]; activated => { Menus.run("ui.panel.maximize?id=rbs.preview"); } }
         }
         Menu {
             title: @tr("Help");
-            MenuItem { title: Menus.titles[35]; icon: Menus.icons[35]; enabled: Menus.enabled[35]; activated => { Menus.run("ui.app_menu.open"); } }
+            MenuItem { title: Menus.titles[36]; icon: Menus.icons[36]; enabled: Menus.enabled[36]; activated => { Menus.run("ui.app_menu.open"); } }
         }
     }
     // END generated menu bar
@@ -1936,21 +1952,23 @@ export component FloatWindow inherits Window {
             title: @tr("Output");
             MenuItem { title: Menus.titles[31]; icon: Menus.icons[31]; enabled: Menus.enabled[31]; checkable: true; checked: Menus.checked[31]; activated => { Menus.run("stream.toggle"); } }
             MenuItem { title: Menus.titles[32]; icon: Menus.icons[32]; enabled: Menus.enabled[32]; checkable: true; checked: Menus.checked[32]; activated => { Menus.run("record.toggle"); } }
+            MenuSeparator { }
+            MenuItem { title: Menus.titles[33]; icon: Menus.icons[33]; enabled: Menus.enabled[33]; checkable: true; checked: Menus.checked[33]; activated => { Menus.run("vcam.toggle"); } }
         }
         Menu {
             title: @tr("Window");
             Menu {
-                title: Menus.titles[33];
-                icon: Menus.icons[33];
-                enabled: Menus.enabled[33];
+                title: Menus.titles[34];
+                icon: Menus.icons[34];
+                enabled: Menus.enabled[34];
                 for c in Menus.choices[5]: MenuItem { title: c.title; checkable: true; checked: c.checked; activated => { Menus.run(c.id); } }
             }
             MenuSeparator { }
-            MenuItem { title: Menus.titles[34]; icon: Menus.icons[34]; enabled: Menus.enabled[34]; checkable: true; checked: Menus.checked[34]; activated => { Menus.run("ui.panel.maximize?id=rbs.preview"); } }
+            MenuItem { title: Menus.titles[35]; icon: Menus.icons[35]; enabled: Menus.enabled[35]; checkable: true; checked: Menus.checked[35]; activated => { Menus.run("ui.panel.maximize?id=rbs.preview"); } }
         }
         Menu {
             title: @tr("Help");
-            MenuItem { title: Menus.titles[35]; icon: Menus.icons[35]; enabled: Menus.enabled[35]; activated => { Menus.run("ui.app_menu.open"); } }
+            MenuItem { title: Menus.titles[36]; icon: Menus.icons[36]; enabled: Menus.enabled[36]; activated => { Menus.run("ui.app_menu.open"); } }
         }
     }
     // END generated menu bar

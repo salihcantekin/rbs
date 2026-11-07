@@ -214,6 +214,19 @@ pub struct Shown<'a> {
     pub panels: Vec<(String, String, bool)>,
     /// The maximized panel (ADR-0049 decision 2).
     pub maximized: Option<&'a PanelId>,
+    /// The virtual camera, for `vcam.toggle`.
+    pub camera: CameraShown,
+}
+
+/// The virtual camera as `vcam.toggle` sees it (ADR-0066 decision 12).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct CameraShown {
+    /// This platform has a virtual camera.
+    pub available: bool,
+    /// It is added, nothing else is being done to it, and it does not start now.
+    pub ready: bool,
+    /// RBS sends to it.
+    pub sending: bool,
 }
 
 /// The control API names of the source kinds, in `SourceKind::ALL` order (the
@@ -401,6 +414,20 @@ impl CommandState for Shown<'_> {
                     s.cannot_record.clone().map_or(Ok(()), Err)
                 }
             },
+            "vcam.toggle" => {
+                let c = self.camera;
+                if c.sending {
+                    return Ok(());
+                }
+                if !c.available {
+                    return Err("The virtual camera is not available on this computer.".into());
+                }
+                self.running()?;
+                if !c.ready {
+                    return Err("Add the virtual camera in Settings, Virtual camera.".into());
+                }
+                Ok(())
+            }
             "record.toggle" => match s.rec_state {
                 rec_state::RECORDING => Ok(()),
                 rec_state::STARTING => Err("The recording is starting.".to_owned()),
@@ -432,6 +459,7 @@ impl CommandState for Shown<'_> {
             "item.locked.toggle" => self.source(id).is_ok_and(|f| f.locked),
             "source.muted.toggle" => self.source(id).is_ok_and(|f| f.muted),
             "stream.toggle" => matches!(self.studio.st_state, st_state::LIVE | st_state::STARTING),
+            "vcam.toggle" => self.camera.sending,
             "record.toggle" => matches!(
                 self.studio.rec_state,
                 rec_state::RECORDING | rec_state::STARTING
@@ -669,6 +697,7 @@ pub fn toolbar(state: &Shown<'_>) -> (Row, bool) {
                 let (title, live) = match (id.base(), on) {
                     ("stream.toggle", true) => ("End stream".to_owned(), true),
                     ("record.toggle", true) => ("Stop recording".to_owned(), true),
+                    ("vcam.toggle", true) => ("Stop virtual camera".to_owned(), true),
                     _ => (title, false),
                 };
                 // A running output's toggle shows a stop square in the live colour; the
@@ -750,6 +779,8 @@ pub enum Run {
     AskEndStream,
     Record,
     StopRecording,
+    /// Start (`true`) or stop sending to the virtual camera.
+    VirtualCamera(bool),
 }
 
 /// What `text` runs in this state; `None` for ids that cannot run (unknown, bad
@@ -818,6 +849,7 @@ pub fn run(text: &str, state: &Shown<'_>) -> Option<Run> {
         "stream.toggle" => Run::GoLive,
         "record.toggle" if on => Run::StopRecording,
         "record.toggle" => Run::Record,
+        "vcam.toggle" => Run::VirtualCamera(!on),
         _ => return None,
     })
 }

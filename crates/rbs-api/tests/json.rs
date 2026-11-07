@@ -244,6 +244,9 @@ fn every_request() -> Vec<Request> {
         c(Command::StreamStart),
         c(Command::StreamStop),
         c(Command::StreamStatus),
+        c(Command::VcamStatus),
+        c(Command::VcamStart),
+        c(Command::VcamStop),
         c(Command::SettingsGet),
         c(Command::ProfileList),
         c(Command::ProfileSwitch(EntryRef {
@@ -470,6 +473,10 @@ fn every_result_and_event_type_round_trips() {
             }),
         },
     });
+    round_trip(&Snapshot {
+        seq: seq.clone(),
+        data: vcam_status(),
+    });
     round_trip(&Subscribed { seq });
     round_trip(&Empty {});
     round_trip(&ApiError::new(ErrorKind::UndoConflict, "x"));
@@ -500,6 +507,10 @@ fn every_result_and_event_type_round_trips() {
             video_encoder: "NVENC".into(),
             audio_encoder: Some("MF AAC".into()),
         }),
+        EventPayload::VcamChanged(VcamStatus {
+            frames: None,
+            ..vcam_status()
+        }),
     ] {
         round_trip(&Event {
             object: None,
@@ -507,6 +518,46 @@ fn every_result_and_event_type_round_trips() {
             payload,
         });
     }
+}
+
+fn vcam_status() -> VcamStatus {
+    VcamStatus {
+        state: Some(VcamInstall::Added),
+        reason: None,
+        sending: true,
+        width: 1280,
+        height: 720,
+        rate: 30,
+        failure: None,
+        frames: Some(VcamFrames {
+            sent: 300,
+            consumer_absent: 12,
+            ..VcamFrames::default()
+        }),
+    }
+}
+
+#[test]
+fn vcam_status_wire_form() {
+    let v = serde_json::to_value(VcamStatus {
+        state: Some(VcamInstall::NeedsUpdate),
+        reason: Some("Add the camera again to update it".into()),
+        frames: None,
+        sending: false,
+        ..vcam_status()
+    })
+    .unwrap();
+    assert_eq!(v["state"], "needs_update");
+    assert_eq!(v["reason"], "Add the camera again to update it");
+    assert_eq!(v["frames"], Value::Null);
+    let unknown = serde_json::to_value(VcamStatus {
+        state: None,
+        ..vcam_status()
+    })
+    .unwrap();
+    assert_eq!(unknown["state"], Value::Null);
+    assert!(unknown.get("reason").is_none());
+    assert_eq!(unknown["frames"]["sent"], 300);
 }
 
 #[test]

@@ -12,7 +12,7 @@ use crate::types::ItemStyle;
 use crate::types::{
     Canvas, CaptureTarget, FilterTypeList, Library, OutputProfile, RecordState, RecordingProfile,
     SceneList, SeqMap, Settings, Snapshot, SourceInfo, SourceKind, StreamSettingsPatch,
-    StreamState, StudioInfo,
+    StreamState, StudioInfo, VcamStatus,
 };
 
 /// Parameters of a method that takes none. Unknown fields are ignored.
@@ -477,6 +477,12 @@ pub enum Command {
     StreamStop,
     /// `stream.status`.
     StreamStatus,
+    /// `vcam.status` (protocol 1.12).
+    VcamStatus,
+    /// `vcam.start` (protocol 1.12).
+    VcamStart,
+    /// `vcam.stop` (protocol 1.12).
+    VcamStop,
     /// `settings.get`.
     SettingsGet,
     /// `settings.set`.
@@ -546,6 +552,9 @@ impl Command {
             Command::StreamStart => "stream.start",
             Command::StreamStop => "stream.stop",
             Command::StreamStatus => "stream.status",
+            Command::VcamStatus => "vcam.status",
+            Command::VcamStart => "vcam.start",
+            Command::VcamStop => "vcam.stop",
             Command::SettingsGet => "settings.get",
             Command::SettingsSet(_) => "settings.set",
             Command::ProfileList => "profile.list",
@@ -650,6 +659,9 @@ pub const METHODS: &[MethodInfo] = &[
     m("stream.start", Some(Scope::Control)),
     m("stream.stop", Some(Scope::Control)),
     m("stream.status", Some(Scope::Read)),
+    m("vcam.status", Some(Scope::Read)),
+    m("vcam.start", Some(Scope::Control)),
+    m("vcam.stop", Some(Scope::Control)),
     m("settings.get", Some(Scope::Admin)),
     m("settings.set", Some(Scope::Admin)),
     m("profile.list", Some(Scope::Read)),
@@ -807,6 +819,12 @@ enum WireRequest {
     StreamStop(Empty),
     #[serde(rename = "stream.status")]
     StreamStatus(Empty),
+    #[serde(rename = "vcam.status")]
+    VcamStatus(Empty),
+    #[serde(rename = "vcam.start")]
+    VcamStart(Empty),
+    #[serde(rename = "vcam.stop")]
+    VcamStop(Empty),
     #[serde(rename = "settings.get")]
     SettingsGet(Empty),
     #[serde(rename = "settings.set")]
@@ -881,6 +899,9 @@ impl From<WireRequest> for Request {
             WireRequest::StreamStart(_) => Request::Command(C::StreamStart),
             WireRequest::StreamStop(_) => Request::Command(C::StreamStop),
             WireRequest::StreamStatus(_) => Request::Command(C::StreamStatus),
+            WireRequest::VcamStatus(_) => Request::Command(C::VcamStatus),
+            WireRequest::VcamStart(_) => Request::Command(C::VcamStart),
+            WireRequest::VcamStop(_) => Request::Command(C::VcamStop),
             WireRequest::SettingsGet(_) => Request::Command(C::SettingsGet),
             WireRequest::SettingsSet(p) => Request::Command(C::SettingsSet(p)),
             WireRequest::ProfileList(_) => Request::Command(C::ProfileList),
@@ -946,6 +967,9 @@ impl From<Request> for WireRequest {
                 C::StreamStart => WireRequest::StreamStart(Empty {}),
                 C::StreamStop => WireRequest::StreamStop(Empty {}),
                 C::StreamStatus => WireRequest::StreamStatus(Empty {}),
+                C::VcamStatus => WireRequest::VcamStatus(Empty {}),
+                C::VcamStart => WireRequest::VcamStart(Empty {}),
+                C::VcamStop => WireRequest::VcamStop(Empty {}),
                 C::SettingsGet => WireRequest::SettingsGet(Empty {}),
                 C::SettingsSet(p) => WireRequest::SettingsSet(p),
                 C::ProfileList => WireRequest::ProfileList(Empty {}),
@@ -1179,6 +1203,8 @@ pub enum Response {
     StreamStarted(StreamStarted),
     /// `stream.status`.
     StreamStatus(Snapshot<StreamState>),
+    /// `vcam.status` (protocol 1.12).
+    VcamStatus(Snapshot<VcamStatus>),
     /// `settings.get`, `settings.set`.
     Settings(Snapshot<Settings>),
     /// `profile.list`, `collection.list` (protocol 1.4).
@@ -1190,7 +1216,7 @@ pub enum Response {
     /// `tokens.create`.
     TokenCreated(TokenCreated),
     /// Methods with nothing to return: `source.delete`, `edit.undo`, `edit.redo`,
-    /// `record.stop`, `stream.stop`, `events.unsubscribe`, `tokens.revoke`,
+    /// `record.stop`, `stream.stop`, `vcam.start`, `vcam.stop`, `events.unsubscribe`, `tokens.revoke`,
     /// `profile.switch`, `collection.switch`, and the protocol 1.6 edits other than
     /// `scene.add` and `item.add`.
     Done(Empty),

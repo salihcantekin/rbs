@@ -657,3 +657,60 @@ pub struct Library {
     #[serde(default)]
     pub pending: bool,
 }
+
+/// Whether the virtual camera is on this computer (protocol 1.12, ADR-0066).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum VcamInstall {
+    /// Apps can list the camera.
+    Added,
+    /// The camera is not added.
+    NotAdded,
+    /// The installed part is from another version of RBS; adding again updates it.
+    NeedsUpdate,
+    /// This computer cannot have the camera.
+    Unavailable,
+}
+
+/// What the virtual camera's session did with the frames since sending started
+/// (the virtual camera spec, "Ring and stats").
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub struct VcamFrames {
+    /// Frames handed to the consumer side.
+    pub sent: u64,
+    /// Frames a newer frame replaced before the sender took them.
+    pub replaced: u64,
+    /// Frames the session refused.
+    pub refused: u64,
+    /// Frames skipped or dropped for lack of room on the consumer side.
+    pub consumer_busy: u64,
+    /// Frames sent while no app read the camera.
+    pub consumer_absent: u64,
+    /// Frames dropped while the camera's format was being changed.
+    pub format_pending: u64,
+    /// Operating system errors.
+    pub os_errors: u64,
+}
+
+/// `vcam.status` and `vcam.changed` (protocol 1.12, ADR-0066 decision 13).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct VcamStatus {
+    /// Whether the camera is added; `null` while the app has not read it yet.
+    pub state: Option<VcamInstall>,
+    /// Why, in words for the user, with `needs_update` and `unavailable`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+    /// RBS sends the program to the camera now.
+    pub sending: bool,
+    /// Width in pixels: sent now, or saved for the next start.
+    pub width: u32,
+    /// Height in pixels: sent now, or saved for the next start.
+    pub height: u32,
+    /// Frames per second, rounded: sent now, or saved for the next start.
+    pub rate: u32,
+    /// While sending, why the camera's node failed, until it runs again.
+    pub failure: Option<String>,
+    /// While sending, the session's counters when the adapter shares them; always
+    /// `null` in `vcam.changed`.
+    pub frames: Option<VcamFrames>,
+}
