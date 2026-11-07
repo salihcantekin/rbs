@@ -20,7 +20,8 @@ In the desktop shell every token is a run-time value: the build generates the `T
 File layout (format 2; format 1 is format 2 without `[font]` and is still read, with the OS UI font): `[fixed]` holds the colours no theme may change (`color.state.live`, `color.text.on-live`); `[themes.dark]`, `[themes.light]` and `[themes.high-contrast]` each define exactly the theme colour names below, as opaque `#rrggbb`; `[length]` (logical pixels: the spacing, size, radius, line, menu, window and keyboard step tokens below), `[duration]` (milliseconds: `motion.fast`, `motion.normal`) `[type]` (`{ size, line, weight }` for the five text styles) and `[font]` (`font.family`, a list of family names, empty for the OS UI font) hold the rest. Every theme in the file also passes the theme rules of the [themes spec](themes.md#theme-rules) (bounds, rules across tokens, distance from the live colour). Token names are lowercase words joined by `.` or `-`. A custom theme is a complete token file; its `[fixed]` values must equal the built-in ones (`#db2d35` and `#ffffff`), otherwise it is refused. Elevation and easing tokens are added to the file together with the components that use them. `rbs_ui::tokens` parses the file and fails on a missing, unknown or invalid token, a changed fixed colour, and any failed contrast rule:
 
 - text: `color.text.primary` and `.secondary` on every surface, `color.text.inverse` on `color.accent`, and `color.text.primary` on `color.accent.subtle`: at least 4.5:1 (7:1 in `high-contrast`); `color.text.on-live` on `color.state.live`: at least 4.5:1 in every theme, because both are fixed;
-- non-text: `color.border.focus` on `surface.base` and `.raised`, `color.border.strong`, `color.state.*` and `color.action.destructive` on `surface.raised`, `color.meter.*` on `surface.sunken`, and `color.state.live` on `surface.base`: at least 3:1;
+- non-text: `color.border.focus` on `surface.base` and `.raised`, `color.border.strong`, `color.state.*` and `color.action.destructive` on `surface.raised`, `color.meter.*` on `surface.sunken`, and `color.state.live` on every surface: at least 3:1;
+- the theme rules of the [themes spec](themes.md#theme-rules) add the pairs the UI draws besides (error text at 4.5:1, among others); a test reads the `.slint` files and fails on a drawn pair no rule covers;
 - `color.state.error`, `color.action.destructive` and `color.meter.clip` differ in hue from `color.state.live` by at least 45 degrees (rule U12).
 
 ### Colour (semantic names, per theme)
@@ -301,6 +302,7 @@ Toolbar items are command registry ids ([ADR-0050](../adr/0050-command-registry-
   | `ui.workspace.select` | picker | `ui.workspace.switch {name}` | View |
   | `ui.area.toggle?area=left\|right\|bottom` | action, checked while the area shows | `ui.area.toggle {area}` | View |
   | `ui.area.hide_all`, `ui.area.show_all`, `ui.layout.reset_sizes`, `ui.toolbar.reset` | action | the method of the same name | View |
+  | `ui.theme.reload` ("Reload themes") | action | the method of the same name: reads the token, appearance and theme files again ([themes spec](themes.md#applying-rbs-app-look)) | View |
   | `ui.panel.select` | picker | `ui.panel.open {id}` | Window |
   | `scene.select` | picker (a bound choice adds `collection`) | `scene.switch {scene}` (protocol 1.6) | Scene |
   | `scene.position?n=1`…`9` | action (Ctrl/Cmd+1…9), in no menu | `scene.switch` with the scene at that position | (none) |

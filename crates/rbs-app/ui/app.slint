@@ -1302,40 +1302,42 @@ export component MainWindow inherits Window {
             MenuSeparator { }
             MenuItem { title: Menus.titles[10]; enabled: Menus.enabled[10]; activated => { Menus.run("ui.layout.reset_sizes"); } }
             MenuItem { title: Menus.titles[11]; enabled: Menus.enabled[11]; activated => { Menus.run("ui.toolbar.reset"); } }
+            MenuSeparator { }
+            MenuItem { title: Menus.titles[12]; enabled: Menus.enabled[12]; activated => { Menus.run("ui.theme.reload"); } }
         }
         Menu {
             title: @tr("Scene");
             Menu {
-                title: Menus.titles[12];
-                enabled: Menus.enabled[12];
+                title: Menus.titles[13];
+                enabled: Menus.enabled[13];
                 for c in Menus.choices[3]: MenuItem { title: c.title; checkable: true; checked: c.checked; activated => { Menus.run(c.id); } }
             }
             MenuSeparator { }
-            MenuItem { title: Menus.titles[13]; enabled: Menus.enabled[13]; activated => { Menus.run("scene.previous"); } }
-            MenuItem { title: Menus.titles[14]; enabled: Menus.enabled[14]; activated => { Menus.run("scene.next"); } }
+            MenuItem { title: Menus.titles[14]; enabled: Menus.enabled[14]; activated => { Menus.run("scene.previous"); } }
+            MenuItem { title: Menus.titles[15]; enabled: Menus.enabled[15]; activated => { Menus.run("scene.next"); } }
         }
         Menu {
             title: @tr("Source");
             Menu {
-                title: Menus.titles[15];
-                enabled: Menus.enabled[15];
+                title: Menus.titles[16];
+                enabled: Menus.enabled[16];
                 for c in Menus.choices[4]: MenuItem { title: c.title; checkable: true; checked: c.checked; activated => { Menus.run(c.id); } }
             }
         }
         Menu {
             title: @tr("Output");
-            MenuItem { title: Menus.titles[16]; enabled: Menus.enabled[16]; checkable: true; checked: Menus.checked[16]; activated => { Menus.run("stream.toggle"); } }
-            MenuItem { title: Menus.titles[17]; enabled: Menus.enabled[17]; checkable: true; checked: Menus.checked[17]; activated => { Menus.run("record.toggle"); } }
+            MenuItem { title: Menus.titles[17]; enabled: Menus.enabled[17]; checkable: true; checked: Menus.checked[17]; activated => { Menus.run("stream.toggle"); } }
+            MenuItem { title: Menus.titles[18]; enabled: Menus.enabled[18]; checkable: true; checked: Menus.checked[18]; activated => { Menus.run("record.toggle"); } }
         }
         Menu {
             title: @tr("Window");
             Menu {
-                title: Menus.titles[18];
-                enabled: Menus.enabled[18];
+                title: Menus.titles[19];
+                enabled: Menus.enabled[19];
                 for c in Menus.choices[5]: MenuItem { title: c.title; checkable: true; checked: c.checked; activated => { Menus.run(c.id); } }
             }
             MenuSeparator { }
-            MenuItem { title: Menus.titles[19]; enabled: Menus.enabled[19]; checkable: true; checked: Menus.checked[19]; activated => { Menus.run("ui.panel.maximize?id=rbs.preview"); } }
+            MenuItem { title: Menus.titles[20]; enabled: Menus.enabled[20]; checkable: true; checked: Menus.checked[20]; activated => { Menus.run("ui.panel.maximize?id=rbs.preview"); } }
         }
     }
     // END generated menu bar
@@ -1506,40 +1508,42 @@ export component FloatWindow inherits Window {
             MenuSeparator { }
             MenuItem { title: Menus.titles[10]; enabled: Menus.enabled[10]; activated => { Menus.run("ui.layout.reset_sizes"); } }
             MenuItem { title: Menus.titles[11]; enabled: Menus.enabled[11]; activated => { Menus.run("ui.toolbar.reset"); } }
+            MenuSeparator { }
+            MenuItem { title: Menus.titles[12]; enabled: Menus.enabled[12]; activated => { Menus.run("ui.theme.reload"); } }
         }
         Menu {
             title: @tr("Scene");
             Menu {
-                title: Menus.titles[12];
-                enabled: Menus.enabled[12];
+                title: Menus.titles[13];
+                enabled: Menus.enabled[13];
                 for c in Menus.choices[3]: MenuItem { title: c.title; checkable: true; checked: c.checked; activated => { Menus.run(c.id); } }
             }
             MenuSeparator { }
-            MenuItem { title: Menus.titles[13]; enabled: Menus.enabled[13]; activated => { Menus.run("scene.previous"); } }
-            MenuItem { title: Menus.titles[14]; enabled: Menus.enabled[14]; activated => { Menus.run("scene.next"); } }
+            MenuItem { title: Menus.titles[14]; enabled: Menus.enabled[14]; activated => { Menus.run("scene.previous"); } }
+            MenuItem { title: Menus.titles[15]; enabled: Menus.enabled[15]; activated => { Menus.run("scene.next"); } }
         }
         Menu {
             title: @tr("Source");
             Menu {
-                title: Menus.titles[15];
-                enabled: Menus.enabled[15];
+                title: Menus.titles[16];
+                enabled: Menus.enabled[16];
                 for c in Menus.choices[4]: MenuItem { title: c.title; checkable: true; checked: c.checked; activated => { Menus.run(c.id); } }
             }
         }
         Menu {
             title: @tr("Output");
-            MenuItem { title: Menus.titles[16]; enabled: Menus.enabled[16]; checkable: true; checked: Menus.checked[16]; activated => { Menus.run("stream.toggle"); } }
-            MenuItem { title: Menus.titles[17]; enabled: Menus.enabled[17]; checkable: true; checked: Menus.checked[17]; activated => { Menus.run("record.toggle"); } }
+            MenuItem { title: Menus.titles[17]; enabled: Menus.enabled[17]; checkable: true; checked: Menus.checked[17]; activated => { Menus.run("stream.toggle"); } }
+            MenuItem { title: Menus.titles[18]; enabled: Menus.enabled[18]; checkable: true; checked: Menus.checked[18]; activated => { Menus.run("record.toggle"); } }
         }
         Menu {
             title: @tr("Window");
             Menu {
-                title: Menus.titles[18];
-                enabled: Menus.enabled[18];
+                title: Menus.titles[19];
+                enabled: Menus.enabled[19];
                 for c in Menus.choices[5]: MenuItem { title: c.title; checkable: true; checked: c.checked; activated => { Menus.run(c.id); } }
             }
             MenuSeparator { }
-            MenuItem { title: Menus.titles[19]; enabled: Menus.enabled[19]; checkable: true; checked: Menus.checked[19]; activated => { Menus.run("ui.panel.maximize?id=rbs.preview"); } }
+            MenuItem { title: Menus.titles[20]; enabled: Menus.enabled[20]; checkable: true; checked: Menus.checked[20]; activated => { Menus.run("ui.panel.maximize?id=rbs.preview"); } }
         }
     }
     // END generated menu bar

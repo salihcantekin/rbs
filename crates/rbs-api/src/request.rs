@@ -521,6 +521,7 @@ pub const UI_METHODS: &[&str] = &[
     "ui.toolbar.get",
     "ui.toolbar.set",
     "ui.toolbar.reset",
+    "ui.theme.reload",
     "ui.command.list",
     "ui.command.run",
 ];

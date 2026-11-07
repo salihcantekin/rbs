@@ -312,6 +312,47 @@ pub fn opened(ctx: &Ctx, app: &mut App) {
     show(ctx, app);
 }
 
+/// `ui.theme.reload` (View › Reload themes, themes spec "Reading"): reads the token
+/// file, `appearance.toml` and the theme files again and applies the result to every
+/// open window. An open editor draft stays applied. What cannot be used is shown as
+/// the app's error, as at start.
+pub fn reload(ctx: &Ctx, app: &mut App) {
+    let mut notes = Vec::new();
+    let fresh = look::token_file(&mut notes);
+    {
+        let mut look = ctx.look.borrow_mut();
+        match (look.as_mut(), fresh) {
+            (Some(look), Some(file)) => look.file = file,
+            (None, Some(_)) => {
+                let (loaded, _) =
+                    look::load(app.studio.user.data(), &mut look::SystemFonts::default());
+                *look = loaded;
+            }
+            (_, None) => {}
+        }
+    }
+    let file = ctx.look.borrow().as_ref().map(|l| l.file.clone());
+    let Some(file) = file else {
+        notes.push("Themes are not available: the token file cannot be read.".into());
+        app.error = Some(super::UiError::Other(notes.join(" ")));
+        return;
+    };
+    {
+        let mut page = ctx.page.borrow_mut();
+        page.ui.refresh(app.studio.user.data(), &file);
+        page.note.clear();
+    }
+    relook(ctx, app);
+    let page_note = ctx.page.borrow().note.clone();
+    if !page_note.is_empty() {
+        notes.push(page_note);
+    }
+    if !notes.is_empty() {
+        app.error = Some(super::UiError::Other(notes.join(" ")));
+    }
+    show(ctx, app);
+}
+
 fn after(ctx: &Ctx, app: &mut App, change: Change) {
     if change == Change::Look {
         relook(ctx, app);
