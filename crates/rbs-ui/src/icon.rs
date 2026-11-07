@@ -207,6 +207,14 @@ pub const ICONS: &[Icon] = &[
         "menu",
         "M 2.5 4 L 13.5 4 M 2.5 8 L 13.5 8 M 2.5 12 L 13.5 12",
     ),
+    line(
+        "rail-between",
+        "M 1.5 3.5 L 6 3.5 L 6 12.5 L 1.5 12.5 Z M 10 3.5 L 14.5 3.5 L 14.5 12.5 L 10 12.5 Z M 8 3.5 L 8 12.5",
+    ),
+    line(
+        "rail-below",
+        "M 1.5 2.5 L 7.5 2.5 L 7.5 9.5 L 1.5 9.5 Z M 8.5 2.5 L 14.5 2.5 L 14.5 9.5 L 8.5 9.5 Z M 1.5 13 L 14.5 13",
+    ),
     line("window-minimize", "M 3.5 8 L 12.5 8"),
     line(
         "window-maximize",
