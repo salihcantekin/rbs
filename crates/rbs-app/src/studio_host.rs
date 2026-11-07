@@ -19,8 +19,8 @@ use std::thread::JoinHandle;
 use std::time::Duration;
 
 use rbs_api::request::{
-    Empty, ItemAdded, ProfileList, RecordStarted, SceneAdded, SourceAdded, StreamStarted,
-    TargetList,
+    Empty, ItemAdded, ProfileList, RecordStarted, SceneAdded, SceneSourceList, SourceAdded,
+    StreamStarted, TargetList,
 };
 use rbs_api::types as api;
 use rbs_api::{
@@ -3813,9 +3813,10 @@ impl ApiTarget<'_> {
                         format!("no scene {}", p.scene),
                     ));
                 }
-                Ok(Response::SceneSources(
-                    host.rows_of(id).iter().map(api_source).collect(),
-                ))
+                Ok(Response::SceneSources(SceneSourceList {
+                    scene: p.scene,
+                    sources: host.rows_of(id).iter().map(api_source).collect(),
+                }))
             }
             C::CanvasSetPreview(p) => {
                 let changed = match p.scene {

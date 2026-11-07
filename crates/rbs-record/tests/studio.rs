@@ -571,7 +571,11 @@ fn in_studio_mode_a_ui_gets_the_preview_scene_on_its_own_picture() {
     col.set_preview(canvas, Some(live)).unwrap();
     studio.update(&col, &r.adapters.sources).unwrap();
     let endpoint = studio.scene_preview().expect("the preview scene's picture");
-    assert_ne!(Some(&endpoint), studio.preview().as_ref(), "a picture of its own");
+    assert_ne!(
+        Some(&endpoint),
+        studio.preview().as_ref(),
+        "a picture of its own"
+    );
 
     let frames = Arc::new(AtomicU64::new(0));
     let ui = {

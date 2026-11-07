@@ -72,3 +72,4 @@ An ADR records one decision that is hard to reverse or affects more than one cra
 | [0057](0057-user-themes-and-appearance-settings.md) | User themes as checked token overrides in a theme library; Settings › Appearance picks and edits them | Accepted |
 | [0058](0058-crop-editing-of-sources.md) | Crop editing of sources: keep the scale, read the picture size from the capture node | Accepted |
 | [0059](0059-scenes-lock-and-source-audio-in-the-studio.md) | Scenes, item lock and source volume in the studio | Accepted |
+| [0061](0061-studio-mode-in-the-desktop-app.md) | Studio mode in the desktop app: preview scene picture, cut transition, control API 1.7 | Accepted |

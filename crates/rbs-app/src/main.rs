@@ -923,8 +923,16 @@ impl Ctx {
         };
         let program_panel = if studio_mode { "rbs.program" } else { panel };
         let picture_main = in_main(program_panel);
-        let scene_main = if studio_mode { in_main("rbs.preview") } else { None };
-        let edit_main = if studio_mode { scene_main } else { picture_main };
+        let scene_main = if studio_mode {
+            in_main("rbs.preview")
+        } else {
+            None
+        };
+        let edit_main = if studio_mode {
+            scene_main
+        } else {
+            picture_main
+        };
         if let Some([_, _, w, h]) = edit_main {
             app.studio.set_picture_size(w, h);
         }

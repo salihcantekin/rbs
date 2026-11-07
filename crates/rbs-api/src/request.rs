@@ -826,6 +826,15 @@ pub struct TargetList {
     pub targets: Vec<CaptureTarget>,
 }
 
+/// `scene.sources`' answer (protocol 1.7).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SceneSourceList {
+    /// The scene.
+    pub scene: u32,
+    /// One row per source item of the scene, top first, as in `source.list`.
+    pub sources: Vec<SourceInfo>,
+}
+
 /// `source.add`'s answer.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SourceAdded {
@@ -942,8 +951,8 @@ pub enum Response {
     SceneAdded(SceneAdded),
     /// `item.add` (protocol 1.6).
     ItemAdded(ItemAdded),
-    /// `scene.sources` (protocol 1.7): one row per source item of the scene, top first.
-    SceneSources(Vec<SourceInfo>),
+    /// `scene.sources` (protocol 1.7).
+    SceneSources(SceneSourceList),
     /// `output.profiles`.
     Profiles(ProfileList),
     /// `record.start`, `record.start_to_file`.

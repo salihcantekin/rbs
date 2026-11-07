@@ -105,8 +105,7 @@ static GENERATION: [std::sync::atomic::AtomicU64; 2] = [
 
 fn setup(which: Picture, mut sub: PreviewSubscriber, done: impl Fn(bool), generation: u64) {
     let i = which.index();
-    let current =
-        move || GENERATION[i].load(std::sync::atomic::Ordering::Relaxed) == generation;
+    let current = move || GENERATION[i].load(std::sync::atomic::Ordering::Relaxed) == generation;
     // Closed while connecting (the window was hidden): the subscriber goes away unused.
     if !current() {
         return;
@@ -290,7 +289,9 @@ fn show(which: Picture, frame: PreviewFrame) {
 fn retire(which: Picture) {
     PREVIEW.with(|p| {
         let mut p = p.borrow_mut();
-        let Some(st) = p[which.index()].as_mut() else { return };
+        let Some(st) = p[which.index()].as_mut() else {
+            return;
+        };
         let now = st.clock.now();
         st.layer.retire(now);
         match st.layer.next_retire() {
@@ -298,9 +299,12 @@ fn retire(which: Picture) {
             Some(due) => {
                 if !st.timer.running() {
                     let after = due.saturating_since(now).max(Duration::from_millis(1));
-                    crate::entry::start(&st.timer, slint::TimerMode::SingleShot, after, move || {
-                        retire(which)
-                    });
+                    crate::entry::start(
+                        &st.timer,
+                        slint::TimerMode::SingleShot,
+                        after,
+                        move || retire(which),
+                    );
                 }
             }
         }

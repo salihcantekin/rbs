@@ -911,7 +911,9 @@ mod tests {
         let titles: Vec<&str> = m.iter().map(|(m, _)| m.title()).collect();
         assert_eq!(
             titles,
-            ["File", "Edit", "View", "Source", "Output", "Window"]
+            [
+                "File", "Edit", "View", "Scene", "Source", "Output", "Window"
+            ]
         );
         let file = &m[0].1;
         let MenuItem::Choices { title, choices } = &file[1] else {

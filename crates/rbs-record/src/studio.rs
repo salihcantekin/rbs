@@ -1095,7 +1095,11 @@ impl Studio {
         }
         // Only for a UI: without a picture the compositor has no consumer and the
         // plan leaves it and the preview-only sources out (ADR-0061 decision 2).
-        let Some(desc) = self.settings.preview.filter(|_| self.settings.scene_preview) else {
+        let Some(desc) = self
+            .settings
+            .preview
+            .filter(|_| self.settings.scene_preview)
+        else {
             return Ok(());
         };
         let Some(bound) = report
@@ -1121,7 +1125,8 @@ impl Studio {
             RENDER,
         )?;
         self.graph.connect(bound.node, "canvas", id, "canvas")?;
-        self.engine.adopt::<GpuRuntime>(RENDER, id, Box::new(node))?;
+        self.engine
+            .adopt::<GpuRuntime>(RENDER, id, Box::new(node))?;
         self.scene_preview = Some(ScenePreview {
             compositor: bound.node,
             layers,

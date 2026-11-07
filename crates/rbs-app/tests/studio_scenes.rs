@@ -388,3 +388,157 @@ fn items_lock_and_hide_and_sources_mute_rename_and_change_volume() {
     assert_eq!(row(&sources(&mut c), screen).get("locked"), None);
     drop(host);
 }
+
+#[test]
+fn studio_mode_previews_a_scene_and_the_transition_puts_it_on_air() {
+    let Some((host, updates, _api, mut c)) = start() else {
+        return;
+    };
+    ok(&c.call("events.subscribe", json!({"topics": ["scene.changed"]})));
+    let one = scenes(&mut c)["program"].as_u64().unwrap();
+    let screen = add(&mut c, "screen", "Main screen");
+    let two = ok(&c.call("scene.add", json!({"name": "Game"})))["scene"]
+        .as_u64()
+        .unwrap();
+    // Outside studio mode there is no preview scene and nothing to transition.
+    assert_eq!(scenes(&mut c).get("preview"), None, "left out when off");
+    assert_eq!(kind(&c.call("canvas.transition", json!({}))), "conflict");
+    assert_eq!(
+        kind(&c.call("canvas.set_preview", json!({"scene": 99}))),
+        "not_found"
+    );
+
+    // Entering studio mode with a scene previews it; the program stays on air.
+    ok(&c.call("canvas.set_preview", json!({"scene": two})));
+    let event = c.event("scene.changed", |d| d["preview"] == two);
+    assert_eq!(event["params"]["data"]["program"], one);
+    // The UI is told too.
+    next(&updates, |u| match u {
+        Update::Scenes(l) if l.preview.map(|p| p.get()) == Some(two as u32) => Some(()),
+        _ => None,
+    });
+
+    // Sources go to the scene named in the call; source.list stays on the program.
+    let targets = c.call("source.targets", json!({"kind": "audio_input"}));
+    let t = ok(&targets)["targets"][0].clone();
+    let mic = ok(&c.call(
+        "source.add",
+        json!({"kind": "audio_input", "adapter": t["adapter"], "target": t["target"],
+               "name": "Mic", "scene": two}),
+    ))["source"]
+        .as_u64()
+        .unwrap();
+    let program_rows = sources(&mut c);
+    assert_eq!(program_rows.len(), 1);
+    assert_eq!(program_rows[0]["id"], screen);
+    let in_two = ok(&c.call("scene.sources", json!({"scene": two})))["sources"].clone();
+    assert_eq!(in_two.as_array().unwrap().len(), 1);
+    assert_eq!(in_two[0]["id"], mic);
+    ok(&c.call("item.add", json!({"source": screen, "scene": two})));
+    let in_two = ok(&c.call("scene.sources", json!({"scene": two})))["sources"].clone();
+    assert_eq!(in_two.as_array().unwrap().len(), 2);
+    assert_eq!(
+        kind(&c.call("scene.sources", json!({"scene": 99}))),
+        "not_found"
+    );
+    assert_eq!(
+        kind(&c.call("item.add", json!({"source": screen, "scene": 99}))),
+        "not_found"
+    );
+
+    // The transition swaps program and preview; it is not on the undo stack.
+    ok(&c.call("canvas.transition", json!({})));
+    let after = scenes(&mut c);
+    assert_eq!(after["program"], two);
+    assert_eq!(after["preview"], one);
+    assert_eq!(sources(&mut c).len(), 2, "source.list follows the program");
+    // Undo removes the item added to Game, but leaves program and preview.
+    ok(&c.call("edit.undo", json!({})));
+    let undone = scenes(&mut c);
+    assert_eq!(undone["program"], two);
+    assert_eq!(undone["preview"], one);
+    assert_eq!(sources(&mut c).len(), 1);
+
+    // Removing the preview scene keeps studio mode, previewing the program.
+    ok(&c.call("scene.remove", json!({"scene": one})));
+    let removed = scenes(&mut c);
+    assert_eq!(removed["program"], two);
+    assert_eq!(removed["preview"], two);
+    // A transition between one scene and itself changes nothing.
+    ok(&c.call("canvas.transition", json!({})));
+
+    // Leaving studio mode.
+    ok(&c.call("canvas.set_preview", json!({"scene": null})));
+    assert_eq!(scenes(&mut c).get("preview"), None);
+    assert_eq!(kind(&c.call("canvas.transition", json!({}))), "conflict");
+    drop(host);
+}
+
+#[test]
+fn in_studio_mode_the_ui_edits_the_preview_and_the_mixer_hears_the_program() {
+    use rbs_app::studio_host::Command;
+    use rbs_scene::model::SceneId;
+    let Some((host, updates, _api, mut c)) = start() else {
+        return;
+    };
+    let one = scenes(&mut c)["program"].as_u64().unwrap();
+    let mic = add(&mut c, "audio_input", "Mic");
+    let two = ok(&c.call("scene.add", json!({"name": "Game"})))["scene"]
+        .as_u64()
+        .unwrap();
+    let id = |raw: u64| SceneId::from_raw(u32::try_from(raw).unwrap());
+
+    // The toggle puts the program scene in preview.
+    host.send(Command::SetStudioMode(true));
+    next(&updates, |u| match u {
+        Update::Scenes(l) if l.preview == Some(id(one)) => Some(()),
+        _ => None,
+    });
+    // A click on a scene previews it; the program stays on air.
+    host.send(Command::SwitchScene(id(two)));
+    next(&updates, |u| match u {
+        Update::Scenes(l) if l.preview == Some(id(two)) => {
+            assert_eq!(l.program, id(one));
+            Some(())
+        }
+        _ => None,
+    });
+    // The Sources list shows the edited (preview) scene.
+    next(&updates, |u| match u {
+        Update::Sources(r) if r.is_empty() => Some(()),
+        _ => None,
+    });
+    // The transition button: now the Sources list shows the first scene (in preview)
+    // and the Mixer the empty program scene.
+    host.send(Command::Transition);
+    next(&updates, |u| match u {
+        Update::Scenes(l) if l.program == id(two) => {
+            assert_eq!(l.preview, Some(id(one)));
+            Some(())
+        }
+        _ => None,
+    });
+    let (mut sources_seen, mut heard_seen) = (false, false);
+    next(&updates, |u| {
+        match u {
+            Update::Sources(r) if r.iter().any(|r| u64::from(r.id.get()) == mic) => {
+                sources_seen = true;
+            }
+            Update::Heard(r) if r.is_empty() => heard_seen = true,
+            _ => {}
+        }
+        (sources_seen && heard_seen).then_some(())
+    });
+    // Off again: a click goes on air.
+    host.send(Command::SetStudioMode(false));
+    next(&updates, |u| match u {
+        Update::Scenes(l) if l.preview.is_none() => Some(()),
+        _ => None,
+    });
+    host.send(Command::SwitchScene(id(one)));
+    next(&updates, |u| match u {
+        Update::Scenes(l) if l.program == id(one) => Some(()),
+        _ => None,
+    });
+    drop(host);
+}

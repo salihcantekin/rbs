@@ -697,10 +697,9 @@ fn studio_mode_is_a_minor_addition() {
     assert_eq!(old.preview, None);
     let add: AddItem = serde_json::from_value(json!({"source": 3})).unwrap();
     assert_eq!(add.scene, None);
-    let off: Request = serde_json::from_value(
-        json!({"method": "canvas.set_preview", "params": {"scene": null}}),
-    )
-    .unwrap();
+    let off: Request =
+        serde_json::from_value(json!({"method": "canvas.set_preview", "params": {"scene": null}}))
+            .unwrap();
     assert_eq!(
         off,
         Request::Command(Command::CanvasSetPreview(SetPreview { scene: None }))
@@ -709,11 +708,12 @@ fn studio_mode_is_a_minor_addition() {
     let cut: Request =
         serde_json::from_value(json!({"method": "canvas.transition", "params": {}})).unwrap();
     assert_eq!(cut, Request::Command(Command::CanvasTransition));
-    let sources: Request = serde_json::from_value(
-        json!({"method": "scene.sources", "params": {"scene": 1}}),
-    )
-    .unwrap();
+    let sources: Request =
+        serde_json::from_value(json!({"method": "scene.sources", "params": {"scene": 1}})).unwrap();
     assert_eq!(sources.scope(), Some(Scope::Read));
     assert!(serde_json::from_value::<SetPreview>(json!({"scene": 1, "x": 0})).is_err());
-    round_trip(&vec![source()]);
+    round_trip(&SceneSourceList {
+        scene: 2,
+        sources: vec![source()],
+    });
 }
