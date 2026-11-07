@@ -182,8 +182,7 @@ export component AppMenu inherits PopupWindow {
     property <int> current: -1;
     // 0 the item column has the keys, 1 the category column.
     property <int> column;
-    property <length> item-w: Tokens.size-menu-md * 2 - Tokens.size-menu-sm * 0.75;
-    width: Tokens.size-menu-md * 2;
+    width: Tokens.size-app-menu-w;
 
     // The popup's content is made each time it shows: fill it then.
     init => {
@@ -328,7 +327,7 @@ export component AppMenu inherits PopupWindow {
                 HorizontalLayout {
                     // The menus, as categories; hidden while search results show.
                     if query.text == "": VerticalLayout {
-                        width: Tokens.size-menu-sm * 0.75;
+                        width: Tokens.size-app-menu-categories;
                         padding: Tokens.space-1;
                         spacing: Tokens.size-border;
                         alignment: start;
@@ -342,7 +341,7 @@ export component AppMenu inherits PopupWindow {
                     }
                     if query.text == "": Rectangle { width: Tokens.size-border; background: Theme.border-subtle; }
                     item-list := Flickable {
-                        height: min(rows.preferred-height, Tokens.size-menu-md * 1.5);
+                        height: min(rows.preferred-height, Tokens.size-app-menu-list-h);
                         content-height: rows.preferred-height;
                         rows := VerticalLayout {
                             padding: Tokens.space-1;
@@ -373,7 +372,6 @@ export component AppMenu inherits PopupWindow {
                                     color: Theme.text-secondary;
                                     font-size: Tokens.type-caption-size;
                                     font-weight: Tokens.type-label-weight;
-                                    letter-spacing: 0.5px;
                                     accessible-role: text;
                                     accessible-label: r.title;
                                 }
@@ -478,7 +476,7 @@ export component AppMenuButton inherits Rectangle {
             text: "RBS";
             color: Theme.text-primary;
             font-size: Tokens.type-body-size;
-            font-weight: 700;
+            font-weight: Tokens.type-title-weight;
             vertical-alignment: center;
         }
     }
