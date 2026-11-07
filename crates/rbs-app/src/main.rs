@@ -32,6 +32,7 @@ mod studio_ui;
 mod title_bar;
 mod vcam_page;
 mod view;
+mod window_place;
 
 use std::cell::{Cell, RefCell};
 use std::path::{Path, PathBuf};
@@ -1000,6 +1001,14 @@ impl Ctx {
             });
             w.set_section(section);
             let _ = w.show();
+            // Centred on the main window, not where the OS puts new windows. While
+            // every window is hidden (ADR-0056) the OS places it.
+            if !app.hidden {
+                let t = w.global::<Tokens>();
+                let size =
+                    slint::LogicalSize::new(t.get_size_settings_w(), t.get_size_settings_h());
+                window_place::centre_on(w.window(), app.main.window(), size);
+            }
             app.settings = Some(w);
             if section == SECTION_APPEARANCE {
                 appearance_page::opened(&ctx, app);

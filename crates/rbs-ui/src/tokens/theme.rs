@@ -250,6 +250,13 @@ pub const THEMEABLE: &[Themeable] = &[
     ),
     length("size.menu.md", "Menu width", SpacingAndSize, 160.0, 480.0),
     length(
+        "size.select.list-h",
+        "Drop-down list height",
+        SpacingAndSize,
+        160.0,
+        640.0,
+    ),
+    length(
         "size.app-menu.w",
         "RBS menu width",
         SpacingAndSize,

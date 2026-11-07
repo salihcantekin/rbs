@@ -84,6 +84,7 @@ pub const LENGTHS: &[&str] = &[
     "size.icon.stroke",
     "size.menu.sm",
     "size.menu.md",
+    "size.select.list-h",
     "size.app-menu.w",
     "size.app-menu.categories",
     "size.app-menu.list-h",
