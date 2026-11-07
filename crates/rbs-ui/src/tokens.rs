@@ -87,6 +87,8 @@ pub const LENGTHS: &[&str] = &[
     "size.window.min-h",
     "size.floating.w",
     "size.floating.h",
+    "size.settings.w",
+    "size.settings.h",
     "step.nudge",
     "step.nudge-large",
 ];

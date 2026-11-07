@@ -107,6 +107,8 @@ format = 2
 "size.window.min-h" = 720
 "size.floating.w" = 640
 "size.floating.h" = 420
+"size.settings.w" = 920
+"size.settings.h" = 680
 "step.nudge" = 8
 "step.nudge-large" = 128
 
