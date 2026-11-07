@@ -154,6 +154,8 @@ struct App {
     toast: Option<Toast>,
     toast_serial: u64,
     error: Option<UiError>,
+    /// `ui.theme.reload` ran; the next sync reads the theme files again.
+    reload_themes: bool,
     save_due: bool,
     exiting: bool,
     /// Every window is hidden by Close with Keep RBS running (ADR-0056).
@@ -393,6 +395,8 @@ impl App {
             Run::AskEndStream => self.studio.end_stream(),
             Run::Record => self.studio.record(),
             Run::StopRecording => self.studio.stop_recording(),
+            // Needs the look and the Appearance page, which the next sync has.
+            Run::ReloadThemes => self.reload_themes = true,
         }
     }
 
@@ -1173,6 +1177,9 @@ impl Ctx {
         }
         if app.exiting {
             return;
+        }
+        if std::mem::take(&mut app.reload_themes) {
+            appearance_page::reload(self, &mut app);
         }
         self.sync_live(&mut app);
         #[cfg(windows)]
@@ -2278,6 +2285,7 @@ fn run(config: PathBuf, notice: Option<String>) -> Result<(), Box<dyn std::error
             toast: None,
             toast_serial: 0,
             error,
+            reload_themes: false,
             save_due: false,
             exiting: false,
             hidden: false,

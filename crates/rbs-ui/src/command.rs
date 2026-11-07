@@ -298,6 +298,17 @@ pub const ENTRIES: &[Entry] = &[
         checkable: false,
     },
     Entry {
+        id: "ui.theme.reload",
+        title: "Reload themes",
+        tooltip: "Read the theme files again and apply them",
+        icon: None,
+        shortcut: None,
+        menu: Menu::View,
+        kind: action("ui.theme.reload"),
+        params: &[],
+        checkable: false,
+    },
+    Entry {
         id: "ui.panel.select",
         title: "Panels",
         tooltip: "Open a panel, or show it if it is open",
@@ -702,6 +713,8 @@ pub const MENU_LAYOUT: &[(Menu, &[&str])] = &[
             "|",
             "ui.layout.reset_sizes",
             "ui.toolbar.reset",
+            "|",
+            "ui.theme.reload",
         ],
     ),
     (

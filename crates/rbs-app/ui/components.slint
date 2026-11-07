@@ -873,7 +873,8 @@ export component KeyboardShortcutHint inherits Rectangle {
         }
         if root.tag != "": Text {
             text: root.tag;
-            color: Theme.accent;
+            // Not accent: accent text on sunken is 3.9:1 in Light, under the 4.5:1 for text.
+            color: Theme.text-secondary;
             font-size: Tokens.type-caption-size;
             font-weight: Tokens.type-label-weight;
             vertical-alignment: center;

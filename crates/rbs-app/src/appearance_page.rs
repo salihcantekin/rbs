@@ -312,6 +312,50 @@ pub fn opened(ctx: &Ctx, app: &mut App) {
     show(ctx, app);
 }
 
+/// `ui.theme.reload` (View › Reload themes, themes spec "Reading"): reads the token
+/// file, `appearance.toml` and the theme files again and applies the result to every
+/// open window. An open editor draft stays applied. What cannot be used is shown as
+/// the app's error, as at start.
+pub fn reload(ctx: &Ctx, app: &mut App) {
+    let mut notes = Vec::new();
+    let dev = look::dev_theme().is_some();
+    if dev || ctx.look.borrow().is_none() {
+        // As at start: `RBS_THEME` fills both slots from the new file.
+        let (loaded, note) = look::load(app.studio.user.data(), &mut look::SystemFonts::default());
+        notes.extend(note);
+        *ctx.look.borrow_mut() = loaded;
+    } else if let Some(file) = look::token_file(&mut notes)
+        && let Some(look) = ctx.look.borrow_mut().as_mut()
+    {
+        look.file = file;
+    }
+    let file = ctx.look.borrow().as_ref().map(|l| l.file.clone());
+    let Some(file) = file else {
+        notes.push("Themes are not available: the token file cannot be read.".into());
+        app.error = Some(super::UiError::Other(notes.join(" ")));
+        return;
+    };
+    {
+        let mut page = ctx.page.borrow_mut();
+        page.ui.refresh(app.studio.user.data(), &file);
+        page.ui.recheck(&file);
+        page.note.clear();
+    }
+    if dev {
+        apply_all(ctx, app);
+    } else {
+        relook(ctx, app);
+    }
+    let page_note = ctx.page.borrow().note.clone();
+    if !page_note.is_empty() {
+        notes.push(page_note);
+    }
+    if !notes.is_empty() {
+        app.error = Some(super::UiError::Other(notes.join(" ")));
+    }
+    show(ctx, app);
+}
+
 fn after(ctx: &Ctx, app: &mut App, change: Change) {
     if change == Change::Look {
         relook(ctx, app);
@@ -344,6 +388,11 @@ fn relook(ctx: &Ctx, app: &mut App) {
             page.note = notes.join(" ");
         }
     }
+    apply_all(ctx, app);
+}
+
+/// Applies the current look to every open window.
+fn apply_all(ctx: &Ctx, app: &App) {
     let look = ctx.look.borrow();
     let look = look.as_ref();
     look::apply(
