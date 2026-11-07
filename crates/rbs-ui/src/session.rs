@@ -45,6 +45,18 @@ pub enum LayoutCommand {
         /// Edge.
         edge: Edge,
     },
+    /// Move a panel into a new stack beside a stack: a drop on one side of the
+    /// five-way guide (ADR-0049 decision 5).
+    MoveBeside {
+        /// Panel.
+        panel: PanelId,
+        /// Target window.
+        window: usize,
+        /// Target stack.
+        stack: usize,
+        /// The side of the stack the panel goes to.
+        edge: Edge,
+    },
     /// Float a panel into its own window.
     Float(PanelId),
     /// Dock a floating window's panels into the main window.
@@ -205,6 +217,7 @@ impl LayoutSession {
             LayoutCommand::ClosePanel(_)
                 | LayoutCommand::MoveToStack { .. }
                 | LayoutCommand::MoveToEdge { .. }
+                | LayoutCommand::MoveBeside { .. }
                 | LayoutCommand::Float(_)
                 | LayoutCommand::Dock { .. }
                 | LayoutCommand::CloseWindow { .. }
@@ -245,6 +258,12 @@ impl LayoutSession {
                 window,
                 edge,
             } => next.move_to_edge(&panel, window, edge)?,
+            LayoutCommand::MoveBeside {
+                panel,
+                window,
+                stack,
+                edge,
+            } => next.move_beside(&panel, window, stack, edge)?,
             LayoutCommand::Float(id) => {
                 next.float(&id)?;
             }
