@@ -4,7 +4,7 @@
 //! function from values to uniforms. [`FilterNode`] runs any filter type as a
 //! `VideoFilter` node on the render executor: textures of its input's size from the
 //! pool, settings through its parameter channel (ADR-0023), no readback (P4).
-//! [`catalogue`] lists the built-in types; [`conformance`] is the suite every type
+//! [`catalogue()`] lists the built-in types; [`conformance`] is the suite every type
 //! passes.
 
 pub mod catalogue;
