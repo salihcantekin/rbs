@@ -146,7 +146,7 @@ An adapter support crate (ADR-0031) for adapters whose consumer lives in another
 - The reader never trusts the header: it computes the layout (size, stride, slot count, offsets) from the format it announced, bounds every index by its own values, reads each shared field once per use, and treats any disagreement as "no frames".
 - Either side treats a wrong magic or layout version as "no frames"; the app reports `NeedsUpdate`.
 - "No frames" on the reader's side always means the source shows its still picture ("RBS Virtual Camera is off"): no writer heartbeat for 1 s, a header that disagrees with the announced format (for example during a pending format change; RBS counts those frames in `format_pending`), or a version mismatch.
-- The section is named `Global\\org.rbs.vcam.<user SID>`, created by the source, writable only by that SID (ADR-0066 decision 9). `rbs-vcam-ring` depends on `std` only.
+- The section is named `Global\org.rbs.vcam.<user SID>`, created by the source, writable only by that SID (ADR-0066 decision 9). `rbs-vcam-ring` depends on `std` only.
 
 ## Errors and failure behaviour
 
