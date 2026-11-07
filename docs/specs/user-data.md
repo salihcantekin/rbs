@@ -25,7 +25,8 @@ Out of scope, later changes: workspaces (ADR-0017 and ADR-0049, owned by `rbs-ui
 | `profiles/<id>.toml` | Output profiles (`UserData::profiles()`) |
 | `scenes/<id>.toml` | Scene collections (`UserData::scene_collections()`) |
 | `current.toml` | `Current { profile, scene_collection }`: ids of the entries in use (`current()`, `set_current()`) |
-| `workspaces/`, `themes/`, `library/` | Reserved (`WORKSPACES_DIR`, `THEMES_DIR`, `LIBRARY_DIR`) |
+| `themes/<id>.toml`, `appearance.toml` | User themes (`UserData::themes()`) and the appearance choice (`appearance()`, `set_appearance()`), [themes spec](themes.md), ADR-0057 |
+| `workspaces/`, `library/` | Reserved (`WORKSPACES_DIR`, `LIBRARY_DIR`) |
 
 `current()` returns an unset selection and the reason when `current.toml` cannot be read; an id that names no entry is treated as unset by the caller.
 
