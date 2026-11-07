@@ -1258,8 +1258,10 @@ fn install_studio(g: &Studio<'_>, ctx: &Ctx) {
                            w: f32,
                            h: f32,
                            shift: bool,
-                           no_snap: bool| {
-        app.studio.preview_press([x, y], [w, h], shift, no_snap);
+                           no_snap: bool,
+                           crop: bool| {
+        app.studio
+            .preview_press([x, y], [w, h], shift, no_snap, crop);
     });
     on!(on_preview_drag, |app, x: f32, y: f32| {
         app.studio.preview_drag([x, y]);

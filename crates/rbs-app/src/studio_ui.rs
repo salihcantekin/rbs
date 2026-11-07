@@ -1213,6 +1213,8 @@ impl StudioUi {
             .map(|d| Placed {
                 id: d.id,
                 at: SourceBox::new([d.x, d.y], [d.w, d.h]),
+                crop: [d.crop_l, d.crop_t, d.crop_r, d.crop_b].map(|v| v.max(0) as u32),
+                picture: (d.pic_w > 0 && d.pic_h > 0).then_some((d.pic_w as u32, d.pic_h as u32)),
             })
             .collect();
         v.reverse();
@@ -1231,16 +1233,38 @@ impl StudioUi {
                 self.deleted.clear();
                 self.send_box(seq, id, b, gesture);
             }
+            Effect::SendCrop(seq, id, crop, gesture) => {
+                self.deleted.clear();
+                if self.host.is_none() {
+                    self.edit.reset();
+                } else {
+                    self.send(Command::SetSourceCrop {
+                        seq,
+                        gesture,
+                        id: SourceId::from_raw(id as u32),
+                        crop,
+                        keep_scale: true,
+                    });
+                }
+            }
         }
         self.refresh_marks();
     }
 
     /// A press on the picture panel (panel coordinates, its size `size`).
-    pub fn preview_press(&mut self, at: [f32; 2], size: [f32; 2], shift: bool, no_snap: bool) {
+    pub fn preview_press(
+        &mut self,
+        at: [f32; 2],
+        size: [f32; 2],
+        shift: bool,
+        no_snap: bool,
+        crop: bool,
+    ) {
         self.edit.set_panel(size[0], size[1]);
         let keys = DragKeys {
             free: shift,
             no_snap,
+            crop,
         };
         let placed = self.placed();
         let e = self
@@ -2271,8 +2295,12 @@ impl StudioUi {
                 let next = self.edit.answered(seq, ok);
                 self.run(next);
             }
-            // Crops from the Properties fields are not numbered.
-            Update::CropPlaced { .. } => {}
+            // Crops from the Properties fields are numbered 0, which the picture
+            // panel never uses.
+            Update::CropPlaced { seq, ok } => {
+                let next = self.edit.answered(seq, ok);
+                self.run(next);
+            }
             Update::Started {
                 preview,
                 kinds,

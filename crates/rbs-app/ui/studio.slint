@@ -93,7 +93,8 @@ export global Studio {
     in property <[MarkData]> marks;
     // Pointer on the picture panel (panel coordinates, logical pixels; `w`, `h` the
     // panel's size). Shift: free resize at corners; Ctrl or Cmd: no snapping.
-    callback preview-press(float /* x */, float /* y */, float /* w */, float /* h */, bool /* shift */, bool /* no-snap */);
+    // `crop`: Alt (Option) held, a handle crops instead of resizing (ADR-0057).
+    callback preview-press(float /* x */, float /* y */, float /* w */, float /* h */, bool /* shift */, bool /* no-snap */, bool /* crop */);
     callback preview-drag(float /* x */, float /* y */);
     callback preview-release();
     // Arrow keys on the picture panel: move the selected source by this many canvas
@@ -387,7 +388,7 @@ export component ProgramPanel inherits Rectangle {
             if e.button != PointerEventButton.left { return; }
             if e.kind == PointerEventKind.down {
                 keys.focus();
-                Studio.preview-press(self.mouse-x / 1px, self.mouse-y / 1px, self.width / 1px, self.height / 1px, e.modifiers.shift, e.modifiers.control || e.modifiers.meta);
+                Studio.preview-press(self.mouse-x / 1px, self.mouse-y / 1px, self.width / 1px, self.height / 1px, e.modifiers.shift, e.modifiers.control || e.modifiers.meta, e.modifiers.alt);
             }
             if e.kind == PointerEventKind.up { Studio.preview-release(); }
         }
@@ -1195,8 +1196,8 @@ component CropFields inherits VerticalLayout {
             horizontal-stretch: 1;
             text: @tr("Whole picture");
             kind: "secondary";
-            enabled: known && (data.crop-l + data.crop-t + data.crop-r + data.crop-b) > 0;
-            accessible-name: @tr("Show all of {}", data.name);
+            enabled: known;
+            accessible-name: @tr("Show all of {}, fitted to the canvas", data.name);
             clicked => { Studio.set-source-region(data.id, 0); }
         }
     }

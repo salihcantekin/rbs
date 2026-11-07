@@ -213,7 +213,7 @@ impl PartialEq for SourceRow {
 /// A part of a source's picture the Region menu shows (ADR-0057).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CropRegion {
-    /// The whole picture: no crop, the scale kept.
+    /// The whole picture: no crop, fitted to the canvas like a new source.
     Full,
     /// The centre, as large as the canvas (or the picture, if smaller), shown 1:1 when
     /// the picture is at least as large as the canvas.
@@ -335,8 +335,7 @@ pub enum Command {
         keep_scale: bool,
     },
     /// Show a part of a video source's picture filling as much of the canvas as fits
-    /// (ADR-0057, Properties' Region menu); [`CropRegion::Full`] removes the crop and
-    /// keeps the scale instead. One undo step.
+    /// (ADR-0057, Properties' Show buttons). One undo step.
     SetSourceRegion {
         /// The source.
         id: SourceId,
@@ -2655,10 +2654,7 @@ impl Host {
             .map(|c| (c.size.width, c.size.height))
             .ok_or_else(|| CropRefusal::Failed("the canvas is gone".into()))?;
         let crop = region.crop(size, canvas);
-        let layout = if region == CropRegion::Full {
-            old.recrop(size, crop)
-                .ok_or_else(|| CropRefusal::Invalid(NO_AREA.into()))?
-        } else {
+        let layout = {
             if !crop.fits(size.0, size.1) {
                 return Err(CropRefusal::Invalid(NO_AREA.into()));
             }
