@@ -9,8 +9,24 @@
 # time keeps them deterministic; everything else still runs in parallel. The PipeWire
 # adapters share the CI's private daemon, and the audio adapter's slow test changes the
 # daemon's graph quantum and rate, so they run in the same group.
+#
+# Windows is the exception: every test process opens its own D3D12 device (WARP on the
+# CI runners) and these packages share nothing else across processes (temporary
+# directories and IPC pipe names carry the process id). Run one at a time, they
+# were the whole Windows test run (130 s of 130 s), so there they run two at a time in
+# their own group. Two, not more: on the 4-vCPU runners, four at a time made
+# `rbs-record` `outputs_with_the_same_settings_share_the_encoders` take 36 s instead of
+# 3 s (WARP renders on the CPU), close to its 20 s-per-step guard, and the whole fast
+# tier took 60 s instead of 30 s. The first matching override wins, so the Windows one
+# comes first.
 [test-groups]
 gpu = { max-threads = 1 }
+gpu-windows = { max-threads = 2 }
+
+[[profile.default.overrides]]
+platform = 'cfg(windows)'
+filter = 'package(rbs-gpu) | package(rbs-record) | package(rbs-app) | package(rbs-capture-sck) | package(rbs-capture-avf) | package(rbs-capture-mf) | package(rbs-capture-wgc) | package(rbs-capture-pipewire) | package(rbs-audio-io-pipewire) | package(/^rbs-codec-/)'
+test-group = 'gpu-windows'
 
 [[profile.default.overrides]]
 filter = 'package(rbs-gpu) | package(rbs-record) | package(rbs-app) | package(rbs-capture-sck) | package(rbs-capture-avf) | package(rbs-capture-mf) | package(rbs-capture-wgc) | package(rbs-capture-pipewire) | package(rbs-audio-io-pipewire) | package(/^rbs-codec-/)'
