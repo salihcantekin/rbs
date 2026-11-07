@@ -4864,6 +4864,8 @@ dependencies = [
  "rbs-scene",
  "rbs-sources",
  "rbs-transport",
+ "rbs-vcam",
+ "rbs-vcam-test",
 ]
 
 [[package]]

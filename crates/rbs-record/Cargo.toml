@@ -24,11 +24,14 @@ rbs-filters = { path = "../rbs-filters" }
 rbs-codec = { path = "../rbs-codec" }
 rbs-mux = { path = "../rbs-mux" }
 rbs-transport = { path = "../rbs-transport" }
+rbs-vcam = { path = "../rbs-vcam" }
 
 [dev-dependencies]
 # Reference adapters of the capture and audio input ports (deterministic, no devices).
 rbs-capture-test = { path = "../rbs-capture-test" }
 rbs-audio-io-test = { path = "../rbs-audio-io-test" }
+# The in-process virtual camera (records what it takes).
+rbs-vcam-test = { path = "../rbs-vcam-test" }
 # The real AAC session over its fake engine (runs on every platform).
 rbs-codec-mf = { path = "../rbs-codec-mf", features = ["testing"] }
 

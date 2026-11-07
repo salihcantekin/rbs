@@ -156,8 +156,15 @@ impl Studio {
     pub fn node_name(&self, node: NodeId) -> Option<&str>;
     pub fn settings(&self) -> &StudioSettings;
     pub fn engine(&self) -> &Engine;
+    pub fn start_virtual_camera(&mut self, factory: &dyn VirtualCameraFactory,
+        settings: VirtualCameraSettings) -> Result<(), VcamError>; // ADR-0066
+    pub fn stop_virtual_camera(&mut self) -> bool;    // false when not sending
+    pub fn virtual_camera(&self) -> Option<VirtualCameraState>; // while sending
     pub fn shutdown(&mut self) -> (Vec<(OutputId, FinishReport)>, Vec<String>);
 }
+pub struct VirtualCameraSettings { pub width: u32, pub height: u32, pub rate: FrameRate } // ::new(w, h, rate)
+pub struct VirtualCameraState { pub config: VirtualCameraConfig,
+    pub stats: Arc<VirtualCameraNodeStats>, pub failure: Option<String> }
 impl Recording { pub fn studio(&self) -> &Studio; }
 // RecordError gains TooManyOutputs and OutputFinishing (ADR-0047; they replace ADR-0041's AlreadyRecording).
 // StartReport gains video_shared and audio_shared: the encoder ran already for another output.
@@ -228,6 +235,13 @@ Without audio (`audio: None`) the two audio partitions are not added: three work
 
 `Recording::start` is a studio without a preview, in a strict mode, with the recording's nodes added before the first apply: a binder problem that leaves out a source of the program scene fails the start (`Problems`) and a source the recording schedules (video and audio) that cannot be instantiated fails it (`Source`), both before any device opens (test `a_video_source_that_cannot_be_instantiated_fails_the_start_before_any_device_opens`). `finish` is `Studio::shutdown`; its `shutdown_errors` hold the draining apply's errors and the engine shutdown's.
 
+### Virtual camera (ADR-0066)
+
+- **Not an output.** The camera is none of the `MAX_OUTPUTS` outputs: it has no encoder or output partition and runs alongside recordings and streams without touching them. It shows the program compositor's canvas, whatever studio mode shows (ADR-0066 decision 5).
+- **Start.** `start_virtual_camera` fails with `InvalidConfig` while the camera already sends. It opens the session (`factory.open` with NV12, system memory, the settings' size and rate) on the calling control thread, so `NotInstalled` and the adapter's other refusals come back before anything is added. Then a `VirtualCameraNode` for the canvas size is added Active on `RENDER`, linked from the program compositor's "canvas", adopted and applied on a copy of the graph. An adoption or apply refusal is `Os { code: 0, .. }`, and the node is taken back (the session drops with it, on this thread).
+- **Running.** The node keeps the program compositor scheduled, so the render worker and the program's video sources run while the camera sends, even with no preview and no output. The node is not essential: its failure is kept in `VirtualCameraState::failure` (cleared when it runs again), never in `failure()` or an output's failure.
+- **Stop.** `stop_virtual_camera` removes the node with a plain apply, then takes it back. If the render partition still runs it, the take is queued in the pending takes, and `service` completes it. Either way the node, and with it the session whose drop joins the adapter's sender thread, is dropped on the control thread, never on `RENDER`. `shutdown` stops the camera first. Stopping never uninstalls the camera.
+
 ### Invariants
 
 1. Engine code names no adapter: `rbs-record` depends on ports, node crates, the scene and the engine only (P1), and selects by capability (P3).
@@ -258,6 +272,7 @@ Control-thread only; the graph's hot paths are the nodes' and keep their budgets
 
 ## Conformance tests
 
+- `crates/rbs-record/tests/vcam.rs` (one test, with `rbs-vcam-test`): a camera that is not installed fails the start and leaves nothing; while not sending, no node, render worker or camera thread; a second start fails; the camera is not an output and schedules the program on its own; a recording starts and stops while it sends and it keeps sending, frames in order; after stop no render worker and no camera thread (Linux lists threads by name).
 - `crates/rbs-record/tests/studio.rs` (same rig and clock driver as `record.rs`, shared in `tests/support`):
   - `recordings_start_and_stop_while_the_studio_keeps_running`: without a preview no render worker and no capture open while the meters run; two recordings in a row on one engine, each with its trailer and finished transport, the recording partitions stopped and video sources closed afterwards.
   - `a_recording_that_cannot_start_leaves_the_studio_running`: `NoAdapter` for a container without a muxer; an output that cannot open its destination fails with `Start` naming the output, nothing records, the studio runs, the next recording works.
