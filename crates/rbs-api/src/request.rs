@@ -640,6 +640,7 @@ pub const UI_METHODS: &[&str] = &[
     "ui.toolbar.set",
     "ui.toolbar.reset",
     "ui.theme.reload",
+    "ui.settings.open",
     "ui.command.list",
     "ui.command.run",
 ];
