@@ -148,6 +148,14 @@ impl AppearanceUi {
         }
     }
 
+    /// Checks the editor's draft again, against `file` (after the token file was
+    /// read again).
+    pub fn recheck(&mut self, file: &TokenFile) {
+        if let Some(ed) = &mut self.editor {
+            ed.problems = problems(file, &ed.draft);
+        }
+    }
+
     /// The list position of `id`.
     pub fn index_of(&self, id: &ThemeId) -> Option<usize> {
         self.entries.iter().position(|e| &e.id == id)
@@ -686,6 +694,30 @@ mod tests {
         assert!(ui.to_save().is_some());
         ui.cancel();
         assert!(ui.editor.is_none());
+    }
+
+    #[test]
+    fn reloading_lists_new_files_and_checks_the_draft_again() {
+        let (_d, data, file, mut ui, id) = setup("reload");
+        ui.selected = ui.index_of(&ThemeId::User(id));
+        assert!(ui.edit(&file));
+        assert!(ui.set_color(&file, "color.accent", "#c4262e"));
+        // A theme file added on disk shows after `ui.theme.reload` reads the files again.
+        {
+            let lock = data.try_lock().unwrap().unwrap();
+            data.themes()
+                .create(&lock, "Added", &ThemeBody::new(Base::Light))
+                .unwrap();
+        }
+        ui.editor.as_mut().unwrap().problems.clear();
+        ui.refresh(&data, &file);
+        ui.recheck(&file);
+        assert!(ui.entries.iter().any(|e| e.name == "Added"));
+        let ed = ui.editor.as_ref().expect("the draft stays open");
+        assert!(
+            !ed.problems.is_empty(),
+            "the draft is checked against the file again"
+        );
     }
 
     #[test]
