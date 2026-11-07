@@ -91,6 +91,14 @@ pub const LENGTHS: &[&str] = &[
     "size.settings.h",
     "step.nudge",
     "step.nudge-large",
+    "size.transition.between",
+    "size.transition.below",
+    "size.transition.min-picture",
+    "size.transition.min-h",
+    "size.transition.type",
+    "size.transition.type-min",
+    "size.transition.duration",
+    "size.transition.compact",
 ];
 
 /// Duration tokens every file defines (milliseconds).

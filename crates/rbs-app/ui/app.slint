@@ -2,7 +2,7 @@
 // crate: Slint has no recursive components, so Rust flattens each window's
 // layout tree into tab stacks and splitter handles with absolute positions.
 import { Theme, Tokens } from "tokens.slint";
-import { Button, IconButton, Icon, IconName, Icons, FocusRing, MenuItem as MenuRow, MenuSurface, EmptyState, Select, NumberField, KeyboardShortcutHint } from "components.slint";
+import { Button, IconButton, Icon, IconName, Icons, FocusRing, MenuItem as MenuRow, MenuSurface, EmptyState, Select, NumberField } from "components.slint";
 import { SettingsNavItem, SettingsNavGroup, SettingsHeader } from "settings.slint";
 import { Appearance, AppearanceSettings, ThemeOption, ThemeTokenRow } from "appearance.slint";
 import { Shortcuts, ShortcutsSettings, ShortcutRow, ShortcutChip } from "shortcuts.slint";
@@ -596,9 +596,14 @@ component TransitionGo inherits VerticalLayout {
             : @tr("Transition: put the preview scene on air ({})", Shell.transition-keys);
         clicked => { Studio.transition(); }
     }
-    if Shell.transition-keys != "": HorizontalLayout {
-        alignment: center;
-        KeyboardShortcutHint { keys: Shell.transition-keys; }
+    // The shortcut as small, quiet text under the button (the owner, 2026-11-07); the
+    // button's accessible name carries it too.
+    if Shell.transition-keys != "": Text {
+        text: Shell.transition-keys;
+        color: Theme.text-secondary;
+        font-size: Tokens.type-caption-size;
+        horizontal-alignment: center;
+        accessible-role: none;
     }
 }
 
@@ -627,15 +632,15 @@ component TransitionRail inherits Rectangle {
     // Below the pictures: type, duration and the button centred under the two
     // pictures, the position toggles at the right end behind a divider.
     // A narrow split keeps the type, the button and the position icons; the
-    // duration (disabled for Cut), the shortcut and the caption go first.
-    property <bool> compact: root.width < 600px;
+    // duration (disabled for Cut) and the caption go first.
+    property <bool> compact: root.width < Tokens.size-transition-compact;
     if below && compact: HorizontalLayout {
         padding-left: Tokens.space-2;
         padding-right: Tokens.space-2;
         spacing: Tokens.space-2;
         VerticalLayout {
             alignment: center;
-            TransitionChoice { min-width: 72px; }
+            TransitionChoice { min-width: Tokens.size-transition-type-min; }
         }
         VerticalLayout {
             alignment: center;
@@ -662,14 +667,16 @@ component TransitionRail inherits Rectangle {
         spacing: Tokens.space-2;
         VerticalLayout {
             alignment: center;
-            TransitionChoice { width: 112px; }
+            TransitionChoice { width: Tokens.size-transition-type; }
         }
         VerticalLayout {
             alignment: center;
-            TransitionDuration { width: 88px; }
+            TransitionDuration { width: Tokens.size-transition-duration; }
         }
         VerticalLayout {
             alignment: center;
+            // Below the pictures the shortcut is not shown: only the accessible name
+            // carries it (the owner, 2026-11-07).
             HorizontalLayout {
                 spacing: Tokens.space-2;
                 Button {
@@ -680,10 +687,6 @@ component TransitionRail inherits Rectangle {
                         ? @tr("Transition: put the preview scene on air")
                         : @tr("Transition: put the preview scene on air ({})", Shell.transition-keys);
                     clicked => { Studio.transition(); }
-                }
-                if Shell.transition-keys != "": VerticalLayout {
-                    alignment: center;
-                    KeyboardShortcutHint { keys: Shell.transition-keys; }
                 }
             }
         }

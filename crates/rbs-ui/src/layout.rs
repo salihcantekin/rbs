@@ -24,7 +24,8 @@ pub const MIN_PANE: f32 = 48.0;
 /// Share of the window a panel gets when it is moved to an edge.
 pub const EDGE_SHARE: f32 = 0.25;
 
-/// Width of the Transition rail between the two pictures (ADR-0064).
+/// Width of the Transition rail between the two pictures (ADR-0064). The rail's
+/// lengths are the built-in tokens `size.transition.*`; a test keeps them equal.
 pub const RAIL_BETWEEN: f32 = 156.0;
 
 /// Least height for the rail between the pictures; a shorter split puts it below.
@@ -35,7 +36,7 @@ pub const RAIL_BETWEEN_MIN_H: f32 = 240.0;
 pub const RAIL_BETWEEN_MIN_PICTURE: f32 = 160.0;
 
 /// Height of the Transition rail below the two pictures (ADR-0064).
-pub const RAIL_BELOW: f32 = 56.0;
+pub const RAIL_BELOW: f32 = 44.0;
 
 /// Where a studio split puts the Transition rail in studio mode (ADR-0064).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -1026,6 +1027,19 @@ fn flatten_studio(
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used)] // Tests fail by panicking.
 mod tests {
+    #[test]
+    fn the_rail_lengths_are_the_built_in_tokens() {
+        let t = crate::tokens::Tokens::built_in().unwrap();
+        for (name, v) in [
+            ("size.transition.between", RAIL_BETWEEN),
+            ("size.transition.below", RAIL_BELOW),
+            ("size.transition.min-h", RAIL_BETWEEN_MIN_H),
+            ("size.transition.min-picture", RAIL_BETWEEN_MIN_PICTURE),
+        ] {
+            assert_eq!(t.length.get(name), Some(&v), "{name}");
+        }
+    }
+
     use super::*;
     use crate::panel::id;
 
