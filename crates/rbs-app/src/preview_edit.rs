@@ -163,6 +163,17 @@ impl PreviewEdit {
         }
     }
 
+    /// The topmost source whose picture is under `point` (a right-click: nothing is
+    /// pressed or dragged).
+    pub fn source_at(&self, point: [f32; 2], canvas: [f32; 2], placed: &[Placed]) -> Option<i32> {
+        let view = self.view(canvas);
+        view.to_canvas(point)?;
+        let boxes: Vec<SourceBox> = placed.iter().map(|p| self.current(p)).collect();
+        transform::topmost_at(&view, &boxes, point)
+            .and_then(|i| placed.get(i))
+            .map(|p| p.id)
+    }
+
     /// The pointer moved to `point` with the button down.
     pub fn drag_to(&mut self, point: [f32; 2], canvas: [f32; 2]) -> Effect {
         let view = self.view(canvas);
