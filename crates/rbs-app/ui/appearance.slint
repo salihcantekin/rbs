@@ -64,6 +64,8 @@ export global Appearance {
     in property <[string]> unknown-tokens;
     in property <bool> can-save;
     in property <bool> changed;
+    // The theme being edited is used by a slot: its changes show in the windows.
+    in property <bool> editing-in-use;
     // The family the window uses now ("" the system font).
     in property <string> font-in-use;
     // A value typed in the editor and not yet confirmed (Enter or leaving the field):
@@ -435,7 +437,10 @@ component ThemeEditor inherits VerticalLayout {
         }
         EditorActions { horizontal-stretch: 0; }
     }
-    Hint { text: @tr("Changes show in every window as you make them. A change that breaks a rule is shown with its problem and not used."); }
+    if Appearance.editing-in-use: Hint { text: @tr("Changes show in every window as you make them. A change that breaks a rule is shown with its problem and not used."); }
+    if !Appearance.editing-in-use: SettingsNotice {
+        text: @tr("This theme is not in use, so the windows do not show its changes. Pick it under Theme in use to see them.");
+    }
     for p in Appearance.general-problems: Problem { text: p; }
     SettingRow {
         divider: false;
