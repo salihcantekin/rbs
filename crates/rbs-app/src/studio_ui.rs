@@ -220,6 +220,9 @@ pub struct StudioUi {
     switch_seq: u64,
     /// A scene collection switch the studio has not answered yet.
     switching: Option<Switching>,
+    /// The `seq` of a control API switch ([`Update::SwitchRequested`]) to answer with
+    /// the next [`Command::SetLibrary`] sent while no collection switch runs.
+    api_switch: Option<u64>,
 }
 
 /// A scene collection the studio is asked to run.
@@ -276,7 +279,7 @@ impl StudioUi {
                 at: meter::position(*db),
             })
             .collect::<Vec<_>>();
-        let ui = Self {
+        let mut ui = Self {
             host: None,
             state: 0,
             failure: String::new(),
@@ -357,6 +360,7 @@ impl StudioUi {
             collection_rows: Rc::new(VecModel::default()),
             switch_seq: 0,
             switching: None,
+            api_switch: None,
         };
         ui.refresh_tokens();
         ui.refresh_library();
@@ -2024,7 +2028,7 @@ impl StudioUi {
     }
 
     /// Reads the output profiles and scene collections for the menus again.
-    pub fn refresh_library(&self) {
+    pub fn refresh_library(&mut self) {
         let rows = |list: Vec<(EntryId, String)>, current: &EntryId| -> Vec<EntryRow> {
             list.into_iter()
                 .map(|(id, name)| EntryRow {
@@ -2034,10 +2038,36 @@ impl StudioUi {
                 })
                 .collect()
         };
+        let profiles = self.user.profiles();
+        let collections = self.user.collections();
+        // A control API switch is answered once nothing of it is left to do.
+        let answered = if self.switching.is_none() {
+            self.api_switch.take()
+        } else {
+            None
+        };
+        self.send(Command::SetLibrary {
+            profiles: api_library(&profiles, &self.user.profile_id),
+            collections: api_library(&collections, &self.user.collection_id),
+            answered,
+        });
         self.profile_rows
-            .set_vec(rows(self.user.profiles(), &self.user.profile_id));
+            .set_vec(rows(profiles, &self.user.profile_id));
         self.collection_rows
-            .set_vec(rows(self.user.collections(), &self.user.collection_id));
+            .set_vec(rows(collections, &self.user.collection_id));
+    }
+
+    /// The output profiles (`collection` false) or scene collections as last read,
+    /// for the File menu's pickers: `(name, id, in use)`, by name.
+    pub fn library_choices(&self, collection: bool) -> Vec<(String, String, bool)> {
+        let rows = if collection {
+            &self.collection_rows
+        } else {
+            &self.profile_rows
+        };
+        rows.iter()
+            .map(|r| (r.name.to_string(), r.id.to_string(), r.current))
+            .collect()
     }
 
     /// Refused, in words, while a recording or stream runs: `doing` is what would
@@ -2060,10 +2090,13 @@ impl StudioUi {
         }
         self.idle_for("switching output profiles")?;
         let result = self.user.switch_profile(&id);
+        // The studio gets the profile's settings and key account before the list
+        // that shows it in use.
+        if result.is_ok() {
+            self.profile_loaded();
+        }
         self.refresh_library();
-        result?;
-        self.profile_loaded();
-        Ok(())
+        result
     }
 
     /// Shows the output profile in use and hands its settings and stream key account
@@ -2107,10 +2140,11 @@ impl StudioUi {
         self.idle_for("switching output profiles")?;
         let id = self.user.new_profile(name, copy)?;
         let result = self.user.switch_profile(&id);
+        if result.is_ok() {
+            self.profile_loaded();
+        }
         self.refresh_library();
-        result?;
-        self.profile_loaded();
-        Ok(())
+        result
     }
 
     /// Output profile menu: renames the profile in use.
@@ -2319,6 +2353,7 @@ impl StudioUi {
                 self.state = 1;
                 self.send(Command::SetProfile(self.profile.clone()));
                 self.send(Command::SetStreamProfile(self.stream.clone()));
+                self.refresh_library();
                 self.kind_list = kinds;
                 let rows: Vec<KindData> = self
                     .kind_list
@@ -2446,6 +2481,16 @@ impl StudioUi {
             // `rbs-cli token` over local IPC made or revoked a token; the control
             // thread gave it to the server already. Only the list shown changes here.
             Update::TokensChanged => self.read_tokens(false),
+            // `profile.switch` or `collection.switch`: the caller switches, since a
+            // collection switch needs the window's preview.
+            Update::SwitchRequested {
+                seq,
+                collection,
+                id,
+            } => {
+                self.api_switch = Some(seq);
+                out.switch = Some((collection, id));
+            }
             Update::Stats(stats) => {
                 let rows: Vec<StatRow> = stat_lines(&stats)
                     .into_iter()
@@ -2669,6 +2714,25 @@ impl StudioUi {
 pub struct Applied {
     pub error: Option<String>,
     pub preview: Option<rbs_gpu::share::PreviewEndpoint>,
+    /// A control API client asked to switch: scene collections (`true`) or output
+    /// profiles to the entry with this id. The caller switches as the File menu
+    /// does and then calls [`StudioUi::refresh_library`], which answers the host.
+    pub switch: Option<(bool, String)>,
+}
+
+/// A library as `profile.list` and `collection.list` show it.
+fn api_library(list: &[(EntryId, String)], current: &EntryId) -> rbs_api::types::Library {
+    rbs_api::types::Library {
+        entries: list
+            .iter()
+            .map(|(id, name)| rbs_api::types::LibraryEntry {
+                id: id.as_str().to_owned(),
+                name: name.clone(),
+            })
+            .collect(),
+        current: current.as_str().to_owned(),
+        pending: false,
+    }
 }
 
 fn file_name(p: &Path) -> String {
@@ -2966,6 +3030,40 @@ mod tests {
         // The server being typed is still there to confirm.
         ui.settings_closed();
         assert_eq!(ui.stream.server, "rtmp://127.0.0.1/typing");
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn a_control_api_profile_switch_is_answered_once_the_profile_is_loaded() {
+        let (mut ui, d) = ui("api-switch");
+        let id = ui.user.new_profile("Live", false).unwrap();
+        let out = ui.apply(Update::SwitchRequested {
+            seq: 7,
+            collection: false,
+            id: id.as_str().to_owned(),
+        });
+        assert_eq!(out.switch, Some((false, id.as_str().to_owned())));
+        assert_eq!(ui.api_switch, Some(7));
+        // Refused while live: still answered, and the one in use stays.
+        ui.st_state = st_state::LIVE;
+        assert!(ui.switch_profile(id.as_str()).is_err());
+        ui.refresh_library();
+        assert_eq!(ui.api_switch, None);
+        assert_ne!(ui.user.profile_id, id);
+        ui.st_state = st_state::OFF;
+        ui.apply(Update::SwitchRequested {
+            seq: 8,
+            collection: false,
+            id: id.as_str().to_owned(),
+        });
+        ui.switch_profile(id.as_str()).unwrap();
+        assert_eq!(ui.api_switch, None);
+        assert_eq!(ui.user.profile_id, id);
+        assert!(
+            ui.library_choices(false)
+                .iter()
+                .any(|(name, _, current)| name == "Live" && *current)
+        );
         let _ = std::fs::remove_dir_all(&d);
     }
 

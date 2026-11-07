@@ -28,5 +28,6 @@ Specs are the current contracts of RBS. Code must match them; a PR that changes 
 | [crash-resilience.md](crash-resilience.md) | Draft | `rbs-crash` (panic boundary, crash reports, unclean-exit detection), `rbs-app` (`entry.rs`, `clippy.toml`, studio host recovery; ADR-0055) |
 | [testing-strategy.md](testing-strategy.md) | Draft | CI, conformance suites |
 | [ui-design-system.md](ui-design-system.md) | Draft | `rbs-ui-tokens`, `rbs-app` (planned) |
+| [themes.md](themes.md) | Draft | `rbs-ui` (`tokens`), `rbs-user-data`, `rbs-app` (user themes, Settings › Appearance; ADR-0057) |
 
 New specs start from [template.md](template.md).

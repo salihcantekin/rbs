@@ -2,6 +2,8 @@
 //! share.
 //!
 //! - [`studio_host`]: the studio's control thread (ADR-0041 decision 7).
+//! - [`background`]: keeping RBS running after the main window closes (ADR-0056);
+//!   `win` (Windows): its tray icon and second-launch event.
 //! - [`edit_history`]: the undo history of scene edits (U4).
 //! - [`platform`]: the platform's adapters (the composition root's list, P1).
 //! - [`popups`]: the popups Slint draws inside a window, as rectangles.
@@ -18,6 +20,7 @@
 //! - `native::MeterBridgeLayer` (macOS): audio meters as Core Animation layers, so meter
 //!   updates do not make the toolkit redraw the window (ADR-0035).
 
+pub mod background;
 pub mod canvas_profile;
 pub mod edit_history;
 pub mod encoder_form;
@@ -32,3 +35,5 @@ pub mod stream_key;
 pub mod stream_profile;
 pub mod studio_host;
 pub mod user_session;
+#[cfg(windows)]
+pub mod win;

@@ -28,6 +28,7 @@ use std::path::PathBuf;
 use std::rc::Rc;
 use std::time::{Duration, Instant};
 
+use rbs_app::background::{self, Action, OnClose, Request};
 use rbs_app::studio_host;
 use rbs_ui::layout::{Axis, Edge, Rect};
 use rbs_ui::session::CommandError;
@@ -141,11 +142,23 @@ struct App {
     error: Option<UiError>,
     save_due: bool,
     exiting: bool,
+    /// Every window is hidden by Close with Keep RBS running (ADR-0056).
+    hidden: bool,
+    /// What closing the main window does (`app.toml`, ADR-0056).
+    bg: background::AppSettings,
+    /// The studio's preview, kept to connect again when the hidden window shows.
+    preview_endpoint: Option<rbs_gpu::share::PreviewEndpoint>,
+    /// What the Dock badge or tray icon shows now; changed only when it differs.
+    bg_state: background::LiveState,
+    /// The tray icon and the second-launch event while Keep RBS running is set.
+    #[cfg(windows)]
+    tray: Option<(rbs_app::win::Tray, Option<rbs_app::win::ShowEvent>)>,
     demo_since: Option<Instant>,
     studio: studio_ui::StudioUi,
     /// The Settings window while it is open (U17).
     settings: Option<SettingsWindow>,
     menus: MenuModels,
+    toolbar_model: Rc<VecModel<ToolbarData>>,
     /// End stream was picked in the menu bar: the frame asks first (U4).
     confirm_end: bool,
 }
@@ -336,6 +349,14 @@ impl App {
                     self.command(LayoutCommand::OpenPanel(id), Origin::Command);
                 }
             }
+            Run::Profile(id) => {
+                let done = self.studio.switch_profile(&id);
+                self.library_done(done);
+            }
+            Run::Collection(id) => {
+                let done = self.studio.switch_collection(&id, close_preview);
+                self.library_done(done);
+            }
             Run::Layout(c) => self.command(c, Origin::Command),
             Run::GoLive => self.studio.go_live(),
             Run::AskEndStream => self.confirm_end = true,
@@ -367,8 +388,8 @@ impl App {
             .workspace()
             .windows
             .get(window)
-            .and_then(|w| w.layout())
-            .and_then(|l| l.flatten(area).handles.get(handle).cloned())
+            .and_then(|w| w.flatten(area).handles.into_iter().nth(handle))
+            .map(|h| h.handle)
         else {
             return;
         };
@@ -437,6 +458,9 @@ thread_local! {
     /// The shell's context, for updates the studio's control thread hands to the UI
     /// thread (`slint::invoke_from_event_loop` takes only `Send` closures).
     static CTX: RefCell<Option<Ctx>> = const { RefCell::new(None) };
+    /// A hidden main window can be brought back (ADR-0056 decision 6): set once the
+    /// platform's way back is in place.
+    static WAY_BACK: Cell<bool> = const { Cell::new(false) };
 }
 
 /// Hands an update from the studio's control thread to the UI thread.
@@ -516,6 +540,11 @@ impl Ctx {
         live.elapsed_secs = elapsed.as_secs();
         let text: slint::SharedString = live.duration_text().into();
         app.session.set_live(live);
+        // The tray tooltip's time, only while no window shows it (ADR-0056 decision 5).
+        #[cfg(windows)]
+        if app.hidden {
+            Self::sync_tray_text(&mut app);
+        }
         app.main.global::<Shell>().set_live_duration(text.clone());
         for f in &app.floats {
             f.window.global::<Shell>().set_live_duration(text.clone());
@@ -537,7 +566,21 @@ impl Ctx {
                 });
             }
             if let Some(endpoint) = applied.preview {
-                ctx.connect_preview(endpoint);
+                app.preview_endpoint = Some(endpoint.clone());
+                // A hidden window connects when it shows again (ADR-0056 decision 5).
+                if !app.hidden {
+                    ctx.connect_preview(endpoint);
+                }
+            }
+            if let Some((collection, id)) = applied.switch {
+                let done = if collection {
+                    app.studio.switch_collection(&id, close_preview)
+                } else {
+                    app.studio.switch_profile(&id)
+                };
+                // Answers the host, also when the switch was refused.
+                app.studio.refresh_library();
+                app.library_done(done);
             }
         });
     }
@@ -753,6 +796,200 @@ impl Ctx {
         }
     }
 
+    /// The live state on the Dock tile while no window shows it, and a problem added
+    /// to it (ADR-0056 decisions 7 and 8). Changes only what differs.
+    fn sync_background(app: &mut App) {
+        let state = background::LiveState {
+            streaming: app.studio.streaming_for().is_some(),
+            recording: app.studio.recording_for().is_some(),
+            problem: app.hidden && app.error.is_some(),
+        };
+        if state == app.bg_state {
+            return;
+        }
+        let new_problem = state.problem && !app.bg_state.problem;
+        app.bg_state = state;
+        #[cfg(target_os = "macos")]
+        {
+            let badge = background::dock_badge(state).and_then(|t| std::ffi::CString::new(t).ok());
+            rbs_app::native::set_badge(badge.as_deref());
+            if new_problem {
+                rbs_app::native::request_attention();
+            }
+        }
+        #[cfg(not(target_os = "macos"))]
+        let _ = new_problem;
+        #[cfg(windows)]
+        Self::sync_tray_text(app);
+    }
+
+    /// Makes or drops the tray icon and the second-launch event as the setting asks
+    /// (ADR-0056 decision 9: nothing exists while Quit RBS is set).
+    #[cfg(windows)]
+    fn sync_tray(app: &mut App) {
+        let want = app.bg.on_close == OnClose::KeepRunning && Self::way_back();
+        match (&app.tray, want) {
+            (None, true) => {
+                let (status, tooltip) = Self::tray_text(app);
+                match rbs_app::win::Tray::new(app.bg_state, &status, &tooltip) {
+                    Ok(tray) => {
+                        let event = rbs_app::win::ShowEvent::create(show_from_system);
+                        app.tray = Some((tray, event));
+                    }
+                    Err(e) => {
+                        // No way back: Close quits, and the setting's hint says so.
+                        studio_ui::log(&format!("tray icon: {e}; closing the window quits"));
+                        WAY_BACK.with(|w| w.set(false));
+                    }
+                }
+            }
+            (Some(_), false) => app.tray = None,
+            _ => {}
+        }
+    }
+
+    /// The tray menu's status line and the icon's tooltip, in words (U4).
+    #[cfg(windows)]
+    fn tray_text(app: &App) -> (String, String) {
+        let clock = |d: Duration| {
+            let s = d.as_secs();
+            format!("{:02}:{:02}:{:02}", s / 3600, s / 60 % 60, s % 60)
+        };
+        let mut status = match (app.studio.streaming_for(), app.studio.recording_for()) {
+            (Some((d, host, _)), _) => format!("Live on {host}, {}", clock(d)),
+            (None, Some((d, _))) => format!("Recording, {}", clock(d)),
+            (None, None) => "Not live".to_owned(),
+        };
+        if app.bg_state.problem {
+            status.push_str(" - a problem needs your attention");
+        }
+        let tooltip = format!("RBS: {status}");
+        (status, tooltip)
+    }
+
+    #[cfg(windows)]
+    fn sync_tray_text(app: &mut App) {
+        let (status, tooltip) = Self::tray_text(app);
+        let state = app.bg_state;
+        if let Some((tray, _)) = &mut app.tray {
+            tray.set_state(state, &status, &tooltip);
+        }
+    }
+
+    /// Whether a hidden main window can be brought back on this platform now
+    /// (ADR-0056 decision 6); without it, Close quits.
+    fn way_back() -> bool {
+        WAY_BACK.with(Cell::get)
+    }
+
+    /// A Close or a Quit (ADR-0056 decision 3). Returns what the close handler answers
+    /// the toolkit.
+    fn request(&self, request: Request) -> slint::CloseRequestResponse {
+        let Ok(mut app) = self.app.try_borrow_mut() else {
+            // Borrowed by a callback in progress: quit as before ADR-0056.
+            let _ = slint::quit_event_loop();
+            return slint::CloseRequestResponse::HideWindow;
+        };
+        let live = app.studio.st_state != studio_ui::st_state::OFF;
+        match background::on_request(&app.bg, request, live, Self::way_back()) {
+            Action::Hide { notice: true } => {
+                // Said once, in the frame, before the windows go (OK hides them).
+                let kind = if cfg!(target_os = "macos") { 1 } else { 2 };
+                app.main.global::<Shell>().set_background_notice(kind);
+                slint::CloseRequestResponse::KeepWindowShown
+            }
+            Action::Hide { notice: false } => {
+                self.hide_all(&mut app);
+                slint::CloseRequestResponse::KeepWindowShown
+            }
+            Action::AskEndStream => {
+                // Ending a stream cannot be undone: the frame asks first (U4), in a
+                // window the user can see.
+                if app.hidden {
+                    self.show_all(&mut app);
+                }
+                app.main.window().set_minimized(false);
+                app.main.global::<Shell>().set_quit_confirm(true);
+                slint::CloseRequestResponse::KeepWindowShown
+            }
+            Action::Quit => {
+                app.exiting = true;
+                if app.save_due {
+                    app.persist_now();
+                }
+                let _ = app.main.hide();
+                drop(app);
+                let _ = slint::quit_event_loop();
+                slint::CloseRequestResponse::HideWindow
+            }
+        }
+    }
+
+    /// Hides every RBS window and keeps running (ADR-0056 decisions 3 and 5): Settings
+    /// closes as by its own close button, floating windows hide without a layout
+    /// change, the preview unsubscribes and the meters stop.
+    fn hide_all(&self, app: &mut App) {
+        if let Some(w) = app.settings.take() {
+            let _ = w.hide();
+            app.studio.settings_closed();
+        }
+        app.main.global::<Shell>().set_background_notice(0);
+        for f in &app.floats {
+            let _ = f.window.hide();
+        }
+        let _ = app.main.hide();
+        #[cfg(any(target_os = "macos", windows))]
+        {
+            preview::close();
+            app.studio.preview_ready = false;
+        }
+        self.meter_timer.stop();
+        app.hidden = true;
+        #[cfg(target_os = "macos")]
+        rbs_app::native::set_hidden(true);
+    }
+
+    /// Shows the windows hidden by [`Self::hide_all`] again and connects the preview.
+    fn show_all(&self, app: &mut App) {
+        if !app.hidden {
+            let _ = app.main.show();
+            return;
+        }
+        app.hidden = false;
+        #[cfg(target_os = "macos")]
+        rbs_app::native::set_hidden(false);
+        let _ = app.main.show();
+        for f in &app.floats {
+            let _ = f.window.show();
+        }
+        if let Some(endpoint) = app.preview_endpoint.clone() {
+            self.connect_preview(endpoint);
+        }
+        // The views catch up on the next turn of the event loop.
+        self.update(|_| {});
+    }
+
+    /// The General section's setting (ADR-0056 decision 1).
+    fn push_general(app: &App) {
+        let platform = if cfg!(target_os = "macos") {
+            0
+        } else if cfg!(windows) {
+            1
+        } else {
+            2
+        };
+        let on_close = i32::from(app.bg.on_close == OnClose::KeepRunning);
+        let push = |g: Studio<'_>| {
+            g.set_platform(platform);
+            g.set_on_close(on_close);
+            g.set_way_back(Self::way_back());
+        };
+        push(app.main.global::<Studio>());
+        if let Some(w) = &app.settings {
+            push(w.global::<Studio>());
+        }
+    }
+
     fn sync(&self) {
         let Ok(mut app) = self.app.try_borrow_mut() else {
             return;
@@ -765,9 +1002,19 @@ impl Ctx {
             return;
         }
         self.sync_live(&mut app);
+        #[cfg(windows)]
+        Self::sync_tray(&mut app);
+        Self::sync_background(&mut app);
+        // Nothing to draw while hidden; the windows catch up when they show (U5).
+        if app.hidden {
+            self.meter_timer.stop();
+            return;
+        }
+        Self::push_general(&app);
 
         // Main window.
-        let (stacks, handles) = view::window_view(0, app.session.workspace().main(), app.area(0));
+        let (stacks, handles) =
+            view::window_view(0, &app.session.workspace().windows[0], app.area(0));
         app.main_models.update(stacks, handles);
 
         self.sync_floats(&mut app);
@@ -788,6 +1035,21 @@ impl Ctx {
         }
         let values = menu_bar::values(&app.shown());
         app.menus.update(values);
+        let (tools, toolbar_visible, toolbar_space) = menu_bar::toolbar(&app.shown());
+        set_rows(
+            &app.toolbar_model,
+            tools
+                .into_iter()
+                .map(|t| ToolbarData {
+                    id: t.id.into(),
+                    title: t.title.into(),
+                    kind: t.kind as i32,
+                    enabled: t.enabled,
+                    checked: t.checked,
+                    live: t.live,
+                })
+                .collect(),
+        );
         let ws = app.session.workspace();
         let live = app.session.live();
         let (toast_kind, toast_subject) = match &app.toast {
@@ -802,6 +1064,7 @@ impl Ctx {
             None => (0, String::new()),
         };
         let panels = ModelRc::from(app.panels_model.clone());
+        let toolbar = ModelRc::from(app.toolbar_model.clone());
         let workspaces = ModelRc::from(app.workspaces_model.clone());
         let push = |g: Shell<'_>| {
             g.set_live_state(view::live_code(live));
@@ -819,6 +1082,9 @@ impl Ctx {
             g.set_error_kind(error_kind);
             g.set_error_detail(error_detail.as_str().into());
             g.set_end_stream_confirm(app.confirm_end);
+            g.set_toolbar(toolbar.clone());
+            g.set_toolbar_visible(toolbar_visible);
+            g.set_toolbar_has_space(toolbar_space);
         };
         push(app.main.global::<Shell>());
         app.menus.push(&app.main.global::<Menus>());
@@ -911,7 +1177,8 @@ impl Ctx {
             let Some(layout) = app.session.workspace().windows[w].layout() else {
                 continue;
             };
-            let (stacks, handles) = view::window_view(w, layout, app.area(w));
+            let (stacks, handles) =
+                view::window_view(w, &app.session.workspace().windows[w], app.area(w));
             slot.models.update(stacks, handles);
             slot.window.set_window(w as i32);
             slot.window.set_panel_names(view::panel_names(layout));
@@ -1024,9 +1291,7 @@ fn install(g: &Shell<'_>, ctx: &Ctx) {
         if let Some(id) = panel(&id)
             && let Some((w, s, _)) = app.session.workspace().find(&id)
         {
-            let count = app.session.workspace().windows[w]
-                .layout()
-                .map_or(0, |l| l.stack_count());
+            let count = app.session.workspace().windows[w].stack_count();
             if count > 1 {
                 let c = LayoutCommand::MoveToStack {
                     panel: id,
@@ -1376,6 +1641,20 @@ fn install_studio(g: &Studio<'_>, ctx: &Ctx) {
     on!(on_set_canvas_rate, |app, i: i32| {
         app.studio.set_canvas_rate(i, close_preview);
     });
+    // Settings, General (ADR-0056 decision 1): takes effect at once.
+    on!(on_set_on_close, |app, i: i32| {
+        let on_close = if i == 1 {
+            OnClose::KeepRunning
+        } else {
+            OnClose::Quit
+        };
+        if on_close.supported() && app.bg.on_close != on_close {
+            app.bg.on_close = on_close;
+            if let Err(e) = background::save(&app.config, &app.bg) {
+                app.error = Some(UiError::Other(format!("The setting was not saved: {e}")));
+            }
+        }
+    });
     on!(on_set_rc_enabled, |app, on: bool| {
         app.studio.set_remote_enabled(on);
     });
@@ -1486,6 +1765,14 @@ fn install_studio(g: &Studio<'_>, ctx: &Ctx) {
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let config = config::config_dir();
+    // A second launch while RBS keeps running brings that RBS forward and ends here
+    // (ADR-0056 decision 6).
+    #[cfg(windows)]
+    if background::load(&config).0.on_close == OnClose::KeepRunning
+        && rbs_app::win::signal_running()
+    {
+        return Ok(());
+    }
     // Crash reports and the running marker (ADR-0055 decisions 4 and 5): a report for
     // every panic on the UI thread, and a notice when the last session ended badly.
     rbs_crash::report_panics_on_this_thread();
@@ -1508,22 +1795,28 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     run(config, notice)
 }
 
-/// The system asked the app to quit (macOS `terminate:`): closes the main window as
-/// its close button does, once AppKit's call has returned.
-#[cfg(target_os = "macos")]
+/// The system asked the app to quit (macOS `terminate:`, the tray menu's Quit RBS on
+/// Windows): Quit (ADR-0056 decision 3), once the system's call has returned.
+#[cfg(any(target_os = "macos", windows))]
 fn quit_from_system() {
     let _ = entry::invoke(|| {
-        // The window handle only: the close handler borrows the app itself.
-        let main = CTX.with(|c| {
-            let ctx = c.borrow().clone()?;
-            let app = ctx.app.try_borrow().ok()?;
-            Some(app.main.as_weak())
-        });
-        if let Some(main) = main.and_then(|w| w.upgrade()) {
-            // The question while live must be visible.
-            main.window().set_minimized(false);
-            main.window()
-                .dispatch_event(slint::platform::WindowEvent::CloseRequested);
+        let ctx = CTX.with(|c| c.borrow().clone());
+        if let Some(ctx) = ctx {
+            let _ = ctx.request(Request::Quit);
+        }
+    });
+}
+
+/// The Dock icon or Cmd+Tab (macOS), the tray icon or a second launch (Windows) asked
+/// for the main window (ADR-0056 decision 6), once the system's call has returned.
+#[cfg(any(target_os = "macos", windows))]
+fn show_from_system() {
+    let _ = entry::invoke(|| {
+        let ctx = CTX.with(|c| c.borrow().clone());
+        if let Some(ctx) = ctx
+            && let Ok(mut app) = ctx.app.try_borrow_mut()
+        {
+            ctx.show_all(&mut app);
         }
     });
 }
@@ -1559,7 +1852,10 @@ fn run(config: PathBuf, notice: Option<String>) -> Result<(), Box<dyn std::error
         &config,
         std::sync::Arc::new(|why| deliver(studio_host::Update::Error(why))),
     );
-    let user_notes = user.notes.clone();
+    let mut user_notes = user.notes.clone();
+    // What closing the main window does (ADR-0056); a bad file means the default.
+    let (bg, bg_note) = background::load(&config);
+    user_notes.extend(bg_note);
     let first_canvas = rbs_app::user_session::first_canvas(&collection);
     let autosave = user.collection_saver();
     let key_account = rbs_app::stream_key::account(user.profile_id.as_str());
@@ -1616,8 +1912,15 @@ fn run(config: PathBuf, notice: Option<String>) -> Result<(), Box<dyn std::error
             error,
             save_due: false,
             exiting: false,
+            hidden: false,
+            bg,
+            preview_endpoint: None,
+            bg_state: background::LiveState::default(),
+            #[cfg(windows)]
+            tray: None,
             settings: None,
             menus: MenuModels::default(),
+            toolbar_model: Rc::new(VecModel::default()),
             confirm_end: false,
             demo_since: demo_live.then(Instant::now),
             studio: studio_ui::StudioUi::new(&studio_config, keys.as_ref(), user, first_canvas),
@@ -1698,24 +2001,33 @@ fn run(config: PathBuf, notice: Option<String>) -> Result<(), Box<dyn std::error
         });
     }
 
-    // Closing the main window ends the app: floating windows close with it and
-    // their closing is not a layout change.
+    // Closing the main window quits, or hides every window and keeps running
+    // (ADR-0056 decision 3). Floating windows close or hide with it; neither is a
+    // layout change.
     {
         let ctx = ctx.clone();
-        entry::on_close_requested(main.window(), move || {
-            if let Ok(mut app) = ctx.app.try_borrow_mut() {
-                // Ending a stream cannot be undone: the frame asks first (U4).
-                if app.studio.st_state != studio_ui::st_state::OFF {
-                    app.main.global::<Shell>().set_quit_confirm(true);
-                    return slint::CloseRequestResponse::KeepWindowShown;
+        entry::on_close_requested(main.window(), move || ctx.request(Request::Close));
+    }
+    {
+        let ctx = ctx.clone();
+        main.global::<Shell>().on_close_main(move || {
+            entry::guard(|| {
+                let _ = ctx.request(Request::Close);
+            });
+        });
+    }
+    {
+        let ctx = ctx.clone();
+        main.global::<Shell>().on_background_notice_ok(move || {
+            entry::guard(|| {
+                if let Ok(mut app) = ctx.app.try_borrow_mut() {
+                    app.bg.background_notice_shown = true;
+                    if let Err(e) = background::save(&app.config, &app.bg) {
+                        studio_ui::log(&format!("app.toml: {e}"));
+                    }
+                    ctx.hide_all(&mut app);
                 }
-                app.exiting = true;
-                if app.save_due {
-                    app.persist_now();
-                }
-            }
-            let _ = slint::quit_event_loop();
-            slint::CloseRequestResponse::HideWindow
+            });
         });
     }
     {
@@ -1752,8 +2064,25 @@ fn run(config: PathBuf, notice: Option<String>) -> Result<(), Box<dyn std::error
         eprintln!("rbs: Quit ends the app without closing the studio first");
     }
 
-    #[allow(clippy::disallowed_methods)] // The one event loop of the app.
-    main.run()?;
+    // The Dock icon and Cmd+Tab bring a hidden main window back (ADR-0056 decision 6);
+    // without that way back, Close quits.
+    #[cfg(target_os = "macos")]
+    WAY_BACK.with(|w| w.set(rbs_app::native::route_show(show_from_system)));
+    // Windows: the tray icon is the way back, made while Keep RBS running is set;
+    // `sync_tray` clears this when it cannot be made.
+    #[cfg(windows)]
+    {
+        rbs_app::win::install_handlers(show_from_system, quit_from_system);
+        WAY_BACK.with(|w| w.set(true));
+    }
+    if !WAY_BACK.with(Cell::get) && OnClose::KeepRunning.supported() {
+        eprintln!("rbs: no way back to a hidden window here; closing the window quits");
+    }
+
+    // Hiding every window keeps the event loop (ADR-0056 decision 4); only Quit ends it.
+    main.show()?;
+    slint::run_event_loop_until_quit()?;
+    let _ = main.hide();
     // The layer's frames go back before the studio and its publisher stop.
     #[cfg(any(target_os = "macos", windows))]
     preview::close();

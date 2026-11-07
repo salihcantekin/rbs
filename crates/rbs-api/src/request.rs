@@ -10,7 +10,7 @@ use crate::event::Topic;
 use crate::scope::{Scope, ScopeSet};
 use crate::types::ItemStyle;
 use crate::types::{
-    Canvas, CaptureTarget, OutputProfile, RecordState, RecordingProfile, SeqMap, Settings,
+    Canvas, CaptureTarget, Library, OutputProfile, RecordState, RecordingProfile, SeqMap, Settings,
     Snapshot, SourceInfo, SourceKind, StreamSettingsPatch, StreamState, StudioInfo,
 };
 
@@ -97,7 +97,7 @@ pub struct SetItemStyle {
     pub style: ItemStyle,
 }
 
-/// `item.set_crop` (protocol 1.4, ADR-0058): the source pixels cut from each edge of
+/// `item.set_crop` (protocol 1.5, ADR-0058): the source pixels cut from each edge of
 /// an item's picture, on the item's layout on the studio's canvas.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -136,6 +136,13 @@ pub struct RecordStartToFile {
     pub profile: String,
     /// The file, absolute; refused with `file_exists` if it exists.
     pub path: String,
+}
+
+/// `profile.switch` and `collection.switch` (protocol 1.4).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EntryRef {
+    /// The entry's id (`profile.list`, `collection.list`).
+    pub id: String,
 }
 
 /// `settings.set`: the sections given replace the current ones.
@@ -201,7 +208,7 @@ pub enum Command {
     SourceDelete(SourceRef),
     /// `item.set_style` (protocol 1.3).
     ItemSetStyle(SetItemStyle),
-    /// `item.set_crop` (protocol 1.4).
+    /// `item.set_crop` (protocol 1.5).
     ItemSetCrop(SetItemCrop),
     /// `edit.undo`.
     EditUndo,
@@ -227,6 +234,14 @@ pub enum Command {
     SettingsGet,
     /// `settings.set`.
     SettingsSet(SettingsPatch),
+    /// `profile.list` (protocol 1.4).
+    ProfileList,
+    /// `profile.switch` (protocol 1.4).
+    ProfileSwitch(EntryRef),
+    /// `collection.list` (protocol 1.4).
+    CollectionList,
+    /// `collection.switch` (protocol 1.4).
+    CollectionSwitch(EntryRef),
     /// `events.subscribe`: answered on the control thread with the `seq` of the topics'
     /// state keys, read after the subscriber mask was set. The target never sees it.
     EventsSubscribe(Subscribe),
@@ -261,6 +276,10 @@ impl Command {
             Command::StreamStatus => "stream.status",
             Command::SettingsGet => "settings.get",
             Command::SettingsSet(_) => "settings.set",
+            Command::ProfileList => "profile.list",
+            Command::ProfileSwitch(_) => "profile.switch",
+            Command::CollectionList => "collection.list",
+            Command::CollectionSwitch(_) => "collection.switch",
             Command::EventsSubscribe(_) => "events.subscribe",
             Command::TokensList => "tokens.list",
             Command::TokensCreate(_) => "tokens.create",
@@ -336,6 +355,10 @@ pub const METHODS: &[MethodInfo] = &[
     m("stream.status", Some(Scope::Read)),
     m("settings.get", Some(Scope::Admin)),
     m("settings.set", Some(Scope::Admin)),
+    m("profile.list", Some(Scope::Read)),
+    m("profile.switch", Some(Scope::Admin)),
+    m("collection.list", Some(Scope::Read)),
+    m("collection.switch", Some(Scope::Control)),
     m("events.subscribe", Some(Scope::Read)),
     m("events.unsubscribe", Some(Scope::Read)),
     m("tokens.list", Some(Scope::Tokens)),
@@ -438,6 +461,14 @@ enum WireRequest {
     SettingsGet(Empty),
     #[serde(rename = "settings.set")]
     SettingsSet(SettingsPatch),
+    #[serde(rename = "profile.list")]
+    ProfileList(Empty),
+    #[serde(rename = "profile.switch")]
+    ProfileSwitch(EntryRef),
+    #[serde(rename = "collection.list")]
+    CollectionList(Empty),
+    #[serde(rename = "collection.switch")]
+    CollectionSwitch(EntryRef),
     #[serde(rename = "events.subscribe")]
     EventsSubscribe(Subscribe),
     #[serde(rename = "events.unsubscribe")]
@@ -477,6 +508,10 @@ impl From<WireRequest> for Request {
             WireRequest::StreamStatus(_) => Request::Command(C::StreamStatus),
             WireRequest::SettingsGet(_) => Request::Command(C::SettingsGet),
             WireRequest::SettingsSet(p) => Request::Command(C::SettingsSet(p)),
+            WireRequest::ProfileList(_) => Request::Command(C::ProfileList),
+            WireRequest::ProfileSwitch(p) => Request::Command(C::ProfileSwitch(p)),
+            WireRequest::CollectionList(_) => Request::Command(C::CollectionList),
+            WireRequest::CollectionSwitch(p) => Request::Command(C::CollectionSwitch(p)),
             WireRequest::EventsSubscribe(p) => Request::Command(C::EventsSubscribe(p)),
             WireRequest::TokensList(_) => Request::Command(C::TokensList),
             WireRequest::TokensCreate(p) => Request::Command(C::TokensCreate(p)),
@@ -513,6 +548,10 @@ impl From<Request> for WireRequest {
                 C::StreamStatus => WireRequest::StreamStatus(Empty {}),
                 C::SettingsGet => WireRequest::SettingsGet(Empty {}),
                 C::SettingsSet(p) => WireRequest::SettingsSet(p),
+                C::ProfileList => WireRequest::ProfileList(Empty {}),
+                C::ProfileSwitch(p) => WireRequest::ProfileSwitch(p),
+                C::CollectionList => WireRequest::CollectionList(Empty {}),
+                C::CollectionSwitch(p) => WireRequest::CollectionSwitch(p),
                 C::EventsSubscribe(p) => WireRequest::EventsSubscribe(p),
                 C::TokensList => WireRequest::TokensList(Empty {}),
                 C::TokensCreate(p) => WireRequest::TokensCreate(p),
@@ -681,6 +720,8 @@ pub enum Response {
     StreamStatus(Snapshot<StreamState>),
     /// `settings.get`, `settings.set`.
     Settings(Snapshot<Settings>),
+    /// `profile.list`, `collection.list` (protocol 1.4).
+    Library(Library),
     /// `events.subscribe`.
     Subscribed(Subscribed),
     /// `tokens.list`.
@@ -688,6 +729,7 @@ pub enum Response {
     /// `tokens.create`.
     TokenCreated(TokenCreated),
     /// Methods with nothing to return: `source.delete`, `edit.undo`, `edit.redo`,
-    /// `record.stop`, `stream.stop`, `events.unsubscribe`, `tokens.revoke`.
+    /// `record.stop`, `stream.stop`, `events.unsubscribe`, `tokens.revoke`,
+    /// `profile.switch`, `collection.switch`.
     Done(Empty),
 }
