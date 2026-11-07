@@ -82,7 +82,12 @@ pub enum LayoutCommand {
         delta: f32,
         /// Undo group, for example one per pointer drag.
         group: Option<u64>,
+        /// The window was laid out with the canvas in studio mode (ADR-0064).
+        studio_mode: bool,
     },
+    /// Put the centre's Transition rail between or below the pictures
+    /// (`ui.layout.studio_rail`, ADR-0064).
+    SetStudioRail(crate::layout::RailAt),
     /// Lock or unlock the layout against pointer changes.
     SetLocked(bool),
     /// Replace the layout with another workspace (`ui.workspace.switch`).
@@ -280,11 +285,12 @@ impl LayoutSession {
                 handle,
                 delta,
                 group: g,
+                studio_mode,
             } => {
                 let ok = next
                     .windows
                     .get_mut(window)
-                    .is_some_and(|w| w.resize(area, handle, delta));
+                    .is_some_and(|w| w.resize(area, handle, delta, studio_mode));
                 if !ok {
                     return Err(WorkspaceError::NoTarget.into());
                 }
@@ -310,6 +316,7 @@ impl LayoutSession {
                 }
             }
             LayoutCommand::ResetToolbar => next.toolbar = None,
+            LayoutCommand::SetStudioRail(at) => next.set_studio_rail(at)?,
             LayoutCommand::SetCollapsed { panel, collapsed } => {
                 next.set_collapsed(&panel, collapsed)?;
             }
@@ -329,6 +336,7 @@ impl LayoutSession {
         // Every result is checked, so a sequence of valid commands can never
         // produce a workspace that fails to load again (for example by nesting
         // splits deeper than the file format allows).
+        next.dissolve_broken_studio();
         next.validate()?;
         if next == before {
             return Ok(None);
@@ -434,7 +442,9 @@ mod tests {
             LayoutCommand::ClosePanel(id("rbs.program").clone()),
             Origin::Command,
         );
-        assert!(t.is_err(), "Edit has no program panel");
+        assert_eq!(t, Ok(None), "not live");
+        // Closing Program dissolves Edit's studio split (ADR-0064).
+        assert!(s.workspace().main().studio_split().is_none());
         assert_eq!(
             s.apply(LayoutCommand::ClosePanel(id("rbs.mixer")), Origin::Command),
             Ok(None)
@@ -464,9 +474,14 @@ mod tests {
             ..LiveStatus::default()
         });
         let t = s
+            .apply(LayoutCommand::Switch(builtin::minimal()), Origin::Command)
+            .unwrap();
+        assert_eq!(t, Some(Toast::ClosedWhileLive(id("rbs.mixer"))));
+        // Edit holds Program in its studio split (ADR-0064): nothing guarded closes.
+        let t = s
             .apply(LayoutCommand::Switch(builtin::edit()), Origin::Command)
             .unwrap();
-        assert_eq!(t, Some(Toast::ClosedWhileLive(id("rbs.program"))));
+        assert_eq!(t, None);
         let t = s.switch_automatically(builtin::minimal()).unwrap();
         assert_eq!(
             t,
@@ -568,6 +583,7 @@ mod tests {
                     handle: 0,
                     delta: -3.0,
                     group: Some(1),
+                    studio_mode: false,
                 },
                 Origin::Pointer,
             )

@@ -13,7 +13,7 @@ use std::fmt;
 use serde::{Deserialize, Serialize};
 
 use crate::command::CommandId;
-use crate::layout::{Axis, Edge, MAX_DEPTH, Node, Rect, Tabs};
+use crate::layout::{Axis, Edge, MAX_DEPTH, Node, RailAt, Rect, Tabs};
 use crate::panel::PanelId;
 
 /// The workspace file format this crate writes. Format 1 files are read and
@@ -447,16 +447,44 @@ impl Window {
         }
     }
 
+    /// Is panel `id` Preview or Program of this window's studio split (ADR-0064)?
+    pub fn in_studio_split(&self, id: &PanelId) -> bool {
+        self.main()
+            .and_then(|m| m.centre.studio_split())
+            .is_some_and(|s| s.children.iter().any(|c| c.find(id).is_some()))
+    }
+
     /// The window laid out in `content`: every tab stack shown and every divider.
     pub fn flatten(&self, content: crate::layout::Rect) -> crate::frame::WindowFlat {
-        crate::frame::flatten_window(self, content)
+        crate::frame::flatten_window(self, content, false)
+    }
+
+    /// [`Window::flatten`] with the canvas in studio mode or not (ADR-0064): a studio
+    /// split shows Program and the Transition rail only in studio mode.
+    pub fn flatten_in(
+        &self,
+        content: crate::layout::Rect,
+        studio_mode: bool,
+    ) -> crate::frame::WindowFlat {
+        crate::frame::flatten_window(self, content, studio_mode)
     }
 
     /// Move divider `handle` of [`Window::flatten`] in `content` by `delta` logical
     /// pixels. Returns false when there is no such divider.
-    pub fn resize(&mut self, content: crate::layout::Rect, handle: usize, delta: f32) -> bool {
+    pub fn resize(
+        &mut self,
+        content: crate::layout::Rect,
+        handle: usize,
+        delta: f32,
+        studio_mode: bool,
+    ) -> bool {
         use crate::frame::HandleTarget;
-        let Some(h) = self.flatten(content).handles.into_iter().nth(handle) else {
+        let Some(h) = self
+            .flatten_in(content, studio_mode)
+            .handles
+            .into_iter()
+            .nth(handle)
+        else {
             return false;
         };
         match h.target {
@@ -762,6 +790,20 @@ pub fn same_name(a: &str, b: &str) -> bool {
     a == b || a.to_lowercase() == b.to_lowercase()
 }
 
+/// Why Preview and Program of the studio split are not collapsed or auto-hidden.
+const STUDIO_SPLIT_FIXED: &str = "Preview and Program stay open beside the Transition rail; move or close one to \
+     change the layout";
+
+/// Studio-flagged splits in a tree, whatever their shape.
+fn count_studio(n: &Node) -> usize {
+    match n {
+        Node::Split(s) => {
+            usize::from(s.studio.is_some()) + s.children.iter().map(count_studio).sum::<usize>()
+        }
+        Node::Tabs(_) => 0,
+    }
+}
+
 /// Check a workspace name: 1 to 64 characters, not only spaces, no control characters.
 pub fn validate_name(name: &str) -> Result<(), WorkspaceError> {
     let n = name.chars().count();
@@ -792,10 +834,11 @@ fn migrate_1(text: &str) -> Result<toml::Table, WorkspaceError> {
     fn refuse_new_keys(v: &toml::Value) -> Result<(), WorkspaceError> {
         match v {
             toml::Value::Table(t) => {
-                if let Some(k) = t
-                    .keys()
-                    .find(|k| FORMAT_2_KEYS.contains(&k.as_str()) || k.as_str() == "state")
-                {
+                if let Some(k) = t.keys().find(|k| {
+                    FORMAT_2_KEYS.contains(&k.as_str())
+                        || k.as_str() == "state"
+                        || k.as_str() == "studio"
+                }) {
                     return Err(WorkspaceError::Parse(format!(
                         "unknown field `{k}` in a format 1 file"
                     )));
@@ -879,8 +922,11 @@ impl Workspace {
         if self.windows.iter().filter(|w| w.is_main()).count() != 1 {
             return invalid("a workspace has exactly one main window");
         }
-        for w in &self.windows {
-            for l in w.trees() {
+        for (i, w) in self.windows.iter().enumerate() {
+            for (t, l) in w.trees().into_iter().enumerate() {
+                if count_studio(l) > usize::from(i == 0 && t == 0) {
+                    return invalid("a workspace has at most one studio split, in the centre");
+                }
                 if l.has_empty_stack_below_root() {
                     return invalid("only the main window's centre may be an empty tab stack");
                 }
@@ -916,6 +962,32 @@ impl Workspace {
             seen.push(p);
         }
         Ok(())
+    }
+
+    /// Drops the studio flag of a split that lost its shape (ADR-0064 decision 4).
+    pub fn dissolve_broken_studio(&mut self) {
+        for w in &mut self.windows {
+            for t in w.trees_mut() {
+                t.dissolve_broken_studio();
+            }
+        }
+    }
+
+    /// Puts the Transition rail of the centre's studio split `at` (ADR-0064,
+    /// `ui.layout.studio_rail`). [`WorkspaceError::NoTarget`] without a studio split.
+    pub fn set_studio_rail(&mut self, at: RailAt) -> Result<(), WorkspaceError> {
+        let m = self.main_layout_mut().ok_or(WorkspaceError::NoTarget)?;
+        let s = m
+            .centre
+            .studio_split_mut()
+            .ok_or(WorkspaceError::NoTarget)?;
+        s.studio = Some(at);
+        Ok(())
+    }
+
+    /// Where the centre's studio split puts the rail, if it has one.
+    pub fn studio_rail(&self) -> Option<RailAt> {
+        self.main().studio_split().and_then(|s| s.studio)
     }
 
     /// The main window's centre.
@@ -1193,6 +1265,9 @@ impl Workspace {
         let (w, stack, _) = self
             .find(id)
             .ok_or_else(|| WorkspaceError::NotOpen(id.clone()))?;
+        if self.windows[w].in_studio_split(id) {
+            return Err(WorkspaceError::Invalid(STUDIO_SPLIT_FIXED.into()));
+        }
         let win = &mut self.windows[w];
         let (tree, local) = win.locate(stack).ok_or(WorkspaceError::NoTarget)?;
         let t = win
@@ -1219,6 +1294,9 @@ impl Workspace {
         let (w, stack, _) = self
             .find(id)
             .ok_or_else(|| WorkspaceError::NotOpen(id.clone()))?;
+        if self.windows[w].in_studio_split(id) {
+            return Err(WorkspaceError::Invalid(STUDIO_SPLIT_FIXED.into()));
+        }
         if w != 0 {
             return Err(WorkspaceError::NoTarget);
         }
@@ -1630,8 +1708,9 @@ placement = { display = "edid:SAM-7012-HX55", connector = "HDMI-1", size = [1920
         w.move_to_edge(&stats, f, Edge::Left).unwrap();
         assert_eq!(w, before);
         // Last window too: no index out of bounds.
-        let g = w.float(&id("rbs.transition")).unwrap();
-        w.move_to_edge(&id("rbs.transition"), g, Edge::Top).unwrap();
+        let g = w.float(&id("rbs.live-controls")).unwrap();
+        w.move_to_edge(&id("rbs.live-controls"), g, Edge::Top)
+            .unwrap();
         w.validate().unwrap();
     }
 
@@ -1958,7 +2037,8 @@ layout = { tabs = ["rbs.status-bar"] }
         assert!(ws.set_collapsed(&id("rbs.properties"), true).is_ok());
         let (_, stack, _) = ws.find(&id("rbs.properties")).unwrap();
         assert!(ws.windows[0].stack(stack).unwrap().collapsed);
-        // Preview is the centre's only stack.
+        // Preview is the centre's only stack once Program leaves the studio split.
+        ws.close(&id("rbs.program")).unwrap();
         assert!(ws.set_collapsed(&id("rbs.preview"), true).is_err());
         let (_, stack, _) = ws.find(&id("rbs.preview")).unwrap();
         assert!(!ws.windows[0].stack(stack).unwrap().collapsed);
@@ -1971,15 +2051,15 @@ layout = { tabs = ["rbs.status-bar"] }
         let mut ws = builtin::edit();
         let before = ws.main_layout().unwrap().right.clone();
         let content = Rect::sized(1440.0, 800.0);
-        ws.auto_hide(&id("rbs.transition"), content).unwrap();
+        ws.auto_hide(&id("rbs.live-controls"), content).unwrap();
         let m = ws.main_layout().unwrap();
-        let g = &m.auto_hide[m.group_of(&id("rbs.transition")).unwrap()];
+        let g = &m.auto_hide[m.group_of(&id("rbs.live-controls")).unwrap()];
         assert_eq!(g.edge, Side::Right);
-        assert_eq!(g.anchor, Some(id("rbs.live-controls")));
+        assert_eq!(g.anchor, Some(id("rbs.properties")));
         assert!(ws.validate().is_ok());
-        ws.pin(&id("rbs.transition")).unwrap();
+        ws.pin(&id("rbs.live-controls")).unwrap();
         let after = &ws.main_layout().unwrap().right;
-        // Back below Live controls, expanded.
+        // Back below Properties.
         assert_eq!(
             after.layout.as_ref().unwrap().panels(),
             before.layout.as_ref().unwrap().panels()
@@ -2016,6 +2096,7 @@ layout = { tabs = ["rbs.status-bar"] }
         assert_eq!(m.auto_hide[0].edge, Side::Right);
         // A centre that is one stack keeps it.
         let mut ws = builtin::edit();
+        ws.close(&id("rbs.program")).unwrap();
         assert!(ws.auto_hide(&id("rbs.preview"), content).is_err());
     }
 

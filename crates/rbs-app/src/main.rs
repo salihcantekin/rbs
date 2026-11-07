@@ -574,7 +574,12 @@ impl App {
             .workspace()
             .windows
             .get(window)
-            .and_then(|w| w.flatten(area).handles.into_iter().nth(handle))
+            .and_then(|w| {
+                w.flatten_in(area, self.studio.studio_mode)
+                    .handles
+                    .into_iter()
+                    .nth(handle)
+            })
             .map(|h| h.handle)
         else {
             return;
@@ -601,6 +606,7 @@ impl App {
             handle,
             delta,
             group: Some(group),
+            studio_mode: self.studio.studio_mode,
         };
         self.command(c, Origin::Pointer);
     }
@@ -609,7 +615,7 @@ impl App {
     fn drop_at(&self, window: usize, panel: &PanelId, x: f32, y: f32) -> Option<DropTarget> {
         let area = self.area(window);
         let w = self.session.workspace().windows.get(window)?;
-        let flat = view::shown_flat(w, area, self.maximized.as_ref());
+        let flat = view::shown_flat(w, area, self.maximized.as_ref(), self.studio.studio_mode);
         drop_target(&flat, area, panel, x, y)
     }
 
@@ -1394,13 +1400,25 @@ impl Ctx {
         Self::push_general(&app);
 
         // Main window.
-        let (stacks, handles) = view::window_view(
+        let (stacks, handles, rail) = view::window_view(
             0,
             &app.session.workspace().windows[0],
             app.area(0),
             app.maximized.as_ref(),
+            app.studio.studio_mode,
         );
         app.main_models.update(stacks, handles);
+        let rail_shown = rail.shown;
+        if app.main.get_rail() != rail {
+            app.main.set_rail(rail);
+        }
+        if rail_shown {
+            let keys = self.keys.borrow().label_for("canvas.transition");
+            let shell = app.main.global::<Shell>();
+            if shell.get_transition_keys() != keys.as_str() {
+                shell.set_transition_keys(keys.into());
+            }
+        }
 
         self.sync_floats(&mut app);
 
@@ -1581,11 +1599,12 @@ impl Ctx {
             let Some(layout) = app.session.workspace().windows[w].layout() else {
                 continue;
             };
-            let (stacks, handles) = view::window_view(
+            let (stacks, handles, _) = view::window_view(
                 w,
                 &app.session.workspace().windows[w],
                 app.area(w),
                 app.maximized.as_ref(),
+                app.studio.studio_mode,
             );
             slot.models.update(stacks, handles);
             slot.window.set_window(w as i32);
@@ -1796,6 +1815,7 @@ fn install(g: &Shell<'_>, ctx: &Ctx) {
             handle: handle as usize,
             delta,
             group: None,
+            studio_mode: app.studio.studio_mode,
         };
         app.command(c, Origin::Command);
     });
@@ -2534,6 +2554,20 @@ fn reset_appearance(config: &Path) -> Option<String> {
         .map(|why| format!("The appearance could not be reset: {why}"))
 }
 
+/// Slots of `appearance.toml` that name a deleted theme take a built-in theme
+/// (themes spec, "Deleting"), so a deleted theme is not reported at every start.
+/// Read-only when another RBS holds the user data.
+fn forget_deleted_themes(config: &Path) {
+    let data = rbs_user_data::UserData::new(config);
+    let Some(next) = appearance::forget_missing(&data) else {
+        return;
+    };
+    if let Ok(Some(lock)) = data.try_lock() {
+        // On failure the start note says why the theme is not used, as before.
+        let _ = data.set_appearance(&lock, &next);
+    }
+}
+
 fn run(config: PathBuf, notice: Option<String>) -> Result<(), Box<dyn std::error::Error>> {
     let demo_live = std::env::args().any(|a| a == "--demo-live");
     // `--reset-appearance` (themes spec): back to the default look when a theme made
@@ -2542,6 +2576,8 @@ fn run(config: PathBuf, notice: Option<String>) -> Result<(), Box<dyn std::error
         .any(|a| a == "--reset-appearance")
         .then(|| reset_appearance(&config))
         .flatten();
+    // Before the user session takes the writer lock.
+    forget_deleted_themes(&config);
     slint::BackendSelector::new()
         .backend_name("winit".into())
         .renderer_name("skia".into())

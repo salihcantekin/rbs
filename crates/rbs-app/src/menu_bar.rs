@@ -9,6 +9,7 @@
 //! order, through the `Menus` global.
 
 use rbs_ui::command::{CommandId, CommandState, Kind, MenuItem, menus};
+use rbs_ui::layout::RailAt;
 use rbs_ui::panel::PanelId;
 use rbs_ui::workspace::{Side, Workspace};
 
@@ -230,6 +231,14 @@ fn panel_of(id: &CommandId) -> Option<PanelId> {
     PanelId::parse(id.param("id")?).ok()
 }
 
+fn rail_at(id: &CommandId) -> Option<RailAt> {
+    match id.param("at")? {
+        "between" => Some(RailAt::Between),
+        "below" => Some(RailAt::Below),
+        _ => None,
+    }
+}
+
 fn side(id: &CommandId) -> Option<Side> {
     match id.param("area")? {
         "left" => Some(Side::Left),
@@ -371,6 +380,12 @@ impl CommandState for Shown<'_> {
                 Some(p) if self.workspace.is_open(&p) => Ok(()),
                 _ => Err("The panel is not open.".to_owned()),
             },
+            "ui.layout.studio_rail" => match self.workspace.studio_rail() {
+                Some(_) => Ok(()),
+                None => Err("This workspace has no Preview and Program side by side in \
+                             the centre."
+                    .to_owned()),
+            },
             "ui.toolbar.reset" => match self.workspace.toolbar {
                 Some(_) => Ok(()),
                 None => Err("The toolbar already has its default items.".to_owned()),
@@ -408,6 +423,10 @@ impl CommandState for Shown<'_> {
                 side(id).is_some_and(|sd| self.areas().any(|(a, has, v)| a == sd && has && v))
             }
             "ui.panel.maximize" => panel_of(id).is_some_and(|p| self.maximized == Some(&p)),
+            "ui.layout.studio_rail" => {
+                self.workspace.studio_rail().is_some()
+                    && self.workspace.studio_rail() == rail_at(id)
+            }
             "canvas.studio_mode.toggle" => self.studio.studio_mode,
             "item.visible.toggle" => self.source(id).is_ok_and(|f| f.visible),
             "item.locked.toggle" => self.source(id).is_ok_and(|f| f.locked),
@@ -728,6 +747,7 @@ pub fn run(text: &str, state: &Shown<'_>) -> Option<Run> {
         "ui.area.hide_all" => Run::Layout(L::SetAllAreasVisible(false)),
         "ui.area.show_all" => Run::Layout(L::SetAllAreasVisible(true)),
         "ui.layout.reset_sizes" => Run::Layout(L::ResetSizes),
+        "ui.layout.studio_rail" => Run::Layout(L::SetStudioRail(rail_at(&id)?)),
         "ui.toolbar.reset" => Run::Layout(L::ResetToolbar),
         "ui.theme.reload" => Run::ReloadThemes,
         "ui.settings.open" => open_settings(&id)?,
