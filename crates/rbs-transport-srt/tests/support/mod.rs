@@ -101,8 +101,6 @@ struct Conn {
     highest: Option<u32>,
     ack_no: u32,
     acked: Option<u32>,
-    /// The last full ACK was answered with an ACKACK.
-    ack_confirmed: bool,
     last_tick: Instant,
     closed: bool,
 }
@@ -131,7 +129,6 @@ pub struct TestServer {
 struct Shutdowns {
     count: Mutex<usize>,
     changed: Condvar,
-    diag: Mutex<String>,
 }
 
 impl TestServer {
@@ -159,7 +156,7 @@ impl TestServer {
         }
     }
 
-    /// Waits until the listener has received `n` shutdown packets. A sent datagram
+    /// Waits until the listener has received a shutdown from `n` connections. A sent datagram
     /// is not necessarily readable yet when `send_to` returns (Windows loopback
     /// under load), so a test that checks the caller's shutdown waits for it here
     /// instead of relying on [`finish`](Self::finish)'s last short read. The
@@ -171,12 +168,7 @@ impl TestServer {
             .changed
             .wait_timeout_while(count, Duration::from_secs(10), |c| *c < n)
             .unwrap();
-        assert!(
-            *count >= n,
-            "{} of {n} shutdowns within 10 s; DIAG {}",
-            *count,
-            self.shutdowns.diag.lock().unwrap()
-        );
+        assert!(*count >= n, "{} of {n} shutdowns within 10 s", *count);
     }
 
     pub fn url(&self) -> String {
@@ -253,37 +245,6 @@ fn serve(
         {
             break;
         }
-        {
-            let mut d = shutdowns.diag.lock().unwrap();
-            match &received {
-                Err(e)
-                    if !matches!(
-                        e.kind(),
-                        std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
-                    ) =>
-                {
-                    d.push_str(&format!(
-                        "[err {:?} at {:?}]",
-                        e.kind(),
-                        std::time::SystemTime::now()
-                    ));
-                }
-                Ok((n, _)) if *n >= 16 && buf[0] & 0x80 != 0 => {
-                    let kind = ((word(&buf, 0) >> 16) & 0x7FFF) as u16;
-                    if kind != 2 && kind != 6 && kind != 1 {
-                        d.push_str(&format!(
-                            "[ctl {kind} dest {} conns {:?}]",
-                            word(&buf, 3),
-                            conns
-                                .iter()
-                                .map(|c| (c.own_id, c.closed))
-                                .collect::<Vec<_>>()
-                        ));
-                    }
-                }
-                _ => {}
-            }
-        }
         if let Ok((n, from)) = received {
             let p = &buf[..n];
             if n >= 16 && p[0] & 0x80 != 0 {
@@ -310,12 +271,7 @@ fn serve(
                             *shutdowns.count.lock().unwrap() += 1;
                             shutdowns.changed.notify_all();
                         }
-                        6 => {
-                            c.session.ackacks += 1;
-                            if word(p, 1) == c.ack_no {
-                                c.ack_confirmed = true;
-                            }
-                        }
+                        6 => c.session.ackacks += 1,
                         7 if n >= 24 => c
                             .session
                             .dropreqs
@@ -469,7 +425,6 @@ fn handshake(
                 highest: None,
                 ack_no: 0,
                 acked: None,
-                ack_confirmed: false,
                 last_tick: Instant::now(),
                 closed: false,
             });
@@ -554,13 +509,9 @@ fn tick(socket: &UdpSocket, b: &Behaviour, c: &mut Conn, out: &mut Vec<u8>) {
         return;
     };
     let expected = c.seq(c.next);
-    // A full ACK that got no ACKACK is sent again (with a new number), as the
-    // datagram or its answer may be lost: otherwise a caller whose only ACK was
-    // lost never learns the round-trip time.
-    if c.acked != Some(expected) || (!c.ack_confirmed && !c.session.shutdown) {
+    if c.acked != Some(expected) {
         c.acked = Some(expected);
         c.ack_no += 1;
-        c.ack_confirmed = false;
         header(out, 2, c.ack_no, c.caller_id);
         words(
             out,
