@@ -482,3 +482,27 @@ pub struct SourceLevels {
     /// RMS per channel in dBFS.
     pub rms_db: Vec<f32>,
 }
+
+/// One entry of a user data library (`profile.list`, `collection.list`; protocol 1.4).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LibraryEntry {
+    /// Its stable id, passed to `profile.switch` and `collection.switch`.
+    pub id: String,
+    /// Its name, unique in the library ignoring case.
+    pub name: String,
+}
+
+/// The output profiles or scene collections (`profile.list`, `collection.list`;
+/// protocol 1.4).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Library {
+    /// Every entry, by name.
+    pub entries: Vec<LibraryEntry>,
+    /// The id of the one in use.
+    pub current: String,
+    /// A switch asked for through the control API is still being made. Once it is
+    /// false, a `current` other than the id asked for means the app refused the
+    /// switch or could not load the entry (its error line says why).
+    #[serde(default)]
+    pub pending: bool,
+}

@@ -352,6 +352,14 @@ impl App {
                     self.command(LayoutCommand::OpenPanel(id), Origin::Command);
                 }
             }
+            Run::Profile(id) => {
+                let done = self.studio.switch_profile(&id);
+                self.library_done(done);
+            }
+            Run::Collection(id) => {
+                let done = self.studio.switch_collection(&id, close_preview);
+                self.library_done(done);
+            }
             Run::Layout(c) => self.command(c, Origin::Command),
             Run::GoLive => self.studio.go_live(),
             Run::AskEndStream => self.confirm_end = true,
@@ -566,6 +574,16 @@ impl Ctx {
                 if !app.hidden {
                     ctx.connect_preview(endpoint);
                 }
+            }
+            if let Some((collection, id)) = applied.switch {
+                let done = if collection {
+                    app.studio.switch_collection(&id, close_preview)
+                } else {
+                    app.studio.switch_profile(&id)
+                };
+                // Answers the host, also when the switch was refused.
+                app.studio.refresh_library();
+                app.library_done(done);
             }
         });
     }

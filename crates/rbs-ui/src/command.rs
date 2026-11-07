@@ -178,6 +178,34 @@ const fn action(method: &'static str) -> Kind {
 /// old id as an alias for at least one major version (ADR-0050 decision 2).
 pub const ENTRIES: &[Entry] = &[
     Entry {
+        id: "profile.select",
+        title: "Output profile",
+        tooltip: "Use another output profile: its recording and stream settings",
+        icon: None,
+        shortcut: None,
+        menu: Menu::File,
+        kind: Kind::Picker {
+            method: "profile.switch",
+            param: "id",
+        },
+        params: &[choice("id")],
+        checkable: false,
+    },
+    Entry {
+        id: "collection.select",
+        title: "Scene collection",
+        tooltip: "Run another scene collection: its canvases, scenes and sources",
+        icon: None,
+        shortcut: None,
+        menu: Menu::File,
+        kind: Kind::Picker {
+            method: "collection.switch",
+            param: "id",
+        },
+        params: &[choice("id")],
+        checkable: false,
+    },
+    Entry {
         id: "edit.undo",
         title: "Undo",
         tooltip: "Undo the last change to the scenes",
@@ -548,6 +576,7 @@ pub enum MenuItem {
 
 /// What each menu holds, in order: command ids (with parameters) and `|` separators.
 pub const MENU_LAYOUT: &[(Menu, &[&str])] = &[
+    (Menu::File, &["profile.select", "collection.select"]),
     (Menu::Edit, &["edit.undo", "edit.redo"]),
     (
         Menu::View,
@@ -792,12 +821,18 @@ mod tests {
     fn menus_follow_state() {
         let m = menus(&Fake);
         let titles: Vec<&str> = m.iter().map(|(m, _)| m.title()).collect();
-        assert_eq!(titles, ["Edit", "View", "Output", "Window"]);
-        let edit = &m[0].1;
+        assert_eq!(titles, ["File", "Edit", "View", "Output", "Window"]);
+        let file = &m[0].1;
+        let MenuItem::Choices { title, choices } = &file[1] else {
+            panic!("scene collection picker")
+        };
+        assert_eq!(title, "Scene collection");
+        assert_eq!(choices[1].1.to_string(), "collection.select?id=Live%20show");
+        let edit = &m[1].1;
         assert!(
             matches!(&edit[1], MenuItem::Command { disabled: Some(r), .. } if r == "Nothing to redo")
         );
-        let view = &m[1].1;
+        let view = &m[2].1;
         let MenuItem::Choices { choices, .. } = &view[0] else {
             panic!("workspace picker")
         };
