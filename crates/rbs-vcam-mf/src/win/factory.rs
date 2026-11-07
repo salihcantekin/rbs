@@ -129,6 +129,20 @@ impl MfVcamFactory {
         }
     }
 
+    /// Removes the camera, then RBS's part from Windows: the user's class key and
+    /// format file (`rbs-vcam-setup unregister`, a second administrator prompt; none
+    /// when there is nothing to remove). Settings › Virtual camera's "Remove
+    /// completely" (spec: Removal).
+    pub fn remove_completely(&self) -> Result<InstallState, VcamError> {
+        let sid = Self::user()?;
+        self.uninstall()?;
+        let key = hklm_string(&class_key(&sid), Some("RbsVcamUser")).is_some();
+        if key || format_path(&sid).is_some_and(|p| p.exists()) {
+            Self::run_setup("unregister", &sid)?;
+        }
+        Ok(self.state(&sid))
+    }
+
     fn run_setup(verb: &str, sid: &str) -> Result<(), VcamError> {
         let exe = install_dir()
             .map(|d| d.join(SETUP_EXE))

@@ -140,3 +140,43 @@ pub fn adapters() -> (RecordAdapters, Vec<String>) {
     }
     (a, errors)
 }
+
+/// The platform's virtual camera (ADR-0066: Windows only).
+#[derive(Clone)]
+pub struct VirtualCamera {
+    /// The adapter.
+    pub factory: Arc<dyn rbs_vcam::VirtualCameraFactory>,
+    /// Settings › Virtual camera's "Remove completely": removes the camera and RBS's
+    /// part from the OS, which may ask for administrator approval again. Blocks until
+    /// the prompt is answered.
+    pub remove_completely:
+        Arc<dyn Fn() -> Result<rbs_vcam::InstallState, rbs_vcam::VcamError> + Send + Sync>,
+}
+
+/// The virtual camera adapter of this platform, or why there is none. `config` is the
+/// RBS settings folder, where the camera's symbolic link is kept in the file
+/// `rbs-cli vcam` uses too.
+pub fn virtual_camera(config: &std::path::Path) -> Result<VirtualCamera, &'static str> {
+    #[cfg(windows)]
+    {
+        // A missing folder only means the link is not kept; `status` then says not added.
+        let _ = std::fs::create_dir_all(config);
+        let links = rbs_vcam_mf::FileLinkStore::new(crate::vcam_settings::link_file(config));
+        let mf = Arc::new(rbs_vcam_mf::MfVcamFactory::new(Box::new(links)));
+        let remove = Arc::clone(&mf);
+        Ok(VirtualCamera {
+            factory: mf,
+            remove_completely: Arc::new(move || remove.remove_completely()),
+        })
+    }
+    #[cfg(target_os = "macos")]
+    {
+        let _ = config;
+        Err("Not available on macOS yet")
+    }
+    #[cfg(not(any(windows, target_os = "macos")))]
+    {
+        let _ = config;
+        Err("Not available on Linux yet")
+    }
+}
