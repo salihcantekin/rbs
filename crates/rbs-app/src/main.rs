@@ -161,6 +161,8 @@ struct App {
     bg: background::AppSettings,
     /// The studio's preview, kept to connect again when the hidden window shows.
     preview_endpoint: Option<rbs_gpu::share::PreviewEndpoint>,
+    /// The preview scene's picture in studio mode (ADR-0061), kept the same way.
+    scene_preview_endpoint: Option<rbs_gpu::share::PreviewEndpoint>,
     /// What the Dock badge or tray icon shows now; changed only when it differs.
     bg_state: background::LiveState,
     /// The tray icon and the second-launch event while Keep RBS running is set.
@@ -379,6 +381,8 @@ impl App {
             Run::Layout(c) => self.command(c, Origin::Command),
             Run::Maximize(id, on) => self.maximized = on.then_some(id),
             Run::AddSource(kind) => self.ask_add_source(kind),
+            Run::StudioMode(on) => self.studio.set_studio_mode(on),
+            Run::Transition => self.studio.transition(),
             Run::GoLive => self.studio.go_live(),
             Run::AskEndStream => self.confirm_end = true,
             Run::Record => self.studio.record(),
@@ -702,6 +706,24 @@ impl Ctx {
                     ctx.connect_preview(endpoint);
                 }
             }
+            // Entering studio mode opens a closed Preview panel where it opens by
+            // default, the only layout change studio mode makes (ADR-0061).
+            if applied.studio_mode_started
+                && let Some(p) = panel("rbs.preview")
+                && !app.session.workspace().is_open(&p)
+            {
+                app.command(LayoutCommand::OpenPanel(p), Origin::Command);
+            }
+            if let Some(endpoint) = applied.scene_preview {
+                #[cfg(any(target_os = "macos", windows))]
+                preview::close_one(preview::Picture::Scene);
+                app.scene_preview_endpoint = endpoint.clone();
+                if let Some(endpoint) = endpoint
+                    && !app.hidden
+                {
+                    ctx.connect_scene_preview(endpoint);
+                }
+            }
             if let Some((collection, id)) = applied.switch {
                 let done = if collection {
                     app.studio.switch_collection(&id, close_preview)
@@ -717,7 +739,7 @@ impl Ctx {
 
     #[cfg(any(target_os = "macos", windows))]
     fn connect_preview(&self, endpoint: rbs_gpu::share::PreviewEndpoint) {
-        preview::connect(endpoint, |ok| {
+        preview::connect(preview::Picture::Program, endpoint, |ok| {
             let ctx = CTX.with(|c| c.borrow().clone());
             if let Some(ctx) = ctx {
                 ctx.update(move |app| {
@@ -730,6 +752,23 @@ impl Ctx {
 
     #[cfg(not(any(target_os = "macos", windows)))]
     fn connect_preview(&self, _endpoint: rbs_gpu::share::PreviewEndpoint) {}
+
+    /// The preview scene's picture in studio mode (ADR-0061; macOS only for now).
+    #[cfg(target_os = "macos")]
+    fn connect_scene_preview(&self, endpoint: rbs_gpu::share::PreviewEndpoint) {
+        preview::connect(preview::Picture::Scene, endpoint, |ok| {
+            let ctx = CTX.with(|c| c.borrow().clone());
+            if let Some(ctx) = ctx {
+                ctx.update(move |app| {
+                    app.studio.scene_preview_ready = ok;
+                    app.studio.scene_preview_failed = !ok;
+                });
+            }
+        });
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    fn connect_scene_preview(&self, _endpoint: rbs_gpu::share::PreviewEndpoint) {}
 
     /// Shows the Settings window at `section`, made on first use and kept until it is
     /// closed.
@@ -872,14 +911,21 @@ impl Ctx {
                 .any(|f| studio_ui::active_content(&f.models.stacks, id, bar, border).is_some())
         };
         // Without studio mode Program and Preview both show the scene on air; the picture
-        // goes to Program when it is shown, else to Preview.
-        let panel = if in_main("rbs.program").is_some() || float_has("rbs.program") {
+        // goes to Program when it is shown, else to Preview. In studio mode Program shows
+        // the scene on air and Preview the preview scene, which is edited (ADR-0061).
+        let studio_mode = app.studio.studio_mode;
+        let panel = if studio_mode {
+            "rbs.preview"
+        } else if in_main("rbs.program").is_some() || float_has("rbs.program") {
             "rbs.program"
         } else {
             "rbs.preview"
         };
-        let picture_main = in_main(panel);
-        if let Some([_, _, w, h]) = picture_main {
+        let program_panel = if studio_mode { "rbs.program" } else { panel };
+        let picture_main = in_main(program_panel);
+        let scene_main = if studio_mode { in_main("rbs.preview") } else { None };
+        let edit_main = if studio_mode { scene_main } else { picture_main };
+        if let Some([_, _, w, h]) = edit_main {
             app.studio.set_picture_size(w, h);
         }
         let mixer_shown = in_main("rbs.mixer").is_some() || float_has("rbs.mixer");
@@ -890,16 +936,25 @@ impl Ctx {
             2 => ps::STOPPED,
             _ if !s.preview_offered => ps::NO_PLATFORM,
             _ if s.preview_failed => ps::NO_SESSION,
-            _ if picture_main.is_none() && float_has(panel) => ps::OTHER_WINDOW,
+            _ if picture_main.is_none() && float_has(program_panel) => ps::OTHER_WINDOW,
             _ if s.preview_ready => ps::SHOWN,
             _ => ps::STARTING,
         };
-        s.push(&app.main.global::<Studio>(), state, panel);
+        let scene_state = match s.state {
+            0 => ps::STARTING,
+            2 => ps::STOPPED,
+            _ if !s.preview_offered || !cfg!(target_os = "macos") => ps::NO_PLATFORM,
+            _ if s.scene_preview_failed => ps::NO_SESSION,
+            _ if scene_main.is_none() && float_has("rbs.preview") => ps::OTHER_WINDOW,
+            _ if s.scene_preview_ready => ps::SHOWN,
+            _ => ps::STARTING,
+        };
+        s.push(&app.main.global::<Studio>(), state, scene_state, panel);
         for f in &app.floats {
-            s.push(&f.window.global::<Studio>(), state, panel);
+            s.push(&f.window.global::<Studio>(), state, scene_state, panel);
         }
         if let Some(w) = &app.settings {
-            s.push(&w.global::<Studio>(), state, panel);
+            s.push(&w.global::<Studio>(), state, scene_state, panel);
         }
 
         if mixer_shown && s.has_meters() {
@@ -935,8 +990,17 @@ impl Ctx {
 
         #[cfg(any(target_os = "macos", windows))]
         {
-            preview::set_area(picture_main);
-            preview::set_marks(&app.main, app.studio.marks());
+            use preview::Picture;
+            preview::set_area(Picture::Program, picture_main);
+            preview::set_area(Picture::Scene, scene_main);
+            // The handles go on the edited scene's picture only.
+            let (marked, other) = if studio_mode {
+                (Picture::Scene, Picture::Program)
+            } else {
+                (Picture::Program, Picture::Scene)
+            };
+            preview::set_marks(&app.main, marked, app.studio.marks());
+            preview::set_marks(&app.main, other, &[]);
             preview::place(&app.main);
         }
     }
@@ -1087,6 +1151,7 @@ impl Ctx {
         {
             preview::close();
             app.studio.preview_ready = false;
+            app.studio.scene_preview_ready = false;
         }
         self.meter_timer.stop();
         app.hidden = true;
@@ -1109,6 +1174,9 @@ impl Ctx {
         }
         if let Some(endpoint) = app.preview_endpoint.clone() {
             self.connect_preview(endpoint);
+        }
+        if let Some(endpoint) = app.scene_preview_endpoint.clone() {
+            self.connect_scene_preview(endpoint);
         }
         // The views catch up on the next turn of the event loop.
         self.update(|_| {});
@@ -1791,6 +1859,12 @@ fn install_studio(g: &Studio<'_>, ctx: &Ctx) {
     on!(on_switch_scene, |app, id: i32| {
         app.studio.switch_scene(id);
     });
+    on!(on_set_studio_mode, |app, on: bool| {
+        app.studio.set_studio_mode(on);
+    });
+    on!(on_transition, |app| {
+        app.studio.transition();
+    });
     on!(on_add_scene, |app| {
         app.studio.add_scene();
     });
@@ -2214,6 +2288,7 @@ fn run(config: PathBuf, notice: Option<String>) -> Result<(), Box<dyn std::error
             hidden: false,
             bg,
             preview_endpoint: None,
+            scene_preview_endpoint: None,
             bg_state: background::LiveState::default(),
             #[cfg(windows)]
             tray: None,

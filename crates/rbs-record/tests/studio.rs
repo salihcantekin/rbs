@@ -491,3 +491,121 @@ fn volume_and_mute_reach_the_mixer_without_a_rebind() {
     let (_, errors) = studio.shutdown();
     assert!(errors.is_empty(), "{errors:?}");
 }
+
+#[test]
+fn studio_mode_without_a_preview_description_runs_nothing_of_it() {
+    let Some(gpu) = gpu() else { return };
+    let r = rig();
+    let (mut col, canvas) = scene();
+    let live = col.canvas(canvas).unwrap().program.unwrap();
+    let (empty, _) = col
+        .add_scene("Empty", rbs_scene::model::SceneScope::Shared)
+        .unwrap();
+    let (engine, clock) = engine_at_start();
+    let mut studio = Studio::start(
+        engine,
+        gpu,
+        &col,
+        &r.adapters.sources,
+        &StudioSettings::new(canvas),
+    )
+    .unwrap();
+    assert!(!studio.studio_mode(), "nothing of it outside studio mode");
+
+    // Studio mode without a preview description (headless): nothing of it runs.
+    col.set_preview(canvas, Some(empty)).unwrap();
+    let up = studio.update(&col, &r.adapters.sources).unwrap();
+    assert!(up.failed.is_empty(), "{:?}", up.failed);
+    assert!(!studio.studio_mode());
+    assert!(studio.scene_preview().is_none());
+    let t = studio.engine().worker_stats(AUDIO).unwrap().ticks();
+    assert!(run_until(&mut studio, &clock, |s| {
+        s.engine().worker_stats(AUDIO).unwrap().ticks() >= t + 5
+    }));
+
+    // A cut that swaps the scenes: the program follows, the studio runs on.
+    col.set_program(canvas, Some(empty)).unwrap();
+    col.set_preview(canvas, Some(live)).unwrap();
+    let up = studio.update(&col, &r.adapters.sources).unwrap();
+    assert!(up.failed.is_empty(), "{:?}", up.failed);
+    assert!(studio.failure().is_none());
+
+    // Leaving studio mode retires it; the studio runs on.
+    col.set_preview(canvas, None).unwrap();
+    let up = studio.update(&col, &r.adapters.sources).unwrap();
+    assert!(up.failed.is_empty(), "{:?}", up.failed);
+    assert!(!studio.studio_mode());
+    let t = studio.engine().worker_stats(AUDIO).unwrap().ticks();
+    assert!(run_until(&mut studio, &clock, |s| {
+        s.engine().worker_stats(AUDIO).unwrap().ticks() >= t + 5
+    }));
+    assert!(studio.failure().is_none());
+    let (_, errors) = studio.shutdown();
+    assert!(errors.is_empty(), "{errors:?}");
+}
+
+#[cfg(any(windows, target_vendor = "apple"))]
+#[test]
+fn in_studio_mode_a_ui_gets_the_preview_scene_on_its_own_picture() {
+    use std::sync::Arc;
+    use std::sync::atomic::AtomicU64;
+    use std::time::Instant;
+
+    use rbs_gpu::share::{PreviewDesc, PreviewSubscriber};
+
+    let Some(gpu) = gpu() else { return };
+    let r = rig();
+    let (mut col, canvas) = scene();
+    let live = col.canvas(canvas).unwrap().program.unwrap();
+    let (engine, clock) = engine_at_start();
+    let mut settings = StudioSettings::new(canvas);
+    settings.audio = false;
+    settings.preview = Some(PreviewDesc {
+        width: 32,
+        height: 18,
+        surfaces: 3,
+    });
+    settings.scene_preview = true;
+    let mut studio = Studio::start(engine, gpu, &col, &r.adapters.sources, &settings).unwrap();
+    assert!(studio.scene_preview().is_none());
+    col.set_preview(canvas, Some(live)).unwrap();
+    studio.update(&col, &r.adapters.sources).unwrap();
+    let endpoint = studio.scene_preview().expect("the preview scene's picture");
+    assert_ne!(Some(&endpoint), studio.preview().as_ref(), "a picture of its own");
+
+    let frames = Arc::new(AtomicU64::new(0));
+    let ui = {
+        let frames = Arc::clone(&frames);
+        std::thread::spawn(move || {
+            let mut sub = PreviewSubscriber::connect(&endpoint, LIMIT).unwrap();
+            let wall = Instant::now();
+            while frames.load(Ordering::Relaxed) < 3 && wall.elapsed() < LIMIT {
+                if sub.recv(Duration::from_millis(250)).unwrap().is_some() {
+                    frames.fetch_add(1, Ordering::Relaxed);
+                }
+            }
+        })
+    };
+    let reached = run_until(&mut studio, &clock, |_| frames.load(Ordering::Relaxed) >= 3);
+    ui.join().unwrap();
+    assert!(reached);
+    // A cut that swaps the scenes keeps both pictures and opens or closes no source.
+    let (empty, _) = col
+        .add_scene("Empty", rbs_scene::model::SceneScope::Shared)
+        .unwrap();
+    col.set_preview(canvas, Some(empty)).unwrap();
+    studio.update(&col, &r.adapters.sources).unwrap();
+    let sources = studio.sources();
+    let before = studio.scene_preview();
+    col.set_program(canvas, Some(empty)).unwrap();
+    col.set_preview(canvas, Some(live)).unwrap();
+    let up = studio.update(&col, &r.adapters.sources).unwrap();
+    assert!(up.failed.is_empty(), "{:?}", up.failed);
+    assert_eq!(studio.scene_preview(), before, "the same picture");
+    assert_eq!(studio.sources(), sources);
+    col.set_preview(canvas, None).unwrap();
+    studio.update(&col, &r.adapters.sources).unwrap();
+    assert!(studio.scene_preview().is_none());
+    let (_, errors) = studio.shutdown();
+    assert!(errors.is_empty(), "{errors:?}");
+}

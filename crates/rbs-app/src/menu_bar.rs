@@ -267,7 +267,15 @@ impl CommandState for Shown<'_> {
                     Err("No area beside the centre has panels.".to_owned())
                 }
             }
-            "source.add" => self.running(),
+            "source.add" | "canvas.studio_mode.toggle" => self.running(),
+            "canvas.transition" => {
+                self.running()?;
+                if s.studio_mode {
+                    Ok(())
+                } else {
+                    Err("Studio mode is off.".to_owned())
+                }
+            }
             "ui.panel.maximize" => match panel_of(id) {
                 Some(p) if self.workspace.is_open(&p) => Ok(()),
                 _ => Err("The panel is not open.".to_owned()),
@@ -309,6 +317,7 @@ impl CommandState for Shown<'_> {
                 side(id).is_some_and(|sd| self.areas().any(|(a, has, v)| a == sd && has && v))
             }
             "ui.panel.maximize" => panel_of(id).is_some_and(|p| self.maximized == Some(&p)),
+            "canvas.studio_mode.toggle" => self.studio.studio_mode,
             "stream.toggle" => matches!(self.studio.st_state, st_state::LIVE | st_state::STARTING),
             "record.toggle" => matches!(
                 self.studio.rec_state,
@@ -484,6 +493,10 @@ pub enum Run {
     Maximize(PanelId, bool),
     /// Open the Add source menu, at the targets of this kind code when given.
     AddSource(Option<i32>),
+    /// Turn studio mode on (`true`) or off (ADR-0061).
+    StudioMode(bool),
+    /// Put the preview scene on air (ADR-0061).
+    Transition,
     GoLive,
     /// Ask first, then end the stream (U4).
     AskEndStream,
@@ -529,6 +542,8 @@ pub fn run(text: &str, state: &Shown<'_>) -> Option<Run> {
         "ui.layout.reset_sizes" => Run::Layout(L::ResetSizes),
         "ui.toolbar.reset" => Run::Layout(L::ResetToolbar),
         "ui.panel.maximize" => Run::Maximize(panel_of(&id)?, !on),
+        "canvas.studio_mode.toggle" => Run::StudioMode(!on),
+        "canvas.transition" => Run::Transition,
         "stream.toggle" if on => Run::AskEndStream,
         "stream.toggle" => Run::GoLive,
         "record.toggle" if on => Run::StopRecording,

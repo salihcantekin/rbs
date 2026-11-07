@@ -73,6 +73,10 @@ pub struct StudioSettings {
     /// A preview of the canvas for a UI (macOS and Windows). `None`: the canvas is only
     /// rendered while something records it.
     pub preview: Option<PreviewDesc>,
+    /// In studio mode, a second picture of `preview`'s size for the preview scene
+    /// (ADR-0061). Off: the preview scene is not rendered (the plan leaves its
+    /// compositor out). Only a UI that can show two pictures sets it.
+    pub scene_preview: bool,
     /// Sync offset in ns of each audio source (ADR-0037): positive delays the source,
     /// negative advances it. Sources not listed have none. The audio input clamps it to
     /// its range (`rbs_sources::DEFAULT_MAX_AUDIO_OFFSET` at most).
@@ -88,6 +92,7 @@ impl StudioSettings {
             audio_graph: AudioGraphConfig::default(),
             partitions: Partitions::default(),
             preview: None,
+            scene_preview: false,
             audio_offsets: BTreeMap::new(),
         }
     }
@@ -504,6 +509,9 @@ pub struct Studio {
     bound_mixer: Option<BoundMixer>,
     meters: BTreeMap<SourceId, Arc<LevelMeter>>,
     preview: Option<Arc<PreviewNodeStats>>,
+    /// The preview scene's compositor and picture while the canvas is in studio mode
+    /// (ADR-0061); `None` otherwise, so nothing of it runs.
+    scene_preview: Option<ScenePreview>,
     entries: Vec<Entry>,
     problems: Vec<BindProblem>,
     /// Studio nodes without which it cannot run (compositor, mixer, preview, sink).
@@ -727,6 +735,7 @@ impl Studio {
             bound_mixer: None,
             meters: BTreeMap::new(),
             preview,
+            scene_preview: None,
             entries: Vec::new(),
             problems: Vec::new(),
             essential,
@@ -824,6 +833,12 @@ impl Studio {
         let mut failed = Vec::new();
         self.failed_nodes.clear();
         let mut gone: Vec<Entry> = Vec::new();
+        // The preview scene's compositor and picture when studio mode ends, taken back
+        // after the apply.
+        let mut leaving: Vec<Added> = Vec::new();
+        if let Some(report) = &report {
+            self.sync_scene_preview(report, &mut leaving)?;
+        }
         let collection = &self.collection;
         if let Some(report) = report {
             if report.retired_compositors.contains(&self.compositor)
@@ -973,6 +988,9 @@ impl Studio {
 
         // Layers in link order of the final plan, strips per mixer input.
         let _ = self.layers.send(node_layers(&self.bound, &plan));
+        if let Some(sp) = &mut self.scene_preview {
+            let _ = sp.layers.send(node_layers(&sp.bound, &plan));
+        }
         // Strips: until the swap, the old schedule may still feed inputs that leave, so
         // the strips sent before the apply cover the old and the new inputs; the ones of
         // inputs that left go after it.
@@ -1039,7 +1057,92 @@ impl Studio {
         for e in gone.iter_mut() {
             take_instance(&mut self.engine, e, &mut self.pending_takes);
         }
+        for a in leaving {
+            if !take(&mut self.engine, a) {
+                self.pending_takes.push((a, None));
+            }
+        }
         Ok((failed, self.problems.clone()))
+    }
+
+    /// Starts or ends the preview scene's compositor and picture as the binder bound
+    /// or retired the canvas's preview compositor (studio mode, ADR-0061). With a
+    /// preview description, a new one is adopted on [`RENDER`] with a [`PreviewNode`] of
+    /// its own; a retired one's nodes leave the graph and go to `leaving`, to be taken
+    /// back after the apply. Neither is essential.
+    fn sync_scene_preview(
+        &mut self,
+        report: &BindReport,
+        leaving: &mut Vec<Added>,
+    ) -> Result<(), RecordError> {
+        let gpu = |node| Added {
+            node,
+            partition: RENDER,
+            gpu: true,
+        };
+        if let Some(sp) = &self.scene_preview
+            && report.retired_compositors.contains(&sp.compositor)
+        {
+            if let Some(sp) = self.scene_preview.take() {
+                leaving.push(gpu(sp.compositor));
+                let (picture, _) = sp.picture;
+                if self.graph.node(picture).is_some() {
+                    let _ = self.graph.set_state(picture, Lifecycle::Standby);
+                    let _ = self.graph.remove_node(picture);
+                }
+                leaving.push(gpu(picture));
+            }
+        }
+        // Only for a UI: without a picture the compositor has no consumer and the
+        // plan leaves it and the preview-only sources out (ADR-0061 decision 2).
+        let Some(desc) = self.settings.preview.filter(|_| self.settings.scene_preview) else {
+            return Ok(());
+        };
+        let Some(bound) = report
+            .compositors
+            .get(&(self.settings.canvas, Role::Preview))
+        else {
+            return Ok(());
+        };
+        if let Some(sp) = &mut self.scene_preview {
+            sp.bound = bound.clone();
+            return Ok(());
+        }
+        let (width, height) = self.size;
+        let (compositor, layers) =
+            CompositorNode::new(CanvasDesc { width, height }, MAX_LAYERS as u32, Vec::new());
+        self.engine
+            .adopt::<GpuRuntime>(RENDER, bound.node, Box::new(compositor))?;
+        let node = PreviewNode::new(desc);
+        let stats = node.stats();
+        let id = add_active(
+            &mut self.graph,
+            Node::<GpuRuntime>::descriptor(&node),
+            RENDER,
+        )?;
+        self.graph.connect(bound.node, "canvas", id, "canvas")?;
+        self.engine.adopt::<GpuRuntime>(RENDER, id, Box::new(node))?;
+        self.scene_preview = Some(ScenePreview {
+            compositor: bound.node,
+            layers,
+            bound: bound.clone(),
+            picture: (id, stats),
+        });
+        Ok(())
+    }
+
+    /// Where a UI connects to the preview scene's picture (studio mode, ADR-0061), once
+    /// it runs. `None` outside studio mode and without a preview description.
+    pub fn scene_preview(&self) -> Option<PreviewEndpoint> {
+        self.scene_preview
+            .as_ref()
+            .and_then(|sp| sp.picture.1.endpoint())
+    }
+
+    /// True while the preview scene's compositor and picture run (studio mode with a
+    /// preview description, ADR-0061).
+    pub fn studio_mode(&self) -> bool {
+        self.scene_preview.is_some()
     }
 
     /// Volume and mute only (ADR-0059): takes the sources' `audio` from `collection`
@@ -1745,6 +1848,9 @@ impl Studio {
             e.scheduled = scheduled.contains(&e.state.node);
         }
         let _ = self.layers.send(node_layers(&self.bound, &plan));
+        if let Some(sp) = &mut self.scene_preview {
+            let _ = sp.layers.send(node_layers(&sp.bound, &plan));
+        }
         (removed, errors)
     }
 
@@ -2057,6 +2163,15 @@ fn take(engine: &mut Engine, a: Added) -> bool {
 /// Volume and mute of every source of `collection`.
 fn mix_of(collection: &SceneCollection) -> BTreeMap<SourceId, SourceAudio> {
     collection.sources().map(|s| (s.id, s.audio)).collect()
+}
+
+/// The preview scene's compositor and its picture for a UI (studio mode, ADR-0061).
+struct ScenePreview {
+    compositor: NodeId,
+    layers: LayerSender,
+    bound: BoundCompositor,
+    /// The preview node and its counters.
+    picture: (NodeId, Arc<PreviewNodeStats>),
 }
 
 /// One mixer input as the studio last sent it: its producer, the source it plays, its

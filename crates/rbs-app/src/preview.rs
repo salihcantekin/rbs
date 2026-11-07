@@ -1,6 +1,9 @@
-//! The Program panel's picture: the studio's preview surfaces as a native layer over the
-//! panel (a Core Animation layer on macOS, ADR-0034; a DirectComposition visual on
-//! Windows, ADR-0036). A new frame changes the layer only; Slint does not redraw.
+//! The pictures of the Program and Preview panels: the studio's preview surfaces as a
+//! native layer over the panel (a Core Animation layer on macOS, ADR-0034; a
+//! DirectComposition visual on Windows, ADR-0036). A new frame changes the layer only;
+//! Slint does not redraw. Outside studio mode there is one picture, the program; in
+//! studio mode a second one shows the preview scene (ADR-0061), each with its own
+//! connection, area, covers and marks.
 //!
 //! UI thread only (the layer is not `Send`); the subscriber receives frames on its own
 //! thread and hands each to the UI thread.
@@ -40,23 +43,46 @@ struct Preview {
     timer: slint::Timer,
 }
 
-thread_local! {
-    static PREVIEW: RefCell<Option<Preview>> = const { RefCell::new(None) };
-    /// The Program panel's content in the main window (logical pixels), if shown there.
-    static AREA: Cell<Option<[f32; 4]>> = const { Cell::new(None) };
+/// Which picture: the program (the scene on air), or the preview scene in studio mode
+/// (ADR-0061).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Picture {
+    /// The scene on air; outside studio mode the only picture.
+    Program = 0,
+    /// The preview scene, in studio mode only.
+    Scene = 1,
 }
 
-/// Connects to `endpoint` off the UI thread, then makes the layer on the UI thread.
-/// `done(true)` once the layer exists, `done(false)` if this session cannot show it.
-pub fn connect(endpoint: PreviewEndpoint, done: impl Fn(bool) + Send + Clone + 'static) {
-    let generation = GENERATION.load(std::sync::atomic::Ordering::Relaxed);
+impl Picture {
+    const ALL: [Picture; 2] = [Picture::Program, Picture::Scene];
+
+    fn index(self) -> usize {
+        self as usize
+    }
+}
+
+thread_local! {
+    static PREVIEW: RefCell<[Option<Preview>; 2]> = const { RefCell::new([None, None]) };
+    /// Each picture's panel content in the main window (logical pixels), if shown there.
+    static AREA: [Cell<Option<[f32; 4]>>; 2] = const { [Cell::new(None), Cell::new(None)] };
+}
+
+/// Connects `which` to `endpoint` off the UI thread, then makes its layer on the UI
+/// thread. `done(true)` once the layer exists, `done(false)` if this session cannot
+/// show it.
+pub fn connect(
+    which: Picture,
+    endpoint: PreviewEndpoint,
+    done: impl Fn(bool) + Send + Clone + 'static,
+) {
+    let generation = GENERATION[which.index()].load(std::sync::atomic::Ordering::Relaxed);
     let spawned = std::thread::Builder::new()
         .name("rbs-preview-connect".into())
         .spawn(
             move || match PreviewSubscriber::connect(&endpoint, CONNECT_TIMEOUT) {
                 Ok(sub) => {
                     let d = done.clone();
-                    let _ = crate::entry::invoke(move || setup(sub, d, generation));
+                    let _ = crate::entry::invoke(move || setup(which, sub, d, generation));
                 }
                 Err(e) => {
                     log(&format!("preview: cannot connect: {e}"));
@@ -72,10 +98,15 @@ pub fn connect(endpoint: PreviewEndpoint, done: impl Fn(bool) + Send + Clone + '
 /// Bumped by [`close`]: a frame thread of an earlier connection ends within one receive
 /// timeout and drops its subscriber, so the studio's publisher does no preview work
 /// while nothing shows it (P13; ADR-0056 decision 5). Its end is then not logged.
-static GENERATION: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+static GENERATION: [std::sync::atomic::AtomicU64; 2] = [
+    std::sync::atomic::AtomicU64::new(0),
+    std::sync::atomic::AtomicU64::new(0),
+];
 
-fn setup(mut sub: PreviewSubscriber, done: impl Fn(bool), generation: u64) {
-    let current = move || GENERATION.load(std::sync::atomic::Ordering::Relaxed) == generation;
+fn setup(which: Picture, mut sub: PreviewSubscriber, done: impl Fn(bool), generation: u64) {
+    let i = which.index();
+    let current =
+        move || GENERATION[i].load(std::sync::atomic::Ordering::Relaxed) == generation;
     // Closed while connecting (the window was hidden): the subscriber goes away unused.
     if !current() {
         return;
@@ -93,7 +124,7 @@ fn setup(mut sub: PreviewSubscriber, done: impl Fn(bool), generation: u64) {
         }
     };
     PREVIEW.with(|p| {
-        *p.borrow_mut() = Some(Preview {
+        p.borrow_mut()[i] = Some(Preview {
             layer,
             marks: Vec::with_capacity(MAX_MARKS),
             covers: Vec::with_capacity(MAX_CUTOUTS),
@@ -113,7 +144,7 @@ fn setup(mut sub: PreviewSubscriber, done: impl Fn(bool), generation: u64) {
                         // A frame of an earlier connection never reaches a newer layer.
                         let shown = crate::entry::invoke(move || {
                             if current() {
-                                show(frame);
+                                show(which, frame);
                             }
                         });
                         if shown.is_err() {
@@ -137,10 +168,10 @@ fn setup(mut sub: PreviewSubscriber, done: impl Fn(bool), generation: u64) {
     done(true);
 }
 
-/// Sets where the Program panel's content is in the main window (`None`: not shown
+/// Sets where `which` picture's panel content is in the main window (`None`: not shown
 /// there).
-pub fn set_area(area: Option<[f32; 4]>) {
-    AREA.with(|a| a.set(area));
+pub fn set_area(which: Picture, area: Option<[f32; 4]>) {
+    AREA.with(|a| a[which.index()].set(area));
 }
 
 /// Attaches the layer once the window exists, places it over the Program panel and
@@ -151,12 +182,19 @@ pub fn set_area(area: Option<[f32; 4]>) {
 /// every redraw of the main window (popups open, move and close with a redraw);
 /// unchanged placement and covers make no layer call.
 pub fn place(window: &MainWindow) {
+    for which in Picture::ALL {
+        place_one(window, which);
+    }
+}
+
+fn place_one(window: &MainWindow, which: Picture) {
+    let i = which.index();
     PREVIEW.with(|p| {
         // Never nested in practice; a redraw inside a layer call would skip one placement.
         let Ok(mut p) = p.try_borrow_mut() else {
             return;
         };
-        let Some(st) = p.as_mut() else { return };
+        let Some(st) = p[i].as_mut() else { return };
         if !st.attached {
             let window_handle = window.window().window_handle();
             let Ok(handle) = window_handle.window_handle() else {
@@ -186,7 +224,10 @@ pub fn place(window: &MainWindow) {
             }
             st.attached = true;
         }
-        let Some([x, y, w, h]) = AREA.with(Cell::get).filter(|a| a[2] > 0.0 && a[3] > 0.0) else {
+        let Some([x, y, w, h]) = AREA
+            .with(|a| a[i].get())
+            .filter(|a| a[2] > 0.0 && a[3] > 0.0)
+        else {
             st.layer.set_hidden(true);
             return;
         };
@@ -234,22 +275,22 @@ pub fn place(window: &MainWindow) {
     });
 }
 
-fn show(frame: PreviewFrame) {
+fn show(which: Picture, frame: PreviewFrame) {
     PREVIEW.with(|p| {
-        if let Some(st) = p.borrow_mut().as_mut() {
+        if let Some(st) = p.borrow_mut()[which.index()].as_mut() {
             let now = st.clock.now();
             st.layer.show(frame, now);
         }
     });
-    retire();
+    retire(which);
 }
 
 /// Releases replaced frames the compositor no longer reads. Never waits; while frames
 /// wait, a one-shot timer comes back at the oldest one's due time.
-fn retire() {
+fn retire(which: Picture) {
     PREVIEW.with(|p| {
         let mut p = p.borrow_mut();
-        let Some(st) = p.as_mut() else { return };
+        let Some(st) = p[which.index()].as_mut() else { return };
         let now = st.clock.now();
         st.layer.retire(now);
         match st.layer.next_retire() {
@@ -257,17 +298,20 @@ fn retire() {
             Some(due) => {
                 if !st.timer.running() {
                     let after = due.saturating_since(now).max(Duration::from_millis(1));
-                    crate::entry::start(&st.timer, slint::TimerMode::SingleShot, after, retire);
+                    crate::entry::start(&st.timer, slint::TimerMode::SingleShot, after, move || {
+                        retire(which)
+                    });
                 }
             }
         }
     });
 }
 
-/// Draws the selection over the picture (ADR-0048): `marks` in the Program panel's
+/// Draws the selection over `which` picture (ADR-0048): `marks` in its panel's
 /// coordinates, placed into the window like the layer, in the theme's colours. Does
 /// nothing when they did not change.
-pub fn set_marks(window: &MainWindow, marks: &[transform::Mark]) {
+pub fn set_marks(window: &MainWindow, which: Picture, marks: &[transform::Mark]) {
+    let i = which.index();
     let theme = window.global::<Theme>();
     let rgba = |c: slint::Color| {
         let c = c.to_argb_u8();
@@ -281,12 +325,12 @@ pub fn set_marks(window: &MainWindow, marks: &[transform::Mark]) {
     let scale = f64::from(window.window().scale_factor());
     // Marks are clipped to the panel's picture area: past it they would cover other
     // panels, which the layer sits above.
-    let Some(area) = AREA.with(Cell::get) else {
+    let Some(area) = AREA.with(|a| a[i].get()) else {
         return;
     };
     PREVIEW.with(|p| {
         let mut p = p.borrow_mut();
-        let Some(st) = p.as_mut() else { return };
+        let Some(st) = p[i].as_mut() else { return };
         let mut changed = false;
         let mut n = 0;
         for m in marks {
@@ -334,6 +378,14 @@ pub fn set_marks(window: &MainWindow, marks: &[transform::Mark]) {
 /// Drops the layer (its frames go back) before the studio stops, or while the main
 /// window is hidden; the frame thread ends and unsubscribes. [`connect`] starts again.
 pub fn close() {
-    GENERATION.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    PREVIEW.with(|p| p.borrow_mut().take());
+    for which in Picture::ALL {
+        close_one(which);
+    }
+}
+
+/// [`close`] for one picture: the preview scene's when studio mode ends (ADR-0061).
+pub fn close_one(which: Picture) {
+    let i = which.index();
+    GENERATION[i].fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    PREVIEW.with(|p| p.borrow_mut()[i].take());
 }

@@ -12,7 +12,8 @@ import { Button, Checkbox, ColorPicker, FocusRing, Icon, IconButton, IconName, I
 // and as a swatch (the values a border gets when turned on while it is off).
 export struct SourceData { id: int, name: string, kind: string, icon: string, status: string, ok: bool, picture: bool, visible: bool, x: float, y: float, w: float, h: float, can-up: bool, can-down: bool, shape: int, radius: float, border: bool, border-width: float, border-color: string, border-swatch: color, crop-l: int, crop-t: int, crop-r: int, crop-b: int, pic-w: int, pic-h: int, locked: bool, audio: bool, muted: bool, volume: float, volume-text: string }
 // A scene in the Scenes panel (ADR-0059): `live` on air, `number` its place (1 up).
-export struct SceneData { id: int, name: string, live: bool, number: int }
+// `live`: the scene on air; `preview`: the preview scene in studio mode (ADR-0061).
+export struct SceneData { id: int, name: string, live: bool, preview: bool, number: int }
 // A source of the collection for Add source's "Existing source" list.
 export struct ExistingData { id: int, name: string, icon: string }
 export struct KindData { code: int, label: string }
@@ -78,6 +79,14 @@ export global Studio {
     // The panel the picture shows in: "rbs.program", else "rbs.preview" (without studio
     // mode both show the scene on air); the other one says where it is.
     in property <string> picture-panel: "rbs.program";
+    // Studio mode (ADR-0061): Preview shows the preview scene (edited there) and
+    // Program the scene on air; `scene-preview-state` is the Preview picture's state,
+    // with the codes of `preview-state`.
+    in property <bool> studio-mode;
+    in property <int> scene-preview-state: 1;
+    callback set-studio-mode(bool /* on */);
+    // The preview scene goes on air and the scene on air to preview (a cut).
+    callback transition();
     callback list-targets(int /* kind */);
     callback add-source(int /* kind */, int /* target */);
     callback delete-source(int /* id */);
@@ -409,19 +418,25 @@ export component ProgramPanel inherits Rectangle {
     // "rbs.program" or "rbs.preview".
     in property <string> panel;
     in property <string> title;
-    property <bool> here: Studio.picture-panel == panel;
-    property <int> shown: here ? Studio.preview-state : 6;
+    // In studio mode both panels have a picture: Preview the preview scene, Program the
+    // scene on air (ADR-0061).
+    property <bool> scene: Studio.studio-mode && panel == "rbs.preview";
+    property <bool> here: Studio.studio-mode || Studio.picture-panel == panel;
+    property <int> shown: !here ? 6 : scene ? Studio.scene-preview-state : Studio.preview-state;
     background: Theme.surface-sunken;
     accessible-role: image;
     accessible-label: title;
-    accessible-description: shown == 0 ? @tr("The live picture of the scene on air") : note.text;
+    accessible-description: shown != 0 ? note.text
+        : scene ? @tr("The picture of the preview scene, the next to go on air")
+        : @tr("The live picture of the scene on air");
     note := Text {
         visible: shown != 0;
         width: parent.width - 2 * Tokens.space-4;
-        text: shown == 1 ? @tr("The program is starting.")
+        text: shown == 1 ? (scene ? @tr("The preview is starting.") : @tr("The program is starting."))
+            : shown == 2 && scene ? @tr("The preview scene's own picture is not available on this platform yet. Its sources are in the Sources panel, and Transition puts it on air.")
             : shown == 2 ? @tr("The program picture is not available on this platform yet.")
             : shown == 3 ? @tr("The program picture cannot be shown in this session, for example over remote desktop.")
-            : shown == 4 ? @tr("The program picture shows in the main window. Dock this panel back to see it here.")
+            : shown == 4 ? @tr("The picture shows in the main window. Dock this panel back to see it here.")
             : shown == 6 ? @tr("Studio mode is off, so the scene on air shows in the Program panel.")
             : @tr("The studio is not running: {}", Studio.failure);
         color: Theme.text-secondary;
@@ -433,7 +448,8 @@ export component ProgramPanel inherits Rectangle {
     // Selecting, moving and resizing sources on the picture (ADR-0048). Arrow keys move
     // the selected source by 1 canvas pixel, with Shift by 10; Escape clears the
     // selection.
-    property <bool> editable: here && Studio.state == 1;
+    // In studio mode the preview scene is edited, on the Preview picture only.
+    property <bool> editable: here && Studio.state == 1 && (!Studio.studio-mode || scene);
     keys := FocusScope {
         enabled: editable;
         key-pressed(e) => {
@@ -464,7 +480,7 @@ export component ProgramPanel inherits Rectangle {
     }
     // Where no layer shows the picture, the toolkit draws the selection itself, clipped
     // to the panel like the layer's marks.
-    if shown != 0: Rectangle {
+    if shown != 0 && editable: Rectangle {
         clip: true;
         for m in Studio.marks: Rectangle {
             x: m.x;
@@ -636,17 +652,25 @@ component SceneRowView inherits Rectangle {
     in-out property <bool> editing;
     height: Tokens.size-control-md;
     border-radius: Tokens.radius-md;
-    // The scene the canvas shows is marked like a selected row; the live colour and
-    // a badge only while it actually goes out (streaming or recording, U12).
-    background: data.live ? Theme.accent-subtle : touch.has-hover ? Theme.surface-overlay : transparent;
-    border-width: data.live ? Tokens.size-border : 0px;
-    border-color: root.live-state != 0 ? Theme.state-live : Theme.accent;
+    // The scene being worked on is marked like a selected row: the one shown, or in
+    // studio mode the preview scene (ADR-0061). The live colour and badge only while
+    // the scene on air actually goes out (streaming or recording, U12).
+    property <bool> studio: Studio.studio-mode;
+    property <bool> marked: studio ? data.preview : data.live;
+    property <bool> on-air: data.live && root.live-state != 0;
+    background: marked ? Theme.accent-subtle : touch.has-hover ? Theme.surface-overlay : transparent;
+    border-width: marked || on-air ? Tokens.size-border : 0px;
+    border-color: on-air ? Theme.state-live : Theme.accent;
     accessible-role: list-item;
-    accessible-label: !data.live ? data.name
-        : root.live-state == 0 ? @tr("{}, shown", data.name)
-        : root.live-state == 2 ? @tr("{}, shown and recording", data.name)
-        : @tr("{}, on air", data.name);
-    accessible-description: @tr("Return puts it on air, F2 renames it, Delete removes it");
+    accessible-label: @tr("{}{}{}", data.name,
+        studio && data.preview ? @tr(", in preview") : "",
+        !data.live ? ""
+        : root.live-state == 0 ? (studio ? @tr(", program") : @tr(", shown"))
+        : root.live-state == 2 ? @tr(", on air and recording")
+        : @tr(", on air"));
+    accessible-description: Studio.studio-mode
+        ? @tr("Return puts it in preview, F2 renames it, Delete removes it")
+        : @tr("Return puts it on air, F2 renames it, Delete removes it");
     accessible-item-selectable: true;
     accessible-item-selected: data.live;
     accessible-action-default => { Studio.switch-scene(data.id); }
@@ -695,6 +719,25 @@ component SceneRowView inherits Rectangle {
                 accepted(t) => {
                     root.editing = false;
                     if t != data.name { Studio.rename-scene(data.id, t); }
+                }
+            }
+        }
+        // In studio mode the scene on air says so in neutral colours while nothing
+        // goes out (ADR-0061).
+        if studio && data.live && root.live-state == 0 && !root.editing: VerticalLayout {
+            alignment: center;
+            Rectangle {
+                height: Tokens.type-caption-line;
+                width: program-text.preferred-width + 2 * Tokens.space-2;
+                border-radius: self.height / 2;
+                background: Theme.surface-overlay;
+                program-text := Text {
+                    text: @tr("Program");
+                    color: Theme.text-secondary;
+                    font-size: Tokens.type-caption-size;
+                    font-weight: Tokens.type-label-weight;
+                    vertical-alignment: center;
+                    horizontal-alignment: center;
                 }
             }
         }
@@ -947,6 +990,50 @@ export component MixerPanel inherits Rectangle {
 // Live controls: Go live and End stream, Record and Stop recording. The stream and the
 // recording run at the same time or alone (ADR-0047). End stream asks first (U4: it
 // cannot be undone).
+// The transition rail or panel (ADR-0061, UI spec Studio mode): the transition's name
+// ("Cut", the only one for now) and, in studio mode, the Transition button that puts
+// the preview scene on air. Narrower than 40 px it is only the button, floating over
+// the bottom edge of the two views.
+export component TransitionPanel inherits Rectangle {
+    background: Theme.surface-raised;
+    property <bool> narrow: root.width < 40px;
+    property <bool> can: Studio.studio-mode && Studio.state == 1;
+    if !narrow: VerticalLayout {
+        padding: Tokens.space-2;
+        spacing: Tokens.space-2;
+        alignment: center;
+        Text {
+            text: @tr("Cut");
+            color: Theme.text-secondary;
+            font-size: Tokens.type-caption-size;
+            horizontal-alignment: center;
+            accessible-role: none;
+        }
+        if root.can: Button {
+            text: root.width < 120px ? @tr("Go") : @tr("Transition");
+            kind: "primary";
+            accessible-name: @tr("Transition: put the preview scene on air");
+            clicked => { Studio.transition(); }
+        }
+        if !Studio.studio-mode && root.width >= 120px: Text {
+            text: @tr("Turn on studio mode to prepare the next scene in Preview.");
+            color: Theme.text-secondary;
+            font-size: Tokens.type-caption-size;
+            horizontal-alignment: center;
+            wrap: word-wrap;
+        }
+    }
+    if narrow && root.can: VerticalLayout {
+        alignment: end;
+        padding-bottom: Tokens.space-2;
+        IconButton {
+            icon: IconName.chevron-right;
+            name: @tr("Transition: put the preview scene on air");
+            clicked => { Studio.transition(); }
+        }
+    }
+}
+
 export component LiveControlsPanel inherits Rectangle {
     background: Theme.surface-raised;
     property <bool> recording: Studio.rec-state == 2;

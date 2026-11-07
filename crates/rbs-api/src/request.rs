@@ -79,6 +79,9 @@ pub struct AddSource {
     /// Its name; `null` lets the server pick one.
     #[serde(default)]
     pub name: Option<String>,
+    /// The scene it is placed in (protocol 1.7); absent: the program scene.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scene: Option<u32>,
 }
 
 /// `source.delete`.
@@ -187,6 +190,18 @@ pub struct SetSourceMuted {
 pub struct AddItem {
     /// The source's id (`scene.list` lists every source).
     pub source: u32,
+    /// The scene it is placed in (protocol 1.7); absent: the program scene.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scene: Option<u32>,
+}
+
+/// `canvas.set_preview` (protocol 1.7, ADR-0061): a scene enters studio mode with it in
+/// preview, or changes the preview scene; `null` leaves studio mode.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SetPreview {
+    /// The preview scene's id, or `null`.
+    pub scene: Option<u32>,
 }
 
 /// `item.set_visible` (protocol 1.6).
@@ -319,6 +334,12 @@ pub enum Command {
     ItemSetVisible(SetItemVisible),
     /// `item.set_locked` (protocol 1.6).
     ItemSetLocked(SetItemLocked),
+    /// `scene.sources` (protocol 1.7): the source items of any scene.
+    SceneSources(SceneRef),
+    /// `canvas.set_preview` (protocol 1.7).
+    CanvasSetPreview(SetPreview),
+    /// `canvas.transition` (protocol 1.7).
+    CanvasTransition,
     /// `edit.undo`.
     EditUndo,
     /// `edit.redo`.
@@ -382,6 +403,9 @@ impl Command {
             Command::SourceSetVolume(_) => "source.set_volume",
             Command::SourceSetMuted(_) => "source.set_muted",
             Command::ItemAdd(_) => "item.add",
+            Command::SceneSources(_) => "scene.sources",
+            Command::CanvasSetPreview(_) => "canvas.set_preview",
+            Command::CanvasTransition => "canvas.transition",
             Command::ItemSetVisible(_) => "item.set_visible",
             Command::ItemSetLocked(_) => "item.set_locked",
             Command::EditUndo => "edit.undo",
@@ -474,6 +498,9 @@ pub const METHODS: &[MethodInfo] = &[
     m("item.add", Some(Scope::Control)),
     m("item.set_visible", Some(Scope::Control)),
     m("item.set_locked", Some(Scope::Control)),
+    m("scene.sources", Some(Scope::Read)),
+    m("canvas.set_preview", Some(Scope::Control)),
+    m("canvas.transition", Some(Scope::Control)),
     m("edit.undo", Some(Scope::Control)),
     m("edit.redo", Some(Scope::Control)),
     m("output.profiles", Some(Scope::Read)),
@@ -590,6 +617,12 @@ enum WireRequest {
     ItemSetVisible(SetItemVisible),
     #[serde(rename = "item.set_locked")]
     ItemSetLocked(SetItemLocked),
+    #[serde(rename = "scene.sources")]
+    SceneSources(SceneRef),
+    #[serde(rename = "canvas.set_preview")]
+    CanvasSetPreview(SetPreview),
+    #[serde(rename = "canvas.transition")]
+    CanvasTransition(Empty),
     #[serde(rename = "edit.undo")]
     EditUndo(Empty),
     #[serde(rename = "edit.redo")]
@@ -658,6 +691,9 @@ impl From<WireRequest> for Request {
             WireRequest::SourceSetVolume(p) => Request::Command(C::SourceSetVolume(p)),
             WireRequest::SourceSetMuted(p) => Request::Command(C::SourceSetMuted(p)),
             WireRequest::ItemAdd(p) => Request::Command(C::ItemAdd(p)),
+            WireRequest::SceneSources(p) => Request::Command(C::SceneSources(p)),
+            WireRequest::CanvasSetPreview(p) => Request::Command(C::CanvasSetPreview(p)),
+            WireRequest::CanvasTransition(_) => Request::Command(C::CanvasTransition),
             WireRequest::ItemSetVisible(p) => Request::Command(C::ItemSetVisible(p)),
             WireRequest::ItemSetLocked(p) => Request::Command(C::ItemSetLocked(p)),
             WireRequest::EditUndo(_) => Request::Command(C::EditUndo),
@@ -709,6 +745,9 @@ impl From<Request> for WireRequest {
                 C::SourceSetVolume(p) => WireRequest::SourceSetVolume(p),
                 C::SourceSetMuted(p) => WireRequest::SourceSetMuted(p),
                 C::ItemAdd(p) => WireRequest::ItemAdd(p),
+                C::SceneSources(p) => WireRequest::SceneSources(p),
+                C::CanvasSetPreview(p) => WireRequest::CanvasSetPreview(p),
+                C::CanvasTransition => WireRequest::CanvasTransition(Empty {}),
                 C::ItemSetVisible(p) => WireRequest::ItemSetVisible(p),
                 C::ItemSetLocked(p) => WireRequest::ItemSetLocked(p),
                 C::EditUndo => WireRequest::EditUndo(Empty {}),
@@ -903,6 +942,8 @@ pub enum Response {
     SceneAdded(SceneAdded),
     /// `item.add` (protocol 1.6).
     ItemAdded(ItemAdded),
+    /// `scene.sources` (protocol 1.7): one row per source item of the scene, top first.
+    SceneSources(Vec<SourceInfo>),
     /// `output.profiles`.
     Profiles(ProfileList),
     /// `record.start`, `record.start_to_file`.
