@@ -124,6 +124,9 @@ export global Studio {
     // sources there are.
     in property <[string]> global-kind-names;
     in property <int> global-count;
+    // The Sources panel's Global group is open (ADR-0065): closed when the app starts,
+    // kept per window while it runs.
+    in-out property <bool> globals-open: false;
     in-out property <int> global-option: -1;
     callback pick-global-kind(int /* kind index */);
     callback add-global(int /* option */);
@@ -898,21 +901,61 @@ export component ScenesPanel inherits Rectangle {
 // also while studio mode edits the preview scene (U4).
 component SourcesGroup inherits Rectangle {
     in property <string> heading;
-    in property <bool> global;
     min-height: lay.min-height;
     preferred-height: lay.preferred-height;
     accessible-role: text;
-    accessible-label: global && Studio.on-air ? @tr("{}, on air in every scene", heading) : heading;
+    accessible-label: heading;
     lay := HorizontalLayout {
         padding-left: Tokens.space-2;
         padding-top: Tokens.space-1;
+        Text {
+            text: root.heading;
+            color: Theme.text-secondary;
+            font-size: Tokens.type-caption-size;
+            font-weight: Tokens.type-label-weight;
+            vertical-alignment: center;
+            horizontal-stretch: 1;
+            accessible-role: none;
+        }
+    }
+}
+
+// The Global group's header (ADR-0065): a disclosure button with the count, folded by
+// default, so the user knows global sources exist without them taking the list.
+component GlobalsFold inherits Rectangle {
+    in property <string> heading;
+    property <bool> global: true;
+    min-height: lay.min-height;
+    preferred-height: lay.preferred-height;
+    accessible-role: button;
+    accessible-label: !global ? heading
+        : Studio.on-air ? @tr("{} ({}), on air in every scene", heading, Studio.global-count)
+        : @tr("{} ({})", heading, Studio.global-count);
+    accessible-expanded: global && Studio.globals-open;
+    accessible-action-default => { if global { Studio.globals-open = !Studio.globals-open; } }
+    background: global && fold.has-hover ? Theme.surface-raised : transparent;
+    border-radius: Tokens.radius-sm;
+    fold := TouchArea {
+        enabled: root.global;
+        mouse-cursor: root.global ? MouseCursor.pointer : MouseCursor.default;
+        clicked => { Studio.globals-open = !Studio.globals-open; }
+    }
+    lay := HorizontalLayout {
+        padding-left: Tokens.space-2;
+        padding-right: Tokens.space-2;
+        padding-top: Tokens.space-1;
+        padding-bottom: global ? Tokens.space-1 : 0;
         spacing: Tokens.space-2;
+        if global: VerticalLayout {
+            alignment: center;
+            Icon { name: Studio.globals-open ? IconName.chevron-down : IconName.chevron-right; ink: Theme.text-secondary; }
+        }
         if global: VerticalLayout {
             alignment: center;
             Icon { name: IconName.globe; ink: Theme.text-secondary; }
         }
         Text {
-            text: root.heading;
+            text: root.global ? @tr("{} ({})", root.heading, Studio.global-count) : root.heading;
             color: Theme.text-secondary;
             font-size: Tokens.type-caption-size;
             font-weight: Tokens.type-label-weight;
@@ -964,15 +1007,17 @@ export component SourcesPanel inherits Rectangle {
         content-height: rows.preferred-height;
         rows := VerticalLayout {
             padding: Tokens.space-2;
-            spacing: Tokens.space-1;
+            // Each entry spaces itself, so a folded global row takes no room.
+            spacing: 0;
             alignment: start;
             for s[i] in Studio.sources: VerticalLayout {
                 spacing: Tokens.space-1;
+                padding-bottom: !s.global || Studio.globals-open || Studio.selected-source == s.id || i == 0 ? Tokens.space-1 : 0;
                 // Global sources come first, under their own heading (ADR-0065): they
-                // are drawn above every scene.
-                if s.global && i == 0: SourcesGroup { heading: @tr("Global"); global: true; }
+                // are drawn above every scene. The group is folded unless opened.
+                if s.global && i == 0: GlobalsFold { heading: @tr("Global"); }
                 if !s.global && i > 0 && Studio.sources[i - 1].global: SourcesGroup { heading: @tr("This scene"); }
-                SourceRowView {
+                if !s.global || Studio.globals-open || Studio.selected-source == s.id: SourceRowView {
                     data: s;
                     leaving => { list-focus.focus(); }
                 }
