@@ -158,6 +158,7 @@ struct App {
     /// The Settings window while it is open (U17).
     settings: Option<SettingsWindow>,
     menus: MenuModels,
+    toolbar_model: Rc<VecModel<ToolbarData>>,
     /// End stream was picked in the menu bar: the frame asks first (U4).
     confirm_end: bool,
 }
@@ -387,8 +388,8 @@ impl App {
             .workspace()
             .windows
             .get(window)
-            .and_then(|w| w.layout())
-            .and_then(|l| l.flatten(area).handles.get(handle).cloned())
+            .and_then(|w| w.flatten(area).handles.into_iter().nth(handle))
+            .map(|h| h.handle)
         else {
             return;
         };
@@ -1012,7 +1013,8 @@ impl Ctx {
         Self::push_general(&app);
 
         // Main window.
-        let (stacks, handles) = view::window_view(0, app.session.workspace().main(), app.area(0));
+        let (stacks, handles) =
+            view::window_view(0, &app.session.workspace().windows[0], app.area(0));
         app.main_models.update(stacks, handles);
 
         self.sync_floats(&mut app);
@@ -1033,6 +1035,21 @@ impl Ctx {
         }
         let values = menu_bar::values(&app.shown());
         app.menus.update(values);
+        let (tools, toolbar_visible, toolbar_space) = menu_bar::toolbar(&app.shown());
+        set_rows(
+            &app.toolbar_model,
+            tools
+                .into_iter()
+                .map(|t| ToolbarData {
+                    id: t.id.into(),
+                    title: t.title.into(),
+                    kind: t.kind as i32,
+                    enabled: t.enabled,
+                    checked: t.checked,
+                    live: t.live,
+                })
+                .collect(),
+        );
         let ws = app.session.workspace();
         let live = app.session.live();
         let (toast_kind, toast_subject) = match &app.toast {
@@ -1047,6 +1064,7 @@ impl Ctx {
             None => (0, String::new()),
         };
         let panels = ModelRc::from(app.panels_model.clone());
+        let toolbar = ModelRc::from(app.toolbar_model.clone());
         let workspaces = ModelRc::from(app.workspaces_model.clone());
         let push = |g: Shell<'_>| {
             g.set_live_state(view::live_code(live));
@@ -1064,6 +1082,9 @@ impl Ctx {
             g.set_error_kind(error_kind);
             g.set_error_detail(error_detail.as_str().into());
             g.set_end_stream_confirm(app.confirm_end);
+            g.set_toolbar(toolbar.clone());
+            g.set_toolbar_visible(toolbar_visible);
+            g.set_toolbar_has_space(toolbar_space);
         };
         push(app.main.global::<Shell>());
         app.menus.push(&app.main.global::<Menus>());
@@ -1156,7 +1177,8 @@ impl Ctx {
             let Some(layout) = app.session.workspace().windows[w].layout() else {
                 continue;
             };
-            let (stacks, handles) = view::window_view(w, layout, app.area(w));
+            let (stacks, handles) =
+                view::window_view(w, &app.session.workspace().windows[w], app.area(w));
             slot.models.update(stacks, handles);
             slot.window.set_window(w as i32);
             slot.window.set_panel_names(view::panel_names(layout));
@@ -1269,9 +1291,7 @@ fn install(g: &Shell<'_>, ctx: &Ctx) {
         if let Some(id) = panel(&id)
             && let Some((w, s, _)) = app.session.workspace().find(&id)
         {
-            let count = app.session.workspace().windows[w]
-                .layout()
-                .map_or(0, |l| l.stack_count());
+            let count = app.session.workspace().windows[w].stack_count();
             if count > 1 {
                 let c = LayoutCommand::MoveToStack {
                     panel: id,
@@ -1887,6 +1907,7 @@ fn run(config: PathBuf, notice: Option<String>) -> Result<(), Box<dyn std::error
             tray: None,
             settings: None,
             menus: MenuModels::default(),
+            toolbar_model: Rc::new(VecModel::default()),
             confirm_end: false,
             demo_since: demo_live.then(Instant::now),
             studio: studio_ui::StudioUi::new(&studio_config, keys.as_ref(), user, first_canvas),

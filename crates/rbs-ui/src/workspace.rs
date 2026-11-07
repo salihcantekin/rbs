@@ -447,6 +447,35 @@ impl Window {
         }
     }
 
+    /// The window laid out in `content`: every tab stack shown and every divider.
+    pub fn flatten(&self, content: crate::layout::Rect) -> crate::frame::WindowFlat {
+        crate::frame::flatten_window(self, content)
+    }
+
+    /// Move divider `handle` of [`Window::flatten`] in `content` by `delta` logical
+    /// pixels. Returns false when there is no such divider.
+    pub fn resize(&mut self, content: crate::layout::Rect, handle: usize, delta: f32) -> bool {
+        use crate::frame::HandleTarget;
+        let Some(h) = self.flatten(content).handles.into_iter().nth(handle) else {
+            return false;
+        };
+        match h.target {
+            HandleTarget::Tree(t) => self
+                .trees_mut()
+                .into_iter()
+                .nth(t)
+                .is_some_and(|tree| tree.resize(&h.handle, delta)),
+            HandleTarget::Area(side) => match self.main_mut() {
+                Some(m) => {
+                    let size = crate::frame::resized_area(m, content, side, delta);
+                    m.area_mut(side).size = size;
+                    true
+                }
+                None => false,
+            },
+        }
+    }
+
     /// Is this the main window?
     pub fn is_main(&self) -> bool {
         matches!(self.content, WindowContent::Main(_))
@@ -1086,12 +1115,31 @@ impl Workspace {
             window
         };
         self.drop_empty_floating();
-        let l = self
+        let window = self
             .windows
             .get_mut(target)
-            .and_then(Window::layout_mut)
             .ok_or(WorkspaceError::NoTarget)?;
-        l.insert_at_edge(id.clone(), edge);
+        // In the main window the left, right and bottom edges are the outer sides of
+        // those areas (ADR-0049), which are shown; the top edge is the centre's.
+        let side = match edge {
+            Edge::Left => Some(Side::Left),
+            Edge::Right => Some(Side::Right),
+            Edge::Bottom => Some(Side::Bottom),
+            Edge::Top => None,
+        };
+        if let (Some(m), Some(side)) = (window.main_mut(), side) {
+            let area = m.area_mut(side);
+            area.visible = true;
+            match &mut area.layout {
+                Some(l) => l.insert_at_edge(id.clone(), edge),
+                None => area.layout = Some(Node::tabs(vec![id.clone()])),
+            }
+            return Ok(());
+        }
+        window
+            .layout_mut()
+            .ok_or(WorkspaceError::NoTarget)?
+            .insert_at_edge(id.clone(), edge);
         Ok(())
     }
 
@@ -1400,8 +1448,14 @@ placement = { display = "edid:SAM-7012-HX55", connector = "HDMI-1", size = [1920
         w.move_to_edge(&stats, 2, Edge::Right).unwrap();
         assert_eq!(w.windows.len(), 2);
         assert_eq!(w.find(&stats).map(|l| l.0), Some(1));
+        // The main window's left edge is the outer side of its left area.
         w.move_to_edge(&stats, 0, Edge::Left).unwrap();
-        assert_eq!(w.find(&stats), Some((0, 0, 0)));
+        let left = main_of(&w)
+            .left
+            .layout
+            .as_ref()
+            .map(|l| l.panels().contains(&&stats));
+        assert_eq!(left, Some(true));
         w.validate().unwrap();
     }
 
