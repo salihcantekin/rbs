@@ -2,7 +2,7 @@
 # The single source of visual values. Shells generate their toolkit format from
 # this file; UI code refers to tokens by name only (rule U6). Values are initial
 # and are tuned in usability testing; names are a contract.
-format = 1
+format = 2
 
 # Live and recording colours are the same in every theme (rule U12): themes cannot change them.
 [fixed]
@@ -122,3 +122,8 @@ format = 1
 "type.label" = { size = 13, line = 20, weight = 500 }
 "type.title" = { size = 15, line = 22, weight = 600 }
 "type.heading" = { size = 20, line = 28, weight = 600 }
+
+# Font families in order of preference; the first one installed is used.
+# Empty: the OS UI font.
+[font]
+"font.family" = []
