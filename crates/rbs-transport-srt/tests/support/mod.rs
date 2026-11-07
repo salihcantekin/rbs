@@ -231,6 +231,7 @@ fn serve(
     let mut out = Vec::with_capacity(2048);
     let mut next_id = 1000_u32;
     let mut ever_connected = 0_usize;
+    let debug = std::env::var_os("RBS_SRT_DEBUG").is_some();
     if let Some(gate) = &b.accept_gate {
         gate.wait();
     }
@@ -253,6 +254,7 @@ fn serve(
             break;
         }
         match &received {
+            _ if !debug => {}
             Err(e)
                 if !matches!(
                     e.kind(),

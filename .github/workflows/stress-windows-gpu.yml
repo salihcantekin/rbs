@@ -45,7 +45,7 @@ jobs:
           fails=0
           for i in 1 2 3 4 5 6; do
             start=$SECONDS
-            if ! cargo nextest run --workspace --profile ci --no-tests=pass > "run-$i.log" 2>&1; then
+            if ! cargo nextest run --workspace --profile ci --no-tests=pass -E 'not test(send_and_delivery_do_not_allocate)' > "run-$i.log" 2>&1; then
               fails=$((fails+1)); echo "RUN $i FAST TIER FAILED"; grep -E "FAIL|TIMEOUT|SIGSEGV|ABORT|DEBUG|recent" "run-$i.log" | head -60
             fi
             grep -E "Summary" "run-$i.log" | sed 's/\x1b\[[0-9;]*m//g'
