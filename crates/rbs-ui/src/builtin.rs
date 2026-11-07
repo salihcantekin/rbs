@@ -2,7 +2,7 @@
 //!
 //! They are defaults: users may change them and restore them, never delete them.
 
-use crate::layout::{Axis, Node, Tabs};
+use crate::layout::{Axis, Node, RailAt, Tabs};
 use crate::panel::id;
 use crate::workspace::{DEFAULT_FLYOUT, EdgeGroup, Side, Workspace, same_name};
 
@@ -21,12 +21,18 @@ fn tabs(ids: &[&'static str]) -> Node {
     Node::tabs(ids.iter().map(|i| id(i)).collect())
 }
 
-/// The full editing layout of the design system's main window structure: Preview in
-/// the centre, Scenes and Sources in the left area, Properties, Live controls and
-/// Transition (collapsed) in the right area, the Mixer in the bottom area, and Stats
-/// and Outputs as edge tabs on the right (ADR-0049, spec Frame).
+/// The studio split (ADR-0064): Preview alone outside studio mode; Preview, the
+/// Transition rail and Program in studio mode.
+fn studio() -> Node {
+    Node::studio(id("rbs.preview"), id("rbs.program"), RailAt::Between)
+}
+
+/// The full editing layout of the design system's main window structure: the studio
+/// split in the centre, Scenes and Sources in the left area, Properties and Live
+/// controls (collapsed) in the right area, the Mixer in the bottom area, and Stats
+/// and Outputs as edge tabs on the right (ADR-0049, ADR-0064, spec Frame).
 pub fn edit() -> Workspace {
-    let mut ws = Workspace::new("Edit", tabs(&["rbs.preview"]));
+    let mut ws = Workspace::new("Edit", studio());
     if let Some(m) = ws.main_layout_mut() {
         m.left.layout = Some(Node::split(
             Axis::Vertical,
@@ -38,9 +44,8 @@ pub fn edit() -> Workspace {
         m.right.layout = Some(Node::split(
             Axis::Vertical,
             vec![
-                (0.5, tabs(&["rbs.properties"])),
+                (0.7, tabs(&["rbs.properties"])),
                 (0.3, collapsed(&["rbs.live-controls"])),
-                (0.2, collapsed(&["rbs.transition"])),
             ],
         ));
         m.bottom.layout = Some(tabs(&["rbs.mixer"]));
@@ -55,12 +60,9 @@ pub fn edit() -> Workspace {
     ws
 }
 
-/// Preview and program side by side, live controls, room for chat, and the mixer.
+/// The studio split over the mixer, live controls, room for chat.
 pub fn live() -> Workspace {
-    let views = Node::split(
-        Axis::Horizontal,
-        vec![(0.5, tabs(&["rbs.preview"])), (0.5, tabs(&["rbs.program"]))],
-    );
+    let views = studio();
     let left = Node::split(
         Axis::Vertical,
         vec![(0.68, views), (0.32, tabs(&["rbs.mixer"]))],
@@ -68,7 +70,7 @@ pub fn live() -> Workspace {
     let right = Node::split(
         Axis::Vertical,
         vec![
-            (0.4, tabs(&["rbs.live-controls", "rbs.transition"])),
+            (0.4, tabs(&["rbs.live-controls"])),
             (0.6, tabs(&["rbs.stats", "rbs.scenes"])),
         ],
     );
