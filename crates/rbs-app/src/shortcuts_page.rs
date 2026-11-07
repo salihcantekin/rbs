@@ -24,6 +24,8 @@ struct Recording {
     global: bool,
     /// A key press that is not a chord: why.
     unusable: Option<&'static str>,
+    /// The shortcut being edited (a double-click on its chip): Save replaces it.
+    editing: Option<Chord>,
 }
 
 /// One row of the page: a command or a picker choice.
@@ -206,6 +208,20 @@ impl Keys {
         Some(Chord::new(r.mods, key).map_err(|e| format!("{e}.")))
     }
 
+    /// The shortcuts file and keymap the recorder checks against: without the shortcut
+    /// being edited, so its own chord (or a new scope for it) is free.
+    fn recorder_base(&self, r: &Recording) -> (ShortcutsDoc, Option<Keymap>) {
+        let mut doc = self.doc.clone();
+        match r.editing {
+            Some(old) => {
+                doc.remove(&r.command, old);
+                let keymap = Keymap::resolve(&doc, self.platform);
+                (doc, Some(keymap))
+            }
+            None => (doc, None),
+        }
+    }
+
     /// The recorder's state for the page: label, state code, message.
     fn recorder_view(&self, title: &dyn Fn(&str) -> String) -> (String, i32, String) {
         let Some(r) = &self.recording else {
@@ -218,7 +234,9 @@ impl Keys {
         };
         let label = chord.label(self.platform);
         let scope = if r.global { Scope::Global } else { Scope::App };
-        let (state, message) = match self.keymap.check(&chord, scope) {
+        let (_, edited) = self.recorder_base(r);
+        let keymap = edited.as_ref().unwrap_or(&self.keymap);
+        let (state, message) = match keymap.check(&chord, scope) {
             Check::Free => (1, String::new()),
             Check::Warn(w) => (4, w),
             Check::Refused(why) => (3, why),
@@ -528,6 +546,7 @@ pub fn refresh(ctx: &Ctx, app: &App) {
     g.set_rec_label(rec_label.into());
     g.set_rec_state(rec_state);
     g.set_rec_message(rec_message.into());
+    g.set_rec_editing(keys.recording.as_ref().is_some_and(|r| r.editing.is_some()));
     g.set_rec_global_available(platform.has_global());
     let names = mod_names(platform);
     g.set_mod_names(ModelRc::new(VecModel::from(
@@ -651,8 +670,32 @@ pub fn install(g: &Shortcuts<'_>, ctx: &Ctx) {
             key: None,
             global: false,
             unusable: None,
+            editing: None,
         });
         // A chord bound globally can be recorded again while the recorder is open.
+        keys.sync_global();
+    });
+    on!(on_edit, |app, c, row: i32, chip: i32| {
+        let _ = app;
+        let mut keys = c.keys.borrow_mut();
+        let Some(r) = usize::try_from(row).ok().and_then(|i| keys.rows.get(i)) else {
+            return;
+        };
+        let Some(b) = usize::try_from(chip)
+            .ok()
+            .and_then(|i| keys.keymap.of(&r.command).nth(i))
+        else {
+            return;
+        };
+        let recording = Recording {
+            command: r.command.clone(),
+            mods: b.chord.mods,
+            key: Some(b.chord.key),
+            global: b.scope == Scope::Global,
+            unusable: None,
+            editing: Some(b.chord),
+        };
+        keys.recording = Some(recording);
         keys.sync_global();
     });
     on!(on_rec_set_mod, |app, c, i: i32, on: bool| {
@@ -697,11 +740,13 @@ pub fn install(g: &Shortcuts<'_>, ctx: &Ctx) {
                 return;
             };
             let scope = if r.global { Scope::Global } else { Scope::App };
-            let mut doc = keys.doc.clone();
-            match keys.keymap.check(&chord, scope) {
+            // Editing: the old shortcut goes, then the new one is added as by Add.
+            let (mut doc, edited) = keys.recorder_base(&r);
+            let keymap = edited.as_ref().unwrap_or(&keys.keymap);
+            match keymap.check(&chord, scope) {
                 Check::Free | Check::Warn(_) => doc.add(&r.command, chord, scope),
                 Check::Taken { command, .. } if command != r.command => {
-                    doc.replace(&keys.keymap, &r.command, chord, scope);
+                    doc.replace(keymap, &r.command, chord, scope);
                 }
                 _ => return,
             }
@@ -894,6 +939,7 @@ mod tests {
             key: Some(Key::Letter(b'Z')),
             global: false,
             unusable: None,
+            editing: None,
         });
         let (label, state, msg) = k.recorder_view(&title);
         assert_eq!((label.as_str(), state), ("Ctrl+Z", 2));
@@ -911,6 +957,36 @@ mod tests {
             r.unusable = Some("nope");
         }
         assert_eq!(k.recorder_view(&title).1, 3);
+    }
+
+    /// Editing a shortcut (double-click on its chip): its own chord is free, so it can
+    /// be kept with another scope, and Save's file holds the new one, not the old.
+    #[test]
+    fn editing_frees_the_chord_being_edited() {
+        let mut k = keys_with(ShortcutsDoc::default());
+        let title = |c: &str| c.to_owned();
+        let undo = Chord::parse("Ctrl+Z").unwrap();
+        k.recording = Some(Recording {
+            command: "edit.undo".into(),
+            mods: undo.mods,
+            key: Some(undo.key),
+            global: false,
+            unusable: None,
+            editing: Some(undo),
+        });
+        assert_eq!(k.recorder_view(&title).1, 1);
+        if let Some(r) = k.recording.as_mut() {
+            r.key = Some(Key::Letter(b'U'));
+        }
+        assert_eq!(k.recorder_view(&title).1, 1);
+        let r = k.recording.clone().unwrap();
+        let (mut doc, edited) = k.recorder_base(&r);
+        let ctrl_u = Chord::parse("Ctrl+U").unwrap();
+        assert_eq!(edited.as_ref().unwrap().app(&undo), None);
+        doc.add("edit.undo", ctrl_u, Scope::App);
+        let after = Keymap::resolve(&doc, Platform::Windows);
+        assert_eq!(after.app(&ctrl_u), Some("edit.undo"));
+        assert_eq!(after.app(&undo), None);
     }
 
     /// With a fake OS: nothing is created without global bindings, refused chords are
@@ -953,6 +1029,7 @@ mod tests {
             key: None,
             global: true,
             unusable: None,
+            editing: None,
         });
         k.sync_global();
         assert_eq!(calls.borrow().last().unwrap().len(), 0);
