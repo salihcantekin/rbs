@@ -1,6 +1,6 @@
 # ADR-0060: Shortcuts bind registry commands to key chords, in the app or globally; Settings › Shortcuts edits them
 
-- Status: Accepted (2026-11-07, after review round 2; threads may accept ADRs per the owner's standing policy)
+- Status: Accepted
 - Date: 2026-11-07
 - Deciders: Salih (owner)
 - Builds on: ADR-0050 (command registry), ADR-0051 (user data documents), ADR-0013 (zero cost when unused), ADR-0056 (keep running after the main window closes), ADR-0057 (Settings › Appearance), ADR-0059 (scenes in the studio)
