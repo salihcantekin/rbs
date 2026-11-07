@@ -9,6 +9,8 @@
 //! - [`OutputProfile`] (glossary: Output profile) and the scene collection document
 //!   ([`rbs_scene::SceneCollection`] implements [`Document`]).
 //! - [`Current`]: which profile and collection are in use.
+//! - [`theme`]: user themes (a library of `rbs_ui::tokens::ThemeBody`) and the
+//!   [`Appearance`] choice (ADR-0057).
 //! - [`UserData`]: where each of them lives under the config directory.
 //!
 //! Application layer: used by the composition roots (`rbs-app`, `rbs-cli`); no engine,
@@ -19,6 +21,7 @@ pub mod document;
 pub mod library;
 pub mod profile;
 pub mod scenes;
+pub mod theme;
 
 use std::path::{Path, PathBuf};
 
@@ -26,6 +29,7 @@ pub use current::Current;
 pub use document::{DataError, Document};
 pub use library::{Entry, EntryId, Library, Listed, Listing};
 pub use profile::OutputProfile;
+pub use theme::{Appearance, AppearanceMode, ThemeId};
 
 /// Directory of output profiles, under the config directory.
 pub const PROFILES_DIR: &str = "profiles";
@@ -35,8 +39,10 @@ pub const SCENE_COLLECTIONS_DIR: &str = "scenes";
 pub const CURRENT_FILE: &str = "current.toml";
 /// Reserved: UI workspaces (ADR-0017, owned by `rbs-ui`).
 pub const WORKSPACES_DIR: &str = "workspaces";
-/// Reserved: user themes (format to be decided).
+/// User themes (ADR-0057).
 pub const THEMES_DIR: &str = "themes";
+/// File holding the appearance choice (ADR-0057).
+pub const APPEARANCE_FILE: &str = "appearance.toml";
 /// Reserved: the asset library (format to be decided).
 pub const LIBRARY_DIR: &str = "library";
 
@@ -67,6 +73,43 @@ impl UserData {
     /// The scene collections.
     pub fn scene_collections(&self) -> Library<rbs_scene::SceneCollection> {
         Library::new(self.root.join(SCENE_COLLECTIONS_DIR))
+    }
+
+    /// The user themes.
+    pub fn themes(&self) -> Library<rbs_ui::tokens::ThemeBody> {
+        Library::new(self.root.join(THEMES_DIR))
+    }
+
+    /// The appearance choice; the defaults if the file is missing, or if it cannot be
+    /// read (with the reason; the file is left as it is).
+    pub fn appearance(&self) -> (Appearance, Option<DataError>) {
+        match document::read::<Appearance>(&self.root.join(APPEARANCE_FILE)) {
+            Ok(Some(r)) => (r.document, None),
+            Ok(None) => (Appearance::default(), None),
+            Err(e) => (Appearance::default(), Some(e)),
+        }
+    }
+
+    /// Records the appearance choice.
+    pub fn set_appearance(
+        &self,
+        _lock: &WriterLock,
+        appearance: &Appearance,
+    ) -> Result<(), DataError> {
+        document::write(&self.root.join(APPEARANCE_FILE), appearance, None)
+    }
+
+    /// Moves `appearance.toml` aside to `appearance.toml.reset.bak` (numbered when
+    /// taken), so the app starts with the default look (`rbs-app --reset-appearance`).
+    /// Returns where it went; `None` when there was no file.
+    pub fn reset_appearance(&self, _lock: &WriterLock) -> Result<Option<PathBuf>, DataError> {
+        let path = self.root.join(APPEARANCE_FILE);
+        if !path.exists() {
+            return Ok(None);
+        }
+        let to = document::aside_path(&path, "reset");
+        std::fs::rename(&path, &to)?;
+        Ok(Some(to))
     }
 
     /// Which profile and collection are in use; unset if the file is missing or cannot

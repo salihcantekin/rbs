@@ -12,8 +12,10 @@ use rbs_core::media::Size;
 use rbs_core::timing::FrameRate;
 use rbs_scene::SceneCollection;
 use rbs_scene::model::SceneScope;
+use rbs_ui::tokens::ThemeBody;
 use rbs_user_data::{
-    Current, DataError, Document, Entry, EntryId, Library, OutputProfile, UserData, WriterLock,
+    Appearance, Current, DataError, Document, Entry, EntryId, Library, OutputProfile, UserData,
+    WriterLock,
 };
 use serde::Serialize;
 use serde::de::DeserializeOwned;
@@ -488,6 +490,88 @@ impl UserSession {
             data.scene_collections()
                 .delete(lock, &id)
                 .map(|_| ())
+                .map_err(|e| e.to_string())
+        })?
+    }
+}
+
+/// User themes and the appearance choice (ADR-0057). Writes go through the writer
+/// thread like every other user data write.
+impl UserSession {
+    /// The user data (for reading).
+    pub fn data(&self) -> &UserData {
+        &self.data
+    }
+
+    /// The user themes, by name.
+    pub fn themes(&self) -> Vec<(EntryId, String)> {
+        listed(&self.data.themes())
+    }
+
+    /// Adds a theme; returns its id.
+    pub fn create_theme(&self, name: &str, theme: ThemeBody) -> Result<EntryId, String> {
+        let name = name.to_owned();
+        self.run(move |data, lock, _| {
+            data.themes()
+                .create(lock, &name, &theme)
+                .map_err(|e| e.to_string())
+        })?
+    }
+
+    /// Saves a theme under `name` (a rename when it differs).
+    pub fn save_theme(&self, id: &EntryId, name: &str, theme: ThemeBody) -> Result<(), String> {
+        let (id, name) = (id.clone(), name.to_owned());
+        self.run(move |data, lock, _| {
+            data.themes()
+                .save(lock, &id, &Entry::new(name, theme))
+                .map_err(|e| e.to_string())
+        })?
+    }
+
+    /// Renames a theme.
+    pub fn rename_theme(&self, id: &EntryId, name: &str) -> Result<(), String> {
+        let (id, name) = (id.clone(), name.to_owned());
+        self.run(move |data, lock, _| {
+            data.themes()
+                .rename(lock, &id, &name)
+                .map_err(|e| e.to_string())
+        })?
+    }
+
+    /// Moves a theme to `deleted/`.
+    pub fn delete_theme(&self, id: &EntryId) -> Result<(), String> {
+        let id = id.clone();
+        self.run(move |data, lock, _| {
+            data.themes()
+                .delete(lock, &id)
+                .map(|_| ())
+                .map_err(|e| e.to_string())
+        })?
+    }
+
+    /// Adds the theme in the file `from` (a clashing name gets a number); returns its
+    /// id.
+    pub fn import_theme(&self, from: &Path) -> Result<EntryId, String> {
+        let from = from.to_owned();
+        self.run(move |data, lock, _| {
+            data.themes()
+                .import(lock, &from)
+                .map(|(id, _)| id)
+                .map_err(|e| e.to_string())
+        })?
+    }
+
+    /// Writes a theme to `to` (one file; nothing to scrub).
+    pub fn export_theme(&self, id: &EntryId, to: &Path) -> Result<(), String> {
+        self.flush();
+        self.data.themes().export(id, to).map_err(|e| e.to_string())
+    }
+
+    /// Records the appearance choice.
+    pub fn set_appearance(&self, appearance: &Appearance) -> Result<(), String> {
+        let appearance = appearance.clone();
+        self.run(move |data, lock, _| {
+            data.set_appearance(lock, &appearance)
                 .map_err(|e| e.to_string())
         })?
     }
