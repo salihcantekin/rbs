@@ -1,6 +1,6 @@
 # ADR-0066: Virtual camera on Windows: the program as a camera for meeting apps, off by default
 
-- Status: Proposed
+- Status: Accepted (Windows scope)
 - Date: 2026-11-07
 - Deciders: Salih (owner)
 - Builds on: ADR-0003 (ports and adapters), ADR-0013 (zero cost when unused), ADR-0025 (native surface export), ADR-0028 (non-blocking IPC exception), ADR-0031 (adapter support crates), ADR-0038 (graph nodes and the readback exception), ADR-0041 (studio on a running engine), ADR-0047 (several outputs per canvas), ADR-0050 (command registry), ADR-0052 (API parity and effects), ADR-0061 (studio mode)
@@ -118,4 +118,4 @@ Forces:
   4. (minor) The predictable section name could be squatted by a holder of the global-object privilege. Fixed: an existing section is used only with the expected owner and access list (decision 9, spec).
   5. (minor) The source DLL was tested on hardware only. Added an in-process COM test on the Windows CI runner (Consequences, spec).
 - 2026-11-07, final check by the same session: approve for the Windows scope; all items resolved (a wording slip in the spec's `consumer_busy` comment fixed). P15 measurements and the hardware checks (symbolic link kept after a format change, persistent lifetime) remain conditions before the code merges.
-- Owner approval: pending.
+- Owner approval: Salih, 2026-11-07 (decision card in the project thread), Windows scope.
