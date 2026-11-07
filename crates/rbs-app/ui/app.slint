@@ -3,9 +3,10 @@
 // layout tree into tab stacks and splitter handles with absolute positions.
 import { Theme, Tokens } from "tokens.slint";
 import { Button, IconButton, Icon, IconName, Icons, FocusRing, MenuItem as MenuRow, MenuSurface, EmptyState } from "components.slint";
+import { Appearance, AppearanceSettings, ThemeOption, ThemeTokenRow } from "appearance.slint";
 import { Studio, EntryRow, SourceData, MarkData, KindData, TargetData, MeterRow, ScaleMark, EncoderData, ProgramPanel, SourcesPanel, PropertiesPanel, MixerPanel, LiveControlsPanel, OutputsPanel, StatsPanel, RecordingSettings, StreamSettings, VideoSettings, RemoteControlSettings, GeneralSettings } from "studio.slint";
 
-export { Theme, Tokens, Studio, EntryRow, SourceData, MarkData, KindData, TargetData, MeterRow, ScaleMark, EncoderData }
+export { Theme, Tokens, Appearance, ThemeOption, ThemeTokenRow, Studio, EntryRow, SourceData, MarkData, KindData, TargetData, MeterRow, ScaleMark, EncoderData }
 
 export struct TabData { id: string, title: string, known: bool, icon: string }
 export struct StackData { window: int, stack: int, x: length, y: length, w: length, h: length, tabs: [TabData], active: int, collapsed: bool, can-collapse: bool, can-hide: bool }
@@ -1223,6 +1224,7 @@ component Toast inherits Rectangle {
 }
 
 export component MainWindow inherits Window {
+    default-font-family: Theme.font-family;
     title: @tr("RBS");
     preferred-width: Tokens.size-window-w;
     preferred-height: Tokens.size-window-h;
@@ -1403,6 +1405,7 @@ export component MainWindow inherits Window {
 
 // A floating panel window. Its title names its panels for screen readers and F6-style switching.
 export component FloatWindow inherits Window {
+    default-font-family: Theme.font-family;
     in property <int> window;
     in property <string> panel-names;
     in property <[StackData]> stacks;
@@ -1496,21 +1499,28 @@ export component FloatWindow inherits Window {
 // The Settings window (U17): a list of sections and the chosen one. Search comes when
 // there are more.
 export component SettingsWindow inherits Window {
+    default-font-family: Theme.font-family;
     title: @tr("RBS settings");
     preferred-width: Tokens.size-floating-w;
     preferred-height: Tokens.size-floating-h;
     min-width: Tokens.size-menu-md * 2;
     background: Theme.surface-raised;
     default-font-size: Tokens.type-body-size;
-    // 0 Video, 1 Recording, 2 Stream, 3 Remote control, 4 General (listed first).
+    // 0 Video, 1 Recording, 2 Stream, 3 Remote control, 4 General (listed first),
+    // 5 Appearance (second).
     in-out property <int> section: 1;
     // Escape was pressed: the window closes, as with its close button.
     callback dismiss();
+    // Another section is shown (the Appearance page reads its files when shown).
+    callback section-shown(int);
+    changed section => { root.section-shown(root.section); }
     forward-focus: keys;
     // Keys a field does not take come up here: Escape closes the window (U7: every
     // action is reachable by keyboard).
     keys := FocusScope {
         key-pressed(e) => {
+            // While "Keep this look?" is asked, Escape is Undo (themes spec).
+            if e.text == Key.Escape && Appearance.keep-asking { Appearance.undo(); return accept; }
             if e.text == Key.Escape { root.dismiss(); return accept; }
             reject
         }
@@ -1527,6 +1537,11 @@ export component SettingsWindow inherits Window {
                         text: @tr("General");
                         checked: root.section == 4;
                         activated => { root.section = 4; }
+                    }
+                    MenuRow {
+                        text: @tr("Appearance");
+                        checked: root.section == 5;
+                        activated => { root.section = 5; }
                     }
                     MenuRow {
                         text: @tr("Video");
@@ -1557,7 +1572,7 @@ export component SettingsWindow inherits Window {
                     spacing: Tokens.space-3;
                     alignment: start;
                     Text {
-                        text: root.section == 0 ? @tr("Video") : root.section == 1 ? @tr("Recording") : root.section == 2 ? @tr("Stream") : root.section == 3 ? @tr("Remote control") : @tr("General");
+                        text: root.section == 0 ? @tr("Video") : root.section == 1 ? @tr("Recording") : root.section == 2 ? @tr("Stream") : root.section == 3 ? @tr("Remote control") : root.section == 5 ? @tr("Appearance") : @tr("General");
                         color: Theme.text-primary;
                         font-size: Tokens.type-heading-size;
                         font-weight: Tokens.type-heading-weight;
@@ -1568,6 +1583,7 @@ export component SettingsWindow inherits Window {
                     if root.section == 2: StreamSettings { }
                     if root.section == 3: RemoteControlSettings { }
                     if root.section == 4: GeneralSettings { }
+                    if root.section == 5: AppearanceSettings { }
                 }
             }
         }

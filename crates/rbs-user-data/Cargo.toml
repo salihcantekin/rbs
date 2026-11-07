@@ -17,6 +17,7 @@ publish.workspace = true
 rbs-core = { path = "../rbs-core" }
 rbs-graph = { path = "../rbs-graph" }
 rbs-scene = { path = "../rbs-scene" }
+rbs-ui = { path = "../rbs-ui" }
 serde = { version = "1", features = ["derive"] }
 toml = "0.9"
 

@@ -163,6 +163,20 @@ impl ApiServer {
                             server.set_tokens(t);
                         }
                         while let Some(event) = inbox.pop() {
+                            // A store set before a client connected must be in place
+                            // before that client's events are handled: replies go out
+                            // during this loop, so a client can connect, say hello and
+                            // authenticate within one round. Checking after each pop
+                            // orders the replacement before every event enqueued
+                            // after it (`set` happens before the event was sent).
+                            let tokens = shared
+                                .tokens
+                                .lock()
+                                .unwrap_or_else(PoisonError::into_inner)
+                                .take();
+                            if let Some(t) = tokens {
+                                server.set_tokens(t);
+                            }
                             server.handle(Input::Transport(event), now);
                         }
                         while let Ok(reply) = reply_rx.try_recv() {
