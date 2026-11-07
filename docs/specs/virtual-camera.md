@@ -122,13 +122,17 @@ Invariants (each a conformance test):
 4. No thread, timer or OS handle exists before `open` or after the session is dropped (P13).
 5. `install` and `uninstall` are idempotent; `status` after them reports what they returned.
 
+### Shared hand-off (`rbs_vcam::Handoff`)
+
+Every adapter builds `reserve`, `send` and `stats` on `Handoff` and its `HandoffReceiver`: the three-slot mailbox (`rbs_vcam::mailbox`, a marked low-level module), the frame check against the configuration (size, pixel format, memory kind; a token of another session is refused too), the counters, and the sender thread's wake (`Thread::unpark`). The adapter's sender thread loops on `HandoffReceiver::take_newest` and `wait`.
+
 ### Capabilities
 
 | Key | Meaning |
 | --- | --- |
 | `vcam.input.memory` | Memory kinds `send` takes: `system` (native kinds are added with the adapter that needs them) |
 | `vcam.input.format` | Pixel formats: `nv12` |
-| `vcam.max_size` | Largest frame size announced to apps |
+| `vcam.max_width`, `vcam.max_height` | Largest frame size announced to apps |
 | `vcam.rates` | Frame rates announced to apps |
 | `vcam.persistent` | The camera stays in the OS camera list while RBS is not sending |
 

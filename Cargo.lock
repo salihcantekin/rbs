@@ -4975,6 +4975,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "rbs-vcam"
+version = "0.0.1"
+dependencies = [
+ "allocation-counter",
+ "bytes",
+ "rbs-core",
+]
+
+[[package]]
 name = "rbs-vcam-ring"
 version = "0.0.1"
 
