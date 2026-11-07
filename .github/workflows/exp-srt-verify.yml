@@ -38,7 +38,7 @@ jobs:
           run() {
             local exe=$1 tag=$2 fails=0
             for n in $(seq 1 200); do
-              ./$exe --exact sends_the_handshake_then_whole_chunks_in_order > out-$tag.txt 2>&1 || { fails=$((fails+1)); grep -A2 "panicked at" out-$tag.txt | grep -v "^--" | grep -v "panicked at" | head -2 | sed "s/^/MSG $tag: /" >> msgs.txt; }
+              ./$exe --exact sends_the_handshake_then_whole_chunks_in_order > out-$tag.txt 2>&1 || { fails=$((fails+1)); grep -A2 "panicked at" out-$tag.txt | grep -v "^--" | sed "s/^thread .* panicked at /AT /" | head -3 | sed "s/^/MSG $tag: /" >> msgs.txt; }
             done
             echo "$tag $fails" >> results.txt
           }
