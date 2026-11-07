@@ -42,11 +42,11 @@ jobs:
             done
             echo "$tag $fails" >> results.txt
           }
-          for v in old new; do
+          for v in new; do
             rm -f results.txt msgs.txt
             for w in 1 2 3 4 5 6 7 8; do run $v.exe $v-$w & pids="$pids $!"; done
             wait $pids; pids=""
             echo "RESULT $v: $(awk '{s+=$2} END {print s}' results.txt) failures of 1600 runs"; cat results.txt
-            sed "s/^MSG [a-z]*-[0-9]*: //" msgs.txt | sort | uniq -c | sed "s/^/MSGCOUNT $v /"
+            sed "s/^MSG [a-z]*-[0-9]*: //" msgs.txt | grep DIAG | head -15 | cut -c1-1500
           done
           kill $(jobs -p) 2>/dev/null || true

@@ -129,6 +129,7 @@ pub struct TestServer {
 struct Shutdowns {
     count: Mutex<usize>,
     changed: Condvar,
+    diag: Mutex<String>,
 }
 
 impl TestServer {
@@ -168,7 +169,12 @@ impl TestServer {
             .changed
             .wait_timeout_while(count, Duration::from_secs(10), |c| *c < n)
             .unwrap();
-        assert!(*count >= n, "{} of {n} shutdowns within 10 s", *count);
+        assert!(
+            *count >= n,
+            "{} of {n} shutdowns within 10 s; DIAG {}",
+            *count,
+            self.shutdowns.diag.lock().unwrap()
+        );
     }
 
     pub fn url(&self) -> String {
@@ -244,6 +250,37 @@ fn serve(
             })
         {
             break;
+        }
+        {
+            let mut d = shutdowns.diag.lock().unwrap();
+            match &received {
+                Err(e)
+                    if !matches!(
+                        e.kind(),
+                        std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+                    ) =>
+                {
+                    d.push_str(&format!(
+                        "[err {:?} at {:?}]",
+                        e.kind(),
+                        std::time::SystemTime::now()
+                    ));
+                }
+                Ok((n, _)) if *n >= 16 && buf[0] & 0x80 != 0 => {
+                    let kind = ((word(&buf, 0) >> 16) & 0x7FFF) as u16;
+                    if kind != 2 && kind != 6 && kind != 1 {
+                        d.push_str(&format!(
+                            "[ctl {kind} dest {} conns {:?}]",
+                            word(&buf, 3),
+                            conns
+                                .iter()
+                                .map(|c| (c.own_id, c.closed))
+                                .collect::<Vec<_>>()
+                        ));
+                    }
+                }
+                _ => {}
+            }
         }
         if let Ok((n, from)) = received {
             let p = &buf[..n];
