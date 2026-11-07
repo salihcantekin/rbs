@@ -28,9 +28,7 @@ use windows::Win32::System::SystemInformation::GetTickCount64;
 use windows::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
 use windows_core::{HSTRING, PCWSTR, PWSTR, Result};
 
-/// `SECTION_MAP_READ | SECTION_MAP_WRITE`: what the user's writer needs (it changes the
-/// slots' state words, so it reads too).
-const USER_ACCESS: u32 = 0x0004 | 0x0002;
+use crate::SECTION_USER_ACCESS as USER_ACCESS;
 /// `ACCESS_ALLOWED_ACE_TYPE`.
 const ACCESS_ALLOWED: u8 = 0;
 

@@ -17,6 +17,12 @@ pub mod clsid;
 pub mod pump;
 pub mod still;
 
+/// What the frame section's access list grants the user whose camera it is:
+/// `READ_CONTROL | SECTION_MAP_READ | SECTION_MAP_WRITE`. The writer changes the slots'
+/// state words, so it reads too, and it reads the section's owner to check that the
+/// source made it (`READ_CONTROL`); it may not change the access list or the owner.
+pub const SECTION_USER_ACCESS: u32 = 0x0002_0000 | 0x0004 | 0x0002;
+
 #[cfg(windows)]
 mod win;
 #[cfg(windows)]

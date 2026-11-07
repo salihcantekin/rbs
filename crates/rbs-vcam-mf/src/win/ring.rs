@@ -18,6 +18,9 @@ use windows_core::HSTRING;
 use super::sys::sid_string;
 use crate::sender::{Keep, RingSource};
 
+/// `READ_CONTROL`: read the object's security descriptor (its owner).
+const READ_CONTROL: u32 = 0x0002_0000;
+
 /// `LocalService`.
 const LOCAL_SERVICE: &str = "S-1-5-19";
 
@@ -83,10 +86,11 @@ pub fn open(name: &str) -> Option<(Region, Keep)> {
 /// Opens and maps `name` if it exists and `owner` (when given) owns it.
 fn open_owned(name: &str, owner: Option<&str>) -> Option<(Region, Keep)> {
     let name = HSTRING::from(name);
-    // SAFETY: opens a named section with read and write access (what the source's
-    // access list grants the user).
-    let handle =
-        unsafe { OpenFileMappingW((FILE_MAP_READ | FILE_MAP_WRITE).0, false, &name) }.ok()?;
+    // `READ_CONTROL`, so `owned_by` can read the owner.
+    let access = FILE_MAP_READ.0 | FILE_MAP_WRITE.0 | READ_CONTROL;
+    // SAFETY: opens a named section with read, write and read-control access (what the
+    // source's access list grants the user).
+    let handle = unsafe { OpenFileMappingW(access, false, &name) }.ok()?;
     let mut mapping = Mapping {
         handle,
         view: MEMORY_MAPPED_VIEW_ADDRESS::default(),
@@ -129,6 +133,12 @@ impl WinRing {
             name: section_name(sid),
             owner: Some(LOCAL_SERVICE),
         }
+    }
+
+    /// Whether the section `name` opens with the writer's access and `owner` owns it.
+    #[cfg(test)]
+    pub fn owned_by_for_test(name: &str, owner: &str) -> bool {
+        open_owned(name, Some(owner)).is_some()
     }
 
     /// A ring of any name and owner (the two-process test's section).
