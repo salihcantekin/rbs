@@ -16,6 +16,7 @@ UI text uses these terms and no synonyms (rule U13). Code may use different inte
 | Mixer | The audio panel with levels and controls | Audio panel | Audio graph UI |
 | Workspace | A saved arrangement of panels, floating windows and projectors. It never holds scenes, sources or output settings | Profile, layout, scene collection | UI workspace file |
 | Scene collection | A set of scenes and sources saved together. It holds no panel layout and no output settings | Project, workspace | Scene document |
+| Global source | A source shown and heard in every scene of a canvas, kept in Settings › Global sources | Global audio device, shared source | Item of the canvas's global scene (ADR-0065) |
 | Remove from scene / Delete source | Remove the source from this scene only / remove it from every scene | Delete (for removing from one scene) | Scene item removal / source removal |
 | Studio mode | Separate preview and program, with transitions between them | Two-pane mode | - |
 | Projector | A full-screen or window view of a canvas, scene or source on any display | External view | - |
