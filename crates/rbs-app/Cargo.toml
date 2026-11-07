@@ -85,6 +85,8 @@ rbs-user-data = { path = "../rbs-user-data" }
 fontique = "0.11.1"
 # Panic boundaries, crash reports and unclean-exit detection (ADR-0055).
 rbs-crash = { path = "../rbs-crash" }
+# Settings › Virtual camera and sending to it (ADR-0066 decisions 11 and 12).
+rbs-vcam = { path = "../rbs-vcam" }
 rbs-capture-test = { path = "../rbs-capture-test", optional = true }
 rbs-audio-io-test = { path = "../rbs-audio-io-test", optional = true }
 
@@ -114,6 +116,7 @@ rbs-audio-io-wasapi = { path = "../rbs-audio-io-wasapi" }
 rbs-codec-nvenc = { path = "../rbs-codec-nvenc" }
 rbs-codec-amf = { path = "../rbs-codec-amf" }
 rbs-codec-mf = { path = "../rbs-codec-mf" }
+rbs-vcam-mf = { path = "../rbs-vcam-mf" }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 rbs-capture-pipewire = { path = "../rbs-capture-pipewire" }
@@ -150,6 +153,7 @@ serde_json = "1"
 # Reference adapters for the studio host tests (deterministic, no devices).
 rbs-capture-test = { path = "../rbs-capture-test" }
 rbs-audio-io-test = { path = "../rbs-audio-io-test" }
+rbs-vcam-test = { path = "../rbs-vcam-test" }
 # The audio graph check (examples/audio_graph.rs) is a composition root: it wires the
 # platform's audio and AAC adapters into the engine. Every one builds on every platform.
 rbs-audio-io = { path = "../rbs-audio-io" }

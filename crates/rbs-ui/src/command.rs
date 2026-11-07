@@ -172,7 +172,7 @@ const SECTION: Param = Param {
 
 /// The sections of the Settings window, as `ui.settings.open {section}` names them,
 /// in the order of the window's section list.
-pub const SETTINGS_SECTIONS: [&str; 8] = [
+pub const SETTINGS_SECTIONS: [&str; 9] = [
     "general",
     "appearance",
     "shortcuts",
@@ -180,6 +180,7 @@ pub const SETTINGS_SECTIONS: [&str; 8] = [
     "global_sources",
     "recording",
     "stream",
+    "virtual_camera",
     "remote_control",
 ];
 
