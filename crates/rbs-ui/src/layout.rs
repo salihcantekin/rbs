@@ -24,6 +24,30 @@ pub const MIN_PANE: f32 = 48.0;
 /// Share of the window a panel gets when it is moved to an edge.
 pub const EDGE_SHARE: f32 = 0.25;
 
+/// Width of the Transition rail between the two pictures (ADR-0064). The rail's
+/// lengths are the built-in tokens `size.transition.*`; a test keeps them equal.
+pub const RAIL_BETWEEN: f32 = 156.0;
+
+/// Least height for the rail between the pictures; a shorter split puts it below.
+pub const RAIL_BETWEEN_MIN_H: f32 = 240.0;
+
+/// Least width of each picture beside the rail between them; a narrower split puts
+/// the rail below, so the pictures are not squeezed into slivers.
+pub const RAIL_BETWEEN_MIN_PICTURE: f32 = 160.0;
+
+/// Height of the Transition rail below the two pictures (ADR-0064).
+pub const RAIL_BELOW: f32 = 44.0;
+
+/// Where a studio split puts the Transition rail in studio mode (ADR-0064).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum RailAt {
+    /// Between Preview and Program.
+    Between,
+    /// Below both pictures, centred.
+    Below,
+}
+
 /// Direction of a split. `Horizontal` places children side by side,
 /// `Vertical` stacks them top to bottom.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -67,6 +91,30 @@ pub struct Split {
     pub ratios: Vec<f32>,
     /// Children.
     pub children: Vec<Node>,
+    /// A studio split (ADR-0064): Preview then Program, with the Transition rail
+    /// here in studio mode. Kept only while [`Split::is_studio_shape`] holds.
+    pub studio: Option<RailAt>,
+}
+
+impl Split {
+    /// Two single-tab stacks, not collapsed, side by side: Preview and then the
+    /// Program of the same canvas.
+    pub fn is_studio_shape(&self) -> bool {
+        let one = |n: &Node| match n {
+            Node::Tabs(t) if t.tabs.len() == 1 && !t.collapsed => t.tabs.first().cloned(),
+            _ => None,
+        };
+        let [a, b] = self.children.as_slice() else {
+            return false;
+        };
+        let (Some(p), Some(q)) = (one(a), one(b)) else {
+            return false;
+        };
+        self.axis == Axis::Horizontal
+            && p.base() == "rbs.preview"
+            && q.base() == "rbs.program"
+            && p.param("canvas") == q.param("canvas")
+    }
 }
 
 /// A tab stack. Only the root of a window may be empty (every panel closed).
@@ -114,6 +162,8 @@ struct RawNode {
     active: Option<usize>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     state: Option<StackState>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    studio: Option<RailAt>,
 }
 
 impl TryFrom<RawNode> for Node {
@@ -124,6 +174,7 @@ impl TryFrom<RawNode> for Node {
             (Some(_), _, _, None, None) if r.state.is_some() => {
                 Err("only a tab stack has a `state`".into())
             }
+            (None, _, _, _, _) if r.studio.is_some() => Err("only a split has `studio`".into()),
             (Some(axis), Some(ratios), Some(children), None, None) => {
                 if children.len() < 2 {
                     return Err("a split needs at least two children".into());
@@ -143,11 +194,18 @@ impl TryFrom<RawNode> for Node {
                     return Err(format!("split ratios must sum to 1, not {sum}"));
                 }
                 let ratios = ratios.iter().map(|r| r / sum).collect();
-                Ok(Node::Split(Split {
+                let split = Split {
                     axis,
                     ratios,
                     children,
-                }))
+                    studio: r.studio,
+                };
+                if split.studio.is_some() && !split.is_studio_shape() {
+                    return Err("a studio split is horizontal with two single-tab stacks: \
+                         Preview, then the Program of the same canvas"
+                        .into());
+                }
+                Ok(Node::Split(split))
             }
             (None, None, None, Some(tabs), active) => {
                 let active = active.unwrap_or(0);
@@ -176,6 +234,7 @@ impl From<Node> for RawNode {
         match n {
             Node::Split(s) => RawNode {
                 split: Some(s.axis),
+                studio: s.studio.filter(|_| s.is_studio_shape()),
                 ratios: Some(s.ratios),
                 children: Some(s.children),
                 tabs: None,
@@ -188,6 +247,7 @@ impl From<Node> for RawNode {
                 children: None,
                 active: (t.active != 0).then_some(t.active),
                 state: t.collapsed.then_some(StackState::Collapsed),
+                studio: None,
                 tabs: Some(t.tabs),
             },
         }
@@ -256,6 +316,8 @@ pub struct Flat {
     pub stacks: Vec<StackRect>,
     /// Splitter handles.
     pub handles: Vec<Handle>,
+    /// The Transition rail of a studio split in studio mode (ADR-0064).
+    pub rail: Option<(Rect, RailAt)>,
 }
 
 impl Node {
@@ -285,7 +347,53 @@ impl Node {
             axis,
             ratios,
             children,
+            studio: None,
         })
+    }
+
+    /// A studio split (ADR-0064): `preview` and `program` side by side, the rail `at`.
+    pub fn studio(preview: PanelId, program: PanelId, at: RailAt) -> Node {
+        Node::Split(Split {
+            axis: Axis::Horizontal,
+            ratios: vec![0.5, 0.5],
+            children: vec![Node::tabs(vec![preview]), Node::tabs(vec![program])],
+            studio: Some(at),
+        })
+    }
+
+    /// The studio split in this tree, if any.
+    pub fn studio_split(&self) -> Option<&Split> {
+        match self {
+            Node::Split(s) if s.studio.is_some() && s.is_studio_shape() => Some(s),
+            Node::Split(s) => s.children.iter().find_map(Node::studio_split),
+            Node::Tabs(_) => None,
+        }
+    }
+
+    /// The studio split in this tree, mutably.
+    pub fn studio_split_mut(&mut self) -> Option<&mut Split> {
+        let here = matches!(self, Node::Split(s) if s.studio.is_some() && s.is_studio_shape());
+        match self {
+            Node::Split(s) => {
+                if here {
+                    Some(s)
+                } else {
+                    s.children.iter_mut().find_map(Node::studio_split_mut)
+                }
+            }
+            Node::Tabs(_) => None,
+        }
+    }
+
+    /// Drops the studio flag of every split that no longer has a studio split's shape
+    /// (a panel moved, closed or collapsed out of it, ADR-0064 decision 4).
+    pub fn dissolve_broken_studio(&mut self) {
+        if let Node::Split(s) = self {
+            s.children.iter_mut().for_each(Node::dissolve_broken_studio);
+            if s.studio.is_some() && !s.is_studio_shape() {
+                s.studio = None;
+            }
+        }
     }
 
     /// True when no panel is in this tree.
@@ -613,10 +721,15 @@ impl Node {
 
     /// Remove empty children, collapse single-child splits and renormalise ratios.
     pub fn prune(&mut self) {
+        self.prune_splits();
+        self.dissolve_broken_studio();
+    }
+
+    fn prune_splits(&mut self) {
         let Node::Split(s) = self else {
             return;
         };
-        s.children.iter_mut().for_each(Node::prune);
+        s.children.iter_mut().for_each(Node::prune_splits);
         let mut ratios = Vec::with_capacity(s.ratios.len());
         let mut children = Vec::with_capacity(s.children.len());
         for (c, r) in s.children.drain(..).zip(s.ratios.drain(..)) {
@@ -643,9 +756,17 @@ impl Node {
 
     /// Place the tree in `rect`: absolute stack rectangles and splitter handles.
     pub fn flatten(&self, rect: Rect) -> Flat {
+        self.flatten_in(rect, false)
+    }
+
+    /// [`Node::flatten`] with the canvas in studio mode or not: outside it a studio
+    /// split shows Preview alone; in it, both pictures and the rail (ADR-0064). Stack
+    /// indices are the same either way.
+    pub fn flatten_in(&self, rect: Rect, studio_mode: bool) -> Flat {
         let mut flat = Flat::default();
         let mut path = Vec::new();
-        flatten_node(self, rect, &mut path, &mut flat);
+        let mut next = 0;
+        flatten_node(self, rect, studio_mode, &mut next, &mut path, &mut flat);
         flat
     }
 
@@ -680,15 +801,28 @@ fn is_collapsed(n: &Node) -> bool {
     matches!(n, Node::Tabs(t) if t.collapsed)
 }
 
-fn flatten_node(node: &Node, r: Rect, path: &mut Vec<usize>, out: &mut Flat) {
+fn flatten_node(
+    node: &Node,
+    r: Rect,
+    studio_mode: bool,
+    next: &mut usize,
+    path: &mut Vec<usize>,
+    out: &mut Flat,
+) {
     match node {
-        Node::Tabs(t) => out.stacks.push(StackRect {
-            stack: out.stacks.len(),
-            rect: r,
-            tabs: t.tabs.clone(),
-            active: t.active,
-            collapsed: t.collapsed,
-        }),
+        Node::Tabs(t) => {
+            out.stacks.push(StackRect {
+                stack: *next,
+                rect: r,
+                tabs: t.tabs.clone(),
+                active: t.active,
+                collapsed: t.collapsed,
+            });
+            *next += 1;
+        }
+        Node::Split(s) if s.studio.is_some() && s.is_studio_shape() => {
+            flatten_studio(s, r, studio_mode, next, path, out);
+        }
         Node::Split(s) => {
             let n = s.children.len();
             let length = match s.axis {
@@ -731,7 +865,7 @@ fn flatten_node(node: &Node, r: Rect, path: &mut Vec<usize>, out: &mut Flat) {
                     },
                 };
                 path.push(i);
-                flatten_node(child, along(pos, len), path, out);
+                flatten_node(child, along(pos, len), studio_mode, next, path, out);
                 path.pop();
                 pos += len;
                 if i + 1 < n {
@@ -757,9 +891,155 @@ fn flatten_node(node: &Node, r: Rect, path: &mut Vec<usize>, out: &mut Flat) {
     }
 }
 
+/// A studio split (ADR-0064): outside studio mode Preview fills it and Program is
+/// hidden (its stack index is still counted); in studio mode the two pictures share it
+/// by ratio around the rail, or above it.
+fn flatten_studio(
+    s: &Split,
+    r: Rect,
+    studio_mode: bool,
+    next: &mut usize,
+    path: &mut [usize],
+    out: &mut Flat,
+) {
+    let stack = |n: &Node, rect: Rect, next: &mut usize, out: &mut Flat| {
+        if let Node::Tabs(t) = n {
+            out.stacks.push(StackRect {
+                stack: *next,
+                rect,
+                tabs: t.tabs.clone(),
+                active: t.active,
+                collapsed: false,
+            });
+        }
+        *next += 1;
+    };
+    let (Some(preview), Some(program)) = (s.children.first(), s.children.get(1)) else {
+        return;
+    };
+    if !studio_mode {
+        stack(preview, r, next, out);
+        *next += 1;
+        return;
+    }
+    let share = s.ratios.first().copied().unwrap_or(0.5).clamp(0.0, 1.0);
+    // Too narrow for a column between two usable pictures: the rail goes below.
+    let at = match s.studio {
+        Some(RailAt::Between)
+            if r.w >= RAIL_BETWEEN + 2.0 * RAIL_BETWEEN_MIN_PICTURE
+                && r.h >= RAIL_BETWEEN_MIN_H =>
+        {
+            RailAt::Between
+        }
+        _ => RailAt::Below,
+    };
+    match at {
+        RailAt::Below => {
+            let rail_h = RAIL_BELOW.min(r.h);
+            let top_h = r.h - rail_h;
+            let free = (r.w - HANDLE_THICKNESS).max(0.0);
+            let a = free * share;
+            stack(
+                preview,
+                Rect {
+                    x: r.x,
+                    y: r.y,
+                    w: a,
+                    h: top_h,
+                },
+                next,
+                out,
+            );
+            out.handles.push(Handle {
+                path: path.to_vec(),
+                index: 0,
+                axis: Axis::Horizontal,
+                rect: Rect {
+                    x: r.x + a,
+                    y: r.y,
+                    w: HANDLE_THICKNESS,
+                    h: top_h,
+                },
+                extent: free,
+            });
+            let x = r.x + a + HANDLE_THICKNESS;
+            stack(
+                program,
+                Rect {
+                    x,
+                    y: r.y,
+                    w: free - a,
+                    h: top_h,
+                },
+                next,
+                out,
+            );
+            // A divider's gap above the rail, as between two stacks.
+            let gap = HANDLE_THICKNESS.min(rail_h);
+            let rail = Rect {
+                x: r.x,
+                y: r.y + top_h + gap,
+                w: r.w,
+                h: rail_h - gap,
+            };
+            out.rail = Some((rail, RailAt::Below));
+        }
+        RailAt::Between => {
+            let rail_w = RAIL_BETWEEN.min(r.w);
+            let free = (r.w - rail_w).max(0.0);
+            let a = free * share;
+            stack(
+                preview,
+                Rect {
+                    x: r.x,
+                    y: r.y,
+                    w: a,
+                    h: r.h,
+                },
+                next,
+                out,
+            );
+            // A divider's gap on each side of the rail, as between two stacks.
+            let gap = HANDLE_THICKNESS.min(rail_w / 2.0);
+            let rail = Rect {
+                x: r.x + a + gap,
+                y: r.y,
+                w: rail_w - 2.0 * gap,
+                h: r.h,
+            };
+            out.rail = Some((rail, RailAt::Between));
+            let x = r.x + a + rail_w;
+            stack(
+                program,
+                Rect {
+                    x,
+                    y: r.y,
+                    w: free - a,
+                    h: r.h,
+                },
+                next,
+                out,
+            );
+        }
+    }
+}
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used)] // Tests fail by panicking.
 mod tests {
+    #[test]
+    fn the_rail_lengths_are_the_built_in_tokens() {
+        let t = crate::tokens::Tokens::built_in().unwrap();
+        for (name, v) in [
+            ("size.transition.between", RAIL_BETWEEN),
+            ("size.transition.below", RAIL_BELOW),
+            ("size.transition.min-h", RAIL_BETWEEN_MIN_H),
+            ("size.transition.min-picture", RAIL_BETWEEN_MIN_PICTURE),
+        ] {
+            assert_eq!(t.length.get(name), Some(&v), "{name}");
+        }
+    }
+
     use super::*;
     use crate::panel::id;
 
@@ -931,5 +1211,106 @@ mod tests {
         ] {
             assert!(toml::from_str::<W>(bad).is_err(), "{bad}");
         }
+    }
+
+    #[test]
+    fn a_studio_split_shows_program_and_the_rail_only_in_studio_mode() {
+        let n = Node::studio(id("rbs.preview"), id("rbs.program"), RailAt::Between);
+        let r = Rect::sized(1000.0, 400.0);
+        // Outside studio mode: Preview fills it; Program is hidden but keeps index 1.
+        let off = n.flatten_in(r, false);
+        assert_eq!(off.stacks.len(), 1);
+        assert_eq!(off.stacks[0].rect, r);
+        assert!(off.rail.is_none() && off.handles.is_empty());
+        // Between: Preview | rail | Program, the rail in place of the divider.
+        let on = n.flatten_in(r, true);
+        assert_eq!(on.stacks.len(), 2);
+        assert_eq!(on.stacks[1].stack, 1);
+        let (rail, at) = on.rail.unwrap();
+        assert_eq!(at, RailAt::Between);
+        assert_eq!(rail.w, RAIL_BETWEEN - 2.0 * HANDLE_THICKNESS);
+        assert_eq!(on.stacks[0].rect.w, on.stacks[1].rect.w);
+        assert_eq!(rail.x, on.stacks[0].rect.w + HANDLE_THICKNESS);
+        assert_eq!(on.stacks[1].rect.x, on.stacks[0].rect.w + RAIL_BETWEEN);
+        assert!(on.handles.is_empty());
+        // Below: both pictures over a full-width rail, a divider between them.
+        let mut below = n.clone();
+        if let Node::Split(s) = &mut below {
+            s.studio = Some(RailAt::Below);
+        }
+        let on = below.flatten_in(r, true);
+        let (rail, _) = on.rail.unwrap();
+        assert_eq!(
+            (rail.y, rail.w, rail.h),
+            (
+                400.0 - RAIL_BELOW + HANDLE_THICKNESS,
+                1000.0,
+                RAIL_BELOW - HANDLE_THICKNESS
+            )
+        );
+        assert_eq!(on.stacks[0].rect.h, 400.0 - RAIL_BELOW);
+        assert_eq!(on.handles.len(), 1);
+        assert!(below.resize(&on.handles[0], 50.0));
+        // Too narrow for a column between two usable pictures: below instead.
+        let narrow = n.flatten_in(
+            Rect::sized(RAIL_BETWEEN + 2.0 * RAIL_BETWEEN_MIN_PICTURE - 1.0, 400.0),
+            true,
+        );
+        assert_eq!(narrow.rail.unwrap().1, RailAt::Below);
+        let short = n.flatten_in(Rect::sized(1000.0, RAIL_BETWEEN_MIN_H - 1.0), true);
+        assert_eq!(short.rail.unwrap().1, RailAt::Below);
+    }
+
+    #[test]
+    fn stack_indices_after_a_studio_split_do_not_depend_on_studio_mode() {
+        let n = Node::split(
+            Axis::Vertical,
+            vec![
+                (
+                    0.7,
+                    Node::studio(id("rbs.preview"), id("rbs.program"), RailAt::Between),
+                ),
+                (0.3, Node::tabs(vec![id("rbs.mixer")])),
+            ],
+        );
+        let r = Rect::sized(800.0, 600.0);
+        for on in [false, true] {
+            let f = n.flatten_in(r, on);
+            let mixer = f
+                .stacks
+                .iter()
+                .find(|s| s.tabs[0] == id("rbs.mixer"))
+                .unwrap();
+            assert_eq!(mixer.stack, 2);
+            assert_eq!(n.stack(mixer.stack).unwrap().tabs, mixer.tabs);
+        }
+    }
+
+    #[test]
+    fn a_studio_split_keeps_its_shape_or_dissolves() {
+        let text = r#"split = "horizontal"
+studio = "below"
+ratios = [0.5, 0.5]
+children = [{ tabs = ["rbs.preview"] }, { tabs = ["rbs.program"] }]
+"#;
+        let n: Node = toml::from_str(text).unwrap();
+        assert_eq!(n.studio_split().unwrap().studio, Some(RailAt::Below));
+        let back = toml::to_string(&n).unwrap();
+        assert!(back.contains("studio = \"below\""), "{back}");
+        // Any other shape is refused in a file.
+        let bad = text.replace("rbs.program", "rbs.mixer");
+        assert!(toml::from_str::<Node>(&bad).is_err());
+        let bad = text.replace("\"rbs.preview\"", "\"rbs.preview\", \"rbs.scenes\"");
+        assert!(toml::from_str::<Node>(&bad).is_err());
+        let bad = text.replace("rbs.program", "rbs.program?canvas=vertical");
+        assert!(toml::from_str::<Node>(&bad).is_err());
+        // A panel added to one of its stacks dissolves it; it is never written broken.
+        let mut n = n;
+        n.insert_into_stack(0, id("rbs.scenes"), None);
+        assert!(n.studio_split().is_none());
+        assert!(!toml::to_string(&n).unwrap().contains("studio"));
+        n.dissolve_broken_studio();
+        let Node::Split(s) = &n else { panic!() };
+        assert_eq!(s.studio, None);
     }
 }

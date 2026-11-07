@@ -57,6 +57,18 @@ pub struct Keys {
     note: String,
 }
 
+impl Keys {
+    /// The first chord in force for `command`, as this platform writes it ("⌘↩",
+    /// "Ctrl+Enter"); empty when it has none.
+    pub fn label_for(&self, command: &str) -> String {
+        self.keymap
+            .bindings()
+            .iter()
+            .find(|b| b.command == command)
+            .map_or_else(String::new, |b| b.chord.label(self.platform))
+    }
+}
+
 impl Default for Keys {
     fn default() -> Self {
         let platform = Platform::current();

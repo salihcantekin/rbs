@@ -114,6 +114,14 @@ format = 2
 "size.settings.h" = 680
 "step.nudge" = 8
 "step.nudge-large" = 128
+"size.transition.between" = 156
+"size.transition.below" = 44
+"size.transition.min-picture" = 160
+"size.transition.min-h" = 240
+"size.transition.type" = 112
+"size.transition.type-min" = 72
+"size.transition.duration" = 88
+"size.transition.compact" = 600
 
 # Milliseconds. Every animation is off under "reduce motion".
 [duration]
