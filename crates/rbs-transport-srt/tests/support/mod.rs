@@ -301,7 +301,9 @@ fn serve(
                 } else if let Some(c) = conns.iter_mut().find(|c| c.own_id == dest && !c.closed) {
                     match kind {
                         1 => c.session.keepalives += 1,
-                        5 => {
+                        // The caller sends its shutdown more than once; only the
+                        // first counts.
+                        5 if !c.session.shutdown => {
                             c.session.shutdown = true;
                             *shutdowns.count.lock().unwrap() += 1;
                             shutdowns.changed.notify_all();

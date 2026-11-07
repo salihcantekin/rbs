@@ -35,11 +35,8 @@ const KEEPALIVE: Duration = Duration::from_secs(1);
 /// The connection is lost after this long without hearing from the peer (libsrt's
 /// default peer idle timeout).
 const PEER_IDLE: Duration = Duration::from_secs(5);
-/// How long the socket stays open after the shutdown was sent, on Windows, where
-/// closing it right after the send can discard the datagram (see
-/// `Conn::send_shutdown`). In a stress run, waiting 1 ms already lost none.
-#[cfg(windows)]
-const SHUTDOWN_LINGER: Duration = Duration::from_millis(10);
+/// How often the final shutdown is sent (see `Conn::send_shutdown`).
+const SHUTDOWN_COPIES: usize = 3;
 /// Payload bytes per data packet: seven 188-byte TS packets, libsrt's live-mode
 /// default. A chunk's last packet may be shorter; packets never span two chunks.
 pub(crate) const PAYLOAD: usize = 1316;
@@ -334,23 +331,15 @@ impl Conn {
         Ok(())
     }
 
-    /// Sends the shutdown, the connection's last packet; the socket is closed next.
-    /// On Windows a send returns once the datagram is in the socket's send buffer,
-    /// and closing the socket right after can discard it: under load the listener
-    /// then never got the shutdown. Two measures, as neither alone was enough on
-    /// CI: without a send buffer the send returns only once the datagram has left,
-    /// and the socket then stays open for [`SHUTDOWN_LINGER`] before it is closed.
-    /// This runs once, when the connection ends, on the I/O thread.
+    /// Sends the shutdown, the connection's last packet, [`SHUTDOWN_COPIES`] times:
+    /// nothing acknowledges or retransmits it, so one lost datagram would leave the
+    /// listener waiting for its idle timeout. The listener ignores the copies after
+    /// the first, which already closed the connection.
     fn send_shutdown(&mut self, shared: &Shared) -> Result<(), Fail> {
-        #[cfg(windows)]
-        {
-            // Best effort: if the option is refused, the send is as before.
-            let _ = socket2::SockRef::from(&self.socket).set_send_buffer_size(0);
+        for _ in 0..SHUTDOWN_COPIES {
+            self.send_control(ctrl::SHUTDOWN, 0, shared)?;
         }
-        let result = self.send_control(ctrl::SHUTDOWN, 0, shared);
-        #[cfg(windows)]
-        std::thread::sleep(SHUTDOWN_LINGER);
-        result
+        Ok(())
     }
 
     fn send_control(&mut self, kind: u16, info: u32, shared: &Shared) -> Result<(), Fail> {

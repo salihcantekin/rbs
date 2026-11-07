@@ -4936,7 +4936,6 @@ dependencies = [
  "rbs-mux-mpegts",
  "rbs-transport",
  "rtrb",
- "socket2",
 ]
 
 [[package]]

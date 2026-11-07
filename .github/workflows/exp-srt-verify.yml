@@ -25,11 +25,7 @@ jobs:
         run: |
           cargo test -p rbs-transport-srt --test behaviour --no-run 2>&1 | tee new.txt
           cp "$(grep -o 'target[^)]*behaviour-[^)]*\.exe' new.txt | head -1 | tr '\\' '/')" new.exe
-          git checkout origin/main -- crates/rbs-transport-srt/src/io.rs
-          cargo test -p rbs-transport-srt --test behaviour --no-run 2>&1 | tee old.txt
-          cp "$(grep -o 'target[^)]*behaviour-[^)]*\.exe' old.txt | head -1 | tr '\\' '/')" old.exe
-          git checkout HEAD -- crates/rbs-transport-srt/src/io.rs
-          ls -la new.exe old.exe
+          ls -la new.exe
       - name: loop under load
         shell: bash
         run: |
