@@ -8,7 +8,10 @@
 //! Collapsing stacks and drawing areas as edge tabs when even their minimums do not
 //! fit come with stack states.
 
-use crate::layout::{Axis, HANDLE_THICKNESS, Handle, Rect, StackRect};
+use crate::layout::{
+    Axis, COLLAPSED_STACK, EDGE_SHARE, Edge, HANDLE_THICKNESS, Handle, Rect, StackRect,
+};
+use crate::panel::PanelId;
 use crate::workspace::{MainLayout, Side, Window, WindowContent};
 
 /// The centre's smallest width and height in logical pixels (one preview).
@@ -257,6 +260,139 @@ pub fn resized_area(m: &MainLayout, content: Rect, side: Side, delta: f32) -> u3
     limited(side, wanted, content).round() as u32
 }
 
+/// How close to a window's edge, in logical pixels, a drop goes to that edge of the
+/// window rather than into the stack under the pointer.
+pub const EDGE_TARGET: f32 = 16.0;
+
+/// The share of a stack's width or height, from each side, that drops beside the
+/// stack on that side; the middle drops into it as a tab.
+pub const SIDE_SHARE: f32 = 0.3;
+
+/// The widest guide a window-edge drop shows, in logical pixels.
+const EDGE_GUIDE_MAX: f32 = 320.0;
+
+/// Where a dragged panel would go.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DropPlace {
+    /// Into window stack `stack` as a tab (the middle of the five-way guide).
+    Into(usize),
+    /// Into a new stack on side `edge` of window stack `stack`.
+    Beside(usize, Edge),
+    /// To edge `edge` of the window (in the main window, that area's outer side).
+    WindowEdge(Edge),
+}
+
+/// A drop target: where the panel goes and the rectangle the shell shades for it.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct DropTarget {
+    /// Where the panel goes.
+    pub place: DropPlace,
+    /// The part of the window the drop will fill, roughly.
+    pub guide: Rect,
+}
+
+/// The drop target for panel `panel` dragged to `(x, y)` over a window flattened into
+/// `flat` in `content` (ADR-0049 decision 5): one of the four window-edge targets near
+/// the window's edges, else the five-way guide of the stack under the pointer. The
+/// title row of a stack, and all of a collapsed one, take the panel as a tab. `None`
+/// when the drop would change nothing or nothing is under the pointer.
+pub fn drop_target(
+    flat: &WindowFlat,
+    content: Rect,
+    panel: &PanelId,
+    x: f32,
+    y: f32,
+) -> Option<DropTarget> {
+    let inside = |r: &Rect| x >= r.x && x < r.x + r.w && y >= r.y && y < r.y + r.h;
+    if !inside(&content) {
+        return None;
+    }
+    let under = flat.stacks.iter().find(|s| inside(&s.rect));
+    // A stack's title row takes the panel as a tab even at the window's edge.
+    let title = under.is_some_and(|s| s.collapsed || y < s.rect.y + COLLAPSED_STACK);
+    let edges = [
+        (Edge::Left, x - content.x),
+        (Edge::Right, content.x + content.w - x),
+        (Edge::Top, y - content.y),
+        (Edge::Bottom, content.y + content.h - y),
+    ];
+    let near = edges
+        .iter()
+        .filter(|(_, d)| *d < EDGE_TARGET)
+        .min_by(|a, b| a.1.total_cmp(&b.1));
+    if let (Some((edge, _)), false) = (near, title) {
+        return Some(DropTarget {
+            place: DropPlace::WindowEdge(*edge),
+            guide: side_of(content, *edge, |extent| {
+                (extent * EDGE_SHARE).min(EDGE_GUIDE_MAX)
+            }),
+        });
+    }
+    let s = under?;
+    let r = s.rect;
+    let own = s.tabs.contains(panel);
+    let side = if title {
+        None
+    } else {
+        let fx = (x - r.x) / r.w;
+        let fy = (y - r.y) / r.h;
+        [
+            (Edge::Left, fx),
+            (Edge::Right, 1.0 - fx),
+            (Edge::Top, fy),
+            (Edge::Bottom, 1.0 - fy),
+        ]
+        .into_iter()
+        .filter(|(_, d)| *d < SIDE_SHARE)
+        .min_by(|a, b| a.1.total_cmp(&b.1))
+        .map(|(e, _)| e)
+    };
+    match side {
+        // Its own stack, as a tab or beside itself when it is the only tab.
+        None if own => None,
+        Some(_) if own && s.tabs.len() == 1 => None,
+        None => Some(DropTarget {
+            place: DropPlace::Into(s.stack),
+            guide: r,
+        }),
+        Some(edge) => Some(DropTarget {
+            place: DropPlace::Beside(s.stack, edge),
+            guide: side_of(r, edge, |extent| extent / 2.0),
+        }),
+    }
+}
+
+/// The strip along side `edge` of `r`, as thick as `thickness` gives for the extent
+/// across that side.
+fn side_of(r: Rect, edge: Edge, thickness: impl Fn(f32) -> f32) -> Rect {
+    match edge {
+        Edge::Left => Rect {
+            w: thickness(r.w),
+            ..r
+        },
+        Edge::Right => {
+            let w = thickness(r.w);
+            Rect {
+                x: r.x + r.w - w,
+                w,
+                ..r
+            }
+        }
+        Edge::Top => Rect {
+            h: thickness(r.h),
+            ..r
+        },
+        Edge::Bottom => {
+            let h = thickness(r.h);
+            Rect {
+                y: r.y + r.h - h,
+                h,
+                ..r
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 #[allow(clippy::expect_used)] // Tests fail by panicking.
 mod tests {
@@ -387,5 +523,85 @@ mod tests {
         // Not below the minimum, not past 40 % of the window.
         assert_eq!(resized_area(&m, WINDOW, Side::Left, -500.0), 200);
         assert_eq!(resized_area(&m, WINDOW, Side::Left, 400.0), 512);
+    }
+
+    #[test]
+    fn drop_targets_follow_the_five_way_guide_and_the_window_edges() {
+        let w = Window {
+            content: WindowContent::Main(Box::new(layout(true, true, true))),
+            placement: None,
+        };
+        let flat = flatten_window(&w, WINDOW);
+        let preview = flat
+            .stacks
+            .iter()
+            .find(|s| s.tabs.contains(&PanelId::parse("rbs.preview").expect("id")))
+            .expect("preview")
+            .clone();
+        let r = preview.rect;
+        let mixer = PanelId::parse("rbs.mixer").expect("id");
+        let at = |fx: f32, fy: f32| {
+            drop_target(&flat, WINDOW, &mixer, r.x + r.w * fx, r.y + r.h * fy).map(|t| t.place)
+        };
+        assert_eq!(at(0.5, 0.5), Some(DropPlace::Into(preview.stack)));
+        assert_eq!(
+            at(0.1, 0.5),
+            Some(DropPlace::Beside(preview.stack, Edge::Left))
+        );
+        assert_eq!(
+            at(0.9, 0.5),
+            Some(DropPlace::Beside(preview.stack, Edge::Right))
+        );
+        assert_eq!(
+            at(0.5, 0.2),
+            Some(DropPlace::Beside(preview.stack, Edge::Top))
+        );
+        assert_eq!(
+            at(0.5, 0.9),
+            Some(DropPlace::Beside(preview.stack, Edge::Bottom))
+        );
+        // The title row takes it as a tab.
+        let title = drop_target(&flat, WINDOW, &mixer, r.x + r.w * 0.5, r.y + 4.0);
+        assert_eq!(title.map(|t| t.place), Some(DropPlace::Into(preview.stack)));
+        // A drop beside shades that half of the stack.
+        let left = drop_target(&flat, WINDOW, &mixer, r.x + 30.0, r.y + r.h * 0.5).expect("left");
+        assert_eq!(left.guide, Rect { w: r.w / 2.0, ..r });
+        // Near the window's edges: the window edge.
+        let edge = drop_target(&flat, WINDOW, &mixer, 5.0, WINDOW.h / 2.0).expect("edge");
+        assert_eq!(edge.place, DropPlace::WindowEdge(Edge::Left));
+        assert_eq!(edge.guide.x, 0.0);
+        assert!(edge.guide.w <= EDGE_GUIDE_MAX);
+        let edge = drop_target(&flat, WINDOW, &mixer, WINDOW.w / 2.0, WINDOW.h - 2.0);
+        assert_eq!(
+            edge.map(|t| t.place),
+            Some(DropPlace::WindowEdge(Edge::Bottom))
+        );
+        // Outside the window: nothing.
+        assert_eq!(drop_target(&flat, WINDOW, &mixer, -1.0, 10.0), None);
+        // Its own stack: no change as a tab, and none beside itself as the only tab.
+        let preview_id = PanelId::parse("rbs.preview").expect("id");
+        let own =
+            |fx: f32| drop_target(&flat, WINDOW, &preview_id, r.x + r.w * fx, r.y + r.h * 0.5);
+        assert_eq!(own(0.5), None);
+        assert_eq!(own(0.1), None);
+        // Beside its own stack when the stack has other tabs.
+        let sources = PanelId::parse("rbs.sources").expect("id");
+        let left_area = flat
+            .stacks
+            .iter()
+            .find(|s| s.tabs.contains(&sources))
+            .expect("left")
+            .rect;
+        let t = drop_target(
+            &flat,
+            WINDOW,
+            &sources,
+            left_area.x + left_area.w * 0.5,
+            left_area.y + left_area.h * 0.9,
+        );
+        assert!(matches!(
+            t.map(|t| t.place),
+            Some(DropPlace::Beside(_, Edge::Bottom))
+        ));
     }
 }

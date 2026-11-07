@@ -33,6 +33,8 @@ pub enum EditKind {
     Style,
     /// A source's picture was cropped (ADR-0058).
     Crop,
+    /// A source was shown or hidden in the scene.
+    Visibility,
 }
 
 /// The step the next undo or redo applies: its kind and the source's name.

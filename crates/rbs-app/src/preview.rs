@@ -222,6 +222,10 @@ pub fn place(window: &MainWindow) {
         if shell.get_flyout_open() {
             st.covers.push(toast(shell.get_flyout()));
         }
+        // The drop guide while a tab is dragged (ADR-0049 decision 5).
+        if shell.get_drop_open() && shell.get_drop_window() >= 0 {
+            st.covers.push(toast(shell.get_drop_cover()));
+        }
         st.cutouts.clear();
         st.cutouts.extend(st.covers.iter().map(|&c| in_layer(c)));
         st.layer.set_rect(in_layer(Rect { x, y, w, h }));

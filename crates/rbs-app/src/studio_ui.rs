@@ -1101,11 +1101,30 @@ impl StudioUi {
     }
 
     /// One layer up (drawn over the source above it in the list) or down.
+    /// Show or hide a source in the program scene (the Sources row's eye button).
+    pub fn set_source_visible(&mut self, id: i32, visible: bool) {
+        self.deleted.clear();
+        self.send(Command::SetSourceVisible {
+            id: SourceId::from_raw(id as u32),
+            visible,
+        });
+    }
+
     pub fn move_source(&mut self, id: i32, up: bool) {
         self.deleted.clear();
         self.send(Command::MoveSource {
             id: SourceId::from_raw(id as u32),
             up,
+        });
+    }
+
+    /// Puts source `id` where source `to` is in the layer order (a row dragged onto
+    /// another).
+    pub fn move_source_to(&mut self, id: i32, to: i32) {
+        self.deleted.clear();
+        self.send(Command::MoveSourceTo {
+            id: SourceId::from_raw(id as u32),
+            to: SourceId::from_raw(to as u32),
         });
     }
 
@@ -2597,9 +2616,11 @@ impl StudioUi {
                     id: r.id.get() as i32,
                     name: r.name.as_str().into(),
                     kind: r.kind.map_or("Unknown type", SourceKind::label).into(),
+                    icon: source_icon(r.kind).into(),
                     status: status.into(),
                     ok,
                     picture: r.layout.is_some(),
+                    visible: r.visible,
                     x,
                     y,
                     w,
@@ -2648,15 +2669,12 @@ impl StudioUi {
             };
             self.slots.push(slot);
         }
-        let names: Vec<SharedString> = rows
+        let meters: Vec<MeterRow> = rows
             .iter()
             .filter(|r| r.meter.is_some())
-            .map(|r| r.name.as_str().into())
-            .collect();
-        let meters: Vec<MeterRow> = names
-            .into_iter()
-            .map(|name| MeterRow {
-                name,
+            .map(|r| MeterRow {
+                name: r.name.as_str().into(),
+                icon: source_icon(r.kind).into(),
                 value: "silent".into(),
                 ..MeterRow::default()
             })
@@ -2906,9 +2924,21 @@ fn color_text(c: [u8; 4]) -> String {
     }
 }
 
+/// The icon a source's row shows for its kind (design system icon set).
+fn source_icon(kind: Option<SourceKind>) -> &'static str {
+    match kind {
+        Some(SourceKind::Screen) => "monitor",
+        Some(SourceKind::Window) => "window",
+        Some(SourceKind::Camera) => "camera",
+        Some(SourceKind::AudioInput) => "mic",
+        Some(SourceKind::SystemAudio | SourceKind::ApplicationAudio) => "speaker",
+        None => "window",
+    }
+}
+
 /// The Studio global's `undo-kind` / `redo-kind` code and the source's name for a
 /// step: 0 nothing, 1 add, 2 delete, 3 layer order, 4 move or resize, 5 shape or
-/// border, 6 crop.
+/// border, 6 crop, 7 shown or hidden.
 fn step_view(step: Option<&StepInfo>) -> (i32, &str) {
     match step {
         None => (0, ""),
@@ -2920,6 +2950,7 @@ fn step_view(step: Option<&StepInfo>) -> (i32, &str) {
                 EditKind::Place => 4,
                 EditKind::Style => 5,
                 EditKind::Crop => 6,
+                EditKind::Visibility => 7,
             },
             s.name.as_str(),
         ),

@@ -15,6 +15,7 @@ export component FocusRing inherits Rectangle {
 export enum IconName {
     none, more, chevron-down, chevron-up, chevron-left, chevron-right, check, close, dot, ring,
     plus, pin, panel-left, panel-right, panel-bottom, bolt, grid, copy, window, search,
+    monitor, camera, mic, speaker, eye, eye-off, expand,
 }
 
 // Vector icon. Icons are paths, not font glyphs, so they look the same on every OS
@@ -44,6 +45,13 @@ export component Icon inherits Rectangle {
         : name == IconName.copy ? "M 5.5 2.5 L 13.5 2.5 L 13.5 10.5 L 5.5 10.5 Z M 2.5 5.5 L 2.5 13.5 L 10.5 13.5"
         : name == IconName.window ? "M 2.5 3 L 13.5 3 L 13.5 13 L 2.5 13 Z M 2.5 6 L 13.5 6"
         : name == IconName.search ? "M 3 7 a 4 4 0 1 0 8 0 a 4 4 0 1 0 -8 0 Z M 10 10 L 13.5 13.5"
+        : name == IconName.monitor ? "M 2 3 L 14 3 L 14 11 L 2 11 Z M 5.5 13.5 L 10.5 13.5 M 8 11 L 8 13.5"
+        : name == IconName.camera ? "M 2 4.5 L 10.5 4.5 L 10.5 11.5 L 2 11.5 Z M 10.5 7 L 14 5 L 14 11 L 10.5 9"
+        : name == IconName.mic ? "M 6 2.5 L 10 2.5 L 10 8.5 L 6 8.5 Z M 4 7.5 C 4 12 12 12 12 7.5 M 8 10.75 L 8 13.5 M 6 13.5 L 10 13.5"
+        : name == IconName.speaker ? "M 2.5 6 L 5 6 L 8.5 3 L 8.5 13 L 5 10 L 2.5 10 Z M 10.5 6 C 11.5 7 11.5 9 10.5 10 M 12 4.5 C 14 6.5 14 9.5 12 11.5"
+        : name == IconName.eye ? "M 1.5 8 C 4 3.5 12 3.5 14.5 8 C 12 12.5 4 12.5 1.5 8 Z M 6.25 8 a 1.75 1.75 0 1 0 3.5 0 a 1.75 1.75 0 1 0 -3.5 0 Z"
+        : name == IconName.eye-off ? "M 1.5 8 C 4 3.5 12 3.5 14.5 8 C 12 12.5 4 12.5 1.5 8 Z M 3 13 L 13 3"
+        : name == IconName.expand ? "M 2.5 6 L 2.5 2.5 L 6 2.5 M 10 2.5 L 13.5 2.5 L 13.5 6 M 13.5 10 L 13.5 13.5 L 10 13.5 M 6 13.5 L 2.5 13.5 L 2.5 10"
         : "";
     width: Tokens.size-icon-box;
     height: Tokens.size-icon-box;
@@ -57,6 +65,28 @@ export component Icon inherits Rectangle {
         stroke: root.filled ? transparent : root.ink;
         stroke-width: root.filled ? 0px : Tokens.size-icon-stroke;
         commands: root.commands;
+    }
+}
+
+// An icon by its name in the icon set, as Rust passes it (registry and panel icons).
+export global Icons {
+    // Slint has no string to enum conversion; unknown names draw nothing.
+    public pure function named(name: string) -> IconName {
+        return name == "bolt" ? IconName.bolt
+        : name == "dot" ? IconName.dot
+        : name == "panel-left" ? IconName.panel-left
+        : name == "panel-right" ? IconName.panel-right
+        : name == "panel-bottom" ? IconName.panel-bottom
+        : name == "grid" ? IconName.grid
+        : name == "copy" ? IconName.copy
+        : name == "window" ? IconName.window
+        : name == "plus" ? IconName.plus
+        : name == "pin" ? IconName.pin
+        : name == "monitor" ? IconName.monitor
+        : name == "camera" ? IconName.camera
+        : name == "mic" ? IconName.mic
+        : name == "speaker" ? IconName.speaker
+        : IconName.none;
     }
 }
 
@@ -638,6 +668,9 @@ export component ColorPicker inherits Rectangle {
 // `step` (Shift: ten steps) and commit at once. Shows whole numbers.
 export component NumberField inherits Rectangle {
     in property <string> label;
+    // A short visible label inside the field, before the value (X, Y, W, H...); the
+    // value is then right-aligned. `label` stays the accessible name.
+    in property <string> prefix;
     in property <float> value;
     in property <float> step: 1;
     in property <bool> enabled: true;
@@ -673,6 +706,15 @@ export component NumberField inherits Rectangle {
     accessible-enabled: enabled;
     accessible-action-increment => { step-by(1); }
     accessible-action-decrement => { step-by(-1); }
+    if prefix != "": Text {
+        x: Tokens.space-2;
+        height: parent.height;
+        text: root.prefix;
+        color: Theme.text-secondary;
+        font-size: Tokens.type-body-size;
+        vertical-alignment: center;
+        accessible-role: none;
+    }
     input := TextInput {
         x: Tokens.space-2;
         width: parent.width - 2 * Tokens.space-2;
@@ -681,6 +723,7 @@ export component NumberField inherits Rectangle {
         enabled: root.enabled;
         single-line: true;
         vertical-alignment: center;
+        horizontal-alignment: root.prefix != "" ? right : left;
         color: root.enabled ? Theme.text-primary : Theme.text-disabled;
         font-size: Tokens.type-body-size;
         // The caret is drawn in the selection colour (Slint 1.18 on macOS): accent,

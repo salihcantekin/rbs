@@ -191,6 +191,8 @@ pub struct SourceRow {
     /// Width and height in pixels of its picture, as last seen while it ran (video
     /// sources, ADR-0058); `None` before it ran.
     pub picture: Option<(u32, u32)>,
+    /// Shown in the program scene (a hidden source is not drawn or heard).
+    pub visible: bool,
 }
 
 impl PartialEq for SourceRow {
@@ -202,6 +204,7 @@ impl PartialEq for SourceRow {
             && self.layout == other.layout
             && self.item == other.item
             && self.picture == other.picture
+            && self.visible == other.visible
             && match (&self.meter, &other.meter) {
                 (Some(a), Some(b)) => Arc::ptr_eq(a, b),
                 (None, None) => true,
@@ -297,6 +300,21 @@ pub enum Command {
         id: SourceId,
         /// Up, else down.
         up: bool,
+    },
+    /// Move a source to where source `to` is in the program scene's layer order (a
+    /// row dragged onto another row of the Sources list); one undo step.
+    MoveSourceTo {
+        /// The source.
+        id: SourceId,
+        /// The source whose place it takes.
+        to: SourceId,
+    },
+    /// Show or hide a source in the program scene (one undo step).
+    SetSourceVisible {
+        /// The source.
+        id: SourceId,
+        /// Shown.
+        visible: bool,
     },
     /// Place a video source's picture: the box's top-left corner and size in canvas
     /// pixels. Rotation, crop and opacity stay. A size of zero or a value that is not
@@ -1505,6 +1523,18 @@ impl Host {
                 Ok(false) => {}
                 Err(e) => notify(Update::Error(e)),
             },
+            Command::MoveSourceTo { id, to } => match self.move_source_to(id, to) {
+                Ok(true) => self.apply(notify),
+                Ok(false) => {}
+                Err(e) => notify(Update::Error(e)),
+            },
+            Command::SetSourceVisible { id, visible } => {
+                match self.set_source_visible(id, visible) {
+                    Ok(true) => self.apply(notify),
+                    Ok(false) => {}
+                    Err(e) => notify(Update::Error(e)),
+                }
+            }
             Command::SetSourceBox {
                 seq,
                 gesture,
@@ -2510,6 +2540,22 @@ impl Host {
 
     /// Over (`up`) or under the next source with a picture; sound-only items do not
     /// count, because they draw nothing. `Ok(false)` when there is none that way.
+    fn move_source_to(&mut self, id: SourceId, to: SourceId) -> Result<bool, String> {
+        if id == to {
+            return Ok(false);
+        }
+        let (_, item) = self.item_of(id)?;
+        let item = item.id;
+        let (index, _) = self.item_of(to)?;
+        let undo = self
+            .collection
+            .move_item(item, index)
+            .map_err(|e| edit_error(&e))?;
+        let name = self.name_of(id);
+        self.history.record(EditKind::Order, &name, 0, vec![undo]);
+        Ok(true)
+    }
+
     fn move_source(&mut self, id: SourceId, up: bool) -> Result<bool, String> {
         let (index, item) = self.item_of(id)?;
         let item = item.id;
@@ -2534,6 +2580,23 @@ impl Host {
             .map_err(|e| edit_error(&e))?;
         let name = self.name_of(id);
         self.history.record(EditKind::Order, &name, 0, vec![undo]);
+        Ok(true)
+    }
+
+    /// Show or hide a source's item in the program scene; `Ok(false)` when it already is.
+    fn set_source_visible(&mut self, id: SourceId, visible: bool) -> Result<bool, String> {
+        let (_, item) = self.item_of(id)?;
+        if item.visible == visible {
+            return Ok(false);
+        }
+        let item = item.id;
+        let undo = self
+            .collection
+            .set_item_visible(item, visible)
+            .map_err(|e| edit_error(&e))?;
+        let name = self.name_of(id);
+        self.history
+            .record(EditKind::Visibility, &name, 0, vec![undo]);
         Ok(true)
     }
 
@@ -2826,6 +2889,7 @@ impl Host {
                         .then(|| self.studio.meter(s.id).cloned())
                         .flatten(),
                     picture: self.sizes.get(&s.id).copied(),
+                    visible: item.visible,
                     status,
                 }
             })
