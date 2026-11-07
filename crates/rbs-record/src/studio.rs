@@ -287,8 +287,12 @@ impl VirtualCameraSettings {
 pub struct VirtualCameraState {
     /// The configuration its session was opened with.
     pub config: VirtualCameraConfig,
-    /// Its node's counters.
+    /// Its node's counters: frames handed to the session.
     pub stats: Arc<VirtualCameraNodeStats>,
+    /// The session's counters, when the adapter shares them: what its sender did with
+    /// the frames (`sent` to the consumer side, `consumer_absent` while no app reads,
+    /// `format_pending`, `consumer_busy`).
+    pub session: Option<Arc<rbs_vcam::VcamCounters>>,
     /// Why its node failed, until it runs again. The studio runs on either way.
     pub failure: Option<String>,
 }
@@ -298,6 +302,7 @@ struct CameraRun {
     node: Added,
     config: VirtualCameraConfig,
     stats: Arc<VirtualCameraNodeStats>,
+    session: Option<Arc<rbs_vcam::VcamCounters>>,
     failure: Option<String>,
 }
 
@@ -2312,6 +2317,7 @@ impl Studio {
             MemoryKind::System,
         );
         let session = factory.open(&config)?;
+        let counters = session.counters();
         let (width, height) = self.size;
         let node = VirtualCameraNode::new(session, config, width, height);
         let stats = node.stats();
@@ -2345,6 +2351,7 @@ impl Studio {
             node: added,
             config,
             stats,
+            session: counters,
             failure: None,
         });
         Ok(())
@@ -2373,6 +2380,7 @@ impl Studio {
         self.camera.as_ref().map(|c| VirtualCameraState {
             config: c.config,
             stats: Arc::clone(&c.stats),
+            session: c.session.clone(),
             failure: c.failure.clone(),
         })
     }

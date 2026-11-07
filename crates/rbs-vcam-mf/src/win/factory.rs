@@ -18,10 +18,10 @@ use rbs_vcam_ring::header_info;
 use windows::Win32::Foundation::ERROR_CANCELLED;
 use windows::Win32::System::SystemInformation::GetTickCount64;
 
-use super::ring::{WinRing, open, section_name};
+use super::ring::{WinRing, open};
 use super::sys::{
     SETUP_EXE, SOURCE_DLL, class_key, current_user, format_path, hklm_string, install_dir,
-    same_file,
+    same_file, trusted_location,
 };
 use super::{camera, elevate};
 use crate::sender::{RETRY_MS, RingSender};
@@ -48,6 +48,11 @@ fn os(code: windows_core::HRESULT, what: &str) -> VcamError {
 
 fn win(e: &windows_core::Error, what: &str) -> VcamError {
     os(e.code(), &format!("{what}: {}", e.message()))
+}
+
+/// RBS runs from a folder whose DLL is never registered (not Program Files).
+fn not_installed_here() -> VcamError {
+    VcamError::Unsupported("Install RBS to add the virtual camera".into())
 }
 
 /// The announced format for `format`, or `InvalidConfig`.
@@ -130,6 +135,9 @@ impl MfVcamFactory {
             .ok_or_else(|| VcamError::Unsupported("RBS install folder not found".into()))?;
         match elevate::run(&exe, &format!("{verb} {sid}")) {
             Ok(0) => Ok(()),
+            Ok(code) if i64::from(code) == i64::from(super::setup::NOT_INSTALLED) => {
+                Err(not_installed_here())
+            }
             Ok(code) => Err(VcamError::Os {
                 code: i64::from(code),
                 message: format!("{SETUP_EXE} {verb} failed"),
@@ -168,8 +176,12 @@ impl VirtualCameraFactory for MfVcamFactory {
             InstallState::Unsupported { reason } => return Err(VcamError::Unsupported(reason)),
             _ => {}
         }
-        // The one prompt, only when the registration is missing or another install's.
+        // The one prompt, only when the registration is missing or another install's,
+        // and never for a DLL the setup tool would refuse.
         if !matches!(Self::registration(&sid), Registration::Ours) {
+            if !install_dir().is_some_and(|d| trusted_location(&d.join(SOURCE_DLL))) {
+                return Err(not_installed_here());
+            }
             Self::run_setup("register", &sid)?;
         }
         match camera::add(&sid) {
@@ -200,7 +212,7 @@ impl VirtualCameraFactory for MfVcamFactory {
         write_format(&path, &wanted)?;
         // SAFETY: no preconditions.
         let now = unsafe { GetTickCount64() };
-        let reading = open(&section_name(&sid))
+        let reading = open(&sid)
             .and_then(|(region, keep)| {
                 let info = header_info(&region);
                 drop(region);
@@ -321,6 +333,10 @@ impl VirtualCameraSession for MfSession {
 
     fn stats(&self) -> VcamStats {
         self.handoff.stats()
+    }
+
+    fn counters(&self) -> Option<std::sync::Arc<rbs_vcam::VcamCounters>> {
+        Some(std::sync::Arc::clone(self.handoff.counters()))
     }
 }
 
