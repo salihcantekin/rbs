@@ -116,6 +116,15 @@ impl Engine {
             Ok(()) | Err(GpuError::ExportBusy { .. }) => {}
             Err(e) => panic!("publish failed: {e}"),
         }
+        // One frame of GPU work at a time. The test loops call this as fast as they can;
+        // without waiting, renders queued up without bound whenever the GPU fell behind
+        // (WARP, a CPU adapter, on a runner busy with other tests), and a converted frame
+        // waited behind seconds of them: the UI saw no frame within its 10 s guard.
+        // A bound only; `tick` checks completion itself.
+        let _ = ctx.device().poll(wgpu::PollType::Wait {
+            submission_index: None,
+            timeout: Some(Duration::from_secs(10)),
+        });
     }
 }
 
