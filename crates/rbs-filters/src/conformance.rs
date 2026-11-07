@@ -379,6 +379,16 @@ pub struct Rig {
     senders: Vec<ParamSender<Values>>,
 }
 
+/// A rig ends with the GPU idle. A test that ends with work in flight (no readback
+/// after its last tick) otherwise lets the process exit while a software driver's
+/// threads still execute it, which crashed a test binary on exit in CI (SIGSEGV after
+/// "test result: ok").
+impl Drop for Rig {
+    fn drop(&mut self) {
+        let _ = self.ctx.wait_idle();
+    }
+}
+
 impl Rig {
     /// A rig running `ty` with `values`, warmed for `size` when given.
     pub fn new(
