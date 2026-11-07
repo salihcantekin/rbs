@@ -1325,12 +1325,16 @@ impl Ctx {
     fn show_all(&self, app: &mut App) {
         if !app.hidden {
             let _ = app.main.show();
+            #[cfg(windows)]
+            title_bar::attach_after_show(&app.main);
             return;
         }
         app.hidden = false;
         #[cfg(target_os = "macos")]
         rbs_app::native::set_hidden(false);
         let _ = app.main.show();
+        #[cfg(windows)]
+        title_bar::attach_after_show(&app.main);
         for f in &app.floats {
             let _ = f.window.show();
         }
@@ -2468,8 +2472,6 @@ fn install_studio(g: &Studio<'_>, ctx: &Ctx) {
                     && let Some(main) = main.upgrade()
                 {
                     preview::place(&main);
-                    #[cfg(windows)]
-                    title_bar::attach(&main);
                 }
             });
             if let Err(e) = set {
@@ -2876,6 +2878,8 @@ fn run(config: PathBuf, notice: Option<String>) -> Result<(), Box<dyn std::error
 
     // Hiding every window keeps the event loop (ADR-0056 decision 4); only Quit ends it.
     main.show()?;
+    #[cfg(windows)]
+    title_bar::attach_after_show(&main);
     slint::run_event_loop_until_quit()?;
     let _ = main.hide();
     // The layer's frames go back before the studio and its publisher stop.

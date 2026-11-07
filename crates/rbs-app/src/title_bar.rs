@@ -40,29 +40,49 @@ pub fn install_handlers(main: &MainWindow) {
         });
 }
 
-/// Before each redraw of the main window: once its Win32 window exists (and again
-/// whenever it is a new one), removes the caption, after this redraw.
+/// After the main window is shown: once its Win32 window exists (and again whenever
+/// it is a new one), removes the caption. Not from a rendering notifier: Slint's
+/// Direct3D surface, which Windows falls back to, never calls one. The window is made
+/// once the event loop runs, so this looks again a few times, briefly.
 #[cfg(windows)]
-pub fn attach(main: &MainWindow) {
-    use raw_window_handle::{HasWindowHandle, RawWindowHandle};
-    let window_handle = main.window().window_handle();
-    let Ok(handle) = window_handle.window_handle() else {
-        return;
-    };
-    let RawWindowHandle::Win32(win32) = handle.as_raw() else {
-        return;
-    };
-    let hwnd = win32.hwnd;
-    if rbs_app::win::caption::window() == Some(hwnd.get() as windows_sys::Win32::Foundation::HWND) {
-        return;
-    }
-    let weak = main.as_weak();
-    // Not inside the redraw: removing the caption resizes the client area at once.
-    entry::single_shot(std::time::Duration::ZERO, move || {
-        if let Some(main) = weak.upgrade() {
-            install(&main, hwnd);
+pub fn attach_after_show(main: &MainWindow) {
+    schedule(main.as_weak(), 0);
+}
+
+/// About two seconds of looking (40 x 50 ms); after that the OS title bar stays.
+#[cfg(windows)]
+const TRIES: u32 = 40;
+
+#[cfg(windows)]
+fn schedule(weak: slint::Weak<MainWindow>, tries: u32) {
+    let after = std::time::Duration::from_millis(if tries == 0 { 0 } else { 50 });
+    entry::single_shot(after, move || {
+        let Some(main) = weak.upgrade() else {
+            return;
+        };
+        match hwnd(&main) {
+            Some(h) => {
+                let current = h.get() as windows_sys::Win32::Foundation::HWND;
+                if rbs_app::win::caption::window() != Some(current) {
+                    install(&main, h);
+                }
+            }
+            None if tries < TRIES => schedule(weak, tries + 1),
+            None => crate::studio_ui::log("title bar: the main window has no Win32 handle"),
         }
     });
+}
+
+/// The main window's Win32 handle, once the window exists.
+#[cfg(windows)]
+fn hwnd(main: &MainWindow) -> Option<std::num::NonZeroIsize> {
+    use raw_window_handle::{HasWindowHandle, RawWindowHandle};
+    let window_handle = main.window().window_handle();
+    let handle = window_handle.window_handle().ok()?;
+    match handle.as_raw() {
+        RawWindowHandle::Win32(win32) => Some(win32.hwnd),
+        _ => None,
+    }
 }
 
 #[cfg(windows)]
@@ -105,5 +125,10 @@ fn install(main: &MainWindow, hwnd: std::num::NonZeroIsize) {
         let g = main.global::<Shell>();
         g.set_window_maximized(caption::maximized());
         g.set_custom_caption(true);
+    } else {
+        crate::studio_ui::log(&format!(
+            "title bar: cannot remove the caption: {}",
+            std::io::Error::last_os_error()
+        ));
     }
 }
