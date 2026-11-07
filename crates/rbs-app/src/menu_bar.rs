@@ -671,7 +671,7 @@ mod tests {
             .map(|s| settings_section(s).expect("known section"))
             .collect();
         seen.sort_unstable();
-        assert_eq!(seen, (0..7).collect::<Vec<_>>());
+        assert_eq!(seen, (0..8).collect::<Vec<_>>());
         assert_eq!(settings_section("audio"), None);
         let run = |t: &str| open_settings(&CommandId::parse(t).expect("id"));
         assert_eq!(run("ui.settings.open"), Some(Run::OpenSettings(None)));
