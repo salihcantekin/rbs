@@ -18,6 +18,7 @@
 mod appearance;
 mod appearance_page;
 mod config;
+mod context_menu;
 mod entry;
 mod look;
 mod menu_bar;
@@ -397,6 +398,19 @@ impl App {
             Run::AddSource(kind) => self.ask_add_source(kind),
             Run::StudioMode(on) => self.studio.set_studio_mode(on),
             Run::Transition => self.studio.transition(),
+            Run::AddScene => self.studio.add_scene(),
+            Run::RenameScene(id, Some(name)) => self.studio.rename_scene(id, &name),
+            // Asking for a name needs someone at the window: not from a control
+            // surface or a global shortcut (`ui.command.run` answers `invalid_params`).
+            Run::RenameScene(_, None) | Run::RenameSource(_, None) if !confirm => {}
+            Run::RenameScene(id, None) => self.ask_rename(id, true),
+            Run::RemoveScene(id) => self.studio.remove_scene(id),
+            Run::RenameSource(id, Some(name)) => self.studio.rename_source(id, &name),
+            Run::RenameSource(id, None) => self.ask_rename(id, false),
+            Run::DeleteSource(id) => self.studio.delete_source(id),
+            Run::SourceVisible(id, on) => self.studio.set_source_visible(id, on),
+            Run::SourceLocked(id, on) => self.studio.set_source_locked(id, on),
+            Run::SourceMuted(id, on) => self.studio.set_source_muted(id, on),
             Run::GoLive => self.studio.go_live(),
             Run::AskEndStream if confirm => self.confirm_end = true,
             Run::AskEndStream => self.studio.end_stream(),
@@ -407,6 +421,85 @@ impl App {
             // Making the window needs the shell's context, which the next sync has.
             Run::OpenSettings(section) => self.open_settings = Some(section),
         }
+    }
+
+    /// Starts the name field of a scene's (`scene`) or source's row: Rename from a menu
+    /// or a shortcut. The row's panel is opened first.
+    fn ask_rename(&mut self, id: i32, scene: bool) {
+        let name = if scene { "rbs.scenes" } else { "rbs.sources" };
+        if let Some(p) = panel(name) {
+            self.command(LayoutCommand::OpenPanel(p), Origin::Command);
+        }
+        // The id says which row; the count makes each ask a change, also for the same
+        // row twice. A row made later (its panel was closed) checks the id when made.
+        let ask = |g: Studio<'_>| {
+            if scene {
+                g.set_renaming_scene(id);
+                g.set_rename_scene_asked(g.get_rename_scene_asked() + 1);
+            } else {
+                g.set_renaming_source(id);
+                g.set_rename_source_asked(g.get_rename_source_asked() + 1);
+            }
+        };
+        ask(self.main.global::<Studio>());
+        for f in &self.floats {
+            ask(f.window.global::<Studio>());
+        }
+    }
+
+    /// The items of a context menu (`ui/context_menu.slint`): `context` names the
+    /// element, `target` what was right-clicked. A source's row or picture becomes
+    /// the selection, as a click would make it.
+    fn context_items(&mut self, context: &str, target: &str) -> Vec<context_menu::Item> {
+        use rbs_ui::command::Context;
+        let Some(mut target) = context_menu::target(target) else {
+            return Vec::new();
+        };
+        let param = |t: &[(String, String)], k: &str| {
+            t.iter().find(|(key, _)| key == k).map(|(_, v)| v.clone())
+        };
+        let context = match context {
+            // The picture: the source under the pointer, else the panel's own menu.
+            "preview" => {
+                let num = |k| param(&target, k).and_then(|v| v.parse::<f32>().ok());
+                let (Some(x), Some(y), Some(w), Some(h)) = (num("x"), num("y"), num("w"), num("h"))
+                else {
+                    return Vec::new();
+                };
+                match self.studio.preview_source_at([x, y], [w, h]) {
+                    Some(id) => {
+                        let Some(f) = self.studio.source_facts(Some(&id.to_string()), None) else {
+                            return Vec::new();
+                        };
+                        target = vec![
+                            ("item".to_owned(), f.item.to_string()),
+                            ("source".to_owned(), f.id.to_string()),
+                        ];
+                        Context::Source
+                    }
+                    None => {
+                        target.retain(|(k, _)| k == "id");
+                        Context::Preview
+                    }
+                }
+            }
+            "source" => {
+                let Some(f) =
+                    param(&target, "source").and_then(|v| self.studio.source_facts(Some(&v), None))
+                else {
+                    return Vec::new();
+                };
+                self.studio.selected = f.id;
+                self.studio.refresh_marks();
+                target.push(("item".to_owned(), f.item.to_string()));
+                Context::Source
+            }
+            other => match Context::parse(other) {
+                Some(c) => c,
+                None => return Vec::new(),
+            },
+        };
+        context_menu::items(context, &target, &self.shown())
     }
 
     /// Opens the Sources panel's Add source menu, at the list of `kind`'s targets when
@@ -1499,6 +1592,7 @@ impl Ctx {
         let fw = FloatWindow::new().ok()?;
         install(&fw.global::<Shell>(), self);
         install_menus(&fw.global::<Menus>(), self);
+        install_context_menus(&fw.global::<ContextMenus>(), self);
         shortcuts_page::install_press(&fw.global::<Shortcuts>(), self);
         install_studio(&fw.global::<Studio>(), self);
         look::apply(
@@ -1752,8 +1846,47 @@ fn install(g: &Shell<'_>, ctx: &Ctx) {
 
 /// Connect one window's menu bar to the shared state.
 fn install_menus(g: &Menus<'_>, ctx: &Ctx) {
-    let ctx = ctx.clone();
-    g.on_run(move |id| ctx.update(move |app| app.run_command(&id)));
+    let c = ctx.clone();
+    g.on_run(move |id| c.update(move |app| app.run_command(&id)));
+}
+
+/// Connect one window's context menus to the shared state. The items are made at
+/// once, so the menu shows the state of the moment; the selection a right-click makes
+/// reaches the views on the next sync.
+fn install_context_menus(g: &ContextMenus<'_>, ctx: &Ctx) {
+    let c = ctx.clone();
+    g.on_prepare(move |context, target| {
+        let items = match c.app.try_borrow_mut() {
+            Ok(mut app) => entry::guard_or(Vec::new, || app.context_items(&context, &target)),
+            Err(_) => Vec::new(),
+        };
+        c.update(|_| {});
+        let rows: Vec<ContextItem> = items.into_iter().map(context_row).collect();
+        ModelRc::new(VecModel::from(rows))
+    });
+    let c = ctx.clone();
+    g.on_run(move |id| c.update(move |app| app.run_command(&id)));
+}
+
+fn context_row(i: context_menu::Item) -> ContextItem {
+    let choices: Vec<ContextChoice> = i
+        .choices
+        .into_iter()
+        .map(|(title, id, checked)| ContextChoice {
+            title: title.into(),
+            id: id.into(),
+            checked,
+        })
+        .collect();
+    ContextItem {
+        kind: i.kind as i32,
+        title: i.title.into(),
+        id: i.id.into(),
+        enabled: i.enabled,
+        checkable: i.checkable,
+        checked: i.checked,
+        choices: ModelRc::new(VecModel::from(choices)),
+    }
 }
 
 /// Which library a menu imports into or exports from.
@@ -2422,6 +2555,7 @@ fn run(config: PathBuf, notice: Option<String>) -> Result<(), Box<dyn std::error
     };
     install(&main.global::<Shell>(), &ctx);
     install_menus(&main.global::<Menus>(), &ctx);
+    install_context_menus(&main.global::<ContextMenus>(), &ctx);
     shortcuts_page::install_press(&main.global::<Shortcuts>(), &ctx);
     install_studio(&main.global::<Studio>(), &ctx);
     CTX.with(|c| *c.borrow_mut() = Some(ctx.clone()));

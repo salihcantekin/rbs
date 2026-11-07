@@ -13,7 +13,7 @@ use rbs_ui::layout::RailAt;
 use rbs_ui::panel::PanelId;
 use rbs_ui::workspace::{Side, Workspace};
 
-use crate::studio_ui::{StudioUi, rec_state, st_state};
+use crate::studio_ui::{SourceFacts, StudioUi, rec_state, st_state};
 
 /// The run-time values of the menu bar, in the generated items' order: one entry
 /// per command or choice submenu in `titles`, `enabled` and `checked`, one list per
@@ -238,6 +238,23 @@ impl Shown<'_> {
         })
     }
 
+    /// The source an id names (`source` or `item`), or the selected one.
+    fn source(&self, id: &CommandId) -> Result<SourceFacts, String> {
+        self.studio
+            .source_facts(id.param("source"), id.param("item"))
+            .ok_or_else(|| match (id.param("source"), id.param("item")) {
+                (None, None) => "No source is selected.".to_owned(),
+                _ => "The source is not in this scene.".to_owned(),
+            })
+    }
+
+    /// The scene an id names, or the one being worked on.
+    fn scene(&self, id: &CommandId) -> Result<i32, String> {
+        self.studio
+            .scene_target(id.param("scene"))
+            .ok_or_else(|| "The scene is gone.".to_owned())
+    }
+
     fn running(&self) -> Result<(), String> {
         match self.studio.state {
             1 => Ok(()),
@@ -250,6 +267,12 @@ impl Shown<'_> {
 impl CommandState for Shown<'_> {
     fn enabled(&self, id: &CommandId) -> Result<(), String> {
         let s = self.studio;
+        // Scene, source and item ids are unique only within a scene collection.
+        if let Some(c) = id.param("collection")
+            && s.current_collection().as_deref() != Some(c)
+        {
+            return Err("In another scene collection.".to_owned());
+        }
         match id.base() {
             "edit.undo" => {
                 self.running()?;
@@ -276,7 +299,40 @@ impl CommandState for Shown<'_> {
                     Err("No area beside the centre has panels.".to_owned())
                 }
             }
-            "source.add" | "canvas.studio_mode.toggle" => self.running(),
+            "source.add" | "canvas.studio_mode.toggle" | "scene.add" => self.running(),
+            "scene.rename" => {
+                self.running()?;
+                self.scene(id).map(|_| ())
+            }
+            "scene.remove" => {
+                self.running()?;
+                self.scene(id)?;
+                if s.scene_count() > 1 {
+                    Ok(())
+                } else {
+                    Err("The last scene cannot be removed.".to_owned())
+                }
+            }
+            "item.visible.toggle" | "source.rename" | "source.delete" => {
+                self.running()?;
+                self.source(id).map(|_| ())
+            }
+            "item.locked.toggle" => {
+                self.running()?;
+                if self.source(id)?.picture {
+                    Ok(())
+                } else {
+                    Err("The source has no picture.".to_owned())
+                }
+            }
+            "source.muted.toggle" => {
+                self.running()?;
+                if self.source(id)?.audio {
+                    Ok(())
+                } else {
+                    Err("The source has no sound in the Mixer.".to_owned())
+                }
+            }
             "canvas.transition" => {
                 self.running()?;
                 if s.studio_mode {
@@ -285,15 +341,7 @@ impl CommandState for Shown<'_> {
                     Err("Studio mode is off.".to_owned())
                 }
             }
-            "scene.select" => {
-                self.running()?;
-                match id.param("collection") {
-                    Some(c) if s.current_collection().as_deref() != Some(c) => {
-                        Err("In another scene collection.".to_owned())
-                    }
-                    _ => Ok(()),
-                }
-            }
+            "scene.select" => self.running(),
             "scene.position" => {
                 self.running()?;
                 scene_position(id)
@@ -359,6 +407,9 @@ impl CommandState for Shown<'_> {
                     && self.workspace.studio_rail() == rail_at(id)
             }
             "canvas.studio_mode.toggle" => self.studio.studio_mode,
+            "item.visible.toggle" => self.source(id).is_ok_and(|f| f.visible),
+            "item.locked.toggle" => self.source(id).is_ok_and(|f| f.locked),
+            "source.muted.toggle" => self.source(id).is_ok_and(|f| f.muted),
             "stream.toggle" => matches!(self.studio.st_state, st_state::LIVE | st_state::STARTING),
             "record.toggle" => matches!(
                 self.studio.rec_state,
@@ -399,6 +450,33 @@ impl CommandState for Shown<'_> {
         match (id.base(), self.studio.current_collection()) {
             ("scene.select", Some(c)) => vec![("collection", c)],
             _ => Vec::new(),
+        }
+    }
+
+    fn title(&self, id: &CommandId) -> Option<String> {
+        match (id.base(), id.param("scene")) {
+            // One scene, from its row's menu: what a click on the row does.
+            ("scene.select", Some(_)) if self.studio.studio_mode => {
+                Some("Show in preview".to_owned())
+            }
+            ("scene.select", Some(_)) => Some("Put on air".to_owned()),
+            ("scene.rename", Some(_)) => Some("Rename".to_owned()),
+            ("scene.remove", Some(_)) => Some("Remove".to_owned()),
+            ("source.rename", _) if id.param("source").is_some() => Some("Rename".to_owned()),
+            ("source.delete", _) if id.param("source").is_some() => Some("Delete".to_owned()),
+            _ => None,
+        }
+    }
+
+    fn applies(&self, id: &CommandId) -> bool {
+        match id.base() {
+            "item.locked.toggle" => self.source(id).is_ok_and(|f| f.picture),
+            "source.muted.toggle" => self.source(id).is_ok_and(|f| f.audio),
+            // The scene shown already: putting it on air again does nothing.
+            "scene.select" => {
+                id.param("scene").is_none() || self.scene(id).ok() != self.studio.scene_target(None)
+            }
+            _ => true,
         }
     }
 }
@@ -579,6 +657,22 @@ pub enum Run {
     StudioMode(bool),
     /// Put the preview scene on air (ADR-0061).
     Transition,
+    /// Add a scene.
+    AddScene,
+    /// Rename the scene with this id; without a name, ask for one in its row.
+    RenameScene(i32, Option<String>),
+    /// Remove the scene with this id.
+    RemoveScene(i32),
+    /// Rename the source with this id; without a name, ask for one in its row.
+    RenameSource(i32, Option<String>),
+    /// Delete the source with this id.
+    DeleteSource(i32),
+    /// Show (`true`) or hide the source with this id in the scene.
+    SourceVisible(i32, bool),
+    /// Lock (`true`) or unlock the source with this id.
+    SourceLocked(i32, bool),
+    /// Mute (`true`) or unmute the source with this id.
+    SourceMuted(i32, bool),
     GoLive,
     /// Ask first, then end the stream (U4).
     AskEndStream,
@@ -633,6 +727,19 @@ pub fn run(text: &str, state: &Shown<'_>) -> Option<Run> {
         "scene.position" => Run::Scene(state.studio.scene_at(scene_position(&id)?)?),
         "scene.next" => Run::Scene(state.studio.scene_step(1)?),
         "scene.previous" => Run::Scene(state.studio.scene_step(-1)?),
+        "scene.add" => Run::AddScene,
+        "scene.rename" => {
+            Run::RenameScene(state.scene(&id).ok()?, id.param("name").map(str::to_owned))
+        }
+        "scene.remove" => Run::RemoveScene(state.scene(&id).ok()?),
+        "source.rename" => Run::RenameSource(
+            state.source(&id).ok()?.id,
+            id.param("name").map(str::to_owned),
+        ),
+        "source.delete" => Run::DeleteSource(state.source(&id).ok()?.id),
+        "item.visible.toggle" => Run::SourceVisible(state.source(&id).ok()?.id, !on),
+        "item.locked.toggle" => Run::SourceLocked(state.source(&id).ok()?.id, !on),
+        "source.muted.toggle" => Run::SourceMuted(state.source(&id).ok()?.id, !on),
         "stream.toggle" if on => Run::AskEndStream,
         "stream.toggle" => Run::GoLive,
         "record.toggle" if on => Run::StopRecording,

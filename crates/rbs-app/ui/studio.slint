@@ -5,6 +5,7 @@
 import { Theme, Tokens } from "tokens.slint";
 import { Button, Checkbox, ColorPicker, FocusRing, Icon, IconButton, IconName, Icons, MenuItem, MenuSurface, EmptyState, NumberField, Select, SegmentedControl, Slider, TextField, Toggle } from "components.slint";
 import { SettingsCard, SettingRow, SettingBlock, SettingsStatus, SettingsNotice, SettingsCallout } from "settings.slint";
+import { CommandMenu } from "context_menu.slint";
 
 // `picture`: a video source; `x`, `y`, `w`, `h` place its box on the canvas (canvas
 // pixels). `can-up` / `can-down`: another source with a picture is above / below it.
@@ -151,6 +152,13 @@ export global Studio {
     callback add-existing-source(int /* id */);
     // The Scenes panel's `+` in its card title row; each press adds one.
     in-out property <int> add-scene-asked;
+    // Rename from a menu or a shortcut: the row of this scene or source starts its
+    // name field and sets it back to -1.
+    in-out property <int> renaming-scene: -1;
+    in-out property <int> renaming-source: -1;
+    // Counts the asks, so asking for the same row again is a change too.
+    in-out property <int> rename-scene-asked;
+    in-out property <int> rename-source-asked;
     // A video source's box on the canvas, in canvas pixels.
     callback set-source-box(int /* id */, float /* x */, float /* y */, float /* w */, float /* h */);
     // Shape and border of a video source (ADR-0053); a colour that is not #rrggbb or
@@ -491,10 +499,24 @@ export component ProgramPanel inherits Rectangle {
             reject
         }
     }
+    // A right-click on the picture: the menu of the source under the pointer (it
+    // becomes the selection), else the panel's own menu.
+    property <Point> menu-at;
+    menu := CommandMenu {
+        context: "preview";
+        target: "h=" + round(touch.height / 1px) + "&id=" + root.panel + "&w=" + round(touch.width / 1px)
+            + "&x=" + round(root.menu-at.x / 1px) + "&y=" + round(root.menu-at.y / 1px);
+    }
     touch := TouchArea {
         enabled: editable;
         pointer-event(e) => {
             if e.kind == PointerEventKind.cancel { Studio.preview-release(); return; }
+            if e.kind == PointerEventKind.down && e.button == PointerEventButton.right {
+                keys.focus();
+                root.menu-at = { x: self.mouse-x, y: self.mouse-y };
+                menu.open(root.menu-at);
+                return;
+            }
             if e.button != PointerEventButton.left { return; }
             if e.kind == PointerEventKind.down {
                 keys.focus();
@@ -532,7 +554,7 @@ component SourceRowView inherits Rectangle {
     property <color> ink: data.visible ? Theme.text-primary : Theme.text-disabled;
     // Layer and delete buttons show while the pointer is over the row, so names keep
     // their room; on a focused row Alt+Up, Alt+Down and Delete do the same.
-    property <bool> tools: touch.has-hover;
+    property <bool> tools: touch.has-hover && !editing;
     // Another row is dragged over this one: it would take this row's place.
     property <bool> drop-here: drop.has-drag && Studio.dragging-source != data.id;
     height: data.ok ? Tokens.size-control-md : Tokens.size-control-md + Tokens.type-caption-line;
@@ -542,15 +564,32 @@ component SourceRowView inherits Rectangle {
     border-color: Theme.accent;
     accessible-role: list-item;
     accessible-label: @tr("{}, {}, {}{}{}", data.name, data.kind, data.status, data.visible ? "" : @tr(", hidden"), data.locked ? @tr(", locked") : "");
-    accessible-description: data.picture ? @tr("Alt+Up or Alt+Down changes the layer, Delete removes it") : @tr("Delete removes it");
+    accessible-description: data.picture ? @tr("Alt+Up or Alt+Down changes the layer, F2 renames it, Delete removes it, the Menu key or Shift+F10 opens its menu") : @tr("F2 renames it, Delete removes it, the Menu key or Shift+F10 opens its menu");
     accessible-item-selectable: true;
     accessible-item-selected: selected;
     accessible-action-default => { Studio.select-source(data.id); }
     // Return or Space selects the focused row; the TouchArea is after the FocusScope
     // so it gets the press (see Button).
+    // Rename: from the menu, a shortcut, F2 or a double-click.
+    in-out property <bool> editing;
+    property <int> rename-asked: Studio.rename-source-asked;
+    changed rename-asked => { root.take-rename(); }
+    init => { root.take-rename(); }
+    function take-rename() {
+        if Studio.renaming-source == data.id { root.editing = true; Studio.renaming-source = -1; }
+    }
+    menu := CommandMenu {
+        context: "source";
+        target: "source=" + data.id;
+    }
     focus := FocusScope {
         key-pressed(e) => {
             if e.text == Key.Return || e.text == " " { Studio.select-source(data.id); return accept; }
+            if e.text == Key.Menu || (e.text == Key.F10 && e.modifiers.shift) {
+                menu.open({ x: Tokens.space-2, y: root.height });
+                return accept;
+            }
+            if e.text == Key.F2 { root.editing = true; return accept; }
             if e.modifiers.alt && e.text == Key.UpArrow && data.picture && data.can-up {
                 root.leaving(); Studio.move-source(data.id, true); return accept;
             }
@@ -583,6 +622,14 @@ component SourceRowView inherits Rectangle {
         }
         touch := TouchArea {
             clicked => { focus.focus(); Studio.select-source(data.id); }
+            double-clicked => { root.editing = true; }
+            pointer-event(e) => {
+                if e.kind == PointerEventKind.down && e.button == PointerEventButton.right {
+                    focus.focus();
+                    Studio.select-source(data.id);
+                    menu.open({ x: self.mouse-x, y: self.mouse-y });
+                }
+            }
             HorizontalLayout {
                 padding-left: Tokens.space-2;
                 padding-right: Tokens.space-1;
@@ -591,7 +638,20 @@ component SourceRowView inherits Rectangle {
                     alignment: center;
                     Icon { name: Icons.named(data.icon); ink: data.visible ? Theme.text-primary : Theme.text-disabled; }
                 }
-                VerticalLayout {
+                if root.editing: VerticalLayout {
+                    alignment: center;
+                    horizontal-stretch: 1;
+                    TextField {
+                        label: @tr("Name of the source {}", data.name);
+                        text: data.name;
+                        init => { self.focus(); }
+                        accepted(t) => {
+                            root.editing = false;
+                            if t != data.name { Studio.rename-source(data.id, t); }
+                        }
+                    }
+                }
+                if !root.editing: VerticalLayout {
                     alignment: center;
                     horizontal-stretch: 1;
                     Text {
@@ -697,14 +757,28 @@ component SceneRowView inherits Rectangle {
         : root.live-state == 2 ? @tr(", on air and recording")
         : @tr(", on air"));
     accessible-description: Studio.studio-mode
-        ? @tr("Return puts it in preview, F2 renames it, Delete removes it")
-        : @tr("Return puts it on air, F2 renames it, Delete removes it");
+        ? @tr("Return puts it in preview, F2 renames it, Delete removes it, the Menu key or Shift+F10 opens its menu")
+        : @tr("Return puts it on air, F2 renames it, Delete removes it, the Menu key or Shift+F10 opens its menu");
     accessible-item-selectable: true;
     accessible-item-selected: data.live;
     accessible-action-default => { Studio.switch-scene(data.id); }
+    property <int> rename-asked: Studio.rename-scene-asked;
+    changed rename-asked => { root.take-rename(); }
+    init => { root.take-rename(); }
+    function take-rename() {
+        if Studio.renaming-scene == data.id { root.editing = true; Studio.renaming-scene = -1; }
+    }
+    menu := CommandMenu {
+        context: "scene";
+        target: "scene=" + data.id;
+    }
     focus := FocusScope {
         key-pressed(e) => {
             if e.text == Key.Return || e.text == " " { Studio.switch-scene(data.id); return accept; }
+            if e.text == Key.Menu || (e.text == Key.F10 && e.modifiers.shift) {
+                menu.open({ x: Tokens.space-2, y: root.height });
+                return accept;
+            }
             if e.text == Key.F2 { root.editing = true; return accept; }
             if (e.text == Key.Delete || e.text == Key.Backspace) && root.can-remove {
                 root.leaving(); Studio.remove-scene(data.id); return accept;
@@ -717,6 +791,13 @@ component SceneRowView inherits Rectangle {
     touch := TouchArea {
         clicked => { focus.focus(); Studio.switch-scene(data.id); }
         double-clicked => { root.editing = true; }
+        // A right-click opens the row's menu without putting the scene on air.
+        pointer-event(e) => {
+            if e.kind == PointerEventKind.down && e.button == PointerEventButton.right {
+                focus.focus();
+                menu.open({ x: self.mouse-x, y: self.mouse-y });
+            }
+        }
     HorizontalLayout {
         padding-left: Tokens.space-2;
         padding-right: Tokens.space-1;
@@ -818,16 +899,38 @@ export component ScenesPanel inherits Rectangle {
     in property <int> live-state;
     property <int> asked: Studio.add-scene-asked;
     changed asked => { if Studio.state == 1 { Studio.add-scene(); } }
+    // A right-click outside the rows: the panel's own menu (Add scene).
+    panel-menu := CommandMenu { context: "scenes"; }
+    TouchArea {
+        pointer-event(e) => {
+            if e.kind == PointerEventKind.down && e.button == PointerEventButton.right {
+                panel-menu.open({ x: self.mouse-x, y: self.mouse-y });
+            }
+        }
+    }
     if Studio.scenes.length == 0: EmptyState {
         width: parent.width;
         height: parent.height;
         title: @tr("No scenes yet");
         message: Studio.state == 0 ? @tr("The studio is starting.") : @tr("The studio is not running.");
     }
-    if Studio.scenes.length > 0: Flickable {
+    if Studio.scenes.length > 0: flick := Flickable {
         width: parent.width;
         height: parent.height;
-        content-height: rows.preferred-height;
+        content-height: max(rows.preferred-height, self.height);
+        // Under the rows: the empty space below them opens the panel's menu.
+        TouchArea {
+            width: flick.content-width;
+            height: flick.content-height;
+            pointer-event(e) => {
+                if e.kind == PointerEventKind.down && e.button == PointerEventButton.right {
+                    panel-menu.open({
+                        x: self.absolute-position.x - root.absolute-position.x + self.mouse-x,
+                        y: self.absolute-position.y - root.absolute-position.y + self.mouse-y,
+                    });
+                }
+            }
+        }
         rows := VerticalLayout {
             padding: Tokens.space-2;
             spacing: Tokens.space-1;
@@ -858,6 +961,15 @@ export component SourcesPanel inherits Rectangle {
     changed asked => {
         if Studio.state == 1 { add-menu.show(); }
     }
+    // A right-click outside the rows: the panel's own menu (Add source).
+    panel-menu := CommandMenu { context: "sources"; }
+    TouchArea {
+        pointer-event(e) => {
+            if e.kind == PointerEventKind.down && e.button == PointerEventButton.right {
+                panel-menu.open({ x: self.mouse-x, y: self.mouse-y });
+            }
+        }
+    }
     if Studio.sources.length == 0: EmptyState {
         y: header;
         width: parent.width;
@@ -867,11 +979,24 @@ export component SourcesPanel inherits Rectangle {
         action: Studio.state == 1 ? @tr("Add source") : "";
         act => { Studio.picker-kind = -1; add-menu.show(); }
     }
-    if Studio.sources.length > 0: Flickable {
+    if Studio.sources.length > 0: flick := Flickable {
         y: header;
         width: parent.width;
         height: parent.height - header;
-        content-height: rows.preferred-height;
+        content-height: max(rows.preferred-height, self.height);
+        // Under the rows: the empty space below them opens the panel's menu.
+        TouchArea {
+            width: flick.content-width;
+            height: flick.content-height;
+            pointer-event(e) => {
+                if e.kind == PointerEventKind.down && e.button == PointerEventButton.right {
+                    panel-menu.open({
+                        x: self.absolute-position.x - root.absolute-position.x + self.mouse-x,
+                        y: self.absolute-position.y - root.absolute-position.y + self.mouse-y,
+                    });
+                }
+            }
+        }
         rows := VerticalLayout {
             padding: Tokens.space-2;
             spacing: Tokens.space-1;

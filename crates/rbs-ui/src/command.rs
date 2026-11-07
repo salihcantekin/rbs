@@ -191,6 +191,21 @@ const fn choice(name: &'static str) -> Param {
     }
 }
 
+/// A parameter that names what the command acts on (or the text it needs); without
+/// it the command acts on the selection, or the UI asks.
+const fn target(name: &'static str) -> Param {
+    Param {
+        name,
+        ty: ParamType::Text,
+        required: false,
+    }
+}
+
+/// The scene collection a targeted id was made in: scene, source and item ids are
+/// unique only within one, so an id that names one runs nothing while another
+/// collection is in use (as `scene.select`'s, ADR-0060).
+const COLLECTION: Param = target("collection");
+
 const fn action(method: &'static str) -> Kind {
     Kind::Action { method }
 }
@@ -447,6 +462,41 @@ pub const ENTRIES: &[Entry] = &[
         checkable: false,
     },
     Entry {
+        id: "scene.add",
+        title: "Add scene",
+        tooltip: "Add an empty scene after the others",
+        icon: Some("plus"),
+        shortcut: None,
+        menu: Menu::Scene,
+        kind: action("scene.add"),
+        params: &[],
+        checkable: false,
+    },
+    Entry {
+        id: "scene.rename",
+        title: "Rename scene",
+        tooltip: "Give the scene another name",
+        icon: None,
+        shortcut: None,
+        menu: Menu::Scene,
+        kind: action("scene.rename"),
+        // Without `scene`: the scene on air (in studio mode, the preview scene).
+        // Without `name`: the UI asks for it (`ui.command.run` cannot run it).
+        params: &[target("scene"), target("name"), COLLECTION],
+        checkable: false,
+    },
+    Entry {
+        id: "scene.remove",
+        title: "Remove scene",
+        tooltip: "Remove the scene; its sources stay in the scene collection",
+        icon: Some("close"),
+        shortcut: None,
+        menu: Menu::Scene,
+        kind: action("scene.remove"),
+        params: &[target("scene"), COLLECTION],
+        checkable: false,
+    },
+    Entry {
         id: "source.add",
         title: "Add source",
         tooltip: "Add a screen, window, camera or audio source to the scene",
@@ -458,6 +508,72 @@ pub const ENTRIES: &[Entry] = &[
             param: "kind",
         },
         params: &[choice("kind")],
+        checkable: false,
+    },
+    Entry {
+        id: "item.visible.toggle",
+        title: "Visible",
+        tooltip: "Show or hide the source in the scene",
+        icon: Some("eye"),
+        shortcut: None,
+        menu: Menu::Source,
+        kind: Kind::Toggle {
+            on: "item.set_visible",
+            off: "item.set_visible",
+        },
+        // Without `item`: the selected source's item in the scene.
+        params: &[target("item"), COLLECTION],
+        checkable: true,
+    },
+    Entry {
+        id: "item.locked.toggle",
+        title: "Locked",
+        tooltip: "Lock the source's picture so the preview does not select, move or resize it",
+        icon: Some("lock"),
+        shortcut: None,
+        menu: Menu::Source,
+        kind: Kind::Toggle {
+            on: "item.set_locked",
+            off: "item.set_locked",
+        },
+        params: &[target("item"), COLLECTION],
+        checkable: true,
+    },
+    Entry {
+        id: "source.muted.toggle",
+        title: "Muted",
+        tooltip: "Mute or unmute the source's sound",
+        icon: Some("speaker-off"),
+        shortcut: None,
+        menu: Menu::Source,
+        kind: Kind::Toggle {
+            on: "source.set_muted",
+            off: "source.set_muted",
+        },
+        params: &[target("source"), COLLECTION],
+        checkable: true,
+    },
+    Entry {
+        id: "source.rename",
+        title: "Rename source",
+        tooltip: "Give the source another name",
+        icon: None,
+        shortcut: None,
+        menu: Menu::Source,
+        kind: action("source.rename"),
+        // Without `source`: the selected source. Without `name`: the UI asks for it.
+        params: &[target("source"), target("name"), COLLECTION],
+        checkable: false,
+    },
+    Entry {
+        id: "source.delete",
+        title: "Delete source",
+        tooltip: "Delete the source from the scene collection",
+        icon: Some("close"),
+        shortcut: None,
+        menu: Menu::Source,
+        kind: action("source.delete"),
+        params: &[target("source"), COLLECTION],
         checkable: false,
     },
     Entry {
@@ -738,6 +854,17 @@ pub trait CommandState {
     fn context(&self, _id: &CommandId) -> Vec<(&'static str, String)> {
         Vec::new()
     }
+    /// A title that depends on state, used instead of the entry's (`scene.select` of
+    /// one scene reads "Put on air" or, in studio mode, "Show in preview").
+    fn title(&self, _id: &CommandId) -> Option<String> {
+        None
+    }
+    /// Whether the command makes sense for what its id names at all (Muted for a
+    /// source without sound does not): a context menu leaves it out, where the menu
+    /// bar shows it disabled.
+    fn applies(&self, _id: &CommandId) -> bool {
+        true
+    }
 }
 
 /// One item of a built menu.
@@ -807,11 +934,27 @@ pub const MENU_LAYOUT: &[(Menu, &[&str])] = &[
             "scene.previous",
             "scene.next",
             "|",
+            "scene.add",
+            "scene.rename",
+            "scene.remove",
+            "|",
             "canvas.studio_mode.toggle",
             "canvas.transition",
         ],
     ),
-    (Menu::Source, &["source.add"]),
+    (
+        Menu::Source,
+        &[
+            "source.add",
+            "|",
+            "item.visible.toggle",
+            "item.locked.toggle",
+            "source.muted.toggle",
+            "|",
+            "source.rename",
+            "source.delete",
+        ],
+    ),
     (Menu::Output, &["stream.toggle", "record.toggle"]),
     (
         Menu::Window,
@@ -865,13 +1008,17 @@ pub fn title(id: &CommandId, e: &Entry) -> String {
                 let name = built_in(&p).map_or(p.as_str(), |i| i.title);
                 format!("Maximize {name}")
             }
+            // One panel of the Panels picker, as a context menu offers it.
+            ("ui.panel.select", Some(p)) => built_in(&p).map_or(p.as_str(), |i| i.title).to_owned(),
             _ => e.title.to_owned(),
         },
     }
 }
 
 fn item(id: CommandId, e: &Entry, state: &dyn CommandState) -> MenuItem {
-    if let Kind::Picker { param, .. } = e.kind {
+    if let Kind::Picker { param, .. } = e.kind
+        && id.param(param).is_none()
+    {
         let choices = state
             .choices(&id)
             .into_iter()
@@ -891,7 +1038,7 @@ fn item(id: CommandId, e: &Entry, state: &dyn CommandState) -> MenuItem {
         };
     }
     MenuItem::Command {
-        title: title(&id, e),
+        title: state.title(&id).unwrap_or_else(|| title(&id, e)),
         shortcut: e.shortcut,
         disabled: state.enabled(&id).err(),
         checked: e.checkable.then(|| state.checked(&id)),
@@ -925,6 +1072,155 @@ pub fn menus(state: &dyn CommandState) -> Vec<(Menu, Vec<MenuItem>)> {
         }
     }
     out
+}
+
+/// Where a context menu opens (ADR-0050 decision 4; spec "Context menus"). Each has
+/// its layout in [`CONTEXT_LAYOUT`]; what was right-clicked comes as a target.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum Context {
+    /// A row of the Scenes panel (target `scene`).
+    Scene,
+    /// The Scenes panel outside its rows.
+    Scenes,
+    /// A row of the Sources panel or a source's picture in Preview (target `source`
+    /// and `item`, the source's item in the scene).
+    Source,
+    /// The Sources panel outside its rows.
+    Sources,
+    /// The editable picture panel (Program, or in studio mode Preview) outside any
+    /// source's picture (target `id`, the panel).
+    Preview,
+}
+
+impl Context {
+    /// Every context.
+    pub const ALL: [Context; 5] = [
+        Context::Scene,
+        Context::Scenes,
+        Context::Source,
+        Context::Sources,
+        Context::Preview,
+    ];
+
+    /// Its name, as the shell's menus ask for it.
+    pub fn name(self) -> &'static str {
+        match self {
+            Context::Scene => "scene",
+            Context::Scenes => "scenes",
+            Context::Source => "source",
+            Context::Sources => "sources",
+            Context::Preview => "preview",
+        }
+    }
+
+    /// The context named `name`.
+    pub fn parse(name: &str) -> Option<Context> {
+        Context::ALL.into_iter().find(|c| c.name() == name)
+    }
+}
+
+/// Most items a context menu holds, separators and submenus included (the shell
+/// declares this many slots).
+pub const MAX_CONTEXT_ITEMS: usize = 16;
+
+/// What each context menu holds, in order: command ids and `|` separators. Every
+/// parameter an entry declares, the id leaves unset and the target names is filled
+/// from the target (`scene.remove` in a Scene row's menu gets the row's `scene`); an
+/// item whose required parameters stay unset is left out.
+pub const CONTEXT_LAYOUT: &[(Context, &[&str])] = &[
+    (
+        Context::Scene,
+        &[
+            "scene.select",
+            "scene.rename",
+            "|",
+            "scene.add",
+            "|",
+            "scene.remove",
+        ],
+    ),
+    (Context::Scenes, &["scene.add"]),
+    (
+        Context::Source,
+        &[
+            "item.visible.toggle",
+            "item.locked.toggle",
+            "source.muted.toggle",
+            "|",
+            "source.rename",
+            "ui.panel.select?id=rbs.properties",
+            "|",
+            "source.delete",
+        ],
+    ),
+    (Context::Sources, &["source.add"]),
+    (
+        Context::Preview,
+        &[
+            "source.add",
+            "|",
+            "canvas.studio_mode.toggle",
+            "ui.panel.maximize",
+        ],
+    ),
+];
+
+/// The items of `context`'s menu for `target` (`(parameter, value)` pairs naming what
+/// was right-clicked), from [`CONTEXT_LAYOUT`] and the shell's state. Commands that do
+/// not apply ([`CommandState::applies`]) are left out, and so are separators that
+/// would lead, end or follow another separator. A picker whose choice the target
+/// fills is one item that runs that choice.
+pub fn context_menu(
+    context: Context,
+    target: &[(String, String)],
+    state: &dyn CommandState,
+) -> Vec<MenuItem> {
+    let Some((_, ids)) = CONTEXT_LAYOUT.iter().find(|(c, _)| *c == context) else {
+        return Vec::new();
+    };
+    let mut items: Vec<MenuItem> = Vec::new();
+    for text in *ids {
+        if *text == "|" {
+            if items.last().is_some_and(|i| *i != MenuItem::Separator) {
+                items.push(MenuItem::Separator);
+            }
+            continue;
+        }
+        let Ok(id) = CommandId::parse(text) else {
+            continue;
+        };
+        let Some(e) = entry(id.base()) else {
+            continue;
+        };
+        let mut params: Vec<(&str, &str)> = id
+            .params()
+            .iter()
+            .map(|(k, v)| (k.as_str(), v.as_str()))
+            .collect();
+        for (k, v) in target {
+            if id.param(k).is_none() && e.params.iter().any(|p| p.name == k) {
+                params.push((k.as_str(), v.as_str()));
+            }
+        }
+        // A required parameter the target does not fill leaves the item out.
+        let Ok(id) = CommandId::with_params(e.id, &params) else {
+            continue;
+        };
+        if !matches!(id.resolve(), Ok(Some(_))) {
+            continue;
+        }
+        if !state.applies(&id) {
+            continue;
+        }
+        items.push(item(id, e, state));
+        if items.len() >= MAX_CONTEXT_ITEMS {
+            break;
+        }
+    }
+    while items.last() == Some(&MenuItem::Separator) {
+        items.pop();
+    }
+    items
 }
 
 /// The default toolbar (Edit's, and that of user workspaces without one). Only
@@ -1156,6 +1452,153 @@ mod tests {
                 checked: Some(false),
                 ..
             }
+        ));
+    }
+
+    #[test]
+    fn context_layouts_use_known_commands_and_fit() {
+        for c in Context::ALL {
+            assert_eq!(Context::parse(c.name()), Some(c));
+            let (_, ids) = CONTEXT_LAYOUT
+                .iter()
+                .find(|(l, _)| *l == c)
+                .expect("every context has a layout");
+            assert!(ids.len() <= MAX_CONTEXT_ITEMS, "{c:?}");
+            for i in *ids {
+                if *i != "|" {
+                    let id = CommandId::parse(i).unwrap();
+                    assert!(entry(id.base()).is_some(), "{i}");
+                    assert_eq!(id.to_string(), *i, "layout ids are written canonically");
+                }
+            }
+        }
+        assert_eq!(Context::parse("nothing"), None);
+    }
+
+    /// Fills targets, leaves out what does not apply, and tidies separators.
+    struct Picky;
+
+    impl CommandState for Picky {
+        fn enabled(&self, id: &CommandId) -> Result<(), String> {
+            match id.base() {
+                "scene.remove" => Err("The last scene cannot be removed.".into()),
+                _ => Ok(()),
+            }
+        }
+        fn checked(&self, id: &CommandId) -> bool {
+            id.base() == "item.visible.toggle"
+        }
+        fn choices(&self, _: &CommandId) -> Vec<(String, String, bool)> {
+            Vec::new()
+        }
+        fn title(&self, id: &CommandId) -> Option<String> {
+            (id.base() == "scene.select").then(|| "Put on air".into())
+        }
+        fn applies(&self, id: &CommandId) -> bool {
+            !matches!(id.base(), "source.muted.toggle" | "scene.select")
+        }
+    }
+
+    fn ids(items: &[MenuItem]) -> Vec<String> {
+        items
+            .iter()
+            .map(|i| match i {
+                MenuItem::Command { id, .. } => id.to_string(),
+                MenuItem::Choices { title, .. } => format!("[{title}]"),
+                MenuItem::Separator => "|".into(),
+            })
+            .collect()
+    }
+
+    #[test]
+    fn context_menus_fill_targets_and_tidy_separators() {
+        let t = |pairs: &[(&str, &str)]| -> Vec<(String, String)> {
+            pairs
+                .iter()
+                .map(|(k, v)| ((*k).to_owned(), (*v).to_owned()))
+                .collect()
+        };
+        let scene = context_menu(Context::Scene, &t(&[("scene", "7")]), &Picky);
+        assert_eq!(
+            ids(&scene),
+            [
+                "scene.rename?scene=7",
+                "|",
+                "scene.add",
+                "|",
+                "scene.remove?scene=7"
+            ]
+        );
+        assert!(matches!(
+            &scene[4],
+            MenuItem::Command { disabled: Some(r), .. } if r == "The last scene cannot be removed."
+        ));
+        let source = context_menu(
+            Context::Source,
+            &t(&[("item", "40"), ("source", "12")]),
+            &Picky,
+        );
+        assert_eq!(
+            ids(&source),
+            [
+                "item.visible.toggle?item=40",
+                "item.locked.toggle?item=40",
+                "|",
+                "source.rename?source=12",
+                "ui.panel.select?id=rbs.properties",
+                "|",
+                "source.delete?source=12"
+            ]
+        );
+        assert!(matches!(
+            &source[0],
+            MenuItem::Command {
+                checked: Some(true),
+                ..
+            }
+        ));
+        assert!(matches!(
+            &source[4],
+            MenuItem::Command { title, .. } if title == "Properties"
+        ));
+        // A picker without its choice is a submenu; with it, one item with the
+        // state's title.
+        let preview = context_menu(Context::Preview, &t(&[("id", "rbs.program")]), &Picky);
+        assert_eq!(
+            ids(&preview),
+            [
+                "[Add source]",
+                "|",
+                "canvas.studio_mode.toggle",
+                "ui.panel.maximize?id=rbs.program"
+            ]
+        );
+        // Without the panel, Maximize has no required `id` and is left out.
+        let bare = context_menu(Context::Preview, &[], &Picky);
+        assert_eq!(
+            ids(&bare),
+            ["[Add source]", "|", "canvas.studio_mode.toggle"]
+        );
+        struct OnAir;
+        impl CommandState for OnAir {
+            fn enabled(&self, _: &CommandId) -> Result<(), String> {
+                Ok(())
+            }
+            fn checked(&self, _: &CommandId) -> bool {
+                false
+            }
+            fn choices(&self, _: &CommandId) -> Vec<(String, String, bool)> {
+                Vec::new()
+            }
+            fn title(&self, id: &CommandId) -> Option<String> {
+                (id.base() == "scene.select").then(|| "Put on air".into())
+            }
+        }
+        let other = context_menu(Context::Scene, &t(&[("scene", "3")]), &OnAir);
+        assert!(matches!(
+            &other[0],
+            MenuItem::Command { id, title, .. }
+                if id.to_string() == "scene.select?scene=3" && title == "Put on air"
         ));
     }
 
