@@ -49,8 +49,13 @@ pub fn edge_tabs(win: &Window) -> [Vec<EdgeTabData>; 3] {
 }
 
 /// Tab stacks and dividers of one window, for its view.
-pub fn window_view(window: usize, win: &Window, area: Rect) -> (Vec<StackData>, Vec<HandleData>) {
-    let WindowFlat { stacks, handles } = win.flatten(area);
+pub fn window_view(
+    window: usize,
+    win: &Window,
+    area: Rect,
+    maximized: Option<&PanelId>,
+) -> (Vec<StackData>, Vec<HandleData>) {
+    let WindowFlat { stacks, handles } = shown_flat(win, area, maximized);
     let trees = win.trees();
     // The main window's centre keeps one expanded stack and a panel (ADR-0049): its
     // last expanded stack offers no Collapse, and a centre of one stack no Auto-hide.
@@ -115,6 +120,15 @@ pub fn window_view(window: usize, win: &Window, area: Rect) -> (Vec<StackData>, 
         })
         .collect();
     (stacks, handles)
+}
+
+/// Window `win` laid out in `area` as it is shown: with panel `maximized` alone over
+/// the whole content when the window holds it (ADR-0049 decision 2).
+pub fn shown_flat(win: &Window, area: Rect, maximized: Option<&PanelId>) -> WindowFlat {
+    let flat = win.flatten(area);
+    maximized
+        .and_then(|p| rbs_ui::frame::maximized(&flat, area, p))
+        .unwrap_or(flat)
 }
 
 /// Share of the pane before a handle, in percent of the pair it divides.
@@ -204,7 +218,7 @@ mod tests {
     #[test]
     fn edit_workspace_view() {
         let ws = builtin::edit();
-        let (stacks, handles) = window_view(0, &ws.windows[0], Rect::sized(1440.0, 860.0));
+        let (stacks, handles) = window_view(0, &ws.windows[0], Rect::sized(1440.0, 860.0), None);
         assert_eq!(stacks.len(), ws.windows[0].stack_count());
         assert!(!handles.is_empty());
         assert!(handles.iter().all(|h| (0..=100).contains(&h.percent)));
