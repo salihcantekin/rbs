@@ -135,6 +135,9 @@ struct App {
     workspaces_model: Rc<VecModel<WorkspaceEntry>>,
     floats: Vec<FloatSlot>,
     areas: Vec<(usize, Rect)>,
+    /// Where the main window's dock area is in the window (the preview layer is placed
+    /// from it).
+    main_origin: (f32, f32),
     drag_group: Option<u64>,
     next_group: u64,
     toast: Option<Toast>,
@@ -348,6 +351,14 @@ impl App {
                 if let Some(id) = panel(&id) {
                     self.command(LayoutCommand::OpenPanel(id), Origin::Command);
                 }
+            }
+            Run::Profile(id) => {
+                let done = self.studio.switch_profile(&id);
+                self.library_done(done);
+            }
+            Run::Collection(id) => {
+                let done = self.studio.switch_collection(&id, close_preview);
+                self.library_done(done);
             }
             Run::Layout(c) => self.command(c, Origin::Command),
             Run::GoLive => self.studio.go_live(),
@@ -564,6 +575,16 @@ impl Ctx {
                     ctx.connect_preview(endpoint);
                 }
             }
+            if let Some((collection, id)) = applied.switch {
+                let done = if collection {
+                    app.studio.switch_collection(&id, close_preview)
+                } else {
+                    app.studio.switch_profile(&id)
+                };
+                // Answers the host, also when the switch was refused.
+                app.studio.refresh_library();
+                app.library_done(done);
+            }
         });
     }
 
@@ -696,12 +717,13 @@ impl Ctx {
 
     fn sync_studio(&self, app: &mut App) {
         let t = app.main.global::<Tokens>();
-        let bar = t.get_size_control_md() + 2.0 * t.get_space_1();
+        // A panel card's header is `size.control.lg` high, then a divider line.
+        let bar = t.get_size_control_lg() + t.get_size_border();
         let border = t.get_size_border();
-        let frame = t.get_size_control_md() + 2.0 * t.get_space_2();
+        let (ox, oy) = app.main_origin;
         let in_main = |id: &str| {
             studio_ui::active_content(&app.main_models.stacks, id, bar, border)
-                .map(|[x, y, w, h]| [x, y + frame, w, h])
+                .map(|[x, y, w, h]| [x + ox, y + oy, w, h])
         };
         let float_has = |id: &str| {
             app.floats
@@ -1015,6 +1037,14 @@ impl Ctx {
         ) {
             app.confirm_end = false;
         }
+        let edges = view::edge_tabs(&app.session.workspace().windows[0]);
+        let edge_ids = edges
+            .iter()
+            .flatten()
+            .map(|t| t.id.as_str())
+            .collect::<Vec<_>>()
+            .join("\n");
+        let edge_models = edges.map(|v| ModelRc::new(VecModel::from(v)));
         let values = menu_bar::values(&app.shown());
         app.menus.update(values);
         let (tools, toolbar_visible, toolbar_space) = menu_bar::toolbar(&app.shown());
@@ -1029,6 +1059,8 @@ impl Ctx {
                     enabled: t.enabled,
                     checked: t.checked,
                     live: t.live,
+                    icon: t.icon.into(),
+                    icon_only: t.icon_only,
                 })
                 .collect(),
         );
@@ -1067,6 +1099,11 @@ impl Ctx {
             g.set_toolbar(toolbar.clone());
             g.set_toolbar_visible(toolbar_visible);
             g.set_toolbar_has_space(toolbar_space);
+            g.set_gap(rbs_ui::layout::HANDLE_THICKNESS);
+            g.set_edge_ids(edge_ids.as_str().into());
+            g.set_left_tabs(edge_models[0].clone());
+            g.set_right_tabs(edge_models[1].clone());
+            g.set_bottom_tabs(edge_models[2].clone());
         };
         push(app.main.global::<Shell>());
         app.menus.push(&app.main.global::<Menus>());
@@ -1230,8 +1267,38 @@ fn install(g: &Shell<'_>, ctx: &Ctx) {
             g.$name(move |$($arg: $ty),*| ctx.update(move |$app: &mut App| $body));
         }};
     }
-    on!(on_relayout, |app, window: i32, w: f32, h: f32| {
+    on!(on_relayout, |app,
+                      window: i32,
+                      x: f32,
+                      y: f32,
+                      w: f32,
+                      h: f32| {
+        if window == 0 {
+            app.main_origin = (x, y);
+        }
         app.set_area(window as usize, Rect::sized(w, h));
+    });
+    on!(on_collapse, |app,
+                      id: slint::SharedString,
+                      collapsed: bool| {
+        if let Some(panel) = panel(&id) {
+            // Collapse and expand stay allowed while locked (ADR-0049).
+            app.command(
+                LayoutCommand::SetCollapsed { panel, collapsed },
+                Origin::Pointer,
+            );
+        }
+    });
+    on!(on_auto_hide, |app, id: slint::SharedString| {
+        if let Some(panel) = panel(&id) {
+            let content = app.area(0);
+            app.command(LayoutCommand::AutoHide { panel, content }, Origin::Pointer);
+        }
+    });
+    on!(on_pin, |app, id: slint::SharedString| {
+        if let Some(panel) = panel(&id) {
+            app.command(LayoutCommand::Pin(panel), Origin::Pointer);
+        }
     });
     on!(on_activate_tab, |app, window: i32, stack: i32, tab: i32| {
         let c = LayoutCommand::ActivateTab {
@@ -1505,8 +1572,10 @@ fn install_studio(g: &Studio<'_>, ctx: &Ctx) {
                            w: f32,
                            h: f32,
                            shift: bool,
-                           no_snap: bool| {
-        app.studio.preview_press([x, y], [w, h], shift, no_snap);
+                           no_snap: bool,
+                           crop: bool| {
+        app.studio
+            .preview_press([x, y], [w, h], shift, no_snap, crop);
     });
     on!(on_preview_drag, |app, x: f32, y: f32| {
         app.studio.preview_drag([x, y]);
@@ -1531,6 +1600,17 @@ fn install_studio(g: &Studio<'_>, ctx: &Ctx) {
                             w: f32,
                             h: f32| {
         app.studio.set_source_box(id, x, y, w, h);
+    });
+    on!(on_set_source_crop, |app,
+                             id: i32,
+                             l: i32,
+                             t: i32,
+                             r: i32,
+                             b: i32| {
+        app.studio.set_source_crop(id, [l, t, r, b]);
+    });
+    on!(on_set_source_region, |app, id: i32, region: i32| {
+        app.studio.set_source_region(id, region);
     });
     on!(
         on_set_source_style,
@@ -1877,6 +1957,7 @@ fn run(config: PathBuf, notice: Option<String>) -> Result<(), Box<dyn std::error
             workspaces_model: Rc::new(VecModel::default()),
             floats: Vec::new(),
             areas: Vec::new(),
+            main_origin: (0.0, 0.0),
             drag_group: None,
             next_group: 0,
             toast: None,

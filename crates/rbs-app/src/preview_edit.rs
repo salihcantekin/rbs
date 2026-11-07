@@ -1,6 +1,6 @@
-//! Selecting, moving and resizing sources on the picture panel (ADR-0048): the pointer
-//! and keys become source boxes, sent to the studio one at a time, and the selection
-//! becomes marks. The geometry is `rbs_ui::transform`; this keeps the state of one drag
+//! Selecting, moving, resizing and cropping sources on the picture panel (ADR-0048,
+//! ADR-0058): the pointer and keys become source boxes or crops, sent to the studio one
+//! at a time, and the selection becomes marks. The geometry is `rbs_ui::transform`; this keeps the state of one drag
 //! and of the boxes on their way to the studio.
 //!
 //! UI thread only. Coordinates are the panel's, in logical pixels.
@@ -17,6 +17,26 @@ pub struct Placed {
     pub id: i32,
     /// Its box on the canvas.
     pub at: SourceBox,
+    /// Source pixels cut from the left, top, right and bottom.
+    pub crop: [u32; 4],
+    /// Its picture's size in pixels, once known (a crop drag needs it).
+    pub picture: Option<(u32, u32)>,
+}
+
+/// What goes to the studio for one source.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum Edit {
+    /// A new box.
+    Box(SourceBox),
+    /// A new crop (left, top, right, bottom), keeping the scale.
+    Crop([u32; 4]),
+}
+
+/// A crop drag's start: the crop and the picture's size.
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct Cropping {
+    crop: [u32; 4],
+    picture: (u32, u32),
 }
 
 /// What a pointer or key event asks of the studio.
@@ -31,22 +51,24 @@ pub enum Effect {
     /// boxes of one drag share one, so they are one undo step; 0 for a box of its own
     /// (arrow keys).
     Send(u64, i32, SourceBox, u64),
+    /// Send this crop for this source, as request `seq`, like [`Effect::Send`].
+    SendCrop(u64, i32, [u32; 4], u64),
 }
 
 /// The editing state of the picture panel.
 #[derive(Debug, Default)]
 pub struct PreviewEdit {
     panel: [f32; 2],
-    drag: Option<(i32, Drag)>,
+    drag: Option<(i32, Drag, Option<Cropping>)>,
     keys: DragKeys,
     /// Boxes shown for sources while the studio has not caught up with them (one per
     /// source).
     live: Vec<(i32, SourceBox)>,
     /// The request with the studio, if any.
     in_flight: Option<(u64, i32)>,
-    /// The newest box per source waiting for the one in flight, oldest source first,
+    /// The newest edit per source waiting for the one in flight, oldest source first,
     /// with its gesture.
-    waiting: Vec<(i32, SourceBox, u64)>,
+    waiting: Vec<(i32, Edit, u64)>,
     next_seq: u64,
     /// The current drag's gesture number (see [`Effect::Send`]).
     gesture: u64,
@@ -110,7 +132,19 @@ impl PreviewEdit {
         if let Some(p) = placed.iter().find(|p| p.id == selected) {
             let b = self.current(p);
             if let Some(grip) = transform::grip_at(&view, &b, point) {
-                self.drag = Some((p.id, Drag::new(grip, at, b)));
+                // Alt on a handle crops, once the picture's size is known.
+                let cropping = match (grip, p.picture) {
+                    (Grip::Handle(_), Some(picture)) if keys.crop => Some(Cropping {
+                        crop: p.crop,
+                        picture,
+                    }),
+                    _ => None,
+                };
+                if cropping.is_some() {
+                    // Each edge on its own: corners keep no aspect ratio.
+                    self.keys.free = true;
+                }
+                self.drag = Some((p.id, Drag::new(grip, at, b), cropping));
                 self.new_gesture();
                 return Effect::None;
             }
@@ -118,7 +152,7 @@ impl PreviewEdit {
         let boxes: Vec<SourceBox> = placed.iter().map(|p| self.current(p)).collect();
         match transform::topmost_at(&view, &boxes, point).and_then(|i| placed.get(i)) {
             Some(p) => {
-                self.drag = Some((p.id, Drag::new(Grip::Move, at, self.current(p))));
+                self.drag = Some((p.id, Drag::new(Grip::Move, at, self.current(p)), None));
                 self.new_gesture();
                 Effect::Select(p.id)
             }
@@ -132,7 +166,7 @@ impl PreviewEdit {
     /// The pointer moved to `point` with the button down.
     pub fn drag_to(&mut self, point: [f32; 2], canvas: [f32; 2]) -> Effect {
         let view = self.view(canvas);
-        let (Some((id, drag)), Some(at)) = (self.drag, view.to_canvas(point)) else {
+        let (Some((id, drag, cropping)), Some(at)) = (self.drag, view.to_canvas(point)) else {
             return Effect::None;
         };
         let scale = view.scale();
@@ -142,11 +176,18 @@ impl PreviewEdit {
             0.0
         };
         let b = drag.update(at, canvas, snap, self.keys);
+        let (b, edit) = match cropping {
+            None => (b, Edit::Box(b)),
+            Some(c) => match transform::crop_for(drag.from(), c.crop, c.picture, b) {
+                Some((crop, shown)) => (shown, Edit::Crop(crop)),
+                None => return Effect::None,
+            },
+        };
         if self.live_of(id).unwrap_or(drag.from()) == b {
             return Effect::None;
         }
         self.set_live(id, b);
-        self.send(id, b, self.gesture)
+        self.send(id, edit, self.gesture)
     }
 
     fn new_gesture(&mut self) {
@@ -157,7 +198,7 @@ impl PreviewEdit {
     /// The button went up or the press was cancelled: the drag ends (its last box is
     /// already on its way).
     pub fn release(&mut self) {
-        if let Some((id, _)) = self.drag.take() {
+        if let Some((id, ..)) = self.drag.take() {
             // Nothing more on its way for it: the studio's box shows again (it is the
             // drag's last box, or what an undo made of it since).
             let busy = self.in_flight.is_some_and(|(_, i)| i == id)
@@ -175,24 +216,27 @@ impl PreviewEdit {
         };
         let b = self.current(p).nudged(dx, dy);
         self.set_live(p.id, b);
-        self.send(p.id, b, 0)
+        self.send(p.id, Edit::Box(b), 0)
     }
 
-    /// At most one box is with the studio; newer ones wait, the newest per source.
-    fn send(&mut self, id: i32, b: SourceBox, gesture: u64) -> Effect {
+    /// At most one edit is with the studio; newer ones wait, the newest per source.
+    fn send(&mut self, id: i32, edit: Edit, gesture: u64) -> Effect {
         if self.in_flight.is_some() {
             match self.waiting.iter_mut().find(|(i, ..)| *i == id) {
                 Some(w) => {
-                    w.1 = b;
+                    w.1 = edit;
                     w.2 = gesture;
                 }
-                None => self.waiting.push((id, b, gesture)),
+                None => self.waiting.push((id, edit, gesture)),
             }
             return Effect::None;
         }
         self.next_seq += 1;
         self.in_flight = Some((self.next_seq, id));
-        Effect::Send(self.next_seq, id, b, gesture)
+        match edit {
+            Edit::Box(b) => Effect::Send(self.next_seq, id, b, gesture),
+            Edit::Crop(c) => Effect::SendCrop(self.next_seq, id, c, gesture),
+        }
     }
 
     /// The studio answered request `seq` (`ok`: it took the box or found it unchanged;
@@ -210,15 +254,15 @@ impl PreviewEdit {
         if !ok {
             self.waiting.retain(|(i, ..)| *i != id);
         }
-        let dragged = self.drag.map(|(d, _)| d);
+        let dragged = self.drag.map(|(d, ..)| d);
         let waiting = &self.waiting;
         self.live
             .retain(|(i, _)| Some(*i) == dragged || waiting.iter().any(|(w, ..)| w == i));
         if self.waiting.is_empty() {
             return Effect::None;
         }
-        let (id, b, gesture) = self.waiting.remove(0);
-        self.send(id, b, gesture)
+        let (id, edit, gesture) = self.waiting.remove(0);
+        self.send(id, edit, gesture)
     }
 
     /// The selection of `selected` as marks in panel coordinates, written into `out`.
@@ -249,10 +293,14 @@ mod tests {
             Placed {
                 id: 1,
                 at: SourceBox::new([0.0, 0.0], [1920.0, 1080.0]),
+                crop: [0; 4],
+                picture: Some((3840, 2160)),
             },
             Placed {
                 id: 2,
                 at: SourceBox::new([1400.0, 700.0], [480.0, 270.0]),
+                crop: [0; 4],
+                picture: None,
             },
         ]
     }
@@ -416,5 +464,42 @@ mod tests {
         assert_eq!(out[0].rect.x, 710.0);
         e.marks(CANVAS, &s, -1, &mut out);
         assert!(out.is_empty());
+    }
+
+    #[test]
+    fn alt_on_a_handle_crops_at_the_picture_scale_and_answers_share_the_flow() {
+        let mut e = edit();
+        let s = scene();
+        let alt = DragKeys {
+            crop: true,
+            ..DragKeys::default()
+        };
+        // The display (3840 x 2160 at half size on the canvas): its left edge handle is
+        // at panel (0, 270); 100 panel px is 200 canvas px, 400 source px.
+        assert_eq!(e.press([0.0, 270.0], CANVAS, &s, 1, alt), Effect::None);
+        let Effect::SendCrop(seq, 1, crop, gesture) = e.drag_to([100.0, 270.0], CANVAS) else {
+            panic!("expected a crop");
+        };
+        assert_eq!(crop, [400, 0, 0, 0]);
+        assert_ne!(gesture, 0);
+        // The marks show the cropped box at once.
+        let mut out = Vec::new();
+        e.marks(CANVAS, &s, 1, &mut out);
+        assert_eq!(out[0].rect.x, 100.0);
+        // The next one waits for the answer, then goes with the same gesture.
+        assert_eq!(e.drag_to([150.0, 270.0], CANVAS), Effect::None);
+        let Effect::SendCrop(_, 1, crop, g) = e.answered(seq, true) else {
+            panic!("expected the waiting crop");
+        };
+        assert_eq!((crop, g), ([600, 0, 0, 0], gesture));
+        e.release();
+
+        // Without a known picture size, Alt resizes as before.
+        e.reset();
+        e.press([700.0, 350.0], CANVAS, &s, 2, alt);
+        assert!(matches!(
+            e.drag_to([650.0, 350.0], CANVAS),
+            Effect::Send(..)
+        ));
     }
 }

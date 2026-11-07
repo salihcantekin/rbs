@@ -3,11 +3,11 @@
 use rbs_ui::frame::{HandleTarget, WindowFlat};
 use rbs_ui::layout::{Axis, Node, Rect};
 use rbs_ui::panel::{BUILT_IN_PANELS, PanelId, built_in};
-use rbs_ui::workspace::Window;
+use rbs_ui::workspace::{Side, Window};
 use rbs_ui::{LiveState, LiveStatus, Workspace};
 use slint::{ModelRc, SharedString, VecModel};
 
-use crate::ui::{HandleData, PanelEntry, StackData, TabData, WorkspaceEntry};
+use crate::ui::{EdgeTabData, HandleData, PanelEntry, StackData, TabData, WorkspaceEntry};
 
 /// English title of a panel; unknown panels show their id.
 pub fn title(id: &PanelId) -> String {
@@ -18,10 +18,50 @@ pub fn title(id: &PanelId) -> String {
     }
 }
 
+/// The icon of a panel in edge tabs and collapsed strips (design system icon set).
+pub fn panel_icon(id: &PanelId) -> &'static str {
+    match id.base() {
+        "rbs.stats" => "grid",
+        "rbs.outputs" => "copy",
+        _ => "window",
+    }
+}
+
+/// The main window's edge tabs on the left, right and bottom edges, in file order.
+pub fn edge_tabs(win: &Window) -> [Vec<EdgeTabData>; 3] {
+    let mut out: [Vec<EdgeTabData>; 3] = Default::default();
+    if let Some(m) = win.main() {
+        for g in &m.auto_hide {
+            let edge = match g.edge {
+                Side::Left => 0,
+                Side::Right => 1,
+                Side::Bottom => 2,
+            };
+            out[edge].extend(g.tabs.iter().map(|id| EdgeTabData {
+                id: id.as_str().into(),
+                title: title(id).into(),
+                icon: panel_icon(id).into(),
+                size: g.size as f32,
+            }));
+        }
+    }
+    out
+}
+
 /// Tab stacks and dividers of one window, for its view.
 pub fn window_view(window: usize, win: &Window, area: Rect) -> (Vec<StackData>, Vec<HandleData>) {
     let WindowFlat { stacks, handles } = win.flatten(area);
     let trees = win.trees();
+    // The main window's centre keeps one expanded stack and a panel (ADR-0049): its
+    // last expanded stack offers no Collapse, and a centre of one stack no Auto-hide.
+    let centre = win.main().map(|m| &m.centre);
+    let centre_stacks = centre.map_or(0, Node::stack_count);
+    let centre_expanded = centre.map_or(0, |c| {
+        (0..centre_stacks)
+            .filter(|&i| c.stack(i).is_some_and(|t| !t.collapsed))
+            .count()
+    });
+    let lone_centre = centre.is_some_and(|c| matches!(c, Node::Tabs(_)));
     let stacks = stacks
         .into_iter()
         .map(|s| StackData {
@@ -38,10 +78,14 @@ pub fn window_view(window: usize, win: &Window, area: Rect) -> (Vec<StackData>, 
                         id: id.as_str().into(),
                         title: title(id).into(),
                         known: built_in(id).is_some(),
+                        icon: panel_icon(id).into(),
                     })
                     .collect::<Vec<_>>(),
             )),
             active: s.active as i32,
+            collapsed: s.collapsed,
+            can_collapse: s.collapsed || s.stack >= centre_stacks || centre_expanded > 1,
+            can_hide: win.is_main() && !(s.stack < centre_stacks && lone_centre),
         })
         .collect();
     let handles = handles
@@ -168,7 +212,21 @@ mod tests {
             .iter()
             .find(|s| s.tabs.iter().any(|t| t.id == "rbs.mixer"))
             .unwrap();
-        assert_eq!(mixer.tabs.row_count(), 3);
+        assert_eq!(mixer.tabs.row_count(), 1);
+        let [left, right, bottom] = edge_tabs(&ws.windows[0]);
+        assert!(left.is_empty() && bottom.is_empty());
+        assert_eq!(right.len(), 2);
+        let transition = stacks
+            .iter()
+            .find(|s| s.tabs.iter().any(|t| t.id == "rbs.transition"))
+            .unwrap();
+        assert!(transition.collapsed);
+        let preview = stacks
+            .iter()
+            .find(|s| s.tabs.iter().any(|t| t.id == "rbs.preview"))
+            .unwrap();
+        assert!(!preview.can_collapse && !preview.can_hide);
+        assert!(transition.can_collapse && transition.can_hide);
         assert!(mixer.tabs.iter().all(|t| t.known));
     }
 

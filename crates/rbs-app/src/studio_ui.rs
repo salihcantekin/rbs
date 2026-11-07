@@ -17,8 +17,8 @@ use rbs_app::remote_control::{NetworkOptions, RemoteOptions, RemoteServer};
 use rbs_app::stream_key::{self, KeyStore};
 use rbs_app::stream_profile::{self, SRT_DEFAULT_LATENCY_MS, SRT_LATENCIES_MS, StreamProfile};
 use rbs_app::studio_host::{
-    Command, EncoderInfo, EncoderOptions, RecordRequest, RecordingUpdate, SourceKind, SourceRow,
-    SourceStatus, Stats, StreamRequest, StreamUpdate, StudioHost, Target, Update,
+    Command, CropRegion, EncoderInfo, EncoderOptions, RecordRequest, RecordingUpdate, SourceKind,
+    SourceRow, SourceStatus, Stats, StreamRequest, StreamUpdate, StudioHost, Target, Update,
 };
 use rbs_app::user_session::{RECORDING, STREAM, UserSession};
 use rbs_audio::LevelMeter;
@@ -220,6 +220,9 @@ pub struct StudioUi {
     switch_seq: u64,
     /// A scene collection switch the studio has not answered yet.
     switching: Option<Switching>,
+    /// The `seq` of a control API switch ([`Update::SwitchRequested`]) to answer with
+    /// the next [`Command::SetLibrary`] sent while no collection switch runs.
+    api_switch: Option<u64>,
 }
 
 /// A scene collection the studio is asked to run.
@@ -276,7 +279,7 @@ impl StudioUi {
                 at: meter::position(*db),
             })
             .collect::<Vec<_>>();
-        let ui = Self {
+        let mut ui = Self {
             host: None,
             state: 0,
             failure: String::new(),
@@ -357,6 +360,7 @@ impl StudioUi {
             collection_rows: Rc::new(VecModel::default()),
             switch_seq: 0,
             switching: None,
+            api_switch: None,
         };
         ui.refresh_tokens();
         ui.refresh_library();
@@ -1112,6 +1116,42 @@ impl StudioUi {
         self.send_box(0, id, SourceBox::new([x, y], [w, h]), 0);
     }
 
+    /// Source pixels cut from each edge of a video source's picture (the Properties
+    /// fields, ADR-0058); the box changes so the picture keeps its scale.
+    pub fn set_source_crop(&mut self, id: i32, crop: [i32; 4]) {
+        if self.host.is_none() {
+            return;
+        }
+        self.deleted.clear();
+        self.send(Command::SetSourceCrop {
+            seq: 0,
+            gesture: 0,
+            id: SourceId::from_raw(id as u32),
+            crop: crop.map(|v| v.max(0) as u32),
+            keep_scale: true,
+        });
+    }
+
+    /// Shows a part of a video source's picture (Properties' Show buttons): 0 the whole
+    /// picture, 1 canvas size centred, 2 left half, 3 right half.
+    pub fn set_source_region(&mut self, id: i32, region: i32) {
+        let region = match region {
+            0 => CropRegion::Full,
+            1 => CropRegion::CanvasCentred,
+            2 => CropRegion::LeftHalf,
+            3 => CropRegion::RightHalf,
+            _ => return,
+        };
+        if self.host.is_none() {
+            return;
+        }
+        self.deleted.clear();
+        self.send(Command::SetSourceRegion {
+            id: SourceId::from_raw(id as u32),
+            region,
+        });
+    }
+
     /// Shape and border of a video source's picture (the Properties fields). `shape`:
     /// 0 rectangle, 1 circle, 2 ellipse. A colour that is not `#rrggbb` or `#rrggbbaa`
     /// changes nothing.
@@ -1177,6 +1217,8 @@ impl StudioUi {
             .map(|d| Placed {
                 id: d.id,
                 at: SourceBox::new([d.x, d.y], [d.w, d.h]),
+                crop: [d.crop_l, d.crop_t, d.crop_r, d.crop_b].map(|v| v.max(0) as u32),
+                picture: (d.pic_w > 0 && d.pic_h > 0).then_some((d.pic_w as u32, d.pic_h as u32)),
             })
             .collect();
         v.reverse();
@@ -1195,16 +1237,38 @@ impl StudioUi {
                 self.deleted.clear();
                 self.send_box(seq, id, b, gesture);
             }
+            Effect::SendCrop(seq, id, crop, gesture) => {
+                self.deleted.clear();
+                if self.host.is_none() {
+                    self.edit.reset();
+                } else {
+                    self.send(Command::SetSourceCrop {
+                        seq,
+                        gesture,
+                        id: SourceId::from_raw(id as u32),
+                        crop,
+                        keep_scale: true,
+                    });
+                }
+            }
         }
         self.refresh_marks();
     }
 
     /// A press on the picture panel (panel coordinates, its size `size`).
-    pub fn preview_press(&mut self, at: [f32; 2], size: [f32; 2], shift: bool, no_snap: bool) {
+    pub fn preview_press(
+        &mut self,
+        at: [f32; 2],
+        size: [f32; 2],
+        shift: bool,
+        no_snap: bool,
+        crop: bool,
+    ) {
         self.edit.set_panel(size[0], size[1]);
         let keys = DragKeys {
             free: shift,
             no_snap,
+            crop,
         };
         let placed = self.placed();
         let e = self
@@ -1964,7 +2028,7 @@ impl StudioUi {
     }
 
     /// Reads the output profiles and scene collections for the menus again.
-    pub fn refresh_library(&self) {
+    pub fn refresh_library(&mut self) {
         let rows = |list: Vec<(EntryId, String)>, current: &EntryId| -> Vec<EntryRow> {
             list.into_iter()
                 .map(|(id, name)| EntryRow {
@@ -1974,10 +2038,36 @@ impl StudioUi {
                 })
                 .collect()
         };
+        let profiles = self.user.profiles();
+        let collections = self.user.collections();
+        // A control API switch is answered once nothing of it is left to do.
+        let answered = if self.switching.is_none() {
+            self.api_switch.take()
+        } else {
+            None
+        };
+        self.send(Command::SetLibrary {
+            profiles: api_library(&profiles, &self.user.profile_id),
+            collections: api_library(&collections, &self.user.collection_id),
+            answered,
+        });
         self.profile_rows
-            .set_vec(rows(self.user.profiles(), &self.user.profile_id));
+            .set_vec(rows(profiles, &self.user.profile_id));
         self.collection_rows
-            .set_vec(rows(self.user.collections(), &self.user.collection_id));
+            .set_vec(rows(collections, &self.user.collection_id));
+    }
+
+    /// The output profiles (`collection` false) or scene collections as last read,
+    /// for the File menu's pickers: `(name, id, in use)`, by name.
+    pub fn library_choices(&self, collection: bool) -> Vec<(String, String, bool)> {
+        let rows = if collection {
+            &self.collection_rows
+        } else {
+            &self.profile_rows
+        };
+        rows.iter()
+            .map(|r| (r.name.to_string(), r.id.to_string(), r.current))
+            .collect()
     }
 
     /// Refused, in words, while a recording or stream runs: `doing` is what would
@@ -2000,10 +2090,13 @@ impl StudioUi {
         }
         self.idle_for("switching output profiles")?;
         let result = self.user.switch_profile(&id);
+        // The studio gets the profile's settings and key account before the list
+        // that shows it in use.
+        if result.is_ok() {
+            self.profile_loaded();
+        }
         self.refresh_library();
-        result?;
-        self.profile_loaded();
-        Ok(())
+        result
     }
 
     /// Shows the output profile in use and hands its settings and stream key account
@@ -2047,10 +2140,11 @@ impl StudioUi {
         self.idle_for("switching output profiles")?;
         let id = self.user.new_profile(name, copy)?;
         let result = self.user.switch_profile(&id);
+        if result.is_ok() {
+            self.profile_loaded();
+        }
         self.refresh_library();
-        result?;
-        self.profile_loaded();
-        Ok(())
+        result
     }
 
     /// Output profile menu: renames the profile in use.
@@ -2235,6 +2329,12 @@ impl StudioUi {
                 let next = self.edit.answered(seq, ok);
                 self.run(next);
             }
+            // Crops from the Properties fields are numbered 0, which the picture
+            // panel never uses.
+            Update::CropPlaced { seq, ok } => {
+                let next = self.edit.answered(seq, ok);
+                self.run(next);
+            }
             Update::Started {
                 preview,
                 kinds,
@@ -2253,6 +2353,7 @@ impl StudioUi {
                 self.state = 1;
                 self.send(Command::SetProfile(self.profile.clone()));
                 self.send(Command::SetStreamProfile(self.stream.clone()));
+                self.refresh_library();
                 self.kind_list = kinds;
                 let rows: Vec<KindData> = self
                     .kind_list
@@ -2380,6 +2481,16 @@ impl StudioUi {
             // `rbs-cli token` over local IPC made or revoked a token; the control
             // thread gave it to the server already. Only the list shown changes here.
             Update::TokensChanged => self.read_tokens(false),
+            // `profile.switch` or `collection.switch`: the caller switches, since a
+            // collection switch needs the window's preview.
+            Update::SwitchRequested {
+                seq,
+                collection,
+                id,
+            } => {
+                self.api_switch = Some(seq);
+                out.switch = Some((collection, id));
+            }
             Update::Stats(stats) => {
                 let rows: Vec<StatRow> = stat_lines(&stats)
                     .into_iter()
@@ -2470,6 +2581,7 @@ impl StudioUi {
                     (l.position[0], l.position[1], l.size[0], l.size[1])
                 });
                 let style = r.layout.map(|l| l.style).unwrap_or_default();
+                let crop = r.layout.map(|l| l.crop).unwrap_or_default();
                 let (shape, radius) = match style.shape {
                     Shape::Circle => (1, 0.0),
                     Shape::Ellipse => (2, 0.0),
@@ -2501,6 +2613,12 @@ impl StudioUi {
                     border_width: border.width,
                     border_color: color_text(border.color).into(),
                     border_swatch: slint::Color::from_argb_u8(ca, cr, cg, cb),
+                    crop_l: crop.left as i32,
+                    crop_t: crop.top as i32,
+                    crop_r: crop.right as i32,
+                    crop_b: crop.bottom as i32,
+                    pic_w: r.picture.map_or(0, |p| p.0 as i32),
+                    pic_h: r.picture.map_or(0, |p| p.1 as i32),
                 }
             })
             .collect();
@@ -2596,6 +2714,25 @@ impl StudioUi {
 pub struct Applied {
     pub error: Option<String>,
     pub preview: Option<rbs_gpu::share::PreviewEndpoint>,
+    /// A control API client asked to switch: scene collections (`true`) or output
+    /// profiles to the entry with this id. The caller switches as the File menu
+    /// does and then calls [`StudioUi::refresh_library`], which answers the host.
+    pub switch: Option<(bool, String)>,
+}
+
+/// A library as `profile.list` and `collection.list` show it.
+fn api_library(list: &[(EntryId, String)], current: &EntryId) -> rbs_api::types::Library {
+    rbs_api::types::Library {
+        entries: list
+            .iter()
+            .map(|(id, name)| rbs_api::types::LibraryEntry {
+                id: id.as_str().to_owned(),
+                name: name.clone(),
+            })
+            .collect(),
+        current: current.as_str().to_owned(),
+        pending: false,
+    }
 }
 
 fn file_name(p: &Path) -> String {
@@ -2771,7 +2908,7 @@ fn color_text(c: [u8; 4]) -> String {
 
 /// The Studio global's `undo-kind` / `redo-kind` code and the source's name for a
 /// step: 0 nothing, 1 add, 2 delete, 3 layer order, 4 move or resize, 5 shape or
-/// border.
+/// border, 6 crop.
 fn step_view(step: Option<&StepInfo>) -> (i32, &str) {
     match step {
         None => (0, ""),
@@ -2782,6 +2919,7 @@ fn step_view(step: Option<&StepInfo>) -> (i32, &str) {
                 EditKind::Order => 3,
                 EditKind::Place => 4,
                 EditKind::Style => 5,
+                EditKind::Crop => 6,
             },
             s.name.as_str(),
         ),
@@ -2892,6 +3030,40 @@ mod tests {
         // The server being typed is still there to confirm.
         ui.settings_closed();
         assert_eq!(ui.stream.server, "rtmp://127.0.0.1/typing");
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn a_control_api_profile_switch_is_answered_once_the_profile_is_loaded() {
+        let (mut ui, d) = ui("api-switch");
+        let id = ui.user.new_profile("Live", false).unwrap();
+        let out = ui.apply(Update::SwitchRequested {
+            seq: 7,
+            collection: false,
+            id: id.as_str().to_owned(),
+        });
+        assert_eq!(out.switch, Some((false, id.as_str().to_owned())));
+        assert_eq!(ui.api_switch, Some(7));
+        // Refused while live: still answered, and the one in use stays.
+        ui.st_state = st_state::LIVE;
+        assert!(ui.switch_profile(id.as_str()).is_err());
+        ui.refresh_library();
+        assert_eq!(ui.api_switch, None);
+        assert_ne!(ui.user.profile_id, id);
+        ui.st_state = st_state::OFF;
+        ui.apply(Update::SwitchRequested {
+            seq: 8,
+            collection: false,
+            id: id.as_str().to_owned(),
+        });
+        ui.switch_profile(id.as_str()).unwrap();
+        assert_eq!(ui.api_switch, None);
+        assert_eq!(ui.user.profile_id, id);
+        assert!(
+            ui.library_choices(false)
+                .iter()
+                .any(|(name, _, current)| name == "Live" && *current)
+        );
         let _ = std::fs::remove_dir_all(&d);
     }
 

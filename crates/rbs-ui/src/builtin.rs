@@ -2,9 +2,17 @@
 //!
 //! They are defaults: users may change them and restore them, never delete them.
 
-use crate::layout::{Axis, Node};
+use crate::layout::{Axis, Node, Tabs};
 use crate::panel::id;
-use crate::workspace::{Workspace, same_name};
+use crate::workspace::{DEFAULT_FLYOUT, EdgeGroup, Side, Workspace, same_name};
+
+fn collapsed(ids: &[&'static str]) -> Node {
+    Node::Tabs(Tabs {
+        tabs: ids.iter().map(|i| id(i)).collect(),
+        active: 0,
+        collapsed: true,
+    })
+}
 
 /// Names of the built-in workspaces, in menu order.
 pub const NAMES: [&str; 4] = ["Edit", "Live", "Minimal", "Audio"];
@@ -13,34 +21,38 @@ fn tabs(ids: &[&'static str]) -> Node {
     Node::tabs(ids.iter().map(|i| id(i)).collect())
 }
 
-/// The full editing layout of the design system's main window structure.
+/// The full editing layout of the design system's main window structure: Preview in
+/// the centre, Scenes and Sources in the left area, Properties, Live controls and
+/// Transition (collapsed) in the right area, the Mixer in the bottom area, and Stats
+/// and Outputs as edge tabs on the right (ADR-0049, spec Frame).
 pub fn edit() -> Workspace {
-    let top = Node::split(
-        Axis::Horizontal,
-        vec![
-            (
-                0.2,
-                Node::split(
-                    Axis::Vertical,
-                    vec![(0.5, tabs(&["rbs.scenes"])), (0.5, tabs(&["rbs.sources"]))],
-                ),
-            ),
-            (0.58, tabs(&["rbs.preview"])),
-            (0.22, tabs(&["rbs.properties"])),
-        ],
-    );
-    let bottom = Node::split(
-        Axis::Horizontal,
-        vec![
-            (0.6, tabs(&["rbs.mixer", "rbs.stats", "rbs.outputs"])),
-            (0.2, tabs(&["rbs.transition"])),
-            (0.2, tabs(&["rbs.live-controls"])),
-        ],
-    );
-    Workspace::new(
-        "Edit",
-        Node::split(Axis::Vertical, vec![(0.7, top), (0.3, bottom)]),
-    )
+    let mut ws = Workspace::new("Edit", tabs(&["rbs.preview"]));
+    if let Some(m) = ws.main_layout_mut() {
+        m.left.layout = Some(Node::split(
+            Axis::Vertical,
+            vec![
+                (0.45, tabs(&["rbs.scenes"])),
+                (0.55, tabs(&["rbs.sources"])),
+            ],
+        ));
+        m.right.layout = Some(Node::split(
+            Axis::Vertical,
+            vec![
+                (0.5, tabs(&["rbs.properties"])),
+                (0.3, collapsed(&["rbs.live-controls"])),
+                (0.2, collapsed(&["rbs.transition"])),
+            ],
+        ));
+        m.bottom.layout = Some(tabs(&["rbs.mixer"]));
+        m.auto_hide.push(EdgeGroup {
+            edge: Side::Right,
+            tabs: vec![id("rbs.stats"), id("rbs.outputs")],
+            active: 0,
+            size: DEFAULT_FLYOUT,
+            anchor: None,
+        });
+    }
+    ws
 }
 
 /// Preview and program side by side, live controls, room for chat, and the mixer.
