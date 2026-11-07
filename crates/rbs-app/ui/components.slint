@@ -49,6 +49,7 @@ export enum IconName {
     keyboard,
     broadcast,
     link,
+    globe,
     gear,
     user,
     folder,
@@ -111,6 +112,7 @@ export component Icon inherits Rectangle {
         : name == IconName.keyboard ? "M 1.5 4 L 14.5 4 L 14.5 12 L 1.5 12 Z M 4 6.75 L 4.5 6.75 M 6.5 6.75 L 7 6.75 M 9 6.75 L 9.5 6.75 M 11.5 6.75 L 12 6.75 M 5 9.5 L 11 9.5"
         : name == IconName.broadcast ? "M 6.75 8 a 1.25 1.25 0 1 0 2.5 0 a 1.25 1.25 0 1 0 -2.5 0 Z M 5.25 5.25 C 3.75 6.75 3.75 9.25 5.25 10.75 M 10.75 5.25 C 12.25 6.75 12.25 9.25 10.75 10.75 M 3.25 3.25 C 0.75 5.75 0.75 10.25 3.25 12.75 M 12.75 3.25 C 15.25 5.75 15.25 10.25 12.75 12.75"
         : name == IconName.link ? "M 6.5 9.5 L 9.5 6.5 M 7 4.5 L 8.5 3 C 9.75 1.75 11.75 1.75 13 3 C 14.25 4.25 14.25 6.25 13 7.5 L 11.5 9 M 9 11.5 L 7.5 13 C 6.25 14.25 4.25 14.25 3 13 C 1.75 11.75 1.75 9.75 3 8.5 L 4.5 7"
+        : name == IconName.globe ? "M 2 8 a 6 6 0 1 0 12 0 a 6 6 0 1 0 -12 0 Z M 2 8 L 14 8 M 8 2 C 5.75 4 5.75 12 8 14 M 8 2 C 10.25 4 10.25 12 8 14"
         : name == IconName.gear ? "M 12.68 6.24 L 14.47 6.69 L 14.47 9.31 L 12.68 9.76 L 12.55 10.06 L 13.50 11.65 L 11.65 13.50 L 10.06 12.55 L 9.76 12.68 L 9.31 14.47 L 6.69 14.47 L 6.24 12.68 L 5.94 12.55 L 4.35 13.50 L 2.50 11.65 L 3.45 10.06 L 3.32 9.76 L 1.53 9.31 L 1.53 6.69 L 3.32 6.24 L 3.45 5.94 L 2.50 4.35 L 4.35 2.50 L 5.94 3.45 L 6.24 3.32 L 6.69 1.53 L 9.31 1.53 L 9.76 3.32 L 10.06 3.45 L 11.65 2.50 L 13.50 4.35 L 12.55 5.94 Z M 6 8 a 2 2 0 1 0 4 0 a 2 2 0 1 0 -4 0 Z"
         : name == IconName.user ? "M 5.5 5 a 2.5 2.5 0 1 0 5 0 a 2.5 2.5 0 1 0 -5 0 Z M 2.5 14 C 2.5 9.5 13.5 9.5 13.5 14"
         : name == IconName.folder ? "M 1.5 3.5 L 6 3.5 L 7.5 5 L 14.5 5 L 14.5 12.5 L 1.5 12.5 Z"
@@ -182,6 +184,7 @@ export global Icons {
         : name == "keyboard" ? IconName.keyboard
         : name == "broadcast" ? IconName.broadcast
         : name == "link" ? IconName.link
+        : name == "globe" ? IconName.globe
         : name == "gear" ? IconName.gear
         : name == "user" ? IconName.user
         : name == "folder" ? IconName.folder
@@ -228,7 +231,7 @@ export component Button inherits Rectangle {
         : kind == "live" ? Theme.state-live
         : checked ? Theme.accent-subtle
         : touch.has-hover ? Theme.surface-overlay
-        : kind == "ghost" ? transparent : Theme.surface-raised;
+        : kind == "ghost" || kind == "danger" ? transparent : Theme.surface-raised;
     border-width: kind == "secondary" ? Tokens.size-border : 0px;
     border-color: Theme.border-subtle;
     accessible-role: button;
@@ -237,7 +240,7 @@ export component Button inherits Rectangle {
     accessible-enabled: enabled;
     accessible-action-default => { if enabled { clicked(); } }
     forward-focus: focus;
-    out property <color> ink: !enabled ? Theme.text-disabled : kind == "primary" ? Theme.text-inverse : kind == "live" ? Theme.text-on-live : Theme.text-primary;
+    out property <color> ink: !enabled ? Theme.text-disabled : kind == "primary" ? Theme.text-inverse : kind == "live" ? Theme.text-on-live : kind == "danger" ? Theme.state-error : Theme.text-primary;
     content := HorizontalLayout {
         alignment: center;
         spacing: Tokens.space-1 + Tokens.space-1 / 2;
@@ -395,7 +398,10 @@ export component Select inherits Rectangle {
     in property <[string]> options;
     in property <int> index;
     in property <bool> enabled: true;
+    // Shown in `text.secondary` while no option is chosen (`index` out of range).
+    in property <string> placeholder;
     out property <bool> open: menu.is-open;
+    property <bool> chosen: root.index >= 0 && root.index < root.options.length;
     callback selected(int);
     height: Tokens.size-control-md;
     min-width: Tokens.size-menu-sm / 2;
@@ -408,7 +414,7 @@ export component Select inherits Rectangle {
     background: !root.enabled ? transparent
         : touch.pressed ? Theme.surface-overlay : Theme.surface-sunken;
     accessible-role: combobox;
-    accessible-label: @tr("{}: {}", root.label, root.options[root.index]);
+    accessible-label: @tr("{}: {}", root.label, root.chosen ? root.options[root.index] : root.placeholder);
     accessible-enabled: root.enabled;
     accessible-expanded: root.open;
     accessible-action-default => { if root.enabled { menu.show(); } }
@@ -419,8 +425,8 @@ export component Select inherits Rectangle {
         spacing: Tokens.space-2;
         Text {
             horizontal-stretch: 1;
-            text: root.options[root.index];
-            color: root.enabled ? Theme.text-primary : Theme.text-disabled;
+            text: root.chosen ? root.options[root.index] : root.placeholder;
+            color: !root.enabled ? Theme.text-disabled : root.chosen ? Theme.text-primary : Theme.text-secondary;
             font-size: Tokens.type-body-size;
             vertical-alignment: center;
             overflow: elide;

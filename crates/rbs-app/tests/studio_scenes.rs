@@ -547,6 +547,125 @@ fn in_studio_mode_the_ui_edits_the_preview_and_the_mixer_hears_the_program() {
     drop(host);
 }
 
+fn globals(c: &mut Client) -> Vec<Value> {
+    ok(&c.call("global.list", json!({})))["sources"]
+        .as_array()
+        .unwrap()
+        .clone()
+}
+
+#[test]
+fn global_sources_are_in_every_scene_and_removal_from_a_scene_is_safe() {
+    // ADR-0065, protocol 1.10.
+    let Some((host, updates, _api, mut c)) = start() else {
+        return;
+    };
+    let one = scenes(&mut c)["program"].as_u64().unwrap();
+    let cam = add(&mut c, "camera", "Cam");
+    let two = ok(&c.call("scene.add", json!({"name": "Two"})))["scene"]
+        .as_u64()
+        .unwrap();
+    ok(&c.call("scene.switch", json!({"scene": two})));
+    let cam_two = ok(&c.call("item.add", json!({"source": cam})))["item"]
+        .as_u64()
+        .unwrap();
+
+    // Remove from scene: the camera stays in the first scene.
+    let removed = ok(&c.call("item.remove", json!({"item": cam_two}))).clone();
+    assert_eq!(removed["source_deleted"], false);
+    assert!(sources(&mut c).is_empty());
+    let all = scenes(&mut c);
+    assert!(
+        all["sources"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|s| s["id"] == cam)
+    );
+    ok(&c.call("edit.undo", json!({})));
+    assert_eq!(sources(&mut c).len(), 1);
+
+    // A microphone added as a global source: heard in every scene, listed nowhere as a
+    // scene, and absent from the 1.9 rows.
+    let targets = c.call("source.targets", json!({"kind": "audio_input"}));
+    let t = ok(&targets)["targets"][0].clone();
+    let mic = ok(&c.call(
+        "source.add",
+        json!({"kind": "audio_input", "adapter": t["adapter"], "target": t["target"], "name": "Mic", "global": true}),
+    ))["source"]
+        .as_u64()
+        .unwrap();
+    let g = globals(&mut c);
+    assert_eq!(g.len(), 1);
+    assert_eq!(g[0]["id"], mic);
+    assert!(sources(&mut c).iter().all(|r| r["id"] != mic));
+    let list = scenes(&mut c);
+    assert_eq!(
+        names(&list),
+        ["Scene", "Two"],
+        "the global scene is never listed"
+    );
+    let entry = list["sources"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|s| s["id"] == mic)
+        .unwrap()
+        .clone();
+    assert_eq!(entry["global"], true);
+    assert_eq!(
+        kind(&c.call("item.add", json!({"source": mic}))),
+        "conflict"
+    );
+    // The Mixer hears it with the program, in either scene.
+    next(&updates, |u| match u {
+        Update::Heard(rows) if rows.iter().any(|r| r.id.get() as u64 == mic && r.global) => {
+            Some(())
+        }
+        _ => None,
+    });
+    // One undo step takes the whole add back.
+    ok(&c.call("edit.undo", json!({})));
+    assert!(globals(&mut c).is_empty());
+    ok(&c.call("edit.redo", json!({})));
+    assert_eq!(globals(&mut c).len(), 1);
+
+    // Making the camera global moves it out of the scenes; keep moves it back into
+    // the program scene.
+    let item = ok(&c.call("global.add", json!({"source": cam})))["item"]
+        .as_u64()
+        .unwrap();
+    assert_eq!(globals(&mut c).len(), 2);
+    assert!(sources(&mut c).is_empty());
+    ok(&c.call("scene.switch", json!({"scene": one})));
+    assert!(sources(&mut c).is_empty(), "it left the first scene too");
+    assert_eq!(
+        kind(&c.call("global.add", json!({"source": cam}))),
+        "conflict"
+    );
+    let back = ok(&c.call("global.remove", json!({"source": cam, "keep": true})))["item"]
+        .as_u64()
+        .unwrap();
+    assert_ne!(back, item);
+    assert_eq!(sources(&mut c).len(), 1);
+    assert_eq!(
+        kind(&c.call("global.remove", json!({"source": cam}))),
+        "invalid_params"
+    );
+
+    // Removing the last placement deletes the source.
+    let gone = ok(&c.call("global.remove", json!({"source": mic}))).clone();
+    assert_eq!(gone["source_deleted"], true);
+    assert!(
+        scenes(&mut c)["sources"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|s| s["id"] != mic)
+    );
+    drop(host);
+}
+
 #[test]
 fn with_the_program_scene_in_preview_the_program_is_held_until_the_transition() {
     let Some((host, updates, _api, mut c)) = start() else {

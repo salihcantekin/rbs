@@ -417,6 +417,7 @@ impl App {
             Run::RenameSource(id, Some(name)) => self.studio.rename_source(id, &name),
             Run::RenameSource(id, None) => self.ask_rename(id, false),
             Run::DeleteSource(id) => self.studio.delete_source(id),
+            Run::RemoveFromScene(id) => self.studio.remove_from_scene(id),
             Run::SourceVisible(id, on) => self.studio.set_source_visible(id, on),
             Run::SourceLocked(id, on) => self.studio.set_source_locked(id, on),
             Run::SourceMuted(id, on) => self.studio.set_source_muted(id, on),
@@ -2006,6 +2007,21 @@ fn install_studio(g: &Studio<'_>, ctx: &Ctx) {
     });
     on!(on_delete_source, |app, id: i32| {
         app.studio.delete_source(id);
+    });
+    on!(on_remove_from_scene, |app, id: i32| {
+        app.studio.remove_from_scene(id);
+    });
+    on!(on_set_global, |app, id: i32, global: bool| {
+        app.studio.set_global(id, global);
+    });
+    on!(on_remove_global, |app, id: i32| {
+        app.studio.remove_global(id);
+    });
+    on!(on_pick_global_kind, |app, index: i32| {
+        app.studio.pick_global_kind(index);
+    });
+    on!(on_add_global, |app, option: i32| {
+        app.studio.add_global(option);
     });
     on!(on_select_source, |app, id: i32| {
         app.studio.selected = id;
