@@ -15,6 +15,7 @@
 //! - [`history`] and [`session`]: layout undo and the commands that change a layout.
 //! - [`live`]: the live indicator.
 //! - [`tokens`]: design tokens and their contrast checks.
+//! - [`icon`]: the icon set as vector paths.
 //! - [`meter`]: the audio meter's scale, peak hold and clip latch.
 //! - [`shortcut`]: key chords bound to commands, defaults, conflicts (ADR-0060).
 //!
@@ -26,6 +27,7 @@ pub mod display;
 pub mod fader;
 pub mod frame;
 pub mod history;
+pub mod icon;
 pub mod layout;
 pub mod live;
 pub mod meter;

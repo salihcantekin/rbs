@@ -16,10 +16,12 @@ use crate::studio_ui::{SourceFacts, StudioUi, rec_state, st_state};
 
 /// The run-time values of the menu bar, in the generated items' order: one entry
 /// per command or choice submenu in `titles`, `enabled` and `checked`, one list per
-/// choice submenu in `choices` (`(title, id to run, current)`).
+/// choice submenu in `choices` (`(title, id to run, current)`). `icons` names each
+/// item's icon from the set, or is empty while a checkmark takes its place.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Values {
     pub titles: Vec<String>,
+    pub icons: Vec<&'static str>,
     pub enabled: Vec<bool>,
     pub checked: Vec<bool>,
     pub choices: Vec<Vec<(String, String, bool)>>,
@@ -35,14 +37,21 @@ pub fn values(state: &dyn CommandState) -> Values {
                     title,
                     disabled,
                     checked,
+                    icon,
                     ..
                 } => {
                     v.titles.push(title);
+                    v.icons.push(item_icon(icon, checked));
                     v.enabled.push(disabled.is_none());
                     v.checked.push(checked.unwrap_or(false));
                 }
-                MenuItem::Choices { title, choices } => {
+                MenuItem::Choices {
+                    title,
+                    icon,
+                    choices,
+                } => {
                     v.titles.push(title);
+                    v.icons.push(item_icon(icon, None));
                     v.enabled.push(!choices.is_empty());
                     v.checked.push(false);
                     v.choices.push(
@@ -57,6 +66,16 @@ pub fn values(state: &dyn CommandState) -> Values {
         }
     }
     v
+}
+
+/// The icon a menu item shows: its own, or none while it is checked, since menus draw
+/// the checkmark in the icon's place (spec, "Icons").
+pub fn item_icon(icon: Option<&'static str>, checked: Option<bool>) -> &'static str {
+    if checked == Some(true) {
+        ""
+    } else {
+        icon.unwrap_or("")
+    }
 }
 
 #[cfg(test)]
@@ -115,7 +134,7 @@ pub fn slint_text(indent: &str) -> String {
                 MenuItem::Command { id, checked, .. } => {
                     let run = quoted(&id.to_string());
                     let mut props = format!(
-                        "MenuItem {{ title: Menus.titles[{index}]; enabled: Menus.enabled[{index}];"
+                        "MenuItem {{ title: Menus.titles[{index}]; icon: Menus.icons[{index}]; enabled: Menus.enabled[{index}];"
                     );
                     if checked.is_some() {
                         props.push_str(&format!(
@@ -129,6 +148,7 @@ pub fn slint_text(indent: &str) -> String {
                 MenuItem::Choices { .. } => {
                     line(2, "Menu {");
                     line(3, &format!("title: Menus.titles[{index}];"));
+                    line(3, &format!("icon: Menus.icons[{index}];"));
                     line(3, &format!("enabled: Menus.enabled[{index}];"));
                     line(
                         3,
