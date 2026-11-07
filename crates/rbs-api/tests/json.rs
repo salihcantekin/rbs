@@ -132,6 +132,7 @@ fn scenes() -> SceneList {
             id: 3,
             name: "Camera".into(),
             kind: Some(SourceKind::Camera),
+            global: true,
         }],
     }
 }
@@ -174,6 +175,7 @@ fn every_request() -> Vec<Request> {
             target: "display-1".into(),
             name: None,
             scene: None,
+            global: true,
         })),
         c(Command::SourceDelete(SourceRef { source: 4 })),
         c(Command::ItemSetStyle(SetItemStyle {
@@ -212,6 +214,13 @@ fn every_request() -> Vec<Request> {
         c(Command::SceneSources(SceneRef { scene: 2 })),
         c(Command::CanvasSetPreview(SetPreview { scene: Some(2) })),
         c(Command::CanvasTransition),
+        c(Command::ItemRemove(ItemRef { item: 7 })),
+        c(Command::GlobalList),
+        c(Command::GlobalAdd(AddGlobal { source: 3 })),
+        c(Command::GlobalRemove(RemoveGlobal {
+            source: 3,
+            keep: true,
+        })),
         c(Command::ItemSetVisible(SetItemVisible {
             item: 7,
             visible: false,
@@ -779,6 +788,49 @@ fn studio_mode_is_a_minor_addition() {
     assert!(serde_json::from_value::<SetPreview>(json!({"scene": 1, "x": 0})).is_err());
     round_trip(&SceneSourceList {
         scene: 2,
+        sources: vec![source()],
+    });
+}
+
+#[test]
+fn global_sources_and_item_remove_have_a_stable_wire_form() {
+    // Protocol 1.10 (ADR-0065).
+    let remove: Request =
+        serde_json::from_value(json!({"method": "item.remove", "params": {"item": 4}})).unwrap();
+    assert_eq!(
+        remove,
+        Request::Command(Command::ItemRemove(ItemRef { item: 4 }))
+    );
+    assert_eq!(remove.scope(), Some(Scope::Control));
+    let list: Request =
+        serde_json::from_value(json!({"method": "global.list", "params": {}})).unwrap();
+    assert_eq!(list.scope(), Some(Scope::Read));
+    let off: Request =
+        serde_json::from_value(json!({"method": "global.remove", "params": {"source": 2}}))
+            .unwrap();
+    assert_eq!(
+        off,
+        Request::Command(Command::GlobalRemove(RemoveGlobal {
+            source: 2,
+            keep: false
+        }))
+    );
+    assert!(serde_json::from_value::<AddGlobal>(json!({"source": 1, "x": 0})).is_err());
+    // `global` is left out when false, so 1.9 answers keep their exact form.
+    let entry = SourceEntry {
+        id: 1,
+        name: "Mic".into(),
+        kind: Some(SourceKind::AudioInput),
+        global: false,
+    };
+    assert_eq!(
+        serde_json::to_value(&entry).unwrap(),
+        json!({"id": 1, "name": "Mic", "kind": "audio_input"})
+    );
+    round_trip(&ItemRemoved {
+        source_deleted: true,
+    });
+    round_trip(&GlobalSourceList {
         sources: vec![source()],
     });
 }

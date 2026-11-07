@@ -147,7 +147,16 @@ pub struct StudioUi {
     /// The preview scene's picture layer could not be made in this session.
     pub scene_preview_failed: bool,
     pub deleted: String,
+    /// The toast's source was only removed from one scene (ADR-0065).
+    pub deleted_from_scene: bool,
     pub deleted_serial: u64,
+    /// Settings › Global sources (ADR-0065): the kind picked (an index into
+    /// [`Self::kind_codes`], -1 none), its devices and the collection's sources of that
+    /// kind that are not global, in the Source field's order.
+    pub global_kind: i32,
+    global_targets: Vec<Target>,
+    global_existing: Vec<SourceId>,
+    pub global_option: i32,
     /// What Undo and Redo would apply now (the studio's undo history).
     pub next_undo: Option<StepInfo>,
     pub next_redo: Option<StepInfo>,
@@ -329,6 +338,11 @@ impl StudioUi {
             scene_preview_failed: false,
             deleted: String::new(),
             deleted_serial: 0,
+            deleted_from_scene: false,
+            global_kind: -1,
+            global_targets: Vec::new(),
+            global_existing: Vec::new(),
+            global_option: -1,
             next_undo: None,
             next_redo: None,
             rec_state: rec_state::OFF,
@@ -477,6 +491,15 @@ impl StudioUi {
         g.set_targets_kind(self.targets_kind);
         g.set_preview_state(preview_state);
         g.set_deleted(self.deleted.as_str().into());
+        g.set_deleted_from_scene(self.deleted_from_scene);
+        g.set_global_kind_names(strings(
+            self.kind_codes().iter().map(|(_, l)| (*l).to_owned()),
+        ));
+        g.set_global_kind(self.global_kind);
+        g.set_global_options(strings(self.global_options()));
+        g.set_global_devices(self.global_targets.len() as i32);
+        g.set_global_option(self.global_option);
+        g.set_global_count(self.rows.iter().filter(|r| r.global).count() as i32);
         let (kind, name) = step_view(self.next_undo.as_ref());
         g.set_undo_kind(kind);
         g.set_undo_name(name.into());
@@ -1146,6 +1169,97 @@ impl StudioUi {
         self.send(Command::DeleteSource(SourceId::from_raw(id as u32)));
     }
 
+    /// Remove from scene (ADR-0065): the Sources row's remove button and Delete key.
+    pub fn remove_from_scene(&mut self, id: i32) {
+        self.deleted.clear();
+        self.send(Command::RemoveFromScene(SourceId::from_raw(id as u32)));
+    }
+
+    /// Show in every scene (Properties' Toggle, ADR-0065).
+    pub fn set_global(&mut self, id: i32, global: bool) {
+        self.deleted.clear();
+        self.send(Command::SetGlobal {
+            id: SourceId::from_raw(id as u32),
+            global,
+        });
+    }
+
+    /// Settings › Global sources' Remove.
+    pub fn remove_global(&mut self, id: i32) {
+        self.deleted.clear();
+        self.send(Command::RemoveGlobal(SourceId::from_raw(id as u32)));
+    }
+
+    /// Settings › Global sources: a kind was picked; its devices are listed.
+    pub fn pick_global_kind(&mut self, index: i32) {
+        let Some((code, _)) = self.kind_codes().get(index as usize).copied() else {
+            return;
+        };
+        self.global_kind = index;
+        self.global_option = -1;
+        self.global_targets.clear();
+        self.refresh_global_existing();
+        self.list_targets(code);
+    }
+
+    /// The kind picked in Settings › Global sources.
+    fn global_source_kind(&self) -> Option<SourceKind> {
+        let (code, _) = self.kind_codes().get(self.global_kind as usize).copied()?;
+        SourceKind::ALL.get(code as usize).copied()
+    }
+
+    /// The collection's sources of the picked kind that are not global.
+    fn refresh_global_existing(&mut self) {
+        let kind = self.global_source_kind();
+        self.global_existing = match (&self.scene_list, kind) {
+            (Some(list), Some(kind)) => list
+                .sources
+                .iter()
+                .filter(|s| s.kind == Some(kind) && !s.global)
+                .map(|s| s.id)
+                .collect(),
+            _ => Vec::new(),
+        };
+        if self.global_option >= self.global_options().len() as i32 {
+            self.global_option = -1;
+        }
+    }
+
+    /// The Source field's options: devices, then sources the scenes have.
+    fn global_options(&self) -> Vec<String> {
+        let names = self.scene_list.as_ref();
+        self.global_targets
+            .iter()
+            .map(|t| t.name.clone())
+            .chain(self.global_existing.iter().map(|id| {
+                let name = names
+                    .and_then(|l| l.sources.iter().find(|s| s.id == *id))
+                    .map_or_else(String::new, |s| s.name.clone());
+                format!("{name} (in scenes)")
+            }))
+            .collect()
+    }
+
+    /// Settings › Global sources' Add: a device becomes a new global source, a source
+    /// the scenes have becomes global (it leaves them).
+    pub fn add_global(&mut self, option: i32) {
+        let Ok(i) = usize::try_from(option) else {
+            return;
+        };
+        self.deleted.clear();
+        if let Some(target) = self.global_targets.get(i).cloned() {
+            if let Some(kind) = self.global_source_kind() {
+                self.send(Command::AddGlobalSource { kind, target });
+            }
+        } else if let Some(id) = self.global_existing.get(i - self.global_targets.len()) {
+            self.send(Command::SetGlobal {
+                id: *id,
+                global: true,
+            });
+        }
+        self.global_option = -1;
+    }
+
     /// Lock or unlock a source on the picture panel (the Sources row's lock button).
     pub fn set_source_locked(&mut self, id: i32, locked: bool) {
         self.deleted.clear();
@@ -1232,7 +1346,7 @@ impl StudioUi {
         let data: Vec<ExistingData> = list
             .sources
             .iter()
-            .filter(|s| !self.rows.iter().any(|r| r.id == s.id))
+            .filter(|s| !s.global && !self.rows.iter().any(|r| r.id == s.id))
             .map(|s| ExistingData {
                 id: s.id.get() as i32,
                 name: s.name.as_str().into(),
@@ -2722,6 +2836,7 @@ impl StudioUi {
                 }
                 self.scene_list = Some(list);
                 self.refresh_existing();
+                self.refresh_global_existing();
             }
             Update::Targets(kind, list) => {
                 self.targets_kind = SourceKind::ALL
@@ -2736,10 +2851,19 @@ impl StudioUi {
                         })
                         .collect::<Vec<_>>(),
                 );
+                let picked = self
+                    .kind_codes()
+                    .get(self.global_kind as usize)
+                    .and_then(|(code, _)| SourceKind::ALL.get(*code as usize).copied());
+                if picked == Some(kind) {
+                    self.global_targets = list.clone();
+                    self.refresh_global_existing();
+                }
                 self.target_list = list;
             }
-            Update::Deleted(name) => {
+            Update::Deleted { name, from_scene } => {
                 self.deleted = name;
+                self.deleted_from_scene = from_scene;
                 self.deleted_serial += 1;
             }
             Update::Error(e) => {
@@ -2888,9 +3012,13 @@ impl StudioUi {
     }
 
     fn set_rows(&mut self, rows: Vec<SourceRow>) {
-        let pictures: Vec<usize> = (0..rows.len())
-            .filter(|i| rows[*i].layout.is_some())
-            .collect();
+        // Layers move within their group: the global sources, then the scene's.
+        let pictures = |global: bool| -> Vec<usize> {
+            (0..rows.len())
+                .filter(|i| rows[*i].layout.is_some() && rows[*i].global == global)
+                .collect()
+        };
+        let (global_pictures, scene_pictures) = (pictures(true), pictures(false));
         self.filter_ui.retain(&rows);
         let data: Vec<SourceData> = rows
             .iter()
@@ -2918,6 +3046,11 @@ impl StudioUi {
                     .unwrap_or(Border::new(DEFAULT_BORDER_WIDTH, [255, 255, 255, 255]));
                 let [cr, cg, cb, ca] = border.color;
                 let (filters, selected_filter) = self.filter_ui.data(r);
+                let pictures = if r.global {
+                    &global_pictures
+                } else {
+                    &scene_pictures
+                };
                 SourceData {
                     id: r.id.get() as i32,
                     name: r.name.as_str().into(),
@@ -2954,6 +3087,10 @@ impl StudioUi {
                     filters,
                     selected_filter,
                     sync_offset: r.audio.sync_offset_ms,
+                    global: r.global,
+                    also_in: r.also_in.join(", ").into(),
+                    in_globals: r.in_globals,
+                    places: (1 + r.also_in.len() + usize::from(r.in_globals)) as i32,
                 }
             })
             .collect();
@@ -3282,7 +3419,8 @@ fn source_icon(kind: Option<SourceKind>) -> &'static str {
 /// step: 0 nothing, 1 add, 2 delete, 3 layer order, 4 move or resize, 5 shape or
 /// border, 6 crop, 7 shown or hidden, 8 lock, 9 source rename, 10 scene added, 11
 /// scene removed, 12 scene renamed (the name is the scene's, or the old name), 13
-/// filters changed.
+/// filters changed, 14 removed from one scene, 15 made global or moved back into a
+/// scene.
 fn step_view(step: Option<&StepInfo>) -> (i32, &str) {
     match step {
         None => (0, ""),
@@ -3301,6 +3439,8 @@ fn step_view(step: Option<&StepInfo>) -> (i32, &str) {
                 EditKind::RemoveScene => 11,
                 EditKind::RenameScene => 12,
                 EditKind::Filter => 13,
+                EditKind::Remove => 14,
+                EditKind::Global => 15,
             },
             s.name.as_str(),
         ),
