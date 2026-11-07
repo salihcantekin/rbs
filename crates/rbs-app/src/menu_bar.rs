@@ -384,6 +384,14 @@ impl CommandState for Shown<'_> {
     }
 }
 
+/// What `ui.settings.open` runs: Settings at the id's section, if it names one.
+fn open_settings(id: &CommandId) -> Option<Run> {
+    Some(Run::OpenSettings(match id.param("section") {
+        Some(name) => Some(settings_section(name)?),
+        None => None,
+    }))
+}
+
 /// The `SettingsWindow.section` number of a `ui.settings.open` section name.
 pub fn settings_section(name: &str) -> Option<i32> {
     Some(match name {
@@ -598,10 +606,7 @@ pub fn run(text: &str, state: &Shown<'_>) -> Option<Run> {
         "ui.layout.reset_sizes" => Run::Layout(L::ResetSizes),
         "ui.toolbar.reset" => Run::Layout(L::ResetToolbar),
         "ui.theme.reload" => Run::ReloadThemes,
-        "ui.settings.open" => Run::OpenSettings(match id.param("section") {
-            Some(name) => Some(settings_section(name)?),
-            None => None,
-        }),
+        "ui.settings.open" => open_settings(&id)?,
         "ui.panel.maximize" => Run::Maximize(panel_of(&id)?, !on),
         "canvas.studio_mode.toggle" => Run::StudioMode(!on),
         "canvas.transition" => Run::Transition,
@@ -667,6 +672,13 @@ mod tests {
         seen.sort_unstable();
         assert_eq!(seen, (0..7).collect::<Vec<_>>());
         assert_eq!(settings_section("audio"), None);
+        let run = |t: &str| open_settings(&CommandId::parse(t).expect("id"));
+        assert_eq!(run("ui.settings.open"), Some(Run::OpenSettings(None)));
+        assert_eq!(
+            run("ui.settings.open?section=shortcuts"),
+            Some(Run::OpenSettings(Some(6)))
+        );
+        assert_eq!(run("ui.settings.open?section=audio"), None);
     }
 
     #[test]
