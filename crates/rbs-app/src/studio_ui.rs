@@ -1867,6 +1867,12 @@ impl StudioUi {
         }
     }
 
+    /// "Record when the stream starts".
+    pub fn set_auto_record(&mut self, on: bool) {
+        self.stream.auto_record = on;
+        self.save_stream();
+    }
+
     pub fn set_reconnect(&mut self, on: bool) {
         self.stream.reconnect = on;
         self.save_stream();
@@ -1957,6 +1963,10 @@ impl StudioUi {
         g.set_st_key_place(self.key_hint.as_str().into());
         g.set_st_key_serial(self.key_serial as i32);
         g.set_st_reconnect(st.reconnect);
+        g.set_st_auto_record(st.auto_record);
+        g.set_st_auto_record_note(
+            stream_profile::auto_record_note(&self.profile.encoding(), &st.encoding).into(),
+        );
         let parsed = st.parsed();
         g.set_st_srt(
             parsed
@@ -2775,6 +2785,7 @@ impl StudioUi {
                 self.stream.reconnect = p.reconnect;
                 self.stream.srt_latency_ms = p.srt_latency_ms;
                 self.stream.encoding = p.encoding;
+                self.stream.auto_record = p.auto_record;
                 self.save_stream();
             }
             // `rbs-cli token` over local IPC made or revoked a token; the control

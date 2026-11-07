@@ -11,7 +11,7 @@ use rbs_core::media::ContainerId;
 use rbs_transport::{ReconnectPolicy, TransportInput};
 use serde::{Deserialize, Serialize};
 
-use crate::record_profile::Encoding;
+use crate::record_profile::{Encoding, RateMode};
 
 /// The file format version this build writes and reads.
 const FORMAT: u32 = 1;
@@ -166,6 +166,10 @@ pub struct StreamProfile {
     /// The encoder settings.
     #[serde(default = "stream_encoding")]
     pub encoding: Encoding,
+    /// Record when the stream starts, with the recording settings; ending the stream
+    /// stops that recording. Off by default.
+    #[serde(default)]
+    pub auto_record: bool,
 }
 
 impl StreamProfile {
@@ -179,6 +183,7 @@ impl StreamProfile {
             reconnect: true,
             srt_latency_ms: None,
             encoding: stream_encoding(),
+            auto_record: false,
         }
     }
 
@@ -254,6 +259,7 @@ impl StreamProfile {
             reconnect: self.reconnect,
             srt_latency_ms: self.srt_latency_ms,
             encoding: self.encoding.to_api(),
+            auto_record: self.auto_record,
         }
     }
 
@@ -265,6 +271,9 @@ impl StreamProfile {
         p.reconnect = patch.reconnect;
         p.srt_latency_ms = patch.srt_latency_ms;
         p.encoding = Encoding::from_api(&patch.encoding);
+        if let Some(on) = patch.auto_record {
+            p.auto_record = on;
+        }
         // Free text the form never offers would make every later Go live fail.
         if let Some(name) = &p.encoding.profile
             && !["high", "main", "baseline"].contains(&name.as_str())
@@ -290,6 +299,39 @@ impl StreamProfile {
             None => Ok(p),
         }
     }
+}
+
+/// What "Record when the stream starts" costs, for the note under the setting: with
+/// the same encoder settings the recording joins the stream's encoders (ADR-0047),
+/// otherwise every frame is encoded twice; either way the file grows on disk for as
+/// long as the stream runs (about so many GB an hour with a bitrate, VBR peaks aside).
+pub fn auto_record_note(record: &Encoding, stream: &Encoding) -> String {
+    let load = if record == stream {
+        "The recording and the stream have the same encoder settings, so they share one \
+         encoder and the extra processor and graphics load is small."
+            .to_owned()
+    } else {
+        "The recording and the stream have different encoder settings, so every frame is \
+         encoded twice: expect more processor or graphics load while live. Use the same \
+         settings in Recording and Stream to share one encoder."
+            .to_owned()
+    };
+    let disk = match record.rate_control {
+        RateMode::ConstantQuality => {
+            "The recording also needs free disk space for as long as the stream runs.".to_owned()
+        }
+        _ => {
+            // kbit/s for an hour: kbit/s * 3600 / 8 kB, shown in GB with one decimal.
+            let kbps = u64::from(record.video_kbps) + u64::from(record.audio_kbps);
+            let tenths = (kbps * 3600 / 8 + 50_000) / 100_000;
+            format!(
+                "The recording also needs about {}.{} GB of disk space for each hour of streaming.",
+                tenths / 10,
+                tenths % 10
+            )
+        }
+    };
+    format!("{load} {disk}")
 }
 
 impl Default for StreamProfile {
@@ -443,6 +485,23 @@ mod tests {
     }
 
     #[test]
+    fn the_auto_record_note_says_whether_frames_are_encoded_twice_and_the_disk_use() {
+        let record = crate::record_profile::RecordProfile::new().encoding();
+        let stream = StreamProfile::new().encoding;
+        let note = auto_record_note(&record, &stream);
+        assert!(note.contains("encoded twice"), "{note}");
+        // 12000 + 160 kbit/s for an hour: 5.47 GB.
+        assert!(note.contains("about 5.5 GB"), "{note}");
+        let note = auto_record_note(&stream, &stream);
+        assert!(note.contains("share one encoder"), "{note}");
+        assert!(note.contains("about 2.8 GB"), "{note}");
+        let mut cq = stream.clone();
+        cq.rate_control = RateMode::ConstantQuality;
+        let note = auto_record_note(&cq, &stream);
+        assert!(!note.contains("GB"), "{note}");
+    }
+
+    #[test]
     fn a_saved_profile_loads_back_and_never_holds_a_key() {
         let d = dir("stream-profile");
         assert_eq!(load(&d), (StreamProfile::new(), None));
@@ -454,6 +513,7 @@ mod tests {
         p.encoding.video_kbps = 8_000;
         p.encoding.rate_control = RateMode::Vbr;
         p.encoding.encoder = Some("org.rbs.codec.nvenc".into());
+        p.auto_record = true;
         save(&d, &p).unwrap();
         assert_eq!(load(&d), (p, None));
         let text = std::fs::read_to_string(file(&d)).unwrap();
@@ -475,6 +535,7 @@ mod tests {
             reconnect: false,
             srt_latency_ms: Some(1_000),
             encoding: api.encoding.clone(),
+            auto_record: None,
         };
         patch.encoding.video_kbps = 9_000;
         let changed = p.with_api(&patch).unwrap();
@@ -484,6 +545,11 @@ mod tests {
         assert_eq!(changed.srt_latency_ms, Some(1_000));
         assert_eq!(changed.encoding.video_kbps, 9_000);
         assert_eq!(changed.to_api().encoding, patch.encoding);
+        // "Record when the stream starts" stays unless the patch names it.
+        assert!(!changed.auto_record);
+        patch.auto_record = Some(true);
+        assert!(p.with_api(&patch).unwrap().auto_record);
+        patch.auto_record = None;
         patch.encoding.video_kbps = 1;
         assert!(p.with_api(&patch).unwrap_err().contains("bitrate"));
         patch.encoding.video_kbps = 6_000;

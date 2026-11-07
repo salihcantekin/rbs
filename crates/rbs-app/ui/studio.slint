@@ -250,6 +250,9 @@ export global Studio {
     // Bumped when a key was saved or removed: the key field is emptied.
     in property <int> st-key-serial;
     in property <bool> st-reconnect;
+    // "Record when the stream starts", and what it costs (shown while it is on).
+    in property <bool> st-auto-record;
+    in property <string> st-auto-record-note;
     // The server is srt://: the latency field shows.
     in property <bool> st-srt;
     in property <[string]> st-latencies;
@@ -266,6 +269,7 @@ export global Studio {
     callback save-key(string);
     callback remove-key();
     callback set-reconnect(bool);
+    callback set-auto-record(bool);
     callback set-latency(int);
 
     // The canvas (Settings, Video): sizes and rates offered, the ones in use.
@@ -2349,6 +2353,23 @@ export component StreamSettings inherits Rectangle {
                     }
                 }
             }
+        }
+        SettingsCard {
+            title: @tr("Recording");
+            SettingRow {
+                divider: false;
+                label: @tr("Record when the stream starts");
+                help: @tr("Uses the Recording settings. Ending the stream stops this recording. Off by default.");
+                enabled: idle;
+                fill: false;
+                Toggle {
+                    label: @tr("Record when the stream starts");
+                    checked: Studio.st-auto-record;
+                    enabled: idle;
+                    toggled(on) => { Studio.set-auto-record(on); }
+                }
+            }
+            if Studio.st-auto-record: SettingsNotice { text: Studio.st-auto-record-note; }
         }
         SettingsCard {
             title: @tr("Encoding");
