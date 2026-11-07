@@ -45,8 +45,8 @@ use rbs_record::{
 };
 use rbs_scene::SceneCollection;
 use rbs_scene::model::{
-    Border, CanvasId, Crop, FilterId, ItemContent, ItemId, ItemStyle, Layout, SceneId, SceneItem,
-    SceneScope, SettingValue, Settings, Shadow, Shape, SourceAudio, SourceId,
+    Border, CanvasId, Crop, FilterId, ItemContent, ItemId, ItemStyle, Layout, Scene, SceneId,
+    SceneItem, SceneScope, SettingValue, Settings, Shadow, Shape, SourceAudio, SourceId,
 };
 use rbs_scene::{SceneError, Undo};
 use rbs_sources::types::{self, keys};
@@ -1291,6 +1291,10 @@ struct Host {
     heard: Vec<SourceRow>,
     /// Scene sources an API call places into, instead of the edited scene.
     into: Option<SceneId>,
+    /// In studio mode with the program scene also in preview: the copy of the program
+    /// scene the program shows until the next transition, so edits stay off air
+    /// (ADR-0063). Never saved, never listed.
+    held: Option<Scene>,
     /// The preview scene's picture endpoint last sent to the UI.
     scene_preview_sent: Option<PreviewEndpoint>,
     /// The scene list as last sent.
@@ -1590,12 +1594,14 @@ fn start(
     settings.preview = config.preview;
     settings.scene_preview = SCENE_PICTURE;
     settings.audio_offsets = filters::audio_offsets(&collection);
+    let held = held_copy(&collection, canvas);
+    let run = held.as_ref().and_then(|h| run_copy(&collection, canvas, h));
     let first = engine();
     let clock = first.clock();
     let studio = Studio::start(
         first,
         Arc::clone(&gpu),
-        &collection,
+        run.as_ref().unwrap_or(&collection),
         &adapters.sources,
         &settings,
     )
@@ -1668,6 +1674,7 @@ fn start(
             rows: Vec::new(),
             heard: Vec::new(),
             into: None,
+            held,
             scene_preview_sent: None,
             scenes_shown: None,
             sizes: BTreeMap::new(),
@@ -2393,12 +2400,17 @@ impl Host {
         settings.preview = self.preview_surfaces.map(|n| preview_desc(canvas.size, n));
         settings.scene_preview = SCENE_PICTURE;
         settings.audio_offsets = filters::audio_offsets(&self.collection);
+        self.sync_held();
+        let run = self
+            .held
+            .as_ref()
+            .and_then(|h| run_copy(&self.collection, self.canvas, h));
         let engine = (self.engine)();
         let clock = engine.clock();
         let studio = Studio::start(
             engine,
             Arc::clone(&self.gpu),
-            &self.collection,
+            run.as_ref().unwrap_or(&self.collection),
             &self.adapters.sources,
             &settings,
         )
@@ -3240,15 +3252,17 @@ impl Host {
     }
 
     /// The transition (a cut, ADR-0061 decision 3): the preview scene goes on air and
-    /// the old program scene to preview. A live action; `Ok(false)` when both are the
-    /// same scene.
+    /// the old program scene to preview. A live action. When both are the same scene,
+    /// the edits made since the program was held go on air (ADR-0063); `Ok(false)` when
+    /// there is nothing to put on air.
     fn transition(&mut self) -> Result<bool, Refusal> {
         let Some(preview) = self.preview() else {
             return Err(Refusal::Conflict(STUDIO_MODE_OFF.to_owned()));
         };
         let program = self.scene;
         if preview == program {
-            return Ok(false);
+            // `apply` holds the scene as it is now.
+            return Ok(self.held.take().is_some());
         }
         self.collection
             .set_program(self.canvas, Some(preview))
@@ -3256,6 +3270,17 @@ impl Host {
         self.scene = preview;
         let _ = self.collection.set_preview(self.canvas, Some(program));
         Ok(true)
+    }
+
+    /// Holds the program scene while it is also the preview scene (ADR-0063), and lets
+    /// it go otherwise. A copy is taken only when the hold starts, so later edits to
+    /// the scene reach the program only through a transition.
+    fn sync_held(&mut self) {
+        if self.preview() != Some(self.scene) {
+            self.held = None;
+        } else if self.held.is_none() {
+            self.held = held_copy(&self.collection, self.canvas);
+        }
     }
 
     /// Keeps a program scene on the canvas and [`Host::scene`] on it: after an undo or
@@ -3552,7 +3577,13 @@ impl Host {
     }
 
     fn apply(&mut self, notify: &dyn Fn(Update)) {
-        match self.studio.update(&self.collection, &self.adapters.sources) {
+        self.sync_held();
+        let run = self
+            .held
+            .as_ref()
+            .and_then(|h| run_copy(&self.collection, self.canvas, h));
+        let running = run.as_ref().unwrap_or(&self.collection);
+        match self.studio.update(running, &self.adapters.sources) {
             Ok(u) => {
                 self.waiting = self.studio.waiting();
                 // Source failures show in the list; other failures need words.
@@ -4763,9 +4794,108 @@ fn shown_scene(
     Ok((canvas, scene))
 }
 
+/// Ids of the held program copy (ADR-0063): far above any id a collection issues, so
+/// they never meet one, and the same for every hold, so the program's compositor and
+/// layers keep their nodes from one hold to the next.
+const HELD_IDS: u32 = 0xF000_0000;
+
+/// A copy of the canvas's program scene, for the program to show while the same scene
+/// is edited in preview; `None` unless the canvas is in studio mode with its program
+/// scene in preview.
+fn held_copy(collection: &SceneCollection, canvas: CanvasId) -> Option<Scene> {
+    let c = collection.canvas(canvas)?;
+    let program = c.program?;
+    if c.preview != Some(program) {
+        return None;
+    }
+    let scene = collection.scene(program)?;
+    let mut held = scene.clone();
+    held.id = SceneId::from_raw(HELD_IDS);
+    held.name = format!("{} (held {HELD_IDS:x})", scene.name);
+    for (n, item) in held.items.iter_mut().enumerate() {
+        let n = u32::try_from(n).ok()?;
+        item.id = ItemId::from_raw(HELD_IDS.checked_add(1)?.checked_add(n)?);
+    }
+    Some(held)
+}
+
+/// The collection the studio runs while the program is held: `collection` with the
+/// held copy added and on air on `canvas`. `None` (the studio then runs `collection`
+/// itself) when the copy does not fit, which a valid collection never causes.
+fn run_copy(
+    collection: &SceneCollection,
+    canvas: CanvasId,
+    held: &Scene,
+) -> Option<SceneCollection> {
+    let canvases = collection
+        .canvases()
+        .map(|c| {
+            let mut c = c.clone();
+            if c.id == canvas {
+                c.program = Some(held.id);
+            }
+            c
+        })
+        .collect();
+    let mut scenes: Vec<Scene> = collection.scenes().cloned().collect();
+    scenes.push(held.clone());
+    SceneCollection::from_parts(
+        canvases,
+        collection.sources().cloned().collect(),
+        scenes,
+        collection.id_counters(),
+    )
+    .ok()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_held_program_keeps_the_scene_as_it_was_and_is_never_listed() {
+        let d = HostConfig::desktop();
+        let mut col = SceneCollection::new();
+        let (canvas, scene) = shown_scene(&mut col, d.size, d.fps).unwrap();
+        let (src, _) = col
+            .add_source("Mic", SourceKind::AudioInput.type_id(), Settings::new())
+            .unwrap();
+        col.add_item(
+            scene,
+            ItemContent::Source(src),
+            Layout::new([0.0, 0.0], [10.0, 10.0]),
+            None,
+        )
+        .unwrap();
+        // Outside studio mode, or with another scene in preview: nothing is held.
+        assert!(held_copy(&col, canvas).is_none());
+        let (other, _) = col.add_scene("Other", SceneScope::Shared).unwrap();
+        col.set_preview(canvas, Some(other)).unwrap();
+        assert!(held_copy(&col, canvas).is_none());
+
+        // The program scene in preview too: the program shows a copy of it.
+        col.set_preview(canvas, Some(scene)).unwrap();
+        let held = held_copy(&col, canvas).unwrap();
+        assert_eq!(held.items.len(), 1);
+        // An edit made after the hold reaches the scene, not the copy on air.
+        let item = col.scene(scene).unwrap().items[0].id;
+        col.remove_item(item).unwrap();
+        let run = run_copy(&col, canvas, &held).unwrap();
+        let program = run.canvas(canvas).unwrap().program.unwrap();
+        assert_eq!(program, held.id);
+        assert_eq!(run.scene(program).unwrap().items.len(), 1, "as it was");
+        assert_eq!(
+            run.scene(scene).unwrap().items.len(),
+            0,
+            "the edit, in preview"
+        );
+        assert_eq!(run.canvas(canvas).unwrap().preview, Some(scene));
+        // The user's collection never holds the copy.
+        assert!(col.scene(held.id).is_none());
+        assert_eq!(col.canvas(canvas).unwrap().program, Some(scene));
+        // The same ids for every hold, so the program keeps its nodes.
+        assert_eq!(held_copy(&col, canvas).unwrap().id, held.id);
+    }
 
     #[test]
     fn a_fitted_screen_is_fitted_again() {

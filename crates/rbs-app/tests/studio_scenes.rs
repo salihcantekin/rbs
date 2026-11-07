@@ -546,3 +546,34 @@ fn in_studio_mode_the_ui_edits_the_preview_and_the_mixer_hears_the_program() {
     });
     drop(host);
 }
+
+#[test]
+fn with_the_program_scene_in_preview_the_program_is_held_until_the_transition() {
+    let Some((host, updates, _api, mut c)) = start() else {
+        return;
+    };
+    let one = scenes(&mut c)["program"].as_u64().unwrap();
+    add(&mut c, "screen", "Main screen");
+    // Studio mode with the program scene in preview: the program is held (ADR-0063).
+    ok(&c.call("canvas.set_preview", json!({"scene": one})));
+    // An edit of that scene: the scene changes, the held copy is never listed.
+    add(&mut c, "audio_input", "Mic");
+    let list = scenes(&mut c);
+    assert_eq!(names(&list), ["Scene"], "no copy is listed");
+    assert_eq!(list["program"], one);
+    assert_eq!(list["preview"], one);
+    assert_eq!(sources(&mut c).len(), 2);
+    // The transition puts the edits on air; the studio runs on without an error.
+    ok(&c.call("canvas.transition", json!({})));
+    ok(&c.call("canvas.transition", json!({})));
+    let list = scenes(&mut c);
+    assert_eq!(names(&list), ["Scene"]);
+    assert_eq!(list["program"], one);
+    ok(&c.call("canvas.set_preview", json!({"scene": null})));
+    while let Ok(u) = updates.try_recv() {
+        if let Update::Error(e) = u {
+            panic!("{e}");
+        }
+    }
+    drop(host);
+}
