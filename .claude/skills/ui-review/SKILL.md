@@ -35,6 +35,8 @@ A literal is allowed only where it is not a visual design choice:
 
 Anything else (`gap: 6px`, `letter-spacing: 0.5px`, `interval: 400ms` for a hover delay, `#808080`) needs a token. When unsure, add the token.
 
+The test `no_hard_coded_visual_values` in `rbs-app` (`src/look/literals.rs`) reads every `.slint` file and fails on a literal length, duration or colour. Zero, `/ 1px` conversions and sentinels of 10000 px or more pass on their own. A content colour or other non-design value passes only with a reason the reviewer can judge: `// literal: <why>` at the end of its line or on the line above, or `// literal-begin: <why>` ... `// literal-end` around a block (preset colours). Never mark a design value to silence the test; add the token. The test does not read Rust: colours and sizes set from Rust are checked in review.
+
 ## Adding a token
 
 If no existing token fits, add one in the same change. Never reuse a token of a different meaning because its value matches today; themes can change either one.

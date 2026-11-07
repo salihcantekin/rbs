@@ -63,9 +63,13 @@ One family (initial choice: Inter, with the OS UI font as fallback). Numbers in 
 | Menus | `size.menu.sm`=220, `size.menu.md`=300 (menu widths) |
 | Windows | `size.window.w`=1440, `size.window.h`=900 (first-start main window), `size.window.min-w`=1280, `size.window.min-h`=720 (U11 minimum of the main window), `size.floating.w`=640, `size.floating.h`=420 (first size of a floating window), `size.settings.w`=920, `size.settings.h`=680 (first size of the Settings window) |
 | Keyboard steps | `step.nudge`=8, `step.nudge-large`=128 (splitter move per arrow key, with Shift) |
+| Text | `size.tracking.caps`=0.5 (letter spacing of uppercase section titles) |
+| Meters | `size.meter.peak`=2 (width of the peak hold marker in a level bar) |
+| Breakpoints | `size.transition.narrow`=40 (narrower: the Transition panel shows only its button), `size.transition.short`=120 (narrower: the button says "Go" and the studio mode hint is hidden) |
 | Elevation | `elevation.0` (flat), `elevation.1` (popovers), `elevation.2` (dialogs); subtle, no heavy shadows |
 | Motion | `motion.fast`=120 ms, `motion.normal`=180 ms, `motion.easing.standard`; all motion disabled under "reduce motion" |
 | Delays | `motion.hover-open`=400 ms (hover time before an auto-hide edge tab slides its panel out; not motion, so it stays under "reduce motion", where the panel appears without sliding) |
+| Repeat | `delay.repeat-start`=400 ms, `delay.repeat`=80 ms (a held stepper button waits, then steps at this interval; not motion, so not off under "reduce motion") |
 
 A token file cannot set `size.focus-ring` below 2 or `size.icon.box` / `size.icon.stroke` below 12 / 1 (U7) or `size.window.min-w` / `.min-h` below 1280 / 720 (U11); the loader rejects such a file.
 

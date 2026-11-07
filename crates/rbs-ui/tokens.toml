@@ -111,11 +111,23 @@ format = 2
 "size.settings.h" = 680
 "step.nudge" = 8
 "step.nudge-large" = 128
+# Letter spacing of uppercase section titles.
+"size.tracking.caps" = 0.5
+# Width of the peak hold marker in a level bar.
+"size.meter.peak" = 2
+# Transition panel widths: below `narrow` only the button shows, below `short`
+# the button says "Go" and the studio mode hint is hidden.
+"size.transition.narrow" = 40
+"size.transition.short" = 120
 
 # Milliseconds. Every animation is off under "reduce motion".
 [duration]
 "motion.fast" = 120
 "motion.normal" = 180
+# Not motion, so not off under "reduce motion": a held stepper button waits
+# `delay.repeat-start`, then steps every `delay.repeat`.
+"delay.repeat-start" = 400
+"delay.repeat" = 80
 
 # Size and line height in logical pixels, weight 100-900.
 [type]

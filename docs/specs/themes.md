@@ -33,7 +33,7 @@ Out of scope, later changes: themes in `.rbspack` packs; font files; a curated a
 | Menus | `size.menu.sm` / `.md` | logical px | 160 to 480 |
 | Motion | `motion.fast` / `motion.normal` | ms | 120 to 200 (U12; reduce motion turns motion off) |
 
-`THEMEABLE` lists them with metadata for the editor: name, label in words, group, value kind, bounds. Not themeable, refused in a theme: `color.state.live`, `color.text.on-live` (U12), `size.window.*`, `size.floating.*`, `size.settings.*`, `step.*`.
+`THEMEABLE` lists them with metadata for the editor: name, label in words, group, value kind, bounds. Not themeable, refused in a theme: `color.state.live`, `color.text.on-live` (U12), `size.window.*`, `size.floating.*`, `size.settings.*`, `step.*`, `size.tracking.caps`, `size.meter.peak`, `size.transition.*`, `delay.*`.
 
 The built-in token file gains `[font] "font.family" = []` (empty: the OS UI font); `tokens.toml` becomes format 2 and `Tokens::parse` still reads format 1 files (given the empty family), so `RBS_TOKENS` files keep working.
 

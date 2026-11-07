@@ -184,7 +184,7 @@ The user decides what is on screen. RBS ships good defaults, never a fixed layou
 
 | Rule | Check |
 | --- | --- |
-| U6 | Lint for hard-coded colours, sizes and fonts in UI code (planned); review |
+| U6 | Test `no_hard_coded_visual_values` (`rbs-app`) fails on literal lengths, durations and colours in `.slint` files; review (Rust and values the test allows by marker) |
 | U5 | UI frame-time and UI-thread-blocking metrics in debug builds; CI scenario |
 | U7 | Automated contrast check on tokens; keyboard-only and screen reader walkthrough per release |
 | U1, U2, U10 | Usability tests with target times and success rate |

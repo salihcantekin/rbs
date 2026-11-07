@@ -1207,8 +1207,8 @@ component MeterView inherits Rectangle {
             Rectangle { x: parent.width * data.mi-from; width: parent.width * (data.mi-to - data.mi-from); background: Theme.meter-mid; }
             Rectangle { x: parent.width * data.hi-from; width: parent.width * (data.hi-to - data.hi-from); background: Theme.meter-high; }
             if data.peak > 0: Rectangle {
-                x: max(0px, parent.width * data.peak - 2px);
-                width: 2px;
+                x: max(0px, parent.width * data.peak - Tokens.size-meter-peak);
+                width: Tokens.size-meter-peak;
                 background: data.peak-zone == 2 ? Theme.meter-high : data.peak-zone == 1 ? Theme.meter-mid : Theme.meter-low;
             }
             }
@@ -1295,7 +1295,7 @@ export component MixerPanel inherits Rectangle {
 // the bottom edge of the two views.
 export component TransitionPanel inherits Rectangle {
     background: Theme.surface-raised;
-    property <bool> narrow: root.width < 40px;
+    property <bool> narrow: root.width < Tokens.size-transition-narrow;
     property <bool> can: Studio.studio-mode && Studio.state == 1;
     if !narrow: VerticalLayout {
         padding: Tokens.space-2;
@@ -1309,12 +1309,12 @@ export component TransitionPanel inherits Rectangle {
             accessible-role: none;
         }
         if root.can: Button {
-            text: root.width < 120px ? @tr("Go") : @tr("Transition");
+            text: root.width < Tokens.size-transition-short ? @tr("Go") : @tr("Transition");
             kind: "primary";
             accessible-name: @tr("Transition: put the preview scene on air");
             clicked => { Studio.transition(); }
         }
-        if !Studio.studio-mode && root.width >= 120px: Text {
+        if !Studio.studio-mode && root.width >= Tokens.size-transition-short: Text {
             text: @tr("Turn on studio mode to prepare the next scene in Preview.");
             color: Theme.text-secondary;
             font-size: Tokens.type-caption-size;
@@ -1473,7 +1473,7 @@ component SectionTitle inherits Text {
     color: Theme.text-secondary;
     font-size: Tokens.type-caption-size;
     font-weight: Tokens.type-label-weight;
-    letter-spacing: 0.5px;
+    letter-spacing: Tokens.size-tracking-caps;
     accessible-role: AccessibleRole.text;
     accessible-label: title;
 }
