@@ -799,6 +799,37 @@ impl Ctx {
         }
     }
 
+    /// Lays out `window`'s panels for its current size at once, and places the preview
+    /// layer over them. Creates and hides no window, so it is safe inside a callback;
+    /// the full update still follows on the next event loop turn.
+    fn relayout_now(&self, window: usize) {
+        let Ok(mut app) = self.app.try_borrow_mut() else {
+            return;
+        };
+        if app.hidden || app.exiting {
+            return;
+        }
+        let Some(ws_window) = app.session.workspace().windows.get(window) else {
+            return;
+        };
+        let (stacks, handles, rail) = view::window_view(
+            window,
+            ws_window,
+            app.area(window),
+            app.maximized.as_ref(),
+            app.studio.studio_mode,
+        );
+        if window == 0 {
+            app.main_models.update(stacks, handles);
+            if app.main.get_rail() != rail {
+                app.main.set_rail(rail);
+            }
+            self.sync_studio(&mut app);
+        } else if let Some(slot) = app.floats.iter().find(|f| f.index == Some(window)) {
+            slot.models.update(stacks, handles);
+        }
+    }
+
     /// Update only the live duration (the 1 Hz tick while live or recording).
     fn live_tick(&self) {
         let Ok(mut app) = self.app.try_borrow_mut() else {
@@ -1721,17 +1752,21 @@ fn install(g: &Shell<'_>, ctx: &Ctx) {
             g.$name(move |$($arg: $ty),*| ctx.update(move |$app: &mut App| $body));
         }};
     }
-    on!(on_relayout, |app,
-                      window: i32,
-                      x: f32,
-                      y: f32,
-                      w: f32,
-                      h: f32| {
-        if window == 0 {
-            app.main_origin = (x, y);
-        }
-        app.set_area(window as usize, Rect::sized(w, h));
-    });
+    {
+        let ctx = ctx.clone();
+        g.on_relayout(move |window: i32, x: f32, y: f32, w: f32, h: f32| {
+            ctx.update(move |app: &mut App| {
+                if window == 0 {
+                    app.main_origin = (x, y);
+                }
+                app.set_area(window as usize, Rect::sized(w, h));
+            });
+            // Not only on the next event loop turn: while the user drags a window's
+            // edge on Windows, the system's resize loop runs no timers, so the panels
+            // would keep their old size until the mouse is released.
+            ctx.relayout_now(window as usize);
+        });
+    }
     g.on_panel_data(|id| entry::guard_or(slint::DataTransfer::default, || text_data(id)));
     on!(on_drag_over, |app,
                        window: i32,

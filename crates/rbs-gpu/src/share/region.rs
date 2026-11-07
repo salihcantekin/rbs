@@ -14,10 +14,6 @@
 pub const MAX_CUTOUTS: usize = 8;
 /// Most tiles the picture is split into (ADR-0054 decision 3): exact for five covers,
 /// `(2 * 5 + 1) * (5 + 1) = 66`.
-#[cfg_attr(
-    windows,
-    allow(dead_code, reason = "Windows tiles wait for the hardware check")
-)]
 pub(crate) const MAX_TILES: usize = 72;
 /// Most pieces the marks are drawn as while covers cut them (ADR-0054 decision 3).
 pub(crate) const MAX_MARK_PIECES: usize = 128;

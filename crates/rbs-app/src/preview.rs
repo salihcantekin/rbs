@@ -175,11 +175,10 @@ pub fn set_area(which: Picture, area: Option<[f32; 4]>) {
 
 /// Attaches the layer once the window exists, places it over the Program panel and
 /// gives it what Slint draws over the window (in-window popups, the bottom toast, the
-/// error bar), which the layer leaves out of the picture and the marks (ADR-0054). The
-/// picture never hides for them (on Windows until the hardware check of ADR-0054
-/// decision 5, it does while one overlaps it). Called after every view sync and before
-/// every redraw of the main window (popups open, move and close with a redraw);
-/// unchanged placement and covers make no layer call.
+/// error bar and the first-close notice in its place), which the layer leaves out of the
+/// picture and the marks (ADR-0054). The picture never hides for them. Called after
+/// every view sync and before every redraw of the main window (popups open, move and
+/// close with a redraw); unchanged placement and covers make no layer call.
 pub fn place(window: &MainWindow) {
     for which in Picture::ALL {
         place_one(window, which);
@@ -255,7 +254,8 @@ fn place_one(window: &MainWindow, which: Picture) {
         if shell.get_toast_kind() != 0 || !window.global::<Studio>().get_deleted().is_empty() {
             st.covers.push(toast(shell.get_bottom_toast()));
         }
-        if shell.get_error_kind() != 0 {
+        // The error bar's place also holds the first-close notice (ADR-0056).
+        if shell.get_error_kind() != 0 || shell.get_background_notice() != 0 {
             st.covers.push(toast(shell.get_top_toast()));
         }
         // A slid-out auto-hide panel (ADR-0049) is drawn over the dock area too.
