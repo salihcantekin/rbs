@@ -239,6 +239,9 @@ pub fn apply(theme: &Theme<'_>, tokens: &Tokens<'_>, look: Option<&Look>) {
 mod drawn;
 
 #[cfg(test)]
+mod literals;
+
+#[cfg(test)]
 mod tests {
     #![allow(clippy::expect_used, clippy::unwrap_used)] // Tests fail by panicking.
 

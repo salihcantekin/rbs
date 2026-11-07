@@ -324,7 +324,7 @@ export component MenuItem inherits Rectangle {
     // and then stops, so it costs nothing while the menu stays open.
     property <bool> focused-once;
     Timer {
-        interval: 1ms;
+        interval: 1ms; // literal: one-shot timer that fires after the first frame, not a design value
         running: root.autofocus && !root.focused-once;
         triggered => { root.focused-once = true; focus.focus(); }
     }
@@ -787,7 +787,7 @@ export component ColorPicker inherits Rectangle {
     property <float> hue;
     property <float> sat;
     property <float> val;
-    property <color> draft: hsv(hue, sat, val);
+    property <color> draft: hsv(hue, sat, val); // literal: the colour being picked
     property <[string]> digits: ["0", "1", "2", "3", "4", "5", "6", "7", "8", "9", "a", "b", "c", "d", "e", "f"];
     function hex2(n: int) -> string {
         return digits[floor(n / 16)] + digits[mod(n, 16)];
@@ -843,13 +843,15 @@ export component ColorPicker inherits Rectangle {
                 area := Rectangle {
                     height: 3 * Tokens.space-8;
                     border-radius: Tokens.radius-sm;
-                    background: hsv(root.hue, 1, 1);
+                    background: hsv(root.hue, 1, 1); // literal: the picked hue at full saturation
                     clip: true;
                     accessible-role: slider;
                     accessible-label: @tr("Saturation and brightness");
                     accessible-value: @tr("Saturation {}%, brightness {}%", round(root.sat * 100), round(root.val * 100));
+                    // literal-begin: the saturation and brightness field is content, not theme chrome
                     Rectangle { background: @linear-gradient(90deg, #ffffff 0%, #ffffff00 100%); }
                     Rectangle { background: @linear-gradient(0deg, #000000 0%, #00000000 100%); }
+                    // literal-end
                     Rectangle {
                         x: root.sat * area.width - self.width / 2;
                         y: (1 - root.val) * area.height - self.height / 2;
@@ -857,7 +859,7 @@ export component ColorPicker inherits Rectangle {
                         height: Tokens.space-3;
                         border-radius: self.width / 2;
                         border-width: Tokens.size-focus-ring;
-                        border-color: root.val > 0.5 ? #000000 : #ffffff;
+                        border-color: root.val > 0.5 ? #000000 : #ffffff; // literal: contrast with the picked colour, not the theme
                         background: root.draft;
                     }
                     area-focus := FocusScope {
@@ -892,6 +894,7 @@ export component ColorPicker inherits Rectangle {
                 bar := Rectangle {
                     height: Tokens.space-4;
                     border-radius: Tokens.radius-sm;
+                    // literal: the hue bar shows every hue, whatever the theme
                     background: @linear-gradient(90deg, #ff0000 0%, #ffff00 16.7%, #00ff00 33.3%, #00ffff 50%, #0000ff 66.7%, #ff00ff 83.3%, #ff0000 100%);
                     accessible-role: slider;
                     accessible-label: @tr("Hue");
@@ -900,8 +903,10 @@ export component ColorPicker inherits Rectangle {
                         x: root.hue / 360 * bar.width - self.width / 2;
                         width: Tokens.space-1;
                         border-width: Tokens.size-border;
+                        // literal-begin: the hue marker contrasts with the hue bar, not the theme
                         border-color: #000000;
                         background: #ffffff;
+                        // literal-end
                     }
                     bar-focus := FocusScope {
                         key-pressed(e) => {
@@ -928,6 +933,7 @@ export component ColorPicker inherits Rectangle {
                 // Preset colours, each a button named after its colour.
                 HorizontalLayout {
                     spacing: Tokens.space-1;
+                    // literal-begin: preset colours a user picks for a source; content, not theme chrome
                     for p in [
                         { name: @tr("White"), c: #ffffff },
                         { name: @tr("Black"), c: #000000 },
@@ -937,6 +943,7 @@ export component ColorPicker inherits Rectangle {
                         { name: @tr("Green"), c: #2a9d8f },
                         { name: @tr("Blue"), c: #3a86ff },
                         { name: @tr("Purple"), c: #8338ec },
+                        // literal-end
                     ]: Rectangle {
                         height: Tokens.size-control-sm;
                         horizontal-stretch: 1;
@@ -1114,12 +1121,12 @@ component StepButton inherits Rectangle {
         }
     }
     Timer {
-        interval: 400ms;
+        interval: Tokens.delay-repeat-start;
         running: touch.pressed && !root.repeating;
         triggered => { root.repeating = true; }
     }
     Timer {
-        interval: 80ms;
+        interval: Tokens.delay-repeat;
         running: touch.pressed && root.repeating;
         triggered => { root.step(); }
     }

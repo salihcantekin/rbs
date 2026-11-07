@@ -98,6 +98,10 @@ pub const LENGTHS: &[&str] = &[
     "size.settings.h",
     "step.nudge",
     "step.nudge-large",
+    "size.tracking.caps",
+    "size.meter.peak",
+    "size.transition.narrow",
+    "size.transition.short",
     "size.transition.between",
     "size.transition.below",
     "size.transition.min-picture",
@@ -109,7 +113,12 @@ pub const LENGTHS: &[&str] = &[
 ];
 
 /// Duration tokens every file defines (milliseconds).
-pub const DURATIONS: &[&str] = &["motion.fast", "motion.normal"];
+pub const DURATIONS: &[&str] = &[
+    "motion.fast",
+    "motion.normal",
+    "delay.repeat-start",
+    "delay.repeat",
+];
 
 /// Text styles every file defines.
 pub const TYPE_STYLES: &[&str] = &[

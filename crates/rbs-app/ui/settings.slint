@@ -77,7 +77,7 @@ export component SettingsNavGroup inherits Text {
     color: Theme.text-secondary;
     font-size: Tokens.type-caption-size;
     font-weight: Tokens.type-label-weight;
-    letter-spacing: 0.5px;
+    letter-spacing: Tokens.size-tracking-caps;
     accessible-role: AccessibleRole.text;
     accessible-label: title;
 }
@@ -130,7 +130,7 @@ export component SettingsCard inherits Rectangle {
                 color: Theme.text-secondary;
                 font-size: Tokens.type-caption-size;
                 font-weight: Tokens.type-title-weight;
-                letter-spacing: 0.5px;
+                letter-spacing: Tokens.size-tracking-caps;
                 accessible-role: none;
             }
             if root.description != "": Text {

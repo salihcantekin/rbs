@@ -193,7 +193,7 @@ export component AppMenu inherits PopupWindow {
     // Focusing in `init` is too early (see MenuItem): once, after the first frame.
     property <bool> focused-once;
     Timer {
-        interval: 1ms;
+        interval: 1ms; // literal: one-shot timer that fires after the first frame, not a design value
         running: !root.focused-once;
         triggered => { root.focused-once = true; query.focus(); }
     }
