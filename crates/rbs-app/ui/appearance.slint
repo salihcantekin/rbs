@@ -1,0 +1,414 @@
+// Settings › Appearance (ADR-0057, docs/specs/themes.md): which theme the app uses, the
+// theme library and the theme editor. Rust (`appearance_page`) pushes state into the
+// `Appearance` global of the Settings window and handles its callbacks.
+import { Theme, Tokens } from "tokens.slint";
+import { Button, Checkbox, ColorPicker, MenuItem, NumberField, Select, TextField } from "components.slint";
+
+// One theme in the library: built-in themes first, then user themes by name.
+// `surface`, `text`, `accent`: its swatch. `usable`: it passes every rule; else
+// `problem` is its first problem.
+export struct ThemeOption {
+    name: string,
+    user: bool,
+    usable: bool,
+    problem: string,
+    surface: color,
+    text: color,
+    accent: color,
+}
+
+// One token in the editor. `kind`: 0 colour, 1 number (`unit` px or ms), 2 text style,
+// 3 font family. `overridden`: the theme sets it (Reset removes it).
+export struct ThemeTokenRow {
+    name: string,
+    label: string,
+    kind: int,
+    color: color,
+    number: float,
+    step: float,
+    unit: string,
+    size: float,
+    line: float,
+    weight: float,
+    fonts: string,
+    overridden: bool,
+    problem: string,
+}
+
+export global Appearance {
+    in property <[ThemeOption]> themes;
+    // Usable themes only, for the pickers, and their list positions.
+    in property <[string]> usable-names;
+    in property <bool> follow-system: true;
+    // Positions in `usable-names`.
+    in property <int> dark-index;
+    in property <int> light-index;
+    in property <int> theme-index;
+    // Position in `themes`; -1 none.
+    in property <int> selected: -1;
+    // A note: a theme in use could not be used, or an action failed.
+    in property <string> note;
+    // `RBS_TOKENS` or `RBS_THEME` is set.
+    in property <bool> dev-override;
+    // "Keep this look?" is asked.
+    in property <bool> keep-asking;
+    in property <int> keep-seconds;
+    // The editor.
+    in property <bool> editing;
+    in property <string> editor-name;
+    in property <[string]> groups;
+    in property <int> group;
+    in property <[ThemeTokenRow]> rows;
+    in property <[string]> general-problems;
+    in property <[string]> unknown-tokens;
+    in property <bool> can-save;
+    in property <bool> changed;
+    // The family the window uses now ("" the system font).
+    in property <string> font-in-use;
+    // 0 dark, 1 light, 2 the one theme.
+    callback pick(int, int);
+    callback set-follow-system(bool);
+    callback select(int);
+    callback use-selected();
+    callback edit();
+    callback duplicate();
+    callback rename(string);
+    callback delete();
+    callback import();
+    callback export();
+    callback set-group(int);
+    callback set-color(string, string);
+    callback set-number(string, float);
+    callback set-style(string, int, float);
+    callback set-fonts(string);
+    callback reset(string);
+    callback save();
+    callback cancel();
+    callback keep();
+    callback undo();
+}
+
+component Hint inherits Text {
+    color: Theme.text-secondary;
+    font-size: Tokens.type-caption-size;
+    wrap: word-wrap;
+}
+
+component Problem inherits Text {
+    color: Theme.state-error;
+    font-size: Tokens.type-caption-size;
+    wrap: word-wrap;
+}
+
+component Field inherits VerticalLayout {
+    in property <string> label;
+    spacing: Tokens.space-1;
+    Text {
+        text: root.label;
+        color: Theme.text-secondary;
+        font-size: Tokens.type-caption-size;
+        accessible-role: none;
+    }
+    @children
+}
+
+// Three squares: background, text and accent colour of a theme.
+component Swatch inherits HorizontalLayout {
+    in property <color> surface;
+    in property <color> text;
+    in property <color> accent;
+    spacing: 0px;
+    alignment: start;
+    accessible-role: none;
+    for c in [root.surface, root.text, root.accent]: Rectangle {
+        width: Tokens.size-icon-box;
+        height: Tokens.size-icon-box;
+        background: c;
+        border-width: Tokens.size-border;
+        border-color: Theme.border-subtle;
+    }
+}
+
+// "Keep this look?" (spec: Keep this look). Escape is Undo (the Settings window).
+component KeepLook inherits Rectangle {
+    background: Theme.surface-overlay;
+    border-radius: Tokens.radius-sm;
+    border-width: Tokens.size-border;
+    border-color: Theme.border-subtle;
+    height: row.preferred-height;
+    accessible-role: groupbox;
+    accessible-label: @tr("Keep this look?");
+    row := HorizontalLayout {
+        padding: Tokens.space-2;
+        spacing: Tokens.space-2;
+        Text {
+            horizontal-stretch: 1;
+            text: @tr("Keep this look? It goes back in {} s.", Appearance.keep-seconds);
+            color: Theme.text-primary;
+            vertical-alignment: center;
+            wrap: word-wrap;
+        }
+        Button {
+            text: @tr("Keep");
+            kind: "primary";
+            clicked => { Appearance.keep(); }
+        }
+        Button {
+            text: @tr("Undo");
+            clicked => { Appearance.undo(); }
+        }
+    }
+}
+
+component TokenEditorRow inherits VerticalLayout {
+    in property <ThemeTokenRow> item;
+    spacing: Tokens.space-1;
+    HorizontalLayout {
+        spacing: Tokens.space-2;
+        alignment: start;
+        Text {
+            width: Tokens.size-menu-sm;
+            text: item.kind == 1 ? item.label + " (" + item.unit + ")" : item.label;
+            color: Theme.text-primary;
+            vertical-alignment: center;
+            wrap: word-wrap;
+            accessible-role: none;
+        }
+        if item.kind == 0: ColorPicker {
+            label: item.label;
+            value: item.color;
+            picked(hex) => { Appearance.set-color(item.name, hex); }
+        }
+        if item.kind == 1: NumberField {
+            width: Tokens.size-menu-sm / 2;
+            label: item.label;
+            value: item.number;
+            step: item.step;
+            edited(v) => { Appearance.set-number(item.name, v); }
+        }
+        if item.kind == 2: HorizontalLayout {
+            spacing: Tokens.space-2;
+            NumberField {
+                width: Tokens.size-menu-sm / 2;
+                label: @tr("{} size", item.label);
+                value: item.size;
+                edited(v) => { Appearance.set-style(item.name, 0, v); }
+            }
+            NumberField {
+                width: Tokens.size-menu-sm / 2;
+                label: @tr("{} line height", item.label);
+                value: item.line;
+                edited(v) => { Appearance.set-style(item.name, 1, v); }
+            }
+            NumberField {
+                width: Tokens.size-menu-sm / 2;
+                label: @tr("{} weight", item.label);
+                value: item.weight;
+                step: 100;
+                edited(v) => { Appearance.set-style(item.name, 2, v); }
+            }
+        }
+        if item.kind == 3: TextField {
+            width: Tokens.size-menu-md;
+            label: item.label;
+            text: item.fonts;
+            accepted(t) => { Appearance.set-fonts(t); }
+        }
+        Button {
+            text: @tr("Reset");
+            accessible-name: @tr("Reset {}", item.label);
+            kind: "ghost";
+            dense: true;
+            enabled: item.overridden;
+            clicked => { Appearance.reset(item.name); }
+        }
+    }
+    if item.kind == 2: Hint { text: @tr("Size, line height and weight"); }
+    if item.kind == 3: Hint {
+        text: Appearance.font-in-use == "" ? @tr("Names separated by commas, then Enter; the first one this computer has is used. In use: the system font.") : @tr("Names separated by commas, then Enter; the first one this computer has is used. In use: {}.", Appearance.font-in-use);
+    }
+    if item.problem != "": Problem { text: item.problem; }
+}
+
+component ThemeEditor inherits VerticalLayout {
+    spacing: Tokens.space-3;
+    Text {
+        text: @tr("Edit {}", Appearance.editor-name);
+        color: Theme.text-primary;
+        font-size: Tokens.type-title-size;
+        font-weight: Tokens.type-title-weight;
+    }
+    Hint { text: @tr("Changes show in every window as you make them. A change that breaks a rule is shown with its problem and not used."); }
+    for p in Appearance.general-problems: Problem { text: p; }
+    Select {
+        label: @tr("Group");
+        options: Appearance.groups;
+        index: Appearance.group;
+        selected(i) => { Appearance.set-group(i); }
+    }
+    for r in Appearance.rows: TokenEditorRow { item: r; }
+    if Appearance.unknown-tokens.length > 0: Field {
+        label: @tr("Not used by this version");
+        for n in Appearance.unknown-tokens: Hint { text: n; }
+    }
+    HorizontalLayout {
+        spacing: Tokens.space-2;
+        alignment: start;
+        Button {
+            text: @tr("Save");
+            kind: "primary";
+            enabled: Appearance.can-save;
+            clicked => { Appearance.save(); }
+        }
+        Button {
+            text: Appearance.changed ? @tr("Cancel") : @tr("Close");
+            clicked => { Appearance.cancel(); }
+        }
+    }
+}
+
+export component AppearanceSettings inherits Rectangle {
+    property <bool> confirming-delete;
+    property <ThemeOption> current: Appearance.selected >= 0 ? Appearance.themes[Appearance.selected] : { name: "" };
+    property <bool> has-selection: Appearance.selected >= 0;
+    changed has-selection => { confirming-delete = false; }
+    form := VerticalLayout {
+        spacing: Tokens.space-3;
+        alignment: start;
+        if Appearance.dev-override: Hint {
+            text: @tr("A development override (RBS_TOKENS or RBS_THEME) is in effect: the themes chosen here are saved but not all of them are shown.");
+        }
+        if Appearance.note != "": Problem { text: Appearance.note; }
+        if Appearance.keep-asking: KeepLook { }
+        VerticalLayout {
+            spacing: Tokens.space-1;
+            Checkbox {
+                text: @tr("Follow the system's light or dark setting");
+                checked: Appearance.follow-system;
+                toggled(on) => { Appearance.set-follow-system(on); }
+            }
+        }
+        if Appearance.follow-system: Field {
+            label: @tr("When the system is dark");
+            Select {
+                label: @tr("When the system is dark");
+                options: Appearance.usable-names;
+                index: Appearance.dark-index;
+                selected(i) => { Appearance.pick(0, i); }
+            }
+        }
+        if Appearance.follow-system: Field {
+            label: @tr("When the system is light");
+            Select {
+                label: @tr("When the system is light");
+                options: Appearance.usable-names;
+                index: Appearance.light-index;
+                selected(i) => { Appearance.pick(1, i); }
+            }
+        }
+        if !Appearance.follow-system: Field {
+            label: @tr("Theme");
+            Select {
+                label: @tr("Theme");
+                options: Appearance.usable-names;
+                index: Appearance.theme-index;
+                selected(i) => { Appearance.pick(2, i); }
+            }
+        }
+        if !Appearance.editing: Field {
+            label: @tr("Themes");
+            VerticalLayout {
+                accessible-role: list;
+                accessible-label: @tr("Themes");
+                for t[i] in Appearance.themes: VerticalLayout {
+                    HorizontalLayout {
+                        spacing: Tokens.space-2;
+                        alignment: start;
+                        Swatch {
+                            surface: t.surface;
+                            text: t.text;
+                            accent: t.accent;
+                            y: (parent.height - self.preferred-height) / 2;
+                        }
+                        MenuItem {
+                            width: Tokens.size-menu-md;
+                            text: t.user ? t.name : @tr("{} (built in)", t.name);
+                            checked: Appearance.selected == i;
+                            activated => { Appearance.select(i); }
+                        }
+                    }
+                    if !t.usable: Problem { text: @tr("Cannot be used: {}", t.problem); }
+                }
+            }
+        }
+        if !Appearance.editing: HorizontalLayout {
+            spacing: Tokens.space-2;
+            alignment: start;
+            Button {
+                text: @tr("Use");
+                enabled: root.has-selection && root.current.usable;
+                clicked => { Appearance.use-selected(); }
+            }
+            Button {
+                text: root.current.user || !root.has-selection ? @tr("Edit") : @tr("Duplicate to edit");
+                enabled: root.has-selection;
+                clicked => { Appearance.edit(); }
+            }
+            Button {
+                text: @tr("Duplicate");
+                enabled: root.has-selection;
+                clicked => { Appearance.duplicate(); }
+            }
+            Button {
+                text: @tr("Delete");
+                enabled: root.has-selection && root.current.user;
+                clicked => { root.confirming-delete = true; }
+            }
+        }
+        if !Appearance.editing && root.confirming-delete: HorizontalLayout {
+            spacing: Tokens.space-2;
+            alignment: start;
+            Text {
+                text: @tr("Delete {}? You can get it back from the deleted folder.", root.current.name);
+                color: Theme.text-primary;
+                vertical-alignment: center;
+                wrap: word-wrap;
+            }
+            Button {
+                text: @tr("Delete");
+                kind: "primary";
+                clicked => {
+                    root.confirming-delete = false;
+                    Appearance.delete();
+                }
+            }
+            Button {
+                text: @tr("Cancel");
+                clicked => { root.confirming-delete = false; }
+            }
+        }
+        if !Appearance.editing && root.current.user: Field {
+            label: @tr("Name");
+            TextField {
+                label: @tr("Name");
+                text: root.current.name;
+                accepted(t) => { Appearance.rename(t); }
+            }
+        }
+        if !Appearance.editing: HorizontalLayout {
+            spacing: Tokens.space-2;
+            alignment: start;
+            Button {
+                text: @tr("Import…");
+                clicked => { Appearance.import(); }
+            }
+            Button {
+                text: @tr("Export…");
+                enabled: root.has-selection && root.current.user;
+                clicked => { Appearance.export(); }
+            }
+        }
+        if Appearance.editing: ThemeEditor { }
+    }
+    height: form.preferred-height;
+}

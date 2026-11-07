@@ -245,3 +245,28 @@ fn the_base_of_a_broken_theme_is_still_found() {
     assert_eq!(read_base(&p), None);
     assert_eq!(read_base(&d.path().join("missing.toml")), None);
 }
+
+#[test]
+fn reset_appearance_moves_the_file_aside() {
+    let d = TempDir::new("reset-appearance");
+    let data = UserData::new(d.path());
+    let lock = data.try_lock().unwrap().unwrap();
+    assert!(data.reset_appearance(&lock).unwrap().is_none());
+
+    let fixed = Appearance::new(
+        AppearanceMode::Fixed,
+        ThemeId::BuiltIn(Base::Dark),
+        ThemeId::BuiltIn(Base::Light),
+        ThemeId::BuiltIn(Base::HighContrast),
+    );
+    data.set_appearance(&lock, &fixed).unwrap();
+    let first = data.reset_appearance(&lock).unwrap().unwrap();
+    assert_eq!(first, d.path().join("appearance.toml.reset.bak"));
+    assert_eq!(data.appearance().0, Appearance::default());
+
+    data.set_appearance(&lock, &fixed).unwrap();
+    let second = data.reset_appearance(&lock).unwrap().unwrap();
+    assert_eq!(second, d.path().join("appearance.toml.reset-2.bak"));
+    assert!(first.exists() && second.exists());
+    assert!(!d.path().join(APPEARANCE_FILE).exists());
+}

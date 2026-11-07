@@ -176,7 +176,7 @@ fn read(path: &Path) -> Result<TokenFile, String> {
 }
 
 /// The theme `RBS_THEME` asks for.
-fn dev_theme() -> Option<Base> {
+pub fn dev_theme() -> Option<Base> {
     std::env::var("RBS_THEME")
         .ok()
         .and_then(|n| Base::from_name(&n))

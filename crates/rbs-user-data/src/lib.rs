@@ -99,6 +99,19 @@ impl UserData {
         document::write(&self.root.join(APPEARANCE_FILE), appearance, None)
     }
 
+    /// Moves `appearance.toml` aside to `appearance.toml.reset.bak` (numbered when
+    /// taken), so the app starts with the default look (`rbs-app --reset-appearance`).
+    /// Returns where it went; `None` when there was no file.
+    pub fn reset_appearance(&self, _lock: &WriterLock) -> Result<Option<PathBuf>, DataError> {
+        let path = self.root.join(APPEARANCE_FILE);
+        if !path.exists() {
+            return Ok(None);
+        }
+        let to = document::aside_path(&path, "reset");
+        std::fs::rename(&path, &to)?;
+        Ok(Some(to))
+    }
+
     /// Which profile and collection are in use; unset if the file is missing or cannot
     /// be read (with the reason).
     pub fn current(&self) -> (Current, Option<DataError>) {

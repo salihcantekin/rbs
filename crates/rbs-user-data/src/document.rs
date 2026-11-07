@@ -403,14 +403,20 @@ pub fn backup_path(path: &Path, format: u32) -> PathBuf {
 /// Where a file that could not be read is moved before it is replaced:
 /// `<file>.unreadable.bak`, or `<file>.unreadable-N.bak` if that is taken.
 pub fn unreadable_path(path: &Path) -> PathBuf {
+    aside_path(path, "unreadable")
+}
+
+/// A free backup name for `path`: `<file>.<why>.bak`, or `<file>.<why>-N.bak` if that
+/// is taken.
+pub fn aside_path(path: &Path, why: &str) -> PathBuf {
     let base = path.file_name().unwrap_or_default().to_os_string();
     let mut n = 1u32;
     loop {
         let mut name = base.clone();
         if n == 1 {
-            name.push(".unreadable.bak");
+            name.push(format!(".{why}.bak"));
         } else {
-            name.push(format!(".unreadable-{n}.bak"));
+            name.push(format!(".{why}-{n}.bak"));
         }
         let candidate = path.with_file_name(name);
         if !candidate.exists() || n == u32::MAX {
