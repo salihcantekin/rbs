@@ -629,16 +629,23 @@ component SourceRowView inherits Rectangle {
 component SceneRowView inherits Rectangle {
     in property <SceneData> data;
     in property <bool> can-remove;
+    // 0 nothing goes out, 1 streaming, 2 recording, 3 both (the shell's live state).
+    in property <int> live-state;
     callback leaving();
     property <bool> tools: touch.has-hover || editing;
     in-out property <bool> editing;
     height: Tokens.size-control-md;
     border-radius: Tokens.radius-md;
+    // The scene the canvas shows is marked like a selected row; the live colour and
+    // a badge only while it actually goes out (streaming or recording, U12).
     background: data.live ? Theme.accent-subtle : touch.has-hover ? Theme.surface-overlay : transparent;
     border-width: data.live ? Tokens.size-border : 0px;
-    border-color: Theme.state-live;
+    border-color: root.live-state != 0 ? Theme.state-live : Theme.accent;
     accessible-role: list-item;
-    accessible-label: data.live ? @tr("{}, on air", data.name) : data.name;
+    accessible-label: !data.live ? data.name
+        : root.live-state == 0 ? @tr("{}, shown", data.name)
+        : root.live-state == 2 ? @tr("{}, shown and recording", data.name)
+        : @tr("{}, on air", data.name);
     accessible-description: @tr("Return puts it on air, F2 renames it, Delete removes it");
     accessible-item-selectable: true;
     accessible-item-selected: data.live;
@@ -691,8 +698,8 @@ component SceneRowView inherits Rectangle {
                 }
             }
         }
-        // On air: in words and in the live colour (U7, U12).
-        if data.live && !root.editing: VerticalLayout {
+        // On air: in words and in the live colour (U7, U12), only while it goes out.
+        if data.live && root.live-state != 0 && !root.editing: VerticalLayout {
             alignment: center;
             Rectangle {
                 height: Tokens.type-caption-line;
@@ -700,7 +707,7 @@ component SceneRowView inherits Rectangle {
                 border-radius: self.height / 2;
                 background: Theme.state-live;
                 live-text := Text {
-                    text: @tr("Live");
+                    text: root.live-state == 1 ? @tr("Live") : root.live-state == 2 ? @tr("REC") : @tr("Live · REC");
                     color: Theme.text-on-live;
                     font-size: Tokens.type-caption-size;
                     font-weight: Tokens.type-label-weight;
@@ -737,6 +744,7 @@ component SceneRowView inherits Rectangle {
 // before it on air; the last scene cannot be removed.
 export component ScenesPanel inherits Rectangle {
     background: Theme.surface-raised;
+    in property <int> live-state;
     property <int> asked: Studio.add-scene-asked;
     changed asked => { if Studio.state == 1 { Studio.add-scene(); } }
     if Studio.scenes.length == 0: EmptyState {
@@ -756,6 +764,7 @@ export component ScenesPanel inherits Rectangle {
             for sc in Studio.scenes: SceneRowView {
                 data: sc;
                 can-remove: Studio.scenes.length > 1;
+                live-state: root.live-state;
                 leaving => { list-focus.focus(); }
             }
         }

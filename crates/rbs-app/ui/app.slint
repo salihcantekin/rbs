@@ -197,6 +197,7 @@ component PanelContent inherits Rectangle {
     if tab.id == "rbs.scenes": ScenesPanel {
         width: parent.width;
         height: parent.height;
+        live-state: Shell.live-state;
     }
     if tab.id == "rbs.sources": SourcesPanel {
         width: parent.width;
