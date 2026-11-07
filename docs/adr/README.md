@@ -76,3 +76,4 @@ An ADR records one decision that is hard to reverse or affects more than one cra
 | [0061](0061-studio-mode-in-the-desktop-app.md) | Studio mode in the desktop app: preview scene picture, cut transition, control API 1.9 | Accepted |
 | [0062](0062-built-in-video-filters-and-properties-tabs.md) | Built-in video filters: one filter node behind a filter type trait, settings through parameter channels, and the Properties tabs | Accepted |
 | [0063](0063-hold-the-program-while-its-scene-is-edited-in-preview.md) | Hold the program while its scene is edited in preview (studio mode) | Accepted |
+| [0066](0066-virtual-camera.md) | Virtual camera: the program as a camera for meeting apps, off by default | Proposed |
