@@ -120,6 +120,15 @@ fn hint(platform: Platform) -> String {
 }
 
 impl Keys {
+    /// The first chord bound to `command` (a canonical id), as this platform writes it
+    /// (the RBS menu shows it beside the command).
+    pub fn label(&self, command: &str) -> Option<String> {
+        self.keymap
+            .of(command)
+            .next()
+            .map(|a| a.chord.label(self.platform))
+    }
+
     /// Uses `doc`, read at start or after a change.
     fn set_doc(&mut self, doc: ShortcutsDoc) {
         self.keymap = Keymap::resolve(&doc, self.platform);
@@ -846,7 +855,7 @@ mod tests {
         let k = keys_with(ShortcutsDoc::default());
         assert_eq!(k.app_command("z", Mods::CTRL).as_deref(), Some("edit.undo"));
         assert_eq!(k.app_command("y", Mods::CTRL).as_deref(), Some("edit.redo"));
-        assert_eq!(k.app_command("k", Mods::CTRL), None);
+        assert_eq!(k.app_command("j", Mods::CTRL), None);
         let shift = Mods {
             shift: true,
             ..Mods::CTRL
