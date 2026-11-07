@@ -101,6 +101,8 @@ struct Conn {
     highest: Option<u32>,
     ack_no: u32,
     acked: Option<u32>,
+    /// The last full ACK was answered with an ACKACK.
+    ack_confirmed: bool,
     last_tick: Instant,
     closed: bool,
 }
@@ -308,7 +310,12 @@ fn serve(
                             *shutdowns.count.lock().unwrap() += 1;
                             shutdowns.changed.notify_all();
                         }
-                        6 => c.session.ackacks += 1,
+                        6 => {
+                            c.session.ackacks += 1;
+                            if word(p, 1) == c.ack_no {
+                                c.ack_confirmed = true;
+                            }
+                        }
                         7 if n >= 24 => c
                             .session
                             .dropreqs
@@ -462,6 +469,7 @@ fn handshake(
                 highest: None,
                 ack_no: 0,
                 acked: None,
+                ack_confirmed: false,
                 last_tick: Instant::now(),
                 closed: false,
             });
@@ -546,9 +554,13 @@ fn tick(socket: &UdpSocket, b: &Behaviour, c: &mut Conn, out: &mut Vec<u8>) {
         return;
     };
     let expected = c.seq(c.next);
-    if c.acked != Some(expected) {
+    // A full ACK that got no ACKACK is sent again (with a new number), as the
+    // datagram or its answer may be lost: otherwise a caller whose only ACK was
+    // lost never learns the round-trip time.
+    if c.acked != Some(expected) || (!c.ack_confirmed && !c.session.shutdown) {
         c.acked = Some(expected);
         c.ack_no += 1;
+        c.ack_confirmed = false;
         header(out, 2, c.ack_no, c.caller_id);
         words(
             out,

@@ -34,7 +34,7 @@ jobs:
           run() {
             local exe=$1 tag=$2 fails=0
             for n in $(seq 1 200); do
-              ./$exe --exact sends_the_handshake_then_whole_chunks_in_order > out-$tag.txt 2>&1 || { fails=$((fails+1)); grep -A2 "panicked at" out-$tag.txt | grep -v "^--" | sed "s/^thread .* panicked at /AT /" | head -3 | sed "s/^/MSG $tag: /" >> msgs.txt; }
+              ./$exe > out-$tag.txt 2>&1 || { fails=$((fails+1)); grep -A2 "panicked at" out-$tag.txt | grep -v "^--" | sed "s/^thread .* panicked at /AT /" | head -3 | sed "s/^/MSG $tag: /" >> msgs.txt; }
             done
             echo "$tag $fails" >> results.txt
           }
@@ -43,6 +43,6 @@ jobs:
             for w in 1 2 3 4 5 6 7 8; do run $v.exe $v-$w & pids="$pids $!"; done
             wait $pids; pids=""
             echo "RESULT $v: $(awk '{s+=$2} END {print s}' results.txt) failures of 1600 runs"; cat results.txt
-            sed "s/^MSG [a-z]*-[0-9]*: //" msgs.txt | grep DIAG | head -15 | cut -c1-1500
+            sed "s/^MSG [a-z]*-[0-9]*: //" msgs.txt | sort | uniq -c | head -30 | cut -c1-600 || true
           done
           kill $(jobs -p) 2>/dev/null || true
