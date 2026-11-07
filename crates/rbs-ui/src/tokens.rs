@@ -9,6 +9,9 @@ use std::fmt;
 
 use serde::Deserialize;
 
+mod theme;
+pub use theme::*;
+
 /// The token file shipped with RBS.
 pub const BUILT_IN: &str = include_str!("../tokens.toml");
 
@@ -175,6 +178,9 @@ pub struct TypeStyle {
 /// A parsed and checked token file.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Tokens {
+    /// Font families in order of preference; the first installed one is used, and
+    /// none (the built-in value) means the OS UI font. Format 1 files have none.
+    pub font_family: Vec<String>,
     /// Colours that no theme can change.
     pub fixed: BTreeMap<String, Color>,
     /// Colours per theme, in [`THEMES`] order.
@@ -197,6 +203,7 @@ struct RawTokens {
     duration: BTreeMap<String, u32>,
     #[serde(rename = "type")]
     type_styles: BTreeMap<String, TypeStyle>,
+    font: Option<BTreeMap<String, Vec<String>>>,
 }
 
 /// A problem in a token file.
@@ -270,6 +277,27 @@ pub const CONTRAST_RULES: &[(&str, &str, f64, f64)] = &[
     ("color.meter.clip", "color.surface.sunken", 3.0, 3.0),
 ];
 
+/// Contrast rules that exist because themes are untrusted input (ADR-0057 decision 3);
+/// the built-in file passes them too: (foreground, background, minimum ratio,
+/// high-contrast minimum).
+pub const THEME_CONTRAST_RULES: &[(&str, &str, f64, f64)] = &[
+    ("color.border.focus", "color.surface.overlay", 3.0, 3.0),
+    ("color.border.focus", "color.surface.sunken", 3.0, 3.0),
+    ("color.text.inverse", "color.accent.hover", 4.5, 7.0),
+    ("color.accent", "color.surface.base", 3.0, 3.0),
+    ("color.accent", "color.surface.raised", 3.0, 3.0),
+    ("color.accent", "color.surface.overlay", 3.0, 3.0),
+    ("color.accent", "color.surface.sunken", 3.0, 3.0),
+    ("color.text.secondary", "color.accent.subtle", 4.5, 7.0),
+];
+
+/// Surfaces `color.state.live` must stand out from (3:1).
+pub const LIVE_SURFACES: &[&str] = &["color.surface.base", "color.surface.sunken"];
+
+/// Smallest CIEDE2000 difference between any theme colour and `color.state.live`, so
+/// no other colour reads as "live red" (rule U12, ADR-0057).
+pub const MIN_DELTA_E_FROM_LIVE: f64 = 15.0;
+
 /// Hue distance in degrees below which an error colour reads as "live red" (rule U12).
 pub const MIN_HUE_DISTANCE_FROM_LIVE: f64 = 45.0;
 
@@ -300,9 +328,21 @@ impl Tokens {
     /// Parse a token file and run every check.
     pub fn parse(text: &str) -> Result<Tokens, TokenError> {
         let raw: RawTokens = toml::from_str(text).map_err(|e| TokenError(e.to_string()))?;
-        if raw.format != 1 {
-            return Err(TokenError(format!("unsupported format {}", raw.format)));
-        }
+        let font_family = match (raw.format, raw.font) {
+            (1, None) => Vec::new(),
+            (1, Some(_)) => return Err(TokenError("[font] needs format 2".into())),
+            (2, Some(mut font)) => {
+                let family = font
+                    .remove(FONT_FAMILY)
+                    .ok_or_else(|| TokenError(format!("[font] is missing {FONT_FAMILY}")))?;
+                if let Some(extra) = font.keys().next() {
+                    return Err(TokenError(format!("[font] has unknown token {extra}")));
+                }
+                family
+            }
+            (2, None) => return Err(TokenError("[font] is missing".into())),
+            (f, _) => return Err(TokenError(format!("unsupported format {f}"))),
+        };
         let fixed_names: Vec<&str> = FIXED.iter().map(|(n, _)| *n).collect();
         let fixed = colors(raw.fixed, &fixed_names, "[fixed]")?;
         for (name, value) in FIXED {
@@ -367,6 +407,7 @@ impl Tokens {
             }
         }
         let tokens = Tokens {
+            font_family,
             fixed,
             themes,
             length: raw.length,
@@ -391,32 +432,18 @@ impl Tokens {
                 live.contrast(on_live)
             )));
         }
-        for (theme, c) in &self.themes {
-            let hc = theme == "high-contrast";
-            for (fg, bg, min, min_hc) in CONTRAST_RULES {
-                let need = if hc { *min_hc } else { *min };
-                let ratio = c[*fg].contrast(c[*bg]);
-                if ratio < need {
-                    return Err(TokenError(format!(
-                        "theme {theme}: {fg} on {bg} has contrast {ratio:.2}, needs {need}"
-                    )));
-                }
-            }
-            for t in [
-                "color.state.error",
-                "color.action.destructive",
-                "color.meter.clip",
-            ] {
-                if hue_distance(c[t], live) < MIN_HUE_DISTANCE_FROM_LIVE {
-                    return Err(TokenError(format!(
-                        "theme {theme}: {t} is too close in hue to color.state.live"
-                    )));
-                }
-            }
-            if live.contrast(c["color.surface.base"]) < 3.0 {
-                return Err(TokenError(format!(
-                    "theme {theme}: color.state.live on color.surface.base needs contrast 3"
-                )));
+        for (theme, colors) in &self.themes {
+            let look = Look {
+                colors,
+                live,
+                high_contrast: theme == "high-contrast",
+                length: &self.length,
+                duration: &self.duration,
+                type_styles: &self.type_styles,
+                font_family: &self.font_family,
+            };
+            if let Some(p) = look.check().into_iter().next() {
+                return Err(TokenError(format!("theme {theme}: {}", p.reason)));
             }
         }
         Ok(())

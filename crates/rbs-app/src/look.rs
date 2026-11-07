@@ -106,7 +106,7 @@ mod tests {
     fn another_file_changes_the_window_at_run_time() {
         let text = BUILT_IN
             .replace("\"space.4\" = 16", "\"space.4\" = 20")
-            .replace("\"motion.fast\" = ", "\"motion.fast\" = 1")
+            .replace("\"motion.fast\" = 120", "\"motion.fast\" = 150")
             .replacen(
                 "\"color.surface.base\" = \"#121417\"",
                 "\"color.surface.base\" = \"#101215\"",
