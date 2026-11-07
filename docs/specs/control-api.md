@@ -199,6 +199,7 @@ The first slice covers what the desktop app does today; the full catalogue follo
 | `source.targets` | `control` | Capture targets of a kind (window titles can be private) |
 | `source.add`, `source.delete`, `edit.undo`, `edit.redo` | `control` | Edit the program scene |
 | `item.set_style {item, style}` | `control` | Shape, border and shadow of a source item (protocol 1.3, ADR-0053) |
+| `item.set_crop {item, crop, keep_scale?}` | `control` | Source pixels cut from each edge of a source item's picture (protocol 1.5, ADR-0058) |
 | `output.profiles` | `read` | Recording profiles: id, name, container, encoder, bitrates (folders only through `settings.get`) |
 | `record.start {profile}`, `record.stop` | `control` | Record with a configured profile into its folder |
 | `record.start_to_file {profile, path}` | `admin` | Record to an explicit file; refused if it exists |
@@ -230,6 +231,10 @@ The first part of the `profile.*` and `collection.*` methods of API parity (ADR-
 
 Effects (ADR-0052 decision 4, when effects join the schema): the lists are `read`, `profile.switch` is `live` (it changes where the next stream goes), `collection.switch` is `edit` with the on-air check, which always passes here, because switching is refused while any output runs.
 
+### Crop (protocol 1.5)
+
+`source.list` rows, and the rows of `source.changed`, carry `picture_size: [width, height]` for a video source whose picture the studio has seen in this run (ADR-0058; absent before it ran, and for sound-only sources). `item.set_crop {item, crop: [left, top, right, bottom], keep_scale?}` sets the crop of the item's layout on the studio's canvas, with the `item.set_style` rule (its override for that canvas when it has one, else its default layout). With `keep_scale` (default `true`) the box changes too, so a source pixel keeps its size on the canvas and the part that stays keeps its place; `false` sets only the crop and what stays fills the box. Refusals: `not_found` for an unknown item; `invalid_params` for an item that places a scene, a crop that leaves less than one pixel of the known picture, or unknown keys; `failed` for `keep_scale` while the picture size was never seen. Each call is one undo step and publishes `source.changed`; the crop the item already has changes nothing. A 1.4 server answers `method_not_found`.
+
 ### Streaming (protocol 1.1)
 
 `stream.start` takes no parameters (unknown fields are ignored, so a later minor version can add an optional destination): it goes live as the desktop app's Go live does, with the server and encoder settings saved in Settings, Stream, and the stream key read from the system's credential store at that moment. Neither the server nor the key is a parameter, so a `control` token cannot send the program elsewhere (an explicit destination would be an `admin` method, as `record.start_to_file` is). The answer comes once the stream's encoders and output are attached, before the connection is made: `{video_encoder, audio_encoder}`. Refusals: `conflict` while a stream runs; `failed` while the app is still starting (before its settings reached the control thread), when no server is saved, the saved settings cannot be used, no stream key is saved for a server that needs one (RTMP; nothing is opened), or this system has no video encoder. A saved encoder this system does not have falls back to the best one, as for recordings. Error texts never repeat the saved server. `stream.stop` ends the stream (`conflict` when none runs); it is the same as End stream in the app, which asks the local user first, while the API call does not: the caller is the one asking.
@@ -250,7 +255,7 @@ Some commands change the state of one UI client, not of the engine: for example 
 
 ## Undo
 
-One user undo stack for the scene collection, shared by all clients. `edit.undo` from a panel can undo the desktop user's last edit, as in a shared document. An undo record used out of order returns `undo_conflict`. `edit.undo` with nothing to undo returns `conflict`, and so does `edit.redo` with nothing to redo. A step is one user action (in `rbs-app`: adding, deleting, a layer move or a source box; all the boxes of one drag on the picture panel are one step); a new edit clears what is left to redo. `rbs-app` keeps at least 100 steps and clears the history when the canvas changes. The serialisable operation type joins the schema as a minor addition with the scene document format ADR.
+One user undo stack for the scene collection, shared by all clients. `edit.undo` from a panel can undo the desktop user's last edit, as in a shared document. An undo record used out of order returns `undo_conflict`. `edit.undo` with nothing to undo returns `conflict`, and so does `edit.redo` with nothing to redo. A step is one user action (in `rbs-app`: adding, deleting, a layer move, a source box, a style or a crop; all the boxes of one drag on the picture panel are one step); a new edit clears what is left to redo. `rbs-app` keeps at least 100 steps and clears the history when the canvas changes. The serialisable operation type joins the schema as a minor addition with the scene document format ADR.
 
 ## Compatibility
 

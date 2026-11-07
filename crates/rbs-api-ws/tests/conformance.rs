@@ -183,7 +183,7 @@ fn a_client_authenticates_with_the_api_server_over_websocket() {
         &mut c,
         r#"{"jsonrpc":"2.0","id":1,"method":"session.hello","params":{"protocols":["1.0"],"client":{"name":"t","version":"1"}}}"#.into(),
     );
-    assert_eq!(hello["result"]["protocol"], "1.4", "{hello}");
+    assert_eq!(hello["result"]["protocol"], "1.5", "{hello}");
     let early = call(
         &mut c,
         r#"{"jsonrpc":"2.0","id":2,"method":"studio.get"}"#.into(),

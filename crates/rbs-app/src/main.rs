@@ -1523,8 +1523,10 @@ fn install_studio(g: &Studio<'_>, ctx: &Ctx) {
                            w: f32,
                            h: f32,
                            shift: bool,
-                           no_snap: bool| {
-        app.studio.preview_press([x, y], [w, h], shift, no_snap);
+                           no_snap: bool,
+                           crop: bool| {
+        app.studio
+            .preview_press([x, y], [w, h], shift, no_snap, crop);
     });
     on!(on_preview_drag, |app, x: f32, y: f32| {
         app.studio.preview_drag([x, y]);
@@ -1549,6 +1551,17 @@ fn install_studio(g: &Studio<'_>, ctx: &Ctx) {
                             w: f32,
                             h: f32| {
         app.studio.set_source_box(id, x, y, w, h);
+    });
+    on!(on_set_source_crop, |app,
+                             id: i32,
+                             l: i32,
+                             t: i32,
+                             r: i32,
+                             b: i32| {
+        app.studio.set_source_crop(id, [l, t, r, b]);
+    });
+    on!(on_set_source_region, |app, id: i32, region: i32| {
+        app.studio.set_source_region(id, region);
     });
     on!(
         on_set_source_style,

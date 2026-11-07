@@ -97,6 +97,31 @@ pub struct SetItemStyle {
     pub style: ItemStyle,
 }
 
+/// `item.set_crop` (protocol 1.5, ADR-0058): the source pixels cut from each edge of
+/// an item's picture, on the item's layout on the studio's canvas.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SetItemCrop {
+    /// The item's id (`source.list` gives each video source's program-scene item).
+    pub item: u32,
+    /// Pixels cut from the left, top, right and bottom.
+    pub crop: [u32; 4],
+    /// Keep the size of a source pixel on the canvas and the place of what stays (the
+    /// box changes); `false` sets only the crop, and what stays fills the box. Default
+    /// `true`.
+    #[serde(default = "yes", skip_serializing_if = "is_true")]
+    pub keep_scale: bool,
+}
+
+fn yes() -> bool {
+    true
+}
+
+#[allow(clippy::trivially_copy_pass_by_ref)] // serde passes a reference.
+fn is_true(v: &bool) -> bool {
+    *v
+}
+
 /// `record.start`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RecordStart {
@@ -183,6 +208,8 @@ pub enum Command {
     SourceDelete(SourceRef),
     /// `item.set_style` (protocol 1.3).
     ItemSetStyle(SetItemStyle),
+    /// `item.set_crop` (protocol 1.5).
+    ItemSetCrop(SetItemCrop),
     /// `edit.undo`.
     EditUndo,
     /// `edit.redo`.
@@ -236,6 +263,7 @@ impl Command {
             Command::SourceAdd(_) => "source.add",
             Command::SourceDelete(_) => "source.delete",
             Command::ItemSetStyle(_) => "item.set_style",
+            Command::ItemSetCrop(_) => "item.set_crop",
             Command::EditUndo => "edit.undo",
             Command::EditRedo => "edit.redo",
             Command::OutputProfiles => "output.profiles",
@@ -314,6 +342,7 @@ pub const METHODS: &[MethodInfo] = &[
     m("source.add", Some(Scope::Control)),
     m("source.delete", Some(Scope::Control)),
     m("item.set_style", Some(Scope::Control)),
+    m("item.set_crop", Some(Scope::Control)),
     m("edit.undo", Some(Scope::Control)),
     m("edit.redo", Some(Scope::Control)),
     m("output.profiles", Some(Scope::Read)),
@@ -406,6 +435,8 @@ enum WireRequest {
     SourceDelete(SourceRef),
     #[serde(rename = "item.set_style")]
     ItemSetStyle(SetItemStyle),
+    #[serde(rename = "item.set_crop")]
+    ItemSetCrop(SetItemCrop),
     #[serde(rename = "edit.undo")]
     EditUndo(Empty),
     #[serde(rename = "edit.redo")]
@@ -464,6 +495,7 @@ impl From<WireRequest> for Request {
             WireRequest::SourceAdd(p) => Request::Command(C::SourceAdd(p)),
             WireRequest::SourceDelete(p) => Request::Command(C::SourceDelete(p)),
             WireRequest::ItemSetStyle(p) => Request::Command(C::ItemSetStyle(p)),
+            WireRequest::ItemSetCrop(p) => Request::Command(C::ItemSetCrop(p)),
             WireRequest::EditUndo(_) => Request::Command(C::EditUndo),
             WireRequest::EditRedo(_) => Request::Command(C::EditRedo),
             WireRequest::OutputProfiles(_) => Request::Command(C::OutputProfiles),
@@ -503,6 +535,7 @@ impl From<Request> for WireRequest {
                 C::SourceAdd(p) => WireRequest::SourceAdd(p),
                 C::SourceDelete(p) => WireRequest::SourceDelete(p),
                 C::ItemSetStyle(p) => WireRequest::ItemSetStyle(p),
+                C::ItemSetCrop(p) => WireRequest::ItemSetCrop(p),
                 C::EditUndo => WireRequest::EditUndo(Empty {}),
                 C::EditRedo => WireRequest::EditRedo(Empty {}),
                 C::OutputProfiles => WireRequest::OutputProfiles(Empty {}),
