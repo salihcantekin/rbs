@@ -44,6 +44,7 @@ pub const ICONS: &[Icon] = &[
     line("close", "M 4.5 4.5 L 11.5 11.5 M 11.5 4.5 L 4.5 11.5"),
     fill("dot", "M 4 8 a 4 4 0 1 0 8 0 a 4 4 0 1 0 -8 0 Z"),
     line("ring", "M 4 8 a 4 4 0 1 0 8 0 a 4 4 0 1 0 -8 0 Z"),
+    fill("stop", "M 4.5 4.5 L 11.5 4.5 L 11.5 11.5 L 4.5 11.5 Z"),
     line("plus", "M 8 3 L 8 13 M 3 8 L 13 8"),
     line(
         "pin",

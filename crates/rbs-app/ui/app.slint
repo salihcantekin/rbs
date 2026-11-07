@@ -176,40 +176,55 @@ export global Shell {
     callback dismiss-error();
 }
 
-// Live indicator (rules U4, U21): state, duration and outputs in text, never colour alone.
+// Live indicator (rules U4, U21): the state in words, never colour alone. Compact on
+// purpose: idle it takes no room (the status bar says "Not live · not recording");
+// live or recording a small chip in the live colour (U12) with a dot and "REC",
+// "LIVE" or "LIVE · REC".
+// The duration and the outputs are in the status bar under the window (spec Frame);
+// the accessible name keeps the whole text.
 component LiveIndicator inherits Rectangle {
     property <bool> active: Shell.live-state != 0;
     property <string> state-text: Shell.live-state == 1 ? @tr("Live")
         : Shell.live-state == 2 ? @tr("Recording")
         : Shell.live-state == 3 ? @tr("Live and recording")
         : @tr("Not live");
+    property <string> short-text: Shell.live-state == 1 ? @tr("LIVE")
+        : Shell.live-state == 2 ? @tr("REC")
+        : @tr("LIVE · REC");
     property <string> full: active
         ? state-text + " " + Shell.live-duration + (Shell.live-outputs != "" ? " · " + Shell.live-outputs : "")
         : state-text;
     height: Tokens.size-control-md;
-    width: content.preferred-width + 2 * Tokens.space-3;
-    border-radius: Tokens.radius-sm;
-    background: active ? Theme.state-live : transparent;
-    border-width: active ? 0px : Tokens.size-border;
-    border-color: Theme.border-strong;
+    width: content.preferred-width;
     accessible-role: AccessibleRole.text;
     accessible-label: @tr("Live status: {}", full);
     content := HorizontalLayout {
         alignment: center;
-        spacing: Tokens.space-1;
-        VerticalLayout {
+        if active: VerticalLayout {
             alignment: center;
-            Icon {
-                name: active ? IconName.dot : IconName.ring;
-                ink: active ? Theme.text-on-live : Theme.text-secondary;
+            Rectangle {
+                height: Tokens.type-caption-line + Tokens.space-1;
+                width: chip.preferred-width;
+                border-radius: Tokens.radius-sm;
+                background: Theme.state-live;
+                chip := HorizontalLayout {
+                    padding-left: Tokens.space-1;
+                    padding-right: Tokens.space-2;
+                    spacing: Tokens.space-1 / 2;
+                    VerticalLayout {
+                        alignment: center;
+                        Icon { name: IconName.dot; ink: Theme.text-on-live; }
+                    }
+                    Text {
+                        text: short-text;
+                        color: Theme.text-on-live;
+                        font-size: Tokens.type-caption-size;
+                        font-weight: Tokens.type-label-weight;
+                        vertical-alignment: center;
+                        accessible-role: none;
+                    }
+                }
             }
-        }
-        Text {
-            text: full;
-            color: active ? Theme.text-on-live : Theme.text-secondary;
-            font-size: Tokens.type-label-size;
-            font-weight: Tokens.type-label-weight;
-            vertical-alignment: center;
         }
     }
 }
@@ -1179,7 +1194,8 @@ component WorkspacePicker inherits Rectangle {
 }
 
 // One toolbar item: a command button with its icon (a toggle that is on is tinted;
-// one that stops a live output is in the live colour, U12), the workspace picker, a
+// one that stops a live output is a normal button whose stop square is in the live
+// colour, U12: the state shows, the toolbar stays calm), the workspace picker, a
 // separator or the flexible space. Go live is the one primary button.
 component ToolbarCell inherits HorizontalLayout {
     in property <ToolbarData> item;
@@ -1192,20 +1208,21 @@ component ToolbarCell inherits HorizontalLayout {
         width: Tokens.size-control-lg;
         accessible-name: item.title;
         lead: Icons.named(item.icon);
-        lead-ink: item.checked ? Theme.text-primary : Theme.text-secondary;
+        lead-ink: item.live && self.enabled ? Theme.state-live
+            : item.checked ? Theme.text-primary : Theme.text-secondary;
         kind: "ghost";
         enabled: item.enabled;
-        checked: item.checked;
+        checked: item.checked && !item.live;
         clicked => { Menus.run(item.id); }
     }
     if (item.kind == 0 || item.kind == 4) && !item.icon-only: Button {
         text: item.title;
         lead: Icons.named(item.icon);
-        // Checked means recording, and then the button itself is in the live colour.
-        lead-ink: record && !item.checked ? Theme.state-live : self.ink;
+        // Record's dot, and the stop square of a running output, in the live colour.
+        lead-ink: (record || item.live) && self.enabled ? Theme.state-live : self.ink;
         enabled: item.enabled;
         checked: item.checked && !item.live;
-        kind: item.live ? "live" : go-live ? "primary" : record ? "secondary" : "ghost";
+        kind: go-live ? "primary" : record || item.live ? "secondary" : "ghost";
         clicked => { Menus.run(item.id); }
     }
     if item.kind == 1: WorkspacePicker {
@@ -1357,7 +1374,8 @@ component FrameBar inherits Rectangle {
             min-width: Tokens.space-2;
         }
         // The end group: the items after the flexible space, then the live indicator
-        // (U4, U21). An item not shown takes no width and no spacing.
+        // while live or recording (U4, U21). An item not shown takes no width and no
+        // spacing.
         end := HorizontalLayout {
             horizontal-stretch: 0;
             padding-top: Tokens.space-1;
@@ -1370,7 +1388,8 @@ component FrameBar inherits Rectangle {
                     ws-menu.show();
                 }
             }
-            LiveIndicator { horizontal-stretch: 0; }
+            // Idle it is not in the layout at all (the status bar says "Not live").
+            if Shell.live-state != 0: LiveIndicator { horizontal-stretch: 0; }
         }
         // Windows: the window buttons end the row (ADR-0071).
         if Shell.custom-caption: HorizontalLayout {
@@ -1454,9 +1473,12 @@ component StatusPicker inherits Rectangle {
 // and Scene collection in use (each opens its menu), and the canvas. It shows values
 // the app already has; it polls nothing (P13).
 component StatusBar inherits Rectangle {
-    property <string> state-text: Shell.live-state == 1 ? @tr("Live {} · not recording", Shell.live-duration)
-        : Shell.live-state == 2 ? @tr("Not live · recording {}", Shell.live-duration)
-        : Shell.live-state == 3 ? @tr("Live and recording {}", Shell.live-duration)
+    // The duration and the outputs (file name, server) live here, not in the
+    // frame's compact live indicator.
+    property <string> outputs: Shell.live-outputs != "" ? " · " + Shell.live-outputs : "";
+    property <string> state-text: Shell.live-state == 1 ? @tr("Live {} · not recording", Shell.live-duration) + outputs
+        : Shell.live-state == 2 ? @tr("Recording {}", Shell.live-duration) + outputs
+        : Shell.live-state == 3 ? @tr("Live and recording {}", Shell.live-duration) + outputs
         : @tr("Not live · not recording");
     height: Tokens.size-control-sm + 2 * Tokens.size-border;
     background: Theme.surface-sunken;
@@ -1470,12 +1492,19 @@ component StatusBar inherits Rectangle {
         padding-right: Tokens.space-3;
         padding-top: Tokens.size-border;
         spacing: Tokens.space-4;
-        Text {
+        HorizontalLayout {
             horizontal-stretch: 0;
-            text: state-text;
-            color: Shell.live-state != 0 ? Theme.text-primary : Theme.text-secondary;
-            font-size: Tokens.type-caption-size;
-            vertical-alignment: center;
+            spacing: Tokens.space-1;
+            if Shell.live-state != 0: VerticalLayout {
+                alignment: center;
+                Icon { name: IconName.dot; ink: Theme.state-live; }
+            }
+            Text {
+                text: state-text;
+                color: Shell.live-state != 0 ? Theme.text-primary : Theme.text-secondary;
+                font-size: Tokens.type-caption-size;
+                vertical-alignment: center;
+            }
         }
         if Studio.st-text != "": Text {
             horizontal-stretch: 0;

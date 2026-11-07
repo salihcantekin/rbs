@@ -24,6 +24,7 @@ export enum IconName {
     close,
     dot,
     ring,
+    stop,
     plus,
     pin,
     panel-left,
@@ -83,7 +84,7 @@ export component Icon inherits Rectangle {
     in property <IconName> name;
     in property <color> ink: Theme.text-primary;
     // Filled shapes; the others are drawn as lines.
-    property <bool> filled: name == IconName.more || name == IconName.dot;
+    property <bool> filled: name == IconName.more || name == IconName.dot || name == IconName.stop;
     property <string> commands:
         name == IconName.more ? "M 2.5 8 a 1.25 1.25 0 1 0 2.5 0 a 1.25 1.25 0 1 0 -2.5 0 Z M 6.75 8 a 1.25 1.25 0 1 0 2.5 0 a 1.25 1.25 0 1 0 -2.5 0 Z M 11 8 a 1.25 1.25 0 1 0 2.5 0 a 1.25 1.25 0 1 0 -2.5 0 Z"
         : name == IconName.chevron-down ? "M 4 6 L 8 10 L 12 6"
@@ -94,6 +95,7 @@ export component Icon inherits Rectangle {
         : name == IconName.close ? "M 4.5 4.5 L 11.5 11.5 M 11.5 4.5 L 4.5 11.5"
         : name == IconName.dot ? "M 4 8 a 4 4 0 1 0 8 0 a 4 4 0 1 0 -8 0 Z"
         : name == IconName.ring ? "M 4 8 a 4 4 0 1 0 8 0 a 4 4 0 1 0 -8 0 Z"
+        : name == IconName.stop ? "M 4.5 4.5 L 11.5 4.5 L 11.5 11.5 L 4.5 11.5 Z"
         : name == IconName.plus ? "M 8 3 L 8 13 M 3 8 L 13 8"
         : name == IconName.pin ? "M 5.5 2.5 L 10.5 2.5 M 6.5 2.5 L 6.5 6.5 L 4.5 9.5 L 11.5 9.5 L 9.5 6.5 L 9.5 2.5 M 8 9.5 L 8 14"
         : name == IconName.panel-left ? "M 2.5 3 L 13.5 3 L 13.5 13 L 2.5 13 Z M 6.5 3 L 6.5 13"
@@ -173,6 +175,7 @@ export global Icons {
         : name == "close" ? IconName.close
         : name == "dot" ? IconName.dot
         : name == "ring" ? IconName.ring
+        : name == "stop" ? IconName.stop
         : name == "plus" ? IconName.plus
         : name == "pin" ? IconName.pin
         : name == "panel-left" ? IconName.panel-left

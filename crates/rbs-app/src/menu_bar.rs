@@ -544,7 +544,8 @@ pub struct ToolItem {
     pub enabled: bool,
     /// A toggle or area toggle that is on.
     pub checked: bool,
-    /// It stops a live output now (drawn in the live colour, U12).
+    /// It stops a live output now (a normal button with a `stop` icon in the live
+    /// colour, U12).
     pub live: bool,
     /// Icon name from the design system's icon set, or empty.
     pub icon: String,
@@ -669,7 +670,13 @@ pub fn toolbar(state: &Shown<'_>) -> (Row, bool) {
                     ("record.toggle", true) => ("Stop recording".to_owned(), true),
                     _ => (title, false),
                 };
-                let icon = rbs_ui::command::icon(&id, entry).unwrap_or_default();
+                // A running output's toggle shows a stop square in the live colour; the
+                // button itself stays a normal one (U12: calm, red only as a mark).
+                let icon = if live {
+                    "stop"
+                } else {
+                    rbs_ui::command::icon(&id, entry).unwrap_or_default()
+                };
                 let icon_only = !icon.is_empty()
                     && (bar.style == ToolbarStyle::Icons || rbs_ui::command::icon_only(&id));
                 ToolItem {

@@ -55,10 +55,12 @@ const EXEMPT: [&str; 2] = ["color.text.disabled", "color.border.subtle"];
 
 /// Drawn pairs with no rule on purpose. The fixed live colour on `surface.raised` and
 /// `.overlay` (2.92:1 and 2.54:1 in Dark) is not a theme's to fix, and live is always
-/// shown with its words as well (U12; ADR-0057 review, item 1).
-const ACCEPTED: [(&str, &str); 2] = [
+/// shown with its words as well (U12; ADR-0057 review, item 1). The same holds for
+/// the small live dot before "REC" on the selected scene row (`accent.subtle`).
+const ACCEPTED: [(&str, &str); 3] = [
     ("color.state.live", "color.surface.raised"),
     ("color.state.live", "color.surface.overlay"),
+    ("color.state.live", "color.accent.subtle"),
 ];
 
 /// What a foreground colour draws: text needs 4.5:1, the others 3:1 (U7).
