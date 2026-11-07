@@ -2,7 +2,7 @@
 // theme library and the theme editor. Rust (`appearance_page`) pushes state into the
 // `Appearance` global of the Settings window and handles its callbacks.
 import { Theme, Tokens } from "tokens.slint";
-import { Button, Checkbox, ColorPicker, FocusRing, IconName, MenuItem, MenuSurface, NumberField, Select, TextField, Toggle } from "components.slint";
+import { Button, Checkbox, ColorPicker, FocusRing, IconButton, IconName, MenuItem, MenuSurface, NumberField, Select, TextField, Toggle } from "components.slint";
 import { SettingsCard, SettingRow, SettingBlock, SettingsNotice, SettingsCallout } from "settings.slint";
 
 // One theme in the library: built-in themes first, then user themes by name.
@@ -64,6 +64,8 @@ export global Appearance {
     in property <[string]> unknown-tokens;
     in property <bool> can-save;
     in property <bool> changed;
+    // The theme being edited is used by a slot: its changes show in the windows.
+    in property <bool> editing-in-use;
     // The family the window uses now ("" the system font).
     in property <string> font-in-use;
     // A value typed in the editor and not yet confirmed (Enter or leaving the field):
@@ -435,7 +437,10 @@ component ThemeEditor inherits VerticalLayout {
         }
         EditorActions { horizontal-stretch: 0; }
     }
-    Hint { text: @tr("Changes show in every window as you make them. A change that breaks a rule is shown with its problem and not used."); }
+    if Appearance.editing-in-use: Hint { text: @tr("Changes show in every window as you make them. A change that breaks a rule is shown with its problem and not used."); }
+    if !Appearance.editing-in-use: SettingsNotice {
+        text: @tr("This theme is not in use, so the windows do not show its changes. Pick it under Theme in use to see them.");
+    }
     for p in Appearance.general-problems: Problem { text: p; }
     SettingRow {
         divider: false;
@@ -461,15 +466,23 @@ component ThemeEditor inherits VerticalLayout {
 // One theme in the library list: its swatch, its name, "Built in" for the built-in
 // ones, and its first problem when it cannot be used. The selected one has the
 // accent-tinted row with the accent bar (as in the section list) and is marked
-// selected for screen readers (U7).
+// selected for screen readers (U7). At its right edge, its actions as icon buttons:
+// Use, Edit (Duplicate to edit for a built-in theme), Duplicate, and for user themes
+// Export and Delete; each acts on this row's theme.
 component ThemeListRow inherits Rectangle {
     in property <ThemeOption> theme;
     in property <bool> selected;
     in property <bool> enabled: true;
-    // Beside the editor: the name gets the room, the "Built in" chip is left out (the
-    // accessible name still says it).
+    // Beside the editor: the name gets the room, the "Built in" chip and the actions
+    // are left out (the accessible name still says it is built in).
     in property <bool> compact;
     callback activated();
+    callback use-it();
+    callback edit-it();
+    callback duplicate-it();
+    callback export-it();
+    callback delete-it();
+    property <length> actions-width: root.compact ? 0px : 5 * Tokens.size-control-sm + 4 * Tokens.space-1 + Tokens.space-2;
     min-height: row.min-height;
     preferred-height: row.preferred-height;
     border-radius: Tokens.radius-md;
@@ -493,6 +506,7 @@ component ThemeListRow inherits Rectangle {
     row := HorizontalLayout {
         padding: Tokens.space-2;
         padding-left: Tokens.space-3;
+        padding-right: Tokens.space-2 + root.actions-width;
         spacing: Tokens.space-3;
         VerticalLayout {
             horizontal-stretch: 0;
@@ -547,14 +561,71 @@ component ThemeListRow inherits Rectangle {
         enabled: root.enabled;
         clicked => { root.activated(); }
     }
+    // After the row's TouchArea, so the buttons take their own clicks. Actions a theme
+    // does not have (Export and Delete of a built-in one) leave their place empty, so
+    // the icons line up from row to row.
+    if !root.compact: HorizontalLayout {
+        x: parent.width - root.actions-width;
+        width: root.actions-width - Tokens.space-2;
+        height: parent.height;
+        spacing: Tokens.space-1;
+        alignment: end;
+        VerticalLayout {
+            alignment: center;
+            IconButton {
+                icon: IconName.check;
+                name: @tr("Use {}", root.theme.name);
+                enabled: root.enabled && root.theme.usable;
+                clicked => { root.use-it(); }
+            }
+        }
+        VerticalLayout {
+            alignment: center;
+            IconButton {
+                icon: IconName.pencil;
+                name: root.theme.user ? @tr("Edit {}", root.theme.name) : @tr("Duplicate {} to edit", root.theme.name);
+                enabled: root.enabled;
+                clicked => { root.edit-it(); }
+            }
+        }
+        VerticalLayout {
+            alignment: center;
+            IconButton {
+                icon: IconName.copy;
+                name: @tr("Duplicate {}", root.theme.name);
+                enabled: root.enabled;
+                clicked => { root.duplicate-it(); }
+            }
+        }
+        VerticalLayout {
+            alignment: center;
+            width: Tokens.size-control-sm;
+            if root.theme.user: IconButton {
+                icon: IconName.export;
+                name: @tr("Export {}…", root.theme.name);
+                enabled: root.enabled;
+                clicked => { root.export-it(); }
+            }
+        }
+        VerticalLayout {
+            alignment: center;
+            width: Tokens.size-control-sm;
+            if root.theme.user: IconButton {
+                icon: IconName.trash;
+                name: @tr("Delete {}…", root.theme.name);
+                enabled: root.enabled;
+                clicked => { root.delete-it(); }
+            }
+        }
+    }
     FocusRing { show: focus.has-focus; border-radius: Tokens.radius-md; }
 }
 
 export component AppearanceSettings inherits Rectangle {
-    property <bool> confirming-delete;
+    // The theme Delete asks about (a position in `Appearance.themes`), -1 none.
+    property <int> confirm-delete: -1;
     property <ThemeOption> current: Appearance.selected >= 0 ? Appearance.themes[Appearance.selected] : { name: "" };
     property <bool> has-selection: Appearance.selected >= 0;
-    changed has-selection => { confirming-delete = false; }
     form := VerticalLayout {
         spacing: Tokens.space-4;
         alignment: start;
@@ -618,7 +689,29 @@ export component AppearanceSettings inherits Rectangle {
                 horizontal-stretch: Appearance.editing ? 0 : 1;
                 SettingsCard {
                     title: @tr("Themes");
-                    description: Appearance.editing ? "" : @tr("Pick a theme to use, edit or share it. Built-in themes cannot be changed: duplicate one to make your own.");
+                    // The card's line with Import at its right (Import adds a theme, so
+                    // it belongs to the list, not to a row).
+                    if !Appearance.editing: HorizontalLayout {
+                        spacing: Tokens.space-3;
+                        padding-bottom: Tokens.space-2;
+                        Text {
+                            horizontal-stretch: 1;
+                            text: @tr("Pick a theme to use, edit or share it. Built-in themes cannot be changed: duplicate one to make your own.");
+                            color: Theme.text-secondary;
+                            font-size: Tokens.type-caption-size;
+                            vertical-alignment: center;
+                            wrap: word-wrap;
+                        }
+                        Button {
+                            horizontal-stretch: 0;
+                            text: @tr("Import…");
+                            accessible-name: @tr("Import a theme…");
+                            kind: "ghost";
+                            dense: true;
+                            lead: IconName.import;
+                            clicked => { Appearance.import(); }
+                        }
+                    }
                     VerticalLayout {
                         spacing: Tokens.space-1;
                         padding-bottom: Tokens.space-2;
@@ -630,6 +723,26 @@ export component AppearanceSettings inherits Rectangle {
                             enabled: !Appearance.editing;
                             compact: Appearance.editing;
                             activated => { Appearance.select(i); }
+                            use-it => {
+                                Appearance.select(i);
+                                Appearance.use-selected();
+                            }
+                            edit-it => {
+                                Appearance.select(i);
+                                Appearance.edit();
+                            }
+                            duplicate-it => {
+                                Appearance.select(i);
+                                Appearance.duplicate();
+                            }
+                            export-it => {
+                                Appearance.select(i);
+                                Appearance.export();
+                            }
+                            delete-it => {
+                                Appearance.select(i);
+                                root.confirm-delete = i;
+                            }
                         }
                     }
                     if !Appearance.editing && root.current.user: SettingRow {
@@ -640,51 +753,11 @@ export component AppearanceSettings inherits Rectangle {
                             accepted(t) => { Appearance.rename(t); }
                         }
                     }
-                    if !Appearance.editing && !root.confirming-delete: SettingBlock {
-                        HorizontalLayout {
-                            spacing: Tokens.space-2;
-                            alignment: start;
-                            Button {
-                                text: @tr("Use");
-                                kind: "primary";
-                                enabled: root.has-selection && root.current.usable;
-                                clicked => { Appearance.use-selected(); }
-                            }
-                            Button {
-                                text: root.current.user || !root.has-selection ? @tr("Edit") : @tr("Duplicate to edit");
-                                enabled: root.has-selection;
-                                clicked => { Appearance.edit(); }
-                            }
-                            Button {
-                                text: @tr("Duplicate");
-                                enabled: root.has-selection;
-                                clicked => { Appearance.duplicate(); }
-                            }
-                            Button {
-                                text: @tr("Delete");
-                                kind: "ghost";
-                                enabled: root.has-selection && root.current.user;
-                                clicked => { root.confirming-delete = true; }
-                            }
-                            Rectangle { horizontal-stretch: 1; }
-                            Button {
-                                text: @tr("Import…");
-                                kind: "ghost";
-                                clicked => { Appearance.import(); }
-                            }
-                            Button {
-                                text: @tr("Export…");
-                                kind: "ghost";
-                                enabled: root.has-selection && root.current.user;
-                                clicked => { Appearance.export(); }
-                            }
-                        }
-                    }
-                    if !Appearance.editing && root.confirming-delete: SettingBlock {
+                    if !Appearance.editing && root.confirm-delete >= 0: SettingBlock {
                         SettingsCallout {
-                            label: @tr("Delete {}?", root.current.name);
+                            label: @tr("Delete {}?", Appearance.themes[root.confirm-delete].name);
                             Text {
-                                text: @tr("Delete {}? You can get it back from the deleted folder.", root.current.name);
+                                text: @tr("Delete {}? You can get it back from the deleted folder.", Appearance.themes[root.confirm-delete].name);
                                 color: Theme.text-primary;
                                 wrap: word-wrap;
                             }
@@ -695,13 +768,14 @@ export component AppearanceSettings inherits Rectangle {
                                     text: @tr("Delete");
                                     kind: "primary";
                                     clicked => {
-                                        root.confirming-delete = false;
+                                        Appearance.select(root.confirm-delete);
+                                        root.confirm-delete = -1;
                                         Appearance.delete();
                                     }
                                 }
                                 Button {
                                     text: @tr("Cancel");
-                                    clicked => { root.confirming-delete = false; }
+                                    clicked => { root.confirm-delete = -1; }
                                 }
                             }
                         }
