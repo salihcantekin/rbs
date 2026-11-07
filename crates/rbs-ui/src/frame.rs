@@ -186,13 +186,18 @@ pub struct WindowFlat {
     pub stacks: Vec<StackRect>,
     /// Dividers: the trees' splitters, then the areas' edges.
     pub handles: Vec<WindowHandle>,
+    /// The Transition rail of the centre's studio split in studio mode (ADR-0064).
+    pub rail: Option<(Rect, crate::layout::RailAt)>,
 }
 
 /// Flatten window `w` laid out in `content`.
-pub fn flatten_window(w: &Window, content: Rect) -> WindowFlat {
+pub fn flatten_window(w: &Window, content: Rect, studio_mode: bool) -> WindowFlat {
     let mut out = WindowFlat::default();
     let mut place = |tree: usize, first: usize, node: &crate::layout::Node, r: Rect| {
-        let flat = node.flatten(r);
+        let flat = node.flatten_in(r, studio_mode);
+        if tree == 0 && out.rail.is_none() {
+            out.rail = flat.rail;
+        }
         out.stacks.extend(flat.stacks.into_iter().map(|mut s| {
             s.stack += first;
             s
@@ -275,6 +280,7 @@ pub fn maximized(flat: &WindowFlat, content: Rect, panel: &PanelId) -> Option<Wi
             collapsed: false,
         }],
         handles: Vec::new(),
+        rail: None,
     })
 }
 
@@ -503,6 +509,7 @@ mod tests {
     fn a_window_numbers_stacks_through_its_trees_and_skips_hidden_ones() {
         let mut m = layout(true, true, false);
         m.left.layout = Some(Node::Split(crate::layout::Split {
+            studio: None,
             axis: Axis::Vertical,
             ratios: vec![0.5, 0.5],
             children: vec![tabs(&["rbs.scenes"]), tabs(&["rbs.sources"])],
@@ -511,7 +518,7 @@ mod tests {
             content: WindowContent::Main(Box::new(m)),
             placement: None,
         };
-        let flat = flatten_window(&w, WINDOW);
+        let flat = flatten_window(&w, WINDOW, false);
         let numbers: Vec<usize> = flat.stacks.iter().map(|s| s.stack).collect();
         assert_eq!(numbers, vec![0, 1, 2, 3]);
         // The left area's splitter, then the two area edges.
@@ -527,7 +534,7 @@ mod tests {
         if let Some(m) = w.main_mut() {
             m.left.visible = false;
         }
-        let flat = flatten_window(&w, WINDOW);
+        let flat = flatten_window(&w, WINDOW, false);
         let numbers: Vec<usize> = flat.stacks.iter().map(|s| s.stack).collect();
         assert_eq!(numbers, vec![0, 3]);
     }
@@ -549,7 +556,7 @@ mod tests {
             content: WindowContent::Main(Box::new(layout(true, true, true))),
             placement: None,
         };
-        let flat = flatten_window(&w, WINDOW);
+        let flat = flatten_window(&w, WINDOW, false);
         let preview = flat
             .stacks
             .iter()
@@ -629,7 +636,7 @@ mod tests {
             content: WindowContent::Main(Box::new(layout(true, true, true))),
             placement: None,
         };
-        let flat = flatten_window(&w, WINDOW);
+        let flat = flatten_window(&w, WINDOW, false);
         let sources = PanelId::parse("rbs.sources").expect("id");
         let m = maximized(&flat, WINDOW, &sources).expect("shown");
         assert_eq!(m.stacks.len(), 1);

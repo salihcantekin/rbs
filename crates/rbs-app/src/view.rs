@@ -1,13 +1,15 @@
 //! Turns the rbs-ui model into the plain data the Slint views draw.
 
 use rbs_ui::frame::{HandleTarget, WindowFlat};
-use rbs_ui::layout::{Axis, Node, Rect};
+use rbs_ui::layout::{Axis, Node, RailAt, Rect};
 use rbs_ui::panel::{BUILT_IN_PANELS, PanelId, built_in};
 use rbs_ui::workspace::{Side, Window};
 use rbs_ui::{LiveState, LiveStatus, Workspace};
 use slint::{ModelRc, SharedString, VecModel};
 
-use crate::ui::{EdgeTabData, HandleData, PanelEntry, StackData, TabData, WorkspaceEntry};
+use crate::ui::{
+    EdgeTabData, HandleData, PanelEntry, RailData, StackData, TabData, WorkspaceEntry,
+};
 
 /// English title of a panel; unknown panels show their id.
 pub fn title(id: &PanelId) -> String {
@@ -48,14 +50,28 @@ pub fn edge_tabs(win: &Window) -> [Vec<EdgeTabData>; 3] {
     out
 }
 
-/// Tab stacks and dividers of one window, for its view.
+/// Tab stacks, dividers and the Transition rail (ADR-0064) of one window, for its
+/// view, with the canvas in studio mode or not.
 pub fn window_view(
     window: usize,
     win: &Window,
     area: Rect,
     maximized: Option<&PanelId>,
-) -> (Vec<StackData>, Vec<HandleData>) {
-    let WindowFlat { stacks, handles } = shown_flat(win, area, maximized);
+    studio_mode: bool,
+) -> (Vec<StackData>, Vec<HandleData>, RailData) {
+    let WindowFlat {
+        stacks,
+        handles,
+        rail,
+    } = shown_flat(win, area, maximized, studio_mode);
+    let rail = rail.map_or_else(RailData::default, |(r, at)| RailData {
+        shown: true,
+        x: r.x,
+        y: r.y,
+        w: r.w,
+        h: r.h,
+        below: at == RailAt::Below,
+    });
     let trees = win.trees();
     // The main window's centre keeps one expanded stack and a panel (ADR-0049): its
     // last expanded stack offers no Collapse, and a centre of one stack no Auto-hide.
@@ -67,9 +83,17 @@ pub fn window_view(
             .count()
     });
     let lone_centre = centre.is_some_and(|c| matches!(c, Node::Tabs(_)));
+    // Preview and Program in the studio split are not collapsed or auto-hidden
+    // (ADR-0064 decision 4).
+    let in_studio = |s: &rbs_ui::layout::StackRect| {
+        s.stack < centre_stacks && s.tabs.first().is_some_and(|p| win.in_studio_split(p))
+    };
     let stacks = stacks
         .into_iter()
         .map(|s| StackData {
+            can_collapse: !in_studio(&s)
+                && (s.collapsed || s.stack >= centre_stacks || centre_expanded > 1),
+            can_hide: win.is_main() && !in_studio(&s) && !(s.stack < centre_stacks && lone_centre),
             window: window as i32,
             stack: s.stack as i32,
             x: s.rect.x,
@@ -89,8 +113,6 @@ pub fn window_view(
             )),
             active: s.active as i32,
             collapsed: s.collapsed,
-            can_collapse: s.collapsed || s.stack >= centre_stacks || centre_expanded > 1,
-            can_hide: win.is_main() && !(s.stack < centre_stacks && lone_centre),
         })
         .collect();
     let handles = handles
@@ -119,13 +141,18 @@ pub fn window_view(
             }
         })
         .collect();
-    (stacks, handles)
+    (stacks, handles, rail)
 }
 
 /// Window `win` laid out in `area` as it is shown: with panel `maximized` alone over
 /// the whole content when the window holds it (ADR-0049 decision 2).
-pub fn shown_flat(win: &Window, area: Rect, maximized: Option<&PanelId>) -> WindowFlat {
-    let flat = win.flatten(area);
+pub fn shown_flat(
+    win: &Window,
+    area: Rect,
+    maximized: Option<&PanelId>,
+    studio_mode: bool,
+) -> WindowFlat {
+    let flat = win.flatten_in(area, studio_mode);
     maximized
         .and_then(|p| rbs_ui::frame::maximized(&flat, area, p))
         .unwrap_or(flat)
@@ -162,6 +189,9 @@ pub fn panel_entries(ws: &Workspace) -> Vec<PanelEntry> {
     let mut out: Vec<PanelEntry> = BUILT_IN_PANELS
         .iter()
         .filter_map(|p| PanelId::parse(p.id).ok())
+        // Transition is the studio rail beside the pictures (ADR-0064), listed only
+        // where an older workspace still has it as a panel.
+        .filter(|id| id.as_str() != "rbs.transition" || ws.is_open(id))
         .map(|id| PanelEntry {
             open: ws.is_open(&id),
             title: title(&id).into(),
@@ -218,8 +248,19 @@ mod tests {
     #[test]
     fn edit_workspace_view() {
         let ws = builtin::edit();
-        let (stacks, handles) = window_view(0, &ws.windows[0], Rect::sized(1440.0, 860.0), None);
-        assert_eq!(stacks.len(), ws.windows[0].stack_count());
+        let (stacks, handles, rail) =
+            window_view(0, &ws.windows[0], Rect::sized(1440.0, 860.0), None, false);
+        assert!(!rail.shown, "no rail outside studio mode");
+        // Program is hidden outside studio mode (ADR-0064).
+        assert_eq!(stacks.len(), ws.windows[0].stack_count() - 1);
+        assert!(
+            !stacks
+                .iter()
+                .any(|s| s.tabs.iter().any(|t| t.id == "rbs.program"))
+        );
+        let (on, _, rail) = window_view(0, &ws.windows[0], Rect::sized(1440.0, 860.0), None, true);
+        assert_eq!(on.len(), ws.windows[0].stack_count());
+        assert!(rail.shown && !rail.below);
         assert!(!handles.is_empty());
         assert!(handles.iter().all(|h| (0..=100).contains(&h.percent)));
         let mixer = stacks
@@ -230,17 +271,17 @@ mod tests {
         let [left, right, bottom] = edge_tabs(&ws.windows[0]);
         assert!(left.is_empty() && bottom.is_empty());
         assert_eq!(right.len(), 2);
-        let transition = stacks
+        let controls = stacks
             .iter()
-            .find(|s| s.tabs.iter().any(|t| t.id == "rbs.transition"))
+            .find(|s| s.tabs.iter().any(|t| t.id == "rbs.live-controls"))
             .unwrap();
-        assert!(transition.collapsed);
+        assert!(controls.collapsed);
         let preview = stacks
             .iter()
             .find(|s| s.tabs.iter().any(|t| t.id == "rbs.preview"))
             .unwrap();
         assert!(!preview.can_collapse && !preview.can_hide);
-        assert!(transition.can_collapse && transition.can_hide);
+        assert!(controls.can_collapse && controls.can_hide);
         assert!(mixer.tabs.iter().all(|t| t.known));
     }
 
@@ -253,7 +294,9 @@ mod tests {
         let mut ws = builtin::minimal();
         ws.open(plugin).unwrap();
         let entries = panel_entries(&ws);
-        assert_eq!(entries.len(), BUILT_IN_PANELS.len() + 1);
+        // Every built-in panel but Transition, and the plugin's.
+        assert_eq!(entries.len(), BUILT_IN_PANELS.len());
+        assert!(!entries.iter().any(|e| e.id == "rbs.transition"));
         assert!(entries.iter().any(|e| e.id == "rbs.program" && e.open));
         assert!(entries.iter().any(|e| e.id == "rbs.mixer" && !e.open));
     }
