@@ -1604,6 +1604,8 @@ export component SettingsWindow inherits Window {
     // 0 Video, 1 Recording, 2 Stream, 3 Remote control, 4 General (listed first),
     // 5 Appearance (second), 6 Shortcuts (third).
     in-out property <int> section: 1;
+    // The section list shows icons only (the collapse button at its top).
+    in-out property <bool> nav-collapsed;
     // Escape was pressed: the window closes, as with its close button.
     callback dismiss();
     // Another section is shown (the Appearance page reads its files when shown).
@@ -1620,9 +1622,10 @@ export component SettingsWindow inherits Window {
             reject
         }
         HorizontalLayout {
-            // The section list, in groups (U17: a flat list, never nested).
+            // The section list, in groups (U17: a flat list, never nested). It collapses to
+            // a rail of icons (the names stay their accessible names) and expands again.
             Rectangle {
-                width: Tokens.size-menu-sm;
+                width: root.nav-collapsed ? Tokens.size-control-lg + Tokens.space-3 * 2 : Tokens.size-menu-sm;
                 background: Theme.surface-raised;
                 Rectangle {
                     x: parent.width - self.width;
@@ -1636,58 +1639,80 @@ export component SettingsWindow inherits Window {
                     alignment: start;
                     accessible-role: list;
                     accessible-label: @tr("Settings sections");
-                    Text {
-                        text: @tr("Settings");
-                        color: Theme.text-primary;
-                        font-size: Tokens.type-title-size;
-                        font-weight: Tokens.type-title-weight;
-                        accessible-role: none;
+                    HorizontalLayout {
+                        spacing: Tokens.space-2;
+                        alignment: root.nav-collapsed ? LayoutAlignment.center : LayoutAlignment.stretch;
+                        if !root.nav-collapsed: Text {
+                            horizontal-stretch: 1;
+                            text: @tr("Settings");
+                            color: Theme.text-primary;
+                            font-size: Tokens.type-title-size;
+                            font-weight: Tokens.type-title-weight;
+                            vertical-alignment: center;
+                            accessible-role: none;
+                        }
+                        IconButton {
+                            horizontal-stretch: 0;
+                            icon: root.nav-collapsed ? IconName.chevron-right : IconName.chevron-left;
+                            name: root.nav-collapsed ? @tr("Expand the section list") : @tr("Collapse the section list");
+                            clicked => { root.nav-collapsed = !root.nav-collapsed; }
+                        }
                     }
                     Rectangle { height: Tokens.space-2; }
-                    SettingsNavGroup { title: @tr("App"); }
+                    if !root.nav-collapsed: SettingsNavGroup { title: @tr("App"); }
+                    if root.nav-collapsed: Rectangle { height: Tokens.size-border; background: Theme.border-subtle; }
                     SettingsNavItem {
                         text: @tr("General");
                         icon: IconName.sliders;
+                        compact: root.nav-collapsed;
                         current: root.section == 4;
                         activated => { root.section = 4; }
                     }
                     SettingsNavItem {
                         text: @tr("Appearance");
                         icon: IconName.palette;
+                        compact: root.nav-collapsed;
                         current: root.section == 5;
                         activated => { root.section = 5; }
                     }
                     SettingsNavItem {
                         text: @tr("Shortcuts");
                         icon: IconName.keyboard;
+                        compact: root.nav-collapsed;
                         current: root.section == 6;
                         activated => { root.section = 6; }
                     }
                     Rectangle { height: Tokens.space-2; }
-                    SettingsNavGroup { title: @tr("Output"); }
+                    if !root.nav-collapsed: SettingsNavGroup { title: @tr("Output"); }
+                    if root.nav-collapsed: Rectangle { height: Tokens.size-border; background: Theme.border-subtle; }
                     SettingsNavItem {
                         text: @tr("Video");
                         icon: IconName.monitor;
+                        compact: root.nav-collapsed;
                         current: root.section == 0;
                         activated => { root.section = 0; }
                     }
                     SettingsNavItem {
                         text: @tr("Recording");
                         icon: IconName.dot;
+                        compact: root.nav-collapsed;
                         current: root.section == 1;
                         activated => { root.section = 1; }
                     }
                     SettingsNavItem {
                         text: @tr("Stream");
                         icon: IconName.broadcast;
+                        compact: root.nav-collapsed;
                         current: root.section == 2;
                         activated => { root.section = 2; }
                     }
                     Rectangle { height: Tokens.space-2; }
-                    SettingsNavGroup { title: @tr("Control"); }
+                    if !root.nav-collapsed: SettingsNavGroup { title: @tr("Control"); }
+                    if root.nav-collapsed: Rectangle { height: Tokens.size-border; background: Theme.border-subtle; }
                     SettingsNavItem {
                         text: @tr("Remote control");
                         icon: IconName.link;
+                        compact: root.nav-collapsed;
                         current: root.section == 3;
                         activated => { root.section = 3; }
                     }
