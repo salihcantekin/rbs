@@ -26,6 +26,7 @@ rbs-sources = { path = "../rbs-sources" }
 rbs-capture = { path = "../rbs-capture" }
 rbs-audio-io = { path = "../rbs-audio-io" }
 rbs-record = { path = "../rbs-record" }
+rbs-vcam = { path = "../rbs-vcam" }
 rbs-codec = { path = "../rbs-codec" }
 rbs-thread-os = { path = "../rbs-thread-os" }
 rbs-mux-matroska = { path = "../rbs-mux-matroska" }
@@ -46,6 +47,7 @@ rbs-api-ws = { path = "../rbs-api-ws" }
 serde_json = "1"
 
 [target.'cfg(windows)'.dependencies]
+rbs-vcam-mf = { path = "../rbs-vcam-mf" }
 rbs-capture-wgc = { path = "../rbs-capture-wgc" }
 rbs-capture-mf = { path = "../rbs-capture-mf" }
 rbs-audio-io-wasapi = { path = "../rbs-audio-io-wasapi" }
@@ -70,6 +72,7 @@ rbs-codec-videotoolbox = { path = "../rbs-codec-videotoolbox" }
 rbs-codec-audiotoolbox = { path = "../rbs-codec-audiotoolbox" }
 
 [dev-dependencies]
+rbs-vcam-test = { path = "../rbs-vcam-test" }
 # Reference adapters for the scene-building tests (deterministic, no devices).
 rbs-capture-test = { path = "../rbs-capture-test" }
 rbs-audio-io-test = { path = "../rbs-audio-io-test" }

@@ -4585,6 +4585,9 @@ dependencies = [
  "rbs-transport-file",
  "rbs-transport-rtmp",
  "rbs-transport-srt",
+ "rbs-vcam",
+ "rbs-vcam-mf",
+ "rbs-vcam-test",
  "serde_json",
 ]
 

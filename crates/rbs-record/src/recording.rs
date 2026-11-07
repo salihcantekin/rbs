@@ -28,6 +28,7 @@ use rbs_transport::{ReconnectPolicy, Secret, TransportFactory, TransportInput};
 use crate::select::Chosen;
 use crate::studio::{
     Chains, OutputId, OutputSettings, Prepared, Strictness, Studio, StudioSettings,
+    VirtualCameraSettings, VirtualCameraState,
 };
 
 /// The render partition: capture sources, the compositor and the video export. The
@@ -748,6 +749,32 @@ impl Recording {
     /// The studio the recording runs on.
     pub fn studio(&self) -> &Studio {
         &self.studio
+    }
+
+    /// Starts sending the program to a virtual camera next to the recording
+    /// ([`Studio::start_virtual_camera`]; `rbs-cli record --vcam`).
+    ///
+    /// # Errors
+    ///
+    /// As [`Studio::start_virtual_camera`]: the adapter's refusal (`NotInstalled`, ...),
+    /// `InvalidConfig` while it already sends, an engine refusal as `Os`.
+    pub fn start_virtual_camera(
+        &mut self,
+        factory: &dyn rbs_vcam::VirtualCameraFactory,
+        settings: VirtualCameraSettings,
+    ) -> Result<(), rbs_vcam::VcamError> {
+        self.studio.start_virtual_camera(factory, settings)
+    }
+
+    /// Stops sending to the virtual camera ([`Studio::stop_virtual_camera`]); false when
+    /// it was not sending. [`Recording::finish`] stops it too.
+    pub fn stop_virtual_camera(&mut self) -> bool {
+        self.studio.stop_virtual_camera()
+    }
+
+    /// The virtual camera while it sends ([`Studio::virtual_camera`]).
+    pub fn virtual_camera(&self) -> Option<VirtualCameraState> {
+        self.studio.virtual_camera()
     }
 
     /// The name of a node of the recording (a source name or a role such as
