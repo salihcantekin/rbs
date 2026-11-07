@@ -1106,9 +1106,12 @@ fn drawn_pairs() -> BTreeMap<(Ink, &'static str, &'static str), Rc<str>> {
 
 /// The smallest ratio a rule asks of `fg` on `bg`, when one does.
 fn rule(fg: &str, bg: &str) -> Option<f64> {
-    let fixed = [("color.text.on-live", "color.state.live", 4.5)]
-        .into_iter()
-        .chain(LIVE_SURFACES.iter().map(|s| ("color.state.live", *s, 3.0)));
+    let fixed = [
+        ("color.text.on-live", "color.state.live", 4.5),
+        ("color.caption.close-text", "color.caption.close-hover", 4.5),
+    ]
+    .into_iter()
+    .chain(LIVE_SURFACES.iter().map(|s| ("color.state.live", *s, 3.0)));
     CONTRAST_RULES
         .iter()
         .chain(THEME_CONTRAST_RULES)

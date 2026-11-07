@@ -224,6 +224,15 @@ pub const ICONS: &[Icon] = &[
         "rail-below",
         "M 1.5 2.5 L 7.5 2.5 L 7.5 9.5 L 1.5 9.5 Z M 8.5 2.5 L 14.5 2.5 L 14.5 9.5 L 8.5 9.5 Z M 1.5 13 L 14.5 13",
     ),
+    line("window-minimize", "M 3.5 8 L 12.5 8"),
+    line(
+        "window-maximize",
+        "M 3.5 3.5 L 12.5 3.5 L 12.5 12.5 L 3.5 12.5 Z",
+    ),
+    line(
+        "window-restore",
+        "M 3.5 5.5 L 10.5 5.5 L 10.5 12.5 L 3.5 12.5 Z M 5.5 5.5 L 5.5 3.5 L 12.5 3.5 L 12.5 10.5 L 10.5 10.5",
+    ),
 ];
 
 /// The icon named `name`, if the set has it.
