@@ -574,8 +574,9 @@ export component SourcesPanel inherits Rectangle {
     // and the usual keys (U4).
     property <length> header: 0px;
     property <int> asked: Studio.add-source-asked;
+    // Whoever asks sets `picker-kind` first: -1 for the list of types, or a type.
     changed asked => {
-        if Studio.state == 1 { Studio.picker-kind = -1; add-menu.show(); }
+        if Studio.state == 1 { add-menu.show(); }
     }
     if Studio.sources.length == 0: EmptyState {
         y: header;

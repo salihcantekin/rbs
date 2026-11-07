@@ -15,6 +15,7 @@
 
 use std::fmt;
 
+use crate::panel::{PanelId, built_in};
 use crate::workspace::{Toolbar, ToolbarItem, ToolbarStyle};
 
 /// Longest command id in bytes, counting the percent-encoded form.
@@ -311,6 +312,38 @@ pub const ENTRIES: &[Entry] = &[
         checkable: false,
     },
     Entry {
+        id: "ui.panel.maximize",
+        title: "Maximize",
+        tooltip: "Show a panel over the whole window, or restore the layout",
+        icon: Some("expand"),
+        shortcut: None,
+        menu: Menu::Window,
+        kind: Kind::Toggle {
+            on: "ui.panel.maximize",
+            off: "ui.panel.restore",
+        },
+        params: &[Param {
+            name: "id",
+            ty: ParamType::Text,
+            required: true,
+        }],
+        checkable: true,
+    },
+    Entry {
+        id: "source.add",
+        title: "Add source",
+        tooltip: "Add a screen, window, camera or audio source to the scene",
+        icon: Some("plus"),
+        shortcut: None,
+        menu: Menu::Source,
+        kind: Kind::Picker {
+            method: "source.add",
+            param: "kind",
+        },
+        params: &[choice("kind")],
+        checkable: false,
+    },
+    Entry {
         id: "stream.toggle",
         title: "Go live",
         tooltip: "Start or end the stream",
@@ -593,8 +626,12 @@ pub const MENU_LAYOUT: &[(Menu, &[&str])] = &[
             "ui.toolbar.reset",
         ],
     ),
+    (Menu::Source, &["source.add"]),
     (Menu::Output, &["stream.toggle", "record.toggle"]),
-    (Menu::Window, &["ui.panel.select"]),
+    (
+        Menu::Window,
+        &["ui.panel.select", "|", "ui.panel.maximize?id=rbs.preview"],
+    ),
 ];
 
 /// The icon an id shows, from the design system's icon set: the entry's, or for an
@@ -614,7 +651,13 @@ pub fn title(id: &CommandId, e: &Entry) -> String {
         ("ui.area.toggle", Some("left")) => "Left area".to_owned(),
         ("ui.area.toggle", Some("right")) => "Right area".to_owned(),
         ("ui.area.toggle", Some("bottom")) => "Bottom area".to_owned(),
-        _ => e.title.to_owned(),
+        _ => match (e.id, id.param("id").and_then(|p| PanelId::parse(p).ok())) {
+            ("ui.panel.maximize", Some(p)) => {
+                let name = built_in(&p).map_or(p.as_str(), |i| i.title);
+                format!("Maximize {name}")
+            }
+            _ => e.title.to_owned(),
+        },
     }
 }
 
@@ -680,6 +723,8 @@ pub fn menus(state: &dyn CommandState) -> Vec<(Menu, Vec<MenuItem>)> {
 pub fn default_toolbar() -> Toolbar {
     let items = [
         "ui.workspace.select",
+        "|",
+        "source.add",
         "~",
         "ui.area.toggle?area=left",
         "ui.area.toggle?area=bottom",
@@ -818,10 +863,26 @@ mod tests {
     }
 
     #[test]
+    fn maximize_names_its_panel_and_add_source_is_on_the_default_toolbar() {
+        let id = CommandId::parse("ui.panel.maximize?id=rbs.preview").unwrap();
+        let e = id.resolve().unwrap().unwrap();
+        assert_eq!(title(&id, e), "Maximize Preview");
+        assert_eq!(icon(&id, e), Some("expand"));
+        assert!(
+            default_toolbar()
+                .items
+                .contains(&ToolbarItem::Command("source.add".into()))
+        );
+    }
+
+    #[test]
     fn menus_follow_state() {
         let m = menus(&Fake);
         let titles: Vec<&str> = m.iter().map(|(m, _)| m.title()).collect();
-        assert_eq!(titles, ["File", "Edit", "View", "Output", "Window"]);
+        assert_eq!(
+            titles,
+            ["File", "Edit", "View", "Source", "Output", "Window"]
+        );
         let file = &m[0].1;
         let MenuItem::Choices { title, choices } = &file[1] else {
             panic!("scene collection picker")
