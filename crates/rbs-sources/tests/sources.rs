@@ -182,10 +182,20 @@ fn a_target_goes_to_the_adapter_that_lists_it() {
 }
 
 #[test]
-fn an_empty_registry_still_has_the_compositor_and_the_mixer() {
+fn an_empty_registry_still_has_the_compositor_the_mixer_and_the_filters() {
     let table = SourceTypes::new().node_types();
     let ids: Vec<&str> = table.ids().map(NodeTypeId::as_str).collect();
-    assert_eq!(ids, ["org.rbs.audio.mixer", "org.rbs.compositor"]);
+    assert_eq!(
+        ids,
+        [
+            "org.rbs.audio.mixer",
+            "org.rbs.compositor",
+            "org.rbs.filter.blur",
+            "org.rbs.filter.chroma-key",
+            "org.rbs.filter.color-correction",
+            "org.rbs.filter.sharpen",
+        ]
+    );
 }
 
 #[test]

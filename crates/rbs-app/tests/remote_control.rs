@@ -102,7 +102,11 @@ impl Client {
     fn login(&mut self, token: &str) -> Value {
         let hello = self.call(json!({"jsonrpc": "2.0", "id": 1, "method": "session.hello",
             "params": {"protocols": ["1.0"], "client": {"name": "test", "version": "1"}}}));
-        assert_eq!(hello["result"]["protocol"], "1.6", "{hello}");
+        assert_eq!(
+            hello["result"]["protocol"],
+            rbs_api::session::PROTOCOL_VERSION,
+            "{hello}"
+        );
         self.call(
             json!({"jsonrpc": "2.0", "id": 2, "method": "session.authenticate",
             "params": {"token": token}}),

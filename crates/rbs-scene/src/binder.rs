@@ -173,6 +173,10 @@ pub struct BindReport {
     pub created_filters: Vec<(FilterId, NodeId)>,
     /// Filter nodes this sync removed, or that someone else removed.
     pub retired_filters: Vec<NodeId>,
+    /// Bound filters whose node was kept but whose settings changed since the last
+    /// sync (ADR-0062 decision 3): the application sends the new values to the
+    /// running instance; the node is never rebuilt for it.
+    pub changed_filters: Vec<(FilterId, NodeId)>,
     /// The mixer of each canvas, when audio is enabled.
     pub mixers: BTreeMap<CanvasId, BoundMixer>,
     /// Mixer nodes this sync removed (their canvas is gone), with every link into
@@ -260,6 +264,8 @@ struct BoundSource {
     source: BoundNode,
     /// The settings the node was made for; other settings get a new node.
     settings: Settings,
+    /// The settings each bound filter was last synced with.
+    filter_settings: BTreeMap<FilterId, Settings>,
     filters: BTreeMap<FilterId, BoundNode>,
     /// Enabled, bound filters in chain order.
     chain: Vec<FilterId>,
@@ -584,6 +590,7 @@ impl State {
                 slot.insert(BoundSource {
                     source: BoundNode { node, pins },
                     settings: source.settings.clone(),
+                    filter_settings: BTreeMap::new(),
                     filters: BTreeMap::new(),
                     chain: Vec::new(),
                     chain_links: Vec::new(),
@@ -600,6 +607,7 @@ impl State {
                 .filter(|f| !present.contains(f))
                 .collect();
             for f in removed {
+                bound.filter_settings.remove(&f);
                 if let Some(b) = bound.filters.remove(&f) {
                     retire(graph, b.node)?;
                     report.retired_filters.push(b.node);
@@ -607,7 +615,13 @@ impl State {
             }
             let has_video = bound.source.pins.output.is_some();
             for filter in &source.filters {
-                if bound.filters.contains_key(&filter.id) {
+                if let Some(b) = bound.filters.get(&filter.id) {
+                    if bound.filter_settings.get(&filter.id) != Some(&filter.settings) {
+                        bound
+                            .filter_settings
+                            .insert(filter.id, filter.settings.clone());
+                        report.changed_filters.push((filter.id, b.node));
+                    }
                     continue;
                 }
                 if !has_video {
@@ -633,6 +647,9 @@ impl State {
                 }
                 let node = add_node(graph, descriptor)?;
                 report.created_filters.push((filter.id, node));
+                bound
+                    .filter_settings
+                    .insert(filter.id, filter.settings.clone());
                 bound.filters.insert(filter.id, BoundNode { node, pins });
             }
             let chain: Vec<FilterId> = source

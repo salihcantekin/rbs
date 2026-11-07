@@ -295,6 +295,14 @@ impl GpuContext {
         &self.queue
     }
 
+    /// The bind group layout of a sampled texture (binding 0, filterable float 2D) and
+    /// its sampler (binding 1), which every pool texture's
+    /// [`PooledTexture::sampled_bind_group`](crate::PooledTexture::sampled_bind_group)
+    /// matches. Pipelines that sample pool textures put it in their pipeline layout.
+    pub fn sampled_layout(&self) -> &wgpu::BindGroupLayout {
+        &self.sampled_layout
+    }
+
     /// Lets the device retire finished work without blocking. Call once per render tick.
     pub fn poll(&self) {
         // A poll error only means the device is lost, which the lost callback reports.

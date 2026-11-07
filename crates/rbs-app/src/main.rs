@@ -1815,6 +1815,45 @@ fn install_studio(g: &Studio<'_>, ctx: &Ctx) {
     on!(on_set_source_volume, |app, id: i32, position: f32| {
         app.studio.set_source_volume(id, position);
     });
+    on!(on_set_source_sync_offset, |app, id: i32, ms: i32| {
+        app.studio.set_source_sync_offset(id, ms);
+    });
+    on!(on_add_filter, |app, source: i32, ty: i32| {
+        app.studio.add_filter(source, ty);
+    });
+    on!(on_select_filter, |app, source: i32, filter: i32| {
+        app.studio.select_filter(source, filter);
+    });
+    on!(on_remove_filter, |app, filter: i32| {
+        app.studio.remove_filter(filter);
+    });
+    on!(on_move_filter, |app, filter: i32, index: i32| {
+        app.studio.move_filter(filter, index);
+    });
+    on!(on_set_filter_enabled, |app, filter: i32, on: bool| {
+        app.studio.set_filter_enabled(filter, on);
+    });
+    on!(
+        on_preview_filter,
+        |app, filter: i32, field: i32, position: f32| {
+            app.studio.preview_filter(filter, field, position);
+        }
+    );
+    on!(on_commit_filter, |app, filter: i32| {
+        app.studio.commit_filter(filter);
+    });
+    on!(on_cancel_filter, |app, filter: i32| {
+        app.studio.cancel_filter(filter);
+    });
+    on!(
+        on_set_filter_colour,
+        |app, filter: i32, field: i32, colour: slint::SharedString| {
+            app.studio.set_filter_colour(filter, field, &colour);
+        }
+    );
+    on!(on_reset_filter, |app, filter: i32| {
+        app.studio.reset_filter(filter);
+    });
     on!(
         on_rename_source,
         |app, id: i32, name: slint::SharedString| {

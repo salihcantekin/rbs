@@ -38,6 +38,8 @@ raw-window-handle = "0.6"
 # The recording settings file (src/record_profile.rs); the versions rbs-ui already uses.
 serde = { version = "1", features = ["derive"] }
 toml = "0.9"
+# Filter settings on the control API (src/studio_host/filters.rs); rbs-api already uses it.
+serde_json = "1"
 # Local time for recording file names; already built by Slint with these features.
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
 
@@ -51,6 +53,7 @@ rbs-gpu = { path = "../rbs-gpu", features = ["preview-layer"] }
 rbs-audio = { path = "../rbs-audio" }
 rbs-scene = { path = "../rbs-scene" }
 rbs-sources = { path = "../rbs-sources" }
+rbs-filters = { path = "../rbs-filters" }
 # CaptureError::Cancelled from OS pickers.
 rbs-capture = { path = "../rbs-capture" }
 rbs-record = { path = "../rbs-record" }

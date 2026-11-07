@@ -45,6 +45,8 @@ pub const METER_PERIOD: Duration = Duration::from_millis(33);
 const REPORT_EVERY: u32 = 30;
 
 /// Codes of `Studio.rec-state`.
+mod filters;
+
 pub mod rec_state {
     pub const OFF: i32 = 0;
     pub const STARTING: i32 = 1;
@@ -111,6 +113,8 @@ pub struct StudioUi {
     existing: Rc<VecModel<ExistingData>>,
     /// The selected source's id (-1 none), shown in every window's Properties.
     pub selected: i32,
+    /// The Filters tab's selection and the drag in progress (ADR-0062).
+    filter_ui: filters::FilterUi,
     /// An Add source is on its way: the next new source is selected.
     adding: bool,
     /// Moving and resizing on the picture panel (ADR-0048).
@@ -294,6 +298,7 @@ impl StudioUi {
             scene_list: None,
             scenes: Rc::new(VecModel::default()),
             existing: Rc::new(VecModel::default()),
+            filter_ui: filters::FilterUi::default(),
             selected: -1,
             adding: false,
             edit: PreviewEdit::default(),
@@ -381,6 +386,7 @@ impl StudioUi {
         g.set_sources(ModelRc::from(self.sources.clone()));
         g.set_scenes(ModelRc::from(self.scenes.clone()));
         g.set_existing(ModelRc::from(self.existing.clone()));
+        g.set_filter_types(strings(Self::filter_type_names()));
         g.set_marks(ModelRc::from(self.marks.clone()));
         g.set_kinds(ModelRc::from(self.kinds.clone()));
         g.set_targets(ModelRc::from(self.targets.clone()));
@@ -2746,10 +2752,17 @@ impl StudioUi {
         }
     }
 
+    /// Shows the rows again (a selection inside them changed).
+    fn refresh_rows(&mut self) {
+        let rows = self.rows.clone();
+        self.set_rows(rows);
+    }
+
     fn set_rows(&mut self, rows: Vec<SourceRow>) {
         let pictures: Vec<usize> = (0..rows.len())
             .filter(|i| rows[*i].layout.is_some())
             .collect();
+        self.filter_ui.retain(&rows);
         let data: Vec<SourceData> = rows
             .iter()
             .enumerate()
@@ -2775,6 +2788,7 @@ impl StudioUi {
                     .border
                     .unwrap_or(Border::new(DEFAULT_BORDER_WIDTH, [255, 255, 255, 255]));
                 let [cr, cg, cb, ca] = border.color;
+                let (filters, selected_filter) = self.filter_ui.data(r);
                 SourceData {
                     id: r.id.get() as i32,
                     name: r.name.as_str().into(),
@@ -2808,6 +2822,9 @@ impl StudioUi {
                     muted: r.audio.muted,
                     volume: fader::position_of(r.audio.volume),
                     volume_text: fader::volume_text(r.audio.volume).into(),
+                    filters,
+                    selected_filter,
+                    sync_offset: r.audio.sync_offset_ms,
                 }
             })
             .collect();
@@ -3109,7 +3126,8 @@ fn source_icon(kind: Option<SourceKind>) -> &'static str {
 /// The Studio global's `undo-kind` / `redo-kind` code and the source's name for a
 /// step: 0 nothing, 1 add, 2 delete, 3 layer order, 4 move or resize, 5 shape or
 /// border, 6 crop, 7 shown or hidden, 8 lock, 9 source rename, 10 scene added, 11
-/// scene removed, 12 scene renamed (the name is the scene's, or the old name).
+/// scene removed, 12 scene renamed (the name is the scene's, or the old name), 13
+/// filters changed.
 fn step_view(step: Option<&StepInfo>) -> (i32, &str) {
     match step {
         None => (0, ""),
@@ -3127,6 +3145,7 @@ fn step_view(step: Option<&StepInfo>) -> (i32, &str) {
                 EditKind::AddScene => 10,
                 EditKind::RemoveScene => 11,
                 EditKind::RenameScene => 12,
+                EditKind::Filter => 13,
             },
             s.name.as_str(),
         ),

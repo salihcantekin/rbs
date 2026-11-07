@@ -20,6 +20,7 @@ rbs-sources = { path = "../rbs-sources" }
 rbs-gpu = { path = "../rbs-gpu" }
 rbs-audio = { path = "../rbs-audio" }
 rbs-nodes = { path = "../rbs-nodes" }
+rbs-filters = { path = "../rbs-filters" }
 rbs-codec = { path = "../rbs-codec" }
 rbs-mux = { path = "../rbs-mux" }
 rbs-transport = { path = "../rbs-transport" }

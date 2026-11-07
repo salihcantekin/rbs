@@ -445,6 +445,9 @@ impl SourceTypes {
             NodeTypeId::new_static(MIXER_TYPE),
             rbs_audio::mixer_descriptor(),
         );
+        for ty in rbs_filters::catalogue() {
+            table.insert(ty.type_id(), rbs_filters::descriptor(*ty));
+        }
         for t in self.installed() {
             let descriptor = match class_of(&t) {
                 Some(SourceClass::Capture(_)) => rbs_nodes::capture_descriptor(),

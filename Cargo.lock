@@ -4336,6 +4336,7 @@ dependencies = [
  "rbs-core",
  "rbs-crash",
  "rbs-engine",
+ "rbs-filters",
  "rbs-gpu",
  "rbs-graph",
  "rbs-mux",
@@ -4718,6 +4719,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "rbs-filters"
+version = "0.0.1"
+dependencies = [
+ "bytemuck",
+ "criterion 0.7.0",
+ "pollster",
+ "rbs-core",
+ "rbs-gpu",
+ "rbs-graph",
+ "wgpu",
+]
+
+[[package]]
 name = "rbs-gpu"
 version = "0.0.1"
 dependencies = [
@@ -4840,6 +4854,7 @@ dependencies = [
  "rbs-codec-mf",
  "rbs-core",
  "rbs-engine",
+ "rbs-filters",
  "rbs-gpu",
  "rbs-graph",
  "rbs-mux",
@@ -4880,6 +4895,7 @@ dependencies = [
  "rbs-capture-wgc",
  "rbs-core",
  "rbs-engine",
+ "rbs-filters",
  "rbs-gpu",
  "rbs-graph",
  "rbs-nodes",

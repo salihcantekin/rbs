@@ -2,7 +2,7 @@
 //! [`rbs_scene::SceneCollection`], mapping one-to-one onto the model (ADR-0021).
 //!
 //! ```toml
-//! format = 3
+//! format = 4
 //! kind = "scene-collection"
 //! name = "Main show"
 //!
@@ -44,7 +44,7 @@
 //! "#rrggbbaa" }`, `shadow = { offset = [x, y], blur, color }`); items `visible = false`,
 //! `locked = true` (format 3) and `overrides = [{ canvas = 1, layout = {...} }]`; sources `filters = [{ id, type,
 //! enabled, settings }]`, `volume` (0 to 1, default 1) and `muted = true` (format 3,
-//! ADR-0059). Setting values are TOML booleans, integers, floats or
+//! ADR-0059), `sync_offset_ms` (-200 to 200, default 0; format 4, ADR-0062). Setting values are TOML booleans, integers, floats or
 //! strings. Loading validates the whole collection
 //! ([`SceneCollection::from_parts`]).
 
@@ -129,6 +129,12 @@ struct SourceDoc {
     volume: f64,
     #[serde(default, skip_serializing_if = "is_false")]
     muted: bool,
+    #[serde(default, skip_serializing_if = "is_zero_ms")]
+    sync_offset_ms: i32,
+}
+
+fn is_zero_ms(v: &i32) -> bool {
+    *v == 0
 }
 
 fn is_false(v: &bool) -> bool {
@@ -401,16 +407,17 @@ fn settings(s: BTreeMap<String, Value>) -> Settings {
 
 impl Document for SceneCollection {
     const KIND: &'static str = "scene-collection";
-    const FORMAT: u32 = 3;
+    const FORMAT: u32 = 4;
 
     /// Format 2 adds the optional layout `style` (ADR-0053); a format 1 body is a
     /// format 2 body without styles. Format 3 adds the optional item `locked` and
     /// source `volume` and `muted` (ADR-0059); a format 2 body is a format 3 body
-    /// without them.
+    /// without them. Format 4 adds the optional source `sync_offset_ms` (ADR-0062); a
+    /// format 3 body is a format 4 body without it.
     fn upgrade(from: u32, body: &mut toml::Table) -> Result<(), String> {
         let _ = body;
         match from {
-            1 | 2 => Ok(()),
+            1..=3 => Ok(()),
             _ => Err(format!("format {from} cannot be read")),
         }
     }
@@ -454,6 +461,7 @@ impl Document for SceneCollection {
                         .collect::<Result<_, String>>()?,
                     volume: wide(s.audio.volume),
                     muted: s.audio.muted,
+                    sync_offset_ms: s.audio.sync_offset_ms,
                 })
             })
             .collect::<Result<_, String>>()?;
@@ -562,7 +570,8 @@ impl Document for SceneCollection {
                         filter
                     })
                     .collect();
-                source.audio = SourceAudio::new(s.volume as f32, s.muted);
+                source.audio =
+                    SourceAudio::new(s.volume as f32, s.muted).with_sync_offset(s.sync_offset_ms);
                 source
             })
             .collect();

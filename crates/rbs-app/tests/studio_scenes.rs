@@ -166,7 +166,11 @@ fn start() -> Option<(StudioHost, Receiver<Update>, ApiServer, Client)> {
         "session.hello",
         json!({"protocols": ["1.6"], "client": {"name": "test", "version": "1"}}),
     );
-    assert_eq!(hello["result"]["protocol"], "1.6", "{hello}");
+    assert_eq!(
+        hello["result"]["protocol"],
+        rbs_api::session::PROTOCOL_VERSION,
+        "{hello}"
+    );
     Some((host, updates, api, c))
 }
 

@@ -52,6 +52,7 @@ fn show() -> SceneCollection {
         .unwrap();
     col.set_source_volume(mic, 0.3).unwrap();
     col.set_source_muted(mic, true).unwrap();
+    col.set_source_sync_offset(mic, -40).unwrap();
 
     let (talk, _) = col.add_scene("Talk", SceneScope::Shared).unwrap();
     let (cam_item, _) = col
@@ -136,7 +137,8 @@ fn a_collection_round_trips_exactly_with_its_counters() {
         "enabled = false",
         "visible = false",
         "canvas = 0",
-        "format = 3",
+        "format = 4",
+        "sync_offset_ms = -40",
         "locked = true",
         "volume = 0.3",
         "muted = true",
@@ -246,6 +248,10 @@ fn invalid_documents_are_refused_with_a_reason() {
         "{SOURCE}{scene}source = 0\nlayout = {{ position = [1e300, 0.0], size = [1.0, 1.0] }}\n"
     ));
     invalid(&format!("{SOURCE}settings = {{ x = inf }}\n"));
+    // Sound: the volume and sync offset ranges are part of the format.
+    assert!(invalid(&format!("{SOURCE}volume = 1.5\n")).contains("volume"));
+    assert!(invalid(&format!("{SOURCE}sync_offset_ms = 201\n")).contains("sync offset"));
+    assert!(invalid(&format!("{SOURCE}sync_offset_ms = -201\n")).contains("sync offset"));
     invalid(&format!("{SOURCE}settings = {{ x = [1, 2] }}\n"));
     // Type ids and names.
     invalid("[[sources]]\nid = 0\nname = \"S\"\ntype = \"display\"\n");
