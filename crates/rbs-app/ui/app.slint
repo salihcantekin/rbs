@@ -1308,8 +1308,10 @@ component FrameBar inherits Rectangle {
         Rectangle {
             horizontal-stretch: Shell.toolbar-visible && Shell.toolbar-has-space ? 0 : 1;
         }
-        // Live indicator (U4, U21): the right end of this row in every workspace.
-        LiveIndicator { horizontal-stretch: 0; }
+        // Live indicator (U4, U21): the right end of this row in every workspace while
+        // live or recording. Idle it is not in the layout at all, so it leaves no gap
+        // after the last toolbar item (the status bar says "Not live" then).
+        if Shell.live-state != 0: LiveIndicator { horizontal-stretch: 0; }
     }
     ws-menu := WorkspaceMenu {
         x: root.ws-menu-x;
