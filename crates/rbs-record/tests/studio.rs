@@ -491,3 +491,70 @@ fn volume_and_mute_reach_the_mixer_without_a_rebind() {
     let (_, errors) = studio.shutdown();
     assert!(errors.is_empty(), "{errors:?}");
 }
+
+#[test]
+fn filters_run_on_a_source_and_follow_edits_without_a_new_node() {
+    use rbs_scene::model::SettingValue;
+    let Some(gpu) = gpu() else { return };
+    let r = rig();
+    let (mut col, canvas) = scene();
+    let display = col
+        .sources()
+        .find(|s| s.type_id.as_str() == types::DISPLAY_SOURCE)
+        .map(|s| s.id)
+        .unwrap();
+    // A stored radius out of range: run clamped and reported, the document untouched.
+    let mut settings = Settings::new();
+    settings.insert("radius".to_owned(), SettingValue::Float(500.0));
+    let (blur, _) = col
+        .add_filter(
+            display,
+            NodeTypeId::new_static(rbs_filters::catalogue::BLUR),
+            settings,
+        )
+        .unwrap();
+    let (engine, clock) = engine_at_start();
+    let mut studio = Studio::start(
+        engine,
+        gpu,
+        &col,
+        &r.adapters.sources,
+        &StudioSettings::new(canvas),
+    )
+    .unwrap();
+    assert_eq!(studio.filter_problems().len(), 1);
+    assert_eq!(studio.filter_problems()[0].key, "radius");
+    let frames = |s: &Studio| s.filter_stats(blur).map_or(0, |st| st.frames());
+    // Pictures run only while something uses the canvas.
+    let out = studio
+        .start_output(
+            &r.adapters,
+            &OutputSettings::new("mem://filters", ContainerId::Matroska),
+        )
+        .unwrap();
+    assert!(run_until(&mut studio, &clock, |s| frames(s) >= 3));
+
+    // A settings edit reaches the running node; no node is made for it.
+    let stats = std::sync::Arc::clone(studio.filter_stats(blur).unwrap());
+    let mut fixed = Settings::new();
+    fixed.insert("radius".to_owned(), SettingValue::Float(4.0));
+    col.set_filter_settings(display, blur, fixed).unwrap();
+    let updated = studio.update(&col, &r.adapters.sources).unwrap();
+    assert!(updated.failed.is_empty(), "{updated:?}");
+    assert!(studio.filter_problems().is_empty());
+    assert!(std::sync::Arc::ptr_eq(
+        &stats,
+        studio.filter_stats(blur).unwrap()
+    ));
+    let before = frames(&studio);
+    assert!(run_until(&mut studio, &clock, |s| frames(s) > before));
+
+    // Removed: its instance is taken back.
+    col.remove_filter(display, blur).unwrap();
+    studio.update(&col, &r.adapters.sources).unwrap();
+    assert!(studio.filter_stats(blur).is_none());
+    let report = studio.stop_output(out).unwrap();
+    assert!(report.shutdown_errors.is_empty(), "{report:?}");
+    let (_, errors) = studio.shutdown();
+    assert!(errors.is_empty(), "{errors:?}");
+}
