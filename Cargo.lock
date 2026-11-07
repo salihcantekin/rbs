@@ -4975,6 +4975,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "rbs-vcam-ring"
+version = "0.0.1"
+
+[[package]]
 name = "rcgen"
 version = "0.14.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
