@@ -1798,6 +1798,39 @@ fn install_studio(g: &Studio<'_>, ctx: &Ctx) {
     on!(on_set_source_visible, |app, id: i32, visible: bool| {
         app.studio.set_source_visible(id, visible);
     });
+    on!(on_set_source_locked, |app, id: i32, locked: bool| {
+        app.studio.set_source_locked(id, locked);
+    });
+    on!(on_set_source_muted, |app, id: i32, muted: bool| {
+        app.studio.set_source_muted(id, muted);
+    });
+    on!(on_set_source_volume, |app, id: i32, position: f32| {
+        app.studio.set_source_volume(id, position);
+    });
+    on!(
+        on_rename_source,
+        |app, id: i32, name: slint::SharedString| {
+            app.studio.rename_source(id, &name);
+        }
+    );
+    on!(on_add_existing_source, |app, id: i32| {
+        app.studio.add_existing_source(id);
+    });
+    on!(on_switch_scene, |app, id: i32| {
+        app.studio.switch_scene(id);
+    });
+    on!(on_add_scene, |app| {
+        app.studio.add_scene();
+    });
+    on!(on_remove_scene, |app, id: i32| {
+        app.studio.remove_scene(id);
+    });
+    on!(
+        on_rename_scene,
+        |app, id: i32, name: slint::SharedString| {
+            app.studio.rename_scene(id, &name);
+        }
+    );
     on!(on_move_source, |app, id: i32, up: bool| {
         app.studio.move_source(id, up);
     });

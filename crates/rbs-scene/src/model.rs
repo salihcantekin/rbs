@@ -152,6 +152,45 @@ pub struct Source {
     pub settings: Settings,
     /// Filters, applied in order.
     pub filters: Vec<Filter>,
+    /// Volume and mute of its sound in the canvas mixers (ADR-0059). One value for the
+    /// source wherever it is placed; changing it never makes a new source node.
+    pub audio: SourceAudio,
+}
+
+/// The largest source volume: 1.0 (0 dB), like a fader. A boost is an audio filter.
+pub const MAX_SOURCE_VOLUME: f32 = 1.0;
+
+/// Volume and mute of a source's sound (ADR-0059).
+#[non_exhaustive]
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct SourceAudio {
+    /// Linear amplitude factor in `0.0..=`[`MAX_SOURCE_VOLUME`].
+    pub volume: f32,
+    /// Muted sound is not mixed; the volume is kept.
+    pub muted: bool,
+}
+
+impl SourceAudio {
+    /// `volume`, muted or not.
+    pub const fn new(volume: f32, muted: bool) -> Self {
+        Self { volume, muted }
+    }
+
+    /// True if the volume is finite and in `0.0..=`[`MAX_SOURCE_VOLUME`].
+    pub fn is_valid(&self) -> bool {
+        self.volume.is_finite() && (0.0..=MAX_SOURCE_VOLUME).contains(&self.volume)
+    }
+
+    /// True for full volume, not muted.
+    pub fn is_default(&self) -> bool {
+        *self == Self::default()
+    }
+}
+
+impl Default for SourceAudio {
+    fn default() -> Self {
+        Self::new(MAX_SOURCE_VOLUME, false)
+    }
 }
 
 impl Source {
@@ -163,6 +202,7 @@ impl Source {
             type_id,
             settings,
             filters: Vec::new(),
+            audio: SourceAudio::default(),
         }
     }
 }
@@ -461,6 +501,10 @@ pub struct SceneItem {
     pub content: ItemContent,
     /// Hidden items are not drawn and do not keep their source Active.
     pub visible: bool,
+    /// Locked items cannot be selected, moved, resized or cropped with the pointer on
+    /// the picture panel (ADR-0059). Properties, the control API and undo still change
+    /// them; flattening and binding ignore the flag.
+    pub locked: bool,
     /// Layout used on every canvas without an override.
     pub layout: Layout,
     /// Per-canvas layouts for shared scenes shown on several canvases (U15), ordered
@@ -475,6 +519,7 @@ impl SceneItem {
             id,
             content,
             visible: true,
+            locked: false,
             layout,
             overrides: BTreeMap::new(),
         }

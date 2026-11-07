@@ -32,7 +32,7 @@ use rbs_nodes::output::OutputNodeStats;
 use rbs_nodes::{OutputNode, PreviewNode, PreviewNodeStats, VideoEncoderNode, VideoExportNode};
 use rbs_scene::SceneCollection;
 use rbs_scene::binder::{BindProblem, BindReport, BoundCompositor, BoundMixer, Role, SceneBinder};
-use rbs_scene::model::{CanvasId, SourceId};
+use rbs_scene::model::{CanvasId, SourceAudio, SourceId};
 use rbs_sources::{InstanceContext, SourceInstance, SourceTypes, node_layers};
 use rbs_transport::{ReconnectPolicy, Secret, TransportConfig, TransportInput};
 
@@ -521,8 +521,11 @@ pub struct Studio {
     /// Retired instances whose take failed (their partition's swap was still in
     /// flight), with the source they belonged to; [`Studio::service`] retries them.
     pending_takes: Vec<(Added, Option<SourceId>)>,
-    /// The mixer's strips last sent: producer and meter.
-    strips: Vec<(NodeId, Option<Arc<LevelMeter>>)>,
+    /// The mixer's strips last sent.
+    strips: Vec<MixStrip>,
+    /// Volume and mute per source, from the last [`Studio::update`] or
+    /// [`Studio::set_mix`].
+    mix: BTreeMap<SourceId, SourceAudio>,
 }
 
 impl fmt::Debug for Studio {
@@ -736,6 +739,7 @@ impl Studio {
             audio_worker,
             pending_takes: Vec::new(),
             strips: Vec::new(),
+            mix: mix_of(collection),
         };
         if let Some(p) = recording
             && let Err(e) = studio.add_output(p)
@@ -802,6 +806,7 @@ impl Studio {
             .sync(collection, &mut self.graph)
             .map_err(RecordError::Bind)?;
         self.collection = collection.clone();
+        self.mix = mix_of(collection);
         let (failed, problems) = self.reconcile(sources, Some(report), Strictness::Lenient)?;
         Ok(Updated { problems, failed })
     }
@@ -975,16 +980,21 @@ impl Studio {
         if let (Some(mixer), Some(bound)) = (&mut self.mixer, &self.bound_mixer) {
             let live: BTreeSet<SourceId> = self.entries.iter().map(|e| e.source).collect();
             self.meters.retain(|s, _| live.contains(s));
-            let new: Vec<(NodeId, Option<Arc<LevelMeter>>)> = bound
+            let new: Vec<MixStrip> = bound
                 .inputs
                 .iter()
-                .map(|i| (i.producer, self.meters.get(&i.source).cloned()))
+                .map(|i| MixStrip {
+                    producer: i.producer,
+                    source: i.source,
+                    meter: self.meters.get(&i.source).cloned(),
+                    audio: self.mix.get(&i.source).copied().unwrap_or_default(),
+                })
                 .collect();
             let mut union = new.clone();
             union.extend(
                 self.strips
                     .iter()
-                    .filter(|(p, _)| !new.iter().any(|(n, _)| n == p))
+                    .filter(|old| !new.iter().any(|n| n.producer == old.producer))
                     .cloned(),
             );
             let _ = mixer.params.send(mixer_params(&union, &mixer.master));
@@ -1030,6 +1040,25 @@ impl Studio {
             take_instance(&mut self.engine, e, &mut self.pending_takes);
         }
         Ok((failed, self.problems.clone()))
+    }
+
+    /// Volume and mute only (ADR-0059): takes the sources' `audio` from `collection`
+    /// and sends the mixer the strips it already has at the new levels, without binding
+    /// or applying the graph, so a fader drag stays cheap. The mixer ramps to them.
+    /// Every other change goes through [`Studio::update`], which also sends the levels.
+    /// Returns false if the studio has no mixer.
+    pub fn set_mix(&mut self, collection: &SceneCollection) -> bool {
+        self.mix = mix_of(collection);
+        for strip in &mut self.strips {
+            if let Some(audio) = self.mix.get(&strip.source) {
+                strip.audio = *audio;
+            }
+        }
+        let Some(mixer) = &mut self.mixer else {
+            return false;
+        };
+        let _ = mixer.params.send(mixer_params(&self.strips, &mixer.master));
+        true
     }
 
     /// The bound sources the running plan schedules, in binder order, each with its
@@ -2025,16 +2054,29 @@ fn take(engine: &mut Engine, a: Added) -> bool {
     r.is_ok()
 }
 
-/// The mixer's parameters for `strips` (gain 1) and the master meter.
-fn mixer_params(
-    strips: &[(NodeId, Option<Arc<LevelMeter>>)],
-    master: &Arc<LevelMeter>,
-) -> MixerParams {
+/// Volume and mute of every source of `collection`.
+fn mix_of(collection: &SceneCollection) -> BTreeMap<SourceId, SourceAudio> {
+    collection.sources().map(|s| (s.id, s.audio)).collect()
+}
+
+/// One mixer input as the studio last sent it: its producer, the source it plays, its
+/// meter and the source's volume and mute (ADR-0059).
+#[derive(Clone)]
+struct MixStrip {
+    producer: NodeId,
+    source: SourceId,
+    meter: Option<Arc<LevelMeter>>,
+    audio: SourceAudio,
+}
+
+/// The mixer's parameters for `strips` (each at its source's volume and mute) and the
+/// master meter.
+fn mixer_params(strips: &[MixStrip], master: &Arc<LevelMeter>) -> MixerParams {
     let strips = strips
         .iter()
-        .map(|(producer, meter)| {
-            let strip = Strip::new(*producer, 1.0);
-            match meter {
+        .map(|s| {
+            let strip = Strip::new(s.producer, s.audio.volume).with_muted(s.audio.muted);
+            match &s.meter {
                 Some(m) => strip.with_meter(Arc::clone(m)),
                 None => strip,
             }

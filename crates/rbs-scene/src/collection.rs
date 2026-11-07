@@ -9,7 +9,7 @@ use rbs_graph::node::NodeTypeId;
 
 use crate::model::{
     Canvas, CanvasId, Filter, FilterId, ItemContent, ItemId, Layout, Scene, SceneId, SceneItem,
-    SceneScope, SettingValue, Settings, Source, SourceId,
+    SceneScope, SettingValue, Settings, Source, SourceAudio, SourceId,
 };
 
 /// Why an edit was refused. The collection is unchanged after any error.
@@ -70,6 +70,8 @@ pub enum SceneError {
     CanvasTooLarge,
     /// A canvas frame rate is above [`MAX_FRAME_RATE`] frames per second.
     FrameRateTooHigh,
+    /// A source volume is not finite or outside `0.0..=1.0` (ADR-0059).
+    InvalidVolume,
 }
 
 /// Most levels of scenes in a nesting chain, counting the shown scene. Bounds the
@@ -131,6 +133,7 @@ impl fmt::Display for SceneError {
                     "canvas frame rates can be at most {MAX_FRAME_RATE} per second"
                 )
             }
+            SceneError::InvalidVolume => f.write_str("volume must be a number from 0 to 1"),
         }
     }
 }
@@ -164,9 +167,16 @@ enum Op {
         placements: Vec<(SceneId, usize, SceneItem)>,
     },
     RemoveSource(SourceId),
+    /// Replaces everything of a source but its `audio`, which stays as it is.
     ReplaceSource {
         expected: Source,
         new: Source,
+    },
+    /// Replaces only a source's volume and mute.
+    SetSourceAudio {
+        source: SourceId,
+        expected: SourceAudio,
+        new: SourceAudio,
     },
     InsertScene {
         scene: Scene,
@@ -523,6 +533,7 @@ impl SceneCollection {
             type_id,
             settings,
             filters: Vec::new(),
+            audio: SourceAudio::default(),
         };
         let undo = self.apply_with(
             Op::InsertSource {
@@ -555,6 +566,29 @@ impl SceneCollection {
         let mut source = self.get_source(id)?.clone();
         source.settings = settings;
         self.replace_source(source, None)
+    }
+
+    /// Sets a source's volume, a linear factor in `0.0..=1.0` (ADR-0059; `InvalidVolume`
+    /// otherwise). The binder ignores it: the source keeps its node.
+    pub fn set_source_volume(&mut self, id: SourceId, volume: f32) -> Result<Undo, SceneError> {
+        let expected = self.get_source(id)?.audio;
+        let new = SourceAudio::new(volume, expected.muted);
+        self.apply(Op::SetSourceAudio {
+            source: id,
+            expected,
+            new,
+        })
+    }
+
+    /// Mutes or unmutes a source's sound (ADR-0059); the volume is kept.
+    pub fn set_source_muted(&mut self, id: SourceId, muted: bool) -> Result<Undo, SceneError> {
+        let expected = self.get_source(id)?.audio;
+        let new = SourceAudio::new(expected.volume, muted);
+        self.apply(Op::SetSourceAudio {
+            source: id,
+            expected,
+            new,
+        })
     }
 
     /// Adds a filter at the end of a source's chain.
@@ -682,6 +716,7 @@ impl SceneCollection {
             id,
             content,
             visible: true,
+            locked: false,
             layout,
             overrides: BTreeMap::new(),
         };
@@ -714,6 +749,14 @@ impl SceneCollection {
     pub fn set_item_visible(&mut self, id: ItemId, visible: bool) -> Result<Undo, SceneError> {
         let mut item = self.get_item(id)?.clone();
         item.visible = visible;
+        self.replace_item(item)
+    }
+
+    /// Locks or unlocks an item (ADR-0059): a locked item cannot be changed with the
+    /// pointer on the picture panel. Nothing here refuses edits of locked items.
+    pub fn set_item_locked(&mut self, id: ItemId, locked: bool) -> Result<Undo, SceneError> {
+        let mut item = self.get_item(id)?.clone();
+        item.locked = locked;
         self.replace_item(item)
     }
 
@@ -941,12 +984,39 @@ impl SceneCollection {
                 let placements = self.remove_items(ItemContent::Source(id));
                 Ok(Op::InsertSource { source, placements })
             }
-            Op::ReplaceSource { expected, new } => {
+            Op::SetSourceAudio {
+                source,
+                expected,
+                new,
+            } => {
+                let slot = self
+                    .sources
+                    .get_mut(&source)
+                    .ok_or(SceneError::UnknownSource(source))?;
+                if slot.audio != expected {
+                    return Err(SceneError::UndoConflict);
+                }
+                slot.audio = new;
+                Ok(Op::SetSourceAudio {
+                    source,
+                    expected: new,
+                    new: expected,
+                })
+            }
+            Op::ReplaceSource {
+                mut expected,
+                mut new,
+            } => {
                 let issued = self.next.filter;
                 let slot = self
                     .sources
                     .get_mut(&new.id)
                     .ok_or(SceneError::UnknownSource(new.id))?;
+                // Volume and mute are live controls with records of their own
+                // (`SetSourceAudio`): replacing a source keeps its current sound, so a
+                // fader move never makes an earlier rename conflict or come back.
+                expected.audio = slot.audio;
+                new.audio = slot.audio;
                 if *slot != expected
                     || expected.id != new.id
                     || new.filters.iter().any(|f| f.id.0 >= issued)
@@ -1109,6 +1179,9 @@ impl SceneCollection {
             }
             check_type(&s.type_id)?;
             check_settings(&s.settings)?;
+            if !s.audio.is_valid() {
+                return Err(SceneError::InvalidVolume);
+            }
             for f in &s.filters {
                 if !filters.insert(f.id) {
                     return Err(SceneError::DuplicateFilter(f.id));

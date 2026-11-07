@@ -8,8 +8,8 @@ use rbs_core::media::Size;
 use rbs_core::timing::FrameRate;
 use rbs_graph::node::NodeTypeId;
 use rbs_scene::model::{
-    Border, CanvasId, Crop, ItemContent, ItemId, ItemStyle, Layout, SceneId, SceneScope,
-    SettingValue, Settings, Shadow, Shape, SourceId,
+    Border, CanvasId, Crop, ItemContent, ItemId, ItemStyle, Layout, MAX_SOURCE_VOLUME, SceneId,
+    SceneScope, SettingValue, Settings, Shadow, Shape, SourceAudio, SourceId,
 };
 use rbs_scene::{MAX_LAYERS, MAX_NESTING_DEPTH, SceneCollection, SceneError, Undo};
 
@@ -488,7 +488,7 @@ fn random_edit(col: &mut SceneCollection, rng: &mut Lcg) -> Result<Undo, SceneEr
     let len = scene
         .and_then(|s| col.scene(s))
         .map_or(0, |s| s.items.len());
-    match rng.below(24) {
+    match rng.below(27) {
         14 => {
             let (s, f) = filter.ok_or(missing)?;
             col.remove_filter(s, f)
@@ -517,6 +517,10 @@ fn random_edit(col: &mut SceneCollection, rng: &mut Lcg) -> Result<Undo, SceneEr
             )
             .map(|x| x.1),
         23 => col.move_item(item.ok_or(missing)?, rng.below(len.max(1))),
+        24 => col.set_item_locked(item.ok_or(missing)?, n.is_multiple_of(2)),
+        // Every fifth volume is out of range and must be refused.
+        25 => col.set_source_volume(source.ok_or(missing)?, (n % 5) as f32 * 0.3),
+        26 => col.set_source_muted(source.ok_or(missing)?, n.is_multiple_of(2)),
         0 => col
             .add_canvas(&format!("C{n}"), Size::new(640, 360), FrameRate::FPS_30)
             .map(|x| x.1),
@@ -993,4 +997,70 @@ fn a_style_reaches_the_layer_in_the_items_own_units() {
     let l = &s.col.flatten(s.wide, outer).unwrap()[0];
     assert_eq!(l.style, style);
     assert_eq!(l.box_size, [640.0, 360.0]);
+}
+
+#[test]
+fn lock_and_source_audio_are_undoable_and_validated() {
+    let mut s = studio();
+    let (scene, _) = s.col.add_scene("Main", SceneScope::Shared).unwrap();
+    let (item, _) = s
+        .col
+        .add_item(scene, ItemContent::Source(s.cam), full(10.0, 10.0), None)
+        .unwrap();
+    s.col.set_program(s.wide, Some(scene)).unwrap();
+    let before = s.col.clone();
+    assert!(!s.col.item(item).unwrap().1.locked);
+
+    let lock = s.col.set_item_locked(item, true).unwrap();
+    assert!(s.col.item(item).unwrap().1.locked);
+    // Locked items still flatten and still take layout edits (ADR-0059).
+    assert_eq!(s.col.flatten(s.wide, scene).unwrap().len(), 1);
+    let moved = s.col.set_item_layout(item, None, full(20.0, 20.0)).unwrap();
+
+    let source = s.col.source(s.cam).unwrap();
+    assert_eq!(source.audio, SourceAudio::default());
+    assert!((source.audio.volume - MAX_SOURCE_VOLUME).abs() < f32::EPSILON);
+    let quiet = s.col.set_source_volume(s.cam, 0.25).unwrap();
+    let mute = s.col.set_source_muted(s.cam, true).unwrap();
+    assert_eq!(
+        s.col.source(s.cam).unwrap().audio,
+        SourceAudio::new(0.25, true)
+    );
+
+    let unchanged = s.col.clone();
+    for bad in [-0.1, 1.01, f32::NAN, f32::INFINITY] {
+        assert_eq!(
+            s.col.set_source_volume(s.cam, bad),
+            Err(SceneError::InvalidVolume)
+        );
+    }
+    assert_eq!(s.col, unchanged);
+
+    for undo in [mute, quiet, moved, lock] {
+        s.col.undo(undo).unwrap();
+    }
+    assert_eq!(s.col, before);
+}
+
+#[test]
+fn volume_and_mute_never_conflict_with_or_come_back_through_other_source_records() {
+    let mut s = studio();
+    let rename = s.col.rename_source(s.cam, "Webcam").unwrap();
+    // A live mute after the rename (the app keeps it off the undo stack).
+    s.col.set_source_muted(s.cam, true).unwrap();
+    s.col.set_source_volume(s.cam, 0.5).unwrap();
+    // Undoing the rename works and keeps the sound as it is now.
+    let redo = s.col.undo(rename).unwrap();
+    let cam = s.col.source(s.cam).unwrap();
+    assert_eq!(cam.name, "Camera");
+    assert_eq!(cam.audio, SourceAudio::new(0.5, true));
+    s.col.set_source_muted(s.cam, false).unwrap();
+    s.col.undo(redo).unwrap();
+    let cam = s.col.source(s.cam).unwrap();
+    assert_eq!(cam.name, "Webcam");
+    assert_eq!(cam.audio, SourceAudio::new(0.5, false));
+    // An audio record used out of order is refused.
+    let a = s.col.set_source_volume(s.cam, 0.2).unwrap();
+    s.col.set_source_volume(s.cam, 0.4).unwrap();
+    assert_eq!(s.col.undo(a), Err(SceneError::UndoConflict));
 }

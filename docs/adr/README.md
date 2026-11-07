@@ -71,4 +71,5 @@ An ADR records one decision that is hard to reverse or affects more than one cra
 | [0056](0056-keep-running-after-the-main-window-closes.md) | Keep running after the main window closes: Close and Quit are separate; Dock on macOS, tray icon on Windows | Accepted |
 | [0057](0057-user-themes-and-appearance-settings.md) | User themes as checked token overrides in a theme library; Settings › Appearance picks and edits them | Accepted |
 | [0058](0058-crop-editing-of-sources.md) | Crop editing of sources: keep the scale, read the picture size from the capture node | Accepted |
+| [0059](0059-scenes-lock-and-source-audio-in-the-studio.md) | Scenes, item lock and source volume in the studio | Accepted |
 | [0060](0060-shortcuts-in-app-and-global.md) | Shortcuts bind registry commands to key chords, in the app or globally; Settings › Shortcuts edits them | Proposed |
