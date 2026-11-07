@@ -1308,7 +1308,7 @@ mod tests {
     #[test]
     fn check_answers_for_recording() {
         let k = Keymap::resolve(&ShortcutsDoc::default(), Platform::Windows);
-        assert_eq!(k.check(&c("Ctrl+K"), Scope::App), Check::Free);
+        assert_eq!(k.check(&c("Ctrl+J"), Scope::App), Check::Free);
         assert_eq!(
             k.check(&c("Ctrl+Z"), Scope::Global),
             Check::Taken {
