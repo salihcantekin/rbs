@@ -162,6 +162,26 @@ const AREA: Param = Param {
     required: true,
 };
 
+/// The Settings section to show; without it the window opens where it was, or at
+/// General.
+const SECTION: Param = Param {
+    name: "section",
+    ty: ParamType::OneOf(&SETTINGS_SECTIONS),
+    required: false,
+};
+
+/// The sections of the Settings window, as `ui.settings.open {section}` names them,
+/// in the order of the window's section list.
+pub const SETTINGS_SECTIONS: [&str; 7] = [
+    "general",
+    "appearance",
+    "shortcuts",
+    "video",
+    "recording",
+    "stream",
+    "remote_control",
+];
+
 /// A picker's choice: optional, because the bare picker id opens the list.
 const fn choice(name: &'static str) -> Param {
     Param {
@@ -204,6 +224,17 @@ pub const ENTRIES: &[Entry] = &[
             param: "id",
         },
         params: &[choice("id")],
+        checkable: false,
+    },
+    Entry {
+        id: "ui.settings.open",
+        title: "Settings",
+        tooltip: "Open the Settings window",
+        icon: Some("gear"),
+        shortcut: None,
+        menu: Menu::File,
+        kind: action("ui.settings.open"),
+        params: &[SECTION],
         checkable: false,
     },
     Entry {
@@ -723,7 +754,15 @@ pub enum MenuItem {
 
 /// What each menu holds, in order: command ids (with parameters) and `|` separators.
 pub const MENU_LAYOUT: &[(Menu, &[&str])] = &[
-    (Menu::File, &["profile.select", "collection.select"]),
+    (
+        Menu::File,
+        &[
+            "profile.select",
+            "collection.select",
+            "|",
+            "ui.settings.open",
+        ],
+    ),
     (Menu::Edit, &["edit.undo", "edit.redo"]),
     (
         Menu::View,
@@ -775,6 +814,13 @@ pub fn icon(id: &CommandId, e: &Entry) -> Option<&'static str> {
         ("ui.area.toggle", Some("bottom")) => Some("panel-bottom"),
         _ => e.icon,
     }
+}
+
+/// Whether a toolbar shows the id as its icon alone in every style: the area toggles
+/// and Settings, whose icons say what they are (the title stays the accessible name
+/// and tooltip).
+pub fn icon_only(id: &CommandId) -> bool {
+    matches!(id.base(), "ui.area.toggle" | "ui.settings.open")
 }
 
 /// The title an id shows: the entry's, with the area named for area toggles, the
@@ -869,6 +915,8 @@ pub fn default_toolbar() -> Toolbar {
         "|",
         "stream.toggle",
         "record.toggle",
+        "|",
+        "ui.settings.open",
     ];
     Toolbar {
         style: ToolbarStyle::IconsText,
@@ -1019,6 +1067,26 @@ mod tests {
                 .items
                 .contains(&ToolbarItem::Command("source.add".into()))
         );
+    }
+
+    #[test]
+    fn settings_is_last_on_the_default_toolbar_as_an_icon() {
+        let t = default_toolbar();
+        assert_eq!(
+            t.items.last(),
+            Some(&ToolbarItem::Command("ui.settings.open".into()))
+        );
+        let id = CommandId::parse("ui.settings.open").unwrap();
+        let e = id.resolve().unwrap().unwrap();
+        assert_eq!(icon(&id, e), Some("gear"));
+        assert!(icon_only(&id));
+        assert_eq!(e.menu, Menu::File);
+        for s in SETTINGS_SECTIONS {
+            let id = CommandId::parse(&format!("ui.settings.open?section={s}")).unwrap();
+            assert!(id.resolve().unwrap().is_some(), "{s}");
+        }
+        let bad = CommandId::parse("ui.settings.open?section=audio").unwrap();
+        assert!(bad.resolve().is_err());
     }
 
     #[test]
