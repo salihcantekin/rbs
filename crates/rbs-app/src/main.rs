@@ -15,6 +15,7 @@
 //! (development aid, see `look`). `RBS_CONFIG_DIR` overrides the config directory.
 #![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
 
+mod app_menu;
 mod appearance;
 mod appearance_page;
 mod config;
@@ -161,6 +162,8 @@ struct App {
     /// `ui.settings.open` ran; the next sync shows Settings, at this section when
     /// given.
     open_settings: Option<Option<i32>>,
+    /// `ui.app_menu.open` ran; the next sync opens the RBS menu in the main window.
+    open_app_menu: bool,
     save_due: bool,
     exiting: bool,
     /// Every window is hidden by Close with Keep RBS running (ADR-0056).
@@ -430,6 +433,7 @@ impl App {
             Run::ReloadThemes => self.reload_themes = true,
             // Making the window needs the shell's context, which the next sync has.
             Run::OpenSettings(section) => self.open_settings = Some(section),
+            Run::OpenAppMenu => self.open_app_menu = true,
         }
     }
 
@@ -1366,6 +1370,11 @@ impl Ctx {
         if std::mem::take(&mut app.reload_themes) {
             appearance_page::reload(self, &mut app);
         }
+        if std::mem::take(&mut app.open_app_menu) {
+            let s = app.main.global::<Shell>();
+            s.set_app_menu_asked(s.get_app_menu_asked().wrapping_add(1));
+            let _ = app.main.show();
+        }
         if let Some(section) = app.open_settings.take() {
             // Without a section: where the open window is, else General (listed first).
             let section = section
@@ -1844,6 +1853,75 @@ fn install(g: &Shell<'_>, ctx: &Ctx) {
 
 /// Connect one window's menu bar to the shared state.
 fn install_menus(g: &Menus<'_>, ctx: &Ctx) {
+    let c = ctx.clone();
+    g.on_run(move |id| c.update(move |app| app.run_command(&id)));
+}
+
+/// Connect the main window's RBS menu to the shared state. Rows are made when the
+/// menu asks, so it shows the state of the moment and costs nothing while closed.
+fn install_app_menu(g: &AppMenus<'_>, ctx: &Ctx) {
+    let c = ctx.clone();
+    let main = ctx.app.borrow().main.as_weak();
+    g.on_prepare(move || {
+        let Some(main) = main.upgrade() else { return };
+        let g = main.global::<AppMenus>();
+        let keys = c.keys.borrow();
+        if let Ok(app) = c.app.try_borrow() {
+            entry::guard(|| {
+                let shown = app.shown();
+                let cats: Vec<slint::SharedString> = app_menu::categories(&shown)
+                    .into_iter()
+                    .map(Into::into)
+                    .collect();
+                g.set_categories(ModelRc::new(VecModel::from(cats)));
+                let chips: Vec<AppMenuChip> = app_menu::profiles(&shown)
+                    .into_iter()
+                    .map(|(title, id, current)| AppMenuChip {
+                        title: title.into(),
+                        id: id.into(),
+                        current,
+                    })
+                    .collect();
+                g.set_profiles(ModelRc::new(VecModel::from(chips)));
+            });
+        }
+        g.set_search_shortcut(keys.label("ui.app_menu.open").unwrap_or_default().into());
+        g.set_settings_shortcut(keys.label("ui.settings.open").unwrap_or_default().into());
+    });
+    let c = ctx.clone();
+    g.on_rows(move |category, picker, query| {
+        let keys = c.keys.borrow();
+        let rows = match c.app.try_borrow() {
+            Ok(app) => entry::guard_or(Vec::new, || {
+                app_menu::rows(
+                    &app.shown(),
+                    usize::try_from(category).unwrap_or(0),
+                    &picker,
+                    &query,
+                    &|id| keys.label(id),
+                )
+            }),
+            Err(_) => Vec::new(),
+        };
+        let rows: Vec<AppMenuRow> = rows
+            .into_iter()
+            .map(|r| AppMenuRow {
+                kind: r.kind as i32,
+                title: r.title.into(),
+                icon: r.icon.into(),
+                shortcut: r.shortcut.into(),
+                value: r.value.into(),
+                id: r.id.into(),
+                enabled: r.enabled,
+                checkable: r.checkable,
+                checked: r.checked,
+                reason: r.reason.into(),
+                up: r.up.and_then(|i| i32::try_from(i).ok()).unwrap_or(-1),
+                down: r.down.and_then(|i| i32::try_from(i).ok()).unwrap_or(-1),
+            })
+            .collect();
+        ModelRc::new(VecModel::from(rows))
+    });
     let c = ctx.clone();
     g.on_run(move |id| c.update(move |app| app.run_command(&id)));
 }
@@ -2541,6 +2619,7 @@ fn run(config: PathBuf, notice: Option<String>) -> Result<(), Box<dyn std::error
             error,
             reload_themes: false,
             open_settings: None,
+            open_app_menu: false,
             save_due: false,
             exiting: false,
             hidden: false,
@@ -2570,6 +2649,9 @@ fn run(config: PathBuf, notice: Option<String>) -> Result<(), Box<dyn std::error
     install(&main.global::<Shell>(), &ctx);
     install_menus(&main.global::<Menus>(), &ctx);
     install_context_menus(&main.global::<ContextMenus>(), &ctx);
+    install_app_menu(&main.global::<AppMenus>(), &ctx);
+    main.global::<Shell>()
+        .set_native_menu_bar(cfg!(target_os = "macos"));
     shortcuts_page::install_press(&main.global::<Shortcuts>(), &ctx);
     install_studio(&main.global::<Studio>(), &ctx);
     CTX.with(|c| *c.borrow_mut() = Some(ctx.clone()));

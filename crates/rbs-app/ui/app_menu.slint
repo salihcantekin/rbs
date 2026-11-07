@@ -1,0 +1,477 @@
+// The RBS menu (spec `ui-design-system.md`, "RBS menu"; mockup G's app menu): a
+// flyout from the RBS button with a search field, the menus as a column of
+// categories, the chosen menu's items in sections, the Output profiles as chips and
+// Settings. Every item is a command registry id (ADR-0050); Rust builds the rows
+// (`app_menu.rs`) when the menu opens or its view changes, so nothing is computed
+// while it is closed (P13).
+import { Theme, Tokens } from "tokens.slint";
+import { Icon, IconName, Icons, MenuSurface, FocusRing } from "components.slint";
+
+// One row of the item column. kind: 1 command, 2 section heading, 3 separator,
+// 4 picker (opens its choices), 5 back (from a picker's choices).
+export struct AppMenuRow {
+    kind: int,
+    title: string,
+    // Icon name from the set.
+    icon: string,
+    // The shortcut bound to it, as the platform writes it.
+    shortcut: string,
+    // A picker's current choice ("Edit" for Workspace).
+    value: string,
+    // The id a click runs (commands) or the picker's id (pickers).
+    id: string,
+    enabled: bool,
+    checkable: bool,
+    checked: bool,
+    // Why it is disabled; shown under the menu while it is the current row.
+    reason: string,
+    // The rows Up and Down move to (-1: none).
+    up: int,
+    down: int,
+}
+
+// An Output profile chip in the bottom row.
+export struct AppMenuChip {
+    title: string,
+    id: string,
+    current: bool,
+}
+
+export global AppMenus {
+    // The menu shown last, kept while the app runs.
+    in-out property <int> category;
+    // The menus, in menu bar order (refreshed when the menu opens).
+    in-out property <[string]> categories;
+    in-out property <[AppMenuChip]> profiles;
+    // The shortcuts of the search command and of Settings, or "".
+    in-out property <string> search-shortcut;
+    in-out property <string> settings-shortcut;
+    // Fills `categories`, `profiles` and the shortcuts.
+    callback prepare();
+    // The rows of menu `category`, of the picker `picker` when it is not "", or the
+    // search results for `query` when it is not blank.
+    callback rows(/* category */ int, /* picker */ string, /* query */ string) -> [AppMenuRow];
+    // Runs a command registry id.
+    callback run(string);
+}
+
+// A category (one menu) in the left column.
+component CategoryRow inherits Rectangle {
+    in property <string> text;
+    in property <bool> selected;
+    callback picked();
+    height: Tokens.size-control-md;
+    border-radius: Tokens.radius-sm;
+    background: selected ? Theme.accent : touch.has-hover ? Theme.surface-raised : transparent;
+    accessible-role: tab;
+    accessible-label: text;
+    accessible-item-selected: selected;
+    accessible-action-default => { picked(); }
+    touch := TouchArea { clicked => { root.picked(); } }
+    HorizontalLayout {
+        padding-left: Tokens.space-2;
+        padding-right: Tokens.space-2;
+        spacing: Tokens.space-2;
+        Text {
+            text: root.text;
+            color: root.selected ? Theme.text-inverse : Theme.text-primary;
+            font-size: Tokens.type-body-size;
+            vertical-alignment: center;
+            horizontal-stretch: 1;
+        }
+        VerticalLayout {
+            alignment: center;
+            Icon { name: IconName.chevron-right; ink: root.selected ? Theme.text-inverse : Theme.text-secondary; }
+        }
+    }
+}
+
+// A row of the item column.
+component ItemRow inherits Rectangle {
+    in property <AppMenuRow> data;
+    in property <bool> current;
+    callback hovered();
+    callback activated();
+    property <color> ink: !data.enabled ? Theme.text-disabled : current ? Theme.text-inverse : Theme.text-primary;
+    property <color> soft: !data.enabled ? Theme.text-disabled : current ? Theme.text-inverse : Theme.text-secondary;
+    height: Tokens.size-control-md;
+    border-radius: Tokens.radius-sm;
+    // A disabled row can be the current one (its reason shows below): a quieter fill.
+    background: !current ? transparent : data.enabled ? Theme.accent : Theme.surface-raised;
+    accessible-role: button;
+    accessible-label: data.kind == 4 && data.value != "" ? @tr("{}: {}", data.title, data.value) : data.title;
+    accessible-description: data.reason;
+    accessible-checkable: data.checkable;
+    accessible-checked: data.checked;
+    accessible-enabled: data.enabled;
+    accessible-action-default => { if data.enabled { activated(); } }
+    TouchArea {
+        enabled: data.enabled;
+        changed has-hover => { if self.has-hover { root.hovered(); } }
+        clicked => { root.activated(); }
+    }
+    HorizontalLayout {
+        padding-left: Tokens.space-2;
+        padding-right: Tokens.space-2;
+        spacing: Tokens.space-2;
+        VerticalLayout {
+            alignment: center;
+            width: Tokens.size-icon-box;
+            // A checked item shows its checkmark in its icon's place (spec, "Icons").
+            Icon {
+                name: data.kind == 5 ? IconName.chevron-left : data.checked ? IconName.check : Icons.named(data.icon);
+                ink: data.checked && !current && data.enabled ? Theme.accent : root.ink;
+            }
+        }
+        Text {
+            text: data.title;
+            color: root.ink;
+            font-size: Tokens.type-body-size;
+            vertical-alignment: center;
+            overflow: elide;
+            horizontal-stretch: 1;
+        }
+        if data.value != "" || data.shortcut != "": Text {
+            text: data.value != "" ? data.value : data.shortcut;
+            color: root.soft;
+            font-size: Tokens.type-caption-size;
+            vertical-alignment: center;
+        }
+        VerticalLayout {
+            alignment: center;
+            width: Tokens.size-icon-box;
+            Icon { name: data.kind == 4 ? IconName.chevron-right : IconName.none; ink: root.soft; }
+        }
+    }
+}
+
+// A chip in the bottom row: an Output profile.
+component Chip inherits Rectangle {
+    in property <string> text;
+    in property <bool> current;
+    callback clicked();
+    height: Tokens.size-control-sm;
+    width: label.preferred-width + 2 * Tokens.space-2;
+    border-radius: self.height / 2;
+    border-width: Tokens.size-border;
+    border-color: current ? Theme.accent : Theme.border-strong;
+    background: touch.has-hover ? Theme.surface-raised : transparent;
+    accessible-role: button;
+    accessible-label: @tr("Output profile {}", text);
+    accessible-checked: current;
+    accessible-action-default => { clicked(); }
+    touch := TouchArea { clicked => { root.clicked(); } }
+    label := Text {
+        text: root.text;
+        color: root.current ? Theme.text-primary : Theme.text-secondary;
+        font-size: Tokens.type-caption-size;
+        font-weight: Tokens.type-label-weight;
+        vertical-alignment: center;
+        horizontal-alignment: center;
+    }
+}
+
+// The flyout. The owner places it under the RBS button and shows it.
+export component AppMenu inherits PopupWindow {
+    // Where Settings and the search shortcut are named in the platform's words.
+    close-policy: close-on-click-outside;
+    property <int> category;
+    property <string> picker;
+    property <string> picker-title;
+    property <[AppMenuRow]> shown;
+    property <int> current: -1;
+    // 0 the item column has the keys, 1 the category column.
+    property <int> column;
+    property <length> item-w: Tokens.size-menu-md * 2 - Tokens.size-menu-sm * 0.75;
+    width: Tokens.size-menu-md * 2;
+
+    // The popup's content is made each time it shows: fill it then.
+    init => {
+        root.category = AppMenus.category;
+        AppMenus.prepare();
+        refresh();
+    }
+    // Focusing in `init` is too early (see MenuItem): once, after the first frame.
+    property <bool> focused-once;
+    Timer {
+        interval: 1ms;
+        running: !root.focused-once;
+        triggered => { root.focused-once = true; query.focus(); }
+    }
+    function refresh() {
+        // The keys stay with the menu after a click (the field forwards what it
+        // does not use).
+        query.focus();
+        shown = AppMenus.rows(category, picker, query.text);
+        current = shown.length == 0 ? -1 : live(0) ? 0 : shown[0].down;
+    }
+    function live(i: int) -> bool {
+        return shown[i].kind == 1 || shown[i].kind == 4 || shown[i].kind == 5;
+    }
+    function move(step: int) {
+        if column == 1 {
+            pick-category(Math.mod(category + step + AppMenus.categories.length, AppMenus.categories.length));
+            return;
+        }
+        if current < 0 { return; }
+        let next = step > 0 ? shown[current].down : shown[current].up;
+        if next >= 0 { current = next; }
+    }
+    function pick-category(i: int) {
+        category = i;
+        AppMenus.category = i;
+        picker = "";
+        query.text = "";
+        refresh();
+    }
+    function activate(i: int) {
+        if i < 0 || i >= shown.length || !shown[i].enabled { return; }
+        if shown[i].kind == 4 {
+            picker = shown[i].id;
+            refresh();
+        } else if shown[i].kind == 5 {
+            picker = "";
+            refresh();
+        } else if shown[i].kind == 1 {
+            AppMenus.run(shown[i].id);
+            root.close();
+        }
+    }
+    MenuSurface {
+        width: root.width;
+        // Arrows, Return and Escape reach the menu before the search field; typing
+        // goes to the field.
+        keys := FocusScope {
+            capture-key-pressed(e) => {
+                if e.text == Key.DownArrow { move(1); return accept; }
+                if e.text == Key.UpArrow { move(-1); return accept; }
+                if e.text == Key.Return { activate(current); return accept; }
+                if e.text == Key.RightArrow && column == 0 && current >= 0 && shown[current].kind == 4 { activate(current); return accept; }
+                if e.text == Key.RightArrow && column == 1 { column = 0; return accept; }
+                if e.text == Key.LeftArrow && picker != "" { picker = ""; refresh(); return accept; }
+                if e.text == Key.LeftArrow && query.text == "" && column == 0 { column = 1; return accept; }
+                if e.text == Key.Escape {
+                    if picker != "" { picker = ""; refresh(); return accept; }
+                    root.close();
+                    return accept;
+                }
+                reject
+            }
+            VerticalLayout {
+                // Search (Ctrl/Cmd+K): every command, setting and panel.
+                Rectangle {
+                    height: Tokens.size-control-md + 2 * Tokens.space-2;
+                    Rectangle {
+                        x: Tokens.space-2;
+                        y: Tokens.space-2;
+                        width: parent.width - 2 * Tokens.space-2;
+                        height: Tokens.size-control-md;
+                        border-radius: Tokens.radius-sm;
+                        background: Theme.surface-raised;
+                        border-width: Tokens.size-border;
+                        border-color: query.has-focus ? Theme.border-focus : Theme.border-subtle;
+                        HorizontalLayout {
+                            padding-left: Tokens.space-2;
+                            padding-right: Tokens.space-2;
+                            spacing: Tokens.space-2;
+                            VerticalLayout { alignment: center; Icon { name: IconName.search; ink: Theme.text-secondary; } }
+                            Rectangle {
+                                horizontal-stretch: 1;
+                                if query.text == "": Text {
+                                    x: 0;
+                                    width: parent.width;
+                                    text: @tr("Type a command, setting or panel");
+                                    color: Theme.text-secondary;
+                                    font-size: Tokens.type-body-size;
+                                    vertical-alignment: center;
+                                }
+                                query := TextInput {
+                                    width: parent.width;
+                                    color: Theme.text-primary;
+                                    font-size: Tokens.type-body-size;
+                                    vertical-alignment: center;
+                                    selection-background-color: Theme.accent;
+                                    selection-foreground-color: Theme.text-inverse;
+                                    text-cursor-width: Tokens.size-focus-ring;
+                                    accessible-label: @tr("Search commands, settings and panels");
+                                    edited => { column = 0; picker = ""; root.refresh(); }
+                                }
+                            }
+                            if AppMenus.search-shortcut != "": Rectangle {
+                                width: kbd.preferred-width + 2 * Tokens.space-1;
+                                height: Tokens.size-control-sm - Tokens.space-1;
+                                y: (parent.height - self.height) / 2;
+                                border-radius: Tokens.radius-sm;
+                                border-width: Tokens.size-border;
+                                border-color: Theme.border-subtle;
+                                kbd := Text {
+                                    text: AppMenus.search-shortcut;
+                                    color: Theme.text-secondary;
+                                    font-size: Tokens.type-caption-size;
+                                    vertical-alignment: center;
+                                    horizontal-alignment: center;
+                                }
+                            }
+                        }
+                    }
+                }
+                Rectangle { height: Tokens.size-border; background: Theme.border-subtle; }
+                HorizontalLayout {
+                    // The menus, as categories; hidden while search results show.
+                    if query.text == "": VerticalLayout {
+                        width: Tokens.size-menu-sm * 0.75;
+                        padding: Tokens.space-1;
+                        spacing: Tokens.size-border;
+                        alignment: start;
+                        accessible-role: tab-list;
+                        accessible-label: @tr("Menus");
+                        for c[i] in AppMenus.categories: CategoryRow {
+                            text: c;
+                            selected: i == root.category;
+                            picked => { root.column = 0; root.pick-category(i); }
+                        }
+                    }
+                    if query.text == "": Rectangle { width: Tokens.size-border; background: Theme.border-subtle; }
+                    Flickable {
+                        height: min(rows.preferred-height, Tokens.size-menu-md * 1.5);
+                        content-height: rows.preferred-height;
+                        rows := VerticalLayout {
+                            padding: Tokens.space-1;
+                            spacing: Tokens.size-border;
+                            alignment: start;
+                            accessible-role: list;
+                            if root.shown.length == 0: Text {
+                                height: Tokens.size-control-md;
+                                x: Tokens.space-2;
+                                text: query.text == "" ? "" : @tr("No command matches “{}”.", query.text);
+                                color: Theme.text-secondary;
+                                font-size: Tokens.type-body-size;
+                                vertical-alignment: center;
+                            }
+                            for r[i] in root.shown: Rectangle {
+                                height: r.kind == 2 ? Tokens.size-control-sm : r.kind == 3 ? Tokens.space-2 : Tokens.size-control-md;
+                                if r.kind == 3: Rectangle {
+                                    y: (parent.height - self.height) / 2;
+                                    x: Tokens.space-2;
+                                    width: parent.width - 2 * Tokens.space-2;
+                                    height: Tokens.size-border;
+                                    background: Theme.border-subtle;
+                                }
+                                if r.kind == 2: Text {
+                                    x: Tokens.space-2;
+                                    y: parent.height - self.height;
+                                    text: r.title.to-uppercase();
+                                    color: Theme.text-secondary;
+                                    font-size: Tokens.type-caption-size;
+                                    font-weight: Tokens.type-label-weight;
+                                    letter-spacing: 0.5px;
+                                    accessible-role: text;
+                                    accessible-label: r.title;
+                                }
+                                if r.kind == 1 || r.kind == 4 || r.kind == 5: ItemRow {
+                                    width: parent.width;
+                                    data: r;
+                                    current: i == root.current && root.column == 0;
+                                    hovered => { root.column = 0; root.current = i; }
+                                    activated => { root.activate(i); }
+                                }
+                            }
+                        }
+                    }
+                }
+                // Why the current item is disabled (ADR-0050 decision 4).
+                if current >= 0 && current < shown.length && shown[current].reason != "": Text {
+                    x: Tokens.space-3;
+                    height: Tokens.size-control-sm;
+                    text: shown[current].reason;
+                    color: Theme.text-secondary;
+                    font-size: Tokens.type-caption-size;
+                    vertical-alignment: center;
+                }
+                Rectangle { height: Tokens.size-border; background: Theme.border-subtle; }
+                HorizontalLayout {
+                    height: Tokens.size-control-md + 2 * Tokens.space-2;
+                    padding-left: Tokens.space-3;
+                    padding-right: Tokens.space-2;
+                    spacing: Tokens.space-2;
+                    if AppMenus.profiles.length > 0: Text {
+                        text: @tr("Profiles:");
+                        color: Theme.text-secondary;
+                        font-size: Tokens.type-caption-size;
+                        vertical-alignment: center;
+                    }
+                    for p in AppMenus.profiles: VerticalLayout {
+                        alignment: center;
+                        Chip {
+                            text: p.title;
+                            current: p.current;
+                            clicked => { AppMenus.run(p.id); root.close(); }
+                        }
+                    }
+                    Rectangle { horizontal-stretch: 1; }
+                    settings := Rectangle {
+                        width: srow.preferred-width;
+                        border-radius: Tokens.radius-sm;
+                        background: stouch.has-hover ? Theme.surface-raised : transparent;
+                        accessible-role: button;
+                        accessible-label: @tr("Settings");
+                        accessible-action-default => { AppMenus.run("ui.settings.open"); root.close(); }
+                        stouch := TouchArea { clicked => { AppMenus.run("ui.settings.open"); root.close(); } }
+                        srow := HorizontalLayout {
+                            padding-left: Tokens.space-2;
+                            padding-right: Tokens.space-2;
+                            spacing: Tokens.space-2;
+                            VerticalLayout { alignment: center; Icon { name: IconName.gear; ink: Theme.text-secondary; } }
+                            Text { text: @tr("Settings"); color: Theme.text-secondary; font-size: Tokens.type-caption-size; vertical-alignment: center; }
+                            if AppMenus.settings-shortcut != "": Text {
+                                text: AppMenus.settings-shortcut;
+                                color: Theme.text-secondary;
+                                font-size: Tokens.type-caption-size;
+                                vertical-alignment: center;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+// The RBS button at the start of the toolbar row: opens the RBS menu.
+export component AppMenuButton inherits Rectangle {
+    in property <bool> open;
+    callback clicked();
+    width: row.preferred-width;
+    height: Tokens.size-control-md;
+    border-radius: Tokens.radius-sm;
+    border-width: Tokens.size-border;
+    border-color: Theme.border-subtle;
+    background: open ? Theme.accent-subtle : touch.has-hover ? Theme.surface-overlay : Theme.surface-raised;
+    accessible-role: button;
+    accessible-label: @tr("RBS menu");
+    accessible-description: @tr("Every command, with search");
+    accessible-expanded: open;
+    accessible-action-default => { clicked(); }
+    forward-focus: focus;
+    focus := FocusScope {
+        key-pressed(e) => {
+            if e.text == Key.Return || e.text == " " || e.text == Key.DownArrow { root.clicked(); return accept; }
+            reject
+        }
+    }
+    touch := TouchArea { clicked => { focus.focus(); root.clicked(); } }
+    row := HorizontalLayout {
+        padding-left: Tokens.space-2;
+        padding-right: Tokens.space-3;
+        spacing: Tokens.space-2;
+        VerticalLayout { alignment: center; Icon { name: IconName.menu; } }
+        Text {
+            text: "RBS";
+            color: Theme.text-primary;
+            font-size: Tokens.type-body-size;
+            font-weight: 700;
+            vertical-alignment: center;
+        }
+    }
+    FocusRing { show: focus.has-focus; }
+}
