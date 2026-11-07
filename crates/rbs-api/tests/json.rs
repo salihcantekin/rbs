@@ -53,6 +53,7 @@ fn stream_settings() -> StreamSettings {
         reconnect: true,
         srt_latency_ms: None,
         encoding: encoding(),
+        auto_record: true,
     }
 }
 
@@ -259,6 +260,7 @@ fn every_request() -> Vec<Request> {
                 reconnect: false,
                 srt_latency_ms: Some(500),
                 encoding: encoding(),
+                auto_record: Some(true),
             }),
         })),
         c(Command::EventsSubscribe(Subscribe {
@@ -671,8 +673,19 @@ fn stream_settings_are_a_minor_addition() {
             reconnect: true,
             srt_latency_ms: None,
             encoding: encoding(),
+            auto_record: Some(true),
         }
     );
+    // Protocol 1.11 added `auto_record`: a 1.2 server's settings read as off, and a
+    // 1.2 client's patch leaves it as it is.
+    let mut old = serde_json::to_value(stream_settings()).unwrap();
+    old.as_object_mut().unwrap().remove("auto_record");
+    let read: StreamSettings = serde_json::from_value(old.clone()).unwrap();
+    assert!(!read.auto_record);
+    let patch: StreamSettingsPatch = serde_json::from_value(old).unwrap();
+    assert_eq!(patch.auto_record, None);
+    let text = serde_json::to_value(&patch).unwrap();
+    assert!(text.get("auto_record").is_none(), "{text}");
 }
 
 /// Protocol 1.3 added item layouts and `item.set_style` (ADR-0053): a 1.2 source row
