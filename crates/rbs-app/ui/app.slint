@@ -3,7 +3,7 @@
 // layout tree into tab stacks and splitter handles with absolute positions.
 import { Theme, Tokens } from "tokens.slint";
 import { Button, IconButton, Icon, IconName, MenuItem as MenuRow, MenuSurface, EmptyState } from "components.slint";
-import { Studio, EntryRow, SourceData, MarkData, KindData, TargetData, MeterRow, ScaleMark, EncoderData, ProgramPanel, SourcesPanel, PropertiesPanel, MixerPanel, LiveControlsPanel, OutputsPanel, StatsPanel, RecordingSettings, StreamSettings, VideoSettings, RemoteControlSettings } from "studio.slint";
+import { Studio, EntryRow, SourceData, MarkData, KindData, TargetData, MeterRow, ScaleMark, EncoderData, ProgramPanel, SourcesPanel, PropertiesPanel, MixerPanel, LiveControlsPanel, OutputsPanel, StatsPanel, RecordingSettings, StreamSettings, VideoSettings, RemoteControlSettings, GeneralSettings } from "studio.slint";
 
 export { Theme, Tokens, Studio, EntryRow, SourceData, MarkData, KindData, TargetData, MeterRow, ScaleMark, EncoderData }
 
@@ -12,6 +12,9 @@ export struct StackData { window: int, stack: int, x: length, y: length, w: leng
 export struct HandleData { window: int, index: int, x: length, y: length, w: length, h: length, horizontal: bool, percent: int }
 export struct PanelEntry { id: string, title: string, open: bool }
 export struct WorkspaceEntry { name: string, built-in: bool, current: bool }
+// A toolbar item (ADR-0050). kind: 0 command, 1 the workspace picker, 2 separator,
+// 3 flexible space, 4 an item this version cannot run (shown disabled).
+export struct ToolbarData { id: string, title: string, kind: int, enabled: bool, checked: bool, live: bool }
 
 // Edges, as passed to Shell.move-edge.
 export global Edges {
@@ -68,8 +71,18 @@ export global Shell {
     in-out property <Cover> top-toast;
     // The main window was closed while a stream runs: the frame asks first (U4).
     in property <bool> quit-confirm;
+    // The first Close to the background says once where RBS went (ADR-0056): 0 none,
+    // 1 macOS (the Dock), 2 Windows (the notification area).
+    in property <int> background-notice;
+    callback background-notice-ok();
+    // Cmd+W on macOS: Close, as the main window's close button (ADR-0056).
+    callback close-main();
     callback quit-end-stream();
     callback quit-keep();
+    // The toolbar's items, whether it is shown, and whether it has a flexible space.
+    in property <[ToolbarData]> toolbar;
+    in property <bool> toolbar-visible: true;
+    in property <bool> toolbar-has-space;
     // End stream from the menu bar: the frame asks first (U4).
     in property <bool> end-stream-confirm;
     callback end-stream-answer(bool /* end */);
@@ -537,26 +550,10 @@ component EntryMenu inherits PopupWindow {
     }
 }
 
-component PanelsMenu inherits PopupWindow {
-    close-policy: close-on-click-outside;
-    width: Tokens.size-menu-sm;
-    MenuSurface {
-        width: Tokens.size-menu-sm;
-        VerticalLayout {
-            padding: Tokens.space-2;
-            for p[i] in Shell.panels: MenuRow {
-                autofocus: i == 0;
-                text: p.title;
-                checked: p.open;
-                activated => { Shell.toggle-panel(p.id); root.close(); }
-            }
-        }
-    }
-}
-
 // End stream picked in the menu bar asks first (U4), in the frame of the window
 // whose menu it was picked from; Keep streaming has the focus.
 component EndStreamConfirm inherits HorizontalLayout {
+    horizontal-stretch: 0;
     spacing: Tokens.space-2;
     accessible-role: groupbox;
     accessible-label: @tr("End the stream?");
@@ -578,38 +575,69 @@ component EndStreamConfirm inherits HorizontalLayout {
     }
 }
 
-// The window frame: live indicator, workspace and Panels menus (rule U21). It stays
-// in every workspace, even with every panel closed.
+// One toolbar item: a command button (a toggle shows its state; one that stops a
+// live output is in the live colour, U12), the workspace picker, a separator or the
+// flexible space.
+component ToolbarCell inherits HorizontalLayout {
+    in property <ToolbarData> item;
+    // The workspace picker was clicked, at this window x.
+    callback open-workspaces(length);
+    horizontal-stretch: item.kind == 3 ? 1 : 0;
+    if item.kind == 0 || item.kind == 4: Button {
+        text: item.title;
+        enabled: item.enabled;
+        checked: item.checked && !item.live;
+        kind: item.live ? "live" : "secondary";
+        clicked => { Menus.run(item.id); }
+    }
+    if item.kind == 1: Button {
+        text: @tr("Workspace: {}", Shell.workspace-name);
+        icon: IconName.chevron-down;
+        clicked => { root.open-workspaces(self.absolute-position.x); }
+    }
+    if item.kind == 2: Rectangle {
+        width: Tokens.size-border;
+        background: Theme.border-subtle;
+    }
+    // The flexible space: an empty layout cannot grow, a rectangle can.
+    if item.kind == 3: Rectangle { }
+}
+
+// The window frame's toolbar row (ADR-0049, ADR-0050): the workspace's toolbar items
+// and, at its right end, the live indicator (U4, U21). It stays in every workspace,
+// even with every panel closed.
 component FrameBar inherits Rectangle {
+    // Where the workspace menu opens: under the toolbar's Workspace item.
+    property <length> ws-menu-x;
     height: Tokens.size-control-md + 2 * Tokens.space-2;
     background: Theme.surface-sunken;
     HorizontalLayout {
         padding: Tokens.space-2;
         spacing: Tokens.space-2;
-        alignment: start;
-        LiveIndicator { }
-        ws-button := Button {
-            text: @tr("Workspace: {}", Shell.workspace-name);
-            icon: IconName.chevron-down;
-            clicked => { ws-menu.show(); }
-        }
-        panels-button := Button {
-            text: @tr("Panels");
-            icon: IconName.chevron-down;
-            clicked => { panels-menu.show(); }
+        // The workspace's toolbar items (ADR-0050); hidden, the row stays with the
+        // live indicator at its right end.
+        for item in Shell.toolbar-visible ? Shell.toolbar : []: ToolbarCell {
+            item: item;
+            open-workspaces(x) => {
+                root.ws-menu-x = x - root.absolute-position.x;
+                ws-menu.show();
+            }
         }
         profile-button := Button {
+            horizontal-stretch: 0;
             text: @tr("Output profile: {}", Studio.profile-name);
             icon: IconName.chevron-down;
             clicked => { profile-menu.show(); }
         }
         collection-button := Button {
+            horizontal-stretch: 0;
             text: @tr("Scene collection: {}", Studio.collection-name);
             icon: IconName.chevron-down;
             clicked => { collection-menu.show(); }
         }
         // Closing while live ends the stream: asked first, in the frame (U4).
         if Shell.quit-confirm: HorizontalLayout {
+            horizontal-stretch: 0;
             spacing: Tokens.space-2;
             accessible-role: groupbox;
             accessible-label: @tr("End the stream and quit?");
@@ -635,6 +663,7 @@ component FrameBar inherits Rectangle {
         // Network access (ADR-0046 decision 7): shown in every workspace while other
         // computers can connect, in words.
         if Studio.rc-network-on: Text {
+            horizontal-stretch: 0;
             text: @tr("Reachable from other computers");
             color: Theme.text-secondary;
             font-size: Tokens.type-caption-size;
@@ -643,18 +672,21 @@ component FrameBar inherits Rectangle {
             accessible-label: @tr("Remote control: reachable from other computers");
         }
         if Shell.locked: Text {
+            horizontal-stretch: 0;
             text: @tr("Layout locked");
             color: Theme.text-secondary;
             font-size: Tokens.type-caption-size;
             vertical-alignment: center;
         }
+        // Takes the free width unless the toolbar has its own flexible space.
+        Rectangle {
+            horizontal-stretch: Shell.toolbar-visible && Shell.toolbar-has-space ? 0 : 1;
+        }
+        // Live indicator (U4, U21): the right end of this row in every workspace.
+        LiveIndicator { horizontal-stretch: 0; }
     }
     ws-menu := WorkspaceMenu {
-        x: ws-button.x;
-        y: parent.height;
-    }
-    panels-menu := PanelsMenu {
-        x: panels-button.x;
+        x: root.ws-menu-x;
         y: parent.height;
     }
     profile-menu := EntryMenu {
@@ -774,6 +806,8 @@ export component MainWindow inherits Window {
         KeyBinding { keys: @keys(Control + Z); activated => { Studio.undo-edit(true); } }
         KeyBinding { keys: @keys(Control + Shift + Z); activated => { Studio.undo-edit(false); } }
         KeyBinding { keys: @keys(Control + Y); activated => { Studio.undo-edit(false); } }
+        // Cmd+W closes the main window on macOS, as its close button does (ADR-0056).
+        KeyBinding { keys: @keys(Control + W); activated => { if Studio.platform == 0 { Shell.close-main(); } } }
         VerticalLayout {
             frame := FrameBar { }
             DockArea {
@@ -799,7 +833,19 @@ export component MainWindow inherits Window {
         act => { Studio.undo-delete(); }
         dismiss => { Studio.dismiss-deleted(); }
     }
-    if Shell.error-kind != 0: Toast {
+    // The first Close with Keep RBS running says once where RBS goes, in the error
+    // bar's place over the window (ADR-0056); OK (or Dismiss) hides the windows.
+    if Shell.background-notice != 0: Toast {
+        x: (parent.width - self.width) / 2;
+        y: frame.height + Tokens.space-2;
+        top: true;
+        text: Shell.background-notice == 1 ? @tr("RBS keeps running in the Dock. Quit with Cmd+Q.")
+            : @tr("RBS keeps running in the notification area (under the ^ arrow until you pin it). Quit it from the RBS icon there.");
+        action: @tr("OK");
+        act => { Shell.background-notice-ok(); }
+        dismiss => { Shell.background-notice-ok(); }
+    }
+    if Shell.error-kind != 0 && Shell.background-notice == 0: Toast {
         x: (parent.width - self.width) / 2;
         y: frame.height + Tokens.space-2;
         top: true;
@@ -899,7 +945,7 @@ export component SettingsWindow inherits Window {
     min-width: Tokens.size-menu-md * 2;
     background: Theme.surface-raised;
     default-font-size: Tokens.type-body-size;
-    // 0 Video, 1 Recording, 2 Stream, 3 Remote control.
+    // 0 Video, 1 Recording, 2 Stream, 3 Remote control, 4 General (listed first).
     in-out property <int> section: 1;
     // Escape was pressed: the window closes, as with its close button.
     callback dismiss();
@@ -920,6 +966,11 @@ export component SettingsWindow inherits Window {
                     alignment: start;
                     accessible-role: list;
                     accessible-label: @tr("Settings sections");
+                    MenuRow {
+                        text: @tr("General");
+                        checked: root.section == 4;
+                        activated => { root.section = 4; }
+                    }
                     MenuRow {
                         text: @tr("Video");
                         checked: root.section == 0;
@@ -949,7 +1000,7 @@ export component SettingsWindow inherits Window {
                     spacing: Tokens.space-3;
                     alignment: start;
                     Text {
-                        text: root.section == 0 ? @tr("Video") : root.section == 1 ? @tr("Recording") : root.section == 2 ? @tr("Stream") : @tr("Remote control");
+                        text: root.section == 0 ? @tr("Video") : root.section == 1 ? @tr("Recording") : root.section == 2 ? @tr("Stream") : root.section == 3 ? @tr("Remote control") : @tr("General");
                         color: Theme.text-primary;
                         font-size: Tokens.type-heading-size;
                         font-weight: Tokens.type-heading-weight;
@@ -959,6 +1010,7 @@ export component SettingsWindow inherits Window {
                     if root.section == 1: RecordingSettings { }
                     if root.section == 2: StreamSettings { }
                     if root.section == 3: RemoteControlSettings { }
+                    if root.section == 4: GeneralSettings { }
                 }
             }
         }

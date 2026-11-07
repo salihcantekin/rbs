@@ -49,13 +49,14 @@ thread_local! {
 /// Connects to `endpoint` off the UI thread, then makes the layer on the UI thread.
 /// `done(true)` once the layer exists, `done(false)` if this session cannot show it.
 pub fn connect(endpoint: PreviewEndpoint, done: impl Fn(bool) + Send + Clone + 'static) {
+    let generation = GENERATION.load(std::sync::atomic::Ordering::Relaxed);
     let spawned = std::thread::Builder::new()
         .name("rbs-preview-connect".into())
         .spawn(
             move || match PreviewSubscriber::connect(&endpoint, CONNECT_TIMEOUT) {
                 Ok(sub) => {
                     let d = done.clone();
-                    let _ = crate::entry::invoke(move || setup(sub, d));
+                    let _ = crate::entry::invoke(move || setup(sub, d, generation));
                 }
                 Err(e) => {
                     log(&format!("preview: cannot connect: {e}"));
@@ -68,10 +69,17 @@ pub fn connect(endpoint: PreviewEndpoint, done: impl Fn(bool) + Send + Clone + '
     }
 }
 
-/// Set by [`close`] at quit: the frame thread's end is then not logged.
-static CLOSED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+/// Bumped by [`close`]: a frame thread of an earlier connection ends within one receive
+/// timeout and drops its subscriber, so the studio's publisher does no preview work
+/// while nothing shows it (P13; ADR-0056 decision 5). Its end is then not logged.
+static GENERATION: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
-fn setup(mut sub: PreviewSubscriber, done: impl Fn(bool)) {
+fn setup(mut sub: PreviewSubscriber, done: impl Fn(bool), generation: u64) {
+    let current = move || GENERATION.load(std::sync::atomic::Ordering::Relaxed) == generation;
+    // Closed while connecting (the window was hidden): the subscriber goes away unused.
+    if !current() {
+        return;
+    }
     #[cfg(target_os = "macos")]
     let made: Result<PreviewLayer, rbs_gpu::GpuError> = Ok(PreviewLayer::new(&sub));
     #[cfg(windows)]
@@ -99,17 +107,23 @@ fn setup(mut sub: PreviewSubscriber, done: impl Fn(bool)) {
     let spawned = std::thread::Builder::new()
         .name("rbs-preview".into())
         .spawn(move || {
-            loop {
+            while current() {
                 match sub.recv(Duration::from_millis(250)) {
                     Ok(Some(frame)) => {
-                        if crate::entry::invoke(move || show(frame)).is_err() {
+                        // A frame of an earlier connection never reaches a newer layer.
+                        let shown = crate::entry::invoke(move || {
+                            if current() {
+                                show(frame);
+                            }
+                        });
+                        if shown.is_err() {
                             break;
                         }
                     }
                     Ok(None) => {}
                     Err(e) => {
                         // At quit the studio stops after `close`; that end is expected.
-                        if !CLOSED.load(std::sync::atomic::Ordering::Relaxed) {
+                        if current() {
                             log(&format!("preview: the studio's preview ended: {e}"));
                         }
                         break;
@@ -309,8 +323,9 @@ pub fn set_marks(window: &MainWindow, marks: &[transform::Mark]) {
     });
 }
 
-/// Drops the layer (its frames go back) before the studio stops.
+/// Drops the layer (its frames go back) before the studio stops, or while the main
+/// window is hidden; the frame thread ends and unsubscribes. [`connect`] starts again.
 pub fn close() {
-    CLOSED.store(true, std::sync::atomic::Ordering::Relaxed);
+    GENERATION.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     PREVIEW.with(|p| p.borrow_mut().take());
 }

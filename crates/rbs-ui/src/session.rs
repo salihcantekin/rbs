@@ -6,7 +6,7 @@
 //! shortcut, the command palette, a pointer and a Stream Deck all take the same path.
 
 use crate::history::LayoutHistory;
-use crate::layout::{Edge, Handle, Rect};
+use crate::layout::{Edge, Rect};
 use crate::live::LiveStatus;
 use crate::panel::{PanelId, UpdateRate, built_in, needed_rate};
 use crate::workspace::{Side, Workspace, WorkspaceError};
@@ -241,18 +241,11 @@ impl LayoutSession {
                 delta,
                 group: g,
             } => {
-                let layout = next
+                let ok = next
                     .windows
                     .get_mut(window)
-                    .and_then(|w| w.layout_mut())
-                    .ok_or(WorkspaceError::NoTarget)?;
-                let h: Handle = layout
-                    .flatten(area)
-                    .handles
-                    .get(handle)
-                    .cloned()
-                    .ok_or(WorkspaceError::NoTarget)?;
-                if !layout.resize(&h, delta) {
+                    .is_some_and(|w| w.resize(area, handle, delta));
+                if !ok {
                     return Err(WorkspaceError::NoTarget.into());
                 }
                 group = g;
