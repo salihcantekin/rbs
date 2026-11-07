@@ -19,17 +19,22 @@
 # 3 s (WARP renders on the CPU), close to its 20 s-per-step guard, and the whole fast
 # tier took 60 s instead of 30 s. The first matching override wins, so the Windows one
 # comes first.
+#
+# Every package whose tests open a GPU device belongs here. `rbs-filters` and `rbs-nodes`
+# were missing: their GPU tests ran beside the group, so on Windows more than two WARP
+# devices shared the 4 vCPUs and `rbs-filters` `alloc_per_frame` took 24 to 60 s
+# (killed at 60 s once).
 [test-groups]
 gpu = { max-threads = 1 }
 gpu-windows = { max-threads = 2 }
 
 [[profile.default.overrides]]
 platform = 'cfg(windows)'
-filter = 'package(rbs-gpu) | package(rbs-record) | package(rbs-app) | package(rbs-capture-sck) | package(rbs-capture-avf) | package(rbs-capture-mf) | package(rbs-capture-wgc) | package(rbs-capture-pipewire) | package(rbs-audio-io-pipewire) | package(/^rbs-codec-/)'
+filter = 'package(rbs-gpu) | package(rbs-filters) | package(rbs-nodes) | package(rbs-record) | package(rbs-app) | package(rbs-capture-sck) | package(rbs-capture-avf) | package(rbs-capture-mf) | package(rbs-capture-wgc) | package(rbs-capture-pipewire) | package(rbs-audio-io-pipewire) | package(/^rbs-codec-/)'
 test-group = 'gpu-windows'
 
 [[profile.default.overrides]]
-filter = 'package(rbs-gpu) | package(rbs-record) | package(rbs-app) | package(rbs-capture-sck) | package(rbs-capture-avf) | package(rbs-capture-mf) | package(rbs-capture-wgc) | package(rbs-capture-pipewire) | package(rbs-audio-io-pipewire) | package(/^rbs-codec-/)'
+filter = 'package(rbs-gpu) | package(rbs-filters) | package(rbs-nodes) | package(rbs-record) | package(rbs-app) | package(rbs-capture-sck) | package(rbs-capture-avf) | package(rbs-capture-mf) | package(rbs-capture-wgc) | package(rbs-capture-pipewire) | package(rbs-audio-io-pipewire) | package(/^rbs-codec-/)'
 test-group = 'gpu'
 
 [profile.default]
