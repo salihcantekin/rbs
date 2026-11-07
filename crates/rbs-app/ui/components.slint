@@ -686,6 +686,9 @@ export component TextField inherits Rectangle {
     in property <bool> read-only: false;
     // A secret: what is typed is never shown, and leaving the field does not confirm it.
     in property <bool> password: false;
+    // Shown in the secondary colour while the field is empty (what an empty value
+    // means, such as "System font"); never the field's name, which is `label`.
+    in property <string> placeholder;
     callback accepted(string);
     callback edited(string);
     // Puts the whole text on the clipboard.
@@ -699,6 +702,17 @@ export component TextField inherits Rectangle {
     border-color: input.has-focus ? Theme.border-focus : Theme.border-subtle;
     background: Theme.surface-sunken;
     forward-focus: input;
+    if root.text == "" && root.placeholder != "": Text {
+        x: Tokens.space-2;
+        width: parent.width - 2 * Tokens.space-2;
+        height: parent.height;
+        text: root.placeholder;
+        color: Theme.text-secondary;
+        font-size: Tokens.type-body-size;
+        vertical-alignment: center;
+        overflow: elide;
+        accessible-role: none;
+    }
     input := TextInput {
         x: Tokens.space-2;
         width: parent.width - 2 * Tokens.space-2;
