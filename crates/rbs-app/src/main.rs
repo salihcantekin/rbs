@@ -732,6 +732,19 @@ struct Ctx {
     live_timer: Rc<slint::Timer>,
 }
 
+/// Shows the Settings window. The only place that does, so every way to open Settings
+/// (toolbar gear, RBS menu, shortcut, control API) lands centred on the main window.
+/// A window that is already on screen stays where the user put it.
+fn present_settings(w: &SettingsWindow, app: &App) {
+    if w.window().is_visible() {
+        let _ = w.show();
+        return;
+    }
+    let t = w.global::<Tokens>();
+    let size = slint::LogicalSize::new(t.get_size_settings_w(), t.get_size_settings_h());
+    let _ = window_place::show_centred(w, &app.main, size, app.hidden);
+}
+
 /// Sections of the Settings window (`SettingsWindow.section`).
 const SECTION_RECORDING: i32 = 1;
 const SECTION_STREAM: i32 = 2;
@@ -964,7 +977,7 @@ impl Ctx {
             app.studio.settings_opened();
             if let Some(w) = &app.settings {
                 w.set_section(section);
-                let _ = w.show();
+                present_settings(w, app);
                 if section == SECTION_APPEARANCE {
                     appearance_page::opened(&ctx, app);
                 }
@@ -1038,15 +1051,7 @@ impl Ctx {
                 }
             });
             w.set_section(section);
-            let _ = w.show();
-            // Centred on the main window, not where the OS puts new windows. While
-            // every window is hidden (ADR-0056) the OS places it.
-            if !app.hidden {
-                let t = w.global::<Tokens>();
-                let size =
-                    slint::LogicalSize::new(t.get_size_settings_w(), t.get_size_settings_h());
-                window_place::centre_on(w.window(), app.main.window(), size);
-            }
+            present_settings(&w, app);
             app.settings = Some(w);
             if section == SECTION_APPEARANCE {
                 appearance_page::opened(&ctx, app);
