@@ -765,6 +765,8 @@ pub enum WorkspaceError {
     NotOpen(PanelId),
     /// No such window or stack.
     NoTarget,
+    /// The workspace is not built in, so it has no default layout to reset to.
+    NoDefault,
 }
 
 impl fmt::Display for WorkspaceError {
@@ -778,6 +780,9 @@ impl fmt::Display for WorkspaceError {
             WorkspaceError::Invalid(e) => write!(f, "invalid workspace: {e}"),
             WorkspaceError::NotOpen(id) => write!(f, "panel {id} is not open"),
             WorkspaceError::NoTarget => write!(f, "no such window or tab stack"),
+            WorkspaceError::NoDefault => {
+                f.write_str("only a built-in workspace has a default layout")
+            }
         }
     }
 }

@@ -106,6 +106,11 @@ pub enum LayoutCommand {
     ResetSizes,
     /// Put the workspace's default toolbar back (`ui.toolbar.reset`).
     ResetToolbar,
+    /// Replace a built-in workspace's layout, toolbar and lock with its default
+    /// (`ui.workspace.reset`). One undo step; [`WorkspaceError::NoDefault`] for a
+    /// workspace that is not built in. A copy saved by an older RBS gets what the
+    /// default has gained since, such as the studio split (ADR-0064).
+    ResetWorkspace,
     /// Collapse (`ui.panel.collapse`) or expand (`ui.panel.expand`) the stack holding
     /// a panel. Allowed while locked: it hides without rearranging.
     SetCollapsed {
@@ -316,6 +321,20 @@ impl LayoutSession {
                 }
             }
             LayoutCommand::ResetToolbar => next.toolbar = None,
+            LayoutCommand::ResetWorkspace => {
+                let mut default =
+                    crate::builtin::by_name(&before.name).ok_or(WorkspaceError::NoDefault)?;
+                // The name keeps the user's spelling, which names the saved file.
+                default.name = before.name.clone();
+                closed.extend(
+                    before
+                        .panels()
+                        .into_iter()
+                        .filter(|p| !default.is_open(p))
+                        .cloned(),
+                );
+                next = default;
+            }
             LayoutCommand::SetStudioRail(at) => next.set_studio_rail(at)?,
             LayoutCommand::SetCollapsed { panel, collapsed } => {
                 next.set_collapsed(&panel, collapsed)?;
@@ -691,6 +710,41 @@ mod tests {
         assert_eq!(
             s.apply(LayoutCommand::ResetToolbar, Origin::Pointer),
             Err(CommandError::Locked)
+        );
+    }
+
+    #[test]
+    fn reset_workspace_brings_back_the_built_in_default() {
+        // A saved Edit from before ADR-0064: no studio split.
+        let mut old = builtin::edit();
+        old.name = "edit".to_owned();
+        old.close(&id("rbs.program")).unwrap();
+        old.dissolve_broken_studio();
+        old.locked = true;
+        assert_eq!(old.studio_rail(), None);
+        let mut s = LayoutSession::new(old.clone());
+        s.apply(LayoutCommand::ResetWorkspace, Origin::Command)
+            .unwrap();
+        let mut want = builtin::edit();
+        want.name = "edit".to_owned();
+        assert_eq!(s.workspace(), &want);
+        assert!(s.workspace().studio_rail().is_some());
+        // Once more changes nothing and adds no undo step.
+        s.apply(LayoutCommand::ResetWorkspace, Origin::Command)
+            .unwrap();
+        assert!(s.undo());
+        assert_eq!(s.workspace(), &old);
+        assert!(!s.can_undo());
+    }
+
+    #[test]
+    fn reset_workspace_refuses_a_workspace_that_is_not_built_in() {
+        let mut ws = builtin::edit();
+        ws.name = "My show".to_owned();
+        let mut s = LayoutSession::new(ws);
+        assert_eq!(
+            s.apply(LayoutCommand::ResetWorkspace, Origin::Command),
+            Err(CommandError::Workspace(WorkspaceError::NoDefault))
         );
     }
 }
