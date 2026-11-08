@@ -3,7 +3,7 @@
 // Rust pushes state into the `Studio` global of every window and handles its callbacks
 // by sending commands to the studio's control thread.
 import { Theme, Tokens } from "tokens.slint";
-import { Button, Checkbox, ColorPicker, FocusRing, RingFocus, Icon, IconButton, IconName, Icons, MenuItem, MenuSurface, EmptyState, NumberField, Select, SegmentedControl, Slider, TextField, Toggle } from "components.slint";
+import { Button, Checkbox, ColorPicker, FocusRing, RingFocus, SectionHeader, Tabs, Icon, IconButton, IconName, Icons, MenuItem, MenuSurface, EmptyState, NumberField, Select, SegmentedControl, Slider, TextField, Toggle } from "components.slint";
 import { SettingsCard, SettingRow, SettingBlock, SettingsStatus, SettingsNotice, SettingsCallout } from "settings.slint";
 import { CommandMenu } from "context_menu.slint";
 
@@ -1502,17 +1502,63 @@ component Hint inherits Text {
     wrap: word-wrap;
 }
 
-// A section title in the Properties panel (mockup E): small, secondary, upper case.
-// Screen readers get the title as written, so it is not spelled out letter by letter.
-component SectionTitle inherits Text {
+// A section title that does not collapse (ADR-0076): the same look as SectionHeader,
+// with a rule to the end of the row, but plain text for screen readers.
+component SectionTitle inherits HorizontalLayout {
     in property <string> title;
-    text: title.to-uppercase();
-    color: Theme.text-secondary;
-    font-size: Tokens.type-caption-size;
-    font-weight: Tokens.type-label-weight;
-    letter-spacing: Tokens.size-tracking-caps;
-    accessible-role: AccessibleRole.text;
-    accessible-label: title;
+    spacing: Tokens.size-field-gap;
+    VerticalLayout {
+        alignment: center;
+        Text {
+            text: title.to-uppercase();
+            color: Theme.text-secondary;
+            font-size: Tokens.type-caption-size;
+            font-weight: Tokens.type-label-weight;
+            letter-spacing: Tokens.size-tracking-caps;
+            accessible-role: text;
+            accessible-label: title;
+        }
+    }
+    VerticalLayout {
+        horizontal-stretch: 1;
+        alignment: center;
+        Rectangle { height: Tokens.size-border; background: Theme.border-subtle; }
+    }
+}
+
+// Which Properties sections the user closed (ADR-0076), kept while the app runs.
+global Sections {
+    in-out property <bool> position-closed;
+    in-out property <bool> crop-closed;
+    in-out property <bool> shape-closed;
+    in-out property <bool> sound-closed;
+    in-out property <bool> sync-closed;
+    in-out property <bool> scenes-closed;
+    in-out property <bool> remove-closed;
+}
+
+// A collapsible group of fields under a SectionHeader. A closed section draws nothing and takes no room. `closed` is the owner's state, `toggled` flips it.
+component Section inherits VerticalLayout {
+    in property <string> title;
+    in property <bool> closed;
+    callback toggled(bool /* now open */);
+    spacing: Tokens.size-field-gap;
+    SectionHeader {
+        title: root.title;
+        collapsible: true;
+        open: !root.closed;
+        toggled(o) => { root.toggled(o); }
+    }
+    // Slint cannot put @children in an `if`, so a closed section is hidden and takes
+    // no room (like Shown): it draws and handles no input.
+    Rectangle {
+        visible: !root.closed;
+        height: root.closed ? 0px : inner.preferred-height;
+        inner := VerticalLayout {
+            spacing: Tokens.size-field-gap;
+            @children
+        }
+    }
 }
 
 component Field inherits VerticalLayout {
@@ -1727,14 +1773,15 @@ component EncoderFields inherits VerticalLayout {
 // (position and size in canvas pixels). Rotation, crop and filters come later.
 // Shape and border of a picture (ADR-0053), under its position and size. Every change
 // is one undo step.
-component StyleFields inherits VerticalLayout {
+component StyleFields inherits Section {
     in property <SourceData> data;
     // The colour that stands. The field's text is set from it whenever it changes,
     // because setting the text after an edit ends the field's binding.
     property <string> colour-text: data.border-color;
     changed colour-text => { colour.text = colour-text; }
-    spacing: Tokens.space-2;
-    SectionTitle { title: @tr("Shape and border"); }
+    title: @tr("Shape and border");
+    closed: Sections.shape-closed;
+    toggled(o) => { Sections.shape-closed = !o; }
     Field {
         label: @tr("Shape");
         SegmentedControl {
@@ -1775,7 +1822,7 @@ component StyleFields inherits VerticalLayout {
     Shown {
         shown: data.border;
         HorizontalLayout {
-            spacing: Tokens.space-2;
+            spacing: Tokens.size-field-gap;
             Field {
                 horizontal-stretch: 1;
                 preferred-width: 0;
@@ -1795,7 +1842,7 @@ component StyleFields inherits VerticalLayout {
                 preferred-width: 0;
                 label: @tr("Colour");
                 HorizontalLayout {
-                    spacing: Tokens.space-2;
+                    spacing: Tokens.size-field-gap;
                     // The colour as a swatch that opens the colour picker, beside its
                     // text (never colour alone, U7).
                     picker := ColorPicker {
@@ -1831,13 +1878,14 @@ component StyleFields inherits VerticalLayout {
 // Crop of a picture in source pixels (ADR-0058), under its position and size. Every
 // change is one undo step and keeps the picture's scale; the Region buttons show a part
 // of the picture as large as the canvas allows.
-component CropFields inherits VerticalLayout {
+component CropFields inherits Section {
     in property <SourceData> data;
     property <bool> known: data.pic-w > 0;
-    spacing: Tokens.space-2;
-    SectionTitle { title: @tr("Crop"); }
+    title: @tr("Crop");
+    closed: Sections.crop-closed;
+    toggled(o) => { Sections.crop-closed = !o; }
     HorizontalLayout {
-        spacing: Tokens.space-2;
+        spacing: Tokens.size-field-gap;
         NumberField {
             horizontal-stretch: 1;
             preferred-width: 0;
@@ -1858,7 +1906,7 @@ component CropFields inherits VerticalLayout {
         }
     }
     HorizontalLayout {
-        spacing: Tokens.space-2;
+        spacing: Tokens.size-field-gap;
         NumberField {
             horizontal-stretch: 1;
             preferred-width: 0;
@@ -1885,7 +1933,7 @@ component CropFields inherits VerticalLayout {
         accessible-role: none;
     }
     HorizontalLayout {
-        spacing: Tokens.space-2;
+        spacing: Tokens.size-field-gap;
         Button {
             horizontal-stretch: 1;
             text: @tr("Canvas size");
@@ -1904,7 +1952,7 @@ component CropFields inherits VerticalLayout {
         }
     }
     HorizontalLayout {
-        spacing: Tokens.space-2;
+        spacing: Tokens.size-field-gap;
         Button {
             horizontal-stretch: 1;
             text: @tr("Left half");
@@ -1932,50 +1980,54 @@ component CropFields inherits VerticalLayout {
 // The Transform tab: where the picture is on the canvas, its crop, shape and border.
 component TransformFields inherits VerticalLayout {
     in property <SourceData> data;
-    spacing: Tokens.space-2;
+    spacing: Tokens.size-section-gap;
     alignment: start;
-    if data.picture: SectionTitle { title: @tr("Position and size"); }
-    if data.picture: HorizontalLayout {
-        spacing: Tokens.space-2;
-        // Equal columns, whatever the values' lengths.
-        NumberField {
-            horizontal-stretch: 1;
-            preferred-width: 0;
-            prefix: @tr("X");
-            label: @tr("Position X of {}", data.name);
-            value: data.x;
-            edited(v) => { Studio.set-source-box(data.id, v, data.y, data.w, data.h); }
+    if data.picture: Section {
+        title: @tr("Position and size");
+        closed: Sections.position-closed;
+        toggled(o) => { Sections.position-closed = !o; }
+        HorizontalLayout {
+            spacing: Tokens.size-field-gap;
+            // Equal columns, whatever the values' lengths.
+            NumberField {
+                horizontal-stretch: 1;
+                preferred-width: 0;
+                prefix: @tr("X");
+                label: @tr("Position X of {}", data.name);
+                value: data.x;
+                edited(v) => { Studio.set-source-box(data.id, v, data.y, data.w, data.h); }
+            }
+            NumberField {
+                horizontal-stretch: 1;
+                preferred-width: 0;
+                prefix: @tr("Y");
+                label: @tr("Position Y of {}", data.name);
+                value: data.y;
+                edited(v) => { Studio.set-source-box(data.id, data.x, v, data.w, data.h); }
+            }
         }
-        NumberField {
-            horizontal-stretch: 1;
-            preferred-width: 0;
-            prefix: @tr("Y");
-            label: @tr("Position Y of {}", data.name);
-            value: data.y;
-            edited(v) => { Studio.set-source-box(data.id, data.x, v, data.w, data.h); }
+        HorizontalLayout {
+            spacing: Tokens.size-field-gap;
+            NumberField {
+                horizontal-stretch: 1;
+                preferred-width: 0;
+                prefix: @tr("W");
+                label: @tr("Width of {}", data.name);
+                value: data.w;
+                edited(v) => { Studio.set-source-box(data.id, data.x, data.y, v, data.h); }
+            }
+            NumberField {
+                horizontal-stretch: 1;
+                preferred-width: 0;
+                prefix: @tr("H");
+                label: @tr("Height of {}", data.name);
+                value: data.h;
+                edited(v) => { Studio.set-source-box(data.id, data.x, data.y, data.w, v); }
+            }
         }
-    }
-    if data.picture: HorizontalLayout {
-        spacing: Tokens.space-2;
-        NumberField {
-            horizontal-stretch: 1;
-            preferred-width: 0;
-            prefix: @tr("W");
-            label: @tr("Width of {}", data.name);
-            value: data.w;
-            edited(v) => { Studio.set-source-box(data.id, data.x, data.y, v, data.h); }
+        Hint {
+            text: @tr("In canvas pixels, from the top-left corner. Up and Down arrows change a value by 1, with Shift by 10.");
         }
-        NumberField {
-            horizontal-stretch: 1;
-            preferred-width: 0;
-            prefix: @tr("H");
-            label: @tr("Height of {}", data.name);
-            value: data.h;
-            edited(v) => { Studio.set-source-box(data.id, data.x, data.y, data.w, v); }
-        }
-    }
-    if data.picture: Hint {
-        text: @tr("In canvas pixels, from the top-left corner. Up and Down arrows change a value by 1, with Shift by 10.");
     }
     if data.picture: CropFields { data: data; }
     if data.picture: StyleFields { data: data; }
@@ -1985,55 +2037,63 @@ component TransformFields inherits VerticalLayout {
 // Volume, mute and the offset are live controls, not undo steps.
 component AudioFields inherits VerticalLayout {
     in property <SourceData> data;
-    spacing: Tokens.space-2;
+    spacing: Tokens.size-section-gap;
     alignment: start;
-    SectionTitle { title: @tr("Sound"); }
-    HorizontalLayout {
-        spacing: Tokens.space-2;
-        Slider {
-            horizontal-stretch: 1;
-            label: @tr("Volume of {}", data.name);
-            value: data.volume;
-            value-text: data.volume-text;
-            enabled: !data.muted;
-            moved(v) => { Studio.set-source-volume(data.id, v); }
+    Section {
+        title: @tr("Sound");
+        closed: Sections.sound-closed;
+        toggled(o) => { Sections.sound-closed = !o; }
+        HorizontalLayout {
+            spacing: Tokens.size-field-gap;
+            Slider {
+                horizontal-stretch: 1;
+                label: @tr("Volume of {}", data.name);
+                value: data.volume;
+                value-text: data.volume-text;
+                enabled: !data.muted;
+                moved(v) => { Studio.set-source-volume(data.id, v); }
+            }
+            Text {
+                min-width: Tokens.size-control-md * 1.5;
+                text: data.volume-text;
+                color: Theme.text-secondary;
+                font-size: Tokens.type-caption-size;
+                horizontal-alignment: right;
+                vertical-alignment: center;
+                accessible-role: none;
+            }
         }
-        Text {
-            min-width: Tokens.size-control-md * 1.5;
-            text: data.volume-text;
-            color: Theme.text-secondary;
-            font-size: Tokens.type-caption-size;
-            horizontal-alignment: right;
-            vertical-alignment: center;
-            accessible-role: none;
-        }
-    }
-    Checkbox {
-        text: @tr("Mute");
-        checked: data.muted;
-        toggled(on) => { Studio.set-source-muted(data.id, on); }
-    }
-    SectionTitle { title: @tr("Sync offset"); }
-    HorizontalLayout {
-        spacing: Tokens.space-2;
-        NumberField {
-            horizontal-stretch: 1;
-            preferred-width: 0;
-            label: @tr("Sync offset of {} in milliseconds", data.name);
-            value: data.sync-offset;
-            step: 10;
-            edited(v) => { Studio.set-source-sync-offset(data.id, round(max(-200, min(200, v)))); }
-        }
-        Text {
-            text: @tr("ms");
-            color: Theme.text-secondary;
-            font-size: Tokens.type-body-size;
-            vertical-alignment: center;
-            accessible-role: none;
+        Checkbox {
+            text: @tr("Mute");
+            checked: data.muted;
+            toggled(on) => { Studio.set-source-muted(data.id, on); }
         }
     }
-    Hint {
-        text: @tr("Delays this source's sound (positive) or plays it earlier (negative) to match the picture, from -200 to 200 ms. Playing it earlier is limited by the audio latency.");
+    Section {
+        title: @tr("Sync offset");
+        closed: Sections.sync-closed;
+        toggled(o) => { Sections.sync-closed = !o; }
+        HorizontalLayout {
+            spacing: Tokens.size-field-gap;
+            NumberField {
+                horizontal-stretch: 1;
+                preferred-width: 0;
+                label: @tr("Sync offset of {} in milliseconds", data.name);
+                value: data.sync-offset;
+                step: 10;
+                edited(v) => { Studio.set-source-sync-offset(data.id, round(max(-200, min(200, v)))); }
+            }
+            Text {
+                text: @tr("ms");
+                color: Theme.text-secondary;
+                font-size: Tokens.type-body-size;
+                vertical-alignment: center;
+                accessible-role: none;
+            }
+        }
+        Hint {
+            text: @tr("Delays this source's sound (positive) or plays it earlier (negative) to match the picture, from -200 to 200 ms. Playing it earlier is limited by the audio latency.");
+        }
     }
 }
 
@@ -2229,7 +2289,7 @@ component AddFilterButton inherits Rectangle {
 // The Filters tab: the chain in order, Add filter, and the selected filter's fields.
 component FiltersFields inherits VerticalLayout {
     in property <SourceData> data;
-    spacing: Tokens.space-2;
+    spacing: Tokens.size-field-gap;
     alignment: start;
     SectionTitle { title: @tr("Filters"); }
     if data.filters.length == 0: Rectangle {
@@ -2248,9 +2308,9 @@ component FiltersFields inherits VerticalLayout {
     }
     AddFilterButton { source: data; }
     for f[i] in data.filters: VerticalLayout {
-        spacing: Tokens.space-2;
+        spacing: Tokens.size-field-gap;
         if f.id == data.selected-filter && f.known: VerticalLayout {
-            spacing: Tokens.space-2;
+            spacing: Tokens.size-field-gap;
             SectionTitle { title: f.name; }
             for field[j] in f.fields: FilterFieldView {
                 source: data;
@@ -2278,100 +2338,50 @@ component SourceProperties inherits VerticalLayout {
     changed data => { if confirm && Studio.selected-source != data.id { confirm = false; } }
     in property <int> live-state;
     // 0 Transform, 1 Filters, 2 Audio.
-    property <int> tab: !data.picture ? 2 : Studio.properties-tab == 1 ? 1 : 0;
-    spacing: Tokens.space-3;
+    property <int> tab: !data.picture ? 2 : Studio.properties-tab == 1 ? 1 : Studio.properties-tab == 2 && data.audio ? 2 : 0;
+    spacing: Tokens.size-section-gap;
     alignment: start;
-    // The source: its kind's icon, its name and its kind.
-    HorizontalLayout {
-        spacing: Tokens.space-2;
-        VerticalLayout {
-            alignment: center;
-            Icon { name: Icons.named(data.icon); ink: Theme.text-primary; }
-        }
-        Text {
-            horizontal-stretch: 1;
-            text: data.name;
-            color: Theme.text-primary;
-            font-size: Tokens.type-label-size;
-            font-weight: Tokens.type-title-weight;
-            vertical-alignment: center;
-            overflow: elide;
-        }
-        Text {
-            text: data.kind;
-            color: Theme.text-secondary;
-            font-size: Tokens.type-caption-size;
-            vertical-alignment: center;
-        }
-    }
-    TextField {
-        label: @tr("Name of {}", data.name);
-        text: data.name;
-        accepted(t) => { if t != data.name { Studio.rename-source(data.id, t); } }
-    }
-    // Global sources (ADR-0065): on, the source is shown and heard in every scene.
-    Toggle {
-        text: @tr("Show in every scene");
-        label: @tr("Show {} in every scene", data.name);
-        checked: data.global;
-        toggled(on) => { Studio.set-global(data.id, on); }
-    }
-    Text {
-        text: data.global
-            ? @tr("Turning this off moves it into this scene only, and off air until the next transition in studio mode.")
-            : @tr("It then leaves the scenes that have it and is drawn above every scene.");
-        color: Theme.text-secondary;
-        font-size: Tokens.type-caption-size;
-        wrap: word-wrap;
-    }
-    // Delete source: every scene. With more than one placement it asks first.
-    if !confirm: HorizontalLayout {
-        alignment: start;
-        Button {
-            text: @tr("Delete source");
-            accessible-name: @tr("Delete source {}", data.name);
-            kind: "danger";
-            dense: true;
-            clicked => {
-                if data.places > 1 { confirm = true; } else { Studio.delete-source(data.id); }
-            }
-        }
-    }
-    if confirm: SettingsCallout {
-        label: @tr("Delete {} from every scene?", data.name);
-        Text {
-            text: data.global || data.in-globals
-                ? (data.places > 2 ? @tr("{} is in every scene and {} more. Delete it from all of them?", data.name, data.places - 1) : data.places == 2 ? @tr("{} is in every scene and 1 more. Delete it from all of them?", data.name) : @tr("{} is in every scene. Delete it?", data.name))
-                : @tr("{} is in {} scenes. Delete it from all of them?", data.name, data.places);
-            color: Theme.text-primary;
-            font-size: Tokens.type-body-size;
-            wrap: word-wrap;
-        }
+    // The source: its kind's icon, its name and kind, and its name as a field.
+    VerticalLayout {
+        spacing: Tokens.size-field-gap;
         HorizontalLayout {
-            spacing: Tokens.space-2;
-            alignment: start;
-            Button {
-                text: @tr("Delete source");
-                kind: "danger";
-                dense: true;
-                clicked => { confirm = false; Studio.delete-source(data.id); }
+            spacing: Tokens.size-field-gap;
+            VerticalLayout {
+                alignment: center;
+                Icon { name: Icons.named(data.icon); ink: Theme.text-primary; }
             }
-            Button {
-                text: @tr("Cancel");
-                dense: true;
-                clicked => { confirm = false; }
+            Text {
+                horizontal-stretch: 1;
+                text: data.name;
+                color: Theme.text-primary;
+                font-size: Tokens.type-label-size;
+                font-weight: Tokens.type-title-weight;
+                vertical-alignment: center;
+                overflow: elide;
+            }
+            Text {
+                text: data.kind;
+                color: Theme.text-secondary;
+                font-size: Tokens.type-caption-size;
+                vertical-alignment: center;
             }
         }
+        TextField {
+            label: @tr("Name of {}", data.name);
+            text: data.name;
+            accepted(t) => { if t != data.name { Studio.rename-source(data.id, t); } }
+        }
     }
-    if data.picture: SegmentedControl {
+    // Transform, Filters and, for a source with sound, Audio (ADR-0062, ADR-0076).
+    if data.picture: Tabs {
         label: @tr("Properties of {}", data.name);
-        options: [@tr("Transform"), @tr("Filters")];
+        options: data.audio ? [@tr("Transform"), @tr("Filters"), @tr("Audio")] : [@tr("Transform"), @tr("Filters")];
         index: tab;
         selected(i) => { Studio.properties-tab = i; }
     }
     // Filters and the sync offset belong to the source: an edit shows on air at once.
     if live-state != 0 && tab != 0: HorizontalLayout {
-        spacing: Tokens.space-2;
+        spacing: Tokens.size-field-gap;
         Rectangle {
             width: on-air.preferred-width + 2 * Tokens.space-2;
             height: Tokens.type-caption-line;
@@ -2398,6 +2408,67 @@ component SourceProperties inherits VerticalLayout {
     if tab == 0: TransformFields { data: data; }
     if tab == 1: FiltersFields { data: data; }
     if tab == 2: AudioFields { data: data; }
+    // Global sources (ADR-0065): on, the source is shown and heard in every scene.
+    Section {
+        title: @tr("Scenes");
+        closed: Sections.scenes-closed;
+        toggled(o) => { Sections.scenes-closed = !o; }
+        Toggle {
+            text: @tr("Show in every scene");
+            label: @tr("Show {} in every scene", data.name);
+            checked: data.global;
+            toggled(on) => { Studio.set-global(data.id, on); }
+        }
+        Hint {
+            text: data.global
+                ? @tr("Turning this off moves it into this scene only, and off air until the next transition in studio mode.")
+                : @tr("It then leaves the scenes that have it and is drawn above every scene.");
+        }
+    }
+    // Delete source: every scene. With more than one placement it asks first.
+    Section {
+        title: @tr("Remove");
+        closed: Sections.remove-closed;
+        toggled(o) => { Sections.remove-closed = !o; }
+        if !confirm: HorizontalLayout {
+            alignment: start;
+            Button {
+                text: @tr("Delete source");
+                accessible-name: @tr("Delete source {}", data.name);
+                kind: "danger";
+                dense: true;
+                clicked => {
+                    if data.places > 1 { confirm = true; } else { Studio.delete-source(data.id); }
+                }
+            }
+        }
+        if confirm: SettingsCallout {
+            label: @tr("Delete {} from every scene?", data.name);
+            Text {
+                text: data.global || data.in-globals
+                    ? (data.places > 2 ? @tr("{} is in every scene and {} more. Delete it from all of them?", data.name, data.places - 1) : data.places == 2 ? @tr("{} is in every scene and 1 more. Delete it from all of them?", data.name) : @tr("{} is in every scene. Delete it?", data.name))
+                    : @tr("{} is in {} scenes. Delete it from all of them?", data.name, data.places);
+                color: Theme.text-primary;
+                font-size: Tokens.type-body-size;
+                wrap: word-wrap;
+            }
+            HorizontalLayout {
+                spacing: Tokens.size-field-gap;
+                alignment: start;
+                Button {
+                    text: @tr("Delete source");
+                    kind: "danger";
+                    dense: true;
+                    clicked => { confirm = false; Studio.delete-source(data.id); }
+                }
+                Button {
+                    text: @tr("Cancel");
+                    dense: true;
+                    clicked => { confirm = false; }
+                }
+            }
+        }
+    }
 }
 
 // The selected source's properties (mockup E): its icon, name and type, its name as a
@@ -2420,10 +2491,10 @@ export component PropertiesPanel inherits Rectangle {
         height: parent.height;
         content-height: list.preferred-height;
         list := VerticalLayout {
-            padding: Tokens.space-3;
+            padding: Tokens.size-panel-pad;
             alignment: start;
             for s in Studio.sources: VerticalLayout {
-                spacing: Tokens.space-3;
+                spacing: Tokens.size-section-gap;
                 if s.id == Studio.selected-source: SourceProperties {
                     data: s;
                     live-state: root.live-state;
