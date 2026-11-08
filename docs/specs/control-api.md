@@ -209,6 +209,7 @@ The first slice covers what the desktop app does today; the full catalogue follo
 | `canvas.set_preview {scene}` | `control` | Studio mode: preview a scene (entering the mode when it is off), or leave the mode with `null`; live, not undoable (protocol 1.9, ADR-0061) |
 | `canvas.transition` | `control` | Studio mode: put the preview scene on air (a cut; the old program scene goes to preview); live, not undoable (protocol 1.9) |
 | `scene.sources {scene}` | `read` | Source items of any scene, as `source.list` rows (protocol 1.9) |
+| `source.set_mixer_hidden {source, hidden}` | `control` | Keep a source out of the Mixer; it is still heard. Live, not undoable; source rows carry `mixer_hidden` (absent means shown). A 1.13 server answers `method_not_found` (protocol 1.14, ADR-0080) |
 | `source.set_volume {source, volume}`, `source.set_muted {source, muted}` | `control` | Volume (linear, `0..=1`) and mute of a source; live, not undoable (protocol 1.6) |
 | `filter.types` | `read` | Built-in video filter types and their fields (protocol 1.8, ADR-0062) |
 | `filter.add {source, type, settings?}`, `filter.remove {filter}`, `filter.move {filter, index}`, `filter.set_enabled {filter, enabled}`, `filter.set_settings {filter, settings}` | `control` | Edit a source's filter chain; one undo step each (protocol 1.8) |

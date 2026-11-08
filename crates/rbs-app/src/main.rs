@@ -2209,7 +2209,7 @@ fn close_preview() {
 
 /// Sections that start closed (ADR-0078): the workspace lists them when the user
 /// opens them, under the id with this suffix, so an old file keeps them closed.
-const CLOSED_BY_DEFAULT: [&str; 1] = ["sources.global"];
+const CLOSED_BY_DEFAULT: [&str; 2] = ["sources.global", "mixer.hidden"];
 const OPENED_SUFFIX: &str = "-open";
 
 /// The key a section is stored under, and whether listing it means "closed".
@@ -2395,6 +2395,9 @@ fn install_studio(g: &Studio<'_>, ctx: &Ctx) {
     });
     on!(on_set_source_muted, |app, id: i32, muted: bool| {
         app.studio.set_source_muted(id, muted);
+    });
+    on!(on_set_source_mixer_hidden, |app, id: i32, hidden: bool| {
+        app.studio.set_source_mixer_hidden(id, hidden);
     });
     on!(on_set_source_volume, |app, id: i32, position: f32| {
         app.studio.set_source_volume(id, position);

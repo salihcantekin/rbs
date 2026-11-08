@@ -581,10 +581,9 @@ impl Document for SceneCollection {
                         filter
                     })
                     .collect();
-                source.audio =
-                    SourceAudio::new(s.volume as f32, s.muted)
-                        .with_sync_offset(s.sync_offset_ms)
-                        .with_mixer_hidden(s.mixer_hidden);
+                source.audio = SourceAudio::new(s.volume as f32, s.muted)
+                    .with_sync_offset(s.sync_offset_ms)
+                    .with_mixer_hidden(s.mixer_hidden);
                 source
             })
             .collect();

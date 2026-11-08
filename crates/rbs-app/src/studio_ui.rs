@@ -142,6 +142,8 @@ pub struct StudioUi {
     pub targets_kind: i32,
     slots: Vec<MeterSlot>,
     meters: Rc<VecModel<MeterRow>>,
+    /// Sources hidden from the Mixer (ADR-0080): names only, no meter slot.
+    hidden_meters: Rc<VecModel<MeterRow>>,
     /// The Stats panel's lines ([`stat_lines`]).
     stats: Rc<VecModel<StatRow>>,
     scale: Rc<VecModel<ScaleMark>>,
@@ -345,6 +347,7 @@ impl StudioUi {
             targets_kind: -1,
             slots: Vec::new(),
             meters: Rc::new(VecModel::default()),
+            hidden_meters: Rc::new(VecModel::default()),
             stats: Rc::new(VecModel::default()),
             scale: Rc::new(VecModel::from(scale)),
             meter_start: Instant::now(),
@@ -436,6 +439,7 @@ impl StudioUi {
         g.set_targets(ModelRc::from(self.targets.clone()));
         g.set_source_targets(ModelRc::from(self.source_targets.clone()));
         g.set_meters(ModelRc::from(self.meters.clone()));
+        g.set_hidden_meters(ModelRc::from(self.hidden_meters.clone()));
         g.set_stats(ModelRc::from(self.stats.clone()));
         g.set_scale(ModelRc::from(self.scale.clone()));
         g.set_rc_tokens(ModelRc::from(self.tokens.clone()));
@@ -1363,6 +1367,14 @@ impl StudioUi {
         self.send(Command::SetSourceMuted {
             id: SourceId::from_raw(id as u32),
             muted,
+        });
+    }
+
+    /// Hide a source from the Mixer or show it again (ADR-0080); it stays audible.
+    pub fn set_source_mixer_hidden(&mut self, id: i32, hidden: bool) {
+        self.send(Command::SetSourceMixerHidden {
+            id: SourceId::from_raw(id as u32),
+            hidden,
         });
     }
 
@@ -3250,7 +3262,7 @@ impl StudioUi {
         // Meters: one per playing audio source, in list order; ballistics survive for
         // sources that stay.
         let mut old: Vec<MeterSlot> = std::mem::take(&mut self.slots);
-        for r in rows {
+        for r in rows.iter().filter(|r| !r.audio.mixer_hidden) {
             let Some(level) = &r.meter else { continue };
             let slot = match old.iter().position(|s| s.source == r.id) {
                 Some(i) if Arc::ptr_eq(&old[i].level, level) => old.swap_remove(i),
@@ -3264,7 +3276,7 @@ impl StudioUi {
         }
         let meters: Vec<MeterRow> = rows
             .iter()
-            .filter(|r| r.meter.is_some())
+            .filter(|r| r.meter.is_some() && !r.audio.mixer_hidden)
             .map(|r| MeterRow {
                 id: r.id.get() as i32,
                 muted: r.audio.muted,
@@ -3276,6 +3288,20 @@ impl StudioUi {
             })
             .collect();
         set_rows(&self.meters, meters);
+        // Hidden sources are heard but not metered: names only (ADR-0080).
+        let hidden: Vec<MeterRow> = rows
+            .iter()
+            .filter(|r| r.meter.is_some() && r.audio.mixer_hidden)
+            .map(|r| MeterRow {
+                id: r.id.get() as i32,
+                muted: r.audio.muted,
+                name: r.name.as_str().into(),
+                icon: source_icon(r.kind).into(),
+                global: r.global,
+                ..MeterRow::default()
+            })
+            .collect();
+        set_rows(&self.hidden_meters, hidden);
     }
 
     /// True while meters need refreshing.

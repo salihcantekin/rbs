@@ -187,6 +187,16 @@ pub struct SetSourceMuted {
     pub muted: bool,
 }
 
+/// `source.set_mixer_hidden` (protocol 1.14, ADR-0080).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SetSourceMixerHidden {
+    /// The source's id.
+    pub source: u32,
+    /// Hidden from the Mixer; still heard.
+    pub hidden: bool,
+}
+
 /// `filter.add` (protocol 1.8, ADR-0062): a filter at the end of a source's chain.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -445,6 +455,8 @@ pub enum Command {
     SourceSetVolume(SetSourceVolume),
     /// `source.set_muted` (protocol 1.6).
     SourceSetMuted(SetSourceMuted),
+    /// `source.set_mixer_hidden` (protocol 1.14, ADR-0080).
+    SourceSetMixerHidden(SetSourceMixerHidden),
     /// `item.add` (protocol 1.6).
     ItemAdd(AddItem),
     /// `filter.types` (protocol 1.8).
@@ -551,6 +563,7 @@ impl Command {
             Command::SourceRename(_) => "source.rename",
             Command::SourceSetVolume(_) => "source.set_volume",
             Command::SourceSetMuted(_) => "source.set_muted",
+            Command::SourceSetMixerHidden(_) => "source.set_mixer_hidden",
             Command::ItemAdd(_) => "item.add",
             Command::FilterTypes => "filter.types",
             Command::FilterAdd(_) => "filter.add",
@@ -660,6 +673,7 @@ pub const METHODS: &[MethodInfo] = &[
     m("source.rename", Some(Scope::Control)),
     m("source.set_volume", Some(Scope::Control)),
     m("source.set_muted", Some(Scope::Control)),
+    m("source.set_mixer_hidden", Some(Scope::Control)),
     m("item.add", Some(Scope::Control)),
     m("filter.types", Some(Scope::Read)),
     m("filter.add", Some(Scope::Control)),
@@ -797,6 +811,8 @@ enum WireRequest {
     SourceSetVolume(SetSourceVolume),
     #[serde(rename = "source.set_muted")]
     SourceSetMuted(SetSourceMuted),
+    #[serde(rename = "source.set_mixer_hidden")]
+    SourceSetMixerHidden(SetSourceMixerHidden),
     #[serde(rename = "item.add")]
     ItemAdd(AddItem),
     #[serde(rename = "filter.types")]
@@ -908,6 +924,7 @@ impl From<WireRequest> for Request {
             WireRequest::SourceRename(p) => Request::Command(C::SourceRename(p)),
             WireRequest::SourceSetVolume(p) => Request::Command(C::SourceSetVolume(p)),
             WireRequest::SourceSetMuted(p) => Request::Command(C::SourceSetMuted(p)),
+            WireRequest::SourceSetMixerHidden(p) => Request::Command(C::SourceSetMixerHidden(p)),
             WireRequest::ItemAdd(p) => Request::Command(C::ItemAdd(p)),
             WireRequest::FilterTypes(_) => Request::Command(C::FilterTypes),
             WireRequest::FilterAdd(p) => Request::Command(C::FilterAdd(p)),
@@ -978,6 +995,7 @@ impl From<Request> for WireRequest {
                 C::SourceRename(p) => WireRequest::SourceRename(p),
                 C::SourceSetVolume(p) => WireRequest::SourceSetVolume(p),
                 C::SourceSetMuted(p) => WireRequest::SourceSetMuted(p),
+                C::SourceSetMixerHidden(p) => WireRequest::SourceSetMixerHidden(p),
                 C::ItemAdd(p) => WireRequest::ItemAdd(p),
                 C::FilterTypes => WireRequest::FilterTypes(Empty {}),
                 C::FilterAdd(p) => WireRequest::FilterAdd(p),

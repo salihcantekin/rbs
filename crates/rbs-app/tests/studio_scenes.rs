@@ -376,6 +376,31 @@ fn items_lock_and_hide_and_sources_mute_rename_and_change_volume() {
         "not_found"
     );
 
+    // Hidden from the Mixer (ADR-0080): live, keeps the sound, absent means shown.
+    assert_eq!(row(&sources(&mut c), mic).get("mixer_hidden"), None);
+    ok(&c.call(
+        "source.set_mixer_hidden",
+        json!({"source": mic, "hidden": true}),
+    ));
+    let r = row(&sources(&mut c), mic);
+    assert_eq!(r["mixer_hidden"], true);
+    assert_eq!(
+        (r["volume"].clone(), r["muted"].clone()),
+        (json!(0.5), json!(true))
+    );
+    assert_eq!(
+        kind(&c.call(
+            "source.set_mixer_hidden",
+            json!({"source": 999, "hidden": true})
+        )),
+        "not_found"
+    );
+    ok(&c.call(
+        "source.set_mixer_hidden",
+        json!({"source": mic, "hidden": false}),
+    ));
+    assert_eq!(row(&sources(&mut c), mic).get("mixer_hidden"), None);
+
     // Rename: one undo step; the undo leaves the sound as it is now.
     ok(&c.call("source.rename", json!({"source": mic, "name": "Voice"})));
     assert_eq!(

@@ -89,6 +89,8 @@ export global Studio {
     // The kind `targets` lists; -1 while a list is being made.
     in property <int> targets-kind: -1;
     in property <[MeterRow]> meters;
+    // Sources kept out of the Mixer, still heard (ADR-0080); no meter runs for them.
+    in property <[MeterRow]> hidden-meters;
     // How many of `meters` are the scene's own and how many are global (Mixer groups).
     in property <int> meter-scenes;
     in property <int> meter-globals;
@@ -166,6 +168,7 @@ export global Studio {
     callback set-source-locked(int /* id */, bool /* locked */);
     // A source's sound: mute, and the volume as a fader position from 0 to 1.
     callback set-source-muted(int /* id */, bool /* muted */);
+    callback set-source-mixer-hidden(int /* id */, bool /* hidden */);
     callback set-source-volume(int /* id */, float /* position */);
     callback rename-source(int /* id */, string /* name */);
     // The sync offset of a source's sound in milliseconds (ADR-0062): a live control.
@@ -1224,6 +1227,44 @@ component MeterView inherits Rectangle {
                 clicked => { Studio.set-source-muted(data.id, !data.muted); }
             }
         }
+        // Hide (ADR-0080): the source leaves the Mixer and is still heard.
+        VerticalLayout {
+            alignment: center;
+            IconButton {
+                icon: IconName.eye-off;
+                name: @tr("Hide {} from the Mixer", data.name);
+                clicked => { Studio.set-source-mixer-hidden(data.id, true); }
+            }
+        }
+    }
+}
+
+// A hidden source (ADR-0080): its name and a button that shows it in the Mixer again.
+component HiddenRow inherits Rectangle {
+    in property <MeterRow> data;
+    height: Tokens.size-control-md;
+    HorizontalLayout {
+        spacing: Tokens.space-2;
+        VerticalLayout {
+            alignment: center;
+            Icon { name: data.muted ? IconName.speaker-off : Icons.named(data.icon); ink: Theme.text-secondary; }
+        }
+        Text {
+            text: data.name;
+            color: Theme.text-secondary;
+            font-size: Tokens.type-body-size;
+            vertical-alignment: center;
+            horizontal-stretch: 1;
+            overflow: elide;
+        }
+        VerticalLayout {
+            alignment: center;
+            IconButton {
+                icon: IconName.eye;
+                name: @tr("Show {} in the Mixer", data.name);
+                clicked => { Studio.set-source-mixer-hidden(data.id, false); }
+            }
+        }
     }
 }
 
@@ -1232,7 +1273,7 @@ component MeterView inherits Rectangle {
 component MeterStrip inherits Rectangle {
     in property <MeterRow> data;
     callback reset();
-    width: Tokens.size-menu-sm * 0.3;
+    width: Tokens.size-menu-sm * 0.42;
     background: Theme.surface-sunken;
     border-radius: Tokens.radius-md;
     accessible-role: progress-indicator;
@@ -1292,6 +1333,11 @@ component MeterStrip inherits Rectangle {
                 checked: data.muted;
                 clicked => { Studio.set-source-muted(data.id, !data.muted); }
             }
+            IconButton {
+                icon: IconName.eye-off;
+                name: @tr("Hide {} from the Mixer", data.name);
+                clicked => { Studio.set-source-mixer-hidden(data.id, true); }
+            }
         }
     }
 }
@@ -1305,8 +1351,10 @@ export component MixerPanel inherits Rectangle {
     property <bool> wide: self.width > self.height * 1.5;
     property <bool> scene-closed: Sections.closed("mixer.scene", Sections.rev);
     property <bool> global-closed: Sections.closed("mixer.global", Sections.rev);
+    property <bool> hidden-closed: Sections.closed("mixer.hidden", Sections.rev);
+    property <bool> any: Studio.meters.length + Studio.hidden-meters.length > 0;
     property <length> name-width: min(root.width * 0.3, Tokens.size-menu-sm * 0.75);
-    if Studio.meters.length == 0: EmptyState {
+    if !root.any: EmptyState {
         width: parent.width;
         height: parent.height;
         title: @tr("No audio sources");
@@ -1315,7 +1363,7 @@ export component MixerPanel inherits Rectangle {
         act => { Studio.picker-kind = -1; add-menu.show(); }
     }
     // Wide: strips in clusters, scrolling sideways when they do not fit.
-    if Studio.meters.length > 0 && root.wide: Flickable {
+    if root.any && root.wide: Flickable {
         width: parent.width;
         height: parent.height;
         content-width: max(clusters.preferred-width, self.width);
@@ -1361,10 +1409,26 @@ export component MixerPanel inherits Rectangle {
                     }
                 }
             }
+            if Studio.hidden-meters.length > 0: VerticalLayout {
+                width: Tokens.size-menu-sm;
+                spacing: Tokens.size-field-gap;
+                SectionHeader {
+                    title: @tr("Hidden ({})", Studio.hidden-meters.length);
+                    collapsible: true;
+                    open: !root.hidden-closed;
+                    toggled(o) => { Sections.set-closed("mixer.hidden", !o); }
+                }
+                if !root.hidden-closed: Flickable {
+                    content-height: hidden-rows.preferred-height;
+                    hidden-rows := VerticalLayout {
+                        for m in Studio.hidden-meters: HiddenRow { data: m; }
+                    }
+                }
+            }
         }
     }
     // Narrow: rows under full-width headers, then the labelled scale (dBFS).
-    if Studio.meters.length > 0 && !root.wide: Flickable {
+    if root.any && !root.wide: Flickable {
         width: parent.width;
         height: parent.height;
         content-height: strips.preferred-height;
@@ -1422,6 +1486,19 @@ export component MixerPanel inherits Rectangle {
                 }
                 Rectangle { width: Tokens.size-icon-box; }
                 Rectangle { width: Tokens.size-control-sm; }
+                Rectangle { width: Tokens.size-control-sm; }
+            }
+            if Studio.hidden-meters.length > 0: VerticalLayout {
+                padding-top: Tokens.size-section-gap;
+                SectionHeader {
+                    title: @tr("Hidden ({})", Studio.hidden-meters.length);
+                    collapsible: true;
+                    open: !root.hidden-closed;
+                    toggled(o) => { Sections.set-closed("mixer.hidden", !o); }
+                }
+                if !root.hidden-closed: VerticalLayout {
+                    for m in Studio.hidden-meters: HiddenRow { data: m; }
+                }
             }
         }
     }
