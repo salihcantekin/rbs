@@ -17,8 +17,8 @@ use rbs_core::time::Clock;
 use rbs_core::timing::FrameRate;
 use rbs_graph::node::{NodeDescriptor, NodeTypeId};
 use rbs_graph::runtime::param::ParamSender;
-use rbs_nodes::CaptureSourceNode;
 use rbs_nodes::capture::CaptureNodeStats;
+use rbs_nodes::{CaptureSourceNode, StillSourceNode};
 use rbs_scene::binder::{COMPOSITOR_TYPE, MIXER_TYPE, NodeTypes};
 use rbs_scene::model::{SettingValue, Settings, Source};
 
@@ -52,6 +52,8 @@ pub enum SourceError {
     Capture(CaptureError),
     /// The audio adapter refused.
     Audio(AudioIoError),
+    /// A still source's picture could not be read or made (ADR-0074).
+    Image(String),
 }
 
 impl fmt::Display for SourceError {
@@ -66,6 +68,7 @@ impl fmt::Display for SourceError {
             }
             SourceError::Capture(e) => write!(f, "capture: {e}"),
             SourceError::Audio(e) => write!(f, "audio: {e}"),
+            SourceError::Image(e) => write!(f, "picture: {e}"),
         }
     }
 }
@@ -195,9 +198,20 @@ pub struct AudioSource {
     pub endpoint: EndpointId,
 }
 
+/// A still source node for the render partition (ADR-0074).
+#[non_exhaustive]
+pub struct StillSource {
+    /// The node; it uploads its picture in `warm` and costs nothing per frame.
+    pub node: StillSourceNode,
+    /// Its counters (`picture_size` is known from the start).
+    pub stats: Arc<CaptureNodeStats>,
+}
+
 /// A node instance for a bound source.
 #[non_exhaustive]
 pub enum SourceInstance {
+    /// Adopt into the render partition.
+    Still(StillSource),
     /// Adopt into the render partition.
     Video(VideoSource),
     /// Adopt into the audio partition.
@@ -207,6 +221,10 @@ pub enum SourceInstance {
 impl fmt::Debug for SourceInstance {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            SourceInstance::Still(s) => f
+                .debug_struct("Still")
+                .field("size", &s.node.size())
+                .finish_non_exhaustive(),
             SourceInstance::Video(v) => f
                 .debug_struct("Video")
                 .field("adapter", &v.adapter)
@@ -409,7 +427,7 @@ impl SourceTypes {
                     .map(|factory| SourcePicker { factory, kind })
                     .collect())
             }
-            SourceClass::Audio(_) => Ok(Vec::new()),
+            SourceClass::Audio(_) | SourceClass::Still => Ok(Vec::new()),
         }
     }
 
@@ -418,7 +436,9 @@ impl SourceTypes {
         match class_of(type_id) {
             Some(SourceClass::Capture(kind)) => !self.capture_candidates(kind).is_empty(),
             Some(SourceClass::Audio(kind)) => !self.audio_candidates(kind).is_empty(),
-            None => false,
+            // Needs no adapter (ADR-0074).
+            Some(SourceClass::Still) => true,
+            _ => false,
         }
     }
 
@@ -451,6 +471,7 @@ impl SourceTypes {
         for t in self.installed() {
             let descriptor = match class_of(&t) {
                 Some(SourceClass::Capture(_)) => rbs_nodes::capture_descriptor(),
+                Some(SourceClass::Still) => rbs_nodes::still_descriptor(),
                 _ => rbs_audio::input_descriptor(),
             };
             table.insert(t, descriptor);
@@ -490,6 +511,7 @@ impl SourceTypes {
                     }
                 }
             }
+            SourceClass::Still => {}
         }
         Ok(out)
     }
@@ -572,6 +594,13 @@ impl SourceTypes {
                     target,
                 }))
             }
+            SourceClass::Still => {
+                let (w, h, rgba) = still_pixels(type_id.as_str(), settings)?;
+                let node = StillSourceNode::new(w, h, rgba)
+                    .map_err(|e| SourceError::Image(e.to_string()))?;
+                let stats = node.stats();
+                Ok(SourceInstance::Still(StillSource { node, stats }))
+            }
             SourceClass::Audio(kind) => {
                 let candidates = choose(&self.audio_candidates(kind), named, type_id)?;
                 let (backend, endpoint) = match target {
@@ -602,6 +631,69 @@ impl SourceTypes {
             }
         }
     }
+}
+
+/// The pixels of an image or colour source from its settings (ADR-0074).
+fn still_pixels(type_id: &str, settings: &Settings) -> Result<crate::still::Picture, SourceError> {
+    use crate::still;
+    if type_id == types::IMAGE_SOURCE {
+        if let Some(path) = text(settings, keys::PATH)? {
+            return still::decode_png(std::path::Path::new(path)).map_err(SourceError::Image);
+        }
+        let id = text(settings, keys::SAMPLE)?.ok_or(SourceError::InvalidSetting {
+            key: keys::PATH,
+            expected: "set (or choose a sample)",
+        })?;
+        let (w, h) = still::DEFAULT_SIZE;
+        let rgba = still::sample_picture(id, w, h).ok_or(SourceError::InvalidSetting {
+            key: keys::SAMPLE,
+            expected: "the id of a built-in sample",
+        })?;
+        return Ok((w, h, rgba));
+    }
+    let colour = |key: &'static str| -> Result<Option<[u8; 4]>, SourceError> {
+        match text(settings, key)? {
+            None => Ok(None),
+            Some(t) => still::parse_color(t)
+                .map(Some)
+                .ok_or(SourceError::InvalidSetting {
+                    key,
+                    expected: "a colour like #rrggbb or #rrggbbaa",
+                }),
+        }
+    };
+    let first = colour(keys::COLOR)?.unwrap_or([0, 0, 0, 255]);
+    let second = colour(keys::COLOR2)?;
+    let angle = match settings.get(keys::ANGLE) {
+        None => 0.0,
+        Some(SettingValue::Int(n)) => *n as f32,
+        Some(_) => {
+            return Err(SourceError::InvalidSetting {
+                key: keys::ANGLE,
+                expected: "an integer",
+            });
+        }
+    };
+    let (w, h) = match (
+        positive(settings, keys::WIDTH)?,
+        positive(settings, keys::HEIGHT)?,
+    ) {
+        (Some(w), Some(h)) => (w, h),
+        (None, None) => still::DEFAULT_SIZE,
+        _ => {
+            return Err(SourceError::InvalidSetting {
+                key: keys::WIDTH,
+                expected: "set together with height",
+            });
+        }
+    };
+    if w > still::MAX_SIDE || h > still::MAX_SIDE {
+        return Err(SourceError::InvalidSetting {
+            key: keys::WIDTH,
+            expected: "at most 8192 pixels on a side",
+        });
+    }
+    Ok((w, h, still::color_picture(w, h, first, second, angle)))
 }
 
 fn default_capture_target(

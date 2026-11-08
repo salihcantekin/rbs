@@ -22,12 +22,13 @@
 mod filters;
 mod layers;
 mod registry;
+pub mod still;
 pub mod types;
 
 pub use filters::{filter_settings, filter_values, filter_values_lenient};
 pub use layers::node_layers;
 pub use registry::{
     AudioSource, InstanceContext, NodeTypeTable, SourceError, SourceInstance, SourcePicker,
-    SourceTarget, SourceTypes, VideoSource,
+    SourceTarget, SourceTypes, StillSource, VideoSource,
 };
 pub use types::{SourceClass, class_of};

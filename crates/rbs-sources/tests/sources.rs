@@ -71,12 +71,14 @@ fn video(i: SourceInstance) -> VideoSource {
 #[test]
 fn types_are_installed_only_by_probed_adapters_that_capture_their_kind() {
     let mut reg = SourceTypes::new();
-    assert!(reg.installed().is_empty());
+    // Still sources need no adapter (ADR-0074).
+    let still = [types::IMAGE_SOURCE, types::COLOR_SOURCE].map(ty);
+    assert_eq!(reg.installed(), still);
     reg.register_capture(Arc::new(TestCaptureFactory::new()))
         .unwrap();
     reg.register_audio(Arc::new(TestAudioBackend::new()))
         .unwrap();
-    assert!(reg.installed().is_empty(), "nothing before probing");
+    assert_eq!(reg.installed(), still, "no adapter type before probing");
     reg.probe();
     // The test audio backend captures inputs and loopback, not applications.
     assert_eq!(
@@ -87,6 +89,8 @@ fn types_are_installed_only_by_probed_adapters_that_capture_their_kind() {
             types::CAMERA_SOURCE,
             types::AUDIO_INPUT_SOURCE,
             types::AUDIO_OUTPUT_SOURCE,
+            types::IMAGE_SOURCE,
+            types::COLOR_SOURCE,
         ]
         .map(ty)
     );
@@ -194,6 +198,8 @@ fn an_empty_registry_still_has_the_compositor_the_mixer_and_the_filters() {
             "org.rbs.filter.chroma-key",
             "org.rbs.filter.color-correction",
             "org.rbs.filter.sharpen",
+            "org.rbs.source.color",
+            "org.rbs.source.image",
         ]
     );
 }
@@ -203,10 +209,10 @@ fn instances_match_the_descriptors_the_binder_uses() {
     let (reg, _) = registry();
     let table = reg.node_types();
     for t in reg.installed() {
-        let settings = if t.as_str() == types::WINDOW_SOURCE {
-            settings(&[(keys::TARGET, text("test-window-0"))])
-        } else {
-            Settings::new()
+        let settings = match t.as_str() {
+            types::WINDOW_SOURCE => settings(&[(keys::TARGET, text("test-window-0"))]),
+            types::IMAGE_SOURCE => settings(&[(keys::SAMPLE, text("slate"))]),
+            _ => Settings::new(),
         };
         let instance = reg
             .instantiate(&source(t.as_str(), settings), &ctx())
@@ -214,6 +220,7 @@ fn instances_match_the_descriptors_the_binder_uses() {
         let descriptor: &NodeDescriptor = match &instance {
             SourceInstance::Video(v) => Node::<GpuRuntime>::descriptor(&v.node),
             SourceInstance::Audio(a) => Node::<()>::descriptor(&a.node),
+            SourceInstance::Still(s) => Node::<GpuRuntime>::descriptor(&s.node),
             other => panic!("unexpected {other:?}"),
         };
         assert_eq!(
@@ -655,4 +662,85 @@ fn attach(graph: &mut GraphDescription, from: NodeId, pin: &str, kind: LinkKind)
     graph.set_state(out, Lifecycle::Standby).unwrap();
     graph.set_state(out, Lifecycle::Active).unwrap();
     graph.connect(from, pin, out, "in").unwrap();
+}
+
+#[test]
+fn still_types_need_no_adapter_and_make_a_still_node() {
+    let reg = SourceTypes::new();
+    for t in [types::IMAGE_SOURCE, types::COLOR_SOURCE] {
+        assert!(reg.is_installed(&ty(t)), "{t}");
+        assert!(reg.installed().contains(&ty(t)), "{t}");
+        assert!(reg.node_types().descriptor(&ty(t)).is_some(), "{t}");
+        assert!(reg.targets(&ty(t)).unwrap().is_empty());
+    }
+    let table = reg.node_types();
+    let desc = table.descriptor(&ty(types::COLOR_SOURCE)).unwrap();
+
+    let sample = source(
+        types::IMAGE_SOURCE,
+        settings(&[(keys::SAMPLE, text("slate"))]),
+    );
+    let SourceInstance::Still(st) = reg.instantiate(&sample, &ctx()).unwrap() else {
+        panic!("expected a still");
+    };
+    assert_eq!(st.stats.picture_size(), Some((1920, 1080)));
+    assert_eq!(Node::<GpuRuntime>::descriptor(&st.node), &*desc);
+
+    let colour = source(
+        types::COLOR_SOURCE,
+        settings(&[
+            (keys::COLOR, text("#ff0000")),
+            (keys::COLOR2, text("#0000ff80")),
+            (keys::ANGLE, SettingValue::Int(90)),
+            (keys::WIDTH, SettingValue::Int(64)),
+            (keys::HEIGHT, SettingValue::Int(36)),
+        ]),
+    );
+    let SourceInstance::Still(st) = reg.instantiate(&colour, &ctx()).unwrap() else {
+        panic!("expected a still");
+    };
+    assert_eq!(st.node.size(), (64, 36));
+}
+
+#[test]
+fn bad_still_settings_are_refused() {
+    let reg = SourceTypes::new();
+    let refuse = |type_id: &str, pairs: &[(&str, SettingValue)]| {
+        reg.instantiate(&source(type_id, settings(pairs)), &ctx())
+            .unwrap_err()
+    };
+    // An image needs a path or a sample, and a known one.
+    assert!(matches!(
+        refuse(types::IMAGE_SOURCE, &[]),
+        SourceError::InvalidSetting { key: "path", .. }
+    ));
+    assert!(matches!(
+        refuse(types::IMAGE_SOURCE, &[(keys::SAMPLE, text("nope"))]),
+        SourceError::InvalidSetting { key: "sample", .. }
+    ));
+    assert!(matches!(
+        refuse(
+            types::IMAGE_SOURCE,
+            &[(keys::PATH, text("/no/such/file.png"))]
+        ),
+        SourceError::Image(_)
+    ));
+    assert!(matches!(
+        refuse(types::COLOR_SOURCE, &[(keys::COLOR, text("red"))]),
+        SourceError::InvalidSetting { key: "color", .. }
+    ));
+    assert!(matches!(
+        refuse(types::COLOR_SOURCE, &[(keys::WIDTH, SettingValue::Int(8))]),
+        SourceError::InvalidSetting { key: "width", .. }
+    ));
+    assert!(matches!(
+        refuse(
+            types::COLOR_SOURCE,
+            &[
+                (keys::WIDTH, SettingValue::Int(100_000)),
+                (keys::HEIGHT, SettingValue::Int(8))
+            ]
+        ),
+        SourceError::InvalidSetting { key: "width", .. }
+    ));
 }
