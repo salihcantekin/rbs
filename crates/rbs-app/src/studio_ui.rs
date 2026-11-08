@@ -3332,6 +3332,8 @@ impl StudioUi {
             .map(|r| MeterRow {
                 id: r.id.get() as i32,
                 muted: r.audio.muted,
+                volume: fader::position_of(r.audio.volume),
+                volume_text: fader::volume_text(r.audio.volume).into(),
                 name: r.name.as_str().into(),
                 icon: source_icon(r.kind).into(),
                 value: "silent".into(),
