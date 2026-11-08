@@ -104,6 +104,19 @@ Invariants:
 2. Every frame on "video" is a pool texture of the render runtime with the capture frame's timestamp, sequence and source time.
 3. A frame that fails to import or upload is dropped (the producer gets its surface back) and counted; the last good frame stays on the link. `GpuError::Unsupported` and `InvalidSize` fail permanently (the source keeps sending what the device cannot take); other errors are `Backend`.
 
+### Still source node (ADR-0074)
+
+`rbs_nodes::StillSourceNode` (`org.rbs.still`, kind `Source`, output "video", render partition). `StillSourceNode::new(width, height, rgba)` takes straight-alpha sRGB `Rgba8` pixels (`StillError::Empty` for a zero side, `WrongLength` unless `width * height * 4` bytes). It holds the pixels and nothing on the GPU until it is warmed.
+
+| Call | Does |
+| --- | --- |
+| `prepare` | Nothing |
+| `warm` | Uploads the picture with `SourceUpload` into a pool texture (not real time) |
+| `process` | Publishes the uploaded frame once; every later tick returns at once and the output slot keeps the frame (P13) |
+| `cool`, `release` | Drop the frame and give the textures back |
+
+Counters are those of the capture node: `picture_size` is known from construction, `uploaded` and `frames` count one per warm-up. Test: `crates/rbs-nodes/tests/still_gpu.rs` (one upload and one publication over many ticks; the exported canvas shows the picture).
+
 ### Video export node
 
 | Call | Does |
