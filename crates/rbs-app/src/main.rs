@@ -2584,6 +2584,9 @@ fn graphics_api(api: &slint::GraphicsAPI<'_>) -> &'static str {
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // The name macOS shows for the app is "RBS", not the executable's file name.
+    #[cfg(target_os = "macos")]
+    rbs_app::native::set_app_name(c"RBS");
     let config = config::config_dir();
     // A second launch while RBS keeps running brings that RBS forward and ends here
     // (ADR-0056 decision 6).
@@ -2957,6 +2960,16 @@ fn run(config: PathBuf, notice: Option<String>) -> Result<(), Box<dyn std::error
     if !rbs_app::native::route_quit(quit_from_system) {
         eprintln!("rbs: Quit ends the app without closing the studio first");
     }
+
+    // The Dock icon shows the RBS logo also without an app bundle (brand assets). Set
+    // from the first event loop turn: AppKit resets the icon of a bare executable while
+    // it finishes launching, which happens when the loop starts.
+    #[cfg(target_os = "macos")]
+    entry::single_shot(std::time::Duration::ZERO, || {
+        if !rbs_app::native::set_icon(include_bytes!("../assets/brand/icon-mac-1024.png")) {
+            eprintln!("rbs: could not set the Dock icon");
+        }
+    });
 
     // The Dock icon and Cmd+Tab bring a hidden main window back (ADR-0056 decision 6);
     // without that way back, Close quits.

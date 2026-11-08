@@ -5,7 +5,7 @@
 // (`app_menu.rs`) when the menu opens or its view changes, so nothing is computed
 // while it is closed (P13).
 import { Theme, Tokens } from "tokens.slint";
-import { BrandMark, Icon, IconName, Icons, MenuSurface, FocusRing } from "components.slint";
+import { BrandMark, Icon, IconName, Icons, MenuSurface, FocusRing, RingFocus } from "components.slint";
 
 // One row of the item column. kind: 1 command, 2 section heading, 3 separator,
 // 4 picker (opens its choices), 5 back (from a picker's choices).
@@ -460,18 +460,18 @@ export component AppMenuButton inherits Rectangle {
     accessible-description: @tr("Every command, with search");
     accessible-action-default => { clicked(); }
     forward-focus: focus;
-    focus := FocusScope {
+    focus := RingFocus {
         key-pressed(e) => {
             if e.text == Key.Return || e.text == " " || e.text == Key.DownArrow { root.clicked(); return accept; }
             reject
         }
     }
-    touch := TouchArea { clicked => { focus.focus(); root.clicked(); } }
+    touch := TouchArea { clicked => { focus.focus-pointer(); root.clicked(); } }
     row := HorizontalLayout {
         padding-left: Tokens.space-2;
         padding-right: Tokens.space-3;
         spacing: Tokens.space-2;
-        VerticalLayout { alignment: center; BrandMark { } }
+        VerticalLayout { alignment: center; BrandMark { ground: touch.has-hover ? Theme.surface-overlay : Theme.surface-raised; } }
         Text {
             text: "RBS";
             color: Theme.text-primary;
@@ -480,5 +480,5 @@ export component AppMenuButton inherits Rectangle {
             vertical-alignment: center;
         }
     }
-    FocusRing { show: focus.has-focus; }
+    FocusRing { show: focus.ring; }
 }

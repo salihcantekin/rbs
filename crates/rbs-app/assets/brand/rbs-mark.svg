@@ -1,5 +1,9 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
-  <!-- The RBS mark: a scene frame with a camera bubble cut out of its corner and a dot in the bubble. Dark-theme colours. -->
-  <path d="M18 4H46A14 14 0 0 1 60 18V36.356A17 17 0 1 0 36.356 60H18A14 14 0 0 1 4 46V18A14 14 0 0 1 18 4Z" fill="#E6E9FF"/>
-  <circle cx="46" cy="46" r="11" fill="#7C52FF"/>
+  <!-- The RBS mark: a window with a camera bubble in its lower right corner. Dark-theme colours; in the app BrandMark draws it from theme tokens. -->
+  <rect x="3" y="9" width="58" height="42" rx="8" fill="#8A63FF"/>
+  <path d="M3 20H61V23H3ZM22 23H25V51H22Z" fill="#1B1E23"/>
+  <circle cx="46" cy="44" r="18" fill="#1B1E23"/>
+  <circle cx="46" cy="44" r="15" fill="#ECEEF2"/>
+  <circle cx="46" cy="40" r="5" fill="#1B1E23"/>
+  <path d="M38 52a8 6.5 0 0 1 16 0Z" fill="#1B1E23"/>
 </svg>
