@@ -1031,15 +1031,11 @@ impl Ctx {
                 }
             });
             w.set_section(section);
-            let _ = w.show();
-            // Centred on the main window, not where the OS puts new windows. While
-            // every window is hidden (ADR-0056) the OS places it.
-            if !app.hidden {
-                let t = w.global::<Tokens>();
-                let size =
-                    slint::LogicalSize::new(t.get_size_settings_w(), t.get_size_settings_h());
-                window_place::centre_on(w.window(), app.main.window(), size);
-            }
+            // Centred on the main window on every OS, not where the OS puts new
+            // windows (see `window_place::show_centred`).
+            let t = w.global::<Tokens>();
+            let size = slint::LogicalSize::new(t.get_size_settings_w(), t.get_size_settings_h());
+            let _ = window_place::show_centred(&w, &app.main, size, app.hidden);
             app.settings = Some(w);
             if section == SECTION_APPEARANCE {
                 appearance_page::opened(&ctx, app);
