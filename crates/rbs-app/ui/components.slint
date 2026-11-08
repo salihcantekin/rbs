@@ -291,6 +291,9 @@ export component Button inherits Rectangle {
     accessible-enabled: enabled;
     accessible-action-default => { if enabled { clicked(); } }
     forward-focus: focus;
+    // The pointer is over the button, or it has the keyboard focus: an icon-only
+    // control uses it to show its name beside itself.
+    out property <bool> pointed: touch.has-hover || focus.has-focus;
     out property <color> ink: !enabled ? Theme.text-disabled : kind == "primary" ? Theme.text-inverse : kind == "live" ? Theme.text-on-live : kind == "danger" ? Theme.state-error : Theme.text-primary;
     content := HorizontalLayout {
         alignment: center;
