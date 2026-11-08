@@ -38,6 +38,11 @@ pub const RAIL_BETWEEN_MIN_PICTURE: f32 = 160.0;
 /// Height of the Transition rail below the two pictures (ADR-0064).
 pub const RAIL_BELOW: f32 = 44.0;
 
+/// Height of the Pictures leaf's header strip, which holds the Studio mode switch
+/// (ADR-0073 decision 3). The strip is only laid out when the leaf is at least twice
+/// this high.
+pub const PICTURES_HEADER: f32 = 32.0;
+
 /// Stack number of Preview in the Pictures leaf in a flattened layout (ADR-0073). The
 /// leaf is not a tab stack, so no window stack has this number; every command that takes
 /// a stack number finds nothing there.
@@ -466,6 +471,8 @@ pub struct Flat {
     pub handles: Vec<Handle>,
     /// The Transition rail of a studio split in studio mode (ADR-0064).
     pub rail: Option<(Rect, RailAt)>,
+    /// The Pictures leaf's header strip with the Studio mode switch (ADR-0073).
+    pub header: Option<Rect>,
 }
 
 impl Node {
@@ -1076,6 +1083,22 @@ fn flatten_node(
 /// pictures are reported as stacks numbered [`PICTURES_PREVIEW_STACK`] and
 /// [`PICTURES_PROGRAM_STACK`], which no window stack has.
 fn flatten_pictures(p: &Pictures, r: Rect, studio_mode: bool, path: &[usize], out: &mut Flat) {
+    // The header strip above the pictures, when the leaf is tall enough for both.
+    let r = if r.h >= 2.0 * PICTURES_HEADER {
+        out.header = Some(Rect {
+            x: r.x,
+            y: r.y,
+            w: r.w,
+            h: PICTURES_HEADER,
+        });
+        Rect {
+            y: r.y + PICTURES_HEADER,
+            h: r.h - PICTURES_HEADER,
+            ..r
+        }
+    } else {
+        r
+    };
     let picture = |id: &PanelId, stack: usize, rect: Rect, out: &mut Flat| {
         out.stacks.push(StackRect {
             stack,
@@ -1191,6 +1214,7 @@ mod tests {
                 RAIL_SIZE_DEFAULT as f32 + 2.0 * HANDLE_THICKNESS,
             ),
             ("size.transition.below", RAIL_BELOW),
+            ("size.pictures.header", PICTURES_HEADER),
             ("size.transition.min-h", RAIL_BETWEEN_MIN_H),
             ("size.transition.min-picture", RAIL_BETWEEN_MIN_PICTURE),
         ] {
@@ -1378,8 +1402,21 @@ mod tests {
         // Outside studio mode: Preview fills it; Program is not shown.
         let off = n.flatten_in(r, false);
         assert_eq!(off.stacks.len(), 1);
-        assert_eq!(off.stacks[0].rect, r);
+        // Under the header strip of the Studio mode switch (ADR-0073).
+        let header = off.header.unwrap();
+        assert_eq!((header.y, header.h), (0.0, PICTURES_HEADER));
+        assert_eq!(
+            off.stacks[0].rect,
+            Rect {
+                y: PICTURES_HEADER,
+                h: 400.0 - PICTURES_HEADER,
+                ..r
+            }
+        );
         assert_eq!(off.stacks[0].stack, PICTURES_PREVIEW_STACK);
+        // Too short for a strip and a picture: no strip.
+        let flat = n.flatten_in(Rect::sized(1000.0, 2.0 * PICTURES_HEADER - 1.0), false);
+        assert!(flat.header.is_none());
         assert!(off.rail.is_none() && off.handles.is_empty());
         // Between: Preview | rail | Program, the rail in place of a divider.
         let on = n.flatten_in(r, true);
@@ -1404,7 +1441,7 @@ mod tests {
                 RAIL_BELOW - HANDLE_THICKNESS
             )
         );
-        assert_eq!(below.stacks[0].rect.h, 400.0 - RAIL_BELOW);
+        assert_eq!(below.stacks[0].rect.h, 400.0 - PICTURES_HEADER - RAIL_BELOW);
         // Too narrow for a column between two usable pictures: below instead.
         let narrow = n.flatten_in(
             Rect::sized(column + 2.0 * RAIL_BETWEEN_MIN_PICTURE - 1.0, 400.0),

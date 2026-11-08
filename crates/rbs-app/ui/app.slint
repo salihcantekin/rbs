@@ -2,7 +2,7 @@
 // crate: Slint has no recursive components, so Rust flattens each window's
 // layout tree into tab stacks and splitter handles with absolute positions.
 import { Theme, Tokens } from "tokens.slint";
-import { Button, IconButton, Icon, IconName, Icons, FocusRing, MenuItem as MenuRow, MenuSurface, EmptyState, Select, NumberField } from "components.slint";
+import { Button, IconButton, Icon, IconName, Icons, FocusRing, MenuItem as MenuRow, MenuSurface, EmptyState, Select, NumberField, Toggle } from "components.slint";
 import { SettingsNavItem, SettingsNavGroup, SettingsHeader } from "settings.slint";
 import { Appearance, AppearanceSettings, ThemeOption, ThemeTokenRow } from "appearance.slint";
 import { Shortcuts, ShortcutsSettings, ShortcutRow, ShortcutChip } from "shortcuts.slint";
@@ -16,7 +16,9 @@ export { AppMenus, AppMenuRow, AppMenuChip, ContextMenus, ContextItem, ContextCh
 export struct TabData { id: string, title: string, known: bool, icon: string }
 export struct StackData { window: int, stack: int, x: length, y: length, w: length, h: length, tabs: [TabData], active: int, collapsed: bool, can-collapse: bool, can-hide: bool }
 // The Transition rail of the centre's studio split, in studio mode (ADR-0064).
-export struct RailData { shown: bool, x: length, y: length, w: length, h: length, below: bool }
+// `strip` is the Pictures area's header strip with the Studio mode switch (ADR-0073),
+// shown whether or not the rail is.
+export struct RailData { shown: bool, x: length, y: length, w: length, h: length, below: bool, strip: bool, strip-x: length, strip-y: length, strip-w: length, strip-h: length }
 export struct HandleData { window: int, index: int, x: length, y: length, w: length, h: length, horizontal: bool, percent: int }
 export struct PanelEntry { id: string, title: string, open: bool }
 export struct WorkspaceEntry { name: string, built-in: bool, current: bool }
@@ -791,6 +793,22 @@ component TransitionRail inherits Rectangle {
     }
 }
 
+// The header strip of the Pictures area (ADR-0073 decision 3): the Studio mode switch,
+// bound to the same command as the toolbar button, the Scene menu entry and the shortcut.
+component PicturesHeader inherits Rectangle {
+    HorizontalLayout {
+        padding-left: Tokens.space-3;
+        padding-right: Tokens.space-3;
+        alignment: start;
+        Toggle {
+            label: @tr("Studio mode");
+            text: @tr("Studio mode");
+            checked: Studio.studio-mode;
+            toggled(on) => { Menus.run("canvas.studio_mode.toggle"); }
+        }
+    }
+}
+
 // A window's panel cards and dividers. It tells Rust where it is in the window (the
 // preview layer is placed from that) and how big it is (the layout is flattened to it).
 component DockArea inherits Rectangle {
@@ -839,6 +857,12 @@ component DockArea inherits Rectangle {
         width: h.w;
         height: h.h;
         data: h;
+    }
+    if rail.strip: PicturesHeader {
+        x: rail.strip-x;
+        y: rail.strip-y;
+        width: rail.strip-w;
+        height: rail.strip-h;
     }
     if rail.shown: TransitionRail {
         x: rail.x;

@@ -64,15 +64,25 @@ pub fn window_view(
         stacks,
         handles,
         rail,
+        header,
     } = shown_flat(win, area, maximized, studio_mode);
-    let rail = rail.map_or_else(RailData::default, |(r, at)| RailData {
+    let mut rail = rail.map_or_else(RailData::default, |(r, at)| RailData {
         shown: true,
         x: r.x,
         y: r.y,
         w: r.w,
         h: r.h,
         below: at == RailAt::Below,
+        ..RailData::default()
     });
+    // The Pictures leaf's header strip with the Studio mode switch (ADR-0073).
+    if let Some(h) = header {
+        rail.strip = true;
+        rail.strip_x = h.x;
+        rail.strip_y = h.y;
+        rail.strip_w = h.w;
+        rail.strip_h = h.h;
+    }
     let trees = win.trees();
     // The main window's centre keeps one expanded stack and a panel (ADR-0049): its
     // last expanded stack offers no Collapse, and a centre of one stack no Auto-hide.
