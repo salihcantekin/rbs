@@ -1217,7 +1217,7 @@ component MeterView inherits Rectangle {
 component MeterStrip inherits Rectangle {
     in property <MeterRow> data;
     callback reset();
-    width: Tokens.size-menu-sm / 3;
+    width: Tokens.size-menu-sm * 0.4;
     background: Theme.surface-sunken;
     border-radius: Tokens.radius-md;
     accessible-role: progress-indicator;
@@ -1225,7 +1225,7 @@ component MeterStrip inherits Rectangle {
     accessible-value: data.value;
     VerticalLayout {
         padding: Tokens.space-2;
-        spacing: Tokens.space-2;
+        spacing: Tokens.space-1;
         Text {
             text: data.name;
             color: data.muted ? Theme.text-disabled : Theme.text-primary;
@@ -1252,23 +1252,25 @@ component MeterStrip inherits Rectangle {
                 }
             }
         }
+        // The clip box and the mute button share a row, so the bar gets the height.
         HorizontalLayout {
             alignment: center;
-            Rectangle {
-                width: Tokens.size-icon-box;
-                height: Tokens.size-icon-box;
-                border-width: Tokens.size-border;
-                border-color: Theme.border-strong;
-                border-radius: Tokens.radius-sm;
-                background: data.clipped ? Theme.meter-clip : transparent;
-                accessible-role: button;
-                accessible-label: data.clipped ? @tr("Clipped. Reset the clip indicator of {}", data.name) : @tr("Not clipped: {}", data.name);
-                accessible-action-default => { root.reset(); }
-                TouchArea { clicked => { root.reset(); } }
+            spacing: Tokens.space-2;
+            VerticalLayout {
+                alignment: center;
+                Rectangle {
+                    width: Tokens.size-icon-box;
+                    height: Tokens.size-icon-box;
+                    border-width: Tokens.size-border;
+                    border-color: Theme.border-strong;
+                    border-radius: Tokens.radius-sm;
+                    background: data.clipped ? Theme.meter-clip : transparent;
+                    accessible-role: button;
+                    accessible-label: data.clipped ? @tr("Clipped. Reset the clip indicator of {}", data.name) : @tr("Not clipped: {}", data.name);
+                    accessible-action-default => { root.reset(); }
+                    TouchArea { clicked => { root.reset(); } }
+                }
             }
-        }
-        HorizontalLayout {
-            alignment: center;
             IconButton {
                 icon: data.muted ? IconName.speaker-off : IconName.speaker;
                 name: data.muted ? @tr("Unmute {}", data.name) : @tr("Mute {}", data.name);
@@ -1301,8 +1303,10 @@ export component MixerPanel inherits Rectangle {
     if Studio.meters.length > 0 && root.wide: Flickable {
         width: parent.width;
         height: parent.height;
-        content-width: clusters.preferred-width;
+        content-width: max(clusters.preferred-width, self.width);
+        content-height: root.height;
         clusters := HorizontalLayout {
+            height: root.height;
             padding: Tokens.size-panel-pad;
             spacing: Tokens.size-section-gap;
             alignment: start;
@@ -1315,6 +1319,8 @@ export component MixerPanel inherits Rectangle {
                     toggled(o) => { Sections.set-closed("mixer.scene", !o); }
                 }
                 if !root.scene-closed: HorizontalLayout {
+                    // The height under the header, so the strips fill the panel.
+                    height: max(0px, root.height - 2 * Tokens.size-panel-pad - Tokens.size-control-sm - Tokens.size-field-gap);
                     spacing: 0px;
                     for m[i] in Studio.meters: VerticalLayout {
                         padding-right: m.global ? 0px : Tokens.size-field-gap;
@@ -1331,6 +1337,8 @@ export component MixerPanel inherits Rectangle {
                     toggled(o) => { Sections.set-closed("mixer.global", !o); }
                 }
                 if !root.global-closed: HorizontalLayout {
+                    // The height under the header, so the strips fill the panel.
+                    height: max(0px, root.height - 2 * Tokens.size-panel-pad - Tokens.size-control-sm - Tokens.size-field-gap);
                     spacing: 0px;
                     for m[i] in Studio.meters: VerticalLayout {
                         padding-right: !m.global ? 0px : Tokens.size-field-gap;
