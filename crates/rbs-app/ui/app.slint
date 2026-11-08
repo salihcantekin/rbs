@@ -707,7 +707,7 @@ component TransitionRail inherits Rectangle {
         TransitionGo { can: root.can; icons: root.icons; }
         Rectangle { }
         Rectangle { height: Tokens.size-border; background: Theme.border-subtle; }
-        RailPlace { below: false; }
+        RailPlace { below: false; caption: !root.icons; }
     }
     // Below the pictures: type, duration and the button centred under the two
     // pictures, the position toggles at the right end behind a divider.
