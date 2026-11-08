@@ -2209,6 +2209,30 @@ fn section_key(id: &str) -> (String, bool) {
     }
 }
 
+/// Every card of the Settings window that folds (ADR-0078), for "Collapse all". A test
+/// keeps this in step with the ids in `ui/*.slint`.
+const SETTINGS_SECTIONS: [&str; 19] = [
+    "settings.appearance.theme-in-use",
+    "settings.appearance.themes",
+    "settings.general.closing",
+    "settings.recording.files",
+    "settings.recording.encoding",
+    "settings.remote.access-tokens",
+    "settings.remote.other-computers",
+    "settings.remote.this-computer",
+    "settings.sources.add-global",
+    "settings.sources.global-sources",
+    "settings.stream.connection",
+    "settings.stream.destination",
+    "settings.stream.encoding",
+    "settings.stream.while-live",
+    "settings.vcam.camera",
+    "settings.vcam.picture",
+    "settings.vcam.removal",
+    "settings.vcam.sending",
+    "settings.video.canvas",
+];
+
 /// Connects one window's `Sections` global to the workspace's closed sections.
 fn install_sections(g: &Sections<'_>, ctx: &Ctx) {
     // Pure: Slint asks again when `rev` changes. While the app is busy (never at
@@ -2219,6 +2243,42 @@ fn install_sections(g: &Sections<'_>, ctx: &Ctx) {
         c.app
             .try_borrow()
             .is_ok_and(|app| app.session.workspace().section_closed(&key) == listed_is_closed)
+    });
+    let c = ctx.clone();
+    g.on_group_state(move |prefix, _rev| {
+        c.app.try_borrow().map_or(0, |app| {
+            let ws = app.session.workspace();
+            let mut cards = SETTINGS_SECTIONS
+                .iter()
+                .filter(|id| id.starts_with(prefix.as_str()));
+            match cards.next() {
+                None => 0,
+                Some(_)
+                    if SETTINGS_SECTIONS
+                        .iter()
+                        .filter(|id| id.starts_with(prefix.as_str()))
+                        .all(|id| ws.section_closed(id)) =>
+                {
+                    2
+                }
+                Some(_) => 1,
+            }
+        })
+    });
+    let c = ctx.clone();
+    g.on_set_group(move |prefix, closed| {
+        c.update(move |app: &mut App| {
+            let mut changed = false;
+            for id in SETTINGS_SECTIONS
+                .iter()
+                .filter(|id| id.starts_with(prefix.as_str()))
+            {
+                changed |= app.session.set_section_closed(id, closed).is_ok();
+            }
+            if changed {
+                app.changed();
+            }
+        });
     });
     let c = ctx.clone();
     g.on_set_closed(move |id, closed| {
@@ -3068,4 +3128,31 @@ fn run(config: PathBuf, notice: Option<String>) -> Result<(), Box<dyn std::error
     }
     CTX.with(|c| c.borrow_mut().take());
     Ok(())
+}
+
+#[cfg(test)]
+mod section_tests {
+    use super::SETTINGS_SECTIONS;
+
+    /// "Collapse all" works from a list in Rust, so it must name every card the
+    /// Settings pages fold (ADR-0078).
+    #[test]
+    fn settings_sections_list_matches_the_cards_in_the_ui_files() {
+        let mut found = Vec::new();
+        for file in ["studio.slint", "appearance.slint", "vcam.slint"] {
+            let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("ui")
+                .join(file);
+            let text = std::fs::read_to_string(&path).expect("ui file");
+            for line in text.lines() {
+                if let Some(id) = line.trim().strip_prefix("id: \"settings.") {
+                    found.push(format!("settings.{}", id.trim_end_matches("\";")));
+                }
+            }
+        }
+        found.sort();
+        let mut listed: Vec<String> = SETTINGS_SECTIONS.iter().map(|s| (*s).to_owned()).collect();
+        listed.sort();
+        assert_eq!(found, listed);
+    }
 }

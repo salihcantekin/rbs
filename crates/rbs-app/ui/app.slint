@@ -2222,6 +2222,7 @@ export component SettingsWindow inherits Window {
                     spacing: Tokens.space-4;
                     alignment: start;
                     SettingsHeader {
+                        group: root.section == 0 ? "settings.video." : root.section == 1 ? "settings.recording." : root.section == 2 ? "settings.stream." : root.section == 3 ? "settings.remote." : root.section == 4 ? "settings.general." : root.section == 5 ? "settings.appearance." : root.section == 7 ? "settings.sources." : root.section == 8 ? "settings.vcam." : "";
                         title: root.section == 0 ? @tr("Video") : root.section == 1 ? @tr("Recording") : root.section == 2 ? @tr("Stream") : root.section == 3 ? @tr("Remote control") : root.section == 5 ? @tr("Appearance") : root.section == 6 ? @tr("Shortcuts") : root.section == 7 ? @tr("Global sources") : root.section == 8 ? @tr("Virtual camera") : @tr("General");
                         subtitle: root.section == 0 ? @tr("The canvas every scene is drawn on.")
                             : root.section == 1 ? @tr("Where recordings are saved and how they are encoded. Changes are saved at once.")

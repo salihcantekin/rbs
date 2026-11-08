@@ -4,7 +4,7 @@
 // and its control on the right (U2: every option explains itself), or under them for
 // wide content. Every value comes from the tokens (U6).
 import { Theme, Tokens } from "tokens.slint";
-import { FocusRing, RingFocus, Icon, IconName, SectionHeader, Sections } from "components.slint";
+import { FocusRing, RingFocus, Icon, IconName, SectionHeader, Sections, Button } from "components.slint";
 
 // One entry of the section list. The section in use has the accent-tinted row with an
 // accent bar at its left edge (mockup E's selected row) and is marked checked for
@@ -86,13 +86,32 @@ export component SettingsNavGroup inherits Text {
 export component SettingsHeader inherits VerticalLayout {
     in property <string> title;
     in property <string> subtitle;
+    // The id prefix of the page's cards (`settings.recording.`). A page with foldable
+    // cards gets one small button that closes all of them, or opens them again.
+    in property <string> group;
+    property <int> fold: root.group == "" ? 0 : Sections.group-state(root.group, Sections.rev);
     spacing: Tokens.space-1;
-    Text {
-        text: root.title;
-        color: Theme.text-primary;
-        font-size: Tokens.type-heading-size;
-        font-weight: Tokens.type-heading-weight;
-        accessible-role: none;
+    HorizontalLayout {
+        spacing: Tokens.size-field-gap;
+        Text {
+            horizontal-stretch: 1;
+            text: root.title;
+            color: Theme.text-primary;
+            font-size: Tokens.type-heading-size;
+            font-weight: Tokens.type-heading-weight;
+            vertical-alignment: center;
+            accessible-role: none;
+        }
+        if root.fold != 0: VerticalLayout {
+            alignment: center;
+            Button {
+                dense: true;
+                kind: "ghost";
+                text: root.fold == 1 ? @tr("Collapse all") : @tr("Expand all");
+                accessible-name: root.fold == 1 ? @tr("Collapse all sections of {}", root.title) : @tr("Expand all sections of {}", root.title);
+                clicked => { Sections.set-group(root.group, root.fold == 1); }
+            }
+        }
     }
     if root.subtitle != "": Text {
         text: root.subtitle;
