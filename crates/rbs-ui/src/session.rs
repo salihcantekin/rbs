@@ -88,6 +88,9 @@ pub enum LayoutCommand {
     /// Put the centre's Transition rail between or below the pictures
     /// (`ui.layout.studio_rail`, ADR-0064).
     SetStudioRail(crate::layout::RailAt),
+    /// Set the width in pixels of the rail between the pictures, clamped to its
+    /// limits (`ui.layout.rail_size`, ADR-0073).
+    SetRailSize(u32),
     /// Lock or unlock the layout against pointer changes.
     SetLocked(bool),
     /// Replace the layout with another workspace (`ui.workspace.switch`).
@@ -339,6 +342,7 @@ impl LayoutSession {
                 next.closed_sections = sections;
             }
             LayoutCommand::SetStudioRail(at) => next.set_studio_rail(at)?,
+            LayoutCommand::SetRailSize(px) => next.set_rail_size(px)?,
             LayoutCommand::SetCollapsed { panel, collapsed } => {
                 next.set_collapsed(&panel, collapsed)?;
             }
@@ -640,6 +644,26 @@ mod tests {
         assert!(
             s.apply(LayoutCommand::ClosePanel(id("rbs.stats")), Origin::Command)
                 .is_ok()
+        );
+    }
+
+    #[test]
+    fn the_rail_size_command_is_one_undoable_step_and_clamps() {
+        let mut s = LayoutSession::new(builtin::edit());
+        let before = s.workspace().clone();
+        s.apply(LayoutCommand::SetRailSize(9999), Origin::Command)
+            .unwrap();
+        assert_eq!(
+            s.workspace().rail_size(),
+            Some(crate::layout::RAIL_SIZE_RANGE.1)
+        );
+        assert!(s.undo());
+        assert_eq!(s.workspace(), &before);
+        // No Pictures area: refused.
+        let mut m = LayoutSession::new(builtin::minimal());
+        assert!(
+            m.apply(LayoutCommand::SetRailSize(100), Origin::Command)
+                .is_err()
         );
     }
 

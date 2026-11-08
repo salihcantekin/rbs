@@ -2,7 +2,7 @@
 // crate: Slint has no recursive components, so Rust flattens each window's
 // layout tree into tab stacks and splitter handles with absolute positions.
 import { Theme, Tokens } from "tokens.slint";
-import { Sections, Button, IconButton, Icon, IconName, Icons, FocusRing, RingFocus, MenuItem as MenuRow, MenuSurface, EmptyState, Select, NumberField } from "components.slint";
+import { Sections, Button, IconButton, Icon, IconName, Icons, FocusRing, RingFocus, MenuItem as MenuRow, MenuSurface, EmptyState, Select, NumberField, Toggle } from "components.slint";
 import { SettingsNavItem, SettingsNavGroup, SettingsHeader } from "settings.slint";
 import { Appearance, AppearanceSettings, ThemeOption, ThemeTokenRow } from "appearance.slint";
 import { Shortcuts, ShortcutsSettings, ShortcutRow, ShortcutChip } from "shortcuts.slint";
@@ -406,6 +406,9 @@ component Tab inherits Rectangle {
 component StackView inherits Rectangle {
     in property <StackData> data;
     in property <bool> floating;
+    // The rail between the pictures holds the Studio mode switch (ADR-0073); otherwise
+    // Preview's title row does, left of its other buttons.
+    in property <bool> switch-in-rail;
     property <length> bar: Tokens.size-control-lg;
     property <bool> strip: data.collapsed && data.h > data.w;
     property <bool> has-tabs: data.tabs.length > 0;
@@ -467,6 +470,25 @@ component StackView inherits Rectangle {
                     name: @tr("Add source");
                     enabled: Studio.state == 1;
                     clicked => { Studio.picker-kind = -1; Studio.add-source-asked += 1; }
+                }
+                if active-id == "rbs.preview" && !data.collapsed && !root.switch-in-rail: HorizontalLayout {
+                    padding-right: Tokens.space-2;
+                    // Its own bordered component, set apart from the panel's buttons.
+                    Rectangle {
+                        border-width: Tokens.size-border;
+                        border-color: Theme.border-subtle;
+                        border-radius: Tokens.radius-md;
+                        HorizontalLayout {
+                            padding-left: Tokens.space-2;
+                            padding-right: Tokens.space-2;
+                            Toggle {
+                                label: @tr("Studio mode");
+                                text: @tr("Studio mode");
+                                checked: Studio.studio-mode;
+                                toggled(on) => { Menus.run("canvas.studio_mode.toggle"); }
+                            }
+                        }
+                    }
                 }
                 // Picture panels: Maximize or Restore in the title row, as in design E.
                 if (active-id == "rbs.preview" || active-id == "rbs.program") && !data.collapsed: IconButton {
@@ -692,6 +714,36 @@ component TransitionGo inherits VerticalLayout {
     }
 }
 
+// The Studio mode switch above the rail between the pictures (ADR-0073): the same
+// setting as the toolbar button, the Scene menu entry and the shortcut. Its name is
+// under the switch, so the card reads the same at any rail width.
+component RailSwitch inherits Rectangle {
+    background: Theme.surface-raised;
+    border-color: Theme.border-subtle;
+    border-width: Tokens.size-border;
+    border-radius: Tokens.radius-md;
+    VerticalLayout {
+        padding: Tokens.space-2;
+        alignment: center;
+        HorizontalLayout {
+            alignment: center;
+            Toggle {
+                label: @tr("Studio mode");
+                checked: Studio.studio-mode;
+                toggled(on) => { Menus.run("canvas.studio_mode.toggle"); }
+            }
+        }
+        Text {
+            text: @tr("Studio mode");
+            color: Theme.text-secondary;
+            font-size: Tokens.type-caption-size;
+            horizontal-alignment: center;
+            wrap: word-wrap;
+            accessible-role: none;
+        }
+    }
+}
+
 component TransitionRail inherits Rectangle {
     in property <bool> below;
     property <bool> can: Studio.studio-mode && Studio.state == 1;
@@ -799,6 +851,8 @@ component DockArea inherits Rectangle {
     in property <[HandleData]> handles;
     in property <RailData> rail;
     in property <bool> floating;
+    // The height of the Studio mode switch card above the rail between the pictures.
+    property <length> switch-h: 2 * Tokens.space-2 + 2 * Tokens.size-control-md;
     property <length> ax: self.absolute-position.x;
     property <length> ay: self.absolute-position.y;
     changed window => { report(); }
@@ -832,6 +886,7 @@ component DockArea inherits Rectangle {
         height: s.h;
         data: s;
         floating: root.floating;
+        switch-in-rail: root.rail.shown && !root.rail.below;
     }
     for h in handles: Splitter {
         x: h.x;
@@ -840,11 +895,20 @@ component DockArea inherits Rectangle {
         height: h.h;
         data: h;
     }
-    if rail.shown: TransitionRail {
+    // Between the pictures the rail is two cards: the Studio mode switch above, the
+    // Transition controls below (ADR-0073). Below the pictures it is the Transition
+    // row alone and the switch is in Preview's title row.
+    if rail.shown && !rail.below: RailSwitch {
         x: rail.x;
         y: rail.y;
         width: rail.w;
-        height: rail.h;
+        height: root.switch-h;
+    }
+    if rail.shown: TransitionRail {
+        x: rail.x;
+        y: rail.below ? rail.y : rail.y + root.switch-h + Shell.gap;
+        width: rail.w;
+        height: rail.below ? rail.h : rail.h - root.switch-h - Shell.gap;
         below: rail.below;
     }
     // The drop guide: the part of the window the drop would fill.

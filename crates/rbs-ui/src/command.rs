@@ -346,6 +346,21 @@ pub const ENTRIES: &[Entry] = &[
         checkable: false,
     },
     Entry {
+        id: "ui.layout.rail_size",
+        title: "Transition rail width",
+        tooltip: "Set the width in pixels of the Transition rail between Preview and Program",
+        icon: Some("rail-between"),
+        shortcut: None,
+        menu: Menu::View,
+        kind: action("ui.layout.rail_size"),
+        params: &[Param {
+            name: "px",
+            ty: ParamType::Text,
+            required: true,
+        }],
+        checkable: false,
+    },
+    Entry {
         id: "ui.layout.studio_rail",
         title: "Transition rail",
         tooltip: "Put the Transition rail between or below Preview and Program",
@@ -1028,7 +1043,7 @@ pub const MENU_LAYOUT: &[(Menu, &[&str])] = &[
 
 /// Entries no menu lists: `scene.position` is for shortcuts and the palette (the
 /// Scene menu lists the scenes through `scene.select`).
-pub const NOT_IN_MENU: &[&str] = &["scene.position"];
+pub const NOT_IN_MENU: &[&str] = &["scene.position", "ui.layout.rail_size"];
 
 /// The icon an id shows, from the design system's icon set: the entry's, or for an
 /// area toggle the panel icon of its area.

@@ -92,7 +92,7 @@ Thread rules: every `Engine` method runs on the control thread and may block up 
 
 ## Performance requirements
 
-- The worker loop (hot path) does per iteration: one atomic load of the worker's mode (run, drain, held, stop; two on a doorbell worker, before and after its wait), clock reads, a `park_timeout` or `Doorbell::wait`, `Executor::swap_pending` (one `try_recv` when nothing is pending) and `run_tick`. No allocation or I/O. Cadence workers take no lock; `Doorbell::wait` takes the doorbell's registration lock, contended at most by a ringer's `try_lock` around one `unpark` (output workers only).
+- The worker loop (hot path) does per iteration: one atomic load of the worker's mode (run, drain, held, stop; two on a doorbell worker, before and after its wait), clock reads, a `park_timeout` or `Doorbell::wait`, `Executor::swap_pending` (one `try_recv` when nothing is pending) and `run_tick`. No allocation or I/O. Cadence workers take no lock; `Doorbell::wait` takes the doorbell's registration lock, contended at most by a ringer's `try_lock` around one `unpark` (output workers only). `ring` and `wait` each have a `SeqCst` fence between their atomic and the lock, so a ring is never lost to a ringer that finds the lock taken while the worker misses the flag (store/load reordering on weakly ordered CPUs).
 - Measured with `cargo bench -p rbs-engine --bench cross_thread` (numbers in ADR-0027): packet hand-off encoder to output across threads p50 36 us; render to output at 60 fps with a quarter-frame encoder offset mean 4.4 ms.
 
 ## Conformance tests
