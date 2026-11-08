@@ -232,6 +232,9 @@ pub struct SourceRow {
     pub also_in: Vec<String>,
     /// The source is also a global source (on a scene row of a source that is both).
     pub in_globals: bool,
+    /// The target id stored in its settings (`target`), empty when it has none: the
+    /// Source tab marks it in the list (ADR-0077).
+    pub target: String,
 }
 
 impl PartialEq for SourceRow {
@@ -250,6 +253,7 @@ impl PartialEq for SourceRow {
             && self.global == other.global
             && self.also_in == other.also_in
             && self.in_globals == other.in_globals
+            && self.target == other.target
             && match (&self.meter, &other.meter) {
                 (Some(a), Some(b)) => Arc::ptr_eq(a, b),
                 (None, None) => true,
@@ -4586,6 +4590,10 @@ impl Host {
                             .filter(|p| **p != this && places.iter().any(|(sc, _)| sc == *p))
                             .filter_map(|p| self.collection.scene(*p).map(|x| x.name.clone()))
                             .collect()
+                    },
+                    target: match s.settings.get(keys::TARGET) {
+                        Some(SettingValue::Text(t)) => t.clone(),
+                        _ => String::new(),
                     },
                     in_globals: !global
                         && globals.is_some_and(|g| {
