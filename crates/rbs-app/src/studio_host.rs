@@ -143,7 +143,7 @@ impl SourceKind {
             SourceKind::SystemAudio => "System audio",
             SourceKind::ApplicationAudio => "Application audio",
             SourceKind::Image => "Image",
-            SourceKind::Color => "Color",
+            SourceKind::Color => "Colour",
         }
     }
 

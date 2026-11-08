@@ -6,6 +6,8 @@ UI text uses these terms and no synonyms (rule U13). Code may use different inte
 | --- | --- | --- | --- |
 | Scene | A layout of sources shown on a canvas | Layout, page | `Scene` |
 | Source | Something that produces video or audio (screen capture, window capture, camera, image, text, media, browser, audio device), as placed in a scene with its position, size and crop. The panel listing them is "Sources" | Input, layer, element, item | Source node; placement is a scene item |
+| Look | A preset of a source's shape, border and filters, copied onto the selected source in one undoable step. Later edits to the source do not change the look | Preset, style, theme | `Look` |
+| Library | The panel with built-in looks and sample pictures. It is not the folder of saved themes, workspaces and scene collections (ADR-0051), which the UI never calls a library | Assets, templates | `rbs.library` |
 | Filter | An effect applied to a source or audio | Effect, plugin | Filter node |
 | Transition | How the view changes from one scene to another | Effect | Transition node |
 | Canvas | An output picture size and frame rate, for example horizontal 1920x1080 or vertical 1080x1920 | Resolution | Canvas |

@@ -95,6 +95,10 @@ One icon set, drawn by the library's `Icon` component as vector paths in a 16 x 
 - `SegmentedControl` is a sunken track (`color.surface.sunken`, `border.subtle`, `radius.md`) with the options side by side; the chosen one is raised (`color.surface.overlay` with a `border.strong` outline), bold and checked for screen readers, the others in `color.text.secondary`. Each option is a button reached by Tab.
 - `IconButton` is the icon-only button (ghost, dense, square). Its `name` must be set and becomes the accessible name (Slint cannot enforce required properties; an accessibility-tree check is a follow-up).
 
+### LibraryRow
+
+One row of the Library panel (ADR-0075): a title on the left and one action button on the right (Apply, Add), disabled when the action is not possible. Built from `Tokens.*` and `Theme.*` only; the sample row adds a thumbnail of `size.library.thumb-w` x `size.library.thumb-h` on `surface-sunken`, a caption under the title and the button under the caption. Its label is the whole accessible name; the button announces its disabled state.
+
 ### AudioMeter
 
 The meter of rule U16, used alone and inside AudioStrip. Logic in `rbs_ui::meter` (toolkit-neutral, tested without a window).
@@ -188,10 +192,10 @@ The inspector pattern (as in Figma, Blender, DaVinci Resolve and Visual Studio),
 ### Panel model
 
 - A panel id is `<namespace>.<panel>` in lowercase ASCII letters, digits, `.`, `-` and `_`, at most 128 bytes, with optional parameters `?key=value&key=value` in the same characters. Each key appears once and parameters are stored sorted by key, so one panel has exactly one id.
-- Every panel has a stable id (`rbs.scenes`, `rbs.sources`, `rbs.preview`, `rbs.program`, `rbs.properties`, `rbs.mixer`, `rbs.live-controls`, `rbs.transition`, `rbs.outputs`, `rbs.stats`, `rbs.status-bar`, plugin panels as `<plugin-id>.<panel>`), a title, an icon, a default dock position and an optional shortcut.
+- Every panel has a stable id (`rbs.scenes`, `rbs.sources`, `rbs.preview`, `rbs.program`, `rbs.properties`, `rbs.mixer`, `rbs.live-controls`, `rbs.transition`, `rbs.outputs`, `rbs.stats`, `rbs.library`, `rbs.status-bar`, plugin panels as `<plugin-id>.<panel>`), a title, an icon, a default dock position and an optional shortcut.
 - Panels that can exist more than once take parameters in the id: `rbs.preview?canvas=vertical`, `rbs.program?canvas=horizontal`. Without a parameter they show the canvas being edited.
 - A layout is a tree per window: splits (horizontal or vertical, with ratios) whose leaves are tab stacks of panels. Floating windows and projectors have their own tree or content plus their position.
-- Each built-in panel declares how often it must redraw while visible: on change only (lists, properties, controls), at most N times per second (`rbs.mixer` 30 Hz, `rbs.stats` and `rbs.status-bar` 1 Hz), or at display rate (`rbs.preview`, `rbs.program`). The shell runs at most one redraw timer, at the fastest rate any visible panel or visible compact view needs, plus 1 Hz for the live indicator while live or recording, and no timer otherwise. Hidden tabs, closed panels, auto-hidden panels that are not out, panels in hidden areas, panels covered by a maximized panel and collapsed panels without a compact view never count.
+- Each built-in panel declares how often it must redraw while visible: on change only (lists, properties, controls, `rbs.library`), at most N times per second (`rbs.mixer` 30 Hz, `rbs.stats` and `rbs.status-bar` 1 Hz), or at display rate (`rbs.preview`, `rbs.program`). The shell runs at most one redraw timer, at the fastest rate any visible panel or visible compact view needs, plus 1 Hz for the live indicator while live or recording, and no timer otherwise. Hidden tabs, closed panels, auto-hidden panels that are not out, panels in hidden areas, panels covered by a maximized panel and collapsed panels without a compact view never count.
 - `rbs.program`, `rbs.live-controls` and `rbs.mixer` are guarded: closing them while live (directly or by closing their floating window) shows the undo toast of U21. Collapsing or auto-hiding them, hiding their area or covering them with a maximized panel shows no toast: one interaction brings them back.
 - **Stack states** (ADR-0049). Panel commands (`ui.panel.collapse(id)` and the others) act on the stack that holds the panel. A tab stack in an area or the centre is:
   - `docked` (default);
@@ -253,7 +257,7 @@ right = { size = 290, visible = true, layout = { split = "vertical", ratios = [0
 ] } }
 bottom = { size = 200, visible = true, layout = { tabs = ["rbs.mixer"] } }
 auto_hide = [
-  { edge = "left", tabs = ["rbs.library"], size = 340, anchor = "rbs.scenes" },
+  { edge = "left", tabs = ["rbs.library"], size = 320, anchor = "rbs.scenes" },
   { edge = "right", tabs = ["rbs.stats"], size = 320, anchor = "rbs.properties" },
 ]
 
