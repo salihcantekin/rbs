@@ -36,6 +36,12 @@ Forces: P4 (no CPU readback), P6 (no allocation or I/O in `Node::process`), P13 
 - The pictures' pixels stay in CPU memory for the life of the node (decision 10); the GPU texture only while warm.
 - Animated pictures (GIF, APNG, video), SVG, text and browser content are not covered. They need a source that produces frames over time and are decided separately.
 
+## Reference tools (CLAUDE.md rule 17)
+
+- **OBS Studio** has an Image source (one file, optional unload when hidden, optional file-change polling), a Colour Source (a solid colour only), an Image Slide Show and a Media Source. A gradient, a rounded frame or a lower-third plate needs an image file made elsewhere or a third-party plugin; every image source keeps its decoded copy and a texture, and the Colour Source is drawn as a quad each frame like any other source.
+- **Where this falls short today:** no hot reload when the file changes on disk, no JPEG, WebP, SVG or animated pictures, and the CPU copy stays while installed (decision 10).
+- **What RBS does better by design:** a gradient and a colour are made without a file; eight original samples (backgrounds and transparent frames) ship in the binary; a still costs one upload and no per-tick work, and holds its GPU texture only while it is in the schedule (P13); shape, border and filters (ADR-0053) apply to it like to any source, so a rounded, bordered logo needs no image editing.
+
 ## Related
 
 ADR-0075 (looks and the Library panel) lists these samples by id in the Library; the ids live in `rbs_sources::still::SAMPLES` only.
