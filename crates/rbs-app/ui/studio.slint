@@ -1410,7 +1410,10 @@ export component MixerPanel inherits Rectangle {
                 height: Tokens.type-caption-line;
                 Rectangle { width: root.name-width; }
                 scale-row := Rectangle {
-                    for mark in Studio.scale: Text {
+                    // A narrow panel shows every second or third label, so none overlap.
+                    property <int> step: self.width >= Tokens.size-menu-sm ? 1 : self.width >= Tokens.size-menu-sm / 2 ? 2 : 3;
+                    for mark[i] in Studio.scale: Text {
+                        visible: Math.mod(i, scale-row.step) == 0;
                         x: parent.width * mark.at - self.width / 2;
                         text: mark.label;
                         color: Theme.text-secondary;
