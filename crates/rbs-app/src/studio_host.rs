@@ -470,6 +470,16 @@ pub enum Command {
         /// Milliseconds; positive delays the sound.
         offset_ms: i32,
     },
+    /// Point a source at another target of its kind, keeping its name, layout, filters
+    /// and place in every scene (one undo step, ADR-0077).
+    RetargetSource {
+        /// The source.
+        id: SourceId,
+        /// What it should capture now.
+        target: Target,
+    },
+    /// Try a source that is not running again with its stored settings (ADR-0077).
+    ReloadSource(SourceId),
     /// Rename a source (one undo step). Names are unique in the collection.
     RenameSource {
         /// The source.
@@ -2016,6 +2026,14 @@ impl Host {
             }
             Command::SetSourceSyncOffset { id, offset_ms } => {
                 let done = self.set_source_sync_offset(id, offset_ms);
+                self.answer_live(done, notify);
+            }
+            Command::RetargetSource { id, target } => {
+                let done = self.retarget_source(id, &target);
+                self.answer(done, notify);
+            }
+            Command::ReloadSource(id) => {
+                let done = self.reload_source(id);
                 self.answer_live(done, notify);
             }
             Command::RenameSource { id, name } => {
@@ -3812,6 +3830,48 @@ impl Host {
     }
 
     /// Renames a source (one undo step); `Ok(false)` when it has that name.
+    /// Points a source at `target`: its `adapter` and `target` settings change, nothing
+    /// else, so name, layout, filters and every scene's item stay. The binder replaces
+    /// the node (break before make). One undo step; the same target records nothing.
+    fn retarget_source(&mut self, id: SourceId, target: &Target) -> Result<bool, Refusal> {
+        let source = self
+            .collection
+            .source(id)
+            .ok_or_else(|| Refusal::NotFound(format!("There is no source {}.", id.get())))?;
+        let name = source.name.clone();
+        let mut settings = source.settings.clone();
+        let same = |key: &str, value: &str| matches!(settings.get(key), Some(SettingValue::Text(t)) if t == value);
+        if same(keys::ADAPTER, &target.adapter) && same(keys::TARGET, &target.target) {
+            return Ok(false);
+        }
+        settings.insert(
+            keys::ADAPTER.into(),
+            SettingValue::Text(target.adapter.clone()),
+        );
+        settings.insert(
+            keys::TARGET.into(),
+            SettingValue::Text(target.target.clone()),
+        );
+        let undo = self
+            .collection
+            .set_source_settings(id, settings)
+            .map_err(|e| Refusal::of(&e))?;
+        self.history
+            .record(EditKind::Retarget, &name, 0, vec![undo]);
+        Ok(true)
+    }
+
+    /// Tries a source again with its stored settings (no edit, no undo step).
+    fn reload_source(&mut self, id: SourceId) -> Result<bool, Refusal> {
+        if self.collection.source(id).is_none() {
+            return Err(Refusal::NotFound(format!(
+                "There is no source {}.",
+                id.get()
+            )));
+        }
+        Ok(self.studio.reload_source(id))
+    }
+
     fn rename_source(&mut self, id: SourceId, name: &str) -> Result<bool, Refusal> {
         let old = self
             .collection

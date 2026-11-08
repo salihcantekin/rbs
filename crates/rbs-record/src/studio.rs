@@ -1441,6 +1441,22 @@ impl Studio {
         }
     }
 
+    /// The user's "reload" of a source (ADR-0077): forgets its failure record so the
+    /// engine prepares its node again at its next service, for a window that opened
+    /// again or a device that came back. Returns whether the source had a failure
+    /// record; a healthy source is left running.
+    pub fn reload_source(&mut self, source: SourceId) -> bool {
+        let Some(node) = self
+            .entries
+            .iter()
+            .find(|e| e.source == source)
+            .map(|e| e.state.node)
+        else {
+            return false;
+        };
+        self.engine.retry(node)
+    }
+
     /// Sends the collection's values to a running filter again (a cancelled drag).
     pub fn restore_filter(&mut self, filter: FilterId) -> bool {
         let Some(values) =

@@ -3523,7 +3523,7 @@ fn source_icon(kind: Option<SourceKind>) -> &'static str {
 /// border, 6 crop, 7 shown or hidden, 8 lock, 9 source rename, 10 scene added, 11
 /// scene removed, 12 scene renamed (the name is the scene's, or the old name), 13
 /// filters changed, 14 removed from one scene, 15 made global or moved back into a
-/// scene, 16 look applied.
+/// scene, 16 look applied, 17 source pointed at another target.
 fn step_view(step: Option<&StepInfo>) -> (i32, &str) {
     match step {
         None => (0, ""),
@@ -3545,6 +3545,7 @@ fn step_view(step: Option<&StepInfo>) -> (i32, &str) {
                 EditKind::Remove => 14,
                 EditKind::Global => 15,
                 EditKind::Look => 16,
+                EditKind::Retarget => 17,
             },
             s.name.as_str(),
         ),
