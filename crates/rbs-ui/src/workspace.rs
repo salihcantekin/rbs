@@ -18,7 +18,7 @@ use crate::panel::PanelId;
 
 /// The workspace file format this crate writes. Format 1 files are read and
 /// migrated in memory ([`Workspace::from_toml`]).
-pub const FORMAT: u32 = 2;
+pub const FORMAT: u32 = 3;
 
 /// Longest workspace name in characters.
 pub const MAX_NAME_CHARS: usize = 64;
@@ -447,11 +447,11 @@ impl Window {
         }
     }
 
-    /// Is panel `id` Preview or Program of this window's studio split (ADR-0064)?
-    pub fn in_studio_split(&self, id: &PanelId) -> bool {
+    /// Is `id` the Pictures leaf of this window, or one of its two pictures (ADR-0073)?
+    pub fn in_pictures(&self, id: &PanelId) -> bool {
         self.main()
-            .and_then(|m| m.centre.studio_split())
-            .is_some_and(|s| s.children.iter().any(|c| c.find(id).is_some()))
+            .and_then(|m| m.centre.pictures_leaf())
+            .is_some_and(|p| p.answers_to(id))
     }
 
     /// The window laid out in `content`: every tab stack shown and every divider.
@@ -571,7 +571,7 @@ impl Window {
     fn remove(&mut self, id: &PanelId) -> bool {
         match &mut self.content {
             WindowContent::Main(m) => {
-                if m.centre.remove(id) {
+                if m.centre.remove_pictures(id) || m.centre.remove(id) {
                     return true;
                 }
                 for a in [&mut m.left, &mut m.right, &mut m.bottom] {
@@ -790,16 +790,19 @@ pub fn same_name(a: &str, b: &str) -> bool {
     a == b || a.to_lowercase() == b.to_lowercase()
 }
 
-/// Why Preview and Program of the studio split are not collapsed or auto-hidden.
-const STUDIO_SPLIT_FIXED: &str = "Preview and Program stay open beside the Transition rail; move or close one to \
-     change the layout";
+/// Why the Pictures leaf is not collapsed, auto-hidden or floated (ADR-0073).
+const PICTURES_FIXED: &str = "Preview and Program are a fixed area beside the Transition rail; \
+     close it from the Panels menu to remove it";
 
-/// Studio-flagged splits in a tree, whatever their shape.
-fn count_studio(n: &Node) -> usize {
+fn main_has_no_pictures(ws: &Workspace) -> bool {
+    ws.main().pictures_leaf().is_none()
+}
+
+/// Pictures leaves in a tree.
+fn count_pictures(n: &Node) -> usize {
     match n {
-        Node::Split(s) => {
-            usize::from(s.studio.is_some()) + s.children.iter().map(count_studio).sum::<usize>()
-        }
+        Node::Pictures(_) => 1,
+        Node::Split(s) => s.children.iter().map(count_pictures).sum(),
         Node::Tabs(_) => 0,
     }
 }
@@ -825,7 +828,7 @@ pub fn file_format(text: &str) -> Option<u32> {
     toml::from_str::<Version>(text).ok()?.format
 }
 
-/// Keys format 2 added; a format 1 file using them is invalid.
+/// Keys format 3 added; a format 1 or 2 file using them is invalid.
 const FORMAT_2_KEYS: [&str; 6] = ["centre", "left", "right", "bottom", "auto_hide", "toolbar"];
 
 /// A format 1 file as format 2 data: the main window's `layout` becomes its `centre`
@@ -838,6 +841,7 @@ fn migrate_1(text: &str) -> Result<toml::Table, WorkspaceError> {
                     FORMAT_2_KEYS.contains(&k.as_str())
                         || k.as_str() == "state"
                         || k.as_str() == "studio"
+                        || k.as_str() == "pictures"
                 }) {
                     return Err(WorkspaceError::Parse(format!(
                         "unknown field `{k}` in a format 1 file"
@@ -892,6 +896,13 @@ impl Workspace {
         let parse = |e: toml::de::Error| WorkspaceError::Parse(e.to_string());
         let w: Workspace = match file_format(text) {
             Some(FORMAT) => toml::from_str(text).map_err(parse)?,
+            // Format 2 (ADR-0064) differs only in the studio split, which a node reads
+            // as the Pictures leaf (ADR-0073).
+            Some(2) => {
+                let mut t: toml::Table = toml::from_str(text).map_err(parse)?;
+                t.insert("format".into(), toml::Value::Integer(i64::from(FORMAT)));
+                toml::Value::Table(t).try_into().map_err(parse)?
+            }
             Some(1) => toml::Value::Table(migrate_1(text)?)
                 .try_into()
                 .map_err(parse)?,
@@ -924,8 +935,8 @@ impl Workspace {
         }
         for (i, w) in self.windows.iter().enumerate() {
             for (t, l) in w.trees().into_iter().enumerate() {
-                if count_studio(l) > usize::from(i == 0 && t == 0) {
-                    return invalid("a workspace has at most one studio split, in the centre");
+                if count_pictures(l) > usize::from(i == 0 && t == 0) {
+                    return invalid("a workspace has at most one Pictures area, in the centre");
                 }
                 if l.has_empty_stack_below_root() {
                     return invalid("only the main window's centre may be an empty tab stack");
@@ -964,30 +975,43 @@ impl Workspace {
         Ok(())
     }
 
-    /// Drops the studio flag of a split that lost its shape (ADR-0064 decision 4).
-    pub fn dissolve_broken_studio(&mut self) {
-        for w in &mut self.windows {
-            for t in w.trees_mut() {
-                t.dissolve_broken_studio();
-            }
-        }
-    }
-
-    /// Puts the Transition rail of the centre's studio split `at` (ADR-0064,
-    /// `ui.layout.studio_rail`). [`WorkspaceError::NoTarget`] without a studio split.
+    /// Puts the Transition rail of the centre's Pictures leaf `at` (ADR-0073,
+    /// `ui.layout.studio_rail`). [`WorkspaceError::NoTarget`] without a leaf.
     pub fn set_studio_rail(&mut self, at: RailAt) -> Result<(), WorkspaceError> {
         let m = self.main_layout_mut().ok_or(WorkspaceError::NoTarget)?;
-        let s = m
+        let p = m
             .centre
-            .studio_split_mut()
+            .pictures_leaf_mut()
             .ok_or(WorkspaceError::NoTarget)?;
-        s.studio = Some(at);
+        p.rail = at;
         Ok(())
     }
 
-    /// Where the centre's studio split puts the rail, if it has one.
+    /// Where the centre's Pictures leaf puts the rail, if it has one.
     pub fn studio_rail(&self) -> Option<RailAt> {
-        self.main().studio_split().and_then(|s| s.studio)
+        self.main().pictures_leaf().map(|p| p.rail)
+    }
+
+    /// Sets the width of the rail between the pictures, clamped to its limits
+    /// (`ui.layout.rail_size`, ADR-0073). [`WorkspaceError::NoTarget`] without a leaf.
+    pub fn set_rail_size(&mut self, px: u32) -> Result<(), WorkspaceError> {
+        let m = self.main_layout_mut().ok_or(WorkspaceError::NoTarget)?;
+        let p = m
+            .centre
+            .pictures_leaf_mut()
+            .ok_or(WorkspaceError::NoTarget)?;
+        p.rail_size = px.clamp(crate::layout::RAIL_SIZE_RANGE.0, crate::layout::RAIL_SIZE_RANGE.1);
+        Ok(())
+    }
+
+    /// The rail's width, if the centre has a Pictures leaf.
+    pub fn rail_size(&self) -> Option<u32> {
+        self.main().pictures_leaf().map(|p| p.rail_size)
+    }
+
+    /// Is `id` the Pictures leaf or one of its pictures, in the main window?
+    fn pictures_answer(&self, id: &PanelId) -> bool {
+        self.windows.first().is_some_and(|w| w.in_pictures(id))
     }
 
     /// The main window's centre.
@@ -1057,7 +1081,7 @@ impl Workspace {
 
     /// Is the panel open in any window, auto-hidden included?
     pub fn is_open(&self, id: &PanelId) -> bool {
-        self.find(id).is_some() || self.group_of(id).is_some()
+        self.find(id).is_some() || self.group_of(id).is_some() || self.pictures_answer(id)
     }
 
     /// The window holding panel `id`, auto-hidden panels in the main window.
@@ -1065,6 +1089,7 @@ impl Workspace {
         self.find(id)
             .map(|(w, _, _)| w)
             .or_else(|| self.group_of(id).map(|_| 0))
+            .or_else(|| self.pictures_answer(id).then_some(0))
     }
 
     /// Close a panel wherever it is. A floating window left empty is removed.
@@ -1084,12 +1109,23 @@ impl Workspace {
         });
     }
 
-    /// Open a closed panel as a new tab of the main window's first stack.
-    /// Opening an open panel only makes it the visible tab (of its stack, or of its
-    /// edge group).
+    /// Open a closed panel (ADR-0073 decisions 2 and 4). Opening an open panel only
+    /// makes it the visible tab (of its stack, or of its edge group); opening the
+    /// Pictures leaf, or one of its two pictures, while the leaf exists changes
+    /// nothing.
+    ///
+    /// A closed panel goes into the first tab stack of the area that is its default
+    /// home (Scenes and Sources left, Properties right, Mixer bottom), made visible
+    /// when hidden and created when it was empty; other panels go into the centre's
+    /// first tab stack, never into the Pictures leaf (it has none). `rbs.pictures`, or
+    /// Preview or Program of the leaf's kind when neither is open as an ordinary
+    /// panel, opens the leaf.
     pub fn open(&mut self, id: PanelId) -> Result<(), WorkspaceError> {
         if let Some((w, s, t)) = self.find(&id) {
             self.windows[w].activate(s, t);
+            return Ok(());
+        }
+        if self.pictures_answer(&id) {
             return Ok(());
         }
         let main = self.main_layout_mut().ok_or(WorkspaceError::NoTarget)?;
@@ -1098,11 +1134,71 @@ impl Workspace {
             group.active = group.tabs.iter().position(|p| *p == id).unwrap_or(0);
             return Ok(());
         }
+        let picture = |p: &PanelId| {
+            matches!(p.base(), "rbs.preview" | "rbs.program") && p.param("canvas").is_none()
+        };
+        let wants_leaf = id.as_str() == "rbs.pictures" || picture(&id);
+        if wants_leaf {
+            // Only when no ordinary Preview or Program is open: the leaf would
+            // hold the same panel ids twice.
+            let (preview, program) = (crate::panel::id("rbs.preview"), crate::panel::id("rbs.program"));
+            let loose = self.is_open(&preview) || self.is_open(&program);
+            if !loose && main_has_no_pictures(self) {
+                return self.open_pictures();
+            }
+            if id.as_str() == "rbs.pictures" {
+                return Ok(());
+            }
+        }
+        let side = match id.base() {
+            "rbs.scenes" | "rbs.sources" => Some(Side::Left),
+            "rbs.properties" => Some(Side::Right),
+            "rbs.mixer" => Some(Side::Bottom),
+            _ => None,
+        };
+        let main = self.main_layout_mut().ok_or(WorkspaceError::NoTarget)?;
+        if let Some(side) = side {
+            let area = main.area_mut(side);
+            area.visible = true;
+            match &mut area.layout {
+                Some(l) if l.stack_count() > 0 => {
+                    l.insert_into_stack(0, id, None);
+                }
+                _ => area.layout = Some(Node::tabs(vec![id])),
+            }
+            return Ok(());
+        }
         if main.centre.is_empty() {
             main.centre = Node::tabs(vec![id]);
-        } else {
+        } else if main.centre.stack_count() > 0 {
             main.centre.insert_into_stack(0, id, None);
+        } else {
+            // The centre holds only the Pictures leaf: a new stack in the right area.
+            let area = main.area_mut(Side::Right);
+            area.visible = true;
+            match &mut area.layout {
+                Some(l) if l.stack_count() > 0 => {
+                    l.insert_into_stack(0, id, None);
+                }
+                _ => area.layout = Some(Node::tabs(vec![id])),
+            }
         }
+        Ok(())
+    }
+
+    /// Opens the Pictures leaf: the whole centre when it is empty, else a new first
+    /// child of the centre (`conflict`-like [`WorkspaceError::Invalid`] when the tree
+    /// would nest too deeply).
+    fn open_pictures(&mut self) -> Result<(), WorkspaceError> {
+        let main = self.main_layout_mut().ok_or(WorkspaceError::NoTarget)?;
+        let mut next = main.centre.clone();
+        next.insert_node_at_edge(Node::pictures(RailAt::Between), crate::layout::Edge::Left);
+        if next.depth() > MAX_DEPTH {
+            return Err(WorkspaceError::Invalid(
+                "the centre is nested too deeply to add the Pictures area".into(),
+            ));
+        }
+        main.centre = next;
         Ok(())
     }
 
@@ -1113,6 +1209,9 @@ impl Workspace {
         window: usize,
         stack: usize,
     ) -> Result<(), WorkspaceError> {
+        if self.pictures_answer(id) {
+            return Err(WorkspaceError::Invalid(PICTURES_FIXED.into()));
+        }
         let target_ok = self
             .windows
             .get(window)
@@ -1165,6 +1264,9 @@ impl Workspace {
         window: usize,
         edge: Edge,
     ) -> Result<(), WorkspaceError> {
+        if self.pictures_answer(id) {
+            return Err(WorkspaceError::Invalid(PICTURES_FIXED.into()));
+        }
         if self.windows.get(window).and_then(Window::layout).is_none() {
             return Err(WorkspaceError::NoTarget);
         }
@@ -1225,6 +1327,9 @@ impl Workspace {
         stack: usize,
         edge: Edge,
     ) -> Result<(), WorkspaceError> {
+        if self.pictures_answer(id) {
+            return Err(WorkspaceError::Invalid(PICTURES_FIXED.into()));
+        }
         let target = self
             .windows
             .get(window)
@@ -1262,12 +1367,12 @@ impl Workspace {
     /// Collapse (`ui.panel.collapse`) or expand (`ui.panel.expand`) the stack holding
     /// panel `id`, in any window. The centre keeps one stack that is not collapsed.
     pub fn set_collapsed(&mut self, id: &PanelId, collapsed: bool) -> Result<(), WorkspaceError> {
+        if self.pictures_answer(id) {
+            return Err(WorkspaceError::Invalid(PICTURES_FIXED.into()));
+        }
         let (w, stack, _) = self
             .find(id)
             .ok_or_else(|| WorkspaceError::NotOpen(id.clone()))?;
-        if self.windows[w].in_studio_split(id) {
-            return Err(WorkspaceError::Invalid(STUDIO_SPLIT_FIXED.into()));
-        }
         let win = &mut self.windows[w];
         let (tree, local) = win.locate(stack).ok_or(WorkspaceError::NoTarget)?;
         let t = win
@@ -1291,12 +1396,12 @@ impl Workspace {
     /// on the nearest of the left, right and bottom edges (ADR-0049 decision 2).
     /// Floating windows have no edges to hide to, and the centre keeps a panel.
     pub fn auto_hide(&mut self, id: &PanelId, content: Rect) -> Result<(), WorkspaceError> {
+        if self.pictures_answer(id) {
+            return Err(WorkspaceError::Invalid(PICTURES_FIXED.into()));
+        }
         let (w, stack, _) = self
             .find(id)
             .ok_or_else(|| WorkspaceError::NotOpen(id.clone()))?;
-        if self.windows[w].in_studio_split(id) {
-            return Err(WorkspaceError::Invalid(STUDIO_SPLIT_FIXED.into()));
-        }
         if w != 0 {
             return Err(WorkspaceError::NoTarget);
         }
@@ -1387,6 +1492,9 @@ impl Workspace {
 
     /// Move a panel into a new floating window. Returns its window index.
     pub fn float(&mut self, id: &PanelId) -> Result<usize, WorkspaceError> {
+        if self.pictures_answer(id) {
+            return Err(WorkspaceError::Invalid(PICTURES_FIXED.into()));
+        }
         self.close(id)?;
         self.windows.push(Window {
             content: WindowContent::Floating(Node::tabs(vec![id.clone()])),
@@ -1584,7 +1692,7 @@ placement = { display = "edid:SAM-7012-HX55", connector = "HDMI-1", size = [1920
     #[test]
     fn rejects_broken_files() {
         let cases = [
-            ("format = 3\nname = \"x\"\nwindows = []", "newer"),
+            ("format = 4\nname = \"x\"\nwindows = []", "newer"),
             ("name = \"x\"\nwindows = []", "missing"),
             ("format = 1\nname = \"x\"\nwindows = []", "first window"),
             (
@@ -1638,12 +1746,15 @@ placement = { display = "edid:SAM-7012-HX55", connector = "HDMI-1", size = [1920
         );
         w.open(program.clone()).unwrap();
         assert_eq!(w.panels().len(), n);
-        let f = w.float(&program).unwrap();
+        // The Pictures leaf is fixed (ADR-0073): it cannot float.
+        assert!(matches!(w.float(&program), Err(WorkspaceError::Invalid(_))));
+        let stats = id("rbs.stats");
+        let f = w.float(&stats).unwrap();
         assert_eq!(f, 1);
-        assert_eq!(w.find(&program).map(|l| l.0), Some(1));
+        assert_eq!(w.find(&stats).map(|l| l.0), Some(1));
         w.dock(f).unwrap();
         assert_eq!(w.windows.len(), 1);
-        assert!(w.is_open(&program));
+        assert!(w.is_open(&stats) && w.is_open(&program));
         assert_eq!(w.dock(0), Err(WorkspaceError::NoTarget));
         w.validate().unwrap();
     }
@@ -1661,14 +1772,17 @@ placement = { display = "edid:SAM-7012-HX55", connector = "HDMI-1", size = [1920
     fn every_panel_can_be_closed_and_reopened() {
         for mut w in builtin::all() {
             let ids: Vec<PanelId> = w.panels().into_iter().cloned().collect();
+            // Closing Preview closes the Pictures leaf, and Program with it.
             for p in &ids {
-                w.close(p).unwrap();
+                if w.is_open(p) {
+                    w.close(p).unwrap();
+                }
             }
             assert!(w.main().is_empty());
             for p in &ids {
                 w.open(p.clone()).unwrap();
             }
-            assert_eq!(w.panels().len(), ids.len());
+            assert!(ids.iter().all(|p| w.is_open(p)));
             w.validate().unwrap();
         }
     }
@@ -1677,7 +1791,7 @@ placement = { display = "edid:SAM-7012-HX55", connector = "HDMI-1", size = [1920
     fn move_between_stacks_and_windows() {
         let mut w = builtin::edit();
         let mixer = id("rbs.mixer");
-        let stacks = w.main().stack_count();
+        let stacks = w.windows[0].stack_count();
         let (_, s, _) = w.find(&mixer).unwrap();
         let target = (s + 1) % stacks;
         w.move_to_stack(&mixer, 0, target).unwrap();
@@ -1873,7 +1987,7 @@ layout = { tabs = ["rbs.status-bar"] }
         assert!(m.auto_hide.is_empty() && w.toolbar.is_none());
         let text = w.to_toml().unwrap();
         assert!(
-            text.contains("format = 2") && text.contains("centre"),
+            text.contains("format = 3") && text.contains("centre"),
             "{text}"
         );
         assert!(
@@ -2037,10 +2151,14 @@ layout = { tabs = ["rbs.status-bar"] }
         assert!(ws.set_collapsed(&id("rbs.properties"), true).is_ok());
         let (_, stack, _) = ws.find(&id("rbs.properties")).unwrap();
         assert!(ws.windows[0].stack(stack).unwrap().collapsed);
-        // Preview is the centre's only stack once Program leaves the studio split.
-        ws.close(&id("rbs.program")).unwrap();
+        // The Pictures leaf is fixed: it cannot collapse (ADR-0073).
         assert!(ws.set_collapsed(&id("rbs.preview"), true).is_err());
-        let (_, stack, _) = ws.find(&id("rbs.preview")).unwrap();
+        // With the leaf closed, the centre's only stack cannot collapse either.
+        ws.close(&id("rbs.program")).unwrap();
+        ws.open(id("rbs.scenes")).unwrap();
+        ws.main_layout_mut().unwrap().centre = Node::tabs(vec![id("rbs.notes")]);
+        assert!(ws.set_collapsed(&id("rbs.notes"), true).is_err());
+        let (_, stack, _) = ws.find(&id("rbs.notes")).unwrap();
         assert!(!ws.windows[0].stack(stack).unwrap().collapsed);
         assert!(ws.set_collapsed(&id("rbs.properties"), false).is_ok());
         assert!(ws.validate().is_ok());
@@ -2108,5 +2226,136 @@ layout = { tabs = ["rbs.status-bar"] }
             ws.auto_hide(&id("rbs.properties"), Rect::sized(800.0, 600.0)),
             Err(WorkspaceError::NoTarget)
         );
+    }
+
+    #[test]
+    fn opening_properties_never_lands_beside_the_pictures() {
+        // The bug of 2026-11-08: Properties became a tab next to Preview.
+        for mut w in [builtin::live(), builtin::edit()] {
+            w.close(&id("rbs.properties")).ok();
+            w.open(id("rbs.properties")).unwrap();
+            let (win, stack, _) = w.find(&id("rbs.properties")).unwrap();
+            let tabs = &w.windows[win].stack(stack).unwrap().tabs;
+            assert!(
+                !tabs.contains(&id("rbs.preview")) && !tabs.contains(&id("rbs.program")),
+                "{}: {tabs:?}",
+                w.name
+            );
+            assert!(w.main().pictures_leaf().is_some());
+            assert!(w.is_open(&id("rbs.preview")) && w.is_open(&id("rbs.program")));
+            w.validate().unwrap();
+        }
+    }
+
+    #[test]
+    fn no_command_puts_a_panel_beside_the_pictures() {
+        // A deterministic walk over open, close, move, float, collapse and auto-hide:
+        // Preview and Program only ever belong to the Pictures leaf.
+        let panels = [
+            "rbs.scenes",
+            "rbs.sources",
+            "rbs.properties",
+            "rbs.mixer",
+            "rbs.stats",
+            "rbs.outputs",
+            "rbs.live-controls",
+            "rbs.preview",
+            "rbs.program",
+            "rbs.pictures",
+        ];
+        let mut seed: u32 = 12345;
+        let mut next = move |n: usize| {
+            seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+            (seed >> 16) as usize % n
+        };
+        for start in builtin::all().into_iter().take(2) {
+            let mut w = start;
+            for _ in 0..400 {
+                let p = id(panels[next(panels.len())]);
+                let stacks = w.windows[0].stack_count().max(1);
+                let _ = match next(8) {
+                    0 | 1 => w.open(p),
+                    2 => w.close(&p),
+                    3 => w.move_to_stack(&p, 0, next(stacks)),
+                    4 => w.move_to_edge(&p, 0, Edge::Left),
+                    5 => w.set_collapsed(&p, next(2) == 0),
+                    6 => w.float(&p).map(|_| ()),
+                    _ => w.auto_hide(&p, Rect::sized(1000.0, 600.0)),
+                };
+                w.validate().unwrap_or_else(|e| panic!("{e}: {}", w.to_toml().unwrap()));
+                for win in &w.windows {
+                    for s in 0..win.stack_count() {
+                        let tabs = &win.stack(s).unwrap().tabs;
+                        for t in tabs {
+                            assert!(
+                                !matches!(t.as_str(), "rbs.preview" | "rbs.program")
+                                    || w.main().pictures_leaf().is_none(),
+                                "{t} sits in a stack beside the leaf"
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn a_format_2_studio_split_becomes_the_pictures_leaf() {
+        let text = r#"format = 2
+name = "Old live"
+[[windows]]
+kind = "main"
+[windows.centre]
+split = "horizontal"
+studio = "below"
+ratios = [0.5, 0.5]
+children = [{ tabs = ["rbs.preview"] }, { tabs = ["rbs.program"] }]
+"#;
+        let w = Workspace::from_toml(text).unwrap();
+        assert_eq!(w.format, FORMAT);
+        assert_eq!(w.studio_rail(), Some(RailAt::Below));
+        assert_eq!(w.rail_size(), Some(crate::layout::RAIL_SIZE_DEFAULT));
+        let out = w.to_toml().unwrap();
+        assert!(out.contains("pictures = true") && !out.contains("studio"), "{out}");
+        assert_eq!(Workspace::from_toml(&out).unwrap(), w);
+        // Format 3 is not readable by a format 2 reader's rules, and two leaves are refused.
+        let two = out.replace(
+            "pictures = true",
+            "pictures = true\n[windows.left]\nsize = 200\n[windows.left.layout]\npictures = true\nrail = \"below\"\nx = 1",
+        );
+        assert!(Workspace::from_toml(&two).is_err());
+    }
+
+    #[test]
+    fn the_rail_size_is_set_within_its_limits() {
+        let mut w = builtin::edit();
+        w.set_rail_size(150).unwrap();
+        assert_eq!(w.rail_size(), Some(150));
+        w.set_rail_size(1).unwrap();
+        assert_eq!(w.rail_size(), Some(crate::layout::RAIL_SIZE_RANGE.0));
+        w.close(&id("rbs.pictures")).unwrap();
+        assert_eq!(w.set_rail_size(100), Err(WorkspaceError::NoTarget));
+        assert_eq!(w.set_studio_rail(RailAt::Below), Err(WorkspaceError::NoTarget));
+    }
+
+    #[test]
+    fn the_leaf_cannot_move_collapse_hide_or_float() {
+        let mut w = builtin::edit();
+        let pic = id("rbs.pictures");
+        assert!(w.set_collapsed(&pic, true).is_err());
+        assert!(w.auto_hide(&pic, Rect::sized(1000.0, 600.0)).is_err());
+        assert!(w.float(&pic).is_err());
+        assert!(w.move_to_stack(&pic, 0, 0).is_err());
+        assert!(w.move_to_edge(&pic, 0, Edge::Left).is_err());
+        // Opening it while it exists changes nothing; closing it and opening it again
+        // brings it back as the first child of the centre.
+        let before = w.clone();
+        w.open(pic.clone()).unwrap();
+        assert_eq!(w, before);
+        w.close(&pic).unwrap();
+        assert!(w.main().pictures_leaf().is_none());
+        w.open(id("rbs.preview")).unwrap();
+        assert!(w.main().pictures_leaf().is_some());
+        w.validate().unwrap();
     }
 }

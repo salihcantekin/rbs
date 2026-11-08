@@ -38,7 +38,21 @@ pub const RAIL_BETWEEN_MIN_PICTURE: f32 = 160.0;
 /// Height of the Transition rail below the two pictures (ADR-0064).
 pub const RAIL_BELOW: f32 = 44.0;
 
-/// Where a studio split puts the Transition rail in studio mode (ADR-0064).
+/// Stack number of Preview in the Pictures leaf in a flattened layout (ADR-0073). The
+/// leaf is not a tab stack, so no window stack has this number; every command that takes
+/// a stack number finds nothing there.
+pub const PICTURES_PREVIEW_STACK: usize = 100_000;
+
+/// Stack number of Program in the Pictures leaf in a flattened layout.
+pub const PICTURES_PROGRAM_STACK: usize = 100_001;
+
+/// Least and most width of the Transition rail between the pictures (ADR-0073).
+pub const RAIL_SIZE_RANGE: (u32, u32) = (48, 240);
+
+/// Default width of the Transition rail between the pictures.
+pub const RAIL_SIZE_DEFAULT: u32 = 88;
+
+/// Where the Pictures leaf puts the Transition rail in studio mode (ADR-0064, ADR-0073).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum RailAt {
@@ -91,15 +105,76 @@ pub struct Split {
     pub ratios: Vec<f32>,
     /// Children.
     pub children: Vec<Node>,
-    /// A studio split (ADR-0064): Preview then Program, with the Transition rail
-    /// here in studio mode. Kept only while [`Split::is_studio_shape`] holds.
-    pub studio: Option<RailAt>,
+}
+
+/// The Pictures leaf (ADR-0073): the pictures of one canvas, Preview alone outside
+/// studio mode, Preview, the Transition rail and Program in studio mode. It is not a
+/// tab stack: nothing can be opened, dropped or moved into it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Pictures {
+    /// Where the rail is in studio mode.
+    pub rail: RailAt,
+    /// Width of the rail between the pictures, in logical pixels, within
+    /// [`RAIL_SIZE_RANGE`].
+    pub rail_size: u32,
+    canvas: Option<String>,
+    preview: PanelId,
+    program: PanelId,
+}
+
+impl Pictures {
+    /// A leaf for `canvas` (`None` is the canvas being edited) with the rail `at` and
+    /// a rail `rail_size` wide (clamped).
+    pub fn with(rail: RailAt, rail_size: u32, canvas: Option<String>) -> Pictures {
+        let id = |base: &str| match &canvas {
+            Some(c) => PanelId::parse(&format!("{base}?canvas={c}")).ok(),
+            None => PanelId::parse(base).ok(),
+        };
+        let (preview, program) = match (id("rbs.preview"), id("rbs.program")) {
+            (Some(a), Some(b)) => (a, b),
+            _ => (crate::panel::id("rbs.preview"), crate::panel::id("rbs.program")),
+        };
+        let canvas = canvas.filter(|_| preview.param("canvas").is_some());
+        Pictures {
+            rail,
+            rail_size: rail_size.clamp(RAIL_SIZE_RANGE.0, RAIL_SIZE_RANGE.1),
+            canvas,
+            preview,
+            program,
+        }
+    }
+
+    /// A leaf with the rail `at`, the default rail size and the canvas being edited.
+    pub fn new(rail: RailAt) -> Pictures {
+        Pictures::with(rail, RAIL_SIZE_DEFAULT, None)
+    }
+
+    /// The canvas shown; `None` is the canvas being edited.
+    pub fn canvas(&self) -> Option<&str> {
+        self.canvas.as_deref()
+    }
+
+    /// The panel id of Preview in this leaf.
+    pub fn preview_id(&self) -> &PanelId {
+        &self.preview
+    }
+
+    /// The panel id of Program in this leaf.
+    pub fn program_id(&self) -> &PanelId {
+        &self.program
+    }
+
+    /// Is `id` the leaf (`rbs.pictures`) or one of its two pictures?
+    pub fn answers_to(&self, id: &PanelId) -> bool {
+        id.as_str() == "rbs.pictures" || *id == self.preview || *id == self.program
+    }
 }
 
 impl Split {
     /// Two single-tab stacks, not collapsed, side by side: Preview and then the
-    /// Program of the same canvas.
-    pub fn is_studio_shape(&self) -> bool {
+    /// Program of the same canvas (the shape of ADR-0064's studio split, read from
+    /// old files).
+    fn is_old_studio_shape(&self) -> bool {
         let one = |n: &Node| match n {
             Node::Tabs(t) if t.tabs.len() == 1 && !t.collapsed => t.tabs.first().cloned(),
             _ => None,
@@ -144,6 +219,8 @@ pub enum Node {
     Split(Split),
     /// A tab stack.
     Tabs(Tabs),
+    /// The Pictures leaf (ADR-0073).
+    Pictures(Pictures),
 }
 
 /// File shape of a node: `{ split, ratios, children }` or `{ tabs, active }`.
@@ -162,14 +239,66 @@ struct RawNode {
     active: Option<usize>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     state: Option<StackState>,
+    /// The old studio split's rail (format 2, ADR-0064); read only, to migrate.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     studio: Option<RailAt>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pictures: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    rail: Option<RailAt>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    rail_size: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    canvas: Option<String>,
+}
+
+impl RawNode {
+    fn none() -> RawNode {
+        RawNode {
+            split: None,
+            ratios: None,
+            children: None,
+            tabs: None,
+            active: None,
+            state: None,
+            studio: None,
+            pictures: None,
+            rail: None,
+            rail_size: None,
+            canvas: None,
+        }
+    }
 }
 
 impl TryFrom<RawNode> for Node {
     type Error = String;
 
     fn try_from(r: RawNode) -> Result<Self, String> {
+        if r.pictures.is_some() {
+            if r.pictures != Some(true)
+                || r.split.is_some()
+                || r.tabs.is_some()
+                || r.studio.is_some()
+                || r.state.is_some()
+                || r.active.is_some()
+                || r.ratios.is_some()
+                || r.children.is_some()
+            {
+                return Err("`pictures = true` stands alone with `rail`, `rail_size` and \
+                     `canvas`"
+                    .into());
+            }
+            let rail = r.rail.ok_or("a pictures node needs `rail`")?;
+            let (lo, hi) = RAIL_SIZE_RANGE;
+            return Ok(Node::Pictures(Pictures::with(
+                rail,
+                r.rail_size.unwrap_or(RAIL_SIZE_DEFAULT).clamp(lo, hi),
+                r.canvas,
+            )));
+        }
+        if r.rail.is_some() || r.rail_size.is_some() || r.canvas.is_some() {
+            return Err("`rail`, `rail_size` and `canvas` belong to a pictures node".into());
+        }
         match (r.split, r.ratios, r.children, r.tabs, r.active) {
             (Some(_), _, _, None, None) if r.state.is_some() => {
                 Err("only a tab stack has a `state`".into())
@@ -198,12 +327,25 @@ impl TryFrom<RawNode> for Node {
                     axis,
                     ratios,
                     children,
-                    studio: r.studio,
                 };
-                if split.studio.is_some() && !split.is_studio_shape() {
-                    return Err("a studio split is horizontal with two single-tab stacks: \
-                         Preview, then the Program of the same canvas"
-                        .into());
+                // Format 2 (ADR-0064): a studio split becomes the Pictures leaf in its
+                // place; a studio flag on any other shape is dropped (ADR-0073).
+                if let Some(rail) = r.studio {
+                    if split.is_old_studio_shape() {
+                        let canvas = match split.children.first() {
+                            Some(Node::Tabs(t)) => t
+                                .tabs
+                                .first()
+                                .and_then(|p| p.param("canvas"))
+                                .map(str::to_owned),
+                            _ => None,
+                        };
+                        return Ok(Node::Pictures(Pictures::with(
+                            rail,
+                            RAIL_SIZE_DEFAULT,
+                            canvas,
+                        )));
+                    }
                 }
                 Ok(Node::Split(split))
             }
@@ -234,21 +376,22 @@ impl From<Node> for RawNode {
         match n {
             Node::Split(s) => RawNode {
                 split: Some(s.axis),
-                studio: s.studio.filter(|_| s.is_studio_shape()),
                 ratios: Some(s.ratios),
                 children: Some(s.children),
-                tabs: None,
-                active: None,
-                state: None,
+                ..RawNode::none()
             },
             Node::Tabs(t) => RawNode {
-                split: None,
-                ratios: None,
-                children: None,
                 active: (t.active != 0).then_some(t.active),
                 state: t.collapsed.then_some(StackState::Collapsed),
-                studio: None,
                 tabs: Some(t.tabs),
+                ..RawNode::none()
+            },
+            Node::Pictures(p) => RawNode {
+                pictures: Some(true),
+                rail: Some(p.rail),
+                rail_size: Some(p.rail_size),
+                canvas: p.canvas,
+                ..RawNode::none()
             },
         }
     }
@@ -347,59 +490,57 @@ impl Node {
             axis,
             ratios,
             children,
-            studio: None,
         })
     }
 
-    /// A studio split (ADR-0064): `preview` and `program` side by side, the rail `at`.
-    pub fn studio(preview: PanelId, program: PanelId, at: RailAt) -> Node {
-        Node::Split(Split {
-            axis: Axis::Horizontal,
-            ratios: vec![0.5, 0.5],
-            children: vec![Node::tabs(vec![preview]), Node::tabs(vec![program])],
-            studio: Some(at),
-        })
+    /// The Pictures leaf (ADR-0073) with the rail `at`.
+    pub fn pictures(at: RailAt) -> Node {
+        Node::Pictures(Pictures::new(at))
     }
 
-    /// The studio split in this tree, if any.
-    pub fn studio_split(&self) -> Option<&Split> {
+    /// The Pictures leaf in this tree, if any.
+    pub fn pictures_leaf(&self) -> Option<&Pictures> {
         match self {
-            Node::Split(s) if s.studio.is_some() && s.is_studio_shape() => Some(s),
-            Node::Split(s) => s.children.iter().find_map(Node::studio_split),
+            Node::Pictures(p) => Some(p),
+            Node::Split(s) => s.children.iter().find_map(Node::pictures_leaf),
             Node::Tabs(_) => None,
         }
     }
 
-    /// The studio split in this tree, mutably.
-    pub fn studio_split_mut(&mut self) -> Option<&mut Split> {
-        let here = matches!(self, Node::Split(s) if s.studio.is_some() && s.is_studio_shape());
+    /// The Pictures leaf in this tree, mutably.
+    pub fn pictures_leaf_mut(&mut self) -> Option<&mut Pictures> {
         match self {
-            Node::Split(s) => {
-                if here {
-                    Some(s)
-                } else {
-                    s.children.iter_mut().find_map(Node::studio_split_mut)
+            Node::Pictures(p) => Some(p),
+            Node::Split(s) => s.children.iter_mut().find_map(Node::pictures_leaf_mut),
+            Node::Tabs(_) => None,
+        }
+    }
+
+    /// Remove the Pictures leaf when `id` is it or one of its pictures (closing it,
+    /// ADR-0073 decision 2); empty parents collapse. Returns whether it was here.
+    pub fn remove_pictures(&mut self, id: &PanelId) -> bool {
+        fn go(n: &mut Node, id: &PanelId) -> bool {
+            match n {
+                Node::Pictures(p) if p.answers_to(id) => {
+                    *n = Node::empty();
+                    true
                 }
-            }
-            Node::Tabs(_) => None,
-        }
-    }
-
-    /// Drops the studio flag of every split that no longer has a studio split's shape
-    /// (a panel moved, closed or collapsed out of it, ADR-0064 decision 4).
-    pub fn dissolve_broken_studio(&mut self) {
-        if let Node::Split(s) = self {
-            s.children.iter_mut().for_each(Node::dissolve_broken_studio);
-            if s.studio.is_some() && !s.is_studio_shape() {
-                s.studio = None;
+                Node::Pictures(_) | Node::Tabs(_) => false,
+                Node::Split(s) => s.children.iter_mut().any(|c| go(c, id)),
             }
         }
+        let done = go(self, id);
+        if done {
+            self.prune();
+        }
+        done
     }
 
     /// True when no panel is in this tree.
     pub fn is_empty(&self) -> bool {
         match self {
             Node::Tabs(t) => t.tabs.is_empty(),
+            Node::Pictures(_) => false,
             Node::Split(s) => s.children.iter().all(Node::is_empty),
         }
     }
@@ -407,9 +548,10 @@ impl Node {
     /// Is there an empty tab stack anywhere except as the whole tree?
     pub fn has_empty_stack_below_root(&self) -> bool {
         match self {
-            Node::Tabs(_) => false,
+            Node::Tabs(_) | Node::Pictures(_) => false,
             Node::Split(s) => s.children.iter().any(|c| match c {
                 Node::Tabs(t) => t.tabs.is_empty(),
+                Node::Pictures(_) => false,
                 Node::Split(_) => c.has_empty_stack_below_root(),
             }),
         }
@@ -418,33 +560,51 @@ impl Node {
     /// Depth of the deepest split (a tab stack has depth 0).
     pub fn depth(&self) -> usize {
         match self {
-            Node::Tabs(_) => 0,
+            Node::Tabs(_) | Node::Pictures(_) => 0,
             Node::Split(s) => 1 + s.children.iter().map(Node::depth).max().unwrap_or(0),
         }
     }
 
-    /// Every panel in the tree, depth first.
+    /// Every panel in the tree, depth first; the Pictures leaf counts as its two
+    /// pictures, Preview then Program.
     pub fn panels(&self) -> Vec<&PanelId> {
         let mut out = Vec::new();
-        self.visit_stacks(&mut |t| out.extend(t.tabs.iter()));
+        self.visit_all(&mut |t| out.extend(t.iter().copied()));
         out
     }
 
-    /// The active panel of every stack that is not collapsed, depth first.
+    /// The active panel of every stack that is not collapsed, depth first, and the
+    /// pictures of a Pictures leaf.
     pub fn visible(&self) -> Vec<&PanelId> {
         let mut out = Vec::new();
-        self.visit_stacks(&mut |t| {
-            if !t.collapsed {
-                out.extend(t.tabs.get(t.active));
+        self.visit_all(&mut |_| {});
+        fn go<'a>(n: &'a Node, out: &mut Vec<&'a PanelId>) {
+            match n {
+                Node::Tabs(t) => {
+                    if !t.collapsed {
+                        out.extend(t.tabs.get(t.active));
+                    }
+                }
+                Node::Pictures(p) => out.extend([&p.preview, &p.program]),
+                Node::Split(s) => s.children.iter().for_each(|c| go(c, out)),
             }
-        });
+        }
+        go(self, &mut out);
         out
+    }
+
+    fn visit_all<'a>(&'a self, f: &mut impl FnMut(Vec<&'a PanelId>)) {
+        match self {
+            Node::Tabs(t) => f(t.tabs.iter().collect()),
+            Node::Pictures(p) => f(vec![&p.preview, &p.program]),
+            Node::Split(s) => s.children.iter().for_each(|c| c.visit_all(f)),
+        }
     }
 
     /// Does the tree have a tab stack that is not collapsed? The centre must keep one
     /// (ADR-0049 decision 2).
     pub fn has_expanded_stack(&self) -> bool {
-        let mut any = false;
+        let mut any = self.pictures_leaf().is_some();
         self.visit_stacks(&mut |t| any |= !t.collapsed);
         any
     }
@@ -459,6 +619,7 @@ impl Node {
     fn visit_stacks<'a>(&'a self, f: &mut impl FnMut(&'a Tabs)) {
         match self {
             Node::Tabs(t) => f(t),
+            Node::Pictures(_) => {}
             Node::Split(s) => s.children.iter().for_each(|c| c.visit_stacks(f)),
         }
     }
@@ -485,6 +646,7 @@ impl Node {
                     *i += 1;
                     (me == index).then_some(t)
                 }
+                Node::Pictures(_) => None,
                 Node::Split(s) => s.children.iter_mut().find_map(|c| go(c, index, i)),
             }
         }
@@ -593,7 +755,7 @@ impl Node {
                     taken.collapsed = false;
                     Some((taken, None))
                 }
-                Node::Tabs(_) => None,
+                Node::Tabs(_) | Node::Pictures(_) => None,
                 Node::Split(s) => {
                     let (i, (taken, anchor)) = s
                         .children
@@ -635,7 +797,7 @@ impl Node {
                     *n = Node::split(axis, vec![(0.5, old), (0.5, new)]);
                     true
                 }
-                Node::Tabs(_) => false,
+                Node::Tabs(_) | Node::Pictures(_) => false,
                 Node::Split(s) => {
                     let Some(i) = s.children.iter().position(|c| c.find(anchor).is_some()) else {
                         return false;
@@ -683,6 +845,7 @@ impl Node {
                     *index -= 1;
                     false
                 }
+                Node::Pictures(_) => false,
                 Node::Split(s) => {
                     for i in 0..s.children.len() {
                         if *index == 0 && s.axis == axis && matches!(s.children[i], Node::Tabs(_)) {
@@ -722,7 +885,6 @@ impl Node {
     /// Remove empty children, collapse single-child splits and renormalise ratios.
     pub fn prune(&mut self) {
         self.prune_splits();
-        self.dissolve_broken_studio();
     }
 
     fn prune_splits(&mut self) {
@@ -820,9 +982,7 @@ fn flatten_node(
             });
             *next += 1;
         }
-        Node::Split(s) if s.studio.is_some() && s.is_studio_shape() => {
-            flatten_studio(s, r, studio_mode, next, path, out);
-        }
+        Node::Pictures(p) => flatten_pictures(p, r, studio_mode, out),
         Node::Split(s) => {
             let n = s.children.len();
             let length = match s.axis {
@@ -891,43 +1051,30 @@ fn flatten_node(
     }
 }
 
-/// A studio split (ADR-0064): outside studio mode Preview fills it and Program is
-/// hidden (its stack index is still counted); in studio mode the two pictures share it
-/// by ratio around the rail, or above it.
-fn flatten_studio(
-    s: &Split,
-    r: Rect,
-    studio_mode: bool,
-    next: &mut usize,
-    path: &mut [usize],
-    out: &mut Flat,
-) {
-    let stack = |n: &Node, rect: Rect, next: &mut usize, out: &mut Flat| {
-        if let Node::Tabs(t) = n {
-            out.stacks.push(StackRect {
-                stack: *next,
-                rect,
-                tabs: t.tabs.clone(),
-                active: t.active,
-                collapsed: false,
-            });
-        }
-        *next += 1;
-    };
-    let (Some(preview), Some(program)) = (s.children.first(), s.children.get(1)) else {
-        return;
+/// The Pictures leaf (ADR-0073): outside studio mode Preview fills it; in studio mode
+/// the two pictures share it in equal halves around the rail, or above it. Its two
+/// pictures are reported as stacks numbered [`PICTURES_PREVIEW_STACK`] and
+/// [`PICTURES_PROGRAM_STACK`], which no window stack has.
+fn flatten_pictures(p: &Pictures, r: Rect, studio_mode: bool, out: &mut Flat) {
+    let picture = |id: &PanelId, stack: usize, rect: Rect, out: &mut Flat| {
+        out.stacks.push(StackRect {
+            stack,
+            rect,
+            tabs: vec![id.clone()],
+            active: 0,
+            collapsed: false,
+        });
     };
     if !studio_mode {
-        stack(preview, r, next, out);
-        *next += 1;
+        picture(&p.preview, PICTURES_PREVIEW_STACK, r, out);
         return;
     }
-    let share = s.ratios.first().copied().unwrap_or(0.5).clamp(0.0, 1.0);
+    let column = p.rail_size.clamp(RAIL_SIZE_RANGE.0, RAIL_SIZE_RANGE.1) as f32
+        + 2.0 * HANDLE_THICKNESS;
     // Too narrow for a column between two usable pictures: the rail goes below.
-    let at = match s.studio {
-        Some(RailAt::Between)
-            if r.w >= RAIL_BETWEEN + 2.0 * RAIL_BETWEEN_MIN_PICTURE
-                && r.h >= RAIL_BETWEEN_MIN_H =>
+    let at = match p.rail {
+        RailAt::Between
+            if r.w >= column + 2.0 * RAIL_BETWEEN_MIN_PICTURE && r.h >= RAIL_BETWEEN_MIN_H =>
         {
             RailAt::Between
         }
@@ -938,86 +1085,58 @@ fn flatten_studio(
             let rail_h = RAIL_BELOW.min(r.h);
             let top_h = r.h - rail_h;
             let free = (r.w - HANDLE_THICKNESS).max(0.0);
-            let a = free * share;
-            stack(
-                preview,
-                Rect {
-                    x: r.x,
-                    y: r.y,
-                    w: a,
-                    h: top_h,
-                },
-                next,
-                out,
-            );
-            out.handles.push(Handle {
-                path: path.to_vec(),
-                index: 0,
-                axis: Axis::Horizontal,
-                rect: Rect {
-                    x: r.x + a,
-                    y: r.y,
-                    w: HANDLE_THICKNESS,
-                    h: top_h,
-                },
-                extent: free,
-            });
-            let x = r.x + a + HANDLE_THICKNESS;
-            stack(
-                program,
-                Rect {
-                    x,
-                    y: r.y,
-                    w: free - a,
-                    h: top_h,
-                },
-                next,
+            let a = free / 2.0;
+            let pic = |x: f32, w: f32| Rect {
+                x,
+                y: r.y,
+                w,
+                h: top_h,
+            };
+            picture(&p.preview, PICTURES_PREVIEW_STACK, pic(r.x, a), out);
+            picture(
+                &p.program,
+                PICTURES_PROGRAM_STACK,
+                pic(r.x + a + HANDLE_THICKNESS, free - a),
                 out,
             );
             // A divider's gap above the rail, as between two stacks.
             let gap = HANDLE_THICKNESS.min(rail_h);
-            let rail = Rect {
-                x: r.x,
-                y: r.y + top_h + gap,
-                w: r.w,
-                h: rail_h - gap,
-            };
-            out.rail = Some((rail, RailAt::Below));
-        }
-        RailAt::Between => {
-            let rail_w = RAIL_BETWEEN.min(r.w);
-            let free = (r.w - rail_w).max(0.0);
-            let a = free * share;
-            stack(
-                preview,
+            out.rail = Some((
                 Rect {
                     x: r.x,
-                    y: r.y,
-                    w: a,
-                    h: r.h,
+                    y: r.y + top_h + gap,
+                    w: r.w,
+                    h: rail_h - gap,
                 },
-                next,
-                out,
-            );
-            // A divider's gap on each side of the rail, as between two stacks.
-            let gap = HANDLE_THICKNESS.min(rail_w / 2.0);
-            let rail = Rect {
-                x: r.x + a + gap,
+                RailAt::Below,
+            ));
+        }
+        RailAt::Between => {
+            let rail_w = column.min(r.w);
+            let free = (r.w - rail_w).max(0.0);
+            let a = free / 2.0;
+            let pic = |x: f32, w: f32| Rect {
+                x,
                 y: r.y,
-                w: rail_w - 2.0 * gap,
+                w,
                 h: r.h,
             };
-            out.rail = Some((rail, RailAt::Between));
-            let x = r.x + a + rail_w;
-            stack(
-                program,
+            picture(&p.preview, PICTURES_PREVIEW_STACK, pic(r.x, a), out);
+            // A divider's gap on each side of the rail, as between two stacks.
+            let gap = HANDLE_THICKNESS.min(rail_w / 2.0);
+            out.rail = Some((
                 Rect {
-                    x,
+                    x: r.x + a + gap,
                     y: r.y,
-                    w: free - a,
+                    w: rail_w - 2.0 * gap,
                     h: r.h,
                 },
-                next,
+                RailAt::Between,
+            ));
+            picture(
+                &p.program,
+                PICTURES_PROGRAM_STACK,
+                pic(r.x + a + rail_w, free - a),
                 out,
             );
         }
@@ -1214,32 +1333,30 @@ mod tests {
     }
 
     #[test]
-    fn a_studio_split_shows_program_and_the_rail_only_in_studio_mode() {
-        let n = Node::studio(id("rbs.preview"), id("rbs.program"), RailAt::Between);
+    fn pictures_show_program_and_the_rail_only_in_studio_mode() {
+        let n = Node::pictures(RailAt::Between);
         let r = Rect::sized(1000.0, 400.0);
-        // Outside studio mode: Preview fills it; Program is hidden but keeps index 1.
+        // Outside studio mode: Preview fills it; Program is not shown.
         let off = n.flatten_in(r, false);
         assert_eq!(off.stacks.len(), 1);
         assert_eq!(off.stacks[0].rect, r);
+        assert_eq!(off.stacks[0].stack, PICTURES_PREVIEW_STACK);
         assert!(off.rail.is_none() && off.handles.is_empty());
-        // Between: Preview | rail | Program, the rail in place of the divider.
+        // Between: Preview | rail | Program, the rail in place of a divider.
         let on = n.flatten_in(r, true);
         assert_eq!(on.stacks.len(), 2);
-        assert_eq!(on.stacks[1].stack, 1);
+        assert_eq!(on.stacks[1].stack, PICTURES_PROGRAM_STACK);
+        let column = RAIL_SIZE_DEFAULT as f32 + 2.0 * HANDLE_THICKNESS;
         let (rail, at) = on.rail.unwrap();
         assert_eq!(at, RailAt::Between);
-        assert_eq!(rail.w, RAIL_BETWEEN - 2.0 * HANDLE_THICKNESS);
+        assert_eq!(rail.w, RAIL_SIZE_DEFAULT as f32);
         assert_eq!(on.stacks[0].rect.w, on.stacks[1].rect.w);
         assert_eq!(rail.x, on.stacks[0].rect.w + HANDLE_THICKNESS);
-        assert_eq!(on.stacks[1].rect.x, on.stacks[0].rect.w + RAIL_BETWEEN);
+        assert_eq!(on.stacks[1].rect.x, on.stacks[0].rect.w + column);
         assert!(on.handles.is_empty());
-        // Below: both pictures over a full-width rail, a divider between them.
-        let mut below = n.clone();
-        if let Node::Split(s) = &mut below {
-            s.studio = Some(RailAt::Below);
-        }
-        let on = below.flatten_in(r, true);
-        let (rail, _) = on.rail.unwrap();
+        // Below: both pictures over a full-width rail.
+        let below = Node::pictures(RailAt::Below).flatten_in(r, true);
+        let (rail, _) = below.rail.unwrap();
         assert_eq!(
             (rail.y, rail.w, rail.h),
             (
@@ -1248,12 +1365,10 @@ mod tests {
                 RAIL_BELOW - HANDLE_THICKNESS
             )
         );
-        assert_eq!(on.stacks[0].rect.h, 400.0 - RAIL_BELOW);
-        assert_eq!(on.handles.len(), 1);
-        assert!(below.resize(&on.handles[0], 50.0));
+        assert_eq!(below.stacks[0].rect.h, 400.0 - RAIL_BELOW);
         // Too narrow for a column between two usable pictures: below instead.
         let narrow = n.flatten_in(
-            Rect::sized(RAIL_BETWEEN + 2.0 * RAIL_BETWEEN_MIN_PICTURE - 1.0, 400.0),
+            Rect::sized(column + 2.0 * RAIL_BETWEEN_MIN_PICTURE - 1.0, 400.0),
             true,
         );
         assert_eq!(narrow.rail.unwrap().1, RailAt::Below);
@@ -1262,17 +1377,29 @@ mod tests {
     }
 
     #[test]
-    fn stack_indices_after_a_studio_split_do_not_depend_on_studio_mode() {
+    fn the_rail_width_follows_its_size_within_limits() {
+        let wide = Node::Pictures(Pictures::with(RailAt::Between, 200, None));
+        let (rail, _) = wide.flatten_in(Rect::sized(1000.0, 400.0), true).rail.unwrap();
+        assert_eq!(rail.w, 200.0);
+        let huge = Node::Pictures(Pictures::with(RailAt::Between, 5000, None));
+        let (rail, _) = huge.flatten_in(Rect::sized(1000.0, 400.0), true).rail.unwrap();
+        assert_eq!(rail.w, RAIL_SIZE_RANGE.1 as f32);
+        let tiny = Node::Pictures(Pictures::with(RailAt::Between, 1, None));
+        let (rail, _) = tiny.flatten_in(Rect::sized(1000.0, 400.0), true).rail.unwrap();
+        assert_eq!(rail.w, RAIL_SIZE_RANGE.0 as f32);
+    }
+
+    #[test]
+    fn pictures_are_no_stack_and_do_not_shift_stack_numbers() {
         let n = Node::split(
             Axis::Vertical,
             vec![
-                (
-                    0.7,
-                    Node::studio(id("rbs.preview"), id("rbs.program"), RailAt::Between),
-                ),
+                (0.7, Node::pictures(RailAt::Between)),
                 (0.3, Node::tabs(vec![id("rbs.mixer")])),
             ],
         );
+        assert_eq!(n.stack_count(), 1);
+        assert!(n.stack(1).is_none());
         let r = Rect::sized(800.0, 600.0);
         for on in [false, true] {
             let f = n.flatten_in(r, on);
@@ -1281,36 +1408,56 @@ mod tests {
                 .iter()
                 .find(|s| s.tabs[0] == id("rbs.mixer"))
                 .unwrap();
-            assert_eq!(mixer.stack, 2);
+            assert_eq!(mixer.stack, 0);
             assert_eq!(n.stack(mixer.stack).unwrap().tabs, mixer.tabs);
         }
+        // Nothing can be inserted into it: stack 0 is the mixer's.
+        let mut n = n;
+        assert!(n.insert_into_stack(0, id("rbs.scenes"), None));
+        assert_eq!(n.panels().len(), 4);
+        assert_eq!(n.pictures_leaf().unwrap().preview_id(), &id("rbs.preview"));
     }
 
     #[test]
-    fn a_studio_split_keeps_its_shape_or_dissolves() {
-        let text = r#"split = "horizontal"
+    fn a_pictures_node_round_trips_and_reads_the_old_studio_split() {
+        let text = "pictures = true\nrail = \"below\"\nrail_size = 100\n";
+        let n: Node = toml::from_str(text).unwrap();
+        assert_eq!(n.pictures_leaf().unwrap().rail, RailAt::Below);
+        let back = toml::to_string(&n).unwrap();
+        assert_eq!(toml::from_str::<Node>(&back).unwrap(), n);
+        // The rail size is clamped; a rail is required; the node stands alone.
+        let n: Node = toml::from_str("pictures = true\nrail = \"between\"\nrail_size = 9999\n").unwrap();
+        assert_eq!(n.pictures_leaf().unwrap().rail_size, RAIL_SIZE_RANGE.1);
+        assert!(toml::from_str::<Node>("pictures = true\n").is_err());
+        assert!(toml::from_str::<Node>("pictures = true\nrail = \"below\"\ntabs = [\"rbs.a\"]\n").is_err());
+        assert!(toml::from_str::<Node>("tabs = [\"rbs.a\"]\nrail = \"below\"\n").is_err());
+        // Format 2 (ADR-0064): a studio split becomes the leaf, keeping rail and canvas.
+        let old = r#"split = "horizontal"
 studio = "below"
 ratios = [0.5, 0.5]
-children = [{ tabs = ["rbs.preview"] }, { tabs = ["rbs.program"] }]
+children = [{ tabs = ["rbs.preview?canvas=vertical"] }, { tabs = ["rbs.program?canvas=vertical"] }]
 "#;
-        let n: Node = toml::from_str(text).unwrap();
-        assert_eq!(n.studio_split().unwrap().studio, Some(RailAt::Below));
-        let back = toml::to_string(&n).unwrap();
-        assert!(back.contains("studio = \"below\""), "{back}");
-        // Any other shape is refused in a file.
-        let bad = text.replace("rbs.program", "rbs.mixer");
-        assert!(toml::from_str::<Node>(&bad).is_err());
-        let bad = text.replace("\"rbs.preview\"", "\"rbs.preview\", \"rbs.scenes\"");
-        assert!(toml::from_str::<Node>(&bad).is_err());
-        let bad = text.replace("rbs.program", "rbs.program?canvas=vertical");
-        assert!(toml::from_str::<Node>(&bad).is_err());
-        // A panel added to one of its stacks dissolves it; it is never written broken.
-        let mut n = n;
-        n.insert_into_stack(0, id("rbs.scenes"), None);
-        assert!(n.studio_split().is_none());
-        assert!(!toml::to_string(&n).unwrap().contains("studio"));
-        n.dissolve_broken_studio();
-        let Node::Split(s) = &n else { panic!() };
-        assert_eq!(s.studio, None);
+        let n: Node = toml::from_str(old).unwrap();
+        let p = n.pictures_leaf().unwrap();
+        assert_eq!((p.rail, p.canvas()), (RailAt::Below, Some("vertical")));
+        assert_eq!(p.program_id().as_str(), "rbs.program?canvas=vertical");
+        // A studio flag on another shape is dropped: an ordinary split stays.
+        let n: Node = toml::from_str(&old.replace("rbs.program?canvas=vertical", "rbs.mixer")).unwrap();
+        assert!(matches!(n, Node::Split(_)) && n.pictures_leaf().is_none());
+    }
+
+    #[test]
+    fn closing_a_picture_removes_the_leaf() {
+        let mut n = Node::split(
+            Axis::Horizontal,
+            vec![
+                (0.5, Node::pictures(RailAt::Between)),
+                (0.5, Node::tabs(vec![id("rbs.mixer")])),
+            ],
+        );
+        assert!(n.remove_pictures(&id("rbs.program")));
+        assert!(n.pictures_leaf().is_none());
+        assert!(matches!(n, Node::Tabs(_)), "the split collapses");
+        assert!(!n.remove_pictures(&id("rbs.program")));
     }
 }
