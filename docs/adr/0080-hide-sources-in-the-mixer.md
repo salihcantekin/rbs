@@ -1,6 +1,6 @@
 # ADR-0080: Hide sources in the Mixer
 
-- Status: Proposed
+- Status: Accepted
 - Date: 2026-11-08
 - Deciders: Salih (owner)
 - Spec: [scene-model](../specs/scene-model.md), [user-data](../specs/user-data.md), [control-api](../specs/control-api.md)
@@ -38,4 +38,4 @@ Where the flag lives decides what a workspace switch does. A flag in the workspa
 
 Round 1, independent AI session (2026-11-08): changes requested (API minor clash with ADR-0077, undo record, garbled UI sentence, meter filtering, global sources, API fields). All resolved in the text above.
 
-Round 2, independent AI session (2026-11-08): approve. Implementation reminders: remove a hidden source from the slots before the next `tick_meters`; register `mixer.hidden` in the saved section state. Amendment (2026-11-08, UI only, requested by the owner): the per-strip Hide button became the ⋯ menu and the Mixer got its bulk menu (decision 4); no contract changed. The owner approved the behaviour proposal (2026-11-08); approval of the visual result (rule 16) and the Accepted status are still pending.
+Round 2, independent AI session (2026-11-08): approve. Implementation reminders: remove a hidden source from the slots before the next `tick_meters`; register `mixer.hidden` in the saved section state. Amendment (2026-11-08, UI only, requested by the owner): the per-strip Hide button became the ⋯ menu and the Mixer got its bulk menu (decision 4); no contract changed. The owner approved the behaviour proposal (2026-11-08); the owner approved the visual result (screenshots in dark, light and high contrast, twice) and the decision on 2026-11-08, so the ADR is Accepted.
