@@ -187,6 +187,7 @@ pub const THEMEABLE: &[Themeable] = &[
     colour("color.accent", "Accent"),
     colour("color.accent.hover", "Accent under the pointer"),
     colour("color.accent.subtle", "Selection background"),
+    colour("color.brand", "Logo accent"),
     colour("color.state.warning", "Warning"),
     colour("color.state.healthy", "Healthy"),
     colour("color.state.error", "Error"),

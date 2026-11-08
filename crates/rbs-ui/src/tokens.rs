@@ -34,6 +34,7 @@ pub const THEME_COLORS: &[&str] = &[
     "color.accent",
     "color.accent.hover",
     "color.accent.subtle",
+    "color.brand",
     "color.state.warning",
     "color.state.healthy",
     "color.state.error",
@@ -331,6 +332,9 @@ pub const THEME_CONTRAST_RULES: &[(&str, &str, f64, f64)] = &[
     ("color.border.strong", "color.surface.overlay", 3.0, 3.0),
     ("color.border.strong", "color.accent.subtle", 3.0, 3.0),
     ("color.accent", "color.accent.subtle", 3.0, 3.0),
+    // The brand mark in the RBS menu button, resting (raised) and under the pointer (overlay).
+    ("color.brand", "color.surface.raised", 3.0, 3.0),
+    ("color.brand", "color.surface.overlay", 3.0, 3.0),
 ];
 
 /// Surfaces `color.state.live` must stand out from (3:1). Not `surface.raised` or
