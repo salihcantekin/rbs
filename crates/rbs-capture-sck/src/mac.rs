@@ -410,16 +410,23 @@ impl CaptureFactory for SckCaptureFactory {
                     .map(|w| {
                         let (width, height) = rect_pixels(w.frame(), window_scale(&content, &w));
                         let title = w.title().map(|t| t.to_string()).unwrap_or_default();
-                        let name = match w.owningApplication() {
-                            Some(app) => format!("{} - {title}", app.applicationName()),
+                        let app = w
+                            .owningApplication()
+                            .map(|a| a.applicationName().to_string());
+                        let name = match &app {
+                            Some(app) => format!("{app} - {title}"),
                             None => title,
                         };
-                        CaptureTarget::new(
+                        let target = CaptureTarget::new(
                             TargetId::new(format!("{WINDOW_PREFIX}{}", w.windowID())),
                             TargetKind::Window,
                             name,
                         )
-                        .with_size(width, height)
+                        .with_size(width, height);
+                        match app.filter(|a| !a.is_empty()) {
+                            Some(app) => target.with_app(app),
+                            None => target,
+                        }
                     })
                     .collect()),
             }

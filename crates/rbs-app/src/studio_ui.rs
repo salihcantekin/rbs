@@ -1212,6 +1212,11 @@ impl StudioUi {
             .and_then(|id| self.rows.iter().find(|r| r.id == id))
             .map(|r| r.target.clone())
             .unwrap_or_default();
+        let current_app = self
+            .source_target_list
+            .iter()
+            .find(|t| !current.is_empty() && t.target == current)
+            .and_then(|t| t.app.clone());
         let mut shown: Vec<(usize, &Target)> = self
             .source_target_list
             .iter()
@@ -1221,17 +1226,44 @@ impl StudioUi {
                 self.source_query.is_empty() || t.name.to_lowercase().contains(&self.source_query)
             })
             .collect();
-        shown.sort_by_key(|(_, t)| t.target != current);
-        self.source_targets.set_vec(
-            shown
-                .into_iter()
-                .map(|(i, t)| SourceTargetData {
+        // The current target first, then the other windows of the same application,
+        // then the rest (ADR-0077).
+        let rank = |t: &Target| {
+            if t.target == current {
+                0
+            } else if current_app.is_some() && t.app == current_app {
+                1
+            } else {
+                2
+            }
+        };
+        shown.sort_by_key(|(_, t)| rank(t));
+        let any_same = shown.iter().any(|(_, t)| rank(t) == 1);
+        let mut last = 0;
+        let rows = shown
+            .into_iter()
+            .map(|(i, t)| {
+                let group = rank(t);
+                let heading = if group != last && group == 1 {
+                    format!(
+                        "Same application: {}",
+                        current_app.as_deref().unwrap_or_default()
+                    )
+                } else if group != last && group == 2 && any_same {
+                    "Other".to_owned()
+                } else {
+                    String::new()
+                };
+                last = group;
+                SourceTargetData {
                     name: t.name.as_str().into(),
                     current: !current.is_empty() && t.target == current,
                     index: i as i32,
-                })
-                .collect::<Vec<_>>(),
-        );
+                    heading: heading.into(),
+                }
+            })
+            .collect::<Vec<_>>();
+        self.source_targets.set_vec(rows);
     }
 
     /// A target of the Source tab's list was chosen: the source points at it.

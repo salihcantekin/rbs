@@ -46,7 +46,12 @@ pub struct TargetId(String);
 
 #[non_exhaustive]
 pub struct CaptureTarget { pub id, pub kind, pub name: String,
-    pub size: Option<(u32, u32)>, pub modes: Vec<CameraMode> }   // + new / with_size / with_modes
+    pub size: Option<(u32, u32)>, pub modes: Vec<CameraMode>,
+    pub app: Option<String> }   // + new / with_size / with_modes / with_app
+
+// `app` is the name of the application that owns a window, when the OS tells it. It only
+// groups and labels targets ("Same application", ADR-0077); hosts never branch on it (P3).
+// Added in 1.x as a compatible field of a `#[non_exhaustive]` struct.
 
 #[non_exhaustive]
 pub struct CameraMode { pub width, pub height, pub pixel_format,

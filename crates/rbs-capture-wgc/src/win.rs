@@ -51,6 +51,9 @@ use windows::Win32::Graphics::Gdi::{
 use windows::Win32::System::Com::{CoIncrementMTAUsage, IAgileObject};
 use windows::Win32::System::Performance::{QueryPerformanceCounter, QueryPerformanceFrequency};
 use windows::Win32::System::SystemInformation::OSVERSIONINFOW;
+use windows::Win32::System::Threading::{
+    OpenProcess, PROCESS_NAME_FORMAT, PROCESS_QUERY_LIMITED_INFORMATION, QueryFullProcessImageNameW,
+};
 use windows::Win32::System::WinRT::Direct3D11::{
     CreateDirect3D11DeviceFromDXGIDevice, IDirect3DDxgiInterfaceAccess,
 };
@@ -59,7 +62,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
     EnumWindows, GWL_EXSTYLE, GetWindowLongW, GetWindowTextW, GetWindowThreadProcessId, IsWindow,
     IsWindowVisible, WS_EX_TOOLWINDOW,
 };
-use windows::core::{BOOL, IInspectable, Interface, PCWSTR};
+use windows::core::{BOOL, IInspectable, Interface, PCWSTR, PWSTR};
 
 use crate::{ADAPTER_ID, Consumer, FRAMES_IN_FLIGHT, RING_SLOTS, luid_to_u64};
 use rbs_capture::handoff::{FrameMeta, Grave, Graveyard, Ring};
@@ -268,6 +271,31 @@ fn window_process(hwnd: HWND) -> u32 {
     pid
 }
 
+/// The name of the program behind process `pid`, from its executable file name without
+/// the extension (`None` when the process cannot be queried, e.g. it runs elevated).
+fn process_name(pid: u32) -> Option<String> {
+    // SAFETY: `OpenProcess` with a query-only right returns an owned handle that is
+    // closed below; `buf` is valid for `len` UTF-16 units and the API updates `len` to
+    // the number written.
+    let path = unsafe {
+        let handle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid).ok()?;
+        let mut buf = [0u16; 1024];
+        let mut len = buf.len() as u32;
+        let queried = QueryFullProcessImageNameW(
+            handle,
+            PROCESS_NAME_FORMAT(0),
+            PWSTR(buf.as_mut_ptr()),
+            &mut len,
+        );
+        let _ = CloseHandle(handle);
+        queried.ok()?;
+        String::from_utf16_lossy(&buf[..(len as usize).min(buf.len())])
+    };
+    let file = path.rsplit(['\\', '/']).next()?;
+    let stem = file.rsplit_once('.').map_or(file, |(stem, _)| stem);
+    (!stem.is_empty()).then(|| stem.to_owned())
+}
+
 /// `window:<process id>:<window handle>`, both hex. The process id guards against a
 /// window handle value reused by another process after the window closed.
 fn window_id(hwnd: HWND) -> TargetId {
@@ -420,10 +448,13 @@ impl CaptureFactory for WgcCaptureFactory {
                 .into_iter()
                 .filter_map(|hwnd| {
                     let (w, h) = window_size(hwnd)?;
-                    Some(
+                    let target =
                         CaptureTarget::new(window_id(hwnd), TargetKind::Window, window_title(hwnd))
-                            .with_size(w, h),
-                    )
+                            .with_size(w, h);
+                    Some(match process_name(window_process(hwnd)) {
+                        Some(app) => target.with_app(app),
+                        None => target,
+                    })
                 })
                 .collect()),
             _ => Err(CaptureError::Unsupported("cameras are not captured by WGC")),

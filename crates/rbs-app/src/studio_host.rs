@@ -170,6 +170,8 @@ pub struct Target {
     pub is_default: bool,
     /// Native size in pixels when known (displays and windows).
     pub size: Option<(u32, u32)>,
+    /// The application that owns a window, when the OS tells it.
+    pub app: Option<String>,
     /// Not a target yet: adding it shows the OS picker of `adapter` (systems that
     /// list no screens or windows, such as the Linux screen-cast portal), and the
     /// target the user chooses is added.
@@ -1411,6 +1413,7 @@ fn target_of(t: SourceTarget) -> Target {
         target: t.target,
         is_default: t.is_default,
         size: t.size,
+        app: t.app,
         picker: false,
     }
 }
@@ -2285,6 +2288,7 @@ impl Host {
             target: String::new(),
             is_default: false,
             size: None,
+            app: None,
             picker: true,
         }));
         list
@@ -5045,6 +5049,7 @@ impl ApiTarget<'_> {
                     target: p.target,
                     is_default: false,
                     size: None,
+                    app: None,
                     picker: false,
                 };
                 if host
