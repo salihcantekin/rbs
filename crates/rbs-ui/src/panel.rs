@@ -201,6 +201,7 @@ pub const BUILT_IN_PANELS: &[PanelInfo] = &[
         false,
         false,
     ),
+    info("rbs.library", "Library", UpdateRate::OnChange, false, false),
     info("rbs.outputs", "Outputs", UpdateRate::OnChange, false, false),
     info("rbs.stats", "Stats", UpdateRate::Hz(1), false, false),
     info(

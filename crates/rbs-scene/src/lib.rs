@@ -18,6 +18,7 @@ pub mod binder;
 mod collection;
 mod crop;
 pub mod flatten;
+pub mod look;
 pub mod model;
 
 pub use collection::{

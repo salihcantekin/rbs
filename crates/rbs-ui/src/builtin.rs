@@ -21,8 +21,9 @@ fn studio() -> Node {
 
 /// The full editing layout of the design system's main window structure: the studio
 /// split in the centre, Scenes and Sources in the left area, Properties in the
-/// right area, the Mixer in the bottom area, and Stats
-/// and Outputs as edge tabs on the right (ADR-0049, ADR-0064, spec Frame).
+/// right area, the Mixer in the bottom area, and Stats and Outputs as edge tabs on
+/// the right, and the Library on the left (ADR-0049, ADR-0064, ADR-0075, spec
+/// Frame).
 pub fn edit() -> Workspace {
     let mut ws = Workspace::new("Edit", studio());
     if let Some(m) = ws.main_layout_mut() {
@@ -35,6 +36,13 @@ pub fn edit() -> Workspace {
         ));
         m.right.layout = Some(tabs(&["rbs.properties"]));
         m.bottom.layout = Some(tabs(&["rbs.mixer"]));
+        m.auto_hide.push(EdgeGroup {
+            edge: Side::Left,
+            tabs: vec![id("rbs.library")],
+            active: 0,
+            size: DEFAULT_FLYOUT,
+            anchor: Some(id("rbs.scenes")),
+        });
         m.auto_hide.push(EdgeGroup {
             edge: Side::Right,
             tabs: vec![id("rbs.stats"), id("rbs.outputs")],

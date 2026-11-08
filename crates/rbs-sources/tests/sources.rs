@@ -744,3 +744,15 @@ fn bad_still_settings_are_refused() {
         SourceError::InvalidSetting { key: "width", .. }
     ));
 }
+
+#[test]
+fn every_built_in_look_is_accepted_by_the_filter_catalogue() {
+    for look in rbs_scene::look::built_in() {
+        for f in &look.filters {
+            let ty = rbs_filters::find(f.type_id)
+                .unwrap_or_else(|| panic!("{}: no filter type {}", look.id, f.type_id));
+            rbs_sources::filter_values(ty, &f.settings)
+                .unwrap_or_else(|e| panic!("{}: {e}", look.id));
+        }
+    }
+}
