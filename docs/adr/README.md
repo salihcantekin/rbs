@@ -67,7 +67,7 @@ An ADR records one decision that is hard to reverse or affects more than one cra
 | [0052](0052-ai-agent-control-through-mcp.md) | AI agents control RBS through an MCP server that is a plain control API client | Accepted |
 | [0053](0053-item-style-and-video-filter-chains.md) | Item shape, border and shadow drawn by the compositor; video filters as a per-source chain of GPU nodes | Accepted |
 | [0054](0054-preview-never-disappears.md) | The preview picture never disappears behind popups: split it around covers | Accepted |
-| [0055](0055-crash-resilience.md) | Crash resilience: a fault in the app must not end a recording or a stream | Proposed |
+| [0055](0055-crash-resilience.md) | Crash resilience: a fault in the app must not end a recording or a stream | Accepted |
 | [0056](0056-keep-running-after-the-main-window-closes.md) | Keep running after the main window closes: Close and Quit are separate; Dock on macOS, tray icon on Windows | Accepted |
 | [0057](0057-user-themes-and-appearance-settings.md) | User themes as checked token overrides in a theme library; Settings › Appearance picks and edits them | Accepted |
 | [0058](0058-crop-editing-of-sources.md) | Crop editing of sources: keep the scale, read the picture size from the capture node | Accepted |
@@ -77,6 +77,7 @@ An ADR records one decision that is hard to reverse or affects more than one cra
 | [0062](0062-built-in-video-filters-and-properties-tabs.md) | Built-in video filters: one filter node behind a filter type trait, settings through parameter channels, and the Properties tabs | Accepted |
 | [0063](0063-hold-the-program-while-its-scene-is-edited-in-preview.md) | Hold the program while its scene is edited in preview (studio mode) | Accepted |
 | [0064](0064-transition-rail-with-the-pictures.md) | The Transition rail sits with the pictures: between or below Preview and Program, only in studio mode | Accepted |
+| [0073](0073-pictures-area-and-studio-mode-switch.md) | The Pictures area, a resizable rail and Studio mode as one switch | Accepted |
 | [0065](0065-global-sources-and-safe-source-removal.md) | Global sources as a global scene per canvas, and safe source removal | Accepted |
 | [0066](0066-virtual-camera.md) | Virtual camera on Windows: the program as a camera for meeting apps, off by default | Accepted |
 | [0069](0069-rbs-menu-and-command-search.md) | The RBS menu: an app menu with command search, and the menu bar only on macOS | Accepted |
