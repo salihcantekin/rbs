@@ -29,6 +29,12 @@ These are features OBS either lacks or provides only through fragile plugins. RB
 10. **A modern, easy UI by rule**: binding UI rules with timed core tasks, one design system, accessibility and localisation from day one ([UI principles](ui/principles.md)).
 11. **Remote guests** (post-1.0 plugin): browser guests over WebRTC, operator roles and moderation.
 
+## Product expectations (owner, 2026-11-08)
+
+- **Lean by default.** RBS must be easy on memory, CPU and GPU. Hot paths may change when a feature needs it, but only done very well: measured before and after, reviewed, approved (P10, P15). A feature that costs resources while unused is a defect (P13).
+- **Beyond parity.** Do not copy how OBS (or any other tool) does a feature just because it does. Ask what that feature cannot do today, or does badly because of its technology or history, and design RBS to do it if it is technically possible. RBS is written from scratch, so it can pick designs older tools cannot change. Examples: scene transitions that move matching sources instead of cutting, a browser source that costs nothing while hidden.
+- **Say it in the proposal.** A spec or ADR for a user-facing feature states what the reference tools do, where they fall short, and what RBS does better (or why it does not).
+
 ## Non-goals
 
 - Feature parity with OBS on day one. We target the 80 % of daily use first, with a better foundation.
