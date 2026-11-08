@@ -74,7 +74,7 @@ Rules:
 
 ## U7. Accessible by default
 
-- Contrast meets WCAG 2.2 AA (4.5:1 for text, 3:1 for UI elements and graphics).
+- Contrast meets WCAG 2.2 AA (4.5:1 for text, 3:1 for UI elements and graphics) in RBS's own themes. A theme a user makes may break it and then shows a warning ([ADR-0072](../adr/0072-theme-colour-rules-warn.md)).
 - Every action is reachable by keyboard; focus is always visible; a complete, rebindable shortcut map exists.
 - Every control has an accessible name for screen readers.
 - Text scales to 200 % without loss of function.
@@ -111,8 +111,8 @@ Rules:
 
 - Modern, calm and dense where needed: neutral surfaces, one accent colour, clear hierarchy through type size and weight rather than borders and boxes.
 - Dark and light themes are both first-class and follow the OS setting by default. High-contrast theme is provided.
-- Colour meanings are reserved. `color.state.live` (red) is used only for live and recording. Errors, clipping and destructive actions use their own tokens with a hue clearly distinct from live, and always with an icon or text. Amber is for warnings, green for healthy, and the accent for selection and primary actions.
-- Users may pick the accent from a curated set and may install custom themes. A theme is a token file that must pass the contrast check and cannot change `color.state.live`.
+- Colour meanings are reserved. `color.state.live` (red) is used only for live and recording. Errors, clipping and destructive actions use their own tokens with a hue clearly distinct from live in RBS's own themes (a user theme that breaks this shows a warning), and always with an icon or text. Amber is for warnings, green for healthy, and the accent for selection and primary actions.
+- Users may pick the accent from a curated set and may install custom themes. A theme is a token file that cannot change `color.state.live`. Built-in themes pass the contrast check; a user theme that does not is used with a warning ([ADR-0072](../adr/0072-theme-colour-rules-warn.md)).
 - Motion is short (120-200 ms), purposeful (shows where something came from or went), and never delays an action.
 - No skeuomorphism, gradients, heavy shadows or decorative animation.
 

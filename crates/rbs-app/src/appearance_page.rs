@@ -162,7 +162,7 @@ pub fn install(g: &Appearance<'_>, ctx: &Ctx) {
                        file,
                        name: SharedString,
                        hex: SharedString| {
-        edited(page.ui.set_color(&file, &name, &hex))
+        edited(page.ui.set_color(&file, &name, &hex, Instant::now()))
     });
     on!(on_set_number, |_app,
                         page,
@@ -237,8 +237,11 @@ pub fn install(g: &Appearance<'_>, ctx: &Ctx) {
             || look::complete_family(&text, &family).into(),
         )
     });
+    on!(on_fix, |_app, page, file, name: SharedString| {
+        edited(page.ui.fix_colour(&file, &name, Instant::now()))
+    });
     on!(on_reset, |_app, page, file, name: SharedString| {
-        edited(page.ui.reset(&file, &name))
+        edited(page.ui.reset(&file, &name, Instant::now()))
     });
     on!(on_save, |app, page, file| {
         let Some((id, name, body)) = page.ui.to_save() else {
@@ -644,6 +647,7 @@ fn show(ctx: &Ctx, app: &App) {
             let rows: Vec<ThemeTokenRow> = ui.rows(&look.file).into_iter().map(row).collect();
             super::set_rows(&page.rows, rows);
             g.set_general_problems(strings(ui.general_problems()));
+            g.set_warning_count(i32::try_from(ui.warning_count()).unwrap_or(i32::MAX));
             g.set_unknown_tokens(strings(ed.draft.unknown_names()));
             let active = app.main.global::<Theme>().get_active().clamp(0, 1) as usize;
             g.set_font_in_use(look.fonts[active].as_str().into());
@@ -681,6 +685,8 @@ fn row(r: crate::appearance::TokenRow) -> ThemeTokenRow {
         label: r.label.into(),
         overridden: r.overridden,
         problem: r.problem.into(),
+        warning: r.warning.into(),
+        fixable: r.fixable,
         step: 1.0,
         ..Default::default()
     };

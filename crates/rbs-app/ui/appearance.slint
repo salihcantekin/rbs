@@ -34,6 +34,10 @@ export struct ThemeTokenRow {
     fonts: string,
     overridden: bool,
     problem: string,
+    // Colour warnings in words (ADR-0072): shown, never blocking.
+    warning: string,
+    // "Fix" can clear the warnings by moving the colour's lightness.
+    fixable: bool,
 }
 
 export global Appearance {
@@ -61,6 +65,8 @@ export global Appearance {
     in property <int> group;
     in property <[ThemeTokenRow]> rows;
     in property <[string]> general-problems;
+    // How many colour warnings the draft has (ADR-0072).
+    in property <int> warning-count;
     in property <[string]> unknown-tokens;
     in property <bool> can-save;
     in property <bool> changed;
@@ -120,6 +126,8 @@ export global Appearance {
     callback set-style(string, int, float);
     callback set-fonts(string);
     callback reset(string);
+    // Moves a colour to the nearest lightness that clears its warnings.
+    callback fix(string);
     callback save();
     callback cancel();
     callback keep();
@@ -130,6 +138,32 @@ component Hint inherits Text {
     color: Theme.text-secondary;
     font-size: Tokens.type-caption-size;
     wrap: word-wrap;
+}
+
+// A colour warning: a small warning-coloured mark and the words in the secondary
+// text colour, so it reads as advice, not as an error (ADR-0072).
+component Warning inherits HorizontalLayout {
+    in property <string> text;
+    spacing: Tokens.space-2;
+    VerticalLayout {
+        padding-top: (Tokens.type-caption-line - Tokens.space-2) / 2;
+        alignment: start;
+        Rectangle {
+            width: Tokens.space-2;
+            height: Tokens.space-2;
+            border-radius: Tokens.space-1;
+            background: Theme.state-warning;
+            accessible-role: none;
+        }
+    }
+    Text {
+        horizontal-stretch: 1;
+        text: root.text;
+        color: Theme.text-secondary;
+        font-size: Tokens.type-caption-size;
+        wrap: word-wrap;
+        accessible-label: @tr("Warning: {}", root.text);
+    }
 }
 
 component Problem inherits Text {
@@ -438,6 +472,14 @@ component TokenEditorRow inherits Rectangle {
                 }
             }
             if item.problem != "": Problem { text: item.problem; }
+            if item.warning != "": Warning { text: item.warning; }
+            if item.fixable: Button {
+                text: @tr("Fix");
+                accessible-name: @tr("Fix the colour of {}", item.label);
+                dense: true;
+                horizontal-stretch: 0;
+                clicked => { Appearance.fix(item.name); }
+            }
         }
         if item.kind != 3: HorizontalLayout {
             horizontal-stretch: 0;
@@ -557,7 +599,10 @@ component ThemeEditor inherits VerticalLayout {
         }
         EditorActions { horizontal-stretch: 0; }
     }
-    if Appearance.editing-in-use: Hint { text: @tr("Changes show in every window as you make them. A change that breaks a rule is shown with its problem and not used."); }
+    if Appearance.editing-in-use: Hint { text: @tr("Changes show in every window as you make them. Colours that are hard to read get a warning; you can still use and save them."); }
+    if Appearance.warning-count > 0: Warning {
+        text: Appearance.warning-count == 1 ? @tr("1 colour warning. The theme is still used and saved as it is.") : @tr("{} colour warnings. The theme is still used and saved as it is.", Appearance.warning-count);
+    }
     if !Appearance.editing-in-use: SettingsNotice {
         text: @tr("This theme is not in use, so the windows do not show its changes. Pick it under Theme in use to see them.");
     }

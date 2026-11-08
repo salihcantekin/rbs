@@ -5,8 +5,8 @@
 use std::time::{Duration, Instant};
 
 use rbs_ui::tokens::{
-    Base, Color, FONT_FAMILY, Group, Kind, ResolvedTheme, THEMEABLE, ThemeBody, ThemeProblem,
-    Tokens as TokenFile, TypeStyle,
+    Base, Color, ColorRule, FONT_FAMILY, Group, Kind, ResolvedTheme, THEMEABLE, ThemeBody,
+    ThemeProblem, Tokens as TokenFile, TypeStyle,
 };
 use rbs_user_data::{Appearance, AppearanceMode, EntryId, ThemeId, UserData};
 
@@ -87,8 +87,43 @@ pub struct Editor {
     pub saved: ThemeBody,
     /// With the edits.
     pub draft: ThemeBody,
-    /// The draft's problems (empty: it can be saved and is applied).
+    /// The draft's problems: errors hold it (not applied, not saved), warnings do not
+    /// (ADR-0072).
     pub problems: Vec<ThemeProblem>,
+}
+
+impl Editor {
+    /// True when a problem refuses the draft.
+    pub fn has_error(&self) -> bool {
+        self.problems.iter().any(ThemeProblem::is_error)
+    }
+}
+
+/// The contrast under which text is unreadable rather than poor: a colour edit that
+/// takes primary text on a surface the editor draws below it asks "Keep this look?"
+/// (ADR-0072 decision 5), so the user always has a way back.
+pub const READABLE_FLOOR: f64 = 1.5;
+
+/// The surfaces the Settings window draws primary text on.
+const EDITOR_SURFACES: [&str; 3] = [
+    "color.surface.base",
+    "color.surface.raised",
+    "color.surface.overlay",
+];
+
+/// True when `body` resolves (it is applied) and primary text on a surface the
+/// editor draws is under [`READABLE_FLOOR`].
+fn unreadable(file: &TokenFile, body: &ThemeBody) -> bool {
+    let Ok(r) = file.resolve(body) else {
+        return false;
+    };
+    let Some(text) = r.colors.get("color.text.primary") else {
+        return false;
+    };
+    EDITOR_SURFACES
+        .iter()
+        .filter_map(|s| r.colors.get(*s))
+        .any(|bg| text.contrast(*bg) < READABLE_FLOOR)
 }
 
 /// What "Keep this look?" goes back to.
@@ -96,8 +131,9 @@ pub struct Editor {
 pub enum Previous {
     /// The appearance choice before a change.
     Choice(Appearance),
-    /// The edited theme's font families before a change.
-    Fonts(Option<Vec<String>>),
+    /// The edited theme's draft before a change (of the font family, or of a colour
+    /// that made text unreadable).
+    Draft(ThemeBody),
 }
 
 /// An open "Keep this look?" question.
@@ -200,7 +236,8 @@ impl AppearanceUi {
     }
 
     /// The themes of the two slots (OS dark, OS light), with the editor's draft in
-    /// place of its saved theme while the draft passes every rule.
+    /// place of its saved theme while the draft has no error (warnings apply too,
+    /// ADR-0072).
     pub fn slots(
         &self,
         data: &UserData,
@@ -211,7 +248,6 @@ impl AppearanceUi {
         let one = |id: &ThemeId, fallback: Base, notes: &mut Vec<String>| {
             if let (Some(ed), ThemeId::User(uid)) = (&self.editor, id)
                 && *uid == ed.id
-                && ed.problems.is_empty()
                 && let Ok(r) = file.resolve(&ed.draft)
             {
                 return r;
@@ -298,9 +334,9 @@ impl AppearanceUi {
                 self.choice = a.clone();
                 Some(a)
             }
-            Previous::Fonts(f) => {
+            Previous::Draft(body) => {
                 if let Some(ed) = &mut self.editor {
-                    ed.draft.font_family = f;
+                    ed.draft = body;
                     ed.problems = problems(file, &ed.draft);
                 }
                 None
@@ -344,12 +380,13 @@ impl AppearanceUi {
         Some((name, body))
     }
 
-    /// Sets a colour override from `#rrggbb` text. True when the draft changed.
-    pub fn set_color(&mut self, file: &TokenFile, name: &str, hex: &str) -> bool {
+    /// Sets a colour override from `#rrggbb` text. True when the draft changed. Asks
+    /// "Keep this look?" when it makes text unreadable in a theme in use.
+    pub fn set_color(&mut self, file: &TokenFile, name: &str, hex: &str, now: Instant) -> bool {
         let Some(c) = Color::parse(hex).map(|c| Color { a: 255, ..c }) else {
             return false;
         };
-        self.change(file, |d| {
+        self.change_looked(file, now, |d| {
             d.colors.insert(name.to_owned(), c);
         })
     }
@@ -401,31 +438,75 @@ impl AppearanceUi {
         let Some(ed) = &self.editor else {
             return false;
         };
-        let before = ed.draft.font_family.clone();
-        let in_use = self.in_use(&ThemeId::User(ed.id.clone()));
+        let before = ed.draft.clone();
         let changed = self.change(file, |d| d.font_family = Some(list));
-        // Only a theme in use changes the look, so only then is "Keep this look?" asked.
-        if changed
-            && in_use
-            && !matches!(
-                self.keep,
-                Some(KeepLook {
-                    previous: Previous::Fonts(_),
-                    ..
-                })
-            )
-        {
-            self.keep = Some(KeepLook {
-                previous: Previous::Fonts(before),
-                since: now,
-            });
+        if changed {
+            self.ask_keep(before, now);
         }
         changed
     }
 
+    /// "Keep this look?" for an edit of the theme in use, going back to `before`.
+    /// Only a theme in use changes the look, so only then is it asked; a question
+    /// already open keeps the first look of the series.
+    fn ask_keep(&mut self, before: ThemeBody, now: Instant) {
+        let Some(ed) = &self.editor else { return };
+        if !self.in_use(&ThemeId::User(ed.id.clone()))
+            || matches!(
+                self.keep,
+                Some(KeepLook {
+                    previous: Previous::Draft(_),
+                    ..
+                })
+            )
+        {
+            return;
+        }
+        self.keep = Some(KeepLook {
+            previous: Previous::Draft(before),
+            since: now,
+        });
+    }
+
+    /// A change that can affect readability: asks "Keep this look?" when it takes
+    /// text from readable to unreadable (ADR-0072 decision 5).
+    fn change_looked(
+        &mut self,
+        file: &TokenFile,
+        now: Instant,
+        f: impl FnOnce(&mut ThemeBody),
+    ) -> bool {
+        let Some(ed) = &self.editor else {
+            return false;
+        };
+        let before = ed.draft.clone();
+        if !self.change(file, f) {
+            return false;
+        }
+        let after = self.editor.as_ref().map(|e| &e.draft);
+        if !unreadable(file, &before) && after.is_some_and(|a| unreadable(file, a)) {
+            self.ask_keep(before, now);
+        }
+        true
+    }
+
+    /// The "Fix" of a colour warning: the colour moves to the nearest lightness that
+    /// clears the token's warnings (ADR-0072). True when the draft changed.
+    pub fn fix_colour(&mut self, file: &TokenFile, name: &str, now: Instant) -> bool {
+        let Some(ed) = &self.editor else {
+            return false;
+        };
+        let Some(c) = rbs_ui::tokens::suggest_colour(file, &ed.draft, name) else {
+            return false;
+        };
+        self.change_looked(file, now, |d| {
+            d.colors.insert(name.to_owned(), c);
+        })
+    }
+
     /// Removes an override (the token takes the base's value again).
-    pub fn reset(&mut self, file: &TokenFile, name: &str) -> bool {
-        self.change(file, |d| {
+    pub fn reset(&mut self, file: &TokenFile, name: &str, now: Instant) -> bool {
+        self.change_looked(file, now, |d| {
             d.colors.remove(name);
             d.length.remove(name);
             d.duration.remove(name);
@@ -456,7 +537,7 @@ impl AppearanceUi {
         if matches!(
             self.keep,
             Some(KeepLook {
-                previous: Previous::Fonts(_),
+                previous: Previous::Draft(_),
                 ..
             })
         ) {
@@ -464,10 +545,11 @@ impl AppearanceUi {
         }
     }
 
-    /// The draft to save, if it passes every rule and differs from the saved theme.
+    /// The draft to save, if it has no error (warnings are saved, ADR-0072) and
+    /// differs from the saved theme.
     pub fn to_save(&self) -> Option<(EntryId, String, ThemeBody)> {
         let ed = self.editor.as_ref()?;
-        (ed.problems.is_empty() && ed.draft != ed.saved)
+        (!ed.has_error() && ed.draft != ed.saved)
             .then(|| (ed.id.clone(), ed.name.clone(), ed.draft.clone()))
     }
 
@@ -479,7 +561,7 @@ impl AppearanceUi {
         if matches!(
             self.keep,
             Some(KeepLook {
-                previous: Previous::Fonts(_),
+                previous: Previous::Draft(_),
                 ..
             })
         ) {
@@ -510,10 +592,14 @@ impl AppearanceUi {
                 let problem = ed
                     .problems
                     .iter()
-                    .filter(|p| p.token.as_deref() == Some(t.name))
+                    .filter(|p| p.is_error() && p.token.as_deref() == Some(t.name))
                     .map(|p| p.reason.clone())
                     .collect::<Vec<_>>()
                     .join("; ");
+                let warning = warnings_for(&ed.problems, t.name).join(" ");
+                let fixable = !warning.is_empty()
+                    && matches!(t.kind, Kind::Color)
+                    && rbs_ui::tokens::suggest_colour(file, &ed.draft, t.name).is_some();
                 let d = &ed.draft;
                 let (value, overridden) = match t.kind {
                     Kind::Color => {
@@ -577,9 +663,18 @@ impl AppearanceUi {
                     value,
                     overridden: overridden || d.invalid.contains_key(t.name),
                     problem,
+                    warning,
+                    fixable,
                 }
             })
             .collect()
+    }
+
+    /// The number of warnings of the draft (ADR-0072).
+    pub fn warning_count(&self) -> usize {
+        self.editor
+            .as_ref()
+            .map_or(0, |ed| ed.problems.iter().filter(|p| !p.is_error()).count())
     }
 
     /// Problems of the draft that belong to no row of any group.
@@ -601,9 +696,82 @@ impl AppearanceUi {
     }
 }
 
+/// A token's label in words, for warnings.
+fn label_of(token: &str) -> &'static str {
+    if token == "color.state.live" {
+        return "the Live badge";
+    }
+    rbs_ui::tokens::themeable(token).map_or("another colour", |t| t.label)
+}
+
+/// The warnings of `problems` that concern the row `token`, in words with labels
+/// (never token ids): a contrast pair shows on both of its rows, live warnings first.
+pub fn warnings_for(problems: &[ThemeProblem], token: &str) -> Vec<String> {
+    let mut live = Vec::new();
+    let mut other = Vec::new();
+    for p in problems.iter().filter(|p| !p.is_error()) {
+        let (words, about_live) = match &p.rule {
+            Some(ColorRule::Contrast {
+                fg,
+                bg,
+                ratio,
+                need,
+            }) => {
+                let n = format!("{ratio:.1} of {need}");
+                if fg == "color.state.live" && bg == token {
+                    (
+                        format!(
+                            "The Live badge is hard to see on this colour ({n}): try a darker or lighter colour."
+                        ),
+                        true,
+                    )
+                } else if fg == token {
+                    (
+                        format!(
+                            "Hard to read on {} ({n}): make one of the two lighter or darker.",
+                            label_of(bg)
+                        ),
+                        false,
+                    )
+                } else if bg == token {
+                    (
+                        format!(
+                            "{} is hard to read on this colour ({n}): make one of the two lighter or darker.",
+                            label_of(fg)
+                        ),
+                        false,
+                    )
+                } else {
+                    continue;
+                }
+            }
+            Some(ColorRule::LiveLook { token: t, .. }) if t == token => (
+                "Looks like the Live colour, so it may be taken for live: pick another colour."
+                    .to_owned(),
+                true,
+            ),
+            Some(ColorRule::LiveHue { token: t }) if t == token => (
+                "Its hue is close to the Live colour: move it away from red.".to_owned(),
+                true,
+            ),
+            _ => continue,
+        };
+        if about_live {
+            live.push(words);
+        } else {
+            other.push(words);
+        }
+    }
+    live.dedup();
+    other.dedup();
+    live.extend(other);
+    live
+}
+
+/// Every problem of `body`: errors and warnings.
 fn problems(file: &TokenFile, body: &ThemeBody) -> Vec<ThemeProblem> {
     match file.resolve(body) {
-        Ok(_) => Vec::new(),
+        Ok(r) => r.warnings,
         Err(p) => p.0,
     }
 }
@@ -632,8 +800,12 @@ pub struct TokenRow {
     pub value: RowValue,
     /// True when the theme sets it.
     pub overridden: bool,
-    /// Its problems, joined; empty when none.
+    /// Its errors, joined; empty when none.
     pub problem: String,
+    /// Its colour warnings in words (ADR-0072); empty when none.
+    pub warning: String,
+    /// True when "Fix" can clear them by moving the colour's lightness.
+    pub fixable: bool,
 }
 
 #[cfg(test)]
@@ -742,7 +914,7 @@ mod tests {
     }
 
     #[test]
-    fn editing_applies_passing_drafts_and_holds_failing_ones() {
+    fn editing_applies_every_draft_without_an_error() {
         let (_d, data, file, mut ui, id) = setup("edit");
         ui.selected = ui.index_of(&ThemeId::User(id.clone()));
         assert!(ui.edit(&file));
@@ -752,7 +924,8 @@ mod tests {
             ThemeId::BuiltIn(Base::Light),
             ThemeId::User(id),
         );
-        assert!(ui.set_color(&file, "color.surface.base", "#0b1020"));
+        let t0 = Instant::now();
+        assert!(ui.set_color(&file, "color.surface.base", "#0b1020", t0));
         let mut notes = Vec::new();
         let slots = ui.slots(&data, &file, &mut notes);
         assert_eq!(
@@ -761,28 +934,85 @@ mod tests {
         );
         assert!(ui.to_save().is_some());
 
-        // A failing edit stays in the editor with its problem and is not applied.
-        assert!(ui.set_color(&file, "color.accent", "#c4262e"));
+        // A colour that breaks a rule is applied and saved, with its warning shown
+        // (ADR-0072).
+        assert!(ui.set_color(&file, "color.accent", "#c4262e", t0));
         ui.group = 0;
         let row = ui
             .rows(&file)
             .into_iter()
             .find(|r| r.name == "color.accent")
             .unwrap();
-        assert!(row.overridden && row.problem.contains("live"), "{row:?}");
+        assert!(row.overridden && row.problem.is_empty(), "{row:?}");
+        assert!(
+            row.warning.starts_with("Looks like the Live colour"),
+            "{row:?}"
+        );
+        assert!(
+            !row.warning.contains("color."),
+            "labels, not token ids: {row:?}"
+        );
         let slots = ui.slots(&data, &file, &mut notes);
-        assert_eq!(slots[0].length["radius.md"], 8.0, "saved theme still used");
-        assert_ne!(
+        assert_eq!(
             slots[0].colors["color.accent"],
             Color::parse("#c4262e").unwrap()
         );
+        assert!(ui.to_save().is_some());
+
+        // An error (a value out of bounds) holds the draft: the saved theme stays.
+        assert!(ui.set_number(&file, "radius.md", 500.0));
+        let slots = ui.slots(&data, &file, &mut notes);
+        assert_eq!(slots[0].length["radius.md"], 8.0, "saved theme still used");
         assert!(ui.to_save().is_none());
 
         // Reset removes the override.
-        assert!(ui.reset(&file, "color.accent"));
+        assert!(ui.reset(&file, "radius.md", t0));
         assert!(ui.to_save().is_some());
         ui.cancel();
         assert!(ui.editor.is_none());
+    }
+
+    #[test]
+    fn fix_moves_a_colour_until_its_warnings_are_gone() {
+        let (_d, _data, file, mut ui, id) = setup("fix");
+        ui.selected = ui.index_of(&ThemeId::User(id));
+        ui.edit(&file);
+        let t0 = Instant::now();
+        assert!(ui.set_color(&file, "color.surface.base", "#5b8de0", t0));
+        ui.group = 0;
+        let row = |ui: &AppearanceUi| {
+            ui.rows(&file)
+                .into_iter()
+                .find(|r| r.name == "color.surface.base")
+                .unwrap()
+        };
+        assert!(row(&ui).fixable && row(&ui).warning.contains("Live badge"));
+        assert!(ui.fix_colour(&file, "color.surface.base", t0));
+        let r = row(&ui);
+        assert!(r.warning.is_empty() && !r.fixable, "{r:?}");
+        assert!(
+            !ui.fix_colour(&file, "color.surface.base", t0),
+            "nothing left to fix"
+        );
+    }
+
+    #[test]
+    fn unreadable_text_asks_to_keep_and_undo_brings_it_back() {
+        let (_d, _data, file, mut ui, id) = setup("unreadable");
+        ui.choice.dark = ThemeId::User(id.clone());
+        ui.selected = ui.index_of(&ThemeId::User(id));
+        ui.edit(&file);
+        let t0 = Instant::now();
+        // Poor but readable: no question.
+        assert!(ui.set_color(&file, "color.surface.base", "#5b8de0", t0));
+        assert!(ui.keep.is_none());
+        // Text close to the surfaces: "Keep this look?".
+        assert!(ui.set_color(&file, "color.text.primary", "#1c1f24", t0));
+        assert!(ui.keep.is_some());
+        assert!(ui.undo(&file).is_none());
+        let ed = ui.editor.as_ref().unwrap();
+        assert!(!ed.draft.colors.contains_key("color.text.primary"));
+        assert!(ed.draft.colors.contains_key("color.surface.base"));
     }
 
     #[test]
@@ -790,7 +1020,7 @@ mod tests {
         let (_d, data, file, mut ui, id) = setup("reload");
         ui.selected = ui.index_of(&ThemeId::User(id));
         assert!(ui.edit(&file));
-        assert!(ui.set_color(&file, "color.accent", "#c4262e"));
+        assert!(ui.set_color(&file, "color.accent", "#c4262e", Instant::now()));
         // A theme file added on disk shows after `ui.theme.reload` reads the files again.
         {
             let lock = data.try_lock().unwrap().unwrap();

@@ -548,11 +548,19 @@ mod tests {
         assert_eq!(r.length["radius.md"], 8.0);
         assert!(notes.is_empty());
 
-        // One that fails a rule: its base's built-in theme (high contrast kept).
+        // One that only breaks colour rules is used, with its warnings (ADR-0072).
+        let mut loud = ThemeBody::new(Base::HighContrast);
+        let live = Color::parse("#c4262e").unwrap();
+        loud.colors.insert("color.accent".into(), live);
+        let id = data.themes().create(&lock, "Warned", &loud).unwrap();
+        let r = resolve(&file, &data, &ThemeId::User(id), Base::Dark, &mut notes);
+        assert_eq!(r.colors["color.accent"], live);
+        assert!(!r.warnings.is_empty());
+        assert!(notes.is_empty(), "{notes:?}");
+
+        // One with an error: its base's built-in theme (high contrast kept).
         let mut failing = ThemeBody::new(Base::HighContrast);
-        failing
-            .colors
-            .insert("color.accent".into(), Color::parse("#c4262e").unwrap());
+        failing.length.insert("radius.md".into(), 500.0);
         let id = data.themes().create(&lock, "Loud", &failing).unwrap();
         let r = resolve(&file, &data, &ThemeId::User(id), Base::Dark, &mut notes);
         assert_eq!(r, file.built_in_theme(Base::HighContrast));
