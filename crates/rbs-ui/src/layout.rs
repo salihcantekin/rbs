@@ -24,9 +24,10 @@ pub const MIN_PANE: f32 = 48.0;
 /// Share of the window a panel gets when it is moved to an edge.
 pub const EDGE_SHARE: f32 = 0.25;
 
-/// The rail column between the pictures is `rail_size` plus a divider gap on each side;
-/// the built-in token `size.transition.between` is the default column, and a test keeps
-/// them equal.
+// The rail column between the pictures is `rail_size` plus a divider gap on each side;
+// the built-in token `size.transition.between` is the default column, and a test keeps
+// them equal.
+
 /// Least height for the rail between the pictures; a shorter split puts it below.
 pub const RAIL_BETWEEN_MIN_H: f32 = 240.0;
 
