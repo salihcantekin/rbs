@@ -81,3 +81,5 @@ Independent AI session per ADR-0014, 2026-11-06 (given only the proposal, specs,
 Round 2, same independent AI session, 2026-11-06, reviewing commit 95ed611. Verdict: **approve**. All seven blocking concerns resolved; the built-in measurements were recomputed from `tokens.toml` and confirmed (tightest new contrast pairs 3.88 against 3.0 in light; closest colour to live ΔE2000 16.2, light `meter.high`). Non-blocking items, applied: `state.live` on `surface.sunken` added as a rule (3.37 / 4.80 / 3.66 in the built-ins); the font glyph check runs again when the UI language changes; item 1 above reworded (the concern named raised and sunken).
 
 Owner approval: threads may mark ADRs Accepted (project policy, Salih, 2026-11-03). The placement of the theme editor (Settings page or own window) is put to the owner with a mockup and does not change this contract.
+
+Amended 2026-11-08 by [ADR-0072](0072-theme-colour-rules-warn.md): the colour rules of decision 3 warn instead of refusing a user theme, which changes the fallback of decision 5, the held draft of decision 6 and the "tightening a check" note of decision 9 (only a new error rule refuses a saved theme).

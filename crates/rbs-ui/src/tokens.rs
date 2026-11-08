@@ -295,7 +295,7 @@ pub const CONTRAST_RULES: &[(&str, &str, f64, f64)] = &[
     ("color.border.focus", "color.surface.base", 3.0, 3.0),
     ("color.border.focus", "color.surface.raised", 3.0, 3.0),
     ("color.border.strong", "color.surface.raised", 3.0, 3.0),
-    ("color.state.warning", "color.surface.raised", 3.0, 3.0),
+    ("color.state.warning", "color.surface.raised", 4.5, 7.0),
     ("color.state.healthy", "color.surface.raised", 3.0, 3.0),
     ("color.state.error", "color.surface.raised", 3.0, 3.0),
     ("color.action.destructive", "color.surface.raised", 3.0, 3.0),

@@ -34,6 +34,10 @@ export struct ThemeTokenRow {
     fonts: string,
     overridden: bool,
     problem: string,
+    // Colour warnings in words (ADR-0072): shown, never blocking.
+    warning: string,
+    // "Fix" can clear the warnings by moving the colour's lightness.
+    fixable: bool,
 }
 
 export global Appearance {
@@ -61,6 +65,8 @@ export global Appearance {
     in property <int> group;
     in property <[ThemeTokenRow]> rows;
     in property <[string]> general-problems;
+    // How many colour warnings the draft has (ADR-0072).
+    in property <int> warning-count;
     in property <[string]> unknown-tokens;
     in property <bool> can-save;
     in property <bool> changed;
@@ -78,6 +84,12 @@ export global Appearance {
     // (`find-fonts` fills it when the menu opens and as the filter changes).
     in property <[string]> font-names;
     callback find-fonts(string);
+    // The font field's suggestions for the family being typed (the part after the
+    // last comma): names that start with it first. `suggest-fonts` fills it as the
+    // field's text changes; `complete-font` returns the text with that part replaced.
+    in property <[string]> font-suggestions;
+    callback suggest-fonts(string);
+    pure callback complete-font(string, string) -> string;
     in-out property <string> pending-name;
     in-out property <int> pending-part;
     in-out property <string> pending-text;
@@ -114,6 +126,8 @@ export global Appearance {
     callback set-style(string, int, float);
     callback set-fonts(string);
     callback reset(string);
+    // Moves a colour to the nearest lightness that clears its warnings.
+    callback fix(string);
     callback save();
     callback cancel();
     callback keep();
@@ -124,6 +138,32 @@ component Hint inherits Text {
     color: Theme.text-secondary;
     font-size: Tokens.type-caption-size;
     wrap: word-wrap;
+}
+
+// A colour warning: a small mark and the words in the warning colour (amber), so it
+// reads as advice, not as an error (ADR-0072).
+component Warning inherits HorizontalLayout {
+    in property <string> text;
+    spacing: Tokens.space-2;
+    VerticalLayout {
+        padding-top: (Tokens.type-caption-line - Tokens.space-2) / 2;
+        alignment: start;
+        Rectangle {
+            width: Tokens.space-2;
+            height: Tokens.space-2;
+            border-radius: Tokens.space-1;
+            background: Theme.state-warning;
+            accessible-role: none;
+        }
+    }
+    Text {
+        horizontal-stretch: 1;
+        text: root.text;
+        color: Theme.state-warning;
+        font-size: Tokens.type-caption-size;
+        wrap: word-wrap;
+        accessible-label: @tr("Warning: {}", root.text);
+    }
 }
 
 component Problem inherits Text {
@@ -252,6 +292,127 @@ component FontMenu inherits Button {
     }
 }
 
+// The font family field: the editable list, with suggestions under it while a name
+// is typed (installed families read the first time something is typed, P13). Down
+// and Up move the highlight, Tab completes the name and keeps typing, Return
+// completes and confirms, Escape hides the suggestions. A click on one completes it.
+component FontField inherits VerticalLayout {
+    in property <string> label;
+    in property <string> value;
+    // The text as typed (not yet confirmed) and confirmed (Return or leaving).
+    callback edited(string);
+    callback accepted(string);
+    out property <string> text: field.text;
+    public function set-text(t: string) {
+        field.text = t;
+        field.caret-to-end();
+        root.edited(t);
+    }
+    property <int> pick: 0;
+    property <bool> hidden;
+    // The pointer is over a suggestion: the list stays open when the click takes focus
+    // from the field.
+    property <bool> over;
+    property <bool> open: (field.has-focus || root.over) && !root.hidden && Appearance.font-suggestions.length > 0;
+    function take(name: string) {
+        root.set-text(Appearance.complete-font(field.text, name));
+        Appearance.suggest-fonts("");
+    }
+    // A pick with the pointer is final: the field shows the whole name and confirms it.
+    function choose(name: string) {
+        root.take(name);
+        root.over = false;
+        root.accepted(field.text);
+    }
+    spacing: Tokens.space-1;
+    keys := FocusScope {
+        // literal-begin: a key hook around the field, not a visual value
+        focus-on-click: false;
+        focus-on-tab-navigation: false;
+        // literal-end
+        height: field.height;
+        capture-key-pressed(e) => {
+            if !root.open { return reject; }
+            if e.text == Key.DownArrow {
+                root.pick = mod(root.pick + 1, Appearance.font-suggestions.length);
+                return accept;
+            }
+            if e.text == Key.UpArrow {
+                root.pick = mod(root.pick + Appearance.font-suggestions.length - 1, Appearance.font-suggestions.length);
+                return accept;
+            }
+            if e.text == Key.Tab && !e.modifiers.shift {
+                root.take(Appearance.font-suggestions[root.pick]);
+                return accept;
+            }
+            if e.text == Key.Return {
+                root.take(Appearance.font-suggestions[root.pick]);
+                root.accepted(field.text);
+                return accept;
+            }
+            if e.text == Key.Escape {
+                root.hidden = true;
+                return accept;
+            }
+            reject
+        }
+        field := TextField {
+            width: parent.width;
+            label: root.label;
+            placeholder: @tr("System font");
+            text: root.value;
+            edited(t) => {
+                root.hidden = false;
+                root.pick = 0;
+                Appearance.suggest-fonts(t);
+                root.edited(t);
+            }
+            accepted(t) => { root.accepted(t); }
+        }
+    }
+    if root.open: MenuSurface {
+        height: list.preferred-height;
+        accessible-role: AccessibleRole.list;
+        accessible-label: @tr("Fonts that match");
+        list := VerticalLayout {
+            padding: Tokens.space-1;
+            for name[i] in Appearance.font-suggestions: Rectangle {
+                height: Tokens.size-control-md;
+                border-radius: Tokens.radius-sm;
+                background: i == root.pick || touch.has-hover ? Theme.accent-subtle : transparent;
+                accessible-role: button;
+                accessible-label: name;
+                accessible-action-default => { root.choose(name); }
+                Text {
+                    x: Tokens.space-2;
+                    width: parent.width - 2 * Tokens.space-2;
+                    text: name;
+                    color: Theme.text-primary;
+                    font-size: Tokens.type-body-size;
+                    vertical-alignment: center;
+                    overflow: elide;
+                }
+                touch := TouchArea {
+                    pointer-event(e) => {
+                        if e.kind == PointerEventKind.down && e.button == PointerEventButton.left {
+                            root.choose(name);
+                        }
+                    }
+                    property <bool> hovered: self.has-hover;
+                    changed hovered => { root.over = self.hovered; }
+                }
+            }
+            Text {
+                x: Tokens.space-2;
+                text: @tr("Tab to complete, Up and Down to choose, Escape to close");
+                color: Theme.text-secondary;
+                font-size: Tokens.type-caption-size;
+                accessible-role: none;
+            }
+        }
+    }
+}
+
 // One token in the editor, as a setting row: its name (and what to type, and its
 // problem) on the left, its fields and Reset on the right. A value being typed is held
 // in `Appearance.pending-*` so Save sees it before Enter or leaving the field.
@@ -288,41 +449,59 @@ component TokenEditorRow inherits Rectangle {
             // under the name.
             if item.kind == 3: HorizontalLayout {
                 spacing: Tokens.space-2;
-                fonts-field := TextField {
+                fonts-field := FontField {
                     horizontal-stretch: 1;
                     label: item.label;
-                    placeholder: @tr("System font");
-                    text: item.fonts;
+                    value: item.fonts;
                     edited(t) => { Appearance.hold(3, item.name, 0, t); }
                     accepted(t) => {
                         Appearance.pending-kind = -1;
                         if t != item.fonts { Appearance.set-fonts(t); }
                     }
                 }
-                FontMenu {
+                // The buttons keep their height and stay level with the field while
+                // suggestions open under it.
+                VerticalLayout {
                     horizontal-stretch: 0;
-                    for-label: item.label;
-                    picked(name) => {
-                        Appearance.pending-kind = -1;
-                        Appearance.set-fonts(fonts-field.text == "" ? name : name + ", " + fonts-field.text);
+                    alignment: start;
+                    HorizontalLayout {
+                        spacing: Tokens.space-2;
+                        FontMenu {
+                            horizontal-stretch: 0;
+                            for-label: item.label;
+                            picked(name) => {
+                                Appearance.pending-kind = -1;
+                                Appearance.set-fonts(fonts-field.text == "" ? name : name + ", " + fonts-field.text);
+                            }
+                        }
+                        Button {
+                            horizontal-stretch: 0;
+                            text: @tr("Reset");
+                            accessible-name: @tr("Reset {}", item.label);
+                            kind: "ghost";
+                            dense: true;
+                            enabled: item.overridden;
+                            clicked => { Appearance.reset(item.name); }
+                        }
                     }
-                }
-                Button {
-                    horizontal-stretch: 0;
-                    text: @tr("Reset");
-                    accessible-name: @tr("Reset {}", item.label);
-                    kind: "ghost";
-                    dense: true;
-                    enabled: item.overridden;
-                    clicked => { Appearance.reset(item.name); }
                 }
             }
             if item.problem != "": Problem { text: item.problem; }
+            if item.warning != "": Warning { text: item.warning; }
         }
         if item.kind != 3: HorizontalLayout {
             horizontal-stretch: 0;
             spacing: Tokens.space-2;
             alignment: end;
+            if item.fixable: VerticalLayout {
+                alignment: center;
+                Button {
+                    text: @tr("Fix");
+                    accessible-name: @tr("Fix the colour of {}", item.label);
+                    dense: true;
+                    clicked => { Appearance.fix(item.name); }
+                }
+            }
             if item.kind == 0: VerticalLayout {
                 alignment: center;
                 ColorPicker {
@@ -437,7 +616,10 @@ component ThemeEditor inherits VerticalLayout {
         }
         EditorActions { horizontal-stretch: 0; }
     }
-    if Appearance.editing-in-use: Hint { text: @tr("Changes show in every window as you make them. A change that breaks a rule is shown with its problem and not used."); }
+    if Appearance.editing-in-use: Hint { text: @tr("Changes show in every window as you make them. Colours that are hard to read get a warning; you can still use and save them."); }
+    if Appearance.warning-count > 0: Warning {
+        text: Appearance.warning-count == 1 ? @tr("1 colour warning. The theme is still used and saved as it is.") : @tr("{} colour warnings. The theme is still used and saved as it is.", Appearance.warning-count);
+    }
     if !Appearance.editing-in-use: SettingsNotice {
         text: @tr("This theme is not in use, so the windows do not show its changes. Pick it under Theme in use to see them.");
     }
