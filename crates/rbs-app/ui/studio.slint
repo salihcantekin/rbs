@@ -3346,7 +3346,7 @@ export component LibraryPanel inherits Rectangle {
                 font-weight: Tokens.type-label-weight;
             }
             Text {
-                text: has-selection ? @tr("Applies to the selected source and replaces its Colour correction or other filter of the same kind. Undo puts it back.")
+                text: has-selection ? @tr("Applies to the selected source. A filter of the same kind is replaced, in every scene that uses the source. Undo puts it back.")
                     : @tr("Select a source in the Sources panel to apply a look.");
                 color: Theme.text-secondary;
                 font-size: Tokens.type-caption-size;
