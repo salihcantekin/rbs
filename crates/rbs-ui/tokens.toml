@@ -95,6 +95,13 @@ format = 2
 "space.4" = 16
 "space.6" = 24
 "space.8" = 32
+# Properties-style panels: padding round the content, gap between sections, gap between
+# fields. A theme may not go below the minimums (ADR-0076), whatever it does to space.*.
+"size.panel.pad" = 12
+"size.section.gap" = 16
+"size.field.gap" = 8
+# Thickness of the chosen tab's underline.
+"size.tab.indicator" = 2
 "size.control.sm" = 24
 "size.control.md" = 28
 "size.control.lg" = 32
