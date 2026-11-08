@@ -89,6 +89,117 @@ pub struct Editor {
     pub draft: ThemeBody,
     /// The draft's problems (empty: it can be saved and is applied).
     pub problems: Vec<ThemeProblem>,
+    /// What the windows show: the draft without the edits that fail a rule (themes
+    /// spec, "a failing edit is shown with its problem and not applied"). A failing
+    /// edit holds back only itself, so later passing edits still show at once.
+    pub shown: ThemeBody,
+}
+
+impl Editor {
+    fn new(id: EntryId, name: String, body: ThemeBody, file: &TokenFile) -> Self {
+        let mut ed = Editor {
+            id,
+            name,
+            saved: body.clone(),
+            draft: body.clone(),
+            problems: Vec::new(),
+            shown: body,
+        };
+        ed.check(file);
+        ed
+    }
+
+    /// Checks the draft and moves every edit that passes into [`Editor::shown`].
+    fn check(&mut self, file: &TokenFile) {
+        self.problems = problems(file, &self.draft);
+        if self.problems.is_empty() {
+            self.shown = self.draft.clone();
+            return;
+        }
+        // One differing token at a time, again until nothing more passes: an edit
+        // that fails alone (text on a new background) passes once the user fixes
+        // the edit it depends on. A few hundred tokens at most, each check well
+        // under a millisecond (spec, performance); user-paced only.
+        loop {
+            let mut moved = false;
+            for step in differences(&self.shown, &self.draft) {
+                let mut next = self.shown.clone();
+                step.apply(&mut next, &self.draft);
+                if file.resolve(&next).is_ok() {
+                    self.shown = next;
+                    moved = true;
+                }
+            }
+            if !moved {
+                break;
+            }
+        }
+    }
+}
+
+/// One token whose value differs between two theme bodies.
+enum Difference {
+    Color(String),
+    Style(String),
+    Length(String),
+    Duration(String),
+    Fonts,
+}
+
+impl Difference {
+    /// Gives `to` the value `from` has for this token (or removes it).
+    fn apply(&self, to: &mut ThemeBody, from: &ThemeBody) {
+        fn copy<V: Clone>(
+            to: &mut std::collections::BTreeMap<String, V>,
+            from: &std::collections::BTreeMap<String, V>,
+            k: &str,
+        ) {
+            match from.get(k) {
+                Some(v) => {
+                    to.insert(k.to_owned(), v.clone());
+                }
+                None => {
+                    to.remove(k);
+                }
+            }
+        }
+        match self {
+            Difference::Color(k) => copy(&mut to.colors, &from.colors, k),
+            Difference::Style(k) => copy(&mut to.type_styles, &from.type_styles, k),
+            Difference::Length(k) => copy(&mut to.length, &from.length, k),
+            Difference::Duration(k) => copy(&mut to.duration, &from.duration, k),
+            Difference::Fonts => to.font_family = from.font_family.clone(),
+        }
+    }
+}
+
+/// The tokens whose values differ between `a` and `b` (overrides only; invalid and
+/// unknown entries never resolve and are not moved).
+fn differences(a: &ThemeBody, b: &ThemeBody) -> Vec<Difference> {
+    fn keys<V: PartialEq>(
+        a: &std::collections::BTreeMap<String, V>,
+        b: &std::collections::BTreeMap<String, V>,
+        out: &mut Vec<Difference>,
+        make: fn(String) -> Difference,
+    ) {
+        let mut names: Vec<&String> = a.keys().chain(b.keys()).collect();
+        names.sort();
+        names.dedup();
+        for k in names {
+            if a.get(k) != b.get(k) {
+                out.push(make(k.clone()));
+            }
+        }
+    }
+    let mut out = Vec::new();
+    keys(&a.colors, &b.colors, &mut out, Difference::Color);
+    keys(&a.type_styles, &b.type_styles, &mut out, Difference::Style);
+    keys(&a.length, &b.length, &mut out, Difference::Length);
+    keys(&a.duration, &b.duration, &mut out, Difference::Duration);
+    if a.font_family != b.font_family {
+        out.push(Difference::Fonts);
+    }
+    out
 }
 
 /// What "Keep this look?" goes back to.
@@ -190,7 +301,7 @@ impl AppearanceUi {
     /// read again).
     pub fn recheck(&mut self, file: &TokenFile) {
         if let Some(ed) = &mut self.editor {
-            ed.problems = problems(file, &ed.draft);
+            ed.check(file);
         }
     }
 
@@ -199,8 +310,8 @@ impl AppearanceUi {
         self.entries.iter().position(|e| &e.id == id)
     }
 
-    /// The themes of the two slots (OS dark, OS light), with the editor's draft in
-    /// place of its saved theme while the draft passes every rule.
+    /// The themes of the two slots (OS dark, OS light), with the editor's passing
+    /// edits ([`Editor::shown`]) in place of its saved theme.
     pub fn slots(
         &self,
         data: &UserData,
@@ -211,8 +322,7 @@ impl AppearanceUi {
         let one = |id: &ThemeId, fallback: Base, notes: &mut Vec<String>| {
             if let (Some(ed), ThemeId::User(uid)) = (&self.editor, id)
                 && *uid == ed.id
-                && ed.problems.is_empty()
-                && let Ok(r) = file.resolve(&ed.draft)
+                && let Ok(r) = file.resolve(&ed.shown)
             {
                 return r;
             }
@@ -301,7 +411,7 @@ impl AppearanceUi {
             Previous::Fonts(f) => {
                 if let Some(ed) = &mut self.editor {
                     ed.draft.font_family = f;
-                    ed.problems = problems(file, &ed.draft);
+                    ed.check(file);
                 }
                 None
             }
@@ -316,13 +426,7 @@ impl AppearanceUi {
         let (ThemeId::User(id), Some(body)) = (&e.id, &e.body) else {
             return false;
         };
-        self.editor = Some(Editor {
-            id: id.clone(),
-            name: e.name.clone(),
-            saved: body.clone(),
-            draft: body.clone(),
-            problems: problems(file, body),
-        });
+        self.editor = Some(Editor::new(id.clone(), e.name.clone(), body.clone(), file));
         true
     }
 
@@ -446,7 +550,7 @@ impl AppearanceUi {
         if ed.draft == before {
             return false;
         }
-        ed.problems = problems(file, &ed.draft);
+        ed.check(file);
         true
     }
 
@@ -771,18 +875,59 @@ mod tests {
             .unwrap();
         assert!(row.overridden && row.problem.contains("live"), "{row:?}");
         let slots = ui.slots(&data, &file, &mut notes);
-        assert_eq!(slots[0].length["radius.md"], 8.0, "saved theme still used");
         assert_ne!(
             slots[0].colors["color.accent"],
             Color::parse("#c4262e").unwrap()
         );
         assert!(ui.to_save().is_none());
 
+        // The failing edit holds back only itself: the earlier and later passing
+        // edits still show.
+        assert_eq!(
+            slots[0].colors["color.surface.base"],
+            Color::parse("#0b1020").unwrap()
+        );
+        assert!(ui.set_number(&file, "radius.md", 6.0));
+        let slots = ui.slots(&data, &file, &mut notes);
+        assert_eq!(slots[0].length["radius.md"], 6.0);
+        assert!(ui.to_save().is_none(), "Save waits for the failing edit");
+
         // Reset removes the override.
         assert!(ui.reset(&file, "color.accent"));
         assert!(ui.to_save().is_some());
         ui.cancel();
         assert!(ui.editor.is_none());
+    }
+
+    #[test]
+    fn an_edit_that_fails_because_of_another_shows_once_that_one_is_fixed() {
+        let (_d, data, file, mut ui, id) = setup("depends");
+        ui.selected = ui.index_of(&ThemeId::User(id.clone()));
+        assert!(ui.edit(&file));
+        ui.choice = Appearance::new(
+            AppearanceMode::Fixed,
+            ThemeId::BuiltIn(Base::Dark),
+            ThemeId::BuiltIn(Base::Light),
+            ThemeId::User(id),
+        );
+        // A failing edit that stays: the live red as accent.
+        assert!(ui.set_color(&file, "color.accent", "#c4262e"));
+        // Medium corners above the large ones fail the order rule: held back.
+        assert!(ui.set_number(&file, "radius.md", 12.0));
+        let mut notes = Vec::new();
+        let slots = ui.slots(&data, &file, &mut notes);
+        assert_ne!(slots[0].length["radius.md"], 12.0);
+        // Larger large corners pass, and then the medium ones pass too, while the
+        // accent is still held back.
+        assert!(ui.set_number(&file, "radius.lg", 16.0));
+        let slots = ui.slots(&data, &file, &mut notes);
+        assert_eq!(slots[0].length["radius.lg"], 16.0);
+        assert_eq!(slots[0].length["radius.md"], 12.0);
+        assert_ne!(
+            slots[0].colors["color.accent"],
+            Color::parse("#c4262e").unwrap()
+        );
+        assert!(ui.to_save().is_none());
     }
 
     #[test]

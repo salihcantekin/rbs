@@ -253,8 +253,9 @@ component FontMenu inherits Button {
 }
 
 // One token in the editor, as a setting row: its name (and what to type, and its
-// problem) on the left, its fields and Reset on the right. A value being typed is held
-// in `Appearance.pending-*` so Save sees it before Enter or leaving the field.
+// problem) on the left, its fields and Reset on the right. A number is applied as it is
+// typed (it shows at once when it passes); it is also held in `Appearance.pending-*` so
+// Save sees it before Enter or leaving the field.
 component TokenEditorRow inherits Rectangle {
     in property <ThemeTokenRow> item;
     in property <bool> divider: true;
@@ -338,7 +339,10 @@ component TokenEditorRow inherits Rectangle {
                     label: item.label;
                     value: item.number;
                     step: item.step;
-                    typed(t) => { Appearance.hold(1, item.name, 0, t); }
+                    typed(t) => {
+                        Appearance.hold(1, item.name, 0, t);
+                        if t.is-float() { Appearance.set-number(item.name, t.to-float()); }
+                    }
                     edited(v) => {
                         Appearance.pending-kind = -1;
                         Appearance.set-number(item.name, v);
@@ -353,7 +357,10 @@ component TokenEditorRow inherits Rectangle {
                         width: Tokens.size-menu-sm / 3;
                         label: @tr("{} size", item.label);
                         value: item.size;
-                        typed(t) => { Appearance.hold(2, item.name, 0, t); }
+                        typed(t) => {
+                            Appearance.hold(2, item.name, 0, t);
+                            if t.is-float() { Appearance.set-style(item.name, 0, t.to-float()); }
+                        }
                         edited(v) => {
                             Appearance.pending-kind = -1;
                             Appearance.set-style(item.name, 0, v);
@@ -363,7 +370,10 @@ component TokenEditorRow inherits Rectangle {
                         width: Tokens.size-menu-sm / 3;
                         label: @tr("{} line height", item.label);
                         value: item.line;
-                        typed(t) => { Appearance.hold(2, item.name, 1, t); }
+                        typed(t) => {
+                            Appearance.hold(2, item.name, 1, t);
+                            if t.is-float() { Appearance.set-style(item.name, 1, t.to-float()); }
+                        }
                         edited(v) => {
                             Appearance.pending-kind = -1;
                             Appearance.set-style(item.name, 1, v);
@@ -374,7 +384,10 @@ component TokenEditorRow inherits Rectangle {
                         label: @tr("{} weight", item.label);
                         value: item.weight;
                         step: 100;
-                        typed(t) => { Appearance.hold(2, item.name, 2, t); }
+                        typed(t) => {
+                            Appearance.hold(2, item.name, 2, t);
+                            if t.is-float() { Appearance.set-style(item.name, 2, t.to-float()); }
+                        }
                         edited(v) => {
                             Appearance.pending-kind = -1;
                             Appearance.set-style(item.name, 2, v);
