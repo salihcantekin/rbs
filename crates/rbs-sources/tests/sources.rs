@@ -756,3 +756,31 @@ fn every_built_in_look_is_accepted_by_the_filter_catalogue() {
         }
     }
 }
+
+#[test]
+fn source_errors_map_to_faults() {
+    use rbs_audio_io::AudioIoError;
+    use rbs_capture::CaptureError;
+    use rbs_core::fault::SourceFault;
+    use rbs_sources::SourceError;
+    assert_eq!(
+        SourceError::Capture(CaptureError::TargetLost).fault(),
+        SourceFault::TargetGone
+    );
+    assert_eq!(
+        SourceError::Audio(AudioIoError::EndpointNotFound).fault(),
+        SourceFault::TargetGone
+    );
+    assert_eq!(
+        SourceError::Audio(AudioIoError::DeviceBusy).fault(),
+        SourceFault::Busy
+    );
+    assert_eq!(
+        SourceError::Audio(AudioIoError::PermissionNotDetermined).fault(),
+        SourceFault::PermissionDenied
+    );
+    assert_eq!(
+        SourceError::Image(String::new()).fault(),
+        SourceFault::Other
+    );
+}
