@@ -748,6 +748,10 @@ pub struct Workspace {
     /// The toolbar; `None` uses the workspace's built-in default (or Edit's).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub toolbar: Option<Toolbar>,
+    /// Ids of the panel sections the user closed (ADR-0078), sorted. A section that
+    /// is not listed is open, so an old file opens everything.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub closed_sections: Vec<String>,
     /// Windows; the first is the main window.
     pub windows: Vec<Window>,
 }
@@ -809,6 +813,27 @@ fn count_pictures(n: &Node) -> usize {
         Node::Pictures(_) => 1,
         Node::Split(s) => s.children.iter().map(count_pictures).sum(),
         Node::Tabs(_) => 0,
+    }
+}
+
+/// Most closed section ids a workspace keeps.
+pub const MAX_CLOSED_SECTIONS: usize = 256;
+/// Longest section id.
+pub const MAX_SECTION_ID_CHARS: usize = 64;
+
+/// Check a section id (ADR-0078): 1 to 64 characters from `a-z`, `0-9`, `.`, `_`, `-`.
+pub fn validate_section_id(id: &str) -> Result<(), WorkspaceError> {
+    let ok = !id.is_empty()
+        && id.len() <= MAX_SECTION_ID_CHARS
+        && id.bytes().all(|b| {
+            b.is_ascii_lowercase() || b.is_ascii_digit() || matches!(b, b'.' | b'_' | b'-')
+        });
+    if ok {
+        Ok(())
+    } else {
+        Err(WorkspaceError::Invalid(format!(
+            "a section id has 1 to {MAX_SECTION_ID_CHARS} characters from a-z, 0-9, '.', '_' and '-'"
+        )))
     }
 }
 
@@ -888,6 +913,7 @@ impl Workspace {
             name: name.to_owned(),
             locked: false,
             toolbar: None,
+            closed_sections: Vec::new(),
             windows: vec![Window {
                 content: WindowContent::Main(Box::new(main)),
                 placement: None,
@@ -932,6 +958,15 @@ impl Workspace {
     pub fn validate(&self) -> Result<(), WorkspaceError> {
         let invalid = |m: &str| Err(WorkspaceError::Invalid(m.to_owned()));
         validate_name(&self.name)?;
+        if self.closed_sections.len() > MAX_CLOSED_SECTIONS {
+            return invalid("too many closed sections");
+        }
+        for id in &self.closed_sections {
+            validate_section_id(id)?;
+        }
+        if !self.closed_sections.windows(2).all(|w| w[0] < w[1]) {
+            return invalid("closed sections are sorted and listed once");
+        }
         if !self.windows.first().is_some_and(Window::is_main) {
             return invalid("the first window must be the main window");
         }
@@ -1538,6 +1573,36 @@ impl Workspace {
         Ok(())
     }
 
+    /// Is the section `id` closed (ADR-0078)?
+    pub fn section_closed(&self, id: &str) -> bool {
+        self.closed_sections
+            .binary_search_by(|s| s.as_str().cmp(id))
+            .is_ok()
+    }
+
+    /// Close or open the section `id`. Opening an id that is not listed is a no-op.
+    pub fn set_section_closed(&mut self, id: &str, closed: bool) -> Result<(), WorkspaceError> {
+        validate_section_id(id)?;
+        let found = self
+            .closed_sections
+            .binary_search_by(|s| s.as_str().cmp(id));
+        match (found, closed) {
+            (Err(at), true) => {
+                if self.closed_sections.len() >= MAX_CLOSED_SECTIONS {
+                    return Err(WorkspaceError::Invalid(format!(
+                        "at most {MAX_CLOSED_SECTIONS} closed sections are kept"
+                    )));
+                }
+                self.closed_sections.insert(at, id.to_owned());
+            }
+            (Ok(at), false) => {
+                self.closed_sections.remove(at);
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+
     /// The workspace prepared for sharing: display fingerprints and connector
     /// names are removed, so it holds no hardware identifiers.
     pub fn exported(&self) -> Workspace {
@@ -1652,6 +1717,35 @@ mod tests {
     use super::*;
     use crate::builtin;
     use crate::panel::id;
+
+    #[test]
+    fn closed_sections_round_trip_and_old_files_open_everything() {
+        let mut w = builtin::edit();
+        assert!(!w.to_toml().unwrap().contains("closed_sections"));
+        w.set_section_closed("sources.global", true).unwrap();
+        w.set_section_closed("properties.crop", true).unwrap();
+        assert_eq!(w.closed_sections, ["properties.crop", "sources.global"]);
+        let again = Workspace::from_toml(&w.to_toml().unwrap()).unwrap();
+        assert_eq!(again.closed_sections, w.closed_sections);
+        assert!(again.section_closed("sources.global"));
+        assert!(!again.section_closed("mixer.global"));
+    }
+
+    #[test]
+    fn closed_sections_are_checked_on_load() {
+        let text = builtin::edit().to_toml().unwrap();
+        let bad = |list: &str| {
+            Workspace::from_toml(&text.replacen(
+                "\n[[windows]]",
+                &format!("\nclosed_sections = {list}\n[[windows]]"),
+                1,
+            ))
+        };
+        assert!(bad("[\"a.b\"]").is_ok());
+        assert!(bad("[\"Bad Id\"]").is_err());
+        assert!(bad("[\"b\", \"a\"]").is_err());
+        assert!(bad("[\"a\", \"a\"]").is_err());
+    }
 
     const SPEC_EXAMPLE: &str = r#"
 format = 1
