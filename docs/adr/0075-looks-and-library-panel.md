@@ -1,6 +1,6 @@
 # ADR-0075: Looks and the Library panel: presets of style and filters, and generated sample pictures
 
-- Status: Proposed
+- Status: Accepted
 - Date: 2026-11-08
 - Deciders: Salih (owner)
 - Builds on: ADR-0049 (workspace layout), ADR-0053 (item style and video filters), ADR-0057 (themes), ADR-0074 (still sources), ADR-0013 (zero cost when unused)
@@ -62,4 +62,4 @@ Concerns:
 9. API clients see no kind for Image and Colour. -> Stated in decision 7.
 Smaller notes: the workspace view test now asserts that the Library edge tab is present; the owned twin of `Look` for user-saved looks is noted in Consequences.
 
-Round 2: same reviewer session, at 239ad75: all nine concerns addressed, approved. Two nits (the Apply note must name the every-scene scope and must not name Colour correction for Shape looks) fixed after the round. Acceptance waits for the owner to confirm the U20 exception in decision 7.
+Round 2: same reviewer session, at 239ad75: all nine concerns addressed, approved. Two nits (the Apply note must name the every-scene scope and must not name Colour correction for Shape looks) fixed after the round. The owner confirmed the U20 exception in decision 7 on 2026-11-08, and the ADR is Accepted.
