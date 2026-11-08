@@ -258,7 +258,8 @@ export global Icons {
 }
 // END generated icon set
 
-// Button: kinds "primary", "secondary", "ghost", and "live" (only for stopping a live
+// Button: kinds "primary", "secondary", "ghost", "danger" (outlined, with the trash icon,
+// ADR-0076), and "live" (only for stopping a live
 // or recording output: the fixed live colour, rule U12). Activated by click, Enter or
 // Space.
 export component Button inherits Rectangle {
@@ -283,8 +284,8 @@ export component Button inherits Rectangle {
         : checked ? Theme.accent-subtle
         : touch.has-hover ? Theme.surface-overlay
         : kind == "ghost" || kind == "danger" ? transparent : Theme.surface-raised;
-    border-width: kind == "secondary" ? Tokens.size-border : 0px;
-    border-color: Theme.border-subtle;
+    border-width: kind == "secondary" || kind == "danger" ? Tokens.size-border : 0px;
+    border-color: kind == "danger" && enabled ? Theme.state-error : Theme.border-subtle;
     accessible-role: button;
     accessible-label: accessible-name;
     accessible-checked: checked;
@@ -295,12 +296,14 @@ export component Button inherits Rectangle {
     // control uses it to show its name beside itself.
     out property <bool> pointed: touch.has-hover || focus.has-focus;
     out property <color> ink: !enabled ? Theme.text-disabled : kind == "primary" ? Theme.text-inverse : kind == "live" ? Theme.text-on-live : kind == "danger" ? Theme.state-error : Theme.text-primary;
+    // A danger button always shows the trash icon (ADR-0076): it is never bare coloured text.
+    property <IconName> shown-lead: root.lead != IconName.none ? root.lead : kind == "danger" ? IconName.trash : IconName.none;
     content := HorizontalLayout {
         alignment: center;
         spacing: Tokens.space-1 + Tokens.space-1 / 2;
-        if root.lead != IconName.none: VerticalLayout {
+        if root.shown-lead != IconName.none: VerticalLayout {
             alignment: center;
-            Icon { name: root.lead; ink: root.enabled ? root.lead-ink : root.ink; }
+            Icon { name: root.shown-lead; ink: root.enabled ? root.lead-ink : root.ink; }
         }
         if root.text != "": Text {
             text: root.text;
@@ -761,6 +764,129 @@ export component SegmentedControl inherits Rectangle {
             clicked => { root.selected(i); }
         }
     }
+}
+
+// Tabs: switch between views of one thing, as a full-width bar with a rule under it; the
+// chosen tab is bold with an accent underline (ADR-0076). Not for picking a value: that
+// is a SegmentedControl. Left and Right choose the next tab.
+component TabItem inherits Rectangle {
+    in property <string> text;
+    in property <string> accessible-name;
+    in property <bool> checked;
+    callback clicked();
+    callback step(int);
+    height: Tokens.size-control-md;
+    background: !root.checked && touch.has-hover ? Theme.surface-overlay : transparent;
+    border-radius: Tokens.radius-sm;
+    accessible-role: tab;
+    accessible-label: root.accessible-name;
+    accessible-checked: root.checked;
+    accessible-action-default => { root.clicked(); }
+    forward-focus: focus;
+    Text {
+        text: root.text;
+        color: root.checked ? Theme.text-primary : Theme.text-secondary;
+        font-size: Tokens.type-label-size;
+        font-weight: root.checked ? Tokens.type-title-weight : Tokens.type-label-weight;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+        accessible-role: none;
+    }
+    Rectangle {
+        y: parent.height - self.height;
+        height: root.checked ? Tokens.size-focus-ring : 0px;
+        background: Theme.accent;
+    }
+    focus := FocusScope {
+        key-pressed(e) => {
+            if e.text == Key.Return || e.text == " " { root.clicked(); return accept; }
+            if e.text == Key.LeftArrow { root.step(-1); return accept; }
+            if e.text == Key.RightArrow { root.step(1); return accept; }
+            reject
+        }
+    }
+    touch := TouchArea { clicked => { focus.focus(); root.clicked(); } }
+    FocusRing { show: focus.has-focus; }
+}
+
+export component Tabs inherits Rectangle {
+    in property <string> label;
+    in property <[string]> options;
+    in property <int> index;
+    callback selected(int);
+    height: Tokens.size-control-md + Tokens.size-border;
+    accessible-role: tab-list;
+    accessible-label: label;
+    Rectangle {
+        y: parent.height - self.height;
+        height: Tokens.size-border;
+        background: Theme.border-subtle;
+    }
+    HorizontalLayout {
+        padding-bottom: Tokens.size-border;
+        for o[i] in root.options: TabItem {
+            horizontal-stretch: 1;
+            text: o;
+            accessible-name: @tr("{}: {}", root.label, o);
+            checked: i == root.index;
+            clicked => { root.selected(i); }
+            step(d) => {
+                if i + d >= 0 && i + d < root.options.length { root.selected(i + d); }
+            }
+        }
+    }
+}
+
+// SectionHeader: starts a collapsible group of fields: its title (small, upper case) and a rule to
+// the end of the row. The whole row is a button with a chevron (ADR-0076); a closed section draws nothing and takes no room.
+export component SectionHeader inherits Rectangle {
+    in property <string> title;
+    in property <bool> collapsible: false;
+    in property <bool> open: true;
+    callback toggled(bool);
+    height: Tokens.size-control-sm;
+    border-radius: Tokens.radius-sm;
+    background: root.collapsible && touch.has-hover ? Theme.surface-overlay : transparent;
+    accessible-role: button;
+    accessible-label: title;
+    accessible-expanded: root.open;
+    accessible-action-default => { if root.collapsible { root.toggled(!root.open); } }
+    forward-focus: focus;
+    HorizontalLayout {
+        spacing: Tokens.size-field-gap;
+        if root.collapsible: VerticalLayout {
+            alignment: center;
+            Icon { name: root.open ? IconName.chevron-down : IconName.chevron-right; ink: Theme.text-secondary; }
+        }
+        VerticalLayout {
+            alignment: center;
+            Text {
+                text: root.title.to-uppercase();
+                color: Theme.text-secondary;
+                font-size: Tokens.type-caption-size;
+                font-weight: Tokens.type-label-weight;
+                letter-spacing: Tokens.size-tracking-caps;
+                accessible-role: none;
+            }
+        }
+        VerticalLayout {
+            horizontal-stretch: 1;
+            alignment: center;
+            Rectangle { height: Tokens.size-border; background: Theme.border-subtle; }
+        }
+    }
+    focus := FocusScope {
+        enabled: root.collapsible;
+        key-pressed(e) => {
+            if root.collapsible && (e.text == Key.Return || e.text == " ") { root.toggled(!root.open); return accept; }
+            reject
+        }
+    }
+    touch := TouchArea {
+        enabled: root.collapsible;
+        clicked => { focus.focus(); root.toggled(!root.open); }
+    }
+    FocusRing { show: focus.has-focus; }
 }
 
 // TextField: one line of text. `accepted` runs on Return and when focus leaves;

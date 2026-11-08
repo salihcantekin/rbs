@@ -59,6 +59,9 @@ pub const FIXED: &[(&str, &str)] = &[
 /// visible and icons legible (rule U7), and the main window must fit the 1280 x 720 minimum (rule U11).
 pub const MINIMUMS: &[(&str, f32, &str)] = &[
     ("size.focus-ring", 2.0, "rule U7"),
+    ("size.panel.pad", 8.0, "ADR-0076"),
+    ("size.section.gap", 12.0, "ADR-0076"),
+    ("size.field.gap", 6.0, "ADR-0076"),
     ("size.icon.box", 12.0, "rule U7"),
     ("size.icon.stroke", 1.0, "rule U7"),
     ("size.window.min-w", 1280.0, "rule U11"),
@@ -73,6 +76,9 @@ pub const LENGTHS: &[&str] = &[
     "space.4",
     "space.6",
     "space.8",
+    "size.panel.pad",
+    "size.section.gap",
+    "size.field.gap",
     "size.control.sm",
     "size.control.md",
     "size.control.lg",
@@ -573,6 +579,15 @@ mod tests {
 
         let thin_ring = base.replacen("\"size.focus-ring\" = 2", "\"size.focus-ring\" = 0", 1);
         assert!(Tokens::parse(&thin_ring).unwrap_err().0.contains("U7"));
+        // ADR-0076: the panel spacing tokens keep a floor, whatever space.* says.
+        for (from, to) in [
+            ("\"size.panel.pad\" = 12", "\"size.panel.pad\" = 2"),
+            ("\"size.section.gap\" = 16", "\"size.section.gap\" = 4"),
+            ("\"size.field.gap\" = 8", "\"size.field.gap\" = 0"),
+        ] {
+            let e = Tokens::parse(&base.replacen(from, to, 1)).unwrap_err().0;
+            assert!(e.contains("ADR-0076"), "{e}");
+        }
         let no_icon = base.replacen("\"size.icon.box\" = 16", "\"size.icon.box\" = 0", 1);
         let e = Tokens::parse(&no_icon).unwrap_err().0;
         assert!(e.contains("size.icon.box") && e.contains("U7"), "{e}");

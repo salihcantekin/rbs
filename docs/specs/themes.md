@@ -25,6 +25,7 @@ Out of scope, later changes: themes in `.rbspack` packs; font files; a curated a
 | Font | `font.family` | array of family names | 0 to 8 names, each 1 to 64 characters, no control characters or text direction marks |
 | Text | `type.caption`, `.body`, `.label`, `.title`, `.heading` | `{ size, line, weight }`, whole style | size 11 to 48, line from size to 2 x size, weight 300 to 900 |
 | Spacing | `space.1` ... `space.8` | logical px | 0 to 64 |
+| Spacing | `size.panel.pad`, `size.section.gap`, `size.field.gap` | logical px | 8 / 12 / 6 to 64 (floors, ADR-0076) |
 | Controls | `size.control.sm` / `.md` / `.lg` | logical px | 24 to 64 (U7) |
 | Shapes | `radius.sm` / `.md` / `.lg` | logical px | 0 to 32 |
 | Lines | `size.border` | logical px | 1 to 4 |

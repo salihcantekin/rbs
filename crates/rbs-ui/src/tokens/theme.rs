@@ -213,6 +213,9 @@ pub const THEMEABLE: &[Themeable] = &[
     length("space.4", "Spacing 4", SpacingAndSize, 0.0, 64.0),
     length("space.6", "Spacing 6", SpacingAndSize, 0.0, 64.0),
     length("space.8", "Spacing 8", SpacingAndSize, 0.0, 64.0),
+    length("size.panel.pad", "Panel padding", SpacingAndSize, 8.0, 64.0),
+    length("size.section.gap", "Gap between sections", SpacingAndSize, 12.0, 64.0),
+    length("size.field.gap", "Gap between fields", SpacingAndSize, 6.0, 64.0),
     length(
         "size.control.sm",
         "Small control height",
