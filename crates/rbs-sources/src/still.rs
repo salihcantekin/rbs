@@ -8,8 +8,8 @@ use std::path::Path;
 
 /// Largest side of a picture, in pixels.
 pub const MAX_SIDE: u32 = 8192;
-/// Largest decoded picture, in bytes.
-pub const MAX_BYTES: u64 = 256 * 1024 * 1024;
+/// Largest decoder buffer, in bytes (ADR-0074 decision 3).
+pub const MAX_BYTES: u64 = 128 * 1024 * 1024;
 /// Size of a colour source and of the built-in samples when nothing else is asked.
 pub const DEFAULT_SIZE: (u32, u32) = (1920, 1080);
 
@@ -82,6 +82,10 @@ pub fn color_picture(
 
 /// Decodes a PNG file into straight-alpha RGBA8.
 pub fn decode_png(path: &Path) -> Result<Picture, String> {
+    decode_limited(path, MAX_BYTES)
+}
+
+fn decode_limited(path: &Path, max_bytes: u64) -> Result<Picture, String> {
     let file = File::open(path).map_err(|e| e.to_string())?;
     let mut decoder = png::Decoder::new(BufReader::new(file));
     decoder.set_transformations(png::Transformations::EXPAND | png::Transformations::STRIP_16);
@@ -91,15 +95,14 @@ pub fn decode_png(path: &Path) -> Result<Picture, String> {
     if w == 0 || h == 0 || w > MAX_SIDE || h > MAX_SIDE {
         return Err(format!("a picture of {w} x {h} pixels is not supported"));
     }
-    if u64::from(w) * u64::from(h) * 4 > MAX_BYTES {
+    // The buffer the decoder will fill, before any conversion to RGBA.
+    let size = reader
+        .output_buffer_size()
+        .ok_or("the picture is too large")?;
+    if size as u64 > max_bytes {
         return Err("the picture is too large".to_owned());
     }
-    let mut buffer = vec![
-        0u8;
-        reader
-            .output_buffer_size()
-            .ok_or("the picture is too large")?
-    ];
+    let mut buffer = vec![0u8; size];
     let frame = reader.next_frame(&mut buffer).map_err(|e| e.to_string())?;
     let data = &buffer[..frame.buffer_size()];
     let rgba = match frame.color_type {
@@ -401,6 +404,44 @@ mod tests {
         assert!(decode_png(&dir.join("missing.png")).is_err());
         std::fs::write(dir.join("bad.png"), b"not a png").unwrap();
         assert!(decode_png(&dir.join("bad.png")).is_err());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    fn write_gray(path: &Path, w: u32, h: u32) {
+        let mut enc = png::Encoder::new(File::create(path).unwrap(), w, h);
+        enc.set_color(png::ColorType::Grayscale);
+        enc.set_depth(png::BitDepth::Eight);
+        let mut writer = enc.write_header().unwrap();
+        let mut stream = writer.stream_writer().unwrap();
+        let row = vec![0u8; w as usize];
+        for _ in 0..h {
+            std::io::Write::write_all(&mut stream, &row).unwrap();
+        }
+        stream.finish().unwrap();
+    }
+
+    #[test]
+    fn pictures_over_the_size_limits_are_refused_before_decoding() {
+        let dir = std::env::temp_dir().join(format!("rbs-still-limits-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        // At the limit of a side.
+        write_gray(&dir.join("side.png"), MAX_SIDE, 1);
+        assert_eq!(decode_png(&dir.join("side.png")).unwrap().0, MAX_SIDE);
+        // One pixel over it.
+        write_gray(&dir.join("wide.png"), MAX_SIDE + 1, 1);
+        assert!(
+            decode_png(&dir.join("wide.png"))
+                .unwrap_err()
+                .contains("not supported")
+        );
+        // Within both sides but a decoder buffer over the byte limit.
+        write_gray(&dir.join("big.png"), 100, 100);
+        assert!(
+            decode_limited(&dir.join("big.png"), 9_999)
+                .unwrap_err()
+                .contains("too large")
+        );
+        assert!(decode_limited(&dir.join("big.png"), 10_000).is_ok());
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

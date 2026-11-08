@@ -78,15 +78,13 @@ pub fn node_layers(compositor: &BoundCompositor, plan: &SchedulePlan) -> Vec<Nod
 | `adapter` | Text | all | Adapter id. Missing: the best probed adapter for the kind (registry order: user choice, preference, hardware, registration) |
 | `target` | Text | all | Capture target id or audio endpoint id. Ids are adapter-defined, so a stored target is stored with its adapter |
 | `cursor` | Bool | display, window | Draw the cursor; default true |
-| `width`, `height` | Int > 0 | display, window, camera | Requested size; both or neither |
+| `width`, `height` | Int > 0 | display, window, camera, color | Requested size; both or neither. For `color` it is the picture size, default 1920 x 1080, at most 8192 |
 | `fps` | Int > 0 | display, window, camera | Requested frame rate |
-
-| `path` | Text | image | A PNG file (straight alpha, any colour type, at most 8192 x 8192 and 256 MiB decoded). Wins over `sample` |
+| `path` | Text | image | A PNG file (straight alpha, any colour type; a side over 8192 pixels or a decoder buffer over 128 MiB is refused; gamma and colour profiles are ignored, pixels are sRGB). Wins over `sample` |
 | `sample` | Text | image | A built-in sample picture id (below) at 1920 x 1080 |
 | `color` | Text | color | `#rrggbb` or `#rrggbbaa`; default `#000000` |
 | `color2` | Text | color | Second colour; present makes a linear gradient from `color` |
 | `angle` | Int | color | Gradient direction in degrees, 0 = top to bottom, 90 = left to right; default 0 |
-| `width`, `height` | Int > 0 | color | Size in pixels (both or neither), default 1920 x 1080, at most 8192 |
 
 Built-in samples (generated in code, original to this repository, ADR-0074 decision 6): backgrounds `aurora`, `sunset`, `slate`, `dots`; frames (transparent in the middle) `frame-thin`, `frame-thick`, `frame-neon`, `lower-third`.
 

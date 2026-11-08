@@ -176,4 +176,32 @@ fn a_still_is_uploaded_once_and_stays_on_the_canvas() {
         assert!(centre_luma(frame).abs_diff(235) <= 2);
     }
     assert_eq!(exec.health(export).unwrap().errors, 0);
+
+    // Standby and back (the P13 contract): the texture goes back to the pool, and the
+    // next activation uploads and publishes once more from the pixels the node kept.
+    let mut run = |graph: &GraphDescription, ticks: std::ops::Range<u64>| {
+        let report = ctl.apply(graph).unwrap();
+        assert!(report.failed.is_empty(), "{report:?}");
+        exec.swap_pending();
+        let _ = ctl.collect();
+        for i in ticks {
+            let tick = Tick::of(&cadence, i);
+            clock.set(tick.time);
+            exec.run_tick(tick);
+            ctx.wait_idle().unwrap();
+            ctx.poll();
+            let _ = ctl.collect();
+        }
+    };
+    graph.set_state(still, Lifecycle::Standby).unwrap();
+    run(&graph, 8..10);
+    assert_eq!(
+        stats.frames.load(Ordering::Relaxed),
+        1,
+        "nothing while in Standby"
+    );
+    graph.set_state(still, Lifecycle::Active).unwrap();
+    run(&graph, 10..14);
+    assert_eq!(stats.uploaded.load(Ordering::Relaxed), 2);
+    assert_eq!(stats.frames.load(Ordering::Relaxed), 2);
 }
