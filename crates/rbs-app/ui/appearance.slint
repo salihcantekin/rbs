@@ -140,8 +140,8 @@ component Hint inherits Text {
     wrap: word-wrap;
 }
 
-// A colour warning: a small warning-coloured mark and the words in the secondary
-// text colour, so it reads as advice, not as an error (ADR-0072).
+// A colour warning: a small mark and the words in the warning colour (amber), so it
+// reads as advice, not as an error (ADR-0072).
 component Warning inherits HorizontalLayout {
     in property <string> text;
     spacing: Tokens.space-2;
@@ -159,7 +159,7 @@ component Warning inherits HorizontalLayout {
     Text {
         horizontal-stretch: 1;
         text: root.text;
-        color: Theme.text-secondary;
+        color: Theme.state-warning;
         font-size: Tokens.type-caption-size;
         wrap: word-wrap;
         accessible-label: @tr("Warning: {}", root.text);
@@ -310,10 +310,19 @@ component FontField inherits VerticalLayout {
     }
     property <int> pick: 0;
     property <bool> hidden;
-    property <bool> open: field.has-focus && !root.hidden && Appearance.font-suggestions.length > 0;
+    // The pointer is over a suggestion: the list stays open when the click takes focus
+    // from the field.
+    property <bool> over;
+    property <bool> open: (field.has-focus || root.over) && !root.hidden && Appearance.font-suggestions.length > 0;
     function take(name: string) {
         root.set-text(Appearance.complete-font(field.text, name));
         Appearance.suggest-fonts("");
+    }
+    // A pick with the pointer is final: the field shows the whole name and confirms it.
+    function choose(name: string) {
+        root.take(name);
+        root.over = false;
+        root.accepted(field.text);
     }
     spacing: Tokens.space-1;
     keys := FocusScope {
@@ -373,7 +382,7 @@ component FontField inherits VerticalLayout {
                 background: i == root.pick || touch.has-hover ? Theme.accent-subtle : transparent;
                 accessible-role: button;
                 accessible-label: name;
-                accessible-action-default => { root.take(name); }
+                accessible-action-default => { root.choose(name); }
                 Text {
                     x: Tokens.space-2;
                     width: parent.width - 2 * Tokens.space-2;
@@ -384,7 +393,13 @@ component FontField inherits VerticalLayout {
                     overflow: elide;
                 }
                 touch := TouchArea {
-                    clicked => { root.take(name); }
+                    pointer-event(e) => {
+                        if e.kind == PointerEventKind.down && e.button == PointerEventButton.left {
+                            root.choose(name);
+                        }
+                    }
+                    property <bool> hovered: self.has-hover;
+                    changed hovered => { root.over = self.hovered; }
                 }
             }
             Text {
