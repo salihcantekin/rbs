@@ -336,7 +336,10 @@ impl LayoutSession {
                         .filter(|p| !default.is_open(p))
                         .cloned(),
                 );
+                // What the user folded is not layout: a reset keeps it (ADR-0078).
+                let sections = std::mem::take(&mut next.closed_sections);
                 next = default;
+                next.closed_sections = sections;
             }
             LayoutCommand::SetStudioRail(at) => next.set_studio_rail(at)?,
             LayoutCommand::SetRailSize(px) => next.set_rail_size(px)?,
@@ -395,6 +398,16 @@ impl LayoutSession {
         }))
     }
 
+    /// Close or open a panel section (ADR-0078). It is saved with the workspace but
+    /// not in the layout undo history: a chevron is not a layout change. A locked
+    /// workspace allows it, like collapsing.
+    pub fn set_section_closed(&mut self, id: &str, closed: bool) -> Result<(), CommandError> {
+        let mut next = self.workspace.clone();
+        next.set_section_closed(id, closed)?;
+        self.workspace = next;
+        Ok(())
+    }
+
     /// End the current undo group (for example when a splitter drag ends).
     pub fn end_group(&mut self) {
         self.history.seal();
@@ -402,7 +415,11 @@ impl LayoutSession {
 
     /// Undo the last layout change. Never touches engine state.
     pub fn undo(&mut self) -> bool {
-        self.history.undo(&mut self.workspace)
+        let sections = std::mem::take(&mut self.workspace.closed_sections);
+        let done = self.history.undo(&mut self.workspace);
+        // Sections are not layout: undo keeps what the user closed since (ADR-0078).
+        self.workspace.closed_sections = sections;
+        done
     }
 
     /// Is there a layout change to undo?
@@ -417,7 +434,10 @@ impl LayoutSession {
 
     /// Redo the last undone layout change.
     pub fn redo(&mut self) -> bool {
-        self.history.redo(&mut self.workspace)
+        let sections = std::mem::take(&mut self.workspace.closed_sections);
+        let done = self.history.redo(&mut self.workspace);
+        self.workspace.closed_sections = sections;
+        done
     }
 
     /// How often the shell must redraw without input: the fastest rate of any
@@ -550,6 +570,40 @@ mod tests {
         }
         let mut s = LayoutSession::new(builtin::minimal());
         assert!(s.apply(LayoutCommand::Switch(w), Origin::Command).is_err());
+    }
+
+    #[test]
+    fn sections_are_kept_apart_from_layout_undo() {
+        let mut s = LayoutSession::new(builtin::edit());
+        s.apply(LayoutCommand::ClosePanel(id("rbs.stats")), Origin::Command)
+            .unwrap();
+        s.set_section_closed("properties.crop", true).unwrap();
+        assert!(s.workspace().section_closed("properties.crop"));
+        assert!(s.undo());
+        assert!(s.workspace().section_closed("properties.crop"));
+        assert!(s.workspace().is_open(&id("rbs.stats")));
+        assert!(s.redo());
+        assert!(s.workspace().section_closed("properties.crop"));
+        s.set_section_closed("properties.crop", false).unwrap();
+        assert!(s.workspace().closed_sections.is_empty());
+        assert!(s.set_section_closed("Bad Id", true).is_err());
+    }
+
+    #[test]
+    fn reset_workspace_keeps_closed_sections_and_switch_takes_the_other_list() {
+        let mut s = LayoutSession::new(builtin::edit());
+        s.apply(LayoutCommand::ClosePanel(id("rbs.stats")), Origin::Command)
+            .unwrap();
+        s.set_section_closed("properties.crop", true).unwrap();
+        s.apply(LayoutCommand::ResetWorkspace, Origin::Command)
+            .unwrap();
+        assert!(s.workspace().section_closed("properties.crop"));
+        let mut other = builtin::edit();
+        other.set_section_closed("mixer.global", true).unwrap();
+        s.apply(LayoutCommand::Switch(other), Origin::Command)
+            .unwrap();
+        assert!(!s.workspace().section_closed("properties.crop"));
+        assert!(s.workspace().section_closed("mixer.global"));
     }
 
     #[test]

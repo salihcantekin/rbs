@@ -167,6 +167,11 @@ struct App {
     /// `ui.app_menu.open` ran; the next sync opens the RBS menu in the main window.
     open_app_menu: bool,
     save_due: bool,
+    /// The closed sections the windows were told about, and the number that tells them
+    /// the answers changed (ADR-0078).
+    sections_shown: Vec<String>,
+    sections_rev: i32,
+    sections_windows: usize,
     exiting: bool,
     /// Every window is hidden by Close with Keep RBS running (ADR-0056).
     hidden: bool,
@@ -996,6 +1001,7 @@ impl Ctx {
                 ctx.look.borrow().as_ref(),
             );
             install_studio(&w.global::<Studio>(), &ctx);
+            install_sections(&w.global::<Sections>(), &ctx);
             // `install_studio` cannot borrow the app here (this runs inside an update):
             // the shared models (the access token list) are attached directly.
             app.studio.attach_models(&w.global::<Studio>());
@@ -1120,6 +1126,24 @@ impl Ctx {
     }
 
     fn sync_studio(&self, app: &mut App) {
+        // A window made since the last sync may have asked while the app was busy and
+        // kept a default: a new number makes every window ask again.
+        let windows = 1 + app.floats.len() + usize::from(app.settings.is_some());
+        if app.sections_shown != app.session.workspace().closed_sections
+            || app.sections_windows != windows
+        {
+            app.sections_shown = app.session.workspace().closed_sections.clone();
+            app.sections_windows = windows;
+            app.sections_rev += 1;
+        }
+        let rev = app.sections_rev;
+        app.main.global::<Sections>().set_rev(rev);
+        for f in &app.floats {
+            f.window.global::<Sections>().set_rev(rev);
+        }
+        if let Some(w) = &app.settings {
+            w.global::<Sections>().set_rev(rev);
+        }
         let t = app.main.global::<Tokens>();
         // A panel card's header is `size.control.lg` high, then a divider line.
         let bar = t.get_size_control_lg() + t.get_size_border();
@@ -1714,6 +1738,7 @@ impl Ctx {
         install_context_menus(&fw.global::<ContextMenus>(), self);
         shortcuts_page::install_press(&fw.global::<Shortcuts>(), self);
         install_studio(&fw.global::<Studio>(), self);
+        install_sections(&fw.global::<Sections>(), self);
         look::apply(
             &fw.global::<Theme>(),
             &fw.global::<Tokens>(),
@@ -2180,6 +2205,109 @@ mod file_dialog {
 fn close_preview() {
     #[cfg(any(target_os = "macos", windows))]
     preview::close();
+}
+
+/// Sections that start closed (ADR-0078): the workspace lists them when the user
+/// opens them, under the id with this suffix, so an old file keeps them closed.
+const CLOSED_BY_DEFAULT: [&str; 1] = ["sources.global"];
+const OPENED_SUFFIX: &str = "-open";
+
+/// The key a section is stored under, and whether listing it means "closed".
+fn section_key(id: &str) -> (String, bool) {
+    if CLOSED_BY_DEFAULT.contains(&id) {
+        (format!("{id}{OPENED_SUFFIX}"), false)
+    } else {
+        (id.to_owned(), true)
+    }
+}
+
+/// Every card of the Settings window that folds (ADR-0078), for "Collapse all". A test
+/// keeps this in step with the ids in `ui/*.slint`.
+const SETTINGS_SECTIONS: [&str; 19] = [
+    "settings.appearance.theme-in-use",
+    "settings.appearance.themes",
+    "settings.general.closing",
+    "settings.recording.files",
+    "settings.recording.encoding",
+    "settings.remote.access-tokens",
+    "settings.remote.other-computers",
+    "settings.remote.this-computer",
+    "settings.sources.add-global",
+    "settings.sources.global-sources",
+    "settings.stream.connection",
+    "settings.stream.destination",
+    "settings.stream.encoding",
+    "settings.stream.while-live",
+    "settings.vcam.camera",
+    "settings.vcam.picture",
+    "settings.vcam.removal",
+    "settings.vcam.sending",
+    "settings.video.canvas",
+];
+
+/// Connects one window's `Sections` global to the workspace's closed sections.
+fn install_sections(g: &Sections<'_>, ctx: &Ctx) {
+    // Pure: Slint asks again when `rev` changes. While the app is busy (never at
+    // render time) the section shows open.
+    let c = ctx.clone();
+    g.on_closed(move |id, _rev| {
+        let (key, listed_is_closed) = section_key(id.as_str());
+        c.app
+            .try_borrow()
+            // Busy (never at render time): the section's default.
+            .map_or(!listed_is_closed, |app| {
+                app.session.workspace().section_closed(&key) == listed_is_closed
+            })
+    });
+    let c = ctx.clone();
+    g.on_group_state(move |prefix, _rev| {
+        c.app.try_borrow().map_or(0, |app| {
+            let ws = app.session.workspace();
+            let mut cards = SETTINGS_SECTIONS
+                .iter()
+                .filter(|id| id.starts_with(prefix.as_str()));
+            match cards.next() {
+                None => 0,
+                Some(_)
+                    if SETTINGS_SECTIONS
+                        .iter()
+                        .filter(|id| id.starts_with(prefix.as_str()))
+                        .all(|id| ws.section_closed(id)) =>
+                {
+                    2
+                }
+                Some(_) => 1,
+            }
+        })
+    });
+    let c = ctx.clone();
+    g.on_set_group(move |prefix, closed| {
+        c.update(move |app: &mut App| {
+            let mut changed = false;
+            for id in SETTINGS_SECTIONS
+                .iter()
+                .filter(|id| id.starts_with(prefix.as_str()))
+            {
+                changed |= app.session.set_section_closed(id, closed).is_ok();
+            }
+            if changed {
+                app.changed();
+            }
+        });
+    });
+    let c = ctx.clone();
+    g.on_set_closed(move |id, closed| {
+        let (key, listed_is_closed) = section_key(id.as_str());
+        c.update(move |app: &mut App| {
+            if app
+                .session
+                .set_section_closed(&key, closed == listed_is_closed)
+                .is_ok()
+            {
+                app.changed();
+            }
+        });
+    });
 }
 
 fn install_studio(g: &Studio<'_>, ctx: &Ctx) {
@@ -2797,6 +2925,9 @@ fn run(config: PathBuf, notice: Option<String>) -> Result<(), Box<dyn std::error
             open_settings: None,
             open_app_menu: false,
             save_due: false,
+            sections_shown: Vec::new(),
+            sections_rev: 0,
+            sections_windows: 0,
             exiting: false,
             hidden: false,
             bg,
@@ -2831,6 +2962,7 @@ fn run(config: PathBuf, notice: Option<String>) -> Result<(), Box<dyn std::error
     install_app_menu(&main.global::<AppMenus>(), &ctx);
     shortcuts_page::install_press(&main.global::<Shortcuts>(), &ctx);
     install_studio(&main.global::<Studio>(), &ctx);
+    install_sections(&main.global::<Sections>(), &ctx);
     CTX.with(|c| *c.borrow_mut() = Some(ctx.clone()));
     // The studio: its own control thread (ADR-0041 decision 7), on the saved canvas.
     let studio_canvas = {
@@ -3012,4 +3144,33 @@ fn run(config: PathBuf, notice: Option<String>) -> Result<(), Box<dyn std::error
     }
     CTX.with(|c| c.borrow_mut().take());
     Ok(())
+}
+
+#[cfg(test)]
+mod section_tests {
+    use super::SETTINGS_SECTIONS;
+
+    /// "Collapse all" works from a list in Rust, so it must name every card the
+    /// Settings pages fold (ADR-0078).
+    #[test]
+    fn settings_sections_list_matches_the_cards_in_the_ui_files() {
+        let mut found = Vec::new();
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui");
+        for entry in std::fs::read_dir(&dir).unwrap_or_else(|e| panic!("ui dir: {e}")) {
+            let path = entry.unwrap_or_else(|e| panic!("ui entry: {e}")).path();
+            if path.extension().is_none_or(|e| e != "slint") {
+                continue;
+            }
+            let text = std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("{path:?}: {e}"));
+            for line in text.lines() {
+                if let Some(id) = line.trim().strip_prefix("id: \"settings.") {
+                    found.push(format!("settings.{}", id.trim_end_matches("\";")));
+                }
+            }
+        }
+        found.sort();
+        let mut listed: Vec<String> = SETTINGS_SECTIONS.iter().map(|s| (*s).to_owned()).collect();
+        listed.sort();
+        assert_eq!(found, listed);
+    }
 }

@@ -2,7 +2,7 @@
 // crate: Slint has no recursive components, so Rust flattens each window's
 // layout tree into tab stacks and splitter handles with absolute positions.
 import { Theme, Tokens } from "tokens.slint";
-import { Button, IconButton, Icon, IconName, Icons, FocusRing, RingFocus, MenuItem as MenuRow, MenuSurface, EmptyState, Select, NumberField, Toggle } from "components.slint";
+import { Sections, Button, IconButton, Icon, IconName, Icons, FocusRing, RingFocus, MenuItem as MenuRow, MenuSurface, EmptyState, Select, NumberField, Toggle } from "components.slint";
 import { SettingsNavItem, SettingsNavGroup, SettingsHeader } from "settings.slint";
 import { Appearance, AppearanceSettings, ThemeOption, ThemeTokenRow } from "appearance.slint";
 import { Shortcuts, ShortcutsSettings, ShortcutRow, ShortcutChip } from "shortcuts.slint";
@@ -11,7 +11,7 @@ import { ContextMenus, ContextItem, ContextChoice } from "context_menu.slint";
 import { AppMenus, AppMenuRow, AppMenuChip, AppMenu, AppMenuButton } from "app_menu.slint";
 import { Studio, EntryRow, SourceData, FilterData, FilterFieldData, MarkData, KindData, TargetData, MeterRow, ScaleMark, EncoderData, ProgramPanel, ScenesPanel, SourcesPanel, PropertiesPanel, MixerPanel, LiveControlsPanel, TransitionPanel, OutputsPanel, LibraryPanel, StatsPanel, RecordingSettings, StreamSettings, VideoSettings, RemoteControlSettings, GeneralSettings, GlobalSourcesSettings } from "studio.slint";
 
-export { AppMenus, AppMenuRow, AppMenuChip, ContextMenus, ContextItem, ContextChoice, Theme, Tokens, Appearance, ThemeOption, ThemeTokenRow, Shortcuts, ShortcutRow, ShortcutChip, VirtualCamera, Studio, EntryRow, SourceData, FilterData, FilterFieldData, MarkData, KindData, TargetData, MeterRow, ScaleMark, EncoderData }
+export { Sections, AppMenus, AppMenuRow, AppMenuChip, ContextMenus, ContextItem, ContextChoice, Theme, Tokens, Appearance, ThemeOption, ThemeTokenRow, Shortcuts, ShortcutRow, ShortcutChip, VirtualCamera, Studio, EntryRow, SourceData, FilterData, FilterFieldData, MarkData, KindData, TargetData, MeterRow, ScaleMark, EncoderData }
 
 export struct TabData { id: string, title: string, known: bool, icon: string }
 export struct StackData { window: int, stack: int, x: length, y: length, w: length, h: length, tabs: [TabData], active: int, collapsed: bool, can-collapse: bool, can-hide: bool }
@@ -2286,6 +2286,7 @@ export component SettingsWindow inherits Window {
                     spacing: Tokens.space-4;
                     alignment: start;
                     SettingsHeader {
+                        group: root.section == 0 ? "settings.video." : root.section == 1 ? "settings.recording." : root.section == 2 ? "settings.stream." : root.section == 3 ? "settings.remote." : root.section == 4 ? "settings.general." : root.section == 5 ? "settings.appearance." : root.section == 7 ? "settings.sources." : root.section == 8 ? "settings.vcam." : "";
                         title: root.section == 0 ? @tr("Video") : root.section == 1 ? @tr("Recording") : root.section == 2 ? @tr("Stream") : root.section == 3 ? @tr("Remote control") : root.section == 5 ? @tr("Appearance") : root.section == 6 ? @tr("Shortcuts") : root.section == 7 ? @tr("Global sources") : root.section == 8 ? @tr("Virtual camera") : @tr("General");
                         subtitle: root.section == 0 ? @tr("The canvas every scene is drawn on.")
                             : root.section == 1 ? @tr("Where recordings are saved and how they are encoded. Changes are saved at once.")

@@ -44,6 +44,7 @@ export component VirtualCameraSettings inherits Rectangle {
         alignment: start;
         SettingsCard {
             title: @tr("Camera");
+            id: "settings.vcam.camera";
             description: @tr("Shows the program in meeting and streaming apps. Video only.");
             SettingRow {
                 divider: false;
@@ -104,6 +105,7 @@ export component VirtualCameraSettings inherits Rectangle {
         }
         if VirtualCamera.available: SettingsCard {
             title: @tr("Picture");
+            id: "settings.vcam.picture";
             SettingRow {
                 divider: false;
                 label: @tr("Size");
@@ -133,6 +135,7 @@ export component VirtualCameraSettings inherits Rectangle {
         }
         if VirtualCamera.available: SettingsCard {
             title: @tr("Sending");
+            id: "settings.vcam.sending";
             SettingRow {
                 divider: false;
                 label: VirtualCamera.sending ? @tr("Sending the program") : @tr("Not sending");
@@ -149,6 +152,7 @@ export component VirtualCameraSettings inherits Rectangle {
         }
         if VirtualCamera.available: SettingsCard {
             title: @tr("Removal");
+            id: "settings.vcam.removal";
             SettingRow {
                 divider: false;
                 label: @tr("Remove completely");
