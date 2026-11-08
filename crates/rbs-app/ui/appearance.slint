@@ -823,6 +823,7 @@ export component AppearanceSettings inherits Rectangle {
         if Appearance.keep-asking: KeepLook { }
         SettingsCard {
             title: @tr("Theme in use");
+            id: "settings.appearance.theme-in-use";
             SettingRow {
                 divider: false;
                 label: @tr("Follow the system's light or dark setting");
@@ -876,6 +877,7 @@ export component AppearanceSettings inherits Rectangle {
                 horizontal-stretch: Appearance.editing ? 0 : 1;
                 SettingsCard {
                     title: @tr("Themes");
+                    id: "settings.appearance.themes";
                     // The card's line with Import at its right (Import adds a theme, so
                     // it belongs to the list, not to a row).
                     if !Appearance.editing: HorizontalLayout {
