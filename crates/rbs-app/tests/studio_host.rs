@@ -70,7 +70,12 @@ fn host_with(gpu: Arc<GpuContext>, config: HostConfig) -> (StudioHost, Receiver<
             (a, Vec::new())
         },
         move || Ok(gpu),
-        || Engine::with_clock(Arc::new(TestClock::new()), EngineConfig::default()),
+        || {
+            Engine::with_clock(
+                Arc::new(TestClock::new()),
+                EngineConfig::default().swap_timeout(LIMIT),
+            )
+        },
         move |u| {
             let _ = tx.send(u);
         },
@@ -537,7 +542,12 @@ fn screens_only_an_os_picker_offers_are_added_through_it() {
             (a, Vec::new())
         },
         move || Ok(gpu),
-        || Engine::with_clock(Arc::new(TestClock::new()), EngineConfig::default()),
+        || {
+            Engine::with_clock(
+                Arc::new(TestClock::new()),
+                EngineConfig::default().swap_timeout(LIMIT),
+            )
+        },
         move |u| {
             let _ = tx.send(u);
         },
