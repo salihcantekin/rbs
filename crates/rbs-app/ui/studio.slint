@@ -1224,14 +1224,14 @@ component MeterView inherits Rectangle {
 component MeterStrip inherits Rectangle {
     in property <MeterRow> data;
     callback reset();
-    width: Tokens.size-menu-sm * 0.4;
+    width: Tokens.size-menu-sm * 0.3;
     background: Theme.surface-sunken;
     border-radius: Tokens.radius-md;
     accessible-role: progress-indicator;
     accessible-label: data.name;
     accessible-value: data.value;
     VerticalLayout {
-        padding: Tokens.space-2;
+        padding: Tokens.space-1;
         spacing: Tokens.space-1;
         Text {
             text: data.name;
