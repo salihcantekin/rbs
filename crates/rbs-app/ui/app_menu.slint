@@ -471,7 +471,7 @@ export component AppMenuButton inherits Rectangle {
         padding-left: Tokens.space-2;
         padding-right: Tokens.space-3;
         spacing: Tokens.space-2;
-        VerticalLayout { alignment: center; BrandMark { } }
+        VerticalLayout { alignment: center; BrandMark { ground: touch.has-hover ? Theme.surface-overlay : Theme.surface-raised; } }
         Text {
             text: "RBS";
             color: Theme.text-primary;
