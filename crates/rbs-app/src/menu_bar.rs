@@ -611,7 +611,13 @@ pub enum ToolKind {
 pub struct Row {
     pub lead: Vec<ToolItem>,
     pub end: Vec<ToolItem>,
+    /// Go live and Record: the frame's fixed group (ADR-0073 decision 8), drawn at the
+    /// row's end whether or not the toolbar is shown, never customisable.
+    pub fixed: Vec<ToolItem>,
 }
+
+/// The commands of the frame's fixed group; a toolbar never draws them itself.
+pub const FIXED_COMMANDS: [&str; 2] = ["stream.toggle", "record.toggle"];
 
 /// Splits items at the first flexible space (later ones are dropped) and drops the
 /// separators that would lead, end or double within a group. Without a space, every
@@ -643,7 +649,7 @@ pub fn split_row(items: Vec<ToolItem>) -> Row {
 /// The workspace's toolbar (its own or the default one), split into the row's groups,
 /// and whether it is shown.
 pub fn toolbar(state: &Shown<'_>) -> (Row, bool) {
-    use rbs_ui::workspace::{ToolbarItem, ToolbarStyle};
+    use rbs_ui::workspace::{Toolbar, ToolbarItem, ToolbarStyle};
     let default;
     let bar = match &state.workspace.toolbar {
         Some(t) => t,
@@ -652,6 +658,28 @@ pub fn toolbar(state: &Shown<'_>) -> (Row, bool) {
             &default
         }
     };
+    let mut row = split_row(build_items(state, bar));
+    let fixed = Toolbar {
+        style: ToolbarStyle::IconsText,
+        visible: true,
+        items: FIXED_COMMANDS
+            .iter()
+            .map(|c| ToolbarItem::Command((*c).to_owned()))
+            .collect(),
+    };
+    row.fixed = build_items(state, &fixed);
+    (row, bar.visible)
+}
+
+/// The items of `bar` as toolbar data, without the frame's fixed commands when `bar`
+/// is a workspace's toolbar (a saved toolbar from before ADR-0073 may still list them).
+fn build_items(state: &Shown<'_>, bar: &rbs_ui::workspace::Toolbar) -> Vec<ToolItem> {
+    use rbs_ui::workspace::{ToolbarItem, ToolbarStyle};
+    let is_fixed_bar = bar.items.len() == FIXED_COMMANDS.len()
+        && bar
+            .items
+            .iter()
+            .all(|i| matches!(i, ToolbarItem::Command(c) if FIXED_COMMANDS.contains(&c.as_str())));
     let blank = |kind| ToolItem {
         id: String::new(),
         title: String::new(),
@@ -662,9 +690,12 @@ pub fn toolbar(state: &Shown<'_>) -> (Row, bool) {
         icon: String::new(),
         icon_only: false,
     };
-    let items = bar
-        .items
+    bar.items
         .iter()
+        .filter(|item| {
+            is_fixed_bar
+                || !matches!(item, ToolbarItem::Command(c) if FIXED_COMMANDS.contains(&c.as_str()))
+        })
         .map(|item| match item {
             ToolbarItem::Separator => blank(ToolKind::Separator),
             ToolbarItem::Space => blank(ToolKind::Space),
@@ -732,8 +763,7 @@ pub fn toolbar(state: &Shown<'_>) -> (Row, bool) {
                 }
             }
         })
-        .collect();
-    (split_row(items), bar.visible)
+        .collect()
 }
 
 /// What running an id from the menu bar does.

@@ -190,6 +190,7 @@ struct App {
     toolbar_model: Rc<VecModel<ToolbarData>>,
     /// Its end group, after the flexible space.
     toolbar_end_model: Rc<VecModel<ToolbarData>>,
+    toolbar_fixed_model: Rc<VecModel<ToolbarData>>,
     /// End stream was picked in the menu bar: the frame asks first (U4).
     confirm_end: bool,
     /// Settings › Virtual camera (ADR-0066).
@@ -1544,6 +1545,7 @@ impl Ctx {
         };
         set_rows(&app.toolbar_model, data(row.lead));
         set_rows(&app.toolbar_end_model, data(row.end));
+        set_rows(&app.toolbar_fixed_model, data(row.fixed));
         let ws = app.session.workspace();
         let live = app.session.live();
         let (toast_kind, toast_subject) = match &app.toast {
@@ -1560,6 +1562,7 @@ impl Ctx {
         let panels = ModelRc::from(app.panels_model.clone());
         let toolbar = ModelRc::from(app.toolbar_model.clone());
         let toolbar_end = ModelRc::from(app.toolbar_end_model.clone());
+        let toolbar_fixed = ModelRc::from(app.toolbar_fixed_model.clone());
         let workspaces = ModelRc::from(app.workspaces_model.clone());
         let push = |g: Shell<'_>| {
             g.set_live_state(view::live_code(live));
@@ -1581,6 +1584,7 @@ impl Ctx {
             g.set_toolbar(toolbar.clone());
             g.set_toolbar_visible(toolbar_visible);
             g.set_toolbar_end(toolbar_end.clone());
+            g.set_toolbar_fixed(toolbar_fixed.clone());
             g.set_gap(rbs_ui::layout::HANDLE_THICKNESS);
             g.set_maximized(app.maximized.as_ref().map_or("", |p| p.as_str()).into());
             g.set_edge_ids(edge_ids.as_str().into());
@@ -2250,6 +2254,15 @@ fn install_studio(g: &Studio<'_>, ctx: &Ctx) {
     on!(on_set_source_sync_offset, |app, id: i32, ms: i32| {
         app.studio.set_source_sync_offset(id, ms);
     });
+    on!(on_library_shown, |app| {
+        app.studio.library_shown();
+    });
+    on!(on_apply_look, |app, id: slint::SharedString| {
+        app.studio.apply_look(id.as_str());
+    });
+    on!(on_add_sample, |app, id: slint::SharedString| {
+        app.studio.add_sample(id.as_str());
+    });
     on!(on_add_filter, |app, source: i32, ty: i32| {
         app.studio.add_filter(source, ty);
     });
@@ -2571,6 +2584,9 @@ fn graphics_api(api: &slint::GraphicsAPI<'_>) -> &'static str {
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // The name macOS shows for the app is "RBS", not the executable's file name.
+    #[cfg(target_os = "macos")]
+    rbs_app::native::set_app_name(c"RBS");
     let config = config::config_dir();
     // A second launch while RBS keeps running brings that RBS forward and ends here
     // (ADR-0056 decision 6).
@@ -2788,6 +2804,7 @@ fn run(config: PathBuf, notice: Option<String>) -> Result<(), Box<dyn std::error
             menus: MenuModels::default(),
             toolbar_model: Rc::new(VecModel::default()),
             toolbar_end_model: Rc::new(VecModel::default()),
+            toolbar_fixed_model: Rc::new(VecModel::default()),
             confirm_end: false,
             vcam,
             demo_since: demo_live.then(Instant::now),
@@ -2943,6 +2960,16 @@ fn run(config: PathBuf, notice: Option<String>) -> Result<(), Box<dyn std::error
     if !rbs_app::native::route_quit(quit_from_system) {
         eprintln!("rbs: Quit ends the app without closing the studio first");
     }
+
+    // The Dock icon shows the RBS logo also without an app bundle (brand assets). Set
+    // from the first event loop turn: AppKit resets the icon of a bare executable while
+    // it finishes launching, which happens when the loop starts.
+    #[cfg(target_os = "macos")]
+    entry::single_shot(std::time::Duration::ZERO, || {
+        if !rbs_app::native::set_icon(include_bytes!("../assets/brand/icon-mac-1024.png")) {
+            eprintln!("rbs: could not set the Dock icon");
+        }
+    });
 
     // The Dock icon and Cmd+Tab bring a hidden main window back (ADR-0056 decision 6);
     // without that way back, Close quits.

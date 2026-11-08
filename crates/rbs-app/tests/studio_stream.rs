@@ -265,7 +265,12 @@ fn host(
             (a, Vec::new())
         },
         move || Ok(gpu),
-        move || Engine::with_clock(Arc::new(clock.clone()), EngineConfig::default()),
+        move || {
+            Engine::with_clock(
+                Arc::new(clock.clone()),
+                EngineConfig::default().swap_timeout(LIMIT),
+            )
+        },
         move |u| {
             let _ = tx.send(u);
         },

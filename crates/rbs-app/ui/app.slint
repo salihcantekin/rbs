@@ -2,14 +2,14 @@
 // crate: Slint has no recursive components, so Rust flattens each window's
 // layout tree into tab stacks and splitter handles with absolute positions.
 import { Theme, Tokens } from "tokens.slint";
-import { Button, IconButton, Icon, IconName, Icons, FocusRing, MenuItem as MenuRow, MenuSurface, EmptyState, Select, NumberField } from "components.slint";
+import { Button, IconButton, Icon, IconName, Icons, FocusRing, RingFocus, MenuItem as MenuRow, MenuSurface, EmptyState, Select, NumberField } from "components.slint";
 import { SettingsNavItem, SettingsNavGroup, SettingsHeader } from "settings.slint";
 import { Appearance, AppearanceSettings, ThemeOption, ThemeTokenRow } from "appearance.slint";
 import { Shortcuts, ShortcutsSettings, ShortcutRow, ShortcutChip } from "shortcuts.slint";
 import { VirtualCamera, VirtualCameraSettings } from "vcam.slint";
 import { ContextMenus, ContextItem, ContextChoice } from "context_menu.slint";
 import { AppMenus, AppMenuRow, AppMenuChip, AppMenu, AppMenuButton } from "app_menu.slint";
-import { Studio, EntryRow, SourceData, FilterData, FilterFieldData, MarkData, KindData, TargetData, MeterRow, ScaleMark, EncoderData, ProgramPanel, ScenesPanel, SourcesPanel, PropertiesPanel, MixerPanel, LiveControlsPanel, TransitionPanel, OutputsPanel, StatsPanel, RecordingSettings, StreamSettings, VideoSettings, RemoteControlSettings, GeneralSettings, GlobalSourcesSettings } from "studio.slint";
+import { Studio, EntryRow, SourceData, FilterData, FilterFieldData, MarkData, KindData, TargetData, MeterRow, ScaleMark, EncoderData, ProgramPanel, ScenesPanel, SourcesPanel, PropertiesPanel, MixerPanel, LiveControlsPanel, TransitionPanel, OutputsPanel, LibraryPanel, StatsPanel, RecordingSettings, StreamSettings, VideoSettings, RemoteControlSettings, GeneralSettings, GlobalSourcesSettings } from "studio.slint";
 
 export { AppMenus, AppMenuRow, AppMenuChip, ContextMenus, ContextItem, ContextChoice, Theme, Tokens, Appearance, ThemeOption, ThemeTokenRow, Shortcuts, ShortcutRow, ShortcutChip, VirtualCamera, Studio, EntryRow, SourceData, FilterData, FilterFieldData, MarkData, KindData, TargetData, MeterRow, ScaleMark, EncoderData }
 
@@ -107,6 +107,9 @@ export global Shell {
     // items after it, and whether the toolbar is shown.
     in property <[ToolbarData]> toolbar;
     in property <[ToolbarData]> toolbar-end;
+    // Go live and Record, the frame's fixed group (ADR-0073): shown with the toolbar
+    // hidden too.
+    in property <[ToolbarData]> toolbar-fixed;
     in property <bool> toolbar-visible: true;
     // Windows (ADR-0071): the toolbar row is the title bar and ends with the window
     // buttons. Set once the window's caption is removed.
@@ -244,7 +247,7 @@ component LiveIndicator inherits Rectangle {
 // A panel's content: the panels connected to the studio, a placeholder for the others.
 component PanelContent inherits Rectangle {
     in property <TabData> tab;
-    property <bool> connected: tab.id == "rbs.program" || tab.id == "rbs.transition" || tab.id == "rbs.scenes" || tab.id == "rbs.sources" || tab.id == "rbs.properties" || tab.id == "rbs.mixer" || tab.id == "rbs.preview" || tab.id == "rbs.live-controls" || tab.id == "rbs.outputs" || tab.id == "rbs.stats";
+    property <bool> connected: tab.id == "rbs.program" || tab.id == "rbs.transition" || tab.id == "rbs.scenes" || tab.id == "rbs.sources" || tab.id == "rbs.properties" || tab.id == "rbs.mixer" || tab.id == "rbs.preview" || tab.id == "rbs.live-controls" || tab.id == "rbs.outputs" || tab.id == "rbs.library" || tab.id == "rbs.stats";
     background: Theme.surface-raised;
     if tab.id == "rbs.program" || tab.id == "rbs.preview": ProgramPanel {
         width: parent.width;
@@ -279,6 +282,10 @@ component PanelContent inherits Rectangle {
         height: parent.height;
     }
     if tab.id == "rbs.outputs": OutputsPanel {
+        width: parent.width;
+        height: parent.height;
+    }
+    if tab.id == "rbs.library": LibraryPanel {
         width: parent.width;
         height: parent.height;
     }
@@ -347,7 +354,7 @@ component Tab inherits Rectangle {
     accessible-description: @tr("Menu key or Shift+F10 opens panel actions; Delete or Backspace closes it; Shift+Escape maximizes or restores it");
     accessible-action-default => { activate(); }
     forward-focus: focus;
-    focus := FocusScope {
+    focus := RingFocus {
         key-pressed(e) => {
             if e.text == Key.Return || e.text == " " { activate(); return accept; }
             if e.text == Key.Menu || (e.text == Key.F10 && e.modifiers.shift) { open-menu(); return accept; }
@@ -364,7 +371,7 @@ component Tab inherits Rectangle {
         allow-move: !Shell.locked;
         data: Shell.panel-data(tab.id);
         touch := TouchArea {
-            clicked => { focus.focus(); activate(); }
+            clicked => { focus.focus-pointer(); activate(); }
             double-clicked => { maximize(); }
             pointer-event(e) => {
                 if e.kind == PointerEventKind.down && e.button == PointerEventButton.right { open-menu(); }
@@ -556,7 +563,7 @@ component Splitter inherits Rectangle {
     accessible-value-minimum: 0;
     accessible-value-maximum: 100;
     forward-focus: focus;
-    focus := FocusScope {
+    focus := RingFocus {
         key-pressed(e) => {
             if (data.horizontal && e.text == Key.LeftArrow) || (!data.horizontal && e.text == Key.UpArrow) {
                 Shell.nudge(data.window, data.index, e.modifiers.shift ? -Tokens.step-nudge-large : -Tokens.step-nudge);
@@ -574,7 +581,7 @@ component Splitter inherits Rectangle {
     touch := TouchArea {
         mouse-cursor: data.horizontal ? ew-resize : ns-resize;
         pointer-event(e) => {
-            if e.kind == PointerEventKind.down { focus.focus(); }
+            if e.kind == PointerEventKind.down { focus.focus-pointer(); }
             if e.kind == PointerEventKind.up { Shell.drag-end(); }
         }
         moved => {
@@ -877,13 +884,13 @@ component EdgeTab inherits Rectangle {
     accessible-expanded: open;
     accessible-action-default => { toggle(); }
     forward-focus: focus;
-    focus := FocusScope {
+    focus := RingFocus {
         key-pressed(e) => {
             if e.text == Key.Return || e.text == " " { toggle(); return accept; }
             reject
         }
     }
-    touch := TouchArea { clicked => { focus.focus(); toggle(); } }
+    touch := TouchArea { clicked => { focus.focus-pointer(); toggle(); } }
     Icon {
         x: vertical ? (parent.width - self.width) / 2 : Tokens.space-2;
         y: vertical ? Tokens.space-2 : (parent.height - self.height) / 2;
@@ -902,7 +909,7 @@ component EdgeTab inherits Rectangle {
         font-size: Tokens.type-caption-size;
         font-weight: Tokens.type-label-weight;
     }
-    FocusRing { show: focus.has-focus; border-radius: Tokens.radius-md; }
+    FocusRing { show: focus.ring; border-radius: Tokens.radius-md; }
 }
 
 // The edge tabs on one edge. `open-id` is the slid-out panel, if it is on this edge.
@@ -956,7 +963,7 @@ component Flyout inherits Rectangle {
     clip: true;
     accessible-role: groupbox;
     accessible-label: data.title;
-    focus := FocusScope {
+    focus := RingFocus {
         key-pressed(e) => {
             if e.text == Key.Escape { root.hide(); return accept; }
             reject
@@ -1205,13 +1212,13 @@ component WorkspacePicker inherits Rectangle {
     accessible-label: @tr("Workspace: {}", Shell.workspace-name);
     accessible-action-default => { clicked(); }
     forward-focus: focus;
-    focus := FocusScope {
+    focus := RingFocus {
         key-pressed(e) => {
             if e.text == Key.Return || e.text == " " { root.clicked(); return accept; }
             reject
         }
     }
-    touch := TouchArea { clicked => { focus.focus(); root.clicked(); } }
+    touch := TouchArea { clicked => { focus.focus-pointer(); root.clicked(); } }
     row := HorizontalLayout {
         padding-left: Tokens.space-2;
         padding-right: Tokens.space-2;
@@ -1234,7 +1241,7 @@ component WorkspacePicker inherits Rectangle {
             Icon { name: IconName.chevron-down; ink: Theme.text-secondary; }
         }
     }
-    FocusRing { show: focus.has-focus; }
+    FocusRing { show: focus.ring; }
 }
 
 // One toolbar item: a command button with its icon (a toggle that is on is tinted;
@@ -1432,6 +1439,12 @@ component FrameBar inherits Rectangle {
                     ws-menu.show();
                 }
             }
+            // Go live and Record: part of the frame, not of the toolbar, so they stay
+            // with the toolbar hidden or customised (U1, ADR-0073).
+            for item in Shell.toolbar-fixed: ToolbarCell {
+                item: item;
+                open-workspaces(x) => { }
+            }
             // Idle it is not in the layout at all (the status bar says "Not live").
             if Shell.live-state != 0 || Shell.live-camera: LiveIndicator { horizontal-stretch: 0; }
         }
@@ -1486,13 +1499,13 @@ component StatusPicker inherits Rectangle {
     accessible-label: @tr("{}: {}", label, value);
     accessible-action-default => { clicked(); }
     forward-focus: focus;
-    focus := FocusScope {
+    focus := RingFocus {
         key-pressed(e) => {
             if e.text == Key.Return || e.text == " " { root.clicked(); return accept; }
             reject
         }
     }
-    touch := TouchArea { clicked => { focus.focus(); root.clicked(); } }
+    touch := TouchArea { clicked => { focus.focus-pointer(); root.clicked(); } }
     row := HorizontalLayout {
         padding-left: Tokens.space-1;
         padding-right: Tokens.space-1;
@@ -1510,7 +1523,7 @@ component StatusPicker inherits Rectangle {
             vertical-alignment: center;
         }
     }
-    FocusRing { show: focus.has-focus; }
+    FocusRing { show: focus.ring; }
 }
 
 // The status bar (spec Frame): live and recording state in words, the Output profile
@@ -1560,6 +1573,25 @@ component StatusBar inherits Rectangle {
             color: Studio.st-bad ? Theme.state-error : Theme.text-secondary;
             font-size: Tokens.type-caption-size;
             vertical-alignment: center;
+        }
+        // What the Live controls panel said under its buttons (ADR-0073): the last
+        // recording's outcome ("Saved ..."), or why recording is not possible, and the
+        // virtual camera's state. Long paths are cut in the middle of the bar's room.
+        if Studio.rec-state == 0 && (Studio.rec-unavailable != "" || Studio.rec-note != ""): Text {
+            horizontal-stretch: 1;
+            text: Studio.rec-unavailable != "" ? Studio.rec-unavailable : Studio.rec-note;
+            color: Studio.rec-unavailable != "" || Studio.rec-note-bad ? Theme.state-error : Theme.text-secondary;
+            font-size: Tokens.type-caption-size;
+            vertical-alignment: center;
+            overflow: elide;
+        }
+        if Studio.vcam-shown && Studio.vcam-text != "": Text {
+            horizontal-stretch: 0;
+            text: Studio.vcam-text;
+            color: Theme.text-secondary;
+            font-size: Tokens.type-caption-size;
+            vertical-alignment: center;
+            overflow: elide;
         }
         Rectangle { horizontal-stretch: 1; }
         profile-button := StatusPicker {

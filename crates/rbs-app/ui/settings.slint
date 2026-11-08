@@ -4,7 +4,7 @@
 // and its control on the right (U2: every option explains itself), or under them for
 // wide content. Every value comes from the tokens (U6).
 import { Theme, Tokens } from "tokens.slint";
-import { FocusRing, Icon, IconName } from "components.slint";
+import { FocusRing, RingFocus, Icon, IconName } from "components.slint";
 
 // One entry of the section list. The section in use has the accent-tinted row with an
 // accent bar at its left edge (mockup E's selected row) and is marked checked for
@@ -57,7 +57,7 @@ export component SettingsNavItem inherits Rectangle {
             overflow: elide;
         }
     }
-    focus := FocusScope {
+    focus := RingFocus {
         key-pressed(e) => {
             if e.text == Key.Return || e.text == " " { root.activated(); return accept; }
             reject
@@ -67,7 +67,7 @@ export component SettingsNavItem inherits Rectangle {
     touch := TouchArea {
         clicked => { root.activated(); }
     }
-    FocusRing { show: focus.has-focus; border-radius: Tokens.radius-md; }
+    FocusRing { show: focus.ring; border-radius: Tokens.radius-md; }
 }
 
 // A group name in the section list: small, secondary, upper case (mockup E).

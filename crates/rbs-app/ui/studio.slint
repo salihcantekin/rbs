@@ -3,7 +3,7 @@
 // Rust pushes state into the `Studio` global of every window and handles its callbacks
 // by sending commands to the studio's control thread.
 import { Theme, Tokens } from "tokens.slint";
-import { Button, Checkbox, ColorPicker, FocusRing, SectionHeader, Tabs, Icon, IconButton, IconName, Icons, MenuItem, MenuSurface, EmptyState, NumberField, Select, SegmentedControl, Slider, TextField, Toggle } from "components.slint";
+import { Button, Checkbox, ColorPicker, FocusRing, RingFocus, SectionHeader, Tabs, Icon, IconButton, IconName, Icons, MenuItem, MenuSurface, EmptyState, NumberField, Select, SegmentedControl, Slider, TextField, Toggle } from "components.slint";
 import { SettingsCard, SettingRow, SettingBlock, SettingsStatus, SettingsNotice, SettingsCallout } from "settings.slint";
 import { CommandMenu } from "context_menu.slint";
 
@@ -29,6 +29,10 @@ export struct SourceData { id: int, name: string, kind: string, icon: string, st
 export struct SceneData { id: int, name: string, live: bool, preview: bool, number: int }
 // A source of the collection for Add source's "Existing source" list.
 export struct ExistingData { id: int, name: string, icon: string }
+// A look in the Library (ADR-0075): `group` 0 colour, 1 effect, 2 shape. A sample
+// picture: `frame` is true for a frame (transparent in the middle), `thumb` its picture.
+export struct LookData { id: string, name: string, group: int }
+export struct SampleData { id: string, name: string, frame: bool, thumb: image }
 export struct KindData { code: int, label: string }
 // A filled rectangle of the selection on the preview (outline or handle), in the
 // panel's coordinates; kind 0 outline, 1 handle border, 2 handle inside.
@@ -156,6 +160,13 @@ export global Studio {
     callback rename-source(int /* id */, string /* name */);
     // The sync offset of a source's sound in milliseconds (ADR-0062): a live control.
     callback set-source-sync-offset(int /* id */, int /* ms */);
+    // The Library panel (ADR-0075): the built-in looks and sample pictures. The samples'
+    // thumbnails are made when the panel first shows (`library-shown`), not before.
+    in property <[LookData]> library-looks;
+    in property <[SampleData]> library-samples;
+    callback library-shown();
+    callback apply-look(string /* look id */);
+    callback add-sample(string /* sample id */);
     // Filters (ADR-0062). The catalogue by name, in the order Add filter lists it.
     in property <[string]> filter-types;
     // The Properties tab picked last: 0 Transform, 1 Filters, 2 Audio.
@@ -628,7 +639,7 @@ component SourceRowView inherits Rectangle {
         context: "source";
         target: "source=" + data.id;
     }
-    focus := FocusScope {
+    focus := RingFocus {
         key-pressed(e) => {
             if e.text == Key.Return || e.text == " " { Studio.select-source(data.id); return accept; }
             if e.text == Key.Menu || (e.text == Key.F10 && e.modifiers.shift) {
@@ -667,11 +678,11 @@ component SourceRowView inherits Rectangle {
             if self.dragging { Studio.dragging-source = data.id; } else { Studio.dragging-source = -1; }
         }
         touch := TouchArea {
-            clicked => { focus.focus(); Studio.select-source(data.id); }
+            clicked => { focus.focus-pointer(); Studio.select-source(data.id); }
             double-clicked => { root.editing = true; }
             pointer-event(e) => {
                 if e.kind == PointerEventKind.down && e.button == PointerEventButton.right {
-                    focus.focus();
+                    focus.focus-pointer();
                     Studio.select-source(data.id);
                     menu.open({ x: self.mouse-x, y: self.mouse-y });
                 }
@@ -786,7 +797,7 @@ component SourceRowView inherits Rectangle {
         height: Tokens.size-focus-ring;
         background: Theme.accent;
     }
-    FocusRing { show: focus.has-focus; border-radius: Tokens.radius-md; }
+    FocusRing { show: focus.ring; border-radius: Tokens.radius-md; }
 }
 
 // One scene in the Scenes panel: its number, its name and, on air, a Live badge
@@ -834,7 +845,7 @@ component SceneRowView inherits Rectangle {
         context: "scene";
         target: "scene=" + data.id;
     }
-    focus := FocusScope {
+    focus := RingFocus {
         key-pressed(e) => {
             if e.text == Key.Return || e.text == " " { Studio.switch-scene(data.id); return accept; }
             if e.text == Key.Menu || (e.text == Key.F10 && e.modifiers.shift) {
@@ -851,12 +862,12 @@ component SceneRowView inherits Rectangle {
     // The row's buttons sit inside its TouchArea, so pointing at them keeps the row
     // hovered; their space is always reserved, so the Live badge never moves (ADR-0059).
     touch := TouchArea {
-        clicked => { focus.focus(); Studio.switch-scene(data.id); }
+        clicked => { focus.focus-pointer(); Studio.switch-scene(data.id); }
         double-clicked => { root.editing = true; }
         // A right-click opens the row's menu without putting the scene on air.
         pointer-event(e) => {
             if e.kind == PointerEventKind.down && e.button == PointerEventButton.right {
-                focus.focus();
+                focus.focus-pointer();
                 menu.open({ x: self.mouse-x, y: self.mouse-y });
             }
         }
@@ -948,7 +959,7 @@ component SceneRowView inherits Rectangle {
         }
     }
     }
-    FocusRing { show: focus.has-focus; border-radius: Tokens.radius-md; }
+    FocusRing { show: focus.ring; border-radius: Tokens.radius-md; }
 }
 
 // The scenes the canvas may show (ADR-0059). A click puts one on air (a cut); the `+`
@@ -3310,6 +3321,147 @@ export component OutputsPanel inherits Rectangle {
                     text: @tr("Stream settings");
                     clicked => { Studio.open-stream-settings(); }
                 }
+            }
+        }
+    }
+}
+
+// One row of the Library: a name, a note and a button, or a thumbnail instead of the note.
+component LibraryRow inherits Rectangle {
+    in property <string> title;
+    in property <string> action;
+    in property <bool> enabled: true;
+    in property <image> thumb;
+    in property <bool> has-thumb: false;
+    in property <bool> frame: false;
+    callback act();
+    accessible-role: list-item;
+    accessible-label: title;
+    HorizontalLayout {
+        padding-top: Tokens.space-1;
+        padding-bottom: Tokens.space-1;
+        spacing: Tokens.space-2;
+        if root.has-thumb: Rectangle {
+            width: Tokens.size-library-thumb-w;
+            height: Tokens.size-library-thumb-h;
+            border-radius: Tokens.radius-sm;
+            background: Theme.surface-sunken;
+            clip: true;
+            Image {
+                source: root.thumb;
+                width: 100%;
+                height: 100%;
+                accessible-role: none;
+            }
+        }
+        VerticalLayout {
+            alignment: center;
+            horizontal-stretch: 1;
+            spacing: Tokens.space-1;
+            Text {
+                text: root.title;
+                color: Theme.text-primary;
+                font-size: Tokens.type-body-size;
+                overflow: elide;
+            }
+            if root.has-thumb: Text {
+                text: root.frame ? @tr("Frame, on top") : @tr("Background, below");
+                color: Theme.text-secondary;
+                font-size: Tokens.type-caption-size;
+                overflow: elide;
+            }
+            if root.has-thumb: HorizontalLayout {
+                alignment: start;
+                Button {
+                    text: root.action;
+                    accessible-name: @tr("{}: {}", root.action, root.title);
+                    enabled: root.enabled;
+                    dense: true;
+                    clicked => { root.act(); }
+                }
+            }
+        }
+        if !root.has-thumb: VerticalLayout {
+            alignment: center;
+            Button {
+                text: root.action;
+                accessible-name: @tr("{}: {}", root.action, root.title);
+                enabled: root.enabled;
+                dense: true;
+                clicked => { root.act(); }
+            }
+        }
+    }
+}
+
+// The Library (ADR-0075): built-in looks that change the selected source's colour, effects
+// and shape in one undo step, and sample backgrounds and frames that add a picture to
+// the scene. Nothing is linked: a look is copied onto the source.
+export component LibraryPanel inherits Rectangle {
+    background: Theme.surface-raised;
+    property <bool> has-selection: Studio.selected-source >= 0;
+    init => { Studio.library-shown(); }
+    fl := Flickable {
+        width: parent.width;
+        height: parent.height;
+        content-width: self.width;
+        content-height: list.preferred-height;
+        list := VerticalLayout {
+            padding: Tokens.space-3;
+            spacing: Tokens.space-1;
+            alignment: start;
+            Text {
+                text: @tr("Looks");
+                color: Theme.text-primary;
+                font-size: Tokens.type-label-size;
+                font-weight: Tokens.type-label-weight;
+            }
+            Text {
+                text: has-selection ? @tr("Applies to the selected source. A filter of the same kind is replaced, in every scene that uses the source. Undo puts it back.")
+                    : @tr("Select a source in the Sources panel to apply a look.");
+                color: Theme.text-secondary;
+                font-size: Tokens.type-caption-size;
+                wrap: word-wrap;
+            }
+            for group[g] in [@tr("Colour"), @tr("Effects"), @tr("Shape")]: VerticalLayout {
+                padding-top: Tokens.space-2;
+                Text {
+                    text: group;
+                    color: Theme.text-secondary;
+                    font-size: Tokens.type-caption-size;
+                    font-weight: Tokens.type-label-weight;
+                }
+                for l in Studio.library-looks: VerticalLayout {
+                    if l.group == g: LibraryRow {
+                        title: l.name;
+                        action: @tr("Apply");
+                        enabled: root.has-selection;
+                        act => { Studio.apply-look(l.id); }
+                    }
+                }
+            }
+            VerticalLayout {
+                padding-top: Tokens.space-3;
+                Text {
+                    text: @tr("Backgrounds and frames");
+                    color: Theme.text-primary;
+                    font-size: Tokens.type-label-size;
+                    font-weight: Tokens.type-label-weight;
+                }
+            }
+            Text {
+                text: @tr("Adds a picture to the scene you are editing.");
+                color: Theme.text-secondary;
+                font-size: Tokens.type-caption-size;
+                wrap: word-wrap;
+            }
+            for s in Studio.library-samples: LibraryRow {
+                title: s.name;
+                action: @tr("Add");
+                has-thumb: true;
+                thumb: s.thumb;
+                frame: s.frame;
+                act => { Studio.add-sample(s.id); }
             }
         }
     }
