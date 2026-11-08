@@ -1,6 +1,6 @@
 # ADR-0081: Master strip in the Mixer
 
-- Status: Proposed
+- Status: Accepted
 - Date: 2026-11-08
 - Deciders: Salih (owner)
 - Spec: [scene-model](../specs/scene-model.md), [user-data](../specs/user-data.md), [control-api](../specs/control-api.md), [audio-graph](../specs/audio-graph.md), [ui-design-system](../specs/ui-design-system.md)
@@ -52,4 +52,4 @@ Round 1, independent AI session, 2026-11-08: changes requested (minor, direction
 9. Missing alternatives. -> Added.
 10. Version number. -> Checked (decision 4).
 Verified correct by the reviewer: `MixerParams::master`, its ramp and the post-fader master meter exist; the undo-record pattern matches ADR-0059 and ADR-0080; format 6 precedent. Tests required in the implementation PR: a fader move between a canvas rename and its undo, removing and undoing a canvas, a saved master applied at start.
-Round 2, same reviewer, 2026-11-08: approve. All ten concerns resolved; the single-canvas API claim verified. Three wording points applied: command names `canvas.set_master_*`, the effect class and on-air rule stated, coalescing stated. Owner approval of the ADR: pending.
+Round 2, same reviewer, 2026-11-08: approve. All ten concerns resolved; the single-canvas API claim verified. Three wording points applied: command names `canvas.set_master_*`, the effect class and on-air rule stated, coalescing stated. Owner approval of the ADR and the Mixer visual: Salih, 2026-11-08.

@@ -97,6 +97,48 @@ pub struct Canvas {
     /// The canvas's global scene (ADR-0065): its items are drawn above, and heard
     /// with, every scene the canvas shows. `None` when the canvas has none.
     pub globals: Option<SceneId>,
+    /// The canvas's master volume and mute, the last stage of its mix (ADR-0081). Shared
+    /// by preview and program; a live control that edits of the canvas itself ignore.
+    pub master: MasterAudio,
+}
+
+/// Volume and mute of a canvas's whole mix (ADR-0081). Like a source's volume it stops
+/// at 0 dB; a boost is an audio filter.
+#[non_exhaustive]
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct MasterAudio {
+    /// Linear amplitude factor in `0.0..=`[`MAX_SOURCE_VOLUME`].
+    pub volume: f32,
+    /// A muted master silences the canvas's outputs; the volume is kept.
+    pub muted: bool,
+}
+
+impl MasterAudio {
+    /// `volume`, muted or not.
+    pub const fn new(volume: f32, muted: bool) -> Self {
+        Self { volume, muted }
+    }
+
+    /// True if the volume is finite and in `0.0..=`[`MAX_SOURCE_VOLUME`].
+    pub fn is_valid(&self) -> bool {
+        self.volume.is_finite() && (0.0..=MAX_SOURCE_VOLUME).contains(&self.volume)
+    }
+
+    /// True for full volume, not muted.
+    pub fn is_default(&self) -> bool {
+        *self == Self::default()
+    }
+
+    /// The linear gain the mixer applies: the volume, or 0 while muted.
+    pub fn gain(&self) -> f32 {
+        if self.muted { 0.0 } else { self.volume }
+    }
+}
+
+impl Default for MasterAudio {
+    fn default() -> Self {
+        Self::new(MAX_SOURCE_VOLUME, false)
+    }
 }
 
 impl Canvas {
@@ -111,6 +153,7 @@ impl Canvas {
             program: None,
             preview: None,
             globals: None,
+            master: MasterAudio::default(),
         }
     }
 }

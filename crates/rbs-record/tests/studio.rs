@@ -493,6 +493,59 @@ fn volume_and_mute_reach_the_mixer_without_a_rebind() {
 }
 
 #[test]
+fn the_master_gain_reaches_the_mixer_at_start_and_on_the_light_path() {
+    let Some(gpu) = gpu() else { return };
+    let r = rig();
+    let (mut col, canvas) = scene();
+    let mic = col.sources().find(|s| s.name == "Microphone").unwrap().id;
+    // A saved, muted master is applied from the first block (ADR-0081).
+    col.set_canvas_master_muted(canvas, true).unwrap();
+    let (engine, clock) = engine_at_start();
+    let mut studio = Studio::start(
+        engine,
+        gpu,
+        &col,
+        &r.adapters.sources,
+        &StudioSettings::new(canvas),
+    )
+    .unwrap();
+    let blocks = |s: &Studio| s.engine().worker_stats(AUDIO).unwrap().ticks();
+    let master = |s: &Studio| s.master_meter().unwrap().take().peak(0);
+    let strip = |s: &Studio| s.meter(mic).unwrap().take().peak(0);
+    let t = blocks(&studio);
+    assert!(run_until(&mut studio, &clock, |s| blocks(s) >= t + 15));
+    let _ = (master(&studio), strip(&studio));
+    let t = blocks(&studio);
+    assert!(run_until(&mut studio, &clock, |s| blocks(s) >= t + 10));
+    assert_eq!(master(&studio), 0.0, "a muted master is silent");
+    assert!(strip(&studio) > 0.0, "the strip is post-strip-fader only");
+
+    // Unmute on the light path: the master hears the mix again, with no rebind.
+    col.set_canvas_master_muted(canvas, false).unwrap();
+    assert!(studio.set_mix(&col));
+    let t = blocks(&studio);
+    assert!(run_until(&mut studio, &clock, |s| blocks(s) >= t + 5));
+    let _ = master(&studio);
+    let t = blocks(&studio);
+    assert!(run_until(&mut studio, &clock, |s| blocks(s) >= t + 10));
+    let full = master(&studio);
+    assert!(full > 0.0, "unmuted");
+
+    // Half volume lowers the peak.
+    col.set_canvas_master_volume(canvas, 0.5).unwrap();
+    assert!(studio.set_mix(&col));
+    let t = blocks(&studio);
+    assert!(run_until(&mut studio, &clock, |s| blocks(s) >= t + 5));
+    let _ = master(&studio);
+    let t = blocks(&studio);
+    assert!(run_until(&mut studio, &clock, |s| blocks(s) >= t + 10));
+    let half = master(&studio);
+    assert!(half > 0.0 && half < full, "{half} < {full}");
+    let (_, errors) = studio.shutdown();
+    assert!(errors.is_empty(), "{errors:?}");
+}
+
+#[test]
 fn filters_run_on_a_source_and_follow_edits_without_a_new_node() {
     use rbs_scene::model::SettingValue;
     let Some(gpu) = gpu() else { return };
