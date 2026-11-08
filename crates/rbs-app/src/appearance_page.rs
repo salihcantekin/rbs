@@ -352,12 +352,14 @@ fn transfer(ctx: &Ctx, import: bool) {
             let Some(file) = file else { return };
             {
                 let mut page = ctx.page.borrow_mut();
+                let mut imported = String::new();
                 let result = match picked {
                     Ok(None) => Ok(()),
                     Err(why) => Err(why),
                     Ok(Some(path)) if import => app.studio.user.import_theme(&path).map(|id| {
                         page.ui.refresh(app.studio.user.data(), &file);
-                        page.ui.selected = page.ui.index_of(&ThemeId::User(id));
+                        page.ui.selected = page.ui.index_of(&ThemeId::User(id.clone()));
+                        imported = page.ui.import_note(&ThemeId::User(id));
                     }),
                     Ok(Some(path)) => match selected_id(&page) {
                         Some(ThemeId::User(id)) => app.studio.user.export_theme(&id, &path),
@@ -365,7 +367,7 @@ fn transfer(ctx: &Ctx, import: bool) {
                     },
                 };
                 match result {
-                    Ok(()) => page.note.clear(),
+                    Ok(()) => page.note = imported,
                     Err(why) => page.note = why,
                 }
             }
@@ -573,7 +575,8 @@ fn show(ctx: &Ctx, app: &App) {
     let options: Vec<ThemeOption> = ui
         .entries
         .iter()
-        .map(|e| {
+        .enumerate()
+        .map(|(i, e)| {
             let swatch = |name: &str| {
                 e.resolved
                     .as_ref()
@@ -595,6 +598,7 @@ fn show(ctx: &Ctx, app: &App) {
                 surface: swatch("color.surface.base"),
                 text: swatch("color.text.primary"),
                 accent: swatch("color.accent"),
+                warnings: i32::try_from(ui.warning_count_of(i)).unwrap_or(i32::MAX),
             }
         })
         .collect();

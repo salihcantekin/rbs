@@ -35,8 +35,8 @@ use slint::{Model, ModelRc, SharedString, VecModel};
 
 use crate::preview_edit::{Effect, Placed, PreviewEdit};
 use crate::ui::{
-    EncoderData, EntryRow, ExistingData, KindData, MarkData, MeterRow, ScaleMark, SceneData,
-    SourceData, StackData, StatRow, Studio, TargetData, TokenRow,
+    EncoderData, EntryRow, ExistingData, KindData, LookData, MarkData, MeterRow, SampleData,
+    ScaleMark, SceneData, SourceData, StackData, StatRow, Studio, TargetData, TokenRow,
 };
 
 /// Meter refresh while the Mixer is visible (U16: 30 Hz).
@@ -111,6 +111,10 @@ pub struct StudioUi {
     scene_list: Option<SceneList>,
     scenes: Rc<VecModel<SceneData>>,
     existing: Rc<VecModel<ExistingData>>,
+    /// The Library's looks (set once) and sample pictures (made when the panel first
+    /// shows, ADR-0075).
+    library_looks: Rc<VecModel<LookData>>,
+    library_samples: Rc<VecModel<SampleData>>,
     /// The selected source's id (-1 none), shown in every window's Properties.
     pub selected: i32,
     /// The Filters tab's selection and the drag in progress (ADR-0062).
@@ -313,6 +317,8 @@ impl StudioUi {
             scene_list: None,
             scenes: Rc::new(VecModel::default()),
             existing: Rc::new(VecModel::default()),
+            library_looks: Rc::new(VecModel::from(library_looks())),
+            library_samples: Rc::new(VecModel::default()),
             filter_ui: filters::FilterUi::default(),
             selected: -1,
             adding: false,
@@ -409,6 +415,8 @@ impl StudioUi {
         g.set_sources(ModelRc::from(self.sources.clone()));
         g.set_scenes(ModelRc::from(self.scenes.clone()));
         g.set_existing(ModelRc::from(self.existing.clone()));
+        g.set_library_looks(ModelRc::from(self.library_looks.clone()));
+        g.set_library_samples(ModelRc::from(self.library_samples.clone()));
         g.set_filter_types(strings(Self::filter_type_names()));
         g.set_marks(ModelRc::from(self.marks.clone()));
         g.set_kinds(ModelRc::from(self.kinds.clone()));
@@ -2334,6 +2342,33 @@ impl StudioUi {
     }
 
     /// Reads the output profiles and scene collections for the menus again.
+    /// The Library panel shows: makes the sample thumbnails the first time.
+    pub fn library_shown(&mut self) {
+        if self.library_samples.row_count() == 0 {
+            self.library_samples.set_vec(library_samples());
+        }
+    }
+
+    /// Applies a built-in look to the selected source (ADR-0075).
+    pub fn apply_look(&mut self, look: &str) {
+        if self.selected < 0 {
+            return;
+        }
+        self.deleted.clear();
+        self.send(Command::ApplyLook {
+            source: SourceId::from_raw(self.selected as u32),
+            look: look.to_owned(),
+        });
+    }
+
+    /// Adds a sample picture to the scene being edited (ADR-0075).
+    pub fn add_sample(&mut self, sample: &str) {
+        self.deleted.clear();
+        self.send(Command::AddSample {
+            sample: sample.to_owned(),
+        });
+    }
+
     pub fn refresh_library(&mut self) {
         let rows = |list: Vec<(EntryId, String)>, current: &EntryId| -> Vec<EntryRow> {
             list.into_iter()
@@ -3407,6 +3442,44 @@ fn color_text(c: [u8; 4]) -> String {
     }
 }
 
+/// The Library's looks, in the order the panel lists them (ADR-0075).
+fn library_looks() -> Vec<LookData> {
+    rbs_scene::look::built_in()
+        .into_iter()
+        .map(|l| LookData {
+            id: l.id.into(),
+            name: l.name.into(),
+            group: match l.group {
+                rbs_scene::look::LookGroup::Color => 0,
+                rbs_scene::look::LookGroup::Effect => 1,
+                _ => 2,
+            },
+        })
+        .collect()
+}
+
+/// Pixels of a sample picture's thumbnail, in the aspect of the canvas it is for.
+const THUMB: (u32, u32) = (288, 162);
+
+/// The sample pictures with their thumbnails (made once, when the Library first shows).
+fn library_samples() -> Vec<SampleData> {
+    rbs_sources::still::SAMPLES
+        .iter()
+        .filter_map(|s| {
+            let px = rbs_sources::still::sample_picture(s.id, THUMB.0, THUMB.1)?;
+            let buffer = slint::SharedPixelBuffer::<slint::Rgba8Pixel>::clone_from_slice(
+                &px, THUMB.0, THUMB.1,
+            );
+            Some(SampleData {
+                id: s.id.into(),
+                name: s.name.into(),
+                frame: s.kind == rbs_sources::still::SampleKind::Frame,
+                thumb: slint::Image::from_rgba8(buffer),
+            })
+        })
+        .collect()
+}
+
 /// The icon a source's row shows for its kind (design system icon set).
 fn source_icon(kind: Option<SourceKind>) -> &'static str {
     match kind {
@@ -3415,6 +3488,8 @@ fn source_icon(kind: Option<SourceKind>) -> &'static str {
         Some(SourceKind::Camera) => "camera",
         Some(SourceKind::AudioInput) => "mic",
         Some(SourceKind::SystemAudio | SourceKind::ApplicationAudio) => "speaker",
+        Some(SourceKind::Image) => "image",
+        Some(SourceKind::Color) => "palette",
         None => "window",
     }
 }
@@ -3424,7 +3499,7 @@ fn source_icon(kind: Option<SourceKind>) -> &'static str {
 /// border, 6 crop, 7 shown or hidden, 8 lock, 9 source rename, 10 scene added, 11
 /// scene removed, 12 scene renamed (the name is the scene's, or the old name), 13
 /// filters changed, 14 removed from one scene, 15 made global or moved back into a
-/// scene.
+/// scene, 16 look applied.
 fn step_view(step: Option<&StepInfo>) -> (i32, &str) {
     match step {
         None => (0, ""),
@@ -3445,6 +3520,7 @@ fn step_view(step: Option<&StepInfo>) -> (i32, &str) {
                 EditKind::Filter => 13,
                 EditKind::Remove => 14,
                 EditKind::Global => 15,
+                EditKind::Look => 16,
             },
             s.name.as_str(),
         ),

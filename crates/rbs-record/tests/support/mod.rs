@@ -611,7 +611,10 @@ pub fn run_until<T: Driven>(
 pub fn engine_at_start() -> (Engine, TestClock) {
     let clock = TestClock::new();
     clock.set(START);
-    let engine = Engine::with_clock(Arc::new(clock.clone()), EngineConfig::default());
+    let engine = Engine::with_clock(
+        Arc::new(clock.clone()),
+        EngineConfig::default().swap_timeout(LIMIT),
+    );
     (engine, clock)
 }
 

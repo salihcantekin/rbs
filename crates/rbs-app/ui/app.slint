@@ -9,7 +9,7 @@ import { Shortcuts, ShortcutsSettings, ShortcutRow, ShortcutChip } from "shortcu
 import { VirtualCamera, VirtualCameraSettings } from "vcam.slint";
 import { ContextMenus, ContextItem, ContextChoice } from "context_menu.slint";
 import { AppMenus, AppMenuRow, AppMenuChip, AppMenu, AppMenuButton } from "app_menu.slint";
-import { Studio, EntryRow, SourceData, FilterData, FilterFieldData, MarkData, KindData, TargetData, MeterRow, ScaleMark, EncoderData, ProgramPanel, ScenesPanel, SourcesPanel, PropertiesPanel, MixerPanel, LiveControlsPanel, TransitionPanel, OutputsPanel, StatsPanel, RecordingSettings, StreamSettings, VideoSettings, RemoteControlSettings, GeneralSettings, GlobalSourcesSettings } from "studio.slint";
+import { Studio, EntryRow, SourceData, FilterData, FilterFieldData, MarkData, KindData, TargetData, MeterRow, ScaleMark, EncoderData, ProgramPanel, ScenesPanel, SourcesPanel, PropertiesPanel, MixerPanel, LiveControlsPanel, TransitionPanel, OutputsPanel, LibraryPanel, StatsPanel, RecordingSettings, StreamSettings, VideoSettings, RemoteControlSettings, GeneralSettings, GlobalSourcesSettings } from "studio.slint";
 
 export { AppMenus, AppMenuRow, AppMenuChip, ContextMenus, ContextItem, ContextChoice, Theme, Tokens, Appearance, ThemeOption, ThemeTokenRow, Shortcuts, ShortcutRow, ShortcutChip, VirtualCamera, Studio, EntryRow, SourceData, FilterData, FilterFieldData, MarkData, KindData, TargetData, MeterRow, ScaleMark, EncoderData }
 
@@ -107,6 +107,9 @@ export global Shell {
     // items after it, and whether the toolbar is shown.
     in property <[ToolbarData]> toolbar;
     in property <[ToolbarData]> toolbar-end;
+    // Go live and Record, the frame's fixed group (ADR-0073): shown with the toolbar
+    // hidden too.
+    in property <[ToolbarData]> toolbar-fixed;
     in property <bool> toolbar-visible: true;
     // Windows (ADR-0071): the toolbar row is the title bar and ends with the window
     // buttons. Set once the window's caption is removed.
@@ -244,7 +247,7 @@ component LiveIndicator inherits Rectangle {
 // A panel's content: the panels connected to the studio, a placeholder for the others.
 component PanelContent inherits Rectangle {
     in property <TabData> tab;
-    property <bool> connected: tab.id == "rbs.program" || tab.id == "rbs.transition" || tab.id == "rbs.scenes" || tab.id == "rbs.sources" || tab.id == "rbs.properties" || tab.id == "rbs.mixer" || tab.id == "rbs.preview" || tab.id == "rbs.live-controls" || tab.id == "rbs.outputs" || tab.id == "rbs.stats";
+    property <bool> connected: tab.id == "rbs.program" || tab.id == "rbs.transition" || tab.id == "rbs.scenes" || tab.id == "rbs.sources" || tab.id == "rbs.properties" || tab.id == "rbs.mixer" || tab.id == "rbs.preview" || tab.id == "rbs.live-controls" || tab.id == "rbs.outputs" || tab.id == "rbs.library" || tab.id == "rbs.stats";
     background: Theme.surface-raised;
     if tab.id == "rbs.program" || tab.id == "rbs.preview": ProgramPanel {
         width: parent.width;
@@ -279,6 +282,10 @@ component PanelContent inherits Rectangle {
         height: parent.height;
     }
     if tab.id == "rbs.outputs": OutputsPanel {
+        width: parent.width;
+        height: parent.height;
+    }
+    if tab.id == "rbs.library": LibraryPanel {
         width: parent.width;
         height: parent.height;
     }
@@ -634,8 +641,11 @@ component TransitionDuration inherits NumberField {
 
 component TransitionGo inherits VerticalLayout {
     in property <bool> can;
+    // A narrow rail shows an icon button; its name and shortcut appear under it while
+    // the pointer or the focus is on it (ADR-0073).
+    in property <bool> icons;
     spacing: Tokens.space-1;
-    Button {
+    if !root.icons: Button {
         text: @tr("Transition");
         kind: "primary";
         enabled: root.can;
@@ -644,9 +654,36 @@ component TransitionGo inherits VerticalLayout {
             : @tr("Transition: put the preview scene on air ({})", Shell.transition-keys);
         clicked => { Studio.transition(); }
     }
+    if root.icons: VerticalLayout {
+        spacing: Tokens.space-1;
+        HorizontalLayout {
+            alignment: center;
+            go := Button {
+                icon: IconName.chevron-right;
+                kind: "primary";
+                enabled: root.can;
+                width: Tokens.size-control-lg;
+                height: Tokens.size-control-lg;
+                accessible-name: Shell.transition-keys == ""
+                    ? @tr("Transition: put the preview scene on air")
+                    : @tr("Transition: put the preview scene on air ({})", Shell.transition-keys);
+                clicked => { Studio.transition(); }
+            }
+        }
+        // The name (and shortcut) of the icon button, shown while it is pointed at.
+        Text {
+            text: Shell.transition-keys == "" ? @tr("Transition") : @tr("Transition") + "\n" + Shell.transition-keys;
+            color: Theme.text-secondary;
+            font-size: Tokens.type-caption-size;
+            horizontal-alignment: center;
+            wrap: word-wrap;
+            accessible-role: none;
+            opacity: go.pointed ? 1 : 0;
+        }
+    }
     // The shortcut as small, quiet text under the button (the owner, 2026-11-07); the
     // button's accessible name carries it too.
-    if Shell.transition-keys != "": Text {
+    if !root.icons && Shell.transition-keys != "": Text {
         text: Shell.transition-keys;
         color: Theme.text-secondary;
         font-size: Tokens.type-caption-size;
@@ -665,17 +702,19 @@ component TransitionRail inherits Rectangle {
     accessible-role: AccessibleRole.groupbox;
     accessible-label: @tr("Transition");
     // Between the pictures: type, duration and the button in a column, the position
-    // toggles at the foot.
+    // toggles at the foot. Up to `size.transition.icons` wide only the icon button
+    // and the position toggles show (ADR-0073).
+    property <bool> icons: root.width <= Tokens.size-transition-icons;
     if !below: VerticalLayout {
         padding: Tokens.space-2;
         spacing: Tokens.space-2;
         Rectangle { }
-        TransitionChoice { }
-        TransitionDuration { }
-        TransitionGo { can: root.can; }
+        if !root.icons: TransitionChoice { }
+        if !root.icons: TransitionDuration { }
+        TransitionGo { can: root.can; icons: root.icons; }
         Rectangle { }
         Rectangle { height: Tokens.size-border; background: Theme.border-subtle; }
-        RailPlace { below: false; }
+        RailPlace { below: false; caption: !root.icons; }
     }
     // Below the pictures: type, duration and the button centred under the two
     // pictures, the position toggles at the right end behind a divider.
@@ -1400,6 +1439,12 @@ component FrameBar inherits Rectangle {
                     ws-menu.show();
                 }
             }
+            // Go live and Record: part of the frame, not of the toolbar, so they stay
+            // with the toolbar hidden or customised (U1, ADR-0073).
+            for item in Shell.toolbar-fixed: ToolbarCell {
+                item: item;
+                open-workspaces(x) => { }
+            }
             // Idle it is not in the layout at all (the status bar says "Not live").
             if Shell.live-state != 0 || Shell.live-camera: LiveIndicator { horizontal-stretch: 0; }
         }
@@ -1528,6 +1573,25 @@ component StatusBar inherits Rectangle {
             color: Studio.st-bad ? Theme.state-error : Theme.text-secondary;
             font-size: Tokens.type-caption-size;
             vertical-alignment: center;
+        }
+        // What the Live controls panel said under its buttons (ADR-0073): the last
+        // recording's outcome ("Saved ..."), or why recording is not possible, and the
+        // virtual camera's state. Long paths are cut in the middle of the bar's room.
+        if Studio.rec-state == 0 && (Studio.rec-unavailable != "" || Studio.rec-note != ""): Text {
+            horizontal-stretch: 1;
+            text: Studio.rec-unavailable != "" ? Studio.rec-unavailable : Studio.rec-note;
+            color: Studio.rec-unavailable != "" || Studio.rec-note-bad ? Theme.state-error : Theme.text-secondary;
+            font-size: Tokens.type-caption-size;
+            vertical-alignment: center;
+            overflow: elide;
+        }
+        if Studio.vcam-shown && Studio.vcam-text != "": Text {
+            horizontal-stretch: 0;
+            text: Studio.vcam-text;
+            color: Theme.text-secondary;
+            font-size: Tokens.type-caption-size;
+            vertical-alignment: center;
+            overflow: elide;
         }
         Rectangle { horizontal-stretch: 1; }
         profile-button := StatusPicker {

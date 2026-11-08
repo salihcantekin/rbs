@@ -355,7 +355,6 @@ impl LayoutSession {
         // Every result is checked, so a sequence of valid commands can never
         // produce a workspace that fails to load again (for example by nesting
         // splits deeper than the file format allows).
-        next.dissolve_broken_studio();
         next.validate()?;
         if next == before {
             return Ok(None);
@@ -462,8 +461,8 @@ mod tests {
             Origin::Command,
         );
         assert_eq!(t, Ok(None), "not live");
-        // Closing Program dissolves Edit's studio split (ADR-0064).
-        assert!(s.workspace().main().studio_split().is_none());
+        // Closing Program closes Edit's Pictures area (ADR-0073).
+        assert!(s.workspace().main().pictures_leaf().is_none());
         assert_eq!(
             s.apply(LayoutCommand::ClosePanel(id("rbs.mixer")), Origin::Command),
             Ok(None)
@@ -592,7 +591,7 @@ mod tests {
 
     #[test]
     fn drag_is_one_undo_step() {
-        let mut s = LayoutSession::new(builtin::minimal());
+        let mut s = LayoutSession::new(builtin::audio());
         let before = s.workspace().clone();
         for _ in 0..10 {
             s.apply(
@@ -657,7 +656,7 @@ mod tests {
         assert_eq!(s.redraw_rate(), UpdateRate::Hz(1));
         // A hidden tab does not count: Live shows Stats in front of Scenes.
         let mut s = LayoutSession::new(builtin::live());
-        for p in ["rbs.preview", "rbs.program", "rbs.mixer"] {
+        for p in ["rbs.preview", "rbs.mixer"] {
             s.apply(LayoutCommand::ClosePanel(id(p)), Origin::Command)
                 .unwrap();
         }
@@ -683,7 +682,7 @@ mod tests {
         let mut ws = builtin::edit();
         {
             let m = ws.main_layout_mut().unwrap();
-            m.left.layout = Some(Node::tabs(vec![id("rbs.library")]));
+            m.left.layout = Some(Node::tabs(vec![id("rbs.status-bar")]));
             m.left.size = 400;
         }
         ws.locked = true;
@@ -699,7 +698,7 @@ mod tests {
         .unwrap();
         let m = s.workspace().main_layout().unwrap();
         assert!(!m.left.visible && m.left.layout.is_some());
-        assert!(!s.workspace().visible().contains(&&id("rbs.library")));
+        assert!(!s.workspace().visible().contains(&&id("rbs.status-bar")));
         s.apply(LayoutCommand::SetAllAreasVisible(true), Origin::Pointer)
             .unwrap();
         assert!(s.workspace().main_layout().unwrap().left.visible);
@@ -720,7 +719,6 @@ mod tests {
         let mut old = builtin::edit();
         old.name = "edit".to_owned();
         old.close(&id("rbs.program")).unwrap();
-        old.dissolve_broken_studio();
         old.locked = true;
         assert_eq!(old.studio_rail(), None);
         let mut s = LayoutSession::new(old.clone());

@@ -25,6 +25,7 @@ pub fn panel_icon(id: &PanelId) -> &'static str {
     match id.base() {
         "rbs.stats" => "grid",
         "rbs.outputs" => "copy",
+        "rbs.library" => "image",
         _ => "window",
     }
 }
@@ -85,9 +86,8 @@ pub fn window_view(
     let lone_centre = centre.is_some_and(|c| matches!(c, Node::Tabs(_)));
     // Preview and Program in the studio split are not collapsed or auto-hidden
     // (ADR-0064 decision 4).
-    let in_studio = |s: &rbs_ui::layout::StackRect| {
-        s.stack < centre_stacks && s.tabs.first().is_some_and(|p| win.in_studio_split(p))
-    };
+    let in_studio =
+        |s: &rbs_ui::layout::StackRect| s.stack >= rbs_ui::layout::PICTURES_PREVIEW_STACK;
     let stacks = stacks
         .into_iter()
         .map(|s| StackData {
@@ -168,6 +168,12 @@ fn percent_before(layout: &Node, h: &rbs_ui::layout::Handle) -> i32 {
                 None => return 0,
             },
             Node::Tabs(_) => return 0,
+            // A rail edge: the rail's width within its limits.
+            Node::Pictures(p) => {
+                let (lo, hi) = rbs_ui::layout::RAIL_SIZE_RANGE;
+                let share = (p.rail_size.clamp(lo, hi) - lo) as f32 / (hi - lo) as f32;
+                return (100.0 * share).round() as i32;
+            }
         }
     }
     match node {
@@ -180,7 +186,7 @@ fn percent_before(layout: &Node, h: &rbs_ui::layout::Handle) -> i32 {
                 0
             }
         }
-        Node::Tabs(_) => 0,
+        Node::Tabs(_) | Node::Pictures(_) => 0,
     }
 }
 
@@ -192,6 +198,9 @@ pub fn panel_entries(ws: &Workspace) -> Vec<PanelEntry> {
         // Transition is the studio rail beside the pictures (ADR-0064), listed only
         // where an older workspace still has it as a panel.
         .filter(|id| id.as_str() != "rbs.transition" || ws.is_open(id))
+        // Go live and Record live in the window frame (ADR-0073), so the Live controls
+        // panel is listed only where an older workspace still has it open.
+        .filter(|id| id.as_str() != "rbs.live-controls" || ws.is_open(id))
         .map(|id| PanelEntry {
             open: ws.is_open(&id),
             title: title(&id).into(),
@@ -251,15 +260,16 @@ mod tests {
         let (stacks, handles, rail) =
             window_view(0, &ws.windows[0], Rect::sized(1440.0, 860.0), None, false);
         assert!(!rail.shown, "no rail outside studio mode");
-        // Program is hidden outside studio mode (ADR-0064).
-        assert_eq!(stacks.len(), ws.windows[0].stack_count() - 1);
+        // Program is hidden outside studio mode; the Pictures leaf is no stack but
+        // reports its pictures (ADR-0073).
+        assert_eq!(stacks.len(), ws.windows[0].stack_count() + 1);
         assert!(
             !stacks
                 .iter()
                 .any(|s| s.tabs.iter().any(|t| t.id == "rbs.program"))
         );
         let (on, _, rail) = window_view(0, &ws.windows[0], Rect::sized(1440.0, 860.0), None, true);
-        assert_eq!(on.len(), ws.windows[0].stack_count());
+        assert_eq!(on.len(), ws.windows[0].stack_count() + 2);
         assert!(rail.shown && !rail.below);
         assert!(!handles.is_empty());
         assert!(handles.iter().all(|h| (0..=100).contains(&h.percent)));
@@ -269,19 +279,21 @@ mod tests {
             .unwrap();
         assert_eq!(mixer.tabs.row_count(), 1);
         let [left, right, bottom] = edge_tabs(&ws.windows[0]);
-        assert!(left.is_empty() && bottom.is_empty());
+        assert!(bottom.is_empty());
+        // The Library is the left edge tab (ADR-0075).
+        assert_eq!(left.len(), 1);
         assert_eq!(right.len(), 2);
-        let controls = stacks
-            .iter()
-            .find(|s| s.tabs.iter().any(|t| t.id == "rbs.live-controls"))
-            .unwrap();
-        assert!(controls.collapsed);
+        assert!(
+            !stacks
+                .iter()
+                .any(|s| s.tabs.iter().any(|t| t.id == "rbs.live-controls"))
+        );
         let preview = stacks
             .iter()
             .find(|s| s.tabs.iter().any(|t| t.id == "rbs.preview"))
             .unwrap();
         assert!(!preview.can_collapse && !preview.can_hide);
-        assert!(controls.can_collapse && controls.can_hide);
+        assert!(mixer.can_collapse && mixer.can_hide);
         assert!(mixer.tabs.iter().all(|t| t.known));
     }
 
@@ -294,9 +306,10 @@ mod tests {
         let mut ws = builtin::minimal();
         ws.open(plugin).unwrap();
         let entries = panel_entries(&ws);
-        // Every built-in panel but Transition, and the plugin's.
-        assert_eq!(entries.len(), BUILT_IN_PANELS.len());
+        // Every built-in panel but Transition and Live controls, and the plugin's.
+        assert_eq!(entries.len(), BUILT_IN_PANELS.len() - 1);
         assert!(!entries.iter().any(|e| e.id == "rbs.transition"));
+        assert!(!entries.iter().any(|e| e.id == "rbs.live-controls"));
         assert!(entries.iter().any(|e| e.id == "rbs.program" && e.open));
         assert!(entries.iter().any(|e| e.id == "rbs.mixer" && !e.open));
     }

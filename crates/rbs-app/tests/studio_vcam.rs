@@ -66,7 +66,12 @@ fn studio(
         config,
         || (RecordAdapters::new(), Vec::new()),
         move || Ok(gpu),
-        || Engine::with_clock(Arc::new(TestClock::new()), EngineConfig::default()),
+        || {
+            Engine::with_clock(
+                Arc::new(TestClock::new()),
+                EngineConfig::default().swap_timeout(LIMIT),
+            )
+        },
         move |u| {
             let _ = tx.send(u);
         },

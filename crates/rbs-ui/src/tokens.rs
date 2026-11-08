@@ -105,6 +105,7 @@ pub const LENGTHS: &[&str] = &[
     "size.transition.narrow",
     "size.transition.short",
     "size.transition.between",
+    "size.transition.icons",
     "size.transition.below",
     "size.transition.min-picture",
     "size.transition.min-h",
@@ -112,6 +113,8 @@ pub const LENGTHS: &[&str] = &[
     "size.transition.type-min",
     "size.transition.duration",
     "size.transition.compact",
+    "size.library.thumb-w",
+    "size.library.thumb-h",
 ];
 
 /// Duration tokens every file defines (milliseconds).

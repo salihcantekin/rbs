@@ -130,7 +130,9 @@ format = 2
 # the button says "Go" and the studio mode hint is hidden.
 "size.transition.narrow" = 40
 "size.transition.short" = 120
-"size.transition.between" = 156
+"size.transition.between" = 100
+# Rail width up to which the rail between the pictures shows icons only.
+"size.transition.icons" = 120
 "size.transition.below" = 44
 "size.transition.min-picture" = 160
 "size.transition.min-h" = 240
@@ -138,6 +140,9 @@ format = 2
 "size.transition.type-min" = 72
 "size.transition.duration" = 88
 "size.transition.compact" = 600
+# Library panel: a sample picture's thumbnail (16:9).
+"size.library.thumb-w" = 144
+"size.library.thumb-h" = 81
 
 # Milliseconds. Every animation is off under "reduce motion".
 [duration]
