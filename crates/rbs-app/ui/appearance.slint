@@ -2,7 +2,7 @@
 // theme library and the theme editor. Rust (`appearance_page`) pushes state into the
 // `Appearance` global of the Settings window and handles its callbacks.
 import { Theme, Tokens } from "tokens.slint";
-import { Button, Checkbox, ColorPicker, FocusRing, IconButton, IconName, MenuItem, MenuSurface, NumberField, Select, TextField, Toggle } from "components.slint";
+import { Button, Checkbox, ColorPicker, FocusRing, RingFocus, IconButton, IconName, MenuItem, MenuSurface, NumberField, Select, TextField, Toggle } from "components.slint";
 import { SettingsCard, SettingRow, SettingBlock, SettingsNotice, SettingsCallout } from "settings.slint";
 
 // One theme in the library: built-in themes first, then user themes by name.
@@ -737,7 +737,7 @@ component ThemeListRow inherits Rectangle {
             }
         }
     }
-    focus := FocusScope {
+    focus := RingFocus {
         enabled: root.enabled;
         key-pressed(e) => {
             if e.text == Key.Return || e.text == " " { root.activated(); return accept; }
@@ -805,7 +805,7 @@ component ThemeListRow inherits Rectangle {
             }
         }
     }
-    FocusRing { show: focus.has-focus; border-radius: Tokens.radius-md; }
+    FocusRing { show: focus.ring; border-radius: Tokens.radius-md; }
 }
 
 export component AppearanceSettings inherits Rectangle {

@@ -1445,9 +1445,6 @@ pub fn default_toolbar() -> Toolbar {
         "ui.area.toggle?area=bottom",
         "ui.area.toggle?area=right",
         "|",
-        "stream.toggle",
-        "record.toggle",
-        "|",
         "ui.settings.open",
     ];
     Toolbar {

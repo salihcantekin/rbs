@@ -143,6 +143,10 @@ rbs-audio-io-coreaudio = { path = "../rbs-audio-io-coreaudio" }
 rbs-codec-videotoolbox = { path = "../rbs-codec-videotoolbox" }
 rbs-codec-audiotoolbox = { path = "../rbs-codec-audiotoolbox" }
 
+[target.'cfg(windows)'.build-dependencies]
+# Embeds assets/brand/rbs.ico as the executable's icon (build.rs).
+winresource = "0.1"
+
 [dev-dependencies]
 # Headless Slint windows for tests/popup_covers.rs; already in the lockfile through Slint.
 i-slint-backend-testing = { version = "=1.18.1", default-features = false }
