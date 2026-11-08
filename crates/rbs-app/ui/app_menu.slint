@@ -5,7 +5,7 @@
 // (`app_menu.rs`) when the menu opens or its view changes, so nothing is computed
 // while it is closed (P13).
 import { Theme, Tokens } from "tokens.slint";
-import { Icon, IconName, Icons, MenuSurface, FocusRing } from "components.slint";
+import { BrandMark, Icon, IconName, Icons, MenuSurface, FocusRing } from "components.slint";
 
 // One row of the item column. kind: 1 command, 2 section heading, 3 separator,
 // 4 picker (opens its choices), 5 back (from a picker's choices).
@@ -471,7 +471,7 @@ export component AppMenuButton inherits Rectangle {
         padding-left: Tokens.space-2;
         padding-right: Tokens.space-3;
         spacing: Tokens.space-2;
-        VerticalLayout { alignment: center; Icon { name: IconName.menu; } }
+        VerticalLayout { alignment: center; BrandMark { } }
         Text {
             text: "RBS";
             color: Theme.text-primary;
