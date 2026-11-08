@@ -473,11 +473,21 @@ component StackView inherits Rectangle {
                 }
                 if active-id == "rbs.preview" && !data.collapsed && !root.switch-in-rail: HorizontalLayout {
                     padding-right: Tokens.space-2;
-                    Toggle {
-                        label: @tr("Studio mode");
-                        text: @tr("Studio mode");
-                        checked: Studio.studio-mode;
-                        toggled(on) => { Menus.run("canvas.studio_mode.toggle"); }
+                    // Its own bordered component, set apart from the panel's buttons.
+                    Rectangle {
+                        border-width: Tokens.size-border;
+                        border-color: Theme.border-subtle;
+                        border-radius: Tokens.radius-md;
+                        HorizontalLayout {
+                            padding-left: Tokens.space-2;
+                            padding-right: Tokens.space-2;
+                            Toggle {
+                                label: @tr("Studio mode");
+                                text: @tr("Studio mode");
+                                checked: Studio.studio-mode;
+                                toggled(on) => { Menus.run("canvas.studio_mode.toggle"); }
+                            }
+                        }
                     }
                 }
                 // Picture panels: Maximize or Restore in the title row, as in design E.
