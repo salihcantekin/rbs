@@ -31,7 +31,7 @@ Bounds and rules across tokens are different: a 2 px control, a line height tall
 ## Consequences
 
 - Users can design freely and see each change at once; Save works for every change the fields allow.
-- A user theme, including an imported one, can be hard to read. The editor shows a theme's warnings, so the cause is visible; built-in themes stay readable for recovery. Showing warnings in the theme list and when importing a theme is not part of this change and is a follow-up (an imported theme that imitates live is not flagged before it is used).
+- A user theme, including an imported one, can be hard to read. The editor shows a theme's warnings, so the cause is visible; built-in themes stay readable for recovery. The theme list shows each theme's warning count and an import names its warnings, the Live ones apart (added after the ADR was accepted; see the themes spec).
 - `every_drawn_pair_has_a_contrast_rule` stays: the rules still exist and still guard the built-in themes; it only changes what a user theme's failure means.
 - The "Keep this look?" safety net fires only when an edit takes primary text from readable to unreadable; an already unreadable theme (an import) is not asked about, and `--reset-appearance` is then the way out.
 - A theme on a `high-contrast` base that breaks the 7:1 thresholds keeps its base and `Theme.high-contrast`; its warnings show like any other.
