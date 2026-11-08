@@ -367,6 +367,24 @@ impl CommandState for Shown<'_> {
                     Err("The source has no sound in the Mixer.".to_owned())
                 }
             }
+            "source.mixer_hidden.toggle" => {
+                self.running()?;
+                if self.source(id)?.audio {
+                    Ok(())
+                } else {
+                    Err("The source has no sound in the Mixer.".to_owned())
+                }
+            }
+            "mixer.hide_all" | "mixer.hide_muted" | "mixer.unhide_all" => {
+                self.running()?;
+                let (shown, muted, hidden) = s.mixer_counts();
+                match id.base() {
+                    "mixer.hide_all" if shown == 0 => Err("Every source is hidden.".to_owned()),
+                    "mixer.hide_muted" if muted == 0 => Err("No shown source is muted.".to_owned()),
+                    "mixer.unhide_all" if hidden == 0 => Err("No source is hidden.".to_owned()),
+                    _ => Ok(()),
+                }
+            }
             "canvas.transition" => {
                 self.running()?;
                 if s.studio_mode {
@@ -476,6 +494,7 @@ impl CommandState for Shown<'_> {
             "item.visible.toggle" => self.source(id).is_ok_and(|f| f.visible),
             "item.locked.toggle" => self.source(id).is_ok_and(|f| f.locked),
             "source.muted.toggle" => self.source(id).is_ok_and(|f| f.muted),
+            "source.mixer_hidden.toggle" => self.source(id).is_ok_and(|f| f.mixer_hidden),
             "stream.toggle" => matches!(self.studio.st_state, st_state::LIVE | st_state::STARTING),
             "vcam.toggle" => self.camera.sending,
             "record.toggle" => matches!(
@@ -543,7 +562,9 @@ impl CommandState for Shown<'_> {
     fn applies(&self, id: &CommandId) -> bool {
         match id.base() {
             "item.locked.toggle" => self.source(id).is_ok_and(|f| f.picture),
-            "source.muted.toggle" => self.source(id).is_ok_and(|f| f.audio),
+            "source.muted.toggle" | "source.mixer_hidden.toggle" => {
+                self.source(id).is_ok_and(|f| f.audio)
+            }
             // The scene shown already: putting it on air again does nothing.
             "scene.select" => {
                 id.param("scene").is_none() || self.scene(id).ok() != self.studio.scene_target(None)
@@ -773,6 +794,17 @@ fn build_items(state: &Shown<'_>, bar: &rbs_ui::workspace::Toolbar) -> Vec<ToolI
         .collect()
 }
 
+/// The Mixer's bulk commands (ADR-0080).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MixerBulk {
+    /// Hide every shown source.
+    HideAll,
+    /// Hide the shown sources that are muted.
+    HideMuted,
+    /// Show every hidden source.
+    ShowAll,
+}
+
 /// What running an id from the menu bar does.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Run {
@@ -822,6 +854,10 @@ pub enum Run {
     SourceLocked(i32, bool),
     /// Mute (`true`) or unmute the source with this id.
     SourceMuted(i32, bool),
+    /// Hide (`true`) or show the source with this id in the Mixer (ADR-0080).
+    SourceMixerHidden(i32, bool),
+    /// Hide every shown source, only the muted ones, or show every hidden one.
+    MixerBulk(MixerBulk),
     GoLive,
     /// Ask first, then end the stream (U4).
     AskEndStream,
@@ -895,6 +931,10 @@ pub fn run(text: &str, state: &Shown<'_>) -> Option<Run> {
         "item.visible.toggle" => Run::SourceVisible(state.source(&id).ok()?.id, !on),
         "item.locked.toggle" => Run::SourceLocked(state.source(&id).ok()?.id, !on),
         "source.muted.toggle" => Run::SourceMuted(state.source(&id).ok()?.id, !on),
+        "source.mixer_hidden.toggle" => Run::SourceMixerHidden(state.source(&id).ok()?.id, !on),
+        "mixer.hide_all" => Run::MixerBulk(MixerBulk::HideAll),
+        "mixer.hide_muted" => Run::MixerBulk(MixerBulk::HideMuted),
+        "mixer.unhide_all" => Run::MixerBulk(MixerBulk::ShowAll),
         "stream.toggle" if on => Run::AskEndStream,
         "stream.toggle" => Run::GoLive,
         "record.toggle" if on => Run::StopRecording,

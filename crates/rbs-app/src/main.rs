@@ -438,6 +438,12 @@ impl App {
             Run::SourceVisible(id, on) => self.studio.set_source_visible(id, on),
             Run::SourceLocked(id, on) => self.studio.set_source_locked(id, on),
             Run::SourceMuted(id, on) => self.studio.set_source_muted(id, on),
+            Run::SourceMixerHidden(id, on) => self.studio.set_source_mixer_hidden(id, on),
+            Run::MixerBulk(bulk) => match bulk {
+                menu_bar::MixerBulk::HideAll => self.studio.hide_in_mixer(true, false),
+                menu_bar::MixerBulk::HideMuted => self.studio.hide_in_mixer(true, true),
+                menu_bar::MixerBulk::ShowAll => self.studio.hide_in_mixer(false, false),
+            },
             Run::GoLive => self.studio.go_live(),
             Run::AskEndStream if confirm => self.confirm_end = true,
             Run::AskEndStream => self.studio.end_stream(),
