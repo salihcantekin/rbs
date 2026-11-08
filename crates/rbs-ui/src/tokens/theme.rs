@@ -1028,6 +1028,7 @@ impl Look<'_> {
             ],
             &len,
         );
+        ascending(&["size.field.gap", "size.section.gap"], &len);
         ascending(&["radius.sm", "radius.md", "radius.lg"], &len);
         ascending(
             &["type.caption", "type.body", "type.title", "type.heading"],

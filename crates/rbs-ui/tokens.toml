@@ -100,6 +100,8 @@ format = 2
 "size.panel.pad" = 12
 "size.section.gap" = 16
 "size.field.gap" = 8
+# Thickness of the chosen tab's underline.
+"size.tab.indicator" = 2
 "size.control.sm" = 24
 "size.control.md" = 28
 "size.control.lg" = 32

@@ -62,6 +62,7 @@ pub const MINIMUMS: &[(&str, f32, &str)] = &[
     ("size.panel.pad", 8.0, "ADR-0076"),
     ("size.section.gap", 12.0, "ADR-0076"),
     ("size.field.gap", 6.0, "ADR-0076"),
+    ("size.tab.indicator", 2.0, "rule U7"),
     ("size.icon.box", 12.0, "rule U7"),
     ("size.icon.stroke", 1.0, "rule U7"),
     ("size.window.min-w", 1280.0, "rule U11"),
@@ -79,6 +80,7 @@ pub const LENGTHS: &[&str] = &[
     "size.panel.pad",
     "size.section.gap",
     "size.field.gap",
+    "size.tab.indicator",
     "size.control.sm",
     "size.control.md",
     "size.control.lg",
@@ -579,6 +581,13 @@ mod tests {
 
         let thin_ring = base.replacen("\"size.focus-ring\" = 2", "\"size.focus-ring\" = 0", 1);
         assert!(Tokens::parse(&thin_ring).unwrap_err().0.contains("U7"));
+        for (name, min, _) in MINIMUMS {
+            if let Some(t) = crate::tokens::themeable(name)
+                && let crate::tokens::theme::Kind::Length { min: bound, .. } = &t.kind
+            {
+                assert_eq!(bound, min, "{name}: editor bound and MINIMUMS floor differ");
+            }
+        }
         // ADR-0076: the panel spacing tokens keep a floor, whatever space.* says.
         for (from, to) in [
             ("\"size.panel.pad\" = 12", "\"size.panel.pad\" = 2"),

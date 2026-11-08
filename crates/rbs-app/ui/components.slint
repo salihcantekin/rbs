@@ -773,8 +773,8 @@ component TabItem inherits Rectangle {
     in property <string> text;
     in property <string> accessible-name;
     in property <bool> checked;
+    in property <bool> focused;
     callback clicked();
-    callback step(int);
     height: Tokens.size-control-md;
     background: !root.checked && touch.has-hover ? Theme.surface-overlay : transparent;
     border-radius: Tokens.radius-sm;
@@ -782,7 +782,6 @@ component TabItem inherits Rectangle {
     accessible-label: root.accessible-name;
     accessible-checked: root.checked;
     accessible-action-default => { root.clicked(); }
-    forward-focus: focus;
     Text {
         text: root.text;
         color: root.checked ? Theme.text-primary : Theme.text-secondary;
@@ -794,21 +793,15 @@ component TabItem inherits Rectangle {
     }
     Rectangle {
         y: parent.height - self.height;
-        height: root.checked ? Tokens.size-focus-ring : 0px;
+        height: root.checked ? Tokens.size-tab-indicator : 0px;
         background: Theme.accent;
     }
-    focus := FocusScope {
-        key-pressed(e) => {
-            if e.text == Key.Return || e.text == " " { root.clicked(); return accept; }
-            if e.text == Key.LeftArrow { root.step(-1); return accept; }
-            if e.text == Key.RightArrow { root.step(1); return accept; }
-            reject
-        }
-    }
-    touch := TouchArea { clicked => { focus.focus(); root.clicked(); } }
-    FocusRing { show: focus.has-focus; }
+    touch := TouchArea { clicked => { root.clicked(); } }
+    FocusRing { show: root.focused && root.checked; }
 }
 
+// One focus stop for the whole bar (Tab enters and leaves it); Left, Right, Home and
+// End choose a tab and the focus ring follows the chosen one.
 export component Tabs inherits Rectangle {
     in property <string> label;
     in property <[string]> options;
@@ -817,6 +810,7 @@ export component Tabs inherits Rectangle {
     height: Tokens.size-control-md + Tokens.size-border;
     accessible-role: tab-list;
     accessible-label: label;
+    forward-focus: focus;
     Rectangle {
         y: parent.height - self.height;
         height: Tokens.size-border;
@@ -829,10 +823,17 @@ export component Tabs inherits Rectangle {
             text: o;
             accessible-name: @tr("{}: {}", root.label, o);
             checked: i == root.index;
-            clicked => { root.selected(i); }
-            step(d) => {
-                if i + d >= 0 && i + d < root.options.length { root.selected(i + d); }
-            }
+            focused: focus.has-focus;
+            clicked => { focus.focus(); root.selected(i); }
+        }
+    }
+    focus := FocusScope {
+        key-pressed(e) => {
+            if e.text == Key.LeftArrow && root.index > 0 { root.selected(root.index - 1); return accept; }
+            if e.text == Key.RightArrow && root.index + 1 < root.options.length { root.selected(root.index + 1); return accept; }
+            if e.text == Key.Home { root.selected(0); return accept; }
+            if e.text == Key.End { root.selected(root.options.length - 1); return accept; }
+            reject
         }
     }
 }
