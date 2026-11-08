@@ -742,7 +742,7 @@ component SourceRowView inherits Rectangle {
                     }
                     // State in words, never colour alone (U7); shown when it needs attention.
                     if !data.ok: Text {
-                        text: @tr("{} · {}", data.kind, data.status);
+                        text: data.status;
                         color: Theme.text-secondary;
                         font-size: Tokens.type-caption-size;
                         overflow: elide;
