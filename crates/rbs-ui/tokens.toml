@@ -134,8 +134,6 @@ format = 2
 # Rail width up to which the rail between the pictures shows icons only.
 "size.transition.icons" = 120
 "size.transition.below" = 44
-# Height of the Pictures area's header strip, which holds the Studio mode switch.
-"size.pictures.header" = 32
 "size.transition.min-picture" = 160
 "size.transition.min-h" = 240
 "size.transition.type" = 112

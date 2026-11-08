@@ -188,8 +188,6 @@ pub struct WindowFlat {
     pub handles: Vec<WindowHandle>,
     /// The Transition rail of the centre's studio split in studio mode (ADR-0064).
     pub rail: Option<(Rect, crate::layout::RailAt)>,
-    /// The Pictures leaf's header strip with the Studio mode switch (ADR-0073).
-    pub header: Option<Rect>,
 }
 
 /// Flatten window `w` laid out in `content`.
@@ -199,7 +197,6 @@ pub fn flatten_window(w: &Window, content: Rect, studio_mode: bool) -> WindowFla
         let flat = node.flatten_in(r, studio_mode);
         if tree == 0 && out.rail.is_none() {
             out.rail = flat.rail;
-            out.header = flat.header;
         }
         out.stacks.extend(flat.stacks.into_iter().map(|mut s| {
             // The Pictures leaf's pictures keep their own numbers (ADR-0073).
@@ -287,7 +284,6 @@ pub fn maximized(flat: &WindowFlat, content: Rect, panel: &PanelId) -> Option<Wi
         }],
         handles: Vec::new(),
         rail: None,
-        header: None,
     })
 }
 
