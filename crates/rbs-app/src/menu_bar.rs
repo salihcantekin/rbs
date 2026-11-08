@@ -399,6 +399,17 @@ impl CommandState for Shown<'_> {
                              the centre."
                     .to_owned()),
             },
+            "ui.workspace.reset" => match rbs_ui::builtin::by_name(&self.workspace.name) {
+                None => Err("Only a built-in workspace has a default layout.".to_owned()),
+                Some(mut d) => {
+                    d.name.clone_from(&self.workspace.name);
+                    if d == *self.workspace {
+                        Err("The workspace already has its default layout.".to_owned())
+                    } else {
+                        Ok(())
+                    }
+                }
+            },
             "ui.toolbar.reset" => match self.workspace.toolbar {
                 Some(_) => Ok(()),
                 None => Err("The toolbar already has its default items.".to_owned()),
@@ -822,6 +833,7 @@ pub fn run(text: &str, state: &Shown<'_>) -> Option<Run> {
         "ui.layout.reset_sizes" => Run::Layout(L::ResetSizes),
         "ui.layout.studio_rail" => Run::Layout(L::SetStudioRail(rail_at(&id)?)),
         "ui.toolbar.reset" => Run::Layout(L::ResetToolbar),
+        "ui.workspace.reset" => Run::Layout(L::ResetWorkspace),
         "ui.theme.reload" => Run::ReloadThemes,
         "ui.settings.open" => open_settings(&id)?,
         "ui.app_menu.open" => Run::OpenAppMenu,
