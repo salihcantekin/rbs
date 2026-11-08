@@ -162,7 +162,7 @@ pub fn install(g: &Appearance<'_>, ctx: &Ctx) {
                        file,
                        name: SharedString,
                        hex: SharedString| {
-        edited(page.ui.set_color(&file, &name, &hex))
+        edited(page.ui.set_color(&file, &name, &hex, Instant::now()))
     });
     on!(on_set_number, |_app,
                         page,
@@ -204,8 +204,44 @@ pub fn install(g: &Appearance<'_>, ctx: &Ctx) {
             });
         });
     }
+    // The font field's suggestions for the family being typed. Like the font menu it
+    // reads the installed families the first time it is needed, and only fills the
+    // list, so the editor's rows (and the field being typed in) stay as they are.
+    {
+        let ctx = ctx.clone();
+        g.on_suggest_fonts(move |text: SharedString| {
+            let c = ctx.clone();
+            ctx.update(move |app: &mut App| {
+                let Some(w) = &app.settings else { return };
+                let mut page = c.page.borrow_mut();
+                let page: &mut Page = &mut page;
+                let names: Vec<SharedString> = if text.trim().is_empty() {
+                    Vec::new()
+                } else {
+                    let all = page
+                        .families
+                        .get_or_insert_with(|| look::FontCatalog::families(&mut page.fonts));
+                    look::suggest_families(all, &text)
+                        .into_iter()
+                        .map(SharedString::from)
+                        .collect()
+                };
+                w.global::<Appearance>()
+                    .set_font_suggestions(ModelRc::new(VecModel::from(names)));
+            });
+        });
+    }
+    g.on_complete_font(|text: SharedString, family: SharedString| {
+        entry::guard_or(
+            || text.clone(),
+            || look::complete_family(&text, &family).into(),
+        )
+    });
+    on!(on_fix, |_app, page, file, name: SharedString| {
+        edited(page.ui.fix_colour(&file, &name, Instant::now()))
+    });
     on!(on_reset, |_app, page, file, name: SharedString| {
-        edited(page.ui.reset(&file, &name))
+        edited(page.ui.reset(&file, &name, Instant::now()))
     });
     on!(on_save, |app, page, file| {
         let Some((id, name, body)) = page.ui.to_save() else {
@@ -611,6 +647,7 @@ fn show(ctx: &Ctx, app: &App) {
             let rows: Vec<ThemeTokenRow> = ui.rows(&look.file).into_iter().map(row).collect();
             super::set_rows(&page.rows, rows);
             g.set_general_problems(strings(ui.general_problems()));
+            g.set_warning_count(i32::try_from(ui.warning_count()).unwrap_or(i32::MAX));
             g.set_unknown_tokens(strings(ed.draft.unknown_names()));
             let active = app.main.global::<Theme>().get_active().clamp(0, 1) as usize;
             g.set_font_in_use(look.fonts[active].as_str().into());
@@ -648,6 +685,8 @@ fn row(r: crate::appearance::TokenRow) -> ThemeTokenRow {
         label: r.label.into(),
         overridden: r.overridden,
         problem: r.problem.into(),
+        warning: r.warning.into(),
+        fixable: r.fixable,
         step: 1.0,
         ..Default::default()
     };

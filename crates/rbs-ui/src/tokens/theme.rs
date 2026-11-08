@@ -296,13 +296,58 @@ pub const TYPE_SIZE: (u16, u16) = (11, 48);
 /// See [`TYPE_SIZE`].
 pub const TYPE_WEIGHT: (u16, u16) = (300, 900);
 
+/// How much a problem matters (ADR-0072).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Severity {
+    /// The theme is refused: not used, not saved.
+    Error,
+    /// A colour rule a user theme breaks: the theme is used and saved, with this shown.
+    /// Built-in themes treat it as an error.
+    Warning,
+}
+
+/// The colour rule a warning comes from, so a UI can say it in its own words.
+#[derive(Clone, Debug, PartialEq)]
+pub enum ColorRule {
+    /// `fg` drawn on `bg` has `ratio`, needs `need`. `fg` may be the fixed
+    /// `color.state.live` (on a live surface).
+    Contrast {
+        /// The foreground token.
+        fg: String,
+        /// The background token.
+        bg: String,
+        /// The contrast found.
+        ratio: f32,
+        /// The contrast needed.
+        need: f32,
+    },
+    /// The token's hue is too close to the live colour's (error, destructive, clip).
+    LiveHue {
+        /// The token.
+        token: String,
+    },
+    /// The token looks like the live colour.
+    LiveLook {
+        /// The token.
+        token: String,
+        /// ΔE2000 found.
+        difference: f32,
+        /// ΔE2000 needed.
+        need: f32,
+    },
+}
+
 /// One thing wrong with a theme.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct ThemeProblem {
     /// The token it belongs to, if any (the editor shows it beside that token).
     pub token: Option<String>,
-    /// What is wrong, in words.
+    /// What is wrong, in words (token names, for logs and files).
     pub reason: String,
+    /// Whether it refuses the theme.
+    pub severity: Severity,
+    /// The colour rule, for a warning.
+    pub rule: Option<ColorRule>,
 }
 
 impl ThemeProblem {
@@ -310,7 +355,23 @@ impl ThemeProblem {
         ThemeProblem {
             token: Some(token.to_owned()),
             reason,
+            severity: Severity::Error,
+            rule: None,
         }
+    }
+
+    fn warn(token: &str, reason: String, rule: ColorRule) -> ThemeProblem {
+        ThemeProblem {
+            token: Some(token.to_owned()),
+            reason,
+            severity: Severity::Warning,
+            rule: Some(rule),
+        }
+    }
+
+    /// True when it refuses the theme.
+    pub fn is_error(&self) -> bool {
+        self.severity == Severity::Error
     }
 }
 
@@ -320,8 +381,8 @@ impl fmt::Display for ThemeProblem {
     }
 }
 
-/// Every problem of a theme that is not used; never empty.
-#[derive(Clone, Debug, PartialEq, Eq)]
+/// Every problem of a theme that is not used (at least one error); warnings too.
+#[derive(Clone, Debug, PartialEq)]
 pub struct ThemeProblems(pub Vec<ThemeProblem>);
 
 impl fmt::Display for ThemeProblems {
@@ -619,7 +680,8 @@ fn font_list(v: &toml::Value) -> Option<Vec<String>> {
         .collect()
 }
 
-/// A theme ready to apply: its base with the overrides, every check passed.
+/// A theme ready to apply: its base with the overrides, with no error (it may have
+/// colour warnings, ADR-0072).
 #[derive(Clone, Debug, PartialEq)]
 pub struct ResolvedTheme {
     /// The base it was resolved on.
@@ -638,6 +700,8 @@ pub struct ResolvedTheme {
     pub font_family: Vec<String>,
     /// Token names in the theme that this build does not know (not applied).
     pub unknown: Vec<String>,
+    /// Colour rules the theme breaks (ADR-0072); empty for a built-in theme.
+    pub warnings: Vec<ThemeProblem>,
 }
 
 impl ResolvedTheme {
@@ -659,6 +723,7 @@ impl Tokens {
             type_styles: self.type_styles.clone(),
             font_family: self.font_family.clone(),
             unknown: Vec::new(),
+            warnings: Vec::new(),
         }
     }
 
@@ -719,6 +784,8 @@ impl Tokens {
                     "the theme has {} token names this version does not know; at most {MAX_UNKNOWN_TOKENS} are kept",
                     out.unknown.len()
                 ),
+                severity: Severity::Error,
+                rule: None,
             });
         }
         let look = Look {
@@ -731,10 +798,12 @@ impl Tokens {
             font_family: &out.font_family,
         };
         problems.extend(look.check());
-        if problems.is_empty() {
-            Ok(out)
-        } else {
+        // Colour rules only warn on a user theme (ADR-0072); any other problem refuses it.
+        if problems.iter().any(ThemeProblem::is_error) {
             Err(ThemeProblems(problems))
+        } else {
+            out.warnings = problems;
+            Ok(out)
         }
     }
 }
@@ -762,9 +831,15 @@ impl Look<'_> {
             if let (Some(f), Some(b)) = (c(fg), c(bg)) {
                 let ratio = f.contrast(b);
                 if ratio < need {
-                    p.push(ThemeProblem::at(
+                    p.push(ThemeProblem::warn(
                         fg,
                         format!("{fg} on {bg} has contrast {ratio:.2}, needs {need}"),
+                        ColorRule::Contrast {
+                            fg: (*fg).to_owned(),
+                            bg: (*bg).to_owned(),
+                            ratio: ratio as f32,
+                            need: need as f32,
+                        },
                     ));
                 }
             }
@@ -775,9 +850,12 @@ impl Look<'_> {
             "color.meter.clip",
         ] {
             if c(t).is_some_and(|v| hue_distance(v, self.live) < MIN_HUE_DISTANCE_FROM_LIVE) {
-                p.push(ThemeProblem::at(
+                p.push(ThemeProblem::warn(
                     t,
                     format!("{t} is too close in hue to color.state.live (rule U12)"),
+                    ColorRule::LiveHue {
+                        token: t.to_owned(),
+                    },
                 ));
             }
         }
@@ -785,9 +863,15 @@ impl Look<'_> {
             if let Some(b) = c(s) {
                 let ratio = self.live.contrast(b);
                 if ratio < 3.0 {
-                    p.push(ThemeProblem::at(
+                    p.push(ThemeProblem::warn(
                         s,
                         format!("color.state.live on {s} has contrast {ratio:.2}, needs 3"),
+                        ColorRule::Contrast {
+                            fg: "color.state.live".to_owned(),
+                            bg: (*s).to_owned(),
+                            ratio: ratio as f32,
+                            need: 3.0,
+                        },
                     ));
                 }
             }
@@ -796,11 +880,16 @@ impl Look<'_> {
             if let Some(v) = c(name) {
                 let d = delta_e_2000(v, self.live);
                 if d < MIN_DELTA_E_FROM_LIVE {
-                    p.push(ThemeProblem::at(
+                    p.push(ThemeProblem::warn(
                         name,
                         format!(
                             "{name} looks like the live colour (difference {d:.1}, needs {MIN_DELTA_E_FROM_LIVE}; rule U12)"
                         ),
+                        ColorRule::LiveLook {
+                            token: (*name).to_owned(),
+                            difference: d as f32,
+                            need: MIN_DELTA_E_FROM_LIVE as f32,
+                        },
                     ));
                 }
             }
@@ -1020,5 +1109,101 @@ pub fn delta_e_2000(a: Color, b: Color) -> f64 {
 impl From<ThemeProblems> for TokenError {
     fn from(p: ThemeProblems) -> TokenError {
         TokenError(p.to_string())
+    }
+}
+
+/// A colour close to `token`'s current one that clears every colour warning of the
+/// token (ADR-0072): the hue and saturation stay, the lightness moves the least that
+/// is enough. `None` when the token has no warning or no lightness helps.
+pub fn suggest_colour(tokens: &Tokens, theme: &ThemeBody, token: &str) -> Option<Color> {
+    let resolved = |t: &ThemeBody| tokens.resolve(t).ok();
+    let now = resolved(theme)?;
+    let start = *now.colors.get(token)?;
+    let concerns = |r: &ResolvedTheme| {
+        r.warnings.iter().any(|w| match &w.rule {
+            Some(ColorRule::Contrast { fg, bg, .. }) => fg == token || bg == token,
+            Some(ColorRule::LiveHue { token: t }) | Some(ColorRule::LiveLook { token: t, .. }) => {
+                t == token
+            }
+            None => false,
+        })
+    };
+    if !concerns(&now) {
+        return None;
+    }
+    // Lightness cannot change a hue or a look, so only a contrast warning has a fix.
+    let contrast = |r: &ResolvedTheme| {
+        r.warnings.iter().any(|w| match &w.rule {
+            Some(ColorRule::Contrast { fg, bg, .. }) => fg == token || bg == token,
+            _ => false,
+        })
+    };
+    if !contrast(&now) {
+        return None;
+    }
+    let (h, sat, l) = to_hsl(start);
+    // 1 % steps of lightness, nearest first, darker and lighter alternating (at most
+    // 200 resolves, only when a row with a contrast warning is shown).
+    for step in 1..=100 {
+        let d = f64::from(step) * 0.01;
+        for candidate in [l - d, l + d] {
+            if !(0.0..=1.0).contains(&candidate) {
+                continue;
+            }
+            let c = from_hsl(h, sat, candidate);
+            let mut t = theme.clone();
+            t.colors.insert(token.to_owned(), c);
+            if let Some(r) = resolved(&t)
+                && !concerns(&r)
+            {
+                return Some(c);
+            }
+        }
+    }
+    None
+}
+
+fn to_hsl(c: Color) -> (f64, f64, f64) {
+    let (r, g, b) = (
+        f64::from(c.r) / 255.0,
+        f64::from(c.g) / 255.0,
+        f64::from(c.b) / 255.0,
+    );
+    let max = r.max(g).max(b);
+    let min = r.min(g).min(b);
+    let l = (max + min) / 2.0;
+    let d = max - min;
+    if d == 0.0 {
+        return (0.0, 0.0, l);
+    }
+    let s = d / (1.0 - (2.0 * l - 1.0).abs());
+    let h = if max == r {
+        ((g - b) / d).rem_euclid(6.0)
+    } else if max == g {
+        (b - r) / d + 2.0
+    } else {
+        (r - g) / d + 4.0
+    } * 60.0;
+    (h, s, l)
+}
+
+fn from_hsl(h: f64, s: f64, l: f64) -> Color {
+    let c = (1.0 - (2.0 * l - 1.0).abs()) * s;
+    let x = c * (1.0 - ((h / 60.0).rem_euclid(2.0) - 1.0).abs());
+    let m = l - c / 2.0;
+    let (r, g, b) = match (h / 60.0) as u32 % 6 {
+        0 => (c, x, 0.0),
+        1 => (x, c, 0.0),
+        2 => (0.0, c, x),
+        3 => (0.0, x, c),
+        4 => (x, 0.0, c),
+        _ => (c, 0.0, x),
+    };
+    let byte = |v: f64| ((v + m) * 255.0).round().clamp(0.0, 255.0) as u8;
+    Color {
+        r: byte(r),
+        g: byte(g),
+        b: byte(b),
+        a: 255,
     }
 }
