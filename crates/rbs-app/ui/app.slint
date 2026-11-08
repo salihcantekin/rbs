@@ -634,8 +634,11 @@ component TransitionDuration inherits NumberField {
 
 component TransitionGo inherits VerticalLayout {
     in property <bool> can;
+    // A narrow rail shows an icon button; its name and shortcut appear under it while
+    // the pointer or the focus is on it (ADR-0073).
+    in property <bool> icons;
     spacing: Tokens.space-1;
-    Button {
+    if !root.icons: Button {
         text: @tr("Transition");
         kind: "primary";
         enabled: root.can;
@@ -644,9 +647,36 @@ component TransitionGo inherits VerticalLayout {
             : @tr("Transition: put the preview scene on air ({})", Shell.transition-keys);
         clicked => { Studio.transition(); }
     }
+    if root.icons: VerticalLayout {
+        spacing: Tokens.space-1;
+        HorizontalLayout {
+            alignment: center;
+            go := Button {
+                icon: IconName.chevron-right;
+                kind: "primary";
+                enabled: root.can;
+                width: Tokens.size-control-lg;
+                height: Tokens.size-control-lg;
+                accessible-name: Shell.transition-keys == ""
+                    ? @tr("Transition: put the preview scene on air")
+                    : @tr("Transition: put the preview scene on air ({})", Shell.transition-keys);
+                clicked => { Studio.transition(); }
+            }
+        }
+        // The name (and shortcut) of the icon button, shown while it is pointed at.
+        Text {
+            text: Shell.transition-keys == "" ? @tr("Transition") : @tr("Transition") + "\n" + Shell.transition-keys;
+            color: Theme.text-secondary;
+            font-size: Tokens.type-caption-size;
+            horizontal-alignment: center;
+            wrap: word-wrap;
+            accessible-role: none;
+            opacity: go.pointed ? 1 : 0;
+        }
+    }
     // The shortcut as small, quiet text under the button (the owner, 2026-11-07); the
     // button's accessible name carries it too.
-    if Shell.transition-keys != "": Text {
+    if !root.icons && Shell.transition-keys != "": Text {
         text: Shell.transition-keys;
         color: Theme.text-secondary;
         font-size: Tokens.type-caption-size;
@@ -665,17 +695,19 @@ component TransitionRail inherits Rectangle {
     accessible-role: AccessibleRole.groupbox;
     accessible-label: @tr("Transition");
     // Between the pictures: type, duration and the button in a column, the position
-    // toggles at the foot.
+    // toggles at the foot. Up to `size.transition.icons` wide only the icon button
+    // and the position toggles show (ADR-0073).
+    property <bool> icons: root.width <= Tokens.size-transition-icons;
     if !below: VerticalLayout {
         padding: Tokens.space-2;
         spacing: Tokens.space-2;
         Rectangle { }
-        TransitionChoice { }
-        TransitionDuration { }
-        TransitionGo { can: root.can; }
+        if !root.icons: TransitionChoice { }
+        if !root.icons: TransitionDuration { }
+        TransitionGo { can: root.can; icons: root.icons; }
         Rectangle { }
         Rectangle { height: Tokens.size-border; background: Theme.border-subtle; }
-        RailPlace { below: false; }
+        RailPlace { below: false; caption: !root.icons; }
     }
     // Below the pictures: type, duration and the button centred under the two
     // pictures, the position toggles at the right end behind a divider.

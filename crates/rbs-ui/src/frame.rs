@@ -199,7 +199,10 @@ pub fn flatten_window(w: &Window, content: Rect, studio_mode: bool) -> WindowFla
             out.rail = flat.rail;
         }
         out.stacks.extend(flat.stacks.into_iter().map(|mut s| {
-            s.stack += first;
+            // The Pictures leaf's pictures keep their own numbers (ADR-0073).
+            if s.stack < crate::layout::PICTURES_PREVIEW_STACK {
+                s.stack += first;
+            }
             s
         }));
         out.handles
@@ -353,6 +356,10 @@ pub fn drop_target(
         });
     }
     let s = under?;
+    // The Pictures leaf takes no tab and has no sides to drop beside (ADR-0073).
+    if s.stack >= crate::layout::PICTURES_PREVIEW_STACK {
+        return None;
+    }
     let r = s.rect;
     let own = s.tabs.contains(panel);
     let side = if title {
@@ -509,7 +516,6 @@ mod tests {
     fn a_window_numbers_stacks_through_its_trees_and_skips_hidden_ones() {
         let mut m = layout(true, true, false);
         m.left.layout = Some(Node::Split(crate::layout::Split {
-            studio: None,
             axis: Axis::Vertical,
             ratios: vec![0.5, 0.5],
             children: vec![tabs(&["rbs.scenes"]), tabs(&["rbs.sources"])],

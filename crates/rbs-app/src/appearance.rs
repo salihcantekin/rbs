@@ -230,6 +230,54 @@ impl AppearanceUi {
         }
     }
 
+    /// How many colour warnings the theme at `index` has (ADR-0072); 0 for a theme that
+    /// cannot be used.
+    pub fn warning_count_of(&self, index: usize) -> usize {
+        self.entries
+            .get(index)
+            .and_then(|e| e.resolved.as_ref().ok())
+            .map_or(0, |r| r.warnings.len())
+    }
+
+    /// What to tell the user after importing the theme `id`: its name and warnings,
+    /// the Live ones named apart because they can hide whether the show is live.
+    /// Empty when it has none.
+    pub fn import_note(&self, id: &ThemeId) -> String {
+        let Some(e) = self.index_of(id).and_then(|i| self.entries.get(i)) else {
+            return String::new();
+        };
+        let Ok(r) = &e.resolved else {
+            return String::new();
+        };
+        let total = r.warnings.len();
+        if total == 0 {
+            return String::new();
+        }
+        let live = r
+            .warnings
+            .iter()
+            .filter(|w| {
+                matches!(
+                    &w.rule,
+                    Some(ColorRule::LiveHue { .. } | ColorRule::LiveLook { .. })
+                ) || matches!(&w.rule, Some(ColorRule::Contrast { fg, .. }) if fg == "color.state.live")
+            })
+            .count();
+        let mut out = format!(
+            "Imported \"{}\". It has {} colour warning{}",
+            e.name,
+            total,
+            if total == 1 { "" } else { "s" }
+        );
+        if live > 0 {
+            out.push_str(&format!(
+                ", {live} about the Live colour, which can hide whether you are live"
+            ));
+        }
+        out.push_str(". Open it to see them.");
+        out
+    }
+
     /// The list position of `id`.
     pub fn index_of(&self, id: &ThemeId) -> Option<usize> {
         self.entries.iter().position(|e| &e.id == id)
@@ -1001,6 +1049,28 @@ mod tests {
             !ui.fix_colour(&file, "color.surface.base", t0),
             "nothing left to fix"
         );
+    }
+
+    #[test]
+    fn a_theme_with_warnings_counts_them_and_an_import_says_so() {
+        let (_d, data, file, mut ui, _id) = setup("import-note");
+        let mut body = ThemeBody::new(Base::Dark);
+        body.colors
+            .insert("color.accent".into(), Color::parse("#c4262e").unwrap());
+        let id = {
+            let lock = data.try_lock().unwrap().unwrap();
+            data.themes().create(&lock, "Loud", &body).unwrap()
+        };
+        ui.refresh(&data, &file);
+        let theme = ThemeId::User(id);
+        let i = ui.index_of(&theme).unwrap();
+        assert!(ui.warning_count_of(i) > 0);
+        assert_eq!(ui.warning_count_of(0), 0, "a built-in theme has none");
+        let note = ui.import_note(&theme);
+        assert!(note.starts_with("Imported \"Loud\". It has "), "{note}");
+        assert!(note.contains("about the Live colour"), "{note}");
+        // A theme without warnings says nothing.
+        assert!(ui.import_note(&ThemeId::BuiltIn(Base::Dark)).is_empty());
     }
 
     #[test]
