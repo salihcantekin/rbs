@@ -208,11 +208,10 @@ impl Node<GpuRuntime> for CaptureSourceNode {
         let mut session = self
             .factory
             .open(&request)
-            .map_err(|e| {
+            .inspect_err(|e| {
                 self.stats
                     .fault
-                    .store(capture_fault(&e).code(), Ordering::Relaxed);
-                e
+                    .store(capture_fault(e).code(), Ordering::Relaxed);
             })
             .map_err(|e| match e {
                 e if !e.is_recoverable() => capture_error(&e),
@@ -221,11 +220,10 @@ impl Node<GpuRuntime> for CaptureSourceNode {
         // `start` may block briefly; this is the control thread (capture port spec).
         session
             .start()
-            .map_err(|e| {
+            .inspect_err(|e| {
                 self.stats
                     .fault
-                    .store(capture_fault(&e).code(), Ordering::Relaxed);
-                e
+                    .store(capture_fault(e).code(), Ordering::Relaxed);
             })
             .map_err(|e| match e {
                 e if !e.is_recoverable() => capture_error(&e),
