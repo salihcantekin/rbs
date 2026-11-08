@@ -40,7 +40,7 @@
 //! writer is dropped on the writer's thread: for video that releases a frame lease,
 //! which lease owners must do without locks (media types spec).
 
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering, fence};
 use std::sync::mpsc::{Receiver, SyncSender, TryRecvError, TrySendError, sync_channel};
 use std::sync::{Arc, Mutex, TryLockError};
 use std::thread::Thread;
@@ -146,6 +146,14 @@ impl Doorbell {
     /// Marks that data is waiting and wakes the worker if it is parked.
     pub fn ring(&self) {
         if !self.rung.swap(true, Ordering::AcqRel) {
+            // Pairs with the fence in `wait`. Without the two fences, a ringer could set
+            // `rung` and still find the lock taken (by a worker that has not seen
+            // `rung`) while that worker releases the lock and still reads `rung` as
+            // clear: the classic store/load reordering, possible on weakly ordered CPUs
+            // (Apple silicon). The ring would be lost and, with a long timer, the last
+            // packet would wait for the timer. With the fences one of the two sees the
+            // other: the worker sees `rung`, or the ringer gets the lock and unparks.
+            fence(Ordering::SeqCst);
             // `try_lock`: a worker registering itself at this moment is about to check
             // `rung` anyway.
             if let Ok(worker) = self.worker.try_lock() {
@@ -169,6 +177,9 @@ impl Doorbell {
                 *worker = Some(me);
             }
         }
+        // Pairs with the fence in `ring`: the lock is released above, `rung` is read
+        // below, and a ringer that failed `try_lock` must not be missed.
+        fence(Ordering::SeqCst);
         if !self.rung.load(Ordering::Acquire) {
             std::thread::park_timeout(timeout);
         }
