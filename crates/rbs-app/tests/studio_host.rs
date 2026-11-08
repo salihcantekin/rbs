@@ -716,3 +716,71 @@ fn another_scene_collection_runs_and_keeps_its_own_edits() {
     drop(user);
     let _ = std::fs::remove_dir_all(&d);
 }
+
+#[test]
+fn a_source_is_pointed_at_another_target_keeping_its_place_and_one_undo_step() {
+    let Some(gpu) = gpu() else { return };
+    let (host, rx) = host(gpu);
+    next(&rx, |u| match u {
+        Update::Started { .. } => Some(()),
+        Update::Failed(e) => panic!("{e}"),
+        _ => None,
+    });
+    let mics = targets(&host, &rx, SourceKind::AudioInput);
+    assert!(mics.len() >= 2, "the reference adapter lists two mics");
+    host.send(Command::AddSource {
+        kind: SourceKind::AudioInput,
+        target: mics[0].clone(),
+    });
+    let rows = rows_where(&rx, |r| r.len() == 1);
+    let (id, name, item, layout) = (
+        rows[0].id,
+        rows[0].name.clone(),
+        rows[0].item,
+        rows[0].layout,
+    );
+
+    host.send(Command::RetargetSource {
+        id,
+        target: mics[1].clone(),
+    });
+    // The rows and the history arrive in either order; wait for the history step.
+    let mut last_rows = None;
+    let (undo, _) = next(&rx, |u| match u {
+        Update::Sources(rows) => {
+            last_rows = Some(rows);
+            None
+        }
+        Update::History { undo, redo }
+            if undo.as_ref().is_some_and(|s| s.kind == EditKind::Retarget) =>
+        {
+            Some((undo, redo))
+        }
+        _ => None,
+    });
+    assert_eq!(undo.unwrap().name, name);
+    // Same source, same item and layout: only the target changed.
+    if let Some(rows) = last_rows {
+        assert_eq!(rows.len(), 1);
+        assert_eq!(
+            (rows[0].id, &rows[0].name, rows[0].item, rows[0].layout),
+            (id, &name, item, layout)
+        );
+    }
+
+    // The same target again records nothing.
+    host.send(Command::RetargetSource {
+        id,
+        target: mics[1].clone(),
+    });
+    // A healthy source is left running: reload finds no failure record.
+    host.send(Command::ReloadSource(id));
+    host.send(Command::Undo);
+    let (undo, redo) = history(&rx);
+    assert_eq!(
+        undo.map(|s| s.kind),
+        Some(EditKind::Add),
+        "one undo step undid the retarget"
+    );
+    assert_eq!(redo.map(|s| s.kind), Some(EditKind::Retarget));
+}

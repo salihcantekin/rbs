@@ -218,6 +218,8 @@ The first slice covers what the desktop app does today; the full catalogue follo
 | `vcam.status` | `read` | The virtual camera: whether it is added, whether RBS sends to it, its size and rate, and its frame counters (protocol 1.12, ADR-0066) |
 | `vcam.start`, `vcam.stop` | `control` | Start or stop sending the program to the virtual camera; live, not undoable (protocol 1.12) |
 | `source.set_sync_offset {source, offset_ms}` | `control` | Sync offset of a source's sound, `-200..=200` ms; live, not undoable (protocol 1.8) |
+| `source.retarget {source, adapter, target}` | `control` | Point a source at another target of its kind (ids from `source.targets`); name, layout, filters and its place in every scene stay; one undo step; the same target changes nothing (protocol 1.13, ADR-0077) |
+| `source.reload {source}` | `control` | Try a source that is not running again with its stored settings; live, not undoable; a source that runs is left running (protocol 1.13, ADR-0077) |
 | `output.profiles` | `read` | Recording profiles: id, name, container, encoder, bitrates (folders only through `settings.get`) |
 | `record.start {profile}`, `record.stop` | `control` | Record with a configured profile into its folder |
 | `record.start_to_file {profile, path}` | `admin` | Record to an explicit file; refused if it exists |
@@ -362,3 +364,7 @@ An OBS WebSocket (v5) compatibility layer (subset) is a separate optional adapte
 - Preview transport for remote clients: UI rule U5 requires a reduced-rate encoded preview for remote panels; WebRTC from the engine is the candidate.
 - Stable addressing for layout commands. `rbs_ui::LayoutCommand` addresses windows and tab stacks by index, which shifts after each change; it is internal to the desktop shell. The `ui.*` commands for remote callers address panels by panel id (open, close, float, dock, move to an edge) and need stable window ids before they can target a window or stack.
 - TLS certificates for network access: decided in [ADR-0046](../adr/0046-network-access-over-tls.md) (a generated key the client pins, or the user's own certificate; one port with TLS detected per connection); channel binding (RFC 9266) if pinning proves insufficient.
+
+### Protocol 1.13: source retarget and reload (ADR-0077)
+
+`source.retarget` and `source.reload` are what the Source tab of Properties runs. Refusals: `not_found` for an unknown source. `source.retarget` does not check that the adapter lists the target: like a stored document, a target that does not exist is reported by the source's status afterwards. The typed `unavailable` source status (`fault`, `detail`) and the generic `source.set_settings` and `source.get_settings` of ADR-0077 decision 7 follow in later minor versions; until then a source that is unavailable is reported as `failed`, and clients treat an unknown `state` as `failed`. A 1.12 server answers `method_not_found`.

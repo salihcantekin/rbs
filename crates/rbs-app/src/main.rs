@@ -2323,6 +2323,21 @@ fn install_studio(g: &Studio<'_>, ctx: &Ctx) {
     on!(on_list_targets, |app, kind: i32| {
         app.studio.list_targets(kind);
     });
+    on!(on_list_source_targets, |app, id: i32| {
+        app.studio.list_source_targets(id);
+    });
+    on!(
+        on_filter_source_targets,
+        |app, query: slint::SharedString| {
+            app.studio.filter_source_targets(query.as_str());
+        }
+    );
+    on!(on_retarget_source, |app, id: i32, index: i32| {
+        app.studio.retarget_source(id, index);
+    });
+    on!(on_reload_source, |app, id: i32| {
+        app.studio.reload_source(id);
+    });
     on!(on_add_source, |app, kind: i32, target: i32| {
         app.studio.add_source(kind, target);
     });

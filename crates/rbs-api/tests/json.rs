@@ -301,6 +301,12 @@ fn every_request() -> Vec<Request> {
             source: 3,
             offset_ms: -40,
         })),
+        c(Command::SourceRetarget(RetargetSource {
+            source: 3,
+            adapter: "org.rbs.capture.test".to_owned(),
+            target: "window:7".to_owned(),
+        })),
+        c(Command::SourceReload(ReloadSource { source: 3 })),
     ]
 }
 

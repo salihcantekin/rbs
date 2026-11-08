@@ -37,7 +37,8 @@ use slint::{Model, ModelRc, SharedString, VecModel};
 use crate::preview_edit::{Effect, Placed, PreviewEdit};
 use crate::ui::{
     EncoderData, EntryRow, ExistingData, KindData, LookData, MarkData, MeterRow, SampleData,
-    ScaleMark, SceneData, SourceData, StackData, StatRow, Studio, TargetData, TokenRow,
+    ScaleMark, SceneData, SourceData, SourceTargetData, StackData, StatRow, Studio, TargetData,
+    TokenRow,
 };
 
 /// Meter refresh while the Mixer is visible (U16: 30 Hz).
@@ -131,6 +132,13 @@ pub struct StudioUi {
     kinds: Rc<VecModel<KindData>>,
     target_list: Vec<Target>,
     targets: Rc<VecModel<TargetData>>,
+    /// The Source tab's list (ADR-0077): what the selected source's kind can capture,
+    /// filtered by the search field, the source's current target first.
+    source_targets: Rc<VecModel<SourceTargetData>>,
+    source_target_list: Vec<Target>,
+    /// The source the list is for, and what the search field holds.
+    source_targets_for: Option<SourceId>,
+    source_query: String,
     pub targets_kind: i32,
     slots: Vec<MeterSlot>,
     meters: Rc<VecModel<MeterRow>>,
@@ -330,6 +338,10 @@ impl StudioUi {
             kinds: Rc::new(VecModel::default()),
             target_list: Vec::new(),
             targets: Rc::new(VecModel::default()),
+            source_targets: Rc::new(VecModel::default()),
+            source_target_list: Vec::new(),
+            source_targets_for: None,
+            source_query: String::new(),
             targets_kind: -1,
             slots: Vec::new(),
             meters: Rc::new(VecModel::default()),
@@ -422,6 +434,7 @@ impl StudioUi {
         g.set_marks(ModelRc::from(self.marks.clone()));
         g.set_kinds(ModelRc::from(self.kinds.clone()));
         g.set_targets(ModelRc::from(self.targets.clone()));
+        g.set_source_targets(ModelRc::from(self.source_targets.clone()));
         g.set_meters(ModelRc::from(self.meters.clone()));
         g.set_stats(ModelRc::from(self.stats.clone()));
         g.set_scale(ModelRc::from(self.scale.clone()));
@@ -1164,6 +1177,70 @@ impl StudioUi {
         };
         self.targets_kind = -1;
         self.send(Command::ListTargets(kind));
+    }
+
+    /// The Source tab opened for a source: its kind's targets are listed again.
+    pub fn list_source_targets(&mut self, id: i32) {
+        let id = SourceId::from_raw(id as u32);
+        let Some(kind) = self.rows.iter().find(|r| r.id == id).and_then(|r| r.kind) else {
+            return;
+        };
+        self.source_targets_for = Some(id);
+        self.source_query.clear();
+        self.source_targets.set_vec(Vec::new());
+        self.send(Command::ListTargets(kind));
+    }
+
+    /// The search field of the Source tab changed.
+    pub fn filter_source_targets(&mut self, query: &str) {
+        self.source_query = query.trim().to_lowercase();
+        self.refresh_source_targets();
+    }
+
+    /// Makes the Source tab's list from the last answer: no pickers (an OS picker
+    /// needs the add flow), the source's current target first, filtered by the search.
+    fn refresh_source_targets(&mut self) {
+        let current = self
+            .source_targets_for
+            .and_then(|id| self.rows.iter().find(|r| r.id == id))
+            .map(|r| r.target.clone())
+            .unwrap_or_default();
+        let mut shown: Vec<(usize, &Target)> = self
+            .source_target_list
+            .iter()
+            .enumerate()
+            .filter(|(_, t)| !t.picker)
+            .filter(|(_, t)| {
+                self.source_query.is_empty() || t.name.to_lowercase().contains(&self.source_query)
+            })
+            .collect();
+        shown.sort_by_key(|(_, t)| t.target != current);
+        self.source_targets.set_vec(
+            shown
+                .into_iter()
+                .map(|(i, t)| SourceTargetData {
+                    name: t.name.as_str().into(),
+                    current: !current.is_empty() && t.target == current,
+                    index: i as i32,
+                })
+                .collect::<Vec<_>>(),
+        );
+    }
+
+    /// A target of the Source tab's list was chosen: the source points at it.
+    pub fn retarget_source(&mut self, id: i32, index: i32) {
+        let Some(target) = self.source_target_list.get(index as usize).cloned() else {
+            return;
+        };
+        self.send(Command::RetargetSource {
+            id: SourceId::from_raw(id as u32),
+            target,
+        });
+    }
+
+    /// Reload on the Source tab: a source that is not running is tried again.
+    pub fn reload_source(&mut self, id: i32) {
+        self.send(Command::ReloadSource(SourceId::from_raw(id as u32)));
     }
 
     pub fn add_source(&mut self, code: i32, index: i32) {
@@ -2899,6 +2976,15 @@ impl StudioUi {
                     self.global_targets = list.clone();
                     self.refresh_global_existing();
                 }
+                // The Source tab's list is for the source whose kind this is.
+                let for_kind = self
+                    .source_targets_for
+                    .and_then(|id| self.rows.iter().find(|r| r.id == id))
+                    .and_then(|r| r.kind);
+                if for_kind == Some(kind) {
+                    self.source_target_list = list.clone();
+                    self.refresh_source_targets();
+                }
                 self.target_list = list;
             }
             Update::Deleted { name, from_scene } => {
@@ -3099,6 +3185,10 @@ impl StudioUi {
                     id: r.id.get() as i32,
                     name: r.name.as_str().into(),
                     kind: r.kind.map_or("Unknown type", SourceKind::label).into(),
+                    kind_code: r
+                        .kind
+                        .and_then(|k| SourceKind::ALL.iter().position(|a| *a == k))
+                        .map_or(-1, |i| i as i32),
                     icon: source_icon(r.kind).into(),
                     status: status.into(),
                     ok,
@@ -3150,6 +3240,8 @@ impl StudioUi {
         }
         set_rows(&self.sources, data);
         self.rows = rows;
+        // The Source tab marks the source's own target: it may have changed.
+        self.refresh_source_targets();
     }
 
     /// The Mixer: what is heard, the program scene's audio (ADR-0061; the edited scene's
@@ -3527,7 +3619,7 @@ fn source_icon(kind: Option<SourceKind>) -> &'static str {
 /// border, 6 crop, 7 shown or hidden, 8 lock, 9 source rename, 10 scene added, 11
 /// scene removed, 12 scene renamed (the name is the scene's, or the old name), 13
 /// filters changed, 14 removed from one scene, 15 made global or moved back into a
-/// scene, 16 look applied.
+/// scene, 16 look applied, 17 source pointed at another target.
 fn step_view(step: Option<&StepInfo>) -> (i32, &str) {
     match step {
         None => (0, ""),
@@ -3549,6 +3641,7 @@ fn step_view(step: Option<&StepInfo>) -> (i32, &str) {
                 EditKind::Remove => 14,
                 EditKind::Global => 15,
                 EditKind::Look => 16,
+                EditKind::Retarget => 17,
             },
             s.name.as_str(),
         ),
