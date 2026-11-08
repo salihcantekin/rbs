@@ -2,12 +2,12 @@
 
 - Status: Draft
 - Owner crate(s): `rbs-sources`
-- Related ADRs: [0013](../adr/0013-zero-cost-when-unused.md), [0021](../adr/0021-scene-collection-model.md), [0037](../adr/0037-audio-graph.md), [0038](../adr/0038-io-graph-nodes.md), [0039](../adr/0039-scene-source-types.md)
+- Related ADRs: [0013](../adr/0013-zero-cost-when-unused.md), [0021](../adr/0021-scene-collection-model.md), [0037](../adr/0037-audio-graph.md), [0038](../adr/0038-io-graph-nodes.md), [0039](../adr/0039-scene-source-types.md), [0074](../adr/0074-still-image-and-colour-sources.md)
 - Builds on: [scene model](scene-model.md) (binder), [capture port](capture-port.md), [audio input port](audio-io-port.md), [I/O nodes](io-nodes.md), [audio graph](audio-graph.md)
 
 ## Purpose
 
-Maps the built-in scene source types (display, window, camera, microphone, system audio, application audio) to graph nodes: which types are installed with the registered adapters, the descriptors the scene binder binds with, and the node instance for each bound source.
+Maps the built-in scene source types (display, window, camera, microphone, system audio, application audio, image, colour) to graph nodes: which types are installed with the registered adapters, the descriptors the scene binder binds with, and the node instance for each bound source.
 
 ## Scope
 
@@ -25,9 +25,11 @@ pub const CAMERA_SOURCE: &str = "org.rbs.source.camera";             // capture,
 pub const AUDIO_INPUT_SOURCE: &str = "org.rbs.source.audio-input";   // audio, EndpointKind::Input
 pub const AUDIO_OUTPUT_SOURCE: &str = "org.rbs.source.audio-output"; // audio, EndpointKind::OutputLoopback
 pub const APPLICATION_AUDIO_SOURCE: &str = "org.rbs.source.application-audio"; // EndpointKind::Application
-pub const ALL: [&str; 6];
-pub mod keys { ADAPTER, TARGET, CURSOR, WIDTH, HEIGHT, FPS }
-pub enum SourceClass { Capture(TargetKind), Audio(EndpointKind) }
+pub const IMAGE_SOURCE: &str = "org.rbs.source.image";               // still, a PNG file or a built-in sample (ADR-0074)
+pub const COLOR_SOURCE: &str = "org.rbs.source.color";               // still, a solid colour or a gradient (ADR-0074)
+pub const ALL: [&str; 8];
+pub mod keys { ADAPTER, TARGET, CURSOR, WIDTH, HEIGHT, FPS, PATH, SAMPLE, COLOR, COLOR2, ANGLE }
+pub enum SourceClass { Capture(TargetKind), Audio(EndpointKind), Still }
 pub fn class_of(type_id: &NodeTypeId) -> Option<SourceClass>;
 
 // rbs_sources
@@ -57,7 +59,15 @@ pub struct InstanceContext { clock, audio: AudioGraphConfig, max_audio_offset } 
 pub enum SourceInstance {
     Video(VideoSource { node: CaptureSourceNode, stats, adapter, target }),
     Audio(AudioSource { node: InputNode, offset: ParamSender<InputParams>, stats, adapter, endpoint }),
+    Still(StillSource { node: StillSourceNode, stats }),   // render partition, no adapter (ADR-0074)
 }
+
+// rbs_sources::still: pixels of still sources, control thread only
+pub fn parse_color(text: &str) -> Option<[u8; 4]>;                  // #rrggbb or #rrggbbaa
+pub fn color_picture(w, h, first, second: Option<[u8; 4]>, angle: f32) -> Vec<u8>;
+pub fn decode_png(path: &Path) -> Result<(u32, u32, Vec<u8>), String>;
+pub const SAMPLES: [Sample; 8];                                      // { id, name, kind: Background | Frame }
+pub fn sample_picture(id: &str, w: u32, h: u32) -> Option<Vec<u8>>;
 pub fn node_layers(compositor: &BoundCompositor, plan: &SchedulePlan) -> Vec<NodeLayer>;
 ```
 
@@ -71,9 +81,20 @@ pub fn node_layers(compositor: &BoundCompositor, plan: &SchedulePlan) -> Vec<Nod
 | `width`, `height` | Int > 0 | display, window, camera | Requested size; both or neither |
 | `fps` | Int > 0 | display, window, camera | Requested frame rate |
 
+| `path` | Text | image | A PNG file (straight alpha, any colour type, at most 8192 x 8192 and 256 MiB decoded). Wins over `sample` |
+| `sample` | Text | image | A built-in sample picture id (below) at 1920 x 1080 |
+| `color` | Text | color | `#rrggbb` or `#rrggbbaa`; default `#000000` |
+| `color2` | Text | color | Second colour; present makes a linear gradient from `color` |
+| `angle` | Int | color | Gradient direction in degrees, 0 = top to bottom, 90 = left to right; default 0 |
+| `width`, `height` | Int > 0 | color | Size in pixels (both or neither), default 1920 x 1080, at most 8192 |
+
+Built-in samples (generated in code, original to this repository, ADR-0074 decision 6): backgrounds `aurora`, `sunset`, `slate`, `dots`; frames (transparent in the middle) `frame-thin`, `frame-thick`, `frame-neon`, `lower-third`.
+
 Unknown keys are ignored. A wrong value type or value is `InvalidSetting`.
 
 ### Invariants
+
+0. Still types (`image`, `color`) are installed always, with no adapter and no probe. `node_types()` holds `rbs_nodes::still_descriptor` for them. `instantiate` decodes or generates the pixels on the control thread and returns `Still`; a missing, unreadable or oversized picture is `Image`, a missing `path` and `sample`, an unknown sample or a bad colour is `InvalidSetting`. A settings edit replaces the node. The node uploads once and costs nothing per frame.
 
 1. A type is installed exactly when a probed adapter declares its kind: `capture.target.kinds` includes the `TargetKind`, or `audio.input.kinds` includes the `EndpointKind`. Nothing is installed before `probe`.
 2. `node_types()` holds the compositor (`rbs_gpu::node::compositor_descriptor`), the mixer (`rbs_audio::mixer_descriptor`) and each installed source type: capture types with `rbs_nodes::capture_descriptor`, audio types with `rbs_audio::input_descriptor`. An instance's descriptor equals its type's descriptor in the table, which the controller requires. So graph nodes carry the node crates' type ids (`org.rbs.capture`, `org.rbs.audio.input`), not the scene source type id; the binder maps sources to nodes. `rbs_scene::binder::COMPOSITOR_TYPE` and `MIXER_TYPE` equal the node crates' ids (test).
@@ -95,7 +116,7 @@ Unknown keys are ignored. A wrong value type or value is `InvalidSetting`.
 
 ## Errors and failure behaviour
 
-`SourceError` (non-exhaustive): `UnknownType`, `NoAdapter`, `AdapterUnavailable(id)`, `NoTarget`, `InvalidSetting { key, expected }`, `Capture(CaptureError)`, `Audio(AudioIoError)`. A capture target that is gone is found by the node's `prepare` (permanent `TargetNotFound`, ADR-0038); an audio endpoint that is gone fails `instantiate` with `Audio`.
+`SourceError` (non-exhaustive): `UnknownType`, `Image(String)` (a still's picture), `NoAdapter`, `AdapterUnavailable(id)`, `NoTarget`, `InvalidSetting { key, expected }`, `Capture(CaptureError)`, `Audio(AudioIoError)`. A capture target that is gone is found by the node's `prepare` (permanent `TargetNotFound`, ADR-0038); an audio endpoint that is gone fails `instantiate` with `Audio`.
 
 ## Performance requirements
 
@@ -103,7 +124,7 @@ Control thread only, user-paced; nothing here runs per frame or per block.
 
 ## Conformance tests
 
-`crates/rbs-sources/tests/sources.rs`, with the reference adapters `rbs-capture-test` and `rbs-audio-io-test`: installed types follow probed kinds; an empty registry has the compositor and mixer; instance descriptors equal table descriptors for every installed type; default targets; windows need a target; stored targets are used as given; bad settings, adapters and types are refused; targets for pickers; pickers only for kinds an adapter declares, picking on another thread, a cancelled pick, a picked target instantiated by its adapter; a bound scene instantiates into the partitions the binder chose, and `node_layers` keeps the transform, crop, opacity and link order.
+`crates/rbs-sources/tests/sources.rs` (still types need no adapter, make a still node and refuse bad settings; the unit tests in `src/still.rs` cover colours, gradients, every sample and PNG decoding), with the reference adapters `rbs-capture-test` and `rbs-audio-io-test`: installed types follow probed kinds; an empty registry has the compositor and mixer; instance descriptors equal table descriptors for every installed type; default targets; windows need a target; stored targets are used as given; bad settings, adapters and types are refused; targets for pickers; pickers only for kinds an adapter declares, picking on another thread, a cancelled pick, a picked target instantiated by its adapter; a bound scene instantiates into the partitions the binder chose, and `node_layers` keeps the transform, crop, opacity and link order.
 
 Hardware (manual): `cargo run -p rbs-sources --example scene_sources --release -- 15` on Windows (WGC, Media Foundation camera, WASAPI microphone and system audio through the binder, the compositor and the mixer on the engine workers).
 
