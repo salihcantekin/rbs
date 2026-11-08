@@ -111,5 +111,8 @@ mod tests {
             !src.contains("window_place::centre_on("),
             "use window_place::show_centred, not centre_on after show"
         );
+        // `present_settings` is the one place that shows the Settings window.
+        let shows = src.matches("let _ = w.show();").count();
+        assert_eq!(shows, 1, "Settings is shown only in `present_settings`");
     }
 }
