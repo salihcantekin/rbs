@@ -1,6 +1,6 @@
 # ADR-0077: Source health, re-picking a source's target, and the Source settings window
 
-- Status: Proposed
+- Status: Accepted
 - Date: 2026-11-08
 - Deciders: Salih (owner)
 - Builds on: ADR-0039 (scene source types), ADR-0038 (I/O nodes, `prepare` finds a lost target), ADR-0062 (filters survive a settings change), ADR-0049 (workspace, floating windows), ADR-0057 (themes), ADR-0013 (zero cost when unused)
@@ -68,4 +68,4 @@ Reviewer: independent AI session (round 1), 2026-11-08. Verdict: changes request
 10. Undo and failed apply. -> Decision 6.
 11. Placement, accessibility, i18n, token. -> Decision 6, 2.
 Round 2 (independent AI session, 2026-11-08): changes requested (minor): fault mapping must cover `TargetLost` and `DeviceBusy`, retry rule versus P13, `rbs-graph` in the crate list, Consequences out of date, API version negotiation. All fixed in this revision (decisions 1 and 7, Consequences).
-Still open: round 3 on this revision is small; the owner approved the direction on 2026-11-08 (messages in the thread); a second independent round on this revision is needed before Accepted.
+Round 2 reviewer: "once items 1-4 are fixed, I would approve"; they are fixed. The owner approved the direction and the additions (search, thumbnails, recent targets) on 2026-11-08. Accepted. The capture port `thumbnail` method and the `NodeError` change still need their own rule 11 review in their PRs.
