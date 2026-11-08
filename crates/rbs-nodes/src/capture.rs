@@ -2,13 +2,14 @@
 //! partition (spec `docs/specs/io-nodes.md`, "Capture source node").
 
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU8, AtomicU64, Ordering};
 
 use rbs_capture::{
     CaptureError, CaptureFactory, CaptureRequest, CaptureSession, GpuDeviceId, GpuImportTarget,
     SyncKind,
 };
 use rbs_core::capability::CapabilityValue;
+use rbs_core::fault::SourceFault;
 use rbs_core::media::{FramePayload, MemoryKind, PixelFormat, Size};
 use rbs_gpu::context::CAP_P010;
 use rbs_gpu::node::GpuRuntime;
@@ -48,9 +49,17 @@ pub struct CaptureNodeStats {
     /// Size of the picture put on the output: width in the high 32 bits, height in the
     /// low 32 bits, 0 while unknown (ADR-0058). Read it with [`Self::picture_size`].
     pub picture_size: AtomicU64,
+    /// The cause of the node's last failure, as [`SourceFault::code`]; 0 while it runs
+    /// (ADR-0077). Read it with [`Self::fault`].
+    pub fault: AtomicU8,
 }
 
 impl CaptureNodeStats {
+    /// Why the node last failed, until it runs again.
+    pub fn fault(&self) -> Option<SourceFault> {
+        SourceFault::from_code(self.fault.load(Ordering::Relaxed))
+    }
+
     /// Width and height in pixels of the picture the node delivers: the session's
     /// format once it is open, then the size of the newest frame. `None` before the
     /// session opened.
@@ -163,6 +172,18 @@ impl CaptureSourceNode {
     }
 }
 
+/// The fault a capture error stands for (ADR-0077; capture port spec).
+pub fn capture_fault(e: &CaptureError) -> SourceFault {
+    match e {
+        CaptureError::TargetNotFound | CaptureError::TargetLost => SourceFault::TargetGone,
+        CaptureError::PermissionDenied | CaptureError::PermissionNotDetermined => {
+            SourceFault::PermissionDenied
+        }
+        CaptureError::DeviceBusy => SourceFault::Busy,
+        _ => SourceFault::Other,
+    }
+}
+
 fn capture_error(e: &CaptureError) -> NodeError {
     match e {
         CaptureError::PermissionDenied => NodeError::Permanent("capture permission denied"),
@@ -183,15 +204,33 @@ impl Node<GpuRuntime> for CaptureSourceNode {
 
     fn prepare(&mut self, ctx: &mut PrepareCtx<'_, GpuRuntime>) -> Result<(), NodeError> {
         let request = complete_request(ctx.shared, self.request.clone());
-        let mut session = self.factory.open(&request).map_err(|e| match e {
-            e if !e.is_recoverable() => capture_error(&e),
-            e => NodeError::Failed(format!("capture open: {e}")),
-        })?;
+        self.stats.fault.store(0, Ordering::Relaxed);
+        let mut session = self
+            .factory
+            .open(&request)
+            .map_err(|e| {
+                self.stats
+                    .fault
+                    .store(capture_fault(&e).code(), Ordering::Relaxed);
+                e
+            })
+            .map_err(|e| match e {
+                e if !e.is_recoverable() => capture_error(&e),
+                e => NodeError::Failed(format!("capture open: {e}")),
+            })?;
         // `start` may block briefly; this is the control thread (capture port spec).
-        session.start().map_err(|e| match e {
-            e if !e.is_recoverable() => capture_error(&e),
-            e => NodeError::Failed(format!("capture start: {e}")),
-        })?;
+        session
+            .start()
+            .map_err(|e| {
+                self.stats
+                    .fault
+                    .store(capture_fault(&e).code(), Ordering::Relaxed);
+                e
+            })
+            .map_err(|e| match e {
+                e if !e.is_recoverable() => capture_error(&e),
+                e => NodeError::Failed(format!("capture start: {e}")),
+            })?;
         self.shown_size = pack(session.format().size);
         self.stats
             .picture_size
@@ -206,7 +245,13 @@ impl Node<GpuRuntime> for CaptureSourceNode {
             // No new frame: the slot keeps the last one.
             Ok(None) => return Ok(()),
             Ok(Some(frame)) => frame,
-            Err(e) => return Err(capture_error(&e)),
+            Err(e) => {
+                // An error path, not a frame: one store.
+                self.stats
+                    .fault
+                    .store(capture_fault(&e).code(), Ordering::Relaxed);
+                return Err(capture_error(&e));
+            }
         };
         // A resized target: one comparison per new frame, one store per resize.
         let size = pack(frame.format().size);
@@ -267,5 +312,41 @@ impl Node<GpuRuntime> for CaptureSourceNode {
         // The decoder's pipelines and bind groups go too: nothing GPU-side in Standby
         // (P13). `cool` already returned the plane textures.
         self.upload = SourceUpload::new();
+    }
+}
+
+#[cfg(test)]
+mod fault_tests {
+    use super::*;
+
+    #[test]
+    fn capture_errors_map_to_faults() {
+        assert_eq!(
+            capture_fault(&CaptureError::TargetNotFound),
+            SourceFault::TargetGone
+        );
+        assert_eq!(
+            capture_fault(&CaptureError::TargetLost),
+            SourceFault::TargetGone
+        );
+        assert_eq!(
+            capture_fault(&CaptureError::PermissionDenied),
+            SourceFault::PermissionDenied
+        );
+        assert_eq!(
+            capture_fault(&CaptureError::PermissionNotDetermined),
+            SourceFault::PermissionDenied
+        );
+        assert_eq!(capture_fault(&CaptureError::DeviceBusy), SourceFault::Busy);
+        assert_eq!(
+            capture_fault(&CaptureError::FormatUnsupported),
+            SourceFault::Other
+        );
+        let stats = CaptureNodeStats::default();
+        assert_eq!(stats.fault(), None);
+        stats
+            .fault
+            .store(SourceFault::Busy.code(), Ordering::Relaxed);
+        assert_eq!(stats.fault(), Some(SourceFault::Busy));
     }
 }
