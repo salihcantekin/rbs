@@ -1076,6 +1076,17 @@ impl Studio {
                         offset: None,
                     });
                 }
+                SourceInstance::Still(st) => {
+                    // Needs no adapter or permission (ADR-0074).
+                    self.engine
+                        .adopt::<GpuRuntime>(RENDER, entry.state.node, Box::new(st.node))?;
+                    entry.instance = Some(Instance {
+                        partition: RENDER,
+                        gpu: true,
+                        watch: Watch::Video(st.stats),
+                        offset: None,
+                    });
+                }
                 SourceInstance::Audio(a) => {
                     entry.state.adapter = a.adapter;
                     entry.state.target = a.endpoint.as_str().to_owned();
