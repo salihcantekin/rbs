@@ -4992,6 +4992,28 @@ impl ApiTarget<'_> {
                 }
                 Ok(Response::Done(Empty {}))
             }
+            C::SourceRetarget(p) => {
+                let target = Target {
+                    name: String::new(),
+                    adapter: p.adapter,
+                    target: p.target,
+                    is_default: false,
+                    size: None,
+                    picker: false,
+                };
+                if host
+                    .retarget_source(SourceId::from_raw(p.source), &target)
+                    .map_err(|e| refused(&e))?
+                {
+                    host.apply(notify);
+                }
+                Ok(Response::Done(Empty {}))
+            }
+            C::SourceReload(p) => {
+                host.reload_source(SourceId::from_raw(p.source))
+                    .map_err(|e| refused(&e))?;
+                Ok(Response::Done(Empty {}))
+            }
             C::ItemRemove(p) => {
                 let (_, deleted) = host
                     .remove_from_scene(ItemId::from_raw(p.item))

@@ -240,6 +240,28 @@ pub struct SetFilterSettings {
     pub settings: BTreeMap<String, serde_json::Value>,
 }
 
+/// `source.retarget` (protocol 1.13, ADR-0077): point a source at another target of its
+/// kind. Name, layout, filters and its place in every scene stay; one undo step.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RetargetSource {
+    /// The source's id.
+    pub source: u32,
+    /// The adapter that listed the target (`source.targets`).
+    pub adapter: String,
+    /// The target's id for that adapter.
+    pub target: String,
+}
+
+/// `source.reload` (protocol 1.13, ADR-0077): try a source that is not running again with
+/// its stored settings.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ReloadSource {
+    /// The source's id.
+    pub source: u32,
+}
+
 /// `source.set_sync_offset` (protocol 1.8).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -439,6 +461,10 @@ pub enum Command {
     FilterSetSettings(SetFilterSettings),
     /// `source.set_sync_offset` (protocol 1.8).
     SourceSetSyncOffset(SetSourceSyncOffset),
+    /// `source.retarget` (protocol 1.13).
+    SourceRetarget(RetargetSource),
+    /// `source.reload` (protocol 1.13).
+    SourceReload(ReloadSource),
     /// `item.set_visible` (protocol 1.6).
     ItemSetVisible(SetItemVisible),
     /// `item.set_locked` (protocol 1.6).
@@ -533,6 +559,8 @@ impl Command {
             Command::FilterSetEnabled(_) => "filter.set_enabled",
             Command::FilterSetSettings(_) => "filter.set_settings",
             Command::SourceSetSyncOffset(_) => "source.set_sync_offset",
+            Command::SourceRetarget(_) => "source.retarget",
+            Command::SourceReload(_) => "source.reload",
             Command::SceneSources(_) => "scene.sources",
             Command::CanvasSetPreview(_) => "canvas.set_preview",
             Command::CanvasTransition => "canvas.transition",
@@ -640,6 +668,8 @@ pub const METHODS: &[MethodInfo] = &[
     m("filter.set_enabled", Some(Scope::Control)),
     m("filter.set_settings", Some(Scope::Control)),
     m("source.set_sync_offset", Some(Scope::Control)),
+    m("source.retarget", Some(Scope::Control)),
+    m("source.reload", Some(Scope::Control)),
     m("item.set_visible", Some(Scope::Control)),
     m("item.set_locked", Some(Scope::Control)),
     m("scene.sources", Some(Scope::Read)),
@@ -783,6 +813,10 @@ enum WireRequest {
     FilterSetSettings(SetFilterSettings),
     #[serde(rename = "source.set_sync_offset")]
     SourceSetSyncOffset(SetSourceSyncOffset),
+    #[serde(rename = "source.retarget")]
+    SourceRetarget(RetargetSource),
+    #[serde(rename = "source.reload")]
+    SourceReload(ReloadSource),
     #[serde(rename = "item.set_visible")]
     ItemSetVisible(SetItemVisible),
     #[serde(rename = "item.set_locked")]
@@ -882,6 +916,8 @@ impl From<WireRequest> for Request {
             WireRequest::FilterSetEnabled(p) => Request::Command(C::FilterSetEnabled(p)),
             WireRequest::FilterSetSettings(p) => Request::Command(C::FilterSetSettings(p)),
             WireRequest::SourceSetSyncOffset(p) => Request::Command(C::SourceSetSyncOffset(p)),
+            WireRequest::SourceRetarget(p) => Request::Command(C::SourceRetarget(p)),
+            WireRequest::SourceReload(p) => Request::Command(C::SourceReload(p)),
             WireRequest::SceneSources(p) => Request::Command(C::SceneSources(p)),
             WireRequest::CanvasSetPreview(p) => Request::Command(C::CanvasSetPreview(p)),
             WireRequest::CanvasTransition(_) => Request::Command(C::CanvasTransition),
@@ -950,6 +986,8 @@ impl From<Request> for WireRequest {
                 C::FilterSetEnabled(p) => WireRequest::FilterSetEnabled(p),
                 C::FilterSetSettings(p) => WireRequest::FilterSetSettings(p),
                 C::SourceSetSyncOffset(p) => WireRequest::SourceSetSyncOffset(p),
+                C::SourceRetarget(p) => WireRequest::SourceRetarget(p),
+                C::SourceReload(p) => WireRequest::SourceReload(p),
                 C::SceneSources(p) => WireRequest::SceneSources(p),
                 C::CanvasSetPreview(p) => WireRequest::CanvasSetPreview(p),
                 C::CanvasTransition => WireRequest::CanvasTransition(Empty {}),
