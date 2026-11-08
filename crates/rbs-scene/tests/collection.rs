@@ -1076,6 +1076,24 @@ fn volume_and_mute_never_conflict_with_or_come_back_through_other_source_records
 }
 
 #[test]
+fn mixer_hidden_is_a_view_flag_that_keeps_the_sound() {
+    let mut s = studio();
+    let before = s.col.clone();
+    let hide = s.col.set_source_mixer_hidden(s.cam, true).unwrap();
+    s.col.set_source_volume(s.cam, 0.5).unwrap();
+    s.col.set_source_muted(s.cam, true).unwrap();
+    let audio = s.col.source(s.cam).unwrap().audio;
+    assert!(audio.mixer_hidden && audio.muted && audio.volume == 0.5);
+    assert!(audio.is_valid() && !audio.is_default());
+    // Out of order, the record conflicts like volume's.
+    assert_eq!(s.col.undo(hide), Err(SceneError::UndoConflict));
+    s.col.set_source_volume(s.cam, 1.0).unwrap();
+    s.col.set_source_muted(s.cam, false).unwrap();
+    s.col.set_source_mixer_hidden(s.cam, false).unwrap();
+    assert_eq!(s.col, before);
+}
+
+#[test]
 fn sync_offset_is_a_live_audio_value_kept_by_volume_and_mute() {
     let mut s = studio();
     let before = s.col.clone();

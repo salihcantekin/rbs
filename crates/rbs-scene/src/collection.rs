@@ -643,6 +643,25 @@ impl SceneCollection {
         })
     }
 
+    /// Hides a source from the Mixer or shows it again (ADR-0080). A view choice like the
+    /// mute: the sound and the volume are untouched and the binder ignores it.
+    pub fn set_source_mixer_hidden(
+        &mut self,
+        id: SourceId,
+        mixer_hidden: bool,
+    ) -> Result<Undo, SceneError> {
+        let expected = self.get_source(id)?.audio;
+        let new = SourceAudio {
+            mixer_hidden,
+            ..expected
+        };
+        self.apply(Op::SetSourceAudio {
+            source: id,
+            expected,
+            new,
+        })
+    }
+
     /// Sets the sync offset of a source's sound in milliseconds (ADR-0062;
     /// `InvalidSyncOffset` outside `-MAX_SYNC_OFFSET_MS..=MAX_SYNC_OFFSET_MS`). A live
     /// control like the volume: the binder ignores it.
