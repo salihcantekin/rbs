@@ -318,6 +318,7 @@ Toolbar items are command registry ids ([ADR-0050](../adr/0050-command-registry-
   | `ui.workspace.select` | picker | `ui.workspace.switch {name}` | View |
   | `ui.area.toggle?area=left\|right\|bottom` | action, checked while the area shows | `ui.area.toggle {area}` | View |
   | `ui.area.hide_all`, `ui.area.show_all`, `ui.layout.reset_sizes`, `ui.toolbar.reset` | action | the method of the same name | View |
+  | `ui.workspace.reset` ("Reset workspace", icon `reset`) | action, disabled for a workspace that is not built in or already has its default | the method of the same name: replaces the shown built-in workspace's layout, toolbar and lock with its default, keeping its name; one layout undo step. A saved copy from an older RBS gets what the default has gained since, such as the studio split (ADR-0064) | View |
   | `ui.theme.reload` ("Reload themes") | action | the method of the same name: reads the token, appearance and theme files again ([themes spec](themes.md#applying-rbs-app-look)) | View |
   | `ui.panel.select` | picker | `ui.panel.open {id}` | Window |
   | `scene.select` | picker (a bound choice adds `collection`) | `scene.switch {scene}` (protocol 1.6) | Scene |
