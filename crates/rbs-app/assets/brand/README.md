@@ -1,10 +1,10 @@
 # RBS brand assets
 
 - `rbs-mark.svg`: the mark alone (dark-theme colours). In the app it is drawn by `BrandMark` in `ui/components.slint` with theme tokens (`color.text.primary`, `color.brand`).
-- `rbs-icon.svg`: the application icon master (fixed colours: tile `#1C2136`, frame `#E6E9FF`, dot `#7C52FF`).
+- `rbs-icon.svg`: the application icon master: a window (title bar, sidebar, text lines) on a black tile with a thin rim and a camera bubble with a pink-to-violet ring in its lower right corner. Fixed colours, the OS does not follow the theme.
 - `icon-win-256.png`, `rbs.ico`: Windows (tile fills the canvas). `icon-mac-1024.png`, `icon-mac-256.png`, `rbs.icns`: macOS (tile with the system margin).
 
-The rasters, `rbs.ico`, `rbs.icns` and `rbs-icon.svg` are drawn from the mark geometry by `generate_icons.py` (needs Pillow and macOS `iconutil`; run it from this directory after any change to the mark). The mark spans 80% of the tile width so it fills the Dock slot like other apps' glyphs.
+`generate_icons.py` draws `rbs-icon.svg`, the rasters, `rbs.ico` and `rbs.icns` from one design description (needs Pillow and macOS `iconutil`; run it from this directory after any change to the design). `BrandMark` in the app has the same geometry, drawn in theme colours; keep them in step.
 
 ## Where the icons are used
 
