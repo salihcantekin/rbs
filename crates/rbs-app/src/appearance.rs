@@ -720,25 +720,14 @@ pub fn warnings_for(problems: &[ThemeProblem], token: &str) -> Vec<String> {
                 let n = format!("{ratio:.1} of {need}");
                 if fg == "color.state.live" && bg == token {
                     (
-                        format!(
-                            "The Live badge is hard to see on this colour ({n}): try a darker or lighter colour."
-                        ),
+                        format!("The Live badge is hard to see on this colour ({n})."),
                         true,
                     )
                 } else if fg == token {
-                    (
-                        format!(
-                            "Hard to read on {} ({n}): make one of the two lighter or darker.",
-                            label_of(bg)
-                        ),
-                        false,
-                    )
+                    (format!("Hard to read on {} ({n}).", label_of(bg)), false)
                 } else if bg == token {
                     (
-                        format!(
-                            "{} is hard to read on this colour ({n}): make one of the two lighter or darker.",
-                            label_of(fg)
-                        ),
+                        format!("{} is hard to read on this colour ({n}).", label_of(fg)),
                         false,
                     )
                 } else {
@@ -746,14 +735,12 @@ pub fn warnings_for(problems: &[ThemeProblem], token: &str) -> Vec<String> {
                 }
             }
             Some(ColorRule::LiveLook { token: t, .. }) if t == token => (
-                "Looks like the Live colour, so it may be taken for live: pick another colour."
-                    .to_owned(),
+                "Looks like the Live colour, so it may be taken for live.".to_owned(),
                 true,
             ),
-            Some(ColorRule::LiveHue { token: t }) if t == token => (
-                "Its hue is close to the Live colour: move it away from red.".to_owned(),
-                true,
-            ),
+            Some(ColorRule::LiveHue { token: t }) if t == token => {
+                ("Its hue is close to the Live colour.".to_owned(), true)
+            }
             _ => continue,
         };
         if about_live {
@@ -765,6 +752,13 @@ pub fn warnings_for(problems: &[ThemeProblem], token: &str) -> Vec<String> {
     live.dedup();
     other.dedup();
     live.extend(other);
+    // Two sentences at most: the rest would bury the row.
+    const SHOWN: usize = 2;
+    if live.len() > SHOWN {
+        let more = live.len() - SHOWN;
+        live.truncate(SHOWN);
+        live.push(format!("And {more} more."));
+    }
     live
 }
 

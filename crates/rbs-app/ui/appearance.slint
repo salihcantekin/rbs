@@ -473,18 +473,20 @@ component TokenEditorRow inherits Rectangle {
             }
             if item.problem != "": Problem { text: item.problem; }
             if item.warning != "": Warning { text: item.warning; }
-            if item.fixable: Button {
-                text: @tr("Fix");
-                accessible-name: @tr("Fix the colour of {}", item.label);
-                dense: true;
-                horizontal-stretch: 0;
-                clicked => { Appearance.fix(item.name); }
-            }
         }
         if item.kind != 3: HorizontalLayout {
             horizontal-stretch: 0;
             spacing: Tokens.space-2;
             alignment: end;
+            if item.fixable: VerticalLayout {
+                alignment: center;
+                Button {
+                    text: @tr("Fix");
+                    accessible-name: @tr("Fix the colour of {}", item.label);
+                    dense: true;
+                    clicked => { Appearance.fix(item.name); }
+                }
+            }
             if item.kind == 0: VerticalLayout {
                 alignment: center;
                 ColorPicker {
