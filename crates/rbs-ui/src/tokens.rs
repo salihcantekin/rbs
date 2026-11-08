@@ -104,6 +104,7 @@ pub const LENGTHS: &[&str] = &[
     "size.transition.narrow",
     "size.transition.short",
     "size.transition.between",
+    "size.transition.icons",
     "size.transition.below",
     "size.transition.min-picture",
     "size.transition.min-h",

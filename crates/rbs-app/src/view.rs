@@ -166,7 +166,13 @@ fn percent_before(layout: &Node, h: &rbs_ui::layout::Handle) -> i32 {
                 Some(c) => node = c,
                 None => return 0,
             },
-            Node::Tabs(_) | Node::Pictures(_) => return 0,
+            Node::Tabs(_) => return 0,
+            // A rail edge: the rail's width within its limits.
+            Node::Pictures(p) => {
+                let (lo, hi) = rbs_ui::layout::RAIL_SIZE_RANGE;
+                let share = (p.rail_size.clamp(lo, hi) - lo) as f32 / (hi - lo) as f32;
+                return (100.0 * share).round() as i32;
+            }
         }
     }
     match node {

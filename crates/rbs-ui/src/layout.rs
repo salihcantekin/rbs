@@ -50,7 +50,7 @@ pub const PICTURES_PROGRAM_STACK: usize = 100_001;
 pub const RAIL_SIZE_RANGE: (u32, u32) = (48, 240);
 
 /// Default width of the Transition rail between the pictures.
-pub const RAIL_SIZE_DEFAULT: u32 = 144;
+pub const RAIL_SIZE_DEFAULT: u32 = 88;
 
 /// Where the Pictures leaf puts the Transition rail in studio mode (ADR-0064, ADR-0073).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -948,6 +948,21 @@ impl Node {
                 _ => return false,
             }
         }
+        if let Node::Pictures(p) = node {
+            // A rail edge: the rail stays centred, so its width changes by twice the
+            // distance the edge moved (ADR-0073).
+            let grow = match handle.index {
+                0 => -2.0 * delta,
+                1 => 2.0 * delta,
+                _ => return false,
+            };
+            let (lo, hi) = RAIL_SIZE_RANGE;
+            let next = (p.rail_size as f32 + grow)
+                .round()
+                .clamp(lo as f32, hi as f32);
+            p.rail_size = next as u32;
+            return true;
+        }
         let Node::Split(s) = node else {
             return false;
         };
@@ -987,7 +1002,7 @@ fn flatten_node(
             });
             *next += 1;
         }
-        Node::Pictures(p) => flatten_pictures(p, r, studio_mode, out),
+        Node::Pictures(p) => flatten_pictures(p, r, studio_mode, path, out),
         Node::Split(s) => {
             let n = s.children.len();
             let length = match s.axis {
@@ -1060,7 +1075,7 @@ fn flatten_node(
 /// the two pictures share it in equal halves around the rail, or above it. Its two
 /// pictures are reported as stacks numbered [`PICTURES_PREVIEW_STACK`] and
 /// [`PICTURES_PROGRAM_STACK`], which no window stack has.
-fn flatten_pictures(p: &Pictures, r: Rect, studio_mode: bool, out: &mut Flat) {
+fn flatten_pictures(p: &Pictures, r: Rect, studio_mode: bool, path: &[usize], out: &mut Flat) {
     let picture = |id: &PanelId, stack: usize, rect: Rect, out: &mut Flat| {
         out.stacks.push(StackRect {
             stack,
@@ -1127,8 +1142,24 @@ fn flatten_pictures(p: &Pictures, r: Rect, studio_mode: bool, out: &mut Flat) {
                 h: r.h,
             };
             picture(&p.preview, PICTURES_PREVIEW_STACK, pic(r.x, a), out);
-            // A divider's gap on each side of the rail, as between two stacks.
+            // A divider's gap on each side of the rail, as between two stacks. The two
+            // gaps are handles that change the rail's width, the rail staying centred
+            // (index 0 is the left gap, 1 the right one; `extent` is 1: no ratios).
             let gap = HANDLE_THICKNESS.min(rail_w / 2.0);
+            for (index, x) in [(0, r.x + a), (1, r.x + a + rail_w - gap)] {
+                out.handles.push(Handle {
+                    path: path.to_vec(),
+                    index,
+                    axis: Axis::Horizontal,
+                    rect: Rect {
+                        x,
+                        y: r.y,
+                        w: gap,
+                        h: r.h,
+                    },
+                    extent: 1.0,
+                });
+            }
             out.rail = Some((
                 Rect {
                     x: r.x + a + gap,
@@ -1361,7 +1392,7 @@ mod tests {
         assert_eq!(on.stacks[0].rect.w, on.stacks[1].rect.w);
         assert_eq!(rail.x, on.stacks[0].rect.w + HANDLE_THICKNESS);
         assert_eq!(on.stacks[1].rect.x, on.stacks[0].rect.w + column);
-        assert!(on.handles.is_empty());
+        assert_eq!(on.handles.len(), 2, "the two rail edges");
         // Below: both pictures over a full-width rail.
         let below = Node::pictures(RailAt::Below).flatten_in(r, true);
         let (rail, _) = below.rail.unwrap();
@@ -1466,6 +1497,30 @@ children = [{ tabs = ["rbs.preview?canvas=vertical"] }, { tabs = ["rbs.program?c
         let n: Node =
             toml::from_str(&old.replace("rbs.program?canvas=vertical", "rbs.mixer")).unwrap();
         assert!(matches!(n, Node::Split(_)) && n.pictures_leaf().is_none());
+    }
+
+    #[test]
+    fn the_rail_edges_are_handles_that_resize_it() {
+        let mut n = Node::pictures(RailAt::Between);
+        let r = Rect::sized(1000.0, 400.0);
+        let flat = n.flatten_in(r, true);
+        assert_eq!(flat.handles.len(), 2);
+        let (left, right) = (flat.handles[0].clone(), flat.handles[1].clone());
+        assert!(left.rect.x < right.rect.x);
+        assert!(n.resize(&left, -10.0), "left edge out: wider");
+        assert_eq!(n.pictures_leaf().unwrap().rail_size, RAIL_SIZE_DEFAULT + 20);
+        assert!(n.resize(&right, -30.0), "right edge in: narrower");
+        assert_eq!(n.pictures_leaf().unwrap().rail_size, RAIL_SIZE_DEFAULT - 40);
+        assert!(n.resize(&right, -1000.0));
+        assert_eq!(n.pictures_leaf().unwrap().rail_size, RAIL_SIZE_RANGE.0);
+        // Below the pictures, and outside studio mode, there is nothing to drag.
+        assert!(
+            Node::pictures(RailAt::Below)
+                .flatten_in(r, true)
+                .handles
+                .is_empty()
+        );
+        assert!(n.flatten_in(r, false).handles.is_empty());
     }
 
     #[test]
