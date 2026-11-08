@@ -696,6 +696,7 @@ pub const UI_METHODS: &[&str] = &[
     "ui.panel.maximize",
     "ui.panel.restore",
     "ui.layout.studio_rail",
+    "ui.layout.rail_size",
     "ui.layout.reset_sizes",
     "ui.toolbar.get",
     "ui.toolbar.set",

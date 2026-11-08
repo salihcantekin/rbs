@@ -393,6 +393,13 @@ impl CommandState for Shown<'_> {
                 Some(p) if self.workspace.is_open(&p) => Ok(()),
                 _ => Err("The panel is not open.".to_owned()),
             },
+            "ui.layout.rail_size" => match (self.workspace.studio_rail(), id.param("px")) {
+                (None, _) => Err("This workspace has no Preview and Program side by side in \
+                                  the centre."
+                    .to_owned()),
+                (Some(_), Some(px)) if px.parse::<u32>().is_ok() => Ok(()),
+                _ => Err("The width is a whole number of pixels.".to_owned()),
+            },
             "ui.layout.studio_rail" => match self.workspace.studio_rail() {
                 Some(_) => Ok(()),
                 None => Err("This workspace has no Preview and Program side by side in \
@@ -862,6 +869,7 @@ pub fn run(text: &str, state: &Shown<'_>) -> Option<Run> {
         "ui.area.show_all" => Run::Layout(L::SetAllAreasVisible(true)),
         "ui.layout.reset_sizes" => Run::Layout(L::ResetSizes),
         "ui.layout.studio_rail" => Run::Layout(L::SetStudioRail(rail_at(&id)?)),
+        "ui.layout.rail_size" => Run::Layout(L::SetRailSize(id.param("px")?.parse().ok()?)),
         "ui.toolbar.reset" => Run::Layout(L::ResetToolbar),
         "ui.workspace.reset" => Run::Layout(L::ResetWorkspace),
         "ui.theme.reload" => Run::ReloadThemes,

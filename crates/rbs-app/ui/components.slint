@@ -876,6 +876,18 @@ export component Tabs inherits Rectangle {
     }
 }
 
+// Panel sections the user closed (ADR-0078), saved in the workspace file. Rust answers
+// `closed`; `rev` changes whenever the answers may have, because Slint calls a pure
+// callback again only when its arguments change.
+export global Sections {
+    in property <int> rev;
+    pure callback closed(string /* id */, int /* rev */) -> bool;
+    callback set-closed(string /* id */, bool /* closed */);
+    // A page's cards by id prefix: 0 none fold, 1 some are open, 2 all are closed.
+    pure callback group-state(string /* prefix */, int /* rev */) -> int;
+    callback set-group(string /* prefix */, bool /* closed */);
+}
+
 // SectionHeader: starts a collapsible group of fields: its title (small, upper case) and a rule to
 // the end of the row. The whole row is a button with a chevron (ADR-0076); a closed section draws nothing and takes no room.
 export component SectionHeader inherits Rectangle {

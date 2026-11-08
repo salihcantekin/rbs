@@ -4,7 +4,7 @@
 // and its control on the right (U2: every option explains itself), or under them for
 // wide content. Every value comes from the tokens (U6).
 import { Theme, Tokens } from "tokens.slint";
-import { FocusRing, RingFocus, Icon, IconName } from "components.slint";
+import { FocusRing, RingFocus, Icon, IconName, SectionHeader, Sections, Button } from "components.slint";
 
 // One entry of the section list. The section in use has the accent-tinted row with an
 // accent bar at its left edge (mockup E's selected row) and is marked checked for
@@ -86,13 +86,32 @@ export component SettingsNavGroup inherits Text {
 export component SettingsHeader inherits VerticalLayout {
     in property <string> title;
     in property <string> subtitle;
+    // The id prefix of the page's cards (`settings.recording.`). A page with foldable
+    // cards gets one small button that closes all of them, or opens them again.
+    in property <string> group;
+    property <int> fold: root.group == "" ? 0 : Sections.group-state(root.group, Sections.rev);
     spacing: Tokens.space-1;
-    Text {
-        text: root.title;
-        color: Theme.text-primary;
-        font-size: Tokens.type-heading-size;
-        font-weight: Tokens.type-heading-weight;
-        accessible-role: none;
+    HorizontalLayout {
+        spacing: Tokens.size-field-gap;
+        Text {
+            horizontal-stretch: 1;
+            text: root.title;
+            color: Theme.text-primary;
+            font-size: Tokens.type-heading-size;
+            font-weight: Tokens.type-heading-weight;
+            vertical-alignment: center;
+            accessible-role: none;
+        }
+        if root.fold != 0: VerticalLayout {
+            alignment: center;
+            Button {
+                dense: true;
+                kind: "ghost";
+                text: root.fold == 1 ? @tr("Collapse all") : @tr("Expand all");
+                accessible-name: root.fold == 1 ? @tr("Collapse all sections of {}", root.title) : @tr("Expand all sections of {}", root.title);
+                clicked => { Sections.set-group(root.group, root.fold == 1); }
+            }
+        }
     }
     if root.subtitle != "": Text {
         text: root.subtitle;
@@ -108,6 +127,10 @@ export component SettingsHeader inherits VerticalLayout {
 export component SettingsCard inherits Rectangle {
     in property <string> title;
     in property <string> description;
+    // A card with an id folds under its title and keeps that in the workspace file
+    // (ADR-0078): `<page>.<card>` such as `settings.recording.files`.
+    in property <string> id;
+    property <bool> closed: root.id != "" && Sections.closed(root.id, Sections.rev);
     background: Theme.surface-raised;
     border-radius: Tokens.radius-lg;
     border-width: Tokens.size-border;
@@ -118,29 +141,45 @@ export component SettingsCard inherits Rectangle {
     preferred-height: body.preferred-height;
     body := VerticalLayout {
         alignment: start;
-        padding-left: Tokens.space-4;
-        padding-right: Tokens.space-4;
-        padding-top: Tokens.space-3;
-        padding-bottom: Tokens.space-1;
-        if root.title != "" || root.description != "": VerticalLayout {
-            spacing: Tokens.space-1;
-            padding-bottom: Tokens.space-2;
-            if root.title != "": Text {
-                text: root.title.to-uppercase();
-                color: Theme.text-secondary;
-                font-size: Tokens.type-caption-size;
-                font-weight: Tokens.type-title-weight;
-                letter-spacing: Tokens.size-tracking-caps;
-                accessible-role: none;
-            }
-            if root.description != "": Text {
-                text: root.description;
-                color: Theme.text-secondary;
-                font-size: Tokens.type-caption-size;
-                wrap: word-wrap;
+        padding-left: Tokens.size-panel-pad;
+        padding-right: Tokens.size-panel-pad;
+        padding-top: Tokens.size-panel-pad;
+        padding-bottom: root.closed ? Tokens.size-panel-pad : Tokens.space-1;
+        if root.id != "" && root.title != "": SectionHeader {
+            title: root.title;
+            collapsible: true;
+            open: !root.closed;
+            toggled(o) => { Sections.set-closed(root.id, !o); }
+        }
+        if root.id == "" && root.title != "": Text {
+            text: root.title.to-uppercase();
+            color: Theme.text-secondary;
+            font-size: Tokens.type-caption-size;
+            font-weight: Tokens.type-title-weight;
+            letter-spacing: Tokens.size-tracking-caps;
+            accessible-role: none;
+        }
+        // Slint cannot put @children in an `if`, so a closed card hides its rows and
+        // takes no room for them.
+        Rectangle {
+            visible: !root.closed;
+            height: root.closed ? 0px : inner.preferred-height;
+            inner := VerticalLayout {
+                alignment: start;
+                spacing: Tokens.size-field-gap;
+                padding-top: root.title != "" || root.description != "" ? Tokens.size-field-gap : 0;
+                if root.description != "": Text {
+                    text: root.description;
+                    color: Theme.text-secondary;
+                    font-size: Tokens.type-caption-size;
+                    wrap: word-wrap;
+                }
+                VerticalLayout {
+                    alignment: start;
+                    @children
+                }
             }
         }
-        @children
     }
 }
 

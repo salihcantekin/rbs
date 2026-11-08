@@ -3,7 +3,7 @@
 // Rust pushes state into the `Studio` global of every window and handles its callbacks
 // by sending commands to the studio's control thread.
 import { Theme, Tokens } from "tokens.slint";
-import { Button, Checkbox, ColorPicker, FocusRing, RingFocus, SectionHeader, Tabs, Icon, IconButton, IconName, Icons, MenuItem, MenuSurface, EmptyState, NumberField, Select, SegmentedControl, Slider, TextField, Toggle } from "components.slint";
+import { Sections, Button, Checkbox, ColorPicker, FocusRing, RingFocus, SectionHeader, Tabs, Icon, IconButton, IconName, Icons, MenuItem, MenuSurface, EmptyState, NumberField, Select, SegmentedControl, Slider, TextField, Toggle } from "components.slint";
 import { SettingsCard, SettingRow, SettingBlock, SettingsStatus, SettingsNotice, SettingsCallout } from "settings.slint";
 import { CommandMenu } from "context_menu.slint";
 
@@ -129,9 +129,6 @@ export global Studio {
     // sources there are.
     in property <[string]> global-kind-names;
     in property <int> global-count;
-    // The Sources panel's Global group is open (ADR-0065): closed when the app starts,
-    // kept per window while it runs.
-    in-out property <bool> globals-open: false;
     in-out property <int> global-option: -1;
     callback pick-global-kind(int /* kind index */);
     callback add-global(int /* option */);
@@ -1032,84 +1029,34 @@ export component ScenesPanel inherits Rectangle {
 // A heading in the Sources list: the global sources, then the scene's. While the
 // studio is on air the Global heading says that its sources are on air in every scene,
 // also while studio mode edits the preview scene (U4).
-component SourcesGroup inherits Rectangle {
-    in property <string> heading;
-    min-height: lay.min-height;
-    preferred-height: lay.preferred-height;
-    accessible-role: text;
-    accessible-label: heading;
-    lay := HorizontalLayout {
-        padding-left: Tokens.space-2;
-        padding-top: Tokens.space-1;
-        Text {
-            text: root.heading;
-            color: Theme.text-secondary;
+// The Global group's header (ADR-0065, ADR-0078): the shared SectionHeader with the count,
+// closed by default, so the user knows global sources exist without them taking the list.
+// While the program is on air the group says so.
+component GlobalsHeader inherits Rectangle {
+    in property <bool> open;
+    height: head.height;
+    head := SectionHeader {
+        title: @tr("Global ({})", Studio.global-count);
+        collapsible: true;
+        open: root.open;
+        toggled(o) => { Sections.set-closed("sources.global", !o); }
+    }
+    if Studio.on-air: Rectangle {
+        x: parent.width - self.width;
+        width: air.preferred-width + 2 * Tokens.space-2;
+        height: Tokens.type-caption-line;
+        y: (parent.height - self.height) / 2;
+        border-radius: self.height / 2;
+        background: Theme.state-live;
+        air := Text {
+            text: @tr("On air");
+            color: Theme.text-on-live;
             font-size: Tokens.type-caption-size;
             font-weight: Tokens.type-label-weight;
             vertical-alignment: center;
-            horizontal-stretch: 1;
-            accessible-role: none;
-        }
-    }
-}
-
-// The Global group's header (ADR-0065): a disclosure button with the count, folded by
-// default, so the user knows global sources exist without them taking the list.
-component GlobalsFold inherits Rectangle {
-    in property <string> heading;
-    property <bool> global: true;
-    min-height: lay.min-height;
-    preferred-height: lay.preferred-height;
-    accessible-role: button;
-    accessible-label: !global ? heading
-        : Studio.on-air ? @tr("{} ({}), on air in every scene", heading, Studio.global-count)
-        : @tr("{} ({})", heading, Studio.global-count);
-    accessible-expanded: global && Studio.globals-open;
-    accessible-action-default => { if global { Studio.globals-open = !Studio.globals-open; } }
-    background: global && fold.has-hover ? Theme.surface-raised : transparent;
-    border-radius: Tokens.radius-sm;
-    fold := TouchArea {
-        enabled: root.global;
-        mouse-cursor: root.global ? MouseCursor.pointer : MouseCursor.default;
-        clicked => { Studio.globals-open = !Studio.globals-open; }
-    }
-    lay := HorizontalLayout {
-        padding-left: Tokens.space-2;
-        padding-right: Tokens.space-2;
-        padding-top: Tokens.space-1;
-        padding-bottom: global ? Tokens.space-1 : 0;
-        spacing: Tokens.space-2;
-        if global: VerticalLayout {
-            alignment: center;
-            Icon { name: Studio.globals-open ? IconName.chevron-down : IconName.chevron-right; ink: Theme.text-secondary; }
-        }
-        if global: VerticalLayout {
-            alignment: center;
-            Icon { name: IconName.globe; ink: Theme.text-secondary; }
-        }
-        Text {
-            text: root.global ? @tr("{} ({})", root.heading, Studio.global-count) : root.heading;
-            color: Theme.text-secondary;
-            font-size: Tokens.type-caption-size;
-            font-weight: Tokens.type-label-weight;
-            vertical-alignment: center;
-            horizontal-stretch: 1;
-            accessible-role: none;
-        }
-        if global && Studio.on-air: Rectangle {
-            width: air.preferred-width + 2 * Tokens.space-2;
-            height: Tokens.type-caption-line;
-            border-radius: self.height / 2;
-            background: Theme.state-live;
-            air := Text {
-                text: @tr("On air");
-                color: Theme.text-on-live;
-                font-size: Tokens.type-caption-size;
-                font-weight: Tokens.type-label-weight;
-                vertical-alignment: center;
-                horizontal-alignment: center;
-                accessible-role: none;
-            }
+            horizontal-alignment: center;
+            accessible-role: text;
+            accessible-label: @tr("On air in every scene");
         }
     }
 }
@@ -1119,6 +1066,8 @@ export component SourcesPanel inherits Rectangle {
     // Add source lives in the panel card's title row; undo and redo in the Edit menu
     // and the usual keys (U4).
     property <length> header: 0px;
+    // The Global group is closed until the user opens it (ADR-0078, ADR-0065).
+    property <bool> globals-open: !Sections.closed("sources.global", Sections.rev);
     property <int> asked: Studio.add-source-asked;
     // Whoever asks sets `picker-kind` first: -1 for the list of types, or a type.
     changed asked => {
@@ -1161,18 +1110,18 @@ export component SourcesPanel inherits Rectangle {
             }
         }
         rows := VerticalLayout {
-            padding: Tokens.space-2;
+            padding: Tokens.size-panel-pad;
             // Each entry spaces itself, so a folded global row takes no room.
             spacing: 0;
             alignment: start;
             for s[i] in Studio.sources: VerticalLayout {
                 spacing: Tokens.space-1;
-                padding-bottom: !s.global || Studio.globals-open || Studio.selected-source == s.id || i == 0 ? Tokens.space-1 : 0;
+                padding-bottom: !s.global || root.globals-open || Studio.selected-source == s.id || i == 0 ? Tokens.space-1 : 0;
                 // Global sources come first, under their own heading (ADR-0065): they
                 // are drawn above every scene. The group is folded unless opened.
-                if s.global && i == 0: GlobalsFold { heading: @tr("Global"); }
-                if !s.global && i > 0 && Studio.sources[i - 1].global: SourcesGroup { heading: @tr("This scene"); }
-                if !s.global || Studio.globals-open || Studio.selected-source == s.id: SourceRowView {
+                if s.global && i == 0: GlobalsHeader { open: root.globals-open; }
+                if !s.global && i > 0 && Studio.sources[i - 1].global: SectionHeader { title: @tr("This scene"); }
+                if !s.global || root.globals-open || Studio.selected-source == s.id: SourceRowView {
                     data: s;
                     leaving => { list-focus.focus(); }
                 }
@@ -1533,28 +1482,18 @@ component SectionTitle inherits HorizontalLayout {
     }
 }
 
-// Which Properties sections the user closed (ADR-0076), kept while the app runs.
-global Sections {
-    in-out property <bool> position-closed;
-    in-out property <bool> crop-closed;
-    in-out property <bool> shape-closed;
-    in-out property <bool> sound-closed;
-    in-out property <bool> sync-closed;
-    in-out property <bool> scenes-closed;
-    in-out property <bool> remove-closed;
-}
-
-// A collapsible group of fields under a SectionHeader. A closed section draws nothing and takes no room. `closed` is the owner's state, `toggled` flips it.
+// A collapsible group of fields under a SectionHeader. A closed section draws nothing and
+// takes no room. Its state is saved in the workspace file under `id` (ADR-0078).
 component Section inherits VerticalLayout {
     in property <string> title;
-    in property <bool> closed;
-    callback toggled(bool /* now open */);
+    in property <string> id;
+    property <bool> closed: Sections.closed(root.id, Sections.rev);
     spacing: Tokens.size-field-gap;
     SectionHeader {
         title: root.title;
         collapsible: true;
         open: !root.closed;
-        toggled(o) => { root.toggled(o); }
+        toggled(o) => { Sections.set-closed(root.id, !o); }
     }
     // Slint cannot put @children in an `if`, so a closed section is hidden and takes
     // no room (like Shown): it draws and handles no input.
@@ -1787,8 +1726,7 @@ component StyleFields inherits Section {
     property <string> colour-text: data.border-color;
     changed colour-text => { colour.text = colour-text; }
     title: @tr("Shape and border");
-    closed: Sections.shape-closed;
-    toggled(o) => { Sections.shape-closed = !o; }
+    id: "properties.shape";
     Field {
         label: @tr("Shape");
         SegmentedControl {
@@ -1889,8 +1827,7 @@ component CropFields inherits Section {
     in property <SourceData> data;
     property <bool> known: data.pic-w > 0;
     title: @tr("Crop");
-    closed: Sections.crop-closed;
-    toggled(o) => { Sections.crop-closed = !o; }
+    id: "properties.crop";
     HorizontalLayout {
         spacing: Tokens.size-field-gap;
         NumberField {
@@ -1991,8 +1928,7 @@ component TransformFields inherits VerticalLayout {
     alignment: start;
     if data.picture: Section {
         title: @tr("Position and size");
-        closed: Sections.position-closed;
-        toggled(o) => { Sections.position-closed = !o; }
+        id: "properties.position";
         HorizontalLayout {
             spacing: Tokens.size-field-gap;
             // Equal columns, whatever the values' lengths.
@@ -2048,8 +1984,7 @@ component AudioFields inherits VerticalLayout {
     alignment: start;
     Section {
         title: @tr("Sound");
-        closed: Sections.sound-closed;
-        toggled(o) => { Sections.sound-closed = !o; }
+        id: "properties.sound";
         HorizontalLayout {
             spacing: Tokens.size-field-gap;
             Slider {
@@ -2078,8 +2013,7 @@ component AudioFields inherits VerticalLayout {
     }
     Section {
         title: @tr("Sync offset");
-        closed: Sections.sync-closed;
-        toggled(o) => { Sections.sync-closed = !o; }
+        id: "properties.sync";
         HorizontalLayout {
             spacing: Tokens.size-field-gap;
             NumberField {
@@ -2418,8 +2352,7 @@ component SourceProperties inherits VerticalLayout {
     // Global sources (ADR-0065): on, the source is shown and heard in every scene.
     Section {
         title: @tr("Scenes");
-        closed: Sections.scenes-closed;
-        toggled(o) => { Sections.scenes-closed = !o; }
+        id: "properties.scenes";
         Toggle {
             text: @tr("Show in every scene");
             label: @tr("Show {} in every scene", data.name);
@@ -2435,8 +2368,7 @@ component SourceProperties inherits VerticalLayout {
     // Delete source: every scene. With more than one placement it asks first.
     Section {
         title: @tr("Remove");
-        closed: Sections.remove-closed;
-        toggled(o) => { Sections.remove-closed = !o; }
+        id: "properties.remove";
         if !confirm: HorizontalLayout {
             alignment: start;
             Button {
@@ -2525,6 +2457,7 @@ export component RecordingSettings inherits Rectangle {
         if Studio.out-note != "": SettingsNotice { text: Studio.out-note; problem: true; }
         SettingsCard {
             title: @tr("Files");
+            id: "settings.recording.files";
             SettingRow {
                 divider: false;
                 label: @tr("Folder");
@@ -2554,6 +2487,7 @@ export component RecordingSettings inherits Rectangle {
         }
         SettingsCard {
             title: @tr("Encoding");
+            id: "settings.recording.encoding";
             fields := EncoderFields {
                 data: Studio.out-enc;
                 idle: idle;
@@ -2581,6 +2515,7 @@ export component StreamSettings inherits Rectangle {
         if Studio.st-note != "": SettingsNotice { text: Studio.st-note; problem: true; }
         SettingsCard {
             title: @tr("Destination");
+            id: "settings.stream.destination";
             SettingRow {
                 divider: false;
                 label: @tr("Server");
@@ -2638,6 +2573,7 @@ export component StreamSettings inherits Rectangle {
         }
         SettingsCard {
             title: @tr("Connection");
+            id: "settings.stream.connection";
             SettingRow {
                 divider: false;
                 label: @tr("Reconnect when the connection drops");
@@ -2670,6 +2606,7 @@ export component StreamSettings inherits Rectangle {
         }
         SettingsCard {
             title: @tr("While live");
+            id: "settings.stream.while-live";
             SettingRow {
                 divider: false;
                 label: @tr("Record when the stream starts");
@@ -2687,6 +2624,7 @@ export component StreamSettings inherits Rectangle {
         }
         SettingsCard {
             title: @tr("Encoding");
+            id: "settings.stream.encoding";
             fields := EncoderFields {
                 data: Studio.st-enc;
                 idle: idle;
@@ -2724,6 +2662,7 @@ export component VideoSettings inherits Rectangle {
         if Studio.canvas-note != "": SettingsNotice { text: Studio.canvas-note; problem: true; }
         SettingsCard {
             title: @tr("Canvas");
+            id: "settings.video.canvas";
             SettingRow {
                 divider: false;
                 label: @tr("Canvas size");
@@ -2763,6 +2702,7 @@ export component GeneralSettings inherits Rectangle {
         alignment: start;
         SettingsCard {
             title: @tr("Closing the main window");
+            id: "settings.general.closing";
             SettingRow {
                 divider: false;
                 label: @tr("When I close the main window");
@@ -2802,6 +2742,7 @@ export component GlobalSourcesSettings inherits Rectangle {
         }
         SettingsCard {
             title: @tr("Global sources");
+            id: "settings.sources.global-sources";
             description: @tr("Heard and shown in every scene, above the scene's own sources.");
             if !running: SettingRow {
                 divider: false;
@@ -2830,6 +2771,7 @@ export component GlobalSourcesSettings inherits Rectangle {
         }
         SettingsCard {
             title: @tr("Add a global source");
+            id: "settings.sources.add-global";
             SettingRow {
                 divider: false;
                 label: @tr("Kind");
@@ -2894,6 +2836,7 @@ export component RemoteControlSettings inherits Rectangle {
         alignment: start;
         SettingsCard {
             title: @tr("This computer");
+            id: "settings.remote.this-computer";
             SettingRow {
                 divider: false;
                 label: @tr("Allow remote control");
@@ -2924,6 +2867,7 @@ export component RemoteControlSettings inherits Rectangle {
         // check the key pin before they send a token.
         SettingsCard {
             title: @tr("Other computers");
+            id: "settings.remote.other-computers";
             SettingRow {
                 divider: false;
                 label: @tr("Allow access from other computers");
@@ -3123,6 +3067,7 @@ export component RemoteControlSettings inherits Rectangle {
         }
         SettingsCard {
             title: @tr("Access tokens");
+            id: "settings.remote.access-tokens";
             description: @tr("Each app needs an access token. Make one per app, so you can revoke it alone. A token is shown only once.");
             if Studio.rc-new-token != "": SettingBlock {
                 divider: false;
