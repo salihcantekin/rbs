@@ -1131,10 +1131,21 @@ pub fn suggest_colour(tokens: &Tokens, theme: &ThemeBody, token: &str) -> Option
     if !concerns(&now) {
         return None;
     }
+    // Lightness cannot change a hue or a look, so only a contrast warning has a fix.
+    let contrast = |r: &ResolvedTheme| {
+        r.warnings.iter().any(|w| match &w.rule {
+            Some(ColorRule::Contrast { fg, bg, .. }) => fg == token || bg == token,
+            _ => false,
+        })
+    };
+    if !contrast(&now) {
+        return None;
+    }
     let (h, sat, l) = to_hsl(start);
-    // 0.5 % steps of lightness, nearest first, darker and lighter alternating.
-    for step in 1..=200 {
-        let d = f64::from(step) * 0.005;
+    // 1 % steps of lightness, nearest first, darker and lighter alternating (at most
+    // 200 resolves, only when a row with a contrast warning is shown).
+    for step in 1..=100 {
+        let d = f64::from(step) * 0.01;
         for candidate in [l - d, l + d] {
             if !(0.0..=1.0).contains(&candidate) {
                 continue;

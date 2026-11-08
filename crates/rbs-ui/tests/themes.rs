@@ -645,3 +645,22 @@ fn the_suggested_colour_clears_the_warnings_of_its_token() {
         rbs_ui::tokens::suggest_colour(&t, &ThemeBody::new(Base::Dark), "color.accent").is_none()
     );
 }
+
+#[test]
+fn only_contrast_warnings_have_a_suggested_colour() {
+    let t = tokens();
+    // A hue warning cannot be fixed by lightness.
+    let mut theme = ThemeBody::new(Base::Dark);
+    theme
+        .colors
+        .insert("color.state.error".into(), color("#d02040"));
+    assert!(rbs_ui::tokens::suggest_colour(&t, &theme, "color.state.error").is_none());
+    // Any single colour: a suggestion never panics and, when given, is an opaque colour.
+    for name in THEME_COLORS {
+        let mut theme = ThemeBody::new(Base::Light);
+        theme.colors.insert((*name).into(), color("#808080"));
+        if let Some(c) = rbs_ui::tokens::suggest_colour(&t, &theme, name) {
+            assert_eq!(c.a, 255, "{name}");
+        }
+    }
+}

@@ -82,4 +82,4 @@ Round 2, same independent AI session, 2026-11-06, reviewing commit 95ed611. Verd
 
 Owner approval: threads may mark ADRs Accepted (project policy, Salih, 2026-11-03). The placement of the theme editor (Settings page or own window) is put to the owner with a mockup and does not change this contract.
 
-Amended 2026-11-08 by [ADR-0072](0072-theme-colour-rules-warn.md): the colour rules of decision 3 warn instead of refusing a user theme, which changes the fallback of decision 5 and the held draft of decision 6.
+Amended 2026-11-08 by [ADR-0072](0072-theme-colour-rules-warn.md): the colour rules of decision 3 warn instead of refusing a user theme, which changes the fallback of decision 5, the held draft of decision 6 and the "tightening a check" note of decision 9 (only a new error rule refuses a saved theme).

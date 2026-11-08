@@ -717,17 +717,28 @@ pub fn warnings_for(problems: &[ThemeProblem], token: &str) -> Vec<String> {
                 ratio,
                 need,
             }) => {
-                let n = format!("{ratio:.1} of {need}");
+                let n = format!("contrast {ratio:.1}, needs {need}");
                 if fg == "color.state.live" && bg == token {
                     (
-                        format!("The Live badge is hard to see on this colour ({n})."),
+                        format!(
+                            "The Live badge is hard to see on this colour ({n}). Pick a lighter or darker colour."
+                        ),
                         true,
                     )
                 } else if fg == token {
-                    (format!("Hard to read on {} ({n}).", label_of(bg)), false)
+                    (
+                        format!(
+                            "Hard to read on {} ({n}). Pick a lighter or darker colour.",
+                            label_of(bg)
+                        ),
+                        false,
+                    )
                 } else if bg == token {
                     (
-                        format!("{} is hard to read on this colour ({n}).", label_of(fg)),
+                        format!(
+                            "{} is hard to read on this colour ({n}). Pick a lighter or darker colour.",
+                            label_of(fg)
+                        ),
                         false,
                     )
                 } else {
@@ -735,12 +746,14 @@ pub fn warnings_for(problems: &[ThemeProblem], token: &str) -> Vec<String> {
                 }
             }
             Some(ColorRule::LiveLook { token: t, .. }) if t == token => (
-                "Looks like the Live colour, so it may be taken for live.".to_owned(),
+                "Looks like the Live colour, so it may be taken for live. Pick a different colour."
+                    .to_owned(),
                 true,
             ),
-            Some(ColorRule::LiveHue { token: t }) if t == token => {
-                ("Its hue is close to the Live colour.".to_owned(), true)
-            }
+            Some(ColorRule::LiveHue { token: t }) if t == token => (
+                "Its hue is close to the Live colour. Pick a different hue.".to_owned(),
+                true,
+            ),
             _ => continue,
         };
         if about_live {
