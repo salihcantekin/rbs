@@ -54,6 +54,8 @@ pub enum EditKind {
     /// A source's filters changed: added, removed, moved, turned on or off, or their
     /// settings (ADR-0062).
     Filter,
+    /// A look from the Library was applied (ADR-0075).
+    Look,
 }
 
 /// The step the next undo or redo applies: its kind and the name of the source or

@@ -25,6 +25,7 @@ pub fn panel_icon(id: &PanelId) -> &'static str {
     match id.base() {
         "rbs.stats" => "grid",
         "rbs.outputs" => "copy",
+        "rbs.library" => "image",
         _ => "window",
     }
 }
@@ -269,7 +270,9 @@ mod tests {
             .unwrap();
         assert_eq!(mixer.tabs.row_count(), 1);
         let [left, right, bottom] = edge_tabs(&ws.windows[0]);
-        assert!(left.is_empty() && bottom.is_empty());
+        assert!(bottom.is_empty());
+        // The Library is the left edge tab (ADR-0075).
+        assert_eq!(left.len(), 1);
         assert_eq!(right.len(), 2);
         let controls = stacks
             .iter()

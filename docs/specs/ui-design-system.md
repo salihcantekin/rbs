@@ -64,6 +64,7 @@ One family (initial choice: Inter, with the OS UI font as fallback). Numbers in 
 | Icons | `size.icon.box`=16 (icon box), `size.icon.stroke`=1.5 (line width) |
 | Menus | `size.menu.sm`=220, `size.menu.md`=300 (menu widths), `size.select.list-h`=320 (a drop-down list's height before it scrolls, about ten options), `size.app-menu.w`=600, `size.app-menu.categories`=165, `size.app-menu.list-h`=450 (RBS menu width, category column width, item list height before it scrolls) |
 | Transition rail | `size.transition.between`=156 (column between the pictures), `size.transition.below`=44 (row below them), `size.transition.min-picture`=160 and `size.transition.min-h`=240 (below them when narrower or shorter), `size.transition.type`=112, `size.transition.type-min`=72, `size.transition.duration`=88 (field widths below the pictures), `size.transition.compact`=600 (narrower: duration and caption hidden), `size.transition.narrow`=40 (narrower: the Transition panel shows only its button), `size.transition.short`=120 (narrower: the button says "Go" and the studio mode hint is hidden) |
+| Library | `size.library.thumb-w`=144 and `size.library.thumb-h`=81 (a sample picture's thumbnail, 16:9; not themeable) |
 | Windows | `size.window.w`=1440, `size.window.h`=900 (first-start main window), `size.window.min-w`=1280, `size.window.min-h`=720 (U11 minimum of the main window), `size.floating.w`=640, `size.floating.h`=420 (first size of a floating window), `size.settings.w`=920, `size.settings.h`=680 (first size of the Settings window) |
 | Windows | `size.window.w`=1440, `size.window.h`=900 (first-start main window), `size.window.min-w`=1280, `size.window.min-h`=720 (U11 minimum of the main window), `size.floating.w`=640, `size.floating.h`=420 (first size of a floating window), `size.settings.w`=920, `size.settings.h`=680 (first size of the Settings window), `size.caption.w`=46 (a window button on Windows, ADR-0071) |
 | Keyboard steps | `step.nudge`=8, `step.nudge-large`=128 (splitter move per arrow key, with Shift) |
@@ -236,7 +237,7 @@ toolbar = { style = "icons-text", items = [
   "~", "ui.app_menu.open", "ui.area.toggle?area=left", "ui.area.toggle?area=bottom",
   "ui.area.toggle?area=right", "|", "stream.toggle", "record.toggle",
 ] }
-# rbs.library is a planned panel; until it exists it shows as an unknown-panel placeholder.
+# rbs.library: the Library panel (ADR-0075), an edge tab on the left of Edit.
 
 [[windows]]
 kind = "main"

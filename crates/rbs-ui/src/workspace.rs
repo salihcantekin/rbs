@@ -2087,7 +2087,8 @@ layout = { tabs = ["rbs.status-bar"] }
                 .find(&id("rbs.outputs"))
                 .is_some()
         );
-        assert!(m.auto_hide.is_empty());
+        // Stats left the right edge; the Library stays on the left.
+        assert!(m.auto_hide.iter().all(|g| g.edge != Side::Right));
         assert!(ws.validate().is_ok());
     }
 

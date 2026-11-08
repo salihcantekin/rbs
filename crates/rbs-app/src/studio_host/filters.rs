@@ -7,7 +7,7 @@ use rbs_api::types as api;
 use rbs_filters::{FieldKind, FilterType, Value, Values, color_text, parse_color};
 use rbs_scene::SceneCollection;
 use rbs_scene::model::{Filter, FilterId, Settings, Source, SourceId};
-use rbs_sources::{filter_settings, filter_values_lenient};
+use rbs_sources::{filter_settings, filter_values, filter_values_lenient};
 
 use super::{Host, Refusal, SourceKind};
 use crate::edit_history::EditKind;
@@ -250,6 +250,108 @@ impl Host {
             .map_err(|e| Refusal::of(&e))?;
         self.history.record(EditKind::Filter, &name, 0, vec![undo]);
         Ok(id)
+    }
+
+    /// Applies a built-in look (ADR-0075) to a source and its item on the studio's
+    /// canvas as one undo step: the item's style when the look has one, and each filter
+    /// of the look replacing the source's filter of that type (set enabled with the
+    /// look's values) or added at the end of the chain. `Ok(false)` when nothing
+    /// changes.
+    pub(super) fn apply_look(&mut self, source: SourceId, look: &str) -> Result<bool, Refusal> {
+        let look = rbs_scene::look::find(look)
+            .ok_or_else(|| Refusal::NotFound(format!("There is no look {look:?}.")))?;
+        let name = self.source_name(source)?;
+        let has_picture = self
+            .collection
+            .source(source)
+            .and_then(|s| SourceKind::of(&s.type_id))
+            .is_none_or(|k| !k.is_audio());
+        if !has_picture {
+            return Err(Refusal::Invalid(format!(
+                "{name} has no picture to change."
+            )));
+        }
+        // Everything is checked before anything is changed.
+        let mut filters = Vec::new();
+        for f in &look.filters {
+            let ty = rbs_filters::find(f.type_id).ok_or_else(|| {
+                Refusal::Invalid(format!("There is no filter type {:?}.", f.type_id))
+            })?;
+            let values = filter_values(ty, &f.settings).map_err(|e| invalid(&e))?;
+            filters.push((ty, filter_settings(ty, &values)));
+        }
+        let mut records = Vec::new();
+        let result = self.apply_look_steps(source, &look, filters, &mut records);
+        match result {
+            Ok(()) if records.is_empty() => Ok(false),
+            Ok(()) => {
+                self.history.record(EditKind::Look, &name, 0, records);
+                Ok(true)
+            }
+            Err(e) => {
+                self.roll_back(records);
+                Err(e)
+            }
+        }
+    }
+
+    fn apply_look_steps(
+        &mut self,
+        source: SourceId,
+        look: &rbs_scene::look::Look,
+        filters: Vec<(&'static dyn FilterType, Settings)>,
+        records: &mut Vec<rbs_scene::Undo>,
+    ) -> Result<(), Refusal> {
+        if let Some(style) = look.style {
+            let (_, item) = self.item_of(source).map_err(Refusal::NotFound)?;
+            let (item_id, mut layout) = (item.id, *item.layout_on(self.canvas));
+            let own = item
+                .overrides
+                .contains_key(&self.canvas)
+                .then_some(self.canvas);
+            if layout.style != style {
+                layout.style = style;
+                let undo = self
+                    .collection
+                    .set_item_layout(item_id, own, layout)
+                    .map_err(|e| Refusal::of(&e))?;
+                records.push(undo);
+            }
+        }
+        for (ty, settings) in filters {
+            let existing = self.collection.source(source).and_then(|s| {
+                s.filters
+                    .iter()
+                    .find(|f| f.type_id == ty.type_id())
+                    .map(|f| (f.id, f.enabled, f.settings.clone()))
+            });
+            match existing {
+                Some((id, enabled, old)) => {
+                    if old != settings {
+                        let undo = self
+                            .collection
+                            .set_filter_settings(source, id, settings)
+                            .map_err(|e| Refusal::of(&e))?;
+                        records.push(undo);
+                    }
+                    if !enabled {
+                        let undo = self
+                            .collection
+                            .set_filter_enabled(source, id, true)
+                            .map_err(|e| Refusal::of(&e))?;
+                        records.push(undo);
+                    }
+                }
+                None => {
+                    let (_, undo) = self
+                        .collection
+                        .add_filter(source, ty.type_id(), settings)
+                        .map_err(|e| Refusal::of(&e))?;
+                    records.push(undo);
+                }
+            }
+        }
+        Ok(())
     }
 
     /// Removes a filter (one undo step).

@@ -683,7 +683,7 @@ mod tests {
         let mut ws = builtin::edit();
         {
             let m = ws.main_layout_mut().unwrap();
-            m.left.layout = Some(Node::tabs(vec![id("rbs.library")]));
+            m.left.layout = Some(Node::tabs(vec![id("rbs.status-bar")]));
             m.left.size = 400;
         }
         ws.locked = true;
@@ -699,7 +699,7 @@ mod tests {
         .unwrap();
         let m = s.workspace().main_layout().unwrap();
         assert!(!m.left.visible && m.left.layout.is_some());
-        assert!(!s.workspace().visible().contains(&&id("rbs.library")));
+        assert!(!s.workspace().visible().contains(&&id("rbs.status-bar")));
         s.apply(LayoutCommand::SetAllAreasVisible(true), Origin::Pointer)
             .unwrap();
         assert!(s.workspace().main_layout().unwrap().left.visible);
