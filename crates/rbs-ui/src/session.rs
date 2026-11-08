@@ -591,7 +591,7 @@ mod tests {
 
     #[test]
     fn drag_is_one_undo_step() {
-        let mut s = LayoutSession::new(builtin::minimal());
+        let mut s = LayoutSession::new(builtin::audio());
         let before = s.workspace().clone();
         for _ in 0..10 {
             s.apply(

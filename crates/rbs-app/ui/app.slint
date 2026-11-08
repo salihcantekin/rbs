@@ -107,6 +107,9 @@ export global Shell {
     // items after it, and whether the toolbar is shown.
     in property <[ToolbarData]> toolbar;
     in property <[ToolbarData]> toolbar-end;
+    // Go live and Record, the frame's fixed group (ADR-0073): shown with the toolbar
+    // hidden too.
+    in property <[ToolbarData]> toolbar-fixed;
     in property <bool> toolbar-visible: true;
     // Windows (ADR-0071): the toolbar row is the title bar and ends with the window
     // buttons. Set once the window's caption is removed.
@@ -1436,6 +1439,12 @@ component FrameBar inherits Rectangle {
                     ws-menu.show();
                 }
             }
+            // Go live and Record: part of the frame, not of the toolbar, so they stay
+            // with the toolbar hidden or customised (U1, ADR-0073).
+            for item in Shell.toolbar-fixed: ToolbarCell {
+                item: item;
+                open-workspaces(x) => { }
+            }
             // Idle it is not in the layout at all (the status bar says "Not live").
             if Shell.live-state != 0 || Shell.live-camera: LiveIndicator { horizontal-stretch: 0; }
         }
@@ -1564,6 +1573,25 @@ component StatusBar inherits Rectangle {
             color: Studio.st-bad ? Theme.state-error : Theme.text-secondary;
             font-size: Tokens.type-caption-size;
             vertical-alignment: center;
+        }
+        // What the Live controls panel said under its buttons (ADR-0073): the last
+        // recording's outcome ("Saved ..."), or why recording is not possible, and the
+        // virtual camera's state. Long paths are cut in the middle of the bar's room.
+        if Studio.rec-state == 0 && (Studio.rec-unavailable != "" || Studio.rec-note != ""): Text {
+            horizontal-stretch: 1;
+            text: Studio.rec-unavailable != "" ? Studio.rec-unavailable : Studio.rec-note;
+            color: Studio.rec-unavailable != "" || Studio.rec-note-bad ? Theme.state-error : Theme.text-secondary;
+            font-size: Tokens.type-caption-size;
+            vertical-alignment: center;
+            overflow: elide;
+        }
+        if Studio.vcam-shown && Studio.vcam-text != "": Text {
+            horizontal-stretch: 0;
+            text: Studio.vcam-text;
+            color: Theme.text-secondary;
+            font-size: Tokens.type-caption-size;
+            vertical-alignment: center;
+            overflow: elide;
         }
         Rectangle { horizontal-stretch: 1; }
         profile-button := StatusPicker {
