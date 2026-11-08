@@ -24,7 +24,7 @@ Where the flag lives decides what a workspace switch does. A flag in the workspa
 ## Consequences
 
 - A hidden microphone stays hidden across workspaces, scenes and restarts, and a collection shared with another machine carries it.
-- Scene format 6 and API 1.13 are public contracts and need the independent review below.
+- Scene format 6 and the new API minor (1.14 or 1.13) are public contracts and need the independent review below.
 - The Mixer audio plan (faders, master strip, ducking indicator) shares the `MeterRow` fields; this change adds only `hidden`, and the layout of strips is otherwise untouched.
 - A user can forget that a hidden source is still audible. The "Hidden (n)" header is the reminder and stays visible while `n > 0`.
 
@@ -36,4 +36,6 @@ Where the flag lives decides what a workspace switch does. A flag in the workspa
 
 ## Review
 
-Pending: independent review (ADR-0014) and the owner's approval of the visual proposal (rules 15 and 16).
+Round 1, independent AI session (2026-11-08): changes requested (API minor clash with ADR-0077, undo record, garbled UI sentence, meter filtering, global sources, API fields). All resolved in the text above.
+
+Round 2, independent AI session (2026-11-08): approve. Implementation reminders: remove a hidden source from the slots before the next `tick_meters`; register `mixer.hidden` in the saved section state. The owner approved the behaviour proposal (2026-11-08); approval of the visual result (rule 16) and the Accepted status are still pending.
