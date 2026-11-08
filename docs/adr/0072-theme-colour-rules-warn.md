@@ -1,6 +1,6 @@
 # ADR-0072: Theme colour rules warn instead of refusing; every editor change shows at once
 
-- Status: Proposed
+- Status: Accepted
 - Date: 2026-11-08
 - Deciders: Salih (owner)
 - Supersedes in part: ADR-0057 decisions 3 (theme rules), 5 (fallback of a theme that fails a check) and 6 (theme editor); rules U7 and U12 (custom themes)
@@ -47,4 +47,10 @@ Bounds and rules across tokens are different: a 2 px control, a line height tall
 
 ## Review
 
-Pending: independent review per ADR-0014.
+Independent AI session per ADR-0014, 2026-11-08, twice (given the proposal, specs, principles and code).
+
+Round 1, verdict changes requested (5 blocking): the recovery path for unreadable colours (added the "Keep this look?" at contrast 1.5 for primary text on the editor's surfaces, Cancel, `--reset-appearance`), specs and principles not updated (themes.md, U7, U12 updated), wrong cross references to ADR-0057 (fixed, pointer appended to ADR-0057), ambiguous `ThemeProblem` contract (severity, `ColorRule`, `Err` carries both, `ResolvedTheme.warnings`), imitation of live by imported themes (section "What keeps live unambiguous"). Non-blocking items applied: `RBS_TOKENS` strict, high-contrast base note, test list.
+
+Round 2, verdict changes requested (2 blocking, small): a sentence promising warnings in the theme list that nothing implemented (reworded: follow-up), font suggestions missing from the spec (added to themes.md). Non-blocking applied: warnings end with the action, Fix only for contrast warnings and a capped search, stale sentences in themes.md and ADR-0057 decision 9, limits of the Keep-this-look check stated.
+
+Owner approval: Salih, 2026-11-08 (the warning presentation and the merge, after screenshots in dark, light and high contrast).
