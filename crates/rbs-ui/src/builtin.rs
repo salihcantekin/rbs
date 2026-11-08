@@ -2,17 +2,9 @@
 //!
 //! They are defaults: users may change them and restore them, never delete them.
 
-use crate::layout::{Axis, Node, RailAt, Tabs};
+use crate::layout::{Axis, Node, RailAt};
 use crate::panel::id;
 use crate::workspace::{DEFAULT_FLYOUT, EdgeGroup, Side, Workspace, same_name};
-
-fn collapsed(ids: &[&'static str]) -> Node {
-    Node::Tabs(Tabs {
-        tabs: ids.iter().map(|i| id(i)).collect(),
-        active: 0,
-        collapsed: true,
-    })
-}
 
 /// Names of the built-in workspaces, in menu order.
 pub const NAMES: [&str; 4] = ["Edit", "Live", "Minimal", "Audio"];
@@ -28,8 +20,8 @@ fn studio() -> Node {
 }
 
 /// The full editing layout of the design system's main window structure: the studio
-/// split in the centre, Scenes and Sources in the left area, Properties and Live
-/// controls (collapsed) in the right area, the Mixer in the bottom area, and Stats
+/// split in the centre, Scenes and Sources in the left area, Properties in the
+/// right area, the Mixer in the bottom area, and Stats
 /// and Outputs as edge tabs on the right (ADR-0049, ADR-0064, spec Frame).
 pub fn edit() -> Workspace {
     let mut ws = Workspace::new("Edit", studio());
@@ -41,13 +33,7 @@ pub fn edit() -> Workspace {
                 (0.55, tabs(&["rbs.sources"])),
             ],
         ));
-        m.right.layout = Some(Node::split(
-            Axis::Vertical,
-            vec![
-                (0.7, tabs(&["rbs.properties"])),
-                (0.3, collapsed(&["rbs.live-controls"])),
-            ],
-        ));
+        m.right.layout = Some(tabs(&["rbs.properties"]));
         m.bottom.layout = Some(tabs(&["rbs.mixer"]));
         m.auto_hide.push(EdgeGroup {
             edge: Side::Right,
@@ -67,47 +53,25 @@ pub fn live() -> Workspace {
         Axis::Vertical,
         vec![(0.68, views), (0.32, tabs(&["rbs.mixer"]))],
     );
-    let right = Node::split(
-        Axis::Vertical,
-        vec![
-            (0.4, tabs(&["rbs.live-controls"])),
-            (0.6, tabs(&["rbs.stats", "rbs.scenes"])),
-        ],
-    );
+    let right = tabs(&["rbs.stats", "rbs.scenes"]);
     Workspace::new(
         "Live",
         Node::split(Axis::Horizontal, vec![(0.76, left), (0.24, right)]),
     )
 }
 
-/// Program and live controls only; the live indicator is in the window frame.
+/// Program only; Go live, Record and the live indicator are in the window frame.
 pub fn minimal() -> Workspace {
-    Workspace::new(
-        "Minimal",
-        Node::split(
-            Axis::Vertical,
-            vec![
-                (0.8, tabs(&["rbs.program"])),
-                (0.2, tabs(&["rbs.live-controls"])),
-            ],
-        ),
-    )
+    Workspace::new("Minimal", tabs(&["rbs.program"]))
 }
 
-/// The mixer large, with a small program view and live controls.
+/// The mixer large, with a small program view.
 pub fn audio() -> Workspace {
-    let top = Node::split(
-        Axis::Horizontal,
-        vec![
-            (0.6, tabs(&["rbs.program"])),
-            (0.4, tabs(&["rbs.live-controls"])),
-        ],
-    );
     Workspace::new(
         "Audio",
         Node::split(
             Axis::Vertical,
-            vec![(0.3, top), (0.7, tabs(&["rbs.mixer"]))],
+            vec![(0.3, tabs(&["rbs.program"])), (0.7, tabs(&["rbs.mixer"]))],
         ),
     )
 }
@@ -148,7 +112,7 @@ mod tests {
     fn minimal_is_cheap() {
         // Minimal needs frames only for the program view; nothing else animates.
         let w = minimal();
-        assert_eq!(w.visible().len(), 2);
+        assert_eq!(w.visible().len(), 1);
         assert_eq!(needed_rate(w.visible()), UpdateRate::Display);
         let mut w = minimal();
         w.close(&id("rbs.program")).unwrap();
