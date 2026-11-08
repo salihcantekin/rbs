@@ -52,3 +52,16 @@ The owner chose (2026-11-08): Studio mode is one switch that works in every work
 ## Review
 
 Independent review per ADR-0014, 2026-11-08, fresh AI session, round 1: changes requested, 13 findings, all taken into decisions above: U1 flows and Live controls (8), addressing and commands of Preview and Program (2), closing the leaf and ADR-0054 (2), migration data loss and indices (6), format 3 (6), locked rail (5), Minimal and Audio (2, 7), testable invariant (11), control API (9), status bar (8), UI rules and accessible names (5, 12), floating windows (1), supersession list (header). A second review round of this revision is pending; the ADR stays Proposed until it is recorded and the owner approves.
+
+Round 2, 2026-11-08, second fresh AI session: approve with changes, 8 findings, resolved here (they refine decisions 2, 6 and 8 and are binding):
+
+1. Frame group. ADR-0050 decisions 3, 5 and 6 and the Live, Minimal and Audio toolbar rows of the spec are amended: `stream.toggle` and `record.toggle` leave the default toolbars; Customize toolbar no longer offers them (they are in the frame group; the commands stay in menus and shortcuts). The group sits at the right end of the toolbar row, never goes into the » overflow (U11) and has a minimum width the window minimum respects; End stream keeps its in-place confirmation (U4).
+2. The virtual camera button lived in Live controls: it becomes registry and Output menu only (it was already not in the default toolbar), and its state text goes to the status bar as in decision 8.
+3. If a workspace has both the leaf and a loose `rbs.program` for the same canvas, the leaf wins as the alias target and the loose panel stays an ordinary panel by its own tab. `collapse`, `auto_hide` and `float` of `id=rbs.pictures` (or an alias that resolves to it) return `conflict`. Maximize shows both pictures. The guarded-close rule and its undo toast use `rbs.pictures`.
+4. The format 2 reader loses its tolerance for `studio` as a known key only through migration; format 1 files migrate 1 to 2 to 3 in memory. An existing `.format1.bak` is never overwritten; `.format2.bak` is written once. A stack index that pointed into the old studio stacks fails with `NoTarget`.
+5. `ui.layout.rail_size` counts as a resize for the spec's lock list (pointer refused when locked, command applies); `studio_rail` stays allowed when locked; "building the studio split" leaves the list.
+6. Reopening the leaf is refused with `conflict` when the tree depth limit would be exceeded.
+7. Spec edits in the implementing change: the picture-goes-to-Preview text, the U21 "studio mode opens Preview" line, the studio split paragraphs, the format 3 section, the built-in table, the guarded-panel list, the lock list, Core flows.
+8. Minimal and Audio do not serve the "Choose a transition" flow (they declare it so in the spec).
+
+The ADR stays Proposed until Salih approves the visible parts (frame group, header strip, rail).
