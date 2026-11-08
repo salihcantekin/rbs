@@ -719,7 +719,6 @@ mod tests {
         let mut old = builtin::edit();
         old.name = "edit".to_owned();
         old.close(&id("rbs.program")).unwrap();
-        old.dissolve_broken_studio();
         old.locked = true;
         assert_eq!(old.studio_rail(), None);
         let mut s = LayoutSession::new(old.clone());

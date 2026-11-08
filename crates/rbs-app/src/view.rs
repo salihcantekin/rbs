@@ -85,7 +85,8 @@ pub fn window_view(
     let lone_centre = centre.is_some_and(|c| matches!(c, Node::Tabs(_)));
     // Preview and Program in the studio split are not collapsed or auto-hidden
     // (ADR-0064 decision 4).
-    let in_studio = |s: &rbs_ui::layout::StackRect| s.stack >= rbs_ui::layout::PICTURES_PREVIEW_STACK;
+    let in_studio =
+        |s: &rbs_ui::layout::StackRect| s.stack >= rbs_ui::layout::PICTURES_PREVIEW_STACK;
     let stacks = stacks
         .into_iter()
         .map(|s| StackData {

@@ -132,7 +132,10 @@ impl Pictures {
         };
         let (preview, program) = match (id("rbs.preview"), id("rbs.program")) {
             (Some(a), Some(b)) => (a, b),
-            _ => (crate::panel::id("rbs.preview"), crate::panel::id("rbs.program")),
+            _ => (
+                crate::panel::id("rbs.preview"),
+                crate::panel::id("rbs.program"),
+            ),
         };
         let canvas = canvas.filter(|_| preview.param("canvas").is_some());
         Pictures {
@@ -284,9 +287,11 @@ impl TryFrom<RawNode> for Node {
                 || r.ratios.is_some()
                 || r.children.is_some()
             {
-                return Err("`pictures = true` stands alone with `rail`, `rail_size` and \
+                return Err(
+                    "`pictures = true` stands alone with `rail`, `rail_size` and \
                      `canvas`"
-                    .into());
+                        .into(),
+                );
             }
             let rail = r.rail.ok_or("a pictures node needs `rail`")?;
             let (lo, hi) = RAIL_SIZE_RANGE;
@@ -1069,8 +1074,8 @@ fn flatten_pictures(p: &Pictures, r: Rect, studio_mode: bool, out: &mut Flat) {
         picture(&p.preview, PICTURES_PREVIEW_STACK, r, out);
         return;
     }
-    let column = p.rail_size.clamp(RAIL_SIZE_RANGE.0, RAIL_SIZE_RANGE.1) as f32
-        + 2.0 * HANDLE_THICKNESS;
+    let column =
+        p.rail_size.clamp(RAIL_SIZE_RANGE.0, RAIL_SIZE_RANGE.1) as f32 + 2.0 * HANDLE_THICKNESS;
     // Too narrow for a column between two usable pictures: the rail goes below.
     let at = match p.rail {
         RailAt::Between
@@ -1379,13 +1384,22 @@ mod tests {
     #[test]
     fn the_rail_width_follows_its_size_within_limits() {
         let wide = Node::Pictures(Pictures::with(RailAt::Between, 200, None));
-        let (rail, _) = wide.flatten_in(Rect::sized(1000.0, 400.0), true).rail.unwrap();
+        let (rail, _) = wide
+            .flatten_in(Rect::sized(1000.0, 400.0), true)
+            .rail
+            .unwrap();
         assert_eq!(rail.w, 200.0);
         let huge = Node::Pictures(Pictures::with(RailAt::Between, 5000, None));
-        let (rail, _) = huge.flatten_in(Rect::sized(1000.0, 400.0), true).rail.unwrap();
+        let (rail, _) = huge
+            .flatten_in(Rect::sized(1000.0, 400.0), true)
+            .rail
+            .unwrap();
         assert_eq!(rail.w, RAIL_SIZE_RANGE.1 as f32);
         let tiny = Node::Pictures(Pictures::with(RailAt::Between, 1, None));
-        let (rail, _) = tiny.flatten_in(Rect::sized(1000.0, 400.0), true).rail.unwrap();
+        let (rail, _) = tiny
+            .flatten_in(Rect::sized(1000.0, 400.0), true)
+            .rail
+            .unwrap();
         assert_eq!(rail.w, RAIL_SIZE_RANGE.0 as f32);
     }
 
@@ -1426,10 +1440,14 @@ mod tests {
         let back = toml::to_string(&n).unwrap();
         assert_eq!(toml::from_str::<Node>(&back).unwrap(), n);
         // The rail size is clamped; a rail is required; the node stands alone.
-        let n: Node = toml::from_str("pictures = true\nrail = \"between\"\nrail_size = 9999\n").unwrap();
+        let n: Node =
+            toml::from_str("pictures = true\nrail = \"between\"\nrail_size = 9999\n").unwrap();
         assert_eq!(n.pictures_leaf().unwrap().rail_size, RAIL_SIZE_RANGE.1);
         assert!(toml::from_str::<Node>("pictures = true\n").is_err());
-        assert!(toml::from_str::<Node>("pictures = true\nrail = \"below\"\ntabs = [\"rbs.a\"]\n").is_err());
+        assert!(
+            toml::from_str::<Node>("pictures = true\nrail = \"below\"\ntabs = [\"rbs.a\"]\n")
+                .is_err()
+        );
         assert!(toml::from_str::<Node>("tabs = [\"rbs.a\"]\nrail = \"below\"\n").is_err());
         // Format 2 (ADR-0064): a studio split becomes the leaf, keeping rail and canvas.
         let old = r#"split = "horizontal"
@@ -1442,7 +1460,8 @@ children = [{ tabs = ["rbs.preview?canvas=vertical"] }, { tabs = ["rbs.program?c
         assert_eq!((p.rail, p.canvas()), (RailAt::Below, Some("vertical")));
         assert_eq!(p.program_id().as_str(), "rbs.program?canvas=vertical");
         // A studio flag on another shape is dropped: an ordinary split stays.
-        let n: Node = toml::from_str(&old.replace("rbs.program?canvas=vertical", "rbs.mixer")).unwrap();
+        let n: Node =
+            toml::from_str(&old.replace("rbs.program?canvas=vertical", "rbs.mixer")).unwrap();
         assert!(matches!(n, Node::Split(_)) && n.pictures_leaf().is_none());
     }
 

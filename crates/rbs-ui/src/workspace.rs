@@ -1005,7 +1005,10 @@ impl Workspace {
             .centre
             .pictures_leaf_mut()
             .ok_or(WorkspaceError::NoTarget)?;
-        p.rail_size = px.clamp(crate::layout::RAIL_SIZE_RANGE.0, crate::layout::RAIL_SIZE_RANGE.1);
+        p.rail_size = px.clamp(
+            crate::layout::RAIL_SIZE_RANGE.0,
+            crate::layout::RAIL_SIZE_RANGE.1,
+        );
         Ok(())
     }
 
@@ -1146,7 +1149,10 @@ impl Workspace {
         if wants_leaf {
             // Only when no ordinary Preview or Program is open: the leaf would
             // hold the same panel ids twice.
-            let (preview, program) = (crate::panel::id("rbs.preview"), crate::panel::id("rbs.program"));
+            let (preview, program) = (
+                crate::panel::id("rbs.preview"),
+                crate::panel::id("rbs.program"),
+            );
             let loose = self.is_open(&preview) || self.is_open(&program);
             if !loose && main_has_no_pictures(self) {
                 return self.open_pictures();
@@ -2287,7 +2293,8 @@ layout = { tabs = ["rbs.status-bar"] }
                     6 => w.float(&p).map(|_| ()),
                     _ => w.auto_hide(&p, Rect::sized(1000.0, 600.0)),
                 };
-                w.validate().unwrap_or_else(|e| panic!("{e}: {}", w.to_toml().unwrap()));
+                w.validate()
+                    .unwrap_or_else(|e| panic!("{e}: {}", w.to_toml().unwrap()));
                 for win in &w.windows {
                     for s in 0..win.stack_count() {
                         let tabs = &win.stack(s).unwrap().tabs;
@@ -2321,7 +2328,10 @@ children = [{ tabs = ["rbs.preview"] }, { tabs = ["rbs.program"] }]
         assert_eq!(w.studio_rail(), Some(RailAt::Below));
         assert_eq!(w.rail_size(), Some(crate::layout::RAIL_SIZE_DEFAULT));
         let out = w.to_toml().unwrap();
-        assert!(out.contains("pictures = true") && !out.contains("studio"), "{out}");
+        assert!(
+            out.contains("pictures = true") && !out.contains("studio"),
+            "{out}"
+        );
         assert_eq!(Workspace::from_toml(&out).unwrap(), w);
         // Format 3 is not readable by a format 2 reader's rules, and two leaves are refused.
         let two = out.replace(
@@ -2340,7 +2350,10 @@ children = [{ tabs = ["rbs.preview"] }, { tabs = ["rbs.program"] }]
         assert_eq!(w.rail_size(), Some(crate::layout::RAIL_SIZE_RANGE.0));
         w.close(&id("rbs.pictures")).unwrap();
         assert_eq!(w.set_rail_size(100), Err(WorkspaceError::NoTarget));
-        assert_eq!(w.set_studio_rail(RailAt::Below), Err(WorkspaceError::NoTarget));
+        assert_eq!(
+            w.set_studio_rail(RailAt::Below),
+            Err(WorkspaceError::NoTarget)
+        );
     }
 
     #[test]
