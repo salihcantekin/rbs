@@ -93,6 +93,11 @@ pub enum SourceKind {
     SystemAudio,
     /// What one application plays.
     ApplicationAudio,
+    /// A picture: a file or a built-in sample (ADR-0074). Not in [`SourceKind::ALL`]:
+    /// it has no target to list; the Library adds it.
+    Image,
+    /// A solid colour or a gradient (ADR-0074). Not in [`SourceKind::ALL`].
+    Color,
 }
 
 impl SourceKind {
@@ -115,6 +120,8 @@ impl SourceKind {
             SourceKind::AudioInput => types::AUDIO_INPUT_SOURCE,
             SourceKind::SystemAudio => types::AUDIO_OUTPUT_SOURCE,
             SourceKind::ApplicationAudio => types::APPLICATION_AUDIO_SOURCE,
+            SourceKind::Image => types::IMAGE_SOURCE,
+            SourceKind::Color => types::COLOR_SOURCE,
         })
     }
 
@@ -122,6 +129,7 @@ impl SourceKind {
     pub fn of(type_id: &NodeTypeId) -> Option<SourceKind> {
         SourceKind::ALL
             .into_iter()
+            .chain([SourceKind::Image, SourceKind::Color])
             .find(|k| k.type_id() == *type_id)
     }
 
@@ -134,6 +142,8 @@ impl SourceKind {
             SourceKind::AudioInput => "Audio input",
             SourceKind::SystemAudio => "System audio",
             SourceKind::ApplicationAudio => "Application audio",
+            SourceKind::Image => "Image",
+            SourceKind::Color => "Colour",
         }
     }
 
@@ -395,6 +405,19 @@ pub enum Command {
         source: SourceId,
         /// The filter type's id.
         type_id: String,
+    },
+    /// Apply a built-in look to a source's item and filters (ADR-0075; one undo step).
+    ApplyLook {
+        /// The source.
+        source: SourceId,
+        /// The look's id (`builtin:...`).
+        look: String,
+    },
+    /// Add a built-in sample picture to the scene being edited: a background below
+    /// everything, a frame above it (ADR-0074, ADR-0075; one undo step).
+    AddSample {
+        /// The sample's id (`rbs_sources::still::SAMPLES`).
+        sample: String,
     },
     /// Remove a filter (one undo step).
     RemoveFilter(FilterId),
@@ -1948,6 +1971,14 @@ impl Host {
                     .map(|_| true);
                 self.answer(done, notify);
             }
+            Command::AddSample { sample } => {
+                let done = self.add_sample(&sample).map(|_| true);
+                self.answer(done, notify);
+            }
+            Command::ApplyLook { source, look } => {
+                let done = self.apply_look(source, &look);
+                self.answer(done, notify);
+            }
             Command::RemoveFilter(filter) => {
                 let done = self.remove_filter(filter).map(|()| true);
                 self.answer(done, notify);
@@ -3465,6 +3496,48 @@ impl Host {
         }
     }
 
+    /// Adds a sample picture as an image source covering the canvas: a background at
+    /// the bottom of the scene being edited, a frame on top (ADR-0074).
+    fn add_sample(&mut self, id: &str) -> Result<SourceId, Refusal> {
+        let sample = rbs_sources::still::SAMPLES
+            .iter()
+            .find(|s| s.id == id)
+            .ok_or_else(|| Refusal::NotFound(format!("There is no sample picture {id:?}.")))?;
+        let canvas = self
+            .collection
+            .canvas(self.canvas)
+            .ok_or_else(|| Refusal::NotFound("The canvas is gone.".to_owned()))?;
+        let layout = Layout::new(
+            [0.0, 0.0],
+            [canvas.size.width as f32, canvas.size.height as f32],
+        );
+        let name = unique_name(&self.collection, sample.name);
+        let mut settings = Settings::new();
+        settings.insert(
+            keys::SAMPLE.into(),
+            SettingValue::Text(sample.id.to_owned()),
+        );
+        let (source, undo_source) = self
+            .collection
+            .add_source(&name, SourceKind::Image.type_id(), settings)
+            .map_err(|e| Refusal::of(&e))?;
+        let index = (sample.kind == rbs_sources::still::SampleKind::Background).then_some(0);
+        match self
+            .collection
+            .add_item(self.edited(), ItemContent::Source(source), layout, index)
+        {
+            Ok((_, undo_item)) => {
+                self.history
+                    .record(EditKind::Add, &name, 0, vec![undo_source, undo_item]);
+                Ok(source)
+            }
+            Err(e) => {
+                let _ = self.collection.undo(undo_source);
+                Err(Refusal::of(&e))
+            }
+        }
+    }
+
     /// Deletes a source from every scene; returns its name.
     fn delete(&mut self, id: SourceId) -> Result<String, String> {
         let name = self
@@ -4600,7 +4673,7 @@ impl ApiTarget<'_> {
                 seq: host.events.seq_map([Topic::CanvasChanged]),
                 data: api::StudioInfo {
                     canvas: host.api_canvas(),
-                    kinds: host.kinds.iter().map(|k| api_kind(*k)).collect(),
+                    kinds: host.kinds.iter().filter_map(|k| api_kind(*k)).collect(),
                     encoders: host
                         .encoders
                         .iter()
@@ -5338,15 +5411,18 @@ impl ControlTarget for Refuse {
     }
 }
 
-fn api_kind(k: SourceKind) -> api::SourceKind {
-    match k {
+/// The control API's name of a kind; `None` for the picture kinds, which the API does
+/// not name yet (ADR-0074).
+fn api_kind(k: SourceKind) -> Option<api::SourceKind> {
+    Some(match k {
         SourceKind::Screen => api::SourceKind::Screen,
         SourceKind::Window => api::SourceKind::Window,
         SourceKind::Camera => api::SourceKind::Camera,
         SourceKind::AudioInput => api::SourceKind::AudioInput,
         SourceKind::SystemAudio => api::SourceKind::SystemAudio,
         SourceKind::ApplicationAudio => api::SourceKind::ApplicationAudio,
-    }
+        SourceKind::Image | SourceKind::Color => return None,
+    })
 }
 
 fn app_kind(k: api::SourceKind) -> SourceKind {
@@ -5432,7 +5508,7 @@ fn api_source(row: &SourceRow) -> api::SourceInfo {
         sync_offset_ms: row.audio.sync_offset_ms,
         id: row.id.get(),
         name: row.name.clone(),
-        kind: row.kind.map(api_kind),
+        kind: row.kind.and_then(api_kind),
         status: match &row.status {
             SourceStatus::Running => api::SourceStatus::Running,
             SourceStatus::Idle => api::SourceStatus::Idle,
@@ -5462,7 +5538,7 @@ fn api_scenes(list: &SceneList) -> api::SceneList {
             .map(|s| api::SourceEntry {
                 id: s.id.get(),
                 name: s.name.clone(),
-                kind: s.kind.map(api_kind),
+                kind: s.kind.and_then(api_kind),
                 global: s.global,
             })
             .collect(),

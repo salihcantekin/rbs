@@ -412,3 +412,101 @@ fn the_properties_tabs_commands_edit_filters_and_the_sync_offset() {
             .any(|s| s.id.get() == mic && s.audio.sync_offset_ms == 80)
     });
 }
+
+#[test]
+fn looks_and_sample_pictures_from_the_library_are_one_undo_step_each() {
+    let Some((host, updates, _api, mut c)) = start() else {
+        return;
+    };
+    let screen = SourceId::from_raw(add(&mut c, "screen", "Screen") as u32);
+    let rows = |pick: &dyn Fn(&[SourceRow]) -> bool| {
+        next(&updates, |u| match u {
+            Update::Sources(rows) if pick(&rows) => Some(rows),
+            _ => None,
+        })
+    };
+    let chain = |rows: &[SourceRow], id: SourceId| {
+        rows.iter()
+            .find(|r| r.id == id)
+            .map(|r| r.filters.clone())
+            .unwrap_or_default()
+    };
+
+    // A sample background is an image source below everything (rows list the top first).
+    host.send(Command::AddSample {
+        sample: "aurora".into(),
+    });
+    let got = rows(&|r| r.len() == 2);
+    assert_eq!(got.last().unwrap().name, "Aurora");
+    assert_eq!(
+        got.last().unwrap().kind,
+        Some(rbs_app::studio_host::SourceKind::Image)
+    );
+    host.send(Command::AddSample {
+        sample: "frame-thin".into(),
+    });
+    let got = rows(&|r| r.len() == 3);
+    assert_eq!(
+        got.first().unwrap().name,
+        "Thin frame",
+        "a frame goes on top"
+    );
+    host.send(Command::AddSample {
+        sample: "no-such-sample".into(),
+    });
+    host.send(Command::ApplyLook {
+        source: screen,
+        look: "builtin:no-such-look".into(),
+    });
+
+    // A colour look adds a colour correction; the same kind of look replaces it.
+    host.send(Command::ApplyLook {
+        source: screen,
+        look: "builtin:warm".into(),
+    });
+    let got = rows(&|r| chain(r, screen).len() == 1);
+    let warm = chain(&got, screen)[0].clone();
+    assert_eq!(warm.type_id, "org.rbs.filter.color-correction");
+    host.send(Command::ApplyLook {
+        source: screen,
+        look: "builtin:vivid".into(),
+    });
+    let got = rows(&|r| {
+        chain(r, screen)
+            .first()
+            .is_some_and(|f| f.stored != warm.stored)
+    });
+    let vivid = chain(&got, screen);
+    assert_eq!(vivid.len(), 1, "replaced, not stacked");
+    assert_eq!(vivid[0].id, warm.id);
+
+    // A shape look sets the item's style.
+    host.send(Command::ApplyLook {
+        source: screen,
+        look: "builtin:circle".into(),
+    });
+    rows(&|r| {
+        r.iter().any(|s| {
+            s.id == screen
+                && s.layout
+                    .is_some_and(|l| l.style.shape == rbs_scene::model::Shape::Circle)
+        })
+    });
+
+    // Undo takes the shape look back, then the colour look's change.
+    host.send(Command::Undo);
+    rows(&|r| {
+        r.iter().any(|s| {
+            s.id == screen
+                && s.layout
+                    .is_some_and(|l| l.style.shape != rbs_scene::model::Shape::Circle)
+        })
+    });
+    host.send(Command::Undo);
+    let got = rows(&|r| {
+        chain(r, screen)
+            .first()
+            .is_some_and(|f| f.stored == warm.stored)
+    });
+    assert_eq!(chain(&got, screen).len(), 1);
+}

@@ -34,7 +34,7 @@ Out of scope, later changes: themes in `.rbspack` packs; font files; a curated a
 | RBS menu | `size.app-menu.w` / `.categories` / `.list-h` | logical px | 480 to 960 / 120 to 320 / 240 to 720 |
 | Motion | `motion.fast` / `motion.normal` | ms | 120 to 200 (U12; reduce motion turns motion off) |
 
-`THEMEABLE` lists them with metadata for the editor: name, label in words, group, value kind, bounds. Not themeable, refused in a theme: `color.state.live`, `color.text.on-live` (U12), `color.caption.close-hover`, `color.caption.close-text` (the Windows close button as the OS draws it, ADR-0071), `size.caption.w`, `size.window.*`, `size.floating.*`, `size.settings.*`, `step.*`, `size.tracking.caps`, `size.meter.peak`, `size.transition.*`, `delay.*`.
+`THEMEABLE` lists them with metadata for the editor: name, label in words, group, value kind, bounds. Not themeable, refused in a theme: `color.state.live`, `color.text.on-live` (U12), `color.caption.close-hover`, `color.caption.close-text` (the Windows close button as the OS draws it, ADR-0071), `size.caption.w`, `size.window.*`, `size.floating.*`, `size.settings.*`, `step.*`, `size.tracking.caps`, `size.meter.peak`, `size.transition.*`, `size.library.*`, `delay.*`.
 
 The built-in token file gains `[font] "font.family" = []` (empty: the OS UI font); `tokens.toml` becomes format 2 and `Tokens::parse` still reads format 1 files (given the empty family), so `RBS_TOKENS` files keep working.
 
