@@ -4,7 +4,7 @@
 - `rbs-icon.svg`: the application icon master (fixed colours: tile `#1C2136`, frame `#E6E9FF`, dot `#7C52FF`).
 - `icon-win-256.png`, `rbs.ico`: Windows (tile fills the canvas). `icon-mac-1024.png`, `icon-mac-256.png`, `rbs.icns`: macOS (tile with the system margin).
 
-The rasters are drawn from the same geometry as the SVGs (rounded square 4..60, radius 14; bite circle at 46,46 radius 17; dot radius 11). Regenerate them after any change to the mark.
+The rasters, `rbs.ico`, `rbs.icns` and `rbs-icon.svg` are drawn from the mark geometry by `generate_icons.py` (needs Pillow and macOS `iconutil`; run it from this directory after any change to the mark). The mark spans 80% of the tile width so it fills the Dock slot like other apps' glyphs.
 
 ## Where the icons are used
 

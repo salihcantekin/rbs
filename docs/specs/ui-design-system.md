@@ -32,7 +32,7 @@ File layout (format 2; format 1 is format 2 without `[font]` and is still read, 
 | `color.text.primary` / `.secondary` / `.disabled` / `.inverse` | Text |
 | `color.border.subtle` / `.strong` / `.focus` | Dividers, inputs, focus ring |
 | `color.accent` / `.accent.hover` / `.accent.subtle` | Primary actions, selection |
-| `color.brand` | The accent of the RBS mark (the dot in the camera bubble), drawn on `color.surface.raised` and `.overlay`; the rest of the mark is `color.text.primary` |
+| `color.brand` | The window of the RBS mark, drawn on `color.surface.raised` and `.overlay`; the camera in the bubble is `color.text.primary` and the cut-outs take the colour the mark sits on |
 | `color.state.live` / `color.text.on-live` | Live and recording only (rule U12), and the text on it; fixed, themes cannot change them |
 | `color.caption.close-hover` / `color.caption.close-text` | The Windows Close button under the pointer, as the OS draws it (ADR-0071); fixed |
 | `color.state.warning` / `.healthy` | Status |
