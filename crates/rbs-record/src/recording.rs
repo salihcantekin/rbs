@@ -469,6 +469,9 @@ pub struct SourceState {
     /// Why it is not running, while it is not (did not start, or failed and waits for
     /// a restart); cleared when it runs again.
     pub failed: Option<String>,
+    /// The cause of that failure, when the adapter tells it (ADR-0077); `None` while the
+    /// source runs or when the cause is unknown.
+    pub fault: Option<rbs_core::fault::SourceFault>,
 }
 
 /// What [`Recording::start`] chose and started.

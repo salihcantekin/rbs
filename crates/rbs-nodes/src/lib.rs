@@ -29,7 +29,7 @@ pub mod preview;
 pub mod still;
 pub mod vcam;
 
-pub use capture::{CAPTURE_NODE_TYPE, CaptureSourceNode, capture_descriptor};
+pub use capture::{CAPTURE_NODE_TYPE, CaptureSourceNode, capture_descriptor, capture_fault};
 pub use encode::{VIDEO_ENCODER_NODE_TYPE, VideoEncoderNode, video_encoder_descriptor};
 pub use export::{ExportEnd, VIDEO_EXPORT_NODE_TYPE, VideoExportNode, video_export_descriptor};
 pub use output::{OUTPUT_NODE_TYPE, OutputNode, output_descriptor};

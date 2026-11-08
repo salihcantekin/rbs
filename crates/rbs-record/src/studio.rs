@@ -1000,6 +1000,7 @@ impl Studio {
                         adapter: rbs_core::registry::AdapterId::new(""),
                         target: String::new(),
                         failed: None,
+                        fault: None,
                     },
                     instance: None,
                     scheduled: false,
@@ -1050,6 +1051,7 @@ impl Studio {
             let instance = match sources.instantiate(source, &ctx) {
                 Ok(i) => {
                     entry.state.failed = None;
+                    entry.state.fault = None;
                     i
                 }
                 Err(error) if strictness == Strictness::Strict => {
@@ -1059,6 +1061,7 @@ impl Studio {
                     });
                 }
                 Err(error) => {
+                    entry.state.fault = Some(error.fault());
                     entry.state.failed = Some(error.to_string());
                     continue;
                 }
@@ -1351,7 +1354,16 @@ impl Studio {
         self.entries
             .iter()
             .filter(|e| e.scheduled)
-            .map(|e| e.state.clone())
+            .map(|e| {
+                let mut state = e.state.clone();
+                // The node's own counters say why a running instance failed.
+                state.fault = match (&state.failed, e.instance.as_ref().map(|i| &i.watch)) {
+                    (None, _) => None,
+                    (Some(_), Some(Watch::Video(stats))) => stats.fault().or(state.fault),
+                    (Some(_), _) => state.fault,
+                };
+                state
+            })
             .collect()
     }
 

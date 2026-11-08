@@ -56,6 +56,25 @@ pub enum SourceError {
     Image(String),
 }
 
+impl SourceError {
+    /// The cause this error stands for, for the typed unavailable state (ADR-0077):
+    /// a capture target or audio endpoint that is gone, refused or busy, else `Other`.
+    pub fn fault(&self) -> rbs_core::fault::SourceFault {
+        use rbs_core::fault::SourceFault;
+        match self {
+            SourceError::Capture(e) => rbs_nodes::capture_fault(e),
+            SourceError::Audio(AudioIoError::EndpointNotFound | AudioIoError::EndpointLost) => {
+                SourceFault::TargetGone
+            }
+            SourceError::Audio(
+                AudioIoError::PermissionDenied | AudioIoError::PermissionNotDetermined,
+            ) => SourceFault::PermissionDenied,
+            SourceError::Audio(AudioIoError::DeviceBusy) => SourceFault::Busy,
+            _ => SourceFault::Other,
+        }
+    }
+}
+
 impl fmt::Display for SourceError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
