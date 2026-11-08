@@ -209,10 +209,10 @@ export component AppMenu inherits PopupWindow {
     }
     // Scrolls the item column so a row at `y` (`h` high) is in view.
     function reveal(y: length, h: length) {
-        if y + item-list.viewport-y < 0 {
-            item-list.viewport-y = -y;
-        } else if y + h + item-list.viewport-y > item-list.height {
-            item-list.viewport-y = item-list.height - y - h;
+        if y + item-list.content-y < 0 {
+            item-list.content-y = -y;
+        } else if y + h + item-list.content-y > item-list.height {
+            item-list.content-y = item-list.height - y - h;
         }
     }
     function move(step: int) {
