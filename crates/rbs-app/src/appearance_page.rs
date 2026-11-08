@@ -10,7 +10,7 @@ use rbs_user_data::{AppearanceMode, ThemeId};
 use slint::{ComponentHandle, ModelRc, SharedString, VecModel};
 
 use super::{App, Ctx, Theme, Tokens, entry, look};
-use crate::appearance::{AppearanceUi, GROUPS, KEEP_LOOK_TIMEOUT, RowValue};
+use crate::appearance::{AppearanceUi, GROUPS, KEEP_LOOK_TIMEOUT, RowValue, editor_group_label};
 use crate::ui::{Appearance, ThemeOption, ThemeTokenRow};
 
 /// The page's state, kept while the app runs (it is small and idle when unused).
@@ -18,7 +18,8 @@ use crate::ui::{Appearance, ThemeOption, ThemeTokenRow};
 pub struct Page {
     ui: AppearanceUi,
     fonts: look::SystemFonts,
-    /// The installed families, read the first time the font menu opens (P13).
+    /// The installed families, read the first time the font menu opens or a font name
+    /// is typed (P13).
     families: Option<Vec<String>>,
     /// The lists the page shows, changed row by row: a list set anew rebuilds its rows
     /// and closes a menu open in one (the font menu while "Keep this look?" counts).
@@ -30,20 +31,10 @@ pub struct Page {
     usable: Vec<usize>,
     /// A theme in use could not be used, or an action failed.
     note: String,
+    /// A font suggestion was picked: the list under the font field empties.
+    clear_suggestions: bool,
     /// Counts down "Keep this look?" once a second; runs only while it is asked.
     timer: Rc<slint::Timer>,
-}
-
-fn label(g: rbs_ui::tokens::Group) -> &'static str {
-    use rbs_ui::tokens::Group::*;
-    match g {
-        Colours => "Colours",
-        Text => "Text",
-        Font => "Font",
-        SpacingAndSize => "Spacing and size",
-        Shapes => "Shapes",
-        Motion => "Motion",
-    }
 }
 
 fn color(c: Color) -> slint::Color {
@@ -162,7 +153,17 @@ pub fn install(g: &Appearance<'_>, ctx: &Ctx) {
                        file,
                        name: SharedString,
                        hex: SharedString| {
-        edited(page.ui.set_color(&file, &name, &hex))
+        if page.ui.on_main() {
+            edited(page.ui.set_main_color(&file, &name, &hex))
+        } else {
+            edited(page.ui.set_color(&file, &name, &hex))
+        }
+    });
+    on!(on_fix, |_app, page, file, name: SharedString| {
+        edited(page.ui.fix_color(&file, &name))
+    });
+    on!(on_fix_all, |_app, page, file| {
+        edited(page.ui.fix_all_colors(&file))
     });
     on!(on_set_number, |_app,
                         page,
@@ -204,6 +205,45 @@ pub fn install(g: &Appearance<'_>, ctx: &Ctx) {
             });
         });
     }
+    // Font names as they are typed: the installed families containing the name being
+    // typed (after the last comma), for the list under the field.
+    {
+        let ctx = ctx.clone();
+        g.on_suggest_fonts(move |text: SharedString| {
+            let c = ctx.clone();
+            ctx.update(move |app: &mut App| {
+                let Some(w) = &app.settings else { return };
+                let mut page = c.page.borrow_mut();
+                let page: &mut Page = &mut page;
+                let typed = last_name(&text);
+                let names: Vec<SharedString> = if typed.is_empty() {
+                    Vec::new()
+                } else {
+                    let all = page
+                        .families
+                        .get_or_insert_with(|| look::FontCatalog::families(&mut page.fonts));
+                    look::matching_families(all, typed)
+                        .into_iter()
+                        .filter(|n| !n.eq_ignore_ascii_case(typed))
+                        .take(FONT_SUGGESTIONS)
+                        .map(SharedString::from)
+                        .collect()
+                };
+                w.global::<Appearance>()
+                    .set_font_suggestions(ModelRc::new(VecModel::from(names)));
+            });
+        });
+    }
+    on!(
+        on_complete_font,
+        |_app, page, file, text: SharedString, name: SharedString| {
+            page.clear_suggestions = true;
+            edited(
+                page.ui
+                    .set_fonts(&file, &completed(&text, &name), Instant::now()),
+            )
+        }
+    );
     on!(on_reset, |_app, page, file, name: SharedString| {
         edited(page.ui.reset(&file, &name))
     });
@@ -237,6 +277,22 @@ pub fn install(g: &Appearance<'_>, ctx: &Ctx) {
         }
         Change::Look
     });
+}
+
+/// How many installed families the list under the font field shows.
+const FONT_SUGGESTIONS: usize = 6;
+
+/// The family name being typed: the text after the last comma, trimmed.
+fn last_name(text: &str) -> &str {
+    text.rsplit(',').next().unwrap_or("").trim()
+}
+
+/// `text` with the name being typed replaced by `name`.
+fn completed(text: &str, name: &str) -> String {
+    match text.rfind(',') {
+        Some(i) => format!("{}, {name}", text[..i].trim_end()),
+        None => name.to_owned(),
+    }
 }
 
 /// What a callback changed.
@@ -516,6 +572,9 @@ fn show(ctx: &Ctx, app: &App) {
     let mut page = ctx.page.borrow_mut();
     let look = ctx.look.borrow();
     let g = w.global::<Appearance>();
+    if std::mem::take(&mut page.clear_suggestions) {
+        g.set_font_suggestions(ModelRc::default());
+    }
     let ui = &page.ui;
     let usable: Vec<usize> = ui
         .entries
@@ -596,7 +655,7 @@ fn show(ctx: &Ctx, app: &App) {
         &page.groups,
         GROUPS
             .iter()
-            .map(|g| SharedString::from(label(*g)))
+            .map(|g| SharedString::from(editor_group_label(*g)))
             .collect(),
     );
     show_model(&g.get_groups(), &page.groups, |m| g.set_groups(m));
@@ -611,6 +670,9 @@ fn show(ctx: &Ctx, app: &App) {
             let rows: Vec<ThemeTokenRow> = ui.rows(&look.file).into_iter().map(row).collect();
             super::set_rows(&page.rows, rows);
             g.set_general_problems(strings(ui.general_problems()));
+            let (summary, fixable) = ui.summary(&look.file);
+            g.set_summary(summary.into());
+            g.set_can_fix_all(fixable);
             g.set_unknown_tokens(strings(ed.draft.unknown_names()));
             let active = app.main.global::<Theme>().get_active().clamp(0, 1) as usize;
             g.set_font_in_use(look.fonts[active].as_str().into());
@@ -648,6 +710,7 @@ fn row(r: crate::appearance::TokenRow) -> ThemeTokenRow {
         label: r.label.into(),
         overridden: r.overridden,
         problem: r.problem.into(),
+        fixable: r.fixable,
         step: 1.0,
         ..Default::default()
     };
@@ -678,4 +741,20 @@ fn row(r: crate::appearance::TokenRow) -> ThemeTokenRow {
         }
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used)] // Tests fail by panicking.
+
+    use super::{completed, last_name};
+
+    #[test]
+    fn the_name_being_typed_is_after_the_last_comma() {
+        assert_eq!(last_name("Inter, Hel"), "Hel");
+        assert_eq!(last_name("Hel"), "Hel");
+        assert_eq!(last_name("Inter, "), "");
+        assert_eq!(completed("Inter, Hel", "Helvetica"), "Inter, Helvetica");
+        assert_eq!(completed("Hel", "Helvetica"), "Helvetica");
+    }
 }

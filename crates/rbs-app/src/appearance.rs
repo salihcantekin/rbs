@@ -11,18 +11,29 @@ use rbs_ui::tokens::{
 use rbs_user_data::{Appearance, AppearanceMode, EntryId, ThemeId, UserData};
 
 use crate::look;
+use crate::theme_assist::{self, Assist, Colors, Issue, MAIN};
 
 /// How long "Keep this look?" waits before the previous look comes back.
 pub const KEEP_LOOK_TIMEOUT: Duration = Duration::from_secs(15);
 
-/// The editor groups, in tab order.
-pub const GROUPS: [Group; 6] = [
-    Group::Colours,
-    Group::Text,
-    Group::Font,
-    Group::SpacingAndSize,
-    Group::Shapes,
-    Group::Motion,
+/// An editor group: the three main colours, or the tokens of one token group.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EditorGroup {
+    /// Background, text and accent; every other colour is worked out from them.
+    Main,
+    /// Every token of a group (Colours: every colour, one by one).
+    Tokens(Group),
+}
+
+/// The editor groups, in tab order. The editor opens on the main colours.
+pub const GROUPS: [EditorGroup; 7] = [
+    EditorGroup::Main,
+    EditorGroup::Tokens(Group::Colours),
+    EditorGroup::Tokens(Group::Text),
+    EditorGroup::Tokens(Group::Font),
+    EditorGroup::Tokens(Group::SpacingAndSize),
+    EditorGroup::Tokens(Group::Shapes),
+    EditorGroup::Tokens(Group::Motion),
 ];
 
 /// The choice with every slot that names a user theme `gone` replaced by the
@@ -607,17 +618,19 @@ impl AppearanceUi {
         };
         let base = file.built_in_theme(ed.draft.base);
         let group = GROUPS[self.group.min(GROUPS.len() - 1)];
-        THEMEABLE
-            .iter()
-            .filter(|t| t.group == group)
+        let colors = colors_of(file, &ed.draft);
+        let issues = assist(file, &ed.draft).issues(&colors);
+        let shown: Vec<&rbs_ui::tokens::Themeable> = match group {
+            EditorGroup::Main => MAIN
+                .iter()
+                .filter_map(|n| rbs_ui::tokens::themeable(n))
+                .collect(),
+            EditorGroup::Tokens(g) => THEMEABLE.iter().filter(|t| t.group == g).collect(),
+        };
+        shown
+            .into_iter()
             .map(|t| {
-                let problem = ed
-                    .problems
-                    .iter()
-                    .filter(|p| p.token.as_deref() == Some(t.name))
-                    .map(|p| p.reason.clone())
-                    .collect::<Vec<_>>()
-                    .join("; ");
+                let (problem, fixable) = row_problem(ed, &issues, t.name);
                 let d = &ed.draft;
                 let (value, overridden) = match t.kind {
                     Kind::Color => {
@@ -677,10 +690,14 @@ impl AppearanceUi {
                 };
                 TokenRow {
                     name: t.name,
-                    label: t.label,
+                    label: match group {
+                        EditorGroup::Main => theme_assist::main_label(t.name).unwrap_or(t.label),
+                        EditorGroup::Tokens(_) => t.label,
+                    },
                     value,
                     overridden: overridden || d.invalid.contains_key(t.name),
                     problem,
+                    fixable,
                 }
             })
             .collect()
@@ -698,11 +715,222 @@ impl AppearanceUi {
                             .as_deref()
                             .is_none_or(|t| rbs_ui::tokens::themeable(t).is_none())
                     })
-                    .map(|p| p.reason.clone())
+                    .map(|p| plain(&p.reason))
                     .collect()
             })
             .unwrap_or_default()
     }
+
+    /// True when the editor shows the main colours.
+    pub fn on_main(&self) -> bool {
+        GROUPS[self.group.min(GROUPS.len() - 1)] == EditorGroup::Main
+    }
+
+    /// Sets a main colour and works out every other colour from the three (themes
+    /// spec, "Main colours"). True when the draft changed.
+    pub fn set_main_color(&mut self, file: &TokenFile, name: &str, hex: &str) -> bool {
+        let Some(c) = Color::parse(hex).map(|c| Color { a: 255, ..c }) else {
+            return false;
+        };
+        let Some(i) = MAIN.iter().position(|m| *m == name) else {
+            return false;
+        };
+        let Some(ed) = &self.editor else {
+            return false;
+        };
+        let now = colors_of(file, &ed.draft);
+        let mut main = MAIN.map(|m| now.get(m).copied().unwrap_or(c));
+        main[i] = c;
+        let base = file.built_in_theme(ed.draft.base).colors;
+        let derived = assist(file, &ed.draft).derive(&base, main, name);
+        self.change(file, |d| set_colors(d, &base, &derived))
+    }
+
+    /// "Fix": moves colour `name` just far enough in lightness to pass every rule it
+    /// takes part in. True when the draft changed.
+    pub fn fix_color(&mut self, file: &TokenFile, name: &str) -> bool {
+        let Some(ed) = &self.editor else {
+            return false;
+        };
+        let colors = colors_of(file, &ed.draft);
+        let Some(c) = assist(file, &ed.draft).fix(&colors, name) else {
+            return false;
+        };
+        self.change(file, |d| {
+            d.colors.insert(name.to_owned(), c);
+        })
+    }
+
+    /// "Fix colours": fixes every colour problem it can, moving the text, borders and
+    /// marks before the surfaces. True when the draft changed.
+    pub fn fix_all_colors(&mut self, file: &TokenFile) -> bool {
+        let Some(ed) = &self.editor else {
+            return false;
+        };
+        let mut colors = colors_of(file, &ed.draft);
+        let changed = assist(file, &ed.draft).fix_all(&mut colors, &[]);
+        if changed.is_empty() {
+            return false;
+        }
+        self.change(file, |d| {
+            for n in changed {
+                if let Some(c) = colors.get(&n) {
+                    d.colors.insert(n, *c);
+                }
+            }
+        })
+    }
+
+    /// The summary over the editor while the draft has problems: what to change before
+    /// Save, by group (empty when there is nothing), and whether "Fix colours" can help.
+    pub fn summary(&self, file: &TokenFile) -> (String, bool) {
+        let Some(ed) = &self.editor else {
+            return (String::new(), false);
+        };
+        if ed.problems.is_empty() {
+            return (String::new(), false);
+        }
+        let colors = colors_of(file, &ed.draft);
+        let issues = assist(file, &ed.draft).issues(&colors);
+        let mut names: Vec<&'static str> = Vec::new();
+        for p in &ed.problems {
+            if let Some(t) = p.token.as_deref().and_then(rbs_ui::tokens::themeable)
+                && !names.contains(&t.name)
+            {
+                names.push(t.name);
+            }
+        }
+        let mut parts: Vec<String> = Vec::new();
+        for g in GROUPS {
+            let EditorGroup::Tokens(g) = g else { continue };
+            let in_group: Vec<&str> = THEMEABLE
+                .iter()
+                .filter(|t| t.group == g && names.contains(&t.name))
+                .map(|t| t.label)
+                .collect();
+            if !in_group.is_empty() {
+                parts.push(format!("{}: {}", group_label(g), in_group.join(", ")));
+            }
+        }
+        let count = names.len() + self.general_problems().len();
+        let head = if count == 1 {
+            "1 setting needs a change before you can save.".to_owned()
+        } else {
+            format!("{count} settings need a change before you can save.")
+        };
+        let text = if parts.is_empty() {
+            head
+        } else {
+            format!("{head} {}.", parts.join(" · "))
+        };
+        (text, !issues.is_empty())
+    }
+}
+
+/// The name of a token group in the editor.
+pub fn group_label(g: Group) -> &'static str {
+    match g {
+        Group::Colours => "All colours",
+        Group::Text => "Text",
+        Group::Font => "Font",
+        Group::SpacingAndSize => "Spacing and size",
+        Group::Shapes => "Shapes",
+        Group::Motion => "Motion",
+    }
+}
+
+/// The name of an editor group.
+pub fn editor_group_label(g: EditorGroup) -> &'static str {
+    match g {
+        EditorGroup::Main => "Main colours",
+        EditorGroup::Tokens(g) => group_label(g),
+    }
+}
+
+/// Every theme colour of `body`: its base's, with its colour overrides.
+fn colors_of(file: &TokenFile, body: &ThemeBody) -> Colors {
+    let mut c = file.built_in_theme(body.base).colors;
+    for (n, v) in &body.colors {
+        if c.contains_key(n) {
+            c.insert(n.clone(), *v);
+        }
+    }
+    c
+}
+
+fn assist(file: &TokenFile, body: &ThemeBody) -> Assist {
+    Assist::new(
+        body.base == Base::HighContrast,
+        file.fixed
+            .get("color.state.live")
+            .copied()
+            .unwrap_or(Color {
+                r: 0xc4,
+                g: 0x26,
+                b: 0x2e,
+                a: 255,
+            }),
+    )
+}
+
+/// Gives `d` the colours `all`, as overrides only where they differ from `base`.
+fn set_colors(d: &mut ThemeBody, base: &Colors, all: &Colors) {
+    for (n, c) in all {
+        if base.get(n) == Some(c) {
+            d.colors.remove(n);
+        } else {
+            d.colors.insert(n.clone(), *c);
+        }
+    }
+}
+
+/// The problem text of the row of `token`, in words, and whether "Fix" can help. A
+/// colour's contrast problems are told from its side (what is hard to read on what),
+/// at most three, the rest counted.
+fn row_problem(ed: &Editor, issues: &[Issue], token: &str) -> (String, bool) {
+    const MOST: usize = 3;
+    let mut mine: Vec<&Issue> = issues
+        .iter()
+        .filter(|i| i.tokens().contains(&token))
+        .collect();
+    // The live red first: it is rule U12, and the reason a colour cannot be used at all.
+    mine.sort_by_key(|i| matches!(i, Issue::Contrast { .. }));
+    let mut lines: Vec<String> = mine.iter().map(|i| i.describe(token)).collect();
+    // Problems the colour helper does not cover (hue, bounds, order): their reasons
+    // with the tokens named in words.
+    let is_colour = rbs_ui::tokens::themeable(token).is_some_and(|t| t.kind == Kind::Color);
+    for p in ed
+        .problems
+        .iter()
+        .filter(|p| p.token.as_deref() == Some(token))
+    {
+        let covered = is_colour
+            && (p.reason.contains("contrast") || p.reason.contains("looks like the live"));
+        if !covered {
+            lines.push(plain(&p.reason));
+        }
+    }
+    let fixable = !mine.is_empty();
+    if lines.len() > MOST {
+        let more = lines.len() - MOST;
+        lines.truncate(MOST);
+        lines.push(format!("and {more} more"));
+    }
+    (lines.join("\n"), fixable)
+}
+
+/// A problem's reason with the token names in words.
+fn plain(reason: &str) -> String {
+    let mut names: Vec<&rbs_ui::tokens::Themeable> = THEMEABLE.iter().collect();
+    names.sort_by_key(|t| std::cmp::Reverse(t.name.len()));
+    let mut out = reason.to_owned();
+    for t in names {
+        out = out.replace(t.name, t.label);
+    }
+    let mut c = out.chars();
+    c.next()
+        .map(|f| f.to_uppercase().chain(c).collect())
+        .unwrap_or_default()
 }
 
 fn problems(file: &TokenFile, body: &ThemeBody) -> Vec<ThemeProblem> {
@@ -736,8 +964,10 @@ pub struct TokenRow {
     pub value: RowValue,
     /// True when the theme sets it.
     pub overridden: bool,
-    /// Its problems, joined; empty when none.
+    /// Its problems in words, one per line; empty when none.
     pub problem: String,
+    /// "Fix" can move this colour so its contrast problems go away.
+    pub fixable: bool,
 }
 
 #[cfg(test)]
@@ -867,7 +1097,7 @@ mod tests {
 
         // A failing edit stays in the editor with its problem and is not applied.
         assert!(ui.set_color(&file, "color.accent", "#c4262e"));
-        ui.group = 0;
+        ui.group = 1;
         let row = ui
             .rows(&file)
             .into_iter()
@@ -928,6 +1158,89 @@ mod tests {
             Color::parse("#c4262e").unwrap()
         );
         assert!(ui.to_save().is_none());
+    }
+
+    #[test]
+    fn main_colours_set_a_whole_palette_that_can_be_saved() {
+        let (_d, _data, file, mut ui, id) = setup("main");
+        ui.selected = ui.index_of(&ThemeId::User(id));
+        assert!(ui.edit(&file));
+        assert!(ui.on_main(), "the editor opens on the main colours");
+        let rows = ui.rows(&file);
+        let labels: Vec<&str> = rows.iter().map(|r| r.label).collect();
+        assert_eq!(labels, ["Background", "Text", "Accent"]);
+        // A light background on a dark theme: the text turns dark, nothing is left
+        // to fix, and Save is on.
+        assert!(ui.set_main_color(&file, "color.surface.base", "#f6f6f4"));
+        let ed = ui.editor.as_ref().unwrap();
+        assert!(ed.problems.is_empty(), "{:?}", ed.problems);
+        assert_eq!(
+            ed.draft.colors["color.surface.base"],
+            Color::parse("#f6f6f4").unwrap()
+        );
+        assert!(ui.to_save().is_some());
+        assert_eq!(ui.summary(&file), (String::new(), false));
+    }
+
+    #[test]
+    fn fix_and_fix_colours_clear_contrast_problems() {
+        let (_d, _data, file, mut ui, id) = setup("fix");
+        ui.selected = ui.index_of(&ThemeId::User(id));
+        assert!(ui.edit(&file));
+        ui.group = 1;
+        // A mid blue window background, set one colour at a time (All colours).
+        assert!(ui.set_color(&file, "color.surface.base", "#4a7bd0"));
+        let row = ui
+            .rows(&file)
+            .into_iter()
+            .find(|r| r.name == "color.surface.base")
+            .unwrap();
+        assert!(row.fixable);
+        assert!(
+            row.problem.contains("is hard to read on it"),
+            "{}",
+            row.problem
+        );
+        let (summary, can_fix) = ui.summary(&file);
+        assert!(summary.contains("before you can save"), "{summary}");
+        assert!(summary.contains("All colours:"), "{summary}");
+        assert!(can_fix);
+        // Fix on the row moves only that colour.
+        assert!(ui.fix_color(&file, "color.surface.base"));
+        let ed = ui.editor.as_ref().unwrap();
+        assert!(
+            ed.problems
+                .iter()
+                .all(|p| p.token.as_deref() != Some("color.surface.base")),
+            "{:?}",
+            ed.problems
+        );
+        // A second clash, fixed with Fix colours.
+        assert!(ui.set_color(&file, "color.text.secondary", "#777777"));
+        assert!(!ui.editor.as_ref().unwrap().problems.is_empty());
+        assert!(ui.fix_all_colors(&file));
+        assert!(ui.editor.as_ref().unwrap().problems.is_empty());
+        assert!(ui.to_save().is_some());
+    }
+
+    #[test]
+    fn problems_name_tokens_in_words() {
+        let (_d, _data, file, mut ui, id) = setup("words");
+        ui.selected = ui.index_of(&ThemeId::User(id));
+        assert!(ui.edit(&file));
+        assert!(ui.set_number(&file, "radius.sm", 30.0));
+        ui.group = 5;
+        let row = ui
+            .rows(&file)
+            .into_iter()
+            .find(|r| r.name == "radius.md")
+            .unwrap();
+        assert!(!row.fixable);
+        assert!(!row.problem.contains("radius."), "{}", row.problem);
+        assert_eq!(
+            row.problem,
+            "Corner radius must not be smaller than Small corner radius"
+        );
     }
 
     #[test]
@@ -995,7 +1308,7 @@ mod tests {
             let rows = ui.rows(&file);
             assert!(!rows.is_empty(), "{kind:?}");
         }
-        ui.group = 4;
+        ui.group = 5;
         let radius = ui
             .rows(&file)
             .into_iter()
@@ -1004,7 +1317,7 @@ mod tests {
         assert_eq!(radius.value, RowValue::Number(8.0));
         assert!(radius.overridden);
         // Text styles change one part at a time.
-        ui.group = 1;
+        ui.group = 2;
         assert!(ui.set_style(&file, "type.body", 2, 500.0));
         assert_eq!(
             ui.editor.as_ref().unwrap().draft.type_styles["type.body"],

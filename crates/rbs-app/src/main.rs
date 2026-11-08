@@ -29,6 +29,7 @@ mod preview;
 mod preview_edit;
 mod shortcuts_page;
 mod studio_ui;
+mod theme_assist;
 mod title_bar;
 mod vcam_page;
 mod view;

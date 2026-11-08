@@ -33,7 +33,10 @@ export struct ThemeTokenRow {
     weight: float,
     fonts: string,
     overridden: bool,
+    // Its problems in words, one per line.
     problem: string,
+    // "Fix" can move this colour so its contrast problems go away.
+    fixable: bool,
 }
 
 export global Appearance {
@@ -110,6 +113,18 @@ export global Appearance {
     callback export();
     callback set-group(int);
     callback set-color(string, string);
+    // "Fix" on a colour row, and "Fix colours" over the editor.
+    callback fix(string);
+    callback fix-all();
+    // While the draft has problems: what needs a change before Save, by group; and
+    // whether "Fix colours" can help.
+    in property <string> summary;
+    in property <bool> can-fix-all;
+    // Installed families containing the font name being typed (after the last comma),
+    // and completing that name with one of them.
+    in property <[string]> font-suggestions;
+    callback suggest-fonts(string);
+    callback complete-font(string, string);
     callback set-number(string, float);
     callback set-style(string, int, float);
     callback set-fonts(string);
@@ -259,6 +274,9 @@ component FontMenu inherits Button {
 component TokenEditorRow inherits Rectangle {
     in property <ThemeTokenRow> item;
     in property <bool> divider: true;
+    // The font family list as last typed: the suggestions under the field complete it,
+    // also once the field has lost focus (its `accepted` then already applied it).
+    property <string> typed-fonts;
     min-height: lay.min-height;
     preferred-height: lay.preferred-height;
     if root.divider: Rectangle {
@@ -294,7 +312,11 @@ component TokenEditorRow inherits Rectangle {
                     label: item.label;
                     placeholder: @tr("System font");
                     text: item.fonts;
-                    edited(t) => { Appearance.hold(3, item.name, 0, t); }
+                    edited(t) => {
+                        Appearance.hold(3, item.name, 0, t);
+                        root.typed-fonts = t;
+                        Appearance.suggest-fonts(t);
+                    }
                     accepted(t) => {
                         Appearance.pending-kind = -1;
                         if t != item.fonts { Appearance.set-fonts(t); }
@@ -316,6 +338,20 @@ component TokenEditorRow inherits Rectangle {
                     dense: true;
                     enabled: item.overridden;
                     clicked => { Appearance.reset(item.name); }
+                }
+            }
+            // Families installed on this computer that contain the name being typed;
+            // a pick completes that name and is applied like a typed list.
+            if item.kind == 3 && Appearance.font-suggestions.length > 0: VerticalLayout {
+                spacing: Tokens.space-1;
+                accessible-role: AccessibleRole.list;
+                accessible-label: @tr("Fonts on this computer");
+                for f in Appearance.font-suggestions: MenuItem {
+                    text: f;
+                    activated => {
+                        Appearance.pending-kind = -1;
+                        Appearance.complete-font(root.typed-fonts, f);
+                    }
                 }
             }
             if item.problem != "": Problem { text: item.problem; }
@@ -395,6 +431,15 @@ component TokenEditorRow inherits Rectangle {
                     }
                 }
             }
+            if item.fixable: VerticalLayout {
+                alignment: center;
+                Button {
+                    text: @tr("Fix");
+                    accessible-name: @tr("Fix {}", item.label);
+                    dense: true;
+                    clicked => { Appearance.fix(item.name); }
+                }
+            }
             VerticalLayout {
                 alignment: center;
                 Button {
@@ -454,6 +499,23 @@ component ThemeEditor inherits VerticalLayout {
     if !Appearance.editing-in-use: SettingsNotice {
         text: @tr("This theme is not in use, so the windows do not show its changes. Pick it under Theme in use to see them.");
     }
+    // What needs a change before Save, with a way to fix the colours in one go.
+    if Appearance.summary != "": HorizontalLayout {
+        spacing: Tokens.space-2;
+        SettingsNotice {
+            horizontal-stretch: 1;
+            problem: true;
+            text: Appearance.summary;
+        }
+        if Appearance.can-fix-all: VerticalLayout {
+            horizontal-stretch: 0;
+            alignment: center;
+            Button {
+                text: @tr("Fix colours");
+                clicked => { Appearance.fix-all(); }
+            }
+        }
+    }
     for p in Appearance.general-problems: Problem { text: p; }
     SettingRow {
         divider: false;
@@ -465,6 +527,9 @@ component ThemeEditor inherits VerticalLayout {
             index: Appearance.group;
             selected(i) => { Appearance.set-group(i); }
         }
+    }
+    if Appearance.group == 0: Hint {
+        text: @tr("Pick three colours; every other colour is worked out from them so text stays easy to read. Fine-tune single colours under All colours.");
     }
     VerticalLayout {
         spacing: 0px;
