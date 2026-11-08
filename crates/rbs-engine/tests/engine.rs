@@ -259,7 +259,13 @@ fn frames_and_packets_cross_three_worker_threads() {
     // The output's timer is an hour: everything it saw came through its doorbell.
     let packets = &rig.engine.crossings()[1].stats;
     assert_eq!(packets.overflows(), 0);
-    assert!(eventually(LIMIT, || rig.seen() == packets.sent()));
+    assert!(
+        eventually(LIMIT, || rig.seen() == packets.sent()),
+        "seen {} of {} sent, {} received",
+        rig.seen(),
+        packets.sent(),
+        packets.received()
+    );
     assert_eq!(packets.received(), packets.sent());
     let output = rig.engine.worker_stats(OUTPUT).unwrap();
     assert!(output.ticks() >= 1);
