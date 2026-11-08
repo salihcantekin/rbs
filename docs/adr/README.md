@@ -77,6 +77,7 @@ An ADR records one decision that is hard to reverse or affects more than one cra
 | [0062](0062-built-in-video-filters-and-properties-tabs.md) | Built-in video filters: one filter node behind a filter type trait, settings through parameter channels, and the Properties tabs | Accepted |
 | [0063](0063-hold-the-program-while-its-scene-is-edited-in-preview.md) | Hold the program while its scene is edited in preview (studio mode) | Accepted |
 | [0064](0064-transition-rail-with-the-pictures.md) | The Transition rail sits with the pictures: between or below Preview and Program, only in studio mode | Accepted |
+| [0073](0073-pictures-area-and-studio-mode-switch.md) | The Pictures area, a resizable rail and Studio mode as one switch | Proposed |
 | [0065](0065-global-sources-and-safe-source-removal.md) | Global sources as a global scene per canvas, and safe source removal | Accepted |
 | [0066](0066-virtual-camera.md) | Virtual camera on Windows: the program as a camera for meeting apps, off by default | Accepted |
 | [0069](0069-rbs-menu-and-command-search.md) | The RBS menu: an app menu with command search, and the menu bar only on macOS | Accepted |
