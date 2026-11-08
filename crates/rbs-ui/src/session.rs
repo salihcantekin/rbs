@@ -333,7 +333,10 @@ impl LayoutSession {
                         .filter(|p| !default.is_open(p))
                         .cloned(),
                 );
+                // What the user folded is not layout: a reset keeps it (ADR-0078).
+                let sections = std::mem::take(&mut next.closed_sections);
                 next = default;
+                next.closed_sections = sections;
             }
             LayoutCommand::SetStudioRail(at) => next.set_studio_rail(at)?,
             LayoutCommand::SetCollapsed { panel, collapsed } => {
@@ -580,6 +583,23 @@ mod tests {
         s.set_section_closed("properties.crop", false).unwrap();
         assert!(s.workspace().closed_sections.is_empty());
         assert!(s.set_section_closed("Bad Id", true).is_err());
+    }
+
+    #[test]
+    fn reset_workspace_keeps_closed_sections_and_switch_takes_the_other_list() {
+        let mut s = LayoutSession::new(builtin::edit());
+        s.apply(LayoutCommand::ClosePanel(id("rbs.stats")), Origin::Command)
+            .unwrap();
+        s.set_section_closed("properties.crop", true).unwrap();
+        s.apply(LayoutCommand::ResetWorkspace, Origin::Command)
+            .unwrap();
+        assert!(s.workspace().section_closed("properties.crop"));
+        let mut other = builtin::edit();
+        other.set_section_closed("mixer.global", true).unwrap();
+        s.apply(LayoutCommand::Switch(other), Origin::Command)
+            .unwrap();
+        assert!(!s.workspace().section_closed("properties.crop"));
+        assert!(s.workspace().section_closed("mixer.global"));
     }
 
     #[test]

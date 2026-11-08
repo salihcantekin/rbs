@@ -171,6 +171,7 @@ struct App {
     /// the answers changed (ADR-0078).
     sections_shown: Vec<String>,
     sections_rev: i32,
+    sections_windows: usize,
     exiting: bool,
     /// Every window is hidden by Close with Keep RBS running (ADR-0056).
     hidden: bool,
@@ -1120,8 +1121,14 @@ impl Ctx {
     }
 
     fn sync_studio(&self, app: &mut App) {
-        if app.sections_shown != app.session.workspace().closed_sections {
+        // A window made since the last sync may have asked while the app was busy and
+        // kept a default: a new number makes every window ask again.
+        let windows = 1 + app.floats.len() + usize::from(app.settings.is_some());
+        if app.sections_shown != app.session.workspace().closed_sections
+            || app.sections_windows != windows
+        {
             app.sections_shown = app.session.workspace().closed_sections.clone();
+            app.sections_windows = windows;
             app.sections_rev += 1;
         }
         let rev = app.sections_rev;
@@ -2242,7 +2249,10 @@ fn install_sections(g: &Sections<'_>, ctx: &Ctx) {
         let (key, listed_is_closed) = section_key(id.as_str());
         c.app
             .try_borrow()
-            .is_ok_and(|app| app.session.workspace().section_closed(&key) == listed_is_closed)
+            // Busy (never at render time): the section's default.
+            .map_or(!listed_is_closed, |app| {
+                app.session.workspace().section_closed(&key) == listed_is_closed
+            })
     });
     let c = ctx.clone();
     g.on_group_state(move |prefix, _rev| {
@@ -2912,6 +2922,7 @@ fn run(config: PathBuf, notice: Option<String>) -> Result<(), Box<dyn std::error
             save_due: false,
             sections_shown: Vec::new(),
             sections_rev: 0,
+            sections_windows: 0,
             exiting: false,
             hidden: false,
             bg,
@@ -3139,11 +3150,13 @@ mod section_tests {
     #[test]
     fn settings_sections_list_matches_the_cards_in_the_ui_files() {
         let mut found = Vec::new();
-        for file in ["studio.slint", "appearance.slint", "vcam.slint"] {
-            let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-                .join("ui")
-                .join(file);
-            let text = std::fs::read_to_string(&path).expect("ui file");
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui");
+        for entry in std::fs::read_dir(&dir).unwrap_or_else(|e| panic!("ui dir: {e}")) {
+            let path = entry.unwrap_or_else(|e| panic!("ui entry: {e}")).path();
+            if path.extension().is_none_or(|e| e != "slint") {
+                continue;
+            }
+            let text = std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("{path:?}: {e}"));
             for line in text.lines() {
                 if let Some(id) = line.trim().strip_prefix("id: \"settings.") {
                     found.push(format!("settings.{}", id.trim_end_matches("\";")));
