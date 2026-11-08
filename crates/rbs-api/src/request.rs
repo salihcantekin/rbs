@@ -681,6 +681,7 @@ pub const METHODS: &[MethodInfo] = &[
 pub const UI_METHODS: &[&str] = &[
     "ui.workspace.list",
     "ui.workspace.switch",
+    "ui.workspace.reset",
     "ui.panel.open",
     "ui.panel.close",
     "ui.area.show",
