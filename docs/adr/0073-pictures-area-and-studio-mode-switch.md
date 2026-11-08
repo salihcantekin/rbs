@@ -1,6 +1,6 @@
 # ADR-0073: The Pictures area, a resizable rail and Studio mode as one switch
 
-- Status: Proposed
+- Status: Accepted
 - Date: 2026-11-08
 - Deciders: Salih (owner)
 - Builds on: ADR-0061 (studio mode), ADR-0064 (Transition rail), ADR-0049 (docking, areas), ADR-0054 (the picture never disappears), ADR-0050 (command registry)
@@ -64,4 +64,4 @@ Round 2, 2026-11-08, second fresh AI session: approve with changes, 8 findings, 
 7. Spec edits in the implementing change: the picture-goes-to-Preview text, the U21 "studio mode opens Preview" line, the studio split paragraphs, the format 3 section, the built-in table, the guarded-panel list, the lock list, Core flows.
 8. Minimal and Audio do not serve the "Choose a transition" flow (they declare it so in the spec).
 
-The ADR stays Proposed until Salih approves the visible parts (frame group, header strip, rail).
+Salih approved the direction and the frame group on 2026-11-08 ("uygula"); screenshots of the visible parts still need his approval before merge (rule 16).
