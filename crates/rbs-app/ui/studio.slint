@@ -713,9 +713,16 @@ component SourceRowView inherits Rectangle {
                     horizontal-stretch: 1;
                     HorizontalLayout {
                         spacing: Tokens.space-1;
+                        // A source that is not running (its window closed, its camera
+                        // unplugged): the mark and the reason say so, the name is dimmed
+                        // (ADR-0077, U7: never colour alone).
+                        if !data.ok: VerticalLayout {
+                            alignment: center;
+                            Icon { name: IconName.warning; ink: Theme.state-warning; }
+                        }
                         Text {
                             text: data.name;
-                            color: root.ink;
+                            color: data.ok ? root.ink : Theme.text-disabled;
                             font-size: Tokens.type-body-size;
                             overflow: elide;
                             horizontal-stretch: 1;
@@ -736,7 +743,7 @@ component SourceRowView inherits Rectangle {
                     // State in words, never colour alone (U7); shown when it needs attention.
                     if !data.ok: Text {
                         text: @tr("{} · {}", data.kind, data.status);
-                        color: Theme.state-error;
+                        color: Theme.text-secondary;
                         font-size: Tokens.type-caption-size;
                         overflow: elide;
                     }

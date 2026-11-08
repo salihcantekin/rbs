@@ -31,6 +31,7 @@ use rbs_audio::LevelMeter;
 use rbs_capture::CaptureError;
 use rbs_codec::caps as codec_caps;
 use rbs_core::capability::{CapabilitySet, CapabilityValue, Requirement};
+use rbs_core::fault::SourceFault;
 use rbs_core::media::{ContainerId, Size};
 use rbs_core::registry::{AdapterFactory, Registry};
 use rbs_core::time::{Clock, Timestamp};
@@ -185,6 +186,14 @@ pub enum SourceStatus {
     Idle,
     /// It is not running, and why.
     Failed(String),
+    /// It cannot deliver because its target is gone, refused or busy (ADR-0077); `detail`
+    /// is the adapter's own text. The UI words the cause by `fault` and the source's kind.
+    Unavailable {
+        /// The typed cause.
+        fault: rbs_core::fault::SourceFault,
+        /// The adapter's text, for tooltips and logs.
+        detail: String,
+    },
 }
 
 /// One source of the program scene, as the UI shows it.
@@ -4481,9 +4490,15 @@ impl Host {
                 let state = states.iter().find(|st| st.name == s.name);
                 let status = match state {
                     None => SourceStatus::Idle,
-                    Some(st) => match &st.failed {
-                        Some(why) => SourceStatus::Failed(why.clone()),
-                        None => SourceStatus::Running,
+                    Some(st) => match (&st.failed, st.fault) {
+                        (Some(why), Some(fault)) if fault != SourceFault::Other => {
+                            SourceStatus::Unavailable {
+                                fault,
+                                detail: why.clone(),
+                            }
+                        }
+                        (Some(why), _) => SourceStatus::Failed(why.clone()),
+                        (None, _) => SourceStatus::Running,
                     },
                 };
                 SourceRow {
@@ -5512,9 +5527,13 @@ fn api_source(row: &SourceRow) -> api::SourceInfo {
         status: match &row.status {
             SourceStatus::Running => api::SourceStatus::Running,
             SourceStatus::Idle => api::SourceStatus::Idle,
-            SourceStatus::Failed(why) => api::SourceStatus::Failed {
-                reason: why.clone(),
-            },
+            // The control API reports an unavailable source as failed until 1.13
+            // adds the typed state (ADR-0077, decision 7).
+            SourceStatus::Failed(why) | SourceStatus::Unavailable { detail: why, .. } => {
+                api::SourceStatus::Failed {
+                    reason: why.clone(),
+                }
+            }
         },
     }
 }

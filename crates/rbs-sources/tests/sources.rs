@@ -779,5 +779,8 @@ fn source_errors_map_to_faults() {
         SourceError::Audio(AudioIoError::PermissionNotDetermined).fault(),
         SourceFault::PermissionDenied
     );
-    assert_eq!(SourceError::Image(String::new()).fault(), SourceFault::Other);
+    assert_eq!(
+        SourceError::Image(String::new()).fault(),
+        SourceFault::Other
+    );
 }
