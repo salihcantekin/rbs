@@ -38,6 +38,7 @@ Check each item; a reviewer checks them again.
 - [ ] Time-dependent logic gets time from an injected `Clock` (`TestClock`) or a `now` argument; the test advances it. No `thread::sleep` in a test except as the behaviour under test (a fake adapter that blocks), with a comment.
 - [ ] Waits are for conditions (`eventually`, channel, join, tick index), never for durations.
 - [ ] Every real-time bound is a hang guard: at least 10x the expected time, at least 250 ms (prefer 1 s or more when a passing run does not wait for it), with a comment saying so. No wall-clock performance asserts; use a benchmark (`measure-performance`).
+- [ ] An engine built for a test that applies graphs on real workers gets `EngineConfig::default().swap_timeout(LIMIT)` (the hang guard), never the 1 s production default: a swap on a loaded CI runner (WARP, 4 vCPUs) can take longer than that without anything being wrong. A test that expects `SwapTimeout` sets its own short value.
 - [ ] An expected timeout cannot be missed because the other side finished early: the other side is held until the timeout was observed.
 - [ ] The outcome does not depend on thread order unless the test sets the order.
 - [ ] Fast: the test takes well under 1 s in a debug build. Expensive fixtures are built cheaply (`slice::repeat` instead of per-byte iterators; small frames unless size is the point). A test that must take seconds of real time is `#[ignore = "slow: <why>"]` and named `slow_*` (the slow tier selects by name).
