@@ -203,6 +203,71 @@ pub fn set_badge(text: Option<&CStr>) {
     }
 }
 
+/// Sets the Dock icon to the PNG `png` at run time, so it shows the RBS logo also when
+/// RBS runs as a bare executable (`cargo run`, no `.app` bundle). Returns false when
+/// the image could not be made. Main thread only.
+pub fn set_icon(png: &'static [u8]) -> bool {
+    let app = app();
+    if app.is_null() {
+        return false;
+    }
+    // SAFETY: `dataWithBytes:length:` copies `png.len()` bytes from a live slice;
+    // `initWithData:` takes that NSData and returns an owned NSImage or nil (an
+    // undecodable image); `setApplicationIconImage:` retains the image, so the one `alloc`
+    // reference is released after it. All on the non-null shared application on the
+    // main thread.
+    unsafe {
+        let data: *mut AnyObject = msg_send![class!(NSData), dataWithBytes: png.as_ptr().cast::<std::ffi::c_void>(), length: png.len()];
+        if data.is_null() {
+            return false;
+        }
+        let image: *mut AnyObject = msg_send![class!(NSImage), alloc];
+        let image: *mut AnyObject = msg_send![image, initWithData: data];
+        if image.is_null() {
+            return false;
+        }
+        let _: () = msg_send![app, setApplicationIconImage: image];
+        let _: () = msg_send![image, release];
+    }
+    true
+}
+
+/// Sets the application name macOS shows (menu bar, About, Dock) to `name`. A bare
+/// executable has no `Info.plist`, so AppKit falls back to the file name (`rbs`); this
+/// writes `CFBundleName` into the main bundle's info dictionary and sets the process
+/// name. Call before the event loop starts. Main thread only.
+pub fn set_app_name(name: &CStr) {
+    let name = ns_string(name);
+    if name.is_null() {
+        return;
+    }
+    // SAFETY: `mainBundle` and `infoDictionary` are plain getters; the dictionary of a
+    // bundle is an `NSMutableDictionary` in practice, checked with `isKindOfClass:`
+    // before `setObject:forKey:` (which retains `name`). `processInfo` is a plain
+    // getter and `setProcessName:` copies its argument. All on the main thread.
+    unsafe {
+        let bundle: *mut AnyObject = msg_send![class!(NSBundle), mainBundle];
+        if !bundle.is_null() {
+            let info: *mut AnyObject = msg_send![bundle, infoDictionary];
+            let mutable: Bool = if info.is_null() {
+                Bool::NO
+            } else {
+                msg_send![info, isKindOfClass: class!(NSMutableDictionary)]
+            };
+            if mutable.as_bool() {
+                let key = ns_string(c"CFBundleName");
+                if !key.is_null() {
+                    let _: () = msg_send![info, setObject: name, forKey: key];
+                }
+            }
+        }
+        let process: *mut AnyObject = msg_send![class!(NSProcessInfo), processInfo];
+        if !process.is_null() {
+            let _: () = msg_send![process, setProcessName: name];
+        }
+    }
+}
+
 /// Bounces the Dock icon once, if RBS is not the active app (macOS does nothing
 /// otherwise). Main thread only.
 pub fn request_attention() {

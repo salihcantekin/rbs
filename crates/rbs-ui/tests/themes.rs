@@ -342,6 +342,21 @@ fn rules_across_tokens() {
     // ... and passes once the spacing makes room.
     theme.length.insert("space.1".into(), 6.0);
     assert!(problems(&theme).is_empty(), "{:?}", problems(&theme));
+
+    // ADR-0076: the gap between fields may not exceed the gap between sections.
+    let mut theme = ThemeBody::new(Base::Dark);
+    theme.length.insert("size.field.gap".into(), 20.0);
+    assert!(
+        fails_at(&theme, "size.section.gap"),
+        "field gap <= section gap"
+    );
+    // The tab indicator is not themeable.
+    let mut theme = ThemeBody::new(Base::Dark);
+    theme.length.insert("size.tab.indicator".into(), 3.0);
+    assert!(
+        !problems(&theme).is_empty(),
+        "size.tab.indicator is not themeable"
+    );
 }
 
 #[test]

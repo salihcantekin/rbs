@@ -1833,9 +1833,8 @@ placement = { display = "edid:SAM-7012-HX55", connector = "HDMI-1", size = [1920
         w.move_to_edge(&stats, f, Edge::Left).unwrap();
         assert_eq!(w, before);
         // Last window too: no index out of bounds.
-        let g = w.float(&id("rbs.live-controls")).unwrap();
-        w.move_to_edge(&id("rbs.live-controls"), g, Edge::Top)
-            .unwrap();
+        let g = w.float(&id("rbs.scenes")).unwrap();
+        w.move_to_edge(&id("rbs.scenes"), g, Edge::Top).unwrap();
         w.validate().unwrap();
     }
 
@@ -2180,15 +2179,14 @@ layout = { tabs = ["rbs.status-bar"] }
         let mut ws = builtin::edit();
         let before = ws.main_layout().unwrap().right.clone();
         let content = Rect::sized(1440.0, 800.0);
-        ws.auto_hide(&id("rbs.live-controls"), content).unwrap();
+        ws.auto_hide(&id("rbs.properties"), content).unwrap();
         let m = ws.main_layout().unwrap();
-        let g = &m.auto_hide[m.group_of(&id("rbs.live-controls")).unwrap()];
+        let g = &m.auto_hide[m.group_of(&id("rbs.properties")).unwrap()];
         assert_eq!(g.edge, Side::Right);
-        assert_eq!(g.anchor, Some(id("rbs.properties")));
         assert!(ws.validate().is_ok());
-        ws.pin(&id("rbs.live-controls")).unwrap();
+        ws.pin(&id("rbs.properties")).unwrap();
         let after = &ws.main_layout().unwrap().right;
-        // Back below Properties.
+        // Back in the right area.
         assert_eq!(
             after.layout.as_ref().unwrap().panels(),
             before.layout.as_ref().unwrap().panels()
@@ -2220,8 +2218,8 @@ layout = { tabs = ["rbs.status-bar"] }
     fn auto_hide_from_the_centre_picks_the_nearest_edge() {
         let mut ws = builtin::live();
         let content = Rect::sized(1440.0, 800.0);
-        // Live controls is in the centre's right column.
-        ws.auto_hide(&id("rbs.live-controls"), content).unwrap();
+        // Stats is in the centre's right column.
+        ws.auto_hide(&id("rbs.stats"), content).unwrap();
         let m = ws.main_layout().unwrap();
         assert_eq!(m.auto_hide[0].edge, Side::Right);
         // A centre that is one stack keeps it.
