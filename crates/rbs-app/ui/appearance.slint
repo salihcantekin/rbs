@@ -16,6 +16,8 @@ export struct ThemeOption {
     surface: color,
     text: color,
     accent: color,
+    // Colour warnings of a usable theme (ADR-0072).
+    warnings: int,
 }
 
 // One token in the editor. `kind`: 0 colour, 1 number (`unit` px or ms), 2 text style,
@@ -713,6 +715,9 @@ component ThemeListRow inherits Rectangle {
                 accessible-role: none;
             }
             if !root.theme.usable: Problem { text: @tr("Cannot be used: {}", root.theme.problem); }
+            if root.theme.usable && root.theme.warnings > 0: Warning {
+                text: root.theme.warnings == 1 ? @tr("1 colour warning") : @tr("{} colour warnings", root.theme.warnings);
+            }
         }
         if !root.theme.user && !root.compact: VerticalLayout {
             horizontal-stretch: 0;

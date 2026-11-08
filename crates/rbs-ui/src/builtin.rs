@@ -24,7 +24,7 @@ fn tabs(ids: &[&'static str]) -> Node {
 /// The studio split (ADR-0064): Preview alone outside studio mode; Preview, the
 /// Transition rail and Program in studio mode.
 fn studio() -> Node {
-    Node::studio(id("rbs.preview"), id("rbs.program"), RailAt::Between)
+    Node::pictures(RailAt::Between)
 }
 
 /// The full editing layout of the design system's main window structure: the studio

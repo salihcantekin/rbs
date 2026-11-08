@@ -355,7 +355,6 @@ impl LayoutSession {
         // Every result is checked, so a sequence of valid commands can never
         // produce a workspace that fails to load again (for example by nesting
         // splits deeper than the file format allows).
-        next.dissolve_broken_studio();
         next.validate()?;
         if next == before {
             return Ok(None);
@@ -462,8 +461,8 @@ mod tests {
             Origin::Command,
         );
         assert_eq!(t, Ok(None), "not live");
-        // Closing Program dissolves Edit's studio split (ADR-0064).
-        assert!(s.workspace().main().studio_split().is_none());
+        // Closing Program closes Edit's Pictures area (ADR-0073).
+        assert!(s.workspace().main().pictures_leaf().is_none());
         assert_eq!(
             s.apply(LayoutCommand::ClosePanel(id("rbs.mixer")), Origin::Command),
             Ok(None)
@@ -657,7 +656,7 @@ mod tests {
         assert_eq!(s.redraw_rate(), UpdateRate::Hz(1));
         // A hidden tab does not count: Live shows Stats in front of Scenes.
         let mut s = LayoutSession::new(builtin::live());
-        for p in ["rbs.preview", "rbs.program", "rbs.mixer"] {
+        for p in ["rbs.preview", "rbs.mixer"] {
             s.apply(LayoutCommand::ClosePanel(id(p)), Origin::Command)
                 .unwrap();
         }
@@ -720,7 +719,6 @@ mod tests {
         let mut old = builtin::edit();
         old.name = "edit".to_owned();
         old.close(&id("rbs.program")).unwrap();
-        old.dissolve_broken_studio();
         old.locked = true;
         assert_eq!(old.studio_rail(), None);
         let mut s = LayoutSession::new(old.clone());
