@@ -2,7 +2,7 @@
 // crate: Slint has no recursive components, so Rust flattens each window's
 // layout tree into tab stacks and splitter handles with absolute positions.
 import { Theme, Tokens } from "tokens.slint";
-import { Button, IconButton, Icon, IconName, Icons, FocusRing, MenuItem as MenuRow, MenuSurface, EmptyState, Select, NumberField } from "components.slint";
+import { Button, IconButton, Icon, IconName, Icons, FocusRing, RingFocus, MenuItem as MenuRow, MenuSurface, EmptyState, Select, NumberField } from "components.slint";
 import { SettingsNavItem, SettingsNavGroup, SettingsHeader } from "settings.slint";
 import { Appearance, AppearanceSettings, ThemeOption, ThemeTokenRow } from "appearance.slint";
 import { Shortcuts, ShortcutsSettings, ShortcutRow, ShortcutChip } from "shortcuts.slint";
@@ -354,7 +354,7 @@ component Tab inherits Rectangle {
     accessible-description: @tr("Menu key or Shift+F10 opens panel actions; Delete or Backspace closes it; Shift+Escape maximizes or restores it");
     accessible-action-default => { activate(); }
     forward-focus: focus;
-    focus := FocusScope {
+    focus := RingFocus {
         key-pressed(e) => {
             if e.text == Key.Return || e.text == " " { activate(); return accept; }
             if e.text == Key.Menu || (e.text == Key.F10 && e.modifiers.shift) { open-menu(); return accept; }
@@ -371,7 +371,7 @@ component Tab inherits Rectangle {
         allow-move: !Shell.locked;
         data: Shell.panel-data(tab.id);
         touch := TouchArea {
-            clicked => { focus.focus(); activate(); }
+            clicked => { focus.focus-pointer(); activate(); }
             double-clicked => { maximize(); }
             pointer-event(e) => {
                 if e.kind == PointerEventKind.down && e.button == PointerEventButton.right { open-menu(); }
@@ -563,7 +563,7 @@ component Splitter inherits Rectangle {
     accessible-value-minimum: 0;
     accessible-value-maximum: 100;
     forward-focus: focus;
-    focus := FocusScope {
+    focus := RingFocus {
         key-pressed(e) => {
             if (data.horizontal && e.text == Key.LeftArrow) || (!data.horizontal && e.text == Key.UpArrow) {
                 Shell.nudge(data.window, data.index, e.modifiers.shift ? -Tokens.step-nudge-large : -Tokens.step-nudge);
@@ -581,7 +581,7 @@ component Splitter inherits Rectangle {
     touch := TouchArea {
         mouse-cursor: data.horizontal ? ew-resize : ns-resize;
         pointer-event(e) => {
-            if e.kind == PointerEventKind.down { focus.focus(); }
+            if e.kind == PointerEventKind.down { focus.focus-pointer(); }
             if e.kind == PointerEventKind.up { Shell.drag-end(); }
         }
         moved => {
@@ -884,13 +884,13 @@ component EdgeTab inherits Rectangle {
     accessible-expanded: open;
     accessible-action-default => { toggle(); }
     forward-focus: focus;
-    focus := FocusScope {
+    focus := RingFocus {
         key-pressed(e) => {
             if e.text == Key.Return || e.text == " " { toggle(); return accept; }
             reject
         }
     }
-    touch := TouchArea { clicked => { focus.focus(); toggle(); } }
+    touch := TouchArea { clicked => { focus.focus-pointer(); toggle(); } }
     Icon {
         x: vertical ? (parent.width - self.width) / 2 : Tokens.space-2;
         y: vertical ? Tokens.space-2 : (parent.height - self.height) / 2;
@@ -909,7 +909,7 @@ component EdgeTab inherits Rectangle {
         font-size: Tokens.type-caption-size;
         font-weight: Tokens.type-label-weight;
     }
-    FocusRing { show: focus.has-focus; border-radius: Tokens.radius-md; }
+    FocusRing { show: focus.ring; border-radius: Tokens.radius-md; }
 }
 
 // The edge tabs on one edge. `open-id` is the slid-out panel, if it is on this edge.
@@ -963,7 +963,7 @@ component Flyout inherits Rectangle {
     clip: true;
     accessible-role: groupbox;
     accessible-label: data.title;
-    focus := FocusScope {
+    focus := RingFocus {
         key-pressed(e) => {
             if e.text == Key.Escape { root.hide(); return accept; }
             reject
@@ -1212,13 +1212,13 @@ component WorkspacePicker inherits Rectangle {
     accessible-label: @tr("Workspace: {}", Shell.workspace-name);
     accessible-action-default => { clicked(); }
     forward-focus: focus;
-    focus := FocusScope {
+    focus := RingFocus {
         key-pressed(e) => {
             if e.text == Key.Return || e.text == " " { root.clicked(); return accept; }
             reject
         }
     }
-    touch := TouchArea { clicked => { focus.focus(); root.clicked(); } }
+    touch := TouchArea { clicked => { focus.focus-pointer(); root.clicked(); } }
     row := HorizontalLayout {
         padding-left: Tokens.space-2;
         padding-right: Tokens.space-2;
@@ -1241,7 +1241,7 @@ component WorkspacePicker inherits Rectangle {
             Icon { name: IconName.chevron-down; ink: Theme.text-secondary; }
         }
     }
-    FocusRing { show: focus.has-focus; }
+    FocusRing { show: focus.ring; }
 }
 
 // One toolbar item: a command button with its icon (a toggle that is on is tinted;
@@ -1499,13 +1499,13 @@ component StatusPicker inherits Rectangle {
     accessible-label: @tr("{}: {}", label, value);
     accessible-action-default => { clicked(); }
     forward-focus: focus;
-    focus := FocusScope {
+    focus := RingFocus {
         key-pressed(e) => {
             if e.text == Key.Return || e.text == " " { root.clicked(); return accept; }
             reject
         }
     }
-    touch := TouchArea { clicked => { focus.focus(); root.clicked(); } }
+    touch := TouchArea { clicked => { focus.focus-pointer(); root.clicked(); } }
     row := HorizontalLayout {
         padding-left: Tokens.space-1;
         padding-right: Tokens.space-1;
@@ -1523,7 +1523,7 @@ component StatusPicker inherits Rectangle {
             vertical-alignment: center;
         }
     }
-    FocusRing { show: focus.has-focus; }
+    FocusRing { show: focus.ring; }
 }
 
 // The status bar (spec Frame): live and recording state in words, the Output profile

@@ -4,6 +4,20 @@
 import { Theme, Tokens } from "tokens.slint";
 
 // Focus ring drawn around a focused control.
+// A FocusScope that tells keyboard focus from pointer focus (like CSS :focus-visible).
+// A click or press calls `focus-pointer()`; `ring` is then false until focus leaves,
+// so the focus ring appears only after Tab or arrow-key navigation, never after a mouse
+// click. Focus and the accessibility tree are unchanged.
+export component RingFocus inherits FocusScope {
+    out property <bool> ring: self.has-focus && !by-pointer;
+    property <bool> by-pointer;
+    public function focus-pointer() {
+        by-pointer = true;
+        self.focus();
+    }
+    changed has-focus => { if !self.has-focus { by-pointer = false; } }
+}
+
 export component FocusRing inherits Rectangle {
     in property <bool> show;
     border-width: show ? Tokens.size-focus-ring : 0px;
@@ -314,7 +328,7 @@ export component Button inherits Rectangle {
             Icon { name: root.icon; ink: root.ink; }
         }
     }
-    focus := FocusScope {
+    focus := RingFocus {
         enabled: root.enabled;
         key-pressed(e) => {
             if e.text == Key.Return || e.text == " " { root.clicked(); return accept; }
@@ -325,9 +339,9 @@ export component Button inherits Rectangle {
     // under the pointer takes the press for itself (focus-on-click).
     touch := TouchArea {
         enabled: root.enabled;
-        clicked => { focus.focus(); root.clicked(); }
+        clicked => { focus.focus-pointer(); root.clicked(); }
     }
-    FocusRing { show: focus.has-focus; }
+    FocusRing { show: focus.ring; }
 }
 
 // Icon-only button (ghost, dense). Always set `name`: it is the accessible name and
@@ -388,7 +402,7 @@ export component MenuItem inherits Rectangle {
             overflow: elide;
         }
     }
-    focus := FocusScope {
+    focus := RingFocus {
         enabled: root.enabled;
         key-pressed(e) => {
             if e.text == Key.Return || e.text == " " { root.activated(); return accept; }
@@ -494,7 +508,7 @@ export component Select inherits Rectangle {
             }
         }
     }
-    focus := FocusScope {
+    focus := RingFocus {
         enabled: root.enabled;
         key-pressed(e) => {
             if e.text == Key.Return || e.text == " " || e.text == Key.DownArrow { menu.show(); return accept; }
@@ -503,9 +517,9 @@ export component Select inherits Rectangle {
     }
     touch := TouchArea {
         enabled: root.enabled;
-        clicked => { focus.focus(); menu.show(); }
+        clicked => { focus.focus-pointer(); menu.show(); }
     }
-    FocusRing { show: focus.has-focus; }
+    FocusRing { show: focus.ring; }
     menu := PopupWindow {
         close-policy: close-on-click-outside;
         y: root.height;
@@ -603,7 +617,7 @@ export component Checkbox inherits Rectangle {
             wrap: word-wrap;
         }
     }
-    focus := FocusScope {
+    focus := RingFocus {
         enabled: root.enabled;
         key-pressed(e) => {
             if e.text == Key.Return || e.text == " " { root.toggled(!root.checked); return accept; }
@@ -612,9 +626,9 @@ export component Checkbox inherits Rectangle {
     }
     touch := TouchArea {
         enabled: root.enabled;
-        clicked => { focus.focus(); root.toggled(!root.checked); }
+        clicked => { focus.focus-pointer(); root.toggled(!root.checked); }
     }
-    FocusRing { show: focus.has-focus; }
+    FocusRing { show: focus.ring; }
 }
 
 // Toggle: an on/off setting that applies at once, drawn as a switch. The label beside
@@ -676,7 +690,7 @@ export component Toggle inherits Rectangle {
             wrap: word-wrap;
         }
     }
-    focus := FocusScope {
+    focus := RingFocus {
         enabled: root.enabled;
         key-pressed(e) => {
             if e.text == Key.Return || e.text == " " { root.toggled(!root.checked); return accept; }
@@ -685,9 +699,9 @@ export component Toggle inherits Rectangle {
     }
     touch := TouchArea {
         enabled: root.enabled;
-        clicked => { focus.focus(); root.toggled(!root.checked); }
+        clicked => { focus.focus-pointer(); root.toggled(!root.checked); }
     }
-    FocusRing { show: focus.has-focus; border-radius: track.height / 2; }
+    FocusRing { show: focus.ring; border-radius: track.height / 2; }
 }
 
 // One option of a SegmentedControl.
@@ -719,7 +733,7 @@ component Segment inherits Rectangle {
         vertical-alignment: center;
         accessible-role: none;
     }
-    focus := FocusScope {
+    focus := RingFocus {
         enabled: root.enabled;
         key-pressed(e) => {
             if e.text == Key.Return || e.text == " " { root.clicked(); return accept; }
@@ -728,9 +742,9 @@ component Segment inherits Rectangle {
     }
     touch := TouchArea {
         enabled: root.enabled;
-        clicked => { focus.focus(); root.clicked(); }
+        clicked => { focus.focus-pointer(); root.clicked(); }
     }
-    FocusRing { show: focus.has-focus; }
+    FocusRing { show: focus.ring; }
 }
 
 // SegmentedControl: a few mutually exclusive options side by side, in a sunken track
@@ -881,7 +895,7 @@ export component ColorPicker inherits Rectangle {
     accessible-enabled: root.enabled;
     accessible-action-default => { root.show-popup(); }
     forward-focus: focus;
-    focus := FocusScope {
+    focus := RingFocus {
         enabled: root.enabled;
         key-pressed(e) => {
             if e.text == Key.Return || e.text == " " { root.show-popup(); return accept; }
@@ -892,7 +906,7 @@ export component ColorPicker inherits Rectangle {
         enabled: root.enabled;
         clicked => { root.show-popup(); }
     }
-    FocusRing { show: focus.has-focus; }
+    FocusRing { show: focus.ring; }
     popup := PopupWindow {
         close-policy: close-on-click-outside;
         y: root.height + Tokens.space-1;
@@ -927,7 +941,7 @@ export component ColorPicker inherits Rectangle {
                         border-color: root.val > 0.5 ? #000000 : #ffffff; // literal: contrast with the picked colour, not the theme
                         background: root.draft;
                     }
-                    area-focus := FocusScope {
+                    area-focus := RingFocus {
                         key-pressed(e) => {
                             if e.text == Key.LeftArrow { root.sat = max(0, root.sat - (e.modifiers.shift ? 0.1 : 0.01)); }
                             else if e.text == Key.RightArrow { root.sat = min(1, root.sat + (e.modifiers.shift ? 0.1 : 0.01)); }
@@ -945,7 +959,7 @@ export component ColorPicker inherits Rectangle {
                         }
                         pointer-event(e) => {
                             if e.kind == PointerEventKind.down && e.button == PointerEventButton.left {
-                                area-focus.focus();
+                                area-focus.focus-pointer();
                                 self.track();
                             } else if e.kind == PointerEventKind.up && e.button == PointerEventButton.left {
                                 root.report(root.draft);
@@ -953,7 +967,7 @@ export component ColorPicker inherits Rectangle {
                         }
                         moved => { if self.pressed { self.track(); } }
                     }
-                    FocusRing { show: area-focus.has-focus; }
+                    FocusRing { show: area-focus.ring; }
                 }
                 // The hue, around the colour wheel from red back to red.
                 bar := Rectangle {
@@ -973,7 +987,7 @@ export component ColorPicker inherits Rectangle {
                         background: #ffffff;
                         // literal-end
                     }
-                    bar-focus := FocusScope {
+                    bar-focus := RingFocus {
                         key-pressed(e) => {
                             if e.text == Key.LeftArrow { root.hue = max(0, root.hue - (e.modifiers.shift ? 10 : 1)); }
                             else if e.text == Key.RightArrow { root.hue = min(360, root.hue + (e.modifiers.shift ? 10 : 1)); }
@@ -985,7 +999,7 @@ export component ColorPicker inherits Rectangle {
                     TouchArea {
                         pointer-event(e) => {
                             if e.kind == PointerEventKind.down && e.button == PointerEventButton.left {
-                                bar-focus.focus();
+                                bar-focus.focus-pointer();
                                 root.hue = clamp(self.mouse-x / bar.width, 0, 1) * 360;
                             } else if e.kind == PointerEventKind.up && e.button == PointerEventButton.left {
                                 root.report(root.draft);
@@ -993,7 +1007,7 @@ export component ColorPicker inherits Rectangle {
                         }
                         moved => { if self.pressed { root.hue = clamp(self.mouse-x / bar.width, 0, 1) * 360; } }
                     }
-                    FocusRing { show: bar-focus.has-focus; }
+                    FocusRing { show: bar-focus.ring; }
                 }
                 // Preset colours, each a button named after its colour.
                 HorizontalLayout {
@@ -1020,7 +1034,7 @@ export component ColorPicker inherits Rectangle {
                         accessible-label: p.name;
                         accessible-action-default => { root.report(p.c); popup.close(); }
                         forward-focus: preset-focus;
-                        preset-focus := FocusScope {
+                        preset-focus := RingFocus {
                             key-pressed(e) => {
                                 if e.text == Key.Return || e.text == " " { root.report(p.c); popup.close(); return accept; }
                                 reject
@@ -1029,7 +1043,7 @@ export component ColorPicker inherits Rectangle {
                         TouchArea {
                             clicked => { root.report(p.c); popup.close(); }
                         }
-                        FocusRing { show: preset-focus.has-focus; }
+                        FocusRing { show: preset-focus.ring; }
                     }
                 }
                 HorizontalLayout {
@@ -1124,7 +1138,7 @@ export component Slider inherits Rectangle {
         border-width: Tokens.size-border;
         border-color: touch.has-hover ? Theme.accent : Theme.border-strong;
     }
-    focus := FocusScope {
+    focus := RingFocus {
         enabled: root.enabled;
         key-pressed(e) => {
             if e.text == Key.Escape && touch.pressed { root.cancel(); return accept; }
@@ -1139,7 +1153,7 @@ export component Slider inherits Rectangle {
     touch := TouchArea {
         enabled: root.enabled;
         pointer-event(e) => {
-            if e.kind == PointerEventKind.down { focus.focus(); }
+            if e.kind == PointerEventKind.down { focus.focus-pointer(); }
         }
         changed pressed => {
             if self.pressed {
@@ -1155,7 +1169,7 @@ export component Slider inherits Rectangle {
             if self.pressed && !root.dropped { root.go((self.mouse-x - knob / 2) / span); }
         }
     }
-    FocusRing { show: focus.has-focus; border-radius: Tokens.radius-sm; }
+    FocusRing { show: focus.ring; border-radius: Tokens.radius-sm; }
 }
 
 // One half of a NumberField's stepper column: a chevron button. Pressed, it steps
