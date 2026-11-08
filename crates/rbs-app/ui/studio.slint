@@ -48,6 +48,8 @@ export struct MeterRow {
     icon: string,
     lo-from: float, lo-to: float, mi-from: float, mi-to: float, hi-from: float, hi-to: float,
     peak: float, peak-zone: int, clipped: bool, value: string,
+    // A global source (ADR-0065): the Mixer groups it apart from the scene's own.
+    global: bool,
 }
 export struct ScaleMark { label: string, at: float }
 // The encoder fields of one output (a recording or a stream): the options offered and
@@ -83,6 +85,9 @@ export global Studio {
     // The kind `targets` lists; -1 while a list is being made.
     in property <int> targets-kind: -1;
     in property <[MeterRow]> meters;
+    // How many of `meters` are the scene's own and how many are global (Mixer groups).
+    in property <int> meter-scenes;
+    in property <int> meter-globals;
     // The Stats panel's lines; empty while nothing records or streams.
     in property <[StatRow]> stats;
     in property <[ScaleMark]> scale;
@@ -1214,8 +1219,85 @@ component MeterView inherits Rectangle {
     }
 }
 
+// One vertical meter strip for a wide, low Mixer (ADR-0078 decision 5): the name, a bar
+// with the same three zones, peak line and clip box as MeterView, and the mute button.
+component MeterStrip inherits Rectangle {
+    in property <MeterRow> data;
+    callback reset();
+    width: Tokens.size-menu-sm * 0.3;
+    background: Theme.surface-sunken;
+    border-radius: Tokens.radius-md;
+    accessible-role: progress-indicator;
+    accessible-label: data.name;
+    accessible-value: data.value;
+    VerticalLayout {
+        padding: Tokens.space-1;
+        spacing: Tokens.space-1;
+        Text {
+            text: data.name;
+            color: data.muted ? Theme.text-disabled : Theme.text-primary;
+            font-size: Tokens.type-caption-size;
+            horizontal-alignment: center;
+            overflow: elide;
+            accessible-role: none;
+        }
+        HorizontalLayout {
+            vertical-stretch: 1;
+            alignment: center;
+            bar := Rectangle {
+                width: Tokens.space-3;
+                background: Theme.surface-base;
+                border-radius: Tokens.radius-sm;
+                clip: true;
+                Rectangle { y: parent.height * (1 - data.lo-to); height: parent.height * (data.lo-to - data.lo-from); background: Theme.meter-low; }
+                Rectangle { y: parent.height * (1 - data.mi-to); height: parent.height * (data.mi-to - data.mi-from); background: Theme.meter-mid; }
+                Rectangle { y: parent.height * (1 - data.hi-to); height: parent.height * (data.hi-to - data.hi-from); background: Theme.meter-high; }
+                if data.peak > 0: Rectangle {
+                    y: min(parent.height - Tokens.size-meter-peak, parent.height * (1 - data.peak));
+                    height: Tokens.size-meter-peak;
+                    background: data.peak-zone == 2 ? Theme.meter-high : data.peak-zone == 1 ? Theme.meter-mid : Theme.meter-low;
+                }
+            }
+        }
+        // The clip box and the mute button share a row, so the bar gets the height.
+        HorizontalLayout {
+            alignment: center;
+            spacing: Tokens.space-2;
+            VerticalLayout {
+                alignment: center;
+                Rectangle {
+                    width: Tokens.size-icon-box;
+                    height: Tokens.size-icon-box;
+                    border-width: Tokens.size-border;
+                    border-color: Theme.border-strong;
+                    border-radius: Tokens.radius-sm;
+                    background: data.clipped ? Theme.meter-clip : transparent;
+                    accessible-role: button;
+                    accessible-label: data.clipped ? @tr("Clipped. Reset the clip indicator of {}", data.name) : @tr("Not clipped: {}", data.name);
+                    accessible-action-default => { root.reset(); }
+                    TouchArea { clicked => { root.reset(); } }
+                }
+            }
+            IconButton {
+                icon: data.muted ? IconName.speaker-off : IconName.speaker;
+                name: data.muted ? @tr("Unmute {}", data.name) : @tr("Mute {}", data.name);
+                checked: data.muted;
+                clicked => { Studio.set-source-muted(data.id, !data.muted); }
+            }
+        }
+    }
+}
+
+// The Mixer (ADR-0078 decision 5): the panel's shape picks the layout. A wide, low panel
+// draws vertical strips side by side, a cluster per group with its header above; a tall,
+// narrow one draws horizontal rows under full-width headers. The groups are the program
+// scene's own sources and the global ones; both headers fold and are saved by id.
 export component MixerPanel inherits Rectangle {
     background: Theme.surface-raised;
+    property <bool> wide: self.width > self.height * 1.5;
+    property <bool> scene-closed: Sections.closed("mixer.scene", Sections.rev);
+    property <bool> global-closed: Sections.closed("mixer.global", Sections.rev);
+    property <length> name-width: min(root.width * 0.3, Tokens.size-menu-sm * 0.75);
     if Studio.meters.length == 0: EmptyState {
         width: parent.width;
         height: parent.height;
@@ -1224,24 +1306,101 @@ export component MixerPanel inherits Rectangle {
         action: Studio.state == 1 ? @tr("Add source") : "";
         act => { Studio.picker-kind = -1; add-menu.show(); }
     }
-    if Studio.meters.length > 0: Flickable {
+    // Wide: strips in clusters, scrolling sideways when they do not fit.
+    if Studio.meters.length > 0 && root.wide: Flickable {
+        width: parent.width;
+        height: parent.height;
+        content-width: max(clusters.preferred-width, self.width);
+        content-height: root.height;
+        clusters := HorizontalLayout {
+            height: root.height;
+            padding: Tokens.size-panel-pad;
+            spacing: Tokens.size-section-gap;
+            alignment: start;
+            if Studio.meter-scenes > 0: VerticalLayout {
+                spacing: Tokens.size-field-gap;
+                SectionHeader {
+                    title: @tr("This scene");
+                    collapsible: true;
+                    open: !root.scene-closed;
+                    toggled(o) => { Sections.set-closed("mixer.scene", !o); }
+                }
+                if !root.scene-closed: HorizontalLayout {
+                    // The height under the header, so the strips fill the panel.
+                    height: max(0px, root.height - 2 * Tokens.size-panel-pad - Tokens.size-control-sm - Tokens.size-field-gap);
+                    spacing: 0px;
+                    for m[i] in Studio.meters: VerticalLayout {
+                        padding-right: m.global ? 0px : Tokens.size-field-gap;
+                        if !m.global: MeterStrip { data: m; reset => { Studio.reset-clip(i); } }
+                    }
+                }
+            }
+            if Studio.meter-globals > 0: VerticalLayout {
+                spacing: Tokens.size-field-gap;
+                SectionHeader {
+                    title: @tr("Global ({})", Studio.meter-globals);
+                    collapsible: true;
+                    open: !root.global-closed;
+                    toggled(o) => { Sections.set-closed("mixer.global", !o); }
+                }
+                if !root.global-closed: HorizontalLayout {
+                    // The height under the header, so the strips fill the panel.
+                    height: max(0px, root.height - 2 * Tokens.size-panel-pad - Tokens.size-control-sm - Tokens.size-field-gap);
+                    spacing: 0px;
+                    for m[i] in Studio.meters: VerticalLayout {
+                        padding-right: !m.global ? 0px : Tokens.size-field-gap;
+                        if m.global: MeterStrip { data: m; reset => { Studio.reset-clip(i); } }
+                    }
+                }
+            }
+        }
+    }
+    // Narrow: rows under full-width headers, then the labelled scale (dBFS).
+    if Studio.meters.length > 0 && !root.wide: Flickable {
         width: parent.width;
         height: parent.height;
         content-height: strips.preferred-height;
         strips := VerticalLayout {
-            padding: Tokens.space-2;
-            spacing: Tokens.space-1;
+            padding: Tokens.size-panel-pad;
+            // Each entry spaces itself, so a folded group takes no room.
+            spacing: 0px;
             alignment: start;
-            for m[i] in Studio.meters: MeterView {
-                name-width: min(root.width * 0.3, Tokens.size-menu-sm * 0.75);
-                data: m;
-                reset => { Studio.reset-clip(i); }
+            if Studio.meter-scenes > 0: SectionHeader {
+                title: @tr("This scene");
+                collapsible: true;
+                open: !root.scene-closed;
+                toggled(o) => { Sections.set-closed("mixer.scene", !o); }
+            }
+            for m[i] in Studio.meters: VerticalLayout {
+                padding-bottom: m.global || root.scene-closed ? 0px : Tokens.space-1;
+                if !m.global && !root.scene-closed: MeterView {
+                    name-width: root.name-width;
+                    data: m;
+                    reset => { Studio.reset-clip(i); }
+                }
+            }
+            if Studio.meter-globals > 0: VerticalLayout {
+                padding-top: Studio.meter-scenes > 0 ? Tokens.size-section-gap : 0px;
+                SectionHeader {
+                    title: @tr("Global ({})", Studio.meter-globals);
+                    collapsible: true;
+                    open: !root.global-closed;
+                    toggled(o) => { Sections.set-closed("mixer.global", !o); }
+                }
+            }
+            for m[i] in Studio.meters: VerticalLayout {
+                padding-bottom: !m.global || root.global-closed ? 0px : Tokens.space-1;
+                if m.global && !root.global-closed: MeterView {
+                    name-width: root.name-width;
+                    data: m;
+                    reset => { Studio.reset-clip(i); }
+                }
             }
             // The labelled scale (dBFS) under the bars, aligned with them.
             HorizontalLayout {
                 spacing: Tokens.space-2;
                 height: Tokens.type-caption-line;
-                Rectangle { width: min(root.width * 0.3, Tokens.size-menu-sm * 0.75); }
+                Rectangle { width: root.name-width; }
                 scale-row := Rectangle {
                     for mark in Studio.scale: Text {
                         x: parent.width * mark.at - self.width / 2;

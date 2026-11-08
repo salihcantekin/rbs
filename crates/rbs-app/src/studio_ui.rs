@@ -509,6 +509,9 @@ impl StudioUi {
         g.set_global_devices(self.global_targets.len() as i32);
         g.set_global_option(self.global_option);
         g.set_global_count(self.rows.iter().filter(|r| r.global).count() as i32);
+        let globals = self.meters.iter().filter(|m| m.global).count();
+        g.set_meter_globals(globals as i32);
+        g.set_meter_scenes((self.meters.row_count() - globals) as i32);
         let (kind, name) = step_view(self.next_undo.as_ref());
         g.set_undo_kind(kind);
         g.set_undo_name(name.into());
@@ -3176,6 +3179,7 @@ impl StudioUi {
                 name: r.name.as_str().into(),
                 icon: source_icon(r.kind).into(),
                 value: "silent".into(),
+                global: r.global,
                 ..MeterRow::default()
             })
             .collect();
