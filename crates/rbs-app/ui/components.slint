@@ -749,10 +749,17 @@ export component TextField inherits Rectangle {
     in property <string> placeholder;
     callback accepted(string);
     callback edited(string);
+    // True while the field has keyboard focus.
+    out property <bool> has-focus: input.has-focus;
     // Puts the whole text on the clipboard.
     public function copy-all() {
         input.select-all();
         input.copy();
+    }
+    // Moves the caret after the last character (after the text was set, such as a
+    // completion). Slint clamps the offset to the text.
+    public function caret-to-end() {
+        input.set-selection-offsets(2147483647, 2147483647);
     }
     height: Tokens.size-control-md;
     border-radius: Tokens.radius-sm;

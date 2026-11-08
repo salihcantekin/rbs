@@ -3,8 +3,8 @@
 #![allow(clippy::unwrap_used, clippy::expect_used)] // Tests fail by panicking.
 
 use rbs_ui::tokens::{
-    BUILT_IN, Base, Color, FONT_FAMILY, Kind, MAX_UNKNOWN_TOKENS, THEME_COLORS, THEMEABLE,
-    ThemeBody, Tokens, TypeStyle, delta_e_2000, themeable,
+    BUILT_IN, Base, Color, ColorRule, FONT_FAMILY, Kind, MAX_UNKNOWN_TOKENS, Severity,
+    THEME_COLORS, THEMEABLE, ThemeBody, Tokens, TypeStyle, delta_e_2000, themeable,
 };
 
 fn tokens() -> Tokens {
@@ -19,12 +19,21 @@ fn body(text: &str) -> ThemeBody {
     ThemeBody::from_body(toml::from_str(text).unwrap()).unwrap()
 }
 
-/// The reasons of a theme that fails, or an empty list.
+/// The reasons of a theme that fails or warns, or an empty list.
 fn problems(theme: &ThemeBody) -> Vec<(Option<String>, String)> {
     match tokens().resolve(theme) {
-        Ok(_) => Vec::new(),
+        Ok(r) => r
+            .warnings
+            .into_iter()
+            .map(|p| (p.token, p.reason))
+            .collect(),
         Err(p) => p.0.into_iter().map(|p| (p.token, p.reason)).collect(),
     }
+}
+
+/// True when the theme is refused (an error, not only warnings).
+fn refused(theme: &ThemeBody) -> bool {
+    tokens().resolve(theme).is_err()
 }
 
 fn fails_at(theme: &ThemeBody, token: &str) -> bool {
@@ -419,7 +428,7 @@ fn any_overrides_resolve_to_a_passing_theme_or_are_refused() {
         seed ^= seed << 17;
         seed
     };
-    let (mut passed, mut refused) = (0, 0);
+    let (mut passed, mut warned, mut refused) = (0, 0, 0);
     for _ in 0..2000 {
         let base = Base::ALL[(next() % 3) as usize];
         let mut theme = ThemeBody::new(base);
@@ -458,6 +467,17 @@ fn any_overrides_resolve_to_a_passing_theme_or_are_refused() {
             }
         }
         match t.resolve(&theme) {
+            Ok(r) if !r.warnings.is_empty() => {
+                // Only colour rules warn (ADR-0072); the theme is used as it is.
+                warned += 1;
+                assert!(
+                    r.warnings
+                        .iter()
+                        .all(|w| w.severity == Severity::Warning && w.rule.is_some()),
+                    "{:?}",
+                    r.warnings
+                );
+            }
             Ok(r) => {
                 passed += 1;
                 // The resolved values, written as a token file, pass the file checks.
@@ -523,12 +543,124 @@ fn any_overrides_resolve_to_a_passing_theme_or_are_refused() {
             }
             Err(p) => {
                 refused += 1;
-                assert!(!p.0.is_empty());
+                assert!(p.0.iter().any(|p| p.severity == Severity::Error), "{p:?}");
             }
         }
     }
     assert!(
-        passed > 100 && refused > 100,
-        "{passed} passed, {refused} refused"
+        passed > 100 && warned > 100 && refused > 100,
+        "{passed} passed, {warned} warned, {refused} refused"
     );
+}
+
+#[test]
+fn colour_rules_warn_and_the_theme_is_still_used() {
+    // ADR-0072: a mid blue window background breaks the live and text contrast rules,
+    // yet the theme resolves with the colour and lists the warnings.
+    let mut theme = ThemeBody::new(Base::Dark);
+    let blue = color("#5b8de0");
+    theme.colors.insert("color.surface.base".into(), blue);
+    let r = tokens()
+        .resolve(&theme)
+        .expect("warnings never refuse a theme");
+    assert_eq!(r.colors["color.surface.base"], blue);
+    assert!(r.warnings.iter().all(|w| w.severity == Severity::Warning));
+    assert!(
+        r.warnings.iter().any(|w| matches!(
+            &w.rule,
+            Some(ColorRule::Contrast { fg, bg, .. })
+                if fg == "color.state.live" && bg == "color.surface.base"
+        )),
+        "{:?}",
+        r.warnings
+    );
+    assert!(
+        r.warnings.iter().any(|w| matches!(
+            &w.rule,
+            Some(ColorRule::Contrast { fg, bg, ratio, need })
+                if fg == "color.text.primary" && bg == "color.surface.base" && ratio < need
+        )),
+        "{:?}",
+        r.warnings
+    );
+    // A colour like live warns; a hue like live warns.
+    let mut theme = ThemeBody::new(Base::Dark);
+    theme.colors.insert("color.accent".into(), color("#c4262e"));
+    theme
+        .colors
+        .insert("color.state.error".into(), color("#d02040"));
+    let r = tokens().resolve(&theme).unwrap();
+    assert!(r.warnings.iter().any(
+        |w| matches!(&w.rule, Some(ColorRule::LiveLook { token, .. }) if token == "color.accent")
+    ));
+    assert!(r.warnings.iter().any(
+        |w| matches!(&w.rule, Some(ColorRule::LiveHue { token }) if token == "color.state.error")
+    ));
+    // An error with warnings still refuses, and lists both.
+    theme.length.insert("space.1".into(), -5.0);
+    let p = tokens().resolve(&theme).unwrap_err();
+    assert!(p.0.iter().any(|p| p.severity == Severity::Error));
+    assert!(p.0.iter().any(|p| p.severity == Severity::Warning));
+    // Built-in themes resolve with no warning.
+    for base in Base::ALL {
+        assert!(
+            tokens()
+                .resolve(&ThemeBody::new(base))
+                .unwrap()
+                .warnings
+                .is_empty()
+        );
+    }
+}
+
+#[test]
+fn a_colour_warning_alone_never_refuses() {
+    let mut theme = ThemeBody::new(Base::Light);
+    theme
+        .colors
+        .insert("color.text.primary".into(), color("#f0f0f0"));
+    assert!(!refused(&theme));
+    assert!(fails_at(&theme, "color.text.primary"));
+}
+
+#[test]
+fn the_suggested_colour_clears_the_warnings_of_its_token() {
+    let t = tokens();
+    let mut theme = ThemeBody::new(Base::Dark);
+    theme
+        .colors
+        .insert("color.surface.base".into(), color("#5b8de0"));
+    let fixed = rbs_ui::tokens::suggest_colour(&t, &theme, "color.surface.base")
+        .expect("a lightness that works exists");
+    theme.colors.insert("color.surface.base".into(), fixed);
+    let r = t.resolve(&theme).unwrap();
+    assert!(
+        r.warnings.iter().all(|w| w.token.as_deref() != Some("color.surface.base")
+            && !matches!(&w.rule, Some(ColorRule::Contrast { bg, .. }) if bg == "color.surface.base")),
+        "{:?}",
+        r.warnings
+    );
+    // Nothing to fix: nothing suggested.
+    assert!(
+        rbs_ui::tokens::suggest_colour(&t, &ThemeBody::new(Base::Dark), "color.accent").is_none()
+    );
+}
+
+#[test]
+fn only_contrast_warnings_have_a_suggested_colour() {
+    let t = tokens();
+    // A hue warning cannot be fixed by lightness.
+    let mut theme = ThemeBody::new(Base::Dark);
+    theme
+        .colors
+        .insert("color.state.error".into(), color("#d02040"));
+    assert!(rbs_ui::tokens::suggest_colour(&t, &theme, "color.state.error").is_none());
+    // Any single colour: a suggestion never panics and, when given, is an opaque colour.
+    for name in THEME_COLORS {
+        let mut theme = ThemeBody::new(Base::Light);
+        theme.colors.insert((*name).into(), color("#808080"));
+        if let Some(c) = rbs_ui::tokens::suggest_colour(&t, &theme, name) {
+            assert_eq!(c.a, 255, "{name}");
+        }
+    }
 }
