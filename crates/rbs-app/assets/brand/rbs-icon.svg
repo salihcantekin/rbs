@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256">
+  <!-- The application icon: the mark on a rounded tile. Fixed colours, the OS does not follow the theme. -->
+  <rect width="256" height="256" rx="57" fill="#1C2136"/>
+  <g transform="translate(41 41) scale(2.72)">
+    <path d="M18 4H46A14 14 0 0 1 60 18V36.356A17 17 0 1 0 36.356 60H18A14 14 0 0 1 4 46V18A14 14 0 0 1 18 4Z" fill="#E6E9FF"/>
+    <circle cx="46" cy="46" r="11" fill="#7C5CFA"/>
+  </g>
+</svg>

@@ -1,0 +1,5 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+  <!-- The RBS mark: a scene frame with a camera bubble cut out of its corner and a dot in the bubble. Dark-theme colours. -->
+  <path d="M18 4H46A14 14 0 0 1 60 18V36.356A17 17 0 1 0 36.356 60H18A14 14 0 0 1 4 46V18A14 14 0 0 1 18 4Z" fill="#E6E9FF"/>
+  <circle cx="46" cy="46" r="11" fill="#7C5CFA"/>
+</svg>

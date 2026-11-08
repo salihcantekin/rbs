@@ -77,6 +77,33 @@ export enum IconName {
     window-restore,
 }
 
+// The RBS mark (docs/specs/ui-design-system.md, "Brand mark"): a scene frame with a round
+// camera bubble cut out of its corner, and the bubble's dot in the brand colour. Drawn in a
+// 64 x 64 view box; `ink` is the frame, `Theme.brand` the dot. Decorative: the control
+// that shows it carries the accessible name.
+export component BrandMark inherits Rectangle {
+    in property <color> ink: Theme.text-primary;
+    width: Tokens.size-icon-box;
+    height: Tokens.size-icon-box;
+    accessible-role: none;
+    Path {
+        width: 100%;
+        height: 100%;
+        viewbox-width: 64;
+        viewbox-height: 64;
+        fill: root.ink;
+        commands: "M 18 4 H 46 A 14 14 0 0 1 60 18 V 36.356 A 17 17 0 1 0 36.356 60 H 18 A 14 14 0 0 1 4 46 V 18 A 14 14 0 0 1 18 4 Z";
+    }
+    Path {
+        width: 100%;
+        height: 100%;
+        viewbox-width: 64;
+        viewbox-height: 64;
+        fill: Theme.brand;
+        commands: "M 35 46 a 11 11 0 1 0 22 0 a 11 11 0 1 0 -22 0 Z";
+    }
+}
+
 // Vector icon. Icons are paths, not font glyphs, so they look the same on every OS
 // (a glyph missing from the system font shows as an empty box). Drawn in a 16 x 16
 // view box. Decorative: the control that shows it carries the accessible name.
