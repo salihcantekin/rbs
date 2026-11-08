@@ -24,10 +24,9 @@ pub const MIN_PANE: f32 = 48.0;
 /// Share of the window a panel gets when it is moved to an edge.
 pub const EDGE_SHARE: f32 = 0.25;
 
-/// Width of the Transition rail between the two pictures (ADR-0064). The rail's
-/// lengths are the built-in tokens `size.transition.*`; a test keeps them equal.
-pub const RAIL_BETWEEN: f32 = 156.0;
-
+/// The rail column between the pictures is `rail_size` plus a divider gap on each side;
+/// the built-in token `size.transition.between` is the default column, and a test keeps
+/// them equal.
 /// Least height for the rail between the pictures; a shorter split puts it below.
 pub const RAIL_BETWEEN_MIN_H: f32 = 240.0;
 
@@ -50,7 +49,7 @@ pub const PICTURES_PROGRAM_STACK: usize = 100_001;
 pub const RAIL_SIZE_RANGE: (u32, u32) = (48, 240);
 
 /// Default width of the Transition rail between the pictures.
-pub const RAIL_SIZE_DEFAULT: u32 = 88;
+pub const RAIL_SIZE_DEFAULT: u32 = 144;
 
 /// Where the Pictures leaf puts the Transition rail in studio mode (ADR-0064, ADR-0073).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -1155,7 +1154,10 @@ mod tests {
     fn the_rail_lengths_are_the_built_in_tokens() {
         let t = crate::tokens::Tokens::built_in().unwrap();
         for (name, v) in [
-            ("size.transition.between", RAIL_BETWEEN),
+            (
+                "size.transition.between",
+                RAIL_SIZE_DEFAULT as f32 + 2.0 * HANDLE_THICKNESS,
+            ),
             ("size.transition.below", RAIL_BELOW),
             ("size.transition.min-h", RAIL_BETWEEN_MIN_H),
             ("size.transition.min-picture", RAIL_BETWEEN_MIN_PICTURE),
