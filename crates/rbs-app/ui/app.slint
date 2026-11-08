@@ -1613,6 +1613,7 @@ component Toast inherits Rectangle {
 export component MainWindow inherits Window {
     default-font-family: Theme.font-family;
     title: @tr("RBS");
+    icon: @image-url("../assets/brand/icon-win-256.png");
     preferred-width: Tokens.size-window-w;
     preferred-height: Tokens.size-window-h;
     min-width: Tokens.size-window-min-w;
@@ -1866,6 +1867,7 @@ export component FloatWindow inherits Window {
     in property <[StackData]> stacks;
     in property <[HandleData]> handles;
     title: @tr("RBS – {}", panel-names);
+    icon: @image-url("../assets/brand/icon-win-256.png");
     forward-focus: edit-keys;
     // BEGIN generated menu bar (menu_bar.rs; do not edit)
     if Shell.native-menu-bar: MenuBar {
@@ -2010,6 +2012,7 @@ export component FloatWindow inherits Window {
 export component SettingsWindow inherits Window {
     default-font-family: Theme.font-family;
     title: @tr("RBS settings");
+    icon: @image-url("../assets/brand/icon-win-256.png");
     preferred-width: Tokens.size-settings-w;
     preferred-height: Tokens.size-settings-h;
     min-width: Tokens.size-menu-sm + Tokens.size-floating-w / 2 + Tokens.size-menu-md;
