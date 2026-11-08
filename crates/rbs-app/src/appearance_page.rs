@@ -204,6 +204,39 @@ pub fn install(g: &Appearance<'_>, ctx: &Ctx) {
             });
         });
     }
+    // The font field's suggestions for the family being typed. Like the font menu it
+    // reads the installed families the first time it is needed, and only fills the
+    // list, so the editor's rows (and the field being typed in) stay as they are.
+    {
+        let ctx = ctx.clone();
+        g.on_suggest_fonts(move |text: SharedString| {
+            let c = ctx.clone();
+            ctx.update(move |app: &mut App| {
+                let Some(w) = &app.settings else { return };
+                let mut page = c.page.borrow_mut();
+                let page: &mut Page = &mut page;
+                let names: Vec<SharedString> = if text.trim().is_empty() {
+                    Vec::new()
+                } else {
+                    let all = page
+                        .families
+                        .get_or_insert_with(|| look::FontCatalog::families(&mut page.fonts));
+                    look::suggest_families(all, &text)
+                        .into_iter()
+                        .map(SharedString::from)
+                        .collect()
+                };
+                w.global::<Appearance>()
+                    .set_font_suggestions(ModelRc::new(VecModel::from(names)));
+            });
+        });
+    }
+    g.on_complete_font(|text: SharedString, family: SharedString| {
+        entry::guard_or(
+            || text.clone(),
+            || look::complete_family(&text, &family).into(),
+        )
+    });
     on!(on_reset, |_app, page, file, name: SharedString| {
         edited(page.ui.reset(&file, &name))
     });

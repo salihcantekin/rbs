@@ -89,6 +89,44 @@ pub fn matching_families<'a>(all: &'a [String], filter: &str) -> Vec<&'a str> {
         .collect()
 }
 
+/// Most suggestions the font field shows while typing.
+pub const FONT_SUGGESTIONS: usize = 8;
+
+/// Suggestions for the family being typed: the last comma-separated part of `text`.
+/// Names that start with it come first, then names that contain it, both without
+/// regard to case and in `all`'s order; at most [`FONT_SUGGESTIONS`]. None while that
+/// part is empty or already names a family exactly.
+pub fn suggest_families<'a>(all: &'a [String], text: &str) -> Vec<&'a str> {
+    let typed = text.rsplit(',').next().unwrap_or("").trim().to_lowercase();
+    if typed.is_empty() || all.iter().any(|n| n.to_lowercase() == typed) {
+        return Vec::new();
+    }
+    let lower: Vec<(usize, String)> = all
+        .iter()
+        .enumerate()
+        .map(|(i, n)| (i, n.to_lowercase()))
+        .collect();
+    let starts = lower.iter().filter(|(_, n)| n.starts_with(&typed));
+    let inside = lower
+        .iter()
+        .filter(|(_, n)| !n.starts_with(&typed) && n.contains(&typed));
+    starts
+        .chain(inside)
+        .take(FONT_SUGGESTIONS)
+        .map(|(i, _)| all[*i].as_str())
+        .collect()
+}
+
+/// `text` with its last comma-separated part replaced by `family`, the families
+/// before it kept as typed (each trimmed, joined by ", ").
+pub fn complete_family(text: &str, family: &str) -> String {
+    let mut parts: Vec<&str> = text.split(',').map(str::trim).collect();
+    parts.pop();
+    parts.retain(|p| !p.is_empty());
+    parts.push(family);
+    parts.join(", ")
+}
+
 /// The first family of `families` the catalogue has with `sample`; empty (the OS UI
 /// font) if none.
 pub fn choose_font(families: &[String], fonts: &mut dyn FontCatalog, sample: &str) -> String {
@@ -253,8 +291,8 @@ mod tests {
     use slint::{ComponentHandle, Model};
 
     use super::{
-        FontCatalog, Look, SLOT_TOKENS, apply_tokens, choose_font, matching_families, resolve,
-        slot, sorted_families,
+        FontCatalog, Look, SLOT_TOKENS, apply_tokens, choose_font, complete_family,
+        matching_families, resolve, slot, sorted_families, suggest_families,
     };
     use crate::ui::{MainWindow, Theme, Tokens};
 
@@ -266,6 +304,49 @@ mod tests {
         assert_eq!(matching_families(&all, " IN "), ["Inter"]);
         assert_eq!(matching_families(&all, ""), ["Arial", "Inter", "menlo"]);
         assert!(matching_families(&all, "zz").is_empty());
+    }
+
+    #[test]
+    fn typing_suggests_names_that_start_with_the_last_part_first() {
+        let all: Vec<String> = [
+            "Arial",
+            "Helvetica",
+            "Helvetica Neue",
+            "Inter",
+            "Noto Sans Hebrew",
+            "Shell",
+        ]
+        .map(String::from)
+        .to_vec();
+        assert_eq!(
+            suggest_families(&all, "Inter, hel"),
+            ["Helvetica", "Helvetica Neue", "Shell"]
+        );
+        assert_eq!(
+            suggest_families(&all, "Hel"),
+            ["Helvetica", "Helvetica Neue", "Shell"]
+        );
+        // Nothing typed after the last comma, or a full name: nothing to suggest.
+        assert!(suggest_families(&all, "Inter, ").is_empty());
+        assert!(suggest_families(&all, "").is_empty());
+        assert!(suggest_families(&all, "arial").is_empty());
+        assert!(suggest_families(&all, "zz").is_empty());
+        let many: Vec<String> = (0..20).map(|i| format!("Font {i}")).collect();
+        assert_eq!(
+            suggest_families(&many, "font").len(),
+            super::FONT_SUGGESTIONS
+        );
+    }
+
+    #[test]
+    fn completing_replaces_only_the_part_being_typed() {
+        assert_eq!(
+            complete_family("Inter, hel", "Helvetica"),
+            "Inter, Helvetica"
+        );
+        assert_eq!(complete_family("hel", "Helvetica"), "Helvetica");
+        assert_eq!(complete_family("", "Helvetica"), "Helvetica");
+        assert_eq!(complete_family(" Inter ,, Me", "Menlo"), "Inter, Menlo");
     }
 
     fn window() -> MainWindow {

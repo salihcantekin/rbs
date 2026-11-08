@@ -78,6 +78,12 @@ export global Appearance {
     // (`find-fonts` fills it when the menu opens and as the filter changes).
     in property <[string]> font-names;
     callback find-fonts(string);
+    // The font field's suggestions for the family being typed (the part after the
+    // last comma): names that start with it first. `suggest-fonts` fills it as the
+    // field's text changes; `complete-font` returns the text with that part replaced.
+    in property <[string]> font-suggestions;
+    callback suggest-fonts(string);
+    pure callback complete-font(string, string) -> string;
     in-out property <string> pending-name;
     in-out property <int> pending-part;
     in-out property <string> pending-text;
@@ -252,6 +258,112 @@ component FontMenu inherits Button {
     }
 }
 
+// The font family field: the editable list, with suggestions under it while a name
+// is typed (installed families read the first time something is typed, P13). Down
+// and Up move the highlight, Tab completes the name and keeps typing, Return
+// completes and confirms, Escape hides the suggestions. A click on one completes it.
+component FontField inherits VerticalLayout {
+    in property <string> label;
+    in property <string> value;
+    // The text as typed (not yet confirmed) and confirmed (Return or leaving).
+    callback edited(string);
+    callback accepted(string);
+    out property <string> text: field.text;
+    public function set-text(t: string) {
+        field.text = t;
+        field.caret-to-end();
+        root.edited(t);
+    }
+    property <int> pick: 0;
+    property <bool> hidden;
+    property <bool> open: field.has-focus && !root.hidden && Appearance.font-suggestions.length > 0;
+    function take(name: string) {
+        root.set-text(Appearance.complete-font(field.text, name));
+        Appearance.suggest-fonts("");
+    }
+    spacing: Tokens.space-1;
+    keys := FocusScope {
+        // literal-begin: a key hook around the field, not a visual value
+        focus-on-click: false;
+        focus-on-tab-navigation: false;
+        // literal-end
+        height: field.height;
+        capture-key-pressed(e) => {
+            if !root.open { return reject; }
+            if e.text == Key.DownArrow {
+                root.pick = mod(root.pick + 1, Appearance.font-suggestions.length);
+                return accept;
+            }
+            if e.text == Key.UpArrow {
+                root.pick = mod(root.pick + Appearance.font-suggestions.length - 1, Appearance.font-suggestions.length);
+                return accept;
+            }
+            if e.text == Key.Tab && !e.modifiers.shift {
+                root.take(Appearance.font-suggestions[root.pick]);
+                return accept;
+            }
+            if e.text == Key.Return {
+                root.take(Appearance.font-suggestions[root.pick]);
+                root.accepted(field.text);
+                return accept;
+            }
+            if e.text == Key.Escape {
+                root.hidden = true;
+                return accept;
+            }
+            reject
+        }
+        field := TextField {
+            width: parent.width;
+            label: root.label;
+            placeholder: @tr("System font");
+            text: root.value;
+            edited(t) => {
+                root.hidden = false;
+                root.pick = 0;
+                Appearance.suggest-fonts(t);
+                root.edited(t);
+            }
+            accepted(t) => { root.accepted(t); }
+        }
+    }
+    if root.open: MenuSurface {
+        height: list.preferred-height;
+        accessible-role: AccessibleRole.list;
+        accessible-label: @tr("Fonts that match");
+        list := VerticalLayout {
+            padding: Tokens.space-1;
+            for name[i] in Appearance.font-suggestions: Rectangle {
+                height: Tokens.size-control-md;
+                border-radius: Tokens.radius-sm;
+                background: i == root.pick || touch.has-hover ? Theme.accent-subtle : transparent;
+                accessible-role: button;
+                accessible-label: name;
+                accessible-action-default => { root.take(name); }
+                Text {
+                    x: Tokens.space-2;
+                    width: parent.width - 2 * Tokens.space-2;
+                    text: name;
+                    color: Theme.text-primary;
+                    font-size: Tokens.type-body-size;
+                    vertical-alignment: center;
+                    overflow: elide;
+                }
+                touch := TouchArea {
+                    clicked => { root.take(name); }
+                }
+            }
+            Text {
+                x: Tokens.space-2;
+                text: @tr("Tab to complete, Up and Down to choose, Escape to close");
+                color: Theme.text-secondary;
+                font-size: Tokens.type-caption-size;
+                accessible-role: none;
+            }
+        }
+    }
+}
+
 // One token in the editor, as a setting row: its name (and what to type, and its
 // problem) on the left, its fields and Reset on the right. A value being typed is held
 // in `Appearance.pending-*` so Save sees it before Enter or leaving the field.
@@ -288,33 +400,41 @@ component TokenEditorRow inherits Rectangle {
             // under the name.
             if item.kind == 3: HorizontalLayout {
                 spacing: Tokens.space-2;
-                fonts-field := TextField {
+                fonts-field := FontField {
                     horizontal-stretch: 1;
                     label: item.label;
-                    placeholder: @tr("System font");
-                    text: item.fonts;
+                    value: item.fonts;
                     edited(t) => { Appearance.hold(3, item.name, 0, t); }
                     accepted(t) => {
                         Appearance.pending-kind = -1;
                         if t != item.fonts { Appearance.set-fonts(t); }
                     }
                 }
-                FontMenu {
+                // The buttons keep their height and stay level with the field while
+                // suggestions open under it.
+                VerticalLayout {
                     horizontal-stretch: 0;
-                    for-label: item.label;
-                    picked(name) => {
-                        Appearance.pending-kind = -1;
-                        Appearance.set-fonts(fonts-field.text == "" ? name : name + ", " + fonts-field.text);
+                    alignment: start;
+                    HorizontalLayout {
+                        spacing: Tokens.space-2;
+                        FontMenu {
+                            horizontal-stretch: 0;
+                            for-label: item.label;
+                            picked(name) => {
+                                Appearance.pending-kind = -1;
+                                Appearance.set-fonts(fonts-field.text == "" ? name : name + ", " + fonts-field.text);
+                            }
+                        }
+                        Button {
+                            horizontal-stretch: 0;
+                            text: @tr("Reset");
+                            accessible-name: @tr("Reset {}", item.label);
+                            kind: "ghost";
+                            dense: true;
+                            enabled: item.overridden;
+                            clicked => { Appearance.reset(item.name); }
+                        }
                     }
-                }
-                Button {
-                    horizontal-stretch: 0;
-                    text: @tr("Reset");
-                    accessible-name: @tr("Reset {}", item.label);
-                    kind: "ghost";
-                    dense: true;
-                    enabled: item.overridden;
-                    clicked => { Appearance.reset(item.name); }
                 }
             }
             if item.problem != "": Problem { text: item.problem; }
