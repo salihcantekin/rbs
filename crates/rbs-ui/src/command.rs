@@ -582,6 +582,53 @@ pub const ENTRIES: &[Entry] = &[
         checkable: true,
     },
     Entry {
+        id: "source.mixer_hidden.toggle",
+        title: "Hidden from Mixer",
+        tooltip: "Keep the source out of the Mixer; it is still heard",
+        icon: Some("eye-off"),
+        shortcut: None,
+        menu: Menu::Source,
+        kind: Kind::Toggle {
+            on: "source.set_mixer_hidden",
+            off: "source.set_mixer_hidden",
+        },
+        params: &[target("source"), COLLECTION],
+        checkable: true,
+    },
+    Entry {
+        id: "mixer.hide_all",
+        title: "Hide all in Mixer",
+        tooltip: "Keep every source out of the Mixer; they are still heard",
+        icon: Some("eye-off"),
+        shortcut: None,
+        menu: Menu::Source,
+        kind: action("source.set_mixer_hidden"),
+        params: &[],
+        checkable: false,
+    },
+    Entry {
+        id: "mixer.hide_muted",
+        title: "Hide muted in Mixer",
+        tooltip: "Keep the muted sources out of the Mixer",
+        icon: Some("speaker-off"),
+        shortcut: None,
+        menu: Menu::Source,
+        kind: action("source.set_mixer_hidden"),
+        params: &[],
+        checkable: false,
+    },
+    Entry {
+        id: "mixer.unhide_all",
+        title: "Show all in Mixer",
+        tooltip: "Bring every hidden source back into the Mixer",
+        icon: Some("eye"),
+        shortcut: None,
+        menu: Menu::Source,
+        kind: action("source.set_mixer_hidden"),
+        params: &[],
+        checkable: false,
+    },
+    Entry {
         id: "source.rename",
         title: "Rename source",
         tooltip: "Give the source another name",
@@ -1024,10 +1071,15 @@ pub const MENU_LAYOUT: &[(Menu, &[&str])] = &[
             "item.visible.toggle",
             "item.locked.toggle",
             "source.muted.toggle",
+            "source.mixer_hidden.toggle",
             "|",
             "source.rename",
             "item.remove",
             "source.delete",
+            "#Mixer",
+            "mixer.hide_all",
+            "mixer.hide_muted",
+            "mixer.unhide_all",
         ],
     ),
     (
@@ -1313,16 +1365,22 @@ pub enum Context {
     /// The editable picture panel (Program, or in studio mode Preview) outside any
     /// source's picture (target `id`, the panel).
     Preview,
+    /// A source's strip or row in the Mixer, or its "more" button (target `source`).
+    MixerSource,
+    /// The Mixer outside its strips and rows.
+    Mixer,
 }
 
 impl Context {
     /// Every context.
-    pub const ALL: [Context; 5] = [
+    pub const ALL: [Context; 7] = [
         Context::Scene,
         Context::Scenes,
         Context::Source,
         Context::Sources,
         Context::Preview,
+        Context::MixerSource,
+        Context::Mixer,
     ];
 
     /// Its name, as the shell's menus ask for it.
@@ -1333,6 +1391,8 @@ impl Context {
             Context::Source => "source",
             Context::Sources => "sources",
             Context::Preview => "preview",
+            Context::MixerSource => "mixer-source",
+            Context::Mixer => "mixer",
         }
     }
 
@@ -1386,6 +1446,20 @@ pub const CONTEXT_LAYOUT: &[(Context, &[&str])] = &[
             "canvas.studio_mode.toggle",
             "ui.panel.maximize",
         ],
+    ),
+    (
+        Context::MixerSource,
+        &[
+            "source.muted.toggle",
+            "source.mixer_hidden.toggle",
+            "|",
+            "source.rename",
+            "ui.panel.select?id=rbs.properties",
+        ],
+    ),
+    (
+        Context::Mixer,
+        &["mixer.hide_all", "mixer.hide_muted", "mixer.unhide_all"],
     ),
 ];
 

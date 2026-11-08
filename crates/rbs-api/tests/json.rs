@@ -99,6 +99,7 @@ fn source() -> SourceInfo {
         locked: true,
         volume: 0.5,
         muted: true,
+        mixer_hidden: true,
         filters: vec![FilterInfo {
             id: 2,
             type_id: "org.rbs.filter.chroma-key".into(),
@@ -206,6 +207,10 @@ fn every_request() -> Vec<Request> {
         c(Command::SourceSetMuted(SetSourceMuted {
             source: 3,
             muted: true,
+        })),
+        c(Command::SourceSetMixerHidden(SetSourceMixerHidden {
+            source: 3,
+            hidden: true,
         })),
         c(Command::ItemAdd(AddItem {
             source: 3,

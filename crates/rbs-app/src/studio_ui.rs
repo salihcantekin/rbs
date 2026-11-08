@@ -141,7 +141,11 @@ pub struct StudioUi {
     source_query: String,
     pub targets_kind: i32,
     slots: Vec<MeterSlot>,
+    /// What the Mixer shows or hides, for its menus (ADR-0080): the heard sources.
+    heard: Vec<HeardFact>,
     meters: Rc<VecModel<MeterRow>>,
+    /// Sources hidden from the Mixer (ADR-0080): names only, no meter slot.
+    hidden_meters: Rc<VecModel<MeterRow>>,
     /// The Stats panel's lines ([`stat_lines`]).
     stats: Rc<VecModel<StatRow>>,
     scale: Rc<VecModel<ScaleMark>>,
@@ -344,7 +348,9 @@ impl StudioUi {
             source_query: String::new(),
             targets_kind: -1,
             slots: Vec::new(),
+            heard: Vec::new(),
             meters: Rc::new(VecModel::default()),
+            hidden_meters: Rc::new(VecModel::default()),
             stats: Rc::new(VecModel::default()),
             scale: Rc::new(VecModel::from(scale)),
             meter_start: Instant::now(),
@@ -436,6 +442,7 @@ impl StudioUi {
         g.set_targets(ModelRc::from(self.targets.clone()));
         g.set_source_targets(ModelRc::from(self.source_targets.clone()));
         g.set_meters(ModelRc::from(self.meters.clone()));
+        g.set_hidden_meters(ModelRc::from(self.hidden_meters.clone()));
         g.set_stats(ModelRc::from(self.stats.clone()));
         g.set_scale(ModelRc::from(self.scale.clone()));
         g.set_rc_tokens(ModelRc::from(self.tokens.clone()));
@@ -1363,6 +1370,36 @@ impl StudioUi {
         self.send(Command::SetSourceMuted {
             id: SourceId::from_raw(id as u32),
             muted,
+        });
+    }
+
+    /// How many heard sources the Mixer shows, how many of those are muted, and how
+    /// many it hides (ADR-0080), for its menu.
+    pub fn mixer_counts(&self) -> (usize, usize, usize) {
+        let hidden = self.heard.iter().filter(|h| h.hidden).count();
+        let muted = self.heard.iter().filter(|h| !h.hidden && h.muted).count();
+        (self.heard.len() - hidden, muted, hidden)
+    }
+
+    /// Hide every shown source (`only_muted`: the muted ones) from the Mixer, or show
+    /// every hidden one (`hide` false). One command each; they stay audible.
+    pub fn hide_in_mixer(&mut self, hide: bool, only_muted: bool) {
+        let ids: Vec<u32> = self
+            .heard
+            .iter()
+            .filter(|h| h.hidden != hide && (!hide || !only_muted || h.muted))
+            .map(|h| h.id)
+            .collect();
+        for id in ids {
+            self.set_source_mixer_hidden(id as i32, hide);
+        }
+    }
+
+    /// Hide a source from the Mixer or show it again (ADR-0080); it stays audible.
+    pub fn set_source_mixer_hidden(&mut self, id: i32, hidden: bool) {
+        self.send(Command::SetSourceMixerHidden {
+            id: SourceId::from_raw(id as u32),
+            hidden,
         });
     }
 
@@ -2535,7 +2572,24 @@ impl StudioUi {
         let row = match (source, item) {
             (Some(text), _) => {
                 let raw: u32 = text.parse().ok()?;
-                self.rows.iter().find(|r| r.id.get() == raw)?
+                match self.rows.iter().find(|r| r.id.get() == raw) {
+                    Some(row) => row,
+                    // Not in the scene being edited, but heard in the Mixer (studio
+                    // mode, global sources): only its sound can be asked about.
+                    None => {
+                        let h = self.heard.iter().find(|h| h.id == raw)?;
+                        return Some(SourceFacts {
+                            id: raw as i32,
+                            item: 0,
+                            visible: true,
+                            locked: false,
+                            muted: h.muted,
+                            mixer_hidden: h.hidden,
+                            picture: false,
+                            audio: true,
+                        });
+                    }
+                }
             }
             (None, Some(text)) => {
                 let raw: u32 = text.parse().ok()?;
@@ -2552,6 +2606,7 @@ impl StudioUi {
             visible: row.visible,
             locked: row.locked,
             muted: row.audio.muted,
+            mixer_hidden: row.audio.mixer_hidden,
             picture: row.layout.is_some(),
             audio: row.kind.is_some_and(SourceKind::is_audio),
         })
@@ -3249,8 +3304,17 @@ impl StudioUi {
     fn set_heard(&mut self, rows: &[SourceRow]) {
         // Meters: one per playing audio source, in list order; ballistics survive for
         // sources that stay.
+        self.heard = rows
+            .iter()
+            .filter(|r| r.meter.is_some())
+            .map(|r| HeardFact {
+                id: r.id.get(),
+                muted: r.audio.muted,
+                hidden: r.audio.mixer_hidden,
+            })
+            .collect();
         let mut old: Vec<MeterSlot> = std::mem::take(&mut self.slots);
-        for r in rows {
+        for r in rows.iter().filter(|r| !r.audio.mixer_hidden) {
             let Some(level) = &r.meter else { continue };
             let slot = match old.iter().position(|s| s.source == r.id) {
                 Some(i) if Arc::ptr_eq(&old[i].level, level) => old.swap_remove(i),
@@ -3264,7 +3328,7 @@ impl StudioUi {
         }
         let meters: Vec<MeterRow> = rows
             .iter()
-            .filter(|r| r.meter.is_some())
+            .filter(|r| r.meter.is_some() && !r.audio.mixer_hidden)
             .map(|r| MeterRow {
                 id: r.id.get() as i32,
                 muted: r.audio.muted,
@@ -3276,6 +3340,20 @@ impl StudioUi {
             })
             .collect();
         set_rows(&self.meters, meters);
+        // Hidden sources are heard but not metered: names only (ADR-0080).
+        let hidden: Vec<MeterRow> = rows
+            .iter()
+            .filter(|r| r.meter.is_some() && r.audio.mixer_hidden)
+            .map(|r| MeterRow {
+                id: r.id.get() as i32,
+                muted: r.audio.muted,
+                name: r.name.as_str().into(),
+                icon: source_icon(r.kind).into(),
+                global: r.global,
+                ..MeterRow::default()
+            })
+            .collect();
+        set_rows(&self.hidden_meters, hidden);
     }
 
     /// True while meters need refreshing.
@@ -3390,10 +3468,20 @@ pub struct SourceFacts {
     pub visible: bool,
     pub locked: bool,
     pub muted: bool,
+    /// Kept out of the Mixer (ADR-0080).
+    pub mixer_hidden: bool,
     /// It has a picture (it can be locked on the picture panel).
     pub picture: bool,
     /// It makes sound only (it can be muted in the Mixer).
     pub audio: bool,
+}
+
+/// One heard source as the Mixer's menus ask about it (ADR-0080).
+#[derive(Clone, Copy, Debug)]
+struct HeardFact {
+    id: u32,
+    muted: bool,
+    hidden: bool,
 }
 
 /// Rows are replaced only where they changed, so unchanged rows keep their views.

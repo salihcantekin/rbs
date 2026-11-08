@@ -89,6 +89,8 @@ export global Studio {
     // The kind `targets` lists; -1 while a list is being made.
     in property <int> targets-kind: -1;
     in property <[MeterRow]> meters;
+    // Sources kept out of the Mixer, still heard (ADR-0080); no meter runs for them.
+    in property <[MeterRow]> hidden-meters;
     // How many of `meters` are the scene's own and how many are global (Mixer groups).
     in property <int> meter-scenes;
     in property <int> meter-globals;
@@ -166,6 +168,7 @@ export global Studio {
     callback set-source-locked(int /* id */, bool /* locked */);
     // A source's sound: mute, and the volume as a fader position from 0 to 1.
     callback set-source-muted(int /* id */, bool /* muted */);
+    callback set-source-mixer-hidden(int /* id */, bool /* hidden */);
     callback set-source-volume(int /* id */, float /* position */);
     callback rename-source(int /* id */, string /* name */);
     // The sync offset of a source's sound in milliseconds (ADR-0062): a live control.
@@ -1167,6 +1170,18 @@ component MeterView inherits Rectangle {
     accessible-role: progress-indicator;
     accessible-label: data.name;
     accessible-value: data.value;
+    // The source's menu (ADR-0080): the "more" button, a right-click or the Menu key.
+    menu := CommandMenu {
+        context: "mixer-source";
+        target: "source=" + data.id;
+    }
+    TouchArea {
+        pointer-event(e) => {
+            if e.kind == PointerEventKind.down && e.button == PointerEventButton.right {
+                menu.open({ x: self.mouse-x, y: self.mouse-y });
+            }
+        }
+    }
     HorizontalLayout {
         spacing: Tokens.space-2;
         HorizontalLayout {
@@ -1224,6 +1239,54 @@ component MeterView inherits Rectangle {
                 clicked => { Studio.set-source-muted(data.id, !data.muted); }
             }
         }
+        VerticalLayout {
+            alignment: center;
+            IconButton {
+                icon: IconName.more;
+                name: @tr("More options for {}", data.name);
+                clicked => { menu.open({ x: self.x, y: root.height }); }
+            }
+        }
+    }
+}
+
+// A hidden source (ADR-0080): its name and a button that shows it in the Mixer again.
+component HiddenRow inherits Rectangle {
+    in property <MeterRow> data;
+    height: Tokens.size-control-md;
+    menu := CommandMenu {
+        context: "mixer-source";
+        target: "source=" + data.id;
+    }
+    TouchArea {
+        pointer-event(e) => {
+            if e.kind == PointerEventKind.down && e.button == PointerEventButton.right {
+                menu.open({ x: self.mouse-x, y: self.mouse-y });
+            }
+        }
+    }
+    HorizontalLayout {
+        spacing: Tokens.space-2;
+        VerticalLayout {
+            alignment: center;
+            Icon { name: data.muted ? IconName.speaker-off : Icons.named(data.icon); ink: Theme.text-secondary; }
+        }
+        Text {
+            text: data.name;
+            color: Theme.text-secondary;
+            font-size: Tokens.type-body-size;
+            vertical-alignment: center;
+            horizontal-stretch: 1;
+            overflow: elide;
+        }
+        VerticalLayout {
+            alignment: center;
+            IconButton {
+                icon: IconName.eye;
+                name: @tr("Show {} in the Mixer", data.name);
+                clicked => { Studio.set-source-mixer-hidden(data.id, false); }
+            }
+        }
     }
 }
 
@@ -1238,6 +1301,17 @@ component MeterStrip inherits Rectangle {
     accessible-role: progress-indicator;
     accessible-label: data.name;
     accessible-value: data.value;
+    menu := CommandMenu {
+        context: "mixer-source";
+        target: "source=" + data.id;
+    }
+    TouchArea {
+        pointer-event(e) => {
+            if e.kind == PointerEventKind.down && e.button == PointerEventButton.right {
+                menu.open({ x: self.mouse-x, y: self.mouse-y });
+            }
+        }
+    }
     VerticalLayout {
         padding: Tokens.space-1;
         spacing: Tokens.space-1;
@@ -1248,6 +1322,21 @@ component MeterStrip inherits Rectangle {
             horizontal-alignment: center;
             overflow: elide;
             accessible-role: none;
+        }
+        HorizontalLayout {
+            alignment: center;
+            Rectangle {
+                width: Tokens.size-icon-box;
+                height: Tokens.size-icon-box;
+                border-width: Tokens.size-border;
+                border-color: Theme.border-strong;
+                border-radius: Tokens.radius-sm;
+                background: data.clipped ? Theme.meter-clip : transparent;
+                accessible-role: button;
+                accessible-label: data.clipped ? @tr("Clipped. Reset the clip indicator of {}", data.name) : @tr("Not clipped: {}", data.name);
+                accessible-action-default => { root.reset(); }
+                TouchArea { clicked => { root.reset(); } }
+            }
         }
         HorizontalLayout {
             vertical-stretch: 1;
@@ -1267,30 +1356,21 @@ component MeterStrip inherits Rectangle {
                 }
             }
         }
-        // The clip box and the mute button share a row, so the bar gets the height.
+        // The mute button and the "more" button share the last row; the clip box has
+        // its own row above the bar, so the strip stays as narrow as it was.
         HorizontalLayout {
             alignment: center;
             spacing: Tokens.space-2;
-            VerticalLayout {
-                alignment: center;
-                Rectangle {
-                    width: Tokens.size-icon-box;
-                    height: Tokens.size-icon-box;
-                    border-width: Tokens.size-border;
-                    border-color: Theme.border-strong;
-                    border-radius: Tokens.radius-sm;
-                    background: data.clipped ? Theme.meter-clip : transparent;
-                    accessible-role: button;
-                    accessible-label: data.clipped ? @tr("Clipped. Reset the clip indicator of {}", data.name) : @tr("Not clipped: {}", data.name);
-                    accessible-action-default => { root.reset(); }
-                    TouchArea { clicked => { root.reset(); } }
-                }
-            }
             IconButton {
                 icon: data.muted ? IconName.speaker-off : IconName.speaker;
                 name: data.muted ? @tr("Unmute {}", data.name) : @tr("Mute {}", data.name);
                 checked: data.muted;
                 clicked => { Studio.set-source-muted(data.id, !data.muted); }
+            }
+            more := IconButton {
+                icon: IconName.more;
+                name: @tr("More options for {}", data.name);
+                clicked => { menu.open({ x: self.x, y: root.height }); }
             }
         }
     }
@@ -1305,8 +1385,10 @@ export component MixerPanel inherits Rectangle {
     property <bool> wide: self.width > self.height * 1.5;
     property <bool> scene-closed: Sections.closed("mixer.scene", Sections.rev);
     property <bool> global-closed: Sections.closed("mixer.global", Sections.rev);
+    property <bool> hidden-closed: Sections.closed("mixer.hidden", Sections.rev);
+    property <bool> any: Studio.meters.length + Studio.hidden-meters.length > 0;
     property <length> name-width: min(root.width * 0.3, Tokens.size-menu-sm * 0.75);
-    if Studio.meters.length == 0: EmptyState {
+    if !root.any: EmptyState {
         width: parent.width;
         height: parent.height;
         title: @tr("No audio sources");
@@ -1315,11 +1397,20 @@ export component MixerPanel inherits Rectangle {
         act => { Studio.picker-kind = -1; add-menu.show(); }
     }
     // Wide: strips in clusters, scrolling sideways when they do not fit.
-    if Studio.meters.length > 0 && root.wide: Flickable {
+    if root.any && root.wide: Flickable {
         width: parent.width;
         height: parent.height;
         content-width: max(clusters.preferred-width, self.width);
         content-height: root.height;
+        TouchArea {
+            width: max(clusters.preferred-width, root.width);
+            height: root.height;
+            pointer-event(e) => {
+                if e.kind == PointerEventKind.down && e.button == PointerEventButton.right {
+                    mixer-menu.open({ x: self.mouse-x, y: self.mouse-y });
+                }
+            }
+        }
         clusters := HorizontalLayout {
             height: root.height;
             padding: Tokens.size-panel-pad;
@@ -1361,13 +1452,38 @@ export component MixerPanel inherits Rectangle {
                     }
                 }
             }
+            if Studio.hidden-meters.length > 0: VerticalLayout {
+                width: Tokens.size-menu-sm;
+                spacing: Tokens.size-field-gap;
+                SectionHeader {
+                    title: @tr("Hidden ({})", Studio.hidden-meters.length);
+                    collapsible: true;
+                    open: !root.hidden-closed;
+                    toggled(o) => { Sections.set-closed("mixer.hidden", !o); }
+                }
+                if !root.hidden-closed: Flickable {
+                    content-height: hidden-rows.preferred-height;
+                    hidden-rows := VerticalLayout {
+                        for m in Studio.hidden-meters: HiddenRow { data: m; }
+                    }
+                }
+            }
         }
     }
     // Narrow: rows under full-width headers, then the labelled scale (dBFS).
-    if Studio.meters.length > 0 && !root.wide: Flickable {
+    if root.any && !root.wide: Flickable {
         width: parent.width;
         height: parent.height;
         content-height: strips.preferred-height;
+        TouchArea {
+            width: root.width;
+            height: max(strips.preferred-height, root.height);
+            pointer-event(e) => {
+                if e.kind == PointerEventKind.down && e.button == PointerEventButton.right {
+                    mixer-menu.open({ x: self.mouse-x, y: self.mouse-y });
+                }
+            }
+        }
         strips := VerticalLayout {
             padding: Tokens.size-panel-pad;
             // Each entry spaces itself, so a folded group takes no room.
@@ -1422,9 +1538,24 @@ export component MixerPanel inherits Rectangle {
                 }
                 Rectangle { width: Tokens.size-icon-box; }
                 Rectangle { width: Tokens.size-control-sm; }
+                Rectangle { width: Tokens.size-control-sm; }
+            }
+            if Studio.hidden-meters.length > 0: VerticalLayout {
+                padding-top: Tokens.size-section-gap;
+                SectionHeader {
+                    title: @tr("Hidden ({})", Studio.hidden-meters.length);
+                    collapsible: true;
+                    open: !root.hidden-closed;
+                    toggled(o) => { Sections.set-closed("mixer.hidden", !o); }
+                }
+                if !root.hidden-closed: VerticalLayout {
+                    for m in Studio.hidden-meters: HiddenRow { data: m; }
+                }
             }
         }
     }
+    // The Mixer's own menu (ADR-0080): a right-click outside any strip or row.
+    mixer-menu := CommandMenu { context: "mixer"; }
     add-menu := AddSourceMenu {
         x: Tokens.space-2;
         y: Tokens.space-2;

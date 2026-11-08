@@ -114,6 +114,15 @@ pub struct SourceInfo {
     /// Sync offset of its sound in milliseconds (protocol 1.8; absent when 0).
     #[serde(default, skip_serializing_if = "is_zero_ms")]
     pub sync_offset_ms: i32,
+    /// The source is kept out of the Mixer but still heard (protocol 1.14, ADR-0080;
+    /// absent before, meaning shown).
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub mixer_hidden: bool,
+}
+
+#[allow(clippy::trivially_copy_pass_by_ref)] // serde passes a reference.
+fn is_false(v: &bool) -> bool {
+    !*v
 }
 
 #[allow(clippy::trivially_copy_pass_by_ref)] // serde passes a reference.

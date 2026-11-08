@@ -179,6 +179,9 @@ pub struct SourceAudio {
     /// Milliseconds in `-MAX_SYNC_OFFSET_MS..=MAX_SYNC_OFFSET_MS`: positive delays the
     /// sound, negative advances it.
     pub sync_offset_ms: i32,
+    /// Not drawn in the Mixer; still heard (ADR-0080). A view choice: it never changes
+    /// the mix.
+    pub mixer_hidden: bool,
 }
 
 impl SourceAudio {
@@ -188,6 +191,7 @@ impl SourceAudio {
             volume,
             muted,
             sync_offset_ms: 0,
+            mixer_hidden: false,
         }
     }
 
@@ -195,6 +199,14 @@ impl SourceAudio {
     pub const fn with_sync_offset(self, sync_offset_ms: i32) -> Self {
         Self {
             sync_offset_ms,
+            ..self
+        }
+    }
+
+    /// The same sound, hidden from the Mixer or not (ADR-0080).
+    pub const fn with_mixer_hidden(self, mixer_hidden: bool) -> Self {
+        Self {
+            mixer_hidden,
             ..self
         }
     }
@@ -214,7 +226,7 @@ impl SourceAudio {
         self.volume_is_valid() && self.sync_offset_is_valid()
     }
 
-    /// True for full volume, not muted, no sync offset.
+    /// True for full volume, not muted, no sync offset, shown in the Mixer.
     pub fn is_default(&self) -> bool {
         *self == Self::default()
     }

@@ -411,6 +411,14 @@ pub enum Command {
         /// Muted.
         muted: bool,
     },
+    /// Hide a source from the Mixer or show it again (ADR-0080). A live view choice like
+    /// the mute: not on the undo stack; the sound is untouched.
+    SetSourceMixerHidden {
+        /// The source.
+        id: SourceId,
+        /// Hidden from the Mixer.
+        hidden: bool,
+    },
     /// Add a filter of a built-in type with its defaults at the end of a source's chain
     /// (ADR-0062; one undo step).
     AddFilter {
@@ -1986,6 +1994,10 @@ impl Host {
             }
             Command::SetSourceMuted { id, muted } => {
                 let done = self.set_source_audio(id, None, Some(muted));
+                self.answer_live(done, notify);
+            }
+            Command::SetSourceMixerHidden { id, hidden } => {
+                let done = self.set_source_mixer_hidden(id, hidden);
                 self.answer_live(done, notify);
             }
             Command::AddFilter { source, type_id } => {
@@ -3833,6 +3845,23 @@ impl Host {
         Ok(changed)
     }
 
+    /// Hides a source from the Mixer or shows it (ADR-0080): a view flag, not on the
+    /// undo stack, and the mix is untouched. `Ok(false)` when nothing changed.
+    fn set_source_mixer_hidden(&mut self, id: SourceId, hidden: bool) -> Result<bool, Refusal> {
+        let now = self
+            .collection
+            .source(id)
+            .ok_or_else(|| Refusal::NotFound(format!("There is no source {}.", id.get())))?
+            .audio;
+        if now.mixer_hidden == hidden {
+            return Ok(false);
+        }
+        self.collection
+            .set_source_mixer_hidden(id, hidden)
+            .map_err(|e| Refusal::of(&e))?;
+        Ok(true)
+    }
+
     /// Renames a source (one undo step); `Ok(false)` when it has that name.
     /// Points a source at `target`: its `adapter` and `target` settings change, nothing
     /// else, so name, layout, filters and every scene's item stay. The binder replaces
@@ -4947,6 +4976,15 @@ impl ApiTarget<'_> {
                 }
                 Ok(Response::Done(Empty {}))
             }
+            C::SourceSetMixerHidden(p) => {
+                let changed = host
+                    .set_source_mixer_hidden(SourceId::from_raw(p.source), p.hidden)
+                    .map_err(|e| refused(&e))?;
+                if changed {
+                    host.publish(notify);
+                }
+                Ok(Response::Done(Empty {}))
+            }
             C::FilterTypes => Ok(Response::FilterTypes(filters::api_types())),
             C::FilterAdd(p) => {
                 let settings = p.settings.unwrap_or_default();
@@ -5609,6 +5647,7 @@ fn api_source(row: &SourceRow) -> api::SourceInfo {
         locked: row.locked,
         volume: row.audio.volume,
         muted: row.audio.muted,
+        mixer_hidden: row.audio.mixer_hidden,
         filters: row.filters.iter().map(filters::api_row).collect(),
         sync_offset_ms: row.audio.sync_offset_ms,
         id: row.id.get(),

@@ -352,6 +352,8 @@ Toolbar items are command registry ids ([ADR-0050](../adr/0050-command-registry-
   | `scene.remove?scene=` | action, disabled for the last scene | `scene.remove {scene}` | Scene |
   | `item.visible.toggle?item=`, `item.locked.toggle?item=` | toggle, checked while shown or locked | `item.set_visible {item, visible}`, `item.set_locked {item, locked}` (protocol 1.6) | Source |
   | `source.muted.toggle?source=` | toggle, checked while muted | `source.set_muted {source, muted}` | Source |
+  | `source.mixer_hidden.toggle?source=` ("Hidden from Mixer", icon `eye-off`) | toggle, checked while hidden | `source.set_mixer_hidden {source, hidden}` (protocol 1.14, ADR-0080) | Source |
+  | `mixer.hide_all`, `mixer.hide_muted`, `mixer.unhide_all` | action, disabled while nothing is left to hide or show | `source.set_mixer_hidden` for each heard source it changes (ADR-0080) | Source |
   | `source.rename?source=&name=` | action | `source.rename {source, name}` | Source |
   | `item.remove?item=` ("Remove from scene") | action | `item.remove {item}` (protocol 1.10, ADR-0065): the source is deleted only when that was its last placement | Source |
   | `source.delete?source=` ("Delete source") | action | `source.delete {source}`: from every scene and the global sources | Source |
