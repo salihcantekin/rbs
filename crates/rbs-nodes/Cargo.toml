@@ -20,6 +20,8 @@ rbs-codec = { path = "../rbs-codec" }
 rbs-mux = { path = "../rbs-mux" }
 rbs-transport = { path = "../rbs-transport" }
 rbs-vcam = { path = "../rbs-vcam" }
+# Pixel buffers of system-memory frames (same crate and version as rbs-core).
+bytes = "1.9"
 # Only to read the render device's graphics API (`wgpu::Backend`); same version and
 # features as rbs-gpu, so nothing new is built.
 wgpu = { version = "30.0.1", default-features = false, features = ["std", "parking_lot", "dx12", "metal", "vulkan", "wgsl"] }

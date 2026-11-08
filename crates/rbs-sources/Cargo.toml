@@ -21,6 +21,8 @@ rbs-audio-io = { path = "../rbs-audio-io" }
 rbs-audio = { path = "../rbs-audio" }
 rbs-nodes = { path = "../rbs-nodes" }
 rbs-filters = { path = "../rbs-filters" }
+# PNG files for image sources (ADR-0074): pure Rust, MIT or Apache-2.0, control thread only.
+png = "0.18"
 
 [dev-dependencies]
 # Reference adapters of the capture and audio input ports (deterministic, no devices).

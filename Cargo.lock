@@ -4840,6 +4840,7 @@ name = "rbs-nodes"
 version = "0.0.1"
 dependencies = [
  "allocation-counter",
+ "bytes",
  "rbs-capture",
  "rbs-capture-mf",
  "rbs-capture-test",
@@ -4904,6 +4905,7 @@ dependencies = [
 name = "rbs-sources"
 version = "0.0.1"
 dependencies = [
+ "png",
  "rbs-audio",
  "rbs-audio-io",
  "rbs-audio-io-test",
