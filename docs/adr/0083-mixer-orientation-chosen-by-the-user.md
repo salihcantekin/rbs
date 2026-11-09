@@ -39,4 +39,5 @@ Forces: the choice is view state, not scene or engine state (P8); the Mixer alre
 
 ## Review
 
-Pending: independent review per ADR-0014.
+- 2026-11-09, independent AI session (round 1, reviewing only the ADRs, specs and code): changes requested. Concerns covered contract details, claims about existing code, hot-path and zero-cost rules, and number allocation across these ADRs; each was resolved in the text above (the numbers of protocol minors and scene formats are now assigned at merge time, not claimed by ADRs).
+- Round 2 (verification by a different fresh reviewer) and the owner's approval are still needed before the status can become Accepted (ADR-0014).
