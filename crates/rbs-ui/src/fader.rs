@@ -118,7 +118,7 @@ mod tests {
 
     #[test]
     fn typed_levels_become_fader_positions() {
-        let at = |t: &str| parse_position(t).unwrap();
+        let at = |t: &str| parse_position(t).unwrap_or(f32::NAN);
         assert_eq!(at("0"), 1.0);
         assert_eq!(at("+3"), 1.0);
         assert_eq!(at(" 0 dB "), 1.0);
