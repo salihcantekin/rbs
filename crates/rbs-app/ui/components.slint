@@ -371,6 +371,100 @@ export component Button inherits Rectangle {
     FocusRing { show: focus.ring; }
 }
 
+// LevelText: a level in words ("-6.0 dB") that becomes a one-line field when it is
+// clicked, or when it has focus and Return is pressed (the typed level of a fader).
+// `entered` gets the text and says whether it was understood: Return keeps the field
+// open with the error colour when it was not, leaving the field applies a text that was
+// understood and drops one that was not, Escape drops the edit.
+export component LevelText inherits Rectangle {
+    in property <string> text;
+    // The accessible name, such as "Volume of Camera".
+    in property <string> label;
+    in property <bool> muted;
+    in property <bool> enabled: true;
+    callback entered(string) -> bool;
+    property <bool> editing;
+    property <bool> invalid;
+    function start() {
+        if !root.enabled { return; }
+        root.invalid = false;
+        input.text = root.text;
+        root.editing = true;
+        input.focus();
+        input.select-all();
+    }
+    function stop() {
+        root.editing = false;
+        root.invalid = false;
+    }
+    function commit() -> bool {
+        if root.entered(input.text) {
+            root.stop();
+            return true;
+        }
+        root.invalid = true;
+        return false;
+    }
+    border-radius: Tokens.radius-sm;
+    border-width: root.editing ? Tokens.size-border : 0px;
+    border-color: root.invalid ? Theme.state-error : Theme.border-focus;
+    background: root.editing ? Theme.surface-sunken : transparent;
+    accessible-role: button;
+    accessible-label: root.label;
+    accessible-value: root.text;
+    accessible-enabled: root.enabled;
+    accessible-action-default => { root.start(); }
+    if !root.editing: Text {
+        width: parent.width;
+        height: parent.height;
+        text: root.text;
+        color: root.muted ? Theme.text-disabled : Theme.text-secondary;
+        font-size: Tokens.type-caption-size;
+        horizontal-alignment: right;
+        vertical-alignment: center;
+        accessible-role: none;
+    }
+    focus := RingFocus {
+        enabled: root.enabled && !root.editing;
+        key-pressed(e) => {
+            if e.text == Key.Return { root.start(); return accept; }
+            reject
+        }
+    }
+    touch := TouchArea {
+        enabled: root.enabled && !root.editing;
+        clicked => { focus.focus-pointer(); root.start(); }
+    }
+    input := TextInput {
+        visible: root.editing;
+        x: Tokens.space-1;
+        width: parent.width - 2 * Tokens.space-1;
+        height: parent.height;
+        single-line: true;
+        horizontal-alignment: right;
+        vertical-alignment: center;
+        color: Theme.text-primary;
+        font-size: Tokens.type-caption-size;
+        selection-background-color: Theme.accent;
+        selection-foreground-color: Theme.text-inverse;
+        text-cursor-width: Tokens.size-focus-ring;
+        accessible-label: root.label;
+        edited => { root.invalid = false; }
+        accepted => { root.commit(); }
+        key-pressed(e) => {
+            if e.text == Key.Escape { root.stop(); return accept; }
+            reject
+        }
+    }
+    property <bool> input-focused: input.has-focus;
+    changed input-focused => {
+        if !input-focused && root.editing {
+            if !root.commit() { root.stop(); }
+        }
+    }
+    FocusRing { show: focus.ring && !root.editing; }
+}
+
 // Icon-only button (ghost, dense). Always set `name`: it is the accessible name and
 // the tooltip-to-be, because the icon itself has no text.
 export component IconButton inherits Button {
