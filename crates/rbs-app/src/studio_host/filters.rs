@@ -136,6 +136,7 @@ pub fn api_types() -> api::FilterTypeList {
                             default,
                             step,
                             unit,
+                            ..
                         } => api::FilterField {
                             key: f.key.to_owned(),
                             label: f.label.to_owned(),
@@ -203,7 +204,7 @@ fn pairs(
         .collect()
 }
 
-fn invalid(e: &rbs_filters::FilterError) -> Refusal {
+fn invalid(e: &rbs_filters::ParamError) -> Refusal {
     Refusal::Invalid(format!("{e}."))
 }
 

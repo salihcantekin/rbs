@@ -15,6 +15,6 @@ pub mod types;
 pub use catalogue::{catalogue, find};
 pub use node::{FilterNode, FilterStats, PRELUDE, descriptor};
 pub use types::{
-    Field, FieldKind, FilterError, FilterType, MAX_FIELDS, MAX_PASSES, Pass, PassSource, Scale,
-    Uniforms, Value, Values, color_text, parse_color,
+    Field, FieldKind, FilterType, MAX_FIELDS, MAX_PASSES, ParamError, Pass, PassSource, Scale,
+    Schema, Uniforms, Value, Values, color_text, parse_color,
 };

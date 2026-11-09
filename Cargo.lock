@@ -4744,6 +4744,7 @@ dependencies = [
  "rbs-core",
  "rbs-gpu",
  "rbs-graph",
+ "rbs-params",
  "wgpu",
 ]
 
@@ -4861,6 +4862,10 @@ dependencies = [
  "rbs-vcam-test",
  "wgpu",
 ]
+
+[[package]]
+name = "rbs-params"
+version = "0.0.1"
 
 [[package]]
 name = "rbs-record"

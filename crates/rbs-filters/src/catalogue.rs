@@ -2,7 +2,7 @@
 
 use rbs_graph::node::NodeTypeId;
 
-use crate::types::{Field, FieldKind, FilterType, Pass, PassSource, Scale, Uniforms, Values};
+use crate::types::{Field, FilterType, Pass, PassSource, Scale, Uniforms, Values};
 
 /// Type id of colour correction.
 pub const COLOR_CORRECTION: &str = "org.rbs.filter.color-correction";
@@ -26,28 +26,6 @@ pub fn find(type_id: &str) -> Option<&'static dyn FilterType> {
         .find(|t| t.type_id().as_str() == type_id)
 }
 
-const fn number(
-    key: &'static str,
-    label: &'static str,
-    min: f32,
-    max: f32,
-    default: f32,
-    step: f32,
-    unit: &'static str,
-) -> Field {
-    Field {
-        key,
-        label,
-        kind: FieldKind::Number {
-            min,
-            max,
-            default,
-            step,
-            unit,
-        },
-    }
-}
-
 /// sRGB-encoded value of an 8-bit channel.
 fn unit(c: u8) -> f32 {
     f32::from(c) / 255.0
@@ -64,11 +42,11 @@ fn chroma(rgb: [f32; 3]) -> [f32; 2] {
 pub struct ColorCorrection;
 
 const COLOR_FIELDS: [Field; 5] = [
-    number("brightness", "Brightness", -1.0, 1.0, 0.0, 0.01, ""),
-    number("contrast", "Contrast", -1.0, 1.0, 0.0, 0.01, ""),
-    number("saturation", "Saturation", 0.0, 3.0, 1.0, 0.01, ""),
-    number("gamma", "Gamma", 0.1, 4.0, 1.0, 0.01, ""),
-    number("hue", "Hue", -180.0, 180.0, 0.0, 1.0, "°"),
+    Field::number("brightness", "Brightness", -1.0, 1.0, 0.0, 0.01, ""),
+    Field::number("contrast", "Contrast", -1.0, 1.0, 0.0, 0.01, ""),
+    Field::number("saturation", "Saturation", 0.0, 3.0, 1.0, 0.01, ""),
+    Field::number("gamma", "Gamma", 0.1, 4.0, 1.0, 0.01, ""),
+    Field::number("hue", "Hue", -180.0, 180.0, 0.0, 1.0, "°"),
 ];
 const COLOR_PASSES: [Pass; 1] = [Pass {
     shader: include_str!("shaders/color_correction.wgsl"),
@@ -108,16 +86,10 @@ impl FilterType for ColorCorrection {
 pub struct ChromaKey;
 
 const KEY_FIELDS: [Field; 4] = [
-    Field {
-        key: "key_color",
-        label: "Key colour",
-        kind: FieldKind::Color {
-            default: [0, 255, 0, 255],
-        },
-    },
-    number("similarity", "Similarity", 0.0, 1.0, 0.4, 0.01, ""),
-    number("smoothness", "Smoothness", 0.0, 1.0, 0.08, 0.01, ""),
-    number("spill", "Spill reduction", 0.0, 1.0, 0.1, 0.01, ""),
+    Field::color("key_color", "Key colour", [0, 255, 0, 255]),
+    Field::number("similarity", "Similarity", 0.0, 1.0, 0.4, 0.01, ""),
+    Field::number("smoothness", "Smoothness", 0.0, 1.0, 0.08, 0.01, ""),
+    Field::number("spill", "Spill reduction", 0.0, 1.0, 0.1, 0.01, ""),
 ];
 const KEY_PASSES: [Pass; 1] = [Pass {
     shader: include_str!("shaders/chroma_key.wgsl"),
@@ -160,7 +132,7 @@ pub struct Blur;
 /// Taps on each side of the centre, at most.
 pub const MAX_BLUR_TAPS: usize = 31;
 
-const BLUR_FIELDS: [Field; 1] = [number("radius", "Radius", 0.0, 64.0, 8.0, 1.0, "px")];
+const BLUR_FIELDS: [Field; 1] = [Field::number("radius", "Radius", 0.0, 64.0, 8.0, 1.0, "px")];
 const BLUR_PASSES: [Pass; 2] = [
     Pass {
         shader: include_str!("shaders/blur.wgsl"),
@@ -230,7 +202,7 @@ impl FilterType for Blur {
 #[derive(Debug, Clone, Copy, Default)]
 pub struct Sharpen;
 
-const SHARPEN_FIELDS: [Field; 1] = [number("amount", "Amount", 0.0, 2.0, 0.3, 0.01, "")];
+const SHARPEN_FIELDS: [Field; 1] = [Field::number("amount", "Amount", 0.0, 2.0, 0.3, 0.01, "")];
 const SHARPEN_PASSES: [Pass; 1] = [Pass {
     shader: include_str!("shaders/sharpen.wgsl"),
     target: Scale::Full,

@@ -12,6 +12,7 @@
 /crates/rbs-capture*/        @salihcantekin
 /crates/rbs-gpu/             @salihcantekin
 /crates/rbs-filters/         @salihcantekin
+/crates/rbs-params/          @salihcantekin
 /crates/rbs-graph/           @salihcantekin
 /crates/rbs-nodes/           @salihcantekin
 /crates/rbs-engine/src/worker.rs @salihcantekin

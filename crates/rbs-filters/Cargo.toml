@@ -12,6 +12,7 @@ publish.workspace = true
 # Engine crates only (ADR-0053 decision 6): never adapters or the scene model.
 rbs-core = { path = "../rbs-core" }
 rbs-graph = { path = "../rbs-graph" }
+rbs-params = { path = "../rbs-params" }
 rbs-gpu = { path = "../rbs-gpu" }
 # Same version and features as rbs-gpu, so nothing new is built.
 wgpu = { version = "30.0.1", default-features = false, features = ["std", "parking_lot", "dx12", "metal", "vulkan", "wgsl"] }

@@ -25,6 +25,7 @@ RBS is a headless engine built around a **media graph**: a set of nodes (sources
 | Layer | Crates (planned) | May depend on |
 | --- | --- | --- |
 | Foundation | `rbs-core` (time, clock, timing, media types, capabilities, registry, the thread policy port, errors, metrics) | std, small utility crates (`bytes`) |
+| Settings schema | `rbs-params` (the field, value and validation types every filter kind shares; ADR-0082) | none (std only) |
 | Format helpers | `rbs-media-format` (H.264/HEVC Annex B and length-prefixed conversion, parameter-set parsing, FLV tag bodies, ADTS; pure functions shared by muxer and transport adapters, ADR-0019) | Foundation only |
 | Engine | `rbs-graph`, `rbs-scene`, `rbs-gpu`, `rbs-audio`, `rbs-engine` (engine loop: a worker thread per partition, control loop, shutdown; ADR-0027), `rbs-nodes` (built-in nodes wrapping the ports: capture sources, video export, encoders, outputs; ADR-0038), `rbs-sources` (scene source types to nodes through registered adapters; ADR-0039), `rbs-record` (the recording of a canvas: scene, encoders, muxed output on the engine; ADR-0040) | Foundation, ports, `wgpu`; `rbs-engine` only `rbs-core` and `rbs-graph` |
 | Ports | `rbs-capture`, `rbs-audio-io`, `rbs-codec`, `rbs-mux`, `rbs-transport`, `rbs-vcam` (virtual camera; ADR-0066) | Foundation only |
