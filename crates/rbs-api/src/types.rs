@@ -230,10 +230,35 @@ pub struct SourceEntry {
     pub global: bool,
 }
 
+/// The studio canvas's master volume and mute (protocol 1.15, ADR-0081).
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct Master {
+    /// A linear factor from 0 to 1.
+    pub volume: f32,
+    /// Muted; the volume is kept.
+    pub muted: bool,
+}
+
+impl Default for Master {
+    fn default() -> Self {
+        Self {
+            volume: 1.0,
+            muted: false,
+        }
+    }
+}
+
+impl Master {
+    /// True for full volume, not muted (left out of the answer).
+    pub fn is_default(&self) -> bool {
+        *self == Self::default()
+    }
+}
+
 /// `scene.list` and `scene.changed` (protocol 1.6): the scenes the studio's canvas may
 /// show in the Scenes panel's order, the one on air, and every source of the
 /// collection by name (what `item.add` can place).
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SceneList {
     /// The scenes.
     pub scenes: Vec<SceneInfo>,
@@ -242,6 +267,10 @@ pub struct SceneList {
     /// The preview scene in studio mode (protocol 1.9, ADR-0061); absent outside it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub preview: Option<u32>,
+    /// The canvas's master volume and mute (protocol 1.15, ADR-0081); absent when it is
+    /// 1.0 and not muted.
+    #[serde(default, skip_serializing_if = "Master::is_default")]
+    pub master: Master,
     /// Every source of the collection.
     pub sources: Vec<SourceEntry>,
 }

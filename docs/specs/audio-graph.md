@@ -114,6 +114,7 @@ Descriptor `org.rbs.audio.mixer`, kind `AudioMixer`, input `in` (Audio, many), o
 - An input whose producer has no strip is not heard (`unknown_inputs`). An input block whose format or length is not the graph's is skipped (`invalid_inputs`); the rest of the mix continues. With no inputs the block is silence.
 - Gains are linear amplitude; negative and non-finite values are 0; a muted strip has gain 0. The first parameters apply at once. Later changes of a strip's or the master's gain ramp linearly from the current value to the new one over `ramp`, evaluated at block time (one gain per frame). An input that joins, or returns after a tick without a block, fades in from 0 over `ramp`. Inputs that leave stop at once.
 - At most `strips` strips are honoured (the first ones); their state is allocated in `new`. Taking new parameters in `process` does not allocate and keeps each strip's ramp by producer id.
+- `MixerParams::master` is set by the studio from the canvas's master volume and mute (0 while muted, ADR-0081, scene model spec); the mixer does not know about either.
 - Meters are post-fader: a strip's meter gets the peak of its input times its gain, the master meter the peak of the output, per channel.
 
 Tests: `crates/rbs-audio/tests/mixer.rs`.

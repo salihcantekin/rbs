@@ -141,6 +141,11 @@ pub struct StudioUi {
     source_query: String,
     pub targets_kind: i32,
     slots: Vec<MeterSlot>,
+    /// The master strip (ADR-0081): the mixer's master meter and its ballistics, and
+    /// the model of its one row (empty while the studio has no mixer).
+    master_slot: Option<(Arc<LevelMeter>, Meter)>,
+    master_meter: Rc<VecModel<MeterRow>>,
+    master_audio: rbs_scene::model::MasterAudio,
     /// What the Mixer shows or hides, for its menus (ADR-0080): the heard sources.
     heard: Vec<HeardFact>,
     meters: Rc<VecModel<MeterRow>>,
@@ -348,6 +353,9 @@ impl StudioUi {
             source_query: String::new(),
             targets_kind: -1,
             slots: Vec::new(),
+            master_slot: None,
+            master_meter: Rc::new(VecModel::default()),
+            master_audio: rbs_scene::model::MasterAudio::default(),
             heard: Vec::new(),
             meters: Rc::new(VecModel::default()),
             hidden_meters: Rc::new(VecModel::default()),
@@ -443,6 +451,7 @@ impl StudioUi {
         g.set_source_targets(ModelRc::from(self.source_targets.clone()));
         g.set_meters(ModelRc::from(self.meters.clone()));
         g.set_hidden_meters(ModelRc::from(self.hidden_meters.clone()));
+        g.set_master_meter(ModelRc::from(self.master_meter.clone()));
         g.set_stats(ModelRc::from(self.stats.clone()));
         g.set_scale(ModelRc::from(self.scale.clone()));
         g.set_rc_tokens(ModelRc::from(self.tokens.clone()));
@@ -2984,7 +2993,15 @@ impl StudioUi {
                 self.refresh_existing();
                 self.refresh_marks();
             }
+            Update::MasterMeter(level) => {
+                self.master_slot = level.map(|l| (l, Meter::new()));
+                self.show_master();
+            }
             Update::Scenes(list) => {
+                if self.master_audio != list.master {
+                    self.master_audio = list.master;
+                    self.show_master();
+                }
                 let data: Vec<SceneData> = list
                     .scenes
                     .iter()
@@ -3360,7 +3377,46 @@ impl StudioUi {
 
     /// True while meters need refreshing.
     pub fn has_meters(&self) -> bool {
-        !self.slots.is_empty()
+        !self.slots.is_empty() || self.master_slot.is_some()
+    }
+
+    /// The master strip's row: its name, fader and mute from the model, its meter
+    /// parts from the last refresh (ADR-0081). One row while the studio has a mixer.
+    fn show_master(&mut self) {
+        if self.master_slot.is_none() {
+            self.master_meter.set_vec(Vec::new());
+            return;
+        }
+        let m = self.master_audio;
+        let mut row = self.master_meter.row_data(0).unwrap_or_default();
+        row.muted = m.muted;
+        row.volume = fader::position_of(m.volume);
+        row.volume_text = fader::volume_text(m.volume).into();
+        row.icon = "speaker".into();
+        if self.master_meter.row_count() == 0 {
+            self.master_meter.set_vec(vec![row]);
+        } else {
+            self.master_meter.set_row_data(0, row);
+        }
+    }
+
+    /// The master volume from the fader position (0 to 1, the fader law of the strips).
+    pub fn set_master_volume(&mut self, position: f32) {
+        self.send(Command::SetMasterVolume {
+            volume: fader::volume_at(position),
+        });
+    }
+
+    /// Mutes or unmutes the master.
+    pub fn set_master_muted(&mut self, muted: bool) {
+        self.send(Command::SetMasterMuted { muted });
+    }
+
+    /// Clears the master's clip latch.
+    pub fn reset_master_clip(&mut self) {
+        if let Some((_, ballistics)) = &mut self.master_slot {
+            ballistics.reset_clip();
+        }
     }
 
     /// One meter refresh: takes each source's peaks since the last call.
@@ -3378,28 +3434,48 @@ impl StudioUi {
             let Some(mut row) = self.meters.row_data(i) else {
                 continue;
             };
-            let [lo, mi, hi] = view.zones();
-            row.lo_from = lo.0;
-            row.lo_to = lo.1;
-            row.mi_from = mi.0;
-            row.mi_to = mi.1;
-            row.hi_from = hi.0;
-            row.hi_to = hi.1;
-            row.peak = view.peak;
-            row.peak_zone = if view.peak >= meter::position(meter::HIGH_FROM_DB) {
-                2
-            } else if view.peak >= meter::position(meter::MID_FROM_DB) {
-                1
-            } else {
-                0
-            };
-            row.clipped = view.clipped;
+            paint(&mut row, &view);
             if report {
                 row.value = s.ballistics.take_report().english().into();
             }
             self.meters.set_row_data(i, row);
         }
+        if let Some((level, ballistics)) = &mut self.master_slot {
+            let levels = level.take();
+            let db = (0..levels.channels())
+                .map(|ch| levels.peak_db(ch))
+                .fold(f32::NEG_INFINITY, f32::max);
+            ballistics.update(db, now);
+            let view = ballistics.view(now);
+            if let Some(mut row) = self.master_meter.row_data(0) {
+                paint(&mut row, &view);
+                if report {
+                    row.value = ballistics.take_report().english().into();
+                }
+                self.master_meter.set_row_data(0, row);
+            }
+        }
     }
+}
+
+/// Copies one meter view into a row: the zones, the peak hold and its zone, the clip.
+fn paint(row: &mut MeterRow, view: &rbs_ui::meter::MeterView) {
+    let [lo, mi, hi] = view.zones();
+    row.lo_from = lo.0;
+    row.lo_to = lo.1;
+    row.mi_from = mi.0;
+    row.mi_to = mi.1;
+    row.hi_from = hi.0;
+    row.hi_to = hi.1;
+    row.peak = view.peak;
+    row.peak_zone = if view.peak >= meter::position(meter::HIGH_FROM_DB) {
+        2
+    } else if view.peak >= meter::position(meter::MID_FROM_DB) {
+        1
+    } else {
+        0
+    };
+    row.clipped = view.clipped;
 }
 
 /// What [`StudioUi::apply`] asks of the shell.

@@ -9,8 +9,8 @@ use rbs_core::timing::FrameRate;
 use rbs_graph::node::NodeTypeId;
 use rbs_scene::model::{
     Border, CanvasId, Crop, FilterId, ItemContent, ItemId, ItemStyle, Layout, MAX_SOURCE_VOLUME,
-    MAX_SYNC_OFFSET_MS, SceneId, SceneScope, SettingValue, Settings, Shadow, Shape, SourceAudio,
-    SourceId,
+    MAX_SYNC_OFFSET_MS, MasterAudio, SceneId, SceneScope, SettingValue, Settings, Shadow, Shape,
+    SourceAudio, SourceId,
 };
 use rbs_scene::{MAX_LAYERS, MAX_NESTING_DEPTH, SceneCollection, SceneError, Undo};
 
@@ -1377,4 +1377,57 @@ fn a_scene_and_the_global_scene_together_stay_within_the_layer_limit() {
         build(limit),
         Err(SceneError::TooManyLayers(id)) if id == SceneId::from_raw(0)
     ));
+}
+
+#[test]
+fn a_canvas_master_is_a_live_control_with_its_own_undo_record() {
+    let mut s = studio();
+    let before = s.col.clone();
+    assert_eq!(s.col.canvas(s.wide).unwrap().master, MasterAudio::default());
+    let quiet = s.col.set_canvas_master_volume(s.wide, 0.25).unwrap();
+    let mute = s.col.set_canvas_master_muted(s.wide, true).unwrap();
+    let master = s.col.canvas(s.wide).unwrap().master;
+    assert_eq!(master, MasterAudio::new(0.25, true));
+    assert!(master.gain().abs() < f32::EPSILON);
+    // The other canvas keeps its own master.
+    assert_eq!(s.col.canvas(s.tall).unwrap().master, MasterAudio::default());
+
+    let unchanged = s.col.clone();
+    for bad in [-0.1, 1.01, f32::NAN, f32::INFINITY] {
+        assert_eq!(
+            s.col.set_canvas_master_volume(s.wide, bad),
+            Err(SceneError::InvalidVolume)
+        );
+    }
+    assert_eq!(s.col, unchanged);
+
+    s.col.undo(mute).unwrap();
+    s.col.undo(quiet).unwrap();
+    assert_eq!(s.col, before);
+}
+
+#[test]
+fn a_master_never_conflicts_with_or_comes_back_through_other_canvas_records() {
+    let mut s = studio();
+    let rename = s.col.rename_canvas(s.wide, "Main").unwrap();
+    // A live fader move after the rename.
+    s.col.set_canvas_master_volume(s.wide, 0.5).unwrap();
+    s.col.undo(rename).unwrap();
+    let canvas = s.col.canvas(s.wide).unwrap();
+    assert_ne!(canvas.name, "Main");
+    assert!((canvas.master.volume - 0.5).abs() < f32::EPSILON);
+}
+
+#[test]
+fn a_removed_canvas_takes_its_master_and_gets_it_back_on_undo() {
+    let mut s = studio();
+    s.col.set_canvas_master_muted(s.tall, true).unwrap();
+    s.col.set_canvas_master_volume(s.tall, 0.4).unwrap();
+    let undo = s.col.remove_canvas(s.tall).unwrap();
+    assert!(s.col.canvas(s.tall).is_none());
+    s.col.undo(undo).unwrap();
+    assert_eq!(
+        s.col.canvas(s.tall).unwrap().master,
+        MasterAudio::new(0.4, true)
+    );
 }

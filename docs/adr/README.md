@@ -89,3 +89,4 @@ An ADR records one decision that is hard to reverse or affects more than one cra
 | [0077](0077-source-health-retarget-and-settings-window.md) | Source health, re-picking a source's target, and the Source settings window | Accepted |
 | [0078](0078-saved-section-state-and-shared-section-components.md) | Saved section state and shared section components in every panel | Accepted |
 | [0080](0080-hide-sources-in-the-mixer.md) | Hide sources in the Mixer | Accepted |
+| [0081](0081-master-strip-in-the-mixer.md) | Master strip in the Mixer: a per-canvas master volume and mute | Accepted |

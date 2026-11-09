@@ -8,8 +8,9 @@ use rbs_core::timing::FrameRate;
 use rbs_graph::node::NodeTypeId;
 
 use crate::model::{
-    Canvas, CanvasId, Filter, FilterId, ItemContent, ItemId, Layout, MAX_SYNC_OFFSET_MS, Scene,
-    SceneId, SceneItem, SceneScope, SettingValue, Settings, Source, SourceAudio, SourceId,
+    Canvas, CanvasId, Filter, FilterId, ItemContent, ItemId, Layout, MAX_SYNC_OFFSET_MS,
+    MasterAudio, Scene, SceneId, SceneItem, SceneScope, SettingValue, Settings, Source,
+    SourceAudio, SourceId,
 };
 
 /// Why an edit was refused. The collection is unchanged after any error.
@@ -171,8 +172,15 @@ enum Op {
         globals: Option<Scene>,
     },
     RemoveCanvas(CanvasId),
+    /// Replaces only a canvas's master volume and mute (ADR-0081).
+    SetCanvasMaster {
+        canvas: CanvasId,
+        expected: MasterAudio,
+        new: MasterAudio,
+    },
     /// Replaces a canvas only if it currently equals `expected`, so an undo used out
-    /// of order is refused instead of reverting later changes.
+    /// of order is refused instead of reverting later changes. Everything but its
+    /// `master`, which stays as it is (a live control with its own record).
     ReplaceCanvas {
         expected: Canvas,
         new: Canvas,
@@ -476,6 +484,7 @@ impl SceneCollection {
             program: None,
             preview: None,
             globals: None,
+            master: MasterAudio::default(),
         };
         let undo = self.apply_with(
             Op::InsertCanvas {
@@ -512,6 +521,40 @@ impl SceneCollection {
         canvas.size = size;
         canvas.frame_rate = frame_rate;
         self.replace_canvas(canvas)
+    }
+
+    /// Sets a canvas's master volume, a linear factor in `0.0..=1.0` (ADR-0081;
+    /// `InvalidVolume` otherwise). A live control: the binder ignores it.
+    pub fn set_canvas_master_volume(
+        &mut self,
+        id: CanvasId,
+        volume: f32,
+    ) -> Result<Undo, SceneError> {
+        let expected = self.get_canvas(id)?.master;
+        let new = MasterAudio { volume, ..expected };
+        if !new.is_valid() {
+            return Err(SceneError::InvalidVolume);
+        }
+        self.apply(Op::SetCanvasMaster {
+            canvas: id,
+            expected,
+            new,
+        })
+    }
+
+    /// Mutes or unmutes a canvas's master (ADR-0081); the volume is kept.
+    pub fn set_canvas_master_muted(
+        &mut self,
+        id: CanvasId,
+        muted: bool,
+    ) -> Result<Undo, SceneError> {
+        let expected = self.get_canvas(id)?.master;
+        let new = MasterAudio { muted, ..expected };
+        self.apply(Op::SetCanvasMaster {
+            canvas: id,
+            expected,
+            new,
+        })
     }
 
     /// Puts `scene` on air on `canvas` (`None`: nothing on air). A cut; transitions
@@ -1072,11 +1115,38 @@ impl SceneCollection {
                     globals,
                 })
             }
-            Op::ReplaceCanvas { expected, new } => {
+            Op::SetCanvasMaster {
+                canvas,
+                expected,
+                new,
+            } => {
+                let slot = self
+                    .canvases
+                    .get_mut(&canvas)
+                    .ok_or(SceneError::UnknownCanvas(canvas))?;
+                if slot.master != expected {
+                    return Err(SceneError::UndoConflict);
+                }
+                slot.master = new;
+                Ok(Op::SetCanvasMaster {
+                    canvas,
+                    expected: new,
+                    new: expected,
+                })
+            }
+            Op::ReplaceCanvas {
+                mut expected,
+                mut new,
+            } => {
                 let slot = self
                     .canvases
                     .get_mut(&new.id)
                     .ok_or(SceneError::UnknownCanvas(new.id))?;
+                // The master is a live control with a record of its own: replacing a
+                // canvas keeps its current master, so a fader move never makes an
+                // earlier rename conflict or come back.
+                expected.master = slot.master;
+                new.master = slot.master;
                 if *slot != expected || expected.id != new.id {
                     return Err(SceneError::UndoConflict);
                 }
@@ -1292,6 +1362,9 @@ impl SceneCollection {
             check_name(&c.name)?;
             if !names.insert(c.name.as_str()) {
                 return Err(SceneError::DuplicateName(c.name.clone()));
+            }
+            if !c.master.is_valid() {
+                return Err(SceneError::InvalidVolume);
             }
             if c.size.width == 0 || c.size.height == 0 {
                 return Err(SceneError::EmptyCanvas);

@@ -129,6 +129,10 @@ fn scenes() -> SceneList {
         ],
         program: 2,
         preview: Some(2),
+        master: Master {
+            volume: 0.5,
+            muted: true,
+        },
         sources: vec![SourceEntry {
             id: 3,
             name: "Camera".into(),
@@ -211,6 +215,12 @@ fn every_request() -> Vec<Request> {
         c(Command::SourceSetMixerHidden(SetSourceMixerHidden {
             source: 3,
             hidden: true,
+        })),
+        c(Command::CanvasSetMasterVolume(SetMasterVolume {
+            volume: 0.5,
+        })),
+        c(Command::CanvasSetMasterMuted(SetMasterMuted {
+            muted: true,
         })),
         c(Command::ItemAdd(AddItem {
             source: 3,
@@ -895,4 +905,20 @@ fn global_sources_and_item_remove_have_a_stable_wire_form() {
     round_trip(&GlobalSourceList {
         sources: vec![source()],
     });
+}
+
+#[test]
+fn the_master_is_left_out_of_a_scene_list_while_it_is_the_default() {
+    let mut list = scenes();
+    list.master = Master::default();
+    let json = serde_json::to_string(&list).unwrap();
+    assert!(!json.contains("master"), "{json}");
+    let back: SceneList = serde_json::from_str(&json).unwrap();
+    assert_eq!(back, list);
+    // A 1.14 server's answer has no master: readers get the default.
+    let old = serde_json::to_string(&list).unwrap();
+    assert_eq!(
+        serde_json::from_str::<SceneList>(&old).unwrap().master,
+        Master::default()
+    );
 }
