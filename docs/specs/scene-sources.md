@@ -48,7 +48,7 @@ impl SourceTypes {
     pub fn instantiate(&self, source: &Source, ctx: &InstanceContext)
         -> Result<SourceInstance, SourceError>;
 }
-pub struct SourceTarget { adapter, target, name, is_default, size: Option<(u32, u32)> }  // size: displays and windows, when known
+pub struct SourceTarget { adapter, target, name, is_default, size: Option<(u32, u32)>, app: Option<String> }  // size: displays and windows, when known; app: owning application of a window, when the OS tells it (grouping and labels only)
 #[derive(Clone)] pub struct SourcePicker;  // Send; holds the adapter's factory only
 impl SourcePicker {
     pub fn adapter(&self) -> AdapterId;

@@ -49,9 +49,14 @@ pub struct CaptureTarget { pub id, pub kind, pub name: String,
     pub size: Option<(u32, u32)>, pub modes: Vec<CameraMode>,
     pub app: Option<String> }   // + new / with_size / with_modes / with_app
 
-// `app` is the name of the application that owns a window, when the OS tells it. It only
-// groups and labels targets ("Same application", ADR-0077); hosts never branch on it (P3).
-// Added in 1.x as a compatible field of a `#[non_exhaustive]` struct.
+// `app` is a display-grade label for the application that owns a window, when the OS
+// tells it. Hosts group and label targets with it ("Same application", ADR-0077) and may
+// compare two values for equality (case-insensitive), but it is not an identity: it is not
+// unique across installs, not a process id, and differs by platform (ScreenCaptureKit: the
+// localised application name; WGC: the executable file name without extension, so UWP
+// windows share "ApplicationFrameHost"). Hosts never branch on its value (P3), never match
+// it across platforms, and it is UI-only: it is not part of the control API and is not
+// logged. Added in 1.x as a compatible field of a `#[non_exhaustive]` struct.
 
 #[non_exhaustive]
 pub struct CameraMode { pub width, pub height, pub pixel_format,

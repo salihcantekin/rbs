@@ -275,8 +275,8 @@ fn window_process(hwnd: HWND) -> u32 {
 /// the extension (`None` when the process cannot be queried, e.g. it runs elevated).
 fn process_name(pid: u32) -> Option<String> {
     // SAFETY: `OpenProcess` with a query-only right returns an owned handle that is
-    // closed below; `buf` is valid for `len` UTF-16 units and the API updates `len` to
-    // the number written.
+    // closed below on every path; `buf` outlives the call and is valid for `len` UTF-16
+    // units, and the API updates `len` to the number of units written.
     let path = unsafe {
         let handle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid).ok()?;
         let mut buf = [0u16; 1024];
@@ -291,9 +291,7 @@ fn process_name(pid: u32) -> Option<String> {
         queried.ok()?;
         String::from_utf16_lossy(&buf[..(len as usize).min(buf.len())])
     };
-    let file = path.rsplit(['\\', '/']).next()?;
-    let stem = file.rsplit_once('.').map_or(file, |(stem, _)| stem);
-    (!stem.is_empty()).then(|| stem.to_owned())
+    crate::exe_stem(&path).map(str::to_owned)
 }
 
 /// `window:<process id>:<window handle>`, both hex. The process id guards against a

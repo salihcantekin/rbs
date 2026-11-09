@@ -1212,55 +1212,13 @@ impl StudioUi {
             .and_then(|id| self.rows.iter().find(|r| r.id == id))
             .map(|r| r.target.clone())
             .unwrap_or_default();
-        let current_app = self
-            .source_target_list
-            .iter()
-            .find(|t| !current.is_empty() && t.target == current)
-            .and_then(|t| t.app.clone());
-        let mut shown: Vec<(usize, &Target)> = self
-            .source_target_list
-            .iter()
-            .enumerate()
-            .filter(|(_, t)| !t.picker)
-            .filter(|(_, t)| {
-                self.source_query.is_empty() || t.name.to_lowercase().contains(&self.source_query)
-            })
-            .collect();
-        // The current target first, then the other windows of the same application,
-        // then the rest (ADR-0077).
-        let rank = |t: &Target| {
-            if t.target == current {
-                0
-            } else if current_app.is_some() && t.app == current_app {
-                1
-            } else {
-                2
-            }
-        };
-        shown.sort_by_key(|(_, t)| rank(t));
-        let any_same = shown.iter().any(|(_, t)| rank(t) == 1);
-        let mut last = 0;
-        let rows = shown
+        let rows = source_target_rows(&self.source_target_list, &current, &self.source_query)
             .into_iter()
-            .map(|(i, t)| {
-                let group = rank(t);
-                let heading = if group != last && group == 1 {
-                    format!(
-                        "Same application: {}",
-                        current_app.as_deref().unwrap_or_default()
-                    )
-                } else if group != last && group == 2 && any_same {
-                    "Other".to_owned()
-                } else {
-                    String::new()
-                };
-                last = group;
-                SourceTargetData {
-                    name: t.name.as_str().into(),
-                    current: !current.is_empty() && t.target == current,
-                    index: i as i32,
-                    heading: heading.into(),
-                }
+            .map(|r| SourceTargetData {
+                name: self.source_target_list[r.index].name.as_str().into(),
+                current: r.current,
+                index: r.index as i32,
+                heading: r.heading.into(),
             })
             .collect::<Vec<_>>();
         self.source_targets.set_vec(rows);
@@ -3787,10 +3745,118 @@ fn section<S: serde::de::DeserializeOwned>(
     }
 }
 
+/// One row of the Source tab's target list.
+#[derive(Debug, PartialEq, Eq)]
+struct SourceTargetRow {
+    /// Index in the listed targets.
+    index: usize,
+    /// The source's current target.
+    current: bool,
+    /// Set on the first row of a group, empty otherwise.
+    heading: String,
+}
+
+/// The Source tab's list: no pickers (an OS picker needs the add flow), filtered by the
+/// lower-case `query`, the current target first, then the other windows of the same
+/// application, then the rest (ADR-0077).
+fn source_target_rows(list: &[Target], current: &str, query: &str) -> Vec<SourceTargetRow> {
+    let current_app = list
+        .iter()
+        .find(|t| !current.is_empty() && t.target == current)
+        .and_then(|t| t.app.clone());
+    let rank = |t: &Target| {
+        if !current.is_empty() && t.target == current {
+            0
+        } else if current_app.is_some() && t.app == current_app {
+            1
+        } else {
+            2
+        }
+    };
+    let mut shown: Vec<(usize, &Target)> = list
+        .iter()
+        .enumerate()
+        .filter(|(_, t)| !t.picker)
+        .filter(|(_, t)| query.is_empty() || t.name.to_lowercase().contains(query))
+        .collect();
+    shown.sort_by_key(|(_, t)| rank(t));
+    let any_same = shown.iter().any(|(_, t)| rank(t) == 1);
+    let mut last = 0;
+    shown
+        .into_iter()
+        .map(|(index, t)| {
+            let group = rank(t);
+            let heading = if group == last {
+                String::new()
+            } else if group == 1 {
+                format!(
+                    "Same application: {}",
+                    current_app.as_deref().unwrap_or_default()
+                )
+            } else if any_same {
+                "Other".to_owned()
+            } else {
+                String::new()
+            };
+            last = group;
+            SourceTargetRow {
+                index,
+                current: group == 0,
+                heading,
+            }
+        })
+        .collect()
+}
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used)] // Tests fail by panicking.
 mod tests {
     use super::*;
+
+    fn window(name: &str, app: Option<&str>) -> Target {
+        Target {
+            name: name.to_owned(),
+            adapter: "test".to_owned(),
+            target: name.to_owned(),
+            is_default: false,
+            size: None,
+            app: app.map(str::to_owned),
+            picker: false,
+        }
+    }
+
+    #[test]
+    fn the_source_tab_lists_the_current_target_then_its_application_then_the_rest() {
+        let list = [
+            window("Other 1", Some("Other")),
+            window("Editor A", Some("Editor")),
+            window("Editor B", Some("Editor")),
+            window("Plain", None),
+        ];
+        let rows = source_target_rows(&list, "Editor A", "");
+        let order: Vec<_> = rows.iter().map(|r| r.index).collect();
+        assert_eq!(order, [1, 2, 0, 3]);
+        assert!(rows[0].current && rows[0].heading.is_empty());
+        assert_eq!(rows[1].heading, "Same application: Editor");
+        assert!(rows[2].heading == "Other" && rows[3].heading.is_empty());
+    }
+
+    #[test]
+    fn without_an_application_the_list_has_no_headings() {
+        let list = [window("A", None), window("B", None)];
+        let rows = source_target_rows(&list, "B", "");
+        assert_eq!(rows.iter().map(|r| r.index).collect::<Vec<_>>(), [1, 0]);
+        assert!(rows.iter().all(|r| r.heading.is_empty()));
+    }
+
+    #[test]
+    fn the_search_filters_and_pickers_are_left_out() {
+        let mut picker = window("Choose a window…", None);
+        picker.picker = true;
+        let list = [picker, window("Alpha", None), window("Beta", None)];
+        let rows = source_target_rows(&list, "", "bet");
+        assert_eq!(rows.iter().map(|r| r.index).collect::<Vec<_>>(), [2]);
+    }
     use rbs_app::stream_key::MemoryKeyStore;
 
     #[test]
