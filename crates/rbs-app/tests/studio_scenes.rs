@@ -401,6 +401,29 @@ fn items_lock_and_hide_and_sources_mute_rename_and_change_volume() {
     ));
     assert_eq!(row(&sources(&mut c), mic).get("mixer_hidden"), None);
 
+    // The canvas master (ADR-0081): live, left out of the list while it is the default.
+    assert_eq!(scenes(&mut c).get("master"), None);
+    ok(&c.call("canvas.set_master_volume", json!({"volume": 0.25})));
+    ok(&c.call("canvas.set_master_muted", json!({"muted": true})));
+    assert_eq!(
+        scenes(&mut c)["master"],
+        json!({"volume": 0.25, "muted": true})
+    );
+    // The UI hears it too.
+    next(&updates, |u| match u {
+        Update::Scenes(l) if l.master.muted && (l.master.volume - 0.25).abs() < f32::EPSILON => {
+            Some(())
+        }
+        _ => None,
+    });
+    for bad in [json!(1.5), json!(-0.1)] {
+        let answer = c.call("canvas.set_master_volume", json!({"volume": bad}));
+        assert_eq!(kind(&answer), "invalid_params", "{answer}");
+    }
+    ok(&c.call("canvas.set_master_volume", json!({"volume": 1.0})));
+    ok(&c.call("canvas.set_master_muted", json!({"muted": false})));
+    assert_eq!(scenes(&mut c).get("master"), None);
+
     // Rename: one undo step; the undo leaves the sound as it is now.
     ok(&c.call("source.rename", json!({"source": mic, "name": "Voice"})));
     assert_eq!(

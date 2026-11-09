@@ -94,6 +94,8 @@ export global Studio {
     in property <[MeterRow]> meters;
     // Sources kept out of the Mixer, still heard (ADR-0080); no meter runs for them.
     in property <[MeterRow]> hidden-meters;
+    // The master strip (ADR-0081): one row while the studio has a mixer, else none.
+    in property <[MeterRow]> master-meter;
     // How many of `meters` are the scene's own and how many are global (Mixer groups).
     in property <int> meter-scenes;
     in property <int> meter-globals;
@@ -252,6 +254,10 @@ export global Studio {
     // Undo (true) or redo (false) the newest scene edit.
     callback undo-edit(bool /* back */);
     callback reset-clip(int /* meter */);
+    callback reset-master-clip();
+    // The master's fader position (0 to 1, the strips' fader law) and its mute (ADR-0081).
+    callback set-master-volume(float);
+    callback set-master-muted(bool);
 
     // Recording: 0 off, 1 starting, 2 recording, 3 stopping.
     in property <int> rec-state;
@@ -1169,9 +1175,18 @@ component MeterView inherits Rectangle {
     // The name column: the kind's icon and the name, as wide as a third of a menu
     // at most (the scale under the bars lines up with it).
     in property <length> name-width;
+    // The master strip (ADR-0081): its own callbacks, no menu, no "more" button.
+    in property <bool> master;
+    property <string> title: root.master ? @tr("Master") : data.name;
+    function set-volume(v: float) {
+        if root.master { Studio.set-master-volume(v); } else { Studio.set-source-volume(data.id, v); }
+    }
+    function toggle-muted() {
+        if root.master { Studio.set-master-muted(!data.muted); } else { Studio.set-source-muted(data.id, !data.muted); }
+    }
     height: Tokens.size-control-md + Tokens.size-control-sm;
     accessible-role: progress-indicator;
-    accessible-label: data.name;
+    accessible-label: root.title;
     accessible-value: data.value;
     // The source's menu (ADR-0080): the "more" button, a right-click or the Menu key.
     menu := CommandMenu {
@@ -1180,7 +1195,7 @@ component MeterView inherits Rectangle {
     }
     TouchArea {
         pointer-event(e) => {
-            if e.kind == PointerEventKind.down && e.button == PointerEventButton.right {
+            if !root.master && e.kind == PointerEventKind.down && e.button == PointerEventButton.right {
                 menu.open({ x: self.mouse-x, y: self.mouse-y });
             }
         }
@@ -1195,7 +1210,7 @@ component MeterView inherits Rectangle {
                 Icon { name: data.muted ? IconName.speaker-off : Icons.named(data.icon); ink: data.muted ? Theme.text-disabled : Theme.text-secondary; }
             }
             Text {
-                text: data.name;
+                text: root.title;
                 color: data.muted ? Theme.text-disabled : Theme.text-primary;
                 font-size: Tokens.type-body-size;
                 vertical-alignment: center;
@@ -1221,12 +1236,12 @@ component MeterView inherits Rectangle {
             }
             // The fader under the bar, same width (ADR-0059 fader law, -60 to 0 dB).
             Slider {
-                label: @tr("Volume of {}", data.name);
+                label: @tr("Volume of {}", root.title);
                 value: data.volume;
                 value-text: data.volume-text;
                 enabled: !data.muted;
-                moved(v) => { Studio.set-source-volume(data.id, v); }
-                reset => { Studio.set-source-volume(data.id, 1); }
+                moved(v) => { root.set-volume(v); }
+                reset => { root.set-volume(1); }
             }
         }
         Text {
@@ -1247,7 +1262,7 @@ component MeterView inherits Rectangle {
             border-radius: Tokens.radius-sm;
             background: data.clipped ? Theme.meter-clip : transparent;
             accessible-role: button;
-            accessible-label: data.clipped ? @tr("Clipped. Reset the clip indicator of {}", data.name) : @tr("Not clipped: {}", data.name);
+            accessible-label: data.clipped ? @tr("Clipped. Reset the clip indicator of {}", root.title) : @tr("Not clipped: {}", root.title);
             accessible-action-default => { root.reset(); }
             TouchArea { clicked => { root.reset(); } }
         }
@@ -1256,19 +1271,21 @@ component MeterView inherits Rectangle {
             alignment: center;
             IconButton {
                 icon: data.muted ? IconName.speaker-off : IconName.speaker;
-                name: data.muted ? @tr("Unmute {}", data.name) : @tr("Mute {}", data.name);
+                name: data.muted ? @tr("Unmute {}", root.title) : @tr("Mute {}", root.title);
                 checked: data.muted;
-                clicked => { Studio.set-source-muted(data.id, !data.muted); }
+                clicked => { root.toggle-muted(); }
             }
         }
-        VerticalLayout {
+        if !root.master: VerticalLayout {
             alignment: center;
             IconButton {
                 icon: IconName.more;
-                name: @tr("More options for {}", data.name);
+                name: @tr("More options for {}", root.title);
                 clicked => { menu.open({ x: self.x, y: root.height }); }
             }
         }
+        // The master has no menu; the space keeps the scale and the bars aligned.
+        if root.master: Rectangle { width: Tokens.size-control-sm; }
     }
 }
 
@@ -1317,11 +1334,20 @@ component HiddenRow inherits Rectangle {
 component MeterStrip inherits Rectangle {
     in property <MeterRow> data;
     callback reset();
+    // The master strip (ADR-0081): its own callbacks, no menu, no "more" button.
+    in property <bool> master;
+    property <string> title: root.master ? @tr("Master") : data.name;
+    function set-volume(v: float) {
+        if root.master { Studio.set-master-volume(v); } else { Studio.set-source-volume(data.id, v); }
+    }
+    function toggle-muted() {
+        if root.master { Studio.set-master-muted(!data.muted); } else { Studio.set-source-muted(data.id, !data.muted); }
+    }
     width: Tokens.size-menu-sm * 0.4;
     background: Theme.surface-sunken;
     border-radius: Tokens.radius-md;
     accessible-role: progress-indicator;
-    accessible-label: data.name;
+    accessible-label: root.title;
     accessible-value: data.value;
     menu := CommandMenu {
         context: "mixer-source";
@@ -1329,7 +1355,7 @@ component MeterStrip inherits Rectangle {
     }
     TouchArea {
         pointer-event(e) => {
-            if e.kind == PointerEventKind.down && e.button == PointerEventButton.right {
+            if !root.master && e.kind == PointerEventKind.down && e.button == PointerEventButton.right {
                 menu.open({ x: self.mouse-x, y: self.mouse-y });
             }
         }
@@ -1338,7 +1364,7 @@ component MeterStrip inherits Rectangle {
         padding: Tokens.space-1;
         spacing: Tokens.space-1;
         Text {
-            text: data.name;
+            text: root.title;
             color: data.muted ? Theme.text-disabled : Theme.text-primary;
             font-size: Tokens.type-caption-size;
             horizontal-alignment: center;
@@ -1365,12 +1391,12 @@ component MeterStrip inherits Rectangle {
             }
             // The fader beside the bar (ADR-0059 fader law, -60 to 0 dB).
             VSlider {
-                label: @tr("Volume of {}", data.name);
+                label: @tr("Volume of {}", root.title);
                 value: data.volume;
                 value-text: data.volume-text;
                 enabled: !data.muted;
-                moved(v) => { Studio.set-source-volume(data.id, v); }
-                reset => { Studio.set-source-volume(data.id, 1); }
+                moved(v) => { root.set-volume(v); }
+                reset => { root.set-volume(1); }
             }
         }
         // The clip box and the level in words share one row, so the bar keeps its height.
@@ -1385,7 +1411,7 @@ component MeterStrip inherits Rectangle {
                 border-radius: Tokens.radius-sm;
                 background: data.clipped ? Theme.meter-clip : transparent;
                 accessible-role: button;
-                accessible-label: data.clipped ? @tr("Clipped. Reset the clip indicator of {}", data.name) : @tr("Not clipped: {}", data.name);
+                accessible-label: data.clipped ? @tr("Clipped. Reset the clip indicator of {}", root.title) : @tr("Not clipped: {}", root.title);
                 accessible-action-default => { root.reset(); }
                 TouchArea { clicked => { root.reset(); } }
             }
@@ -1404,13 +1430,13 @@ component MeterStrip inherits Rectangle {
             spacing: Tokens.space-2;
             IconButton {
                 icon: data.muted ? IconName.speaker-off : IconName.speaker;
-                name: data.muted ? @tr("Unmute {}", data.name) : @tr("Mute {}", data.name);
+                name: data.muted ? @tr("Unmute {}", root.title) : @tr("Mute {}", root.title);
                 checked: data.muted;
-                clicked => { Studio.set-source-muted(data.id, !data.muted); }
+                clicked => { root.toggle-muted(); }
             }
-            more := IconButton {
+            if !root.master: more := IconButton {
                 icon: IconName.more;
-                name: @tr("More options for {}", data.name);
+                name: @tr("More options for {}", root.title);
                 clicked => { menu.open({ x: self.x, y: root.height }); }
             }
         }
@@ -1493,6 +1519,24 @@ export component MixerPanel inherits Rectangle {
                     }
                 }
             }
+            // The master strip (ADR-0081): after a divider, at the end of the strips.
+            if Studio.master-meter.length > 0: Rectangle {
+                width: Tokens.size-border;
+                background: Theme.border-subtle;
+            }
+            if Studio.master-meter.length > 0: VerticalLayout {
+                spacing: Tokens.size-field-gap;
+                SectionHeader { title: @tr("Master"); }
+                HorizontalLayout {
+                    // The height under the header, so the strip fills the panel.
+                    height: max(0px, root.height - 2 * Tokens.size-panel-pad - Tokens.size-control-sm - Tokens.size-field-gap);
+                    MeterStrip {
+                        master: true;
+                        data: Studio.master-meter[0];
+                        reset => { Studio.reset-master-clip(); }
+                    }
+                }
+            }
             if Studio.hidden-meters.length > 0: VerticalLayout {
                 width: Tokens.size-menu-sm;
                 spacing: Tokens.size-field-gap;
@@ -1559,6 +1603,22 @@ export component MixerPanel inherits Rectangle {
                     name-width: root.name-width;
                     data: m;
                     reset => { Studio.reset-clip(i); }
+                }
+            }
+            // The master (ADR-0081): after the groups, under a divider, so the scale
+            // below serves it too.
+            if Studio.master-meter.length > 0: VerticalLayout {
+                padding-top: Tokens.size-section-gap;
+                spacing: Tokens.size-field-gap;
+                Rectangle {
+                    height: Tokens.size-border;
+                    background: Theme.border-subtle;
+                }
+                MeterView {
+                    master: true;
+                    name-width: root.name-width;
+                    data: Studio.master-meter[0];
+                    reset => { Studio.reset-master-clip(); }
                 }
             }
             // The labelled scale (dBFS) under the bars, aligned with them.

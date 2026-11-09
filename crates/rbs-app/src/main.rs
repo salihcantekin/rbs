@@ -2405,6 +2405,15 @@ fn install_studio(g: &Studio<'_>, ctx: &Ctx) {
     on!(on_set_source_mixer_hidden, |app, id: i32, hidden: bool| {
         app.studio.set_source_mixer_hidden(id, hidden);
     });
+    on!(on_set_master_volume, |app, position: f32| {
+        app.studio.set_master_volume(position);
+    });
+    on!(on_set_master_muted, |app, muted: bool| {
+        app.studio.set_master_muted(muted);
+    });
+    on!(on_reset_master_clip, |app| {
+        app.studio.reset_master_clip();
+    });
     on!(on_set_source_volume, |app, id: i32, position: f32| {
         app.studio.set_source_volume(id, position);
     });

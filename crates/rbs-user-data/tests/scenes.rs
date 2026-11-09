@@ -156,7 +156,7 @@ fn a_collection_round_trips_exactly_with_its_counters() {
         "visible = false",
         "canvas = 0",
         "format = 7",
-        "master = { volume = 0.5, muted = true }",
+        "[canvases.master]",
         "mixer_hidden = true",
         "globals = ",
         "sync_offset_ms = -40",
