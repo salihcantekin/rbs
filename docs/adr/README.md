@@ -90,3 +90,4 @@ An ADR records one decision that is hard to reverse or affects more than one cra
 | [0078](0078-saved-section-state-and-shared-section-components.md) | Saved section state and shared section components in every panel | Accepted |
 | [0080](0080-hide-sources-in-the-mixer.md) | Hide sources in the Mixer | Accepted |
 | [0081](0081-master-strip-in-the-mixer.md) | Master strip in the Mixer: a per-canvas master volume and mute | Accepted |
+| [0082](0082-audio-filter-chains-on-sources.md) | Audio filter chains on sources: shared parameter schema (rbs-params), audio filter nodes, gain and noise gate | Proposed |
