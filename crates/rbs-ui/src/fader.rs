@@ -53,9 +53,16 @@ pub fn volume_text(volume: f32) -> String {
 /// fader's range is the whole range (boost is a filter, not the fader). `None` for
 /// anything else, so the caller keeps the old level.
 pub fn parse_position(text: &str) -> Option<f32> {
-    let text = text.trim().to_lowercase().replace('\u{2212}', "-").replace(',', ".");
+    let text = text
+        .trim()
+        .to_lowercase()
+        .replace('\u{2212}', "-")
+        .replace(',', ".");
     let text = text.strip_suffix("db").unwrap_or(&text).trim();
-    if matches!(text, "-inf" | "inf" | "-infinity" | "mute" | "muted" | "silent" | "off") {
+    if matches!(
+        text,
+        "-inf" | "inf" | "-infinity" | "mute" | "muted" | "silent" | "off"
+    ) {
         return Some(0.0);
     }
     let db: f32 = text.parse().ok()?;
