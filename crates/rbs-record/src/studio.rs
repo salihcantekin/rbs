@@ -36,7 +36,7 @@ use rbs_nodes::{
 };
 use rbs_scene::SceneCollection;
 use rbs_scene::binder::{BindProblem, BindReport, BoundCompositor, BoundMixer, Role, SceneBinder};
-use rbs_scene::model::{CanvasId, FilterId, SourceAudio, SourceId};
+use rbs_scene::model::{CanvasId, FilterId, MasterAudio, SourceAudio, SourceId};
 use rbs_sources::{
     InstanceContext, SourceInstance, SourceTypes, filter_values_lenient, node_layers,
 };
@@ -611,6 +611,8 @@ pub struct Studio {
     /// Volume and mute per source, from the last [`Studio::update`] or
     /// [`Studio::set_mix`].
     mix: BTreeMap<SourceId, SourceAudio>,
+    /// The canvas's master volume and mute (ADR-0081), from the same calls.
+    master: MasterAudio,
     /// Bound filters, with an instance once scheduled.
     filters: Vec<FilterEntry>,
     /// Stored filter settings adjusted on load.
@@ -786,7 +788,9 @@ impl Studio {
             let (node, params, stats) = MixerNode::new(
                 settings.audio_graph,
                 MAX_LAYERS,
-                MixerParams::new(Vec::new()).with_master_meter(Arc::clone(&master)),
+                MixerParams::new(Vec::new())
+                    .with_master(master_of(collection, canvas_id).gain())
+                    .with_master_meter(Arc::clone(&master)),
             );
             engine.adopt::<()>(parts.audio, mixer_id, Box::new(node))?;
             let sink = MeterSinkNode::new();
@@ -833,6 +837,7 @@ impl Studio {
             pending_takes: Vec::new(),
             strips: Vec::new(),
             mix: mix_of(collection),
+            master: master_of(collection, canvas_id),
             filters: Vec::new(),
             filter_problems: Vec::new(),
             camera: None,
@@ -903,6 +908,7 @@ impl Studio {
             .map_err(RecordError::Bind)?;
         self.collection = collection.clone();
         self.mix = mix_of(collection);
+        self.master = master_of(collection, self.settings.canvas);
         let (failed, problems) = self.reconcile(sources, Some(report), Strictness::Lenient)?;
         Ok(Updated { problems, failed })
     }
@@ -1182,9 +1188,11 @@ impl Studio {
                     .filter(|old| !new.iter().any(|n| n.producer == old.producer))
                     .cloned(),
             );
-            let _ = mixer.params.send(mixer_params(&union, &mixer.master));
+            let _ = mixer
+                .params
+                .send(mixer_params(&union, &mixer.master, self.master));
             if union.len() != new.len() {
-                trimmed = Some(mixer_params(&new, &mixer.master));
+                trimmed = Some(mixer_params(&new, &mixer.master, self.master));
             }
             self.strips = new;
         }
@@ -1329,13 +1337,15 @@ impl Studio {
         self.scene_preview.is_some()
     }
 
-    /// Volume and mute only (ADR-0059): takes the sources' `audio` from `collection`
-    /// and sends the mixer the strips it already has at the new levels, without binding
+    /// Volume and mute only (ADR-0059, ADR-0081): takes the sources' `audio` and the
+    /// canvas's master from `collection` and sends the mixer the strips it already has
+    /// at the new levels and the new master gain, without binding
     /// or applying the graph, so a fader drag stays cheap. The mixer ramps to them.
     /// Every other change goes through [`Studio::update`], which also sends the levels.
     /// Returns false if the studio has no mixer.
     pub fn set_mix(&mut self, collection: &SceneCollection) -> bool {
         self.mix = mix_of(collection);
+        self.master = master_of(collection, self.settings.canvas);
         for strip in &mut self.strips {
             if let Some(audio) = self.mix.get(&strip.source) {
                 strip.audio = *audio;
@@ -1344,7 +1354,9 @@ impl Studio {
         let Some(mixer) = &mut self.mixer else {
             return false;
         };
-        let _ = mixer.params.send(mixer_params(&self.strips, &mixer.master));
+        let _ = mixer
+            .params
+            .send(mixer_params(&self.strips, &mixer.master, self.master));
         true
     }
 
@@ -2546,9 +2558,17 @@ struct MixStrip {
     audio: SourceAudio,
 }
 
-/// The mixer's parameters for `strips` (each at its source's volume and mute) and the
-/// master meter.
-fn mixer_params(strips: &[MixStrip], master: &Arc<LevelMeter>) -> MixerParams {
+/// The canvas's master volume and mute (the defaults for a canvas that is gone).
+fn master_of(collection: &SceneCollection, canvas: CanvasId) -> MasterAudio {
+    collection
+        .canvas(canvas)
+        .map(|c| c.master)
+        .unwrap_or_default()
+}
+
+/// The mixer's parameters for `strips` (each at its source's volume and mute), the
+/// master gain (its volume, or silence while muted) and the master meter.
+fn mixer_params(strips: &[MixStrip], meter: &Arc<LevelMeter>, master: MasterAudio) -> MixerParams {
     let strips = strips
         .iter()
         .map(|s| {
@@ -2559,5 +2579,7 @@ fn mixer_params(strips: &[MixStrip], master: &Arc<LevelMeter>) -> MixerParams {
             }
         })
         .collect();
-    MixerParams::new(strips).with_master_meter(Arc::clone(master))
+    MixerParams::new(strips)
+        .with_master(master.gain())
+        .with_master_meter(Arc::clone(meter))
 }

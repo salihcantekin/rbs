@@ -2,7 +2,7 @@
 //! [`rbs_scene::SceneCollection`], mapping one-to-one onto the model (ADR-0021).
 //!
 //! ```toml
-//! format = 5
+//! format = 7
 //! kind = "scene-collection"
 //! name = "Main show"
 //!
@@ -21,6 +21,7 @@
 //! frame_rate = [30, 1]         # numerator, denominator
 //! program = 0                  # scene id; optional, like preview
 //! # globals = 2                # the canvas's global scene (format 5, ADR-0065)
+//! # master = { volume = 0.5, muted = true }   # the canvas's master (format 7, ADR-0081)
 //!
 //! [[sources]]
 //! id = 0
@@ -56,8 +57,8 @@ use rbs_core::timing::FrameRate;
 use rbs_graph::node::NodeTypeId;
 use rbs_scene::model::{
     Border, Canvas, CanvasId, Crop, Filter, FilterId, ItemContent, ItemId, ItemStyle, Layout,
-    Scene, SceneId, SceneItem, SceneScope, SettingValue, Settings, Shadow, Shape, Source,
-    SourceAudio, SourceId,
+    MasterAudio, Scene, SceneId, SceneItem, SceneScope, SettingValue, Settings, Shadow, Shape,
+    Source, SourceAudio, SourceId,
 };
 use rbs_scene::{IdCounters, SceneCollection};
 use serde::{Deserialize, Serialize};
@@ -107,6 +108,20 @@ struct CanvasDoc {
     /// The canvas's global scene (format 5, ADR-0065).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     globals: Option<u32>,
+    /// The canvas's master volume and mute, written only when not the default
+    /// (format 7, ADR-0081).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    master: Option<MasterDoc>,
+}
+
+/// A canvas's master: each key is optional and defaults to full volume, not muted.
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct MasterDoc {
+    #[serde(default = "one", skip_serializing_if = "is_one")]
+    volume: f64,
+    #[serde(default, skip_serializing_if = "is_false")]
+    muted: bool,
 }
 
 #[derive(Serialize, Deserialize, Clone)]
@@ -413,7 +428,7 @@ fn settings(s: BTreeMap<String, Value>) -> Settings {
 
 impl Document for SceneCollection {
     const KIND: &'static str = "scene-collection";
-    const FORMAT: u32 = 6;
+    const FORMAT: u32 = 7;
 
     /// Format 2 adds the optional layout `style` (ADR-0053); a format 1 body is a
     /// format 2 body without styles. Format 3 adds the optional item `locked` and
@@ -421,11 +436,12 @@ impl Document for SceneCollection {
     /// without them. Format 4 adds the optional source `sync_offset_ms` (ADR-0062); a
     /// format 3 body is a format 4 body without it. Format 5 adds the optional canvas
     /// `globals` (ADR-0065); a format 4 body is a format 5 body without it. Format 6 adds the optional source
-    /// `mixer_hidden` (ADR-0080); a format 5 body is a format 6 body without it.
+    /// `mixer_hidden` (ADR-0080); a format 5 body is a format 6 body without it. Format 7 adds the optional canvas
+    /// `master` (ADR-0081); a format 6 body is a format 7 body without it.
     fn upgrade(from: u32, body: &mut toml::Table) -> Result<(), String> {
         let _ = body;
         match from {
-            1..=5 => Ok(()),
+            1..=6 => Ok(()),
             _ => Err(format!("format {from} cannot be read")),
         }
     }
@@ -445,6 +461,10 @@ impl Document for SceneCollection {
                     program: c.program.map(SceneId::get),
                     preview: c.preview.map(SceneId::get),
                     globals: c.globals.map(SceneId::get),
+                    master: (!c.master.is_default()).then(|| MasterDoc {
+                        volume: f64::from(c.master.volume),
+                        muted: c.master.muted,
+                    }),
                 }
             })
             .collect();
@@ -555,6 +575,9 @@ impl Document for SceneCollection {
                 canvas.program = c.program.map(SceneId::from_raw);
                 canvas.preview = c.preview.map(SceneId::from_raw);
                 canvas.globals = c.globals.map(SceneId::from_raw);
+                if let Some(m) = c.master {
+                    canvas.master = MasterAudio::new(m.volume as f32, m.muted);
+                }
                 Ok(canvas)
             })
             .collect::<Result<Vec<_>, String>>()?;

@@ -46,8 +46,8 @@ use rbs_record::{
 };
 use rbs_scene::SceneCollection;
 use rbs_scene::model::{
-    Border, CanvasId, Crop, FilterId, ItemContent, ItemId, ItemStyle, Layout, Scene, SceneId,
-    SceneItem, SceneScope, SettingValue, Settings, Shadow, Shape, SourceAudio, SourceId,
+    Border, CanvasId, Crop, FilterId, ItemContent, ItemId, ItemStyle, Layout, MasterAudio, Scene,
+    SceneId, SceneItem, SceneScope, SettingValue, Settings, Shadow, Shape, SourceAudio, SourceId,
 };
 use rbs_scene::{SceneError, Undo};
 use rbs_sources::types::{self, keys};
@@ -410,6 +410,17 @@ pub enum Command {
     SetSourceMuted {
         /// The source.
         id: SourceId,
+        /// Muted.
+        muted: bool,
+    },
+    /// The canvas's master volume, a linear factor from 0 to 1 (ADR-0081). A live
+    /// control like a source's volume: not on the undo stack, no rebind.
+    SetMasterVolume {
+        /// From 0 to 1.
+        volume: f32,
+    },
+    /// Mute or unmute the canvas's master (ADR-0081). A live control.
+    SetMasterMuted {
         /// Muted.
         muted: bool,
     },
@@ -889,7 +900,7 @@ pub struct SourceEntry {
 
 /// The scenes and sources of the collection, as the Scenes panel and the source
 /// pickers show them (ADR-0059).
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct SceneList {
     /// The scenes the canvas may show, in panel order.
     pub scenes: Vec<SceneRow>,
@@ -897,6 +908,8 @@ pub struct SceneList {
     pub program: SceneId,
     /// The preview scene in studio mode (ADR-0061); `None` outside it.
     pub preview: Option<SceneId>,
+    /// The canvas's master volume and mute (ADR-0081).
+    pub master: MasterAudio,
     /// Every source of the collection, by name.
     pub sources: Vec<SourceEntry>,
 }
@@ -945,6 +958,9 @@ pub enum Update {
     /// The scenes, the one on air and the collection's sources, after any change of
     /// them (ADR-0059).
     Scenes(SceneList),
+    /// The studio mixer's master meter, when the studio has one and each time it is
+    /// made again (ADR-0081); `None` while there is no mixer.
+    MasterMeter(Option<Arc<rbs_audio::LevelMeter>>),
     /// The answer to [`Command::SetSourceBox`] number `seq`: `ok` when the box is the
     /// source's now (changed or already so), else it was refused (an
     /// [`Update::Error`] says why).
@@ -1464,6 +1480,8 @@ struct Host {
     scene_preview_sent: Option<PreviewEndpoint>,
     /// The scene list as last sent.
     scenes_shown: Option<SceneList>,
+    /// The master meter last sent to the UI.
+    master_sent: Option<Arc<rbs_audio::LevelMeter>>,
     /// The last picture size seen per video source (ADR-0058).
     sizes: BTreeMap<SourceId, (u32, u32)>,
     /// The user's undo history of scene edits, shared with control API clients.
@@ -1860,6 +1878,7 @@ fn start(
             held,
             scene_preview_sent: None,
             scenes_shown: None,
+            master_sent: None,
             sizes: BTreeMap::new(),
             history: History::new(),
             history_shown: (None, None),
@@ -2001,6 +2020,14 @@ impl Host {
             }
             Command::SetSourceMixerHidden { id, hidden } => {
                 let done = self.set_source_mixer_hidden(id, hidden);
+                self.answer_live(done, notify);
+            }
+            Command::SetMasterVolume { volume } => {
+                let done = self.set_master(Some(volume), None);
+                self.answer_live(done, notify);
+            }
+            Command::SetMasterMuted { muted } => {
+                let done = self.set_master(None, Some(muted));
                 self.answer_live(done, notify);
             }
             Command::AddFilter { source, type_id } => {
@@ -3849,6 +3876,34 @@ impl Host {
         Ok(changed)
     }
 
+    /// The canvas's master volume or mute (ADR-0081): a live control, not on the undo
+    /// stack, sent to the mixer without rebinding. `Ok(false)` when nothing changed.
+    fn set_master(&mut self, volume: Option<f32>, muted: Option<bool>) -> Result<bool, Refusal> {
+        let canvas = self.canvas;
+        let now = self
+            .collection
+            .canvas(canvas)
+            .ok_or_else(|| Refusal::NotFound("There is no canvas.".to_owned()))?
+            .master;
+        let mut changed = false;
+        if let Some(v) = volume.filter(|v| *v != now.volume) {
+            self.collection
+                .set_canvas_master_volume(canvas, v)
+                .map_err(|e| Refusal::of(&e))?;
+            changed = true;
+        }
+        if let Some(m) = muted.filter(|m| *m != now.muted) {
+            self.collection
+                .set_canvas_master_muted(canvas, m)
+                .map_err(|e| Refusal::of(&e))?;
+            changed = true;
+        }
+        if changed {
+            self.studio.set_mix(&self.collection);
+        }
+        Ok(changed)
+    }
+
     /// Hides a source from the Mixer or shows it (ADR-0080): a view flag, not on the
     /// undo stack, and the mix is untouched. `Ok(false)` when nothing changed.
     fn set_source_mixer_hidden(&mut self, id: SourceId, hidden: bool) -> Result<bool, Refusal> {
@@ -4247,6 +4302,11 @@ impl Host {
                 .collect(),
             program: self.scene,
             preview: self.preview(),
+            master: self
+                .collection
+                .canvas(self.canvas)
+                .map(|c| c.master)
+                .unwrap_or_default(),
             sources,
         }
     }
@@ -4504,6 +4564,16 @@ impl Host {
     fn publish(&mut self, notify: &dyn Fn(Update)) {
         self.publish_save();
         self.refresh_sizes();
+        let master = self.studio.master_meter().cloned();
+        let same = match (&self.master_sent, &master) {
+            (Some(a), Some(b)) => Arc::ptr_eq(a, b),
+            (None, None) => true,
+            _ => false,
+        };
+        if !same {
+            self.master_sent = master.clone();
+            notify(Update::MasterMeter(master));
+        }
         let scenes = self.scene_list();
         if self.scenes_shown.as_ref() != Some(&scenes) {
             self.scenes_shown = Some(scenes.clone());
@@ -4983,6 +5053,24 @@ impl ApiTarget<'_> {
             C::SourceSetMixerHidden(p) => {
                 let changed = host
                     .set_source_mixer_hidden(SourceId::from_raw(p.source), p.hidden)
+                    .map_err(|e| refused(&e))?;
+                if changed {
+                    host.publish(notify);
+                }
+                Ok(Response::Done(Empty {}))
+            }
+            C::CanvasSetMasterVolume(p) => {
+                let changed = host
+                    .set_master(Some(p.volume), None)
+                    .map_err(|e| refused(&e))?;
+                if changed {
+                    host.publish(notify);
+                }
+                Ok(Response::Done(Empty {}))
+            }
+            C::CanvasSetMasterMuted(p) => {
+                let changed = host
+                    .set_master(None, Some(p.muted))
                     .map_err(|e| refused(&e))?;
                 if changed {
                     host.publish(notify);
@@ -5685,6 +5773,10 @@ fn api_scenes(list: &SceneList) -> api::SceneList {
             .collect(),
         program: list.program.get(),
         preview: list.preview.map(SceneId::get),
+        master: api::Master {
+            volume: list.master.volume,
+            muted: list.master.muted,
+        },
         sources: list
             .sources
             .iter()

@@ -54,6 +54,8 @@ fn show() -> SceneCollection {
     col.set_source_muted(mic, true).unwrap();
     col.set_source_sync_offset(mic, -40).unwrap();
     col.set_source_mixer_hidden(mic, true).unwrap();
+    col.set_canvas_master_volume(wide, 0.5).unwrap();
+    col.set_canvas_master_muted(wide, true).unwrap();
 
     let (talk, _) = col.add_scene("Talk", SceneScope::Shared).unwrap();
     let (cam_item, _) = col
@@ -153,7 +155,8 @@ fn a_collection_round_trips_exactly_with_its_counters() {
         "enabled = false",
         "visible = false",
         "canvas = 0",
-        "format = 6",
+        "format = 7",
+        "[canvases.master]",
         "mixer_hidden = true",
         "globals = ",
         "sync_offset_ms = -40",
