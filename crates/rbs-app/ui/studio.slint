@@ -39,7 +39,8 @@ export struct KindData { code: int, label: string }
 export struct MarkData { x: length, y: length, w: length, h: length, kind: int }
 export struct TargetData { name: string, is-default: bool }
 // One line of the Source tab's target list: `index` is its place in the answer, `current` marks the source's own target (ADR-0077).
-export struct SourceTargetData { name: string, current: bool, index: int }
+// `heading` is set on the first row of a group ("Same application", "Other").
+export struct SourceTargetData { name: string, current: bool, index: int, heading: string }
 // One meter's moving parts as fractions of the bar (rbs_ui::meter::MeterView::zones),
 // its peak-hold position and zone, the clip latch and the accessible value (U16).
 export struct MeterRow {
@@ -2725,10 +2726,20 @@ component SourceFields inherits VerticalLayout {
     }
     VerticalLayout {
         spacing: Tokens.space-1;
-        for t in Studio.source-targets: MenuItem {
-            text: t.name;
-            checked: t.current;
-            activated => { Studio.retarget-source(data.id, t.index); }
+        for t in Studio.source-targets: VerticalLayout {
+            spacing: Tokens.space-1;
+            if t.heading != "": Text {
+                text: t.heading;
+                color: Theme.text-secondary;
+                font-size: Tokens.type-caption-size;
+                font-weight: Tokens.type-label-weight;
+                overflow: elide;
+            }
+            MenuItem {
+                text: t.name;
+                checked: t.current;
+                activated => { Studio.retarget-source(data.id, t.index); }
+            }
         }
     }
 }

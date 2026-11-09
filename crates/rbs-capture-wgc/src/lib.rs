@@ -35,6 +35,15 @@ use rbs_core::time::Timestamp;
 #[cfg(windows)]
 mod win;
 
+/// The program name in an executable path: the file name without its extension
+/// (`C:\\Apps\\obs64.exe` is `obs64`), or `None` when nothing is left.
+#[cfg_attr(not(windows), allow(dead_code))]
+fn exe_stem(path: &str) -> Option<&str> {
+    let file = path.rsplit(['\\', '/']).next()?;
+    let stem = file.rsplit_once('.').map_or(file, |(stem, _)| stem);
+    (!stem.is_empty()).then_some(stem)
+}
+
 use rbs_capture::handoff::Ring;
 
 /// Adapter id.
@@ -200,6 +209,18 @@ impl<O: AsRef<Ring> + LeaseOwner + 'static> Consumer<O> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn exe_stem_takes_the_file_name_without_extension() {
+        assert_eq!(
+            super::exe_stem(r"C:\Program Files\App\app.exe"),
+            Some("app")
+        );
+        assert_eq!(super::exe_stem("/usr/bin/tool"), Some("tool"));
+        assert_eq!(super::exe_stem("noext"), Some("noext"));
+        assert_eq!(super::exe_stem(r"C:\dir\"), None);
+        assert_eq!(super::exe_stem(""), None);
+    }
+
     use super::*;
     use rbs_capture::handoff::FrameMeta;
     use rbs_core::media::{ColorSpace, MemoryKind, PixelFormat};

@@ -784,3 +784,11 @@ fn source_errors_map_to_faults() {
         SourceFault::Other
     );
 }
+
+#[test]
+fn window_targets_carry_the_owning_application() {
+    let (reg, _) = registry();
+    let list = reg.targets(&ty(types::WINDOW_SOURCE)).unwrap();
+    let window = list.iter().find(|t| t.target == "test-window-0").unwrap();
+    assert_eq!(window.app.as_deref(), Some("Test application"));
+}

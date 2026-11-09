@@ -138,6 +138,10 @@ pub struct CaptureTarget {
     pub size: Option<(u32, u32)>,
     /// Supported modes for cameras; empty for displays and windows.
     pub modes: Vec<CameraMode>,
+    /// Name of the application that owns the window, when the OS tells it
+    /// (`None` for displays, cameras and adapters that cannot know). Only for
+    /// grouping and display; hosts never branch on its value (P3).
+    pub app: Option<String>,
 }
 
 impl CaptureTarget {
@@ -149,12 +153,19 @@ impl CaptureTarget {
             name: name.into(),
             size: None,
             modes: Vec::new(),
+            app: None,
         }
     }
 
     /// Sets the native size.
     pub fn with_size(mut self, width: u32, height: u32) -> Self {
         self.size = Some((width, height));
+        self
+    }
+
+    /// Sets the name of the owning application.
+    pub fn with_app(mut self, app: impl Into<String>) -> Self {
+        self.app = Some(app.into());
         self
     }
 

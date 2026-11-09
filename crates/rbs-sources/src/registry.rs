@@ -109,6 +109,8 @@ pub struct SourceTarget {
     /// Native size in pixels when the adapter knows it (displays and windows), so a
     /// picker can place the source with its aspect ratio.
     pub size: Option<(u32, u32)>,
+    /// The application that owns a window, when the OS tells it (grouping only).
+    pub app: Option<String>,
 }
 
 /// One adapter's OS picker for a capture kind, from [`SourceTypes::pickers`]. It holds
@@ -154,6 +156,7 @@ impl SourcePicker {
             name: t.name,
             is_default: false,
             size: t.size,
+            app: t.app,
         })
     }
 }
@@ -513,6 +516,7 @@ impl SourceTypes {
                             name: t.name,
                             is_default: false,
                             size: t.size,
+                            app: t.app,
                         });
                     }
                 }
@@ -526,6 +530,7 @@ impl SourceTypes {
                             name: e.name,
                             is_default: e.is_default,
                             size: None,
+                            app: None,
                         });
                     }
                 }

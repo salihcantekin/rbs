@@ -132,7 +132,8 @@ impl TestCaptureFactory {
                         TargetKind::Window,
                         "Test window",
                     )
-                    .with_size(640, 360),
+                    .with_size(640, 360)
+                    .with_app("Test application"),
                     WINDOW_MAX,
                 ),
                 target(
