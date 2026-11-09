@@ -1,7 +1,7 @@
 //! Filter settings in the scene model to and from filter values (spec
 //! `video-filters.md`, "Values"; ADR-0062 decisions 2 and 8).
 
-use rbs_filters::{FieldKind, FilterError, FilterType, Value, Values, color_text, parse_color};
+use rbs_filters::{FieldKind, FilterType, ParamError, Value, Values, color_text, parse_color};
 use rbs_scene::model::{SettingValue, Settings};
 
 /// The value a stored setting holds for `kind`, or `None` for the wrong kind.
@@ -16,15 +16,15 @@ fn value_of(kind: &FieldKind, v: &SettingValue) -> Option<Value> {
 
 /// Strict conversion, for edits: unknown keys, wrong kinds and out-of-range or
 /// non-finite numbers are refused; missing keys take their defaults.
-pub fn filter_values(ty: &dyn FilterType, settings: &Settings) -> Result<Values, FilterError> {
+pub fn filter_values(ty: &dyn FilterType, settings: &Settings) -> Result<Values, ParamError> {
     let fields = ty.fields();
     let mut pairs = Vec::with_capacity(settings.len());
     for (key, v) in settings {
         let field = fields
             .iter()
             .find(|f| f.key == key)
-            .ok_or_else(|| FilterError::UnknownKey(key.clone()))?;
-        let value = value_of(&field.kind, v).ok_or(FilterError::WrongKind(field.key))?;
+            .ok_or_else(|| ParamError::UnknownKey(key.clone()))?;
+        let value = value_of(&field.kind, v).ok_or(ParamError::WrongKind(field.key))?;
         pairs.push((field.key, value));
     }
     Values::from_pairs(ty, pairs)
@@ -108,15 +108,15 @@ mod tests {
         assert_eq!(v.number(0), 4.0);
         assert_eq!(
             filter_values(blur, &s(&[("radius", SettingValue::Float(65.0))])),
-            Err(FilterError::OutOfRange("radius"))
+            Err(ParamError::OutOfRange("radius"))
         );
         assert_eq!(
             filter_values(blur, &s(&[("size", SettingValue::Float(1.0))])),
-            Err(FilterError::UnknownKey("size".to_owned()))
+            Err(ParamError::UnknownKey("size".to_owned()))
         );
         assert_eq!(
             filter_values(blur, &s(&[("radius", SettingValue::Bool(true))])),
-            Err(FilterError::WrongKind("radius"))
+            Err(ParamError::WrongKind("radius"))
         );
         let key = find(CHROMA_KEY).unwrap();
         assert_eq!(
@@ -124,7 +124,7 @@ mod tests {
                 key,
                 &s(&[("key_color", SettingValue::Text("green".into()))])
             ),
-            Err(FilterError::WrongKind("key_color"))
+            Err(ParamError::WrongKind("key_color"))
         );
     }
 

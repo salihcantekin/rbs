@@ -25,7 +25,7 @@ use rbs_graph::runtime::{
 
 use crate::node::{FilterNode, FilterStats, PRELUDE};
 use crate::types::{
-    FieldKind, FilterError, FilterType, MAX_FIELDS, MAX_PASSES, PassSource, Scale, Uniforms, Value,
+    FieldKind, FilterType, MAX_FIELDS, MAX_PASSES, ParamError, PassSource, Scale, Uniforms, Value,
     Values,
 };
 
@@ -39,6 +39,9 @@ pub fn check_type(ty: &dyn FilterType) -> Vec<String> {
     let fields = ty.fields();
     if fields.len() > MAX_FIELDS {
         problems.push(format!("{} fields, at most {MAX_FIELDS}", fields.len()));
+    }
+    if let Err(e) = rbs_params::check_fields(fields, MAX_FIELDS) {
+        problems.push(e);
     }
     for (i, f) in fields.iter().enumerate() {
         if f.key.is_empty()
@@ -96,7 +99,7 @@ pub fn check_type(ty: &dyn FilterType) -> Vec<String> {
     // Values: refusals and defaults.
     let defaults = Values::defaults(ty);
     if Values::from_pairs(ty, [("no_such_key", Value::Number(0.0))])
-        != Err(FilterError::UnknownKey("no_such_key".to_owned()))
+        != Err(ParamError::UnknownKey("no_such_key".to_owned()))
     {
         problems.push("an unknown key is not refused".to_owned());
     }
@@ -112,7 +115,7 @@ pub fn check_type(ty: &dyn FilterType) -> Vec<String> {
                     }
                 }
                 if Values::from_pairs(ty, [(f.key, Value::Color([0; 4]))])
-                    != Err(FilterError::WrongKind(f.key))
+                    != Err(ParamError::WrongKind(f.key))
                 {
                     problems.push(format!("{}: a colour is not refused", f.key));
                 }
@@ -123,13 +126,15 @@ pub fn check_type(ty: &dyn FilterType) -> Vec<String> {
                     }
                 }
             }
-            FieldKind::Color { .. } => {
+            FieldKind::Color { .. }
                 if Values::from_pairs(ty, [(f.key, Value::Number(0.0))])
-                    != Err(FilterError::WrongKind(f.key))
-                {
-                    problems.push(format!("{}: a number is not refused", f.key));
-                }
+                    != Err(ParamError::WrongKind(f.key)) =>
+            {
+                problems.push(format!("{}: a number is not refused", f.key));
             }
+            // Other kinds are checked by the shared schema conformance
+            // (`rbs_params::check_fields`) and not used by video filters yet.
+            _ => {}
         }
     }
     check_uniforms(ty, &defaults, &mut problems);

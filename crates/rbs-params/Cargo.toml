@@ -1,0 +1,16 @@
+[package]
+name = "rbs-params"
+description = "The settings schema shared by every kind of filter: fields, values and their validation (ADR-0082)."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+license.workspace = true
+publish.workspace = true
+
+# No dependencies on purpose: the schema is pure data, so video filters (GPU) and audio
+# filters (DSP) can share it without either layer knowing the other (P1, ADR-0082).
+[dependencies]
+
+[lints]
+workspace = true
