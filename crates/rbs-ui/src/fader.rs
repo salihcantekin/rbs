@@ -47,6 +47,37 @@ pub fn volume_text(volume: f32) -> String {
     }
 }
 
+/// The fader position for a level the user typed (ADR-0059): a number of dB such as
+/// "-6", "-6 dB", "\u{2212}6,5" or "0", or a word for silence ("-inf", "mute", "silent",
+/// "off"). Above 0 dB is full volume and below [`FLOOR_DB`] is silence, because the
+/// fader's range is the whole range (boost is a filter, not the fader). `None` for
+/// anything else, so the caller keeps the old level.
+pub fn parse_position(text: &str) -> Option<f32> {
+    let text = text
+        .trim()
+        .to_lowercase()
+        .replace('\u{2212}', "-")
+        .replace(',', ".");
+    let text = text.strip_suffix("db").unwrap_or(&text).trim();
+    if matches!(
+        text,
+        "-inf" | "inf" | "-infinity" | "mute" | "muted" | "silent" | "off"
+    ) {
+        return Some(0.0);
+    }
+    let db: f32 = text.parse().ok()?;
+    if !db.is_finite() {
+        return None;
+    }
+    if db >= TOP_DB {
+        Some(1.0)
+    } else if db < FLOOR_DB {
+        Some(0.0)
+    } else {
+        Some(position_of(10f32.powf(db / 20.0)))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -83,5 +114,25 @@ mod tests {
         assert_eq!(volume_text(1.0), "0 dB");
         assert_eq!(volume_text(0.0), "Silent");
         assert_eq!(volume_text(10f32.powf(-6.0 / 20.0)), "\u{2212}6.0 dB");
+    }
+
+    #[test]
+    fn typed_levels_become_fader_positions() {
+        let at = |t: &str| parse_position(t).unwrap_or(f32::NAN);
+        assert_eq!(at("0"), 1.0);
+        assert_eq!(at("+3"), 1.0);
+        assert_eq!(at(" 0 dB "), 1.0);
+        assert_eq!(at("-inf"), 0.0);
+        assert_eq!(at("Mute"), 0.0);
+        assert_eq!(at("-80"), 0.0);
+        assert!((at("-6") - position(-6.0)).abs() < 1e-5);
+        assert!((at("-6 dB") - at("-6")).abs() < 1e-6);
+        assert!((at("\u{2212}6,5 DB") - position(-6.5)).abs() < 1e-5);
+        // What the label says reads back as the same level.
+        let label = volume_text(volume_at(0.7));
+        assert!((at(&label) - 0.7).abs() < 0.01, "{label}");
+        for bad in ["", "dB", "abc", "-", "--6", "nan", "6 6"] {
+            assert_eq!(parse_position(bad), None, "{bad:?}");
+        }
     }
 }

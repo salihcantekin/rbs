@@ -3,7 +3,7 @@
 // Rust pushes state into the `Studio` global of every window and handles its callbacks
 // by sending commands to the studio's control thread.
 import { Theme, Tokens } from "tokens.slint";
-import { Sections, Button, Checkbox, ColorPicker, FocusRing, RingFocus, SectionHeader, Tabs, Icon, IconButton, IconName, Icons, MenuItem, MenuSurface, EmptyState, NumberField, Select, SegmentedControl, Slider, VSlider, TextField, Toggle } from "components.slint";
+import { Sections, Button, Checkbox, ColorPicker, FocusRing, RingFocus, SectionHeader, Tabs, Icon, IconButton, IconName, Icons, MenuItem, MenuSurface, EmptyState, NumberField, Select, SegmentedControl, Slider, VSlider, LevelText, TextField, Toggle } from "components.slint";
 import { SettingsCard, SettingRow, SettingBlock, SettingsStatus, SettingsNotice, SettingsCallout } from "settings.slint";
 import { CommandMenu } from "context_menu.slint";
 
@@ -259,6 +259,9 @@ export global Studio {
     // The master's fader position (0 to 1, the strips' fader law) and its mute (ADR-0081).
     callback set-master-volume(float);
     callback set-master-muted(bool);
+    // The fader position (0 to 1) of a level the user typed, such as "-6 dB"; -1 when the
+    // text is not a level. Pure: it reads nothing from the app.
+    pure callback level-position(string) -> float;
 
     // Recording: 0 off, 1 starting, 2 recording, 3 stopping.
     in property <int> rec-state;
@@ -1182,6 +1185,11 @@ component MeterView inherits Rectangle {
     function set-volume(v: float) {
         if root.master { Studio.set-master-volume(v); } else { Studio.set-source-volume(data.id, v); }
     }
+    function enter-level(t: string) -> bool {
+        if Studio.level-position(t) < 0 { return false; }
+        root.set-volume(Studio.level-position(t));
+        return true;
+    }
     function toggle-muted() {
         if root.master { Studio.set-master-muted(!data.muted); } else { Studio.set-source-muted(data.id, !data.muted); }
     }
@@ -1245,14 +1253,12 @@ component MeterView inherits Rectangle {
                 reset => { root.set-volume(1); }
             }
         }
-        Text {
+        LevelText {
             width: Tokens.size-control-md * 1.5;
             text: data.volume-text;
-            color: data.muted ? Theme.text-disabled : Theme.text-secondary;
-            font-size: Tokens.type-caption-size;
-            horizontal-alignment: right;
-            vertical-alignment: center;
-            accessible-role: none;
+            label: @tr("Volume of {}", root.title);
+            muted: data.muted;
+            entered(t) => { return root.enter-level(t); }
         }
         clip-box := Rectangle {
             width: Tokens.size-icon-box;
@@ -1341,6 +1347,11 @@ component MeterStrip inherits Rectangle {
     function set-volume(v: float) {
         if root.master { Studio.set-master-volume(v); } else { Studio.set-source-volume(data.id, v); }
     }
+    function enter-level(t: string) -> bool {
+        if Studio.level-position(t) < 0 { return false; }
+        root.set-volume(Studio.level-position(t));
+        return true;
+    }
     function toggle-muted() {
         if root.master { Studio.set-master-muted(!data.muted); } else { Studio.set-source-muted(data.id, !data.muted); }
     }
@@ -1416,12 +1427,12 @@ component MeterStrip inherits Rectangle {
                 accessible-action-default => { root.reset(); }
                 TouchArea { clicked => { root.reset(); } }
             }
-            Text {
+            LevelText {
+                width: Tokens.size-control-md * 2;
                 text: data.volume-text;
-                color: data.muted ? Theme.text-disabled : Theme.text-secondary;
-                font-size: Tokens.type-caption-size;
-                vertical-alignment: center;
-                accessible-role: none;
+                label: @tr("Volume of {}", root.title);
+                muted: data.muted;
+                entered(t) => { return root.enter-level(t); }
             }
         }
         // The mute button and the "more" button share the last row; the clip box has
@@ -2399,14 +2410,16 @@ component AudioFields inherits VerticalLayout {
                 enabled: !data.muted;
                 moved(v) => { Studio.set-source-volume(data.id, v); }
             }
-            Text {
+            LevelText {
                 min-width: Tokens.size-control-md * 1.5;
                 text: data.volume-text;
-                color: Theme.text-secondary;
-                font-size: Tokens.type-caption-size;
-                horizontal-alignment: right;
-                vertical-alignment: center;
-                accessible-role: none;
+                label: @tr("Volume of {}", data.name);
+                muted: data.muted;
+                entered(t) => {
+                    if Studio.level-position(t) < 0 { return false; }
+                    Studio.set-source-volume(data.id, Studio.level-position(t));
+                    return true;
+                }
             }
         }
         Checkbox {

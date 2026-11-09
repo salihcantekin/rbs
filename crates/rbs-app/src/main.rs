@@ -2405,6 +2405,12 @@ fn install_studio(g: &Studio<'_>, ctx: &Ctx) {
     on!(on_set_source_mixer_hidden, |app, id: i32, hidden: bool| {
         app.studio.set_source_mixer_hidden(id, hidden);
     });
+    g.on_level_position(|text| {
+        entry::guard_or(
+            || -1.0,
+            || rbs_ui::fader::parse_position(text.as_str()).unwrap_or(-1.0),
+        )
+    });
     on!(on_set_master_volume, |app, position: f32| {
         app.studio.set_master_volume(position);
     });
