@@ -1,0 +1,50 @@
+# ADR-0090: Recording protection: early warnings for disk and encoder trouble, ordered load shedding, and adaptive bitrate
+
+- Status: Proposed
+- Date: 2026-11-09
+- Deciders: Salih (owner)
+- Builds on: [ADR-0013](0013-zero-cost-when-unused.md), [ADR-0024](0024-node-restart-with-back-off.md), [ADR-0032](0032-fast-deterministic-tests.md), [ADR-0045](0045-recording-tail-on-stop.md), [ADR-0047](0047-several-outputs-per-canvas.md), [ADR-0055](0055-crash-resilience.md), [ADR-0086](0086-recording-sources-separately-iso.md), [ADR-0087](0087-output-cost-estimate-and-hardware-limits.md), [ADR-0088](0088-replay-buffer-and-retroactive-recording.md), [ADR-0089](0089-recording-markers-and-editor-project-export.md)
+- Spec: [recording](../specs/recording.md), [output-ports](../specs/output-ports.md) (`codec.reconfigure`), [control-api](../specs/control-api.md), [performance-budgets](../specs/performance-budgets.md)
+
+## Context
+
+The worst outcomes in live production are silent: a disk that fills at hour three, a recording that falls behind because the encoder or the disk cannot keep up, a stream that stutters because the uplink is worse than at the test. ADR-0055 makes the app survive faults and ADR-0087 predicts cost before the start; neither reacts to what happens during the take. The owner approved a protection feature: warn early when the disk is about to fill or an encoder lags, and lower the bit rate automatically when needed.
+
+What exists to build on: progress counters (late ticks, drops, queue depth, packets muxed, transport link counters: drops, reconnect attempts), `Studio::service` as the control loop, `codec.reconfigure` (a running encoder may accept a bitrate change; the capability lists which adapters do, and a CBR change must keep the rate-control mode), fragmented containers that stay playable after an abrupt end, and the ISO isolation rules (ADR-0086) that already say the master comes first.
+
+Constraints: no new work in hot paths (P15; reading existing counters is fine, adding counters to a node's `process` is a hot-path edit that needs measurement), nothing running when no output runs (P13), deterministic tests with no sleeping (ADR-0032), every threshold and action a user setting with a plain explanation (owner's standing rule), and an automatic quality change must never surprise the user silently.
+
+## Decision
+
+1. **A protection guard per running session.** When the first output starts, the studio creates a *guard* on the control thread; it is dropped when the last output ends. With no output running there is no guard, no timer and no polling. It samples once per second (disk once per five seconds, on a worker with a timeout, never on the engine control thread): the existing progress counters of each output (`output_counters` per `OutputId`) and track, namely encoder skips, export drops, late render ticks, the backlog peak per interval and the transport link counters, the free space and the write rate of each target folder, and the available system memory. It reads, never writes, the hot-path structures.
+2. **A pure state machine.** The decision logic is one pure function `Guard::step(now, sample) -> Vec<Action>` with explicit hysteresis state, tested with `TestClock` and synthetic samples (no real disk, no sleeping; ADR-0032). Real sampling and the execution of actions are thin layers around it.
+3. **Disk.** Before the start the preflight (ADR-0087) already checks free space for the planned duration. At run time the guard computes the *time left* (free space above the reserve divided by the current write rate of that folder) and raises: `notice` at `warn_minutes` (default 30), `warning` at a tenth of it (default 3), `critical` when the free space reaches `reserve` (default 1 GiB, user setting). At `critical`, the configured action runs: **stop cleanly** (default on: the recording ends through the normal tail path, ADR-0045, before the disk is full, so the files are complete and the user is told why) or *warn only*. A recording never runs the disk to zero by default.
+4. **Encoder, disk-speed and network lag.** "Lag" means, for an output or track, late ticks, a growing queue (the rate of encoder skips, export drops or late ticks above `lag_limit` per second for `lag_seconds`, defaults 1 and 3 s; the backlog peak above half of the output's limit also counts, so shedding acts before an output backlog fails the Output node for good) or, for a stream, a growing transport backlog or drops. The guard escalates through an **ordered list of shedding steps the user can edit** (each step has a switch; defaults in this order): (1) *stop separate tracks* (ISO video tracks, newest first, ADR-0086; their files end cleanly and the manifest records why), (2) *lower the bit rate* of the lagging output (decision 5), (3) *warn only*. Stopping the master is never an automatic shedding step; only decision 3's disk rule can stop it.
+5. **Adaptive bit rate (opt-in, second phase).** The encoder node has no parameter channel today, and ADR-0047 calls adding one a hot-path change and forbids per-output bit rate changes on a shared encoder. Adaptive bit rate is therefore a **second phase** that first adds that channel (before/after numbers, `hot-path-review`, Salih's sign-off, P15). It then applies only to CBR and CBR-padded sessions of adapters that list `bitrate` in `codec.reconfigure`, on an encoder that is not shared (it is shown unavailable, with the reason, for VBR, constant quality and shared encoders), lowers the bit rate by `step` percent (default 20 %) down to `floor` (default 40 % of the configured value), raises it back after `recover_seconds` (default 30) without lag, at most one change per `hold_seconds` (default 10). It helps a slow disk or network; it does not help a CPU-bound encoder, which the text says. The default is **off**. Phase one of this ADR ships without it.
+6. **Memory.** When available system memory falls below `min_memory` (default 1 GiB), the guard first shrinks the replay buffer (ADR-0088, the oldest data), then raises a warning; it never allocates in response.
+7. **Telling the user (never modal, never silent).** Each state change is: a toast with a plain sentence ("Recording will stop in about 3 minutes: the disk is almost full"), a line in the live indicator area following U4/U12 without hiding the On air state, an automatic marker when ADR-0089 markers are on, the event `protection.alert {level, kind, text, output?}`, and a log entry. A `warning` or `critical` state stays visible in Live controls until the user acknowledges it or the condition ends. After the take, the final report lists every guard event with its time. All text uses glossary terms and is localised.
+8. **Settings (user-visible and saved in the output profile, none hard-coded).** Settings › Recording › Protection: low-disk warning (minutes), reserve space, the action at critical (stop cleanly / warn only), the ordered shedding list with switches, `lag_limit` and `lag_seconds` in an advanced section, adaptive bit rate (separately for stream and recording: on/off, step, floor, recover time), minimum memory. Every control shows a one-line effect text and the default; reset per card. Visual parts follow rules 15 and 16 (proposal first, then screenshots in three themes).
+9. **Control API** (next free minor version): `protection.status` (levels per kind, time left, current adaptive step per output), the event of decision 7, settings through `settings.get/set`. No method disables the guard mid-take except through its settings, which take effect for new takes; changing a threshold during a take applies to the running guard through the same pure function.
+10. **Hot paths.** The first implementation reads existing counters only. If measurement shows a needed counter is missing (for example a queue depth not exposed), adding it is a separate small PR that is a hot-path change (before/after numbers, `hot-path-review`, Salih's sign-off, P15). The bit rate change of decision 5 is the exception and is hot-path work in its own PR.
+11. **Windows and macOS only.** Disk and memory probes use the OS APIs of those platforms behind a small port in the composition layer, with a fake for tests.
+
+## Consequences
+
+- Disk-full and slow-disk disasters become a planned, explained stop or a clean shedding of the least important files, with the master protected.
+- Streams can ride out a weak uplink if the user opts in; the quality change is visible and bounded.
+- The logic is deterministic and unit-testable without sleeping, so it will not become a flaky test (rule 14).
+- Defaults are conservative: warnings on, stop-before-disk-full on, adaptive bitrate off. A user who wants more automation turns it on knowingly.
+- A guard that mis-measures could stop a recording early; that is why the stop is on a reserve with a time-left estimate, the notice and warning come first, and the thresholds are settings.
+- Spec follow-ups: `recording.md` (guard, reports), `control-api.md`, `performance-budgets.md` (guard cost: one pass per second), `user-data.md` (profile section), `ui-design-system.md`, glossary.
+
+## Alternatives considered
+
+- **Warn only, never act.** Safe and simple, but cannot prevent a corrupted or truncated take when nobody is watching the screen.
+- **Always adapt bit rate.** Surprises people who chose a quality; opt-in with explanation is the project's pattern for quality parameters.
+- **Let each output decide for itself.** Duplicates logic, cannot protect the master by shedding other outputs, and cannot be tested in one place.
+- **Run the checks in the encoder or muxer nodes.** Puts work on hot paths for a control-rate concern.
+- **Lower resolution or frame rate when lagging.** Changes the session parameters, which no `EncoderChange` allows (output-ports spec: the stream parameters are fixed for the session).
+
+## Review
+
+Pending: independent review per ADR-0014.
