@@ -513,6 +513,9 @@ mod linux {
         let picked = Picked(PipeWireCaptureFactory::new());
         let hooks = Hooks(Arc::clone(portal));
         let options = Options {
+            // The portal stream stamps frames at capture; one may be delivered just
+            // after the first post-pause call although it was captured just before.
+            delivery_slack: Duration::from_millis(5),
             measure_allocations: Some(measure),
             hooks: Some(&hooks),
             process_threads: Some(conformance::process_thread_ids),
