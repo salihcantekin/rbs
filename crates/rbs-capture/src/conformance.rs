@@ -145,6 +145,13 @@ pub struct Options<'a> {
     /// Largest allowed age (`clock.now() - timestamp`) of a frame returned right after
     /// a pause.
     pub max_latency: Duration,
+    /// How much older than the first post-pause call a second, immediate call may
+    /// return a frame. Frames carry their capture time, not their delivery time: a
+    /// frame captured just before the first call can legitimately be delivered just
+    /// after it. Zero for adapters that stamp frames on delivery; asynchronous sources
+    /// set a few milliseconds. It must stay far below one frame interval, or a queue
+    /// one frame deep would pass.
+    pub delivery_slack: Duration,
     /// Runs the closure and returns the number of heap allocations plus frees it made
     /// on the calling thread. When set, the suite checks that `latest_frame` (and
     /// dropping its frame) neither allocates nor frees. Adapter tests provide it, for
@@ -215,6 +222,7 @@ impl Default for Options<'_> {
             frames_to_check: 8,
             pause: Duration::from_millis(500),
             max_latency: Duration::from_millis(100),
+            delivery_slack: Duration::ZERO,
             measure_allocations: None,
             hooks: None,
             strict: false,
@@ -232,6 +240,7 @@ impl fmt::Debug for Options<'_> {
             .field("frames_to_check", &self.frames_to_check)
             .field("pause", &self.pause)
             .field("max_latency", &self.max_latency)
+            .field("delivery_slack", &self.delivery_slack)
             .field("measure_allocations", &self.measure_allocations.is_some())
             .field("hooks", &self.hooks.is_some())
             .field("strict", &self.strict)
@@ -848,12 +857,17 @@ impl Suite<'_> {
                 // first call, never an older queued one (no slack).
                 match session.latest_frame() {
                     Ok(Some(next)) => {
-                        ensure("latest wins", next.timestamp() > called_at, || {
-                            format!(
-                                "{id}: a second call returned a frame {:?} older than the first call",
-                                called_at.saturating_since(next.timestamp())
-                            )
-                        })?;
+                        let stale_by = called_at.saturating_since(next.timestamp());
+                        ensure(
+                            "latest wins",
+                            stale_by <= self.options.delivery_slack,
+                            || {
+                                format!(
+                                    "{id}: a second call returned a frame {stale_by:?} older than the first call (slack {:?})",
+                                    self.options.delivery_slack
+                                )
+                            },
+                        )?;
                         self.check_frame(session.as_ref(), &next, clock.as_ref(), &mut last)?;
                     }
                     Ok(None) => {}
