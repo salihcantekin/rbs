@@ -234,6 +234,9 @@ pub struct Target {
     /// list no screens or windows, such as the Linux screen-cast portal), and the
     /// target the user chooses is added.
     pub picker: bool,
+    /// Name of the camera's own microphone, when the audio system has it and it is not
+    /// a source yet (ADR-0096 E); `None` otherwise and for everything but cameras.
+    pub mic: Option<String>,
 }
 
 /// How a source is doing.
@@ -1660,6 +1663,7 @@ fn target_of(t: SourceTarget) -> Target {
         app: t.app,
         recent: None,
         picker: false,
+        mic: None,
     }
 }
 
@@ -2651,13 +2655,26 @@ impl Host {
 
     /// What a kind can capture, in OS order, then one entry per OS picker.
     fn targets(&self, kind: SourceKind) -> Vec<Target> {
-        let mut list: Vec<Target> = self
+        let raw = self
             .adapters
             .sources
             .targets(&kind.type_id())
-            .unwrap_or_default()
+            .unwrap_or_default();
+        // Pairing a camera with its microphone lists audio inputs; it runs only for
+        // cameras, while a list is asked for (P13).
+        let mics = (kind == SourceKind::Camera)
+            .then(|| self.unused_microphones())
+            .unwrap_or_default();
+        let mut list: Vec<Target> = raw
             .into_iter()
-            .map(target_of)
+            .map(|t| {
+                let mic = t
+                    .related_audio
+                    .as_ref()
+                    .and_then(|id| mics.iter().find(|m| &m.target == id))
+                    .map(|m| m.name.clone());
+                Target { mic, ..target_of(t) }
+            })
             .collect();
         let pickers = self
             .adapters
@@ -2673,11 +2690,57 @@ impl Host {
             app: None,
             recent: None,
             picker: true,
+            mic: None,
         }));
         for t in &mut list {
             t.recent = recent_rank(self.recent.list(kind.type_id().as_str()), t);
         }
         list
+    }
+
+    /// The audio inputs that are not a source yet.
+    fn unused_microphones(&self) -> Vec<rbs_sources::SourceTarget> {
+        let used: Vec<&str> = self
+            .collection
+            .sources()
+            .filter(|s| s.type_id == SourceKind::AudioInput.type_id())
+            .filter_map(|s| match s.settings.get(keys::TARGET) {
+                Some(SettingValue::Text(t)) => Some(t.as_str()),
+                _ => None,
+            })
+            .collect();
+        self.adapters
+            .sources
+            .targets(&SourceKind::AudioInput.type_id())
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|m| !used.contains(&m.target.as_str()))
+            .collect()
+    }
+
+    /// The microphone that belongs with the camera `picture` shows, when the audio
+    /// system has it and it is not a source yet.
+    fn camera_microphone(&self, picture: &rbs_scene::model::Source) -> Option<Target> {
+        let (adapter, id) = match (
+            picture.settings.get(keys::ADAPTER),
+            picture.settings.get(keys::TARGET),
+        ) {
+            (Some(SettingValue::Text(a)), Some(SettingValue::Text(t))) => (a.as_str(), t.as_str()),
+            _ => return None,
+        };
+        let related = self
+            .adapters
+            .sources
+            .targets(&SourceKind::Camera.type_id())
+            .unwrap_or_default()
+            .into_iter()
+            .find(|t| t.adapter.as_str() == adapter && t.target == id)?
+            .related_audio?;
+        let mic = self
+            .unused_microphones()
+            .into_iter()
+            .find(|m| m.target == related)?;
+        Some(target_of(mic))
     }
 
     /// Grabs the pictures of `rows` on up to two threads, each target once, and posts
@@ -4112,9 +4175,20 @@ impl Host {
                     false,
                 )
             }
+            Some(SourceKind::Camera) => {
+                let target = self.camera_microphone(&source).ok_or_else(|| {
+                    Refusal::Failed("No microphone belongs with this camera.".into())
+                })?;
+                (
+                    SourceKind::AudioInput,
+                    target,
+                    format!("{} mic", source.name),
+                    false,
+                )
+            }
             _ => {
                 return Err(Refusal::Invalid(
-                    "Only a Display or a Window can capture audio too.".into(),
+                    "Only a Display, a Window or a Camera can capture audio too.".into(),
                 ));
             }
         };
@@ -6154,6 +6228,7 @@ impl ApiTarget<'_> {
                     app: None,
                     recent: None,
                     picker: false,
+                    mic: None,
                 };
                 if host
                     .retarget_source(SourceId::from_raw(p.source), &target)
@@ -7261,6 +7336,7 @@ mod tests {
             app: app.map(str::to_owned),
             recent: None,
             picker: false,
+            mic: None,
         };
         let find = |listed: Vec<Target>, app: &str| match_by_hints(listed, "a", "old", app, "zsh");
         // One match, the application in another case.
@@ -7298,6 +7374,7 @@ mod tests {
             app: app.map(str::to_owned),
             recent: None,
             picker: false,
+            mic: None,
         };
         let h = hints_of(&target("zsh - Terminal", Some("Terminal")));
         assert_eq!(

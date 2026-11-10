@@ -1601,7 +1601,11 @@ impl StudioUi {
                 let audio = self.add_picker.as_ref().is_some_and(|p| p.audio());
                 self.adding = true;
                 self.deleted.clear();
-                if audio && !target.picker {
+                // A camera without a microphone of its own adds just the camera.
+                let with_sound = audio
+                    && !target.picker
+                    && (kind != SourceKind::Camera || target.mic.is_some());
+                if with_sound {
                     self.send(Command::AddSourceWithAudio { kind, target });
                 } else {
                     self.send(Command::AddSource { kind, target });
@@ -1628,6 +1632,7 @@ impl StudioUi {
             status: p.status(),
             rows: p.rows(),
             offers_audio: p.offers_audio(),
+            offers_mic: p.offers_microphone(),
             audio: p.audio(),
         })
     }
@@ -3734,6 +3739,8 @@ pub struct PickerView {
     pub rows: Vec<add_picker::Row>,
     /// Show "Capture audio too" (displays and windows) and whether it is checked.
     pub offers_audio: bool,
+    /// The dialog offers "Add its microphone too" (a camera with a microphone of its own).
+    pub offers_mic: bool,
     pub audio: bool,
 }
 
@@ -4332,6 +4339,7 @@ mod tests {
             app: app.map(str::to_owned),
             recent: None,
             picker: false,
+            mic: None,
         }
     }
 

@@ -114,6 +114,9 @@ pub struct SourceTarget {
     /// What a camera offers, empty for everything else: the modes the Source settings
     /// window lists.
     pub modes: Vec<SourceMode>,
+    /// The opaque id of the audio input that belongs with a camera (its microphone),
+    /// when the capture adapter knows it; the audio adapter resolves it (ADR-0096).
+    pub related_audio: Option<String>,
 }
 
 /// One mode of a camera: a picture size and the frame rates it runs at.
@@ -191,6 +194,7 @@ impl SourcePicker {
             size: t.size,
             app: t.app,
             modes: Vec::new(),
+            related_audio: None,
         })
     }
 }
@@ -673,6 +677,9 @@ impl SourceTypes {
                             is_default: false,
                             size: t.size,
                             modes: source_modes(&t.modes),
+                            related_audio: t.related.and_then(|r| {
+                                (r.kind == rbs_capture::RelatedKind::Audio).then_some(r.id)
+                            }),
                             app: t.app,
                         });
                     }
@@ -689,6 +696,7 @@ impl SourceTypes {
                             size: None,
                             app: None,
                             modes: Vec::new(),
+                            related_audio: None,
                         });
                     }
                 }
