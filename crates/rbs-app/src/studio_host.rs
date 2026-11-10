@@ -58,11 +58,12 @@ use rbs_transport::{ReconnectPolicy, Secret, TransportInput};
 use rbs_vcam::{InstallState, VcamStats, VirtualCameraFactory};
 
 pub mod filters;
+mod monitor;
 pub mod replay;
 
 use crate::canvas_profile::CanvasProfile;
 use crate::edit_history::{EditKind, History, HistoryError, StepInfo};
-use crate::monitor_settings::{MonitorControl, MonitorSettings, MonitorStep};
+use crate::monitor_settings::MonitorSettings;
 use crate::recent_targets::{Recent, RecentTargets};
 use crate::record_profile::{API_PROFILE_ID, RecordProfile};
 use crate::remote_control::ApiTokens;
@@ -1916,11 +1917,9 @@ struct Host {
     camera: Option<VirtualCameraSettings>,
     /// When the camera's counters go out next; `None` while it does not send.
     camera_due: Option<Timestamp>,
-    /// The monitor's device and volume, and when its device is opened (ADR-0097).
-    monitor: MonitorSettings,
-    monitor_control: MonitorControl,
-    /// Why the monitor device last failed to open or play, until it plays again.
-    monitor_problem: Option<String>,
+    /// The monitor output: its saved device and volume, when its device opens, what
+    /// the API saw last (ADR-0097).
+    monitor: monitor::MonitorHost,
     /// The camera as the app's settings know it; `None` until the app sent it.
     camera_setup: Option<CameraSetup>,
     /// The `vcam.changed` state last published.
@@ -2178,6 +2177,7 @@ fn start(
     let config_fault = config.fault;
     let (mut adapters, mut notes) = adapters();
     adapters.probe();
+    let can_monitor = adapters.sources.can_monitor();
     let gpu = gpu()?;
     notes.push(format!("gpu: {}", gpu.adapter_name()));
     let loaded = config.collection.clone();
@@ -2290,9 +2290,7 @@ fn start(
             camera_factory: config.virtual_camera.map(|f| f.0),
             camera: None,
             camera_due: None,
-            monitor: config.monitor,
-            monitor_control: MonitorControl::default(),
-            monitor_problem: None,
+            monitor: monitor::MonitorHost::new(config.monitor, can_monitor),
             camera_setup: None,
             camera_published: None,
             replay: replay::ReplayHost::new(),
@@ -3951,54 +3949,6 @@ impl Host {
         // A failure of the camera's node, or its end, is a change of state.
         self.camera_changed();
         Some(STATS_INTERVAL)
-    }
-
-    /// Opens, closes and retries the monitor device as the studio needs it (ADR-0097
-    /// decisions 4 and 7): open on the control thread only while a source is monitored
-    /// or soloed, closed when none is, a failed device closed and opened again with
-    /// back-off. The mix and the outputs never wait for it. Returns the time until the
-    /// next attempt, if one waits.
-    fn drive_monitor(&mut self, now: Timestamp) -> Option<Duration> {
-        let wanted = self.studio.monitor_wanted();
-        let state = self.studio.monitor();
-        let failure = state.as_ref().and_then(|m| m.failure.clone());
-        let (step, wait) =
-            self.monitor_control
-                .step(wanted, state.is_some(), failure.is_some(), now);
-        match step {
-            MonitorStep::Keep => {
-                if state.is_some() && failure.is_none() {
-                    self.monitor_problem = None;
-                }
-                wait
-            }
-            MonitorStep::Close => {
-                if failure.is_some() {
-                    self.monitor_problem = failure;
-                }
-                self.studio.stop_monitor();
-                wait
-            }
-            MonitorStep::Open => {
-                let opened = self
-                    .adapters
-                    .sources
-                    .open_monitor(self.monitor.device.as_deref())
-                    .map_err(|e| e.to_string())
-                    .and_then(|(output, _, _)| {
-                        self.studio
-                            .start_monitor(output, self.monitor.volume)
-                            .map_err(|e| e.to_string())
-                    });
-                match opened {
-                    Ok(()) => None,
-                    Err(why) => {
-                        self.monitor_problem = Some(why);
-                        Some(self.monitor_control.failed(now))
-                    }
-                }
-            }
-        }
     }
 
     /// Tells the UI when the stream's connection changed.
@@ -5974,6 +5924,7 @@ impl Host {
     }
 
     fn apply(&mut self, notify: &dyn Fn(Update)) {
+        self.prune_monitor_solo();
         let run = self.run_collection();
         let running = run.as_ref().unwrap_or(&self.collection);
         match self.studio.update(running, &self.adapters.sources) {
@@ -6519,6 +6470,38 @@ impl ApiTarget<'_> {
                 if changed {
                     host.publish(notify);
                 }
+                Ok(Response::Done(Empty {}))
+            }
+            C::SourceSetMonitor(p) => {
+                let changed = host
+                    .set_source_monitor(
+                        SourceId::from_raw(p.source),
+                        monitor::scene_mode(p.monitor),
+                    )
+                    .map_err(|e| refused(&e))?;
+                if changed {
+                    host.publish(notify);
+                }
+                Ok(Response::Done(Empty {}))
+            }
+            C::MonitorStatus => Ok(Response::MonitorStatus(api::Snapshot {
+                seq: {
+                    host.monitor_api_changed();
+                    host.events.seq_map([Topic::MonitorChanged])
+                },
+                data: host.api_monitor(),
+            })),
+            C::MonitorDevices => Ok(Response::MonitorDevices(host.api_monitor_devices())),
+            C::MonitorSetDevice(p) => {
+                host.set_monitor_device(p.device).map_err(|e| refused(&e))?;
+                Ok(Response::Done(Empty {}))
+            }
+            C::MonitorSetVolume(p) => {
+                host.set_monitor_volume(p.volume).map_err(|e| refused(&e))?;
+                Ok(Response::Done(Empty {}))
+            }
+            C::MonitorSetSolo(p) => {
+                host.set_monitor_solo(&p.sources).map_err(|e| refused(&e))?;
                 Ok(Response::Done(Empty {}))
             }
             C::SourceSetMixerHidden(p) => {
@@ -7457,6 +7440,7 @@ fn api_source(row: &SourceRow) -> api::SourceInfo {
         volume: row.audio.volume,
         muted: row.audio.muted,
         mixer_hidden: row.audio.mixer_hidden,
+        monitor: monitor::api_mode(row.audio.monitor),
         companion_of: row.companion_of.map(|c| c.get()),
         filters: row.filters.iter().map(filters::api_row).collect(),
         sync_offset_ms: row.audio.sync_offset_ms,
