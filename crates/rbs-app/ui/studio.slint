@@ -498,6 +498,7 @@ export component ProgramPanel inherits Rectangle {
     // In studio mode the preview scene is edited, on the Preview picture only.
     property <bool> editable: here && Studio.state == 1 && (!Studio.studio-mode || scene);
     keys := FocusScope {
+        focus-on-click: false;
         enabled: editable;
         key-pressed(e) => {
             if Studio.selected-source < 0 { return reject; }
@@ -600,6 +601,7 @@ component SourceRowView inherits Rectangle {
         target: "source=" + data.id;
     }
     focus := RingFocus {
+        focus-on-click: false;
         key-pressed(e) => {
             if e.text == Key.Return || e.text == " " { Studio.select-source(data.id); return accept; }
             if e.text == Key.Menu || (e.text == Key.F10 && e.modifiers.shift) {
@@ -813,6 +815,7 @@ component SceneRowView inherits Rectangle {
         target: "scene=" + data.id;
     }
     focus := RingFocus {
+        focus-on-click: false;
         key-pressed(e) => {
             if e.text == Key.Return || e.text == " " { Studio.switch-scene(data.id); return accept; }
             if e.text == Key.Menu || (e.text == Key.F10 && e.modifiers.shift) {

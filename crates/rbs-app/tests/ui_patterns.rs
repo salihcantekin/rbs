@@ -63,3 +63,85 @@ fn no_new_popup_windows() {
         );
     }
 }
+
+/// Whether a trimmed line declares an element (`name := Type {`, `Type {`, or one under
+/// `if ...:` / `for ... in ...:`).
+fn declares_element(line: &str) -> bool {
+    let mut rest = line;
+    if let Some((_, after)) = rest.split_once(":=") {
+        rest = after.trim_start();
+    }
+    if rest.starts_with("if ") || rest.starts_with("for ") {
+        match rest.split_once(": ") {
+            Some((_, after)) => rest = after.trim_start(),
+            None => return false,
+        }
+    }
+    let name: String = rest
+        .chars()
+        .take_while(|c| c.is_alphanumeric() || *c == '_')
+        .collect();
+    name.starts_with(|c: char| c.is_ascii_uppercase())
+        && rest[name.len()..].trim_start().starts_with('{')
+}
+
+/// A focus scope over other controls: a `FocusScope` or `RingFocus` without child
+/// elements, declared after a sibling element, must set `focus-on-click: false`. A scope
+/// that takes focus on click accepts the first press while it has no focus, so the
+/// control under it needs a second click (seen on the Properties tabs after a click in
+/// another panel). The control's click handler calls `focus-pointer()` instead.
+#[test]
+fn focus_scopes_over_controls_do_not_take_the_first_click() {
+    let mut wrong = Vec::new();
+    for (name, text) in slint_files() {
+        let lines: Vec<&str> = text.lines().collect();
+        let mut depth = Vec::with_capacity(lines.len());
+        let mut d: i64 = 0;
+        for l in &lines {
+            depth.push(d);
+            let code = l.split("//").next().unwrap_or("");
+            let mut in_str = false;
+            for c in code.chars() {
+                match c {
+                    '"' => in_str = !in_str,
+                    '{' if !in_str => d += 1,
+                    '}' if !in_str => d -= 1,
+                    _ => {}
+                }
+            }
+        }
+        for (i, l) in lines.iter().enumerate() {
+            let t = l.trim();
+            let scope = t.split_once(":=").map_or(t, |(_, a)| a.trim_start());
+            if !(scope.starts_with("RingFocus {") || scope.starts_with("FocusScope {")) {
+                continue;
+            }
+            let end = (i + 1..lines.len())
+                .find(|&j| depth[j] <= depth[i])
+                .unwrap_or(lines.len());
+            let body = &lines[i + 1..end];
+            let leaf = !body
+                .iter()
+                .zip(i + 1..)
+                .any(|(b, j)| depth[j] == depth[i] + 1 && declares_element(b.trim()));
+            let off = body.iter().any(|b| b.contains("focus-on-click: false"));
+            let mut prior = false;
+            for j in (0..i).rev() {
+                if depth[j] < depth[i] {
+                    break;
+                }
+                if depth[j] == depth[i] && declares_element(lines[j].trim()) {
+                    prior = true;
+                    break;
+                }
+            }
+            if leaf && prior && !off {
+                wrong.push(format!("{name}:{}", i + 1));
+            }
+        }
+    }
+    assert!(
+        wrong.is_empty(),
+        "focus scopes over other elements without `focus-on-click: false`: {wrong:?}"
+    );
+}
