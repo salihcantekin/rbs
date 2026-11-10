@@ -393,6 +393,30 @@ fn bad_settings_adapters_and_types_are_refused() {
 }
 
 #[test]
+fn a_capture_adapter_is_reachable_for_thumbnails() {
+    let (reg, _) = registry();
+    let display = &reg.targets(&ty(types::DISPLAY_SOURCE)).unwrap()[0];
+    let factory = reg
+        .capture_factory(&ty(types::DISPLAY_SOURCE), &display.adapter)
+        .expect("the display adapter is a candidate");
+    let thumb = factory
+        .thumbnail(
+            &rbs_capture::TargetId::new(display.target.clone()),
+            Size {
+                width: 96,
+                height: 54,
+            },
+        )
+        .expect("the reference adapter makes thumbnails");
+    assert!(thumb.width() <= 96 && thumb.height() <= 54);
+    // Audio types have no capture adapter.
+    assert!(
+        reg.capture_factory(&ty(types::AUDIO_INPUT_SOURCE), &display.adapter)
+            .is_none()
+    );
+}
+
+#[test]
 fn targets_list_every_capturable_thing_for_pickers() {
     let (reg, _) = registry();
     let displays = reg.targets(&ty(types::DISPLAY_SOURCE)).unwrap();

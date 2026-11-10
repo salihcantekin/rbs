@@ -20,6 +20,10 @@
 //!   of the native surface rules, so an importer that caches them by pointer never sees
 //!   a reused pointer.
 //!
+//! - `thumbnail` grabs one frame with `SCScreenshotManager` (macOS 14, else
+//!   `Unsupported`), scaled by ScreenCaptureKit to fit and converted to sRGB RGBA8. It
+//!   starts no stream, shows no capture indicator and never prompts for permission.
+//!
 //! The importer side is `docs/specs/gpu-compositor.md`, "Native import" (Metal).
 //!
 //! - When the target is resized, the sample handler reconfigures the stream so later

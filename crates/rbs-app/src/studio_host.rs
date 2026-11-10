@@ -12,9 +12,10 @@
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;
-use std::sync::Arc;
 use std::sync::Weak;
+use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
+use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 use std::time::Duration;
 
@@ -527,6 +528,19 @@ pub enum Command {
         /// What it should capture now.
         target: Target,
     },
+    /// Grab small pictures of the listed targets of `kind`, two at a time off the control
+    /// thread, one [`Update::Thumbnail`] each (ADR-0077). A newer request or
+    /// [`Command::StopThumbnails`] makes older work stop at its next item.
+    GrabThumbnails {
+        /// The source kind whose adapters are asked.
+        kind: SourceKind,
+        /// (adapter, target) of each row, in the order wanted.
+        rows: Vec<(String, String)>,
+        /// The largest picture wanted, in pixels.
+        max: (u32, u32),
+    },
+    /// The target list closed: stop grabbing and forget the pictures.
+    StopThumbnails,
     /// Ask for what the Source settings window shows ([`Update::SourceSettings`]).
     OpenSourceSettings(SourceId),
     /// Change a source's stored settings by a patch (a `null` removes a key; one undo
@@ -1063,6 +1077,16 @@ pub enum Update {
     ScenePreview(Option<PreviewEndpoint>),
     /// What a kind can capture, in OS order.
     Targets(SourceKind, Vec<Target>),
+    /// One target's picture ([`Command::GrabThumbnails`]); `None` when the adapter has
+    /// none for it (the row keeps its icon).
+    Thumbnail {
+        /// The adapter that listed the target.
+        adapter: String,
+        /// The target.
+        target: String,
+        /// The picture, if one could be made.
+        picture: Option<rbs_capture::Thumbnail>,
+    },
     /// What the Source settings window of a source shows ([`Command::OpenSourceSettings`]).
     SourceSettings(SourceSettingsView),
     /// A source was deleted, or (`from_scene`) removed from one scene;
@@ -1241,6 +1265,13 @@ enum Msg {
     ApiWake,
     /// An OS picker failed (not cancelled).
     PickFailed(String),
+    /// A thumbnail worker finished one target.
+    Thumbnail {
+        generation: u64,
+        adapter: String,
+        target: String,
+        picture: Option<rbs_capture::Thumbnail>,
+    },
 }
 
 /// How the studio starts.
@@ -1537,6 +1568,8 @@ struct Host {
     /// The recent targets per source type and the folder they are saved in.
     recent: RecentTargets,
     recent_dir: Option<PathBuf>,
+    /// The generation of the thumbnail request that may still deliver (ADR-0077).
+    thumbs: Arc<AtomicU64>,
     /// The collection as last handed to `autosave`.
     saved: Option<SceneCollection>,
     studio: Studio,
@@ -1674,7 +1707,7 @@ fn run(
                 match m {
                     Msg::AttachApi(a) => api = Some(*a),
                     Msg::DetachApi => api = None,
-                    Msg::Ui(_) | Msg::ApiWake | Msg::PickFailed(_) => {}
+                    Msg::Ui(_) | Msg::ApiWake | Msg::PickFailed(_) | Msg::Thumbnail { .. } => {}
                 }
                 if let Some(api) = &api {
                     let mut events = EventPublisher::new();
@@ -1769,6 +1802,21 @@ fn round(
             host.api = None;
         }
         Some(Msg::PickFailed(why)) => notify(Update::Error(why)),
+        Some(Msg::Thumbnail {
+            generation,
+            adapter,
+            target,
+            picture,
+        }) => {
+            // A picture of a list that was closed or replaced meanwhile is dropped.
+            if generation == host.thumbs.load(AtomicOrdering::Acquire) {
+                notify(Update::Thumbnail {
+                    adapter,
+                    target,
+                    picture,
+                });
+            }
+        }
         Some(Msg::ApiWake) | None => {}
     }
     // One API request per round: a UI command that arrived meanwhile is taken by the
@@ -1993,6 +2041,7 @@ fn start(
                 .map(|d| crate::recent_targets::load(d).0)
                 .unwrap_or_default(),
             recent_dir: config.recent_dir,
+            thumbs: Arc::new(AtomicU64::new(0)),
             // A collection that had to be completed is saved at the first publish.
             saved: loaded,
             events: EventPublisher::new(),
@@ -2164,6 +2213,10 @@ impl Host {
             Command::RetargetSource { id, target } => {
                 let done = self.retarget_source(id, &target);
                 self.answer(done, notify);
+            }
+            Command::GrabThumbnails { kind, rows, max } => self.grab_thumbnails(kind, rows, max),
+            Command::StopThumbnails => {
+                self.thumbs.fetch_add(1, AtomicOrdering::AcqRel);
             }
             Command::OpenSourceSettings(id) => match self.source_settings_view(id) {
                 Ok(view) => notify(Update::SourceSettings(view)),
@@ -2429,6 +2482,57 @@ impl Host {
             t.recent = recent_rank(self.recent.list(kind.type_id().as_str()), t);
         }
         list
+    }
+
+    /// Grabs the pictures of `rows` on up to two threads, each target once, and posts
+    /// them as they come. Nothing runs when the list is closed: a newer generation
+    /// ends the workers at their next row (P13).
+    fn grab_thumbnails(&self, kind: SourceKind, rows: Vec<(String, String)>, max: (u32, u32)) {
+        let generation = self.thumbs.fetch_add(1, AtomicOrdering::AcqRel) + 1;
+        let type_id = kind.type_id();
+        let size = rbs_core::media::Size {
+            width: max.0,
+            height: max.1,
+        };
+        let queue = Arc::new(Mutex::new(
+            rows.into_iter()
+                .filter_map(|(adapter, target)| {
+                    let id = rbs_core::registry::AdapterId::new(adapter.clone());
+                    let factory = self.adapters.sources.capture_factory(&type_id, &id)?;
+                    Some((adapter, target, factory))
+                })
+                .collect::<std::collections::VecDeque<_>>(),
+        ));
+        for n in 0..2 {
+            let (queue, current, inbox) = (
+                Arc::clone(&queue),
+                Arc::clone(&self.thumbs),
+                Weak::clone(&self.inbox),
+            );
+            let spawned = std::thread::Builder::new()
+                .name(format!("rbs-thumbnail-{n}"))
+                .spawn(move || {
+                    while current.load(AtomicOrdering::Acquire) == generation {
+                        let next = queue.lock().ok().and_then(|mut q| q.pop_front());
+                        let Some((adapter, target, factory)) = next else {
+                            break;
+                        };
+                        let picture = factory
+                            .thumbnail(&rbs_capture::TargetId::new(target.clone()), size)
+                            .ok();
+                        let Some(tx) = inbox.upgrade() else { break };
+                        let _ = tx.send(Msg::Thumbnail {
+                            generation,
+                            adapter,
+                            target,
+                            picture,
+                        });
+                    }
+                });
+            if spawned.is_err() {
+                break;
+            }
+        }
     }
 
     /// Shows the OS picker of `entry.adapter` on a thread of its own (it blocks while
