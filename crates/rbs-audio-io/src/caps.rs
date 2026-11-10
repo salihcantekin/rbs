@@ -18,3 +18,11 @@ pub const INPUT_PERMISSION: CapabilityKey = CapabilityKey::new_static("audio.inp
 /// interface must not offer a display-sound companion, because it would echo.
 pub const LOOPBACK_EXCLUDE_SELF: CapabilityKey =
     CapabilityKey::new_static("audio.loopback.exclude_self");
+
+/// Flag: the adapter implements `open_output` (monitoring, ADR-0097).
+pub const OUTPUT: CapabilityKey = CapabilityKey::new_static("audio.output");
+/// Flag: `enumerate(EndpointKind::Output)` lists playback devices.
+pub const OUTPUT_ENUMERATE: CapabilityKey = CapabilityKey::new_static("audio.output.enumerate");
+/// Int: the adapter's best estimate of the output latency in nanoseconds (device
+/// buffer plus OS path), for a user interface to show.
+pub const OUTPUT_LATENCY_NS: CapabilityKey = CapabilityKey::new_static("audio.output.latency_ns");
