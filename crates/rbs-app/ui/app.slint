@@ -122,6 +122,13 @@ export global Shell {
     callback caption-regions(length /* lead end */, length /* end start */, length /* max x */, length /* max width */, length /* row height */);
     // End stream from the menu bar: the frame asks first (U4).
     in property <bool> end-stream-confirm;
+    // The same for the vertical canvas's stream (ADR-0093 decision 6).
+    in property <bool> end-vertical-confirm;
+    // A vertical canvas exists: Go live and Record get a ▾ with its outputs.
+    in property <bool> vertical-outputs;
+    // The vertical canvas streams, records (or starts to): Go live and Record show "9:16".
+    in property <bool> vertical-live;
+    in property <bool> vertical-rec;
     // The gap between panel cards and around them: the layout's divider thickness.
     // literal: Rust sets it to rbs_ui::layout::HANDLE_THICKNESS, which the frame geometry also uses
     in property <length> gap: 6px;
@@ -136,6 +143,7 @@ export global Shell {
     in-out property <bool> flyout-open;
     in-out property <Cover> flyout;
     callback end-stream-answer(bool /* end */);
+    callback end-vertical-answer(bool /* end */);
 
     // Dragging a tab (ADR-0049 decision 5): the payload names the panel; the dock area
     // under the pointer reports moves and the drop in its own coordinates, and Rust
@@ -1023,27 +1031,55 @@ component Flyout inherits Rectangle {
 }
 
 // End stream picked in the menu bar asks first (U4), in the frame of the window
-// whose menu it was picked from; Keep streaming has the focus.
+// whose menu it was picked from; Keep streaming has the focus. `vertical`: the
+// vertical canvas's stream (ADR-0093 decision 6).
 component EndStreamConfirm inherits HorizontalLayout {
+    in property <bool> vertical;
     horizontal-stretch: 0;
     spacing: Tokens.space-2;
     accessible-role: groupbox;
-    accessible-label: @tr("End the stream?");
+    accessible-label: vertical ? @tr("End the vertical stream?") : @tr("End the stream?");
     init => { keep-stream.focus(); }
     Text {
-        text: @tr("End the stream? Viewers see it end.");
+        text: vertical ? @tr("End the vertical stream? Viewers see it end.") : @tr("End the stream? Viewers see it end.");
         color: Theme.text-primary;
         font-size: Tokens.type-body-size;
         vertical-alignment: center;
     }
     Button {
-        text: @tr("Yes, end the stream");
+        text: vertical ? @tr("Yes, end the vertical stream") : @tr("Yes, end the stream");
         kind: "live";
-        clicked => { Shell.end-stream-answer(true); }
+        clicked => { if vertical { Shell.end-vertical-answer(true); } else { Shell.end-stream-answer(true); } }
     }
     keep-stream := Button {
         text: @tr("Keep streaming");
-        clicked => { Shell.end-stream-answer(false); }
+        clicked => { if vertical { Shell.end-vertical-answer(false); } else { Shell.end-stream-answer(false); } }
+    }
+}
+
+// "9:16" beside Go live or Record while the vertical canvas's stream or recording
+// runs (ADR-0093 decision 6): a small mark with a live-colour outline, not a button
+// (U12).
+component VerticalMark inherits VerticalLayout {
+    horizontal-stretch: 0;
+    alignment: center;
+    accessible-role: text;
+    accessible-label: @tr("The vertical canvas is on air");
+    Rectangle {
+        border-radius: Tokens.radius-sm;
+        border-width: Tokens.size-border;
+        border-color: Theme.state-live;
+        HorizontalLayout {
+            padding-left: Tokens.space-1;
+            padding-right: Tokens.space-1;
+            Text {
+                text: "9:16"; // literal: the aspect ratio, the same in every language
+                color: Theme.text-primary;
+                font-size: Tokens.type-caption-size;
+                font-weight: Tokens.type-label-weight;
+                vertical-alignment: center;
+            }
+        }
     }
 }
 
@@ -1103,9 +1139,18 @@ component ToolbarCell inherits HorizontalLayout {
     callback open-workspaces(length);
     // The Add source item was clicked, at this window x: it opens the type menu.
     callback open-add-source(length);
+    // Go live and Record in the frame's fixed group: a ▾ with the vertical canvas's
+    // outputs while it exists, and "9:16" while its stream or recording runs
+    // (ADR-0093 decision 6).
+    in property <bool> vertical-menu;
+    in property <bool> vertical-on;
+    // The ▾ was clicked, at this window x.
+    callback open-vertical(length);
     property <bool> go-live: item.id == "stream.toggle" && !item.live;
     property <bool> record: item.id == "record.toggle" && !item.live;
     horizontal-stretch: item.kind == 3 ? 1 : 0;
+    // Only Go live and Record have more than one child (their 9:16 mark and ▾).
+    spacing: Tokens.space-1;
     if (item.kind == 0 || item.kind == 4) && item.icon-only: Button {
         width: Tokens.size-control-lg;
         accessible-name: item.title;
@@ -1126,6 +1171,12 @@ component ToolbarCell inherits HorizontalLayout {
         checked: item.checked && !item.live;
         kind: go-live ? "primary" : record || item.live ? "secondary" : "ghost";
         clicked => { if item.id == "source.add" { root.open-add-source(self.absolute-position.x); } else { Menus.run(item.id); } }
+    }
+    if vertical-on: VerticalMark { }
+    if vertical-menu: IconButton {
+        icon: IconName.chevron-down;
+        name: item.id == "stream.toggle" ? @tr("Vertical stream") : @tr("Vertical recording");
+        clicked => { root.open-vertical(self.absolute-position.x); }
     }
     if item.kind == 1: WorkspacePicker {
         clicked => { root.open-workspaces(self.absolute-position.x); }
@@ -1252,6 +1303,7 @@ component FrameBar inherits Rectangle {
             }
             // End stream from the menu bar asks first, in the frame (U4).
             if Shell.end-stream-confirm && !Shell.quit-confirm: EndStreamConfirm { }
+            if Shell.end-vertical-confirm && !Shell.end-stream-confirm && !Shell.quit-confirm: EndStreamConfirm { vertical: true; }
             // Network access (ADR-0046 decision 7): shown in every workspace while other
             // computers can connect, in words.
             if Studio.rc-network-on: Text {
@@ -1296,7 +1348,10 @@ component FrameBar inherits Rectangle {
             // with the toolbar hidden or customised (U1, ADR-0073).
             for item in Shell.toolbar-fixed: ToolbarCell {
                 item: item;
+                vertical-menu: Shell.vertical-outputs;
+                vertical-on: item.id == "stream.toggle" ? Shell.vertical-live : Shell.vertical-rec;
                 open-workspaces(x) => { }
+                open-vertical(x) => { vertical-menu.open({ x: x - root.absolute-position.x, y: root.height }); }
             }
             // Idle it is not in the layout at all (the status bar says "Not live").
             if Shell.live-state != 0 || Shell.live-camera: LiveIndicator { horizontal-stretch: 0; }
@@ -1329,6 +1384,7 @@ component FrameBar inherits Rectangle {
     // The workspace menu: the same CommandMenu as every other context (ADR-0094 B1).
     ws-menu := CommandMenu { context: "workspace"; }
     add-source-menu := CommandMenu { context: "add-source"; }
+    vertical-menu := CommandMenu { context: "vertical-outputs"; }
     function open-app-menu() { AppMenus.open = true; }
     property <int> asked: Shell.app-menu-asked;
     changed asked => { open-app-menu(); }
@@ -1646,28 +1702,30 @@ export component MainWindow inherits Window {
             title: @tr("Output");
             MenuItem { title: Menus.titles[49]; icon: Menus.icons[49]; enabled: Menus.enabled[49]; checkable: true; checked: Menus.checked[49]; activated => { Menus.run("stream.toggle"); } }
             MenuItem { title: Menus.titles[50]; icon: Menus.icons[50]; enabled: Menus.enabled[50]; checkable: true; checked: Menus.checked[50]; activated => { Menus.run("record.toggle"); } }
+            MenuItem { title: Menus.titles[51]; icon: Menus.icons[51]; enabled: Menus.enabled[51]; checkable: true; checked: Menus.checked[51]; activated => { Menus.run("stream.vertical.toggle"); } }
+            MenuItem { title: Menus.titles[52]; icon: Menus.icons[52]; enabled: Menus.enabled[52]; checkable: true; checked: Menus.checked[52]; activated => { Menus.run("record.vertical.toggle"); } }
             MenuSeparator { }
-            MenuItem { title: Menus.titles[51]; icon: Menus.icons[51]; enabled: Menus.enabled[51]; checkable: true; checked: Menus.checked[51]; activated => { Menus.run("vcam.toggle"); } }
+            MenuItem { title: Menus.titles[53]; icon: Menus.icons[53]; enabled: Menus.enabled[53]; checkable: true; checked: Menus.checked[53]; activated => { Menus.run("vcam.toggle"); } }
             MenuSeparator { }
-            MenuItem { title: Menus.titles[52]; icon: Menus.icons[52]; enabled: Menus.enabled[52]; checkable: true; checked: Menus.checked[52]; activated => { Menus.run("replay.toggle"); } }
-            MenuItem { title: Menus.titles[53]; icon: Menus.icons[53]; enabled: Menus.enabled[53]; activated => { Menus.run("replay.save"); } }
+            MenuItem { title: Menus.titles[54]; icon: Menus.icons[54]; enabled: Menus.enabled[54]; checkable: true; checked: Menus.checked[54]; activated => { Menus.run("replay.toggle"); } }
+            MenuItem { title: Menus.titles[55]; icon: Menus.icons[55]; enabled: Menus.enabled[55]; activated => { Menus.run("replay.save"); } }
             MenuSeparator { }
-            MenuItem { title: Menus.titles[54]; icon: Menus.icons[54]; enabled: Menus.enabled[54]; activated => { Menus.run("canvas.add_vertical"); } }
+            MenuItem { title: Menus.titles[56]; icon: Menus.icons[56]; enabled: Menus.enabled[56]; activated => { Menus.run("canvas.add_vertical"); } }
         }
         Menu {
             title: @tr("Window");
             Menu {
-                title: Menus.titles[55];
-                icon: Menus.icons[55];
-                enabled: Menus.enabled[55];
+                title: Menus.titles[57];
+                icon: Menus.icons[57];
+                enabled: Menus.enabled[57];
                 for c in Menus.choices[9]: MenuItem { title: c.title; checkable: true; checked: c.checked; activated => { Menus.run(c.id); } }
             }
             MenuSeparator { }
-            MenuItem { title: Menus.titles[56]; icon: Menus.icons[56]; enabled: Menus.enabled[56]; checkable: true; checked: Menus.checked[56]; activated => { Menus.run("ui.panel.maximize?id=rbs.preview"); } }
+            MenuItem { title: Menus.titles[58]; icon: Menus.icons[58]; enabled: Menus.enabled[58]; checkable: true; checked: Menus.checked[58]; activated => { Menus.run("ui.panel.maximize?id=rbs.preview"); } }
         }
         Menu {
             title: @tr("Help");
-            MenuItem { title: Menus.titles[57]; icon: Menus.icons[57]; enabled: Menus.enabled[57]; activated => { Menus.run("ui.app_menu.open"); } }
+            MenuItem { title: Menus.titles[59]; icon: Menus.icons[59]; enabled: Menus.enabled[59]; activated => { Menus.run("ui.app_menu.open"); } }
         }
     }
     // END generated menu bar
@@ -1947,28 +2005,30 @@ export component FloatWindow inherits Window {
             title: @tr("Output");
             MenuItem { title: Menus.titles[49]; icon: Menus.icons[49]; enabled: Menus.enabled[49]; checkable: true; checked: Menus.checked[49]; activated => { Menus.run("stream.toggle"); } }
             MenuItem { title: Menus.titles[50]; icon: Menus.icons[50]; enabled: Menus.enabled[50]; checkable: true; checked: Menus.checked[50]; activated => { Menus.run("record.toggle"); } }
+            MenuItem { title: Menus.titles[51]; icon: Menus.icons[51]; enabled: Menus.enabled[51]; checkable: true; checked: Menus.checked[51]; activated => { Menus.run("stream.vertical.toggle"); } }
+            MenuItem { title: Menus.titles[52]; icon: Menus.icons[52]; enabled: Menus.enabled[52]; checkable: true; checked: Menus.checked[52]; activated => { Menus.run("record.vertical.toggle"); } }
             MenuSeparator { }
-            MenuItem { title: Menus.titles[51]; icon: Menus.icons[51]; enabled: Menus.enabled[51]; checkable: true; checked: Menus.checked[51]; activated => { Menus.run("vcam.toggle"); } }
+            MenuItem { title: Menus.titles[53]; icon: Menus.icons[53]; enabled: Menus.enabled[53]; checkable: true; checked: Menus.checked[53]; activated => { Menus.run("vcam.toggle"); } }
             MenuSeparator { }
-            MenuItem { title: Menus.titles[52]; icon: Menus.icons[52]; enabled: Menus.enabled[52]; checkable: true; checked: Menus.checked[52]; activated => { Menus.run("replay.toggle"); } }
-            MenuItem { title: Menus.titles[53]; icon: Menus.icons[53]; enabled: Menus.enabled[53]; activated => { Menus.run("replay.save"); } }
+            MenuItem { title: Menus.titles[54]; icon: Menus.icons[54]; enabled: Menus.enabled[54]; checkable: true; checked: Menus.checked[54]; activated => { Menus.run("replay.toggle"); } }
+            MenuItem { title: Menus.titles[55]; icon: Menus.icons[55]; enabled: Menus.enabled[55]; activated => { Menus.run("replay.save"); } }
             MenuSeparator { }
-            MenuItem { title: Menus.titles[54]; icon: Menus.icons[54]; enabled: Menus.enabled[54]; activated => { Menus.run("canvas.add_vertical"); } }
+            MenuItem { title: Menus.titles[56]; icon: Menus.icons[56]; enabled: Menus.enabled[56]; activated => { Menus.run("canvas.add_vertical"); } }
         }
         Menu {
             title: @tr("Window");
             Menu {
-                title: Menus.titles[55];
-                icon: Menus.icons[55];
-                enabled: Menus.enabled[55];
+                title: Menus.titles[57];
+                icon: Menus.icons[57];
+                enabled: Menus.enabled[57];
                 for c in Menus.choices[9]: MenuItem { title: c.title; checkable: true; checked: c.checked; activated => { Menus.run(c.id); } }
             }
             MenuSeparator { }
-            MenuItem { title: Menus.titles[56]; icon: Menus.icons[56]; enabled: Menus.enabled[56]; checkable: true; checked: Menus.checked[56]; activated => { Menus.run("ui.panel.maximize?id=rbs.preview"); } }
+            MenuItem { title: Menus.titles[58]; icon: Menus.icons[58]; enabled: Menus.enabled[58]; checkable: true; checked: Menus.checked[58]; activated => { Menus.run("ui.panel.maximize?id=rbs.preview"); } }
         }
         Menu {
             title: @tr("Help");
-            MenuItem { title: Menus.titles[57]; icon: Menus.icons[57]; enabled: Menus.enabled[57]; activated => { Menus.run("ui.app_menu.open"); } }
+            MenuItem { title: Menus.titles[59]; icon: Menus.icons[59]; enabled: Menus.enabled[59]; activated => { Menus.run("ui.app_menu.open"); } }
         }
     }
     // END generated menu bar
@@ -1991,6 +2051,7 @@ export component FloatWindow inherits Window {
                     alignment: start;
                     Button { text: @tr("Dock back"); clicked => { Shell.dock(root.window); } }
                     if Shell.end-stream-confirm: EndStreamConfirm { }
+                    if Shell.end-vertical-confirm && !Shell.end-stream-confirm: EndStreamConfirm { vertical: true; }
                 }
             }
             DockArea {

@@ -16,7 +16,7 @@ use rbs_ui::workspace::{MixerOrientation, Side, Workspace};
 
 use crate::studio_host::TransformOp;
 use crate::studio_ui::filters::filter_types;
-use crate::studio_ui::{SourceFacts, StudioUi, rec_state, st_state};
+use crate::studio_ui::{SourceFacts, StudioUi, VerticalOut, rec_state, st_state};
 
 /// The run-time values of the menu bar, in the generated items' order: one entry
 /// per command or choice submenu in `titles`, `enabled` and `checked`, one list per
@@ -325,6 +325,13 @@ impl Shown<'_> {
             1 => Ok(()),
             0 => Err("The studio is starting.".to_owned()),
             _ => Err("The studio stopped.".to_owned()),
+        }
+    }
+
+    fn has_vertical(&self) -> Result<(), String> {
+        match self.studio.vertical {
+            Some(_) => Ok(()),
+            None => Err("Add a vertical output first.".to_owned()),
         }
     }
 }
@@ -638,6 +645,25 @@ impl CommandState for Shown<'_> {
                     Err("Arm the replay buffer first.".to_owned())
                 }
             }
+            "stream.vertical.toggle" => match s.vertical_st {
+                VerticalOut::On | VerticalOut::Starting => Ok(()),
+                VerticalOut::Ending => Err("The vertical stream is ending.".to_owned()),
+                VerticalOut::Off => {
+                    self.running()?;
+                    self.has_vertical()?;
+                    s.cannot_record.clone().map_or(Ok(()), Err)
+                }
+            },
+            "record.vertical.toggle" => match s.vertical_rec {
+                VerticalOut::On => Ok(()),
+                VerticalOut::Starting => Err("The vertical recording is starting.".to_owned()),
+                VerticalOut::Ending => Err("The vertical recording is stopping.".to_owned()),
+                VerticalOut::Off => {
+                    self.running()?;
+                    self.has_vertical()?;
+                    s.cannot_record.clone().map_or(Ok(()), Err)
+                }
+            },
             "record.toggle" => match s.rec_state {
                 rec_state::RECORDING => Ok(()),
                 rec_state::STARTING => Err("The recording is starting.".to_owned()),
@@ -680,6 +706,8 @@ impl CommandState for Shown<'_> {
             "stream.toggle" => matches!(self.studio.st_state, st_state::LIVE | st_state::STARTING),
             "vcam.toggle" => self.camera.sending,
             "replay.toggle" => self.replay.armed,
+            "stream.vertical.toggle" => self.studio.vertical_st.on(),
+            "record.vertical.toggle" => self.studio.vertical_rec.on(),
             "record.toggle" => matches!(
                 self.studio.rec_state,
                 rec_state::RECORDING | rec_state::STARTING
@@ -825,6 +853,15 @@ impl CommandState for Shown<'_> {
             }
             _ => {}
         }
+        match id.base() {
+            "stream.vertical.toggle" if self.studio.vertical_st.on() => {
+                return Some("End vertical stream".to_owned());
+            }
+            "record.vertical.toggle" if self.studio.vertical_rec.on() => {
+                return Some("Stop vertical recording".to_owned());
+            }
+            _ => {}
+        }
         match (id.base(), id.param("scene")) {
             // One scene, from its row's menu: what a click on the row does.
             ("scene.select", Some(_)) if self.studio.studio_mode => {
@@ -855,6 +892,12 @@ impl CommandState for Shown<'_> {
             | "item.reset_transform" => self.source(id).is_ok_and(|f| f.picture),
             "source.muted.toggle" | "source.mixer_hidden.toggle" => {
                 self.source(id).is_ok_and(|f| f.audio)
+            }
+            // A vertical canvas's outputs, while it exists (or one of them still runs).
+            "stream.vertical.toggle" | "record.vertical.toggle" => {
+                self.studio.vertical.is_some()
+                    || self.studio.vertical_st.busy()
+                    || self.studio.vertical_rec.busy()
             }
             // The scene shown already: putting it on air again does nothing.
             "scene.select" => {
@@ -1232,6 +1275,12 @@ pub enum Run {
     AskEndStream,
     Record,
     StopRecording,
+    /// Stream the vertical canvas (ADR-0093 decision 6).
+    GoLiveVertical,
+    /// Ask first, then end the vertical stream (U4).
+    AskEndVerticalStream,
+    RecordVertical,
+    StopVerticalRecording,
     /// Start (`true`) or stop sending to the virtual camera.
     VirtualCamera(bool),
     /// Arm (`true`) or disarm the replay buffer.
@@ -1373,6 +1422,10 @@ pub fn run(text: &str, state: &Shown<'_>) -> Option<Run> {
         "stream.toggle" => Run::GoLive,
         "record.toggle" if on => Run::StopRecording,
         "record.toggle" => Run::Record,
+        "stream.vertical.toggle" if on => Run::AskEndVerticalStream,
+        "stream.vertical.toggle" => Run::GoLiveVertical,
+        "record.vertical.toggle" if on => Run::StopVerticalRecording,
+        "record.vertical.toggle" => Run::RecordVertical,
         "vcam.toggle" => Run::VirtualCamera(!on),
         "replay.toggle" => Run::Replay(!on),
         "replay.save" => Run::SaveReplay,

@@ -1120,6 +1120,36 @@ pub const ENTRIES: &[Entry] = &[
         params: &[],
         checkable: true,
     },
+    // The vertical canvas's outputs (ADR-0093 decision 6): the ▾ menus beside the
+    // frame's Go live and Record, shown while a vertical canvas exists.
+    Entry {
+        id: "stream.vertical.toggle",
+        title: "Go live vertical",
+        tooltip: "Start or end the vertical canvas's stream",
+        icon: Some("bolt"),
+        shortcut: None,
+        menu: Menu::Output,
+        kind: Kind::Toggle {
+            on: "stream.start",
+            off: "stream.stop",
+        },
+        params: &[],
+        checkable: true,
+    },
+    Entry {
+        id: "record.vertical.toggle",
+        title: "Record vertical",
+        tooltip: "Start or stop recording the vertical canvas",
+        icon: Some("dot"),
+        shortcut: None,
+        menu: Menu::Output,
+        kind: Kind::Toggle {
+            on: "record.start",
+            off: "record.stop",
+        },
+        params: &[],
+        checkable: true,
+    },
     Entry {
         id: "vcam.toggle",
         title: "Start virtual camera",
@@ -1541,6 +1571,8 @@ pub const MENU_LAYOUT: &[(Menu, &[&str])] = &[
         &[
             "stream.toggle",
             "record.toggle",
+            "stream.vertical.toggle",
+            "record.vertical.toggle",
             "|",
             "vcam.toggle",
             "|",
@@ -1879,11 +1911,14 @@ pub enum Context {
     AddFilter,
     /// The Add source button's menu: the source types (no target).
     AddSource,
+    /// The ▾ beside the frame's Go live and Record while a vertical canvas exists:
+    /// its outputs (no target, ADR-0093 decision 6).
+    VerticalOutputs,
 }
 
 impl Context {
     /// Every context.
-    pub const ALL: [Context; 13] = [
+    pub const ALL: [Context; 14] = [
         Context::Scene,
         Context::Scenes,
         Context::Source,
@@ -1897,6 +1932,7 @@ impl Context {
         Context::Collections,
         Context::AddFilter,
         Context::AddSource,
+        Context::VerticalOutputs,
     ];
 
     /// Its name, as the shell's menus ask for it.
@@ -1915,6 +1951,7 @@ impl Context {
             Context::Collections => "collections",
             Context::AddFilter => "add-filter",
             Context::AddSource => "add-source",
+            Context::VerticalOutputs => "vertical-outputs",
         }
     }
 
@@ -1975,6 +2012,10 @@ pub const CONTEXT_LAYOUT: &[(Context, &[&str])] = &[
         ],
     ),
     (Context::Sources, &["source.add"]),
+    (
+        Context::VerticalOutputs,
+        &["stream.vertical.toggle", "record.vertical.toggle"],
+    ),
     (
         Context::Preview,
         &[
