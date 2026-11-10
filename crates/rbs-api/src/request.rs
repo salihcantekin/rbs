@@ -287,6 +287,38 @@ pub struct SetSourceMuted {
     pub muted: bool,
 }
 
+/// The arrangement `canvas.add_vertical` writes for the new shape (protocol 1.28).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum VerticalLayout {
+    /// Each item scaled to fit, letterboxed.
+    Fit,
+    /// Each item scaled to cover the canvas.
+    Fill,
+    /// The visible items in equal bands from top to bottom.
+    Stack,
+}
+
+/// `canvas.add_vertical` (protocol 1.28, ADR-0093 decision 8): adds and runs the
+/// second, vertical canvas. At most one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AddVerticalCanvas {
+    /// Picture width in pixels (default 1080).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub width: Option<u32>,
+    /// Picture height in pixels (default 1920).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub height: Option<u32>,
+    /// Shows the main canvas's program scene and switches with it (default true).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub follow: Option<bool>,
+    /// Arranges the program scene's sources for the new shape; absent: they keep the
+    /// main canvas's layout.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub layout: Option<VerticalLayout>,
+}
+
 /// `canvas.set_master_volume` (protocol 1.15, ADR-0081): the studio canvas's master.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -674,6 +706,10 @@ pub enum Command {
     SourceSetSettings(SetSourceSettings),
     /// `source.set_companion_audio` (protocol 1.26).
     SourceSetCompanionAudio(SetCompanionAudio),
+    /// `canvas.add_vertical` (protocol 1.28, ADR-0093).
+    CanvasAddVertical(AddVerticalCanvas),
+    /// `canvas.remove_vertical` (protocol 1.28, ADR-0093).
+    CanvasRemoveVertical(Empty),
     /// `settings.recent_targets` (protocol 1.13).
     SettingsRecentTargets(TargetsParams),
     /// `settings.clear_recent_targets` (protocol 1.13).
@@ -793,6 +829,8 @@ impl Command {
             Command::SourceGetSettings(_) => "source.get_settings",
             Command::SourceSetSettings(_) => "source.set_settings",
             Command::SourceSetCompanionAudio(_) => "source.set_companion_audio",
+            Command::CanvasAddVertical(_) => "canvas.add_vertical",
+            Command::CanvasRemoveVertical(_) => "canvas.remove_vertical",
             Command::SettingsRecentTargets(_) => "settings.recent_targets",
             Command::SettingsClearRecentTargets(_) => "settings.clear_recent_targets",
             Command::SceneSources(_) => "scene.sources",
@@ -919,6 +957,8 @@ pub const METHODS: &[MethodInfo] = &[
     m("source.get_settings", Some(Scope::Control)),
     m("source.set_settings", Some(Scope::Control)),
     m("source.set_companion_audio", Some(Scope::Control)),
+    m("canvas.add_vertical", Some(Scope::Control)),
+    m("canvas.remove_vertical", Some(Scope::Control)),
     m("settings.recent_targets", Some(Scope::Control)),
     m("settings.clear_recent_targets", Some(Scope::Control)),
     m("item.set_visible", Some(Scope::Control)),
@@ -1115,6 +1155,10 @@ enum WireRequest {
     SourceSetSettings(SetSourceSettings),
     #[serde(rename = "source.set_companion_audio")]
     SourceSetCompanionAudio(SetCompanionAudio),
+    #[serde(rename = "canvas.add_vertical")]
+    CanvasAddVertical(AddVerticalCanvas),
+    #[serde(rename = "canvas.remove_vertical")]
+    CanvasRemoveVertical(Empty),
     #[serde(rename = "settings.recent_targets")]
     SettingsRecentTargets(TargetsParams),
     #[serde(rename = "settings.clear_recent_targets")]
@@ -1241,6 +1285,8 @@ impl From<WireRequest> for Request {
             WireRequest::SourceSetCompanionAudio(p) => {
                 Request::Command(C::SourceSetCompanionAudio(p))
             }
+            WireRequest::CanvasAddVertical(p) => Request::Command(C::CanvasAddVertical(p)),
+            WireRequest::CanvasRemoveVertical(p) => Request::Command(C::CanvasRemoveVertical(p)),
             WireRequest::SettingsRecentTargets(p) => Request::Command(C::SettingsRecentTargets(p)),
             WireRequest::SettingsClearRecentTargets(p) => {
                 Request::Command(C::SettingsClearRecentTargets(p))
@@ -1330,6 +1376,8 @@ impl From<Request> for WireRequest {
                 C::SourceGetSettings(p) => WireRequest::SourceGetSettings(p),
                 C::SourceSetSettings(p) => WireRequest::SourceSetSettings(p),
                 C::SourceSetCompanionAudio(p) => WireRequest::SourceSetCompanionAudio(p),
+                C::CanvasAddVertical(p) => WireRequest::CanvasAddVertical(p),
+                C::CanvasRemoveVertical(p) => WireRequest::CanvasRemoveVertical(p),
                 C::SettingsRecentTargets(p) => WireRequest::SettingsRecentTargets(p),
                 C::SettingsClearRecentTargets(p) => WireRequest::SettingsClearRecentTargets(p),
                 C::SceneSources(p) => WireRequest::SceneSources(p),

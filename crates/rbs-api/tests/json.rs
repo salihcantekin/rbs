@@ -242,6 +242,13 @@ fn every_request() -> Vec<Request> {
         c(Command::CanvasSetMasterVolume(SetMasterVolume {
             volume: 0.5,
         })),
+        c(Command::CanvasAddVertical(AddVerticalCanvas {
+            width: Some(720),
+            height: Some(1280),
+            follow: Some(false),
+            layout: Some(VerticalLayout::Stack),
+        })),
+        c(Command::CanvasRemoveVertical(Empty {})),
         c(Command::CanvasSetMasterMuted(SetMasterMuted {
             muted: true,
         })),
