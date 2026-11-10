@@ -42,7 +42,7 @@ Before a minor release that changes one of these flows, at least five people fro
 Rules:
 - Every setting declares its level (`simple`, `advanced`, `expert`) in its settings schema. The level is chosen in review using the personas above, and the review checks the declared level, not the rendered screen.
 - A setting that the second persona changes regularly must not be `expert`.
-- Every option shows its default and a one-line explanation on hover or focus.
+- Every option shows its default and a one-line explanation: the `Tooltip` (hover and keyboard focus) gives the short line and the default, and the `InfoHint` popover (press) carries longer text, never inline paragraphs ([ADR-0094](../adr/0094-ui-interaction-patterns-and-tabler-icon-set.md)).
 
 ## U3. Direct manipulation first
 
