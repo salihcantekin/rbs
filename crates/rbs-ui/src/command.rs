@@ -1149,6 +1149,17 @@ pub const ENTRIES: &[Entry] = &[
         checkable: true,
     },
     Entry {
+        id: "canvas.add_vertical",
+        title: "Add vertical output...",
+        tooltip: "Add a vertical canvas for short-form video, from the same sources",
+        icon: Some("plus"),
+        shortcut: None,
+        menu: Menu::Output,
+        kind: action("canvas.add_vertical"),
+        params: &[],
+        checkable: false,
+    },
+    Entry {
         id: "replay.save",
         title: "Save replay clip",
         tooltip: "Save the last minutes the replay buffer holds as a clip file",
@@ -1535,6 +1546,8 @@ pub const MENU_LAYOUT: &[(Menu, &[&str])] = &[
             "|",
             "replay.toggle",
             "replay.save",
+            "|",
+            "canvas.add_vertical",
         ],
     ),
     (

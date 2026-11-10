@@ -410,7 +410,7 @@ impl CommandState for Shown<'_> {
                 }
                 Ok(())
             }
-            "canvas.studio_mode.toggle" | "scene.add" => self.running(),
+            "canvas.studio_mode.toggle" | "scene.add" | "canvas.add_vertical" => self.running(),
             "scene.rename" => {
                 self.running()?;
                 self.scene(id).map(|_| ())
@@ -1200,6 +1200,8 @@ pub enum Run {
     Transition,
     /// Add a scene.
     AddScene,
+    /// Open the Add vertical output dialog (ADR-0093 decision 8).
+    AddVertical,
     /// Rename the scene with this id; without a name, ask for one in its row.
     RenameScene(i32, Option<String>),
     /// Remove the scene with this id.
@@ -1374,6 +1376,7 @@ pub fn run(text: &str, state: &Shown<'_>) -> Option<Run> {
         "vcam.toggle" => Run::VirtualCamera(!on),
         "replay.toggle" => Run::Replay(!on),
         "replay.save" => Run::SaveReplay,
+        "canvas.add_vertical" => Run::AddVertical,
         _ => return None,
     })
 }
