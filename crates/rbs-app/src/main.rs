@@ -1845,9 +1845,11 @@ impl Ctx {
             2
         };
         let on_close = i32::from(app.bg.on_close == OnClose::KeepRunning);
+        let swap = app.bg.swap_after_transition;
         let push = |g: Studio<'_>| {
             g.set_platform(platform);
             g.set_on_close(on_close);
+            g.set_swap_after_transition(swap);
             g.set_way_back(Self::way_back());
         };
         push(app.main.global::<Studio>());
@@ -2720,10 +2722,11 @@ fn section_key(id: &str) -> (String, bool) {
 
 /// Every card of the Settings window that folds (ADR-0078), for "Collapse all". A test
 /// keeps this in step with the ids in `ui/*.slint`.
-const SETTINGS_SECTIONS: [&str; 20] = [
+const SETTINGS_SECTIONS: [&str; 21] = [
     "settings.appearance.theme-in-use",
     "settings.appearance.themes",
     "settings.general.closing",
+    "settings.general.studio",
     "settings.recording.files",
     "settings.recording.encoding",
     "settings.recording.replay",
@@ -2933,7 +2936,14 @@ fn install_studio(g: &Studio<'_>, ctx: &Ctx) {
             .preview_press([x, y], [w, h], shift, no_snap, crop);
     });
     on!(on_preview_drag, |app, x: f32, y: f32| {
-        app.studio.preview_drag([x, y]);
+        // The click that closes a system menu on Windows can reach the picture without
+        // its release (the menu takes it): a drag whose button is no longer down ends
+        // here instead of following the pointer.
+        if primary_button_up() {
+            app.studio.preview_release();
+        } else {
+            app.studio.preview_drag([x, y]);
+        }
     });
     on!(on_preview_release, |app| {
         app.studio.preview_release();
@@ -3208,6 +3218,17 @@ fn install_studio(g: &Studio<'_>, ctx: &Ctx) {
         };
         if on_close.supported() && app.bg.on_close != on_close {
             app.bg.on_close = on_close;
+            if let Err(e) = background::save(&app.config, &app.bg) {
+                app.error = Some(UiError::Other(format!("The setting was not saved: {e}")));
+            }
+        }
+    });
+    // Settings, General (ADR-0098): the next transition follows it.
+    on!(on_set_swap_after_transition, |app, on: bool| {
+        if app.bg.swap_after_transition != on {
+            app.bg.swap_after_transition = on;
+            app.studio
+                .send(studio_host::Command::SetSwapAfterTransition(on));
             if let Err(e) = background::save(&app.config, &app.bg) {
                 app.error = Some(UiError::Other(format!("The setting was not saved: {e}")));
             }
@@ -3565,6 +3586,7 @@ fn run(config: PathBuf, notice: Option<String>) -> Result<(), Box<dyn std::error
         config.key_account = key_account;
         config.virtual_camera = ctx.app.borrow().vcam.factory();
         config.recent_dir = Some(ctx.app.borrow().config.clone());
+        config.swap_after_transition = ctx.app.borrow().bg.swap_after_transition;
         // The monitor device belongs to this computer (ADR-0097); a file that cannot be
         // read gives System default at full volume and is left as it is.
         let (monitor, note) = rbs_app::monitor_settings::load(&ctx.app.borrow().config);
@@ -3744,6 +3766,19 @@ fn run(config: PathBuf, notice: Option<String>) -> Result<(), Box<dyn std::error
     }
     CTX.with(|c| c.borrow_mut().take());
     Ok(())
+}
+
+/// Whether the primary mouse button is up now (Windows; elsewhere the toolkit's release
+/// always arrives, so `false`).
+fn primary_button_up() -> bool {
+    #[cfg(windows)]
+    {
+        rbs_app::win::primary_button_up()
+    }
+    #[cfg(not(windows))]
+    {
+        false
+    }
 }
 
 #[cfg(test)]
