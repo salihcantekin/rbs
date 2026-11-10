@@ -483,9 +483,10 @@ component StackView inherits Rectangle {
                 IconButton {
                     icon: IconName.more;
                     name: @tr("Actions for {}", active-title);
+                    // The menu opens under this button, as Add source's does.
                     clicked => {
                         menu-panel = active-id;
-                        menu.open({ x: Tokens.space-2, y: bar });
+                        menu.open({ x: self.absolute-position.x - root.absolute-position.x, y: bar });
                     }
                 }
             }
