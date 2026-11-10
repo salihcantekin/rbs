@@ -192,6 +192,8 @@ fn an_empty_registry_still_has_the_compositor_the_mixer_and_the_filters() {
     assert_eq!(
         ids,
         [
+            "org.rbs.audio-filter.gain",
+            "org.rbs.audio-filter.noise-gate",
             "org.rbs.audio.mixer",
             "org.rbs.compositor",
             "org.rbs.filter.blur",

@@ -104,8 +104,9 @@ pub struct BoundCompositor {
 pub struct BoundAudio {
     /// The source.
     pub source: SourceId,
-    /// The node whose audio the mixer hears: the source's node, which is in the
-    /// mixer's partition, so it is also the strip's producer (ADR-0037).
+    /// The node whose audio the mixer hears: the tail of the source's filter chain
+    /// (the source's node when it has no enabled filter). It is in the mixer's
+    /// partition, so it is also the strip's producer (ADR-0037, ADR-0082).
     pub producer: NodeId,
 }
 
@@ -136,9 +137,9 @@ pub enum BindProblem {
     /// The filter's node type is not a `VideoFilter` with video input and output; it
     /// is skipped.
     NoVideoPins(FilterId),
-    /// The filter belongs to a source without a video output; audio filters are not
-    /// bound yet, so it is skipped.
-    FilterOnAudioSource(FilterId),
+    /// The filter's node type is not an `AudioFilter` with audio input and output (an
+    /// audio source takes only audio filters); it is skipped.
+    NoAudioPins(FilterId),
     /// The source has video and audio outputs; only its video is bound. Its audio
     /// would reach the mixer through a partition queue, whose reader the mixer sees
     /// as the producer, which the binder cannot name yet.
@@ -613,7 +614,9 @@ impl State {
                     report.retired_filters.push(b.node);
                 }
             }
-            let has_video = bound.source.pins.output.is_some();
+            // A source without a video output is an audio source (bound only with audio
+            // enabled): its chain is an audio chain in the source's partition.
+            let is_audio = bound.source.pins.output.is_none();
             for filter in &source.filters {
                 if let Some(b) = bound.filters.get(&filter.id) {
                     if bound.filter_settings.get(&filter.id) != Some(&filter.settings) {
@@ -624,12 +627,6 @@ impl State {
                     }
                     continue;
                 }
-                if !has_video {
-                    report
-                        .problems
-                        .push(BindProblem::FilterOnAudioSource(filter.id));
-                    continue;
-                }
                 let Some(descriptor) = types.descriptor(&filter.type_id) else {
                     report.problems.push(BindProblem::UnknownFilterType(
                         filter.id,
@@ -637,15 +634,33 @@ impl State {
                     ));
                     continue;
                 };
-                let pins = video_pins(&descriptor, false);
-                if descriptor.kind != NodeKind::VideoFilter
-                    || pins.input.is_none()
-                    || pins.output.is_none()
-                {
-                    report.problems.push(BindProblem::NoVideoPins(filter.id));
+                let (kind, pins) = if is_audio {
+                    (
+                        NodeKind::AudioFilter,
+                        pins_of(&descriptor, LinkKind::Audio, false),
+                    )
+                } else {
+                    (NodeKind::VideoFilter, video_pins(&descriptor, false))
+                };
+                let usable = pins.input.is_some()
+                    && if is_audio {
+                        pins.audio.is_some()
+                    } else {
+                        pins.output.is_some()
+                    };
+                if descriptor.kind != kind || !usable {
+                    report.problems.push(if is_audio {
+                        BindProblem::NoAudioPins(filter.id)
+                    } else {
+                        BindProblem::NoVideoPins(filter.id)
+                    });
                     continue;
                 }
                 let node = add_node(graph, descriptor)?;
+                if let (true, Some(partition)) = (is_audio, audio) {
+                    // The filter runs in the source's partition: no queue between them.
+                    graph.set_partition(node, partition)?;
+                }
                 report.created_filters.push((filter.id, node));
                 bound
                     .filter_settings
@@ -667,8 +682,12 @@ impl State {
                 let mut prev = bound.source.clone();
                 for f in &chain {
                     if let Some(next) = bound.filters.get(f) {
-                        if let (Some(out), Some((_, input))) = (&prev.pins.output, &next.pins.input)
-                        {
+                        let out = if is_audio {
+                            &prev.pins.audio
+                        } else {
+                            &prev.pins.output
+                        };
+                        if let (Some(out), Some((_, input))) = (out, &next.pins.input) {
                             let link = graph.connect(prev.node, out, next.node, input)?;
                             bound.chain_links.push(link);
                         }
@@ -841,13 +860,16 @@ impl State {
                     let Some(bound) = self.sources.get(id) else {
                         continue;
                     };
-                    if let (None, Some(out)) = (&bound.source.pins.output, &bound.source.pins.audio)
-                    {
-                        inputs.push(BoundAudio {
-                            source: *id,
-                            producer: bound.source.node,
-                        });
-                        outs.insert(bound.source.node, out.clone());
+                    if bound.source.pins.output.is_none() {
+                        // The mixer hears the tail of the audio chain (ADR-0082).
+                        let tail = bound.tail();
+                        if let Some(out) = &tail.pins.audio {
+                            inputs.push(BoundAudio {
+                                source: *id,
+                                producer: tail.node,
+                            });
+                            outs.insert(tail.node, out.clone());
+                        }
                     }
                 }
                 mix.links.retain(|link| {

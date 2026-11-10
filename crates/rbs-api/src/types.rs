@@ -154,13 +154,31 @@ pub struct FilterTypeList {
 /// A filter type and its settings schema.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct FilterTypeInfo {
-    /// `org.rbs.filter.<name>`.
+    /// `org.rbs.filter.<name>` for a video filter, `org.rbs.audio-filter.<name>` for an
+    /// audio filter.
     #[serde(rename = "type")]
     pub type_id: String,
+    /// `"video"` or `"audio"` (protocol 1.16, ADR-0082); a 1.8 to 1.15 server omits it,
+    /// which means video.
+    #[serde(default = "video_domain")]
+    pub domain: String,
     /// English display name.
     pub name: String,
     /// Its settings, in display order.
     pub fields: Vec<FilterField>,
+}
+
+fn video_domain() -> String {
+    "video".to_owned()
+}
+
+/// One option of a `"choice"` setting (protocol 1.16).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FilterOption {
+    /// The value stored in settings.
+    pub key: String,
+    /// English label.
+    pub label: String,
 }
 
 /// One setting of a filter type.
@@ -170,8 +188,18 @@ pub struct FilterField {
     pub key: String,
     /// English label.
     pub label: String,
-    /// `"number"` or `"color"`.
+    /// `"number"`, `"color"`, `"toggle"` or `"choice"` (the last two since protocol 1.16).
     pub kind: String,
+    /// One sentence that explains the setting (protocol 1.16); absent when none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub help: Option<String>,
+    /// `"linear"` or `"log"` for a number (protocol 1.16); absent for other kinds. A
+    /// log number is meant for a log-scaled slider.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub curve: Option<String>,
+    /// The options of a `"choice"` (protocol 1.16); absent for other kinds.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub options: Option<Vec<FilterOption>>,
     /// Smallest number.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub min: Option<f32>,
@@ -184,7 +212,8 @@ pub struct FilterField {
     /// Shown after the value; absent when none.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub unit: Option<String>,
-    /// The default: a number, or a `"#rrggbb"` / `"#rrggbbaa"` string.
+    /// The default: a number, a `"#rrggbb"` / `"#rrggbbaa"` string, a boolean for a
+    /// toggle, or an option key for a choice.
     pub default: serde_json::Value,
 }
 
