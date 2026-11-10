@@ -99,6 +99,10 @@ impl AddPicker {
     /// The dialog offers "Capture audio too": a display or a window is being added.
     pub fn offers_audio(&self) -> bool {
         matches!(self.kind, Some(SourceKind::Screen | SourceKind::Window))
+            && self
+                .entries
+                .iter()
+                .any(|(_, _, p)| matches!(p, Pick::Target(_, t) if t.sound && !t.picker))
     }
 
     /// The dialog offers "Add its microphone too": a camera is listed and at least one
@@ -178,6 +182,7 @@ mod tests {
             recent: None,
             picker: false,
             mic: None,
+            sound: true,
         }
     }
 
@@ -190,12 +195,24 @@ mod tests {
             (SourceKind::AudioInput, false),
         ] {
             let mut p = AddPicker::for_kind(kind);
+            p.answer(kind, &[target("Thing", false)]);
             assert_eq!(p.offers_audio(), offered, "{kind:?}");
             assert!(!p.audio());
             p.set_audio(true);
             assert!(p.audio());
         }
         assert!(!AddPicker::existing(&[]).offers_audio());
+    }
+
+    #[test]
+    fn a_display_that_cannot_leave_rbs_out_of_its_sound_does_not_offer_it() {
+        let mut p = AddPicker::for_kind(SourceKind::Screen);
+        let display = Target {
+            sound: false,
+            ..target("Display 1", false)
+        };
+        p.answer(SourceKind::Screen, &[display]);
+        assert!(!p.offers_audio());
     }
 
     #[test]

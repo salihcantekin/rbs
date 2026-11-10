@@ -237,6 +237,9 @@ pub struct Target {
     /// Name of the camera's own microphone, when the audio system has it and it is not
     /// a source yet (ADR-0096 E); `None` otherwise and for everything but cameras.
     pub mic: Option<String>,
+    /// The sound that goes with a display or window can be added too (the system can
+    /// leave RBS's own sound out of a display's sound); false when it cannot.
+    pub sound: bool,
 }
 
 /// How a source is doing.
@@ -1669,6 +1672,7 @@ fn target_of(t: SourceTarget) -> Target {
         recent: None,
         picker: false,
         mic: None,
+        sound: true,
     }
 }
 
@@ -2675,6 +2679,7 @@ impl Host {
         } else {
             Vec::new()
         };
+        let can_exclude = self.adapters.sources.can_exclude_own_sound();
         let mut list: Vec<Target> = raw
             .into_iter()
             .map(|t| {
@@ -2683,8 +2688,10 @@ impl Host {
                     .as_ref()
                     .and_then(|id| mics.iter().find(|m| &m.target == id))
                     .map(|m| m.name.clone());
+                let sound = kind != SourceKind::Screen || can_exclude;
                 Target {
                     mic,
+                    sound,
                     ..target_of(t)
                 }
             })
@@ -2704,6 +2711,7 @@ impl Host {
             recent: None,
             picker: true,
             mic: None,
+            sound: false,
         }));
         for t in &mut list {
             t.recent = recent_rank(self.recent.list(kind.type_id().as_str()), t);
@@ -6296,6 +6304,7 @@ impl ApiTarget<'_> {
                     recent: None,
                     picker: false,
                     mic: None,
+                    sound: false,
                 };
                 if host
                     .retarget_source(SourceId::from_raw(p.source), &target)
@@ -7404,6 +7413,7 @@ mod tests {
             recent: None,
             picker: false,
             mic: None,
+            sound: false,
         };
         let find = |listed: Vec<Target>, app: &str| match_by_hints(listed, "a", "old", app, "zsh");
         // One match, the application in another case.
@@ -7442,6 +7452,7 @@ mod tests {
             recent: None,
             picker: false,
             mic: None,
+            sound: false,
         };
         let h = hints_of(&target("zsh - Terminal", Some("Terminal")));
         assert_eq!(
