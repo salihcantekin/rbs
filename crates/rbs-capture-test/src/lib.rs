@@ -142,7 +142,8 @@ impl TestCaptureFactory {
                         TargetKind::Camera,
                         "Test camera",
                     )
-                    .with_modes(camera_modes),
+                    .with_modes(camera_modes)
+                    .with_related(rbs_capture::RelatedDevice::audio("test-camera-0-mic")),
                     (0, 0),
                 ),
             ],
