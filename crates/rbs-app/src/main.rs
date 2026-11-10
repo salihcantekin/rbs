@@ -1237,8 +1237,8 @@ impl Ctx {
     #[cfg(not(any(target_os = "macos", windows)))]
     fn connect_preview(&self, _endpoint: rbs_gpu::share::PreviewEndpoint) {}
 
-    /// The preview scene's picture in studio mode (ADR-0061; macOS only for now).
-    #[cfg(target_os = "macos")]
+    /// The preview scene's picture in studio mode (ADR-0061).
+    #[cfg(any(target_os = "macos", windows))]
     fn connect_scene_preview(&self, endpoint: rbs_gpu::share::PreviewEndpoint) {
         preview::connect(preview::Picture::Scene, endpoint, |ok| {
             let ctx = CTX.with(|c| c.borrow().clone());
@@ -1251,7 +1251,7 @@ impl Ctx {
         });
     }
 
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(not(any(target_os = "macos", windows)))]
     fn connect_scene_preview(&self, _endpoint: rbs_gpu::share::PreviewEndpoint) {}
 
     /// Shows the Settings window at `section`, made on first use and kept until it is
@@ -1498,7 +1498,7 @@ impl Ctx {
         let scene_state = match s.state {
             0 => ps::STARTING,
             2 => ps::STOPPED,
-            _ if !s.preview_offered || !cfg!(target_os = "macos") => ps::NO_PLATFORM,
+            _ if !s.preview_offered || !cfg!(any(target_os = "macos", windows)) => ps::NO_PLATFORM,
             _ if s.scene_preview_failed => ps::NO_SESSION,
             _ if scene_main.is_none() && float_has("rbs.preview") => ps::OTHER_WINDOW,
             _ if s.scene_preview_ready => ps::SHOWN,

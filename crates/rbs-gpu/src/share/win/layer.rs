@@ -9,10 +9,16 @@
 //! is when the frame goes back to the engine.
 //!
 //! Toolkit-neutral: the layer needs only the window's `HWND` and a rectangle in it.
+//!
+//! A window has at most one topmost composition target, so every layer of the UI
+//! thread uses one shared DirectComposition device ([`Composition`]), and the layers of
+//! one window (Program and Preview in studio mode, ADR-0061) are child visuals of that
+//! window's one target.
 
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 use std::ffi::c_void;
 use std::num::NonZeroIsize;
+use std::rc::{Rc, Weak};
 use std::time::Duration;
 
 use rbs_core::time::Timestamp;
@@ -87,8 +93,12 @@ pub struct PreviewLayer {
     surface: IPresentationSurface,
     buffers: Vec<IPresentationBuffer>,
     _surface_handle: Owned,
+    /// The thread's shared composition device and window targets.
+    composition: Rc<Composition>,
+    /// `composition`'s device, for short calls.
     dcomp: IDCompositionDevice,
-    /// The target's root: the picture, and above it the marks (ADR-0048).
+    /// The layer's own root: the picture, and above it the marks (ADR-0048). A child of
+    /// the window's shared root while attached and shown.
     root: IDCompositionVisual,
     visual: IDCompositionVisual,
     /// The composition swapchain surface as visual content; the picture and every tile
@@ -102,7 +112,10 @@ pub struct PreviewLayer {
     tiled: usize,
     /// Scratch for the tiles' pieces; capacity kept.
     tile_pieces: Vec<Edges>,
-    target: Option<IDCompositionTarget>,
+    /// The window the layer is attached to: its `HWND` and the shared root of its target.
+    window: Option<(isize, IDCompositionVisual)>,
+    /// `root` is a child of the window's root now.
+    in_window: Cell<bool>,
     /// Parent of the mark visuals, above the picture; made at the first `set_marks`.
     overlay: Option<IDCompositionVisual>,
     /// The mark visuals, reused; at most [`MAX_MARKS`].
@@ -230,7 +243,7 @@ impl PreviewLayer {
         // SAFETY: creates a composition surface handle we own (closed on drop), a
         // presentation surface and composition objects bound to it, and a root visual of
         // our own device holding the picture visual.
-        let (surface_handle, surface, dcomp, root, visual, content) = unsafe {
+        let (surface_handle, surface, composition, dcomp, root, visual, content) = unsafe {
             let handle = Owned(
                 DCompositionCreateSurfaceHandle(COMPOSITIONOBJECT_ALL_ACCESS, None)
                     .map_err(fail("DCompositionCreateSurfaceHandle failed"))?,
@@ -258,9 +271,8 @@ impl PreviewLayer {
             surface
                 .SetSourceRect(&source)
                 .map_err(fail("SetSourceRect failed"))?;
-            let dxgi: IDXGIDevice = d3d.cast().map_err(fail("no IDXGIDevice"))?;
-            let dcomp: IDCompositionDevice =
-                DCompositionCreateDevice(&dxgi).map_err(fail("DCompositionCreateDevice failed"))?;
+            let composition = Composition::for_thread(subscriber.adapter_luid(), &d3d)?;
+            let dcomp = composition.dcomp.clone();
             let visual = dcomp.CreateVisual().map_err(fail("CreateVisual failed"))?;
             let root = dcomp.CreateVisual().map_err(fail("CreateVisual failed"))?;
             root.AddVisual(&visual, true, None::<&IDCompositionVisual>)
@@ -271,7 +283,7 @@ impl PreviewLayer {
             visual
                 .SetContent(&content)
                 .map_err(fail("SetContent failed"))?;
-            (handle, surface, dcomp, root, visual, content)
+            (handle, surface, composition, dcomp, root, visual, content)
         };
         // SAFETY: a query of our own manager; the event stays owned by it.
         let lost_event = unsafe { manager.GetLostEvent() }.map_err(fail("GetLostEvent failed"))?;
@@ -287,6 +299,7 @@ impl PreviewLayer {
             lost_event,
             buffers,
             _surface_handle: surface_handle,
+            composition,
             dcomp,
             root,
             visual,
@@ -295,7 +308,8 @@ impl PreviewLayer {
             tiles: Vec::new(),
             tiled: 0,
             tile_pieces: Vec::with_capacity(region::MAX_PIECES),
-            target: None,
+            window: None,
+            in_window: Cell::new(false),
             overlay: None,
             mark_visuals: Vec::new(),
             mark_colors: Vec::new(),
@@ -341,13 +355,16 @@ impl PreviewLayer {
     /// `hwnd` must be a live top-level window of this process (for example the
     /// `Win32WindowHandle::hwnd` of the toolkit's window), and the call must be made on
     /// the thread that owns it.
+    ///
+    /// Several layers may be attached to one window: they share its one topmost target
+    /// (a child visual each), so they must not overlap.
     pub unsafe fn attach_to_hwnd(&mut self, hwnd: NonZeroIsize) -> Result<(), GpuError> {
-        let hwnd = HWND(hwnd.get() as *mut c_void);
-        // SAFETY: the caller guarantees a live window; a window has at most one topmost
-        // target, which this creates.
-        let target = unsafe { self.dcomp.CreateTargetForHwnd(hwnd, true) }
-            .map_err(|_| GpuError::Unsupported("CreateTargetForHwnd failed"))?;
-        self.target = Some(target);
+        if self.window.is_some() {
+            self.leave_window();
+        }
+        // SAFETY: the caller's guarantees are passed on.
+        let root = unsafe { self.composition.join(hwnd.get()) }?;
+        self.window = Some((hwnd.get(), root));
         self.placed = None;
         // The visual joins the window at the next `show`, never with an old buffer.
         self.awaiting_frame = true;
@@ -373,11 +390,15 @@ impl PreviewLayer {
     /// Takes the visual out of the window and waits until the compositor has applied it
     /// (UI thread, not real-time).
     fn leave_window(&mut self) {
-        if let Some(target) = self.target.take() {
-            // SAFETY: clears the root of our own target, commits, and waits for the
+        if let Some((hwnd, window_root)) = self.window.take() {
+            // SAFETY: removes our own root from the window's shared root (same device),
+            // drops the target if no other layer uses it, commits, and waits for the
             // compositor to process the commit.
             unsafe {
-                let _ = target.SetRoot(None::<&IDCompositionVisual>);
+                if self.in_window.replace(false) {
+                    let _ = window_root.RemoveVisual(&self.root);
+                }
+                self.composition.leave(hwnd);
                 let _ = self.dcomp.Commit();
                 let _ = self.dcomp.WaitForCommitCompletion();
             }
@@ -690,14 +711,15 @@ impl PreviewLayer {
             let mut offset = POINT::default();
             let texture: ID3D11Texture2D = surface.BeginDraw(None, &mut offset).ok()?;
             let mut rtv: Option<ID3D11RenderTargetView> = None;
-            let drawn = self
-                ._d3d
+            // The surface's texture belongs to the composition device's D3D device,
+            // which may be another layer's.
+            let d3d = &self.composition.d3d;
+            let drawn = d3d
                 .CreateRenderTargetView(&texture, None, Some(&mut rtv))
                 .ok()
                 .and(rtv)
                 .zip(
-                    self._d3d
-                        .GetImmediateContext()
+                    d3d.GetImmediateContext()
                         .ok()
                         .and_then(|c| c.cast::<ID3D11DeviceContext1>().ok()),
                 )
@@ -747,7 +769,7 @@ impl PreviewLayer {
     /// once and nothing is presented, so no frame waits on a surface the compositor does
     /// not show.
     pub fn show(&mut self, frame: PreviewFrame, now: Timestamp) {
-        if self.target.is_none() {
+        if self.window.is_none() {
             drop(frame);
             self.retire(now);
             return;
@@ -833,15 +855,24 @@ impl PreviewLayer {
         if self.awaiting_frame {
             return;
         }
-        if let Some(target) = &self.target {
-            // SAFETY: sets or clears the root of our own target to our own visual.
-            let _ = unsafe {
-                if self.hidden.get() || self.cut_bad {
-                    target.SetRoot(None::<&IDCompositionVisual>)
-                } else {
-                    target.SetRoot(&self.root)
-                }
-            };
+        let Some((_, window_root)) = &self.window else {
+            return;
+        };
+        let shown = !(self.hidden.get() || self.cut_bad);
+        if shown == self.in_window.get() {
+            return;
+        }
+        // SAFETY: adds or removes our own root under the window's shared root, both of
+        // the shared device.
+        let done = unsafe {
+            if shown {
+                window_root.AddVisual(&self.root, true, None::<&IDCompositionVisual>)
+            } else {
+                window_root.RemoveVisual(&self.root)
+            }
+        };
+        if done.is_ok() {
+            self.in_window.set(shown);
         }
     }
 
@@ -894,5 +925,113 @@ impl Drop for PreviewLayer {
         // engine could write a surface still on screen (one torn preview frame at worst).
         // The frame kept since `detach` goes back here too, so the same holds after it.
         self.leave_window();
+    }
+}
+
+/// The DirectComposition device shared by every layer of the UI thread, and the topmost
+/// target of each window with a layer. A window has at most one topmost target, so the
+/// layers of one window are child visuals of its one root. Kept while a layer holds it.
+struct Composition {
+    /// The engine adapter's LUID the device was made on.
+    luid: u64,
+    /// The device behind `dcomp`: it owns the textures of `dcomp`'s own surfaces (the
+    /// marks' colours).
+    d3d: ID3D11Device,
+    dcomp: IDCompositionDevice,
+    windows: RefCell<Vec<WindowTarget>>,
+}
+
+/// One window's topmost target and the root holding its layers.
+struct WindowTarget {
+    hwnd: isize,
+    target: IDCompositionTarget,
+    root: IDCompositionVisual,
+    layers: usize,
+}
+
+thread_local! {
+    static COMPOSITION: RefCell<Weak<Composition>> = const { RefCell::new(Weak::new()) };
+}
+
+impl Composition {
+    /// The thread's device on the adapter `luid`, made from `d3d` if there is none (or
+    /// the one there is was made on another adapter or lost its device).
+    fn for_thread(luid: u64, d3d: &ID3D11Device) -> Result<Rc<Self>, GpuError> {
+        let fail = |what: &'static str| move |_: windows::core::Error| GpuError::Unsupported(what);
+        COMPOSITION.with(|c| {
+            if let Some(shared) = c.borrow().upgrade() {
+                // SAFETY: a plain query of a live device.
+                let removed = unsafe { shared.d3d.GetDeviceRemovedReason() }.is_err();
+                if shared.luid == luid && !removed {
+                    return Ok(shared);
+                }
+            }
+            let dxgi: IDXGIDevice = d3d.cast().map_err(fail("no IDXGIDevice"))?;
+            // SAFETY: creates a composition device on our live D3D device.
+            let dcomp: IDCompositionDevice = unsafe { DCompositionCreateDevice(&dxgi) }
+                .map_err(fail("DCompositionCreateDevice failed"))?;
+            let made = Rc::new(Self {
+                luid,
+                d3d: d3d.clone(),
+                dcomp,
+                windows: RefCell::new(Vec::new()),
+            });
+            *c.borrow_mut() = Rc::downgrade(&made);
+            Ok(made)
+        })
+    }
+
+    /// One more layer in window `hwnd`: the window's root, its target made on the first.
+    ///
+    /// # Safety
+    ///
+    /// As [`PreviewLayer::attach_to_hwnd`].
+    unsafe fn join(&self, hwnd: isize) -> Result<IDCompositionVisual, GpuError> {
+        let mut windows = self.windows.borrow_mut();
+        if let Some(w) = windows.iter_mut().find(|w| w.hwnd == hwnd) {
+            w.layers += 1;
+            return Ok(w.root.clone());
+        }
+        // SAFETY: the caller guarantees a live window owned by this thread; it has no
+        // topmost target of this device yet, so this makes its only one.
+        let (target, root) = unsafe {
+            let target = self
+                .dcomp
+                .CreateTargetForHwnd(HWND(hwnd as *mut c_void), true)
+                .map_err(|_| GpuError::Unsupported("CreateTargetForHwnd failed"))?;
+            let root = self
+                .dcomp
+                .CreateVisual()
+                .map_err(|_| GpuError::Unsupported("CreateVisual failed"))?;
+            target
+                .SetRoot(&root)
+                .map_err(|_| GpuError::Unsupported("SetRoot failed"))?;
+            (target, root)
+        };
+        windows.push(WindowTarget {
+            hwnd,
+            target,
+            root: root.clone(),
+            layers: 1,
+        });
+        Ok(root)
+    }
+
+    /// One layer fewer in window `hwnd`; the last one clears and drops the target. The
+    /// caller commits.
+    fn leave(&self, hwnd: isize) {
+        let mut windows = self.windows.borrow_mut();
+        let Some(i) = windows.iter().position(|w| w.hwnd == hwnd) else {
+            return;
+        };
+        let last = windows.get_mut(i).is_some_and(|w| {
+            w.layers = w.layers.saturating_sub(1);
+            w.layers == 0
+        });
+        if last {
+            let w = windows.swap_remove(i);
+            // SAFETY: clears the root of our own target before it is released.
+            let _ = unsafe { w.target.SetRoot(None::<&IDCompositionVisual>) };
+        }
     }
 }

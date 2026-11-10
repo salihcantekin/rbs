@@ -409,9 +409,9 @@ impl CropRefusal {
 }
 
 /// Whether the app shows the preview scene's own picture in studio mode (ADR-0061):
-/// macOS, where each picture is its own Core Animation layer. Windows waits for one
-/// DirectComposition target shared by both pictures (a window has one topmost target).
-const SCENE_PICTURE: bool = cfg!(target_os = "macos");
+/// macOS, where each picture is its own Core Animation layer, and Windows, where both
+/// pictures share the window's one DirectComposition target.
+const SCENE_PICTURE: bool = cfg!(any(target_os = "macos", windows));
 
 const STUDIO_MODE_OFF: &str = "Studio mode is off: there is no preview scene.";
 const NO_AREA: &str = "The crop must leave at least one pixel of the picture in each direction.";
