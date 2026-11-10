@@ -55,6 +55,20 @@ pub const REPLAY_AUDIO_ENCODER: PartitionId = PartitionId(9);
 /// Default partition of the replay buffer's ring node.
 pub const REPLAY_RING: PartitionId = PartitionId(10);
 
+/// Default video encoder partition of a studio's third output slot (a second canvas,
+/// ADR-0093 decision 6).
+pub const VIDEO_ENCODER_3: PartitionId = PartitionId(11);
+/// Default audio encoder partition of the third output slot.
+pub const AUDIO_ENCODER_3: PartitionId = PartitionId(12);
+/// Default output partition of the third output slot.
+pub const OUTPUT_3: PartitionId = PartitionId(13);
+/// Default video encoder partition of the fourth output slot.
+pub const VIDEO_ENCODER_4: PartitionId = PartitionId(14);
+/// Default audio encoder partition of the fourth output slot.
+pub const AUDIO_ENCODER_4: PartitionId = PartitionId(15);
+/// Default output partition of the fourth output slot.
+pub const OUTPUT_4: PartitionId = PartitionId(16);
+
 /// The ports a recording chooses adapters for.
 #[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -208,22 +222,26 @@ pub struct Partitions {
     /// The second output slot of a studio (ADR-0047): its encoders, when they are not
     /// shared with the first output, and its output. The fields above are the first.
     pub second: OutputPartitions,
+    /// The third and fourth output slots (ADR-0093 decision 6: two outputs per canvas,
+    /// four in all). They get a worker only while something is scheduled on them.
+    pub more: [OutputPartitions; 2],
     /// The replay buffer (ADR-0088): its own encoders and its ring node. Workers start
     /// only while the buffer is armed (ADR-0013).
     pub replay: OutputPartitions,
 }
 
 impl Partitions {
-    /// The partitions of output slot `slot` (0 or 1; 1 for anything above).
+    /// The partitions of output slot `slot` (0 to 3; the last for anything above).
     pub(crate) fn slot(&self, slot: usize) -> OutputPartitions {
-        if slot == 0 {
-            OutputPartitions {
+        match slot {
+            0 => OutputPartitions {
                 video_encoder: self.video_encoder,
                 audio_encoder: self.audio_encoder,
                 output: self.output,
-            }
-        } else {
-            self.second
+            },
+            1 => self.second,
+            2 => self.more[0],
+            _ => self.more[1],
         }
     }
 }
@@ -236,6 +254,18 @@ impl Default for Partitions {
             audio_encoder: AUDIO_ENCODER,
             output: OUTPUT,
             second: OutputPartitions::default(),
+            more: [
+                OutputPartitions {
+                    video_encoder: VIDEO_ENCODER_3,
+                    audio_encoder: AUDIO_ENCODER_3,
+                    output: OUTPUT_3,
+                },
+                OutputPartitions {
+                    video_encoder: VIDEO_ENCODER_4,
+                    audio_encoder: AUDIO_ENCODER_4,
+                    output: OUTPUT_4,
+                },
+            ],
             replay: OutputPartitions {
                 video_encoder: REPLAY_VIDEO_ENCODER,
                 audio_encoder: REPLAY_AUDIO_ENCODER,
@@ -415,7 +445,8 @@ pub enum RecordError {
     /// output's nodes were removed and the studio runs on; errors of that removal are
     /// listed with node `"rollback"`.)
     Start(Vec<StartFailure>),
-    /// The studio runs [`MAX_OUTPUTS`](crate::MAX_OUTPUTS) outputs already
+    /// The canvas feeds [`MAX_OUTPUTS_PER_CANVAS`](crate::MAX_OUTPUTS_PER_CANVAS) outputs
+    /// already, or the studio runs [`MAX_OUTPUTS`](crate::MAX_OUTPUTS)
     /// ([`Studio::start_output`]).
     TooManyOutputs,
     /// A partition the new output needs still finishes a stopped output (its swap or
@@ -462,7 +493,8 @@ impl fmt::Display for RecordError {
             RecordError::ReplayArmed => f.write_str("the replay buffer is armed already"),
             RecordError::TooManyOutputs => write!(
                 f,
-                "{} outputs run already, the most a studio runs at once",
+                "this canvas already feeds the most outputs at once ({}); a studio runs at most {}",
+                crate::MAX_OUTPUTS_PER_CANVAS,
                 crate::MAX_OUTPUTS
             ),
             RecordError::Start(nodes) => {

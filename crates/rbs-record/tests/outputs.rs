@@ -13,12 +13,13 @@ use rbs_codec::RateControl;
 use rbs_core::media::ContainerId;
 use rbs_core::time::{Clock, TestClock, Timestamp};
 use rbs_record::{
-    AUDIO_ENCODER, AUDIO_ENCODER_2, END_TAIL_LIMIT, MAX_OUTPUTS, OUTPUT, OUTPUT_2, OutputSettings,
-    RecordError, Studio, StudioSettings, VIDEO_ENCODER, VIDEO_ENCODER_2,
+    AUDIO_ENCODER, AUDIO_ENCODER_2, END_TAIL_LIMIT, MAX_OUTPUTS_PER_CANVAS, OUTPUT, OUTPUT_2,
+    OutputSettings, RecordError, Studio, StudioSettings, VIDEO_ENCODER, VIDEO_ENCODER_2,
 };
 use support::*;
 
-/// Workers of the two slots: video encoder, audio encoder, output; slot 0 then 1.
+/// Workers of the slots: video encoder, audio encoder, output; slot 0 then 1 (the third
+/// and fourth slots are in `more_slots`).
 fn slots(studio: &Studio) -> [bool; 6] {
     [
         VIDEO_ENCODER,
@@ -27,6 +28,18 @@ fn slots(studio: &Studio) -> [bool; 6] {
         VIDEO_ENCODER_2,
         AUDIO_ENCODER_2,
         OUTPUT_2,
+    ]
+    .map(|p| studio.engine().has_worker(p))
+}
+
+fn more_slots(studio: &Studio) -> [bool; 6] {
+    [
+        rbs_record::VIDEO_ENCODER_3,
+        rbs_record::AUDIO_ENCODER_3,
+        rbs_record::OUTPUT_3,
+        rbs_record::VIDEO_ENCODER_4,
+        rbs_record::AUDIO_ENCODER_4,
+        rbs_record::OUTPUT_4,
     ]
     .map(|p| studio.engine().has_worker(p))
 }
@@ -84,7 +97,7 @@ fn a_recording_and_a_stream_with_different_settings_run_on_their_own_encoders() 
         studio.start_output(&r.adapters, &stream(3_000_000)),
         Err(RecordError::TooManyOutputs)
     ));
-    assert_eq!(studio.outputs().len(), MAX_OUTPUTS);
+    assert_eq!(studio.outputs().len(), MAX_OUTPUTS_PER_CANVAS);
     assert_eq!(r.video_sessions.load(Ordering::Relaxed), sessions);
 
     let reached = run_until(&mut studio, &clock, |_| {
@@ -303,6 +316,96 @@ fn an_output_of_a_further_canvas_has_its_own_export_and_encoder() {
         let report = studio.stop_output(id).unwrap();
         assert!(report.shutdown_errors.is_empty(), "{report:?}");
     }
+    let (_, errors) = studio.shutdown();
+    assert!(errors.is_empty(), "{errors:?}");
+}
+
+#[test]
+fn each_canvas_runs_two_outputs_and_four_run_in_all() {
+    use rbs_core::media::video::Size;
+    use rbs_core::timing::FrameRate;
+    use rbs_record::{ExtraCanvas, MAX_OUTPUTS};
+
+    if gpu().is_none() {
+        return;
+    }
+    let r = rig();
+    let (mut col, main) = scene();
+    let program = col.canvas(main).unwrap().program.unwrap();
+    let (tall, _) = col
+        .add_canvas("Vertical", Size::new(H / 2, W / 2), FrameRate::FPS_30)
+        .unwrap();
+    col.set_program(tall, Some(program)).unwrap();
+    let (engine, clock) = engine_at_start();
+    let mut settings = StudioSettings::new(main);
+    settings.extra_canvases = vec![ExtraCanvas::new(tall)];
+    let mut studio = Studio::start(engine, gpu().unwrap(), &col, &r.adapters.sources, &settings)
+        .expect("a canvas without a picture starts");
+
+    let on = |canvas, bitrate: u64| {
+        let mut o = stream(bitrate);
+        o.canvas = canvas;
+        o
+    };
+    // The slots of the second canvas cost nothing until used (P13).
+    assert_eq!(more_slots(&studio), [false; 6]);
+    // A recording and a stream on the main canvas, and the same on the vertical one.
+    let mut ids = vec![
+        studio.start_output(&r.adapters, &recording()).unwrap(),
+        studio
+            .start_output(&r.adapters, &on(None, 6_000_000))
+            .unwrap(),
+    ];
+    let mut tall_rec = recording();
+    tall_rec.canvas = Some(tall);
+    ids.push(studio.start_output(&r.adapters, &tall_rec).unwrap());
+    ids.push(
+        studio
+            .start_output(&r.adapters, &on(Some(tall), 4_000_000))
+            .unwrap(),
+    );
+    assert_eq!(ids.len(), MAX_OUTPUTS);
+    assert_eq!(studio.outputs().len(), MAX_OUTPUTS);
+    // Every slot has its own video encoder and output, the third and fourth included;
+    // all four share the one AAC encoder (the same audio settings, one mix).
+    assert_eq!(slots(&studio), [true, true, true, true, false, true]);
+    assert_eq!(more_slots(&studio), [true, false, true, true, false, true]);
+    // A third output of either canvas is refused before anything is chosen.
+    let sessions = r.video_sessions.load(Ordering::Relaxed);
+    for canvas in [None, Some(tall)] {
+        assert!(matches!(
+            studio.start_output(&r.adapters, &on(canvas, 3_000_000)),
+            Err(RecordError::TooManyOutputs)
+        ));
+    }
+    assert_eq!(r.video_sessions.load(Ordering::Relaxed), sessions);
+
+    // Every output encodes frames, the vertical ones too.
+    let reached = run_until(&mut studio, &clock, |s| {
+        ids.iter().all(|id| {
+            s.output_progress(*id)
+                .is_some_and(|p| p.frames_encoded >= 4)
+        })
+    });
+    assert!(
+        reached,
+        "{:?}",
+        ids.iter()
+            .map(|id| studio.output_progress(*id))
+            .collect::<Vec<_>>()
+    );
+    // An output that ended but is not stopped yet still counts.
+    assert!(studio.end_output(ids[2]));
+    assert!(matches!(
+        studio.start_output(&r.adapters, &on(Some(tall), 3_000_000)),
+        Err(RecordError::TooManyOutputs)
+    ));
+    for id in ids {
+        let report = studio.stop_output(id).unwrap();
+        assert!(report.shutdown_errors.is_empty(), "{report:?}");
+    }
+    assert_eq!(slots(&studio), [false; 6]);
+    assert_eq!(more_slots(&studio), [false; 6]);
     let (_, errors) = studio.shutdown();
     assert!(errors.is_empty(), "{errors:?}");
 }
