@@ -1,6 +1,6 @@
 # ADR-0096: "Capture audio too" companions and the camera's own microphone
 
-- Status: Proposed
+- Status: Accepted
 - Date: 2026-11-10
 - Deciders: Salih (owner)
 - Spec: [capture-port](../specs/capture-port.md), [scene-model](../specs/scene-model.md), [control-api](../specs/control-api.md), [audio-graph](../specs/audio-graph.md)
@@ -42,4 +42,4 @@ Facts (analysis-and-roadmap section 3, hardware-verified): Windows 10 2004+ has 
 
 ## Review
 
-Round 1, independent AI session (2026-11-10): changes requested (9 concerns: pid in the wrong port, undefined self-exclusion option and capability, cross-port `related` type, unproven scene format claim, hide/delete/undo semantics, API version, missing cases, P13 for lookups). All resolved in this text. Round 2 (same day): approve. Notes for the implementation PR: the rule that a companion is audible while one of its picture's items is visible is new binder behaviour (a cross-source dependency, like the ducker key), so scene-model.md and audio-graph.md are updated with a binder test; the round-trip test result decides the scene format number and is recorded in the PR; the capture-port and audio-io-port changes land with conformance tests. Owner product approval: Salih, 2026-11-10 (proposal D and E, recommended decisions).
+Round 1, independent AI session (2026-11-10): changes requested (9 concerns: pid in the wrong port, undefined self-exclusion option and capability, cross-port `related` type, unproven scene format claim, hide/delete/undo semantics, API version, missing cases, P13 for lookups). All resolved in this text. Round 2 (same day): approve. Notes for the implementation PR: the rule that a companion is audible while one of its picture's items is visible is new binder behaviour (a cross-source dependency, like the ducker key), so scene-model.md and audio-graph.md are updated with a binder test; the round-trip test result decides the scene format number and is recorded in the PR; the capture-port and audio-io-port changes land with conformance tests. Owner approval: Salih, 2026-11-10 (proposal D and E with the recommended decisions; "onaylıyorum" and "merge et").
