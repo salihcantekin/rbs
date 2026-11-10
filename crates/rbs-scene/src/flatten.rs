@@ -226,6 +226,15 @@ impl SceneCollection {
                 }
             }
         }
+        // A "Capture audio too" companion is audible only while its picture is
+        // (ADR-0096): sound is never on air without its picture. Pictures are not
+        // companions, so one pass is enough.
+        let shown = found.clone();
+        found.retain(|id| {
+            self.source(*id)
+                .and_then(|s| s.companion_of())
+                .is_none_or(|picture| shown.contains(&picture))
+        });
         Ok(found)
     }
 
