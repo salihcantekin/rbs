@@ -26,8 +26,8 @@ fn slint_files() -> BTreeMap<String, String> {
 /// (file, count); lower a number when a menu migrates, never raise one.
 const POPUP_WINDOWS: &[(&str, usize)] = &[
     ("app_menu.slint", 1),
-    ("appearance.slint", 1),
-    ("components.slint", 2),
+    ("appearance.slint", 0),
+    ("components.slint", 1),
     ("studio.slint", 0),
 ];
 

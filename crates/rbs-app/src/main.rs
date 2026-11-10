@@ -1264,6 +1264,7 @@ impl Ctx {
                 });
             });
             appearance_page::install(&w.global::<Appearance>(), &ctx);
+            appearance_page::install_picker(&w.global::<Overlays>(), &ctx);
             shortcuts_page::install(&w.global::<Shortcuts>(), &ctx);
             vcam_page::install(&w.global::<VirtualCamera>(), &ctx);
             let c = ctx.clone();

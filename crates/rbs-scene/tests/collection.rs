@@ -1451,3 +1451,155 @@ fn undoing_a_re_pick_restores_the_settings_and_the_hints() {
     col.undo(redo).unwrap();
     assert_eq!(col.source(src).unwrap().hints, hints("new"));
 }
+
+#[test]
+fn a_canvas_follows_another_one_and_the_edit_undoes() {
+    use rbs_scene::model::Fallback;
+
+    let mut s = studio();
+    let before = s.col.clone();
+    let undo = s
+        .col
+        .set_canvas_follow(s.tall, Some(s.wide), Fallback::KeepLast)
+        .unwrap();
+    assert_eq!(s.col.canvas(s.tall).unwrap().follow, Some(s.wide));
+    let followed = s.col.clone();
+    s.col.undo(undo).unwrap();
+    assert_eq!(s.col, before);
+    s.col
+        .set_canvas_follow(s.tall, Some(s.wide), Fallback::KeepLast)
+        .unwrap();
+    assert_eq!(s.col, followed);
+    // Not itself, not a canvas that follows, and a followed canvas cannot follow.
+    assert_eq!(
+        s.col
+            .set_canvas_follow(s.tall, Some(s.tall), Fallback::KeepLast),
+        Err(SceneError::InvalidFollow(s.tall))
+    );
+    assert_eq!(
+        s.col
+            .set_canvas_follow(s.wide, Some(s.tall), Fallback::KeepLast),
+        Err(SceneError::InvalidFollow(s.wide))
+    );
+    // The followed canvas cannot be removed while it is followed.
+    assert!(s.col.remove_canvas(s.wide).is_err());
+    // A fallback scene needs a follower and a scene the follower may show.
+    let (own, _) = s.col.add_scene("Own", SceneScope::Canvas(s.tall)).unwrap();
+    let (other, _) = s
+        .col
+        .add_scene("Other", SceneScope::Canvas(s.wide))
+        .unwrap();
+    assert!(
+        s.col
+            .set_canvas_follow(s.tall, Some(s.wide), Fallback::Scene(own))
+            .is_ok()
+    );
+    assert_eq!(
+        s.col
+            .set_canvas_follow(s.tall, Some(s.wide), Fallback::Scene(other)),
+        Err(SceneError::InvalidFollow(s.tall))
+    );
+    assert_eq!(
+        s.col.set_canvas_follow(s.wide, None, Fallback::Scene(own)),
+        Err(SceneError::InvalidFollow(s.wide))
+    );
+}
+
+#[test]
+fn a_follower_shows_the_followed_program_or_its_fallback() {
+    use std::collections::BTreeMap;
+
+    use rbs_scene::model::Fallback;
+
+    let mut s = studio();
+    let (live, _) = s.col.add_scene("Live", SceneScope::Shared).unwrap();
+    let (game, _) = s.col.add_scene("Game", SceneScope::Canvas(s.wide)).unwrap();
+    let (vertical, _) = s
+        .col
+        .add_scene("Vertical", SceneScope::Canvas(s.tall))
+        .unwrap();
+    s.col.set_program(s.wide, Some(live)).unwrap();
+    s.col
+        .set_canvas_follow(s.tall, Some(s.wide), Fallback::KeepLast)
+        .unwrap();
+    let none = BTreeMap::new();
+    assert_eq!(s.col.followed_programs(&none)[&s.tall], live);
+
+    // A scene of the main canvas alone cannot be shown: keep the last one shown.
+    s.col.set_program(s.wide, Some(game)).unwrap();
+    let last = BTreeMap::from([(s.tall, live)]);
+    assert_eq!(s.col.followed_programs(&last)[&s.tall], live);
+    // The chosen fallback scene instead.
+    s.col
+        .set_canvas_follow(s.tall, Some(s.wide), Fallback::Scene(vertical))
+        .unwrap();
+    assert_eq!(s.col.followed_programs(&last)[&s.tall], vertical);
+    // A canvas that follows nothing is left out.
+    assert!(!s.col.followed_programs(&last).contains_key(&s.wide));
+}
+
+#[test]
+fn auto_layout_gives_each_item_a_layout_for_the_canvas_in_one_undo_step() {
+    use std::collections::BTreeMap;
+
+    use rbs_scene::AutoLayout;
+
+    let mut s = studio();
+    let (scene, _) = s.col.add_scene("Talk", SceneScope::Shared).unwrap();
+    let (game, _) = s
+        .col
+        .add_item(
+            scene,
+            ItemContent::Source(s.screen),
+            full(1920.0, 1080.0),
+            None,
+        )
+        .unwrap();
+    let (cam, _) = s
+        .col
+        .add_item(scene, ItemContent::Source(s.cam), full(640.0, 360.0), None)
+        .unwrap();
+    let before = s.col.clone();
+    let picture = |_| Some((1920, 1080));
+    let none = BTreeMap::new();
+
+    let undo = s
+        .col
+        .auto_layout(s.tall, scene, AutoLayout::Stack, &picture, &none)
+        .unwrap();
+    let top = s.col.item(game).unwrap().1.overrides[&s.tall];
+    let bottom = s.col.item(cam).unwrap().1.overrides[&s.tall];
+    // Two equal bands of the 1080x1920 canvas, the lowest layer on top.
+    assert_eq!((top.position, top.size), ([0.0, 0.0], [1080.0, 960.0]));
+    assert_eq!(
+        (bottom.position, bottom.size),
+        ([0.0, 960.0], [1080.0, 960.0])
+    );
+    // A 16:9 picture cut to the 9:8 band keeps 1080 x 960 of its 1920 x 1080 pixels.
+    let kept = 1920 - top.crop.left - top.crop.right;
+    assert!((i64::from(kept) - 1215).abs() <= 1, "{kept}");
+    assert_eq!(top.crop.top + top.crop.bottom, 0);
+    // The horizontal canvas is untouched.
+    assert!(!s.col.item(game).unwrap().1.overrides.contains_key(&s.wide));
+
+    s.col.undo(undo).unwrap();
+    assert_eq!(s.col, before);
+
+    // Fit letterboxes: 1080 wide, 607.5 high, centred.
+    s.col
+        .auto_layout(s.tall, scene, AutoLayout::Fit, &picture, &none)
+        .unwrap();
+    let fit = s.col.item(game).unwrap().1.overrides[&s.tall];
+    assert_eq!(fit.size, [1080.0, 607.5]);
+    assert_eq!(fit.position, [0.0, (1920.0 - 607.5) / 2.0]);
+
+    // Fill with the focus at the left edge cuts only the right side.
+    let focus = BTreeMap::from([(game, 0.0)]);
+    s.col
+        .auto_layout(s.tall, scene, AutoLayout::Fill, &picture, &focus)
+        .unwrap();
+    let fill = s.col.item(game).unwrap().1.overrides[&s.tall];
+    assert_eq!((fill.position, fill.size), ([0.0, 0.0], [1080.0, 1920.0]));
+    assert_eq!(fill.crop.left, 0);
+    assert!(fill.crop.right > 1000);
+}
