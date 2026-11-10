@@ -1,6 +1,6 @@
 # ADR-0097: Audio monitoring and buses
 
-- Status: Proposed
+- Status: Accepted
 - Date: 2026-11-10
 - Deciders: Salih (owner)
 - Spec: [audio-graph](../specs/audio-graph.md), [audio-io-port](../specs/audio-io-port.md), [scene-model](../specs/scene-model.md), [control-api](../specs/control-api.md)
@@ -56,4 +56,4 @@ Round 1, independent AI session (2026-11-10): changes requested (8 blocking: bus
 
 Round 2, independent AI session (2026-11-10): changes requested (4 high: buses vs ADR-0093's shared mix, profile references vs ADR-0051, encoder sharing key vs ADR-0047, fixed mixer pin vs schedule swap; 5 medium/low: `Only` without sends, `Only` on a machine without a device, preview and two-canvas monitoring, where sends live and undo, muted strips in the monitor). All addressed in this text.
 
-Round 3, independent AI session (2026-11-10): approve, no blocking problems. Notes for the implementation PRs: (1) mixer ramp state is keyed by producer today; sends and `Only` need ramp state per (producer, bus) with fixed capacity, sized in the F2 design and bench; (2) the F2 PR pins whether `main` is a stored record or implicit (one source of truth for its volume and mute); (3) a canvas with `audio_from = main` keeps its own `master` field, which is ignored for audio (the UI hides it); (4) the start-time refusal for a missing bus offers a one-click fix (choose another bus); (5) a test that no stored send or `Only` entry for a removed source or bus survives load. Owner approval of the shape: see above; the status becomes Accepted when the owner accepts the ADR.
+Round 3, independent AI session (2026-11-10): approve, no blocking problems. Notes for the implementation PRs: (1) mixer ramp state is keyed by producer today; sends and `Only` need ramp state per (producer, bus) with fixed capacity, sized in the F2 design and bench; (2) the F2 PR pins whether `main` is a stored record or implicit (one source of truth for its volume and mute); (3) a canvas with `audio_from = main` keeps its own `master` field, which is ignored for audio (the UI hides it); (4) the start-time refusal for a missing bus offers a one-click fix (choose another bus); (5) a test that no stored send or `Only` entry for a removed source or bus survives load. Owner approval of the shape: see above; owner acceptance: Salih, 2026-11-10 ("ADR-0097'yi kabul ediyorum").

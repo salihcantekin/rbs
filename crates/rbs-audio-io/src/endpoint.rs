@@ -13,12 +13,16 @@ pub enum EndpointKind {
     Input,
     /// What an output device plays (system audio loopback).
     OutputLoopback,
-    /// The audio one application (process tree) plays.
+    /// The audaudio one application (process tree) plays.
     Application,
+    /// A playback device the engine can play audio on (monitoring, ADR-0097). Listed
+    /// by `enumerate` and opened with `open_output`, never with `open_input`; not part
+    /// of [`EndpointKind::ALL`], which names the capture kinds.
+    Output,
 }
 
 impl EndpointKind {
-    /// Every kind, in declaration order.
+    /// Every capture kind (the kinds `open_input` can take), in declaration order.
     pub const ALL: [EndpointKind; 3] = [
         EndpointKind::Input,
         EndpointKind::OutputLoopback,
@@ -31,6 +35,7 @@ impl EndpointKind {
             EndpointKind::Input => "input",
             EndpointKind::OutputLoopback => "output_loopback",
             EndpointKind::Application => "application",
+            EndpointKind::Output => "output",
         }
     }
 }
@@ -85,6 +90,11 @@ pub struct AudioEndpoint {
     pub sample_rates: Vec<SampleRate>,
     /// True for the OS default endpoint of its kind.
     pub is_default: bool,
+    /// Opaque key that is equal for the endpoints of one physical or virtual device,
+    /// so a playback endpoint and the loopback endpoint of the same device can be
+    /// told apart from unrelated ones (ADR-0097, decision 8). `None` when the
+    /// adapter cannot tell; aggregate and virtual devices may not compare equal.
+    pub device_key: Option<String>,
 }
 
 impl AudioEndpoint {
@@ -102,6 +112,7 @@ impl AudioEndpoint {
             format,
             sample_rates: vec![format.sample_rate],
             is_default: false,
+            device_key: None,
         }
     }
 
@@ -111,6 +122,12 @@ impl AudioEndpoint {
         if !self.sample_rates.contains(&self.format.sample_rate) {
             self.sample_rates.insert(0, self.format.sample_rate);
         }
+        self
+    }
+
+    /// Sets the device key (see [`AudioEndpoint::device_key`]).
+    pub fn with_device_key(mut self, key: impl Into<String>) -> Self {
+        self.device_key = Some(key.into());
         self
     }
 
