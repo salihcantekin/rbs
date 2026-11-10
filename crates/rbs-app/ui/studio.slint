@@ -62,6 +62,10 @@ export struct MeterRow {
     peak: float, peak-zone: int, clipped: bool, value: string,
     // A global source (ADR-0065): the Mixer groups it apart from the scene's own.
     global: bool,
+    // Heard on the monitor (ADR-0097): 0 off, 1 monitor and output, 2 monitor only;
+    // and soloed on the monitor.
+    monitor: int,
+    solo: bool,
 }
 export struct ScaleMark { label: string, at: float }
 // The encoder fields of one output (a recording or a stream): the options offered and
@@ -181,6 +185,33 @@ export global Studio {
     // A source's sound: mute, and the volume as a fader position from 0 to 1.
     callback set-source-muted(int /* id */, bool /* muted */);
     callback set-source-mixer-hidden(int /* id */, bool /* hidden */);
+    // The monitor output (ADR-0097): a source's mode (0 off, 1 monitor and output,
+    // 2 monitor only) and solo, and the Mixer row's and Settings › Audio's controls.
+    callback set-source-monitor(int /* id */, int /* mode */);
+    callback set-source-solo(int /* id */, bool /* on */);
+    callback end-monitor-solo();
+    // The volume as a fader position (sent when a drag ends) and the device by its
+    // index in `monitor-devices` (0: System default).
+    callback set-monitor-volume(float);
+    callback set-monitor-device(int);
+    // A device picker is shown: list the playback devices (only then, ADR-0097).
+    callback list-monitor-devices();
+    // Some adapter can play on this computer.
+    in property <bool> monitor-available;
+    // A source is monitored or soloed: the Mixer shows the monitor row.
+    in property <bool> monitor-wanted;
+    // 0 neutral (not in use, opening), 1 playing, 2 a problem; the state in words, and
+    // the latency while it plays ("42 ms").
+    in property <int> monitor-tone;
+    in property <string> monitor-status;
+    in property <string> monitor-latency;
+    in property <float> monitor-volume;
+    in property <string> monitor-volume-text;
+    in property <[string]> monitor-devices;
+    in property <int> monitor-device;
+    in property <string> monitor-device-name;
+    // The soloed sources' names; empty while solo is off.
+    in property <string> monitor-solo;
     callback set-source-volume(int /* id */, float /* position */);
     callback rename-source(int /* id */, string /* name */);
     // The sync offset of a source's sound in milliseconds (ADR-0062): a live control.
@@ -1093,6 +1124,170 @@ export component SourcesPanel inherits Rectangle {
     }
 }
 
+// The headphones button of a Mixer strip (ADR-0097 decision 5): a click turns the
+// source's monitor on (Monitor and output) or off; Alt-click (Option-click on macOS)
+// solos it on the monitor; a right-click opens the monitor menu, which the strip's own
+// menu has too. Monitor only adds a dot (warning colour while no device plays, so the
+// source still goes to the outputs), solo an "S"; the accessible name says both (U7).
+component MonitorButton inherits Rectangle {
+    in property <MeterRow> data;
+    in property <string> title;
+    property <string> mode-text: data.monitor == 2 ? @tr("Monitor only") : data.monitor == 1 ? @tr("Monitor and output") : @tr("Monitor off");
+    property <string> state-text: data.monitor == 2 && Studio.monitor-tone != 1
+        ? @tr("{}; it goes to the outputs until the monitor plays", root.mode-text)
+        : root.mode-text;
+    width: button.width;
+    height: button.height;
+    button := IconButton {
+        icon: data.monitor == 0 && !data.solo ? IconName.headphones-off : IconName.headphones;
+        name: data.solo ? @tr("Monitor of {}: {}, soloed", root.title, root.state-text) : @tr("Monitor of {}: {}", root.title, root.state-text);
+        checked: data.monitor != 0 || data.solo;
+        alt-click: true;
+        clicked => { Studio.set-source-monitor(data.id, data.monitor == 0 ? 1 : 0); }
+        alt-clicked => { Studio.set-source-solo(data.id, !data.solo); }
+        context-requested(x, y) => { menu.show({ x: x, y: y }); }
+    }
+    if data.monitor == 2: Rectangle {
+        x: root.width - self.width;
+        y: root.height - self.height;
+        width: Tokens.space-2;
+        height: Tokens.space-2;
+        border-radius: self.width / 2;
+        background: Studio.monitor-tone == 1 ? Theme.accent : Theme.state-warning;
+    }
+    if data.solo: Text {
+        x: root.width - self.width;
+        y: 0;
+        // "S" for solo; the accessible name says it in words.
+        text: @tr("S");
+        color: Theme.text-primary;
+        font-size: Tokens.type-caption-size;
+        font-weight: Tokens.type-label-weight;
+        accessible-role: none;
+    }
+    menu := ContextMenuArea {
+        enabled: false;
+        Menu {
+            MenuItem {
+                title: @tr("Monitor off");
+                checkable: true;
+                checked: data.monitor == 0;
+                activated => { Studio.set-source-monitor(data.id, 0); }
+            }
+            MenuItem {
+                title: @tr("Monitor and output");
+                checkable: true;
+                checked: data.monitor == 1;
+                activated => { Studio.set-source-monitor(data.id, 1); }
+            }
+            MenuItem {
+                title: @tr("Monitor only");
+                checkable: true;
+                checked: data.monitor == 2;
+                activated => { Studio.set-source-monitor(data.id, 2); }
+            }
+            MenuSeparator { }
+            MenuItem {
+                title: @tr("Solo in monitor");
+                checkable: true;
+                checked: data.solo;
+                activated => { Studio.set-source-solo(data.id, !data.solo); }
+            }
+        }
+    }
+}
+
+// The Mixer's monitor row (ADR-0097): shown only while a source is monitored or
+// soloed. The headphones in the state's colour, the monitor volume (sent when a drag
+// ends), the device, the latency or the problem in words, and the solo chip that ends
+// solo.
+component MonitorRow inherits Rectangle {
+    // The fader position while a drag runs; -1 otherwise.
+    property <float> drag: -1;
+    height: Tokens.size-control-md + 2 * Tokens.space-1;
+    background: Theme.surface-raised;
+    Rectangle {
+        y: 0;
+        height: Tokens.size-border;
+        background: Theme.border-subtle;
+    }
+    HorizontalLayout {
+        padding-left: Tokens.size-panel-pad;
+        padding-right: Tokens.size-panel-pad;
+        padding-top: Tokens.space-1;
+        padding-bottom: Tokens.space-1;
+        spacing: Tokens.space-2;
+        VerticalLayout {
+            alignment: center;
+            Icon {
+                name: IconName.headphones;
+                ink: Studio.monitor-tone == 2 ? Theme.state-warning : Studio.monitor-tone == 1 ? Theme.accent : Theme.text-secondary;
+            }
+        }
+        Text {
+            text: @tr("Monitor");
+            color: Theme.text-primary;
+            font-size: Tokens.type-label-size;
+            font-weight: Tokens.type-label-weight;
+            vertical-alignment: center;
+            accessible-role: none;
+        }
+        VerticalLayout {
+            alignment: center;
+            width: Tokens.size-menu-sm * 0.5;
+            Slider {
+                label: @tr("Monitor volume");
+                value: root.drag >= 0 ? root.drag : Studio.monitor-volume;
+                value-text: Studio.monitor-volume-text;
+                moved(v) => { root.drag = v; }
+                released => {
+                    if root.drag >= 0 { Studio.set-monitor-volume(root.drag); }
+                    root.drag = -1;
+                }
+                cancelled => { root.drag = -1; }
+                reset => { Studio.set-monitor-volume(1); }
+            }
+        }
+        VerticalLayout {
+            alignment: center;
+            width: Tokens.size-menu-sm * 0.8;
+            Select {
+                label: @tr("Monitor device");
+                options: Studio.monitor-devices;
+                index: Studio.monitor-device;
+                selected(i) => { Studio.set-monitor-device(i); }
+            }
+        }
+        Text {
+            horizontal-stretch: 1;
+            text: Studio.monitor-tone == 1 ? Studio.monitor-latency : Studio.monitor-status;
+            color: Studio.monitor-tone == 2 ? Theme.state-error : Theme.text-secondary;
+            font-size: Tokens.type-caption-size;
+            vertical-alignment: center;
+            overflow: elide;
+        }
+        VerticalLayout {
+            alignment: center;
+            InfoHint {
+                label: @tr("Monitor");
+                text: @tr("Sources with their monitor on play here, after their fader and mute and before the master. The monitor goes through the mix, so it lags the sound by the latency shown: for playing live, use your audio interface's direct monitoring.");
+                detail: @tr("Monitor only takes a source off the stream and the recording while the monitor plays. Alt-click (Option-click) a headphones button to solo a source.");
+            }
+        }
+        if Studio.monitor-solo != "": VerticalLayout {
+            alignment: center;
+            Button {
+                dense: true;
+                text: @tr("Solo: {}", Studio.monitor-solo);
+                icon: IconName.close;
+                accessible-name: @tr("End solo of {}", Studio.monitor-solo);
+                tooltip: @tr("End solo");
+                clicked => { Studio.end-monitor-solo(); }
+            }
+        }
+    }
+}
+
 // One horizontal meter (AudioMeter, U16): bar with three zones, peak-hold line, clip
 // box (outlined, filled once clipped), labelled scale under the strip.
 component MeterView inherits Rectangle {
@@ -1195,6 +1390,13 @@ component MeterView inherits Rectangle {
             accessible-action-default => { root.reset(); }
             TouchArea { clicked => { root.reset(); } }
         }
+        // The monitor (ADR-0097); the master has none (the monitor is before it), so a
+        // space keeps the bars aligned.
+        if !root.master: VerticalLayout {
+            alignment: center;
+            MonitorButton { data: data; title: root.title; }
+        }
+        if root.master: Rectangle { width: Tokens.size-control-sm; }
         // Mute (ADR-0059): the icon and the accessible state both say it (U7).
         VerticalLayout {
             alignment: center;
@@ -1361,13 +1563,15 @@ component MeterStrip inherits Rectangle {
         // its own row above the bar, so the strip stays as narrow as it was.
         HorizontalLayout {
             alignment: center;
-            spacing: Tokens.space-2;
+            // Three buttons fit the strip with the small gap.
+            spacing: root.master ? Tokens.space-2 : Tokens.space-1;
             IconButton {
                 icon: data.muted ? IconName.speaker-off : IconName.speaker;
                 name: data.muted ? @tr("Unmute {}", root.title) : @tr("Mute {}", root.title);
                 checked: data.muted;
                 clicked => { root.toggle-muted(); }
             }
+            if !root.master: MonitorButton { data: data; title: root.title; }
             if !root.master: more := IconButton {
                 icon: IconName.more;
                 name: @tr("More options for {}", root.title);
@@ -1390,6 +1594,9 @@ export component MixerPanel inherits Rectangle {
     property <bool> hidden-closed: Sections.closed("mixer.hidden", Sections.rev);
     property <bool> any: Studio.meters.length + Studio.hidden-meters.length > 0;
     property <length> name-width: min(root.width * 0.3, Tokens.size-menu-sm * 0.75);
+    // The monitor row (ADR-0097) takes the panel's bottom while the monitor is wanted.
+    property <length> row-height: Studio.monitor-wanted ? Tokens.size-control-md + 2 * Tokens.space-1 : 0px;
+    property <length> avail: root.height - root.row-height;
     if !root.any: EmptyState {
         width: parent.width;
         height: parent.height;
@@ -1401,12 +1608,12 @@ export component MixerPanel inherits Rectangle {
     // Wide: strips in clusters, scrolling sideways when they do not fit.
     if root.any && root.wide: Flickable {
         width: parent.width;
-        height: parent.height;
+        height: parent.height - root.row-height;
         content-width: max(clusters.preferred-width, self.width);
-        content-height: root.height;
+        content-height: root.avail;
         TouchArea {
             width: max(clusters.preferred-width, root.width);
-            height: root.height;
+            height: root.avail;
             pointer-event(e) => {
                 if e.kind == PointerEventKind.down && e.button == PointerEventButton.right {
                     // Relative to the panel, where the menu is, whatever the scroll.
@@ -1418,7 +1625,7 @@ export component MixerPanel inherits Rectangle {
             }
         }
         clusters := HorizontalLayout {
-            height: root.height;
+            height: root.avail;
             padding: Tokens.size-panel-pad;
             spacing: Tokens.size-section-gap;
             alignment: start;
@@ -1432,7 +1639,7 @@ export component MixerPanel inherits Rectangle {
                 }
                 if !root.scene-closed: HorizontalLayout {
                     // The height under the header, so the strips fill the panel.
-                    height: max(0px, root.height - 2 * Tokens.size-panel-pad - Tokens.size-control-sm - Tokens.size-field-gap);
+                    height: max(0px, root.avail - 2 * Tokens.size-panel-pad - Tokens.size-control-sm - Tokens.size-field-gap);
                     spacing: 0px;
                     for m[i] in Studio.meters: VerticalLayout {
                         padding-right: m.global ? 0px : Tokens.size-field-gap;
@@ -1450,7 +1657,7 @@ export component MixerPanel inherits Rectangle {
                 }
                 if !root.global-closed: HorizontalLayout {
                     // The height under the header, so the strips fill the panel.
-                    height: max(0px, root.height - 2 * Tokens.size-panel-pad - Tokens.size-control-sm - Tokens.size-field-gap);
+                    height: max(0px, root.avail - 2 * Tokens.size-panel-pad - Tokens.size-control-sm - Tokens.size-field-gap);
                     spacing: 0px;
                     for m[i] in Studio.meters: VerticalLayout {
                         padding-right: !m.global ? 0px : Tokens.size-field-gap;
@@ -1468,7 +1675,7 @@ export component MixerPanel inherits Rectangle {
                 SectionHeader { title: @tr("Master"); }
                 HorizontalLayout {
                     // The height under the header, so the strip fills the panel.
-                    height: max(0px, root.height - 2 * Tokens.size-panel-pad - Tokens.size-control-sm - Tokens.size-field-gap);
+                    height: max(0px, root.avail - 2 * Tokens.size-panel-pad - Tokens.size-control-sm - Tokens.size-field-gap);
                     MeterStrip {
                         master: true;
                         data: Studio.master-meter[0];
@@ -1497,7 +1704,7 @@ export component MixerPanel inherits Rectangle {
     // Narrow: rows under full-width headers, then the labelled scale (dBFS).
     if root.any && !root.wide: Flickable {
         width: parent.width;
-        height: parent.height;
+        height: parent.height - root.row-height;
         content-height: strips.preferred-height;
         TouchArea {
             width: root.width;
@@ -1584,6 +1791,7 @@ export component MixerPanel inherits Rectangle {
                 Rectangle { width: Tokens.size-icon-box; }
                 Rectangle { width: Tokens.size-control-sm; }
                 Rectangle { width: Tokens.size-control-sm; }
+                Rectangle { width: Tokens.size-control-sm; }
             }
             if Studio.hidden-meters.length > 0: VerticalLayout {
                 padding-top: Tokens.size-section-gap;
@@ -1598,6 +1806,10 @@ export component MixerPanel inherits Rectangle {
                 }
             }
         }
+    }
+    if Studio.monitor-wanted: MonitorRow {
+        y: root.height - root.row-height;
+        width: root.width;
     }
     // The Mixer's own menu (ADR-0080): a right-click outside any strip or row.
     mixer-menu := CommandMenu { context: "mixer"; }

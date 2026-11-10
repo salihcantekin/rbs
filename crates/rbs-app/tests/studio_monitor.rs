@@ -338,3 +338,68 @@ fn the_control_api_sets_and_reports_the_monitor() {
     ok(&c.call("source.delete", json!({"source": mic})));
     c.event("monitor.changed", |d| d.get("solo").is_none());
 }
+
+/// Waits (hang guard only) for a monitor status that `want` accepts.
+fn monitor_until(
+    updates: &Receiver<Update>,
+    want: impl Fn(&rbs_api::types::MonitorStatus) -> bool,
+) -> rbs_api::types::MonitorStatus {
+    let deadline = Instant::now() + LIMIT;
+    loop {
+        let left = deadline.saturating_duration_since(Instant::now());
+        if let Update::Monitor(s) = updates.recv_timeout(left).expect("a monitor update") {
+            if want(&s) {
+                return s;
+            }
+        }
+    }
+}
+
+#[test]
+fn the_ui_commands_drive_the_monitor_and_report_it() {
+    use rbs_app::studio_host::Command;
+    use rbs_scene::model::SourceId;
+    let Some((host, updates, audio)) = start(SourceMonitor::Off) else {
+        return;
+    };
+    // The monitor's state is sent once at the start (nothing monitored), the Mixer's
+    // rows give the microphone's id, and the devices answer the list request.
+    host.send(Command::ListMonitorDevices);
+    let deadline = Instant::now() + LIMIT;
+    let (mut status, mut mic, mut devices) = (None, None, None);
+    while status.is_none() || mic.is_none() || devices.is_none() {
+        let left = deadline.saturating_duration_since(Instant::now());
+        match updates
+            .recv_timeout(left)
+            .expect("the state, the rows and the devices")
+        {
+            Update::Monitor(s) => status = Some(s),
+            Update::Heard(rows) if !rows.is_empty() => mic = Some(rows[0].id),
+            Update::MonitorDevices(d) => devices = Some(d),
+            _ => {}
+        }
+    }
+    let s = status.unwrap();
+    assert!(s.available && !s.wanted && !s.playing);
+    let mic: SourceId = mic.unwrap();
+    assert!(!devices.unwrap().is_empty());
+    host.send(Command::SetSourceMonitor {
+        id: mic,
+        monitor: SourceMonitor::Also,
+    });
+    monitor_until(&updates, |s| s.playing);
+    assert!(streams_reach(&audio, 2));
+    host.send(Command::SetMonitorVolume(0.5));
+    monitor_until(&updates, |s| s.volume == 0.5);
+    // Solo keeps the monitor wanted after the source's own monitor goes off.
+    host.send(Command::SetMonitorSolo(vec![mic]));
+    monitor_until(&updates, |s| s.solo == [mic.get()]);
+    host.send(Command::SetSourceMonitor {
+        id: mic,
+        monitor: SourceMonitor::Off,
+    });
+    host.send(Command::SetMonitorSolo(Vec::new()));
+    monitor_until(&updates, |s| !s.wanted && !s.playing && s.solo.is_empty());
+    assert!(streams_reach(&audio, 1));
+    drop(host);
+}

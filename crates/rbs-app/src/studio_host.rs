@@ -49,6 +49,7 @@ use rbs_record::{
 use rbs_scene::model::{
     Border, CanvasId, Crop, FilterId, ItemContent, ItemId, ItemStyle, Layout, MasterAudio, Scene,
     SceneId, SceneItem, SceneScope, SettingValue, Settings, Shadow, Shape, SourceAudio, SourceId,
+    SourceMonitor,
 };
 use rbs_scene::{AutoLayout, CenterAxis, FitMode, SceneError, Undo};
 use rbs_scene::{COMPANION_OF_HINT, SceneCollection};
@@ -529,6 +530,23 @@ pub enum Command {
         /// Muted.
         muted: bool,
     },
+    /// Whether a source is heard on the monitor (ADR-0097 decision 5). A live control:
+    /// not on the undo stack; the device opens or closes on the host's next round.
+    SetSourceMonitor {
+        /// The source.
+        id: SourceId,
+        /// Off, Only or Also.
+        monitor: SourceMonitor,
+    },
+    /// The sources soloed on the monitor (session state, never saved); empty ends solo.
+    SetMonitorSolo(Vec<SourceId>),
+    /// The monitor device (`None`: System default), saved in `monitor.toml`.
+    SetMonitorDevice(Option<String>),
+    /// The monitor volume, linear from 0 to 1, saved in `monitor.toml`.
+    SetMonitorVolume(f32),
+    /// Lists the playback devices ([`Update::MonitorDevices`] answers). Enumerates:
+    /// sent only while a device picker is shown (ADR-0097 decision 7).
+    ListMonitorDevices,
     /// Hide a source from the Mixer or show it again (ADR-0080). A live view choice like
     /// the mute: not on the undo stack; the sound is untouched.
     SetSourceMixerHidden {
@@ -1239,6 +1257,11 @@ pub struct VerticalState {
 /// What the studio tells the UI.
 #[derive(Debug, Clone)]
 pub enum Update {
+    /// The monitor output (ADR-0097): device, volume, whether it is wanted and plays,
+    /// its latency, solo and problem. Sent once at the start and when it changes.
+    Monitor(api::MonitorStatus),
+    /// The playback devices, answering [`Command::ListMonitorDevices`].
+    MonitorDevices(Vec<api::MonitorDevice>),
     /// The second canvas runs (`Some`) or does not (`None`), sent when it changes
     /// (ADR-0093) and once at the start.
     Vertical(Option<VerticalState>),
@@ -2170,6 +2193,7 @@ fn round(
     if let Some(left) = host.drive_monitor(now) {
         wait = wait.min(left);
     }
+    host.report_monitor(notify);
     if let Some(left) = host.report_replay(now, notify) {
         wait = wait.min(left);
     }
@@ -2469,6 +2493,29 @@ impl Host {
             Command::SetMasterMuted { muted } => {
                 let done = self.set_master(None, Some(muted));
                 self.answer_live(done, notify);
+            }
+            Command::SetSourceMonitor { id, monitor } => {
+                let done = self.set_source_monitor(id, monitor);
+                self.answer_live(done, notify);
+            }
+            Command::SetMonitorSolo(sources) => {
+                let raw: Vec<u32> = sources.iter().map(|s| s.get()).collect();
+                if let Err(e) = self.set_monitor_solo(&raw) {
+                    notify(Update::Error(e.text().to_owned()));
+                }
+            }
+            Command::SetMonitorDevice(device) => {
+                if let Err(e) = self.set_monitor_device(device) {
+                    notify(Update::Error(e.text().to_owned()));
+                }
+            }
+            Command::SetMonitorVolume(volume) => {
+                if let Err(e) = self.set_monitor_volume(volume) {
+                    notify(Update::Error(e.text().to_owned()));
+                }
+            }
+            Command::ListMonitorDevices => {
+                notify(Update::MonitorDevices(self.api_monitor_devices().devices));
             }
             Command::AddFilter { source, type_id } => {
                 let done = self

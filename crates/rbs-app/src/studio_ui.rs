@@ -49,6 +49,7 @@ const REPORT_EVERY: u32 = 30;
 /// Codes of `Studio.rec-state`.
 pub(crate) mod add_picker;
 pub(crate) mod filters;
+pub(crate) mod monitor;
 
 pub mod rec_state {
     pub const OFF: i32 = 0;
@@ -189,6 +190,10 @@ pub struct StudioUi {
     master_audio: rbs_scene::model::MasterAudio,
     /// What the Mixer shows or hides, for its menus (ADR-0080): the heard sources.
     heard: Vec<HeardFact>,
+    /// The heard sources' names by id, for the monitor's solo line.
+    heard_names: Vec<(u32, String)>,
+    /// The monitor output (ADR-0097): the Mixer's row and Settings › Audio.
+    pub monitor: monitor::MonitorUi,
     meters: Rc<VecModel<MeterRow>>,
     /// Sources hidden from the Mixer (ADR-0080): names only, no meter slot.
     hidden_meters: Rc<VecModel<MeterRow>>,
@@ -418,6 +423,8 @@ impl StudioUi {
             master_meter: Rc::new(VecModel::default()),
             master_audio: rbs_scene::model::MasterAudio::default(),
             heard: Vec::new(),
+            heard_names: Vec::new(),
+            monitor: monitor::MonitorUi::default(),
             meters: Rc::new(VecModel::default()),
             hidden_meters: Rc::new(VecModel::default()),
             stats: Rc::new(VecModel::default()),
@@ -606,6 +613,7 @@ impl StudioUi {
         g.set_canvas_note(self.canvas_note.as_str().into());
         self.push_remote(g);
         self.push_stream(g);
+        self.push_monitor(g);
         g.set_picture_panel(picture_panel.into());
         g.set_state(self.state);
         g.set_failure(self.failure.as_str().into());
@@ -1207,6 +1215,7 @@ impl StudioUi {
         self.commit_server();
         self.new_token = None;
         self.revoked = None;
+        self.monitor_page_shown(false);
     }
 
     pub fn dismiss_new_token(&mut self) {
@@ -3048,6 +3057,8 @@ impl StudioUi {
                             locked: false,
                             muted: h.muted,
                             mixer_hidden: h.hidden,
+                            monitor: h.monitor,
+                            soloed: self.is_soloed(raw),
                             picture: false,
                             audio: true,
                             reloadable: true,
@@ -3073,6 +3084,8 @@ impl StudioUi {
             locked: row.locked,
             muted: row.audio.muted,
             mixer_hidden: row.audio.mixer_hidden,
+            monitor: row.audio.monitor,
+            soloed: self.is_soloed(row.id.get()),
             picture: row.layout.is_some(),
             audio: row.kind.is_some_and(SourceKind::is_audio),
             reloadable: row.kind.is_some(),
@@ -3429,7 +3442,12 @@ impl StudioUi {
         ) {
             self.edit.reset();
         }
+        if self.monitor_update(&u) {
+            return out;
+        }
         match u {
+            // Taken above.
+            Update::Monitor(_) | Update::MonitorDevices(_) => {}
             Update::Thumbnail {
                 adapter,
                 target,
@@ -3938,7 +3956,13 @@ impl StudioUi {
                 id: r.id.get(),
                 muted: r.audio.muted,
                 hidden: r.audio.mixer_hidden,
+                monitor: r.audio.monitor,
             })
+            .collect();
+        self.heard_names = rows
+            .iter()
+            .filter(|r| r.meter.is_some())
+            .map(|r| (r.id.get(), r.name.as_str().to_owned()))
             .collect();
         let mut old: Vec<MeterSlot> = std::mem::take(&mut self.slots);
         for r in rows.iter().filter(|r| !r.audio.mixer_hidden) {
@@ -3965,6 +3989,8 @@ impl StudioUi {
                 icon: source_icon(r.kind).into(),
                 value: "silent".into(),
                 global: r.global,
+                monitor: monitor::mode_code(r.audio.monitor),
+                solo: self.is_soloed(r.id.get()),
                 ..MeterRow::default()
             })
             .collect();
@@ -4177,6 +4203,10 @@ pub struct SourceFacts {
     pub muted: bool,
     /// Kept out of the Mixer (ADR-0080).
     pub mixer_hidden: bool,
+    /// Heard on the monitor (ADR-0097): off, also or only.
+    pub monitor: rbs_scene::model::SourceMonitor,
+    /// Soloed on the monitor.
+    pub soloed: bool,
     /// It has a picture (it can be locked on the picture panel).
     pub picture: bool,
     /// It makes sound only (it can be muted in the Mixer).
@@ -4196,6 +4226,7 @@ struct HeardFact {
     id: u32,
     muted: bool,
     hidden: bool,
+    monitor: rbs_scene::model::SourceMonitor,
 }
 
 /// Rows are replaced only where they changed, so unchanged rows keep their views.
