@@ -1050,3 +1050,23 @@ fn the_unavailable_source_status_round_trips_and_older_clients_read_it_as_failed
         }
     );
 }
+
+#[test]
+fn a_status_with_missing_words_still_decodes() {
+    let bare: SourceStatus = serde_json::from_value(json!({"state": "unavailable"})).unwrap();
+    assert_eq!(
+        bare,
+        SourceStatus::Unavailable {
+            fault: SourceFault::Other,
+            detail: String::new()
+        }
+    );
+    let held: SourceStatus =
+        serde_json::from_value(json!({"state": "paused", "detail": "held"})).unwrap();
+    assert_eq!(
+        held,
+        SourceStatus::Failed {
+            reason: "held".into()
+        }
+    );
+}
