@@ -13,3 +13,8 @@ pub const INPUT_ENUMERATE: CapabilityKey = CapabilityKey::new_static("audio.inpu
 pub const INPUT_CHANNELS_MAX: CapabilityKey = CapabilityKey::new_static("audio.input.channels.max");
 /// Flag: the adapter needs a user permission for some kinds (microphone privacy).
 pub const INPUT_PERMISSION: CapabilityKey = CapabilityKey::new_static("audio.input.permission");
+/// Flag: `OutputLoopback` streams can leave the sound of this process out of the
+/// capture (`InputRequest::exclude_own_process`, ADR-0096). Without it a user
+/// interface must not offer a display-sound companion, because it would echo.
+pub const LOOPBACK_EXCLUDE_SELF: CapabilityKey =
+    CapabilityKey::new_static("audio.loopback.exclude_self");
