@@ -222,3 +222,37 @@ fn escape_closes_the_picker_above_the_name_prompt_and_nothing_else() {
         "only the topmost overlay"
     );
 }
+
+#[test]
+fn the_colour_popover_is_a_layer_and_a_pick_reaches_only_the_swatch_that_opened_it() {
+    let p = setup();
+    let o = p.global::<Overlays>();
+    // The swatch is at (200, 10), 28 px or so wide: a click opens the popover.
+    p.window().dispatch_event(WindowEvent::PointerMoved {
+        position: slint::LogicalPosition::new(210.0, 20.0),
+    });
+    p.window().dispatch_event(WindowEvent::PointerPressed {
+        position: slint::LogicalPosition::new(210.0, 20.0),
+        button: slint::platform::PointerEventButton::Left,
+    });
+    p.window().dispatch_event(WindowEvent::PointerReleased {
+        position: slint::LogicalPosition::new(210.0, 20.0),
+        button: slint::platform::PointerEventButton::Left,
+    });
+    settle();
+    assert!(o.get_color_open(), "the swatch opens the popover");
+    assert_eq!(o.get_color_label().as_str(), "Border colour");
+    // A pick (as the popover publishes it) comes back through the swatch.
+    o.set_color_result("#445566".into());
+    o.set_color_serial(o.get_color_serial() + 1);
+    settle();
+    assert_eq!(p.get_last_pick().as_str(), "#445566");
+    // Another owner's pick is not ours.
+    o.set_color_owner(o.get_color_owner() + 100);
+    o.set_color_result("#778899".into());
+    o.set_color_serial(o.get_color_serial() + 1);
+    settle();
+    assert_eq!(p.get_last_pick().as_str(), "#445566");
+    key(&p, Key::Escape);
+    assert!(!o.get_color_open());
+}
