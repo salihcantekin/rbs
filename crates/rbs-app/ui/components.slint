@@ -1835,6 +1835,12 @@ export global Overlays {
     in-out property <bool> name-open;
     in-out property <string> name-value;
     in-out property <string> name-error;
+    // The dialog's title and the label of its accepting button; `name-ask` false makes
+    // it a confirmation (Delete / Keep, Keep focused) with `name-error` as its message
+    // line and no field.
+    in-out property <string> name-title: @tr("Save as new workspace");
+    in-out property <string> name-confirm: @tr("Save");
+    in-out property <bool> name-ask: true;
     in-out property <OverlayCover> name-cover;
     callback name-accepted(string);
     callback name-cancelled();
@@ -1926,8 +1932,11 @@ export component OverlayHost inherits Rectangle {
             x: (root.width - self.width) / 2;
             y: max(Tokens.space-1, (root.height - self.height) / 3);
             accessible-role: groupbox;
-            accessible-label: @tr("Save as new workspace");
-            init => { Overlays.name-cover = { x: self.x, y: self.y, width: self.width, height: self.height }; name-input.text = Overlays.name-value; name-input.focus(); }
+            accessible-label: Overlays.name-title;
+            init => {
+                Overlays.name-cover = { x: self.x, y: self.y, width: self.width, height: self.height };
+                if Overlays.name-ask { name-input.text = Overlays.name-value; name-input.focus(); } else { keep-button.focus(); }
+            }
             changed x => { Overlays.name-cover = { x: self.x, y: self.y, width: self.width, height: self.height }; }
             changed y => { Overlays.name-cover = { x: self.x, y: self.y, width: self.width, height: self.height }; }
             prompt-keys := FocusScope {
@@ -1940,18 +1949,20 @@ export component OverlayHost inherits Rectangle {
                 padding: Tokens.space-3;
                 spacing: Tokens.space-2;
                 Text {
-                    text: @tr("Save as new workspace");
+                    text: Overlays.name-title;
+                    wrap: word-wrap;
                     color: Theme.text-primary;
                     font-size: Tokens.type-body-size;
                     font-weight: Tokens.type-title-weight;
                     accessible-role: none;
                 }
                 Rectangle {
+                    visible: Overlays.name-ask;
                     border-width: Tokens.size-border;
                     border-radius: Tokens.radius-sm;
                     border-color: Overlays.name-error != "" ? Theme.state-error : name-input.has-focus ? Theme.border-focus : Theme.border-strong;
                     background: Theme.surface-sunken;
-                    height: Tokens.size-control-md;
+                    height: Overlays.name-ask ? Tokens.size-control-md : 0px;
                     name-input := TextInput {
                         // Visible caret: see TextField.
                         selection-background-color: Theme.accent;
@@ -1962,7 +1973,7 @@ export component OverlayHost inherits Rectangle {
                         color: Theme.text-primary;
                         font-size: Tokens.type-body-size;
                         vertical-alignment: center;
-                        accessible-label: @tr("Name of the new workspace");
+                        accessible-label: Overlays.name-title;
                         edited => { Overlays.name-error = ""; }
                         accepted => { if self.text != "" { Overlays.name-accepted(self.text); } }
                         key-pressed(e) => {
@@ -1981,12 +1992,15 @@ export component OverlayHost inherits Rectangle {
                 HorizontalLayout {
                     spacing: Tokens.space-2;
                     alignment: end;
-                    Button { text: @tr("Cancel"); clicked => { Overlays.name-cancelled(); } }
+                    keep-button := Button {
+                        text: Overlays.name-ask ? @tr("Cancel") : @tr("Keep");
+                        clicked => { Overlays.name-cancelled(); }
+                    }
                     Button {
-                        text: @tr("Save");
+                        text: Overlays.name-confirm;
                         kind: "primary";
-                        enabled: name-input.text != "";
-                        clicked => { Overlays.name-accepted(name-input.text); }
+                        enabled: !Overlays.name-ask || name-input.text != "";
+                        clicked => { Overlays.name-accepted(Overlays.name-ask ? name-input.text : ""); }
                     }
                 }
             }

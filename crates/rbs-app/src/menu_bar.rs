@@ -478,6 +478,22 @@ impl CommandState for Shown<'_> {
                 Some(p) if self.workspace.is_open(&p) => Ok(()),
                 _ => Err("The panel is not open.".to_owned()),
             },
+            "ui.profile.new"
+            | "ui.profile.duplicate"
+            | "ui.profile.rename"
+            | "ui.profile.delete"
+            | "ui.profile.import"
+            | "ui.profile.export"
+            | "ui.collection.new"
+            | "ui.collection.duplicate"
+            | "ui.collection.rename"
+            | "ui.collection.delete"
+            | "ui.collection.import"
+            | "ui.collection.export" => {
+                let (kind, op) = entry_op(id.base()).ok_or("Unknown command.")?;
+                self.studio
+                    .entry_blocked(kind == EntryKind::Collection, op.name())
+            }
             "ui.layout.undo" if !self.can_undo => {
                 Err("There is no layout change to undo.".to_owned())
             }
@@ -1011,9 +1027,64 @@ pub enum MixerBulk {
     ShowAll,
 }
 
+/// The two libraries the status bar's pickers switch.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum EntryKind {
+    Profile,
+    Collection,
+}
+
+/// What an Output profile or Scene collection command does to the one in use.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum EntryOp {
+    New,
+    Duplicate,
+    Rename,
+    Delete,
+    Import,
+    Export,
+}
+
+impl EntryOp {
+    /// The word the registry ids end in.
+    pub fn name(self) -> &'static str {
+        match self {
+            EntryOp::New => "new",
+            EntryOp::Duplicate => "duplicate",
+            EntryOp::Rename => "rename",
+            EntryOp::Delete => "delete",
+            EntryOp::Import => "import",
+            EntryOp::Export => "export",
+        }
+    }
+}
+
+/// The library and operation of a `ui.profile.*` or `ui.collection.*` id.
+fn entry_op(base: &str) -> Option<(EntryKind, EntryOp)> {
+    let (kind, op) = if let Some(op) = base.strip_prefix("ui.profile.") {
+        (EntryKind::Profile, op)
+    } else {
+        (EntryKind::Collection, base.strip_prefix("ui.collection.")?)
+    };
+    let op = [
+        EntryOp::New,
+        EntryOp::Duplicate,
+        EntryOp::Rename,
+        EntryOp::Delete,
+        EntryOp::Import,
+        EntryOp::Export,
+    ]
+    .into_iter()
+    .find(|o| o.name() == op)?;
+    Some((kind, op))
+}
+
 /// What running an id from the menu bar does.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Run {
+    /// An Output profile or Scene collection command (`ui.profile.new`, ...). New,
+    /// Duplicate and Rename take a name; without one the window asks for it.
+    Entry(EntryKind, EntryOp, Option<String>),
     /// Read the token, appearance and theme files again (`ui.theme.reload`).
     ReloadThemes,
     /// Show the Settings window, at this section (`SettingsWindow.section`) when
@@ -1166,6 +1237,10 @@ pub fn run(text: &str, state: &Shown<'_>) -> Option<Run> {
         }),
         "ui.panel.auto_hide" => Run::AutoHide(panel_of(&id)?),
         "ui.workspace.save" => Run::SaveWorkspace,
+        base if entry_op(base).is_some() => {
+            let (kind, op) = entry_op(base)?;
+            Run::Entry(kind, op, id.param("name").map(str::to_owned))
+        }
         "ui.workspace.save_as" => Run::SaveWorkspaceAs(id.param("name").map(str::to_owned)),
         "ui.layout.lock" => Run::Layout(L::SetLocked(!on)),
         "ui.layout.undo" => Run::LayoutHistory(true),

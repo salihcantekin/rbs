@@ -1019,111 +1019,6 @@ component Flyout inherits Rectangle {
     }
 }
 
-// The Output profile and Scene collection menus (ADR-0051): the entries to switch to,
-// then New, Duplicate and Rename with the name typed below, and Delete, which asks
-// first (U4) because it cannot be undone here.
-component EntryMenu inherits PopupWindow {
-    in property <[EntryRow]> entries;
-    in property <string> current;
-    // "output profile" or "scene collection", for labels.
-    in property <string> what;
-    in property <bool> busy;
-    callback pick(string /* id */);
-    // 0 new, 1 duplicate, 2 rename (with the name typed), 3 delete the one in use,
-    // 4 import from a file, 5 export the one in use to a file.
-    callback act(int, string);
-    property <bool> confirm-delete;
-    close-policy: close-on-click-outside;
-    width: Tokens.size-menu-md;
-    MenuSurface {
-        width: Tokens.size-menu-md;
-        VerticalLayout {
-            padding: Tokens.space-2;
-            spacing: Tokens.space-1;
-            for e[i] in root.entries: MenuRow {
-                autofocus: i == 0;
-                text: e.name;
-                checked: e.current;
-                enabled: !root.busy;
-                activated => { root.pick(e.id); root.close(); }
-            }
-            Rectangle { height: Tokens.size-border; background: Theme.border-subtle; }
-            MenuRow {
-                text: @tr("Import…");
-                activated => { root.act(4, ""); root.close(); }
-            }
-            MenuRow {
-                text: @tr("Export {}…", root.current);
-                activated => { root.act(5, ""); root.close(); }
-            }
-            if !root.confirm-delete: MenuRow {
-                text: @tr("Delete {}…", root.current);
-                enabled: root.entries.length > 1 && !root.busy;
-                activated => { root.confirm-delete = true; }
-            }
-            if root.confirm-delete: HorizontalLayout {
-                spacing: Tokens.space-2;
-                accessible-role: groupbox;
-                accessible-label: @tr("Delete {}?", root.current);
-                Text {
-                    text: @tr("Delete {}?", root.current);
-                    color: Theme.text-primary;
-                    font-size: Tokens.type-body-size;
-                    vertical-alignment: center;
-                    wrap: word-wrap;
-                }
-                Button {
-                    text: @tr("Delete");
-                    clicked => { root.act(3, ""); root.confirm-delete = false; root.close(); }
-                }
-                Button {
-                    text: @tr("Keep");
-                    clicked => { root.confirm-delete = false; }
-                }
-            }
-            Rectangle { height: Tokens.size-border; background: Theme.border-subtle; }
-            Rectangle {
-                border-width: Tokens.size-border;
-                border-radius: Tokens.radius-sm;
-                border-color: name.has-focus ? Theme.border-focus : Theme.border-strong;
-                background: Theme.surface-sunken;
-                height: Tokens.size-control-md;
-                name := TextInput {
-                    // Visible caret: see TextField.
-                    selection-background-color: Theme.accent;
-                    selection-foreground-color: Theme.text-inverse;
-                    text-cursor-width: Tokens.size-focus-ring;
-                    x: Tokens.space-2;
-                    width: parent.width - 2 * Tokens.space-2;
-                    color: Theme.text-primary;
-                    font-size: Tokens.type-body-size;
-                    vertical-alignment: center;
-                    accessible-label: @tr("Name for a new or renamed {}", root.what);
-                    accepted => { if self.text != "" && !root.busy { root.act(0, self.text); root.close(); } }
-                }
-            }
-            HorizontalLayout {
-                spacing: Tokens.space-2;
-                Button {
-                    text: @tr("New");
-                    enabled: name.text != "" && !root.busy;
-                    clicked => { root.act(0, name.text); root.close(); }
-                }
-                Button {
-                    text: @tr("Duplicate");
-                    enabled: name.text != "" && !root.busy;
-                    clicked => { root.act(1, name.text); root.close(); }
-                }
-                Button {
-                    text: @tr("Rename");
-                    enabled: name.text != "";
-                    clicked => { root.act(2, name.text); root.close(); }
-                }
-            }
-        }
-    }
-}
-
 // End stream picked in the menu bar asks first (U4), in the frame of the window
 // whose menu it was picked from; Keep streaming has the focus.
 component EndStreamConfirm inherits HorizontalLayout {
@@ -1546,12 +1441,12 @@ component StatusBar inherits Rectangle {
         profile-button := StatusPicker {
             label: @tr("Output profile");
             value: Studio.profile-name;
-            clicked => { profile-menu.show(); }
+            clicked => { profile-menu.open({ x: profile-button.x, y: profile-button.y }); }
         }
         collection-button := StatusPicker {
             label: @tr("Scene collection");
             value: Studio.collection-name;
-            clicked => { collection-menu.show(); }
+            clicked => { collection-menu.open({ x: collection-button.x, y: collection-button.y }); }
         }
         if Studio.canvas-sizes.length > Studio.canvas-size && Studio.canvas-size >= 0: Text {
             horizontal-stretch: 0;
@@ -1563,26 +1458,10 @@ component StatusBar inherits Rectangle {
             vertical-alignment: center;
         }
     }
-    // The menus open upwards, over the dock area.
-    profile-menu := EntryMenu {
-        x: min(profile-button.x, root.width - Tokens.size-menu-md);
-        y: -self.height;
-        entries: Studio.profiles;
-        current: Studio.profile-name;
-        what: @tr("output profile");
-        pick(id) => { Studio.switch-profile(id); }
-        act(a, text) => { Studio.profile-action(a, text); }
-    }
-    collection-menu := EntryMenu {
-        x: min(collection-button.x, root.width - Tokens.size-menu-md);
-        y: -self.height;
-        entries: Studio.collections;
-        current: Studio.collection-name;
-        what: @tr("scene collection");
-        busy: Studio.switching;
-        pick(id) => { Studio.switch-collection(id); }
-        act(a, text) => { Studio.collection-action(a, text); }
-    }
+    // The Output profile and Scene collection menus (ADR-0094 rule B1); each opens
+    // at the top-left of its picker.
+    profile-menu := CommandMenu { context: "profiles"; }
+    collection-menu := CommandMenu { context: "collections"; }
 }
 
 component Toast inherits Rectangle {
