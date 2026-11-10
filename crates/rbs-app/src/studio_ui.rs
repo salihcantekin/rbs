@@ -1363,6 +1363,14 @@ impl StudioUi {
         self.send(Command::ReloadSource(SourceId::from_raw(id as u32)));
     }
 
+    /// Adds or removes the "Capture audio too" companion of a display or window.
+    pub fn set_companion_audio(&mut self, id: i32, on: bool) {
+        self.send(Command::SetCompanionAudio {
+            source: SourceId::from_raw(id as u32),
+            on,
+        });
+    }
+
     pub fn delete_source(&mut self, id: i32) {
         self.deleted.clear();
         self.send(Command::DeleteSource(SourceId::from_raw(id as u32)));
@@ -3511,6 +3519,7 @@ impl StudioUi {
                     also_in: r.also_in.join(", ").into(),
                     in_globals: r.in_globals,
                     places: (1 + r.also_in.len() + usize::from(r.in_globals)) as i32,
+                    companion: rows.iter().any(|c| c.companion_of == Some(r.id)),
                 }
             })
             .collect();
