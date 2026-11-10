@@ -821,6 +821,17 @@ fn window_targets_carry_the_owning_application() {
 }
 
 #[test]
+fn only_system_audio_takes_the_exclude_own_process_setting() {
+    use rbs_sources::validate_settings;
+    let on = settings(&[(keys::EXCLUDE_OWN_PROCESS, SettingValue::Bool(true))]);
+    assert!(validate_settings(&ty(types::AUDIO_OUTPUT_SOURCE), &on).is_ok());
+    assert!(validate_settings(&ty(types::AUDIO_INPUT_SOURCE), &on).is_err());
+    assert!(validate_settings(&ty(types::APPLICATION_AUDIO_SOURCE), &on).is_err());
+    let bad = settings(&[(keys::EXCLUDE_OWN_PROCESS, text("yes"))]);
+    assert!(validate_settings(&ty(types::AUDIO_OUTPUT_SOURCE), &bad).is_err());
+}
+
+#[test]
 fn settings_are_validated_for_the_type_without_touching_a_device() {
     use rbs_sources::validate_settings;
     let camera = ty(types::CAMERA_SOURCE);
