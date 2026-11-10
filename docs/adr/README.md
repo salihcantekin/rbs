@@ -102,4 +102,4 @@ An ADR records one decision that is hard to reverse or affects more than one cra
 | [0091](0091-per-scene-audio-levels.md) | Per-scene audio levels: a scene can remember its own volumes and mutes | Proposed |
 | [0092](0092-loudness-metering-and-leveling.md) | Loudness: BS.1770 metering first, then a slow leveler, and gain advice for editing | Proposed |
 | [0093](0093-vertical-second-canvas-from-the-same-sources.md) | A vertical (9:16) second canvas running at the same time as the main one | Proposed |
-| [0095](0095-audio-ducker-and-key-tap.md) | Audio ducker as a filter with a pre-fader key tap from another source | Proposed |
+| [0095](0095-audio-ducker-and-key-tap.md) | Audio ducker as a filter with a pre-fader key tap from another source | Accepted |

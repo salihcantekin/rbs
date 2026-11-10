@@ -1,6 +1,6 @@
 # ADR-0095: Audio ducker and the pre-fader key tap
 
-- Status: Proposed
+- Status: Accepted
 - Date: 2026-11-10
 - Deciders: Salih (owner)
 - Spec: [audio-filters](../specs/audio-filters.md), [audio-graph](../specs/audio-graph.md), [scene-model](../specs/scene-model.md), [control-api](../specs/control-api.md), [ui-design-system](../specs/ui-design-system.md)
@@ -46,4 +46,4 @@ Facts that shape the decision:
 
 ## Review
 
-Round 1, independent AI session (2026-11-10): changes requested. Resolved in this text: "none" is an absent setting, not id 0 (ids start at 0); the binder finds the key by contract (pin `key`, setting `key_source`) without depending on `rbs-params`; the node and `AudioDsp` contract changes and the spec update are stated; every `FieldKind` match site is listed with one all-kinds test; the cycle check runs before connecting and is history-independent; a lost key releases at the release rate instead of jumping; the cross-partition case is removed; a Standby key source is silent without a warning. Round 2 (same day): approve. Three items go into the implementation PR: saving "none" leaves `key_source` out of the settings and `filter.set` with `null` clears it (both in the all-kinds test); the contract text (`key_input`, the `key` pin, `process_keyed`, `FieldKind::Source`, the ducker's fields and DSP) is written into the audio-filters spec. The owner's approval and P15 sign-off are needed before Accepted.
+Round 1, independent AI session (2026-11-10): changes requested. Resolved in this text: "none" is an absent setting, not id 0 (ids start at 0); the binder finds the key by contract (pin `key`, setting `key_source`) without depending on `rbs-params`; the node and `AudioDsp` contract changes and the spec update are stated; every `FieldKind` match site is listed with one all-kinds test; the cycle check runs before connecting and is history-independent; a lost key releases at the release rate instead of jumping; the cross-partition case is removed; a Standby key source is silent without a warning. Round 2 (same day): approve. Three items go into the implementation PR: saving "none" leaves `key_source` out of the settings and `filter.set` with `null` clears it (both in the all-kinds test); the contract text (`key_input`, the `key` pin, `process_keyed`, `FieldKind::Source`, the ducker's fields and DSP) is written into the audio-filters spec. Owner approval: Salih, 2026-11-10 (Accepted). The P15 sign-off for the hot path is still needed in the implementation PR.
