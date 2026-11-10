@@ -1012,3 +1012,61 @@ fn the_master_is_left_out_of_a_scene_list_while_it_is_the_default() {
         Master::default()
     );
 }
+
+#[test]
+fn the_unavailable_source_status_round_trips_and_older_clients_read_it_as_failed() {
+    let unavailable = SourceStatus::Unavailable {
+        fault: SourceFault::TargetGone,
+        detail: "the window was closed".into(),
+    };
+    round_trip(&unavailable);
+    let wire = serde_json::to_value(&unavailable).unwrap();
+    assert_eq!(
+        wire,
+        json!({"state": "unavailable", "fault": "target_gone", "detail": "the window was closed"})
+    );
+    round_trip(&SourceStatus::Running);
+    round_trip(&SourceStatus::Idle);
+    round_trip(&SourceStatus::Failed { reason: "x".into() });
+    // A state a newer server adds reads as failed, with its words.
+    let newer: SourceStatus =
+        serde_json::from_value(json!({"state": "paused", "reason": "held"})).unwrap();
+    assert_eq!(
+        newer,
+        SourceStatus::Failed {
+            reason: "held".into()
+        }
+    );
+    // An unknown fault reads as other.
+    let fault: SourceStatus = serde_json::from_value(
+        json!({"state": "unavailable", "fault": "on_fire", "detail": "hot"}),
+    )
+    .unwrap();
+    assert_eq!(
+        fault,
+        SourceStatus::Unavailable {
+            fault: SourceFault::Other,
+            detail: "hot".into()
+        }
+    );
+}
+
+#[test]
+fn a_status_with_missing_words_still_decodes() {
+    let bare: SourceStatus = serde_json::from_value(json!({"state": "unavailable"})).unwrap();
+    assert_eq!(
+        bare,
+        SourceStatus::Unavailable {
+            fault: SourceFault::Other,
+            detail: String::new()
+        }
+    );
+    let held: SourceStatus =
+        serde_json::from_value(json!({"state": "paused", "detail": "held"})).unwrap();
+    assert_eq!(
+        held,
+        SourceStatus::Failed {
+            reason: "held".into()
+        }
+    );
+}

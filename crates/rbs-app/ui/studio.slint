@@ -3,7 +3,7 @@
 // Rust pushes state into the `Studio` global of every window and handles its callbacks
 // by sending commands to the studio's control thread.
 import { Theme, Tokens } from "tokens.slint";
-import { Sections, Button, Checkbox, ColorPicker, FocusRing, RingFocus, SectionHeader, Tabs, Icon, IconButton, IconName, Icons, MenuItem, MenuSurface, EmptyState, NumberField, Select, SegmentedControl, Slider, VSlider, LevelText, TextField, Toggle, InfoHint } from "components.slint";
+import { Sections, Button, Checkbox, ColorPicker, FocusRing, RingFocus, SectionHeader, Tabs, Icon, IconButton, IconName, Icons, MenuItem, MenuSurface, EmptyState, NumberField, Select, SegmentedControl, Slider, VSlider, LevelText, TextField, Toggle, InfoHint, FeatureSection } from "components.slint";
 import { SettingsCard, SettingRow, SettingBlock, SettingsStatus, SettingsNotice, SettingsCallout } from "settings.slint";
 import { CommandMenu } from "context_menu.slint";
 
@@ -2600,7 +2600,6 @@ component FilterFieldView inherits VerticalLayout {
     property <string> colour-text: data.colour;
     changed colour-text => { colour.text = colour-text; }
     spacing: Tokens.space-1;
-    property <bool> help-open;
     HorizontalLayout {
         spacing: Tokens.space-1;
         Text {
@@ -2610,13 +2609,8 @@ component FilterFieldView inherits VerticalLayout {
             vertical-alignment: center;
             accessible-role: none;
         }
-        if data.help != "": IconButton {
-            icon: IconName.info;
-            name: root.help-open ? @tr("Hide help for {}", data.label) : @tr("Show help for {}", data.label);
-            clicked => { root.help-open = !root.help-open; }
-        }
+        if data.help != "": InfoHint { label: data.label; text: data.help; }
     }
-    if data.help != "" && root.help-open: Hint { text: data.help; }
     if data.kind == 0: HorizontalLayout {
         spacing: Tokens.space-2;
         Slider {
@@ -2781,7 +2775,6 @@ component FiltersFields inherits VerticalLayout {
     // The Filters section of the Audio tab (ADR-0082): audio filter types, and a note
     // about the short dip when the chain's tail changes.
     in property <bool> audio;
-    property <bool> dip-open;
     spacing: Tokens.size-field-gap;
     alignment: start;
     if !audio: SectionTitle { title: @tr("Filters"); }
@@ -2802,22 +2795,19 @@ component FiltersFields inherits VerticalLayout {
     HorizontalLayout {
         spacing: Tokens.space-1;
         AddFilterButton { source: data; audio: audio; horizontal-stretch: 1; }
-        if audio: IconButton {
-            icon: IconName.info;
-            name: root.dip-open ? @tr("Hide note about changing filters") : @tr("Show note about changing filters");
-            clicked => { root.dip-open = !root.dip-open; }
+        if audio: InfoHint {
+            label: @tr("Changing filters");
+            text: @tr("Adding, removing or reordering a filter can cause a brief dip (10 to 20 ms) in this source's sound. Changing a setting never does.");
         }
-    }
-    if audio && root.dip-open: Hint {
-        text: @tr("Adding, removing or reordering a filter can cause a brief dip (10 to 20 ms) in this source's sound. Changing a setting never does.");
     }
     for f[i] in data.filters: VerticalLayout {
         spacing: Tokens.size-field-gap;
         if f.id == data.selected-filter && f.known: VerticalLayout {
             spacing: Tokens.size-field-gap;
-            Section {
+            FeatureSection {
                 title: f.name;
                 id: "properties.filter-settings";
+                has-toggle: false;
                 if f.gate: GateBar { filter: f; }
                 for field[j] in f.fields: FilterFieldView {
                     source: data;
