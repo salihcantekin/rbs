@@ -278,6 +278,43 @@ pub struct SourceAudio {
     /// Not drawn in the Mixer; still heard (ADR-0080). A view choice: it never changes
     /// the mix.
     pub mixer_hidden: bool,
+    /// Whether the source is heard on the monitor output (ADR-0097 decision 5). Saved
+    /// with the source; a machine without a monitor device treats `Only` as `Off`.
+    pub monitor: SourceMonitor,
+}
+
+/// Whether a source is heard on the monitor output (ADR-0097 decision 5).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum SourceMonitor {
+    /// Not monitored; the stream and recordings carry it.
+    #[default]
+    Off,
+    /// Monitored only: taken off the stream and recordings (its send ramps to 0) while a
+    /// monitor output is active; heard in both while none is.
+    Only,
+    /// Monitored and mixed.
+    Also,
+}
+
+impl SourceMonitor {
+    /// The lowercase name used in documents and the control API: `off`, `only`, `also`.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Off => "off",
+            Self::Only => "only",
+            Self::Also => "also",
+        }
+    }
+
+    /// The mode named by [`SourceMonitor::as_str`].
+    pub fn from_name(name: &str) -> Option<Self> {
+        match name {
+            "off" => Some(Self::Off),
+            "only" => Some(Self::Only),
+            "also" => Some(Self::Also),
+            _ => None,
+        }
+    }
 }
 
 impl SourceAudio {
@@ -288,6 +325,7 @@ impl SourceAudio {
             muted,
             sync_offset_ms: 0,
             mixer_hidden: false,
+            monitor: SourceMonitor::Off,
         }
     }
 
@@ -297,6 +335,11 @@ impl SourceAudio {
             sync_offset_ms,
             ..self
         }
+    }
+
+    /// The same sound with this monitor mode (ADR-0097).
+    pub const fn with_monitor(self, monitor: SourceMonitor) -> Self {
+        Self { monitor, ..self }
     }
 
     /// The same sound, hidden from the Mixer or not (ADR-0080).
@@ -322,7 +365,7 @@ impl SourceAudio {
         self.volume_is_valid() && self.sync_offset_is_valid()
     }
 
-    /// True for full volume, not muted, no sync offset, shown in the Mixer.
+    /// True for full volume, not muted, no sync offset, shown in the Mixer, not monitored.
     pub fn is_default(&self) -> bool {
         *self == Self::default()
     }
