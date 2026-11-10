@@ -372,6 +372,44 @@ impl Host {
             .ok_or_else(|| Refusal::NotFound(format!("There is no source {}.", id.get())))
     }
 
+    /// Refuses a key source (a `Source` field, ADR-0095) that is the filter's own source,
+    /// does not exist or has a picture: only sound sources can be a key.
+    fn check_key_sources(
+        &self,
+        owner: SourceId,
+        ty: &AnyFilter,
+        values: &Values,
+    ) -> Result<(), Refusal> {
+        for (i, field) in ty.fields().iter().enumerate() {
+            if !matches!(field.kind, FieldKind::Source) {
+                continue;
+            }
+            let Some(id) = values.source(i) else { continue };
+            let key = SourceId::from_raw(id);
+            if key == owner {
+                return Err(Refusal::Invalid(format!(
+                    "{} cannot use its own sound as its {}.",
+                    self.source_name(owner)?,
+                    field.label.to_lowercase()
+                )));
+            }
+            let source = self.collection.source(key).ok_or_else(|| {
+                Refusal::NotFound(format!(
+                    "There is no source {id} for the {}.",
+                    field.label.to_lowercase()
+                ))
+            })?;
+            if !SourceKind::of(&source.type_id).is_some_and(SourceKind::is_audio) {
+                return Err(Refusal::Invalid(format!(
+                    "{} has a picture; only a sound source can be the {}.",
+                    source.name,
+                    field.label.to_lowercase()
+                )));
+            }
+        }
+        Ok(())
+    }
+
     /// Adds an enabled filter at the end of a source's chain (one undo step).
     pub(super) fn add_filter(
         &mut self,
@@ -397,6 +435,7 @@ impl Host {
             }));
         }
         let values = Values::from_pairs(&ty, pairs(ty, settings)?).map_err(|e| invalid(&e))?;
+        self.check_key_sources(source, &ty, &values)?;
         let (id, undo) = self
             .collection
             .add_filter(source, ty.type_id(), filter_settings(&ty, &values))
@@ -598,6 +637,7 @@ impl Host {
         let ty = AnyFilter::find(f.type_id.as_str()).ok_or_else(|| {
             Refusal::Invalid("This filter is not available in this version.".to_owned())
         })?;
+        self.check_key_sources(source, &ty, &values)?;
         let (on_air, adjusted) = filter_values_lenient(&ty, &f.settings);
         let settings = filter_settings(&ty, &values);
         if on_air == values && adjusted.is_empty() && settings == f.settings {
