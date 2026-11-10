@@ -52,6 +52,11 @@ pub struct AppSettings {
     /// The first Close to the background said where RBS went (ADR-0056 decision 3).
     #[serde(default)]
     pub background_notice_shown: bool,
+    /// A transition also puts the old program scene in preview (ADR-0098). Off by
+    /// default: the preview keeps its scene. Read as false when absent, so the format
+    /// stays 1.
+    #[serde(default)]
+    pub swap_after_transition: bool,
 }
 
 impl Default for AppSettings {
@@ -60,6 +65,7 @@ impl Default for AppSettings {
             format_version: FORMAT,
             on_close: OnClose::platform_default(),
             background_notice_shown: false,
+            swap_after_transition: false,
         }
     }
 }
@@ -420,10 +426,14 @@ mod tests {
         let s = AppSettings {
             on_close: OnClose::Quit,
             background_notice_shown: true,
+            swap_after_transition: true,
             ..AppSettings::default()
         };
         save(&d, &s).unwrap();
         assert_eq!(load(&d), (s, None));
+        // A file without the swap key (older builds): off (ADR-0098).
+        std::fs::write(file(&d), "format_version = 1\non_close = \"quit\"\n").unwrap();
+        assert!(!load(&d).0.swap_after_transition);
         // Invalid: the default and the reason.
         std::fs::write(file(&d), "format_version = 1\non_close = \"sometimes\"\n").unwrap();
         let (got, note) = load(&d);

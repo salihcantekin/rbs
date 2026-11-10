@@ -503,7 +503,9 @@ fn studio_mode_previews_a_scene_and_the_transition_puts_it_on_air() {
         "not_found"
     );
 
-    // The transition swaps program and preview; it is not on the undo stack.
+    // With the swap setting on (ADR-0098), the transition swaps program and preview;
+    // it is not on the undo stack.
+    host.send(rbs_app::studio_host::Command::SetSwapAfterTransition(true));
     ok(&c.call("canvas.transition", json!({})));
     let after = scenes(&mut c);
     assert_eq!(after["program"], two);
@@ -528,6 +530,58 @@ fn studio_mode_previews_a_scene_and_the_transition_puts_it_on_air() {
     ok(&c.call("canvas.set_preview", json!({"scene": null})));
     assert_eq!(scenes(&mut c).get("preview"), None);
     assert_eq!(kind(&c.call("canvas.transition", json!({}))), "conflict");
+    drop(host);
+}
+
+#[test]
+fn by_default_the_transition_keeps_the_preview_scene() {
+    let Some((host, updates, _api, mut c)) = start() else {
+        return;
+    };
+    ok(&c.call("events.subscribe", json!({"topics": ["scene.changed"]})));
+    let one = scenes(&mut c)["program"].as_u64().unwrap();
+    let two = ok(&c.call("scene.add", json!({"name": "Game"})))["scene"]
+        .as_u64()
+        .unwrap();
+    ok(&c.call("canvas.set_preview", json!({"scene": two})));
+    // The preview scene goes on air and stays in preview (ADR-0098).
+    ok(&c.call("canvas.transition", json!({})));
+    let event = c.event("scene.changed", |d| d["program"] == two);
+    assert_eq!(event["params"]["data"]["preview"], two, "{event}");
+    let after = scenes(&mut c);
+    assert_eq!(after["program"], two);
+    assert_eq!(after["preview"], two);
+    // An edit of the scene on air, then another scene previewed: the program stays
+    // held (the copy is never listed), and the next transition puts that scene on air.
+    add(&mut c, "audio_input", "Mic");
+    ok(&c.call("canvas.set_preview", json!({"scene": one})));
+    let list = scenes(&mut c);
+    assert_eq!(names(&list), ["Scene", "Game"], "no copy is listed");
+    assert_eq!(list["program"], two);
+    assert_eq!(list["preview"], one);
+    // Undo and redo keep program and preview.
+    ok(&c.call("edit.undo", json!({})));
+    ok(&c.call("edit.redo", json!({})));
+    let list = scenes(&mut c);
+    assert_eq!(
+        (list["program"].clone(), list["preview"].clone()),
+        (json!(two), json!(one))
+    );
+    ok(&c.call("canvas.transition", json!({})));
+    let list = scenes(&mut c);
+    assert_eq!(list["program"], one);
+    assert_eq!(list["preview"], one);
+    // A transition of the scene with itself, swap on: one scene, nothing swaps.
+    host.send(rbs_app::studio_host::Command::SetSwapAfterTransition(true));
+    ok(&c.call("canvas.transition", json!({})));
+    let list = scenes(&mut c);
+    assert_eq!(list["program"], one);
+    assert_eq!(list["preview"], one);
+    while let Ok(u) = updates.try_recv() {
+        if let Update::Error(e) = u {
+            panic!("{e}");
+        }
+    }
     drop(host);
 }
 
@@ -565,8 +619,9 @@ fn in_studio_mode_the_ui_edits_the_preview_and_the_mixer_hears_the_program() {
         Update::Sources(r) if r.is_empty() => Some(()),
         _ => None,
     });
-    // The transition button: now the Sources list shows the first scene (in preview)
-    // and the Mixer the empty program scene.
+    // The transition button, with the swap setting on (ADR-0098): now the Sources list
+    // shows the first scene (in preview) and the Mixer the empty program scene.
+    host.send(Command::SetSwapAfterTransition(true));
     host.send(Command::Transition);
     next(&updates, |u| match u {
         Update::Scenes(l) if l.program == id(two) => {

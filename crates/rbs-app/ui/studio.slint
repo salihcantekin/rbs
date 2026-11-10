@@ -391,6 +391,10 @@ export global Studio {
     // the window quits.
     in property <bool> way-back;
     callback set-on-close(int);
+    // Studio mode (Settings, General, ADR-0098): a transition also puts the old
+    // program scene in preview. Off by default.
+    in property <bool> swap-after-transition;
+    callback set-swap-after-transition(bool);
 
     // Remote control (Settings, Remote control): other apps control RBS through the
     // control API. Off by default.
@@ -537,7 +541,10 @@ export component ProgramPanel inherits Rectangle {
             if e.button != PointerEventButton.left { return; }
             if e.kind == PointerEventKind.down {
                 keys.focus();
-                Studio.preview-press(self.mouse-x / 1px, self.mouse-y / 1px, self.width / 1px, self.height / 1px, e.modifiers.shift, e.modifiers.control || e.modifiers.meta, e.modifiers.alt);
+                // Where the press is, from the press itself: after a system menu closes,
+                // the press that closed it can arrive with no move before it, so
+                // `mouse-x` and `mouse-y` may still be where the menu opened.
+                Studio.preview-press(self.pressed-x / 1px, self.pressed-y / 1px, self.width / 1px, self.height / 1px, e.modifiers.shift, e.modifiers.control || e.modifiers.meta, e.modifiers.alt);
             }
             if e.kind == PointerEventKind.up { Studio.preview-release(); }
         }
@@ -3379,7 +3386,8 @@ export component VideoSettings inherits Rectangle {
     min-height: form.min-height;
 }
 
-// Settings, General (ADR-0056): what closing the main window does.
+// Settings, General (ADR-0056, ADR-0098): what closing the main window does, and what
+// a transition does to the preview scene.
 export component GeneralSettings inherits Rectangle {
     form := VerticalLayout {
         spacing: Tokens.space-4;
@@ -3402,6 +3410,21 @@ export component GeneralSettings inherits Rectangle {
                     index: Studio.platform == 2 ? 0 : Studio.on-close;
                     enabled: Studio.platform != 2;
                     selected(i) => { Studio.set-on-close(i); }
+                }
+            }
+        }
+        SettingsCard {
+            title: @tr("Studio mode");
+            id: "settings.general.studio";
+            SettingRow {
+                divider: false;
+                label: @tr("Swap scenes after a transition");
+                help: @tr("After Transition, Preview shows the scene that was on air. Off: Preview keeps the scene that went on air.");
+                fill: false;
+                Toggle {
+                    label: @tr("Swap scenes after a transition");
+                    checked: Studio.swap-after-transition;
+                    toggled(on) => { Studio.set-swap-after-transition(on); }
                 }
             }
         }

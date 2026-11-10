@@ -46,3 +46,5 @@ Independent review per ADR-0014, 2026-11-07, by a fresh AI session given only th
 8. The copy's name could appear in a failure message. It is now the scene's name with "(on air)", made unique against the user's scenes.
 
 Re-check by the same session: nothing blocking remains. Left open: a loaded file with item ids from `0x1000_0000` up gets no hold (decision 2); no test switches collections or resizes the canvas while held.
+
+Follow-up, 2026-11-10: ADR-0098 supersedes decision 1 in part: a hold also starts at a transition that keeps the preview scene, and it lasts while its scene is on air, whatever is previewed after; it ends when another scene goes on air or studio mode ends.
