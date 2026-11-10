@@ -2155,18 +2155,28 @@ export component OverlayHost inherits Rectangle {
                     font-size: Tokens.type-caption-size;
                     accessible-role: text;
                 }
-                if !Overlays.vertical-exists: HorizontalLayout {
-                    spacing: Tokens.space-2;
+                if !Overlays.vertical-exists: VerticalLayout {
+                    spacing: Tokens.space-1;
+                    HorizontalLayout {
+                        spacing: Tokens.space-1;
+                        Text {
+                            text: @tr("Size");
+                            color: Theme.text-primary;
+                            font-size: Tokens.type-body-size;
+                            vertical-alignment: center;
+                            accessible-role: none;
+                        }
+                        InfoHint {
+                            label: @tr("Size");
+                            text: @tr("The picture size of the vertical canvas. It runs at the frame rate of the main canvas. 1080x1920 is the usual size for short videos.");
+                            detail: @tr("Even sides from 64 to 8192");
+                        }
+                    }
                     Select {
                         label: @tr("Size");
                         options: ["1080x1920", "720x1280", @tr("Custom")];
                         index: Overlays.vertical-size;
                         selected(i) => { Overlays.vertical-size = i; Overlays.vertical-error = ""; }
-                    }
-                    InfoHint {
-                        label: @tr("Size");
-                        text: @tr("The picture size of the vertical canvas. It runs at the frame rate of the main canvas. 1080x1920 is the usual size for short videos.");
-                        detail: @tr("Even sides from 64 to 8192");
                     }
                 }
                 if !Overlays.vertical-exists && Overlays.vertical-size == 2: HorizontalLayout {
@@ -2187,36 +2197,46 @@ export component OverlayHost inherits Rectangle {
                     }
                 }
                 if !Overlays.vertical-exists: HorizontalLayout {
-                    spacing: Tokens.space-2;
+                    spacing: Tokens.space-1;
                     Text {
                         text: @tr("Follow main");
                         color: Theme.text-primary;
                         font-size: Tokens.type-body-size;
                         vertical-alignment: center;
-                        horizontal-stretch: 1;
                         accessible-role: none;
                     }
                     InfoHint {
                         label: @tr("Follow main");
                         text: @tr("The vertical canvas shows the scene that is on air in the main canvas and switches with it. Your scenes become shared with it, so it can show them. The vertical canvas cuts where the main canvas fades. Its sound is the main mix.");
                     }
+                    Rectangle { horizontal-stretch: 1; }
                     Toggle {
                         label: @tr("Follow main");
                         checked: Overlays.vertical-follow;
                         toggled(on) => { Overlays.vertical-follow = on; }
                     }
                 }
-                if !Overlays.vertical-exists: HorizontalLayout {
-                    spacing: Tokens.space-2;
+                if !Overlays.vertical-exists: VerticalLayout {
+                    spacing: Tokens.space-1;
+                    HorizontalLayout {
+                        spacing: Tokens.space-1;
+                        Text {
+                            text: @tr("Auto layout");
+                            color: Theme.text-primary;
+                            font-size: Tokens.type-body-size;
+                            vertical-alignment: center;
+                            accessible-role: none;
+                        }
+                        InfoHint {
+                            label: @tr("Auto layout");
+                            text: @tr("How the sources of the scene on air are placed for the tall shape. Fit shows each whole, Fill covers the canvas, Stack places them one above the other in equal bands. You can change every layout afterwards.");
+                        }
+                    }
                     Select {
                         label: @tr("Auto layout");
                         options: [@tr("Keep the main layout"), @tr("Fit"), @tr("Fill"), @tr("Stack")];
                         index: Overlays.vertical-layout;
                         selected(i) => { Overlays.vertical-layout = i; }
-                    }
-                    InfoHint {
-                        label: @tr("Auto layout");
-                        text: @tr("How the sources of the scene on air are placed for the tall shape. Fit shows each whole, Fill covers the canvas, Stack places them one above the other in equal bands. You can change every layout afterwards.");
                     }
                 }
                 if Overlays.vertical-error != "": Text {
