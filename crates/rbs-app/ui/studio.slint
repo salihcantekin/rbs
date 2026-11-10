@@ -39,6 +39,11 @@ export struct KindData { code: int, label: string }
 export struct MarkData { x: length, y: length, w: length, h: length, kind: int }
 export struct TargetData { name: string, is-default: bool }
 // One line of the Source tab's target list: `index` is its place in the answer, `current` marks the source's own target (ADR-0077).
+// One mode of a camera in the Source settings window: its size and the frame rates it runs at.
+export struct ModeData { label: string, rates: [string] }
+// What the Source settings window shows for one source (ADR-0077): the camera's modes with
+// the chosen mode and rate, or the rates of a screen or window and its cursor choice.
+export struct SourceSettingsData { id: int, name: string, kind-code: int, modes: [ModeData], mode-labels: [string], mode-index: int, rates: [string], rate-index: int, has-cursor: bool, cursor: bool }
 // `heading` is set on the first row of a group ("Same application", "Other").
 export struct SourceTargetData { name: string, current: bool, index: int, heading: string }
 // One meter's moving parts as fractions of the bar (rbs_ui::meter::MeterView::zones),
@@ -90,6 +95,8 @@ export global Studio {
     in property <[TargetData]> targets;
     // The Source tab's list of what the selected source's kind can capture.
     in property <[SourceTargetData]> source-targets;
+    // The Source settings window's content: empty until the host answers, then one entry.
+    in property <[SourceSettingsData]> source-settings;
     // The kind `targets` lists; -1 while a list is being made.
     in property <int> targets-kind: -1;
     in property <[MeterRow]> meters;
@@ -127,6 +134,10 @@ export global Studio {
     callback transition();
     callback list-targets(int /* kind */);
     callback list-source-targets(int /* source */);
+    // The Source settings window opens for a source.
+    callback open-source-settings(int /* source */);
+    // Apply or OK in the Source settings window: the chosen mode (cameras), rate and cursor.
+    callback apply-source-settings(int /* source */, int /* mode */, int /* rate */, bool /* cursor */);
     callback filter-source-targets(string);
     callback retarget-source(int /* source */, int /* index */);
     callback reload-source(int /* source */);
@@ -2856,6 +2867,16 @@ component SourceFields inherits VerticalLayout {
             text: @tr("Refresh list");
             dense: true;
             clicked => { Studio.list-source-targets(data.id); }
+        }
+    }
+    // Screens, windows and cameras have more settings (ADR-0077).
+    if data.kind-code >= 0 && data.kind-code <= 2: HorizontalLayout {
+        alignment: start;
+        Button {
+            text: @tr("Source settings…");
+            accessible-name: @tr("Open the source settings of {}", data.name);
+            dense: true;
+            clicked => { Studio.open-source-settings(data.id); }
         }
     }
     TextField {

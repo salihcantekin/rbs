@@ -190,6 +190,8 @@ struct App {
     studio: studio_ui::StudioUi,
     /// The Settings window while it is open (U17).
     settings: Option<SettingsWindow>,
+    /// The Source settings window of a source (ADR-0077), open or not.
+    source_settings: Option<SourceSettingsWindow>,
     menus: MenuModels,
     /// The toolbar row's leading group (ADR-0071).
     toolbar_model: Rc<VecModel<ToolbarData>>,
@@ -2333,9 +2335,63 @@ fn install_sections(g: &Sections<'_>, ctx: &Ctx) {
     });
 }
 
+/// Opens the Source settings window for a source (centred on the main window; one at a
+/// time: another source's replaces the content of the open one).
+fn open_source_settings(ctx: &Ctx, app: &mut App, id: i32) {
+    app.studio.request_source_settings(id);
+    if let Some(w) = &app.source_settings {
+        w.show().ok();
+        return;
+    }
+    let Ok(w) = SourceSettingsWindow::new() else {
+        app.error = Some(UiError::Other(
+            "The source settings window cannot be opened.".into(),
+        ));
+        return;
+    };
+    look::apply(
+        &w.global::<Theme>(),
+        &w.global::<Tokens>(),
+        ctx.look.borrow().as_ref(),
+    );
+    install_studio(&w.global::<Studio>(), ctx);
+    app.studio.attach_models(&w.global::<Studio>());
+    let c = ctx.clone();
+    entry::on_close_requested(w.window(), move || {
+        c.update(|app| {
+            app.source_settings = None;
+            app.studio.source_settings_closed();
+        });
+        slint::CloseRequestResponse::HideWindow
+    });
+    let (weak, c) = (w.as_weak(), ctx.clone());
+    w.on_dismiss(move || {
+        entry::guard(|| {
+            if let Some(w) = weak.upgrade() {
+                let _ = w.hide();
+            }
+            c.update(|app| {
+                app.source_settings = None;
+                app.studio.source_settings_closed();
+            });
+        });
+    });
+    let t = w.global::<Tokens>();
+    let size = slint::LogicalSize::new(t.get_size_floating_w(), t.get_size_floating_h());
+    let _ = window_place::show_centred(&w, &app.main, size, app.hidden);
+    app.source_settings = Some(w);
+}
+
 fn install_studio(g: &Studio<'_>, ctx: &Ctx) {
     if let Ok(app) = ctx.app.try_borrow() {
         app.studio.attach_models(g);
+    }
+    {
+        let c = ctx.clone();
+        g.on_open_source_settings(move |id| {
+            let ctx = c.clone();
+            c.update(move |app| open_source_settings(&ctx, app, id));
+        });
     }
     macro_rules! on {
         ($name:ident, |$app:ident $(, $arg:ident : $ty:ty)*| $body:block) => {{
@@ -2343,6 +2399,12 @@ fn install_studio(g: &Studio<'_>, ctx: &Ctx) {
             g.$name(move |$($arg: $ty),*| ctx.update(move |$app: &mut App| $body));
         }};
     }
+    on!(
+        on_apply_source_settings,
+        |app, id: i32, mode: i32, rate: i32, cursor: bool| {
+            app.studio.apply_source_settings(id, mode, rate, cursor);
+        }
+    );
     on!(on_list_targets, |app, kind: i32| {
         app.studio.list_targets(kind);
     });
@@ -3010,6 +3072,7 @@ fn run(config: PathBuf, notice: Option<String>) -> Result<(), Box<dyn std::error
             #[cfg(windows)]
             tray: None,
             settings: None,
+            source_settings: None,
             menus: MenuModels::default(),
             toolbar_model: Rc::new(VecModel::default()),
             toolbar_end_model: Rc::new(VecModel::default()),
