@@ -2177,6 +2177,7 @@ fn start(
     let config_fault = config.fault;
     let (mut adapters, mut notes) = adapters();
     adapters.probe();
+    let can_monitor = adapters.sources.can_monitor();
     let gpu = gpu()?;
     notes.push(format!("gpu: {}", gpu.adapter_name()));
     let loaded = config.collection.clone();
@@ -2289,7 +2290,7 @@ fn start(
             camera_factory: config.virtual_camera.map(|f| f.0),
             camera: None,
             camera_due: None,
-            monitor: monitor::MonitorHost::new(config.monitor),
+            monitor: monitor::MonitorHost::new(config.monitor, can_monitor),
             camera_setup: None,
             camera_published: None,
             replay: replay::ReplayHost::new(),
@@ -5923,6 +5924,7 @@ impl Host {
     }
 
     fn apply(&mut self, notify: &dyn Fn(Update)) {
+        self.prune_monitor_solo();
         let run = self.run_collection();
         let running = run.as_ref().unwrap_or(&self.collection);
         match self.studio.update(running, &self.adapters.sources) {

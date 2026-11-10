@@ -143,6 +143,9 @@ fn scopes_are_enforced_per_method() {
         json!({"profile": "default", "path": "/tmp/x.mkv"}),
     );
     assert_eq!(error_kind(&h.one(conn)), "scope_denied");
+    // The monitor device is a saved setting of the computer (protocol 1.30).
+    h.call(conn, "monitor.set_device", json!({"device": null}));
+    assert_eq!(error_kind(&h.one(conn)), "scope_denied");
     h.call(
         conn,
         "events.subscribe",

@@ -1059,7 +1059,7 @@ pub const METHODS: &[MethodInfo] = &[
     m("source.set_monitor", Some(Scope::Control)),
     m("monitor.status", Some(Scope::Read)),
     m("monitor.devices", Some(Scope::Read)),
-    m("monitor.set_device", Some(Scope::Control)),
+    m("monitor.set_device", Some(Scope::Admin)),
     m("monitor.set_volume", Some(Scope::Control)),
     m("monitor.set_solo", Some(Scope::Control)),
     m("replay.arm", Some(Scope::Control)),

@@ -23,16 +23,24 @@ pub(super) struct MonitorHost {
     control: MonitorControl,
     /// Why the device last failed to open or play, until it plays again.
     problem: Option<String>,
+    /// Some adapter can play (probed once at start).
+    available: bool,
+    /// Whether the studio wanted the monitor, had one and saw it fail, at the last
+    /// round: `monitor.changed` is only recomputed when this or the step changes, so an
+    /// unused monitor costs the host loop three flag reads (P13).
+    seen: (bool, bool, bool),
     /// The status `monitor.changed` carried last.
     api_published: Option<api::MonitorStatus>,
 }
 
 impl MonitorHost {
-    pub(super) fn new(settings: MonitorSettings) -> Self {
+    pub(super) fn new(settings: MonitorSettings, available: bool) -> Self {
         Self {
             settings,
             control: MonitorControl::default(),
             problem: None,
+            available,
+            seen: (false, false, false),
             api_published: None,
         }
     }
@@ -64,6 +72,7 @@ impl Host {
         let wanted = self.studio.monitor_wanted();
         let state = self.studio.monitor();
         let failure = state.as_ref().and_then(|m| m.failure.clone());
+        let seen = (wanted, state.is_some(), failure.is_some());
         let (step, wait) =
             self.monitor
                 .control
@@ -102,7 +111,10 @@ impl Host {
                 }
             }
         };
-        self.monitor_api_changed();
+        if step != MonitorStep::Keep || seen != self.monitor.seen {
+            self.monitor.seen = seen;
+            self.monitor_api_changed();
+        }
         wait
     }
 
@@ -132,6 +144,9 @@ impl Host {
     /// Chooses the monitor device (`None`: System default) and saves it. A monitor that
     /// plays is closed and opens on the new device on the host's next round.
     pub(super) fn set_monitor_device(&mut self, device: Option<String>) -> Result<(), Refusal> {
+        if self.monitor.settings.device == device {
+            return Ok(());
+        }
         if let Some(d) = &device
             && !self
                 .adapters
@@ -144,11 +159,13 @@ impl Host {
                 "There is no playback device {d}."
             )));
         }
-        if self.monitor.settings.device == device {
-            return Ok(());
-        }
-        self.monitor.settings.device = device;
-        self.save_monitor()?;
+        // Saved first: a failed save changes nothing.
+        let settings = MonitorSettings {
+            device,
+            ..self.monitor.settings.clone()
+        };
+        self.save_monitor(&settings)?;
+        self.monitor.settings = settings;
         // A new device is a fresh start: no back-off from the old one.
         self.monitor.control = MonitorControl::default();
         self.monitor.problem = None;
@@ -167,8 +184,12 @@ impl Host {
         if self.monitor.settings.volume == volume {
             return Ok(());
         }
-        self.monitor.settings.volume = volume;
-        self.save_monitor()?;
+        let settings = MonitorSettings {
+            volume,
+            ..self.monitor.settings.clone()
+        };
+        self.save_monitor(&settings)?;
+        self.monitor.settings = settings;
         self.studio.set_monitor_volume(volume);
         self.monitor_api_changed();
         Ok(())
@@ -190,11 +211,29 @@ impl Host {
         Ok(())
     }
 
-    fn save_monitor(&self) -> Result<(), Refusal> {
+    /// Writes `settings` to the config folder; without one (tests, a headless host)
+    /// they are kept in memory only.
+    /// Drops soloed sources that no longer exist (a delete, an undo, a collection
+    /// switch), so `solo` never lists a gone source.
+    pub(super) fn prune_monitor_solo(&mut self) {
+        let solo = self.studio.solo();
+        if solo.iter().all(|s| self.collection.source(*s).is_some()) {
+            return;
+        }
+        let kept = solo
+            .iter()
+            .copied()
+            .filter(|s| self.collection.source(*s).is_some())
+            .collect();
+        self.studio.set_solo(kept);
+        self.monitor_api_changed();
+    }
+
+    fn save_monitor(&self, settings: &MonitorSettings) -> Result<(), Refusal> {
         let Some(dir) = &self.recent_dir else {
             return Ok(());
         };
-        monitor_settings::save(dir, &self.monitor.settings)
+        monitor_settings::save(dir, settings)
             .map_err(|e| Refusal::Failed(format!("The monitor settings were not saved: {e}")))
     }
 
@@ -203,7 +242,7 @@ impl Host {
         let state = self.studio.monitor();
         let failure = state.as_ref().and_then(|m| m.failure.clone());
         api::MonitorStatus {
-            available: self.adapters.sources.can_monitor(),
+            available: self.monitor.available,
             device: self.monitor.settings.device.clone(),
             volume: self.monitor.settings.volume,
             wanted: self.studio.monitor_wanted(),

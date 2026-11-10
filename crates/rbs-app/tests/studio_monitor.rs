@@ -331,4 +331,10 @@ fn the_control_api_sets_and_reports_the_monitor() {
         d["wanted"] == false && d["playing"] == false && d.get("solo").is_none()
     });
     assert!(streams_reach(&audio, 1));
+
+    // A deleted source leaves solo.
+    ok(&c.call("monitor.set_solo", json!({"sources": [mic]})));
+    c.event("monitor.changed", |d| d["solo"] == json!([mic]));
+    ok(&c.call("source.delete", json!({"source": mic})));
+    c.event("monitor.changed", |d| d.get("solo").is_none());
 }
