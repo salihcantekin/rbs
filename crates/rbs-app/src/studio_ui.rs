@@ -18,8 +18,8 @@ use rbs_app::stream_key::{self, KeyStore};
 use rbs_app::stream_profile::{self, SRT_DEFAULT_LATENCY_MS, SRT_LATENCIES_MS, StreamProfile};
 use rbs_app::studio_host::{
     Command, CropRegion, EncoderInfo, EncoderOptions, RecordRequest, RecordingUpdate, SceneList,
-    SourceKind, SourceRow, SourceStatus, Stats, StreamRequest, StreamUpdate, StudioHost, Target,
-    Update,
+    SourceKind, SourceRow, SourceSettingsView, SourceStatus, Stats, StreamRequest, StreamUpdate,
+    StudioHost, Target, Update,
 };
 use rbs_app::user_session::{RECORDING, STREAM, UserSession};
 use rbs_audio::LevelMeter;
@@ -36,9 +36,9 @@ use slint::{Model, ModelRc, SharedString, VecModel};
 
 use crate::preview_edit::{Effect, Placed, PreviewEdit};
 use crate::ui::{
-    EncoderData, EntryRow, ExistingData, KindData, LookData, MarkData, MeterRow, SampleData,
-    ScaleMark, SceneData, SourceData, SourceTargetData, StackData, StatRow, Studio, TargetData,
-    TokenRow,
+    EncoderData, EntryRow, ExistingData, KindData, LookData, MarkData, MeterRow, ModeData,
+    SampleData, ScaleMark, SceneData, SourceData, SourceSettingsData, SourceTargetData, StackData,
+    StatRow, Studio, TargetData, TokenRow,
 };
 
 /// Meter refresh while the Mixer is visible (U16: 30 Hz).
@@ -136,6 +136,10 @@ pub struct StudioUi {
     /// filtered by the search field, the source's current target first.
     source_targets: Rc<VecModel<SourceTargetData>>,
     source_target_list: Vec<Target>,
+    /// The Source settings window's content (ADR-0077): empty until the host answers,
+    /// then one entry; and what its choices mean.
+    source_settings: Rc<VecModel<SourceSettingsData>>,
+    source_settings_view: Option<SettingsChoices>,
     /// The source the list is for, and what the search field holds.
     source_targets_for: Option<SourceId>,
     source_query: String,
@@ -348,6 +352,8 @@ impl StudioUi {
             target_list: Vec::new(),
             targets: Rc::new(VecModel::default()),
             source_targets: Rc::new(VecModel::default()),
+            source_settings: Rc::new(VecModel::default()),
+            source_settings_view: None,
             source_target_list: Vec::new(),
             source_targets_for: None,
             source_query: String::new(),
@@ -449,6 +455,7 @@ impl StudioUi {
         g.set_kinds(ModelRc::from(self.kinds.clone()));
         g.set_targets(ModelRc::from(self.targets.clone()));
         g.set_source_targets(ModelRc::from(self.source_targets.clone()));
+        g.set_source_settings(ModelRc::from(self.source_settings.clone()));
         g.set_meters(ModelRc::from(self.meters.clone()));
         g.set_hidden_meters(ModelRc::from(self.hidden_meters.clone()));
         g.set_master_meter(ModelRc::from(self.master_meter.clone()));
@@ -1231,6 +1238,35 @@ impl StudioUi {
             })
             .collect::<Vec<_>>();
         self.source_targets.set_vec(rows);
+    }
+
+    /// The Source settings window opens for a source: what it shows is asked for.
+    pub fn request_source_settings(&mut self, id: i32) {
+        self.source_settings.set_vec(Vec::new());
+        self.source_settings_view = None;
+        self.send(Command::OpenSourceSettings(SourceId::from_raw(id as u32)));
+    }
+
+    /// The Source settings window was closed: its content is dropped.
+    pub fn source_settings_closed(&mut self) {
+        self.source_settings.set_vec(Vec::new());
+        self.source_settings_view = None;
+    }
+
+    /// Apply or OK in the Source settings window: the chosen mode, rate and cursor are
+    /// sent as one patch (one undo step).
+    pub fn apply_source_settings(&mut self, id: i32, mode: i32, rate: i32, cursor: bool) {
+        let Some(choices) = &self.source_settings_view else {
+            return;
+        };
+        let patch = choices.patch(mode, rate, cursor);
+        if patch.is_empty() {
+            return;
+        }
+        self.send(Command::SetSourceSettings {
+            id: SourceId::from_raw(id as u32),
+            patch,
+        });
     }
 
     /// A target of the Source tab's list was chosen: the source points at it.
@@ -3017,6 +3053,11 @@ impl StudioUi {
                 self.refresh_existing();
                 self.refresh_global_existing();
             }
+            Update::SourceSettings(view) => {
+                let (data, choices) = source_settings_data(&view);
+                self.source_settings.set_vec(vec![data]);
+                self.source_settings_view = Some(choices);
+            }
             Update::Targets(kind, list) => {
                 self.targets_kind = SourceKind::ALL
                     .iter()
@@ -3822,6 +3863,149 @@ fn section<S: serde::de::DeserializeOwned>(
     }
 }
 
+/// The frame rates a screen, a window or a camera mode is offered, lowest first.
+const STANDARD_RATES: [u32; 12] = [5, 10, 15, 20, 24, 25, 30, 48, 50, 60, 90, 120];
+
+/// What the choices of the Source settings window stand for.
+#[derive(Debug, PartialEq, Eq)]
+struct SettingsChoices {
+    /// Camera modes: the size of each, in the order listed.
+    modes: Vec<(u32, u32)>,
+    /// The rates of each mode (one list for a screen or window).
+    rates: Vec<Vec<u32>>,
+    /// The kind has a cursor choice.
+    has_cursor: bool,
+}
+
+impl SettingsChoices {
+    /// The settings patch for the chosen mode and rate (`-1`: nothing chosen, the stored
+    /// value stays) and the cursor.
+    fn patch(
+        &self,
+        mode: i32,
+        rate: i32,
+        cursor: bool,
+    ) -> std::collections::BTreeMap<String, serde_json::Value> {
+        let mut patch = std::collections::BTreeMap::new();
+        let mode = usize::try_from(mode).ok();
+        if let Some((w, h)) = mode.and_then(|m| self.modes.get(m)) {
+            patch.insert("width".to_owned(), serde_json::json!(w));
+            patch.insert("height".to_owned(), serde_json::json!(h));
+        }
+        let list = if self.modes.is_empty() {
+            self.rates.first()
+        } else {
+            mode.and_then(|m| self.rates.get(m))
+        };
+        if let Some(fps) = usize::try_from(rate)
+            .ok()
+            .and_then(|r| list.and_then(|l| l.get(r)))
+        {
+            patch.insert("fps".to_owned(), serde_json::json!(fps));
+        }
+        if self.has_cursor {
+            patch.insert("cursor".to_owned(), serde_json::json!(cursor));
+        }
+        patch
+    }
+}
+
+/// The rates of a mode that runs from `min` to `max` frames per second, plus the stored
+/// one so that it can be shown.
+fn rates_between(min: u32, max: u32, stored: Option<u32>) -> Vec<u32> {
+    let mut rates: Vec<u32> = STANDARD_RATES
+        .into_iter()
+        .filter(|r| (min..=max).contains(r))
+        .collect();
+    if rates.is_empty() {
+        rates.push(max.max(1));
+    }
+    if let Some(s) = stored.filter(|s| !rates.contains(s)) {
+        rates.push(s);
+        rates.sort_unstable();
+    }
+    rates
+}
+
+fn source_settings_data(view: &SourceSettingsView) -> (SourceSettingsData, SettingsChoices) {
+    let camera = view.kind == SourceKind::Camera;
+    let (modes, rates): (Vec<(u32, u32)>, Vec<Vec<u32>>) = if camera {
+        view.modes
+            .iter()
+            .map(|m| {
+                (
+                    (m.width, m.height),
+                    rates_between(m.min_fps, m.max_fps, None),
+                )
+            })
+            .unzip()
+    } else {
+        (Vec::new(), vec![rates_between(15, 60, view.fps)])
+    };
+    let mode_index = view
+        .size
+        .and_then(|s| modes.iter().position(|m| *m == s))
+        .map_or(-1, |i| i as i32);
+    let shown_rates = if camera {
+        usize::try_from(mode_index)
+            .ok()
+            .and_then(|m| rates.get(m))
+            .cloned()
+            .unwrap_or_default()
+    } else {
+        rates[0].clone()
+    };
+    let rate_index = view
+        .fps
+        .and_then(|f| shown_rates.iter().position(|r| *r == f))
+        .map_or(-1, |i| i as i32);
+    let strings = |v: &[u32]| -> ModelRc<SharedString> {
+        ModelRc::new(VecModel::from(
+            v.iter()
+                .map(|r| SharedString::from(format!("{r} fps")))
+                .collect::<Vec<_>>(),
+        ))
+    };
+    let has_cursor = matches!(view.kind, SourceKind::Screen | SourceKind::Window);
+    let data = SourceSettingsData {
+        id: view.id.get() as i32,
+        name: view.name.as_str().into(),
+        kind_code: SourceKind::ALL
+            .iter()
+            .position(|k| *k == view.kind)
+            .map_or(-1, |i| i as i32),
+        modes: ModelRc::new(VecModel::from(
+            modes
+                .iter()
+                .zip(&rates)
+                .map(|((w, h), r)| ModeData {
+                    label: format!("{w} \u{d7} {h}").into(),
+                    rates: strings(r),
+                })
+                .collect::<Vec<_>>(),
+        )),
+        mode_labels: ModelRc::new(VecModel::from(
+            modes
+                .iter()
+                .map(|(w, h)| SharedString::from(format!("{w} \u{d7} {h}")))
+                .collect::<Vec<_>>(),
+        )),
+        mode_index,
+        rates: strings(&shown_rates),
+        rate_index,
+        has_cursor,
+        cursor: view.cursor,
+    };
+    (
+        data,
+        SettingsChoices {
+            modes,
+            rates,
+            has_cursor,
+        },
+    )
+}
+
 /// One row of the Source tab's target list.
 #[derive(Debug, PartialEq, Eq)]
 struct SourceTargetRow {
@@ -3922,6 +4106,74 @@ mod tests {
         assert!(rows[0].current && rows[0].heading.is_empty());
         assert_eq!(rows[1].heading, "Same application: Editor");
         assert!(rows[2].heading == "Other" && rows[3].heading.is_empty());
+    }
+
+    fn camera_view(size: Option<(u32, u32)>, fps: Option<u32>) -> SourceSettingsView {
+        SourceSettingsView {
+            id: SourceId::from_raw(4),
+            name: "Cam".to_owned(),
+            kind: SourceKind::Camera,
+            modes: vec![
+                rbs_sources::SourceMode {
+                    width: 1920,
+                    height: 1080,
+                    min_fps: 30,
+                    max_fps: 60,
+                },
+                rbs_sources::SourceMode {
+                    width: 640,
+                    height: 360,
+                    min_fps: 15,
+                    max_fps: 30,
+                },
+            ],
+            size,
+            fps,
+            cursor: true,
+        }
+    }
+
+    #[test]
+    fn a_camera_offers_its_modes_and_the_rates_of_the_chosen_one() {
+        let (data, choices) = source_settings_data(&camera_view(Some((640, 360)), Some(24)));
+        assert_eq!(data.mode_index, 1);
+        // 640 x 360 runs at 15..=30: 15, 20, 24, 25, 30; the stored 24 is the fourth entry... third.
+        assert_eq!(data.rate_index, 2);
+        assert_eq!(data.rates.row_count(), 5);
+        assert!(!data.has_cursor);
+        // Choosing the first mode and its first rate sets size and rate, not the cursor.
+        let patch = choices.patch(0, 0, true);
+        assert_eq!(patch["width"], 1920);
+        assert_eq!(patch["height"], 1080);
+        assert_eq!(patch["fps"], 30);
+        assert!(!patch.contains_key("cursor"));
+    }
+
+    #[test]
+    fn nothing_chosen_leaves_the_stored_values() {
+        let (data, choices) = source_settings_data(&camera_view(None, None));
+        assert_eq!((data.mode_index, data.rate_index), (-1, -1));
+        assert!(choices.patch(-1, -1, true).is_empty());
+    }
+
+    #[test]
+    fn a_screen_has_rates_and_a_cursor_choice_and_shows_a_stored_odd_rate() {
+        let view = SourceSettingsView {
+            id: SourceId::from_raw(1),
+            name: "Screen".to_owned(),
+            kind: SourceKind::Screen,
+            modes: Vec::new(),
+            size: None,
+            fps: Some(144),
+            cursor: false,
+        };
+        let (data, choices) = source_settings_data(&view);
+        assert!(data.has_cursor && !data.cursor);
+        let last = data.rates.row_count() - 1;
+        assert_eq!(data.rate_index as usize, last, "144 is kept and shown last");
+        let patch = choices.patch(-1, data.rate_index, true);
+        assert_eq!(patch["fps"], 144);
+        assert_eq!(patch["cursor"], true);
     }
 
     #[test]
