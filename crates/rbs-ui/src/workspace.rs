@@ -1239,6 +1239,17 @@ impl Workspace {
                 return Ok(());
             }
         }
+        // A further canvas's picture (`rbs.program?canvas=vertical`, ADR-0093 decision 7)
+        // goes beside the pictures, in a stack of its own at the centre's right edge.
+        if matches!(id.base(), "rbs.preview" | "rbs.program") && id.param("canvas").is_some() {
+            let main = self.main_layout_mut().ok_or(WorkspaceError::NoTarget)?;
+            let mut next = main.centre.clone();
+            next.insert_node_at_edge(Node::tabs(vec![id.clone()]), crate::layout::Edge::Right);
+            if next.depth() <= MAX_DEPTH {
+                main.centre = next;
+                return Ok(());
+            }
+        }
         let side = match id.base() {
             "rbs.scenes" | "rbs.sources" => Some(Side::Left),
             "rbs.properties" => Some(Side::Right),
@@ -2433,6 +2444,29 @@ layout = { tabs = ["rbs.status-bar"] }
             ws.auto_hide(&id("rbs.properties"), Rect::sized(800.0, 600.0)),
             Err(WorkspaceError::NoTarget)
         );
+    }
+
+    #[test]
+    fn the_vertical_picture_opens_beside_the_pictures_and_closes_again() {
+        // ADR-0093 decision 7: a stack of its own at the centre's right edge, never a
+        // tab next to Preview or Program, and closing it leaves the rest as it was.
+        let vertical = id("rbs.program?canvas=vertical");
+        for mut w in [builtin::live(), builtin::edit()] {
+            let before = w.clone();
+            w.open(vertical.clone()).unwrap();
+            let (win, stack, _) = w.find(&vertical).unwrap();
+            assert_eq!(win, 0, "{}", w.name);
+            assert_eq!(
+                w.windows[0].stack(stack).unwrap().tabs,
+                vec![vertical.clone()]
+            );
+            assert!(w.main().pictures_leaf().is_some());
+            assert!(!w.windows[0].in_pictures(&vertical));
+            w.validate().unwrap();
+            w.close(&vertical).unwrap();
+            assert!(!w.is_open(&vertical));
+            assert_eq!(w.windows, before.windows, "{}", w.name);
+        }
     }
 
     #[test]

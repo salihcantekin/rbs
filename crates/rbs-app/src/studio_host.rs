@@ -765,6 +765,10 @@ pub enum Command {
     /// The vertical canvas's stream settings as saved (`None`: none saved). Sent at
     /// start and after each change.
     SetVerticalStreamProfile(Option<StreamProfile>),
+    /// The vertical canvas's panel shows (`true`) or not (ADR-0093 decision 7): its
+    /// picture runs only while it shows, so a closed panel costs nothing. Kept while
+    /// there is no vertical canvas, for the next one.
+    SetVerticalPicture(bool),
     /// Change the canvas's size and rate (Settings, Video). The studio restarts with
     /// it (ADR-0041: a running studio's canvas does not change); the program scene's
     /// items are placed again for the new size. Refused while recording. Always
@@ -1306,6 +1310,9 @@ pub enum Update {
     /// Where the UI connects to the preview scene's picture in studio mode (ADR-0061),
     /// each time it appears (`Some`) or goes (`None`).
     ScenePreview(Option<PreviewEndpoint>),
+    /// Where the UI connects to the vertical canvas's picture (ADR-0093 decision 7),
+    /// each time it appears (`Some`) or goes (`None`).
+    VerticalPreview(Option<PreviewEndpoint>),
     /// What a kind can capture, in OS order.
     Targets(SourceKind, Vec<Target>),
     /// One target's picture ([`Command::GrabThumbnails`]); `None` when the adapter has
@@ -1844,6 +1851,9 @@ struct Host {
     held: Option<Held>,
     /// The preview scene's picture endpoint last sent to the UI.
     scene_preview_sent: Option<PreviewEndpoint>,
+    /// The vertical canvas's panel shows: its picture runs (ADR-0093 decision 7).
+    vertical_picture: bool,
+    vertical_preview_sent: Option<PreviewEndpoint>,
     /// The scene list as last sent.
     scenes_shown: Option<SceneList>,
     /// The second canvas that runs, and what was last sent about it (ADR-0093).
@@ -2286,6 +2296,8 @@ fn start(
             into: None,
             held,
             scene_preview_sent: None,
+            vertical_picture: false,
+            vertical_preview_sent: None,
             scenes_shown: None,
             vertical: None,
             vertical_shared: Vec::new(),
@@ -2679,6 +2691,12 @@ impl Host {
             }
             Command::SetVerticalProfile(profile) => self.vertical_profile = profile,
             Command::SetVerticalStreamProfile(profile) => self.vertical_stream_profile = profile,
+            Command::SetVerticalPicture(on) => {
+                if let Err(why) = self.set_vertical_picture(on) {
+                    notify(Update::Error(why));
+                }
+                self.publish(notify);
+            }
             Command::SetCanvas { size, fps } => {
                 if let Err(why) = self.change_canvas(size, fps, notify) {
                     notify(Update::Error(why));
@@ -3074,6 +3092,7 @@ impl Host {
         self.rows.clear();
         self.heard.clear();
         self.scene_preview_sent = None;
+        self.vertical_preview_sent = None;
         self.publish(notify);
         let now = self.api_canvas();
         if now != before {
@@ -3349,7 +3368,7 @@ impl Host {
             .vertical
             .filter(|v| self.collection.canvas(v.canvas).is_some())
         {
-            settings.extra_canvases = vec![ExtraCanvas::new(v.canvas)];
+            settings.extra_canvases = vec![self.vertical_extra(v.canvas)];
         } else if self.vertical.take().is_some() {
             self.forget_vertical_outputs();
         }
@@ -4985,10 +5004,11 @@ impl Host {
         let before = std::mem::replace(&mut self.collection, draft);
         let run = self.run_collection();
         let running = run.as_ref().unwrap_or(&self.collection);
-        match self
-            .studio
-            .activate_canvas(running, &self.adapters.sources, ExtraCanvas::new(canvas))
-        {
+        match self.studio.activate_canvas(
+            running,
+            &self.adapters.sources,
+            self.vertical_extra(canvas),
+        ) {
             Ok(_) => {
                 self.vertical_shared = shared;
                 self.vertical = Some(VerticalState {
@@ -5006,6 +5026,35 @@ impl Host {
                 )))
             }
         }
+    }
+
+    /// The vertical canvas as the studio runs it: with its picture while its panel
+    /// shows (ADR-0093 decision 7).
+    fn vertical_extra(&self, canvas: CanvasId) -> ExtraCanvas {
+        let extra = ExtraCanvas::new(canvas);
+        let size = self.collection.canvas(canvas).map(|c| c.size);
+        match (self.vertical_picture, self.preview_surfaces, size) {
+            (true, Some(n), Some(size)) => extra.with_preview(preview_desc(size, n)),
+            _ => extra,
+        }
+    }
+
+    /// The vertical canvas's panel opened or closed: its picture starts or stops, also
+    /// while its outputs run.
+    fn set_vertical_picture(&mut self, on: bool) -> Result<(), String> {
+        self.vertical_picture = on;
+        let Some(v) = self.vertical else {
+            return Ok(());
+        };
+        let desc = self.vertical_extra(v.canvas).preview;
+        let run = self.run_collection();
+        let running = run.as_ref().unwrap_or(&self.collection);
+        self.studio
+            .set_canvas_picture(running, &self.adapters.sources, v.canvas, desc)
+            .map(|_| ())
+            .map_err(|e| format!("The vertical preview did not start: {e}"))?;
+        self.waiting = self.studio.waiting();
+        Ok(())
     }
 
     /// Stops the second canvas and removes it from the collection.
@@ -6018,6 +6067,13 @@ impl Host {
         if picture != self.scene_preview_sent {
             self.scene_preview_sent = picture.clone();
             notify(Update::ScenePreview(picture));
+        }
+        let vertical = self
+            .vertical
+            .and_then(|v| self.studio.canvas_preview(v.canvas));
+        if vertical != self.vertical_preview_sent {
+            self.vertical_preview_sent = vertical.clone();
+            notify(Update::VerticalPreview(vertical));
         }
         // After the rows, so the UI sees the edit before what undoes it.
         let shown = (

@@ -2,8 +2,9 @@
 //! native layer over the panel (a Core Animation layer on macOS, ADR-0034; a
 //! DirectComposition visual on Windows, ADR-0036). A new frame changes the layer only;
 //! Slint does not redraw. Outside studio mode there is one picture, the program; in
-//! studio mode a second one shows the preview scene (ADR-0061), each with its own
-//! connection, area, covers and marks.
+//! studio mode a second one shows the preview scene (ADR-0061), and while its panel shows
+//! a third one shows the vertical canvas (ADR-0093), each with its own connection, area,
+//! covers and marks.
 //!
 //! UI thread only (the layer is not `Send`); the subscriber receives frames on its own
 //! thread and hands each to the UI thread.
@@ -51,10 +52,12 @@ pub enum Picture {
     Program = 0,
     /// The preview scene, in studio mode only.
     Scene = 1,
+    /// The vertical canvas's program, while its panel shows (ADR-0093 decision 7).
+    Vertical = 2,
 }
 
 impl Picture {
-    const ALL: [Picture; 2] = [Picture::Program, Picture::Scene];
+    const ALL: [Picture; 3] = [Picture::Program, Picture::Scene, Picture::Vertical];
 
     fn index(self) -> usize {
         self as usize
@@ -62,9 +65,10 @@ impl Picture {
 }
 
 thread_local! {
-    static PREVIEW: RefCell<[Option<Preview>; 2]> = const { RefCell::new([None, None]) };
+    static PREVIEW: RefCell<[Option<Preview>; 3]> = const { RefCell::new([None, None, None]) };
     /// Each picture's panel content in the main window (logical pixels), if shown there.
-    static AREA: [Cell<Option<[f32; 4]>>; 2] = const { [Cell::new(None), Cell::new(None)] };
+    static AREA: [Cell<Option<[f32; 4]>>; 3] =
+        const { [Cell::new(None), Cell::new(None), Cell::new(None)] };
 }
 
 /// Connects `which` to `endpoint` off the UI thread, then makes its layer on the UI
@@ -98,7 +102,8 @@ pub fn connect(
 /// Bumped by [`close`]: a frame thread of an earlier connection ends within one receive
 /// timeout and drops its subscriber, so the studio's publisher does no preview work
 /// while nothing shows it (P13; ADR-0056 decision 5). Its end is then not logged.
-static GENERATION: [std::sync::atomic::AtomicU64; 2] = [
+static GENERATION: [std::sync::atomic::AtomicU64; 3] = [
+    std::sync::atomic::AtomicU64::new(0),
     std::sync::atomic::AtomicU64::new(0),
     std::sync::atomic::AtomicU64::new(0),
 ];

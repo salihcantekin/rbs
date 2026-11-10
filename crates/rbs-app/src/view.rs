@@ -15,6 +15,8 @@ use crate::ui::{
 pub fn title(id: &PanelId) -> String {
     let base = built_in(id).map_or(id.as_str(), |p| p.title);
     match id.param("canvas") {
+        // The vertical canvas's picture is named by its canvas (ADR-0093 decision 7).
+        Some("vertical") if id.base() == "rbs.program" => "Vertical".to_owned(),
         Some(c) if built_in(id).is_some() => format!("{base} ({c})"),
         _ => base.to_owned(),
     }
@@ -22,6 +24,9 @@ pub fn title(id: &PanelId) -> String {
 
 /// The icon of a panel in edge tabs and collapsed strips (design system icon set).
 pub fn panel_icon(id: &PanelId) -> &'static str {
+    if id.param("canvas") == Some("vertical") {
+        return "canvas-vertical";
+    }
     match id.base() {
         "rbs.stats" => "grid",
         "rbs.outputs" => "copy",
@@ -300,7 +305,10 @@ mod tests {
     #[test]
     fn titles_and_menu() {
         let p = PanelId::parse("rbs.program?canvas=vertical").unwrap();
-        assert_eq!(title(&p), "Program (vertical)");
+        assert_eq!(title(&p), "Vertical");
+        assert_eq!(panel_icon(&p), "canvas-vertical");
+        let other = PanelId::parse("rbs.preview?canvas=vertical").unwrap();
+        assert_eq!(title(&other), "Preview (vertical)");
         let plugin = PanelId::parse("com.example.chat").unwrap();
         assert_eq!(title(&plugin), "com.example.chat");
         let mut ws = builtin::minimal();

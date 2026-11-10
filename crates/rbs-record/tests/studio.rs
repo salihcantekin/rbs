@@ -935,6 +935,57 @@ fn a_ui_subscribed_to_a_vertical_canvas_gets_its_frames() {
     assert!(errors.is_empty(), "{errors:?}");
 }
 
+#[cfg(any(windows, target_vendor = "apple"))]
+#[test]
+fn a_vertical_canvas_gets_and_loses_its_picture_while_it_runs() {
+    use rbs_core::media::video::Size;
+    use rbs_core::timing::FrameRate;
+    use rbs_gpu::share::PreviewDesc;
+
+    let Some(gpu) = gpu() else { return };
+    let r = rig();
+    let (mut col, main) = scene();
+    let program = col.canvas(main).unwrap().program.unwrap();
+    let (tall, _) = col
+        .add_canvas("Vertical", Size::new(H / 2, W / 2), FrameRate::FPS_30)
+        .unwrap();
+    col.set_program(tall, Some(program)).unwrap();
+    let (engine, clock) = engine_at_start();
+    let mut settings = StudioSettings::new(main);
+    settings.audio = false;
+    settings.extra_canvases = vec![ExtraCanvas::new(tall)];
+    let mut studio = Studio::start(engine, gpu, &col, &r.adapters.sources, &settings).unwrap();
+    // No panel: no picture (P13).
+    assert!(studio.canvas_preview_stats(tall).is_none());
+    let desc = PreviewDesc {
+        width: 32,
+        height: 18,
+        surfaces: 4,
+    };
+    studio
+        .set_canvas_picture(&col, &r.adapters.sources, tall, Some(desc))
+        .unwrap();
+    // Asking again changes nothing.
+    studio
+        .set_canvas_picture(&col, &r.adapters.sources, tall, Some(desc))
+        .unwrap();
+    let reached = run_until(&mut studio, &clock, |s| s.canvas_preview(tall).is_some());
+    assert!(reached, "the picture is prepared");
+    studio
+        .set_canvas_picture(&col, &r.adapters.sources, tall, None)
+        .unwrap();
+    assert!(studio.canvas_preview_stats(tall).is_none());
+    assert!(studio.canvas_preview(tall).is_none());
+    // A canvas that does not run has no picture to change.
+    let absent = CanvasId::from_raw(999);
+    assert!(matches!(
+        studio.set_canvas_picture(&col, &r.adapters.sources, absent, Some(desc)),
+        Err(RecordError::UnknownCanvas(c)) if c == absent
+    ));
+    let (_, errors) = studio.shutdown();
+    assert!(errors.is_empty(), "{errors:?}");
+}
+
 #[test]
 fn a_further_canvas_must_run_at_the_main_rate_and_be_new() {
     use rbs_core::media::video::Size;
