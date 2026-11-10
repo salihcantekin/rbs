@@ -324,6 +324,95 @@ fn audio_requirement(kind: EndpointKind) -> Requirement {
     )
 }
 
+/// The keys a source type uses; others are refused when settings are set through the
+/// API or the Source settings window (a stored document may still carry more, so a file
+/// from a newer version loads).
+fn known_keys(type_id: &NodeTypeId) -> Option<&'static [&'static str]> {
+    Some(match class_of(type_id)? {
+        SourceClass::Capture(TargetKind::Camera) => &[
+            keys::ADAPTER,
+            keys::TARGET,
+            keys::WIDTH,
+            keys::HEIGHT,
+            keys::FPS,
+        ],
+        SourceClass::Capture(_) => &[
+            keys::ADAPTER,
+            keys::TARGET,
+            keys::CURSOR,
+            keys::WIDTH,
+            keys::HEIGHT,
+            keys::FPS,
+        ],
+        SourceClass::Audio(_) => &[keys::ADAPTER, keys::TARGET],
+        SourceClass::Still => &[
+            keys::PATH,
+            keys::SAMPLE,
+            keys::COLOR,
+            keys::COLOR2,
+            keys::ANGLE,
+            keys::WIDTH,
+            keys::HEIGHT,
+        ],
+    })
+}
+
+/// Checks `settings` for a source of `type_id` without touching any device: only keys the
+/// type uses, each of the right kind, a size given as both sides, a sane size and rate.
+/// What the OS offers (does the target exist, does the camera have this mode) is only
+/// known when the source opens and shows in its status then.
+pub fn validate_settings(type_id: &NodeTypeId, settings: &Settings) -> Result<(), SourceError> {
+    /// The largest picture side and frame rate accepted.
+    const MAX_SIDE: u32 = 16_384;
+    const MAX_FPS: u32 = 240;
+    let known = known_keys(type_id).ok_or_else(|| SourceError::UnknownType(type_id.clone()))?;
+    if settings.keys().any(|k| !known.contains(&k.as_str())) {
+        return Err(SourceError::InvalidSetting {
+            key: "settings",
+            expected: "only keys this source type uses",
+        });
+    }
+    text(settings, keys::ADAPTER)?;
+    text(settings, keys::TARGET)?;
+    flag(settings, keys::CURSOR)?;
+    let (w, h) = (
+        positive(settings, keys::WIDTH)?,
+        positive(settings, keys::HEIGHT)?,
+    );
+    if w.is_some() != h.is_some() {
+        return Err(SourceError::InvalidSetting {
+            key: keys::WIDTH,
+            expected: "set together with height",
+        });
+    }
+    if w.into_iter().chain(h).any(|v| v > MAX_SIDE) {
+        return Err(SourceError::InvalidSetting {
+            key: keys::WIDTH,
+            expected: "at most 16384 pixels",
+        });
+    }
+    if positive(settings, keys::FPS)?.is_some_and(|n| n > MAX_FPS) {
+        return Err(SourceError::InvalidSetting {
+            key: keys::FPS,
+            expected: "at most 240 frames per second",
+        });
+    }
+    text(settings, keys::PATH)?;
+    text(settings, keys::SAMPLE)?;
+    text(settings, keys::COLOR)?;
+    text(settings, keys::COLOR2)?;
+    if settings
+        .get(keys::ANGLE)
+        .is_some_and(|v| !matches!(v, SettingValue::Int(_)))
+    {
+        return Err(SourceError::InvalidSetting {
+            key: keys::ANGLE,
+            expected: "an integer",
+        });
+    }
+    Ok(())
+}
+
 fn text<'a>(settings: &'a Settings, key: &'static str) -> Result<Option<&'a str>, SourceError> {
     match settings.get(key) {
         None => Ok(None),

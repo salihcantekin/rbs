@@ -310,6 +310,36 @@ pub struct ReloadSource {
     pub source: u32,
 }
 
+/// `source.get_settings` (protocol 1.17, ADR-0077).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct GetSourceSettings {
+    /// The source's id.
+    pub source: u32,
+}
+
+/// `source.set_settings` (protocol 1.17, ADR-0077): a patch of a source's stored settings.
+/// A key set to `null` is removed; the result is validated for the source's type and the
+/// change is one undo step. The source is opened again with the new settings (filters,
+/// layout and its place in the scenes stay).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SetSourceSettings {
+    /// The source's id.
+    pub source: u32,
+    /// The keys to change.
+    pub settings: BTreeMap<String, serde_json::Value>,
+}
+
+/// `source.get_settings`' answer: every stored setting of the source.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SourceSettingsInfo {
+    /// The source's id.
+    pub source: u32,
+    /// Its settings.
+    pub settings: BTreeMap<String, serde_json::Value>,
+}
+
 /// `source.set_sync_offset` (protocol 1.8).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -519,6 +549,10 @@ pub enum Command {
     SourceRetarget(RetargetSource),
     /// `source.reload` (protocol 1.13).
     SourceReload(ReloadSource),
+    /// `source.get_settings` (protocol 1.17).
+    SourceGetSettings(GetSourceSettings),
+    /// `source.set_settings` (protocol 1.17).
+    SourceSetSettings(SetSourceSettings),
     /// `settings.recent_targets` (protocol 1.13).
     SettingsRecentTargets(TargetsParams),
     /// `settings.clear_recent_targets` (protocol 1.13).
@@ -622,6 +656,8 @@ impl Command {
             Command::SourceSetSyncOffset(_) => "source.set_sync_offset",
             Command::SourceRetarget(_) => "source.retarget",
             Command::SourceReload(_) => "source.reload",
+            Command::SourceGetSettings(_) => "source.get_settings",
+            Command::SourceSetSettings(_) => "source.set_settings",
             Command::SettingsRecentTargets(_) => "settings.recent_targets",
             Command::SettingsClearRecentTargets(_) => "settings.clear_recent_targets",
             Command::SceneSources(_) => "scene.sources",
@@ -736,6 +772,8 @@ pub const METHODS: &[MethodInfo] = &[
     m("source.set_sync_offset", Some(Scope::Control)),
     m("source.retarget", Some(Scope::Control)),
     m("source.reload", Some(Scope::Control)),
+    m("source.get_settings", Some(Scope::Control)),
+    m("source.set_settings", Some(Scope::Control)),
     m("settings.recent_targets", Some(Scope::Control)),
     m("settings.clear_recent_targets", Some(Scope::Control)),
     m("item.set_visible", Some(Scope::Control)),
@@ -892,6 +930,10 @@ enum WireRequest {
     SourceRetarget(RetargetSource),
     #[serde(rename = "source.reload")]
     SourceReload(ReloadSource),
+    #[serde(rename = "source.get_settings")]
+    SourceGetSettings(GetSourceSettings),
+    #[serde(rename = "source.set_settings")]
+    SourceSetSettings(SetSourceSettings),
     #[serde(rename = "settings.recent_targets")]
     SettingsRecentTargets(TargetsParams),
     #[serde(rename = "settings.clear_recent_targets")]
@@ -1000,6 +1042,8 @@ impl From<WireRequest> for Request {
             WireRequest::SourceSetSyncOffset(p) => Request::Command(C::SourceSetSyncOffset(p)),
             WireRequest::SourceRetarget(p) => Request::Command(C::SourceRetarget(p)),
             WireRequest::SourceReload(p) => Request::Command(C::SourceReload(p)),
+            WireRequest::SourceGetSettings(p) => Request::Command(C::SourceGetSettings(p)),
+            WireRequest::SourceSetSettings(p) => Request::Command(C::SourceSetSettings(p)),
             WireRequest::SettingsRecentTargets(p) => Request::Command(C::SettingsRecentTargets(p)),
             WireRequest::SettingsClearRecentTargets(p) => {
                 Request::Command(C::SettingsClearRecentTargets(p))
@@ -1077,6 +1121,8 @@ impl From<Request> for WireRequest {
                 C::SourceSetSyncOffset(p) => WireRequest::SourceSetSyncOffset(p),
                 C::SourceRetarget(p) => WireRequest::SourceRetarget(p),
                 C::SourceReload(p) => WireRequest::SourceReload(p),
+                C::SourceGetSettings(p) => WireRequest::SourceGetSettings(p),
+                C::SourceSetSettings(p) => WireRequest::SourceSetSettings(p),
                 C::SettingsRecentTargets(p) => WireRequest::SettingsRecentTargets(p),
                 C::SettingsClearRecentTargets(p) => WireRequest::SettingsClearRecentTargets(p),
                 C::SceneSources(p) => WireRequest::SceneSources(p),
@@ -1322,6 +1368,8 @@ pub enum Response {
     SceneSources(SceneSourceList),
     /// `global.list` (protocol 1.10).
     GlobalSources(GlobalSourceList),
+    /// `source.get_settings` (protocol 1.17).
+    SourceSettings(SourceSettingsInfo),
     /// `item.remove`, `global.remove` (protocol 1.10).
     ItemRemoved(ItemRemoved),
     /// `output.profiles`.

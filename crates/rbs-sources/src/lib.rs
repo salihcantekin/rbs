@@ -29,6 +29,6 @@ pub use filters::{filter_settings, filter_values, filter_values_lenient};
 pub use layers::node_layers;
 pub use registry::{
     AudioSource, InstanceContext, NodeTypeTable, SourceError, SourceInstance, SourcePicker,
-    SourceTarget, SourceTypes, StillSource, VideoSource,
+    SourceTarget, SourceTypes, StillSource, VideoSource, validate_settings,
 };
 pub use types::{SourceClass, class_of};
