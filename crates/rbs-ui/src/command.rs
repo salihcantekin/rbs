@@ -596,6 +596,20 @@ pub const ENTRIES: &[Entry] = &[
         checkable: true,
     },
     Entry {
+        id: "ui.mixer.orientation",
+        title: "Mixer layout",
+        tooltip: "Arrange the Mixer in rows, in columns, or by the panel's shape",
+        icon: Some("layout"),
+        shortcut: None,
+        menu: Menu::Source,
+        kind: Kind::Picker {
+            method: "ui.mixer.set_orientation",
+            param: "orientation",
+        },
+        params: &[choice("orientation")],
+        checkable: false,
+    },
+    Entry {
         id: "mixer.hide_all",
         title: "Hide all in Mixer",
         tooltip: "Keep every source out of the Mixer; they are still heard",
@@ -1077,6 +1091,7 @@ pub const MENU_LAYOUT: &[(Menu, &[&str])] = &[
             "item.remove",
             "source.delete",
             "#Mixer",
+            "ui.mixer.orientation",
             "mixer.hide_all",
             "mixer.hide_muted",
             "mixer.unhide_all",
@@ -1459,7 +1474,13 @@ pub const CONTEXT_LAYOUT: &[(Context, &[&str])] = &[
     ),
     (
         Context::Mixer,
-        &["mixer.hide_all", "mixer.hide_muted", "mixer.unhide_all"],
+        &[
+            "ui.mixer.orientation",
+            "|",
+            "mixer.hide_all",
+            "mixer.hide_muted",
+            "mixer.unhide_all",
+        ],
     ),
 ];
 

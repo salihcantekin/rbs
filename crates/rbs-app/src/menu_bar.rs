@@ -11,7 +11,7 @@
 use rbs_ui::command::{CommandId, CommandState, Kind, MenuItem, menus};
 use rbs_ui::layout::RailAt;
 use rbs_ui::panel::PanelId;
-use rbs_ui::workspace::{Side, Workspace};
+use rbs_ui::workspace::{MixerOrientation, Side, Workspace};
 
 use crate::studio_ui::{SourceFacts, StudioUi, rec_state, st_state};
 
@@ -516,6 +516,17 @@ impl CommandState for Shown<'_> {
                 })
                 .collect(),
             "ui.panel.select" => self.panels.clone(),
+            "ui.mixer.orientation" => {
+                let now = self.workspace.mixer_orientation();
+                [
+                    (MixerOrientation::Auto, "Auto"),
+                    (MixerOrientation::Rows, "Rows"),
+                    (MixerOrientation::Columns, "Columns"),
+                ]
+                .into_iter()
+                .map(|(o, title)| (title.to_owned(), o.name().to_owned(), o == now))
+                .collect()
+            }
             "profile.select" => self.studio.library_choices(false),
             "collection.select" => self.studio.library_choices(true),
             "scene.select" => self.studio.scene_choices(),
@@ -858,6 +869,8 @@ pub enum Run {
     SourceMixerHidden(i32, bool),
     /// Hide every shown source, only the muted ones, or show every hidden one.
     MixerBulk(MixerBulk),
+    /// The Mixer's layout (ADR-0083); view state, not layout history.
+    MixerOrientation(MixerOrientation),
     GoLive,
     /// Ask first, then end the stream (U4).
     AskEndStream,
@@ -887,6 +900,7 @@ pub fn run(text: &str, state: &Shown<'_>) -> Option<Run> {
         return Some(match id.base() {
             "ui.workspace.select" => Run::Workspace(value),
             "ui.panel.select" => Run::Panel(value),
+            "ui.mixer.orientation" => Run::MixerOrientation(MixerOrientation::parse(&value)?),
             "profile.select" => Run::Profile(value),
             "collection.select" => Run::Collection(value),
             "scene.select" => Run::Scene(value.parse().ok()?),

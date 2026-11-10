@@ -1461,7 +1461,8 @@ component MeterStrip inherits Rectangle {
 // scene's own sources and the global ones; both headers fold and are saved by id.
 export component MixerPanel inherits Rectangle {
     background: Theme.surface-raised;
-    property <bool> wide: self.width > self.height * 1.5;
+    // ADR-0083: a fixed layout never reflows by size; auto follows the panel's shape.
+    property <bool> wide: Sections.mixer-orientation == 2 || (Sections.mixer-orientation == 0 && self.width > self.height * 1.5);
     property <bool> scene-closed: Sections.closed("mixer.scene", Sections.rev);
     property <bool> global-closed: Sections.closed("mixer.global", Sections.rev);
     property <bool> hidden-closed: Sections.closed("mixer.hidden", Sections.rev);

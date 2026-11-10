@@ -338,8 +338,10 @@ impl LayoutSession {
                 );
                 // What the user folded is not layout: a reset keeps it (ADR-0078).
                 let sections = std::mem::take(&mut next.closed_sections);
+                let options = std::mem::take(&mut next.panel_options);
                 next = default;
                 next.closed_sections = sections;
+                next.panel_options = options;
             }
             LayoutCommand::SetStudioRail(at) => next.set_studio_rail(at)?,
             LayoutCommand::SetRailSize(px) => next.set_rail_size(px)?,
@@ -408,6 +410,12 @@ impl LayoutSession {
         Ok(())
     }
 
+    /// Set the Mixer's orientation (ADR-0083). Saved with the workspace, not in the
+    /// layout undo history, and allowed on a locked workspace.
+    pub fn set_mixer_orientation(&mut self, orientation: crate::MixerOrientation) {
+        self.workspace.set_mixer_orientation(orientation);
+    }
+
     /// End the current undo group (for example when a splitter drag ends).
     pub fn end_group(&mut self) {
         self.history.seal();
@@ -416,9 +424,12 @@ impl LayoutSession {
     /// Undo the last layout change. Never touches engine state.
     pub fn undo(&mut self) -> bool {
         let sections = std::mem::take(&mut self.workspace.closed_sections);
+        let options = std::mem::take(&mut self.workspace.panel_options);
         let done = self.history.undo(&mut self.workspace);
-        // Sections are not layout: undo keeps what the user closed since (ADR-0078).
+        // Sections and panel options are not layout: undo keeps what the user chose
+        // since (ADR-0078, ADR-0083).
         self.workspace.closed_sections = sections;
+        self.workspace.panel_options = options;
         done
     }
 
@@ -435,8 +446,10 @@ impl LayoutSession {
     /// Redo the last undone layout change.
     pub fn redo(&mut self) -> bool {
         let sections = std::mem::take(&mut self.workspace.closed_sections);
+        let options = std::mem::take(&mut self.workspace.panel_options);
         let done = self.history.redo(&mut self.workspace);
         self.workspace.closed_sections = sections;
+        self.workspace.panel_options = options;
         done
     }
 
@@ -604,6 +617,23 @@ mod tests {
             .unwrap();
         assert!(!s.workspace().section_closed("properties.crop"));
         assert!(s.workspace().section_closed("mixer.global"));
+    }
+
+    #[test]
+    fn mixer_orientation_is_not_layout_history_and_survives_reset() {
+        use crate::MixerOrientation::{Auto, Columns};
+        let mut s = LayoutSession::new(builtin::edit());
+        s.apply(LayoutCommand::ClosePanel(id("rbs.stats")), Origin::Command)
+            .unwrap();
+        s.set_mixer_orientation(Columns);
+        assert!(s.undo());
+        assert_eq!(s.workspace().mixer_orientation(), Columns);
+        s.apply(LayoutCommand::ResetWorkspace, Origin::Command)
+            .unwrap();
+        assert_eq!(s.workspace().mixer_orientation(), Columns);
+        s.apply(LayoutCommand::Switch(builtin::edit()), Origin::Command)
+            .unwrap();
+        assert_eq!(s.workspace().mixer_orientation(), Auto);
     }
 
     #[test]
