@@ -1,0 +1,27 @@
+[package]
+name = "rbs-audio-filters"
+description = "Built-in audio filters for RBS: the audio filter type trait, the filter node, Gain and Noise gate (ADR-0082)."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+# Engine crates only: no GPU, no OS API, no rbs-audio (ADR-0082 decision 3).
+rbs-core = { path = "../rbs-core" }
+rbs-graph = { path = "../rbs-graph" }
+rbs-params = { path = "../rbs-params" }
+
+[dev-dependencies]
+# Allocation guard for `process` (performance budgets: no allocation on hot paths).
+allocation-counter = "0.8"
+criterion = { version = "0.8", default-features = false, features = ["cargo_bench_support"] }
+
+[[bench]]
+name = "dsp"
+harness = false
+
+[lints]
+workspace = true
