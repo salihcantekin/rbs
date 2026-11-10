@@ -1651,21 +1651,23 @@ export component MainWindow inherits Window {
             MenuSeparator { }
             MenuItem { title: Menus.titles[52]; icon: Menus.icons[52]; enabled: Menus.enabled[52]; checkable: true; checked: Menus.checked[52]; activated => { Menus.run("replay.toggle"); } }
             MenuItem { title: Menus.titles[53]; icon: Menus.icons[53]; enabled: Menus.enabled[53]; activated => { Menus.run("replay.save"); } }
+            MenuSeparator { }
+            MenuItem { title: Menus.titles[54]; icon: Menus.icons[54]; enabled: Menus.enabled[54]; activated => { Menus.run("canvas.add_vertical"); } }
         }
         Menu {
             title: @tr("Window");
             Menu {
-                title: Menus.titles[54];
-                icon: Menus.icons[54];
-                enabled: Menus.enabled[54];
+                title: Menus.titles[55];
+                icon: Menus.icons[55];
+                enabled: Menus.enabled[55];
                 for c in Menus.choices[9]: MenuItem { title: c.title; checkable: true; checked: c.checked; activated => { Menus.run(c.id); } }
             }
             MenuSeparator { }
-            MenuItem { title: Menus.titles[55]; icon: Menus.icons[55]; enabled: Menus.enabled[55]; checkable: true; checked: Menus.checked[55]; activated => { Menus.run("ui.panel.maximize?id=rbs.preview"); } }
+            MenuItem { title: Menus.titles[56]; icon: Menus.icons[56]; enabled: Menus.enabled[56]; checkable: true; checked: Menus.checked[56]; activated => { Menus.run("ui.panel.maximize?id=rbs.preview"); } }
         }
         Menu {
             title: @tr("Help");
-            MenuItem { title: Menus.titles[56]; icon: Menus.icons[56]; enabled: Menus.enabled[56]; activated => { Menus.run("ui.app_menu.open"); } }
+            MenuItem { title: Menus.titles[57]; icon: Menus.icons[57]; enabled: Menus.enabled[57]; activated => { Menus.run("ui.app_menu.open"); } }
         }
     }
     // END generated menu bar
@@ -1950,21 +1952,23 @@ export component FloatWindow inherits Window {
             MenuSeparator { }
             MenuItem { title: Menus.titles[52]; icon: Menus.icons[52]; enabled: Menus.enabled[52]; checkable: true; checked: Menus.checked[52]; activated => { Menus.run("replay.toggle"); } }
             MenuItem { title: Menus.titles[53]; icon: Menus.icons[53]; enabled: Menus.enabled[53]; activated => { Menus.run("replay.save"); } }
+            MenuSeparator { }
+            MenuItem { title: Menus.titles[54]; icon: Menus.icons[54]; enabled: Menus.enabled[54]; activated => { Menus.run("canvas.add_vertical"); } }
         }
         Menu {
             title: @tr("Window");
             Menu {
-                title: Menus.titles[54];
-                icon: Menus.icons[54];
-                enabled: Menus.enabled[54];
+                title: Menus.titles[55];
+                icon: Menus.icons[55];
+                enabled: Menus.enabled[55];
                 for c in Menus.choices[9]: MenuItem { title: c.title; checkable: true; checked: c.checked; activated => { Menus.run(c.id); } }
             }
             MenuSeparator { }
-            MenuItem { title: Menus.titles[55]; icon: Menus.icons[55]; enabled: Menus.enabled[55]; checkable: true; checked: Menus.checked[55]; activated => { Menus.run("ui.panel.maximize?id=rbs.preview"); } }
+            MenuItem { title: Menus.titles[56]; icon: Menus.icons[56]; enabled: Menus.enabled[56]; checkable: true; checked: Menus.checked[56]; activated => { Menus.run("ui.panel.maximize?id=rbs.preview"); } }
         }
         Menu {
             title: @tr("Help");
-            MenuItem { title: Menus.titles[56]; icon: Menus.icons[56]; enabled: Menus.enabled[56]; activated => { Menus.run("ui.app_menu.open"); } }
+            MenuItem { title: Menus.titles[57]; icon: Menus.icons[57]; enabled: Menus.enabled[57]; activated => { Menus.run("ui.app_menu.open"); } }
         }
     }
     // END generated menu bar

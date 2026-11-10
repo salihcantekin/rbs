@@ -167,6 +167,8 @@ struct App {
     open_settings: Option<Option<i32>>,
     /// `ui.app_menu.open` ran; the next sync opens the RBS menu in the main window.
     open_app_menu: bool,
+    /// The Add vertical output dialog is asked for (`canvas.add_vertical`).
+    open_vertical: bool,
     /// Ask for the name of a new workspace (Save as new) in the main window.
     /// What the name prompt is to ask for at the next sync (`Run::SaveWorkspaceAs(None)`
     /// and the Output profile and Scene collection commands without a name).
@@ -505,6 +507,7 @@ impl App {
             Run::StudioMode(on) => self.studio.set_studio_mode(on),
             Run::Transition => self.studio.transition(),
             Run::AddScene => self.studio.add_scene(),
+            Run::AddVertical => self.open_vertical = true,
             Run::RenameScene(id, Some(name)) => self.studio.rename_scene(id, &name),
             // Asking for a name needs someone at the window: not from a control
             // surface or a global shortcut (`ui.command.run` answers `invalid_params`).
@@ -618,6 +621,14 @@ impl App {
     }
 
     /// Opens the name prompt for `ask`: its title, button and prefilled name.
+    /// Shows the Add vertical output dialog (Remove when the canvas is there).
+    fn open_vertical_prompt(&mut self) {
+        let o = self.main.global::<Overlays>();
+        o.set_vertical_error("".into());
+        o.set_vertical_exists(self.studio.vertical.is_some());
+        o.set_vertical_open(true);
+    }
+
     fn open_name_prompt(&mut self, ask: Ask) {
         use menu_bar::{EntryKind, EntryOp};
         let (title, confirm, value, field) = match ask {
@@ -1759,6 +1770,10 @@ impl Ctx {
             let s = app.main.global::<Shell>();
             s.set_app_menu_asked(s.get_app_menu_asked().wrapping_add(1));
         }
+        if std::mem::take(&mut app.open_vertical) {
+            self.show_all(&mut app);
+            app.open_vertical_prompt();
+        }
         if let Some(ask) = app.ask_name.take() {
             self.show_all(&mut app);
             app.open_name_prompt(ask);
@@ -2300,6 +2315,68 @@ fn install_name_prompt(g: &Overlays<'_>, ctx: &Ctx) {
             ctx.update(|app: &mut App| {
                 app.name_for = None;
                 app.main.global::<Overlays>().set_name_open(false);
+            });
+        });
+    });
+}
+
+/// The Add vertical output dialog: Add and Remove send the host's commands and close
+/// it (a refusal comes back as a notice); Escape or Cancel closes it.
+fn install_vertical_prompt(g: &Overlays<'_>, ctx: &Ctx) {
+    use rbs_app::studio_host::{Command, VerticalCanvas};
+    use rbs_core::media::Size;
+    use rbs_scene::AutoLayout;
+    {
+        let ctx = ctx.clone();
+        g.on_vertical_accepted(move || {
+            entry::guard(|| {
+                ctx.update(|app: &mut App| {
+                    let o = app.main.global::<Overlays>();
+                    let (w, h) = match o.get_vertical_size() {
+                        0 => (1080.0, 1920.0),
+                        1 => (720.0, 1280.0),
+                        _ => (o.get_vertical_w(), o.get_vertical_h()),
+                    };
+                    let fits =
+                        |v: f32| (64.0..=8192.0).contains(&v) && v.fract() == 0.0 && v % 2.0 == 0.0;
+                    if !fits(w) || !fits(h) {
+                        o.set_vertical_error(
+                            "Width and height must be even numbers from 64 to 8192.".into(),
+                        );
+                        return;
+                    }
+                    let layout = match o.get_vertical_layout() {
+                        1 => Some(AutoLayout::Fit),
+                        2 => Some(AutoLayout::Fill),
+                        3 => Some(AutoLayout::Stack),
+                        _ => None,
+                    };
+                    app.studio.send(Command::AddVerticalCanvas(VerticalCanvas {
+                        size: Size::new(w as u32, h as u32),
+                        follow: o.get_vertical_follow(),
+                        layout,
+                    }));
+                    o.set_vertical_open(false);
+                });
+            });
+        });
+    }
+    {
+        let ctx = ctx.clone();
+        g.on_vertical_removed(move || {
+            entry::guard(|| {
+                ctx.update(|app: &mut App| {
+                    app.studio.send(Command::RemoveVerticalCanvas);
+                    app.main.global::<Overlays>().set_vertical_open(false);
+                });
+            });
+        });
+    }
+    let ctx = ctx.clone();
+    g.on_vertical_cancelled(move || {
+        entry::guard(|| {
+            ctx.update(|app: &mut App| {
+                app.main.global::<Overlays>().set_vertical_open(false);
             });
         });
     });
@@ -3302,6 +3379,7 @@ fn run(config: PathBuf, notice: Option<String>) -> Result<(), Box<dyn std::error
             reload_themes: false,
             open_settings: None,
             open_app_menu: false,
+            open_vertical: false,
             ask_name: None,
             name_for: None,
             run_origin: None,
@@ -3346,6 +3424,7 @@ fn run(config: PathBuf, notice: Option<String>) -> Result<(), Box<dyn std::error
     install_context_menus(&main.global::<ContextMenus>(), &ctx, None);
     install_picker(&main.global::<Overlays>(), &ctx);
     install_name_prompt(&main.global::<Overlays>(), &ctx);
+    install_vertical_prompt(&main.global::<Overlays>(), &ctx);
     install_app_menu(&main.global::<AppMenus>(), &ctx);
     shortcuts_page::install_press(&main.global::<Shortcuts>(), &ctx);
     install_studio(&main.global::<Studio>(), &ctx);
