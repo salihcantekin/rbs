@@ -54,6 +54,13 @@ fn show() -> SceneCollection {
     col.set_source_muted(mic, true).unwrap();
     col.set_source_sync_offset(mic, -40).unwrap();
     col.set_source_mixer_hidden(mic, true).unwrap();
+    let hinted = col.source(screen).unwrap().settings.clone();
+    col.set_source_settings_and_hints(
+        screen,
+        hinted,
+        [("target_app".to_owned(), "Terminal".to_owned())].into(),
+    )
+    .unwrap();
     col.set_canvas_master_volume(wide, 0.5).unwrap();
     col.set_canvas_master_muted(wide, true).unwrap();
 
@@ -155,7 +162,8 @@ fn a_collection_round_trips_exactly_with_its_counters() {
         "enabled = false",
         "visible = false",
         "canvas = 0",
-        "format = 7",
+        "format = 8",
+        "target_app = \"Terminal\"",
         "[canvases.master]",
         "mixer_hidden = true",
         "globals = ",

@@ -1431,3 +1431,23 @@ fn a_removed_canvas_takes_its_master_and_gets_it_back_on_undo() {
         MasterAudio::new(0.4, true)
     );
 }
+
+#[test]
+fn undoing_a_re_pick_restores_the_settings_and_the_hints() {
+    let mut col = SceneCollection::new();
+    let (src, _) = col
+        .add_source("Window", ty("window"), rbs_scene::model::Settings::new())
+        .unwrap();
+    let hints = |t: &str| [("target_title".to_owned(), t.to_owned())].into();
+    let before = col.source(src).unwrap().settings.clone();
+    col.set_source_settings_and_hints(src, before.clone(), hints("old"))
+        .unwrap();
+    let undo = col
+        .set_source_settings_and_hints(src, before, hints("new"))
+        .unwrap();
+    assert_eq!(col.source(src).unwrap().hints, hints("new"));
+    let redo = col.undo(undo).unwrap();
+    assert_eq!(col.source(src).unwrap().hints, hints("old"));
+    col.undo(redo).unwrap();
+    assert_eq!(col.source(src).unwrap().hints, hints("new"));
+}

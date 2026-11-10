@@ -46,7 +46,7 @@
 //! "#rrggbbaa" }`, `shadow = { offset = [x, y], blur, color }`); items `visible = false`,
 //! `locked = true` (format 3) and `overrides = [{ canvas = 1, layout = {...} }]`; sources `filters = [{ id, type,
 //! enabled, settings }]`, `volume` (0 to 1, default 1) and `muted = true` (format 3,
-//! ADR-0059), `sync_offset_ms` (-200 to 200, default 0; format 4, ADR-0062). Setting values are TOML booleans, integers, floats or
+//! ADR-0059), `sync_offset_ms` (-200 to 200, default 0; format 4, ADR-0062), `hints = { target_app = "...", target_title = "..." }` (format 8, ADR-0077). Setting values are TOML booleans, integers, floats or
 //! strings. Loading validates the whole collection
 //! ([`SceneCollection::from_parts`]).
 
@@ -152,6 +152,9 @@ struct SourceDoc {
     sync_offset_ms: i32,
     #[serde(default, skip_serializing_if = "is_false")]
     mixer_hidden: bool,
+    /// Hints for finding the target again (`target_app`, `target_title`; format 8, ADR-0077).
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    hints: BTreeMap<String, String>,
 }
 
 fn is_zero_ms(v: &i32) -> bool {
@@ -428,7 +431,7 @@ fn settings(s: BTreeMap<String, Value>) -> Settings {
 
 impl Document for SceneCollection {
     const KIND: &'static str = "scene-collection";
-    const FORMAT: u32 = 7;
+    const FORMAT: u32 = 8;
 
     /// Format 2 adds the optional layout `style` (ADR-0053); a format 1 body is a
     /// format 2 body without styles. Format 3 adds the optional item `locked` and
@@ -437,11 +440,12 @@ impl Document for SceneCollection {
     /// format 3 body is a format 4 body without it. Format 5 adds the optional canvas
     /// `globals` (ADR-0065); a format 4 body is a format 5 body without it. Format 6 adds the optional source
     /// `mixer_hidden` (ADR-0080); a format 5 body is a format 6 body without it. Format 7 adds the optional canvas
-    /// `master` (ADR-0081); a format 6 body is a format 7 body without it.
+    /// `master` (ADR-0081); a format 6 body is a format 7 body without it. Format 8 adds the optional source
+    /// `hints` (ADR-0077); a format 7 body is a format 8 body without them.
     fn upgrade(from: u32, body: &mut toml::Table) -> Result<(), String> {
         let _ = body;
         match from {
-            1..=6 => Ok(()),
+            1..=7 => Ok(()),
             _ => Err(format!("format {from} cannot be read")),
         }
     }
@@ -492,6 +496,7 @@ impl Document for SceneCollection {
                     muted: s.audio.muted,
                     sync_offset_ms: s.audio.sync_offset_ms,
                     mixer_hidden: s.audio.mixer_hidden,
+                    hints: s.hints.clone(),
                 })
             })
             .collect::<Result<_, String>>()?;
@@ -607,6 +612,7 @@ impl Document for SceneCollection {
                 source.audio = SourceAudio::new(s.volume as f32, s.muted)
                     .with_sync_offset(s.sync_offset_ms)
                     .with_mixer_hidden(s.mixer_hidden);
+                source.hints = s.hints;
                 source
             })
             .collect();

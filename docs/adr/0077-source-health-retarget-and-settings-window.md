@@ -74,3 +74,7 @@ Round 2 reviewer: "once items 1-4 are fixed, I would approve"; they are fixed. T
 ## Amendment 2026-11-08 (implementation)
 
 The fault carrier is the source node's counters, not `NodeError` (decision 1). This removes the `rbs-graph` change and the hot-path concern; the round-2 reviewer's concern 3 (core API change) no longer applies. A short independent look at this amendment is part of the phase (b) PR.
+
+### Review record, 2026-11-10 (hints, independent review of the scene format 8 change)
+
+An older build refuses a format 8 file without touching it (it does not drop `hints` on save, as decisions 4 and the consequences said); `source.get_settings` returns the stored settings only, not the hints, which keeps window titles out of the API; Reload of a window source that finds its window by the hints re-points the source, which is a settings change and so one "retarget" undo step (a plain Reload stays no step); `target_app` is stored for any kind whose adapter reports an application. Matching: application case-insensitive (Unicode lower case), title exact, exactly one match.

@@ -353,6 +353,14 @@ impl CommandState for Shown<'_> {
                 self.running()?;
                 self.source(id).map(|_| ())
             }
+            "source.reload" => {
+                self.running()?;
+                if self.source(id)?.reloadable {
+                    Ok(())
+                } else {
+                    Err("This source has nothing to open again.".to_owned())
+                }
+            }
             "item.flip" | "item.rotate" | "item.align" | "item.fit" | "item.reset_transform" => {
                 self.running()?;
                 let f = self.source(id)?;
@@ -605,6 +613,7 @@ impl CommandState for Shown<'_> {
             ("scene.rename", Some(_)) => Some("Rename".to_owned()),
             ("scene.remove", Some(_)) => Some("Remove".to_owned()),
             ("source.rename", _) if id.param("source").is_some() => Some("Rename".to_owned()),
+            ("source.reload", _) if id.param("source").is_some() => Some("Reload".to_owned()),
             ("source.delete", _) if id.param("source").is_some() => {
                 Some("Delete everywhere".to_owned())
             }
@@ -906,6 +915,8 @@ pub enum Run {
     RemoveScene(i32),
     /// Rename the source with this id; without a name, ask for one in its row.
     RenameSource(i32, Option<String>),
+    /// Open a source again (ADR-0077).
+    ReloadSource(i32),
     /// Delete the source with this id.
     DeleteSource(i32),
     RemoveFromScene(i32),
@@ -1014,6 +1025,7 @@ pub fn run(text: &str, state: &Shown<'_>) -> Option<Run> {
             state.source(&id).ok()?.id,
             id.param("name").map(str::to_owned),
         ),
+        "source.reload" => Run::ReloadSource(state.source(&id).ok()?.id),
         "source.delete" => Run::DeleteSource(state.source(&id).ok()?.id),
         "item.remove" => Run::RemoveFromScene(state.source(&id).ok()?.id),
         "item.visible.toggle" => Run::SourceVisible(state.source(&id).ok()?.id, !on),
