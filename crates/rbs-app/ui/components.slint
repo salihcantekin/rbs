@@ -2201,6 +2201,9 @@ export component OverlayHost inherits Rectangle {
                         text: @tr("The vertical canvas shows the scene that is on air in the main canvas and switches with it. Your scenes become shared with it, so it can show them. The vertical canvas cuts where the main canvas fades. Its sound is the main mix.");
                     }
                     Toggle {
+                        // No share of the spare width: the label takes it, so the switch
+                        // sits at the right edge like the controls of the other rows.
+                        horizontal-stretch: 0;
                         label: @tr("Follow main");
                         checked: Overlays.vertical-follow;
                         toggled(on) => { Overlays.vertical-follow = on; }
