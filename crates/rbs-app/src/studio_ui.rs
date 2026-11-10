@@ -1602,9 +1602,8 @@ impl StudioUi {
                 self.adding = true;
                 self.deleted.clear();
                 // A camera without a microphone of its own adds just the camera.
-                let with_sound = audio
-                    && !target.picker
-                    && (kind != SourceKind::Camera || target.mic.is_some());
+                let with_sound =
+                    audio && !target.picker && (kind != SourceKind::Camera || target.mic.is_some());
                 if with_sound {
                     self.send(Command::AddSourceWithAudio { kind, target });
                 } else {

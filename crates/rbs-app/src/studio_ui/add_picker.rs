@@ -88,11 +88,7 @@ impl AddPicker {
                     (None, true) => "default".to_owned(),
                     (None, false) => String::new(),
                 };
-                (
-                    t.name.clone(),
-                    note,
-                    Pick::Target(kind, t.clone()),
-                )
+                (t.name.clone(), note, Pick::Target(kind, t.clone()))
             })
             .collect();
         // Cameras with a microphone of their own start with it checked (ADR-0096 E).

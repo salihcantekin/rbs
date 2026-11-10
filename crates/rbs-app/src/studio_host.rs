@@ -2670,9 +2670,11 @@ impl Host {
             .unwrap_or_default();
         // Pairing a camera with its microphone lists audio inputs; it runs only for
         // cameras, while a list is asked for (P13).
-        let mics = (kind == SourceKind::Camera)
-            .then(|| self.unused_microphones())
-            .unwrap_or_default();
+        let mics = if kind == SourceKind::Camera {
+            self.unused_microphones()
+        } else {
+            Vec::new()
+        };
         let mut list: Vec<Target> = raw
             .into_iter()
             .map(|t| {
@@ -2681,7 +2683,10 @@ impl Host {
                     .as_ref()
                     .and_then(|id| mics.iter().find(|m| &m.target == id))
                     .map(|m| m.name.clone());
-                Target { mic, ..target_of(t) }
+                Target {
+                    mic,
+                    ..target_of(t)
+                }
             })
             .collect();
         let pickers = self
