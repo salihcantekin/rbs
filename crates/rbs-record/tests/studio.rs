@@ -939,7 +939,6 @@ fn a_ui_subscribed_to_a_vertical_canvas_gets_its_frames() {
 fn a_further_canvas_must_run_at_the_main_rate_and_be_new() {
     use rbs_core::media::video::Size;
     use rbs_core::timing::FrameRate;
-    use rbs_gpu::share::PreviewDesc;
 
     let Some(gpu) = gpu() else { return };
     let r = rig();
@@ -949,11 +948,6 @@ fn a_further_canvas_must_run_at_the_main_rate_and_be_new() {
         .add_canvas("Slow", Size::new(18, 32), FrameRate::FPS_60)
         .unwrap();
     col.set_program(slow, Some(program)).unwrap();
-    let desc = PreviewDesc {
-        width: 8,
-        height: 8,
-        surfaces: 2,
-    };
     let start = |extra: Vec<ExtraCanvas>| {
         let (engine, _) = engine_at_start();
         let mut settings = StudioSettings::new(main);
