@@ -3794,7 +3794,8 @@ fn source_icon(kind: Option<SourceKind>) -> &'static str {
 /// border, 6 crop, 7 shown or hidden, 8 lock, 9 source rename, 10 scene added, 11
 /// scene removed, 12 scene renamed (the name is the scene's, or the old name), 13
 /// filters changed, 14 removed from one scene, 15 made global or moved back into a
-/// scene, 16 look applied, 17 source pointed at another target, 18 flipped, turned, fitted or centred.
+/// scene, 16 look applied, 17 source pointed at another target, 18 source settings
+/// changed, 19 flipped, turned, fitted or centred.
 fn step_view(step: Option<&StepInfo>) -> (i32, &str) {
     match step {
         None => (0, ""),
@@ -3817,7 +3818,8 @@ fn step_view(step: Option<&StepInfo>) -> (i32, &str) {
                 EditKind::Global => 15,
                 EditKind::Look => 16,
                 EditKind::Retarget => 17,
-                EditKind::Transform => 18,
+                EditKind::SourceSettings => 18,
+                EditKind::Transform => 19,
             },
             s.name.as_str(),
         ),

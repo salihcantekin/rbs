@@ -20,7 +20,8 @@ use std::time::Duration;
 
 use rbs_api::request::{
     AlignAxis, Axis, Empty, FitKind, GlobalSourceList, ItemAdded, ItemRemoved, ProfileList,
-    RecordStarted, SceneAdded, SceneSourceList, SourceAdded, StreamStarted, TargetList,
+    RecordStarted, SceneAdded, SceneSourceList, SourceAdded, SourceSettingsInfo, StreamStarted,
+    TargetList,
 };
 use rbs_api::types as api;
 use rbs_api::{
@@ -4074,6 +4075,95 @@ impl Host {
         Ok(true)
     }
 
+    /// A source's stored settings as JSON values (`source.get_settings`).
+    fn source_settings_json(
+        &self,
+        id: SourceId,
+    ) -> Result<BTreeMap<String, serde_json::Value>, Refusal> {
+        let source = self
+            .collection
+            .source(id)
+            .ok_or_else(|| Refusal::NotFound(format!("There is no source {}.", id.get())))?;
+        Ok(source
+            .settings
+            .iter()
+            .map(|(k, v)| {
+                let v = match v {
+                    SettingValue::Bool(b) => serde_json::Value::Bool(*b),
+                    SettingValue::Int(n) => serde_json::Value::from(*n),
+                    SettingValue::Float(f) => serde_json::Value::from(*f),
+                    SettingValue::Text(t) => serde_json::Value::String(t.clone()),
+                    _ => serde_json::Value::Null,
+                };
+                (k.clone(), v)
+            })
+            .collect())
+    }
+
+    /// Changes a source's stored settings by a patch (`source.set_settings`, ADR-0077): a
+    /// `null` removes a key; the result is validated for the source's type, nothing is
+    /// written when it is refused, and a change is one undo step. The source opens again
+    /// with the new settings (filters, layout and scenes stay). `Ok(false)` when nothing
+    /// changes.
+    fn patch_source_settings(
+        &mut self,
+        id: SourceId,
+        patch: &BTreeMap<String, serde_json::Value>,
+    ) -> Result<bool, Refusal> {
+        let source = self
+            .collection
+            .source(id)
+            .ok_or_else(|| Refusal::NotFound(format!("There is no source {}.", id.get())))?;
+        let (name, type_id) = (source.name.clone(), source.type_id.clone());
+        let mut settings = source.settings.clone();
+        for (key, value) in patch {
+            match value {
+                serde_json::Value::Null => {
+                    settings.remove(key);
+                }
+                serde_json::Value::Bool(b) => {
+                    settings.insert(key.clone(), SettingValue::Bool(*b));
+                }
+                serde_json::Value::Number(n) => {
+                    let v = match n.as_i64() {
+                        Some(i) => SettingValue::Int(i),
+                        None => SettingValue::Float(n.as_f64().unwrap_or(f64::NAN)),
+                    };
+                    if matches!(v, SettingValue::Float(f) if !f.is_finite()) {
+                        return Err(Refusal::Invalid(format!(
+                            "{key:?} must be a finite number."
+                        )));
+                    }
+                    settings.insert(key.clone(), v);
+                }
+                serde_json::Value::String(t) => {
+                    settings.insert(key.clone(), SettingValue::Text(t.clone()));
+                }
+                _ => {
+                    return Err(Refusal::Invalid(format!(
+                        "{key:?} must be a flag, a number, text or null."
+                    )));
+                }
+            }
+        }
+        rbs_sources::validate_settings(&type_id, &settings)
+            .map_err(|e| Refusal::Invalid(e.to_string()))?;
+        if self
+            .collection
+            .source(id)
+            .is_some_and(|s| s.settings == settings)
+        {
+            return Ok(false);
+        }
+        let undo = self
+            .collection
+            .set_source_settings(id, settings)
+            .map_err(|e| Refusal::of(&e))?;
+        self.history
+            .record(EditKind::SourceSettings, &name, 0, vec![undo]);
+        Ok(true)
+    }
+
     /// Tries a source again with its stored settings (no edit, no undo step).
     fn reload_source(&mut self, id: SourceId) -> Result<bool, Refusal> {
         if self.collection.source(id).is_none() {
@@ -5368,6 +5458,24 @@ impl ApiTarget<'_> {
             }
             C::SettingsClearRecentTargets(p) => {
                 host.clear_recent_targets(app_kind(p.kind));
+                Ok(Response::Done(Empty {}))
+            }
+            C::SourceGetSettings(p) => {
+                let settings = host
+                    .source_settings_json(SourceId::from_raw(p.source))
+                    .map_err(|e| refused(&e))?;
+                Ok(Response::SourceSettings(SourceSettingsInfo {
+                    source: p.source,
+                    settings,
+                }))
+            }
+            C::SourceSetSettings(p) => {
+                if host
+                    .patch_source_settings(SourceId::from_raw(p.source), &p.settings)
+                    .map_err(|e| refused(&e))?
+                {
+                    host.apply(notify);
+                }
                 Ok(Response::Done(Empty {}))
             }
             C::SourceReload(p) => {
