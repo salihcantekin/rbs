@@ -280,6 +280,39 @@ impl App {
         }
     }
 
+    /// Moves a panel to an edge of the window that holds it, or to that window's next
+    /// tab stack (`ui.panel.move`).
+    fn move_panel(&mut self, panel: PanelId, to: &str) {
+        let Some((window, stack, _)) = self.session.workspace().find(&panel) else {
+            return;
+        };
+        let command = match to {
+            "left" | "right" | "top" | "bottom" => LayoutCommand::MoveToEdge {
+                panel,
+                window,
+                edge: match to {
+                    "left" => Edge::Left,
+                    "right" => Edge::Right,
+                    "top" => Edge::Top,
+                    _ => Edge::Bottom,
+                },
+            },
+            "next_stack" => {
+                let count = self.session.workspace().windows[window].stack_count();
+                if count < 2 {
+                    return;
+                }
+                LayoutCommand::MoveToStack {
+                    panel,
+                    window,
+                    stack: (stack + 1) % count,
+                }
+            }
+            _ => return,
+        };
+        self.command(command, Origin::Command);
+    }
+
     fn area(&self, window: usize) -> Rect {
         self.areas
             .iter()
@@ -423,6 +456,11 @@ impl App {
             Run::Scene(id) => self.studio.switch_scene(id),
             Run::Layout(c) => self.command(c, Origin::Command),
             Run::Maximize(id, on) => self.maximized = on.then_some(id),
+            Run::AutoHide(panel) => {
+                let content = self.area(0);
+                self.command(LayoutCommand::AutoHide { panel, content }, Origin::Command);
+            }
+            Run::MovePanel(panel, to) => self.move_panel(panel, &to),
             Run::AddSource(kind) => self.ask_add_source(kind),
             Run::StudioMode(on) => self.studio.set_studio_mode(on),
             Run::Transition => self.studio.transition(),
@@ -1796,15 +1834,6 @@ impl Ctx {
     }
 }
 
-fn edge(code: i32) -> Edge {
-    match code {
-        0 => Edge::Left,
-        1 => Edge::Right,
-        2 => Edge::Top,
-        _ => Edge::Bottom,
-    }
-}
-
 /// A drag payload holding `text` (a panel id or a source id).
 fn text_data(text: slint::SharedString) -> slint::DataTransfer {
     let mut d = slint::DataTransfer::default();
@@ -1902,39 +1931,6 @@ fn install(g: &Shell<'_>, ctx: &Ctx) {
                 LayoutCommand::OpenPanel(id)
             };
             app.command(c, Origin::Command);
-        }
-    });
-    on!(on_move_edge, |app,
-                       id: slint::SharedString,
-                       window: i32,
-                       e: i32| {
-        if let Some(id) = panel(&id) {
-            let c = LayoutCommand::MoveToEdge {
-                panel: id,
-                window: window as usize,
-                edge: edge(e),
-            };
-            app.command(c, Origin::Command);
-        }
-    });
-    on!(on_move_next_stack, |app, id: slint::SharedString| {
-        if let Some(id) = panel(&id)
-            && let Some((w, s, _)) = app.session.workspace().find(&id)
-        {
-            let count = app.session.workspace().windows[w].stack_count();
-            if count > 1 {
-                let c = LayoutCommand::MoveToStack {
-                    panel: id,
-                    window: w,
-                    stack: (s + 1) % count,
-                };
-                app.command(c, Origin::Command);
-            }
-        }
-    });
-    on!(on_float_panel, |app, id: slint::SharedString| {
-        if let Some(id) = panel(&id) {
-            app.command(LayoutCommand::Float(id), Origin::Command);
         }
     });
     on!(on_dock, |app, window: i32| {
