@@ -17,7 +17,7 @@ import { CommandMenu } from "context_menu.slint";
 // there, `value-text` the value with its unit; `min`, `max`, `snap` (the value's step),
 // `decimals` and `suffix` (the unit with its space) for the text while dragging), 1 a colour (`colour` as #rrggbb or
 // #rrggbbaa, `swatch` the same colour).
-export struct FilterFieldData { label: string, kind: int, position: float, step: float, value-text: string, min: float, max: float, snap: float, decimals: int, suffix: string, colour: string, swatch: color }
+export struct FilterFieldData { label: string, help: string, log: bool, kind: int, position: float, step: float, value-text: string, min: float, max: float, snap: float, decimals: int, suffix: string, colour: string, swatch: color }
 // One filter of a source's chain: `known` false for a type this version lacks (it can
 // only be removed); `can-up` / `can-down` false at the ends of the chain.
 export struct FilterData { id: int, name: string, enabled: bool, known: bool, can-up: bool, can-down: bool, fields: [FilterFieldData] }
@@ -188,6 +188,8 @@ export global Studio {
     callback add-sample(string /* sample id */);
     // Filters (ADR-0062). The catalogue by name, in the order Add filter lists it.
     in property <[string]> filter-types;
+    // The audio filter types by name, for a source with only sound (ADR-0082).
+    in property <[string]> audio-filter-types;
     // The Properties tab picked last: 0 Transform, 1 Filters, 2 Audio, 3 Source (shown first).
     in-out property <int> properties-tab;
     callback add-filter(int /* source */, int /* type */);
@@ -2483,70 +2485,6 @@ component TransformFields inherits VerticalLayout {
     if data.picture: StyleFields { data: data; }
 }
 
-// The sound of a source and its sync offset: the Audio tab (ADR-0059, ADR-0062).
-// Volume, mute and the offset are live controls, not undo steps.
-component AudioFields inherits VerticalLayout {
-    in property <SourceData> data;
-    spacing: Tokens.size-section-gap;
-    alignment: start;
-    Section {
-        title: @tr("Sound");
-        id: "properties.sound";
-        HorizontalLayout {
-            spacing: Tokens.size-field-gap;
-            Slider {
-                horizontal-stretch: 1;
-                label: @tr("Volume of {}", data.name);
-                value: data.volume;
-                value-text: data.volume-text;
-                enabled: !data.muted;
-                moved(v) => { Studio.set-source-volume(data.id, v); }
-            }
-            LevelText {
-                min-width: Tokens.size-control-md * 1.5;
-                text: data.volume-text;
-                label: @tr("Volume of {}", data.name);
-                muted: data.muted;
-                entered(t) => {
-                    if Studio.level-position(t) < 0 { return false; }
-                    Studio.set-source-volume(data.id, Studio.level-position(t));
-                    return true;
-                }
-            }
-        }
-        Checkbox {
-            text: @tr("Mute");
-            checked: data.muted;
-            toggled(on) => { Studio.set-source-muted(data.id, on); }
-        }
-    }
-    Section {
-        title: @tr("Sync offset");
-        id: "properties.sync";
-        HorizontalLayout {
-            spacing: Tokens.size-field-gap;
-            NumberField {
-                horizontal-stretch: 1;
-                preferred-width: 0;
-                label: @tr("Sync offset of {} in milliseconds", data.name);
-                value: data.sync-offset;
-                step: 10;
-                edited(v) => { Studio.set-source-sync-offset(data.id, round(max(-200, min(200, v)))); }
-            }
-            Text {
-                text: @tr("ms");
-                color: Theme.text-secondary;
-                font-size: Tokens.type-body-size;
-                vertical-alignment: center;
-                accessible-role: none;
-            }
-        }
-        Hint {
-            text: @tr("Delays this source's sound (positive) or plays it earlier (negative) to match the picture, from -200 to 200 ms. Playing it earlier is limited by the audio latency.");
-        }
-    }
-}
-
 // One filter in the chain: its on/off Checkbox named after it, then Move up, Move down
 // and Remove. A click on the row selects it, so its fields show below the list.
 component FilterRowView inherits Rectangle {
@@ -2632,19 +2570,31 @@ component FilterFieldView inherits VerticalLayout {
     property <bool> dragging: dragged >= 0;
     // The value at a slider position, as the host stores it (on its step).
     function text-at(p: float) -> string {
-        let raw = data.min + max(0, min(1, p)) * (data.max - data.min);
+        let q = max(0, min(1, p));
+        let raw = data.log ? data.min * Math.pow(data.max / data.min, q) : data.min + q * (data.max - data.min);
         let v = data.snap > 0 ? max(data.min, min(data.max, data.min + round((raw - data.min) / data.snap) * data.snap)) : raw;
         return v.to-fixed(data.decimals) + data.suffix;
     }
     property <string> colour-text: data.colour;
     changed colour-text => { colour.text = colour-text; }
     spacing: Tokens.space-1;
-    Text {
-        text: data.label;
-        color: Theme.text-secondary;
-        font-size: Tokens.type-caption-size;
-        accessible-role: none;
+    property <bool> help-open;
+    HorizontalLayout {
+        spacing: Tokens.space-1;
+        Text {
+            text: data.label;
+            color: Theme.text-secondary;
+            font-size: Tokens.type-caption-size;
+            vertical-alignment: center;
+            accessible-role: none;
+        }
+        if data.help != "": IconButton {
+            icon: IconName.info;
+            name: root.help-open ? @tr("Hide help for {}", data.label) : @tr("Show help for {}", data.label);
+            clicked => { root.help-open = !root.help-open; }
+        }
     }
+    if data.help != "" && root.help-open: Hint { text: data.help; }
     if data.kind == 0: HorizontalLayout {
         spacing: Tokens.space-2;
         Slider {
@@ -2705,6 +2655,8 @@ component FilterFieldView inherits VerticalLayout {
 // the end of the chain and is selected.
 component AddFilterButton inherits Rectangle {
     in property <SourceData> source;
+    // The audio filter types instead of the video ones (the Audio tab).
+    in property <bool> audio;
     height: Tokens.size-control-md;
     Button {
         width: root.width;
@@ -2726,7 +2678,7 @@ component AddFilterButton inherits Rectangle {
             VerticalLayout {
                 padding: Tokens.space-2;
                 spacing: Tokens.space-1;
-                for t[i] in Studio.filter-types: MenuItem {
+                for t[i] in (audio ? Studio.audio-filter-types : Studio.filter-types): MenuItem {
                     text: t;
                     autofocus: i == 0;
                     activated => { Studio.add-filter(source.id, i); menu.close(); }
@@ -2739,15 +2691,19 @@ component AddFilterButton inherits Rectangle {
 // The Filters tab: the chain in order, Add filter, and the selected filter's fields.
 component FiltersFields inherits VerticalLayout {
     in property <SourceData> data;
+    // The Filters section of the Audio tab (ADR-0082): audio filter types, and a note
+    // about the short dip when the chain's tail changes.
+    in property <bool> audio;
+    property <bool> dip-open;
     spacing: Tokens.size-field-gap;
     alignment: start;
-    SectionTitle { title: @tr("Filters"); }
+    if !audio: SectionTitle { title: @tr("Filters"); }
     if data.filters.length == 0: Rectangle {
         height: empty.preferred-height;
         empty := EmptyState {
             width: parent.width;
             title: @tr("No filters");
-            message: @tr("Add filter to change colours, key out a green screen, blur or sharpen this source.");
+            message: audio ? @tr("Add filter to raise or lower the level of this source or to gate out its background noise.") : @tr("Add filter to change colours, key out a green screen, blur or sharpen this source.");
         }
     }
     for f[i] in data.filters: FilterRowView {
@@ -2756,28 +2712,112 @@ component FiltersFields inherits VerticalLayout {
         index: i;
         selected: f.id == data.selected-filter;
     }
-    AddFilterButton { source: data; }
+    HorizontalLayout {
+        spacing: Tokens.space-1;
+        AddFilterButton { source: data; audio: audio; horizontal-stretch: 1; }
+        if audio: IconButton {
+            icon: IconName.info;
+            name: root.dip-open ? @tr("Hide note about changing filters") : @tr("Show note about changing filters");
+            clicked => { root.dip-open = !root.dip-open; }
+        }
+    }
+    if audio && root.dip-open: Hint {
+        text: @tr("Adding, removing or reordering a filter can cause a brief dip (10 to 20 ms) in this source's sound. Changing a setting never does.");
+    }
     for f[i] in data.filters: VerticalLayout {
         spacing: Tokens.size-field-gap;
         if f.id == data.selected-filter && f.known: VerticalLayout {
             spacing: Tokens.size-field-gap;
-            SectionTitle { title: f.name; }
-            for field[j] in f.fields: FilterFieldView {
-                source: data;
-                filter: f;
-                data: field;
-                index: j;
-            }
-            HorizontalLayout {
-                alignment: start;
-                Button {
-                    text: @tr("Reset to defaults");
-                    kind: "secondary";
-                    accessible-name: @tr("Reset {} to defaults", f.name);
-                    clicked => { Studio.reset-filter(f.id); }
+            Section {
+                title: f.name;
+                id: "properties.filter-settings";
+                for field[j] in f.fields: FilterFieldView {
+                    source: data;
+                    filter: f;
+                    data: field;
+                    index: j;
+                }
+                HorizontalLayout {
+                    alignment: start;
+                    Button {
+                        text: @tr("Reset to defaults");
+                        kind: "secondary";
+                        accessible-name: @tr("Reset {} to defaults", f.name);
+                        clicked => { Studio.reset-filter(f.id); }
+                    }
                 }
             }
         }
+    }
+}
+
+// The sound of a source and its sync offset: the Audio tab (ADR-0059, ADR-0062).
+// Volume, mute and the offset are live controls, not undo steps.
+component AudioFields inherits VerticalLayout {
+    in property <SourceData> data;
+    spacing: Tokens.size-section-gap;
+    alignment: start;
+    Section {
+        title: @tr("Sound");
+        id: "properties.sound";
+        HorizontalLayout {
+            spacing: Tokens.size-field-gap;
+            Slider {
+                horizontal-stretch: 1;
+                label: @tr("Volume of {}", data.name);
+                value: data.volume;
+                value-text: data.volume-text;
+                enabled: !data.muted;
+                moved(v) => { Studio.set-source-volume(data.id, v); }
+            }
+            LevelText {
+                min-width: Tokens.size-control-md * 1.5;
+                text: data.volume-text;
+                label: @tr("Volume of {}", data.name);
+                muted: data.muted;
+                entered(t) => {
+                    if Studio.level-position(t) < 0 { return false; }
+                    Studio.set-source-volume(data.id, Studio.level-position(t));
+                    return true;
+                }
+            }
+        }
+        Checkbox {
+            text: @tr("Mute");
+            checked: data.muted;
+            toggled(on) => { Studio.set-source-muted(data.id, on); }
+        }
+    }
+    Section {
+        title: @tr("Sync offset");
+        id: "properties.sync";
+        HorizontalLayout {
+            spacing: Tokens.size-field-gap;
+            NumberField {
+                horizontal-stretch: 1;
+                preferred-width: 0;
+                label: @tr("Sync offset of {} in milliseconds", data.name);
+                value: data.sync-offset;
+                step: 10;
+                edited(v) => { Studio.set-source-sync-offset(data.id, round(max(-200, min(200, v)))); }
+            }
+            Text {
+                text: @tr("ms");
+                color: Theme.text-secondary;
+                font-size: Tokens.type-body-size;
+                vertical-alignment: center;
+                accessible-role: none;
+            }
+        }
+        Hint {
+            text: @tr("Delays this source's sound (positive) or plays it earlier (negative) to match the picture, from -200 to 200 ms. Playing it earlier is limited by the audio latency.");
+        }
+    }
+    // Audio filters belong to a source with only sound (ADR-0082).
+    if !data.picture: Section {
+        title: @tr("Filters");
+        id: "properties.audio-filters";
+        FiltersFields { data: data; audio: true; }
     }
 }
 
