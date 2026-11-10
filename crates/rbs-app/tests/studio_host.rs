@@ -12,7 +12,7 @@ use std::time::Duration;
 
 use rbs_app::edit_history::{EditKind, StepInfo};
 use rbs_app::studio_host::{
-    Command, HostConfig, SourceKind, SourceRow, SourceStatus, StudioHost, Target, Update,
+    Command, Fault, HostConfig, SourceKind, SourceRow, SourceStatus, StudioHost, Target, Update,
 };
 use rbs_audio_io_test::TestAudioBackend;
 use rbs_capture_test::TestCaptureFactory;
@@ -457,6 +457,32 @@ fn a_new_canvas_restarts_the_studio_with_the_sources() {
         _ => None,
     });
     assert_eq!(again, Size::new(1280, 720));
+}
+
+#[test]
+fn a_canvas_change_that_panics_while_restarting_fails_the_studio() {
+    let Some(gpu) = gpu() else { return };
+    let mut config = HostConfig::desktop();
+    config.preview = None;
+    config.fault = Some(Fault::DuringCanvasRestart);
+    let (host, rx) = host_with(gpu, config);
+    next(&rx, |u| match u {
+        Update::Started { .. } => Some(()),
+        Update::Failed(e) => panic!("{e}"),
+        _ => None,
+    });
+    host.send(Command::SetCanvas {
+        size: Size::new(1280, 720),
+        fps: FrameRate::FPS_60,
+    });
+    let why = next(&rx, |u| match u {
+        Update::Failed(why) => Some(why),
+        _ => None,
+    });
+    assert!(
+        why.contains("restarted"),
+        "the studio should fail in the same round: {why}"
+    );
 }
 
 /// Lists no screens and picks them with an OS picker, like the Linux portal: the first

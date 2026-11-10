@@ -18,7 +18,7 @@ ADR status is the file header, not only the index. Where those two disagree, bot
 | Second canvas | Partial, ADR Accepted | ADR-0093 Accepted 2026-11-10. Engine steps, add/remove, the Add vertical output dialog and `canvas.add_vertical` / `canvas.remove_vertical` (protocol 1.28) are in the tree. Deferred items in the review stay deferred. The Windows measurement is on SC-PC |
 | Source transform commands | Partial, ADR Accepted | ADR-0084 Accepted 2026-11-10. Flip, rotate, fit and align exist. Remaining menu categories do not |
 | Replay buffer | Partial, ADR Accepted | ADR-0088 Accepted 2026-11-10. Host and control API are in the tree |
-| Crash isolation | Partial, ADR Accepted | `catch_unwind` around `Node::process`, `rbs-crash`. ADR-0055 Accepted 2026-11-10. Follow-ups in the review are still follow-ups |
+| Crash isolation | Partial, ADR Accepted | `catch_unwind` around `Node::process`, `rbs-crash`. ADR-0055 Accepted 2026-11-10. Fault injection covers recording, stream start and end, and a canvas restart. A separate studio process is still follow-up work |
 | Plugin SDK | Started | `rbs-plugin-sdk` parses the manifest. `rbs-plugin-host` reads installed manifests and loads nothing. No native, WASM or process loader |
 | MCP | Started | `rbs-mcp` answers stdio while RBS is unreachable: the only tool is `studio_summary`. No IPC session yet |
 | Compact spacing | Running | Appearance format 2, `density` `regular` or `compact`. Compact steps `space.*` and `size.control.*` down one token |

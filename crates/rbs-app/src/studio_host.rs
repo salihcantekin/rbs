@@ -1487,6 +1487,12 @@ pub enum Fault {
     AfterOutputStart,
     /// In a recording stop, after the output stopped and before the host forgets it.
     InRecordingStop,
+    /// In a stream start, after the output started and before the host tracks it.
+    AfterStreamStart,
+    /// In a stream end, after the output stopped and before the host forgets it.
+    InStreamEnd,
+    /// While a canvas change is restarting the studio, before that restart is over.
+    DuringCanvasRestart,
 }
 
 /// Panics once if the host was told to fail at `$fault`.
@@ -3149,6 +3155,8 @@ impl Host {
         self.restarting = true;
         let _ = self.studio.shutdown();
         let restarted = self.restart();
+        // Still restarting: a panic here leaves the studio dead (ADR-0055 decision 3).
+        inject!(self, Fault::DuringCanvasRestart);
         self.restarting = false;
         match restarted {
             Ok(()) => {
@@ -3196,9 +3204,18 @@ impl Host {
             notify(answer);
         }
         if std::mem::take(&mut self.restarting) {
-            self.dead.get_or_insert_with(|| {
-                "An internal error stopped the studio while it restarted.".into()
-            });
+            let why = self
+                .dead
+                .get_or_insert_with(|| {
+                    "An internal error stopped the studio while it restarted.".into()
+                })
+                .clone();
+            // The round that panicked does not reach its own dead check, and the next
+            // round may not run until something wakes the thread. Say it failed now.
+            if failed.is_none() {
+                *failed = Some(why.clone());
+                notify(Update::Failed(why));
+            }
         }
         let running = self.studio.outputs();
         let recording = self.recording.as_ref().map(|(_, id)| *id);
@@ -3497,6 +3514,9 @@ impl Host {
             a
         });
         let (id, video_encoder, audio_encoder) = self.start_output(&out, r.encoder.as_deref())?;
+        // Before the host tracks it: recovery stops an output a panicked start left
+        // running (ADR-0055 decision 3).
+        inject!(self, Fault::AfterStreamStart);
         self.streaming = Some((r.url.clone(), Link::default(), id));
         let protocol = match parse_server(&r.url).map(|s| s.protocol) {
             Ok(Protocol::Srt) => api::StreamProtocol::Srt,
@@ -3760,6 +3780,8 @@ impl Host {
         // Tracked until the end, as in `stop_recording`.
         let (_, _, id) = self.streaming.clone()?;
         let report = self.studio.stop_output(id);
+        // Still tracked: recovery ends a stream whose stop panicked half-way.
+        inject!(self, Fault::InStreamEnd);
         let (frames, dropped, connects, failed) = report.map_or((0, 0, 0, None), |r| {
             let p = &r.progress;
             (
