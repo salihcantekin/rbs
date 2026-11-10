@@ -33,6 +33,8 @@ use rbs_core::media::{
 use rbs_core::time::Timestamp;
 
 #[cfg(windows)]
+mod thumb;
+#[cfg(windows)]
 mod win;
 
 /// The program name in an executable path: the file name without its extension
@@ -207,8 +209,110 @@ impl<O: AsRef<Ring> + LeaseOwner + 'static> Consumer<O> {
     }
 }
 
+/// The largest size with the aspect of `width` x `height` inside `max`, never larger
+/// than the source, at least 1 x 1; `None` when any side is zero (capture-port.md,
+/// `thumbnail`).
+#[cfg_attr(not(windows), allow(dead_code))]
+fn fit_size(width: u32, height: u32, max: Size) -> Option<(u32, u32)> {
+    if width == 0 || height == 0 || max.width == 0 || max.height == 0 {
+        return None;
+    }
+    let scale = (f64::from(max.width) / f64::from(width))
+        .min(f64::from(max.height) / f64::from(height))
+        .min(1.0);
+    let scaled = |v: u32, cap: u32| ((f64::from(v) * scale).round() as u32).clamp(1, cap);
+    Some((scaled(width, max.width), scaled(height, max.height)))
+}
+
+/// Box-filters a BGRA8 picture (`pitch` bytes per row) down to `dst_w` x `dst_h` opaque
+/// RGBA8: each output pixel is the mean of the source pixels it covers. The output is
+/// never larger than the source (callers pass a size from [`fit_size`]).
+#[cfg_attr(not(windows), allow(dead_code))]
+fn downscale_bgra(
+    src: &[u8],
+    src_w: u32,
+    src_h: u32,
+    pitch: usize,
+    dst_w: u32,
+    dst_h: u32,
+) -> Vec<u8> {
+    let (sw, sh, dw, dh) = (
+        src_w as usize,
+        src_h as usize,
+        dst_w as usize,
+        dst_h as usize,
+    );
+    let mut out = Vec::with_capacity(dw * dh * 4);
+    for y in 0..dh {
+        let (y0, y1) = (
+            y * sh / dh,
+            ((y + 1) * sh / dh).max(y * sh / dh + 1).min(sh),
+        );
+        for x in 0..dw {
+            let (x0, x1) = (
+                x * sw / dw,
+                ((x + 1) * sw / dw).max(x * sw / dw + 1).min(sw),
+            );
+            let mut sum = [0u64; 3];
+            let mut n = 0u64;
+            for row in y0..y1 {
+                let line = row * pitch;
+                for col in x0..x1 {
+                    let i = line + col * 4;
+                    if let Some(px) = src.get(i..i + 4) {
+                        sum[0] += u64::from(px[2]);
+                        sum[1] += u64::from(px[1]);
+                        sum[2] += u64::from(px[0]);
+                        n += 1;
+                    }
+                }
+            }
+            let n = n.max(1);
+            out.extend_from_slice(&[
+                ((sum[0] + n / 2) / n) as u8,
+                ((sum[1] + n / 2) / n) as u8,
+                ((sum[2] + n / 2) / n) as u8,
+                255,
+            ]);
+        }
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn thumbnails_fit_keep_the_aspect_and_never_grow() {
+        let max = rbs_core::media::Size::new(192, 108);
+        assert_eq!(super::fit_size(3840, 2160, max), Some((192, 108)));
+        assert_eq!(super::fit_size(1080, 1920, max), Some((61, 108)));
+        assert_eq!(super::fit_size(100, 50, max), Some((100, 50)));
+        assert_eq!(super::fit_size(5000, 1, max), Some((192, 1)));
+        assert_eq!(super::fit_size(0, 10, max), None);
+        assert_eq!(
+            super::fit_size(10, 10, rbs_core::media::Size::new(0, 5)),
+            None
+        );
+    }
+
+    #[test]
+    fn bgra_is_averaged_into_opaque_rgba() {
+        // 2x2 BGRA with a padded pitch of 12 bytes: blue, red / green, white.
+        let mut src = vec![0u8; 24];
+        src[0..4].copy_from_slice(&[255, 0, 0, 255]);
+        src[4..8].copy_from_slice(&[0, 0, 255, 255]);
+        src[12..16].copy_from_slice(&[0, 255, 0, 0]);
+        src[16..20].copy_from_slice(&[255, 255, 255, 255]);
+        assert_eq!(
+            super::downscale_bgra(&src, 2, 2, 12, 1, 1),
+            vec![128, 128, 128, 255]
+        );
+        let same = super::downscale_bgra(&src, 2, 2, 12, 2, 2);
+        assert_eq!(&same[0..4], &[0, 0, 255, 255]);
+        assert_eq!(&same[4..8], &[255, 0, 0, 255]);
+        assert_eq!(&same[8..12], &[0, 255, 0, 255]);
+    }
+
     #[test]
     fn exe_stem_takes_the_file_name_without_extension() {
         assert_eq!(

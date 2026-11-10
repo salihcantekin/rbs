@@ -351,6 +351,10 @@ Checks: probe returns within 1 s (the fastest of up to three calls, so one-time 
 | `rbs-capture-pipewire` | Linux (Wayland, X11 via portal) | camera (PipeWire `Video/Source` nodes); display, window (screen-cast portal picker) | dmabuf (ready), system | 0 (implemented; portal tested against a test portal, desktop run pending) |
 | `rbs-capture-v4l2` | Linux | camera | system, dmabuf | 2 |
 
+### Windows Graphics Capture adapter notes
+
+- `thumbnail` (ADR-0077): one frame from a short-lived free-threaded frame pool (one buffer) on a hardware D3D11 device of the default adapter, polled for at most 1 s (a timeout is a recoverable `Backend` error), cursor off. The capture border must be turned off (`IsBorderRequired = false`, Windows build 20348 and later, so Windows 11); where that is not possible the adapter returns `Unsupported`, because a yellow border flashing around a window while the user browses the list is a visible side effect. The frame is scaled down on the GPU with a mip chain, the smallest level still at least the thumbnail size is copied to a staging texture and read back, then box-filtered to opaque RGBA on the CPU. A window that no longer exists returns `TargetNotFound`. Minimised windows deliver no frame and time out, so their rows keep the type icon. To be checked on Windows hardware: Windows 10 behaviour and grab time with many windows.
+
 ### ScreenCaptureKit adapter notes
 
 - `thumbnail` (ADR-0077): one `SCScreenshotManager` grab, macOS 14 and later (`Unsupported` before), cursor off, within a 1 s budget. Without permission it returns `PermissionNotDetermined`, because macOS does not tell "not asked" from "denied". Known limits, to be checked on macOS 14 and 15 hardware: the periodic screen-recording re-approval alert of macOS 15 and the menu-bar indicator may appear on a grab (the adapter cannot prevent either); a grab that timed out keeps running inside ScreenCaptureKit until it ends, so a hung system can pile up abandoned requests (the host asks at most two at a time and only for the rows shown).
