@@ -820,3 +820,39 @@ fn targets_a_source_was_given_are_listed_as_recent_newest_first() {
     assert_eq!(rank(&mics[0]), Some(1));
     stop(host, &rx);
 }
+
+#[test]
+fn thumbnails_are_grabbed_off_the_control_thread_and_only_for_the_asked_rows() {
+    let Some(gpu) = gpu() else { return };
+    let (host, rx) = host(gpu);
+    let screens = targets(&host, &rx, SourceKind::Screen);
+    let screen = screens.first().expect("the test display");
+    host.send(Command::GrabThumbnails {
+        kind: SourceKind::Screen,
+        rows: vec![
+            (screen.adapter.clone(), screen.target.clone()),
+            (screen.adapter.clone(), "no-such-target".to_owned()),
+        ],
+        max: (96, 54),
+    });
+    let (mut got, mut missing) = (false, false);
+    while !(got && missing) {
+        next(&rx, |u| match u {
+            Update::Thumbnail {
+                target, picture, ..
+            } => {
+                match (target == screen.target, picture) {
+                    (true, Some(p)) => {
+                        assert!(p.width() <= 96 && p.height() <= 54);
+                        got = true;
+                    }
+                    (false, None) => missing = true,
+                    other => panic!("unexpected picture {other:?}"),
+                }
+                Some(())
+            }
+            _ => None,
+        });
+    }
+    host.send(Command::StopThumbnails);
+}

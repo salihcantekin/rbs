@@ -136,6 +136,9 @@ pub struct StudioUi {
     /// filtered by the search field, the source's current target first.
     source_targets: Rc<VecModel<SourceTargetData>>,
     source_target_list: Vec<Target>,
+    /// The pictures of the Source tab's targets by (adapter, target), kept only while
+    /// the list shows them; dropped when it is listed again (ADR-0077).
+    source_pictures: std::collections::HashMap<(String, String), slint::Image>,
     /// The Source settings window's content (ADR-0077): empty until the host answers,
     /// then one entry; and what its choices mean.
     source_settings: Rc<VecModel<SourceSettingsData>>,
@@ -356,6 +359,7 @@ impl StudioUi {
             source_settings_view: None,
             source_target_list: Vec::new(),
             source_targets_for: None,
+            source_pictures: std::collections::HashMap::new(),
             source_query: String::new(),
             targets_kind: -1,
             slots: Vec::new(),
@@ -1211,6 +1215,8 @@ impl StudioUi {
         };
         self.source_targets_for = Some(id);
         self.source_query.clear();
+        self.source_pictures.clear();
+        self.send(Command::StopThumbnails);
         self.source_targets.set_vec(Vec::new());
         self.send(Command::ListTargets(kind));
     }
@@ -1229,16 +1235,86 @@ impl StudioUi {
             .and_then(|id| self.rows.iter().find(|r| r.id == id))
             .map(|r| r.target.clone())
             .unwrap_or_default();
-        let rows = source_target_rows(&self.source_target_list, &current, &self.source_query)
-            .into_iter()
-            .map(|r| SourceTargetData {
-                name: self.source_target_list[r.index].name.as_str().into(),
-                current: r.current,
-                index: r.index as i32,
-                heading: r.heading.into(),
+        let rows = source_target_rows(&self.source_target_list, &current, &self.source_query);
+        let kind = self
+            .source_targets_for
+            .and_then(|id| self.rows.iter().find(|r| r.id == id))
+            .and_then(|r| r.kind);
+        let pictured = matches!(kind, Some(SourceKind::Screen | SourceKind::Window));
+        let data = rows
+            .iter()
+            .map(|r| {
+                let t = &self.source_target_list[r.index];
+                let picture = self
+                    .source_pictures
+                    .get(&(t.adapter.clone(), t.target.clone()));
+                SourceTargetData {
+                    name: t.name.as_str().into(),
+                    current: r.current,
+                    index: r.index as i32,
+                    heading: r.heading.clone().into(),
+                    has_picture: picture.is_some(),
+                    picture: picture.cloned().unwrap_or_default(),
+                    wants_picture: pictured,
+                }
             })
             .collect::<Vec<_>>();
-        self.source_targets.set_vec(rows);
+        self.source_targets.set_vec(data);
+        // Pictures are asked for the rows shown that have none yet, a few at a time
+        // (ADR-0077): the grabs are the host's, off the control thread.
+        if let (true, Some(kind)) = (pictured, kind) {
+            let asked: Vec<(String, String)> = rows
+                .iter()
+                .map(|r| &self.source_target_list[r.index])
+                .filter(|t| {
+                    !self
+                        .source_pictures
+                        .contains_key(&(t.adapter.clone(), t.target.clone()))
+                })
+                .take(THUMBS_PER_LIST)
+                .map(|t| (t.adapter.clone(), t.target.clone()))
+                .collect();
+            if !asked.is_empty() {
+                self.send(Command::GrabThumbnails {
+                    kind,
+                    rows: asked,
+                    max: (THUMB_REQUEST.0, THUMB_REQUEST.1),
+                });
+            }
+        }
+    }
+
+    /// One target's picture arrived for the Source tab's list.
+    fn source_picture(
+        &mut self,
+        adapter: String,
+        target: String,
+        picture: Option<rbs_capture::Thumbnail>,
+    ) {
+        let Some(p) = picture else { return };
+        let buffer = slint::SharedPixelBuffer::<slint::Rgba8Pixel>::clone_from_slice(
+            p.rgba(),
+            p.width(),
+            p.height(),
+        );
+        self.source_pictures
+            .insert((adapter, target), slint::Image::from_rgba8(buffer));
+        let list = &self.source_target_list;
+        let pictures = &self.source_pictures;
+        for i in 0..self.source_targets.row_count() {
+            let Some(mut row) = self.source_targets.row_data(i) else {
+                continue;
+            };
+            let Some(t) = list.get(row.index as usize) else {
+                continue;
+            };
+            let img = pictures.get(&(t.adapter.clone(), t.target.clone()));
+            if let (Some(img), false) = (img, row.has_picture) {
+                row.has_picture = true;
+                row.picture = img.clone();
+                self.source_targets.set_row_data(i, row);
+            }
+        }
     }
 
     /// The Source settings window opens for a source: what it shows is asked for.
@@ -2936,6 +3012,11 @@ impl StudioUi {
             self.edit.reset();
         }
         match u {
+            Update::Thumbnail {
+                adapter,
+                target,
+                picture,
+            } => self.source_picture(adapter, target, picture),
             #[cfg(feature = "fault-injection")]
             Update::Recovered { .. } => {}
             Update::BoxPlaced { seq, ok } => {
@@ -3782,6 +3863,11 @@ fn library_looks() -> Vec<LookData> {
 
 /// Pixels of a sample picture's thumbnail, in the aspect of the canvas it is for.
 const THUMB: (u32, u32) = (288, 162);
+
+/// How many rows of the Source tab's list get a picture, and the size asked for (twice the
+/// token size, so it stays sharp on a high-density screen).
+const THUMBS_PER_LIST: usize = 24;
+const THUMB_REQUEST: (u32, u32) = (192, 108);
 
 /// The sample pictures with their thumbnails (made once, when the Library first shows).
 fn library_samples() -> Vec<SampleData> {
