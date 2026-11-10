@@ -3468,6 +3468,11 @@ impl StudioUi {
         }
     }
 
+    /// The live levels of a filter's meter, as bar positions (see `FilterUi::levels`).
+    pub fn filter_levels(&self, filter: i32) -> (f32, f32) {
+        self.filter_ui.levels(filter)
+    }
+
     /// One meter refresh: takes each source's peaks since the last call.
     pub fn tick_meters(&mut self) {
         let now = self.meter_start.elapsed();

@@ -23,6 +23,16 @@ pub struct FilterUi {
     known: BTreeMap<i32, Vec<i32>>,
     /// The values a slider drag shows on the picture, until it is released.
     drag: Option<(FilterId, Values)>,
+    /// The live meters of the shown filters that have one, by filter id.
+    meters: BTreeMap<i32, std::sync::Arc<rbs_audio_filters::FilterMeter>>,
+}
+
+/// The level bar of a noise gate spans this range, the range of its thresholds (dB).
+const BAR_MIN_DB: f32 = -80.0;
+
+/// A level in dB as a position on the bar, 0 to 1.
+fn bar_position(db: f32) -> f32 {
+    ((db - BAR_MIN_DB) / -BAR_MIN_DB).clamp(0.0, 1.0)
 }
 
 /// Whether a number's slider is log-scaled: only for a log curve over a positive range.
@@ -148,8 +158,26 @@ impl FilterUi {
                     (Some(ty), Some(values)) => field_data(ty, values),
                     _ => Vec::new(),
                 };
+                let id = f.id.get() as i32;
+                match &f.meter {
+                    Some(m) => {
+                        self.meters.insert(id, std::sync::Arc::clone(&m.0));
+                    }
+                    None => {
+                        self.meters.remove(&id);
+                    }
+                }
+                // A filter with a live meter is a noise gate: its first two numbers are
+                // the open and the close threshold.
+                let (open_pos, close_pos) = match (&f.meter, &f.values) {
+                    (Some(_), Some(v)) => (bar_position(v.number(0)), bar_position(v.number(1))),
+                    _ => (0.0, 0.0),
+                };
                 FilterData {
-                    id: f.id.get() as i32,
+                    gate: f.meter.is_some(),
+                    open_pos,
+                    close_pos,
+                    id,
                     name: f.name.as_str().into(),
                     enabled: f.enabled,
                     known: f.any().is_some(),
@@ -160,6 +188,17 @@ impl FilterUi {
             })
             .collect();
         (ModelRc::new(VecModel::from(data)), selected)
+    }
+
+    /// The live levels of a filter's meter as bar positions (input peak, gain
+    /// reduction); zeros when it has none. Read by the editor's timer, only while shown.
+    pub fn levels(&self, filter: i32) -> (f32, f32) {
+        self.meters.get(&filter).map_or((0.0, 0.0), |m| {
+            (
+                bar_position(m.input_peak_db()),
+                (m.gain_reduction_db() / -BAR_MIN_DB).clamp(0.0, 1.0),
+            )
+        })
     }
 
     /// Forgets the selection and the chains of sources that are gone.
