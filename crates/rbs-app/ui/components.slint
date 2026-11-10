@@ -1861,6 +1861,7 @@ export global Overlays {
     // audio too" when adding a display or window (ADR-0096). The explanation sits
     // behind its info button.
     in-out property <string> picker-option-label;
+    in-out property <string> picker-option-hint;
     in-out property <bool> picker-option;
     callback picker-option-toggled(bool);
     callback picker-chosen(int /* the row's index */);
@@ -2488,7 +2489,7 @@ export component OverlayHost inherits Rectangle {
                     }
                     if Overlays.picker-option-label != "": InfoHint {
                         label: Overlays.picker-option-label;
-                        text: @tr("Adds the sound that goes with the picture as its own audio source: a display's system sound without RBS's own sound, a window's application sound. Capturing the system sound and another app's sound can play the same audio twice.");
+                        text: Overlays.picker-option-hint;
                     }
                     Rectangle { horizontal-stretch: 1; }
                     Button {
