@@ -166,6 +166,8 @@ struct App {
     open_settings: Option<Option<i32>>,
     /// `ui.app_menu.open` ran; the next sync opens the RBS menu in the main window.
     open_app_menu: bool,
+    /// Ask for the name of a new workspace (Save as new) in the main window.
+    ask_workspace_name: bool,
     save_due: bool,
     /// The closed sections the windows were told about, and the number that tells them
     /// the answers changed (ADR-0078).
@@ -417,6 +419,8 @@ impl App {
             studio: &self.studio,
             maximized: self.maximized.as_ref(),
             camera: self.vcam.shown(),
+            can_undo: self.session.can_undo(),
+            can_redo: self.session.can_redo(),
             panels: view::panel_entries(self.session.workspace())
                 .into_iter()
                 .map(|p| (p.title.into(), p.id.into(), p.open))
@@ -456,6 +460,26 @@ impl App {
             Run::Scene(id) => self.studio.switch_scene(id),
             Run::Layout(c) => self.command(c, Origin::Command),
             Run::Maximize(id, on) => self.maximized = on.then_some(id),
+            Run::SaveWorkspace => {
+                self.persist_now();
+                self.refresh_list();
+            }
+            Run::SaveWorkspaceAs(Some(name)) => {
+                if let Err(e) = self.save_workspace_as(&name) {
+                    self.error = Some(UiError::Other(e));
+                }
+            }
+            // Asking for a name needs someone at the window: not from a control surface
+            // or a global shortcut (`ui.command.run` answers `invalid_params`).
+            Run::SaveWorkspaceAs(None) if !confirm => {}
+            Run::SaveWorkspaceAs(None) => self.ask_workspace_name = true,
+            Run::LayoutHistory(back) => {
+                if back {
+                    self.undo();
+                } else {
+                    self.redo();
+                }
+            }
             Run::AutoHide(panel) => {
                 let content = self.area(0);
                 self.command(LayoutCommand::AutoHide { panel, content }, Origin::Command);
@@ -502,6 +526,18 @@ impl App {
             Run::OpenSettings(section) => self.open_settings = Some(section),
             Run::OpenAppMenu => self.open_app_menu = true,
         }
+    }
+
+    /// Saves the shown workspace as a new one called `name` and switches to it.
+    fn save_workspace_as(&mut self, name: &str) -> Result<(), String> {
+        let current = self.session.workspace().clone();
+        let ws = self
+            .store
+            .save_as(&current, name.trim())
+            .map_err(|e| e.to_string())?;
+        self.command(LayoutCommand::Switch(ws), Origin::Command);
+        self.refresh_list();
+        Ok(())
     }
 
     /// Starts the name field of a scene's (`scene`) or source's row: Rename from a menu
@@ -1550,6 +1586,13 @@ impl Ctx {
             let s = app.main.global::<Shell>();
             s.set_app_menu_asked(s.get_app_menu_asked().wrapping_add(1));
         }
+        if std::mem::take(&mut app.ask_workspace_name) {
+            self.show_all(&mut app);
+            let o = app.main.global::<Overlays>();
+            o.set_name_error("".into());
+            o.set_name_value("".into());
+            o.set_name_open(true);
+        }
         if let Some(section) = app.open_settings.take() {
             // Without a section: where the open window is, else General (listed first).
             let section = section
@@ -1962,39 +2005,6 @@ fn install(g: &Shell<'_>, ctx: &Ctx) {
     on!(on_switch_workspace, |app, name: slint::SharedString| {
         app.switch_workspace(&name);
     });
-    on!(on_save_workspace, |app| {
-        app.persist_now();
-        app.refresh_list();
-    });
-    on!(on_save_workspace_as, |app, name: slint::SharedString| {
-        let current = app.session.workspace().clone();
-        match app.store.save_as(&current, name.trim()) {
-            Ok(ws) => {
-                app.command(LayoutCommand::Switch(ws), Origin::Command);
-                app.refresh_list();
-            }
-            Err(e) => app.error = Some(UiError::Other(e.to_string())),
-        }
-    });
-    on!(on_restore_workspace, |app| {
-        let name = app.session.workspace().name.clone();
-        match app.store.restore_default(&name) {
-            Ok(ws) => {
-                app.command(LayoutCommand::Switch(ws), Origin::Command);
-                app.refresh_list();
-            }
-            Err(e) => app.error = Some(UiError::Other(e.to_string())),
-        }
-    });
-    on!(on_set_locked, |app, locked: bool| {
-        app.command(LayoutCommand::SetLocked(locked), Origin::Command);
-    });
-    on!(on_undo, |app| {
-        app.undo();
-    });
-    on!(on_redo, |app| {
-        app.redo();
-    });
     on!(on_toast_undo, |app| {
         if app.toast.is_some() {
             app.undo();
@@ -2091,6 +2101,29 @@ fn install_app_menu(g: &AppMenus<'_>, ctx: &Ctx) {
 /// Connect one window's context menus to the shared state. The items are made at
 /// once, so the menu shows the state of the moment; the selection a right-click makes
 /// reaches the views on the next sync.
+/// The name prompt of the main window (Save as new): Enter saves, and a refusal stays
+/// in the prompt as its error line; Escape or the Cancel button closes it.
+fn install_name_prompt(g: &Overlays<'_>, ctx: &Ctx) {
+    {
+        let ctx = ctx.clone();
+        g.on_name_accepted(move |name| {
+            let name = name.to_string();
+            ctx.update(move |app: &mut App| {
+                let done = app.save_workspace_as(&name);
+                let o = app.main.global::<Overlays>();
+                match done {
+                    Ok(()) => o.set_name_open(false),
+                    Err(e) => o.set_name_error(e.into()),
+                }
+            });
+        });
+    }
+    let ctx = ctx.clone();
+    g.on_name_cancelled(move || {
+        ctx.update(|app: &mut App| app.main.global::<Overlays>().set_name_open(false));
+    });
+}
+
 fn install_context_menus(g: &ContextMenus<'_>, ctx: &Ctx) {
     let c = ctx.clone();
     g.on_prepare(move |context, target| {
@@ -3074,6 +3107,7 @@ fn run(config: PathBuf, notice: Option<String>) -> Result<(), Box<dyn std::error
             reload_themes: false,
             open_settings: None,
             open_app_menu: false,
+            ask_workspace_name: false,
             save_due: false,
             sections_shown: Vec::new(),
             sections_rev: 0,
@@ -3110,6 +3144,7 @@ fn run(config: PathBuf, notice: Option<String>) -> Result<(), Box<dyn std::error
     install(&main.global::<Shell>(), &ctx);
     install_menus(&main.global::<Menus>(), &ctx);
     install_context_menus(&main.global::<ContextMenus>(), &ctx);
+    install_name_prompt(&main.global::<Overlays>(), &ctx);
     install_app_menu(&main.global::<AppMenus>(), &ctx);
     shortcuts_page::install_press(&main.global::<Shortcuts>(), &ctx);
     install_studio(&main.global::<Studio>(), &ctx);

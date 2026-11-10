@@ -348,6 +348,69 @@ pub const ENTRIES: &[Entry] = &[
         checkable: false,
     },
     Entry {
+        id: "ui.workspace.save",
+        title: "Save changes",
+        tooltip: "Write this workspace's layout and toolbar to its file now",
+        icon: Some("save"),
+        shortcut: None,
+        menu: Menu::View,
+        kind: action("ui.workspace.save"),
+        params: &[],
+        checkable: false,
+    },
+    Entry {
+        id: "ui.workspace.save_as",
+        title: "Save as new...",
+        tooltip: "Save this layout and toolbar as a new workspace and switch to it",
+        icon: Some("save"),
+        shortcut: None,
+        menu: Menu::View,
+        kind: action("ui.workspace.save_as"),
+        // Without a name the window asks for one.
+        params: &[Param {
+            name: "name",
+            ty: ParamType::Text,
+            required: false,
+        }],
+        checkable: false,
+    },
+    Entry {
+        id: "ui.layout.lock",
+        title: "Lock layout",
+        tooltip: "Refuse layout changes made with the pointer until it is unlocked",
+        icon: Some("lock"),
+        shortcut: None,
+        menu: Menu::View,
+        kind: Kind::Toggle {
+            on: "ui.layout.set_locked",
+            off: "ui.layout.set_locked",
+        },
+        params: &[],
+        checkable: true,
+    },
+    Entry {
+        id: "ui.layout.undo",
+        title: "Undo layout change",
+        tooltip: "Undo the last change to the layout",
+        icon: Some("undo"),
+        shortcut: None,
+        menu: Menu::View,
+        kind: action("ui.layout.undo"),
+        params: &[],
+        checkable: false,
+    },
+    Entry {
+        id: "ui.layout.redo",
+        title: "Redo layout change",
+        tooltip: "Redo the layout change that was undone",
+        icon: Some("redo"),
+        shortcut: None,
+        menu: Menu::View,
+        kind: action("ui.layout.redo"),
+        params: &[],
+        checkable: false,
+    },
+    Entry {
         id: "ui.workspace.reset",
         title: "Reset workspace",
         tooltip: "Put this workspace's default layout and toolbar back",
@@ -1204,6 +1267,11 @@ pub const MENU_LAYOUT: &[(Menu, &[&str])] = &[
             "ui.area.show_all",
             "ui.layout.reset_sizes",
             "ui.workspace.reset",
+            "ui.workspace.save",
+            "ui.workspace.save_as",
+            "ui.layout.lock",
+            "ui.layout.undo",
+            "ui.layout.redo",
             "#Toolbar",
             "ui.toolbar.reset",
             "#Transition",
@@ -1559,11 +1627,13 @@ pub enum Context {
     Mixer,
     /// A panel's tab or header menu (target `id`, the panel).
     Panel,
+    /// The toolbar's Workspace item (no target).
+    Workspace,
 }
 
 impl Context {
     /// Every context.
-    pub const ALL: [Context; 8] = [
+    pub const ALL: [Context; 9] = [
         Context::Scene,
         Context::Scenes,
         Context::Source,
@@ -1572,6 +1642,7 @@ impl Context {
         Context::MixerSource,
         Context::Mixer,
         Context::Panel,
+        Context::Workspace,
     ];
 
     /// Its name, as the shell's menus ask for it.
@@ -1585,6 +1656,7 @@ impl Context {
             Context::MixerSource => "mixer-source",
             Context::Mixer => "mixer",
             Context::Panel => "panel",
+            Context::Workspace => "workspace",
         }
     }
 
@@ -1679,6 +1751,20 @@ pub const CONTEXT_LAYOUT: &[(Context, &[&str])] = &[
             "ui.panel.auto_hide",
             "|",
             "ui.panel.close",
+        ],
+    ),
+    (
+        Context::Workspace,
+        &[
+            "ui.workspace.select",
+            "|",
+            "ui.workspace.save",
+            "ui.workspace.save_as",
+            "ui.workspace.reset",
+            "|",
+            "ui.layout.lock",
+            "ui.layout.undo",
+            "ui.layout.redo",
         ],
     ),
 ];
