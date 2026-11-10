@@ -871,7 +871,7 @@ fn two_canvas_studio(
     };
     settings.preview = Some(desc);
     if vertical {
-        settings.extra_canvases = vec![ExtraCanvas::new(tall, desc)];
+        settings.extra_canvases = vec![ExtraCanvas::new(tall).with_preview(desc)];
     }
     let studio = Studio::start(engine, gpu, &col, &r.adapters.sources, &settings).unwrap();
     let buffers = r.capture.live_buffers();
@@ -962,11 +962,11 @@ fn a_further_canvas_must_run_at_the_main_rate_and_be_new() {
         Studio::start(engine, gpu.clone(), &col, &r.adapters.sources, &settings).err()
     };
     assert!(matches!(
-        start(vec![ExtraCanvas::new(slow, desc)]),
+        start(vec![ExtraCanvas::new(slow)]),
         Some(RecordError::CanvasRate(c)) if c == slow
     ));
     assert!(matches!(
-        start(vec![ExtraCanvas::new(main, desc)]),
+        start(vec![ExtraCanvas::new(main)]),
         Some(RecordError::TooManyCanvases)
     ));
 }

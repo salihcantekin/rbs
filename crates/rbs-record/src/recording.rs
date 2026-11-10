@@ -337,6 +337,7 @@ impl RecordSettings {
             transport_options: self.transport_options.clone(),
             video: self.video.clone(),
             audio: self.audio.clone(),
+            canvas: None,
         }
     }
 }
@@ -725,6 +726,7 @@ impl Recording {
         let prepared = Prepared::choose(
             adapters,
             &settings.output(),
+            settings.canvas,
             (canvas.size.width, canvas.size.height),
             canvas.frame_rate,
             settings.audio_graph,

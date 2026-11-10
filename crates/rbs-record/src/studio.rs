@@ -77,15 +77,24 @@ pub const MAX_CANVASES: usize = 2;
 pub struct ExtraCanvas {
     /// The canvas. It needs a program scene and the main canvas's frame rate.
     pub canvas: CanvasId,
-    /// Its picture for a UI. The canvas is only composed while this exists (Standby
-    /// otherwise, P13): a closed panel costs nothing.
-    pub preview: PreviewDesc,
+    /// Its picture for a UI. `None`: no picture, and the canvas is only composed while
+    /// an output of it runs (P13): a closed panel costs nothing.
+    pub preview: Option<PreviewDesc>,
 }
 
 impl ExtraCanvas {
-    /// `canvas` with a picture described by `preview`.
-    pub fn new(canvas: CanvasId, preview: PreviewDesc) -> Self {
-        Self { canvas, preview }
+    /// `canvas` without a picture; outputs can still take it.
+    pub fn new(canvas: CanvasId) -> Self {
+        Self {
+            canvas,
+            preview: None,
+        }
+    }
+
+    /// The same canvas with a picture described by `preview`.
+    pub fn with_preview(mut self, preview: PreviewDesc) -> Self {
+        self.preview = Some(preview);
+        self
     }
 }
 
@@ -157,6 +166,9 @@ pub struct OutputSettings {
     pub video: VideoSettings,
     /// Audio encoding; `None` records video only.
     pub audio: Option<AudioSettings>,
+    /// The canvas this output takes (ADR-0093): the main canvas or one of
+    /// [`StudioSettings::extra_canvases`]. `None`: the main canvas.
+    pub canvas: Option<CanvasId>,
 }
 
 impl OutputSettings {
@@ -181,6 +193,7 @@ impl OutputSettings {
             transport_options: Vec::new(),
             video: VideoSettings::default(),
             audio: Some(AudioSettings::default()),
+            canvas: None,
         }
     }
 
@@ -408,6 +421,8 @@ enum AudioPlan {
 
 /// Adapters chosen for an output, nothing in the graph yet.
 pub(crate) struct Prepared {
+    /// The canvas the video comes from.
+    canvas: CanvasId,
     video: VideoPlan,
     audio: AudioPlan,
     output: OutputNode,
@@ -424,6 +439,7 @@ impl Prepared {
     pub(crate) fn choose(
         adapters: &RecordAdapters,
         out: &OutputSettings,
+        canvas: CanvasId,
         (width, height): (u32, u32),
         fps: FrameRate,
         audio_graph: AudioGraphConfig,
@@ -452,7 +468,8 @@ impl Prepared {
         };
         let shared_video = running.video.iter().position(|c| {
             c.as_ref().is_some_and(|c| {
-                c.settings == out.video
+                c.canvas == canvas
+                    && c.settings == out.video
                     // An export asked to end takes no later canvas (ADR-0045).
                     && c.end.requested().is_none()
                     && select::is_video_candidate(
@@ -530,6 +547,7 @@ impl Prepared {
             None => None,
         };
         Ok(Self {
+            canvas,
             video,
             audio,
             output,
@@ -541,6 +559,8 @@ impl Prepared {
 
 /// A running video export and encoder, used by one or more outputs.
 struct VideoChain {
+    /// The canvas it exports; an encoder is shared only between outputs of one canvas.
+    canvas: CanvasId,
     settings: VideoSettings,
     chosen: Chosen,
     stream: StreamDescriptor,
@@ -882,9 +902,11 @@ impl Studio {
                 .canvas(extra.canvas)
                 .map(|c| (c.size.width, c.size.height))
                 .ok_or(RecordError::UnknownCanvas(extra.canvas))?;
-            let view = attach_picture(&mut engine, &mut graph, bound, size, extra.preview)?;
+            let view = attach_compositor(&mut engine, &mut graph, bound, size, extra.preview)?;
             essential.insert(view.compositor, "compositor of a further canvas");
-            essential.insert(view.picture.0, "preview of a further canvas");
+            if let Some((picture, _)) = &view.picture {
+                essential.insert(*picture, "preview of a further canvas");
+            }
             extras.push(ExtraRun {
                 canvas: extra.canvas,
                 size,
@@ -1583,7 +1605,7 @@ impl Studio {
         self.extras
             .iter()
             .find(|e| e.canvas == canvas)
-            .and_then(|e| e.view.picture.1.endpoint())
+            .and_then(|e| e.view.picture.as_ref()?.1.endpoint())
     }
 
     /// The counters of a further canvas's picture.
@@ -1591,7 +1613,7 @@ impl Studio {
         self.extras
             .iter()
             .find(|e| e.canvas == canvas)
-            .map(|e| &e.view.picture.1)
+            .and_then(|e| e.view.picture.as_ref().map(|p| &p.1))
     }
 
     /// The preview's counters, if there is a preview.
@@ -1903,15 +1925,42 @@ impl Studio {
         if out.audio.is_some() && self.mixer.is_none() {
             return Err(RecordError::NotBound("mixer"));
         }
+        let canvas = out.canvas.unwrap_or(self.settings.canvas);
+        let size = self.canvas_size(canvas)?;
         let prepared = Prepared::choose(
             adapters,
             out,
-            self.size,
+            canvas,
+            size,
             self.fps,
             self.settings.audio_graph,
             &self.chains,
         )?;
         self.attach(prepared, &adapters.sources, Strictness::Lenient)
+    }
+
+    /// The compositor node of a canvas the studio runs.
+    fn compositor_of(&self, canvas: CanvasId) -> Result<NodeId, RecordError> {
+        if canvas == self.settings.canvas {
+            return Ok(self.compositor);
+        }
+        self.extras
+            .iter()
+            .find(|e| e.canvas == canvas)
+            .map(|e| e.view.compositor)
+            .ok_or(RecordError::UnknownCanvas(canvas))
+    }
+
+    /// The size of a canvas the studio runs.
+    fn canvas_size(&self, canvas: CanvasId) -> Result<(u32, u32), RecordError> {
+        if canvas == self.settings.canvas {
+            return Ok(self.size);
+        }
+        self.extras
+            .iter()
+            .find(|e| e.canvas == canvas)
+            .map(|e| e.size)
+            .ok_or(RecordError::UnknownCanvas(canvas))
     }
 
     /// Encoder counters of the chains in `video` and `audio` slots now.
@@ -1939,6 +1988,8 @@ impl Studio {
     /// as before. Returns the output and the nodes it added.
     fn add_output(&mut self, p: Prepared) -> Result<(OutputId, Vec<Added>), RecordError> {
         let parts = self.settings.partitions;
+        let canvas = p.canvas;
+        let compositor = self.compositor_of(canvas)?;
         // Partitions are taken by role, each the first free one whose earlier nodes
         // were all taken back (a take still pending means its swap or drain is in
         // flight, ADR-0047). With MAX_OUTPUTS outputs and at most one chain of each kind
@@ -1992,7 +2043,7 @@ impl Studio {
                     RENDER,
                 )?;
                 let encoder_id = add_active(&mut graph, Node::<()>::descriptor(&**encoder), part)?;
-                graph.connect(self.compositor, "canvas", export_id, "canvas")?;
+                graph.connect(compositor, "canvas", export_id, "canvas")?;
                 graph.connect(export_id, "video", encoder_id, "video")?;
                 let e = Added {
                     node: export_id,
@@ -2087,6 +2138,7 @@ impl Studio {
             let r = self.engine.adopt::<()>(v.partition, v.node, encoder);
             adopt(&mut self.engine, v, r)?;
             video_chain = Some(VideoChain {
+                canvas,
                 settings,
                 chosen,
                 stream,
@@ -2782,17 +2834,26 @@ struct ScenePreview {
 struct ExtraRun {
     canvas: CanvasId,
     size: (u32, u32),
-    view: ScenePreview,
+    view: ExtraView,
 }
 
-/// Adopts `bound`'s compositor on [`RENDER`] at `size` with a picture of its own.
-fn attach_picture(
+/// A further canvas's compositor and, for a UI, its picture.
+struct ExtraView {
+    compositor: NodeId,
+    layers: LayerSender,
+    bound: BoundCompositor,
+    picture: Option<(NodeId, Arc<PreviewNodeStats>)>,
+}
+
+/// Adopts `bound`'s compositor on [`RENDER`] at `size`, with a picture of its own when
+/// `desc` is given.
+fn attach_compositor(
     engine: &mut Engine,
     graph: &mut GraphDescription,
     bound: BoundCompositor,
     size: (u32, u32),
-    desc: PreviewDesc,
-) -> Result<ScenePreview, RecordError> {
+    desc: Option<PreviewDesc>,
+) -> Result<ExtraView, RecordError> {
     let (compositor, layers) = CompositorNode::new(
         CanvasDesc {
             width: size.0,
@@ -2802,16 +2863,20 @@ fn attach_picture(
         Vec::new(),
     );
     engine.adopt::<GpuRuntime>(RENDER, bound.node, Box::new(compositor))?;
-    let node = PreviewNode::new(desc);
-    let stats = node.stats();
-    let id = add_active(graph, Node::<GpuRuntime>::descriptor(&node), RENDER)?;
-    graph.connect(bound.node, "canvas", id, "canvas")?;
-    engine.adopt::<GpuRuntime>(RENDER, id, Box::new(node))?;
-    Ok(ScenePreview {
+    let mut picture = None;
+    if let Some(desc) = desc {
+        let node = PreviewNode::new(desc);
+        let stats = node.stats();
+        let id = add_active(graph, Node::<GpuRuntime>::descriptor(&node), RENDER)?;
+        graph.connect(bound.node, "canvas", id, "canvas")?;
+        engine.adopt::<GpuRuntime>(RENDER, id, Box::new(node))?;
+        picture = Some((id, stats));
+    }
+    Ok(ExtraView {
         compositor: bound.node,
         layers,
         bound,
-        picture: (id, stats),
+        picture,
     })
 }
 

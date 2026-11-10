@@ -259,3 +259,50 @@ fn an_output_that_cannot_start_leaves_the_running_one_alone() {
     let (_, errors) = studio.shutdown();
     assert!(errors.is_empty(), "{errors:?}");
 }
+
+#[test]
+fn an_output_of_a_further_canvas_has_its_own_export_and_encoder() {
+    use rbs_core::media::video::Size;
+    use rbs_core::timing::FrameRate;
+    use rbs_record::ExtraCanvas;
+
+    if gpu().is_none() {
+        return;
+    }
+    let r = rig();
+    let (mut col, main) = scene();
+    let program = col.canvas(main).unwrap().program.unwrap();
+    let (tall, _) = col
+        .add_canvas("Vertical", Size::new(H / 2, W / 2), FrameRate::FPS_30)
+        .unwrap();
+    col.set_program(tall, Some(program)).unwrap();
+    let (engine, clock) = engine_at_start();
+    let mut settings = StudioSettings::new(main);
+    settings.extra_canvases = vec![ExtraCanvas::new(tall)];
+    let mut studio = Studio::start(engine, gpu().unwrap(), &col, &r.adapters.sources, &settings)
+        .expect("a canvas without a picture starts");
+    // Nothing consumes either canvas yet (P13).
+    assert!(!studio.engine().has_worker(rbs_record::RENDER));
+
+    let horizontal = studio.start_output(&r.adapters, &recording()).unwrap();
+    let one = r.video_sessions.load(Ordering::Relaxed);
+    // The same settings on another canvas never share the encoder.
+    let mut vertical_out = stream(6_000_000);
+    vertical_out.video = recording().video;
+    vertical_out.canvas = Some(tall);
+    let vertical = studio.start_output(&r.adapters, &vertical_out).unwrap();
+    assert!(!studio.output(vertical).unwrap().video_shared);
+    assert_eq!(r.video_sessions.load(Ordering::Relaxed), 2 * one);
+
+    let reached = run_until(&mut studio, &clock, |_| {
+        r.log.count(0) >= 8 && r.stream_log.count(0) >= 8
+    });
+    assert!(reached, "{:?}", studio.output_progress(vertical));
+
+    for id in [horizontal, vertical] {
+        let report = studio.stop_output(id).unwrap();
+        assert!(report.shutdown_errors.is_empty(), "{report:?}");
+    }
+    let (_, errors) = studio.shutdown();
+    assert!(errors.is_empty(), "{errors:?}");
+}

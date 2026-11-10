@@ -107,7 +107,7 @@ pub const MAX_OUTPUTS: usize = 2;      // outputs running at once
     pub extra_canvases: Vec<ExtraCanvas>, // ADR-0093: further canvases beside `canvas`; empty
 }
 pub const MAX_CANVASES: usize = 2;         // the main canvas included
-#[non_exhaustive] pub struct ExtraCanvas { pub canvas: CanvasId, pub preview: PreviewDesc }
+#[non_exhaustive] pub struct ExtraCanvas { pub canvas: CanvasId, pub preview: Option<PreviewDesc> } // new(canvas).with_preview(desc)
 impl StudioSettings { pub fn new(canvas: CanvasId) -> Self; } // audio on, no preview
 #[non_exhaustive] pub struct OutputSettings { // a recording or a live stream
     pub url: String, pub input: TransportInput,
@@ -235,7 +235,8 @@ Without audio (`audio: None`) the two audio partitions are not added: three work
 
 - **What runs.** Each `StudioSettings::extra_canvases` entry adds one compositor on `RENDER` at the canvas's own size and one picture (`canvas_preview`). Source nodes and their filter chains are built once by the binder and feed every compositor, so a device is opened once whatever the number of canvases. No entry: nothing of the others is scheduled (Installed, P13).
 - **Checks at start.** `Studio::start` fails with `TooManyCanvases` (more than `MAX_CANVASES`, a canvas listed twice or equal to the main one), `UnknownCanvas`, `NoProgram`, or `CanvasRate` (the frame rate differs from the main canvas, ADR-0093 decision 2). `update` rejects a size or rate change of any running canvas.
-- **Not yet.** Outputs (recording, streaming) of a further canvas, follow modes, audio per canvas, Auto layout and the control API are the next steps of ADR-0093 decision 11; a further canvas shows its own program scene until the follow modes exist. The render tick is a hot path: measurements and the maintainer's sign-off (P15) are pending before this merges.
+- **Outputs.** `OutputSettings::canvas` (`None`: main) picks the canvas an output records or streams; an unknown one fails with `UnknownCanvas`. An encoder is shared only between outputs of the same canvas (and equal settings). `MAX_OUTPUTS` is still 2 in total; the per-canvas limit of ADR-0093 decision 6 follows with the partition change.
+- **Not yet.** Follow modes, audio per canvas, Auto layout and the control API are the next steps of ADR-0093 decision 11; a further canvas shows its own program scene until the follow modes exist. The render tick is a hot path: measurements and the maintainer's sign-off (P15) are pending before this merges.
 
 ### Several outputs (ADR-0047)
 
