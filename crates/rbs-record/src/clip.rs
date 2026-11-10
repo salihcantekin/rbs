@@ -6,12 +6,15 @@
 //! graph: capture and every running output go on while it writes.
 
 use std::fmt;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use rbs_core::media::{ContainerId, MediaError, MuxChunk, StreamDescriptor};
-use rbs_mux::{MuxError, MuxerConfig};
+use rbs_mux::{MuxError, MuxerConfig, MuxerFactory};
 use rbs_nodes::replay::{Clip, ClipBounds};
-use rbs_transport::{TransportConfig, TransportError, TransportInput, TransportItem};
+use rbs_transport::{
+    TransportConfig, TransportError, TransportFactory, TransportInput, TransportItem,
+};
 
 use crate::recording::{Port, RecordAdapters, RecordError};
 use crate::select::{self, Chosen};
@@ -65,9 +68,121 @@ impl fmt::Display for ClipWriteError {
 
 impl std::error::Error for ClipWriteError {}
 
-/// Writes `clip` to `url` in `container`. `streams` are the buffer's stream descriptors
-/// ([`Studio::replay_streams`](crate::Studio::replay_streams)). Timestamps are rebased
-/// so the earliest sample is 0; nothing is re-encoded.
+/// The adapters that write one clip: chosen on the control thread (where the registries
+/// live), then moved to the worker thread that runs [`ClipWriter::write`].
+pub struct ClipWriter {
+    muxer: Arc<dyn MuxerFactory>,
+    transport: Arc<dyn TransportFactory>,
+    muxer_chosen: Chosen,
+    transport_chosen: Chosen,
+    url: String,
+    container: ContainerId,
+}
+
+impl ClipWriter {
+    /// Chooses a muxer for `container` and a transport for `url`.
+    pub fn new(
+        adapters: &RecordAdapters,
+        url: &str,
+        container: ContainerId,
+    ) -> Result<Self, ClipWriteError> {
+        let (muxer, muxer_chosen) =
+            select::muxer(&adapters.muxers, container).map_err(ClipWriteError::Adapter)?;
+        let (transport, transport_chosen) = select::transport(
+            &adapters.transports,
+            url,
+            TransportInput::Container(container),
+        )
+        .map_err(ClipWriteError::Adapter)?;
+        Ok(Self {
+            muxer,
+            transport,
+            muxer_chosen,
+            transport_chosen,
+            url: url.to_owned(),
+            container,
+        })
+    }
+
+    /// Writes `clip` to the URL. `streams` are the buffer's stream descriptors
+    /// ([`Studio::replay_streams`](crate::Studio::replay_streams)). Timestamps are
+    /// rebased so the earliest sample is 0; nothing is re-encoded. Blocks until the
+    /// file is closed.
+    pub fn write(
+        &self,
+        clip: &Clip,
+        streams: &[StreamDescriptor],
+    ) -> Result<ClipFile, ClipWriteError> {
+        let container = self.container;
+        let entries = clip.rebased().map_err(ClipWriteError::Media)?;
+        let mut muxer = self
+            .muxer
+            .create(&MuxerConfig::new(container, streams.to_vec()))
+            .map_err(|e| ClipWriteError::Adapter(refused(Port::Muxer, &self.muxer_chosen, &e)))?;
+        let mut transport = self
+            .transport
+            .create(&TransportConfig::new(
+                self.url.as_str(),
+                TransportInput::Container(container),
+            ))
+            .map_err(|e| {
+                ClipWriteError::Adapter(refused(Port::Transport, &self.transport_chosen, &e))
+            })?;
+        transport
+            .start(streams)
+            .map_err(ClipWriteError::Transport)?;
+
+        let deadline = Instant::now() + CLIP_WRITE_TIMEOUT;
+        let mut chunks: Vec<MuxChunk> = Vec::new();
+        let mut send_all = |chunks: &mut Vec<MuxChunk>| -> Result<(), ClipWriteError> {
+            for chunk in chunks.drain(..) {
+                loop {
+                    match transport.send(TransportItem::Chunk(&chunk)) {
+                        Ok(_) => break,
+                        Err(TransportError::QueueFull) if Instant::now() < deadline => {
+                            std::thread::sleep(RETRY_PAUSE);
+                        }
+                        Err(e) => return Err(ClipWriteError::Transport(e)),
+                    }
+                }
+            }
+            Ok(())
+        };
+        let mut packets = 0_u64;
+        let mut mux_drops = 0_u64;
+        let result = (|| {
+            muxer.begin(&mut chunks).map_err(ClipWriteError::Mux)?;
+            send_all(&mut chunks)?;
+            for e in &entries {
+                match muxer.write(e.stream, &e.packet, &mut chunks) {
+                    Ok(()) => packets += 1,
+                    Err(MuxError::NonMonotonic { .. }) => mux_drops += 1,
+                    Err(err) => return Err(ClipWriteError::Mux(err)),
+                }
+                send_all(&mut chunks)?;
+            }
+            muxer.finish(&mut chunks).map_err(ClipWriteError::Mux)?;
+            send_all(&mut chunks)
+        })();
+        // Close the file whatever happened: a half-written clip is still a valid
+        // fragmented file, and the transport's threads and handles must end.
+        let finished = transport
+            .finish(deadline.saturating_duration_since(Instant::now()))
+            .map_err(ClipWriteError::Transport);
+        result?;
+        finished?;
+        Ok(ClipFile {
+            packets,
+            mux_drops,
+            bounds: clip.bounds,
+            muxer: self.muxer_chosen.clone(),
+            transport: self.transport_chosen.clone(),
+        })
+    }
+}
+
+/// Writes `clip` to `url` in `container`: [`ClipWriter::new`] and [`ClipWriter::write`]
+/// in one call.
 pub fn write_clip(
     adapters: &RecordAdapters,
     clip: &Clip,
@@ -75,74 +190,7 @@ pub fn write_clip(
     url: &str,
     container: ContainerId,
 ) -> Result<ClipFile, ClipWriteError> {
-    let entries = clip.rebased().map_err(ClipWriteError::Media)?;
-    let (muxer_factory, muxer_chosen) =
-        select::muxer(&adapters.muxers, container).map_err(ClipWriteError::Adapter)?;
-    let (transport_factory, transport_chosen) = select::transport(
-        &adapters.transports,
-        url,
-        TransportInput::Container(container),
-    )
-    .map_err(ClipWriteError::Adapter)?;
-    let mut muxer = muxer_factory
-        .create(&MuxerConfig::new(container, streams.to_vec()))
-        .map_err(|e| ClipWriteError::Adapter(refused(Port::Muxer, &muxer_chosen, &e)))?;
-    let mut transport = transport_factory
-        .create(&TransportConfig::new(
-            url,
-            TransportInput::Container(container),
-        ))
-        .map_err(|e| ClipWriteError::Adapter(refused(Port::Transport, &transport_chosen, &e)))?;
-    transport
-        .start(streams)
-        .map_err(ClipWriteError::Transport)?;
-
-    let deadline = Instant::now() + CLIP_WRITE_TIMEOUT;
-    let mut chunks: Vec<MuxChunk> = Vec::new();
-    let mut send_all = |chunks: &mut Vec<MuxChunk>| -> Result<(), ClipWriteError> {
-        for chunk in chunks.drain(..) {
-            loop {
-                match transport.send(TransportItem::Chunk(&chunk)) {
-                    Ok(_) => break,
-                    Err(TransportError::QueueFull) if Instant::now() < deadline => {
-                        std::thread::sleep(RETRY_PAUSE);
-                    }
-                    Err(e) => return Err(ClipWriteError::Transport(e)),
-                }
-            }
-        }
-        Ok(())
-    };
-    let mut packets = 0_u64;
-    let mut mux_drops = 0_u64;
-    let result = (|| {
-        muxer.begin(&mut chunks).map_err(ClipWriteError::Mux)?;
-        send_all(&mut chunks)?;
-        for e in &entries {
-            match muxer.write(e.stream, &e.packet, &mut chunks) {
-                Ok(()) => packets += 1,
-                Err(MuxError::NonMonotonic { .. }) => mux_drops += 1,
-                Err(err) => return Err(ClipWriteError::Mux(err)),
-            }
-            send_all(&mut chunks)?;
-        }
-        muxer.finish(&mut chunks).map_err(ClipWriteError::Mux)?;
-        send_all(&mut chunks)
-    })();
-    // Close the file whatever happened: a half-written clip is still a valid
-    // fragmented file, and the transport's threads and handles must end.
-    let finished = transport
-        .finish(deadline.saturating_duration_since(Instant::now()))
-        .map_err(ClipWriteError::Transport);
-    result?;
-    finished?;
-    Ok(ClipFile {
-        packets,
-        mux_drops,
-        bounds: clip.bounds,
-        muxer: muxer_chosen,
-        transport: transport_chosen,
-    })
+    ClipWriter::new(adapters, url, container)?.write(clip, streams)
 }
 
 /// An adapter that was chosen but refused to create its session.
