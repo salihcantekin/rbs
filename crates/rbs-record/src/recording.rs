@@ -454,6 +454,8 @@ pub enum RecordError {
     OutputFinishing,
     /// The replay buffer is armed already ([`Studio::arm_replay`]).
     ReplayArmed,
+    /// The monitor output plays already ([`Studio::start_monitor`]).
+    MonitorPlaying,
 }
 
 impl fmt::Display for RecordError {
@@ -491,6 +493,7 @@ impl fmt::Display for RecordError {
                 f.write_str("an output stopped just now is still finishing; try again")
             }
             RecordError::ReplayArmed => f.write_str("the replay buffer is armed already"),
+            RecordError::MonitorPlaying => f.write_str("the monitor output plays already"),
             RecordError::TooManyOutputs => write!(
                 f,
                 "this canvas already feeds the most outputs at once ({}); a studio runs at most {}",
