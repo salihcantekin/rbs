@@ -1328,11 +1328,7 @@ component FrameBar inherits Rectangle {
     // The workspace menu: the same CommandMenu as every other context (ADR-0094 B1).
     ws-menu := CommandMenu { context: "workspace"; }
     add-source-menu := CommandMenu { context: "add-source"; }
-    app-menu := AppMenu {
-        x: Tokens.space-2;
-        y: parent.height;
-    }
-    function open-app-menu() { app-menu.show(); }
+    function open-app-menu() { AppMenus.open = true; }
     property <int> asked: Shell.app-menu-asked;
     changed asked => { open-app-menu(); }
 }
@@ -1794,6 +1790,16 @@ export component MainWindow inherits Window {
             : @tr("That did not work: {}", Shell.error-detail);
         action: "";
         dismiss => { Shell.dismiss-error(); }
+    }
+    // The RBS menu: a layer under the hint and tooltip layer; a click outside closes it.
+    if AppMenus.open: Rectangle {
+        width: parent.width;
+        height: parent.height;
+        TouchArea { clicked => { AppMenus.open = false; } }
+        AppMenu {
+            x: Tokens.space-2;
+            y: frame.height;
+        }
     }
     // The info hint and tooltip layer, drawn last (ADR-0094).
     OverlayHost { width: parent.width; height: parent.height; }
