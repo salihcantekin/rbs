@@ -1,6 +1,6 @@
 # Spec: Audio filters
 
-- Status: Draft (crate, nodes, binder and studio wiring exist; the control API and UI follow in later PRs of ADR-0082)
+- Status: Draft (crate, nodes, binder, studio wiring and control API 1.16 exist; the UI follows in a later PR of ADR-0082)
 - Owner crate(s): `rbs-audio-filters` (audio filter type trait, DSP trait, filter node, catalogue, conformance suite); `rbs-params` (settings schema, shared with video filters)
 - Related ADRs: ADR-0082, ADR-0062, ADR-0023, ADR-0020, ADR-0013
 
@@ -12,7 +12,7 @@ Built-in audio filters for sources: Gain and Noise gate, run as `AudioFilter` no
 
 In scope: `AudioFilterType`, `AudioDsp`, `FilterMeter`, `AudioFilterNode`, the catalogue and the conformance suite.
 
-Out of scope here (later PRs of ADR-0082): the `filter.*` control API for audio, the editor UI, a limiter and look-ahead filters (they need latency reporting in the node contract), the ducker.
+Out of scope here (later PRs of ADR-0082): the editor UI, a limiter and look-ahead filters (they need latency reporting in the node contract), the ducker.
 
 ## Contract
 
