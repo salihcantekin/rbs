@@ -322,6 +322,12 @@ fn every_request() -> Vec<Request> {
             target: "window:7".to_owned(),
         })),
         c(Command::SourceReload(ReloadSource { source: 3 })),
+        c(Command::SettingsRecentTargets(TargetsParams {
+            kind: SourceKind::Window,
+        })),
+        c(Command::SettingsClearRecentTargets(TargetsParams {
+            kind: SourceKind::Window,
+        })),
     ]
 }
 

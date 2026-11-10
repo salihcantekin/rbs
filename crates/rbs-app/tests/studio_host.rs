@@ -784,3 +784,36 @@ fn a_source_is_pointed_at_another_target_keeping_its_place_and_one_undo_step() {
     );
     assert_eq!(redo.map(|s| s.kind), Some(EditKind::Retarget));
 }
+
+#[test]
+fn targets_a_source_was_given_are_listed_as_recent_newest_first() {
+    let Some(gpu) = gpu() else { return };
+    let (host, rx) = host(gpu);
+    next(&rx, |u| match u {
+        Update::Started { .. } => Some(()),
+        Update::Failed(e) => panic!("{e}"),
+        _ => None,
+    });
+    let mics = targets(&host, &rx, SourceKind::AudioInput);
+    assert!(mics.iter().all(|t| t.recent.is_none()), "nothing picked yet");
+    host.send(Command::AddSource {
+        kind: SourceKind::AudioInput,
+        target: mics[0].clone(),
+    });
+    let rows = rows_where(&rx, |r| r.len() == 1);
+    host.send(Command::RetargetSource {
+        id: rows[0].id,
+        target: mics[1].clone(),
+    });
+    // Commands run in order, so the list below sees both picks.
+    let after = targets(&host, &rx, SourceKind::AudioInput);
+    let rank = |t: &Target| {
+        after
+            .iter()
+            .find(|a| a.target == t.target)
+            .and_then(|a| a.recent)
+    };
+    assert_eq!(rank(&mics[1]), Some(0), "the last pick is the newest");
+    assert_eq!(rank(&mics[0]), Some(1));
+    stop(host, &rx);
+}

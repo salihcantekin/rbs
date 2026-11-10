@@ -497,6 +497,10 @@ pub enum Command {
     SourceRetarget(RetargetSource),
     /// `source.reload` (protocol 1.13).
     SourceReload(ReloadSource),
+    /// `settings.recent_targets` (protocol 1.13).
+    SettingsRecentTargets(TargetsParams),
+    /// `settings.clear_recent_targets` (protocol 1.13).
+    SettingsClearRecentTargets(TargetsParams),
     /// `item.set_visible` (protocol 1.6).
     ItemSetVisible(SetItemVisible),
     /// `item.set_locked` (protocol 1.6).
@@ -596,6 +600,8 @@ impl Command {
             Command::SourceSetSyncOffset(_) => "source.set_sync_offset",
             Command::SourceRetarget(_) => "source.retarget",
             Command::SourceReload(_) => "source.reload",
+            Command::SettingsRecentTargets(_) => "settings.recent_targets",
+            Command::SettingsClearRecentTargets(_) => "settings.clear_recent_targets",
             Command::SceneSources(_) => "scene.sources",
             Command::CanvasSetPreview(_) => "canvas.set_preview",
             Command::CanvasTransition => "canvas.transition",
@@ -708,6 +714,8 @@ pub const METHODS: &[MethodInfo] = &[
     m("source.set_sync_offset", Some(Scope::Control)),
     m("source.retarget", Some(Scope::Control)),
     m("source.reload", Some(Scope::Control)),
+    m("settings.recent_targets", Some(Scope::Control)),
+    m("settings.clear_recent_targets", Some(Scope::Control)),
     m("item.set_visible", Some(Scope::Control)),
     m("item.set_locked", Some(Scope::Control)),
     m("scene.sources", Some(Scope::Read)),
@@ -861,6 +869,10 @@ enum WireRequest {
     SourceRetarget(RetargetSource),
     #[serde(rename = "source.reload")]
     SourceReload(ReloadSource),
+    #[serde(rename = "settings.recent_targets")]
+    SettingsRecentTargets(TargetsParams),
+    #[serde(rename = "settings.clear_recent_targets")]
+    SettingsClearRecentTargets(TargetsParams),
     #[serde(rename = "item.set_visible")]
     ItemSetVisible(SetItemVisible),
     #[serde(rename = "item.set_locked")]
@@ -965,6 +977,10 @@ impl From<WireRequest> for Request {
             WireRequest::SourceSetSyncOffset(p) => Request::Command(C::SourceSetSyncOffset(p)),
             WireRequest::SourceRetarget(p) => Request::Command(C::SourceRetarget(p)),
             WireRequest::SourceReload(p) => Request::Command(C::SourceReload(p)),
+            WireRequest::SettingsRecentTargets(p) => Request::Command(C::SettingsRecentTargets(p)),
+            WireRequest::SettingsClearRecentTargets(p) => {
+                Request::Command(C::SettingsClearRecentTargets(p))
+            }
             WireRequest::SceneSources(p) => Request::Command(C::SceneSources(p)),
             WireRequest::CanvasSetPreview(p) => Request::Command(C::CanvasSetPreview(p)),
             WireRequest::CanvasTransition(_) => Request::Command(C::CanvasTransition),
@@ -1038,6 +1054,8 @@ impl From<Request> for WireRequest {
                 C::SourceSetSyncOffset(p) => WireRequest::SourceSetSyncOffset(p),
                 C::SourceRetarget(p) => WireRequest::SourceRetarget(p),
                 C::SourceReload(p) => WireRequest::SourceReload(p),
+                C::SettingsRecentTargets(p) => WireRequest::SettingsRecentTargets(p),
+                C::SettingsClearRecentTargets(p) => WireRequest::SettingsClearRecentTargets(p),
                 C::SceneSources(p) => WireRequest::SceneSources(p),
                 C::CanvasSetPreview(p) => WireRequest::CanvasSetPreview(p),
                 C::CanvasTransition => WireRequest::CanvasTransition(Empty {}),

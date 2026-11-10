@@ -3833,8 +3833,8 @@ struct SourceTargetRow {
 }
 
 /// The Source tab's list: no pickers (an OS picker needs the add flow), filtered by the
-/// lower-case `query`, the current target first, then the other windows of the same
-/// application, then the rest (ADR-0077).
+/// lower-case `query`, the current target first, then the recent targets, then the other
+/// windows of the same application, then the rest (ADR-0077).
 fn source_target_rows(list: &[Target], current: &str, query: &str) -> Vec<SourceTargetRow> {
     let current_app = list
         .iter()
@@ -3843,10 +3843,12 @@ fn source_target_rows(list: &[Target], current: &str, query: &str) -> Vec<Source
     let rank = |t: &Target| {
         if !current.is_empty() && t.target == current {
             0
-        } else if current_app.is_some() && t.app == current_app {
+        } else if t.recent.is_some() {
             1
-        } else {
+        } else if current_app.is_some() && t.app == current_app {
             2
+        } else {
+            3
         }
     };
     let mut shown: Vec<(usize, &Target)> = list
@@ -3855,8 +3857,9 @@ fn source_target_rows(list: &[Target], current: &str, query: &str) -> Vec<Source
         .filter(|(_, t)| !t.picker)
         .filter(|(_, t)| query.is_empty() || t.name.to_lowercase().contains(query))
         .collect();
-    shown.sort_by_key(|(_, t)| rank(t));
-    let any_same = shown.iter().any(|(_, t)| rank(t) == 1);
+    // Recent targets keep their order of use; the others keep the OS order.
+    shown.sort_by_key(|(_, t)| (rank(t), if rank(t) == 1 { t.recent } else { None }));
+    let any_grouped = shown.iter().any(|(_, t)| matches!(rank(t), 1 | 2));
     let mut last = 0;
     shown
         .into_iter()
@@ -3865,11 +3868,13 @@ fn source_target_rows(list: &[Target], current: &str, query: &str) -> Vec<Source
             let heading = if group == last {
                 String::new()
             } else if group == 1 {
+                "Recent".to_owned()
+            } else if group == 2 {
                 format!(
                     "Same application: {}",
                     current_app.as_deref().unwrap_or_default()
                 )
-            } else if any_same {
+            } else if any_grouped {
                 "Other".to_owned()
             } else {
                 String::new()
@@ -3897,6 +3902,7 @@ mod tests {
             is_default: false,
             size: None,
             app: app.map(str::to_owned),
+            recent: None,
             picker: false,
         }
     }
@@ -3915,6 +3921,26 @@ mod tests {
         assert!(rows[0].current && rows[0].heading.is_empty());
         assert_eq!(rows[1].heading, "Same application: Editor");
         assert!(rows[2].heading == "Other" && rows[3].heading.is_empty());
+    }
+
+    #[test]
+    fn recent_targets_come_after_the_current_one_in_the_order_of_use() {
+        let mut older = window("Older", None);
+        older.recent = Some(1);
+        let mut newer = window("Newer", None);
+        newer.recent = Some(0);
+        let list = [
+            window("Cur", Some("Editor")),
+            window("Plain", None),
+            older,
+            newer,
+        ];
+        let rows = source_target_rows(&list, "Cur", "");
+        let order: Vec<_> = rows.iter().map(|r| r.index).collect();
+        assert_eq!(order, [0, 3, 2, 1]);
+        assert_eq!(rows[1].heading, "Recent");
+        assert!(rows[2].heading.is_empty());
+        assert_eq!(rows[3].heading, "Other");
     }
 
     #[test]
