@@ -2,7 +2,7 @@
 //! [`rbs_scene::SceneCollection`], mapping one-to-one onto the model (ADR-0021).
 //!
 //! ```toml
-//! format = 9
+//! format = 10
 //! kind = "scene-collection"
 //! name = "Main show"
 //!
@@ -30,6 +30,7 @@
 //! name = "Display"
 //! type = "org.rbs.source.display"
 //! settings = { cursor = true }
+//! # monitor = "also"         # heard on the monitor output: "only" or "also" (format 10, ADR-0097)
 //!
 //! [[scenes]]
 //! id = 0
@@ -60,7 +61,7 @@ use rbs_graph::node::NodeTypeId;
 use rbs_scene::model::{
     Border, Canvas, CanvasId, Crop, Fallback, Filter, FilterId, ItemContent, ItemId, ItemStyle,
     Layout, MasterAudio, Scene, SceneId, SceneItem, SceneScope, SettingValue, Settings, Shadow,
-    Shape, Source, SourceAudio, SourceId,
+    Shape, Source, SourceAudio, SourceId, SourceMonitor,
 };
 use rbs_scene::{IdCounters, SceneCollection};
 use serde::{Deserialize, Serialize};
@@ -174,9 +175,48 @@ struct SourceDoc {
     sync_offset_ms: i32,
     #[serde(default, skip_serializing_if = "is_false")]
     mixer_hidden: bool,
+    /// Heard on the monitor output (format 10, ADR-0097); absent: off.
+    #[serde(default, skip_serializing_if = "MonitorDoc::is_off")]
+    monitor: MonitorDoc,
     /// Hints for finding the target again (`target_app`, `target_title`; format 8, ADR-0077).
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     hints: BTreeMap<String, String>,
+}
+
+/// A source's monitor mode in the document (ADR-0097 decision 5).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+enum MonitorDoc {
+    #[default]
+    Off,
+    Only,
+    Also,
+}
+
+impl MonitorDoc {
+    fn is_off(&self) -> bool {
+        *self == Self::Off
+    }
+}
+
+impl From<SourceMonitor> for MonitorDoc {
+    fn from(m: SourceMonitor) -> Self {
+        match m {
+            SourceMonitor::Off => Self::Off,
+            SourceMonitor::Only => Self::Only,
+            SourceMonitor::Also => Self::Also,
+        }
+    }
+}
+
+impl From<MonitorDoc> for SourceMonitor {
+    fn from(m: MonitorDoc) -> Self {
+        match m {
+            MonitorDoc::Off => Self::Off,
+            MonitorDoc::Only => Self::Only,
+            MonitorDoc::Also => Self::Also,
+        }
+    }
 }
 
 fn is_zero_ms(v: &i32) -> bool {
@@ -453,7 +493,7 @@ fn settings(s: BTreeMap<String, Value>) -> Settings {
 
 impl Document for SceneCollection {
     const KIND: &'static str = "scene-collection";
-    const FORMAT: u32 = 9;
+    const FORMAT: u32 = 10;
 
     /// Format 2 adds the optional layout `style` (ADR-0053); a format 1 body is a
     /// format 2 body without styles. Format 3 adds the optional item `locked` and
@@ -465,9 +505,11 @@ impl Document for SceneCollection {
     /// `master` (ADR-0081); a format 6 body is a format 7 body without it. Format 8 adds the optional source
     /// `hints` (ADR-0077); a format 7 body is a format 8 body without them. Format 9 adds the optional canvas
     /// `follow` and `fallback` (ADR-0093); a format 8 body is a format 9 body without them.
+    /// Format 10 adds the optional source `monitor` (ADR-0097); a format 9 body is a
+    /// format 10 body without it.
     fn upgrade(from: u32, body: &mut toml::Table) -> Result<(), String> {
         match from {
-            1..=8 => {
+            1..=9 => {
                 // Keys of a later format in an older file mean it was not written by
                 // a build that knew them: refuse instead of reading them silently.
                 let late = body
@@ -481,6 +523,16 @@ impl Document for SceneCollection {
                     return Err(format!(
                         "format {from} has no canvas `follow` or `fallback` (format 9)"
                     ));
+                }
+                let monitored = body
+                    .get("sources")
+                    .and_then(toml::Value::as_array)
+                    .into_iter()
+                    .flatten()
+                    .filter_map(toml::Value::as_table)
+                    .any(|s| s.contains_key("monitor"));
+                if monitored {
+                    return Err(format!("format {from} has no source `monitor` (format 10)"));
                 }
                 Ok(())
             }
@@ -541,6 +593,7 @@ impl Document for SceneCollection {
                     muted: s.audio.muted,
                     sync_offset_ms: s.audio.sync_offset_ms,
                     mixer_hidden: s.audio.mixer_hidden,
+                    monitor: s.audio.monitor.into(),
                     hints: s.hints.clone(),
                 })
             })
@@ -661,7 +714,8 @@ impl Document for SceneCollection {
                     .collect();
                 source.audio = SourceAudio::new(s.volume as f32, s.muted)
                     .with_sync_offset(s.sync_offset_ms)
-                    .with_mixer_hidden(s.mixer_hidden);
+                    .with_mixer_hidden(s.mixer_hidden)
+                    .with_monitor(s.monitor.into());
                 source.hints = s.hints;
                 source
             })
