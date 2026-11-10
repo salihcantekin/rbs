@@ -67,6 +67,28 @@ pub const MAX_LAYERS: usize = 64;
 /// (a stalled readback must not hold the stop up, ADR-0045).
 pub const END_TAIL_LIMIT: Duration = Duration::from_millis(500);
 
+/// Canvases a studio serves at once, the main one included (ADR-0093 decision 1).
+pub const MAX_CANVASES: usize = 2;
+
+/// A further canvas the studio runs beside the main one (ADR-0093): its own compositor
+/// and picture; sources and their filter chains are shared with the main canvas.
+#[non_exhaustive]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ExtraCanvas {
+    /// The canvas. It needs a program scene and the main canvas's frame rate.
+    pub canvas: CanvasId,
+    /// Its picture for a UI. The canvas is only composed while this exists (Standby
+    /// otherwise, P13): a closed panel costs nothing.
+    pub preview: PreviewDesc,
+}
+
+impl ExtraCanvas {
+    /// `canvas` with a picture described by `preview`.
+    pub fn new(canvas: CanvasId, preview: PreviewDesc) -> Self {
+        Self { canvas, preview }
+    }
+}
+
 /// How the studio runs its canvas.
 #[non_exhaustive]
 #[derive(Debug, Clone, PartialEq)]
@@ -91,6 +113,10 @@ pub struct StudioSettings {
     /// negative advances it. Sources not listed have none. The audio input clamps it to
     /// its range (`rbs_sources::DEFAULT_MAX_AUDIO_OFFSET` at most).
     pub audio_offsets: BTreeMap<SourceId, i64>,
+    /// Further canvases run beside `canvas` (ADR-0093), at most
+    /// [`MAX_CANVASES`]` - 1`, each at the main canvas's frame rate. Empty: one canvas,
+    /// nothing of the others runs.
+    pub extra_canvases: Vec<ExtraCanvas>,
 }
 
 impl StudioSettings {
@@ -104,6 +130,7 @@ impl StudioSettings {
             preview: None,
             scene_preview: false,
             audio_offsets: BTreeMap::new(),
+            extra_canvases: Vec::new(),
         }
     }
 }
@@ -634,6 +661,8 @@ pub struct Studio {
     /// The preview scene's compositor and picture while the canvas is in studio mode
     /// (ADR-0061); `None` otherwise, so nothing of it runs.
     scene_preview: Option<ScenePreview>,
+    /// The further canvases that run (ADR-0093), in `settings.extra_canvases` order.
+    extras: Vec<ExtraRun>,
     entries: Vec<Entry>,
     problems: Vec<BindProblem>,
     /// Studio nodes without which it cannot run (compositor, mixer, preview, sink).
@@ -737,6 +766,27 @@ impl Studio {
         let (width, height) = (canvas.size.width, canvas.size.height);
         let fps = canvas.frame_rate;
         let parts = settings.partitions;
+        if settings.extra_canvases.len() + 1 > MAX_CANVASES {
+            return Err(RecordError::TooManyCanvases);
+        }
+        for (i, extra) in settings.extra_canvases.iter().enumerate() {
+            if extra.canvas == canvas_id
+                || settings.extra_canvases[..i]
+                    .iter()
+                    .any(|e| e.canvas == extra.canvas)
+            {
+                return Err(RecordError::TooManyCanvases);
+            }
+            let other = collection
+                .canvas(extra.canvas)
+                .ok_or(RecordError::UnknownCanvas(extra.canvas))?;
+            if other.program.is_none() {
+                return Err(RecordError::NoProgram(extra.canvas));
+            }
+            if other.frame_rate != fps {
+                return Err(RecordError::CanvasRate(extra.canvas));
+            }
+        }
 
         let mut graph = GraphDescription::new();
         let mut binder = SceneBinder::new(sources.node_types());
@@ -821,6 +871,27 @@ impl Studio {
             essential.insert(id, "preview");
         }
 
+        let mut extras = Vec::new();
+        for extra in &settings.extra_canvases {
+            let bound = report
+                .compositors
+                .get(&(extra.canvas, Role::Program))
+                .cloned()
+                .ok_or(RecordError::NotBound("program compositor"))?;
+            let size = collection
+                .canvas(extra.canvas)
+                .map(|c| (c.size.width, c.size.height))
+                .ok_or(RecordError::UnknownCanvas(extra.canvas))?;
+            let view = attach_picture(&mut engine, &mut graph, bound, size, extra.preview)?;
+            essential.insert(view.compositor, "compositor of a further canvas");
+            essential.insert(view.picture.0, "preview of a further canvas");
+            extras.push(ExtraRun {
+                canvas: extra.canvas,
+                size,
+                view,
+            });
+        }
+
         let mut mixer = None;
         if settings.audio {
             let mixer_id = binder
@@ -869,6 +940,7 @@ impl Studio {
             meters: BTreeMap::new(),
             preview,
             scene_preview: None,
+            extras,
             entries: Vec::new(),
             problems: Vec::new(),
             essential,
@@ -942,6 +1014,17 @@ impl Studio {
         if (canvas.size.width, canvas.size.height) != self.size || canvas.frame_rate != self.fps {
             return Err(RecordError::NotBound("canvas of the same size and rate"));
         }
+        for extra in &self.extras {
+            let other = collection
+                .canvas(extra.canvas)
+                .ok_or(RecordError::UnknownCanvas(extra.canvas))?;
+            if (other.size.width, other.size.height) != extra.size || other.frame_rate != self.fps {
+                return Err(RecordError::NotBound("canvas of the same size and rate"));
+            }
+            if other.program.is_none() {
+                return Err(RecordError::NoProgram(extra.canvas));
+            }
+        }
         // Checked before anything changes: without a program scene the binder would
         // retire the compositor the studio runs.
         if canvas.program.is_none() {
@@ -997,6 +1080,15 @@ impl Studio {
                 .get(&(self.settings.canvas, Role::Program))
             {
                 self.bound = b.clone();
+            }
+            for extra in &mut self.extras {
+                if report.retired_compositors.contains(&extra.view.compositor) {
+                    self.failure = Some("a further canvas's compositor was retired".to_owned());
+                    return Err(RecordError::NotBound("program compositor"));
+                }
+                if let Some(b) = report.compositors.get(&(extra.canvas, Role::Program)) {
+                    extra.view.bound = b.clone();
+                }
             }
             self.bound_mixer = report.mixers.get(&self.settings.canvas).cloned();
             let retired: BTreeSet<NodeId> = report.retired_sources.iter().copied().collect();
@@ -1240,6 +1332,12 @@ impl Studio {
         if let Some(sp) = &mut self.scene_preview {
             let _ = sp.layers.send(node_layers(&sp.bound, &plan));
         }
+        for extra in &mut self.extras {
+            let _ = extra
+                .view
+                .layers
+                .send(node_layers(&extra.view.bound, &plan));
+        }
         // Strips: until the swap, the old schedule may still feed inputs that leave, so
         // the strips sent before the apply cover the old and the new inputs; the ones of
         // inputs that left go after it.
@@ -1477,6 +1575,23 @@ impl Studio {
     /// Where a UI connects to the preview, once the preview runs.
     pub fn preview(&self) -> Option<PreviewEndpoint> {
         self.preview.as_ref().and_then(|p| p.endpoint())
+    }
+
+    /// Where a UI connects to the picture of a further canvas (ADR-0093). `None` for the
+    /// main canvas (see [`Studio::preview`]) and for a canvas the studio does not run.
+    pub fn canvas_preview(&self, canvas: CanvasId) -> Option<PreviewEndpoint> {
+        self.extras
+            .iter()
+            .find(|e| e.canvas == canvas)
+            .and_then(|e| e.view.picture.1.endpoint())
+    }
+
+    /// The counters of a further canvas's picture.
+    pub fn canvas_preview_stats(&self, canvas: CanvasId) -> Option<&Arc<PreviewNodeStats>> {
+        self.extras
+            .iter()
+            .find(|e| e.canvas == canvas)
+            .map(|e| &e.view.picture.1)
     }
 
     /// The preview's counters, if there is a preview.
@@ -2222,6 +2337,12 @@ impl Studio {
         if let Some(sp) = &mut self.scene_preview {
             let _ = sp.layers.send(node_layers(&sp.bound, &plan));
         }
+        for extra in &mut self.extras {
+            let _ = extra
+                .view
+                .layers
+                .send(node_layers(&extra.view.bound, &plan));
+        }
         (removed, errors)
     }
 
@@ -2655,6 +2776,43 @@ struct ScenePreview {
     bound: BoundCompositor,
     /// The preview node and its counters.
     picture: (NodeId, Arc<PreviewNodeStats>),
+}
+
+/// A further canvas that runs (ADR-0093).
+struct ExtraRun {
+    canvas: CanvasId,
+    size: (u32, u32),
+    view: ScenePreview,
+}
+
+/// Adopts `bound`'s compositor on [`RENDER`] at `size` with a picture of its own.
+fn attach_picture(
+    engine: &mut Engine,
+    graph: &mut GraphDescription,
+    bound: BoundCompositor,
+    size: (u32, u32),
+    desc: PreviewDesc,
+) -> Result<ScenePreview, RecordError> {
+    let (compositor, layers) = CompositorNode::new(
+        CanvasDesc {
+            width: size.0,
+            height: size.1,
+        },
+        MAX_LAYERS as u32,
+        Vec::new(),
+    );
+    engine.adopt::<GpuRuntime>(RENDER, bound.node, Box::new(compositor))?;
+    let node = PreviewNode::new(desc);
+    let stats = node.stats();
+    let id = add_active(graph, Node::<GpuRuntime>::descriptor(&node), RENDER)?;
+    graph.connect(bound.node, "canvas", id, "canvas")?;
+    engine.adopt::<GpuRuntime>(RENDER, id, Box::new(node))?;
+    Ok(ScenePreview {
+        compositor: bound.node,
+        layers,
+        bound,
+        picture: (id, stats),
+    })
 }
 
 /// One mixer input as the studio last sent it: its producer, the source it plays, its

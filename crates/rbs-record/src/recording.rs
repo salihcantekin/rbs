@@ -358,6 +358,12 @@ pub enum RecordError {
     UnknownCanvas(CanvasId),
     /// The canvas has no program scene.
     NoProgram(CanvasId),
+    /// A further canvas of the studio does not run at the main canvas's frame rate
+    /// (ADR-0093 decision 2).
+    CanvasRate(CanvasId),
+    /// More canvases than [`MAX_CANVASES`](crate::MAX_CANVASES), or one listed twice
+    /// or equal to the main canvas.
+    TooManyCanvases,
     /// The URL has no scheme.
     InvalidUrl(String),
     /// The binder refused the collection.
@@ -404,6 +410,13 @@ impl fmt::Display for RecordError {
         match self {
             RecordError::UnknownCanvas(id) => write!(f, "no canvas {id:?}"),
             RecordError::NoProgram(id) => write!(f, "canvas {id:?} has no program scene"),
+            RecordError::CanvasRate(id) => {
+                write!(
+                    f,
+                    "canvas {id:?} does not run at the main canvas's frame rate"
+                )
+            }
+            RecordError::TooManyCanvases => write!(f, "too many canvases in the studio"),
             RecordError::InvalidUrl(url) => write!(f, "not a URL: {url}"),
             RecordError::Bind(e) => write!(f, "binding the scene failed: {e}"),
             RecordError::Problems(p) => write!(f, "the scene cannot be bound: {p:?}"),

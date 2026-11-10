@@ -15,9 +15,11 @@ use rbs_core::time::{Clock, Timestamp};
 use rbs_core::timing::Cadence;
 use rbs_graph::node::NodeTypeId;
 use rbs_record::{
-    AUDIO, AUDIO_ENCODER, END_TAIL_LIMIT, OUTPUT, OutputSettings, RENDER, RecordError, Studio,
-    StudioSettings, VIDEO_ENCODER,
+    AUDIO, AUDIO_ENCODER, END_TAIL_LIMIT, ExtraCanvas, OUTPUT, OutputSettings, RENDER, RecordError,
+    Studio, StudioSettings, VIDEO_ENCODER,
 };
+#[cfg(any(windows, target_vendor = "apple"))]
+use rbs_scene::model::CanvasId;
 use rbs_scene::model::{ItemContent, Layout, Settings};
 use rbs_sources::types;
 use support::*;
@@ -839,4 +841,132 @@ fn in_studio_mode_a_ui_gets_the_preview_scene_on_its_own_picture() {
     assert!(studio.scene_preview().is_none());
     let (_, errors) = studio.shutdown();
     assert!(errors.is_empty(), "{errors:?}");
+}
+
+#[cfg(any(windows, target_vendor = "apple"))]
+/// Starts a studio on the shared test scene plus, optionally, a vertical canvas showing
+/// the same program scene; returns the studio and the buffers the sources hold.
+fn two_canvas_studio(
+    vertical: bool,
+) -> Option<(Studio, rbs_core::time::TestClock, usize, CanvasId)> {
+    use rbs_core::media::video::Size;
+    use rbs_core::timing::FrameRate;
+    use rbs_gpu::share::PreviewDesc;
+
+    let gpu = gpu()?;
+    let r = rig();
+    let (mut col, main) = scene();
+    let program = col.canvas(main).unwrap().program.unwrap();
+    let (tall, _) = col
+        .add_canvas("Vertical", Size::new(H / 2, W / 2), FrameRate::FPS_30)
+        .unwrap();
+    col.set_program(tall, Some(program)).unwrap();
+    let (engine, clock) = engine_at_start();
+    let mut settings = StudioSettings::new(main);
+    settings.audio = false;
+    let desc = PreviewDesc {
+        width: 32,
+        height: 18,
+        surfaces: 4,
+    };
+    settings.preview = Some(desc);
+    if vertical {
+        settings.extra_canvases = vec![ExtraCanvas::new(tall, desc)];
+    }
+    let studio = Studio::start(engine, gpu, &col, &r.adapters.sources, &settings).unwrap();
+    let buffers = r.capture.live_buffers();
+    Some((studio, clock, buffers, tall))
+}
+
+#[cfg(any(windows, target_vendor = "apple"))]
+#[test]
+fn a_vertical_canvas_shares_the_sources() {
+    let Some((mut alone, _, one_canvas, absent)) = two_canvas_studio(false) else {
+        return;
+    };
+    assert!(alone.canvas_preview_stats(absent).is_none());
+    let (_, errors) = alone.shutdown();
+    assert!(errors.is_empty(), "{errors:?}");
+    let Some((mut studio, _, two_canvases, tall)) = two_canvas_studio(true) else {
+        return;
+    };
+    // Every source is opened once, whatever the number of canvases (ADR-0093), and the
+    // further canvas's picture keeps the render worker alive.
+    assert_eq!(one_canvas, two_canvases);
+    assert!(studio.canvas_preview_stats(tall).is_some());
+    assert!(studio.engine().has_worker(RENDER));
+    let (_, errors) = studio.shutdown();
+    assert!(errors.is_empty(), "{errors:?}");
+}
+
+#[cfg(any(windows, target_vendor = "apple"))]
+#[test]
+fn a_ui_subscribed_to_a_vertical_canvas_gets_its_frames() {
+    use std::sync::Arc;
+    use std::sync::atomic::AtomicU64;
+    use std::time::Instant;
+
+    use rbs_gpu::share::PreviewSubscriber;
+
+    let Some((mut studio, clock, _, tall)) = two_canvas_studio(true) else {
+        return;
+    };
+    let endpoint = studio
+        .canvas_preview(tall)
+        .expect("the picture is prepared");
+    let frames = Arc::new(AtomicU64::new(0));
+    let ui = {
+        let frames = Arc::clone(&frames);
+        std::thread::spawn(move || {
+            let mut sub = PreviewSubscriber::connect(&endpoint, LIMIT).unwrap();
+            let wall = Instant::now();
+            while frames.load(Ordering::Relaxed) < 3 && wall.elapsed() < LIMIT {
+                if let Some(frame) = sub.recv(Duration::from_millis(250)).unwrap() {
+                    assert!(frame.sequence() > 0);
+                    frames.fetch_add(1, Ordering::Relaxed);
+                }
+            }
+        })
+    };
+    let reached = run_until(&mut studio, &clock, |_| frames.load(Ordering::Relaxed) >= 3);
+    ui.join().unwrap();
+    assert!(reached, "{:?}", studio.canvas_preview_stats(tall));
+    let (_, errors) = studio.shutdown();
+    assert!(errors.is_empty(), "{errors:?}");
+}
+
+#[test]
+fn a_further_canvas_must_run_at_the_main_rate_and_be_new() {
+    use rbs_core::media::video::Size;
+    use rbs_core::timing::FrameRate;
+    use rbs_gpu::share::PreviewDesc;
+
+    let Some(gpu) = gpu() else { return };
+    let r = rig();
+    let (mut col, main) = scene();
+    let program = col.canvas(main).unwrap().program.unwrap();
+    let (slow, _) = col
+        .add_canvas("Slow", Size::new(18, 32), FrameRate::FPS_60)
+        .unwrap();
+    col.set_program(slow, Some(program)).unwrap();
+    let desc = PreviewDesc {
+        width: 8,
+        height: 8,
+        surfaces: 2,
+    };
+    let start = |extra: Vec<ExtraCanvas>| {
+        let (engine, _) = engine_at_start();
+        let mut settings = StudioSettings::new(main);
+        settings.audio = false;
+        settings.extra_canvases = extra;
+        Studio::start(engine, gpu.clone(), &col, &r.adapters.sources, &settings).err()
+    };
+    assert!(matches!(
+        start(vec![ExtraCanvas::new(slow, desc)]),
+        Some(RecordError::CanvasRate(c)) if c == slow
+    ));
+    assert!(matches!(
+        start(vec![ExtraCanvas::new(main, desc)]),
+        Some(RecordError::TooManyCanvases)
+    ));
 }
