@@ -88,6 +88,13 @@ pub trait CaptureFactory: AdapterFactory {
 
     /// Shows the OS permission prompt if not determined; blocks (control thread only).
     fn request_permission(&self, kind: TargetKind) -> Result<Permission, CaptureError>;
+
+    /// One small RGBA8 picture of a target for a browsing list (ADR-0077, minor
+    /// version 0.2). At most `max` and at most 192 x 108. Needs no session: grabs one
+    /// frame, releases everything before returning. Never prompts. Blocks up to ~1 s:
+    /// workers only. Default: Unsupported (also for cameras: a grab would light the
+    /// device). TargetNotFound if the target is gone.
+    fn thumbnail(&self, target: &TargetId, max: Size) -> Result<Thumbnail, CaptureError>;
 }
 
 #[non_exhaustive]

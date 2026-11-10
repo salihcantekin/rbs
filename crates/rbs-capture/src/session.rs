@@ -9,7 +9,7 @@ use rbs_core::time::Clock;
 use rbs_core::timing::FrameRate;
 
 use crate::error::CaptureError;
-use crate::target::{CaptureTarget, Permission, TargetId, TargetKind};
+use crate::target::{CaptureTarget, Permission, TargetId, TargetKind, Thumbnail};
 
 /// A GPU device, identified the way OS interop APIs identify it.
 #[non_exhaustive]
@@ -297,5 +297,22 @@ pub trait CaptureFactory: AdapterFactory {
     /// Blocks while the OS prompt is shown; call it from a control thread.
     fn request_permission(&self, kind: TargetKind) -> Result<Permission, CaptureError> {
         Ok(self.permission(kind))
+    }
+
+    /// One small picture of a target for browsing a list, at most `max` pixels (and
+    /// never larger than [`THUMBNAIL_MAX`](crate::target::THUMBNAIL_MAX)).
+    ///
+    /// Works without a session: it grabs one frame and releases everything before it
+    /// returns (no threads, streams or handles remain). Never prompts; without
+    /// permission it returns [`CaptureError::PermissionDenied`] or
+    /// [`CaptureError::PermissionNotDetermined`]. Blocks for up to about a second:
+    /// call it from a worker, never from the render loop or an audio callback.
+    /// Returns [`CaptureError::Unsupported`] by default and for cameras and
+    /// microphones (a grab would light the device), and
+    /// [`CaptureError::TargetNotFound`] for a target that is gone. The picture is for
+    /// the UI only: not logged, stored or sent anywhere.
+    fn thumbnail(&self, target: &TargetId, max: Size) -> Result<Thumbnail, CaptureError> {
+        let _ = (target, max);
+        Err(CaptureError::Unsupported("thumbnail"))
     }
 }
