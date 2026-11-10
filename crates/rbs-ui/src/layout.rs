@@ -826,6 +826,47 @@ impl Node {
         go(self, anchor, &mut Some(stack), axis)
     }
 
+    /// Put `stack` to the right of the Pictures leaf, taking `share` (0 to 1) of the
+    /// leaf's place: inside the leaf's parent split when that split runs left to
+    /// right, else in a new split in the leaf's place (ADR-0093 decision 7: a further
+    /// canvas's picture beside the pictures). Returns false (and leaves the tree
+    /// alone) when there is no leaf here or `stack` has no tabs.
+    pub fn insert_beside_pictures(&mut self, stack: Tabs, share: f32) -> bool {
+        fn go(n: &mut Node, new: &mut Option<Tabs>, share: f32) -> bool {
+            match n {
+                Node::Pictures(_) => {
+                    let Some(t) = new.take() else { return false };
+                    let old = std::mem::replace(n, Node::empty());
+                    *n = Node::split(
+                        Axis::Horizontal,
+                        vec![(1.0 - share, old), (share, Node::Tabs(t))],
+                    );
+                    true
+                }
+                Node::Tabs(_) => false,
+                Node::Split(s) => {
+                    let Some(i) = s.children.iter().position(|c| c.pictures_leaf().is_some())
+                    else {
+                        return false;
+                    };
+                    if s.axis == Axis::Horizontal && matches!(s.children[i], Node::Pictures(_)) {
+                        let Some(t) = new.take() else { return false };
+                        let part = s.ratios[i] * share;
+                        s.ratios[i] -= part;
+                        s.ratios.insert(i + 1, part);
+                        s.children.insert(i + 1, Node::Tabs(t));
+                        return true;
+                    }
+                    go(&mut s.children[i], new, share)
+                }
+            }
+        }
+        if stack.tabs.is_empty() || !(share > 0.0 && share < 1.0) {
+            return false;
+        }
+        go(self, &mut Some(stack), share)
+    }
+
     /// Put `stack` on the `edge` side of stack number `index` (a drop on that side of
     /// the five-way guide, ADR-0049 decision 5). The two share the old stack's place
     /// half and half: inside its parent split when that split runs along the edge's
