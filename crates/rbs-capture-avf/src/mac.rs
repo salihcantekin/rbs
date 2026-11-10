@@ -22,7 +22,7 @@ use objc2_av_foundation::{
     AVAuthorizationStatus, AVCaptureConnection, AVCaptureDevice, AVCaptureDeviceFormat,
     AVCaptureDeviceInput, AVCaptureDeviceWasDisconnectedNotification, AVCaptureOutput,
     AVCaptureSession, AVCaptureSessionRuntimeErrorNotification, AVCaptureVideoDataOutput,
-    AVCaptureVideoDataOutputSampleBufferDelegate, AVError, AVMediaTypeVideo,
+    AVCaptureVideoDataOutputSampleBufferDelegate, AVError, AVMediaTypeAudio, AVMediaTypeVideo,
 };
 use objc2_core_foundation::CFRetained;
 use objc2_core_media::{
@@ -42,7 +42,8 @@ use rbs_capture::camera::{self, ModeChoice, NativeMode};
 use rbs_capture::handoff::{FrameMeta, Grave, Graveyard, Ring};
 use rbs_capture::{
     CaptureChange, CaptureError, CaptureFactory, CaptureRequest, CaptureSession, CaptureStats,
-    CaptureTarget, ErrorDomain, GpuDeviceId, Permission, SyncKind, TargetId, TargetKind, caps,
+    CaptureTarget, ErrorDomain, GpuDeviceId, Permission, RelatedDevice, SyncKind, TargetId,
+    TargetKind, caps,
 };
 use rbs_core::capability::{CapabilitySet, CapabilityValue};
 use rbs_core::media::{ColorSpace, LeaseOwner, MemoryKind, PixelFormat, Size, VideoFormat};
@@ -183,6 +184,47 @@ fn devices() -> Vec<Retained<AVCaptureDevice>> {
     list.iter().collect()
 }
 
+/// One audio input as far as pairing needs it: unique id, model id, manufacturer.
+type AudioCandidate = (String, String, String);
+
+/// The audio input that belongs with a camera: the only one reporting the same
+/// non-empty model id and manufacturer (a webcam's microphone shares them with its
+/// camera). Returns `None` when nothing matches or the match is ambiguous, so a wrong
+/// microphone is never suggested. Compares what the OS reports and never looks at
+/// vendor or model names (P3).
+fn paired_audio(model: &str, maker: &str, audio: &[AudioCandidate]) -> Option<String> {
+    if model.is_empty() {
+        return None;
+    }
+    let mut found = audio
+        .iter()
+        .filter(|(_, m, k)| m == model && k == maker)
+        .map(|(id, _, _)| id);
+    let first = found.next()?;
+    found.next().is_none().then(|| first.clone())
+}
+
+/// Every audio capture device connected now, for camera pairing. Runs only while
+/// targets are listed (the Add source dialog), never at startup (P13).
+fn audio_candidates() -> Vec<AudioCandidate> {
+    // SAFETY: `AVMediaTypeAudio` is a framework constant.
+    let Some(audio) = (unsafe { AVMediaTypeAudio }) else {
+        return Vec::new();
+    };
+    // SAFETY: a class method returning an array of devices; plain property reads.
+    #[allow(deprecated)]
+    let list = unsafe { AVCaptureDevice::devicesWithMediaType(audio) };
+    list.iter()
+        .map(|d| unsafe {
+            (
+                d.uniqueID().to_string(),
+                d.modelID().to_string(),
+                d.manufacturer().to_string(),
+            )
+        })
+        .collect()
+}
+
 fn device(unique_id: &str) -> Option<Retained<AVCaptureDevice>> {
     let id = NSString::from_str(unique_id);
     // SAFETY: looks a device up by its unique id; nothing is opened.
@@ -248,13 +290,15 @@ fn native_modes(device: &AVCaptureDevice) -> Vec<NativeMode> {
     modes
 }
 
-fn target_of(device: &AVCaptureDevice) -> CaptureTarget {
+fn target_of(device: &AVCaptureDevice, audio: &[AudioCandidate]) -> CaptureTarget {
     let modes = native_modes(device);
     // SAFETY: plain property reads.
-    let (id, name) = unsafe {
+    let (id, name, model, maker) = unsafe {
         (
             device.uniqueID().to_string(),
             device.localizedName().to_string(),
+            device.modelID().to_string(),
+            device.manufacturer().to_string(),
         )
     };
     let mut target = CaptureTarget::new(
@@ -267,6 +311,10 @@ fn target_of(device: &AVCaptureDevice) -> CaptureTarget {
         .max_by_key(|m| u64::from(m.width) * u64::from(m.height))
     {
         target = target.with_size(largest.width, largest.height);
+    }
+    if let Some(mic) = paired_audio(&model, &maker, audio) {
+        // The audio adapter names its devices by the same unique id.
+        target = target.with_related(RelatedDevice::audio(mic));
     }
     target.with_modes(camera::camera_modes(&modes))
 }
@@ -400,7 +448,10 @@ impl CaptureFactory for AvfCaptureFactory {
             ));
         }
         // Listing devices and their formats needs no permission and opens nothing.
-        autoreleasepool(|_| Ok(devices().iter().map(|d| target_of(d)).collect()))
+        autoreleasepool(|_| {
+            let audio = audio_candidates();
+            Ok(devices().iter().map(|d| target_of(d, &audio)).collect())
+        })
     }
 
     fn open(&self, request: &CaptureRequest) -> Result<Box<dyn CaptureSession>, CaptureError> {
@@ -1130,6 +1181,25 @@ impl Drop for AvfSession {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn mic(id: &str, model: &str, maker: &str) -> AudioCandidate {
+        (id.into(), model.into(), maker.into())
+    }
+
+    #[test]
+    fn a_camera_pairs_with_the_one_microphone_reporting_its_model() {
+        let audio = [
+            mic("a", "M1", "X"),
+            mic("b", "M2", "X"),
+            mic("c", "M2", "Y"),
+        ];
+        assert_eq!(paired_audio("M2", "X", &audio), Some("b".to_string()));
+        assert_eq!(paired_audio("M2", "Z", &audio), None);
+        assert_eq!(paired_audio("", "X", &[mic("d", "", "X")]), None);
+        // Two matches are ambiguous: suggest nothing rather than a wrong microphone.
+        let twins = [mic("e", "M3", "X"), mic("f", "M3", "X")];
+        assert_eq!(paired_audio("M3", "X", &twins), None);
+    }
 
     #[test]
     fn durations_and_rates_round_trip_exactly() {
