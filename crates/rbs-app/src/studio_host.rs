@@ -1313,6 +1313,9 @@ pub enum Update {
     /// Where the UI connects to the vertical canvas's picture (ADR-0093 decision 7),
     /// each time it appears (`Some`) or goes (`None`).
     VerticalPreview(Option<PreviewEndpoint>),
+    /// The vertical canvas's picture did not start; the UI asks again only after its
+    /// panel was hidden and shown.
+    VerticalPictureFailed,
     /// What a kind can capture, in OS order.
     Targets(SourceKind, Vec<Target>),
     /// One target's picture ([`Command::GrabThumbnails`]); `None` when the adapter has
@@ -2692,7 +2695,12 @@ impl Host {
             Command::SetVerticalProfile(profile) => self.vertical_profile = profile,
             Command::SetVerticalStreamProfile(profile) => self.vertical_stream_profile = profile,
             Command::SetVerticalPicture(on) => {
-                if let Err(why) = self.set_vertical_picture(on) {
+                // Turning the picture off cannot leave anything to report: the node
+                // goes with the next update at the latest.
+                if let Err(why) = self.set_vertical_picture(on)
+                    && on
+                {
+                    notify(Update::VerticalPictureFailed);
                     notify(Update::Error(why));
                 }
                 self.publish(notify);

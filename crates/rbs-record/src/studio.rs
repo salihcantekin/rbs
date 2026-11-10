@@ -1160,7 +1160,9 @@ impl Studio {
     /// decision 7: a closed panel costs nothing). Without a picture and without an
     /// output the canvas is not composed (P13). A picture the canvas already has, or
     /// already lacks, is left as it is. Fails with `UnknownCanvas` when the canvas does
-    /// not run; the checks of an update run before anything changes.
+    /// not run; the checks of an update run before anything changes. When the update
+    /// itself then fails, the change is kept and applies with the next update, as for
+    /// any other change; asking for the opposite takes it back.
     pub fn set_canvas_picture(
         &mut self,
         collection: &SceneCollection,

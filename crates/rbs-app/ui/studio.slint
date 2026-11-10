@@ -127,7 +127,7 @@ export global Studio {
     in property <bool> studio-mode;
     in property <int> scene-preview-state: 1;
     // The vertical canvas's picture (ADR-0093 decision 7), with the codes of
-    // `preview-state` and 7: no vertical canvas exists.
+    // `preview-state`, 7: no vertical canvas exists, 8: its picture did not start.
     in property <int> vertical-preview-state: 1;
     callback set-studio-mode(bool /* on */);
     // The preview scene goes on air and the scene on air to preview (a cut).
@@ -573,6 +573,7 @@ export component VerticalPanel inherits Rectangle {
             : shown == 3 ? @tr("The vertical picture cannot be shown in this session, for example over remote desktop.")
             : shown == 4 ? @tr("The picture shows in the main window. Dock this panel back to see it here.")
             : shown == 7 ? @tr("There is no vertical canvas. Add a vertical output to see it here.")
+            : shown == 8 ? @tr("The vertical picture did not start. Hide and show this panel to try again.")
             : @tr("The studio is not running: {}", Studio.failure);
         color: Theme.text-secondary;
         font-size: Tokens.type-body-size;

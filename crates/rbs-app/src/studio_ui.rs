@@ -86,7 +86,6 @@ pub mod enc_field {
     pub const B_FRAMES: i32 = 10;
 }
 
-/// Codes of `Studio.preview-state`.
 /// The vertical canvas's picture panel (ADR-0093 decision 7).
 pub const VERTICAL_PANEL: &str = "rbs.program?canvas=vertical";
 
@@ -101,6 +100,7 @@ pub struct PictureStates {
     pub vertical: i32,
 }
 
+/// Codes of `Studio.preview-state`.
 pub mod preview_state {
     pub const SHOWN: i32 = 0;
     pub const STARTING: i32 = 1;
@@ -110,6 +110,8 @@ pub mod preview_state {
     pub const STOPPED: i32 = 5;
     /// No vertical canvas exists (the Vertical panel only).
     pub const NO_CANVAS: i32 = 7;
+    /// The vertical canvas's picture did not start (the Vertical panel only).
+    pub const FAILED: i32 = 8;
 }
 
 struct MeterSlot {
@@ -231,6 +233,9 @@ pub struct StudioUi {
     pub vertical_preview_ready: bool,
     /// The vertical canvas's picture layer could not be made in this session.
     pub vertical_preview_failed: bool,
+    /// The studio could not make the vertical canvas's picture; asked again only after
+    /// its panel was hidden and shown.
+    pub vertical_picture_failed: bool,
     pub deleted: String,
     /// The toast's source was only removed from one scene (ADR-0065).
     pub deleted_from_scene: bool,
@@ -453,6 +458,7 @@ impl StudioUi {
             vertical: None,
             vertical_preview_ready: false,
             vertical_preview_failed: false,
+            vertical_picture_failed: false,
             deleted: String::new(),
             deleted_serial: 0,
             deleted_from_scene: false,
@@ -3558,6 +3564,7 @@ impl StudioUi {
                 self.vertical_preview_failed = false;
                 out.vertical_preview = Some(endpoint);
             }
+            Update::VerticalPictureFailed => self.vertical_picture_failed = true,
             Update::Sources(rows) => {
                 self.set_rows(rows);
                 self.refresh_existing();

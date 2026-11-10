@@ -1525,6 +1525,10 @@ impl Ctx {
             app.studio.set_picture_size(w, h);
         }
         let vertical_main = in_main(studio_ui::VERTICAL_PANEL);
+        // Hiding the panel clears a failure: showing it again asks once more.
+        if vertical_main.is_none() {
+            app.studio.vertical_picture_failed = false;
+        }
         let mixer_shown = in_main("rbs.mixer").is_some() || float_has("rbs.mixer");
         use studio_ui::preview_state as ps;
         let s = &app.studio;
@@ -1551,6 +1555,7 @@ impl Ctx {
             2 => ps::STOPPED,
             _ if s.vertical.is_none() => ps::NO_CANVAS,
             _ if !s.preview_offered || !cfg!(target_os = "macos") => ps::NO_PLATFORM,
+            _ if s.vertical_picture_failed => ps::FAILED,
             _ if s.vertical_preview_failed => ps::NO_SESSION,
             _ if vertical_main.is_none() && float_has(studio_ui::VERTICAL_PANEL) => {
                 ps::OTHER_WINDOW
@@ -1581,6 +1586,7 @@ impl Ctx {
             && s.preview_offered
             && s.vertical.is_some()
             && vertical_main.is_some()
+            && !s.vertical_picture_failed
             && !app.hidden;
         if vertical_wanted != app.vertical_picture_sent {
             s.send(studio_host::Command::SetVerticalPicture(vertical_wanted));
@@ -1785,6 +1791,14 @@ impl Ctx {
             app.studio.scene_preview_ready = false;
             app.studio.vertical_preview_ready = false;
         }
+        // The vertical canvas stops making its picture while nothing can show it (P13);
+        // the next sync after showing asks for it again and a new endpoint follows.
+        if app.vertical_picture_sent {
+            app.studio
+                .send(studio_host::Command::SetVerticalPicture(false));
+            app.vertical_picture_sent = false;
+        }
+        app.vertical_preview_endpoint = None;
         self.meter_timer.stop();
         app.hidden = true;
         #[cfg(target_os = "macos")]
