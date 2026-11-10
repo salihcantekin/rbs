@@ -3440,6 +3440,13 @@ fn run(config: PathBuf, notice: Option<String>) -> Result<(), Box<dyn std::error
         config.key_account = key_account;
         config.virtual_camera = ctx.app.borrow().vcam.factory();
         config.recent_dir = Some(ctx.app.borrow().config.clone());
+        // The monitor device belongs to this computer (ADR-0097); a file that cannot be
+        // read gives System default at full volume and is left as it is.
+        let (monitor, note) = rbs_app::monitor_settings::load(&ctx.app.borrow().config);
+        if let Some(why) = note {
+            eprintln!("rbs: monitor settings: {why}");
+        }
+        config.monitor = monitor;
         config
     };
     match studio_host::StudioHost::spawn(

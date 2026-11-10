@@ -19,6 +19,7 @@ rbs-scene = { path = "../rbs-scene" }
 rbs-sources = { path = "../rbs-sources" }
 rbs-gpu = { path = "../rbs-gpu" }
 rbs-audio = { path = "../rbs-audio" }
+rbs-audio-io = { path = "../rbs-audio-io" }
 rbs-nodes = { path = "../rbs-nodes" }
 rbs-filters = { path = "../rbs-filters" }
 rbs-audio-filters = { path = "../rbs-audio-filters" }

@@ -862,3 +862,38 @@ fn settings_are_validated_for_the_type_without_touching_a_device() {
     );
     assert!(validate_settings(&ty("org.rbs.nope"), &Settings::new()).is_err());
 }
+
+#[test]
+fn monitor_devices_are_listed_and_opened_in_standby() {
+    use rbs_audio_io_test::{OUTPUT, OUTPUT_DEVICE_KEY};
+    let (reg, audio) = registry();
+    assert!(reg.can_monitor());
+    let devices = reg.monitor_devices();
+    assert_eq!(devices.len(), 1);
+    assert_eq!(devices[0].target, OUTPUT);
+    assert!(devices[0].is_default);
+    assert_eq!(devices[0].device_key.as_deref(), Some(OUTPUT_DEVICE_KEY));
+
+    // System default and a named device both open, in Standby (no stream runs).
+    let before = audio.active_streams();
+    let (output, adapter, endpoint) = reg.open_monitor(None).unwrap();
+    assert_eq!(endpoint.as_str(), OUTPUT);
+    assert_eq!(adapter.as_str(), rbs_audio_io_test::ADAPTER_ID);
+    assert_eq!(audio.active_streams(), before);
+    drop(output);
+    assert!(reg.open_monitor(Some(OUTPUT)).is_ok());
+    // A device that is not listed is not found; without adapters there is no monitor.
+    assert!(matches!(
+        reg.open_monitor(Some("gone")),
+        Err(SourceError::Audio(
+            rbs_audio_io::AudioIoError::EndpointNotFound
+        ))
+    ));
+    let empty = SourceTypes::new();
+    assert!(!empty.can_monitor());
+    assert!(empty.monitor_devices().is_empty());
+    assert!(matches!(
+        empty.open_monitor(None),
+        Err(SourceError::NoAdapter(_))
+    ));
+}

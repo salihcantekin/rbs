@@ -10,7 +10,7 @@ use std::time::Duration;
 
 use rbs_audio::{
     AudioGraphConfig, EncoderNode, InputParams, InputStats, LevelMeter, MeterSinkNode, MixerNode,
-    MixerParams, MixerStats, Strip,
+    MixerParams, MixerStats, MonitorMode, Strip,
 };
 use rbs_audio_filters::{
     AudioFilterNode, AudioFilterStats, AudioFilterType, DspSetup, FilterMeter,
@@ -39,7 +39,9 @@ use rbs_nodes::{
 };
 use rbs_scene::SceneCollection;
 use rbs_scene::binder::{BindProblem, BindReport, BoundCompositor, BoundMixer, Role, SceneBinder};
-use rbs_scene::model::{CanvasId, FilterId, MasterAudio, SceneId, SourceAudio, SourceId};
+use rbs_scene::model::{
+    CanvasId, FilterId, MasterAudio, SceneId, SourceAudio, SourceId, SourceMonitor,
+};
 use rbs_sources::{
     InstanceContext, SourceInstance, SourceTypes, filter_values_lenient, node_layers,
 };
@@ -53,7 +55,9 @@ use crate::recording::{
 };
 use crate::select::{self, Chosen};
 
+mod monitor;
 mod replay;
+pub use monitor::MonitorState;
 pub use replay::ReplaySettings;
 
 /// Why a scheduled source has no instance yet: the one it replaces did not close.
@@ -737,6 +741,11 @@ pub struct Studio {
     /// The virtual camera while it sends (ADR-0066 decision 6); `None` otherwise, so
     /// nothing of it runs.
     camera: Option<CameraRun>,
+    /// The monitor output while it plays (ADR-0097 F1); `None` otherwise, so no device,
+    /// ring or node of it exists.
+    monitor: Option<monitor::MonitorRun>,
+    /// Soloed sources (session state, never saved; ADR-0097 decision 5).
+    solo: BTreeSet<SourceId>,
 }
 
 impl fmt::Debug for Studio {
@@ -1013,6 +1022,8 @@ impl Studio {
             filters: Vec::new(),
             filter_problems: Vec::new(),
             camera: None,
+            monitor: None,
+            solo: BTreeSet::new(),
         };
         if let Some(p) = recording
             && let Err(e) = studio.add_output(p)
@@ -1570,9 +1581,9 @@ impl Studio {
             );
             let _ = mixer
                 .params
-                .send(mixer_params(&union, &mixer.master, self.master));
+                .send(mixer_params(&union, &mixer.master, self.master, &self.solo));
             if union.len() != new.len() {
-                trimmed = Some(mixer_params(&new, &mixer.master, self.master));
+                trimmed = Some(mixer_params(&new, &mixer.master, self.master, &self.solo));
             }
             self.strips = new;
         }
@@ -1741,9 +1752,12 @@ impl Studio {
         let Some(mixer) = &mut self.mixer else {
             return false;
         };
-        let _ = mixer
-            .params
-            .send(mixer_params(&self.strips, &mixer.master, self.master));
+        let _ = mixer.params.send(mixer_params(
+            &self.strips,
+            &mixer.master,
+            self.master,
+            &self.solo,
+        ));
         true
     }
 
@@ -1995,6 +2009,10 @@ impl Studio {
                     } else if let Some(c) = self.camera.as_mut().filter(|c| c.node.node == *node) {
                         // Not essential: the studio and its outputs run on (ADR-0066).
                         c.failure = Some(format!("{cause:?}"));
+                    } else if let Some(m) = self.monitor.as_mut().filter(|m| m.node() == *node) {
+                        // Not essential: the mix and the encoders never wait for the
+                        // monitor (ADR-0097 decision 4).
+                        m.failure = Some(format!("{cause:?}"));
                     } else if let Some(e) = self.entries.iter_mut().find(|e| e.state.node == *node)
                     {
                         e.state.failed = Some(format!("{cause:?}"));
@@ -2003,6 +2021,9 @@ impl Studio {
                 RuntimeEvent::Restarted { node, .. } | RuntimeEvent::Recovered { node } => {
                     if let Some(c) = self.camera.as_mut().filter(|c| c.node.node == *node) {
                         c.failure = None;
+                    }
+                    if let Some(m) = self.monitor.as_mut().filter(|m| m.node() == *node) {
+                        m.failure = None;
                     }
                     if let Some(e) = self.entries.iter_mut().find(|e| e.state.node == *node) {
                         e.state.failed = None;
@@ -2908,6 +2929,7 @@ impl Studio {
     /// shutdown's errors.
     pub fn shutdown(&mut self) -> (Vec<(OutputId, FinishReport)>, Vec<String>) {
         self.stop_virtual_camera();
+        self.stop_monitor();
         let ids = self.outputs();
         let (removed, errors) = self.detach_all(&ids, true);
         let reports = removed
@@ -3130,6 +3152,15 @@ struct MixStrip {
     audio: SourceAudio,
 }
 
+/// The mixer's monitor mode for a source's saved one (ADR-0097 decision 5).
+fn monitor_mode(m: SourceMonitor) -> MonitorMode {
+    match m {
+        SourceMonitor::Off => MonitorMode::Off,
+        SourceMonitor::Only => MonitorMode::Only,
+        SourceMonitor::Also => MonitorMode::Also,
+    }
+}
+
 /// The canvas's master volume and mute (the defaults for a canvas that is gone).
 fn master_of(collection: &SceneCollection, canvas: CanvasId) -> MasterAudio {
     collection
@@ -3140,11 +3171,19 @@ fn master_of(collection: &SceneCollection, canvas: CanvasId) -> MasterAudio {
 
 /// The mixer's parameters for `strips` (each at its source's volume and mute), the
 /// master gain (its volume, or silence while muted) and the master meter.
-fn mixer_params(strips: &[MixStrip], meter: &Arc<LevelMeter>, master: MasterAudio) -> MixerParams {
+fn mixer_params(
+    strips: &[MixStrip],
+    meter: &Arc<LevelMeter>,
+    master: MasterAudio,
+    solo: &BTreeSet<SourceId>,
+) -> MixerParams {
     let strips = strips
         .iter()
         .map(|s| {
-            let strip = Strip::new(s.producer, s.audio.volume).with_muted(s.audio.muted);
+            let strip = Strip::new(s.producer, s.audio.volume)
+                .with_muted(s.audio.muted)
+                .with_monitor(monitor_mode(s.audio.monitor))
+                .with_solo(solo.contains(&s.source));
             match &s.meter {
                 Some(m) => strip.with_meter(Arc::clone(m)),
                 None => strip,

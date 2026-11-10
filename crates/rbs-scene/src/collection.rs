@@ -11,7 +11,7 @@ use crate::arrange::{AutoItem, AutoLayout, auto_layout};
 use crate::model::{
     AudioFrom, Canvas, CanvasId, Fallback, Filter, FilterId, ItemContent, ItemId, Layout,
     MAX_SYNC_OFFSET_MS, MasterAudio, Scene, SceneId, SceneItem, SceneScope, SettingValue, Settings,
-    Source, SourceAudio, SourceId,
+    Source, SourceAudio, SourceId, SourceMonitor,
 };
 
 /// Why an edit was refused. The collection is unchanged after any error.
@@ -777,6 +777,26 @@ impl SceneCollection {
     pub fn set_source_muted(&mut self, id: SourceId, muted: bool) -> Result<Undo, SceneError> {
         let expected = self.get_source(id)?.audio;
         let new = SourceAudio { muted, ..expected };
+        self.apply(Op::SetSourceAudio {
+            source: id,
+            expected,
+            new,
+        })
+    }
+
+    /// Sets whether a source is heard on the monitor output (ADR-0097 decision 5). A live
+    /// control like the mute: the binder ignores it and the application sends it to the
+    /// source's mixer strip.
+    pub fn set_source_monitor(
+        &mut self,
+        id: SourceId,
+        monitor: SourceMonitor,
+    ) -> Result<Undo, SceneError> {
+        let expected = self.get_source(id)?.audio;
+        let new = SourceAudio {
+            monitor,
+            ..expected
+        };
         self.apply(Op::SetSourceAudio {
             source: id,
             expected,

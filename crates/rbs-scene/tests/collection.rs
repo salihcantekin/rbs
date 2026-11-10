@@ -10,7 +10,7 @@ use rbs_graph::node::NodeTypeId;
 use rbs_scene::model::{
     Border, CanvasId, Crop, FilterId, ItemContent, ItemId, ItemStyle, Layout, MAX_SOURCE_VOLUME,
     MAX_SYNC_OFFSET_MS, MasterAudio, SceneId, SceneScope, SettingValue, Settings, Shadow, Shape,
-    SourceAudio, SourceId,
+    SourceAudio, SourceId, SourceMonitor,
 };
 use rbs_scene::{MAX_LAYERS, MAX_NESTING_DEPTH, SceneCollection, SceneError, Undo};
 
@@ -1091,6 +1091,38 @@ fn mixer_hidden_is_a_view_flag_that_keeps_the_sound() {
     s.col.set_source_muted(s.cam, false).unwrap();
     s.col.set_source_mixer_hidden(s.cam, false).unwrap();
     assert_eq!(s.col, before);
+}
+
+#[test]
+fn monitor_is_a_live_audio_value_with_its_own_undo() {
+    let mut s = studio();
+    let before = s.col.clone();
+    let only = s
+        .col
+        .set_source_monitor(s.cam, SourceMonitor::Only)
+        .unwrap();
+    let audio = s.col.source(s.cam).unwrap().audio;
+    assert_eq!(audio.monitor, SourceMonitor::Only);
+    assert!(audio.is_valid() && !audio.is_default());
+    // A rename keeps the monitor mode and does not make the record conflict.
+    s.col.rename_source(s.cam, "Camera 2").unwrap();
+    assert_eq!(
+        s.col.source(s.cam).unwrap().audio.monitor,
+        SourceMonitor::Only
+    );
+    s.col.undo(only).unwrap();
+    assert_eq!(
+        s.col.source(s.cam).unwrap().audio.monitor,
+        SourceMonitor::Off
+    );
+    s.col
+        .rename_source(s.cam, &before.source(s.cam).unwrap().name.clone())
+        .unwrap();
+    assert_eq!(s.col, before);
+    for m in [SourceMonitor::Off, SourceMonitor::Only, SourceMonitor::Also] {
+        assert_eq!(SourceMonitor::from_name(m.as_str()), Some(m));
+    }
+    assert_eq!(SourceMonitor::from_name("solo"), None);
 }
 
 #[test]
