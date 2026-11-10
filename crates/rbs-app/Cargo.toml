@@ -57,6 +57,8 @@ rbs-audio = { path = "../rbs-audio" }
 rbs-scene = { path = "../rbs-scene" }
 rbs-sources = { path = "../rbs-sources" }
 rbs-filters = { path = "../rbs-filters" }
+rbs-audio-filters = { path = "../rbs-audio-filters" }
+rbs-params = { path = "../rbs-params" }
 # CaptureError::Cancelled from OS pickers.
 rbs-capture = { path = "../rbs-capture" }
 rbs-record = { path = "../rbs-record" }

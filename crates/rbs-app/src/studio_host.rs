@@ -5077,7 +5077,7 @@ impl ApiTarget<'_> {
                 }
                 Ok(Response::Done(Empty {}))
             }
-            C::FilterTypes => Ok(Response::FilterTypes(filters::api_types())),
+            C::FilterTypes(p) => Ok(Response::FilterTypes(filters::api_types(p.domain))),
             C::FilterAdd(p) => {
                 let settings = p.settings.unwrap_or_default();
                 let id = host

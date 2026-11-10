@@ -213,6 +213,28 @@ pub struct SetSourceMixerHidden {
     pub hidden: bool,
 }
 
+/// Which filter types `filter.types` lists (protocol 1.16, ADR-0082).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum FilterDomains {
+    /// Video filters only: what a 1.8 to 1.15 server lists, so old clients never meet
+    /// the audio kinds.
+    #[default]
+    Video,
+    /// Audio filters only.
+    Audio,
+    /// Both.
+    All,
+}
+
+/// `filter.types` (protocol 1.8; `domain` since 1.16).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FilterTypesParams {
+    /// Which types to list; video when absent.
+    #[serde(default)]
+    pub domain: FilterDomains,
+}
+
 /// `filter.add` (protocol 1.8, ADR-0062): a filter at the end of a source's chain.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -479,8 +501,8 @@ pub enum Command {
     CanvasSetMasterMuted(SetMasterMuted),
     /// `item.add` (protocol 1.6).
     ItemAdd(AddItem),
-    /// `filter.types` (protocol 1.8).
-    FilterTypes,
+    /// `filter.types` (protocol 1.8; the `domain` parameter since 1.16, ADR-0082).
+    FilterTypes(FilterTypesParams),
     /// `filter.add` (protocol 1.8).
     FilterAdd(AddFilter),
     /// `filter.remove` (protocol 1.8).
@@ -587,7 +609,7 @@ impl Command {
             Command::CanvasSetMasterVolume(_) => "canvas.set_master_volume",
             Command::CanvasSetMasterMuted(_) => "canvas.set_master_muted",
             Command::ItemAdd(_) => "item.add",
-            Command::FilterTypes => "filter.types",
+            Command::FilterTypes(_) => "filter.types",
             Command::FilterAdd(_) => "filter.add",
             Command::FilterRemove(_) => "filter.remove",
             Command::FilterMove(_) => "filter.move",
@@ -844,7 +866,7 @@ enum WireRequest {
     #[serde(rename = "item.add")]
     ItemAdd(AddItem),
     #[serde(rename = "filter.types")]
-    FilterTypes(Empty),
+    FilterTypes(FilterTypesParams),
     #[serde(rename = "filter.add")]
     FilterAdd(AddFilter),
     #[serde(rename = "filter.remove")]
@@ -956,7 +978,7 @@ impl From<WireRequest> for Request {
             WireRequest::CanvasSetMasterVolume(p) => Request::Command(C::CanvasSetMasterVolume(p)),
             WireRequest::CanvasSetMasterMuted(p) => Request::Command(C::CanvasSetMasterMuted(p)),
             WireRequest::ItemAdd(p) => Request::Command(C::ItemAdd(p)),
-            WireRequest::FilterTypes(_) => Request::Command(C::FilterTypes),
+            WireRequest::FilterTypes(p) => Request::Command(C::FilterTypes(p)),
             WireRequest::FilterAdd(p) => Request::Command(C::FilterAdd(p)),
             WireRequest::FilterRemove(p) => Request::Command(C::FilterRemove(p)),
             WireRequest::FilterMove(p) => Request::Command(C::FilterMove(p)),
@@ -1029,7 +1051,7 @@ impl From<Request> for WireRequest {
                 C::CanvasSetMasterVolume(p) => WireRequest::CanvasSetMasterVolume(p),
                 C::CanvasSetMasterMuted(p) => WireRequest::CanvasSetMasterMuted(p),
                 C::ItemAdd(p) => WireRequest::ItemAdd(p),
-                C::FilterTypes => WireRequest::FilterTypes(Empty {}),
+                C::FilterTypes(p) => WireRequest::FilterTypes(p),
                 C::FilterAdd(p) => WireRequest::FilterAdd(p),
                 C::FilterRemove(p) => WireRequest::FilterRemove(p),
                 C::FilterMove(p) => WireRequest::FilterMove(p),
