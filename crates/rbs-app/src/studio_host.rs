@@ -160,6 +160,57 @@ impl SourceKind {
     }
 }
 
+/// The one listed window a window source's hints name: none while its stored target
+/// is still listed, none when no or several windows have the same application
+/// (case-insensitive) and title (exact).
+fn match_by_hints(
+    listed: Vec<Target>,
+    adapter: &str,
+    stored: &str,
+    app: &str,
+    title: &str,
+) -> Option<Target> {
+    if listed
+        .iter()
+        .any(|t| t.adapter == adapter && t.target == stored)
+    {
+        return None;
+    }
+    let app = app.to_lowercase();
+    let mut same = listed.into_iter().filter(|t| {
+        t.adapter == adapter
+            && t.name == title
+            && t.app.as_deref().is_some_and(|a| a.to_lowercase() == app)
+    });
+    let found = same.next()?;
+    same.next().is_none().then_some(found)
+}
+
+/// What a reload did.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Reload {
+    /// The source was re-pointed at the window its hints name: the collection changed.
+    Retargeted,
+    /// The source node was restarted; `true` when it was running to restart.
+    Restarted(bool),
+}
+
+/// The hint keys of a source (ADR-0077): the application and the title its target had.
+const HINT_APP: &str = "target_app";
+const HINT_TITLE: &str = "target_title";
+
+/// The hints a source gets for `target`: its title always, its application when known.
+fn hints_of(target: &Target) -> BTreeMap<String, String> {
+    let mut hints = BTreeMap::new();
+    if !target.name.is_empty() {
+        hints.insert(HINT_TITLE.to_owned(), target.name.clone());
+    }
+    if let Some(app) = target.app.as_ref().filter(|a| !a.is_empty()) {
+        hints.insert(HINT_APP.to_owned(), app.clone());
+    }
+    hints
+}
+
 /// Something a source of a kind can capture: a display, window, camera or endpoint.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Target {
@@ -2226,10 +2277,11 @@ impl Host {
                 let done = self.patch_source_settings(id, &patch);
                 self.answer(done, notify);
             }
-            Command::ReloadSource(id) => {
-                let done = self.reload_source(id);
-                self.answer_live(done, notify);
-            }
+            Command::ReloadSource(id) => match self.reload_source(id) {
+                Ok(Reload::Retargeted) => self.answer(Ok(true), notify),
+                Ok(Reload::Restarted(done)) => self.answer_live(Ok(done), notify),
+                Err(e) => self.answer_live(Err(e), notify),
+            },
             Command::RenameSource { id, name } => {
                 let done = self.rename_source(id, &name);
                 self.answer(done, notify);
@@ -3500,6 +3552,15 @@ impl Host {
         let name = unique_name(&self.collection, &target.name);
         let id = self.add_named(kind, &name, settings, layout)?;
         self.remember_target(kind, &target.adapter, &target.target, &target.name);
+        // Hints are not a step of their own: undoing the add removes the source. The
+        // source was just added, so the write cannot fail; a lost hint only costs a
+        // later Reload by hints.
+        if let Some(source) = self.collection.source(id) {
+            let settings = source.settings.clone();
+            let _ = self
+                .collection
+                .set_source_settings_and_hints(id, settings, hints_of(target));
+        }
         Ok(id)
     }
 
@@ -4206,9 +4267,19 @@ impl Host {
             keys::TARGET.into(),
             SettingValue::Text(target.target.clone()),
         );
+        // A target made from an API call has no name: the listed one gives the hints.
+        let hints = match (target.name.is_empty(), kind) {
+            (true, Some(kind)) => self
+                .targets(kind)
+                .iter()
+                .find(|t| t.adapter == target.adapter && t.target == target.target)
+                .map(hints_of)
+                .unwrap_or_default(),
+            _ => hints_of(target),
+        };
         let undo = self
             .collection
-            .set_source_settings(id, settings)
+            .set_source_settings_and_hints(id, settings, hints)
             .map_err(|e| Refusal::of(&e))?;
         self.history
             .record(EditKind::Retarget, &name, 0, vec![undo]);
@@ -4349,15 +4420,48 @@ impl Host {
         Ok(true)
     }
 
-    /// Tries a source again with its stored settings (no edit, no undo step).
-    fn reload_source(&mut self, id: SourceId) -> Result<bool, Refusal> {
+    /// Tries a source again with its stored settings. Only when a closed and reopened
+    /// window is found by its hints is something edited: the source is re-pointed (one
+    /// "retarget" undo step) and the caller applies the collection, which replaces the
+    /// node; otherwise it is no edit and no undo step.
+    fn reload_source(&mut self, id: SourceId) -> Result<Reload, Refusal> {
         if self.collection.source(id).is_none() {
             return Err(Refusal::NotFound(format!(
                 "There is no source {}.",
                 id.get()
             )));
         }
-        Ok(self.studio.reload_source(id))
+        // A window that was closed and opened again has a new id: when the stored one
+        // is gone, exactly one window of the same application with the same title is
+        // taken instead (ADR-0077 decision 3b); otherwise nothing is guessed.
+        if let Some(target) = self.window_by_hints(id)
+            && self.retarget_source(id, &target)?
+        {
+            return Ok(Reload::Retargeted);
+        }
+        Ok(Reload::Restarted(self.studio.reload_source(id)))
+    }
+
+    /// The window a window source's hints name, when its stored target is no longer
+    /// listed and exactly one listed window has the same application and title.
+    fn window_by_hints(&self, id: SourceId) -> Option<Target> {
+        let source = self.collection.source(id)?;
+        if SourceKind::of(&source.type_id) != Some(SourceKind::Window) {
+            return None;
+        }
+        let text = |key: &str| match source.settings.get(key) {
+            Some(SettingValue::Text(t)) => Some(t.as_str()),
+            _ => None,
+        };
+        let (adapter, stored) = (text(keys::ADAPTER)?, text(keys::TARGET)?);
+        let (app, title) = (source.hints.get(HINT_APP)?, source.hints.get(HINT_TITLE)?);
+        match_by_hints(
+            self.targets(SourceKind::Window),
+            adapter,
+            stored,
+            app,
+            title,
+        )
     }
 
     fn rename_source(&mut self, id: SourceId, name: &str) -> Result<bool, Refusal> {
@@ -5664,8 +5768,13 @@ impl ApiTarget<'_> {
                 Ok(Response::Done(Empty {}))
             }
             C::SourceReload(p) => {
-                host.reload_source(SourceId::from_raw(p.source))
-                    .map_err(|e| refused(&e))?;
+                if host
+                    .reload_source(SourceId::from_raw(p.source))
+                    .map_err(|e| refused(&e))?
+                    == Reload::Retargeted
+                {
+                    host.apply(notify);
+                }
                 Ok(Response::Done(Empty {}))
             }
             C::ItemRemove(p) => {
@@ -6622,6 +6731,67 @@ fn run_copy(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[allow(clippy::unwrap_used)] // Tests fail by panicking.
+    #[test]
+    fn a_reopened_window_is_found_by_application_and_title_only_when_unique() {
+        let window = |id: &str, name: &str, app: Option<&str>| Target {
+            name: name.to_owned(),
+            adapter: "a".to_owned(),
+            target: id.to_owned(),
+            is_default: false,
+            size: None,
+            app: app.map(str::to_owned),
+            recent: None,
+            picker: false,
+        };
+        let find = |listed: Vec<Target>, app: &str| match_by_hints(listed, "a", "old", app, "zsh");
+        // One match, the application in another case.
+        let one = vec![
+            window("new", "zsh", Some("TERMINAL")),
+            window("x", "vim", Some("Terminal")),
+        ];
+        assert_eq!(find(one, "Terminal").unwrap().target, "new");
+        // Two windows alike: nothing is guessed.
+        let two = vec![
+            window("n1", "zsh", Some("Terminal")),
+            window("n2", "zsh", Some("Terminal")),
+        ];
+        assert!(find(two, "Terminal").is_none());
+        // Another application, no application known, a different title.
+        assert!(find(vec![window("n", "zsh", Some("iTerm"))], "Terminal").is_none());
+        assert!(find(vec![window("n", "zsh", None)], "Terminal").is_none());
+        assert!(find(vec![window("n", "zsh2", Some("Terminal"))], "Terminal").is_none());
+        // The stored window is still there: it is used as it is.
+        let still = vec![
+            window("old", "zsh", Some("Terminal")),
+            window("new", "zsh", Some("Terminal")),
+        ];
+        assert!(find(still, "Terminal").is_none());
+    }
+
+    #[test]
+    fn hints_name_the_target_and_its_application() {
+        let target = |name: &str, app: Option<&str>| Target {
+            name: name.to_owned(),
+            adapter: String::new(),
+            target: String::new(),
+            is_default: false,
+            size: None,
+            app: app.map(str::to_owned),
+            recent: None,
+            picker: false,
+        };
+        let h = hints_of(&target("zsh - Terminal", Some("Terminal")));
+        assert_eq!(
+            h.get(HINT_TITLE).map(String::as_str),
+            Some("zsh - Terminal")
+        );
+        assert_eq!(h.get(HINT_APP).map(String::as_str), Some("Terminal"));
+        // No application known: the title alone, so Reload by hints cannot match.
+        assert_eq!(hints_of(&target("Display 1", None)).len(), 1);
+        assert!(hints_of(&target("", Some(""))).is_empty());
+    }
 
     /// A collection with a program scene holding one audio item, in studio mode with
     /// the program scene in preview too.

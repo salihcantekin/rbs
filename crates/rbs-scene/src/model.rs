@@ -202,6 +202,10 @@ pub struct Source {
     /// Volume and mute of its sound in the canvas mixers (ADR-0059). One value for the
     /// source wherever it is placed; changing it never makes a new source node.
     pub audio: SourceAudio,
+    /// What the source was pointed at, as the user saw it (`target_app`, `target_title`):
+    /// hints for finding it again, not settings (ADR-0077). The binder never compares
+    /// them, so changing them never makes a new source node.
+    pub hints: BTreeMap<String, String>,
 }
 
 /// The largest source volume: 1.0 (0 dB), like a fader. A boost is an audio filter.
@@ -291,6 +295,7 @@ impl Source {
             settings,
             filters: Vec::new(),
             audio: SourceAudio::default(),
+            hints: BTreeMap::new(),
         }
     }
 }
