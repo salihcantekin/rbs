@@ -518,6 +518,10 @@ impl AdapterFactory for CoreAudioBackend {
                 CapabilityValue::Int(MAX_CHANNELS as i64),
             )
             .with(caps::INPUT_PERMISSION, CapabilityValue::Flag(true))
+            .with(
+                caps::LOOPBACK_EXCLUDE_SELF,
+                CapabilityValue::Flag(taps_supported()),
+            )
             .with(HARDWARE, CapabilityValue::Flag(true)))
     }
 }
@@ -567,7 +571,13 @@ impl AudioBackend for CoreAudioBackend {
                     .filter(|d| channels(*d, kAudioObjectPropertyScopeOutput) > 0)
                     .ok_or(AudioIoError::EndpointNotFound)?;
                 let rate = nominal_rate(device).ok_or(AudioIoError::EndpointNotFound)?;
-                (Target::Output(native.to_owned()), Self::stereo(rate))
+                (
+                    Target::Output {
+                        uid: native.to_owned(),
+                        exclude_self: request.exclude_own_process,
+                    },
+                    Self::stereo(rate),
+                )
             }
             _ => {
                 let pid: i32 = native.parse().map_err(|_| AudioIoError::EndpointNotFound)?;
@@ -628,7 +638,11 @@ enum Target {
     /// An input device, by UID.
     Input(String),
     /// An output device's loopback, by UID.
-    Output(String),
+    Output {
+        uid: String,
+        /// Leave this process's own sound out of the tap (ADR-0096).
+        exclude_self: bool,
+    },
     /// A process, by pid.
     Application(i32),
 }
@@ -916,12 +930,18 @@ impl Drop for Session {
 }
 
 /// A private process tap: of an output device's stream (mixed down to stereo) or of
-/// one process (stereo). Returns the tap and its UID.
+/// one process (stereo). `exclude` is a process object left out of the device tap.
+/// Returns the tap and its UID.
 fn create_tap(
     output: Option<&str>,
     process: Option<AudioObjectID>,
+    exclude: Option<AudioObjectID>,
 ) -> Result<(AudioObjectID, String), AudioIoError> {
     let api = tap_api().ok_or(AudioIoError::Unsupported("process taps need macOS 14.4"))?;
+    let excluded = match exclude {
+        Some(object) => NSArray::from_retained_slice(&[NSNumber::new_u32(object)]),
+        None => NSArray::new(),
+    };
     // SAFETY: CATapDescription initialisers and setters on a fresh object; the class
     // exists (macOS 14.2+, checked by `tap_api`).
     let description = unsafe {
@@ -929,7 +949,7 @@ fn create_tap(
             (Some(uid), _) => {
                 let d = CATapDescription::initExcludingProcesses_andDeviceUID_withStream(
                     CATapDescription::alloc(),
-                    &NSArray::new(),
+                    &excluded,
                     &NSString::from_str(uid),
                     0,
                 );
@@ -1055,12 +1075,17 @@ impl CoreAudioStream {
                 }
                 (device, device, None, Buffers::All)
             }
-            Target::Output(uid) => {
+            Target::Output { uid, exclude_self } => {
                 let device = device_by_uid(uid).ok_or(AudioIoError::EndpointLost)?;
                 if nominal_rate(device) != Some(rate) {
                     return Err(AudioIoError::FormatChanged);
                 }
-                let (tap, tap_uid) = create_tap(Some(uid), None)?;
+                // A process that has not used audio yet has no audio object and so
+                // nothing to exclude; its sound would then be captured once it starts.
+                let own = exclude_self
+                    .then(|| process_object(std::process::id() as i32))
+                    .flatten();
+                let (tap, tap_uid) = create_tap(Some(uid), None, own)?;
                 session.tap = Some((tap, Owned::new()));
                 let aggregate = create_aggregate(uid, &tap_uid)?;
                 session.aggregate = Some((aggregate, Owned::new()));
@@ -1075,7 +1100,7 @@ impl CoreAudioStream {
                 if nominal_rate(output) != Some(rate) {
                     return Err(AudioIoError::FormatChanged);
                 }
-                let (tap, tap_uid) = create_tap(None, Some(process))?;
+                let (tap, tap_uid) = create_tap(None, Some(process), None)?;
                 session.tap = Some((tap, Owned::new()));
                 let aggregate = create_aggregate(&output_uid, &tap_uid)?;
                 session.aggregate = Some((aggregate, Owned::new()));
