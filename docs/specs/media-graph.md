@@ -14,7 +14,7 @@ The runtime model of the engine: nodes, typed links, scheduling and live editing
 | --- | --- | --- | --- |
 | Source | no media (data allowed) | at least one output | screen, window, camera, media file, browser, remote guest; data-only producers (timers, chat events) |
 | VideoFilter | video | video | colour correction, chroma key, LUT, blur |
-| AudioFilter | audio | audio | gain, noise suppression, compressor, CLAP plugin |
+| AudioFilter | audio (plus an optional second audio input named `key`, ADR-0095) | audio | gain, noise gate, ducker, noise suppression, compressor, CLAP plugin |
 | Compositor | many video | video | one per canvas, plus one per nested scene in use (its output feeds the parent compositor like a source) |
 | Transition | two or more video (stinger: third), optional audio | video, optional audio | cut, fade, stinger, shader transition |
 | AudioMixer | many audio | audio | buses and mixes |

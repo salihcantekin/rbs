@@ -140,6 +140,11 @@ pub enum BindProblem {
     /// The filter's node type is not an `AudioFilter` with audio input and output (an
     /// audio source takes only audio filters); it is skipped.
     NoAudioPins(FilterId),
+    /// The filter's key source (setting `key_source`) is deleted, has no bound audio,
+    /// is the filter's own source, or would make a loop of key links (the link of the
+    /// filter with the highest id in the loop is the one left out). The filter passes
+    /// its sound unchanged until the key is valid (ADR-0095).
+    KeyUnavailable(FilterId),
     /// The source has video and audio outputs; only its video is bound. Its audio
     /// would reach the mixer through a partition queue, whose reader the mixer sees
     /// as the producer, which the binder cannot name yet.
@@ -228,7 +233,16 @@ struct Pins {
     output: Option<String>,
     /// First audio output.
     audio: Option<String>,
+    /// The audio input named `key` of a filter that takes another source's signal
+    /// (ADR-0095).
+    key: Option<String>,
 }
+
+/// The name of the audio input pin that carries a key signal (ADR-0095).
+const KEY_PIN: &str = "key";
+
+/// The setting that names the key source: an `Int` source id; absent means none.
+const KEY_SETTING: &str = "key_source";
 
 fn pins_of(descriptor: &NodeDescriptor, kind: LinkKind, many_input: bool) -> Pins {
     let first_output = |kind: LinkKind| {
@@ -247,7 +261,29 @@ fn pins_of(descriptor: &NodeDescriptor, kind: LinkKind, many_input: bool) -> Pin
             .map(|(i, p)| (i, p.name.to_string())),
         output: first_output(kind),
         audio: first_output(LinkKind::Audio),
+        key: descriptor
+            .inputs
+            .iter()
+            .find(|p| p.kind == LinkKind::Audio && p.name == KEY_PIN)
+            .map(|p| p.name.to_string()),
     }
+}
+
+/// Whether `to` can be reached from `from` along `deps` (source depends on its keys).
+fn reaches(deps: &BTreeMap<SourceId, BTreeSet<SourceId>>, from: SourceId, to: SourceId) -> bool {
+    let mut seen = BTreeSet::new();
+    let mut stack = vec![from];
+    while let Some(s) = stack.pop() {
+        if s == to {
+            return true;
+        }
+        if seen.insert(s)
+            && let Some(next) = deps.get(&s)
+        {
+            stack.extend(next.iter().copied());
+        }
+    }
+    false
 }
 
 fn video_pins(descriptor: &NodeDescriptor, many_input: bool) -> Pins {
@@ -272,6 +308,9 @@ struct BoundSource {
     chain: Vec<FilterId>,
     /// Links this binder made for the chain.
     chain_links: Vec<Link>,
+    /// The key links of this source's filters: the producer node they come from and
+    /// the link (ADR-0095).
+    key_links: BTreeMap<FilterId, (NodeId, Link)>,
 }
 
 impl BoundSource {
@@ -483,6 +522,93 @@ impl State {
         Ok(())
     }
 
+    /// Links the `key` input of every filter that has one (a ducker, ADR-0095) from the
+    /// tail of its key source's chain, the signal before that source's fader. A key that
+    /// is none, deleted, without bound audio, the filter's own source or part of a loop
+    /// is left unlinked (the filter hears silence and so changes nothing); loops are
+    /// found before any link is made, over all key settings in filter id order, so the
+    /// result does not depend on the order of edits.
+    fn sync_key_links(
+        &mut self,
+        graph: &mut GraphDescription,
+        collection: &SceneCollection,
+        report: &mut BindReport,
+    ) -> Result<(), BindError> {
+        // (filter, owner source, wanted key source) for every bound filter with a key pin.
+        let mut wanted: Vec<(FilterId, SourceId, Option<SourceId>)> = Vec::new();
+        for (owner, bound) in &self.sources {
+            let Some(source) = collection.source(*owner) else {
+                continue;
+            };
+            for f in &source.filters {
+                if bound
+                    .filters
+                    .get(&f.id)
+                    .is_some_and(|b| b.pins.key.is_some())
+                {
+                    let key = match f.settings.get(KEY_SETTING) {
+                        Some(crate::model::SettingValue::Int(i)) => {
+                            u32::try_from(*i).ok().map(SourceId::from_raw)
+                        }
+                        _ => None,
+                    };
+                    wanted.push((f.id, *owner, key));
+                }
+            }
+        }
+        wanted.sort_by_key(|(f, _, _)| *f);
+        // Accept the edges in filter id order; one that closes a loop is left out.
+        let mut deps: BTreeMap<SourceId, BTreeSet<SourceId>> = BTreeMap::new();
+        let mut accepted: BTreeMap<FilterId, (NodeId, String)> = BTreeMap::new();
+        for (fid, owner, key) in wanted.iter().copied() {
+            let Some(key) = key else { continue };
+            let producer = self
+                .sources
+                .get(&key)
+                .filter(|k| k.source.pins.output.is_none())
+                .and_then(|k| {
+                    let tail = k.tail();
+                    tail.pins.audio.clone().map(|out| (tail.node, out))
+                });
+            let loops = key == owner || reaches(&deps, key, owner);
+            match (producer, loops) {
+                (Some(p), false) => {
+                    deps.entry(owner).or_default().insert(key);
+                    accepted.insert(fid, p);
+                }
+                _ => report.problems.push(BindProblem::KeyUnavailable(fid)),
+            }
+        }
+        for bound in self.sources.values_mut() {
+            // Drop links that are no longer wanted or come from another node now (the
+            // key source's chain tail changed).
+            let stale: Vec<FilterId> = bound
+                .key_links
+                .iter()
+                .filter(|(f, (node, _))| {
+                    accepted.get(f).map(|(n, _)| n) != Some(node) || !bound.filters.contains_key(f)
+                })
+                .map(|(f, _)| *f)
+                .collect();
+            for f in stale {
+                if let Some((_, link)) = bound.key_links.remove(&f) {
+                    graph.disconnect(link);
+                }
+            }
+            for (fid, filter) in &bound.filters {
+                let (Some((producer, out)), Some(pin)) = (accepted.get(fid), &filter.pins.key)
+                else {
+                    continue;
+                };
+                if !bound.key_links.contains_key(fid) {
+                    let link = graph.connect(*producer, out, filter.node, pin)?;
+                    bound.key_links.insert(*fid, (*producer, link));
+                }
+            }
+        }
+        Ok(())
+    }
+
     fn sync(
         &mut self,
         types: &dyn NodeTypes,
@@ -595,6 +721,7 @@ impl State {
                     filters: BTreeMap::new(),
                     chain: Vec::new(),
                     chain_links: Vec::new(),
+                    key_links: BTreeMap::new(),
                 });
             }
             let Some(bound) = self.sources.get_mut(&source.id) else {
@@ -697,6 +824,8 @@ impl State {
                 bound.chain = chain;
             }
         }
+
+        self.sync_key_links(graph, collection, &mut report)?;
 
         // Compositors and their layers.
         let mut needed: BTreeMap<(CanvasId, Role), SceneId> = BTreeMap::new();
