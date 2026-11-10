@@ -8,6 +8,7 @@
 //! window are numbered depth first through the centre, then the left, right and
 //! bottom areas, so a stack index means the same thing to every operation.
 
+use std::collections::BTreeMap;
 use std::fmt;
 
 use serde::{Deserialize, Serialize};
@@ -725,6 +726,42 @@ impl From<Window> for RawWindow {
     }
 }
 
+const MIXER_PANEL: &str = "rbs.mixer";
+const ORIENTATION_KEY: &str = "orientation";
+
+/// How the Mixer arranges its sources (ADR-0083).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum MixerOrientation {
+    /// The panel's shape decides (ADR-0078 decision 5).
+    #[default]
+    Auto,
+    /// Sources stacked top to bottom with horizontal meters.
+    Rows,
+    /// Sources side by side with vertical meters and faders.
+    Columns,
+}
+
+impl MixerOrientation {
+    /// The name used in the workspace file and the control API.
+    pub fn name(self) -> &'static str {
+        match self {
+            MixerOrientation::Auto => "auto",
+            MixerOrientation::Rows => "rows",
+            MixerOrientation::Columns => "columns",
+        }
+    }
+
+    /// The orientation named `name`; `None` for anything else.
+    pub fn parse(name: &str) -> Option<MixerOrientation> {
+        match name {
+            "auto" => Some(MixerOrientation::Auto),
+            "rows" => Some(MixerOrientation::Rows),
+            "columns" => Some(MixerOrientation::Columns),
+            _ => None,
+        }
+    }
+}
+
 /// A workspace.
 ///
 /// Invariants, checked by [`Workspace::validate`] (called by [`Workspace::from_toml`]):
@@ -752,6 +789,11 @@ pub struct Workspace {
     /// is not listed is open, so an old file opens everything.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub closed_sections: Vec<String>,
+    /// View options of single panels (ADR-0083), keyed by panel id: for example
+    /// `[panel_options."rbs.mixer"] orientation = "columns"`. Only non-default
+    /// options are written. Unknown panels and keys are kept and ignored.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub panel_options: BTreeMap<String, BTreeMap<String, toml::Value>>,
     /// Windows; the first is the main window.
     pub windows: Vec<Window>,
 }
@@ -914,6 +956,7 @@ impl Workspace {
             locked: false,
             toolbar: None,
             closed_sections: Vec::new(),
+            panel_options: BTreeMap::new(),
             windows: vec![Window {
                 content: WindowContent::Main(Box::new(main)),
                 placement: None,
@@ -1603,6 +1646,37 @@ impl Workspace {
         Ok(())
     }
 
+    /// The Mixer's orientation (ADR-0083). A missing or invalid value is `Auto`.
+    pub fn mixer_orientation(&self) -> MixerOrientation {
+        self.panel_options
+            .get(MIXER_PANEL)
+            .and_then(|o| o.get(ORIENTATION_KEY))
+            .and_then(toml::Value::as_str)
+            .and_then(MixerOrientation::parse)
+            .unwrap_or_default()
+    }
+
+    /// Set the Mixer's orientation. `Auto` removes the key, so the file stays as an
+    /// older build writes it.
+    pub fn set_mixer_orientation(&mut self, orientation: MixerOrientation) {
+        if orientation == MixerOrientation::Auto {
+            if let Some(options) = self.panel_options.get_mut(MIXER_PANEL) {
+                options.remove(ORIENTATION_KEY);
+                if options.is_empty() {
+                    self.panel_options.remove(MIXER_PANEL);
+                }
+            }
+        } else {
+            self.panel_options
+                .entry(MIXER_PANEL.to_owned())
+                .or_default()
+                .insert(
+                    ORIENTATION_KEY.to_owned(),
+                    toml::Value::String(orientation.name().to_owned()),
+                );
+        }
+    }
+
     /// The workspace prepared for sharing: display fingerprints and connector
     /// names are removed, so it holds no hardware identifiers.
     pub fn exported(&self) -> Workspace {
@@ -1729,6 +1803,35 @@ mod tests {
         assert_eq!(again.closed_sections, w.closed_sections);
         assert!(again.section_closed("sources.global"));
         assert!(!again.section_closed("mixer.global"));
+    }
+
+    #[test]
+    fn mixer_orientation_round_trips_and_keeps_unknown_options() {
+        let mut w = builtin::edit();
+        assert_eq!(w.mixer_orientation(), MixerOrientation::Auto);
+        assert!(!w.to_toml().unwrap().contains("panel_options"));
+        w.set_mixer_orientation(MixerOrientation::Columns);
+        w.panel_options
+            .entry("rbs.other".into())
+            .or_default()
+            .insert("x".into(), toml::Value::Integer(1));
+        let again = Workspace::from_toml(&w.to_toml().unwrap()).unwrap();
+        assert_eq!(again.mixer_orientation(), MixerOrientation::Columns);
+        assert_eq!(again.panel_options, w.panel_options);
+        let mut back = again;
+        back.set_mixer_orientation(MixerOrientation::Auto);
+        assert!(!back.panel_options.contains_key("rbs.mixer"));
+        assert!(back.panel_options.contains_key("rbs.other"));
+    }
+
+    #[test]
+    fn an_invalid_mixer_orientation_means_auto() {
+        let mut w = builtin::edit();
+        w.panel_options
+            .entry("rbs.mixer".into())
+            .or_default()
+            .insert("orientation".into(), toml::Value::String("diagonal".into()));
+        assert_eq!(w.mixer_orientation(), MixerOrientation::Auto);
     }
 
     #[test]

@@ -3,14 +3,67 @@
 
 use std::collections::BTreeMap;
 
+use rbs_api::request::FilterDomains;
 use rbs_api::types as api;
-use rbs_filters::{FieldKind, FilterType, Value, Values, color_text, parse_color};
+use rbs_audio_filters::AudioFilterType;
+use rbs_filters::{FilterType, Values};
+use rbs_graph::node::NodeTypeId;
+use rbs_params::{Curve, Field, FieldKind, Schema, Value, color_text, parse_color};
 use rbs_scene::SceneCollection;
 use rbs_scene::model::{Filter, FilterId, Settings, Source, SourceId};
 use rbs_sources::{filter_settings, filter_values, filter_values_lenient};
 
 use super::{Host, Refusal, SourceKind};
 use crate::edit_history::EditKind;
+
+/// A built-in filter type of either domain (ADR-0082): what the host edits, shows and
+/// lists without caring whether the filter works on pictures or on sound.
+#[derive(Clone, Copy)]
+pub enum AnyFilter {
+    /// A video filter.
+    Video(&'static dyn FilterType),
+    /// An audio filter.
+    Audio(&'static dyn AudioFilterType),
+}
+
+impl AnyFilter {
+    /// The built-in type with this id, from either catalogue.
+    pub fn find(type_id: &str) -> Option<Self> {
+        rbs_filters::find(type_id)
+            .map(Self::Video)
+            .or_else(|| rbs_audio_filters::find(type_id).map(Self::Audio))
+    }
+
+    /// The type id.
+    pub fn type_id(self) -> NodeTypeId {
+        match self {
+            Self::Video(t) => t.type_id(),
+            Self::Audio(t) => t.type_id(),
+        }
+    }
+
+    /// The display name.
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Video(t) => t.name(),
+            Self::Audio(t) => t.name(),
+        }
+    }
+
+    /// Works on sound.
+    pub fn is_audio(self) -> bool {
+        matches!(self, Self::Audio(_))
+    }
+}
+
+impl Schema for AnyFilter {
+    fn fields(&self) -> &'static [Field] {
+        match self {
+            Self::Video(t) => FilterType::fields(*t),
+            Self::Audio(t) => AudioFilterType::fields(*t),
+        }
+    }
+}
 
 /// One filter of a source, as the Filters tab and the API show it.
 #[derive(Debug, Clone, PartialEq)]
@@ -30,9 +83,14 @@ pub struct FilterRow {
 }
 
 impl FilterRow {
-    /// The built-in type, if this build has it.
+    /// The built-in video type, if this build has it (`None` for an audio filter).
     pub fn ty(&self) -> Option<&'static dyn FilterType> {
         rbs_filters::find(&self.type_id)
+    }
+
+    /// The built-in type of either domain, if this build has it.
+    pub fn any(&self) -> Option<AnyFilter> {
+        AnyFilter::find(&self.type_id)
     }
 }
 
@@ -43,7 +101,7 @@ pub fn rows(source: &Source) -> Vec<FilterRow> {
         .filters
         .iter()
         .map(|f| {
-            let ty = rbs_filters::find(f.type_id.as_str());
+            let ty = AnyFilter::find(f.type_id.as_str());
             let base = ty.map_or_else(|| f.type_id.as_str().to_owned(), |t| t.name().to_owned());
             let n = seen.entry(f.type_id.as_str()).or_insert(0);
             *n += 1;
@@ -53,7 +111,7 @@ pub fn rows(source: &Source) -> Vec<FilterRow> {
                 type_id: f.type_id.as_str().to_owned(),
                 name,
                 enabled: f.enabled,
-                values: ty.map(|t| filter_values_lenient(t, &f.settings).0),
+                values: ty.map(|t| filter_values_lenient(&t, &f.settings).0),
                 stored: f.settings.clone(),
             }
         })
@@ -72,14 +130,28 @@ pub fn audio_offsets(collection: &SceneCollection) -> BTreeMap<SourceId, i64> {
 
 fn json_of(v: Value) -> serde_json::Value {
     match v {
+        Value::Toggle(b) => serde_json::Value::Bool(b),
         Value::Number(n) => format!("{n}")
             .parse::<f64>()
             .ok()
             .and_then(serde_json::Number::from_f64)
             .map_or(serde_json::Value::Null, serde_json::Value::Number),
         Value::Color(c) => serde_json::Value::String(color_text(c)),
+        // A choice needs its field to name the option: see `json_of_field`.
         #[allow(unreachable_patterns)]
         _ => serde_json::Value::Null,
+    }
+}
+
+/// `v` as JSON for `field`: a choice is its option's key.
+fn json_of_field(field: &Field, v: Value) -> serde_json::Value {
+    match (field.kind, v) {
+        (FieldKind::Choice { options, .. }, Value::Choice(i)) => options
+            .get(usize::from(i))
+            .map_or(serde_json::Value::Null, |(key, _)| {
+                serde_json::Value::String((*key).to_owned())
+            }),
+        _ => json_of(v),
     }
 }
 
@@ -98,11 +170,12 @@ fn json_of_stored(v: &rbs_scene::model::SettingValue) -> serde_json::Value {
 /// The API's row of a filter: the values on air, or the stored settings for an
 /// unknown type.
 pub fn api_row(row: &FilterRow) -> api::FilterInfo {
-    let settings = match (row.ty(), &row.values) {
+    let settings = match (row.any(), &row.values) {
         (Some(ty), Some(values)) => values
-            .to_pairs(ty)
+            .to_pairs(&ty)
             .into_iter()
-            .map(|(k, v)| (k.to_owned(), json_of(v)))
+            .zip(ty.fields())
+            .map(|((k, v), field)| (k.to_owned(), json_of_field(field, v)))
             .collect(),
         _ => row
             .stored
@@ -118,58 +191,98 @@ pub fn api_row(row: &FilterRow) -> api::FilterInfo {
     }
 }
 
-/// `filter.types`' answer.
-pub fn api_types() -> api::FilterTypeList {
-    api::FilterTypeList {
-        types: rbs_filters::catalogue()
-            .iter()
-            .map(|t| api::FilterTypeInfo {
-                type_id: t.type_id().as_str().to_owned(),
-                name: t.name().to_owned(),
-                fields: t
-                    .fields()
+/// One field of a type as the API lists it.
+fn api_field(f: &Field) -> api::FilterField {
+    let mut field = api::FilterField {
+        key: f.key.to_owned(),
+        label: f.label.to_owned(),
+        kind: "unknown".to_owned(),
+        help: (!f.help.is_empty()).then(|| f.help.to_owned()),
+        curve: None,
+        options: None,
+        min: None,
+        max: None,
+        step: None,
+        unit: None,
+        default: serde_json::Value::Null,
+    };
+    match f.kind {
+        FieldKind::Number {
+            min,
+            max,
+            default,
+            step,
+            unit,
+            curve,
+            ..
+        } => {
+            field.kind = "number".to_owned();
+            field.min = Some(min);
+            field.max = Some(max);
+            field.step = Some(step);
+            field.unit = (!unit.is_empty()).then(|| unit.to_owned());
+            field.curve = Some(
+                match curve {
+                    Curve::Log => "log",
+                    _ => "linear",
+                }
+                .to_owned(),
+            );
+            field.default = json_of(Value::Number(default));
+        }
+        FieldKind::Color { default } => {
+            field.kind = "color".to_owned();
+            field.default = json_of(Value::Color(default));
+        }
+        FieldKind::Toggle { default } => {
+            field.kind = "toggle".to_owned();
+            field.default = json_of(Value::Toggle(default));
+        }
+        FieldKind::Choice { options, .. } => {
+            field.kind = "choice".to_owned();
+            field.options = Some(
+                options
                     .iter()
-                    .map(|f| match f.kind {
-                        FieldKind::Number {
-                            min,
-                            max,
-                            default,
-                            step,
-                            unit,
-                            ..
-                        } => api::FilterField {
-                            key: f.key.to_owned(),
-                            label: f.label.to_owned(),
-                            kind: "number".to_owned(),
-                            min: Some(min),
-                            max: Some(max),
-                            step: Some(step),
-                            unit: (!unit.is_empty()).then(|| unit.to_owned()),
-                            default: json_of(Value::Number(default)),
-                        },
-                        FieldKind::Color { default } => api::FilterField {
-                            key: f.key.to_owned(),
-                            label: f.label.to_owned(),
-                            kind: "color".to_owned(),
-                            min: None,
-                            max: None,
-                            step: None,
-                            unit: None,
-                            default: json_of(Value::Color(default)),
-                        },
-                        #[allow(unreachable_patterns)]
-                        _ => api::FilterField {
-                            key: f.key.to_owned(),
-                            label: f.label.to_owned(),
-                            kind: "unknown".to_owned(),
-                            min: None,
-                            max: None,
-                            step: None,
-                            unit: None,
-                            default: serde_json::Value::Null,
-                        },
+                    .map(|(key, label)| api::FilterOption {
+                        key: (*key).to_owned(),
+                        label: (*label).to_owned(),
                     })
                     .collect(),
+            );
+            field.default = json_of_field(f, f.kind.default_value());
+        }
+        #[allow(unreachable_patterns)]
+        _ => {}
+    }
+    field
+}
+
+/// `filter.types`' answer for `domains`: video types first, then audio types.
+pub fn api_types(domains: FilterDomains) -> api::FilterTypeList {
+    let video = matches!(domains, FilterDomains::Video | FilterDomains::All)
+        .then(|| {
+            rbs_filters::catalogue()
+                .iter()
+                .map(|t| AnyFilter::Video(*t))
+        })
+        .into_iter()
+        .flatten();
+    let audio = matches!(domains, FilterDomains::Audio | FilterDomains::All)
+        .then(|| {
+            rbs_audio_filters::catalogue()
+                .iter()
+                .map(|t| AnyFilter::Audio(*t))
+        })
+        .into_iter()
+        .flatten();
+    api::FilterTypeList {
+        types: video
+            .chain(audio)
+            .map(|t| api::FilterTypeInfo {
+                type_id: t.type_id().as_str().to_owned(),
+                domain: if t.is_audio() { "audio" } else { "video" }.to_owned(),
+                name: t.name().to_owned(),
+                fields: t.fields().iter().map(api_field).collect(),
             })
             .collect(),
     }
@@ -178,7 +291,7 @@ pub fn api_types() -> api::FilterTypeList {
 /// `(key, value)` pairs from JSON settings, checked for kind only (ranges are checked
 /// by `Values`).
 fn pairs(
-    ty: &dyn FilterType,
+    ty: AnyFilter,
     settings: &BTreeMap<String, serde_json::Value>,
 ) -> Result<Vec<(&'static str, Value)>, Refusal> {
     settings
@@ -194,6 +307,12 @@ fn pairs(
                 (FieldKind::Color { .. }, serde_json::Value::String(t)) => {
                     parse_color(t).map(Value::Color)
                 }
+                (FieldKind::Toggle { .. }, serde_json::Value::Bool(b)) => Some(Value::Toggle(*b)),
+                (FieldKind::Choice { options, .. }, serde_json::Value::String(t)) => options
+                    .iter()
+                    .position(|(key, _)| key == t)
+                    .and_then(|i| u8::try_from(i).ok())
+                    .map(Value::Choice),
                 _ => None,
             }
             .ok_or_else(|| {
@@ -232,22 +351,26 @@ impl Host {
         settings: &BTreeMap<String, serde_json::Value>,
     ) -> Result<FilterId, Refusal> {
         let name = self.source_name(source)?;
-        let has_picture = self
+        let ty = AnyFilter::find(type_id)
+            .ok_or_else(|| Refusal::Invalid(format!("There is no filter type {type_id:?}.")))?;
+        let has_sound = self
             .collection
             .source(source)
             .and_then(|s| SourceKind::of(&s.type_id))
-            .is_some_and(|k| !k.is_audio());
-        if !has_picture {
-            return Err(Refusal::Invalid(format!(
-                "{name} has no picture to filter."
-            )));
+            .is_some_and(SourceKind::is_audio);
+        // A source with a picture takes video filters, one with only sound takes audio
+        // filters (ADR-0082); the wrong domain is refused in both directions.
+        if has_sound != ty.is_audio() {
+            return Err(Refusal::Invalid(if has_sound {
+                format!("{name} has only sound; {} is a video filter.", ty.name())
+            } else {
+                format!("{name} has a picture; {} is an audio filter.", ty.name())
+            }));
         }
-        let ty = rbs_filters::find(type_id)
-            .ok_or_else(|| Refusal::Invalid(format!("There is no filter type {type_id:?}.")))?;
-        let values = Values::from_pairs(ty, pairs(ty, settings)?).map_err(|e| invalid(&e))?;
+        let values = Values::from_pairs(&ty, pairs(ty, settings)?).map_err(|e| invalid(&e))?;
         let (id, undo) = self
             .collection
-            .add_filter(source, ty.type_id(), filter_settings(ty, &values))
+            .add_filter(source, ty.type_id(), filter_settings(&ty, &values))
             .map_err(|e| Refusal::of(&e))?;
         self.history.record(EditKind::Filter, &name, 0, vec![undo]);
         Ok(id)
@@ -421,15 +544,15 @@ impl Host {
         patch: &BTreeMap<String, serde_json::Value>,
     ) -> Result<bool, Refusal> {
         let (_, f) = self.filter_owner(filter)?;
-        let ty = rbs_filters::find(f.type_id.as_str()).ok_or_else(|| {
+        let ty = AnyFilter::find(f.type_id.as_str()).ok_or_else(|| {
             Refusal::Invalid(format!(
                 "This version has no filter type {:?}; it can only be moved, turned on or off, or removed.",
                 f.type_id.as_str()
             ))
         })?;
-        let (on_air, _) = filter_values_lenient(ty, &f.settings);
+        let (on_air, _) = filter_values_lenient(&ty, &f.settings);
         let values = on_air
-            .with(ty, pairs(ty, patch)?)
+            .with(&ty, pairs(ty, patch)?)
             .map_err(|e| invalid(&e))?;
         self.set_filter_values(filter, values)
     }
@@ -443,11 +566,11 @@ impl Host {
         values: Values,
     ) -> Result<bool, Refusal> {
         let (source, f) = self.filter_owner(filter)?;
-        let ty = rbs_filters::find(f.type_id.as_str()).ok_or_else(|| {
+        let ty = AnyFilter::find(f.type_id.as_str()).ok_or_else(|| {
             Refusal::Invalid("This filter is not available in this version.".to_owned())
         })?;
-        let (on_air, adjusted) = filter_values_lenient(ty, &f.settings);
-        let settings = filter_settings(ty, &values);
+        let (on_air, adjusted) = filter_values_lenient(&ty, &f.settings);
+        let settings = filter_settings(&ty, &values);
         if on_air == values && adjusted.is_empty() && settings == f.settings {
             return Ok(false);
         }

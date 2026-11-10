@@ -43,4 +43,4 @@ pub use layout::{Axis, Edge, Node, Rect};
 pub use live::{LiveState, LiveStatus};
 pub use panel::{PanelId, UpdateRate};
 pub use session::{LayoutCommand, LayoutSession, Origin, Toast};
-pub use workspace::{Window, WindowContent, Workspace, WorkspaceError};
+pub use workspace::{MixerOrientation, Window, WindowContent, Workspace, WorkspaceError};

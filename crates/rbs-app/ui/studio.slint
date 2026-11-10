@@ -1463,7 +1463,8 @@ component MeterStrip inherits Rectangle {
 // scene's own sources and the global ones; both headers fold and are saved by id.
 export component MixerPanel inherits Rectangle {
     background: Theme.surface-raised;
-    property <bool> wide: self.width > self.height * 1.5;
+    // ADR-0083: a fixed layout never reflows by size; auto follows the panel's shape.
+    property <bool> wide: Sections.mixer-orientation == 2 || (Sections.mixer-orientation == 0 && self.width > self.height * 1.5);
     property <bool> scene-closed: Sections.closed("mixer.scene", Sections.rev);
     property <bool> global-closed: Sections.closed("mixer.global", Sections.rev);
     property <bool> hidden-closed: Sections.closed("mixer.hidden", Sections.rev);
@@ -1488,7 +1489,11 @@ export component MixerPanel inherits Rectangle {
             height: root.height;
             pointer-event(e) => {
                 if e.kind == PointerEventKind.down && e.button == PointerEventButton.right {
-                    mixer-menu.open({ x: self.mouse-x, y: self.mouse-y });
+                    // Relative to the panel, where the menu is, whatever the scroll.
+                    mixer-menu.open({
+                        x: self.absolute-position.x - root.absolute-position.x + self.mouse-x,
+                        y: self.absolute-position.y - root.absolute-position.y + self.mouse-y,
+                    });
                 }
             }
         }
@@ -1579,7 +1584,11 @@ export component MixerPanel inherits Rectangle {
             height: max(strips.preferred-height, root.height);
             pointer-event(e) => {
                 if e.kind == PointerEventKind.down && e.button == PointerEventButton.right {
-                    mixer-menu.open({ x: self.mouse-x, y: self.mouse-y });
+                    // Relative to the panel, where the menu is, whatever the scroll.
+                    mixer-menu.open({
+                        x: self.absolute-position.x - root.absolute-position.x + self.mouse-x,
+                        y: self.absolute-position.y - root.absolute-position.y + self.mouse-y,
+                    });
                 }
             }
         }
@@ -2846,10 +2855,13 @@ component SourceProperties inherits VerticalLayout {
     property <bool> confirm;
     changed data => { if confirm && Studio.selected-source != data.id { confirm = false; } }
     in property <int> live-state;
-    // 0 Transform, 1 Filters, 2 Audio, 3 Source. The Source tab is the first one shown,
-    // and opens by itself while the source is not running (ADR-0077).
+    // 0 Transform, 1 Filters, 2 Audio, 3 Source. The Source tab is the last one shown;
+    // the first tab opens, except while the source is not running, when the Source tab
+    // opens by itself (ADR-0077).
     property <bool> has-source: data.kind-code >= 0;
-    property <int> offset: has-source ? 1 : 0;
+    // The tabs before Source: Transform, Filters and Audio for a source with a picture
+    // and sound, without Audio when it has none, only Audio for sound alone.
+    property <int> before-source: data.picture ? (data.audio ? 3 : 2) : 1;
     property <int> want: Studio.properties-tab;
     property <int> tab: has-source && (!data.ok || want == 3) ? 3
         : !data.picture ? 2
@@ -2889,18 +2901,18 @@ component SourceProperties inherits VerticalLayout {
             accepted(t) => { if t != data.name { Studio.rename-source(data.id, t); } }
         }
     }
-    // Source, Transform, Filters and, for a source with sound, Audio (ADR-0062, ADR-0076, ADR-0077).
+    // Transform, Filters and, for a source with sound, Audio, then Source (ADR-0062, ADR-0076, ADR-0077).
     if data.picture || has-source: Tabs {
         label: @tr("Properties of {}", data.name);
         options: has-source
             ? (data.picture
-                ? (data.audio ? [@tr("Source"), @tr("Transform"), @tr("Filters"), @tr("Audio")] : [@tr("Source"), @tr("Transform"), @tr("Filters")])
-                : [@tr("Source"), @tr("Audio")])
+                ? (data.audio ? [@tr("Transform"), @tr("Filters"), @tr("Audio"), @tr("Source")] : [@tr("Transform"), @tr("Filters"), @tr("Source")])
+                : [@tr("Audio"), @tr("Source")])
             : (data.audio ? [@tr("Transform"), @tr("Filters"), @tr("Audio")] : [@tr("Transform"), @tr("Filters")]);
-        index: tab == 3 ? 0 : data.picture ? offset + tab : offset;
+        index: tab == 3 ? before-source : data.picture ? tab : 0;
         selected(i) => {
-            if has-source && i == 0 { Studio.properties-tab = 3; }
-            else if data.picture { Studio.properties-tab = i - offset; }
+            if has-source && i == before-source { Studio.properties-tab = 3; }
+            else if data.picture { Studio.properties-tab = i; }
             else { Studio.properties-tab = 2; }
         }
     }

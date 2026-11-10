@@ -131,7 +131,7 @@ pub enum Axis {
     Vertical,
 }
 
-/// `item.flip` (protocol 1.16, ADR-0084): mirror the item on the canvas.
+/// `item.flip` (protocol 1.17, ADR-0084): mirror the item on the canvas.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct FlipItem {
@@ -141,7 +141,7 @@ pub struct FlipItem {
     pub axis: Axis,
 }
 
-/// `item.rotate` (protocol 1.16, ADR-0084): turn the item clockwise about its centre.
+/// `item.rotate` (protocol 1.17, ADR-0084): turn the item clockwise about its centre.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct RotateItem {
@@ -163,7 +163,7 @@ pub enum FitKind {
     Stretch,
 }
 
-/// `item.fit` (protocol 1.16, ADR-0084).
+/// `item.fit` (protocol 1.17, ADR-0084).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct FitItem {
@@ -185,7 +185,7 @@ pub enum AlignAxis {
     Vertical,
 }
 
-/// `item.align` (protocol 1.16, ADR-0084): centre the item on the canvas.
+/// `item.align` (protocol 1.17, ADR-0084): centre the item on the canvas.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct AlignItem {
@@ -196,7 +196,7 @@ pub struct AlignItem {
     pub axis: Option<AlignAxis>,
 }
 
-/// `item.reset_transform` (protocol 1.16, ADR-0084).
+/// `item.reset_transform` (protocol 1.17, ADR-0084).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ResetItemTransform {
@@ -294,6 +294,28 @@ pub struct SetSourceMixerHidden {
     pub source: u32,
     /// Hidden from the Mixer; still heard.
     pub hidden: bool,
+}
+
+/// Which filter types `filter.types` lists (protocol 1.16, ADR-0082).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum FilterDomains {
+    /// Video filters only: what a 1.8 to 1.15 server lists, so old clients never meet
+    /// the audio kinds.
+    #[default]
+    Video,
+    /// Audio filters only.
+    Audio,
+    /// Both.
+    All,
+}
+
+/// `filter.types` (protocol 1.8; `domain` since 1.16).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FilterTypesParams {
+    /// Which types to list; video when absent.
+    #[serde(default)]
+    pub domain: FilterDomains,
 }
 
 /// `filter.add` (protocol 1.8, ADR-0062): a filter at the end of a source's chain.
@@ -538,15 +560,15 @@ pub enum Command {
     ItemSetStyle(SetItemStyle),
     /// `item.set_crop` (protocol 1.5).
     ItemSetCrop(SetItemCrop),
-    /// `item.flip` (protocol 1.16).
+    /// `item.flip` (protocol 1.17).
     ItemFlip(FlipItem),
-    /// `item.rotate` (protocol 1.16).
+    /// `item.rotate` (protocol 1.17).
     ItemRotate(RotateItem),
-    /// `item.fit` (protocol 1.16).
+    /// `item.fit` (protocol 1.17).
     ItemFit(FitItem),
-    /// `item.align` (protocol 1.16).
+    /// `item.align` (protocol 1.17).
     ItemAlign(AlignItem),
-    /// `item.reset_transform` (protocol 1.16).
+    /// `item.reset_transform` (protocol 1.17).
     ItemResetTransform(ResetItemTransform),
     /// `scene.list` (protocol 1.6).
     SceneList,
@@ -572,8 +594,8 @@ pub enum Command {
     CanvasSetMasterMuted(SetMasterMuted),
     /// `item.add` (protocol 1.6).
     ItemAdd(AddItem),
-    /// `filter.types` (protocol 1.8).
-    FilterTypes,
+    /// `filter.types` (protocol 1.8; the `domain` parameter since 1.16, ADR-0082).
+    FilterTypes(FilterTypesParams),
     /// `filter.add` (protocol 1.8).
     FilterAdd(AddFilter),
     /// `filter.remove` (protocol 1.8).
@@ -590,6 +612,10 @@ pub enum Command {
     SourceRetarget(RetargetSource),
     /// `source.reload` (protocol 1.13).
     SourceReload(ReloadSource),
+    /// `settings.recent_targets` (protocol 1.13).
+    SettingsRecentTargets(TargetsParams),
+    /// `settings.clear_recent_targets` (protocol 1.13).
+    SettingsClearRecentTargets(TargetsParams),
     /// `item.set_visible` (protocol 1.6).
     ItemSetVisible(SetItemVisible),
     /// `item.set_locked` (protocol 1.6).
@@ -685,7 +711,7 @@ impl Command {
             Command::CanvasSetMasterVolume(_) => "canvas.set_master_volume",
             Command::CanvasSetMasterMuted(_) => "canvas.set_master_muted",
             Command::ItemAdd(_) => "item.add",
-            Command::FilterTypes => "filter.types",
+            Command::FilterTypes(_) => "filter.types",
             Command::FilterAdd(_) => "filter.add",
             Command::FilterRemove(_) => "filter.remove",
             Command::FilterMove(_) => "filter.move",
@@ -694,6 +720,8 @@ impl Command {
             Command::SourceSetSyncOffset(_) => "source.set_sync_offset",
             Command::SourceRetarget(_) => "source.retarget",
             Command::SourceReload(_) => "source.reload",
+            Command::SettingsRecentTargets(_) => "settings.recent_targets",
+            Command::SettingsClearRecentTargets(_) => "settings.clear_recent_targets",
             Command::SceneSources(_) => "scene.sources",
             Command::CanvasSetPreview(_) => "canvas.set_preview",
             Command::CanvasTransition => "canvas.transition",
@@ -811,6 +839,8 @@ pub const METHODS: &[MethodInfo] = &[
     m("source.set_sync_offset", Some(Scope::Control)),
     m("source.retarget", Some(Scope::Control)),
     m("source.reload", Some(Scope::Control)),
+    m("settings.recent_targets", Some(Scope::Control)),
+    m("settings.clear_recent_targets", Some(Scope::Control)),
     m("item.set_visible", Some(Scope::Control)),
     m("item.set_locked", Some(Scope::Control)),
     m("scene.sources", Some(Scope::Read)),
@@ -869,6 +899,7 @@ pub const UI_METHODS: &[&str] = &[
     "ui.layout.studio_rail",
     "ui.layout.rail_size",
     "ui.layout.reset_sizes",
+    "ui.mixer.set_orientation",
     "ui.toolbar.get",
     "ui.toolbar.set",
     "ui.toolbar.reset",
@@ -957,7 +988,7 @@ enum WireRequest {
     #[serde(rename = "item.add")]
     ItemAdd(AddItem),
     #[serde(rename = "filter.types")]
-    FilterTypes(Empty),
+    FilterTypes(FilterTypesParams),
     #[serde(rename = "filter.add")]
     FilterAdd(AddFilter),
     #[serde(rename = "filter.remove")]
@@ -974,6 +1005,10 @@ enum WireRequest {
     SourceRetarget(RetargetSource),
     #[serde(rename = "source.reload")]
     SourceReload(ReloadSource),
+    #[serde(rename = "settings.recent_targets")]
+    SettingsRecentTargets(TargetsParams),
+    #[serde(rename = "settings.clear_recent_targets")]
+    SettingsClearRecentTargets(TargetsParams),
     #[serde(rename = "item.set_visible")]
     ItemSetVisible(SetItemVisible),
     #[serde(rename = "item.set_locked")]
@@ -1074,7 +1109,7 @@ impl From<WireRequest> for Request {
             WireRequest::CanvasSetMasterVolume(p) => Request::Command(C::CanvasSetMasterVolume(p)),
             WireRequest::CanvasSetMasterMuted(p) => Request::Command(C::CanvasSetMasterMuted(p)),
             WireRequest::ItemAdd(p) => Request::Command(C::ItemAdd(p)),
-            WireRequest::FilterTypes(_) => Request::Command(C::FilterTypes),
+            WireRequest::FilterTypes(p) => Request::Command(C::FilterTypes(p)),
             WireRequest::FilterAdd(p) => Request::Command(C::FilterAdd(p)),
             WireRequest::FilterRemove(p) => Request::Command(C::FilterRemove(p)),
             WireRequest::FilterMove(p) => Request::Command(C::FilterMove(p)),
@@ -1083,6 +1118,10 @@ impl From<WireRequest> for Request {
             WireRequest::SourceSetSyncOffset(p) => Request::Command(C::SourceSetSyncOffset(p)),
             WireRequest::SourceRetarget(p) => Request::Command(C::SourceRetarget(p)),
             WireRequest::SourceReload(p) => Request::Command(C::SourceReload(p)),
+            WireRequest::SettingsRecentTargets(p) => Request::Command(C::SettingsRecentTargets(p)),
+            WireRequest::SettingsClearRecentTargets(p) => {
+                Request::Command(C::SettingsClearRecentTargets(p))
+            }
             WireRequest::SceneSources(p) => Request::Command(C::SceneSources(p)),
             WireRequest::CanvasSetPreview(p) => Request::Command(C::CanvasSetPreview(p)),
             WireRequest::CanvasTransition(_) => Request::Command(C::CanvasTransition),
@@ -1152,7 +1191,7 @@ impl From<Request> for WireRequest {
                 C::CanvasSetMasterVolume(p) => WireRequest::CanvasSetMasterVolume(p),
                 C::CanvasSetMasterMuted(p) => WireRequest::CanvasSetMasterMuted(p),
                 C::ItemAdd(p) => WireRequest::ItemAdd(p),
-                C::FilterTypes => WireRequest::FilterTypes(Empty {}),
+                C::FilterTypes(p) => WireRequest::FilterTypes(p),
                 C::FilterAdd(p) => WireRequest::FilterAdd(p),
                 C::FilterRemove(p) => WireRequest::FilterRemove(p),
                 C::FilterMove(p) => WireRequest::FilterMove(p),
@@ -1161,6 +1200,8 @@ impl From<Request> for WireRequest {
                 C::SourceSetSyncOffset(p) => WireRequest::SourceSetSyncOffset(p),
                 C::SourceRetarget(p) => WireRequest::SourceRetarget(p),
                 C::SourceReload(p) => WireRequest::SourceReload(p),
+                C::SettingsRecentTargets(p) => WireRequest::SettingsRecentTargets(p),
+                C::SettingsClearRecentTargets(p) => WireRequest::SettingsClearRecentTargets(p),
                 C::SceneSources(p) => WireRequest::SceneSources(p),
                 C::CanvasSetPreview(p) => WireRequest::CanvasSetPreview(p),
                 C::CanvasTransition => WireRequest::CanvasTransition(Empty {}),

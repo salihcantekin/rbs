@@ -353,6 +353,81 @@ fn the_sync_offset_is_set_on_sources_with_sound_only() {
 }
 
 #[test]
+fn audio_filters_are_listed_by_domain_and_edited_on_sound_sources_only() {
+    let Some((_host, _updates, _api, mut c)) = start() else {
+        return;
+    };
+    // The default domain is video: what a 1.15 client always saw.
+    let video = c.call("filter.types", json!({}));
+    assert!(
+        ok(&video)["types"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|t| t["domain"] == "video")
+    );
+    let audio = c.call("filter.types", json!({"domain": "audio"}));
+    let types = ok(&audio)["types"].as_array().unwrap().clone();
+    let ids: Vec<_> = types.iter().map(|t| t["type"].as_str().unwrap()).collect();
+    assert_eq!(
+        ids,
+        [
+            "org.rbs.audio-filter.gain",
+            "org.rbs.audio-filter.noise-gate"
+        ]
+    );
+    let attack = types[1]["fields"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|f| f["key"] == "attack")
+        .unwrap();
+    assert_eq!(attack["curve"], "log");
+    assert_eq!(attack["unit"], "ms");
+    assert!(attack["help"].as_str().is_some_and(|h| !h.is_empty()));
+    let all = c.call("filter.types", json!({"domain": "all"}));
+    assert_eq!(ok(&all)["types"].as_array().unwrap().len(), 6);
+
+    let mic = add(&mut c, "audio_input", "Mic");
+    let screen = add(&mut c, "screen", "Screen");
+    let gain = c.call(
+        "filter.add",
+        json!({"source": mic, "type": "org.rbs.audio-filter.gain", "settings": {"gain": 6}}),
+    );
+    let gain = ok(&gain)["filter"].as_u64().unwrap();
+    let rows = filters_of(&mut c, mic);
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0]["type"], "org.rbs.audio-filter.gain");
+    assert_eq!(rows[0]["settings"]["gain"], 6.0);
+    ok(&c.call(
+        "filter.set_settings",
+        json!({"filter": gain, "settings": {"gain": -3.5}}),
+    ));
+    assert_eq!(filters_of(&mut c, mic)[0]["settings"]["gain"], -3.5);
+
+    // The wrong domain is refused in both directions; ranges are checked.
+    for (params, want) in [
+        (
+            json!({"source": screen, "type": "org.rbs.audio-filter.gain"}),
+            "invalid_params",
+        ),
+        (
+            json!({"source": mic, "type": "org.rbs.filter.blur"}),
+            "invalid_params",
+        ),
+        (
+            json!({"source": mic, "type": "org.rbs.audio-filter.gain", "settings": {"gain": 31}}),
+            "invalid_params",
+        ),
+    ] {
+        let bad = c.call("filter.add", params.clone());
+        assert_eq!(kind(&bad), want, "{params}: {bad}");
+    }
+    ok(&c.call("filter.remove", json!({"filter": gain})));
+    assert!(filters_of(&mut c, mic).is_empty());
+}
+
+#[test]
 fn the_properties_tabs_commands_edit_filters_and_the_sync_offset() {
     let Some((host, updates, _api, mut c)) = start() else {
         return;

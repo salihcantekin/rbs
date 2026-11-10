@@ -59,6 +59,7 @@ pub mod filters;
 
 use crate::canvas_profile::CanvasProfile;
 use crate::edit_history::{EditKind, History, HistoryError, StepInfo};
+use crate::recent_targets::{Recent, RecentTargets};
 use crate::record_profile::{API_PROFILE_ID, RecordProfile};
 use crate::remote_control::ApiTokens;
 use crate::stream_key::{self, KeyStore, MemoryKeyStore};
@@ -172,6 +173,9 @@ pub struct Target {
     pub size: Option<(u32, u32)>,
     /// The application that owns a window, when the OS tells it.
     pub app: Option<String>,
+    /// Where the user picked it recently for this source type: 0 is the newest
+    /// ([`crate::recent_targets`]); `None` when it is not among the recent targets.
+    pub recent: Option<usize>,
     /// Not a target yet: adding it shows the OS picker of `adapter` (systems that
     /// list no screens or windows, such as the Linux screen-cast portal), and the
     /// target the user chooses is added.
@@ -1251,6 +1255,9 @@ pub struct HostConfig {
     /// The platform's virtual camera, `None` where there is none: the studio sends
     /// to it on [`Command::StartVirtualCamera`].
     pub virtual_camera: Option<CameraFactory>,
+    /// The config folder where the recent targets are kept
+    /// ([`crate::recent_targets`]); `None`: they are kept in memory only.
+    pub recent_dir: Option<PathBuf>,
     /// A step to panic at once (tests only, ADR-0055).
     #[cfg(feature = "fault-injection")]
     #[doc(hidden)]
@@ -1278,6 +1285,7 @@ impl HostConfig {
             collection: None,
             autosave: None,
             virtual_camera: None,
+            recent_dir: None,
             #[cfg(feature = "fault-injection")]
             fault: None,
         }
@@ -1457,8 +1465,19 @@ fn target_of(t: SourceTarget) -> Target {
         is_default: t.is_default,
         size: t.size,
         app: t.app,
+        recent: None,
         picker: false,
     }
+}
+
+/// Where `target` is in the recent list (0 is the newest); pickers are never recent.
+fn recent_rank(recent: &[Recent], target: &Target) -> Option<usize> {
+    if target.picker {
+        return None;
+    }
+    recent
+        .iter()
+        .position(|r| r.adapter == target.adapter && r.target == target.target)
 }
 
 /// The entry that opens the OS picker for `kind` (glossary: screen, window).
@@ -1483,6 +1502,9 @@ struct Host {
     inbox: Weak<Sender<Msg>>,
     /// Saves the collection after a change ([`HostConfig::autosave`]).
     autosave: Option<CollectionSaver>,
+    /// The recent targets per source type and the folder they are saved in.
+    recent: RecentTargets,
+    recent_dir: Option<PathBuf>,
     /// The collection as last handed to `autosave`.
     saved: Option<SceneCollection>,
     studio: Studio,
@@ -1933,6 +1955,12 @@ fn start(
             #[cfg(feature = "fault-injection")]
             fault: config_fault,
             autosave: config.autosave,
+            recent: config
+                .recent_dir
+                .as_deref()
+                .map(|d| crate::recent_targets::load(d).0)
+                .unwrap_or_default(),
+            recent_dir: config.recent_dir,
             // A collection that had to be completed is saved at the first publish.
             saved: loaded,
             events: EventPublisher::new(),
@@ -2354,8 +2382,12 @@ impl Host {
             is_default: false,
             size: None,
             app: None,
+            recent: None,
             picker: true,
         }));
+        for t in &mut list {
+            t.recent = recent_rank(self.recent.list(kind.type_id().as_str()), t);
+        }
         list
     }
 
@@ -3271,13 +3303,60 @@ impl Host {
     }
 
     /// Adds a source of `kind` for `target` to the program scene, on top.
+    /// Puts a target first among the recent ones of its source type and saves the list
+    /// (a small file, written only when the list changes). An empty `name` is looked up
+    /// in the listed targets; a target that is not listed is not remembered.
+    fn remember_target(&mut self, kind: SourceKind, adapter: &str, target: &str, name: &str) {
+        let name = if name.is_empty() {
+            match self
+                .targets(kind)
+                .into_iter()
+                .find(|t| t.adapter == adapter && t.target == target)
+            {
+                Some(t) => t.name,
+                None => return,
+            }
+        } else {
+            name.to_owned()
+        };
+        let changed = self
+            .recent
+            .push(kind.type_id().as_str(), adapter, target, &name);
+        if changed && let Some(dir) = &self.recent_dir {
+            // A list that cannot be saved is still kept for this run.
+            let _ = crate::recent_targets::save(dir, &self.recent);
+        }
+    }
+
+    /// The recent targets of `kind` that still exist, newest first.
+    fn recent_targets(&self, kind: SourceKind) -> Vec<Target> {
+        let mut list: Vec<Target> = self
+            .targets(kind)
+            .into_iter()
+            .filter(|t| t.recent.is_some())
+            .collect();
+        list.sort_by_key(|t| t.recent);
+        list
+    }
+
+    /// Forgets the recent targets of `kind` and saves the list.
+    fn clear_recent_targets(&mut self, kind: SourceKind) {
+        if self.recent.clear(kind.type_id().as_str())
+            && let Some(dir) = &self.recent_dir
+        {
+            let _ = crate::recent_targets::save(dir, &self.recent);
+        }
+    }
+
     fn add(&mut self, kind: SourceKind, target: &Target) -> Result<SourceId, String> {
         // A screen or window is as large as fits with its own aspect ratio, centred
         // (a 21:9 display is not squeezed into a 16:9 canvas); audio has no picture,
         // the item only places it in the scene.
         let (settings, layout) = self.new_source(kind, target)?;
         let name = unique_name(&self.collection, &target.name);
-        self.add_named(kind, &name, settings, layout)
+        let id = self.add_named(kind, &name, settings, layout)?;
+        self.remember_target(kind, &target.adapter, &target.target, &target.name);
+        Ok(id)
     }
 
     /// Settings and layout a new source of `kind` capturing `target` gets.
@@ -3969,6 +4048,7 @@ impl Host {
             .source(id)
             .ok_or_else(|| Refusal::NotFound(format!("There is no source {}.", id.get())))?;
         let name = source.name.clone();
+        let kind = SourceKind::of(&source.type_id);
         let mut settings = source.settings.clone();
         let same = |key: &str, value: &str| matches!(settings.get(key), Some(SettingValue::Text(t)) if t == value);
         if same(keys::ADAPTER, &target.adapter) && same(keys::TARGET, &target.target) {
@@ -3988,6 +4068,9 @@ impl Host {
             .map_err(|e| Refusal::of(&e))?;
         self.history
             .record(EditKind::Retarget, &name, 0, vec![undo]);
+        if let Some(kind) = kind {
+            self.remember_target(kind, &target.adapter, &target.target, &target.name);
+        }
         Ok(true)
     }
 
@@ -5191,7 +5274,7 @@ impl ApiTarget<'_> {
                 }
                 Ok(Response::Done(Empty {}))
             }
-            C::FilterTypes => Ok(Response::FilterTypes(filters::api_types())),
+            C::FilterTypes(p) => Ok(Response::FilterTypes(filters::api_types(p.domain))),
             C::FilterAdd(p) => {
                 let settings = p.settings.unwrap_or_default();
                 let id = host
@@ -5252,6 +5335,7 @@ impl ApiTarget<'_> {
                     is_default: false,
                     size: None,
                     app: None,
+                    recent: None,
                     picker: false,
                 };
                 if host
@@ -5260,6 +5344,30 @@ impl ApiTarget<'_> {
                 {
                     host.apply(notify);
                 }
+                Ok(Response::Done(Empty {}))
+            }
+            C::SettingsRecentTargets(p) => {
+                let kind = app_kind(p.kind);
+                let targets = host
+                    .recent_targets(kind)
+                    .into_iter()
+                    .map(|t| api::CaptureTarget {
+                        name: t.name,
+                        adapter: t.adapter,
+                        target: t.target,
+                        is_default: t.is_default,
+                        size: t
+                            .size
+                            .map(|(width, height)| api::Dimensions { width, height }),
+                    })
+                    .collect();
+                Ok(Response::Targets(TargetList {
+                    kind: p.kind,
+                    targets,
+                }))
+            }
+            C::SettingsClearRecentTargets(p) => {
+                host.clear_recent_targets(app_kind(p.kind));
                 Ok(Response::Done(Empty {}))
             }
             C::SourceReload(p) => {

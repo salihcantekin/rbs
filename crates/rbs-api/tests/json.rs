@@ -310,7 +310,7 @@ fn every_request() -> Vec<Request> {
         c(Command::TokensRevoke(TokenRef {
             name: "Stream Deck".into(),
         })),
-        c(Command::FilterTypes),
+        c(Command::FilterTypes(FilterTypesParams::default())),
         c(Command::FilterAdd(AddFilter {
             source: 3,
             type_id: "org.rbs.filter.blur".into(),
@@ -339,6 +339,12 @@ fn every_request() -> Vec<Request> {
             target: "window:7".to_owned(),
         })),
         c(Command::SourceReload(ReloadSource { source: 3 })),
+        c(Command::SettingsRecentTargets(TargetsParams {
+            kind: SourceKind::Window,
+        })),
+        c(Command::SettingsClearRecentTargets(TargetsParams {
+            kind: SourceKind::Window,
+        })),
     ]
 }
 
@@ -353,6 +359,21 @@ fn every_request_round_trips_and_every_method_is_covered() {
     let mut methods: Vec<_> = METHODS.iter().map(|m| m.name).collect();
     methods.sort_unstable();
     assert_eq!(names, methods);
+}
+
+#[test]
+fn filter_types_takes_a_domain_and_defaults_to_video() {
+    for (params, want) in [
+        (json!({}), FilterDomains::Video),
+        (json!({"domain": "audio"}), FilterDomains::Audio),
+        (json!({"domain": "all"}), FilterDomains::All),
+    ] {
+        let p: FilterTypesParams = serde_json::from_value(params).unwrap();
+        assert_eq!(p.domain, want);
+    }
+    round_trip(&Request::Command(Command::FilterTypes(FilterTypesParams {
+        domain: FilterDomains::Audio,
+    })));
 }
 
 #[test]
@@ -384,20 +405,62 @@ fn every_result_and_event_type_round_trips() {
         pending: true,
     });
     round_trip(&FilterTypeList {
-        types: vec![FilterTypeInfo {
-            type_id: "org.rbs.filter.blur".into(),
-            name: "Blur".into(),
-            fields: vec![FilterField {
-                key: "radius".into(),
-                label: "Radius".into(),
-                kind: "number".into(),
-                min: Some(0.0),
-                max: Some(64.0),
-                step: Some(1.0),
-                unit: Some("px".into()),
-                default: json!(8.0),
-            }],
-        }],
+        types: vec![
+            FilterTypeInfo {
+                type_id: "org.rbs.filter.blur".into(),
+                domain: "video".into(),
+                name: "Blur".into(),
+                fields: vec![FilterField {
+                    key: "radius".into(),
+                    label: "Radius".into(),
+                    kind: "number".into(),
+                    help: None,
+                    curve: None,
+                    options: None,
+                    min: Some(0.0),
+                    max: Some(64.0),
+                    step: Some(1.0),
+                    unit: Some("px".into()),
+                    default: json!(8.0),
+                }],
+            },
+            FilterTypeInfo {
+                type_id: "org.example.audio-filter.test".into(),
+                domain: "audio".into(),
+                name: "Test".into(),
+                fields: vec![
+                    FilterField {
+                        key: "attack".into(),
+                        label: "Attack".into(),
+                        kind: "number".into(),
+                        help: Some("How fast it opens.".into()),
+                        curve: Some("log".into()),
+                        options: None,
+                        min: Some(0.1),
+                        max: Some(100.0),
+                        step: Some(0.1),
+                        unit: Some("ms".into()),
+                        default: json!(5.0),
+                    },
+                    FilterField {
+                        key: "mode".into(),
+                        label: "Mode".into(),
+                        kind: "choice".into(),
+                        help: None,
+                        curve: None,
+                        options: Some(vec![FilterOption {
+                            key: "soft".into(),
+                            label: "Soft".into(),
+                        }]),
+                        min: None,
+                        max: None,
+                        step: None,
+                        unit: None,
+                        default: json!("soft"),
+                    },
+                ],
+            },
+        ],
     });
     round_trip(&FilterAdded { filter: 4 });
     round_trip(&HelloResult {

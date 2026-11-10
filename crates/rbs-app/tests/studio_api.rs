@@ -303,7 +303,7 @@ fn a_control_api_client_drives_the_studio() {
         d[0]["layout"]["crop"] == json!([0, 0, 0, 0])
     });
 
-    // Transform commands (protocol 1.16, ADR-0084): flip, rotate, centre, one undo
+    // Transform commands (protocol 1.17, ADR-0084): flip, rotate, centre, one undo
     // step each; fit needs a picture size this test never sees.
     let flip = c.call("item.flip", json!({"item": item, "axis": "horizontal"}));
     assert!(flip["result"].is_object(), "{flip}");

@@ -440,6 +440,10 @@ impl App {
             Run::Transform(id, op) => self.studio.transform_source(id, op),
             Run::SourceMuted(id, on) => self.studio.set_source_muted(id, on),
             Run::SourceMixerHidden(id, on) => self.studio.set_source_mixer_hidden(id, on),
+            Run::MixerOrientation(o) => {
+                self.session.set_mixer_orientation(o);
+                self.changed();
+            }
             Run::MixerBulk(bulk) => match bulk {
                 menu_bar::MixerBulk::HideAll => self.studio.hide_in_mixer(true, false),
                 menu_bar::MixerBulk::HideMuted => self.studio.hide_in_mixer(true, true),
@@ -1144,9 +1148,21 @@ impl Ctx {
             app.sections_rev += 1;
         }
         let rev = app.sections_rev;
+        // The Mixer's layout (ADR-0083): 0 auto, 1 rows, 2 columns.
+        let orientation = match app.session.workspace().mixer_orientation() {
+            rbs_ui::MixerOrientation::Auto => 0,
+            rbs_ui::MixerOrientation::Rows => 1,
+            rbs_ui::MixerOrientation::Columns => 2,
+        };
         app.main.global::<Sections>().set_rev(rev);
+        app.main
+            .global::<Sections>()
+            .set_mixer_orientation(orientation);
         for f in &app.floats {
             f.window.global::<Sections>().set_rev(rev);
+            f.window
+                .global::<Sections>()
+                .set_mixer_orientation(orientation);
         }
         if let Some(w) = &app.settings {
             w.global::<Sections>().set_rev(rev);
@@ -3030,6 +3046,7 @@ fn run(config: PathBuf, notice: Option<String>) -> Result<(), Box<dyn std::error
         config.autosave = autosave;
         config.key_account = key_account;
         config.virtual_camera = ctx.app.borrow().vcam.factory();
+        config.recent_dir = Some(ctx.app.borrow().config.clone());
         config
     };
     match studio_host::StudioHost::spawn(

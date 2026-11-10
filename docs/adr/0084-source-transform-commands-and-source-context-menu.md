@@ -51,4 +51,4 @@ Forces: commands come from the registry (ADR-0050), so a shortcut, the palette a
 
 ## Implementation notes
 
-- 2026-11-10: registry ids are parameterised instead of one id per variant: `item.flip?axis=`, `item.rotate`, `item.fit` and `item.align` (pickers, shown as submenus), `item.reset_transform`. `Reset rotation` is not a separate command (Reset transform and the rotation field cover it), and `item.align` takes `axis` of `both`, `horizontal` or `vertical`. The Arrange, Source and Remove menu categories and multi-selection follow in later changes; protocol minor 1.16 was taken at merge time.
+- 2026-11-10: registry ids are parameterised instead of one id per variant: `item.flip?axis=`, `item.rotate`, `item.fit` and `item.align` (pickers, shown as submenus), `item.reset_transform`. `Reset rotation` is not a separate command (Reset transform and the rotation field cover it), and `item.align` takes `axis` of `both`, `horizontal` or `vertical`. The Arrange, Source and Remove menu categories and multi-selection follow in later changes; protocol minor 1.17 was taken at merge time.

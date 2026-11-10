@@ -12,6 +12,9 @@ use rbs_audio::{
     AudioGraphConfig, EncoderNode, InputParams, InputStats, LevelMeter, MeterSinkNode, MixerNode,
     MixerParams, MixerStats, Strip,
 };
+use rbs_audio_filters::{
+    AudioFilterNode, AudioFilterStats, AudioFilterType, DspSetup, FilterMeter,
+};
 use rbs_codec::{AudioEncoderConfig, EncoderTuning, VideoEncoderConfig};
 use rbs_core::lifecycle::Lifecycle;
 use rbs_core::media::{ContainerId, MemoryKind, PixelFormat, StreamDescriptor};
@@ -230,9 +233,51 @@ struct FilterEntry {
     filter: FilterId,
     source: SourceId,
     node: NodeId,
-    /// Its running instance's value channel and statistics.
-    instance: Option<(ParamSender<Values>, Arc<FilterStats>)>,
+    /// Its running instance.
+    instance: Option<FilterInstance>,
 }
+
+/// A running filter: the value channel the studio keeps and what the node shares
+/// (ADR-0062 decision 8; ADR-0082 decision 8 for audio filters).
+enum FilterInstance {
+    /// A video filter on the render partition.
+    Video(ParamSender<Values>, Arc<FilterStats>),
+    /// An audio filter on the audio partition, with its meter if it has one.
+    Audio {
+        sender: ParamSender<Values>,
+        meter: Option<Arc<FilterMeter>>,
+        stats: Arc<AudioFilterStats>,
+    },
+}
+
+impl FilterInstance {
+    fn sender(&mut self) -> &mut ParamSender<Values> {
+        match self {
+            FilterInstance::Video(sender, _) | FilterInstance::Audio { sender, .. } => sender,
+        }
+    }
+}
+
+/// The built-in type of a filter: video or audio (ADR-0082 decision 8).
+#[derive(Clone, Copy)]
+enum FilterKind {
+    Video(&'static dyn FilterType),
+    Audio(&'static dyn AudioFilterType),
+}
+
+impl FilterKind {
+    /// The stored settings as values, and the keys that had to be adjusted.
+    fn values_lenient(self, settings: &rbs_scene::model::Settings) -> (Values, Vec<String>) {
+        match self {
+            FilterKind::Video(ty) => filter_values_lenient(ty, settings),
+            FilterKind::Audio(ty) => filter_values_lenient(ty, settings),
+        }
+    }
+}
+
+/// The key of a [`FilterSettingsAdjusted`] that means the filter as a whole could not
+/// be made, so its source plays unfiltered.
+pub const FILTER_UNAVAILABLE: &str = "*";
 
 /// A filter's stored settings that were adjusted to run it (ADR-0062 decision 8): the
 /// key was unknown, out of range or of the wrong kind. The document keeps them until
@@ -984,13 +1029,13 @@ impl Studio {
             }
             for (filter, _) in &report.changed_filters {
                 let values = filter_of(collection, *filter)
-                    .map(|(ty, settings)| filter_values_lenient(ty, settings).0);
+                    .map(|(kind, settings)| kind.values_lenient(settings).0);
                 if let (Some(values), Some(entry)) = (
                     values,
                     self.filters.iter_mut().find(|f| f.filter == *filter),
                 ) {
-                    if let Some((sender, _)) = &mut entry.instance {
-                        sender.send(values);
+                    if let Some(instance) = &mut entry.instance {
+                        instance.sender().send(values);
                     }
                 }
             }
@@ -1131,10 +1176,10 @@ impl Studio {
         // Instances for the filters the plan schedules, warmed for their source's size.
         let mut adjusted = Vec::new();
         for entry in &mut self.filters {
-            let Some((ty, settings)) = filter_of(collection, entry.filter) else {
+            let Some((kind, settings)) = filter_of(collection, entry.filter) else {
                 continue;
             };
-            let (values, keys) = filter_values_lenient(ty, settings);
+            let (values, keys) = kind.values_lenient(settings);
             adjusted.extend(keys.into_iter().map(|key| FilterSettingsAdjusted {
                 filter: entry.filter,
                 key,
@@ -1142,20 +1187,51 @@ impl Studio {
             if entry.instance.is_some() || !scheduled.contains(&entry.node) {
                 continue;
             }
-            let size = self
-                .entries
-                .iter()
-                .find(|e| e.source == entry.source)
-                .and_then(|e| match &e.instance.as_ref()?.watch {
-                    Watch::Video(stats) => stats.picture_size(),
-                    _ => None,
-                })
-                .map(|(w, h)| [w, h]);
-            let shared: Arc<dyn FilterType> = Arc::new(ty);
-            let (node, sender, stats) = FilterNode::new(shared, values, size);
-            self.engine
-                .adopt::<GpuRuntime>(RENDER, entry.node, Box::new(node))?;
-            entry.instance = Some((sender, stats));
+            match kind {
+                FilterKind::Video(ty) => {
+                    let size = self
+                        .entries
+                        .iter()
+                        .find(|e| e.source == entry.source)
+                        .and_then(|e| match &e.instance.as_ref()?.watch {
+                            Watch::Video(stats) => stats.picture_size(),
+                            _ => None,
+                        })
+                        .map(|(w, h)| [w, h]);
+                    let shared: Arc<dyn FilterType> = Arc::new(ty);
+                    let (node, sender, stats) = FilterNode::new(shared, values, size);
+                    self.engine
+                        .adopt::<GpuRuntime>(RENDER, entry.node, Box::new(node))?;
+                    entry.instance = Some(FilterInstance::Video(sender, stats));
+                }
+                FilterKind::Audio(ty) => {
+                    let graph = self.settings.audio_graph;
+                    let setup = DspSetup::new(graph.format, graph.block_frames);
+                    // A filter that cannot be made passes audio through, so its source
+                    // stays audible; the filter is reported (ADR-0082 decision 8).
+                    let (node, (sender, meter, stats)) =
+                        match AudioFilterNode::new(ty, setup, values) {
+                            Ok(made) => made,
+                            Err(_) => {
+                                adjusted.push(FilterSettingsAdjusted {
+                                    filter: entry.filter,
+                                    key: FILTER_UNAVAILABLE.to_owned(),
+                                });
+                                AudioFilterNode::pass_through(ty, setup, values)
+                            }
+                        };
+                    self.engine.adopt::<()>(
+                        self.settings.partitions.audio,
+                        entry.node,
+                        Box::new(node),
+                    )?;
+                    entry.instance = Some(FilterInstance::Audio {
+                        sender,
+                        meter,
+                        stats,
+                    });
+                }
+            }
         }
         self.filter_problems = adjusted;
 
@@ -1238,11 +1314,18 @@ impl Studio {
             }
         }
         for f in gone_filters {
-            if f.instance.is_some() {
-                let a = Added {
-                    node: f.node,
-                    partition: RENDER,
-                    gpu: true,
+            if let Some(instance) = &f.instance {
+                let a = match instance {
+                    FilterInstance::Video(..) => Added {
+                        node: f.node,
+                        partition: RENDER,
+                        gpu: true,
+                    },
+                    FilterInstance::Audio { .. } => Added {
+                        node: f.node,
+                        partition: self.settings.partitions.audio,
+                        gpu: false,
+                    },
                 };
                 if !take(&mut self.engine, a) {
                     self.pending_takes.push((a, None));
@@ -1445,8 +1528,8 @@ impl Studio {
             .find(|f| f.filter == filter)
             .and_then(|f| f.instance.as_mut())
         {
-            Some((sender, _)) => {
-                sender.send(values);
+            Some(instance) => {
+                instance.sender().send(values);
                 true
             }
             None => false,
@@ -1472,7 +1555,7 @@ impl Studio {
     /// Sends the collection's values to a running filter again (a cancelled drag).
     pub fn restore_filter(&mut self, filter: FilterId) -> bool {
         let Some(values) =
-            filter_of(&self.collection, filter).map(|(ty, s)| filter_values_lenient(ty, s).0)
+            filter_of(&self.collection, filter).map(|(kind, s)| kind.values_lenient(s).0)
         else {
             return false;
         };
@@ -1487,7 +1570,29 @@ impl Studio {
     /// Statistics of a running filter (its warm size and resizes).
     pub fn filter_stats(&self, filter: FilterId) -> Option<&Arc<FilterStats>> {
         let f = self.filters.iter().find(|f| f.filter == filter)?;
-        f.instance.as_ref().map(|(_, stats)| stats)
+        match f.instance.as_ref()? {
+            FilterInstance::Video(_, stats) => Some(stats),
+            FilterInstance::Audio { .. } => None,
+        }
+    }
+
+    /// The live meter of a running audio filter that has one (a noise gate's input
+    /// level and gain reduction, ADR-0082); read it only while an editor shows it.
+    pub fn audio_filter_meter(&self, filter: FilterId) -> Option<&Arc<FilterMeter>> {
+        let f = self.filters.iter().find(|f| f.filter == filter)?;
+        match f.instance.as_ref()? {
+            FilterInstance::Audio { meter, .. } => meter.as_ref(),
+            FilterInstance::Video(..) => None,
+        }
+    }
+
+    /// Blocks an audio filter dropped because they were not in the graph's format.
+    pub fn audio_filter_invalid_inputs(&self, filter: FilterId) -> Option<u64> {
+        let f = self.filters.iter().find(|f| f.filter == filter)?;
+        match f.instance.as_ref()? {
+            FilterInstance::Audio { stats, .. } => Some(stats.invalid_inputs()),
+            FilterInstance::Video(..) => None,
+        }
     }
 
     /// Width and height in pixels of the picture a video source delivers now (its
@@ -2493,12 +2598,16 @@ fn engine_failures(applied: &Applied) -> Vec<StartFailure> {
 fn filter_of(
     collection: &SceneCollection,
     filter: FilterId,
-) -> Option<(&'static dyn FilterType, &rbs_scene::model::Settings)> {
+) -> Option<(FilterKind, &rbs_scene::model::Settings)> {
     let f = collection
         .sources()
         .flat_map(|s| s.filters.iter())
         .find(|f| f.id == filter)?;
-    Some((rbs_filters::find(f.type_id.as_str())?, &f.settings))
+    let kind = match rbs_filters::find(f.type_id.as_str()) {
+        Some(ty) => FilterKind::Video(ty),
+        None => FilterKind::Audio(rbs_audio_filters::find(f.type_id.as_str())?),
+    };
+    Some((kind, &f.settings))
 }
 
 fn take_instance(

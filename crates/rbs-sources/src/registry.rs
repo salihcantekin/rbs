@@ -490,6 +490,9 @@ impl SourceTypes {
         for ty in rbs_filters::catalogue() {
             table.insert(ty.type_id(), rbs_filters::descriptor(*ty));
         }
+        for ty in rbs_audio_filters::catalogue() {
+            table.insert(ty.type_id(), rbs_audio_filters::descriptor(*ty));
+        }
         for t in self.installed() {
             let descriptor = match class_of(&t) {
                 Some(SourceClass::Capture(_)) => rbs_nodes::capture_descriptor(),

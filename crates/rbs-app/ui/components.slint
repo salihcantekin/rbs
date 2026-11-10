@@ -999,6 +999,8 @@ export component Tabs inherits Rectangle {
 // callback again only when its arguments change.
 export global Sections {
     in property <int> rev;
+    // The Mixer's layout (ADR-0083): 0 auto (by the panel's shape), 1 rows, 2 columns.
+    in property <int> mixer-orientation;
     pure callback closed(string /* id */, int /* rev */) -> bool;
     callback set-closed(string /* id */, bool /* closed */);
     // A page's cards by id prefix: 0 none fold, 1 some are open, 2 all are closed.

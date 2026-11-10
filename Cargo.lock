@@ -4313,6 +4313,7 @@ dependencies = [
  "rbs-app",
  "rbs-app-ui",
  "rbs-audio",
+ "rbs-audio-filters",
  "rbs-audio-io",
  "rbs-audio-io-coreaudio",
  "rbs-audio-io-pipewire",
@@ -4344,6 +4345,7 @@ dependencies = [
  "rbs-mux-fmp4",
  "rbs-mux-matroska",
  "rbs-mux-mpegts",
+ "rbs-params",
  "rbs-record",
  "rbs-remote-settings",
  "rbs-scene",
@@ -4389,6 +4391,17 @@ dependencies = [
  "rbs-codec",
  "rbs-core",
  "rbs-graph",
+]
+
+[[package]]
+name = "rbs-audio-filters"
+version = "0.0.1"
+dependencies = [
+ "allocation-counter",
+ "criterion 0.8.2",
+ "rbs-core",
+ "rbs-graph",
+ "rbs-params",
 ]
 
 [[package]]
@@ -4872,6 +4885,7 @@ name = "rbs-record"
 version = "0.0.1"
 dependencies = [
  "rbs-audio",
+ "rbs-audio-filters",
  "rbs-audio-io-test",
  "rbs-capture-test",
  "rbs-codec",
@@ -4913,6 +4927,7 @@ version = "0.0.1"
 dependencies = [
  "png",
  "rbs-audio",
+ "rbs-audio-filters",
  "rbs-audio-io",
  "rbs-audio-io-test",
  "rbs-audio-io-wasapi",
@@ -4926,6 +4941,7 @@ dependencies = [
  "rbs-gpu",
  "rbs-graph",
  "rbs-nodes",
+ "rbs-params",
  "rbs-scene",
 ]
 

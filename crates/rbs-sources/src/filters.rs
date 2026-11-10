@@ -1,7 +1,8 @@
 //! Filter settings in the scene model to and from filter values (spec
-//! `video-filters.md`, "Values"; ADR-0062 decisions 2 and 8).
+//! `video-filters.md`, "Values"; ADR-0062 decisions 2 and 8). The functions take any
+//! [`Schema`], so video filter types and audio filter types (ADR-0082) share them.
 
-use rbs_filters::{FieldKind, FilterType, ParamError, Value, Values, color_text, parse_color};
+use rbs_params::{FieldKind, ParamError, Schema, Value, Values, color_text, parse_color};
 use rbs_scene::model::{SettingValue, Settings};
 
 /// The value a stored setting holds for `kind`, or `None` for the wrong kind.
@@ -10,13 +11,22 @@ fn value_of(kind: &FieldKind, v: &SettingValue) -> Option<Value> {
         (FieldKind::Number { .. }, SettingValue::Float(f)) => Some(Value::Number(*f as f32)),
         (FieldKind::Number { .. }, SettingValue::Int(i)) => Some(Value::Number(*i as f32)),
         (FieldKind::Color { .. }, SettingValue::Text(t)) => parse_color(t).map(Value::Color),
+        (FieldKind::Toggle { .. }, SettingValue::Bool(b)) => Some(Value::Toggle(*b)),
+        (FieldKind::Choice { options, .. }, SettingValue::Text(t)) => options
+            .iter()
+            .position(|(key, _)| key == t)
+            .and_then(|i| u8::try_from(i).ok())
+            .map(Value::Choice),
         _ => None,
     }
 }
 
 /// Strict conversion, for edits: unknown keys, wrong kinds and out-of-range or
 /// non-finite numbers are refused; missing keys take their defaults.
-pub fn filter_values(ty: &dyn FilterType, settings: &Settings) -> Result<Values, ParamError> {
+pub fn filter_values<S: Schema + ?Sized>(
+    ty: &S,
+    settings: &Settings,
+) -> Result<Values, ParamError> {
     let fields = ty.fields();
     let mut pairs = Vec::with_capacity(settings.len());
     for (key, v) in settings {
@@ -24,7 +34,12 @@ pub fn filter_values(ty: &dyn FilterType, settings: &Settings) -> Result<Values,
             .iter()
             .find(|f| f.key == key)
             .ok_or_else(|| ParamError::UnknownKey(key.clone()))?;
-        let value = value_of(&field.kind, v).ok_or(ParamError::WrongKind(field.key))?;
+        let value = value_of(&field.kind, v).ok_or(match (&field.kind, v) {
+            (FieldKind::Choice { .. }, SettingValue::Text(_)) => {
+                ParamError::UnknownChoice(field.key)
+            }
+            _ => ParamError::WrongKind(field.key),
+        })?;
         pairs.push((field.key, value));
     }
     Values::from_pairs(ty, pairs)
@@ -33,7 +48,10 @@ pub fn filter_values(ty: &dyn FilterType, settings: &Settings) -> Result<Values,
 /// Lenient conversion, for settings read from a document: unknown keys are ignored,
 /// numbers clamped into range, wrong kinds and non-finite numbers replaced by the
 /// default. Returns the values and the keys it adjusted (unknown keys included).
-pub fn filter_values_lenient(ty: &dyn FilterType, settings: &Settings) -> (Values, Vec<String>) {
+pub fn filter_values_lenient<S: Schema + ?Sized>(
+    ty: &S,
+    settings: &Settings,
+) -> (Values, Vec<String>) {
     let fields = ty.fields();
     let mut adjusted = Vec::new();
     let mut pairs = Vec::with_capacity(settings.len());
@@ -50,7 +68,7 @@ pub fn filter_values_lenient(ty: &dyn FilterType, settings: &Settings) -> (Value
                 }
                 Value::Number(c)
             }
-            (Some(Value::Color(c)), _) => Value::Color(c),
+            (Some(v @ (Value::Color(_) | Value::Toggle(_) | Value::Choice(_))), _) => v,
             _ => {
                 adjusted.push(key.clone());
                 continue;
@@ -71,14 +89,24 @@ fn wide(v: f32) -> f64 {
 
 /// The settings that store `values`: every field of the type, numbers as floats and
 /// colours as `#rrggbb` or `#rrggbbaa`.
-pub fn filter_settings(ty: &dyn FilterType, values: &Values) -> Settings {
+pub fn filter_settings<S: Schema + ?Sized>(ty: &S, values: &Values) -> Settings {
     values
         .to_pairs(ty)
         .into_iter()
-        .map(|(key, v)| {
+        .zip(ty.fields())
+        .map(|((key, v), field)| {
             let stored = match v {
                 Value::Number(n) => SettingValue::Float(wide(n)),
                 Value::Color(c) => SettingValue::Text(color_text(c)),
+                Value::Toggle(b) => SettingValue::Bool(b),
+                Value::Choice(i) => match field.kind {
+                    FieldKind::Choice { options, .. } => SettingValue::Text(
+                        options
+                            .get(usize::from(i))
+                            .map_or_else(String::new, |(key, _)| (*key).to_owned()),
+                    ),
+                    _ => SettingValue::Text(String::new()),
+                },
                 // `Value` is non-exhaustive; a later kind is stored as text.
                 #[allow(unreachable_patterns)]
                 other => SettingValue::Text(format!("{other:?}")),
@@ -177,6 +205,20 @@ mod tests {
         assert_eq!(
             ms,
             u128::from(rbs_scene::model::MAX_SYNC_OFFSET_MS.unsigned_abs())
+        );
+    }
+
+    #[test]
+    fn audio_filter_settings_round_trip() {
+        let gate = rbs_audio_filters::find(rbs_audio_filters::gate::NOISE_GATE).unwrap();
+        let (values, adjusted) = filter_values_lenient(gate, &Settings::new());
+        assert!(adjusted.is_empty());
+        let stored = filter_settings(gate, &values);
+        assert_eq!(stored.len(), gate.fields().len());
+        assert_eq!(filter_values(gate, &stored), Ok(values));
+        assert_eq!(
+            filter_values(gate, &s(&[("hold", SettingValue::Float(501.0))])),
+            Err(ParamError::OutOfRange("hold"))
         );
     }
 }
