@@ -253,6 +253,9 @@ fn the_colour_popover_is_a_layer_and_a_pick_reaches_only_the_swatch_that_opened_
     o.set_color_serial(o.get_color_serial() + 1);
     settle();
     assert_eq!(p.get_last_pick().as_str(), "#445566");
+    o.set_color_owner(o.get_color_owner() - 100);
     key(&p, Key::Escape);
+    settle();
     assert!(!o.get_color_open());
+    assert!(p.get_colour_focused(), "the focus is back on the swatch");
 }

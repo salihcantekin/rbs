@@ -254,6 +254,11 @@ component FontMenu inherits Button {
     changed serial => {
         if Appearance.font-owner == root.for-label { root.picked(Appearance.font-picked); }
     }
+    // The focus goes back to the button that opened the picker when it closes.
+    property <bool> picking: Overlays.picker-open;
+    changed picking => {
+        if !root.picking && Appearance.font-owner == root.for-label { root.take-focus(); }
+    }
     clicked => {
         Appearance.font-owner = root.for-label;
         Overlays.picker-title = @tr("Add a font to {}", root.for-label);
