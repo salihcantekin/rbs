@@ -642,8 +642,7 @@ export component EmptyState inherits Rectangle {
     }
 }
 
-// Select: a button showing the chosen option; it opens a list of the options. The
-// owner counts `open` as an overlay (the preview layer hides under popups).
+// Select: a button showing the chosen option; it opens a native menu of the options.
 export component Select inherits Rectangle {
     // The field's name: the accessible name is "<label>: <option>".
     in property <string> label;
@@ -652,7 +651,6 @@ export component Select inherits Rectangle {
     in property <bool> enabled: true;
     // Shown in `text.secondary` while no option is chosen (`index` out of range).
     in property <string> placeholder;
-    out property <bool> open: menu.is-open;
     property <bool> chosen: root.index >= 0 && root.index < root.options.length;
     callback selected(int);
     height: Tokens.size-control-md;
@@ -662,14 +660,13 @@ export component Select inherits Rectangle {
     border-radius: Tokens.radius-sm;
     border-width: Tokens.size-border;
     border-color: !root.enabled ? Theme.border-subtle
-        : touch.has-hover || root.open ? Theme.border-strong : Theme.border-subtle;
+        : touch.has-hover ? Theme.border-strong : Theme.border-subtle;
     background: !root.enabled ? transparent
         : touch.pressed ? Theme.surface-overlay : Theme.surface-sunken;
     accessible-role: combobox;
     accessible-label: @tr("{}: {}", root.label, root.chosen ? root.options[root.index] : root.placeholder);
     accessible-enabled: root.enabled;
-    accessible-expanded: root.open;
-    accessible-action-default => { if root.enabled { menu.show(); } }
+    accessible-action-default => { if root.enabled { menu.show({ x: 0px, y: root.height }); } }
     forward-focus: focus;
     HorizontalLayout {
         padding-left: Tokens.space-2;
@@ -695,60 +692,24 @@ export component Select inherits Rectangle {
     focus := RingFocus {
         enabled: root.enabled;
         key-pressed(e) => {
-            if e.text == Key.Return || e.text == " " || e.text == Key.DownArrow { menu.show(); return accept; }
+            if e.text == Key.Return || e.text == " " || e.text == Key.DownArrow { menu.show({ x: 0px, y: root.height }); return accept; }
             reject
         }
     }
     touch := TouchArea {
         enabled: root.enabled;
-        clicked => { focus.focus-pointer(); menu.show(); }
+        clicked => { focus.focus-pointer(); menu.show({ x: 0px, y: root.height }); }
     }
     FocusRing { show: focus.ring; }
-    menu := PopupWindow {
-        close-policy: close-on-click-outside;
-        y: root.height;
-        width: root.width;
-        // Its own height, or the popup takes the whole list's height and the toolkit
-        // moves it up to fit the window.
-        height: scroller.height;
-        MenuSurface {
-            width: root.width;
-            height: scroller.height;
-            accessible-role: list;
-            accessible-label: root.label;
-            // A long list (the Key list of a shortcut) scrolls instead of growing past
-            // the window: at most `size.select.list-h`, the chosen option in view.
-            scroller := Flickable {
-                height: min(options.preferred-height, Tokens.size-select-list-h);
-                content-height: options.preferred-height;
-                content-width: self.width;
-                init => {
-                    if root.chosen && options.preferred-height > self.height {
-                        self.content-y = max(self.height - options.preferred-height,
-                            min(0px, self.height / 2 - (root.index + 0.5) * options.preferred-height / root.options.length));
-                    }
-                }
-                options := VerticalLayout {
-                    padding: Tokens.space-2;
-                    spacing: Tokens.space-1;
-                    for o[i] in root.options: MenuItem {
-                        text: o;
-                        checked: i == root.index;
-                        autofocus: i == root.index;
-                        activated => { root.selected(i); menu.close(); }
-                    }
-                }
-            }
-            // Where the visible part is in a list that scrolls: a thin thumb on the right
-            // (the list scrolls with the wheel or a touch drag).
-            if options.preferred-height > scroller.height: Rectangle {
-                x: parent.width - self.width - Tokens.space-1;
-                y: scroller.y + (-scroller.content-y) * scroller.height / options.preferred-height;
-                width: Tokens.space-1;
-                height: scroller.height * scroller.height / options.preferred-height;
-                border-radius: Tokens.radius-sm;
-                background: Theme.border-strong;
-                accessible-role: none;
+    // The list of options is a native menu (ADR-0094 B1), opened under the field.
+    menu := ContextMenuArea {
+        enabled: false;
+        Menu {
+            for o[i] in root.options: MenuItem {
+                title: o;
+                checkable: true;
+                checked: i == root.index;
+                activated => { root.selected(i); }
             }
         }
     }
