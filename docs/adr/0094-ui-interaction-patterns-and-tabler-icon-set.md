@@ -11,7 +11,7 @@ The owner asked (2026-11-10) for foundational UI rules so that a user who learns
 
 A review of the code found drift:
 
-- Help is mostly inline text: `grep -c word-wrap crates/rbs-app/ui/*.slint` finds 50 wrapped texts (studio 21, settings 8, appearance 8, app 3, shortcuts 3, vcam 3, components 4), several over 100 characters. Only the filter fields have an info button (`studio.slint`, `FilterFieldView`: it toggles an inline `Hint`, documented in the spec's icon list). U2 promises an explanation "on hover or focus", but no tooltip component exists (`IconButton` has a "tooltip-to-be" comment).
+- Help is mostly inline text: `grep -c word-wrap crates/rbs-app/ui/*.slint` finds 51 wrapped texts (studio 21, settings 8, appearance 8, components 4, app 3, shortcuts 3, vcam 3, source_settings 1), several over 100 characters. Only the filter fields have an info button (`studio.slint`, `FilterFieldView`: it toggles an inline `Hint`, documented in the spec's icon list). U2 promises an explanation "on hover or focus", but no tooltip component exists (`IconButton` has a "tooltip-to-be" comment).
 - Four notice styles: `Hint` (private copies in `studio.slint`, `appearance.slint` and `shortcuts.slint`), `SettingsNotice`/`SettingsCallout`/`SettingsStatus`, and bare `Text`. `Field` is also copied in `studio.slint` and `appearance.slint`.
 - Two section systems (`SectionHeader` with the private `Section`, `SectionTitle`, `Field`; and `SettingsCard`). The "Advanced settings" of `EncoderFields` is its own button.
 - Nine `PopupWindow`s (`grep -c 'PopupWindow {'`: app 3, studio 2, components 2, app_menu 1, appearance 1), most of them menus, next to the registry-based `CommandMenu` (ADR-0050).
@@ -26,11 +26,11 @@ A review of the code found drift:
 
 1. **Short label, optional info hint.** A setting has a label of one to three words and, only when it needs one, an `InfoHint`: a small `info` icon button after the label (it replaces the inline-toggled help of the filter fields). Pressing it (Return or Space while focused) opens a non-modal popover with the explanation, the default value and the range; Escape or a click outside closes it. One hint is open at a time. An `InfoHint` has a hit target of at least 24 x 24 px (U11) around its 16 px icon, an accessible name ("Help: <label>") and its popover text is the accessible description of the field; closing it returns focus to the button. Hint text, tooltips and `StatusLine` text go through `@tr` (U8) and are never truncated. No explanation paragraph is drawn inline. Inline text is allowed only for a state the user must see now (warning, error, status) and then in a `StatusLine` (D1).
 2. **Many settings means sections.** A group of two or more related settings is a `SectionHeader` section with a stable id saved in the workspace file (ADR-0078).
-3. **A feature with parameters is a feature section.** New component `FeatureSection`: one row with the feature's name, a `Toggle` and a chevron. Switching it on opens its settings below; switching it off collapses them. Parameters of a feature that is off are not drawn. Filters, the ducker, the gate and Settings cards such as Auto-record use it. Its open or closed state is a section id (ADR-0078); the on/off state is the feature's own setting. Advanced settings of a feature are a nested standard "Advanced" section (U2), not a private button.
-4. **Control by option count.** Boolean: `Toggle`. Two to four short options that should stay visible: `SegmentedControl`. Five or more options, or long labels: `Select`. A number with a range: `NumberField`, plus `Slider` when drag feedback matters. Free text: `TextField`. A value is never picked from a row of buttons.
-5. **Buttons are for actions.** One `primary` button per window or section. Row actions are `ghost` `IconButton`s with a tooltip; three or more row actions collapse into one `more` menu. Destructive actions stay `danger` with the `trash` icon and a confirmation or undo toast (U4).
-6. **Icon-only controls have a name.** Every icon-only control has a tooltip on hover and focus (new `Tooltip`, built into `IconButton` and `Button`) and an accessible name; the tooltip text is the name for an icon-only control. A tooltip shows on hover and keyboard focus only (touch uses the `InfoHint` or a long press), stays visible while the pointer is over it and is dismissed with Escape (WCAG 1.4.13).
-7. **Icon instead of a button when the meaning is universal.** An action whose icon everyone reads (flip, rotate, delete, show or hide, lock, mute, add) is an `IconButton`, not a text button. Related actions form one compact icon group in a row (flip horizontal, flip vertical, rotate left, rotate right). A rare or ambiguous action keeps icon and text. Every icon has a glossary term (U13).
+3. **A feature with parameters is a feature section.** New component `FeatureSection`: one row with the feature's name and a `Toggle`. Switching it on expands its settings below and shows a chevron to fold them; switching it off collapses them and hides the chevron, so the parameters of a feature that is off are never drawn. Toggling while live applies at once and never moves other controls. Filters, the ducker, the gate and Settings cards such as Auto-record use it. Its open or closed state is a section id (ADR-0078); the on/off state is the feature's own setting. Advanced settings of a feature are a nested standard "Advanced" section (U2), not a private button.
+4. **Control by option count.** Boolean: `Toggle`. Two to four short options that should stay visible: `SegmentedControl`. Five or more options, or long labels: `Select`. A number with a range: `NumberField`, plus `Slider` when drag feedback matters. Free text: `TextField`. A value is never picked from a row of independent buttons; `SegmentedControl` is the one control that shows several options side by side.
+5. **Buttons are for actions.** One `primary` button per window or section. Row actions are `ghost` `IconButton`s with a tooltip; three or more row actions that do not form an icon group (A7) collapse into one `more` menu. Destructive actions stay `danger` with the `trash` icon and a confirmation or undo toast (U4).
+6. **Icon-only controls have a name.** Every icon-only control has a tooltip on hover and focus (new `Tooltip`, built into `IconButton` and `Button`) and an accessible name; the tooltip text is the name for an icon-only control. A tooltip shows on hover and keyboard focus only (touch uses the `InfoHint` or a long press), stays visible while the pointer is over it and is dismissed with Escape (WCAG 1.4.13). There is one tooltip host per window, driven by callbacks from `IconButton` and `Button`; a button does not own a popup or a timer. A Slint `PopupWindow` cannot take focus, so the `InfoHint` returns focus to its button itself when the popover closes, and opening one hint closes the other.
+7. **Icon instead of a button when the meaning is universal.** An action whose icon everyone reads (flip, rotate, delete, show or hide, lock, mute, add) is an `IconButton`, not a text button. Related actions form one compact icon group in a row (flip horizontal, flip vertical, rotate left, rotate right). Today only one rotate command exists (`item.rotate`, clockwise); a counter-clockwise command is added with the group, not assumed. A rare or ambiguous action keeps icon and text. Every icon has a glossary term (U13).
 
 ### B. Menus
 
@@ -41,21 +41,21 @@ A review of the code found drift:
 ### C. Structure
 
 1. **One shell per surface.** Panels use `SectionHeader` sections; Settings cards are `SectionHeader` sections underneath. The private `Section`, `SectionTitle` and `Field` of `studio.slint` move into `components.slint`.
-2. **One row anatomy.** `[label] [info hint] ...... [control] [unit]`. The label is on the left, the control in a fixed right column, the unit a suffix in `text.secondary`. Same in Properties, Settings and the Mixer filters.
+2. **One row anatomy.** `[label] [info hint] ...... [control] [unit]`. The label is on the left (it wraps, never truncates), the control in a right column that keeps its minimum width (U11), the unit a suffix in `text.secondary`. Same in Properties, Settings and the Mixer filters.
 3. **Where settings live** stays as in the design system spec. A search field appears in Settings and Properties once they have more than six sections (U17).
 
 ### D. Feedback and states
 
-1. **One status component.** `StatusLine` has four kinds: info, success, warning, error. It shows an icon, one line and an optional action button ("Fix", "Open settings"). It replaces `SettingsNotice`, `SettingsCallout`, `SettingsStatus` and the per-page "A problem with..." strings. Detail goes behind an info hint.
+1. **One status component.** `StatusLine` has four kinds: info, success, warning, error. It shows an icon, one line and an optional action button ("Fix", "Open settings"). Where a line can appear while the user is working live, its space is reserved or it overlays; it never moves controls. It replaces `SettingsNotice`, `SettingsCallout`, `SettingsStatus` and the per-page "A problem with..." strings. Detail goes behind an info hint.
 2. **Inline validation.** An invalid field shows an error border, an icon and a one-line reason under it, and the value is not applied; Escape restores the last good value. Valid changes apply at once (U17) without a confirmation.
 3. **Empty states** show one sentence and the next action as a button (U10).
-4. **Disabled with a reason.** A disabled control says why in its tooltip. It is not hidden, except for a feature that does not exist on this platform.
+4. **Disabled with a reason.** A disabled control says why in its tooltip and stays focusable (`accessible-enabled: false` but reachable with Tab) so the tooltip shows on keyboard focus. It is not hidden, except for a feature that does not exist on this platform.
 5. Toasts and dialogs stay as in U18; a reversible action uses an undo toast rather than a confirmation dialog.
 
 ### E. Interaction
 
-1. **Keyboard parity.** Every row, hint and menu is reachable with Tab and the arrows; Return activates; Escape closes the top popover; Shift+F10 or the Menu key opens a context menu. The focus ring shows on keyboard focus only.
-2. **Number fields.** Arrows step by 1 (Shift: 10), typing and Return apply, Escape restores, double-click on a slider resets to the default.
+1. **Keyboard parity.** Every row, hint and menu is reachable with Tab and the arrows; Return activates; Escape acts on one thing at a time, in this order: a tooltip, then the top popover, then a field edit; Slint needs explicit key handlers for Shift+F10 and the Menu key; Shift+F10 or the Menu key opens a context menu. The focus ring shows on keyboard focus only.
+2. **Number fields.** Arrows step by 1 (Shift: 10), typing and Return apply, Escape restores, double-click on a slider resets to the default; the same reset is a Reset item in the field's context menu and Ctrl+Backspace, so it works without a pointer.
 3. **Copy.** Sentence case, glossary terms, verbs for actions, nouns for settings, no full stop at the end of a label, hints of at most two sentences.
 
 ### F. Icons
@@ -79,11 +79,12 @@ Each step is its own pull request with screenshots in the three themes for the o
 1. The Tabler icons (implemented in the proposing pull request, not merged: screenshots in three themes await the owner's approval, rule 16).
 2. `InfoHint`, `Tooltip` (a `tooltip` property on `IconButton` and `Button`, replacing the "tooltip-to-be" comment), `StatusLine` components and spec text, then move the long inline texts behind hints screen by screen (Settings, Properties, Mixer filters).
 3. `FeatureSection` for filters and the Settings cards.
-4. Fold the ten `PopupWindow` menus into `CommandMenu`; the shared `Context::Source` menu.
+4. Fold the nine `PopupWindow`s into `CommandMenu`; the shared `Context::Source` menu.
 5. The `ui_patterns` test and the `ui-review` checklist. The test starts earlier with an allowlist of existing violations that only shrinks.
 
 ## Consequences
 
+- The design system spec gets the `InfoHint`, `Tooltip`, `StatusLine` and `FeatureSection` contracts in the same change as each component (rule 2).
 - A user meets one pattern for help, for features with parameters, for menus and for status. Screens get shorter.
 - Icons read better at 16 px, especially flip, rotate and fit.
 - The wrapped texts and menus counted above need migration; the order above keeps each change small and reviewable.
@@ -100,6 +101,6 @@ Each step is its own pull request with screenshots in the three themes for the o
 
 ## Review
 
-Round 1, independent AI session (2026-11-10): changes requested. Resolved in this revision: wrong counts (50 wrapped texts, 9 popups, four notice styles) and the existing filter info button are stated; U2 wording made explicit; ADR-0070 citation replaced; InfoHint and Tooltip accessibility, touch and i18n added; zero-cost wording added; `reset` and `rotate-ccw` now differ; flip axis naming explained; licence notice shipping and the test added; rule 16 status corrected; enforcement test gets an allowlist. Open: pinning the Tabler source SVGs (follow-up), and round 2 by a fresh session. The ADR stays `Proposed` until round 2 approves and the owner approves.
+Round 1, independent AI session (2026-11-10): changes requested. Resolved in this revision: wrong counts (50 wrapped texts, 9 popups, four notice styles) and the existing filter info button are stated; U2 wording made explicit; ADR-0070 citation replaced; InfoHint and Tooltip accessibility, touch and i18n added; zero-cost wording added; `reset` and `rotate-ccw` now differ; flip axis naming explained; licence notice shipping and the test added; rule 16 status corrected; enforcement test gets an allowlist. Round 2, independent AI session (2026-11-10): changes requested. Resolved in this revision: the wrapped-text count (51) and nine popups; A4 and A5 no longer contradict `SegmentedControl` and the icon group; one tooltip host per window instead of a popup and timer per button, and focus handling for popovers stated; disabled controls stay focusable so their reason can show; the feature section toggle and chevron rule defined; an Escape order; a keyboard and context-menu way to reset a value; status lines never move controls while live; labels wrap; a single rotate command exists today. Open: pinning the Tabler source SVGs (follow-up), and round 3 or an owner decision on the remaining wording. The ADR stays `Proposed` until round 2 approves and the owner approves.
 
 Owner input, 2026-11-10: approved info hint on press and tooltip on hover; the seven-item menu limit and the "four options or fewer: segmented control" rule; the feature section for Settings cards; icons instead of buttons where the meaning is universal; Tabler as the icon set, replacing all current icons.
