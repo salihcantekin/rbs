@@ -17,19 +17,21 @@
 //! Every stream is timestamped on the engine's master clock, so the muxer keeps them
 //! in sync (ADR-0004).
 
+mod clip;
 mod recording;
 mod select;
 mod studio;
 
+pub use clip::{CLIP_WRITE_TIMEOUT, ClipFile, ClipWriteError, write_clip};
 pub use recording::{
     AUDIO, AUDIO_ENCODER, AUDIO_ENCODER_2, AudioSettings, FinishReport, OUTPUT, OUTPUT_2,
-    OutputPartitions, Partitions, Port, Progress, RENDER, RecordAdapters, RecordError,
-    RecordSettings, Recording, SourceProgress, SourceState, StartFailure, StartReport,
-    VIDEO_ENCODER, VIDEO_ENCODER_2, VideoSettings,
+    OutputPartitions, Partitions, Port, Progress, RENDER, REPLAY_AUDIO_ENCODER, REPLAY_RING,
+    REPLAY_VIDEO_ENCODER, RecordAdapters, RecordError, RecordSettings, Recording, SourceProgress,
+    SourceState, StartFailure, StartReport, VIDEO_ENCODER, VIDEO_ENCODER_2, VideoSettings,
 };
 pub use select::{Chosen, scheme_of};
 pub use studio::{
     END_TAIL_LIMIT, FILTER_UNAVAILABLE, FilterSettingsAdjusted, Link, MAX_LAYERS, MAX_OUTPUTS,
-    OutputId, OutputSettings, Studio, StudioSettings, Updated, VirtualCameraSettings,
-    VirtualCameraState,
+    OutputId, OutputSettings, ReplaySettings, Studio, StudioSettings, Updated,
+    VirtualCameraSettings, VirtualCameraState,
 };
