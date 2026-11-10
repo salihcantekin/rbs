@@ -28,7 +28,9 @@ mod stream;
 
 pub use endpoint::{AudioEndpoint, EndpointId, EndpointKind, Permission};
 pub use error::{AudioIoError, ErrorDomain};
-pub use output::{AudioOutput, OutputConsumer, OutputProducer, OutputRequest, OutputStats};
+pub use output::{
+    AudioOutput, OutputConsumer, OutputProducer, OutputRequest, OutputStats, OutputStatsReader,
+};
 pub use stream::{
     AudioBackend, AudioInputStream, AudioRead, DEFAULT_BUFFER, InputRequest, InputStats,
     MAX_BUFFER, MIN_BUFFER,
