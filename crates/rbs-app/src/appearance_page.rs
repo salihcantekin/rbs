@@ -752,31 +752,35 @@ fn fill_font_picker(ctx: &Ctx, filter: &str) {
 pub fn install_picker(o: &Overlays<'_>, ctx: &Ctx) {
     {
         let ctx = ctx.clone();
-        o.on_picker_filtered(move |text| fill_font_picker(&ctx, &text));
+        o.on_picker_filtered(move |text| entry::guard(|| fill_font_picker(&ctx, &text)));
     }
     {
         let ctx = ctx.clone();
         o.on_picker_chosen(move |index| {
             let c = ctx.clone();
-            ctx.update(move |app: &mut App| {
-                let Some(w) = &app.settings else { return };
-                let name = usize::try_from(index)
-                    .ok()
-                    .and_then(|i| c.page.borrow().font_listing.get(i).cloned());
-                let Some(name) = name else { return };
-                let a = w.global::<Appearance>();
-                a.set_font_picked(name.into());
-                a.set_font_picked_serial(a.get_font_picked_serial() + 1);
-                w.global::<Overlays>().set_picker_open(false);
+            entry::guard(|| {
+                ctx.update(move |app: &mut App| {
+                    let Some(w) = &app.settings else { return };
+                    let name = usize::try_from(index)
+                        .ok()
+                        .and_then(|i| c.page.borrow().font_listing.get(i).cloned());
+                    let Some(name) = name else { return };
+                    let a = w.global::<Appearance>();
+                    a.set_font_picked(name.into());
+                    a.set_font_picked_serial(a.get_font_picked_serial() + 1);
+                    w.global::<Overlays>().set_picker_open(false);
+                })
             });
         });
     }
     let ctx = ctx.clone();
     o.on_picker_cancelled(move || {
-        ctx.update(|app: &mut App| {
-            if let Some(w) = &app.settings {
-                w.global::<Overlays>().set_picker_open(false);
-            }
+        entry::guard(|| {
+            ctx.update(|app: &mut App| {
+                if let Some(w) = &app.settings {
+                    w.global::<Overlays>().set_picker_open(false);
+                }
+            });
         });
     });
 }
