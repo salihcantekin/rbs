@@ -47,7 +47,7 @@ pub const METER_PERIOD: Duration = Duration::from_millis(33);
 const REPORT_EVERY: u32 = 30;
 
 /// Codes of `Studio.rec-state`.
-mod filters;
+pub(crate) mod filters;
 
 pub mod rec_state {
     pub const OFF: i32 = 0;
@@ -454,8 +454,6 @@ impl StudioUi {
         g.set_existing(ModelRc::from(self.existing.clone()));
         g.set_library_looks(ModelRc::from(self.library_looks.clone()));
         g.set_library_samples(ModelRc::from(self.library_samples.clone()));
-        g.set_filter_types(strings(Self::filter_type_names()));
-        g.set_audio_filter_types(strings(Self::audio_filter_type_names()));
         g.set_marks(ModelRc::from(self.marks.clone()));
         g.set_kinds(ModelRc::from(self.kinds.clone()));
         g.set_targets(ModelRc::from(self.targets.clone()));
