@@ -1,6 +1,6 @@
 // A window for tests/overlays.rs: the info hint and the tooltip as the real library
 // components draw them (ADR-0094). Not shown by the app.
-import { InfoHint, IconButton, IconName, OverlayHost, FeatureSection, ColorPicker } from "components.slint";
+import { InfoHint, IconButton, IconName, OverlayHost, FeatureSection, ColorPicker, Tabs } from "components.slint";
 
 export component OverlayProbe inherits Window {
     // literal-begin: a test window; its size and the places of its two controls are test data
@@ -40,6 +40,16 @@ export component OverlayProbe inherits Window {
         title: "Noise gate";
         hint: "Mutes sound below the threshold.";
         Rectangle { height: 40px; }
+    }
+    out property <int> tab-index;
+    tabs := Tabs {
+        x: 10px;
+        y: 240px;
+        width: 300px;
+        label: "Properties";
+        options: ["Transform", "Filters", "Audio"];
+        index: root.tab-index;
+        selected(i) => { root.tab-index = i; }
     }
     // literal-end
     public function flip-feature() { feature.on = !feature.on; }
