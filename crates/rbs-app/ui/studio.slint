@@ -130,6 +130,9 @@ export global Studio {
     // with the codes of `preview-state`.
     in property <bool> studio-mode;
     in property <int> scene-preview-state: 1;
+    // The vertical canvas's picture (ADR-0093 decision 7), with the codes of
+    // `preview-state`, 7: no vertical canvas exists, 8: its picture did not start.
+    in property <int> vertical-preview-state: 1;
     callback set-studio-mode(bool /* on */);
     // The preview scene goes on air and the scene on air to preview (a cut).
     callback transition();
@@ -581,6 +584,33 @@ export component ProgramPanel inherits Rectangle {
             height: m.h;
             background: m.kind == 2 ? Theme.surface-raised : Theme.accent;
         }
+    }
+}
+
+// The vertical canvas as its viewers see it (ADR-0093 decision 7), view only. The
+// picture is a native layer placed over this rectangle, made only while the panel shows.
+export component VerticalPanel inherits Rectangle {
+    in property <string> title;
+    property <int> shown: Studio.vertical-preview-state;
+    background: Theme.surface-sunken;
+    accessible-role: image;
+    accessible-label: title;
+    accessible-description: shown != 0 ? note.text : @tr("The live picture of the vertical canvas");
+    note := Text {
+        visible: shown != 0;
+        width: parent.width - 2 * Tokens.space-4;
+        text: shown == 1 ? @tr("The vertical picture is starting.")
+            : shown == 2 ? @tr("The vertical picture is not available on this platform yet. Its recording and stream work as usual.")
+            : shown == 3 ? @tr("The vertical picture cannot be shown in this session, for example over remote desktop.")
+            : shown == 4 ? @tr("The picture shows in the main window. Dock this panel back to see it here.")
+            : shown == 7 ? @tr("There is no vertical canvas. Add a vertical output to see it here.")
+            : shown == 8 ? @tr("The vertical picture did not start. Hide and show this panel to try again.")
+            : @tr("The studio is not running: {}", Studio.failure);
+        color: Theme.text-secondary;
+        font-size: Tokens.type-body-size;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+        wrap: word-wrap;
     }
 }
 

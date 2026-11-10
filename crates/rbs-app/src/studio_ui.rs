@@ -87,6 +87,20 @@ pub mod enc_field {
     pub const B_FRAMES: i32 = 10;
 }
 
+/// The vertical canvas's picture panel (ADR-0093 decision 7).
+pub const VERTICAL_PANEL: &str = "rbs.program?canvas=vertical";
+
+/// Each picture panel's state, with the codes of [`preview_state`].
+#[derive(Clone, Copy)]
+pub struct PictureStates {
+    /// The scene on air (Program, or Preview without studio mode).
+    pub program: i32,
+    /// The preview scene (studio mode).
+    pub scene: i32,
+    /// The vertical canvas.
+    pub vertical: i32,
+}
+
 /// Codes of `Studio.preview-state`.
 pub mod preview_state {
     pub const SHOWN: i32 = 0;
@@ -95,6 +109,10 @@ pub mod preview_state {
     pub const NO_SESSION: i32 = 3;
     pub const OTHER_WINDOW: i32 = 4;
     pub const STOPPED: i32 = 5;
+    /// No vertical canvas exists (the Vertical panel only).
+    pub const NO_CANVAS: i32 = 7;
+    /// The vertical canvas's picture did not start (the Vertical panel only).
+    pub const FAILED: i32 = 8;
 }
 
 struct MeterSlot {
@@ -216,6 +234,13 @@ pub struct StudioUi {
     pub scene_preview_failed: bool,
     /// The vertical canvas the host runs, if any (ADR-0093).
     pub vertical: Option<rbs_app::studio_host::VerticalState>,
+    /// The vertical canvas's picture layer exists (ADR-0093).
+    pub vertical_preview_ready: bool,
+    /// The vertical canvas's picture layer could not be made in this session.
+    pub vertical_preview_failed: bool,
+    /// The studio could not make the vertical canvas's picture; asked again only after
+    /// its panel was hidden and shown.
+    pub vertical_picture_failed: bool,
     pub deleted: String,
     /// The toast's source was only removed from one scene (ADR-0065).
     pub deleted_from_scene: bool,
@@ -438,6 +463,9 @@ impl StudioUi {
             scene_preview_ready: false,
             scene_preview_failed: false,
             vertical: None,
+            vertical_preview_ready: false,
+            vertical_preview_failed: false,
+            vertical_picture_failed: false,
             deleted: String::new(),
             deleted_serial: 0,
             deleted_from_scene: false,
@@ -533,15 +561,11 @@ impl StudioUi {
     }
 
     /// Pushes the scalar state into a window's `Studio` global.
-    pub fn push(
-        &self,
-        g: &Studio<'_>,
-        preview_state: i32,
-        scene_preview_state: i32,
-        picture_panel: &str,
-    ) {
+    pub fn push(&self, g: &Studio<'_>, states: PictureStates, picture_panel: &str) {
+        let preview_state = states.program;
         g.set_studio_mode(self.studio_mode);
-        g.set_scene_preview_state(scene_preview_state);
+        g.set_scene_preview_state(states.scene);
+        g.set_vertical_preview_state(states.vertical);
         g.set_selected_source(self.selected);
         g.set_profile_name(self.user.profile_name.as_str().into());
         g.set_collection_name(self.user.collection_name.as_str().into());
@@ -2924,6 +2948,8 @@ impl StudioUi {
         self.preview_failed = false;
         self.scene_preview_ready = false;
         self.scene_preview_failed = false;
+        self.vertical_preview_ready = false;
+        self.vertical_preview_failed = false;
         self.canvas_restarting = true;
         self.send(Command::SetCanvas {
             size: next.size(),
@@ -3302,6 +3328,8 @@ impl StudioUi {
         self.preview_failed = false;
         self.scene_preview_ready = false;
         self.scene_preview_failed = false;
+        self.vertical_preview_ready = false;
+        self.vertical_preview_failed = false;
         self.canvas_restarting = true;
         self.switching = Some(Switching {
             seq: self.switch_seq,
@@ -3549,6 +3577,12 @@ impl StudioUi {
                 self.scene_preview_failed = false;
                 out.scene_preview = Some(endpoint);
             }
+            Update::VerticalPreview(endpoint) => {
+                self.vertical_preview_ready = false;
+                self.vertical_preview_failed = false;
+                out.vertical_preview = Some(endpoint);
+            }
+            Update::VerticalPictureFailed => self.vertical_picture_failed = true,
             Update::Sources(rows) => {
                 self.set_rows(rows);
                 self.refresh_existing();
@@ -3559,6 +3593,10 @@ impl StudioUi {
                     self.settings_canvas = OutputCanvas::Main;
                     self.folder_serial += 1;
                     self.server_serial += 1;
+                    self.vertical_preview_ready = false;
+                    self.vertical_preview_failed = false;
+                } else if self.vertical.is_none() {
+                    out.vertical_added = true;
                 }
                 self.vertical = v;
             }
@@ -4139,6 +4177,11 @@ pub struct Applied {
     /// The preview scene's picture endpoint changed (studio mode, ADR-0061): connect to
     /// it, or close that picture for `None`.
     pub scene_preview: Option<Option<rbs_gpu::share::PreviewEndpoint>>,
+    /// The vertical canvas's picture endpoint changed (ADR-0093): connect to it, or
+    /// close that picture for `None`.
+    pub vertical_preview: Option<Option<rbs_gpu::share::PreviewEndpoint>>,
+    /// A vertical canvas was just added: a closed Vertical panel opens.
+    pub vertical_added: bool,
     /// Studio mode just started: a closed Preview panel opens (UI spec, Studio mode).
     pub studio_mode_started: bool,
     /// A control API client asked to switch: scene collections (`true`) or output
@@ -5148,6 +5191,78 @@ mod tests {
             shown
                 .enabled(&cmd("ui.panel.collapse?id=rbs.mixer"))
                 .is_ok()
+        );
+        let _ = std::fs::remove_dir_all(d);
+    }
+
+    #[test]
+    #[allow(clippy::unwrap_used)] // Tests fail by panicking.
+    fn the_vertical_preview_toggle_opens_and_closes_its_panel_while_the_canvas_exists() {
+        use crate::menu_bar::{Run, Shown, run};
+        use rbs_ui::LayoutCommand as L;
+        use rbs_ui::command::{CommandId, CommandState};
+        use rbs_ui::panel::PanelId;
+        let (mut ui, d) = ui("vertical-preview-toggle");
+        ui.state = 1;
+        let panel = PanelId::parse(VERTICAL_PANEL).unwrap();
+        let toggle = CommandId::parse("canvas.vertical_preview.toggle").unwrap();
+        let shown =
+            |ui: &StudioUi, ws: &rbs_ui::workspace::Workspace| -> (bool, bool, bool, Option<Run>) {
+                let s = Shown {
+                    workspace: ws,
+                    workspaces: &[],
+                    studio: ui,
+                    panels: Vec::new(),
+                    maximized: None,
+                    camera: Default::default(),
+                    replay: Default::default(),
+                    can_undo: false,
+                    can_redo: false,
+                };
+                (
+                    s.applies(&toggle),
+                    s.enabled(&toggle).is_ok(),
+                    s.checked(&toggle),
+                    run("canvas.vertical_preview.toggle", &s),
+                )
+            };
+        let mut ws = rbs_ui::builtin::edit();
+        // No vertical canvas: the toggle is not offered.
+        assert_eq!(shown(&ui, &ws), (false, false, false, None));
+        // Adding one asks for its panel to open.
+        let out = ui.apply(Update::Vertical(Some(
+            rbs_app::studio_host::VerticalState {
+                canvas: rbs_scene::model::CanvasId::from_raw(2),
+                size: rbs_core::media::video::Size::new(1080, 1920),
+                follow: true,
+            },
+        )));
+        assert!(out.vertical_added);
+        assert_eq!(
+            shown(&ui, &ws),
+            (
+                true,
+                true,
+                false,
+                Some(Run::Layout(L::OpenPanel(panel.clone())))
+            )
+        );
+        ws.open(panel.clone()).unwrap();
+        assert_eq!(
+            shown(&ui, &ws),
+            (
+                true,
+                true,
+                true,
+                Some(Run::Layout(L::ClosePanel(panel.clone())))
+            )
+        );
+        // Removed while its panel is open: the panel can still be closed.
+        let out = ui.apply(Update::Vertical(None));
+        assert!(!out.vertical_added);
+        assert_eq!(
+            shown(&ui, &ws),
+            (true, true, true, Some(Run::Layout(L::ClosePanel(panel))))
         );
         let _ = std::fs::remove_dir_all(d);
     }

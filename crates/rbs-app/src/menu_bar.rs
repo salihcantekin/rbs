@@ -329,6 +329,11 @@ impl Shown<'_> {
         }
     }
 
+    /// The vertical canvas's picture panel is open (in any window).
+    fn vertical_panel_open(&self) -> bool {
+        PanelId::parse(crate::studio_ui::VERTICAL_PANEL).is_ok_and(|p| self.workspace.is_open(&p))
+    }
+
     fn has_vertical(&self) -> Result<(), String> {
         match self.studio.vertical {
             Some(_) => Ok(()),
@@ -419,6 +424,12 @@ impl CommandState for Shown<'_> {
                 Ok(())
             }
             "canvas.studio_mode.toggle" | "scene.add" | "canvas.add_vertical" => self.running(),
+            // An open panel can always be closed.
+            "canvas.vertical_preview.toggle" if self.vertical_panel_open() => Ok(()),
+            "canvas.vertical_preview.toggle" => {
+                self.running()?;
+                self.has_vertical()
+            }
             "scene.rename" => {
                 self.running()?;
                 self.scene(id).map(|_| ())
@@ -695,6 +706,7 @@ impl CommandState for Shown<'_> {
                     && self.workspace.studio_rail() == rail_at(id)
             }
             "canvas.studio_mode.toggle" => self.studio.studio_mode,
+            "canvas.vertical_preview.toggle" => self.vertical_panel_open(),
             "item.flip" => self.source(id).is_ok_and(|f| match id.param("axis") {
                 Some("horizontal") => f.flip.horizontal,
                 Some("vertical") => f.flip.vertical,
@@ -915,6 +927,11 @@ impl CommandState for Shown<'_> {
                     || self.studio.vertical_st.busy()
                     || self.studio.vertical_rec.busy()
             }
+            // The vertical picture's toggle, while a vertical canvas exists (or its panel
+            // is still open).
+            "canvas.vertical_preview.toggle" => {
+                self.studio.vertical.is_some() || self.vertical_panel_open()
+            }
             // The scene shown already: putting it on air again does nothing.
             "scene.select" => {
                 id.param("scene").is_none() || self.scene(id).ok() != self.studio.scene_target(None)
@@ -1074,6 +1091,13 @@ fn build_items(state: &Shown<'_>, bar: &rbs_ui::workspace::Toolbar) -> Vec<ToolI
         .filter(|item| {
             is_fixed_bar
                 || !matches!(item, ToolbarItem::Command(c) if FIXED_COMMANDS.contains(&c.as_str()))
+        })
+        // A canvas's own toggle shows only while that canvas exists.
+        .filter(|item| match item {
+            ToolbarItem::Command(c) if c.as_str() == "canvas.vertical_preview.toggle" => {
+                CommandId::parse(c).is_ok_and(|id| state.applies(&id))
+            }
+            _ => true,
         })
         .map(|item| match item {
             ToolbarItem::Separator => blank(ToolKind::Separator),
@@ -1411,6 +1435,14 @@ pub fn run(text: &str, state: &Shown<'_>) -> Option<Run> {
         }
         "ui.panel.close" => Run::Layout(L::ClosePanel(panel_of(&id)?)),
         "canvas.studio_mode.toggle" => Run::StudioMode(!on),
+        "canvas.vertical_preview.toggle" => {
+            let panel = PanelId::parse(crate::studio_ui::VERTICAL_PANEL).ok()?;
+            Run::Layout(if on {
+                L::ClosePanel(panel)
+            } else {
+                L::OpenPanel(panel)
+            })
+        }
         "canvas.transition" => Run::Transition,
         "scene.position" => Run::Scene(state.studio.scene_at(scene_position(&id)?)?),
         "scene.next" => Run::Scene(state.studio.scene_step(1)?),

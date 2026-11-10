@@ -845,6 +845,10 @@ pub fn same_name(a: &str, b: &str) -> bool {
 const PICTURES_FIXED: &str = "Preview and Program are a fixed area beside the Transition rail; \
      close it from the Panels menu to remove it";
 
+/// The share of the Pictures leaf's place a further canvas's picture takes when it
+/// opens beside it: about a 9:16 picture's width next to two 16:9 ones.
+const BESIDE_PICTURES_SHARE: f32 = 0.3;
+
 fn main_has_no_pictures(ws: &Workspace) -> bool {
     ws.main().pictures_leaf().is_none()
 }
@@ -1236,6 +1240,25 @@ impl Workspace {
                 return self.open_pictures();
             }
             if id.as_str() == "rbs.pictures" {
+                return Ok(());
+            }
+        }
+        // A further canvas's picture (`rbs.program?canvas=vertical`, ADR-0093 decision 7)
+        // goes beside the pictures, in a stack of its own right of them (else at the
+        // centre's right edge).
+        if matches!(id.base(), "rbs.preview" | "rbs.program") && id.param("canvas").is_some() {
+            let main = self.main_layout_mut().ok_or(WorkspaceError::NoTarget)?;
+            let mut next = main.centre.clone();
+            let stack = crate::layout::Tabs {
+                tabs: vec![id.clone()],
+                active: 0,
+                collapsed: false,
+            };
+            if !next.insert_beside_pictures(stack, BESIDE_PICTURES_SHARE) {
+                next.insert_node_at_edge(Node::tabs(vec![id.clone()]), crate::layout::Edge::Right);
+            }
+            if next.depth() <= MAX_DEPTH {
+                main.centre = next;
                 return Ok(());
             }
         }
@@ -2433,6 +2456,42 @@ layout = { tabs = ["rbs.status-bar"] }
             ws.auto_hide(&id("rbs.properties"), Rect::sized(800.0, 600.0)),
             Err(WorkspaceError::NoTarget)
         );
+    }
+
+    #[test]
+    fn the_vertical_picture_opens_beside_the_pictures_and_closes_again() {
+        // ADR-0093 decision 7: a stack of its own right of the pictures, never a tab
+        // next to Preview or Program, and closing it leaves the rest as it was.
+        fn right_of_pictures(n: &Node, id: &PanelId) -> bool {
+            match n {
+                Node::Split(s) => {
+                    s.children.windows(2).any(|w| {
+                        s.axis == crate::layout::Axis::Horizontal
+                            && matches!(&w[0], Node::Pictures(_))
+                            && matches!(&w[1], Node::Tabs(t) if t.tabs == [id.clone()])
+                    }) || s.children.iter().any(|c| right_of_pictures(c, id))
+                }
+                _ => false,
+            }
+        }
+        let vertical = id("rbs.program?canvas=vertical");
+        for mut w in [builtin::live(), builtin::edit()] {
+            let before = w.clone();
+            w.open(vertical.clone()).unwrap();
+            let (win, stack, _) = w.find(&vertical).unwrap();
+            assert_eq!(win, 0, "{}", w.name);
+            assert_eq!(
+                w.windows[0].stack(stack).unwrap().tabs,
+                vec![vertical.clone()]
+            );
+            assert!(w.main().pictures_leaf().is_some());
+            assert!(!w.windows[0].in_pictures(&vertical));
+            assert!(right_of_pictures(w.main(), &vertical), "{}", w.name);
+            w.validate().unwrap();
+            w.close(&vertical).unwrap();
+            assert!(!w.is_open(&vertical));
+            assert_eq!(w.windows, before.windows, "{}", w.name);
+        }
     }
 
     #[test]
