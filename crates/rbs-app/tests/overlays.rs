@@ -160,3 +160,65 @@ fn the_name_prompt_accepts_with_return_and_cancels_with_escape() {
     key(&p, Key::Escape);
     assert_eq!(log.borrow().as_slice(), ["ok Show", "cancel"]);
 }
+
+fn picker_row(name: &str, index: i32) -> rbs_app_ui::PickerRow {
+    rbs_app_ui::PickerRow {
+        name: name.into(),
+        note: "".into(),
+        index,
+    }
+}
+
+#[test]
+fn the_picker_moves_with_the_arrows_and_chooses_by_the_rows_listing_index() {
+    use std::cell::RefCell;
+    use std::rc::Rc;
+
+    let p = setup();
+    let o = p.global::<Overlays>();
+    let log: Rc<RefCell<Vec<String>>> = Rc::default();
+    let chosen = log.clone();
+    o.on_picker_chosen(move |i| chosen.borrow_mut().push(format!("chose {i}")));
+    let filtered = log.clone();
+    o.on_picker_filtered(move |t| filtered.borrow_mut().push(format!("filter {t}")));
+    // A filter hid rows 0 and 1: the visible rows keep their listing indexes 2 and 5.
+    o.set_picker_rows(slint::ModelRc::new(slint::VecModel::from(vec![
+        picker_row("Capture card", 2),
+        picker_row("Virtual cam", 5),
+    ])));
+    o.set_picker_open(true);
+    settle();
+    // The filter field has the focus: typing reaches the app, Down moves, Return chooses.
+    p.window()
+        .dispatch_event(WindowEvent::KeyPressed { text: "c".into() });
+    key(&p, Key::DownArrow);
+    key(&p, Key::Return);
+    assert_eq!(log.borrow().last().map(String::as_str), Some("chose 5"));
+    key(&p, Key::UpArrow);
+    key(&p, Key::Return);
+    assert_eq!(log.borrow().last().map(String::as_str), Some("chose 2"));
+}
+
+#[test]
+fn escape_closes_the_picker_above_the_name_prompt_and_nothing_else() {
+    use std::cell::RefCell;
+    use std::rc::Rc;
+
+    let p = setup();
+    let o = p.global::<Overlays>();
+    let log: Rc<RefCell<Vec<&'static str>>> = Rc::default();
+    let name = log.clone();
+    o.on_name_cancelled(move || name.borrow_mut().push("name"));
+    let picker = log.clone();
+    o.on_picker_cancelled(move || picker.borrow_mut().push("picker"));
+    o.set_name_open(true);
+    settle();
+    o.set_picker_open(true);
+    settle();
+    key(&p, Key::Escape);
+    assert_eq!(
+        log.borrow().as_slice(),
+        ["picker"],
+        "only the topmost overlay"
+    );
+}

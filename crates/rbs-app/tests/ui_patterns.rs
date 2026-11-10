@@ -28,7 +28,7 @@ const POPUP_WINDOWS: &[(&str, usize)] = &[
     ("app_menu.slint", 1),
     ("appearance.slint", 1),
     ("components.slint", 2),
-    ("studio.slint", 1),
+    ("studio.slint", 0),
 ];
 
 #[test]

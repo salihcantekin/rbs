@@ -172,6 +172,10 @@ struct App {
     ask_name: Option<Ask>,
     /// What the open name prompt answers.
     name_for: Option<Ask>,
+    /// The float a command came from while it runs (`None`: the main window).
+    run_origin: Option<slint::Weak<FloatWindow>>,
+    /// The float the Add source picker is open in (`None`: the main window).
+    picker_host: Option<slint::Weak<FloatWindow>>,
     save_due: bool,
     /// The closed sections the windows were told about, and the number that tells them
     /// the answers changed (ADR-0078).
@@ -491,7 +495,7 @@ impl App {
             Run::MovePanel(panel, to) => self.move_panel(panel, &to),
             Run::AddFilter(source, type_id) => self.studio.add_filter_type(source, &type_id),
             Run::Entry(kind, op, name) => self.run_entry(kind, op, name, confirm),
-            Run::AddSource(kind) => self.ask_add_source(kind),
+            Run::AddSource(what) => self.ask_add_source(what),
             Run::StudioMode(on) => self.studio.set_studio_mode(on),
             Run::Transition => self.studio.transition(),
             Run::AddScene => self.studio.add_scene(),
@@ -738,38 +742,60 @@ impl App {
 
     /// Opens the Sources panel's Add source menu, at the list of `kind`'s targets when
     /// given (toolbar, Source menu). The panel is opened or expanded first.
-    fn ask_add_source(&mut self, kind: Option<i32>) {
-        let Some(sources) = panel("rbs.sources") else {
+    /// Opens the device picker (ADR-0094 B1) in the window the command came from.
+    fn ask_add_source(&mut self, what: menu_bar::AddWhat) {
+        // A picker open elsewhere closes first.
+        self.close_picker_ui();
+        self.picker_host = self.run_origin.clone();
+        self.studio.open_add_picker(what);
+        self.sync_picker();
+    }
+
+    /// Runs `f` on the overlays of the window the picker is open in.
+    fn with_picker_overlays(&self, f: impl FnOnce(&Overlays<'_>)) {
+        match &self.picker_host {
+            Some(w) => {
+                if let Some(win) = w.upgrade() {
+                    f(&win.global::<Overlays>());
+                }
+            }
+            None => f(&self.main.global::<Overlays>()),
+        }
+    }
+
+    /// Shows what the picker holds now (once after each change).
+    fn sync_picker(&mut self) {
+        let Some(view) = self.studio.take_picker_view() else {
             return;
         };
-        self.command(LayoutCommand::OpenPanel(sources.clone()), Origin::Command);
-        let ws = self.session.workspace();
-        let collapsed = ws
-            .find(&sources)
-            .and_then(|(w, s, _)| ws.windows[w].stack(s))
-            .is_some_and(|t| t.collapsed);
-        if collapsed {
-            let c = LayoutCommand::SetCollapsed {
-                panel: sources.clone(),
-                collapsed: false,
-            };
-            self.command(c, Origin::Command);
-        }
-        // A maximized panel that is not Sources would cover the menu.
-        if self.maximized.as_ref().is_some_and(|m| *m != sources) {
-            self.maximized = None;
-        }
-        if let Some(code) = kind {
-            self.studio.list_targets(code);
-        }
-        let ask = |g: Studio<'_>| {
-            g.set_picker_kind(kind.unwrap_or(-1));
-            g.set_add_source_asked(g.get_add_source_asked() + 1);
+        use studio_ui::add_picker::Status;
+        let status = match view.status {
+            Status::Looking => "Looking for devices...",
+            Status::Nothing => "Nothing of this type was found.",
+            Status::NoMatch => "Nothing matches.",
+            Status::Ready => "",
         };
-        ask(self.main.global::<Studio>());
-        for f in &self.floats {
-            ask(f.window.global::<Studio>());
-        }
+        let rows: Vec<PickerRow> = view
+            .rows
+            .into_iter()
+            .map(|r| PickerRow {
+                name: r.name.into(),
+                note: r.note.into(),
+                index: r.index as i32,
+            })
+            .collect();
+        self.with_picker_overlays(|o| {
+            o.set_picker_title(view.title.into());
+            o.set_picker_status(status.into());
+            o.set_picker_rows(ModelRc::new(VecModel::from(rows)));
+            o.set_picker_open(true);
+        });
+    }
+
+    fn close_picker_ui(&mut self) {
+        self.studio.close_add_picker();
+        self.with_picker_overlays(|o| o.set_picker_open(false));
+        self.picker_host = None;
     }
 
     fn undo(&mut self) {
@@ -1091,6 +1117,7 @@ impl Ctx {
         let ctx = self.clone();
         self.update(move |app| {
             let applied = app.studio.apply(u);
+            app.sync_picker();
             if let Some(e) = applied.error {
                 // A caught panic on the studio's thread reads as a notice, not as an
                 // action that failed (ADR-0055).
@@ -1956,7 +1983,8 @@ impl Ctx {
         let fw = FloatWindow::new().ok()?;
         install(&fw.global::<Shell>(), self);
         install_menus(&fw.global::<Menus>(), self);
-        install_context_menus(&fw.global::<ContextMenus>(), self);
+        install_context_menus(&fw.global::<ContextMenus>(), self, Some(fw.as_weak()));
+        install_picker(&fw.global::<Overlays>(), self);
         shortcuts_page::install_press(&fw.global::<Shortcuts>(), self);
         install_studio(&fw.global::<Studio>(), self);
         install_sections(&fw.global::<Sections>(), self);
@@ -2246,7 +2274,44 @@ fn install_name_prompt(g: &Overlays<'_>, ctx: &Ctx) {
     });
 }
 
-fn install_context_menus(g: &ContextMenus<'_>, ctx: &Ctx) {
+/// The searchable picker's callbacks (every window has them; the one it is open in
+/// answers).
+fn install_picker(g: &Overlays<'_>, ctx: &Ctx) {
+    {
+        let ctx = ctx.clone();
+        g.on_picker_chosen(move |index| {
+            entry::guard(|| {
+                ctx.update(move |app: &mut App| {
+                    if usize::try_from(index).is_ok_and(|i| app.studio.choose_add_picker(i)) {
+                        app.close_picker_ui();
+                    }
+                });
+            });
+        });
+    }
+    {
+        let ctx = ctx.clone();
+        g.on_picker_filtered(move |text| {
+            let text = text.to_string();
+            entry::guard(|| {
+                ctx.update(move |app: &mut App| {
+                    app.studio.filter_add_picker(&text);
+                    app.sync_picker();
+                });
+            });
+        });
+    }
+    let ctx = ctx.clone();
+    g.on_picker_cancelled(move || {
+        entry::guard(|| ctx.update(|app: &mut App| app.close_picker_ui()));
+    });
+}
+
+fn install_context_menus(
+    g: &ContextMenus<'_>,
+    ctx: &Ctx,
+    origin: Option<slint::Weak<FloatWindow>>,
+) {
     let c = ctx.clone();
     g.on_prepare(move |context, target| {
         let items = match c.app.try_borrow_mut() {
@@ -2258,7 +2323,14 @@ fn install_context_menus(g: &ContextMenus<'_>, ctx: &Ctx) {
         ModelRc::new(VecModel::from(rows))
     });
     let c = ctx.clone();
-    g.on_run(move |id| c.update(move |app| app.run_command(&id)));
+    g.on_run(move |id| {
+        let origin = origin.clone();
+        c.update(move |app| {
+            app.run_origin = origin;
+            app.run_command(&id);
+            app.run_origin = None;
+        });
+    });
 }
 
 fn context_row(i: context_menu::Item) -> ContextItem {
@@ -2585,9 +2657,6 @@ fn install_studio(g: &Studio<'_>, ctx: &Ctx) {
     on!(on_reload_source, |app, id: i32| {
         app.studio.reload_source(id);
     });
-    on!(on_add_source, |app, kind: i32, target: i32| {
-        app.studio.add_source(kind, target);
-    });
     on!(on_delete_source, |app, id: i32| {
         app.studio.delete_source(id);
     });
@@ -2733,9 +2802,6 @@ fn install_studio(g: &Studio<'_>, ctx: &Ctx) {
             app.studio.rename_source(id, &name);
         }
     );
-    on!(on_add_existing_source, |app, id: i32| {
-        app.studio.add_existing_source(id);
-    });
     on!(on_switch_scene, |app, id: i32| {
         app.studio.switch_scene(id);
     });
@@ -3190,6 +3256,8 @@ fn run(config: PathBuf, notice: Option<String>) -> Result<(), Box<dyn std::error
             open_app_menu: false,
             ask_name: None,
             name_for: None,
+            run_origin: None,
+            picker_host: None,
             save_due: false,
             sections_shown: Vec::new(),
             sections_rev: 0,
@@ -3225,7 +3293,8 @@ fn run(config: PathBuf, notice: Option<String>) -> Result<(), Box<dyn std::error
     };
     install(&main.global::<Shell>(), &ctx);
     install_menus(&main.global::<Menus>(), &ctx);
-    install_context_menus(&main.global::<ContextMenus>(), &ctx);
+    install_context_menus(&main.global::<ContextMenus>(), &ctx, None);
+    install_picker(&main.global::<Overlays>(), &ctx);
     install_name_prompt(&main.global::<Overlays>(), &ctx);
     install_app_menu(&main.global::<AppMenus>(), &ctx);
     shortcuts_page::install_press(&main.global::<Shortcuts>(), &ctx);
