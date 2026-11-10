@@ -413,6 +413,14 @@ const NO_AREA: &str = "The crop must leave at least one pixel of the picture in 
 pub enum Command {
     /// List what a kind can capture ([`Update::Targets`]).
     ListTargets(SourceKind),
+    /// Add a display or window and its "Capture audio too" companion sound as one
+    /// undo step (ADR-0096). A refused companion adds nothing.
+    AddSourceWithAudio {
+        /// Its kind (a display or a window).
+        kind: SourceKind,
+        /// What it captures.
+        target: Target,
+    },
     /// Add a source of `kind` capturing `target` to the program scene, on top.
     AddSource {
         /// Its kind.
@@ -2206,6 +2214,20 @@ impl Host {
             Command::ListTargets(kind) => {
                 let targets = self.targets(kind);
                 notify(Update::Targets(kind, targets));
+            }
+            Command::AddSourceWithAudio { kind, target } => {
+                let done = self
+                    .add(kind, &target)
+                    .map_err(Refusal::Failed)
+                    .and_then(|id| {
+                        self.add_companion(id, true).inspect_err(|_| {
+                            let _ = self.delete(id);
+                        })
+                    });
+                match done {
+                    Ok(_) => self.apply(notify),
+                    Err(e) => notify(Update::Error(e.text().to_owned())),
+                }
             }
             Command::AddSource { kind, target } if target.picker => self.pick(kind, &target),
             Command::AddSource { kind, target } => match self.add(kind, &target) {
