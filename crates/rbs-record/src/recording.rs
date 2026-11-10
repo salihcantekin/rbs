@@ -48,6 +48,12 @@ pub const VIDEO_ENCODER_2: PartitionId = PartitionId(5);
 pub const AUDIO_ENCODER_2: PartitionId = PartitionId(6);
 /// Default output partition of a studio's second output slot.
 pub const OUTPUT_2: PartitionId = PartitionId(7);
+/// Default video encoder partition of the replay buffer (ADR-0088).
+pub const REPLAY_VIDEO_ENCODER: PartitionId = PartitionId(8);
+/// Default audio encoder partition of the replay buffer.
+pub const REPLAY_AUDIO_ENCODER: PartitionId = PartitionId(9);
+/// Default partition of the replay buffer's ring node.
+pub const REPLAY_RING: PartitionId = PartitionId(10);
 
 /// The ports a recording chooses adapters for.
 #[non_exhaustive]
@@ -202,6 +208,9 @@ pub struct Partitions {
     /// The second output slot of a studio (ADR-0047): its encoders, when they are not
     /// shared with the first output, and its output. The fields above are the first.
     pub second: OutputPartitions,
+    /// The replay buffer (ADR-0088): its own encoders and its ring node. Workers start
+    /// only while the buffer is armed (ADR-0013).
+    pub replay: OutputPartitions,
 }
 
 impl Partitions {
@@ -227,6 +236,11 @@ impl Default for Partitions {
             audio_encoder: AUDIO_ENCODER,
             output: OUTPUT,
             second: OutputPartitions::default(),
+            replay: OutputPartitions {
+                video_encoder: REPLAY_VIDEO_ENCODER,
+                audio_encoder: REPLAY_AUDIO_ENCODER,
+                output: REPLAY_RING,
+            },
         }
     }
 }
@@ -404,6 +418,8 @@ pub enum RecordError {
     /// A partition the new output needs still finishes a stopped output (its swap or
     /// drain is in flight); [`Studio::service`] completes it, then a start works.
     OutputFinishing,
+    /// The replay buffer is armed already ([`Studio::arm_replay`]).
+    ReplayArmed,
 }
 
 impl fmt::Display for RecordError {
@@ -438,6 +454,7 @@ impl fmt::Display for RecordError {
             RecordError::OutputFinishing => {
                 f.write_str("an output stopped just now is still finishing; try again")
             }
+            RecordError::ReplayArmed => f.write_str("the replay buffer is armed already"),
             RecordError::TooManyOutputs => write!(
                 f,
                 "{} outputs run already, the most a studio runs at once",

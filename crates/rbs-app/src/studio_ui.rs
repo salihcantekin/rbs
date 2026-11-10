@@ -36,9 +36,9 @@ use slint::{Model, ModelRc, SharedString, VecModel};
 
 use crate::preview_edit::{Effect, Placed, PreviewEdit};
 use crate::ui::{
-    EncoderData, EntryRow, ExistingData, KindData, LookData, MarkData, MeterRow, ModeData,
-    SampleData, ScaleMark, SceneData, SourceData, SourceSettingsData, SourceTargetData, StackData,
-    StatRow, Studio, TargetData, TokenRow,
+    EncoderData, EntryRow, KindData, LookData, MarkData, MeterRow, ModeData, SampleData, ScaleMark,
+    SceneData, SourceData, SourceSettingsData, SourceTargetData, StackData, StatRow, Studio,
+    TokenRow,
 };
 
 /// Meter refresh while the Mixer is visible (U16: 30 Hz).
@@ -47,6 +47,7 @@ pub const METER_PERIOD: Duration = Duration::from_millis(33);
 const REPORT_EVERY: u32 = 30;
 
 /// Codes of `Studio.rec-state`.
+pub(crate) mod add_picker;
 pub(crate) mod filters;
 
 pub mod rec_state {
@@ -112,7 +113,11 @@ pub struct StudioUi {
     /// The scenes and sources as the host last sent them (ADR-0059).
     scene_list: Option<SceneList>,
     scenes: Rc<VecModel<SceneData>>,
-    existing: Rc<VecModel<ExistingData>>,
+    /// The sources of other scenes the scene on air does not have (Add source).
+    existing: Vec<(SourceId, String)>,
+    /// The open Add source picker (ADR-0094 B1) and whether the dialog must be redrawn.
+    add_picker: Option<add_picker::AddPicker>,
+    picker_dirty: bool,
     /// The Library's looks (set once) and sample pictures (made when the panel first
     /// shows, ADR-0075).
     library_looks: Rc<VecModel<LookData>>,
@@ -130,8 +135,6 @@ pub struct StudioUi {
     marks: Rc<VecModel<MarkData>>,
     kind_list: Vec<SourceKind>,
     kinds: Rc<VecModel<KindData>>,
-    target_list: Vec<Target>,
-    targets: Rc<VecModel<TargetData>>,
     /// The Source tab's list (ADR-0077): what the selected source's kind can capture,
     /// filtered by the search field, the source's current target first.
     source_targets: Rc<VecModel<SourceTargetData>>,
@@ -146,7 +149,6 @@ pub struct StudioUi {
     /// The source the list is for, and what the search field holds.
     source_targets_for: Option<SourceId>,
     source_query: String,
-    pub targets_kind: i32,
     slots: Vec<MeterSlot>,
     /// The master strip (ADR-0081): the mixer's master meter and its ballistics, and
     /// the model of its one row (empty while the studio has no mixer).
@@ -341,7 +343,9 @@ impl StudioUi {
             sources: Rc::new(VecModel::default()),
             scene_list: None,
             scenes: Rc::new(VecModel::default()),
-            existing: Rc::new(VecModel::default()),
+            existing: Vec::new(),
+            add_picker: None,
+            picker_dirty: false,
             library_looks: Rc::new(VecModel::from(library_looks())),
             library_samples: Rc::new(VecModel::default()),
             filter_ui: filters::FilterUi::default(),
@@ -352,8 +356,6 @@ impl StudioUi {
             marks: Rc::new(VecModel::default()),
             kind_list: Vec::new(),
             kinds: Rc::new(VecModel::default()),
-            target_list: Vec::new(),
-            targets: Rc::new(VecModel::default()),
             source_targets: Rc::new(VecModel::default()),
             source_settings: Rc::new(VecModel::default()),
             source_settings_view: None,
@@ -361,7 +363,6 @@ impl StudioUi {
             source_targets_for: None,
             source_pictures: std::collections::HashMap::new(),
             source_query: String::new(),
-            targets_kind: -1,
             slots: Vec::new(),
             master_slot: None,
             master_meter: Rc::new(VecModel::default()),
@@ -451,12 +452,10 @@ impl StudioUi {
     pub fn attach_models(&self, g: &Studio<'_>) {
         g.set_sources(ModelRc::from(self.sources.clone()));
         g.set_scenes(ModelRc::from(self.scenes.clone()));
-        g.set_existing(ModelRc::from(self.existing.clone()));
         g.set_library_looks(ModelRc::from(self.library_looks.clone()));
         g.set_library_samples(ModelRc::from(self.library_samples.clone()));
         g.set_marks(ModelRc::from(self.marks.clone()));
         g.set_kinds(ModelRc::from(self.kinds.clone()));
-        g.set_targets(ModelRc::from(self.targets.clone()));
         g.set_source_targets(ModelRc::from(self.source_targets.clone()));
         g.set_source_settings(ModelRc::from(self.source_settings.clone()));
         g.set_meters(ModelRc::from(self.meters.clone()));
@@ -536,7 +535,6 @@ impl StudioUi {
         g.set_picture_panel(picture_panel.into());
         g.set_state(self.state);
         g.set_failure(self.failure.as_str().into());
-        g.set_targets_kind(self.targets_kind);
         g.set_preview_state(preview_state);
         g.set_deleted(self.deleted.as_str().into());
         g.set_deleted_from_scene(self.deleted_from_scene);
@@ -1197,11 +1195,16 @@ impl StudioUi {
             .collect()
     }
 
+    /// Whether another scene has a source the scene on air does not (Add source's
+    /// "Existing source").
+    pub fn has_existing_sources(&self) -> bool {
+        !self.existing.is_empty()
+    }
+
     pub fn list_targets(&mut self, code: i32) {
         let Some(kind) = SourceKind::ALL.get(code as usize).copied() else {
             return;
         };
-        self.targets_kind = -1;
         self.send(Command::ListTargets(kind));
     }
 
@@ -1358,16 +1361,6 @@ impl StudioUi {
     /// Reload on the Source tab: a source that is not running is tried again.
     pub fn reload_source(&mut self, id: i32) {
         self.send(Command::ReloadSource(SourceId::from_raw(id as u32)));
-    }
-
-    pub fn add_source(&mut self, code: i32, index: i32) {
-        let kind = SourceKind::ALL.get(code as usize).copied();
-        let target = self.target_list.get(index as usize).cloned();
-        if let (Some(kind), Some(target)) = (kind, target) {
-            self.adding = true;
-            self.deleted.clear();
-            self.send(Command::AddSource { kind, target });
-        }
     }
 
     pub fn delete_source(&mut self, id: i32) {
@@ -1547,6 +1540,75 @@ impl StudioUi {
         self.send(Command::AddExistingSource(SourceId::from_raw(id as u32)));
     }
 
+    /// Opens the Add source picker for a source type (its devices are listed by the
+    /// studio and fill the rows when they arrive) or for the sources of other scenes.
+    /// A picker that is open is replaced.
+    pub fn open_add_picker(&mut self, what: crate::menu_bar::AddWhat) {
+        use crate::menu_bar::AddWhat;
+        let picker = match what {
+            AddWhat::Kind(code) => {
+                let Some(kind) = SourceKind::ALL.get(code as usize).copied() else {
+                    return;
+                };
+                self.send(Command::ListTargets(kind));
+                add_picker::AddPicker::for_kind(kind)
+            }
+            AddWhat::Existing => add_picker::AddPicker::existing(&self.existing),
+        };
+        self.add_picker = Some(picker);
+        self.picker_dirty = true;
+    }
+
+    /// The picker was closed or cancelled: a late answer fills nothing.
+    pub fn close_add_picker(&mut self) {
+        self.add_picker = None;
+        self.picker_dirty = false;
+    }
+
+    pub fn filter_add_picker(&mut self, text: &str) {
+        if let Some(p) = &mut self.add_picker {
+            p.set_query(text);
+            self.picker_dirty = true;
+        }
+    }
+
+    /// A row was chosen (`index` is of the picker's listing, see [`add_picker::Row`]).
+    /// Returns whether something was added, so the caller closes the dialog.
+    pub fn choose_add_picker(&mut self, index: usize) -> bool {
+        let pick = self
+            .add_picker
+            .as_ref()
+            .and_then(|p| p.pick(index))
+            .cloned();
+        match pick {
+            Some(add_picker::Pick::Target(kind, target)) => {
+                self.adding = true;
+                self.deleted.clear();
+                self.send(Command::AddSource { kind, target });
+            }
+            Some(add_picker::Pick::Existing(id)) => self.add_existing_source(id.get() as i32),
+            None => return false,
+        }
+        self.add_picker = None;
+        true
+    }
+
+    /// What the dialog shows now, once after each change.
+    pub fn take_picker_view(&mut self) -> Option<PickerView> {
+        if !std::mem::take(&mut self.picker_dirty) {
+            return None;
+        }
+        let p = self.add_picker.as_ref()?;
+        let what = p
+            .kind()
+            .map_or("existing source".to_owned(), |k| k.label().to_lowercase());
+        Some(PickerView {
+            title: format!("Add {what}"),
+            status: p.status(),
+            rows: p.rows(),
+        })
+    }
+
     /// Puts a scene on air (a click in the Scenes panel); in studio mode, in preview.
     pub fn switch_scene(&mut self, id: i32) {
         self.send(Command::SwitchScene(SceneId::from_raw(id as u32)));
@@ -1588,17 +1650,12 @@ impl StudioUi {
         let Some(list) = &self.scene_list else {
             return;
         };
-        let data: Vec<ExistingData> = list
+        self.existing = list
             .sources
             .iter()
             .filter(|s| !s.global && !self.rows.iter().any(|r| r.id == s.id))
-            .map(|s| ExistingData {
-                id: s.id.get() as i32,
-                name: s.name.as_str().into(),
-                icon: source_icon(s.kind).into(),
-            })
+            .map(|s| (s.id, s.name.clone()))
             .collect();
-        set_rows(&self.existing, data);
     }
 
     /// One layer up (drawn over the source above it in the list) or down.
@@ -3190,18 +3247,11 @@ impl StudioUi {
                 self.source_settings_view = Some(choices);
             }
             Update::Targets(kind, list) => {
-                self.targets_kind = SourceKind::ALL
-                    .iter()
-                    .position(|a| *a == kind)
-                    .map_or(-1, |i| i as i32);
-                self.targets.set_vec(
-                    list.iter()
-                        .map(|t| TargetData {
-                            name: t.name.as_str().into(),
-                            is_default: t.is_default,
-                        })
-                        .collect::<Vec<_>>(),
-                );
+                if let Some(p) = &mut self.add_picker
+                    && p.answer(kind, &list)
+                {
+                    self.picker_dirty = true;
+                }
                 let picked = self
                     .kind_codes()
                     .get(self.global_kind as usize)
@@ -3219,7 +3269,6 @@ impl StudioUi {
                     self.source_target_list = list.clone();
                     self.refresh_source_targets();
                 }
-                self.target_list = list;
             }
             Update::Deleted { name, from_scene } => {
                 self.deleted = name;
@@ -3649,6 +3698,13 @@ fn paint(row: &mut MeterRow, view: &rbs_ui::meter::MeterView) {
 }
 
 /// What [`StudioUi::apply`] asks of the shell.
+/// The Add source dialog's content ([`StudioUi::take_picker_view`]).
+pub struct PickerView {
+    pub title: String,
+    pub status: add_picker::Status,
+    pub rows: Vec<add_picker::Row>,
+}
+
 #[derive(Default)]
 pub struct Applied {
     pub error: Option<String>,
@@ -4657,6 +4713,67 @@ mod tests {
                 .is_ok()
         );
         let _ = std::fs::remove_dir_all(d);
+    }
+
+    #[test]
+    #[allow(clippy::unwrap_used)] // Tests fail by panicking.
+    fn add_source_opens_the_picker_for_a_kind_and_offers_existing_only_when_there_are_some() {
+        use crate::menu_bar::{AddWhat, Run, Shown, run};
+        use rbs_ui::command::{Context, MenuItem, context_menu};
+        let (mut ui, d) = ui("add-source-picker");
+        ui.state = 1;
+        let ws = rbs_ui::builtin::edit();
+        let run_of = |ui: &StudioUi, text: &str| {
+            let s = Shown {
+                workspace: &ws,
+                workspaces: &[],
+                studio: ui,
+                panels: Vec::new(),
+                maximized: None,
+                camera: Default::default(),
+                can_undo: false,
+                can_redo: false,
+            };
+            run(text, &s)
+        };
+        assert_eq!(
+            run_of(&ui, "source.add?kind=screen"),
+            Some(Run::AddSource(AddWhat::Kind(0)))
+        );
+        assert_eq!(run_of(&ui, "source.add?kind=bogus"), None);
+        // Nothing runs without a kind: the buttons open the menu.
+        assert_eq!(run_of(&ui, "source.add"), None);
+        // No other scene has a source: "existing" is not offered and does not run.
+        assert_eq!(run_of(&ui, "source.add?kind=existing"), None);
+        ui.existing = vec![(SourceId::from_raw(7), "Mic".to_owned())];
+        assert_eq!(
+            run_of(&ui, "source.add?kind=existing"),
+            Some(Run::AddSource(AddWhat::Existing))
+        );
+        // The type menu lists "Existing source" with the types, and only then.
+        let ids = |ui: &StudioUi| -> Vec<String> {
+            let s = Shown {
+                workspace: &ws,
+                workspaces: &[],
+                studio: ui,
+                panels: Vec::new(),
+                maximized: None,
+                camera: Default::default(),
+                can_undo: false,
+                can_redo: false,
+            };
+            context_menu(Context::AddSource, &[], &s)
+                .into_iter()
+                .filter_map(|i| match i {
+                    MenuItem::Command { id, .. } => Some(id.to_string()),
+                    _ => None,
+                })
+                .collect()
+        };
+        assert!(ids(&ui).contains(&"source.add?kind=existing".to_owned()));
+        ui.existing.clear();
+        assert!(!ids(&ui).iter().any(|i| i.ends_with("existing")));
+        std::fs::remove_dir_all(d).ok();
     }
 
     #[test]

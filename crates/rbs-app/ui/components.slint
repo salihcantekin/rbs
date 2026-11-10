@@ -1799,6 +1799,9 @@ export component KeyboardShortcutHint inherits Rectangle {
 // waiting. The shell cuts what they cover out of the native preview layer through
 // `hint-cover` and `tip-cover` (ADR-0054), like the toasts.
 export struct OverlayCover { x: length, y: length, width: length, height: length }
+// A row of the picker: `index` is its place in the listing the app made it from, so a
+// filter never changes what choosing it means.
+export struct PickerRow { name: string, note: string, index: int }
 
 export global Overlays {
     property <int> serial;
@@ -1828,6 +1831,21 @@ export global Overlays {
         return serial;
     }
     public function close-hint() { hint-open = false; }
+
+    // The searchable picker (Add source; the font list next): a title, a filter field
+    // that keeps the focus, a status line while it says something (searching, nothing
+    // found), the rows the app made, Cancel. The app filters (`picker-filtered`) and
+    // sets the rows; Enter chooses the highlighted row, Up and Down move it, Escape or a
+    // click outside cancels. Reported as a cover like the name prompt (ADR-0054).
+    in-out property <bool> picker-open;
+    in-out property <string> picker-title;
+    in-out property <string> picker-status;
+    in-out property <[PickerRow]> picker-rows;
+    in-out property <int> picker-current;
+    in-out property <OverlayCover> picker-cover;
+    callback picker-chosen(int /* the row's index */);
+    callback picker-filtered(string);
+    callback picker-cancelled();
 
     // The name prompt of the main window (Save as new): a small dialog over the
     // window. Enter accepts, Escape or Cancel closes it; a refusal stays in the prompt
@@ -2050,6 +2068,130 @@ export component OverlayHost inherits Rectangle {
         interval: Tokens.delay-tooltip;
         running: Overlays.tip-waiting;
         triggered => { Overlays.tip-shown = true; }
+    }
+    // The searchable picker: modal, above the name prompt and the hint (Escape closes
+    // the topmost only, E1). It exists only while open; nothing runs while it is closed.
+    if Overlays.picker-open: picker := Rectangle {
+        width: root.width;
+        height: root.height;
+        TouchArea { clicked => { Overlays.picker-cancelled(); } }
+        picker-card := MenuSurface {
+            width: Tokens.size-menu-md;
+            height: picker-body.preferred-height;
+            x: (root.width - self.width) / 2;
+            y: max(Tokens.space-1, (root.height - self.height) / 3);
+            accessible-role: groupbox;
+            accessible-label: Overlays.picker-title;
+            init => {
+                Overlays.picker-current = 0;
+                Overlays.picker-cover = { x: self.x, y: self.y, width: self.width, height: self.height };
+                picker-input.focus();
+            }
+            changed x => { Overlays.picker-cover = { x: self.x, y: self.y, width: self.width, height: self.height }; }
+            changed y => { Overlays.picker-cover = { x: self.x, y: self.y, width: self.width, height: self.height }; }
+            changed height => { Overlays.picker-cover = { x: self.x, y: self.y, width: self.width, height: self.height }; }
+            picker-body := VerticalLayout {
+                padding: Tokens.space-3;
+                spacing: Tokens.space-2;
+                Text {
+                    text: Overlays.picker-title;
+                    wrap: word-wrap;
+                    color: Theme.text-primary;
+                    font-size: Tokens.type-body-size;
+                    font-weight: Tokens.type-title-weight;
+                    accessible-role: none;
+                }
+                Rectangle {
+                    border-width: Tokens.size-border;
+                    border-radius: Tokens.radius-sm;
+                    border-color: picker-input.has-focus ? Theme.border-focus : Theme.border-strong;
+                    background: Theme.surface-sunken;
+                    height: Tokens.size-control-md;
+                    picker-input := TextInput {
+                        selection-background-color: Theme.accent;
+                        selection-foreground-color: Theme.text-inverse;
+                        text-cursor-width: Tokens.size-focus-ring;
+                        x: Tokens.space-2;
+                        width: parent.width - 2 * Tokens.space-2;
+                        color: Theme.text-primary;
+                        font-size: Tokens.type-body-size;
+                        vertical-alignment: center;
+                        accessible-label: @tr("Filter");
+                        edited => { Overlays.picker-current = 0; picker-list.content-y = 0px; Overlays.picker-filtered(self.text); }
+                        accepted => {
+                            if Overlays.picker-rows.length > 0 {
+                                Overlays.picker-chosen(Overlays.picker-rows[min(Overlays.picker-current, Overlays.picker-rows.length - 1)].index);
+                            }
+                        }
+                        key-pressed(e) => {
+                            if e.text == Key.Escape { Overlays.picker-cancelled(); return accept; }
+                            if e.text == Key.DownArrow && Overlays.picker-rows.length > 0 {
+                                Overlays.picker-current = min(Overlays.picker-current + 1, Overlays.picker-rows.length - 1);
+                                picker-list.content-y = min(0px, max(-Overlays.picker-current * Tokens.size-control-md, min(picker-list.content-y, picker-list.height - (Overlays.picker-current + 1) * Tokens.size-control-md)));
+                                return accept;
+                            }
+                            if e.text == Key.UpArrow && Overlays.picker-rows.length > 0 {
+                                Overlays.picker-current = max(Overlays.picker-current - 1, 0);
+                                picker-list.content-y = min(0px, max(-Overlays.picker-current * Tokens.size-control-md, min(picker-list.content-y, picker-list.height - (Overlays.picker-current + 1) * Tokens.size-control-md)));
+                                return accept;
+                            }
+                            reject
+                        }
+                    }
+                }
+                if Overlays.picker-status != "": Text {
+                    text: Overlays.picker-status;
+                    color: Theme.text-secondary;
+                    font-size: Tokens.type-caption-size;
+                    wrap: word-wrap;
+                    accessible-role: text;
+                }
+                picker-list := Flickable {
+                    height: min(Overlays.picker-rows.length * Tokens.size-control-md, Tokens.size-select-list-h);
+                    content-height: Overlays.picker-rows.length * Tokens.size-control-md;
+                    accessible-role: list;
+                    accessible-label: Overlays.picker-title;
+                    for r[i] in Overlays.picker-rows: Rectangle {
+                        y: i * Tokens.size-control-md;
+                        height: Tokens.size-control-md;
+                        width: parent.width;
+                        border-radius: Tokens.radius-sm;
+                        background: i == Overlays.picker-current || row-touch.has-hover ? Theme.accent-subtle : transparent;
+                        accessible-role: button;
+                        accessible-label: r.name;
+                        accessible-action-default => { Overlays.picker-chosen(r.index); }
+                        HorizontalLayout {
+                            padding-left: Tokens.space-2;
+                            padding-right: Tokens.space-2;
+                            spacing: Tokens.space-2;
+                            Text {
+                                text: r.name;
+                                overflow: elide;
+                                color: Theme.text-primary;
+                                font-size: Tokens.type-body-size;
+                                vertical-alignment: center;
+                                accessible-role: none;
+                            }
+                            if r.note != "": Text {
+                                text: r.note;
+                                color: Theme.text-secondary;
+                                font-size: Tokens.type-caption-size;
+                                vertical-alignment: center;
+                                accessible-role: none;
+                            }
+                        }
+                        row-touch := TouchArea { clicked => { Overlays.picker-chosen(r.index); } }
+                    }
+                }
+                HorizontalLayout {
+                    alignment: end;
+                    Button {
+                        text: @tr("Cancel");
+                        clicked => { Overlays.picker-cancelled(); }
+                    }
+                }
+            }
+        }
     }
 }
 

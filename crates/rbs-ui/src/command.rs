@@ -423,7 +423,12 @@ pub const ENTRIES: &[Entry] = &[
             method: "filter.add",
             param: "type",
         },
-        params: &[target("source"), COLLECTION, choice("type")],
+        params: &[
+            target("source"),
+            target("audio"),
+            COLLECTION,
+            choice("type"),
+        ],
         checkable: false,
     },
     Entry {
@@ -1826,11 +1831,13 @@ pub enum Context {
     Collections,
     /// The Add filter button of a source's Properties (target `source`).
     AddFilter,
+    /// The Add source button's menu: the source types (no target).
+    AddSource,
 }
 
 impl Context {
     /// Every context.
-    pub const ALL: [Context; 12] = [
+    pub const ALL: [Context; 13] = [
         Context::Scene,
         Context::Scenes,
         Context::Source,
@@ -1843,6 +1850,7 @@ impl Context {
         Context::Profiles,
         Context::Collections,
         Context::AddFilter,
+        Context::AddSource,
     ];
 
     /// Its name, as the shell's menus ask for it.
@@ -1860,6 +1868,7 @@ impl Context {
             Context::Profiles => "profiles",
             Context::Collections => "collections",
             Context::AddFilter => "add-filter",
+            Context::AddSource => "add-source",
         }
     }
 
@@ -1892,6 +1901,9 @@ pub const CONTEXT_LAYOUT: &[(Context, &[&str])] = &[
     (Context::Scenes, &["scene.add"]),
     // The filter types that fit the source, as items of the menu itself.
     (Context::AddFilter, &["*filter.add"]),
+    // The source types (and "Existing source" when other scenes have sources), as
+    // items of the menu; a type opens the device picker.
+    (Context::AddSource, &["*source.add"]),
     (
         Context::Source,
         &[
@@ -2461,6 +2473,13 @@ mod tests {
         let target = [("source".to_owned(), "3".to_owned())];
         let items = context_menu(Context::AddFilter, &target, &Types(true));
         assert_eq!(ids(&items), ["filter.add?source=3&type=rbs.filter.blur"]);
+        // The Audio tab's button says so in its target, and the choices carry it.
+        let audio = [target[0].clone(), ("audio".to_owned(), "1".to_owned())];
+        let items = context_menu(Context::AddFilter, &audio, &Types(true));
+        assert_eq!(
+            ids(&items),
+            ["filter.add?audio=1&source=3&type=rbs.filter.blur"]
+        );
         let items = context_menu(Context::AddFilter, &target, &Types(false));
         assert!(matches!(
             &items[0],

@@ -53,6 +53,9 @@ use crate::recording::{
 };
 use crate::select::{self, Chosen};
 
+mod replay;
+pub use replay::ReplaySettings;
+
 /// Why a scheduled source has no instance yet: the one it replaces did not close.
 const WAITING: &str = "waiting for the source it replaces to close";
 /// Audio ticks a late audio worker still runs in order (ADR-0037).
@@ -419,6 +422,32 @@ enum AudioPlan {
     Shared(usize),
 }
 
+/// The encoder configuration of `video` for frames of `format` at `fps`.
+fn video_encoder_config(
+    video: &VideoSettings,
+    format: rbs_core::media::VideoFormat,
+    fps: FrameRate,
+) -> VideoEncoderConfig {
+    let config = VideoEncoderConfig::new(
+        video.codec,
+        format,
+        fps,
+        MemoryKind::System,
+        video.rate_control,
+    )
+    .with_keyframe_interval(video.keyframe_interval)
+    .with_max_b_frames(video.max_b_frames)
+    .with_tuning({
+        let mut tuning = EncoderTuning::default();
+        tuning.preset = video.preset;
+        tuning
+    });
+    match &video.profile {
+        Some(profile) => config.with_profile(profile.clone()),
+        None => config,
+    }
+}
+
 /// Adapters chosen for an output, nothing in the graph yet.
 pub(crate) struct Prepared {
     /// The canvas the video comes from.
@@ -448,24 +477,7 @@ impl Prepared {
         // System memory: the export reads the canvas back (the P4 exception of
         // ADR-0038); native export will take the memory kind from the encoder.
         let export = VideoExportNode::new(out.video.format, width, height);
-        let video_config = VideoEncoderConfig::new(
-            out.video.codec,
-            export.frame_format(),
-            fps,
-            MemoryKind::System,
-            out.video.rate_control,
-        )
-        .with_keyframe_interval(out.video.keyframe_interval)
-        .with_max_b_frames(out.video.max_b_frames)
-        .with_tuning({
-            let mut tuning = EncoderTuning::default();
-            tuning.preset = out.video.preset;
-            tuning
-        });
-        let video_config = match &out.video.profile {
-            Some(profile) => video_config.with_profile(profile.clone()),
-            None => video_config,
-        };
+        let video_config = video_encoder_config(&out.video, export.frame_format(), fps);
         let shared_video = running.video.iter().position(|c| {
             c.as_ref().is_some_and(|c| {
                 c.canvas == canvas
@@ -692,6 +704,8 @@ pub struct Studio {
     failure: Option<String>,
     /// The running outputs, in start order.
     outputs: Vec<Attached>,
+    /// The replay buffer while armed (ADR-0088).
+    replay: Option<replay::ReplayRun>,
     /// The encoder chains they use.
     chains: Chains,
     next_output: u64,
@@ -855,8 +869,10 @@ impl Studio {
             RenderLocal::default(),
             Pacing::cadence(frames),
         )?;
-        for slot in 0..MAX_OUTPUTS {
-            let p = parts.slot(slot);
+        for p in (0..MAX_OUTPUTS)
+            .map(|slot| parts.slot(slot))
+            .chain([parts.replay])
+        {
             engine.add_partition::<()>(
                 p.video_encoder,
                 Arc::new(()),
@@ -872,9 +888,12 @@ impl Studio {
                 (),
                 Pacing::stream(settings.audio_graph.cadence(clock.now()), AUDIO_CATCH_UP),
             )?;
-            for slot in 0..MAX_OUTPUTS {
+            for p in (0..MAX_OUTPUTS)
+                .map(|slot| parts.slot(slot))
+                .chain([parts.replay])
+            {
                 engine.add_partition::<()>(
-                    parts.slot(slot).audio_encoder,
+                    p.audio_encoder,
                     Arc::new(()),
                     (),
                     Pacing::doorbell(DEFAULT_DOORBELL_TIMER),
@@ -974,6 +993,7 @@ impl Studio {
             essential,
             failure: None,
             outputs: Vec::new(),
+            replay: None,
             chains: Chains::default(),
             next_output: 0,
             failed_nodes: BTreeSet::new(),
