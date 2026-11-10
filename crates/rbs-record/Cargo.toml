@@ -21,6 +21,7 @@ rbs-gpu = { path = "../rbs-gpu" }
 rbs-audio = { path = "../rbs-audio" }
 rbs-nodes = { path = "../rbs-nodes" }
 rbs-filters = { path = "../rbs-filters" }
+rbs-audio-filters = { path = "../rbs-audio-filters" }
 rbs-codec = { path = "../rbs-codec" }
 rbs-mux = { path = "../rbs-mux" }
 rbs-transport = { path = "../rbs-transport" }

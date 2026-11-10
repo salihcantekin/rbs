@@ -613,6 +613,60 @@ fn filters_run_on_a_source_and_follow_edits_without_a_new_node() {
 }
 
 #[test]
+fn audio_filters_run_on_a_microphone_and_follow_edits_without_a_new_node() {
+    use rbs_scene::model::SettingValue;
+    let Some(gpu) = gpu() else { return };
+    let r = rig();
+    let (mut col, canvas) = scene();
+    let mic = col.sources().find(|s| s.name == "Microphone").unwrap().id;
+    let (gate, _) = col
+        .add_filter(
+            mic,
+            NodeTypeId::new_static(rbs_audio_filters::gate::NOISE_GATE),
+            Settings::new(),
+        )
+        .unwrap();
+    let (engine, clock) = engine_at_start();
+    let mut studio = Studio::start(
+        engine,
+        gpu,
+        &col,
+        &r.adapters.sources,
+        &StudioSettings::new(canvas),
+    )
+    .unwrap();
+    assert!(studio.filter_problems().is_empty());
+    // The filter runs in the audio partition and the mix keeps playing through it.
+    let meter = std::sync::Arc::clone(studio.audio_filter_meter(gate).unwrap());
+    assert!(run_until(&mut studio, &clock, |s| {
+        s.progress().master_peak_db.is_some_and(f32::is_finite)
+    }));
+    assert!(meter.input_peak_db() <= 0.0);
+
+    // An edit reaches the running node; no node is made for it.
+    let mut edited = Settings::new();
+    edited.insert("hold".to_owned(), SettingValue::Float(20.0));
+    col.set_filter_settings(mic, gate, edited).unwrap();
+    let updated = studio.update(&col, &r.adapters.sources).unwrap();
+    assert!(updated.failed.is_empty(), "{updated:?}");
+    assert!(std::sync::Arc::ptr_eq(
+        &meter,
+        studio.audio_filter_meter(gate).unwrap()
+    ));
+
+    // Removed: its instance is taken back and the microphone plays on unfiltered.
+    col.remove_filter(mic, gate).unwrap();
+    let updated = studio.update(&col, &r.adapters.sources).unwrap();
+    assert!(updated.failed.is_empty(), "{updated:?}");
+    assert!(studio.audio_filter_meter(gate).is_none());
+    assert!(run_until(&mut studio, &clock, |s| {
+        s.progress().master_peak_db.is_some_and(f32::is_finite)
+    }));
+    let (_, errors) = studio.shutdown();
+    assert!(errors.is_empty(), "{errors:?}");
+}
+
+#[test]
 fn studio_mode_without_a_preview_description_runs_nothing_of_it() {
     let Some(gpu) = gpu() else { return };
     let r = rig();

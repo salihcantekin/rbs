@@ -4883,6 +4883,7 @@ name = "rbs-record"
 version = "0.0.1"
 dependencies = [
  "rbs-audio",
+ "rbs-audio-filters",
  "rbs-audio-io-test",
  "rbs-capture-test",
  "rbs-codec",
@@ -4924,6 +4925,7 @@ version = "0.0.1"
 dependencies = [
  "png",
  "rbs-audio",
+ "rbs-audio-filters",
  "rbs-audio-io",
  "rbs-audio-io-test",
  "rbs-audio-io-wasapi",
@@ -4937,6 +4939,7 @@ dependencies = [
  "rbs-gpu",
  "rbs-graph",
  "rbs-nodes",
+ "rbs-params",
  "rbs-scene",
 ]
 

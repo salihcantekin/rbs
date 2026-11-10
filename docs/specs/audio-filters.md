@@ -1,6 +1,6 @@
 # Spec: Audio filters
 
-- Status: Draft (the crate and its nodes exist; the binder, studio, control API and UI follow in later PRs of ADR-0082)
+- Status: Draft (crate, nodes, binder and studio wiring exist; the control API and UI follow in later PRs of ADR-0082)
 - Owner crate(s): `rbs-audio-filters` (audio filter type trait, DSP trait, filter node, catalogue, conformance suite); `rbs-params` (settings schema, shared with video filters)
 - Related ADRs: ADR-0082, ADR-0062, ADR-0023, ADR-0020, ADR-0013
 
@@ -12,7 +12,7 @@ Built-in audio filters for sources: Gain and Noise gate, run as `AudioFilter` no
 
 In scope: `AudioFilterType`, `AudioDsp`, `FilterMeter`, `AudioFilterNode`, the catalogue and the conformance suite.
 
-Out of scope here (later PRs of ADR-0082): the scene binder and studio wiring, the `filter.*` control API for audio, the editor UI, a limiter and look-ahead filters (they need latency reporting in the node contract), the ducker.
+Out of scope here (later PRs of ADR-0082): the `filter.*` control API for audio, the editor UI, a limiter and look-ahead filters (they need latency reporting in the node contract), the ducker.
 
 ## Contract
 
@@ -54,6 +54,10 @@ pub trait AudioDsp: Send {
 ### Conformance
 
 `conformance::check_type` checks the id, the schema (`rbs_params::check_fields`) and that the DSP output stays clean for silence, full scale, NaN, infinity and denormal input at the defaults and at every number field's extremes.
+
+### Wiring
+
+The scene binder puts an audio filter node in its source's partition and links the mixer to the chain tail (`scene-model.md`, "Graph binding"). `rbs-sources` installs the catalogue's descriptors in `node_types()` and converts stored settings with `filter_values`, `filter_values_lenient` and `filter_settings`, which take any `Schema`. The studio (`rbs-record`) makes an `AudioFilterNode` for every scheduled audio filter on the audio partition, keeps its `ParamSender`, sends values on edits (`update`, `preview_filter`, `restore_filter`) and exposes the meter (`Studio::audio_filter_meter`). If `make` fails, the studio runs a pass-through node and reports the filter in `filter_problems` with the key `FILTER_UNAVAILABLE` (`"*"`), so the source stays audible and unfiltered.
 
 ## Performance
 
