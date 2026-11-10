@@ -7143,7 +7143,10 @@ impl ApiTarget<'_> {
                 "a recording is already running",
             ));
         }
-        let request = host.profile_request(c, path).map_err(failed)?;
+        let request = host.profile_request(c, path).map_err(|why| match c {
+            OutputCanvas::Main => failed(why),
+            OutputCanvas::Vertical => failed(format!("the vertical recording: {why}")),
+        })?;
         let profile = (!explicit).then(|| API_PROFILE_ID.to_owned());
         let result = host.start_recording(c, &request, profile);
         host.publish(notify);

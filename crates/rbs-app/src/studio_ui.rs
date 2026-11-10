@@ -3237,6 +3237,8 @@ impl StudioUi {
                 out.camera = Some(None);
                 self.state = 2;
                 self.cannot_record = Some(format!("The studio stopped: {why}"));
+                // The studio's shutdown ended the vertical outputs too.
+                self.vertical_busy = (false, false);
                 if self.rec_state != rec_state::OFF {
                     // The studio's shutdown closed the file.
                     self.rec_state = rec_state::OFF;
