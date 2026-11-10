@@ -97,6 +97,7 @@ fn source() -> SourceInfo {
         picture_size: Some([1920, 1080]),
         visible: false,
         locked: true,
+        companion_of: Some(2),
         volume: 0.5,
         muted: true,
         mixer_hidden: true,
@@ -181,6 +182,11 @@ fn every_request() -> Vec<Request> {
             name: None,
             scene: None,
             global: true,
+            with_audio: true,
+        })),
+        c(Command::SourceSetCompanionAudio(SetCompanionAudio {
+            source: 4,
+            enabled: true,
         })),
         c(Command::SourceDelete(SourceRef { source: 4 })),
         c(Command::ItemSetStyle(SetItemStyle {
@@ -276,6 +282,10 @@ fn every_request() -> Vec<Request> {
         c(Command::StreamStart),
         c(Command::StreamStop),
         c(Command::StreamStatus),
+        c(Command::ReplayStatus),
+        c(Command::ReplayArm),
+        c(Command::ReplayDisarm),
+        c(Command::ReplaySave(ReplaySave { seconds: None })),
         c(Command::VcamStatus),
         c(Command::VcamStart),
         c(Command::VcamStop),
@@ -588,6 +598,10 @@ fn every_result_and_event_type_round_trips() {
         seq: seq.clone(),
         data: vcam_status(),
     });
+    round_trip(&Snapshot {
+        seq: seq.clone(),
+        data: replay_status(),
+    });
     round_trip(&Subscribed { seq });
     round_trip(&Empty {});
     round_trip(&ApiError::new(ErrorKind::UndoConflict, "x"));
@@ -622,6 +636,7 @@ fn every_result_and_event_type_round_trips() {
             frames: None,
             ..vcam_status()
         }),
+        EventPayload::ReplayChanged(replay_status()),
     ] {
         round_trip(&Event {
             object: None,
@@ -629,6 +644,36 @@ fn every_result_and_event_type_round_trips() {
             payload,
         });
     }
+}
+
+fn replay_status() -> ReplayStatus {
+    ReplayStatus {
+        armed: true,
+        held_secs: 192,
+        length_secs: 300,
+        bytes: 123_456_789,
+        memory_limit: 1 << 30,
+        memory_limited: false,
+        saving: false,
+        last_saved: Some("/clips/RBS Replay 2026-11-10 17-00-00.mkv".into()),
+        last_error: None,
+    }
+}
+
+#[test]
+fn replay_save_takes_optional_seconds_and_refuses_unknown_fields() {
+    let r: ReplaySave = serde_json::from_str("{}").unwrap();
+    assert_eq!(r.seconds, None);
+    let r: ReplaySave = serde_json::from_str(r#"{"seconds": 30}"#).unwrap();
+    assert_eq!(r.seconds, Some(30));
+    assert!(serde_json::from_str::<ReplaySave>(r#"{"secs": 30}"#).is_err());
+    let v = serde_json::to_value(ReplayStatus {
+        last_saved: None,
+        ..replay_status()
+    })
+    .unwrap();
+    assert!(v.get("last_saved").is_none() && v.get("last_error").is_none());
+    assert_eq!(v["held_secs"], 192);
 }
 
 fn vcam_status() -> VcamStatus {

@@ -1143,29 +1143,17 @@ export component ColorPicker inherits Rectangle {
     in property <string> label;
     in property <color> value;
     in property <bool> enabled: true;
-    out property <bool> open: popup.is-open;
     callback picked(string);
-    // The colour being chosen in the popover, as hue (degrees), saturation and value.
-    property <float> hue;
-    property <float> sat;
-    property <float> val;
-    property <color> draft: hsv(hue, sat, val); // literal: the colour being picked
-    property <[string]> digits: ["0", "1", "2", "3", "4", "5", "6", "7", "8", "9", "a", "b", "c", "d", "e", "f"];
-    function hex2(n: int) -> string {
-        return digits[floor(n / 16)] + digits[mod(n, 16)];
-    }
-    function hex(c: color) -> string {
-        return "#" + hex2(c.red) + hex2(c.green) + hex2(c.blue) + (root.value.alpha < 255 ? hex2(root.value.alpha) : "");
-    }
-    function report(c: color) {
-        root.picked(hex(c));
+    // The popover is a layer of the window (`ColorPopover`, drawn by `OverlayHost`); its
+    // pick comes back through `Overlays.color-result` to the swatch that opened it.
+    property <int> my-id;
+    property <int> picks: Overlays.color-serial;
+    changed picks => {
+        if Overlays.color-owner == root.my-id { root.picked(Overlays.color-result); }
     }
     function show-popup() {
         if !root.enabled { return; }
-        root.hue = root.value.to-hsv().hue;
-        root.sat = root.value.to-hsv().saturation;
-        root.val = root.value.to-hsv().value;
-        popup.show();
+        root.my-id = Overlays.open-color(root.label, root.value, root.absolute-position.x, root.absolute-position.y, root.width, root.height);
     }
     width: Tokens.size-control-md;
     height: Tokens.size-control-md;
@@ -1190,162 +1178,194 @@ export component ColorPicker inherits Rectangle {
         clicked => { root.show-popup(); }
     }
     FocusRing { show: focus.ring; }
-    popup := PopupWindow {
-        close-policy: close-on-click-outside;
-        y: root.height + Tokens.space-1;
+}
+
+// The colour popover: hue, saturation and brightness, presets, the colour in words.
+// `OverlayHost` draws it while `Overlays.color-open`; every pick is published through
+// `Overlays.color-result` and `color-serial`.
+export component ColorPopover inherits Rectangle {
+    // The colour being chosen, as hue (degrees), saturation and value.
+    property <float> hue: Overlays.color-value.to-hsv().hue;
+    property <float> sat: Overlays.color-value.to-hsv().saturation;
+    property <float> val: Overlays.color-value.to-hsv().value;
+    property <color> draft: hsv(hue, sat, val); // literal: the colour being picked
+    property <[string]> digits: ["0", "1", "2", "3", "4", "5", "6", "7", "8", "9", "a", "b", "c", "d", "e", "f"];
+    function hex2(n: int) -> string {
+        return digits[floor(n / 16)] + digits[mod(n, 16)];
+    }
+    function hex(c: color) -> string {
+        return "#" + hex2(c.red) + hex2(c.green) + hex2(c.blue) + (Overlays.color-value.alpha < 255 ? hex2(Overlays.color-value.alpha) : "");
+    }
+    function report(c: color) {
+        Overlays.color-result = hex(c);
+        Overlays.color-serial += 1;
+    }
+    width: Tokens.size-menu-sm;
+    height: surface.preferred-height;
+    init => {
+        Overlays.color-cover = { x: self.x, y: self.y, width: self.width, height: self.height };
+        colour-keys.focus();
+    }
+    changed x => { Overlays.color-cover = { x: self.x, y: self.y, width: self.width, height: self.height }; }
+    changed y => { Overlays.color-cover = { x: self.x, y: self.y, width: self.width, height: self.height }; }
+    changed height => { Overlays.color-cover = { x: self.x, y: self.y, width: self.width, height: self.height }; }
+    colour-keys := FocusScope {
+        capture-key-pressed(e) => {
+            if e.text == Key.Escape { Overlays.color-open = false; return accept; }
+            reject
+        }
+    }
+    surface := MenuSurface {
         width: Tokens.size-menu-sm;
-        MenuSurface {
-            width: Tokens.size-menu-sm;
-            accessible-role: groupbox;
-            accessible-label: root.label;
-            VerticalLayout {
-                padding: Tokens.space-3;
-                spacing: Tokens.space-3;
-                // Saturation left to right, brightness bottom to top, at the chosen hue.
-                area := Rectangle {
-                    height: 3 * Tokens.space-8;
-                    border-radius: Tokens.radius-sm;
-                    background: hsv(root.hue, 1, 1); // literal: the picked hue at full saturation
-                    clip: true;
-                    accessible-role: slider;
-                    accessible-label: @tr("Saturation and brightness");
-                    accessible-value: @tr("Saturation {}%, brightness {}%", round(root.sat * 100), round(root.val * 100));
-                    // literal-begin: the saturation and brightness field is content, not theme chrome
-                    Rectangle { background: @linear-gradient(90deg, #ffffff 0%, #ffffff00 100%); }
-                    Rectangle { background: @linear-gradient(0deg, #000000 0%, #00000000 100%); }
+        accessible-role: groupbox;
+        accessible-label: Overlays.color-label;
+        VerticalLayout {
+            padding: Tokens.space-3;
+            spacing: Tokens.space-3;
+            // Saturation left to right, brightness bottom to top, at the chosen hue.
+            area := Rectangle {
+                height: 3 * Tokens.space-8;
+                border-radius: Tokens.radius-sm;
+                background: hsv(root.hue, 1, 1); // literal: the picked hue at full saturation
+                clip: true;
+                accessible-role: slider;
+                accessible-label: @tr("Saturation and brightness");
+                accessible-value: @tr("Saturation {}%, brightness {}%", round(root.sat * 100), round(root.val * 100));
+                // literal-begin: the saturation and brightness field is content, not theme chrome
+                Rectangle { background: @linear-gradient(90deg, #ffffff 0%, #ffffff00 100%); }
+                Rectangle { background: @linear-gradient(0deg, #000000 0%, #00000000 100%); }
+                // literal-end
+                Rectangle {
+                    x: root.sat * area.width - self.width / 2;
+                    y: (1 - root.val) * area.height - self.height / 2;
+                    width: Tokens.space-3;
+                    height: Tokens.space-3;
+                    border-radius: self.width / 2;
+                    border-width: Tokens.size-focus-ring;
+                    border-color: root.val > 0.5 ? #000000 : #ffffff; // literal: contrast with the picked colour, not the theme
+                    background: root.draft;
+                }
+                area-focus := RingFocus {
+                    key-pressed(e) => {
+                        if e.text == Key.LeftArrow { root.sat = max(0, root.sat - (e.modifiers.shift ? 0.1 : 0.01)); }
+                        else if e.text == Key.RightArrow { root.sat = min(1, root.sat + (e.modifiers.shift ? 0.1 : 0.01)); }
+                        else if e.text == Key.DownArrow { root.val = max(0, root.val - (e.modifiers.shift ? 0.1 : 0.01)); }
+                        else if e.text == Key.UpArrow { root.val = min(1, root.val + (e.modifiers.shift ? 0.1 : 0.01)); }
+                        else { return reject; }
+                        root.report(root.draft);
+                        accept
+                    }
+                }
+                TouchArea {
+                    function track() {
+                        root.sat = clamp(self.mouse-x / area.width, 0, 1);
+                        root.val = clamp(1 - self.mouse-y / area.height, 0, 1);
+                    }
+                    pointer-event(e) => {
+                        if e.kind == PointerEventKind.down && e.button == PointerEventButton.left {
+                            area-focus.focus-pointer();
+                            self.track();
+                        } else if e.kind == PointerEventKind.up && e.button == PointerEventButton.left {
+                            root.report(root.draft);
+                        }
+                    }
+                    moved => { if self.pressed { self.track(); } }
+                }
+                FocusRing { show: area-focus.ring; }
+            }
+            // The hue, around the colour wheel from red back to red.
+            bar := Rectangle {
+                height: Tokens.space-4;
+                border-radius: Tokens.radius-sm;
+                // literal: the hue bar shows every hue, whatever the theme
+                background: @linear-gradient(90deg, #ff0000 0%, #ffff00 16.7%, #00ff00 33.3%, #00ffff 50%, #0000ff 66.7%, #ff00ff 83.3%, #ff0000 100%);
+                accessible-role: slider;
+                accessible-label: @tr("Hue");
+                accessible-value: @tr("{} degrees", round(root.hue));
+                Rectangle {
+                    x: root.hue / 360 * bar.width - self.width / 2;
+                    width: Tokens.space-1;
+                    border-width: Tokens.size-border;
+                    // literal-begin: the hue marker contrasts with the hue bar, not the theme
+                    border-color: #000000;
+                    background: #ffffff;
                     // literal-end
-                    Rectangle {
-                        x: root.sat * area.width - self.width / 2;
-                        y: (1 - root.val) * area.height - self.height / 2;
-                        width: Tokens.space-3;
-                        height: Tokens.space-3;
-                        border-radius: self.width / 2;
-                        border-width: Tokens.size-focus-ring;
-                        border-color: root.val > 0.5 ? #000000 : #ffffff; // literal: contrast with the picked colour, not the theme
-                        background: root.draft;
-                    }
-                    area-focus := RingFocus {
-                        key-pressed(e) => {
-                            if e.text == Key.LeftArrow { root.sat = max(0, root.sat - (e.modifiers.shift ? 0.1 : 0.01)); }
-                            else if e.text == Key.RightArrow { root.sat = min(1, root.sat + (e.modifiers.shift ? 0.1 : 0.01)); }
-                            else if e.text == Key.DownArrow { root.val = max(0, root.val - (e.modifiers.shift ? 0.1 : 0.01)); }
-                            else if e.text == Key.UpArrow { root.val = min(1, root.val + (e.modifiers.shift ? 0.1 : 0.01)); }
-                            else { return reject; }
-                            root.report(root.draft);
-                            accept
-                        }
-                    }
-                    TouchArea {
-                        function track() {
-                            root.sat = clamp(self.mouse-x / area.width, 0, 1);
-                            root.val = clamp(1 - self.mouse-y / area.height, 0, 1);
-                        }
-                        pointer-event(e) => {
-                            if e.kind == PointerEventKind.down && e.button == PointerEventButton.left {
-                                area-focus.focus-pointer();
-                                self.track();
-                            } else if e.kind == PointerEventKind.up && e.button == PointerEventButton.left {
-                                root.report(root.draft);
-                            }
-                        }
-                        moved => { if self.pressed { self.track(); } }
-                    }
-                    FocusRing { show: area-focus.ring; }
                 }
-                // The hue, around the colour wheel from red back to red.
-                bar := Rectangle {
-                    height: Tokens.space-4;
+                bar-focus := RingFocus {
+                    key-pressed(e) => {
+                        if e.text == Key.LeftArrow { root.hue = max(0, root.hue - (e.modifiers.shift ? 10 : 1)); }
+                        else if e.text == Key.RightArrow { root.hue = min(360, root.hue + (e.modifiers.shift ? 10 : 1)); }
+                        else { return reject; }
+                        root.report(root.draft);
+                        accept
+                    }
+                }
+                TouchArea {
+                    pointer-event(e) => {
+                        if e.kind == PointerEventKind.down && e.button == PointerEventButton.left {
+                            bar-focus.focus-pointer();
+                            root.hue = clamp(self.mouse-x / bar.width, 0, 1) * 360;
+                        } else if e.kind == PointerEventKind.up && e.button == PointerEventButton.left {
+                            root.report(root.draft);
+                        }
+                    }
+                    moved => { if self.pressed { root.hue = clamp(self.mouse-x / bar.width, 0, 1) * 360; } }
+                }
+                FocusRing { show: bar-focus.ring; }
+            }
+            // Preset colours, each a button named after its colour.
+            HorizontalLayout {
+                spacing: Tokens.space-1;
+                // literal-begin: preset colours a user picks for a source; content, not theme chrome
+                for p in [
+                    { name: @tr("White"), c: #ffffff },
+                    { name: @tr("Black"), c: #000000 },
+                    { name: @tr("Red"), c: #e5383b },
+                    { name: @tr("Orange"), c: #f77f00 },
+                    { name: @tr("Yellow"), c: #fcbf49 },
+                    { name: @tr("Green"), c: #2a9d8f },
+                    { name: @tr("Blue"), c: #3a86ff },
+                    { name: @tr("Purple"), c: #8338ec },
+                    // literal-end
+                ]: Rectangle {
+                    height: Tokens.size-control-sm;
+                    horizontal-stretch: 1;
                     border-radius: Tokens.radius-sm;
-                    // literal: the hue bar shows every hue, whatever the theme
-                    background: @linear-gradient(90deg, #ff0000 0%, #ffff00 16.7%, #00ff00 33.3%, #00ffff 50%, #0000ff 66.7%, #ff00ff 83.3%, #ff0000 100%);
-                    accessible-role: slider;
-                    accessible-label: @tr("Hue");
-                    accessible-value: @tr("{} degrees", round(root.hue));
-                    Rectangle {
-                        x: root.hue / 360 * bar.width - self.width / 2;
-                        width: Tokens.space-1;
-                        border-width: Tokens.size-border;
-                        // literal-begin: the hue marker contrasts with the hue bar, not the theme
-                        border-color: #000000;
-                        background: #ffffff;
-                        // literal-end
-                    }
-                    bar-focus := RingFocus {
+                    border-width: Tokens.size-border;
+                    border-color: Theme.border-strong;
+                    background: p.c;
+                    accessible-role: button;
+                    accessible-label: p.name;
+                    accessible-action-default => { root.report(p.c); Overlays.color-open = false; }
+                    forward-focus: preset-focus;
+                    preset-focus := RingFocus {
                         key-pressed(e) => {
-                            if e.text == Key.LeftArrow { root.hue = max(0, root.hue - (e.modifiers.shift ? 10 : 1)); }
-                            else if e.text == Key.RightArrow { root.hue = min(360, root.hue + (e.modifiers.shift ? 10 : 1)); }
-                            else { return reject; }
-                            root.report(root.draft);
-                            accept
+                            if e.text == Key.Return || e.text == " " { root.report(p.c); Overlays.color-open = false; return accept; }
+                            reject
                         }
                     }
                     TouchArea {
-                        pointer-event(e) => {
-                            if e.kind == PointerEventKind.down && e.button == PointerEventButton.left {
-                                bar-focus.focus-pointer();
-                                root.hue = clamp(self.mouse-x / bar.width, 0, 1) * 360;
-                            } else if e.kind == PointerEventKind.up && e.button == PointerEventButton.left {
-                                root.report(root.draft);
-                            }
-                        }
-                        moved => { if self.pressed { root.hue = clamp(self.mouse-x / bar.width, 0, 1) * 360; } }
+                        clicked => { root.report(p.c); Overlays.color-open = false; }
                     }
-                    FocusRing { show: bar-focus.ring; }
+                    FocusRing { show: preset-focus.ring; }
                 }
-                // Preset colours, each a button named after its colour.
-                HorizontalLayout {
-                    spacing: Tokens.space-1;
-                    // literal-begin: preset colours a user picks for a source; content, not theme chrome
-                    for p in [
-                        { name: @tr("White"), c: #ffffff },
-                        { name: @tr("Black"), c: #000000 },
-                        { name: @tr("Red"), c: #e5383b },
-                        { name: @tr("Orange"), c: #f77f00 },
-                        { name: @tr("Yellow"), c: #fcbf49 },
-                        { name: @tr("Green"), c: #2a9d8f },
-                        { name: @tr("Blue"), c: #3a86ff },
-                        { name: @tr("Purple"), c: #8338ec },
-                        // literal-end
-                    ]: Rectangle {
-                        height: Tokens.size-control-sm;
-                        horizontal-stretch: 1;
-                        border-radius: Tokens.radius-sm;
-                        border-width: Tokens.size-border;
-                        border-color: Theme.border-strong;
-                        background: p.c;
-                        accessible-role: button;
-                        accessible-label: p.name;
-                        accessible-action-default => { root.report(p.c); popup.close(); }
-                        forward-focus: preset-focus;
-                        preset-focus := RingFocus {
-                            key-pressed(e) => {
-                                if e.text == Key.Return || e.text == " " { root.report(p.c); popup.close(); return accept; }
-                                reject
-                            }
-                        }
-                        TouchArea {
-                            clicked => { root.report(p.c); popup.close(); }
-                        }
-                        FocusRing { show: preset-focus.ring; }
-                    }
+            }
+            HorizontalLayout {
+                spacing: Tokens.space-2;
+                Rectangle {
+                    width: Tokens.size-control-md;
+                    height: Tokens.size-control-sm;
+                    border-radius: Tokens.radius-sm;
+                    border-width: Tokens.size-border;
+                    border-color: Theme.border-subtle;
+                    background: root.draft;
+                    accessible-role: none;
                 }
-                HorizontalLayout {
-                    spacing: Tokens.space-2;
-                    Rectangle {
-                        width: Tokens.size-control-md;
-                        height: Tokens.size-control-sm;
-                        border-radius: Tokens.radius-sm;
-                        border-width: Tokens.size-border;
-                        border-color: Theme.border-subtle;
-                        background: root.draft;
-                        accessible-role: none;
-                    }
-                    Text {
-                        text: root.hex(root.draft);
-                        color: Theme.text-primary;
-                        font-size: Tokens.type-body-size;
-                        vertical-alignment: center;
-                    }
+                Text {
+                    text: root.hex(root.draft);
+                    color: Theme.text-primary;
+                    font-size: Tokens.type-body-size;
+                    vertical-alignment: center;
                 }
             }
         }
@@ -1793,6 +1813,33 @@ export global Overlays {
     }
     public function close-hint() { hint-open = false; }
 
+    // The colour popover (ColorPicker): opened by a swatch at its window position, drawn
+    // by `OverlayHost`; a pick comes back as `color-result` with `color-serial` moving,
+    // and only the swatch whose id is `color-owner` takes it.
+    in-out property <bool> color-open;
+    in-out property <string> color-label;
+    in-out property <color> color-value;
+    in-out property <length> color-x;
+    in-out property <length> color-y;
+    in-out property <length> color-w;
+    in-out property <length> color-h;
+    in-out property <int> color-owner;
+    in-out property <string> color-result;
+    in-out property <int> color-serial;
+    in-out property <OverlayCover> color-cover;
+    public function open-color(label: string, value: color, x: length, y: length, w: length, h: length) -> int {
+        serial += 1;
+        color-label = label;
+        color-value = value;
+        color-x = x;
+        color-y = y;
+        color-w = w;
+        color-h = h;
+        color-owner = serial;
+        color-open = true;
+        return serial;
+    }
+
     // The searchable picker (Add source; the font list next): a title, a filter field
     // that keeps the focus, a status line while it says something (searching, nothing
     // found), the rows the app made, Cancel. The app filters (`picker-filtered`) and
@@ -2029,6 +2076,16 @@ export component OverlayHost inherits Rectangle {
         interval: Tokens.delay-tooltip;
         running: Overlays.tip-waiting;
         triggered => { Overlays.tip-shown = true; }
+    }
+    // The colour popover: a click outside it, or Escape, closes it.
+    if Overlays.color-open: Rectangle {
+        width: root.width;
+        height: root.height;
+        TouchArea { clicked => { Overlays.color-open = false; } }
+        ColorPopover {
+            x: clamp(Overlays.color-x, Tokens.space-1, root.width - self.width - Tokens.space-1);
+            y: Overlays.color-y + Overlays.color-h + Tokens.space-1 + self.height > root.height ? max(Tokens.space-1, Overlays.color-y - Tokens.space-1 - self.height) : Overlays.color-y + Overlays.color-h + Tokens.space-1;
+        }
     }
     // The searchable picker: modal, above the name prompt and the hint (Escape closes
     // the topmost only, E1). It exists only while open; nothing runs while it is closed.

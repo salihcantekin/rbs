@@ -173,6 +173,10 @@ pub struct SourceInfo {
     /// absent before, meaning shown).
     #[serde(default, skip_serializing_if = "is_false")]
     pub mixer_hidden: bool,
+    /// The picture source this one is the "Capture audio too" companion of (protocol
+    /// 1.26, ADR-0096); absent for other sources.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub companion_of: Option<u32>,
 }
 
 #[allow(clippy::trivially_copy_pass_by_ref)] // serde passes a reference.
@@ -812,6 +816,31 @@ pub struct VcamFrames {
     pub format_pending: u64,
     /// Operating system errors.
     pub os_errors: u64,
+}
+
+/// `replay.status` and `replay.changed` (protocol 1.27, ADR-0088).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ReplayStatus {
+    /// The buffer runs and keeps the past.
+    pub armed: bool,
+    /// The usable past in whole seconds; `0` while disarmed.
+    pub held_secs: u32,
+    /// The wanted length in seconds.
+    pub length_secs: u32,
+    /// Payload bytes held.
+    pub bytes: u64,
+    /// The memory limit in bytes.
+    pub memory_limit: u64,
+    /// Memory, not the length setting, is why the past is short.
+    pub memory_limited: bool,
+    /// A clip is being cut or written.
+    pub saving: bool,
+    /// The file of the last clip saved since the server started.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_saved: Option<String>,
+    /// Why the last save failed, until a save succeeds.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_error: Option<String>,
 }
 
 /// `vcam.status` and `vcam.changed` (protocol 1.12, ADR-0066 decision 13).

@@ -21,6 +21,7 @@
 //! - [`user_session`]: the output profile and scene collection in use, and their one
 //!   writer thread (ADR-0051).
 //! - [`recent_targets`]: the last targets picked per source type (`recent-targets.toml`, ADR-0077).
+//! - [`replay_settings`]: Settings › Recording › Replay buffer and `replay.toml` (ADR-0088).
 //! - [`vcam_settings`]: Settings › Virtual camera and `vcam.toml` (ADR-0066).
 //! - `native::MeterBridgeLayer` (macOS): audio meters as Core Animation layers, so meter
 //!   updates do not make the toolkit redraw the window (ADR-0035).
@@ -39,6 +40,7 @@ pub mod popups;
 pub mod recent_targets;
 pub mod record_profile;
 pub mod remote_control;
+pub mod replay_settings;
 pub mod stream_key;
 pub mod stream_profile;
 pub mod studio_host;

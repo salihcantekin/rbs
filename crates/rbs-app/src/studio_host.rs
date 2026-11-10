@@ -46,18 +46,19 @@ use rbs_record::{
     AudioSettings, ExtraCanvas, Link, OutputId, OutputSettings, Progress, RecordAdapters,
     RecordError, Studio, StudioSettings, VideoSettings, VirtualCameraSettings,
 };
-use rbs_scene::SceneCollection;
 use rbs_scene::model::{
     Border, CanvasId, Crop, FilterId, ItemContent, ItemId, ItemStyle, Layout, MasterAudio, Scene,
     SceneId, SceneItem, SceneScope, SettingValue, Settings, Shadow, Shape, SourceAudio, SourceId,
 };
 use rbs_scene::{AutoLayout, CenterAxis, FitMode, SceneError, Undo};
+use rbs_scene::{COMPANION_OF_HINT, SceneCollection};
 use rbs_sources::types::{self, keys};
 use rbs_sources::{SourceError, SourceTarget};
 use rbs_transport::{ReconnectPolicy, Secret, TransportInput};
 use rbs_vcam::{InstallState, VcamStats, VirtualCameraFactory};
 
 pub mod filters;
+pub mod replay;
 
 use crate::canvas_profile::CanvasProfile;
 use crate::edit_history::{EditKind, History, HistoryError, StepInfo};
@@ -272,6 +273,8 @@ pub struct SourceRow {
     pub layout: Option<Layout>,
     /// Its item in the program scene.
     pub item: ItemId,
+    /// The picture this source is the "Capture audio too" companion of (ADR-0096).
+    pub companion_of: Option<SourceId>,
     /// Width and height in pixels of its picture, as last seen while it ran (video
     /// sources, ADR-0058); `None` before it ran.
     pub picture: Option<(u32, u32)>,
@@ -304,6 +307,7 @@ impl PartialEq for SourceRow {
             && self.status == other.status
             && self.layout == other.layout
             && self.item == other.item
+            && self.companion_of == other.companion_of
             && self.picture == other.picture
             && self.visible == other.visible
             && self.locked == other.locked
@@ -756,6 +760,21 @@ pub enum Command {
     /// The virtual camera as Settings › Virtual camera knows it: what `vcam.start` and
     /// `vcam.status` use for control API clients. Sent at start and after each change.
     SetVirtualCamera(CameraSetup),
+    /// The replay buffer's settings as saved (ADR-0088): used when it arms. Sent at
+    /// start and after each change; a buffer that runs keeps the settings it started
+    /// with until it is armed again.
+    SetReplay(crate::replay_settings::ReplaySetup),
+    /// Arm the replay buffer; answered with [`Update::Replay`], and an
+    /// [`Update::Error`] when it did not start.
+    ArmReplay,
+    /// Disarm the replay buffer and free what it held; answered with [`Update::Replay`].
+    DisarmReplay,
+    /// Save the last `seconds` (all of the buffer for `None`) as a clip file; answered
+    /// with [`Update::ReplaySaved`] once it is written.
+    SaveReplay {
+        /// How much of the past, or `None` for all of it.
+        seconds: Option<u32>,
+    },
     /// The stream settings as saved: what `stream.start` uses for control API clients.
     /// Sent at start and after each change.
     SetStreamProfile(StreamProfile),
@@ -1217,6 +1236,11 @@ pub enum Update {
     /// The virtual camera started or stopped sending (`None`), and its counters once a
     /// second while it sends.
     VirtualCamera(Option<CameraStatus>),
+    /// The replay buffer's state: armed or not, what it holds, and whether a clip is
+    /// being saved. Sent when it changes and once a second while armed.
+    Replay(replay::ReplayState),
+    /// A saved clip's file, or why it could not be saved.
+    ReplaySaved(Result<std::path::PathBuf, String>),
     /// [`Command::SwitchCollection`] with this `seq` is done: `Ok` the new collection
     /// runs, `Err` why the one before still runs.
     CollectionSwitched {
@@ -1353,6 +1377,8 @@ enum Msg {
     ApiWake,
     /// An OS picker failed (not cancelled).
     PickFailed(String),
+    /// A replay clip writer finished.
+    ReplayWritten(Result<std::path::PathBuf, String>),
     /// A thumbnail worker finished one target.
     Thumbnail {
         generation: u64,
@@ -1768,6 +1794,8 @@ struct Host {
     camera_setup: Option<CameraSetup>,
     /// The `vcam.changed` state last published.
     camera_published: Option<api::VcamStatus>,
+    /// The replay buffer's settings and state (ADR-0088).
+    replay: replay::ReplayHost,
 }
 
 fn run(
@@ -1798,7 +1826,11 @@ fn run(
                 match m {
                     Msg::AttachApi(a) => api = Some(*a),
                     Msg::DetachApi => api = None,
-                    Msg::Ui(_) | Msg::ApiWake | Msg::PickFailed(_) | Msg::Thumbnail { .. } => {}
+                    Msg::Ui(_)
+                    | Msg::ApiWake
+                    | Msg::PickFailed(_)
+                    | Msg::ReplayWritten(_)
+                    | Msg::Thumbnail { .. } => {}
                 }
                 if let Some(api) = &api {
                     let mut events = EventPublisher::new();
@@ -1893,6 +1925,7 @@ fn round(
             host.api = None;
         }
         Some(Msg::PickFailed(why)) => notify(Update::Error(why)),
+        Some(Msg::ReplayWritten(result)) => host.replay_written(result, notify),
         Some(Msg::Thumbnail {
             generation,
             adapter,
@@ -1983,6 +2016,9 @@ fn round(
         wait = wait.min(left);
     }
     if let Some(left) = host.report_camera(now, notify) {
+        wait = wait.min(left);
+    }
+    if let Some(left) = host.report_replay(now, notify) {
         wait = wait.min(left);
     }
     host.publish(notify);
@@ -2115,6 +2151,7 @@ fn start(
             camera_due: None,
             camera_setup: None,
             camera_published: None,
+            replay: replay::ReplayHost::new(),
             streaming: None,
             keys,
             key_account: config.key_account,
@@ -2499,6 +2536,21 @@ impl Host {
                 }
             }
             Command::StopVirtualCamera => self.stop_camera(notify),
+            Command::SetReplay(setup) => {
+                self.replay.setup = setup;
+                self.replay_changed(notify);
+            }
+            Command::ArmReplay => {
+                if let Err(why) = self.arm_replay(notify) {
+                    notify(Update::Error(why));
+                }
+            }
+            Command::DisarmReplay => self.disarm_replay(notify),
+            Command::SaveReplay { seconds } => {
+                if let Err(why) = self.save_replay(seconds) {
+                    notify(Update::ReplaySaved(Err(why)));
+                }
+            }
             Command::SetVirtualCamera(setup) => {
                 self.camera_setup = Some(setup);
                 self.camera_changed();
@@ -3049,6 +3101,8 @@ impl Host {
             self.camera_due = Some(self.clock.now());
         }
         self.camera_changed();
+        // The replay buffer keeps its place: it is armed again in the new studio.
+        self.rearm_replay(&|_| {});
         Ok(())
     }
 
@@ -3948,6 +4002,125 @@ impl Host {
                 Err(format!("{e:?}"))
             }
         }
+    }
+
+    /// Adds the "Capture audio too" companion of a picture source (ADR-0096): a Display
+    /// gets the system sound without RBS's own sound, a Window its application's
+    /// sound. The companion joins the picture's last history step when `join` is set
+    /// (adding both is one undo step), else it is a step of its own. It goes in the
+    /// scene of the picture's first item, named after the picture.
+    fn add_companion(&mut self, picture: SourceId, join: bool) -> Result<SourceId, Refusal> {
+        let source = self
+            .collection
+            .source(picture)
+            .ok_or_else(|| Refusal::NotFound("This source is not in the scene any more.".into()))?
+            .clone();
+        if self
+            .collection
+            .sources()
+            .any(|s| s.companion_of() == Some(picture))
+        {
+            return Err(Refusal::Conflict(format!(
+                "{} already has its sound.",
+                source.name
+            )));
+        }
+        let scene = self
+            .collection
+            .placements_of(picture)
+            .first()
+            .map(|(scene, _)| *scene)
+            .ok_or_else(|| Refusal::Invalid("The source is not placed in any scene.".into()))?;
+        let (kind, target, name, exclude) = match SourceKind::of(&source.type_id) {
+            Some(SourceKind::Screen) => {
+                if !self.adapters.sources.can_exclude_own_sound() {
+                    return Err(Refusal::Failed(
+                        "This system cannot leave RBS's own sound out of the system sound.".into(),
+                    ));
+                }
+                let target = self
+                    .targets(SourceKind::SystemAudio)
+                    .into_iter()
+                    .find(|t| t.is_default)
+                    .ok_or_else(|| {
+                        Refusal::Failed("There is no sound output to capture.".into())
+                    })?;
+                (
+                    SourceKind::SystemAudio,
+                    target,
+                    "System sound".to_owned(),
+                    true,
+                )
+            }
+            Some(SourceKind::Window) => {
+                let app = source.hints.get(HINT_APP).cloned().ok_or_else(|| {
+                    Refusal::Failed("This window's application is not known.".into())
+                })?;
+                let target = self
+                    .targets(SourceKind::ApplicationAudio)
+                    .into_iter()
+                    .find(|t| t.name == app)
+                    .ok_or_else(|| {
+                        Refusal::Failed(format!("{app} is not playing sound that can be captured."))
+                    })?;
+                (
+                    SourceKind::ApplicationAudio,
+                    target,
+                    format!("{} sound", source.name),
+                    false,
+                )
+            }
+            _ => {
+                return Err(Refusal::Invalid(
+                    "Only a Display or a Window can capture audio too.".into(),
+                ));
+            }
+        };
+        let (mut settings, layout) = self.new_source(kind, &target).map_err(Refusal::Failed)?;
+        if exclude {
+            settings.insert(keys::EXCLUDE_OWN_PROCESS.into(), SettingValue::Bool(true));
+        }
+        let name = unique_name(&self.collection, &name);
+        let (id, undo_source) = self
+            .collection
+            .add_source(&name, kind.type_id(), settings.clone())
+            .map_err(|e| Refusal::of(&e))?;
+        let mut hints = hints_of(&target);
+        hints.insert(COMPANION_OF_HINT.to_owned(), picture.get().to_string());
+        let hinted = self
+            .collection
+            .set_source_settings_and_hints(id, settings, hints);
+        let placed = hinted.and_then(|undo_hints| {
+            self.collection
+                .add_item(scene, ItemContent::Source(id), layout, None)
+                .map(|(_, undo_item)| (undo_hints, undo_item))
+        });
+        match placed {
+            Ok((undo_hints, undo_item)) => {
+                let records = vec![undo_source, undo_hints, undo_item];
+                if join {
+                    self.history.extend_last(EditKind::Add, &name, records);
+                } else {
+                    self.history.record(EditKind::Add, &name, 0, records);
+                }
+                Ok(id)
+            }
+            Err(e) => {
+                let _ = self.collection.undo(undo_source);
+                Err(Refusal::of(&e))
+            }
+        }
+    }
+
+    /// Removes the companion of `picture` as one undo step.
+    fn remove_companion(&mut self, picture: SourceId) -> Result<(), Refusal> {
+        let id = self
+            .collection
+            .sources()
+            .find(|s| s.companion_of() == Some(picture))
+            .map(|s| s.id)
+            .ok_or_else(|| Refusal::NotFound("This source has no companion sound.".into()))?;
+        self.delete(id).map(|_| ()).map_err(Refusal::Failed)
     }
 
     /// Adds a sample picture as an image source covering the canvas: a background at
@@ -5435,6 +5608,7 @@ impl Host {
                 SourceRow {
                     id: s.id,
                     item: item.id,
+                    companion_of: s.companion_of(),
                     name: s.name.clone(),
                     kind,
                     layout: kind
@@ -5686,10 +5860,44 @@ impl ApiTarget<'_> {
                     }
                     host.add_global(kind, &target).map_err(|e| refused(&e))?
                 } else {
-                    host.placing_into(p.scene, |h| h.add(kind, &target).map_err(failed))?
+                    host.placing_into(p.scene, |h| {
+                        let id = h.add(kind, &target).map_err(failed)?;
+                        if p.with_audio {
+                            // One undo step for the picture and its sound; a refused
+                            // companion takes the picture back out.
+                            if let Err(e) = h.add_companion(id, true) {
+                                let _ = h.delete(id);
+                                return Err(refused(&e));
+                            }
+                        }
+                        Ok(id)
+                    })?
                 };
                 host.apply(notify);
                 Ok(Response::SourceAdded(SourceAdded { source: id.get() }))
+            }
+            C::SourceSetCompanionAudio(p) => {
+                let picture = SourceId::from_raw(p.source);
+                if host.collection.source(picture).is_none() {
+                    return Err(ApiError::new(
+                        ErrorKind::NotFound,
+                        format!("no source {}", p.source),
+                    ));
+                }
+                let has = host
+                    .collection
+                    .sources()
+                    .any(|s| s.companion_of() == Some(picture));
+                if p.enabled != has {
+                    if p.enabled {
+                        host.add_companion(picture, false)
+                            .map_err(|e| refused(&e))?;
+                    } else {
+                        host.remove_companion(picture).map_err(|e| refused(&e))?;
+                    }
+                    host.apply(notify);
+                }
+                Ok(Response::Done(Empty {}))
             }
             C::SourceDelete(p) => {
                 let id = SourceId::from_raw(p.source);
@@ -6231,6 +6439,62 @@ impl ApiTarget<'_> {
                 host.publish(notify);
                 Ok(Response::Done(Empty {}))
             }
+            C::ReplayStatus => Ok(Response::ReplayStatus(api::Snapshot {
+                // The state as it is now, so the data and its `seq` match.
+                seq: {
+                    host.replay_api_changed();
+                    host.events.seq_map([Topic::ReplayChanged])
+                },
+                data: host.api_replay(),
+            })),
+            C::ReplayArm => {
+                if host.studio.replay_armed() {
+                    return Err(ApiError::new(
+                        ErrorKind::Conflict,
+                        "the replay buffer is already armed",
+                    ));
+                }
+                host.arm_replay(notify).map_err(failed)?;
+                host.publish(notify);
+                Ok(Response::Done(Empty {}))
+            }
+            C::ReplayDisarm => {
+                if !host.studio.replay_armed() {
+                    return Err(ApiError::new(
+                        ErrorKind::Conflict,
+                        "the replay buffer is not armed",
+                    ));
+                }
+                host.disarm_replay(notify);
+                host.publish(notify);
+                Ok(Response::Done(Empty {}))
+            }
+            C::ReplaySave(p) => {
+                if let Some(seconds) = p.seconds
+                    && !(1..=host.api_replay().length_secs).contains(&seconds)
+                {
+                    return Err(ApiError::new(
+                        ErrorKind::InvalidParams,
+                        format!(
+                            "seconds must be 1 to {} (the buffer's length)",
+                            host.api_replay().length_secs
+                        ),
+                    ));
+                }
+                if !host.studio.replay_armed() {
+                    return Err(ApiError::new(
+                        ErrorKind::Conflict,
+                        "the replay buffer is not armed",
+                    ));
+                }
+                // The file is written on a worker: the answer says the clip was
+                // requested, and `replay.changed` carries where it went.
+                host.save_replay(p.seconds)
+                    .map_err(|why| ApiError::new(ErrorKind::Conflict, why))?;
+                host.replay_changed(notify);
+                host.publish(notify);
+                Ok(Response::Done(Empty {}))
+            }
             C::SettingsGet => Ok(Response::Settings(api::Snapshot {
                 seq: host.events.seq_map([Topic::SettingsChanged]),
                 data: host.api_settings(),
@@ -6587,6 +6851,7 @@ fn api_source(row: &SourceRow) -> api::SourceInfo {
         volume: row.audio.volume,
         muted: row.audio.muted,
         mixer_hidden: row.audio.mixer_hidden,
+        companion_of: row.companion_of.map(|c| c.get()),
         filters: row.filters.iter().map(filters::api_row).collect(),
         sync_offset_ms: row.audio.sync_offset_ms,
         id: row.id.get(),
