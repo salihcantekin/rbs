@@ -11,9 +11,9 @@ use crate::scope::{Scope, ScopeSet};
 use crate::types::ItemStyle;
 use crate::types::{
     Canvas, CanvasRecordState, CanvasStreamState, CaptureTarget, FilterTypeList, Library,
-    OutputCanvas, OutputProfile, RecordState, RecordingProfile, ReplayStatus, SceneList, SeqMap,
-    Settings, Snapshot, SourceInfo, SourceKind, StreamSettingsPatch, StreamState, StudioInfo,
-    VcamStatus,
+    MonitorDeviceList, MonitorMode, MonitorStatus, OutputCanvas, OutputProfile, RecordState,
+    RecordingProfile, ReplayStatus, SceneList, SeqMap, Settings, Snapshot, SourceInfo, SourceKind,
+    StreamSettingsPatch, StreamState, StudioInfo, VcamStatus,
 };
 
 /// Parameters of a method that takes none. Unknown fields are ignored.
@@ -334,6 +334,40 @@ pub struct SetMasterVolume {
 pub struct SetMasterMuted {
     /// Muted.
     pub muted: bool,
+}
+
+/// `source.set_monitor` (protocol 1.30, ADR-0097).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SetSourceMonitor {
+    /// The source's id.
+    pub source: u32,
+    /// Off, only on the monitor, or also on the monitor.
+    pub monitor: MonitorMode,
+}
+
+/// `monitor.set_device` (protocol 1.30).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SetMonitorDevice {
+    /// A `monitor.devices` id; `null`: System default.
+    pub device: Option<String>,
+}
+
+/// `monitor.set_volume` (protocol 1.30).
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SetMonitorVolume {
+    /// Linear factor from 0 to 1.
+    pub volume: f32,
+}
+
+/// `monitor.set_solo` (protocol 1.30).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SetMonitorSolo {
+    /// The soloed sources; empty ends solo.
+    pub sources: Vec<u32>,
 }
 
 /// `source.set_mixer_hidden` (protocol 1.14, ADR-0080).
@@ -777,6 +811,18 @@ pub enum Command {
     StreamStatus(OnCanvas),
     /// `replay.status` (protocol 1.27).
     ReplayStatus,
+    /// `source.set_monitor` (protocol 1.30).
+    SourceSetMonitor(SetSourceMonitor),
+    /// `monitor.status` (protocol 1.30).
+    MonitorStatus,
+    /// `monitor.devices` (protocol 1.30).
+    MonitorDevices,
+    /// `monitor.set_device` (protocol 1.30).
+    MonitorSetDevice(SetMonitorDevice),
+    /// `monitor.set_volume` (protocol 1.30).
+    MonitorSetVolume(SetMonitorVolume),
+    /// `monitor.set_solo` (protocol 1.30).
+    MonitorSetSolo(SetMonitorSolo),
     /// `replay.arm` (protocol 1.27).
     ReplayArm,
     /// `replay.disarm` (protocol 1.27).
@@ -876,6 +922,12 @@ impl Command {
             Command::StreamStop(_) => "stream.stop",
             Command::StreamStatus(_) => "stream.status",
             Command::ReplayStatus => "replay.status",
+            Command::SourceSetMonitor(_) => "source.set_monitor",
+            Command::MonitorStatus => "monitor.status",
+            Command::MonitorDevices => "monitor.devices",
+            Command::MonitorSetDevice(_) => "monitor.set_device",
+            Command::MonitorSetVolume(_) => "monitor.set_volume",
+            Command::MonitorSetSolo(_) => "monitor.set_solo",
             Command::ReplayArm => "replay.arm",
             Command::ReplayDisarm => "replay.disarm",
             Command::ReplaySave(_) => "replay.save",
@@ -1004,6 +1056,12 @@ pub const METHODS: &[MethodInfo] = &[
     m("stream.stop", Some(Scope::Control)),
     m("stream.status", Some(Scope::Read)),
     m("replay.status", Some(Scope::Read)),
+    m("source.set_monitor", Some(Scope::Control)),
+    m("monitor.status", Some(Scope::Read)),
+    m("monitor.devices", Some(Scope::Read)),
+    m("monitor.set_device", Some(Scope::Control)),
+    m("monitor.set_volume", Some(Scope::Control)),
+    m("monitor.set_solo", Some(Scope::Control)),
     m("replay.arm", Some(Scope::Control)),
     m("replay.disarm", Some(Scope::Control)),
     m("replay.save", Some(Scope::Control)),
@@ -1226,6 +1284,18 @@ enum WireRequest {
     StreamStatus(OnCanvas),
     #[serde(rename = "replay.status")]
     ReplayStatus(Empty),
+    #[serde(rename = "source.set_monitor")]
+    SourceSetMonitor(SetSourceMonitor),
+    #[serde(rename = "monitor.status")]
+    MonitorStatus(Empty),
+    #[serde(rename = "monitor.devices")]
+    MonitorDevices(Empty),
+    #[serde(rename = "monitor.set_device")]
+    MonitorSetDevice(SetMonitorDevice),
+    #[serde(rename = "monitor.set_volume")]
+    MonitorSetVolume(SetMonitorVolume),
+    #[serde(rename = "monitor.set_solo")]
+    MonitorSetSolo(SetMonitorSolo),
     #[serde(rename = "replay.arm")]
     ReplayArm(Empty),
     #[serde(rename = "replay.disarm")]
@@ -1334,6 +1404,12 @@ impl From<WireRequest> for Request {
             WireRequest::StreamStop(p) => Request::Command(C::StreamStop(p)),
             WireRequest::StreamStatus(p) => Request::Command(C::StreamStatus(p)),
             WireRequest::ReplayStatus(_) => Request::Command(C::ReplayStatus),
+            WireRequest::SourceSetMonitor(p) => Request::Command(C::SourceSetMonitor(p)),
+            WireRequest::MonitorStatus(_) => Request::Command(C::MonitorStatus),
+            WireRequest::MonitorDevices(_) => Request::Command(C::MonitorDevices),
+            WireRequest::MonitorSetDevice(p) => Request::Command(C::MonitorSetDevice(p)),
+            WireRequest::MonitorSetVolume(p) => Request::Command(C::MonitorSetVolume(p)),
+            WireRequest::MonitorSetSolo(p) => Request::Command(C::MonitorSetSolo(p)),
             WireRequest::ReplayArm(_) => Request::Command(C::ReplayArm),
             WireRequest::ReplayDisarm(_) => Request::Command(C::ReplayDisarm),
             WireRequest::ReplaySave(p) => Request::Command(C::ReplaySave(p)),
@@ -1423,6 +1499,12 @@ impl From<Request> for WireRequest {
                 C::StreamStop(p) => WireRequest::StreamStop(p),
                 C::StreamStatus(p) => WireRequest::StreamStatus(p),
                 C::ReplayStatus => WireRequest::ReplayStatus(Empty {}),
+                C::SourceSetMonitor(p) => WireRequest::SourceSetMonitor(p),
+                C::MonitorStatus => WireRequest::MonitorStatus(Empty {}),
+                C::MonitorDevices => WireRequest::MonitorDevices(Empty {}),
+                C::MonitorSetDevice(p) => WireRequest::MonitorSetDevice(p),
+                C::MonitorSetVolume(p) => WireRequest::MonitorSetVolume(p),
+                C::MonitorSetSolo(p) => WireRequest::MonitorSetSolo(p),
                 C::ReplayArm => WireRequest::ReplayArm(Empty {}),
                 C::ReplayDisarm => WireRequest::ReplayDisarm(Empty {}),
                 C::ReplaySave(p) => WireRequest::ReplaySave(p),
@@ -1672,6 +1754,10 @@ pub enum Response {
     VcamStatus(Snapshot<VcamStatus>),
     /// `replay.status` (protocol 1.27).
     ReplayStatus(Snapshot<ReplayStatus>),
+    /// `monitor.status` (protocol 1.30).
+    MonitorStatus(Snapshot<MonitorStatus>),
+    /// `monitor.devices` (protocol 1.30).
+    MonitorDevices(MonitorDeviceList),
     /// `settings.get`, `settings.set`.
     Settings(Snapshot<Settings>),
     /// `profile.list`, `collection.list` (protocol 1.4).
@@ -1683,7 +1769,7 @@ pub enum Response {
     /// `tokens.create`.
     TokenCreated(TokenCreated),
     /// Methods with nothing to return: `source.delete`, `edit.undo`, `edit.redo`,
-    /// `record.stop`, `stream.stop`, `vcam.start`, `vcam.stop`, `replay.arm`, `replay.disarm`, `replay.save`, `events.unsubscribe`, `tokens.revoke`,
+    /// `record.stop`, `stream.stop`, `vcam.start`, `vcam.stop`, `replay.arm`, `replay.disarm`, `replay.save`, the `monitor.set_*` methods, `source.set_monitor`, `events.unsubscribe`, `tokens.revoke`,
     /// `profile.switch`, `collection.switch`, and the protocol 1.6 edits other than
     /// `scene.add` and `item.add`.
     Done(Empty),

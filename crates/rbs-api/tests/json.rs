@@ -101,6 +101,7 @@ fn source() -> SourceInfo {
         volume: 0.5,
         muted: true,
         mixer_hidden: true,
+        monitor: MonitorMode::Only,
         filters: vec![FilterInfo {
             id: 2,
             type_id: "org.rbs.filter.chroma-key".into(),
@@ -298,6 +299,20 @@ fn every_request() -> Vec<Request> {
         })),
         c(Command::StreamStatus(OnCanvas::default())),
         c(Command::ReplayStatus),
+        c(Command::SourceSetMonitor(SetSourceMonitor {
+            source: 3,
+            monitor: MonitorMode::Also,
+        })),
+        c(Command::MonitorStatus),
+        c(Command::MonitorDevices),
+        c(Command::MonitorSetDevice(SetMonitorDevice {
+            device: Some("play:{0.0.0.00000000}.{1234}".into()),
+        })),
+        c(Command::MonitorSetDevice(SetMonitorDevice { device: None })),
+        c(Command::MonitorSetVolume(SetMonitorVolume { volume: 0.5 })),
+        c(Command::MonitorSetSolo(SetMonitorSolo {
+            sources: vec![3, 4],
+        })),
         c(Command::ReplayArm),
         c(Command::ReplayDisarm),
         c(Command::ReplaySave(ReplaySave { seconds: None })),
@@ -653,6 +668,7 @@ fn every_result_and_event_type_round_trips() {
             ..vcam_status()
         }),
         EventPayload::ReplayChanged(replay_status()),
+        EventPayload::MonitorChanged(monitor_status()),
         EventPayload::RecordCanvasState(CanvasRecordState {
             canvas: OutputCanvas::Vertical,
             state: RecordState::Idle { last: None },
@@ -668,6 +684,60 @@ fn every_result_and_event_type_round_trips() {
             payload,
         });
     }
+}
+
+fn monitor_status() -> MonitorStatus {
+    MonitorStatus {
+        available: true,
+        device: None,
+        volume: 0.8,
+        wanted: true,
+        playing: true,
+        latency_ms: Some(72),
+        solo: vec![3],
+        error: None,
+    }
+}
+
+#[test]
+fn monitor_values_have_their_wire_form() {
+    let v = serde_json::to_value(SetSourceMonitor {
+        source: 3,
+        monitor: MonitorMode::Only,
+    })
+    .unwrap();
+    assert_eq!(v, json!({"source": 3, "monitor": "only"}));
+    assert!(
+        serde_json::from_value::<SetSourceMonitor>(json!({"source": 3, "monitor": "solo"}))
+            .is_err()
+    );
+    // `null` is System default.
+    let d: SetMonitorDevice = serde_json::from_value(json!({"device": null})).unwrap();
+    assert_eq!(d.device, None);
+    // Off, no solo, no latency and no error are left out.
+    let v = serde_json::to_value(MonitorStatus {
+        playing: false,
+        latency_ms: None,
+        solo: Vec::new(),
+        ..monitor_status()
+    })
+    .unwrap();
+    assert!(v.get("latency_ms").is_none() && v.get("solo").is_none() && v.get("error").is_none());
+    assert_eq!(v["device"], Value::Null);
+    let row = serde_json::to_value(SourceInfo {
+        monitor: MonitorMode::Off,
+        ..source()
+    })
+    .unwrap();
+    assert!(row.get("monitor").is_none());
+    assert_eq!(serde_json::to_value(source()).unwrap()["monitor"], "only");
+    round_trip(&MonitorDeviceList {
+        devices: vec![MonitorDevice {
+            device: "play:x".into(),
+            name: "Headphones".into(),
+            is_default: true,
+        }],
+    });
 }
 
 fn replay_status() -> ReplayStatus {

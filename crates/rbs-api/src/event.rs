@@ -7,8 +7,8 @@ use std::fmt;
 use serde::{Deserialize, Serialize};
 
 use crate::types::{
-    Canvas, CanvasRecordState, CanvasStreamState, RecordState, ReplayStatus, SceneList, Settings,
-    SourceInfo, SourceLevels, StreamState, VcamStatus,
+    Canvas, CanvasRecordState, CanvasStreamState, MonitorStatus, RecordState, ReplayStatus,
+    SceneList, Settings, SourceInfo, SourceLevels, StreamState, VcamStatus,
 };
 
 /// An event topic. Subscriptions and the subscriber mask are per topic.
@@ -49,11 +49,15 @@ pub enum Topic {
     /// (state, protocol 1.29).
     #[serde(rename = "stream.canvas_state")]
     StreamCanvasState,
+    /// The monitor output: device, volume, solo, whether it plays (state, protocol
+    /// 1.30).
+    #[serde(rename = "monitor.changed")]
+    MonitorChanged,
 }
 
 impl Topic {
     /// Every topic.
-    pub const ALL: [Topic; 11] = [
+    pub const ALL: [Topic; 12] = [
         Topic::SourceChanged,
         Topic::RecordState,
         Topic::CanvasChanged,
@@ -65,6 +69,7 @@ impl Topic {
         Topic::ReplayChanged,
         Topic::RecordCanvasState,
         Topic::StreamCanvasState,
+        Topic::MonitorChanged,
     ];
 
     /// Its name on the wire.
@@ -81,6 +86,7 @@ impl Topic {
             Topic::ReplayChanged => "replay.changed",
             Topic::RecordCanvasState => "record.canvas_state",
             Topic::StreamCanvasState => "stream.canvas_state",
+            Topic::MonitorChanged => "monitor.changed",
         }
     }
 
@@ -238,6 +244,9 @@ pub enum EventPayload {
     /// A stream state of a canvas other than the main one (protocol 1.29).
     #[serde(rename = "stream.canvas_state")]
     StreamCanvasState(CanvasStreamState),
+    /// The monitor output (protocol 1.30).
+    #[serde(rename = "monitor.changed")]
+    MonitorChanged(MonitorStatus),
 }
 
 impl EventPayload {
@@ -255,6 +264,7 @@ impl EventPayload {
             EventPayload::ReplayChanged(_) => Topic::ReplayChanged,
             EventPayload::RecordCanvasState(_) => Topic::RecordCanvasState,
             EventPayload::StreamCanvasState(_) => Topic::StreamCanvasState,
+            EventPayload::MonitorChanged(_) => Topic::MonitorChanged,
         }
     }
 }

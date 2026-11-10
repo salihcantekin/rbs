@@ -177,6 +177,72 @@ pub struct SourceInfo {
     /// 1.26, ADR-0096); absent for other sources.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub companion_of: Option<u32>,
+    /// Whether the source is heard on the monitor output (protocol 1.30, ADR-0097;
+    /// absent when off).
+    #[serde(default, skip_serializing_if = "MonitorMode::is_off")]
+    pub monitor: MonitorMode,
+}
+
+/// Whether a source is heard on the monitor output (protocol 1.30, ADR-0097).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum MonitorMode {
+    /// Not monitored.
+    #[default]
+    Off,
+    /// Monitored and taken off the stream and recordings while a monitor plays.
+    Only,
+    /// Monitored and mixed.
+    Also,
+}
+
+impl MonitorMode {
+    #[allow(clippy::trivially_copy_pass_by_ref)] // serde passes a reference.
+    fn is_off(&self) -> bool {
+        *self == Self::Off
+    }
+}
+
+/// `monitor.status` and `monitor.changed` (protocol 1.30, ADR-0097).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct MonitorStatus {
+    /// Some audio adapter can play to a device on this computer.
+    pub available: bool,
+    /// The chosen device (`monitor.devices` `device`); `null`: System default.
+    pub device: Option<String>,
+    /// The monitor volume, a linear factor from 0 to 1.
+    pub volume: f32,
+    /// A source is monitored or soloed, so the device should play.
+    pub wanted: bool,
+    /// The device plays the monitor mix.
+    pub playing: bool,
+    /// How far the monitor plays behind real time, in milliseconds, while it plays.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub latency_ms: Option<u32>,
+    /// The soloed sources (session state, never saved).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub solo: Vec<u32>,
+    /// Why the device failed to open or play, until it plays again.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
+/// One playback device of `monitor.devices` (protocol 1.30).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MonitorDevice {
+    /// Its id, for `monitor.set_device`.
+    pub device: String,
+    /// The name the system gives it.
+    pub name: String,
+    /// The system's default output.
+    pub is_default: bool,
+}
+
+/// `monitor.devices` (protocol 1.30).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MonitorDeviceList {
+    /// The playback devices, best adapter first.
+    pub devices: Vec<MonitorDevice>,
 }
 
 #[allow(clippy::trivially_copy_pass_by_ref)] // serde passes a reference.
