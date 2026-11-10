@@ -1857,6 +1857,12 @@ export global Overlays {
     in-out property <[PickerRow]> picker-rows;
     in-out property <int> picker-current;
     in-out property <OverlayCover> picker-cover;
+    // An optional checkbox next to Cancel (empty label: none), for example "Capture
+    // audio too" when adding a display or window (ADR-0096). The explanation sits
+    // behind its info button.
+    in-out property <string> picker-option-label;
+    in-out property <bool> picker-option;
+    callback picker-option-toggled(bool);
     callback picker-chosen(int /* the row's index */);
     callback picker-filtered(string);
     callback picker-cancelled();
@@ -1917,6 +1923,59 @@ export global Overlays {
         return false;
     }
 }
+
+// An info button after a label: pressing it (Return or Space when focused) opens a
+// popover with the explanation and the default and range (ADR-0094 rule A1). Escape or
+// a click outside closes it and the focus returns here. `label` names the field.
+export component InfoHint inherits Rectangle {
+    in property <string> label;
+    in property <string> text;
+    // For example "Default -40 dB, range -90 to 0 dB".
+    in property <string> detail;
+    property <int> owner: -1;
+    property <bool> open: Overlays.hint-open && Overlays.hint-owner == root.owner;
+    out property <bool> focused: focus.has-focus;
+    public function take-focus() { focus.focus(); }
+    width: Tokens.size-control-sm;
+    height: Tokens.size-control-sm;
+    border-radius: Tokens.radius-sm;
+    background: root.open ? Theme.accent-subtle : touch.has-hover ? Theme.surface-overlay : transparent;
+    accessible-role: button;
+    accessible-label: @tr("Help: {}", root.label);
+    accessible-description: root.text;
+    accessible-expanded: root.open;
+    accessible-action-default => { root.toggle(); }
+    forward-focus: focus;
+    function toggle() {
+        if root.open {
+            Overlays.close-hint();
+        } else {
+            root.owner = Overlays.open-hint(root.text, root.detail, root.absolute-position.x, root.absolute-position.y, root.width, root.height);
+        }
+    }
+    // The popover closed while this button owned it: the focus comes back.
+    changed open => { if !root.open && root.owner >= 0 && Overlays.hint-owner == root.owner { focus.focus(); } }
+    focus := RingFocus {
+        key-pressed(e) => {
+            if e.text == Key.Return || e.text == " " { root.toggle(); return accept; }
+            reject
+        }
+    }
+    touch := TouchArea { clicked => { focus.focus-pointer(); root.toggle(); } }
+    VerticalLayout {
+        alignment: center;
+        HorizontalLayout {
+            alignment: center;
+            Icon { name: IconName.info; ink: root.open ? Theme.text-primary : Theme.text-secondary; }
+        }
+    }
+    FocusRing { show: focus.ring; }
+}
+
+// One line of status under or inside a control group (ADR-0094 rule D): an icon, a
+// short message and an optional action. `tone`: 0 info, 1 success, 2 warning, 3 error.
+// Error keeps the outline so it reads without colour; the message wraps instead of
+// being cut. Use it for notes, validation and "why is this disabled" lines.
 
 // Draws the open overlays above everything else in the window. Put one as the last
 // child of every window's root, filling it. It takes no input while nothing is open.
@@ -2248,7 +2307,17 @@ export component OverlayHost inherits Rectangle {
                 }
                 }
                 HorizontalLayout {
-                    alignment: end;
+                    spacing: Tokens.space-1;
+                    if Overlays.picker-option-label != "": Checkbox {
+                        text: Overlays.picker-option-label;
+                        checked: Overlays.picker-option;
+                        toggled(on) => { Overlays.picker-option-toggled(on); }
+                    }
+                    if Overlays.picker-option-label != "": InfoHint {
+                        label: Overlays.picker-option-label;
+                        text: @tr("Adds the sound that goes with the picture as its own audio source: a display's system sound without RBS's own sound, a window's application sound. Capturing the system sound and another app's sound can play the same audio twice.");
+                    }
+                    Rectangle { horizontal-stretch: 1; }
                     Button {
                         text: @tr("Cancel");
                         clicked => { Overlays.picker-cancelled(); }
@@ -2259,58 +2328,6 @@ export component OverlayHost inherits Rectangle {
     }
 }
 
-// An info button after a label: pressing it (Return or Space when focused) opens a
-// popover with the explanation and the default and range (ADR-0094 rule A1). Escape or
-// a click outside closes it and the focus returns here. `label` names the field.
-export component InfoHint inherits Rectangle {
-    in property <string> label;
-    in property <string> text;
-    // For example "Default -40 dB, range -90 to 0 dB".
-    in property <string> detail;
-    property <int> owner: -1;
-    property <bool> open: Overlays.hint-open && Overlays.hint-owner == root.owner;
-    out property <bool> focused: focus.has-focus;
-    public function take-focus() { focus.focus(); }
-    width: Tokens.size-control-sm;
-    height: Tokens.size-control-sm;
-    border-radius: Tokens.radius-sm;
-    background: root.open ? Theme.accent-subtle : touch.has-hover ? Theme.surface-overlay : transparent;
-    accessible-role: button;
-    accessible-label: @tr("Help: {}", root.label);
-    accessible-description: root.text;
-    accessible-expanded: root.open;
-    accessible-action-default => { root.toggle(); }
-    forward-focus: focus;
-    function toggle() {
-        if root.open {
-            Overlays.close-hint();
-        } else {
-            root.owner = Overlays.open-hint(root.text, root.detail, root.absolute-position.x, root.absolute-position.y, root.width, root.height);
-        }
-    }
-    // The popover closed while this button owned it: the focus comes back.
-    changed open => { if !root.open && root.owner >= 0 && Overlays.hint-owner == root.owner { focus.focus(); } }
-    focus := RingFocus {
-        key-pressed(e) => {
-            if e.text == Key.Return || e.text == " " { root.toggle(); return accept; }
-            reject
-        }
-    }
-    touch := TouchArea { clicked => { focus.focus-pointer(); root.toggle(); } }
-    VerticalLayout {
-        alignment: center;
-        HorizontalLayout {
-            alignment: center;
-            Icon { name: IconName.info; ink: root.open ? Theme.text-primary : Theme.text-secondary; }
-        }
-    }
-    FocusRing { show: focus.ring; }
-}
-
-// One line of status under or inside a control group (ADR-0094 rule D): an icon, a
-// short message and an optional action. `tone`: 0 info, 1 success, 2 warning, 3 error.
-// Error keeps the outline so it reads without colour; the message wraps instead of
-// being cut. Use it for notes, validation and "why is this disabled" lines.
 export component StatusLine inherits Rectangle {
     in property <string> text;
     in property <int> tone;

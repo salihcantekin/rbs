@@ -1573,6 +1573,14 @@ impl StudioUi {
         self.picker_dirty = false;
     }
 
+    /// "Capture audio too" in the Add source dialog was checked or unchecked.
+    pub fn set_picker_audio(&mut self, on: bool) {
+        if let Some(p) = &mut self.add_picker {
+            p.set_audio(on);
+            self.picker_dirty = true;
+        }
+    }
+
     pub fn filter_add_picker(&mut self, text: &str) {
         if let Some(p) = &mut self.add_picker {
             p.set_query(text);
@@ -1590,9 +1598,14 @@ impl StudioUi {
             .cloned();
         match pick {
             Some(add_picker::Pick::Target(kind, target)) => {
+                let audio = self.add_picker.as_ref().is_some_and(|p| p.audio());
                 self.adding = true;
                 self.deleted.clear();
-                self.send(Command::AddSource { kind, target });
+                if audio && !target.picker {
+                    self.send(Command::AddSourceWithAudio { kind, target });
+                } else {
+                    self.send(Command::AddSource { kind, target });
+                }
             }
             Some(add_picker::Pick::Existing(id)) => self.add_existing_source(id.get() as i32),
             None => return false,
@@ -1614,6 +1627,8 @@ impl StudioUi {
             title: format!("Add {what}"),
             status: p.status(),
             rows: p.rows(),
+            offers_audio: p.offers_audio(),
+            audio: p.audio(),
         })
     }
 
@@ -3718,6 +3733,9 @@ pub struct PickerView {
     pub title: String,
     pub status: add_picker::Status,
     pub rows: Vec<add_picker::Row>,
+    /// Show "Capture audio too" (displays and windows) and whether it is checked.
+    pub offers_audio: bool,
+    pub audio: bool,
 }
 
 #[derive(Default)]
