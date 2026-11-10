@@ -527,6 +527,16 @@ pub enum Command {
         /// What it should capture now.
         target: Target,
     },
+    /// Ask for what the Source settings window shows ([`Update::SourceSettings`]).
+    OpenSourceSettings(SourceId),
+    /// Change a source's stored settings by a patch (a `null` removes a key; one undo
+    /// step, ADR-0077): what Apply and OK of the Source settings window send.
+    SetSourceSettings {
+        /// The source.
+        id: SourceId,
+        /// The keys to change.
+        patch: BTreeMap<String, serde_json::Value>,
+    },
     /// Try a source that is not running again with its stored settings (ADR-0077).
     ReloadSource(SourceId),
     /// Rename a source (one undo step). Names are unique in the collection.
@@ -1053,6 +1063,8 @@ pub enum Update {
     ScenePreview(Option<PreviewEndpoint>),
     /// What a kind can capture, in OS order.
     Targets(SourceKind, Vec<Target>),
+    /// What the Source settings window of a source shows ([`Command::OpenSourceSettings`]).
+    SourceSettings(SourceSettingsView),
     /// A source was deleted, or (`from_scene`) removed from one scene;
     /// [`Command::UndoDelete`] brings it back.
     Deleted {
@@ -1455,6 +1467,25 @@ impl ControlTarget for WithTokens<'_> {
         }
         self.inner.handle(command, events)
     }
+}
+
+/// What the Source settings window shows for a source (ADR-0077).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SourceSettingsView {
+    /// The source.
+    pub id: SourceId,
+    /// Its name.
+    pub name: String,
+    /// Its kind.
+    pub kind: SourceKind,
+    /// The modes its camera offers (cameras only, empty when unknown).
+    pub modes: Vec<rbs_sources::SourceMode>,
+    /// The stored size, when set.
+    pub size: Option<(u32, u32)>,
+    /// The stored frame rate, when set.
+    pub fps: Option<u32>,
+    /// Draw the cursor (screens and windows).
+    pub cursor: bool,
 }
 
 /// A listed target as the UI shows it.
@@ -2132,6 +2163,14 @@ impl Host {
             }
             Command::RetargetSource { id, target } => {
                 let done = self.retarget_source(id, &target);
+                self.answer(done, notify);
+            }
+            Command::OpenSourceSettings(id) => match self.source_settings_view(id) {
+                Ok(view) => notify(Update::SourceSettings(view)),
+                Err(e) => notify(Update::Error(e.text().to_owned())),
+            },
+            Command::SetSourceSettings { id, patch } => {
+                let done = self.patch_source_settings(id, &patch);
                 self.answer(done, notify);
             }
             Command::ReloadSource(id) => {
@@ -4073,6 +4112,48 @@ impl Host {
             self.remember_target(kind, &target.adapter, &target.target, &target.name);
         }
         Ok(true)
+    }
+
+    /// What the Source settings window shows for a source.
+    fn source_settings_view(&self, id: SourceId) -> Result<SourceSettingsView, Refusal> {
+        let source = self
+            .collection
+            .source(id)
+            .ok_or_else(|| Refusal::NotFound(format!("There is no source {}.", id.get())))?;
+        let kind = SourceKind::of(&source.type_id)
+            .ok_or_else(|| Refusal::Invalid("This source has no settings window.".to_owned()))?;
+        let int = |key: &str| match source.settings.get(key) {
+            Some(SettingValue::Int(n)) => u32::try_from(*n).ok(),
+            _ => None,
+        };
+        let text = |key: &str| match source.settings.get(key) {
+            Some(SettingValue::Text(t)) => Some(t.clone()),
+            _ => None,
+        };
+        let modes = match (kind, text(keys::TARGET)) {
+            (SourceKind::Camera, Some(target)) => self
+                .adapters
+                .sources
+                .targets(&kind.type_id())
+                .unwrap_or_default()
+                .into_iter()
+                .find(|t| t.target == target)
+                .map(|t| t.modes)
+                .unwrap_or_default(),
+            _ => Vec::new(),
+        };
+        Ok(SourceSettingsView {
+            id,
+            name: source.name.clone(),
+            kind,
+            modes,
+            size: int(keys::WIDTH).zip(int(keys::HEIGHT)),
+            fps: int(keys::FPS),
+            cursor: !matches!(
+                source.settings.get(keys::CURSOR),
+                Some(SettingValue::Bool(false))
+            ),
+        })
     }
 
     /// A source's stored settings as JSON values (`source.get_settings`).
