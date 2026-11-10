@@ -624,6 +624,8 @@ impl CommandState for Shown<'_> {
                 })
                 .collect(),
             "ui.panel.select" => self.panels.clone(),
+            // A locked layout offers no place to move to: the submenu is disabled.
+            "ui.panel.move" if self.workspace.locked => Vec::new(),
             "ui.panel.move" => {
                 let stacks = self.panel_caps(id).map_or(0, |c| c.stacks);
                 let mut out: Vec<_> = [
