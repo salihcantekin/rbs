@@ -167,7 +167,7 @@ fn a_collection_round_trips_exactly_with_its_counters() {
         "canvas = 0",
         "format = 9",
         "follow = 0",
-        "fallback = { scene = ",
+        "[canvases.fallback]",
         "target_app = \"Terminal\"",
         "[canvases.master]",
         "mixer_hidden = true",

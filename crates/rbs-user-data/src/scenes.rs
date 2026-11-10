@@ -468,7 +468,7 @@ impl Document for SceneCollection {
     fn upgrade(from: u32, body: &mut toml::Table) -> Result<(), String> {
         let _ = body;
         match from {
-            1..=7 => Ok(()),
+            1..=8 => Ok(()),
             _ => Err(format!("format {from} cannot be read")),
         }
     }
