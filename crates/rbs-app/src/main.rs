@@ -2120,7 +2120,9 @@ fn install_name_prompt(g: &Overlays<'_>, ctx: &Ctx) {
     }
     let ctx = ctx.clone();
     g.on_name_cancelled(move || {
-        ctx.update(|app: &mut App| app.main.global::<Overlays>().set_name_open(false));
+        entry::guard(|| {
+            ctx.update(|app: &mut App| app.main.global::<Overlays>().set_name_open(false));
+        });
     });
 }
 
