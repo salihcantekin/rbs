@@ -521,10 +521,62 @@ impl Tokens {
     }
 }
 
+/// How tightly spacing and controls are packed. Regular is the token file as written.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Density {
+    /// The lengths in the token file.
+    #[default]
+    Regular,
+    /// Each spacing and control-size step uses the next smaller token's length.
+    /// The smallest step is unchanged. No new pixel value is introduced.
+    Compact,
+}
+
+const SPACE_STEPS: &[&str] = &[
+    "space.1", "space.2", "space.3", "space.4", "space.6", "space.8",
+];
+const CONTROL_STEPS: &[&str] = &["size.control.sm", "size.control.md", "size.control.lg"];
+
+/// Applies `density` to spacing and control sizes. Call it once on a freshly resolved
+/// length map. Compact reads the current values and steps them down; calling it again
+/// steps them down again.
+pub fn apply_density(length: &mut std::collections::BTreeMap<String, f32>, density: Density) {
+    if density == Density::Compact {
+        step_down(length, SPACE_STEPS);
+        step_down(length, CONTROL_STEPS);
+    }
+}
+
+fn step_down(length: &mut std::collections::BTreeMap<String, f32>, keys: &[&str]) {
+    let current: Vec<Option<f32>> = keys.iter().map(|k| length.get(*k).copied()).collect();
+    for (i, key) in keys.iter().enumerate().skip(1) {
+        if let Some(smaller) = current[i - 1] {
+            length.insert((*key).to_owned(), smaller);
+        }
+    }
+}
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used)] // Tests fail by panicking.
 mod tests {
     use super::*;
+
+    #[test]
+    fn compact_uses_the_next_smaller_spacing_and_control_size() {
+        let file = Tokens::built_in().expect("built-in tokens");
+        let regular_space = file.length["space.4"];
+        let smaller_space = file.length["space.3"];
+        let smaller_control = file.length["size.control.md"];
+        let smallest = file.length["space.1"];
+        let mut length = file.length.clone();
+        apply_density(&mut length, Density::Regular);
+        assert_eq!(length["space.4"], regular_space);
+        apply_density(&mut length, Density::Compact);
+        assert_eq!(length["space.4"], smaller_space);
+        assert_eq!(length["space.1"], smallest);
+        assert_eq!(length["size.control.lg"], smaller_control);
+        assert_eq!(length["size.control.sm"], file.length["size.control.sm"]);
+    }
 
     #[test]
     fn built_in_tokens_pass_every_check() {

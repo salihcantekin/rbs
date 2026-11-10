@@ -14,12 +14,14 @@ ADR status is the file header, not only the index. Where those two disagree, bot
 | JSON Schema, `stats`, `ui.*` routing, U20 command parity | Not started | Named in the control-api spec |
 | Audio filters (gain, noise gate, ducker) | Running | ADR-0082 and ADR-0095 Accepted. Catalogue, API and Properties |
 | Several outputs | Partial | ADR-0047 Accepted. Record and stream together, shared encoder when settings match. `MAX_OUTPUTS` is 2 per the current cap |
-| Default video encode | CPU readback | `YuvDownload` in `rbs-nodes` export, ADR-0038. NVENC and AMF take system memory. VideoToolbox can take an IOSurface; the export node does not select it yet |
-| Second canvas | Partial, ADR Proposed | ADR-0093 header is Proposed. Engine steps and add/remove of a vertical canvas are in the tree. Follow-up UI and API in that ADR are not a licence to keep building it before the owner accepts it |
-| Source transform commands | In the tree, ADR Proposed | ADR-0084 header is Proposed. Flip, rotate, fit and align commands exist |
-| Replay buffer | In the tree, ADR Proposed | ADR-0088 header is Proposed. Host and control API are in the tree |
-| Crash isolation | Partial, status disagrees | `catch_unwind` around `Node::process`, `rbs-crash`. ADR-0055 header is Proposed. `docs/adr/README.md` says Accepted. The header wins until the owner adds an approval line |
-| Plugin SDK, MCP | Not started | Specs are Draft. No `rbs-plugin-*` or `rbs-mcp` crate. ADR-0006 and ADR-0052 are the plans |
+| Default video encode | CPU readback | `YuvDownload` in `rbs-nodes` export, ADR-0038. The hardware check is SC-PC: Windows 11, RTX 4090 and the AMD iGPU in that machine (recording spec, 2026-11-03). It was off on 2026-11-10, so the native surface path is not in this tree |
+| Second canvas | Partial, ADR Accepted | ADR-0093 Accepted 2026-11-10. Engine steps and add/remove of a vertical canvas are in the tree. Deferred items in the review stay deferred. The Windows measurement is on SC-PC |
+| Source transform commands | Partial, ADR Accepted | ADR-0084 Accepted 2026-11-10. Flip, rotate, fit and align exist. Remaining menu categories do not |
+| Replay buffer | Partial, ADR Accepted | ADR-0088 Accepted 2026-11-10. Host and control API are in the tree |
+| Crash isolation | Partial, ADR Accepted | `catch_unwind` around `Node::process`, `rbs-crash`. ADR-0055 Accepted 2026-11-10. Follow-ups in the review are still follow-ups |
+| Plugin SDK | Started | `rbs-plugin-sdk` parses the manifest. `rbs-plugin-host` reads installed manifests and loads nothing. No native, WASM or process loader |
+| MCP | Started | `rbs-mcp` answers stdio while RBS is unreachable: the only tool is `studio_summary`. No IPC session yet |
+| Compact spacing | Running | Appearance format 2, `density` `regular` or `compact`. Compact steps `space.*` and `size.control.*` down one token |
 | Performance budgets in CI | Not enforced | ADR-0009 Accepted. CI does not run `cargo bench`. Idle-cost rows in the performance-budgets spec have no workflow |
 | Browser source, ISO, markers, loudness, OBS importer, NDI | Not started | Later roadmap and Proposed ADRs 0086–0092 |
 

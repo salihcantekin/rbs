@@ -2239,6 +2239,20 @@ fn start(
 }
 
 impl Host {
+    /// Runs a control API command for a window action that already has a method.
+    /// The window and a remote client then share one implementation.
+    fn run_ui_api(&mut self, command: rbs_api::Command, notify: &dyn Fn(Update)) {
+        let result = rbs_crash::contain(|| ApiTarget { host: self, notify }.run(command));
+        match result {
+            Ok(Ok(_)) => {}
+            Ok(Err(e)) => notify(Update::Error(e.message)),
+            Err(_) => {
+                self.caught = true;
+                notify(Update::Error(rbs_crash::CAUGHT_TEXT.to_owned()));
+            }
+        }
+    }
+
     fn command(&mut self, c: Command, notify: &dyn Fn(Update)) {
         match c {
             Command::ListTargets(kind) => {
@@ -2336,18 +2350,27 @@ impl Host {
                     .and_then(|item| self.set_item_locked(item, locked));
                 self.answer(done, notify);
             }
-            Command::SetSourceVolume { id, volume } => {
-                let done = self.set_source_audio(id, Some(volume), None);
-                self.answer_live(done, notify);
-            }
-            Command::SetSourceMuted { id, muted } => {
-                let done = self.set_source_audio(id, None, Some(muted));
-                self.answer_live(done, notify);
-            }
-            Command::SetSourceMixerHidden { id, hidden } => {
-                let done = self.set_source_mixer_hidden(id, hidden);
-                self.answer_live(done, notify);
-            }
+            Command::SetSourceVolume { id, volume } => self.run_ui_api(
+                rbs_api::Command::SourceSetVolume(rbs_api::request::SetSourceVolume {
+                    source: id.get(),
+                    volume,
+                }),
+                notify,
+            ),
+            Command::SetSourceMuted { id, muted } => self.run_ui_api(
+                rbs_api::Command::SourceSetMuted(rbs_api::request::SetSourceMuted {
+                    source: id.get(),
+                    muted,
+                }),
+                notify,
+            ),
+            Command::SetSourceMixerHidden { id, hidden } => self.run_ui_api(
+                rbs_api::Command::SourceSetMixerHidden(rbs_api::request::SetSourceMixerHidden {
+                    source: id.get(),
+                    hidden,
+                }),
+                notify,
+            ),
             Command::AddVerticalCanvas(spec) => {
                 let done = self.add_vertical(spec);
                 self.answer_live(done, notify);
@@ -2356,14 +2379,16 @@ impl Host {
                 let done = self.remove_vertical();
                 self.answer_live(done, notify);
             }
-            Command::SetMasterVolume { volume } => {
-                let done = self.set_master(Some(volume), None);
-                self.answer_live(done, notify);
-            }
-            Command::SetMasterMuted { muted } => {
-                let done = self.set_master(None, Some(muted));
-                self.answer_live(done, notify);
-            }
+            Command::SetMasterVolume { volume } => self.run_ui_api(
+                rbs_api::Command::CanvasSetMasterVolume(rbs_api::request::SetMasterVolume {
+                    volume,
+                }),
+                notify,
+            ),
+            Command::SetMasterMuted { muted } => self.run_ui_api(
+                rbs_api::Command::CanvasSetMasterMuted(rbs_api::request::SetMasterMuted { muted }),
+                notify,
+            ),
             Command::AddFilter { source, type_id } => {
                 let done = self
                     .add_filter(source, &type_id, &std::collections::BTreeMap::new())

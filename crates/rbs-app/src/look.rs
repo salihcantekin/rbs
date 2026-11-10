@@ -171,10 +171,13 @@ pub fn load(data: &UserData, fonts: &mut dyn FontCatalog) -> (Option<Look>, Opti
         }
     };
     let [dark, light] = appearance.slots();
-    let themes = [
+    let mut themes = [
         resolve(&file, data, dark, Base::Dark, &mut notes),
         resolve(&file, data, light, Base::Light, &mut notes),
     ];
+    for theme in &mut themes {
+        rbs_ui::tokens::apply_density(&mut theme.length, appearance.density);
+    }
     let fonts = [
         choose_font(&themes[0].font_family, fonts, SAMPLE_TEXT),
         choose_font(&themes[1].font_family, fonts, SAMPLE_TEXT),

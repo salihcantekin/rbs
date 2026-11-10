@@ -1,6 +1,6 @@
 # ADR-0055: Crash resilience: a fault in the app must not end a recording or a stream
 
-- Status: Proposed
+- Status: Accepted
 - Date: 2026-11-06
 - Deciders: Salih (owner)
 - Builds on: P7 (failures contained to the node), P8 (headless core), ADR-0008 (UI as a control API client), ADR-0024 (node restart with back-off), ADR-0028 and ADR-0036 (preview across processes), ADR-0041 decision 7 (studio on its own control thread), ADR-0051 (crash-safe user data)
@@ -114,3 +114,5 @@ Second pass, same reviewer, 2026-11-06. Verdict: changes requested; resolutions:
 7. Windows rename -> Commented (std's `FILE_SHARE_DELETE`); the `rbs-crash` tests run in CI on Windows and macOS.
 
 Mac hardware check, 2026-11-06: the first version ended the session only when `main` returned. Quitting the app normally on macOS (Cmd+Q) does not return from `main`, so the marker stayed and the next start would have shown a false notice. Decision 5 now ends the session from a C runtime exit handler (`atexit`), with a test that runs child processes: one that calls `exit` leaves no marker, and one whose main thread panics uncaught keeps it. The same check showed that Cmd+Q skipped the app's own quit path as well (no question while live, no last save, no clean end of the recording; an MP4 recording would be lost): Slint 1.18 always puts the system Quit item (`terminate:`) in the macOS app menu and winit's delegate does not answer `applicationShouldTerminate:`. The app now adds that method to the delegate's class (`rbs_app::native::route_quit`), cancels the termination and runs the window's close request. A logout is therefore cancelled once by RBS, as by any app that asks before quitting; answering `NSTerminateLater` instead is a possible follow-up.
+
+- 2026-11-10: Owner (Salih) accepts this ADR. The header had stayed Proposed while the index said Accepted; the code in `rbs-crash` and the app may be ahead of the follow-ups named in this review. Those follow-ups stay follow-ups.

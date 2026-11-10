@@ -4796,6 +4796,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "rbs-mcp"
+version = "0.0.1"
+dependencies = [
+ "serde_json",
+]
+
+[[package]]
 name = "rbs-media-format"
 version = "0.0.1"
 dependencies = [
@@ -4879,6 +4886,21 @@ dependencies = [
 [[package]]
 name = "rbs-params"
 version = "0.0.1"
+
+[[package]]
+name = "rbs-plugin-host"
+version = "0.0.1"
+dependencies = [
+ "rbs-plugin-sdk",
+]
+
+[[package]]
+name = "rbs-plugin-sdk"
+version = "0.0.1"
+dependencies = [
+ "serde",
+ "toml 0.8.23",
+]
 
 [[package]]
 name = "rbs-record"

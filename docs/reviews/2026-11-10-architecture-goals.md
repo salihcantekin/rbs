@@ -104,6 +104,15 @@ Order that matches the vision, after this change:
 - Stop rules in `CLAUDE.md` and the node and hot-path skills.
 - `audio.levels` from the source meters, without clearing the Mixer.
 
+## Owner decisions, 2026-11-10
+
+- The Windows machine in the hot-path notes is **SC-PC**: Windows 11, an RTX 4090 and the AMD iGPU in the same machine (`docs/specs/recording.md`, `docs/specs/output-ports.md`, 2026-11-03). It was off, so the native encode path and the Windows meter layers were not written in the follow-up. They need that machine.
+- ADR-0055, ADR-0084, ADR-0088 and ADR-0093 are Accepted by the owner. Code may stay ahead of the remaining decision text. Deferred items stay deferred.
+- Compact spacing is in Appearance (format 2). It steps existing spacing and control-size tokens down one step.
+- Window actions for volume, mute, mixer hide and the master now call the control API command, so those arms are not a second implementation.
+- `rbs-plugin-sdk` and `rbs-plugin-host` read manifests and load nothing. `rbs-mcp` answers an unreachable studio with `studio_summary` only.
+- A `cargo bench` gate in CI waits.
+
 ## Not done, and why
 
 | Item | Why it is not in this change |

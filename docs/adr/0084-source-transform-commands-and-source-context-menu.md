@@ -1,6 +1,6 @@
 # ADR-0084: Source transform commands (flip, rotate, fit, align) and a categorized source context menu
 
-- Status: Proposed
+- Status: Accepted
 - Date: 2026-11-09
 - Deciders: Salih (owner)
 - Builds on: [ADR-0050](0050-command-registry-menus-and-toolbar.md) (command registry), [ADR-0053](0053-item-style-and-video-filter-chains.md), [ADR-0058](0058-crop-editing-of-sources.md), [ADR-0059](0059-scenes-lock-and-source-audio-in-the-studio.md), [ADR-0065](0065-global-sources-and-safe-source-removal.md), [ADR-0077](0077-source-health-retarget-and-settings-window.md)
@@ -47,7 +47,8 @@ Forces: commands come from the registry (ADR-0050), so a shortcut, the palette a
 ## Review
 
 - 2026-11-09, independent AI session (round 1, reviewing only the ADRs, specs and code): changes requested. Concerns covered contract details, claims about existing code, hot-path and zero-cost rules, and number allocation across these ADRs; each was resolved in the text above (the numbers of protocol minors and scene formats are now assigned at merge time, not claimed by ADRs).
-- Round 2 (verification by a different fresh reviewer) and the owner's approval are still needed before the status can become Accepted (ADR-0014).
+- Round 2 (verification by a different fresh reviewer) was still open when the owner accepted the ADR.
+- 2026-11-10: Owner (Salih) accepts this ADR. The commands already on main (flip, rotate, fit, align) may be ahead of the remaining menu categories in the decision. Those categories stay unfinished work, not a reason to treat the decision as Proposed.
 
 ## Implementation notes
 

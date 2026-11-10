@@ -24,10 +24,10 @@ Specs are the current contracts of RBS. Code must match them; a PR that changes 
 | [scene-sources.md](scene-sources.md) | Draft | `rbs-sources` (built-in source types, adapter registry for sources, instances for bound sources) |
 | [io-nodes.md](io-nodes.md) | Draft | `rbs-nodes` (capture source, video export, video encoder and output nodes), `rbs-gpu` (`upload`, `download`) |
 | [recording.md](recording.md) | Draft | `rbs-record` (scene to encoders and a muxed output on the engine), `rbs-cli` (`record`, `devices`) |
-| [plugin-sdk.md](plugin-sdk.md) | Draft | `rbs-plugin-sdk`, `rbs-plugin-host` (planned) |
+| [plugin-sdk.md](plugin-sdk.md) | Draft | `rbs-plugin-sdk` (manifest), `rbs-plugin-host` (reads manifests, loads nothing). Loaders are not started |
 | [performance-budgets.md](performance-budgets.md) | Draft | `benches/`, CI |
 | [control-api.md](control-api.md) | Draft | `rbs-api`, `rbs-api-ws`, `rbs-api-ipc` (ADR-0044). What is still missing is in that spec's implementation status |
-| [mcp-server.md](mcp-server.md) | Draft | `rbs-mcp` (planned; ADR-0052) |
+| [mcp-server.md](mcp-server.md) | Draft | `rbs-mcp` (ADR-0052). While RBS is unreachable the only tool is `studio_summary`. IPC and generated tools are not started |
 | [crash-resilience.md](crash-resilience.md) | Draft | `rbs-crash` (panic boundary, crash reports, unclean-exit detection), `rbs-app` (`entry.rs`, `clippy.toml`, studio host recovery; ADR-0055) |
 | [testing-strategy.md](testing-strategy.md) | Draft | CI, conformance suites |
 | [ui-design-system.md](ui-design-system.md) | Draft | `rbs-ui` (tokens), `rbs-app` |

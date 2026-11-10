@@ -189,6 +189,18 @@ fn deny(from: &str, to: &str) -> Option<String> {
             ],
             "user data sees the scene model, not an adapter or a toolkit",
         ),
+        Class::PluginSdk => deny_named(
+            to,
+            to_class,
+            &["serde", "toml"],
+            "the plugin SDK is the manifest types and does not see the engine",
+        ),
+        Class::Plugin => deny_named(
+            to,
+            to_class,
+            &["rbs-plugin-sdk"],
+            "the plugin host reads manifests and does not load libraries or see the engine",
+        ),
         Class::App | Class::Tool => None,
     }
 }
@@ -236,7 +248,9 @@ fn deny_engine(from: &str, to: &str, to_class: Option<Class>) -> Option<String> 
             | Class::Ui
             | Class::Settings
             | Class::UserData
-            | Class::Tool,
+            | Class::Tool
+            | Class::Plugin
+            | Class::PluginSdk,
         ) => Some("the engine never depends on an adapter, the control API or the UI".to_owned()),
         Some(Class::Core | Class::Helper | Class::Support | Class::Engine) => None,
         None if is_ui_toolkit(to) || is_ffmpeg(to) || is_os_media(to) && from != "rbs-gpu" => Some(
@@ -266,7 +280,9 @@ fn deny_adapter(from: &str, to: &str, to_class: Option<Class>) -> Option<String>
             | Class::Ui
             | Class::Settings
             | Class::UserData
-            | Class::Tool,
+            | Class::Tool
+            | Class::Plugin
+            | Class::PluginSdk,
         ) => Some("an adapter sees its port, foundation and its support crate".to_owned()),
         Some(Class::Core | Class::Helper | Class::Support) => None,
         None if is_ui_toolkit(to) => Some("an adapter does not use a UI toolkit".to_owned()),
@@ -324,6 +340,8 @@ enum Class {
     UserData,
     App,
     Tool,
+    PluginSdk,
+    Plugin,
 }
 
 /// `None` for a crate from outside the workspace. A workspace crate that is missing
@@ -343,7 +361,9 @@ fn class(name: &str) -> Option<Class> {
         "rbs-app-ui" => Class::AppUi,
         "rbs-remote-settings" => Class::Settings,
         "rbs-user-data" => Class::UserData,
-        "rbs-app" | "rbs-cli" => Class::App,
+        "rbs-app" | "rbs-cli" | "rbs-mcp" => Class::App,
+        "rbs-plugin-sdk" => Class::PluginSdk,
+        "rbs-plugin-host" => Class::Plugin,
         "xtask" => Class::Tool,
         "rbs-capture-wgc"
         | "rbs-capture-sck"

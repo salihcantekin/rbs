@@ -336,6 +336,17 @@ impl AppearanceUi {
         self.change_choice(next, now)
     }
 
+    /// Compact spacing or the theme's own spacing.
+    pub fn set_compact(&mut self, compact: bool, now: Instant) -> Option<Appearance> {
+        let mut next = self.choice.clone();
+        next.density = if compact {
+            rbs_ui::tokens::Density::Compact
+        } else {
+            rbs_ui::tokens::Density::Regular
+        };
+        self.change_choice(next, now)
+    }
+
     /// Follow the system or not.
     pub fn set_follow_system(&mut self, follow: bool, now: Instant) -> Option<Appearance> {
         let mut next = self.choice.clone();

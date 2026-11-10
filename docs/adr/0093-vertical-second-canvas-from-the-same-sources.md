@@ -1,6 +1,6 @@
 # ADR-0093: A vertical (9:16) second canvas running at the same time as the main one
 
-- Status: Proposed
+- Status: Accepted
 - Date: 2026-11-09
 - Deciders: Salih (owner)
 - Builds on: [ADR-0021](0021-scene-collection-model.md), [ADR-0026](0026-partitions-and-queues.md), [ADR-0034](0034-preview-as-native-layer.md), [ADR-0039](0039-scene-source-types.md), [ADR-0041](0041-studio-recording-on-a-running-engine.md), [ADR-0047](0047-several-outputs-per-canvas.md), [ADR-0049](0049-main-window-areas-panel-states-and-sizes.md), [ADR-0061](0061-studio-mode-in-the-desktop-app.md), [ADR-0081](0081-master-strip-in-the-mixer.md), [ADR-0084](0084-source-transform-commands-and-source-context-menu.md), [ADR-0087](0087-output-cost-estimate-and-hardware-limits.md)
@@ -53,4 +53,4 @@ Forces: sources must be captured once and shared (P4, rule 17); a second canvas 
   - *Format 8 file with `follow`* is refused; a duplicate canvas has its own error (`DuplicateCanvas`); `last` is dropped when a canvas stops.
   - *Deferred, stated here so the text does not claim them as done* (each needs its own change and review): the secondary-frame skip rule and the ADR-0090 guard of decision 10; `MAX_OUTPUTS` per canvas of decision 6 (it stays 2 in total, so record plus stream on both canvases cannot run yet); `Fallback::Black` and the cut when the main canvas's transition ends (decision 3); saving the set of activated canvases with the workspace (decision 9: `extra_canvases` is a `StudioSettings` field only); `audio_from` is in the model but not in the document (only `main` exists). The Windows (RTX 4090) measurement of decision 10 is open; the M4 Pro measurement is in #269.
   - Test gaps: the picture tests run only on Windows and macOS (previews exist only there).
-- The owner's explicit acceptance and a round-3 check of these amendments are still needed before the status can become Accepted (ADR-0014).
+- 2026-11-10: Owner (Salih) accepts this ADR. The deferred items in the round-2 note stay deferred. The Windows measurement of decision 10 is on SC-PC (Windows 11, RTX 4090 and the AMD iGPU in that machine); it was not run for this acceptance because that machine was off.
