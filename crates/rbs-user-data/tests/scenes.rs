@@ -248,6 +248,13 @@ fn invalid(body: &str) -> String {
     }
 }
 
+#[test]
+fn a_follow_in_a_format_before_9_is_refused() {
+    // `invalid` writes format 1: the keys of format 9 do not belong there.
+    let why = invalid(&format!("{CANVAS}follow = 0\n"));
+    assert!(why.contains("follow"), "{why}");
+}
+
 const CANVAS: &str =
     "[[canvases]]\nid = 0\nname = \"Main\"\nwidth = 1920\nheight = 1080\nframe_rate = [30, 1]\n";
 const SOURCE: &str = "[[sources]]\nid = 0\nname = \"S\"\ntype = \"org.rbs.source.display\"\n";

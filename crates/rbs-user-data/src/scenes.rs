@@ -466,9 +466,24 @@ impl Document for SceneCollection {
     /// `hints` (ADR-0077); a format 7 body is a format 8 body without them. Format 9 adds the optional canvas
     /// `follow` and `fallback` (ADR-0093); a format 8 body is a format 9 body without them.
     fn upgrade(from: u32, body: &mut toml::Table) -> Result<(), String> {
-        let _ = body;
         match from {
-            1..=8 => Ok(()),
+            1..=8 => {
+                // Keys of a later format in an older file mean it was not written by
+                // a build that knew them: refuse instead of reading them silently.
+                let late = body
+                    .get("canvases")
+                    .and_then(toml::Value::as_array)
+                    .into_iter()
+                    .flatten()
+                    .filter_map(toml::Value::as_table)
+                    .any(|c| c.contains_key("follow") || c.contains_key("fallback"));
+                if from < 9 && late {
+                    return Err(format!(
+                        "format {from} has no canvas `follow` or `fallback` (format 9)"
+                    ));
+                }
+                Ok(())
+            }
             _ => Err(format!("format {from} cannot be read")),
         }
     }

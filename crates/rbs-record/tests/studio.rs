@@ -961,7 +961,7 @@ fn a_further_canvas_must_run_at_the_main_rate_and_be_new() {
     ));
     assert!(matches!(
         start(vec![ExtraCanvas::new(main)]),
-        Some(RecordError::TooManyCanvases)
+        Some(RecordError::DuplicateCanvas(c)) if c == main
     ));
 }
 
@@ -1028,4 +1028,67 @@ fn a_following_canvas_shows_the_main_program_scene() {
         "{following:?}"
     );
     assert!(following.iter().any(|n| n == "Display"), "{following:?}");
+}
+
+#[test]
+fn a_canvas_that_does_not_run_costs_nothing_and_its_sources_close_when_it_stops() {
+    use rbs_core::media::video::Size;
+    use rbs_core::timing::FrameRate;
+
+    let Some(gpu) = gpu() else { return };
+    let r = rig();
+    let (mut col, main) = scene();
+    let (tall, _) = col
+        .add_canvas("Vertical", Size::new(H / 2, W / 2), FrameRate::FPS_30)
+        .unwrap();
+    let (own, _) = col
+        .add_scene("Vertical only", rbs_scene::model::SceneScope::Canvas(tall))
+        .unwrap();
+    let (extra, _) = col
+        .add_source(
+            "Vertical camera",
+            NodeTypeId::new_static(types::CAMERA_SOURCE),
+            Settings::new(),
+        )
+        .unwrap();
+    col.add_item(
+        own,
+        ItemContent::Source(extra),
+        Layout::new([0.0, 0.0], [1.0, 1.0]),
+        None,
+    )
+    .unwrap();
+    col.set_program(tall, Some(own)).unwrap();
+    let (engine, clock) = engine_at_start();
+    let mut settings = StudioSettings::new(main);
+    settings.audio = false;
+    let mut studio = Studio::start(engine, gpu, &col, &r.adapters.sources, &settings).unwrap();
+    let mut rec = OutputSettings::new("mem://main", ContainerId::Matroska);
+    rec.audio = None;
+    studio.start_output(&r.adapters, &rec).unwrap();
+    let names = |s: &Studio| -> Vec<String> { s.sources().into_iter().map(|x| x.name).collect() };
+    assert!(!names(&studio).iter().any(|n| n == "Vertical camera"));
+    let buffers = r.capture.live_buffers();
+
+    // Running the canvas opens its own source ...
+    studio
+        .activate_canvas(&col, &r.adapters.sources, ExtraCanvas::new(tall))
+        .unwrap();
+    let mut out = OutputSettings::new("mem://vertical", ContainerId::Matroska);
+    out.audio = None;
+    out.canvas = Some(tall);
+    let id = studio.start_output(&r.adapters, &out).unwrap();
+    assert!(names(&studio).iter().any(|n| n == "Vertical camera"));
+    let reached = run_until(&mut studio, &clock, |_| r.capture.live_buffers() > buffers);
+    assert!(reached);
+    // ... and stopping it releases that source again.
+    studio.stop_output(id).unwrap();
+    studio
+        .deactivate_canvas(&col, &r.adapters.sources, tall)
+        .unwrap();
+    assert!(!names(&studio).iter().any(|n| n == "Vertical camera"));
+    let reached = run_until(&mut studio, &clock, |_| r.capture.live_buffers() <= buffers);
+    assert!(reached, "the vertical camera is still open");
+    let (_, errors) = studio.shutdown();
+    assert!(errors.is_empty(), "{errors:?}");
 }

@@ -345,7 +345,7 @@ fn a_further_canvas_starts_and_stops_while_the_studio_runs() {
         .unwrap();
     assert!(matches!(
         studio.activate_canvas(&col, &r.adapters.sources, ExtraCanvas::new(tall)),
-        Err(RecordError::TooManyCanvases)
+        Err(RecordError::DuplicateCanvas(c)) if c == tall
     ));
     let id = studio.start_output(&r.adapters, &vertical).unwrap();
     assert!(matches!(

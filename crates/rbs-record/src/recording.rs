@@ -376,9 +376,10 @@ pub enum RecordError {
     /// A further canvas of the studio does not run at the main canvas's frame rate
     /// (ADR-0093 decision 2).
     CanvasRate(CanvasId),
-    /// More canvases than [`MAX_CANVASES`](crate::MAX_CANVASES), or one listed twice
-    /// or equal to the main canvas.
+    /// More canvases than [`MAX_CANVASES`](crate::MAX_CANVASES).
     TooManyCanvases,
+    /// A further canvas listed twice, equal to the main canvas, or already running.
+    DuplicateCanvas(CanvasId),
     /// An output still takes the canvas that was to stop running.
     CanvasBusy(CanvasId),
     /// The URL has no scheme.
@@ -436,6 +437,7 @@ impl fmt::Display for RecordError {
                 )
             }
             RecordError::TooManyCanvases => write!(f, "too many canvases in the studio"),
+            RecordError::DuplicateCanvas(id) => write!(f, "canvas {id:?} is already in the studio"),
             RecordError::CanvasBusy(id) => write!(f, "an output still takes canvas {id:?}"),
             RecordError::InvalidUrl(url) => write!(f, "not a URL: {url}"),
             RecordError::Bind(e) => write!(f, "binding the scene failed: {e}"),

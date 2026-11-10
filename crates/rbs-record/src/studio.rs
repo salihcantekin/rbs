@@ -814,7 +814,7 @@ impl Studio {
                     .iter()
                     .any(|e| e.canvas == extra.canvas)
             {
-                return Err(RecordError::TooManyCanvases);
+                return Err(RecordError::DuplicateCanvas(extra.canvas));
             }
             let other = collection
                 .canvas(extra.canvas)
@@ -1071,10 +1071,12 @@ impl Studio {
         sources: &SourceTypes,
         extra: ExtraCanvas,
     ) -> Result<Updated, RecordError> {
-        if self.extras.len() + 2 > MAX_CANVASES
-            || extra.canvas == self.settings.canvas
+        if extra.canvas == self.settings.canvas
             || self.extras.iter().any(|e| e.canvas == extra.canvas)
         {
+            return Err(RecordError::DuplicateCanvas(extra.canvas));
+        }
+        if self.extras.len() + 2 > MAX_CANVASES {
             return Err(RecordError::TooManyCanvases);
         }
         self.update_with(collection, sources, Some(extra))
@@ -1102,8 +1104,12 @@ impl Studio {
         {
             return Err(RecordError::CanvasBusy(canvas));
         }
+        // The checks of an update run before anything changes.
+        let followed = with_followers(collection, &mut self.last_follow.clone());
+        self.check_collection(&followed)?;
         let run = self.extras.remove(at);
         self.settings.extra_canvases.retain(|e| e.canvas != canvas);
+        self.last_follow.remove(&canvas);
         let mut leaving = vec![Added {
             node: run.view.compositor,
             partition: RENDER,
@@ -1131,19 +1137,18 @@ impl Studio {
         updated
     }
 
-    fn update_with(
-        &mut self,
-        collection: &SceneCollection,
-        sources: &SourceTypes,
-        add: Option<ExtraCanvas>,
-    ) -> Result<Updated, RecordError> {
-        let followed = with_followers(collection, &mut self.last_follow);
-        let collection = &followed;
+    /// What an update needs of `collection` before anything changes: the main canvas and
+    /// the running further canvases keep size and rate and have a program scene (without
+    /// one the binder would retire the compositor that runs).
+    fn check_collection(&self, collection: &SceneCollection) -> Result<(), RecordError> {
         let canvas = collection
             .canvas(self.settings.canvas)
             .ok_or(RecordError::UnknownCanvas(self.settings.canvas))?;
         if (canvas.size.width, canvas.size.height) != self.size || canvas.frame_rate != self.fps {
             return Err(RecordError::NotBound("canvas of the same size and rate"));
+        }
+        if canvas.program.is_none() {
+            return Err(RecordError::NoProgram(self.settings.canvas));
         }
         for extra in &self.extras {
             let other = collection
@@ -1156,11 +1161,18 @@ impl Studio {
                 return Err(RecordError::NoProgram(extra.canvas));
             }
         }
-        // Checked before anything changes: without a program scene the binder would
-        // retire the compositor the studio runs.
-        if canvas.program.is_none() {
-            return Err(RecordError::NoProgram(self.settings.canvas));
-        }
+        Ok(())
+    }
+
+    fn update_with(
+        &mut self,
+        collection: &SceneCollection,
+        sources: &SourceTypes,
+        add: Option<ExtraCanvas>,
+    ) -> Result<Updated, RecordError> {
+        let followed = with_followers(collection, &mut self.last_follow);
+        let collection = &followed;
+        self.check_collection(collection)?;
         let fps = self.fps;
         let new = match add {
             Some(extra) => {
@@ -1181,36 +1193,50 @@ impl Studio {
             .binder
             .sync(collection, &mut self.graph)
             .map_err(RecordError::Bind)?;
+        // A canvas that cannot be attached leaves the studio as it was, but the sync
+        // already ran: the update goes on so the sources it created get their entries,
+        // and the error is returned after it.
+        let mut attach_error = None;
         if let Some((extra, size)) = new {
-            let bound = report
+            let attached = report
                 .compositors
                 .get(&(extra.canvas, Role::Program))
                 .cloned()
-                .ok_or(RecordError::NotBound("program compositor"))?;
-            let view = attach_compositor(
-                &mut self.engine,
-                &mut self.graph,
-                bound,
-                size,
-                extra.preview,
-            )?;
-            self.essential
-                .insert(view.compositor, "compositor of a further canvas");
-            if let Some((picture, _)) = &view.picture {
-                self.essential
-                    .insert(*picture, "preview of a further canvas");
+                .ok_or(RecordError::NotBound("program compositor"))
+                .and_then(|bound| {
+                    attach_compositor(
+                        &mut self.engine,
+                        &mut self.graph,
+                        bound,
+                        size,
+                        extra.preview,
+                    )
+                });
+            match attached {
+                Ok(view) => {
+                    self.essential
+                        .insert(view.compositor, "compositor of a further canvas");
+                    if let Some((picture, _)) = &view.picture {
+                        self.essential
+                            .insert(*picture, "preview of a further canvas");
+                    }
+                    self.settings.extra_canvases.push(extra);
+                    self.extras.push(ExtraRun {
+                        canvas: extra.canvas,
+                        size,
+                        view,
+                    });
+                }
+                Err(e) => attach_error = Some(e),
             }
-            self.settings.extra_canvases.push(extra);
-            self.extras.push(ExtraRun {
-                canvas: extra.canvas,
-                size,
-                view,
-            });
         }
         self.collection = collection.clone();
         self.mix = mix_of(collection);
         self.master = master_of(collection, self.settings.canvas);
         let (failed, problems) = self.reconcile(sources, Some(report), Strictness::Lenient)?;
+        if let Some(e) = attach_error {
+            return Err(e);
+        }
         Ok(Updated { problems, failed })
     }
 
@@ -3039,9 +3065,39 @@ fn attach_compositor(
     if let Some(desc) = desc {
         let node = PreviewNode::new(desc);
         let stats = node.stats();
-        let id = add_active(graph, Node::<GpuRuntime>::descriptor(&node), RENDER)?;
-        graph.connect(bound.node, "canvas", id, "canvas")?;
-        engine.adopt::<GpuRuntime>(RENDER, id, Box::new(node))?;
+        let added = (|| -> Result<NodeId, RecordError> {
+            let id = add_active(graph, Node::<GpuRuntime>::descriptor(&node), RENDER)?;
+            graph.connect(bound.node, "canvas", id, "canvas")?;
+            Ok(id)
+        })();
+        let id = match added {
+            Ok(id) => id,
+            Err(e) => {
+                // The compositor was adopted a moment ago: give it back.
+                take(
+                    engine,
+                    Added {
+                        node: bound.node,
+                        partition: RENDER,
+                        gpu: true,
+                    },
+                );
+                return Err(e);
+            }
+        };
+        if let Err(e) = engine.adopt::<GpuRuntime>(RENDER, id, Box::new(node)) {
+            let _ = graph.set_state(id, Lifecycle::Standby);
+            let _ = graph.remove_node(id);
+            take(
+                engine,
+                Added {
+                    node: bound.node,
+                    partition: RENDER,
+                    gpu: true,
+                },
+            );
+            return Err(e.into());
+        }
         picture = Some((id, stats));
     }
     Ok(ExtraView {
