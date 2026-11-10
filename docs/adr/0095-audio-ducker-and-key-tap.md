@@ -1,0 +1,49 @@
+# ADR-0095: Audio ducker and the pre-fader key tap
+
+- Status: Accepted
+- Date: 2026-11-10
+- Deciders: Salih (owner)
+- Spec: [audio-filters](../specs/audio-filters.md), [audio-graph](../specs/audio-graph.md), [scene-model](../specs/scene-model.md), [control-api](../specs/control-api.md), [ui-design-system](../specs/ui-design-system.md)
+
+## Context
+
+[ADR-0082](0082-audio-filter-chains-on-sources.md) gave audio sources filter chains (Gain, Noise gate) and left the ducker, phase C of the owner's audio roadmap, to its own decision because the ducker reads the signal of a second source (the key). The owner approved the product shape on 2026-11-10: a "Ducker" filter on the music source, off unless the user adds it, with a key source, threshold, amount, attack, hold and release as visible, saved settings; the key is taken before the key source's fader, so muting the microphone in the mix does not stop the ducking.
+
+Facts that shape the decision:
+
+- A filter node today has one audio input `in` and one output `out`, in the source's partition (ADR-0082 decision 5). The binder knows every source's chain tail.
+- The mixer applies the fader and mute after the chain (ADR-0082 decision 7). The tail of a source's chain is therefore a pre-fader signal.
+- A filter's settings are a flat map of `Bool`, `Int`, `Float` and `Text`. A reference to another source has no field kind yet, and source ids can be deleted.
+- Rule 10 forbids a per-block "is ducking on" check in the mixer; a feature that is off must not be in the schedule.
+
+## Decision
+
+1. **The ducker is an audio filter type** `org.rbs.audio-filter.ducker` ("Ducker") in `rbs-audio-filters`, on the music source's chain like Gain and Noise gate. The mixer is not edited.
+2. **Fields** (key: range, default; unit): `key_source` (a source, default none = the setting is absent), `threshold` -80..0, -30; dB. `amount` 0..60, 12; dB (how far the sound is lowered). `attack` 1..200, 20; ms, log. `hold` 0..2000, 300; ms. `release` 20..3000, 500; ms, log. Every field has help text shown behind its info button. With `key_source` none the ducker passes the sound unchanged.
+3. **A new field kind `Source`** in `rbs-params`: `FieldKind::Source` and `Value::Source(Option<u32>)`. Source ids start at 0, so "none" is not an id: it is the setting being absent (JSON `null`). A source is stored in `Settings` as `Int`; strict conversion refuses a negative or out-of-range value; lenient conversion (loading) falls back to none. Every place that matches on `FieldKind` handles it explicitly, with one test that walks every kind through settings, API JSON and the UI field list: `rbs-sources` filter conversions (a kind must not be saved as its debug text), `Values::with` (accepts `Source`), `studio_host/filters.rs` (`api_field` kind `"source"`, JSON integer or null) and `studio_ui/filters.rs` (its own field kind, not the toggle's). The UI shows it as a picker of the collection's audio sources, excluding the filter's own source. Adding a kind is a public contract change (reviewed with this ADR); `FieldKind` is already `#[non_exhaustive]`.
+4. **The key tap.** A filter type may declare a key input (`AudioFilterType::key_input() -> bool`, default false); `descriptor()` then adds a second audio input pin named `key`, and `AudioDsp` gains `process_keyed(channels, key: Option<&[&[f32]]>, frames)` (default: calls `process`). Both are changes to the audio-filter contract, made in `docs/specs/audio-filters.md` in the same change (the ducker leaves its out-of-scope list). The node reads the key block from its `Inputs` with no allocation. The binder (`rbs-scene`, which does not depend on `rbs-params`) finds the key by contract, not by schema: a filter whose descriptor has an audio input pin `key` takes the key source id from the `Int` setting named `key_source`; a missing or non-integer value means no key. The binder links `key` from the **tail of the chain of the key source** (the source node when its chain is empty): the signal before that source's fader and mute, after its own filters (so a gate on the microphone also gates the ducking). The link is rebuilt when the key source's tail changes, exactly like the mixer link. The key link only reads: it adds no output pin to the key source and does not change what the mixer hears.
+5. **Unavailable key means pass-through.** If the key source is none, deleted, not an audio source, the filter's own source, or would make a cycle, the `key` pin stays unlinked and the node treats the key as silence. If it was ducking, it first releases to 0 dB at the release rate (no jump), and from then on copies `in` to `out` bit exactly. The binder reports `BindProblem::KeyUnavailable(filter id)` for deleted, non-audio, self and cycle cases only; the Studio shows it on the filter like `FILTER_UNAVAILABLE`. A key source that is not in the shown scene is Standby (not an error): the key is silent, there is no warning, and the UI says so in the field's help (the key source must be in the scene to duck). A cycle (A keyed by B while B is keyed by A, or a longer loop) is found **before any link is made**, over the whole collection, on source-level dependencies (key links plus chains), and the same result comes out whatever the sync history: in each cycle the link of the ducker with the highest filter id is the one dropped. (`GraphDescription::connect` refuses a cycle with an error, so it must never be asked to make one.)
+6. **DSP.** A linked peak envelope follower over all key channels (as the gate), threshold with 3 dB less hysteresis, hold timer, then a target reduction of `-amount` dB while the key is above threshold and 0 dB otherwise, smoothed in the dB domain with the attack rate going down and the release rate coming back (dB per sample from `attack` and `release`, no allocation, the exponent computed once per steady state as in the gate). Applied per sample to `in`. No look-ahead and no latency: the first syllable passes before the duck settles, so an attack of 5 to 20 ms is advised in the help text. Output is sanitised like the gate (NaN, infinity and denormals become 0). With 0 dB of reduction and no key the block is copied untouched (bit exact).
+7. **Meter.** The ducker publishes `FilterMeter` values: the key's peak as `input_peak_db` and the reduction as `gain_reduction_db`, once per block, so the Properties editor shows the same live bar as the gate (threshold line, reduction bar). The UI reads only while the section is open.
+8. **Partition and timing.** The binder puts every audio-only source and audio filter in the one audio partition, so the key link is a same-tick link with no queue and no added latency. A source with a picture has no bound audio (`AudioOnVideoSource`) and so cannot be a key; the key picker lists audio-only sources.
+9. **Scene model and API.** No scene format change (a filter with settings; format 7). Control API 1.19: `filter.types` lists the ducker for `domain` audio and a new field `kind` `"source"` (value is a source id integer or null); `filter.set` accepts it; errors name an unknown or non-audio key source. Old clients never meet the kind because `filter.types` defaults to video.
+10. **Zero cost (P13).** No ducker, nothing: no node, no link, no meter. A disabled ducker is Standby and not scheduled. The key link adds no work to the key source.
+11. **Hot path.** The ducker's `process` runs in the audio partition (a hot path): the PR carries a benchmark (budget: under 8 µs per 480-frame stereo block), an allocation guard test, and needs the owner's P15 sign-off.
+
+## Consequences
+
+- The mixer stays untouched; ducking costs nothing when unused.
+- Filters can now depend on another source; the binder gains a key-dependency pass with cycle detection, and `rbs-params` a kind that other cross-references (a camera's paired mic, a sidechain compressor) can reuse.
+- Deleting the key source degrades to pass-through with a visible warning; a key source that is not in the shown scene is silent without a warning. Music is never silenced.
+- Ducking by the processed key (after the key source's own filters) means a gate on the microphone gates the duck, which is what users expect.
+
+## Alternatives considered
+
+- **A rule inside `MixerNode`.** Touches the hot mixer loop and adds a per-block check for everyone (rule 10).
+- **A separate node outside the filter chain.** Needs its own scene model, API and UI; as a filter it reuses all three.
+- **Post-fader key.** Muting the mic in the mix would stop ducking; the owner chose pre-fader.
+- **Key source by name.** Renames would break it; ids survive renames.
+
+## Review
+
+Round 1, independent AI session (2026-11-10): changes requested. Resolved in this text: "none" is an absent setting, not id 0 (ids start at 0); the binder finds the key by contract (pin `key`, setting `key_source`) without depending on `rbs-params`; the node and `AudioDsp` contract changes and the spec update are stated; every `FieldKind` match site is listed with one all-kinds test; the cycle check runs before connecting and is history-independent; a lost key releases at the release rate instead of jumping; the cross-partition case is removed; a Standby key source is silent without a warning. Round 2 (same day): approve. Three items go into the implementation PR: saving "none" leaves `key_source` out of the settings and `filter.set` with `null` clears it (both in the all-kinds test); the contract text (`key_input`, the `key` pin, `process_keyed`, `FieldKind::Source`, the ducker's fields and DSP) is written into the audio-filters spec. Owner approval: Salih, 2026-11-10 (Accepted). The P15 sign-off for the hot path is still needed in the implementation PR.

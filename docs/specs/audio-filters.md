@@ -12,7 +12,7 @@ Built-in audio filters for sources: Gain and Noise gate, run as `AudioFilter` no
 
 In scope: `AudioFilterType`, `AudioDsp`, `FilterMeter`, `AudioFilterNode`, the catalogue and the conformance suite.
 
-Out of scope here (later PRs of ADR-0082): the editor UI, a limiter and look-ahead filters (they need latency reporting in the node contract), the ducker.
+Out of scope here (later PRs of ADR-0082): the editor UI, a limiter and look-ahead filters (they need latency reporting in the node contract). The ducker and its key input are decided in [ADR-0095](../adr/0095-audio-ducker-and-key-tap.md) (Accepted).
 
 ## Contract
 
