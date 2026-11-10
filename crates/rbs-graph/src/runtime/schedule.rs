@@ -374,9 +374,12 @@ impl Outputs<'_> {
         self.slots.len()
     }
 
-    /// Whether a scheduled node reads output `pin` in the current schedule. A node may
-    /// skip the work for an unread pin; linking or unlinking one is a schedule swap that
-    /// keeps the node (ADR-0097 decision 6). `false` for a pin that does not exist.
+    /// Whether a node with an instance reads output `pin` in the current schedule (a
+    /// consumer held without one, after a failed `prepare` or while it waits for a
+    /// restart, does not count; one bypassed at run time counts until the next
+    /// `apply`). A node may skip the work for an unread pin; linking or unlinking one
+    /// is a schedule swap that keeps the node (ADR-0097 decision 6). `false` for a pin
+    /// that does not exist.
     pub fn is_linked(&self, pin: usize) -> bool {
         self.linked.get(pin).copied().unwrap_or(false)
     }

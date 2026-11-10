@@ -517,3 +517,22 @@ impl<X: Runtime> Node<X> for MixerNode {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn taking_the_same_target_again_keeps_a_ramp_running() {
+        let t0 = Timestamp::ZERO;
+        let ramp = Ramp::steady(1.0).towards(0.0, t0, Duration::from_millis(100));
+        let mid = t0 + Duration::from_millis(50);
+        let again = ramp.towards(0.0, mid, Duration::from_millis(100));
+        assert_eq!(again.at(t0 + Duration::from_millis(100)), 0.0);
+        assert_eq!(again.at(mid), 0.5);
+        // A new target re-ramps from the current value.
+        let back = ramp.towards(1.0, mid, Duration::from_millis(100));
+        assert_eq!(back.at(mid), 0.5);
+        assert_eq!(back.at(mid + Duration::from_millis(100)), 1.0);
+    }
+}

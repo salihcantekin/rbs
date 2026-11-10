@@ -358,3 +358,42 @@ fn monitoring_does_not_allocate() {
     let changed = allocation_counter::measure(|| r.run(10));
     assert_eq!(changed.count_total, base.count_total);
 }
+
+#[test]
+fn solo_changes_ramp_on_the_monitor_and_only_strips_stay_off_the_mix() {
+    use MonitorMode::*;
+    let mut r = Rig::new(&[0.2, 0.4], |s| {
+        MixerParams::new(vec![
+            Strip::new(s[0], 1.0).with_monitor(Only),
+            Strip::new(s[1], 1.0).with_monitor(Also),
+        ])
+        .with_ramp(Duration::from_millis(20))
+    });
+    r.link_monitor(true);
+    r.run(4);
+    let s = r.sources.clone();
+    // Solo the `Also` strip: the `Only` one leaves the monitor and stays off the mix.
+    r.params.send(
+        MixerParams::new(vec![
+            Strip::new(s[0], 1.0).with_monitor(Only),
+            Strip::new(s[1], 1.0).with_monitor(Also).with_solo(true),
+        ])
+        .with_ramp(Duration::from_millis(20)),
+    );
+    let from = r.mon.lock().unwrap().len();
+    r.run(4);
+    assert!(all(&r.last_mon().unwrap(), 0.4));
+    assert!(all(&r.last_main(), 0.4));
+    let mon: Vec<f32> = r.mon.lock().unwrap()[from..]
+        .iter()
+        .flatten()
+        .flatten()
+        .copied()
+        .collect();
+    assert!((mon[0] - 0.6).abs() < 0.001, "{}", mon[0]);
+    let worst = mon
+        .windows(2)
+        .map(|w| (w[1] - w[0]).abs())
+        .fold(0.0, f32::max);
+    assert!(worst <= 0.2 / 960.0 + 1e-6, "{worst}");
+}

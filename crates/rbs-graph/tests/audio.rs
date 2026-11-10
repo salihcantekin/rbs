@@ -624,3 +624,59 @@ fn a_node_sees_which_outputs_are_read_and_a_link_edit_keeps_it() {
     );
     assert_eq!(prepared.load(Ordering::Relaxed), 1);
 }
+
+/// An output whose `prepare` fails, so the plan holds it without an instance.
+struct Broken(NodeDescriptor);
+
+impl Node<()> for Broken {
+    fn descriptor(&self) -> &NodeDescriptor {
+        &self.0
+    }
+    fn prepare(&mut self, _: &mut PrepareCtx<'_, ()>) -> Result<(), NodeError> {
+        Err(NodeError::Permanent("device gone"))
+    }
+    fn release(&mut self, _: &mut PrepareCtx<'_, ()>) {}
+    fn process(&mut self, _: &mut ProcessCtx<'_, ()>) -> Result<(), NodeError> {
+        Ok(())
+    }
+}
+
+#[test]
+fn a_consumer_without_an_instance_does_not_read_its_input() {
+    let split = Split2 {
+        desc: NodeDescriptor::new(
+            NodeTypeId::new("org.rbs.test.split"),
+            NodeKind::Source,
+            vec![],
+            vec![
+                Pin::one("main", LinkKind::Audio),
+                Pin::one("monitor", LinkKind::Audio),
+            ],
+        ),
+        linked: Arc::default(),
+        prepared: Arc::default(),
+    };
+    let linked = Arc::clone(&split.linked);
+    let a = Sink::new(NodeKind::Output);
+    let broken = Broken(NodeDescriptor::new(
+        NodeTypeId::new("org.rbs.test.broken"),
+        NodeKind::Output,
+        vec![Pin::one("in", LinkKind::Audio)],
+        vec![],
+    ));
+    let (mut ctl, mut exec) = channel::<()>(Arc::new(()), ());
+    let mut g = GraphDescription::new();
+    let s = active(&mut g, &split.desc);
+    let ia = active(&mut g, &a.desc);
+    let ib = active(&mut g, &broken.0);
+    g.connect(s, "main", ia, "in").unwrap();
+    g.connect(s, "monitor", ib, "in").unwrap();
+    ctl.adopt(s, Box::new(split)).unwrap();
+    ctl.adopt(ia, Box::new(a)).unwrap();
+    ctl.adopt(ib, Box::new(broken)).unwrap();
+    let _ = ctl.apply(&g);
+    exec.swap_pending();
+    ctl.collect().unwrap().unwrap();
+    exec.run_tick(Tick::of(&cadence(), 0));
+    assert_eq!(*linked.lock().unwrap(), vec![(true, false, false)]);
+}
