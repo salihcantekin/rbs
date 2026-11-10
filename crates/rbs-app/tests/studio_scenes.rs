@@ -752,3 +752,32 @@ fn with_the_program_scene_in_preview_the_program_is_held_until_the_transition() 
     }
     drop(host);
 }
+
+#[test]
+fn a_vertical_canvas_is_added_follows_the_main_program_and_is_removed() {
+    use rbs_app::studio_host::{Command, VerticalCanvas};
+    use rbs_core::media::Size;
+    let Some((host, updates, _api, mut c)) = start() else {
+        return;
+    };
+    let _ = scenes(&mut c);
+    host.send(Command::AddVerticalCanvas(VerticalCanvas {
+        size: Size::new(1080, 1920),
+        follow: true,
+        layout: None,
+    }));
+    let state = next(&updates, |u| match u {
+        Update::Vertical(Some(v)) => Some(v),
+        Update::Error(e) => panic!("{e}"),
+        _ => None,
+    });
+    assert_eq!(state.size, Size::new(1080, 1920));
+    assert!(state.follow);
+    host.send(Command::RemoveVerticalCanvas);
+    next(&updates, |u| match u {
+        Update::Vertical(None) => Some(()),
+        Update::Error(e) => panic!("{e}"),
+        _ => None,
+    });
+    drop(host);
+}
