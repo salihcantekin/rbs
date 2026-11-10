@@ -35,7 +35,8 @@ pub use input::{
 };
 pub use meter::{LevelMeter, Levels};
 pub use mixer::{
-    DEFAULT_RAMP, MIXER_NODE_TYPE, MixerNode, MixerParams, MixerStats, Strip, mixer_descriptor,
+    DEFAULT_RAMP, MIXER_NODE_TYPE, MixerNode, MixerParams, MixerStats, MonitorMode, Strip,
+    mixer_descriptor,
 };
 pub use output::{
     DEFAULT_OUTPUT_TARGET, MAX_OUTPUT_VOLUME, OUTPUT_NODE_TYPE, OUTPUT_VOLUME_RAMP, OutputCounters,

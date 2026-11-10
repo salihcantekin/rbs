@@ -186,7 +186,10 @@ impl<X: Runtime> Executor<X> {
                     links: &schedule.links,
                     sources: &schedule.link_sources,
                 },
-                outputs: Outputs { slots: own },
+                outputs: Outputs {
+                    slots: own,
+                    linked: &schedule.linked[start..start + entry.outputs.len()],
+                },
             };
             let result = catch_unwind(AssertUnwindSafe(|| node.process(&mut ctx)));
             let health = &mut entry.health;
