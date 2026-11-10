@@ -132,6 +132,7 @@ pub fn save(config: &Path, recent: &RecentTargets) -> std::io::Result<()> {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used)] // Tests fail by panicking.
 mod tests {
     use super::*;
 

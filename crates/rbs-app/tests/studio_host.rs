@@ -795,7 +795,10 @@ fn targets_a_source_was_given_are_listed_as_recent_newest_first() {
         _ => None,
     });
     let mics = targets(&host, &rx, SourceKind::AudioInput);
-    assert!(mics.iter().all(|t| t.recent.is_none()), "nothing picked yet");
+    assert!(
+        mics.iter().all(|t| t.recent.is_none()),
+        "nothing picked yet"
+    );
     host.send(Command::AddSource {
         kind: SourceKind::AudioInput,
         target: mics[0].clone(),
