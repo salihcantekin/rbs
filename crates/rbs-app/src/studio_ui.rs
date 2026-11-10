@@ -259,6 +259,9 @@ pub struct StudioUi {
     key_hint: String,
     /// [`st_state`].
     pub st_state: i32,
+    /// The vertical canvas records, and it streams (ADR-0093 decision 6): an output
+    /// profile switch waits for them as for the main ones.
+    vertical_busy: (bool, bool),
     /// The running stream's server host and when it went live.
     st_live: Option<(String, Instant)>,
     /// The stream's connection, as reported last.
@@ -434,6 +437,7 @@ impl StudioUi {
             key_serial: 0,
             key_hint: stream_key::hint(keys),
             st_state: st_state::OFF,
+            vertical_busy: (false, false),
             st_live: None,
             st_link: Link::default(),
             st_note: String::new(),
@@ -2853,6 +2857,12 @@ impl StudioUi {
         if self.st_state != st_state::OFF {
             return Err(format!("End the stream before {doing}."));
         }
+        if self.vertical_busy.0 {
+            return Err(format!("Stop the vertical recording before {doing}."));
+        }
+        if self.vertical_busy.1 {
+            return Err(format!("End the vertical stream before {doing}."));
+        }
         Ok(())
     }
 
@@ -2910,22 +2920,21 @@ impl StudioUi {
     }
 
     /// Hands the vertical canvas's saved recording and stream settings to the studio
-    /// (ADR-0093 decision 6); a section that does not load counts as not saved.
+    /// (ADR-0093 decision 6). A section that does not load counts as not saved; one
+    /// that loads with a problem is sent as it is, so a start says it cannot be used.
     fn send_vertical_profiles(&self) {
-        let usable_record = self
+        let saved_record = self
             .user
             .section::<RecordProfile>(RECORDING_VERTICAL)
             .ok()
-            .flatten()
-            .filter(|p| p.problem().is_none());
-        let usable_stream = self
+            .flatten();
+        let saved_stream = self
             .user
             .section::<StreamProfile>(STREAM_VERTICAL)
             .ok()
-            .flatten()
-            .filter(|p| p.problem().is_none());
-        self.send(Command::SetVerticalProfile(usable_record));
-        self.send(Command::SetVerticalStreamProfile(usable_stream));
+            .flatten();
+        self.send(Command::SetVerticalProfile(saved_record));
+        self.send(Command::SetVerticalStreamProfile(saved_stream));
     }
 
     /// Output profile menu: makes a profile named `name`, with default settings or a
@@ -3351,20 +3360,42 @@ impl StudioUi {
             Update::Recording(r) => self.recording(r, &mut out),
             Update::Stream(u) => self.stream_update(u, &mut out),
             // The vertical canvas's outputs have no live controls yet (they start
-            // through the control API, protocol 1.29): only what went wrong is shown.
-            Update::VerticalRecording(RecordingUpdate::NotStarted(why))
-            | Update::VerticalStream(StreamUpdate::NotStarted(why)) => {
-                out.error = Some(format!("Vertical canvas: {why}"));
+            // through the control API, protocol 1.29): what went wrong is shown, and
+            // whether they run is kept for the profile switch.
+            Update::VerticalRecording(r) => {
+                // A refused start leaves a running one running.
+                match &r {
+                    RecordingUpdate::Started { .. } => self.vertical_busy.0 = true,
+                    RecordingUpdate::Stopped { .. } => self.vertical_busy.0 = false,
+                    _ => {}
+                }
+                let why = match r {
+                    RecordingUpdate::NotStarted(why) => Some(why),
+                    RecordingUpdate::Stopped { failure, .. } => failure,
+                    _ => None,
+                };
+                if let Some(why) = why {
+                    out.error = Some(format!("Vertical canvas: {why}"));
+                }
             }
-            Update::VerticalRecording(RecordingUpdate::Stopped {
-                failure: Some(why), ..
-            })
-            | Update::VerticalStream(StreamUpdate::Ended {
-                failure: Some(why), ..
-            }) => {
-                out.error = Some(format!("Vertical canvas: {why}"));
+            Update::VerticalStream(u) => {
+                match &u {
+                    StreamUpdate::Started { .. } => self.vertical_busy.1 = true,
+                    StreamUpdate::Ended { .. } => self.vertical_busy.1 = false,
+                    _ => {}
+                }
+                let why = match u {
+                    StreamUpdate::NotStarted(why) => Some(why),
+                    StreamUpdate::NoKey => {
+                        Some("no stream key is saved for the vertical stream".to_owned())
+                    }
+                    StreamUpdate::Ended { failure, .. } => failure,
+                    _ => None,
+                };
+                if let Some(why) = why {
+                    out.error = Some(format!("Vertical canvas: {why}"));
+                }
             }
-            Update::VerticalRecording(_) | Update::VerticalStream(_) => {}
             Update::CollectionSwitched { seq, result } => {
                 if let Some(e) = self.collection_switched(seq, result) {
                     out.error = Some(e);

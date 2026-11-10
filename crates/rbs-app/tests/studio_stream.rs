@@ -1363,7 +1363,8 @@ fn the_vertical_canvas_records_and_streams_beside_the_main_one() {
     assert_eq!(busy["error"]["data"]["kind"], "conflict", "{busy}");
     // Ending the vertical stream stops the recording it started (after its tail).
     assert!(c.call("stream.stop", vertical.clone())["result"].is_object());
-    c.event("stream.canvas_state", |d| d["state"] == "idle");
+    let idle = c.event("stream.canvas_state", |d| d["state"] == "idle");
+    let last_seq = idle["params"]["seq"].as_u64().unwrap();
     let path = next_while(
         &rx,
         || clock.advance(END_TAIL_LIMIT * 2),
@@ -1392,8 +1393,24 @@ fn the_vertical_canvas_records_and_streams_beside_the_main_one() {
 
     assert!(c.call("canvas.remove_vertical", none.clone())["result"].is_object());
     next(&rx, |u| matches!(u, Update::Vertical(None)).then_some(()));
-    let gone = c.call("record.status", vertical);
+    let gone = c.call("record.status", vertical.clone());
     assert_eq!(gone["error"]["data"]["kind"], "not_found", "{gone}");
+    // A new vertical canvas starts idle, and its events count on from the old ones.
+    let added = c.call(
+        "canvas.add_vertical",
+        serde_json::json!({"width": 720, "height": 1280}),
+    );
+    assert!(added["result"].is_object(), "{added}");
+    next(&rx, |u| {
+        matches!(u, Update::Vertical(Some(_))).then_some(())
+    });
+    let status = c.call("stream.status", vertical.clone());
+    assert_eq!(status["result"]["data"]["state"], "idle", "{status}");
+    assert!(status["result"]["data"]["last"].is_null(), "{status}");
+    assert!(c.call("stream.start", vertical.clone())["result"].is_object());
+    let live = c.event("stream.canvas_state", |d| d["state"] == "live");
+    assert!(live["params"]["seq"].as_u64().unwrap() > last_seq, "{live}");
+    assert!(c.call("stream.stop", vertical)["result"].is_object());
     assert!(c.call("record.stop", none.clone())["result"].is_object());
     assert!(c.call("stream.stop", none)["result"].is_object());
     drop(host);

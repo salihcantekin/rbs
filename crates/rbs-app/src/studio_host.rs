@@ -3435,12 +3435,10 @@ impl Host {
     }
 
     /// The vertical canvas is gone: its outputs' states go with it (no event), and a
-    /// new one starts idle (protocol 1.29).
+    /// new one starts idle (protocol 1.29). The `seq` counters are kept, so a client
+    /// never takes a new canvas's events for older ones.
     fn forget_vertical_outputs(&mut self) {
-        let c = OutputCanvas::Vertical;
-        self.outs[slot(c)] = CanvasOutputs::default();
-        self.events.forget(canvas_key(Topic::RecordCanvasState, c));
-        self.events.forget(canvas_key(Topic::StreamCanvasState, c));
+        self.outs[slot(OutputCanvas::Vertical)] = CanvasOutputs::default();
     }
 
     /// A recording runs on either canvas.
@@ -3678,8 +3676,12 @@ impl Host {
             ));
         }
         let key = self.keys.read(&self.key_account_of(c)).map_err(|e| {
+            let which = match c {
+                OutputCanvas::Main => "",
+                OutputCanvas::Vertical => " of the vertical stream",
+            };
             format!(
-                "The stream key could not be read from {}: {e}",
+                "The stream key{which} could not be read from {}: {e}",
                 self.keys.place()
             )
         })?;
@@ -7022,7 +7024,11 @@ impl ApiTarget<'_> {
                     if let Some(why) = profile.problem() {
                         return Err(ApiError::new(ErrorKind::InvalidParams, why));
                     }
-                    if host.outs[0].recording.is_some() && profile != host.profile {
+                    // A vertical recording without settings of its own runs on these.
+                    let uses = host.outs[0].recording.is_some()
+                        || (host.vertical_profile.is_none()
+                            && host.outs[slot(OutputCanvas::Vertical)].recording.is_some());
+                    if uses && profile != host.profile {
                         return Err(ApiError::new(
                             ErrorKind::Conflict,
                             "stop the recording before changing its settings",
