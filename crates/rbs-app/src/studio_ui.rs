@@ -19,7 +19,7 @@ use rbs_app::stream_profile::{self, SRT_DEFAULT_LATENCY_MS, SRT_LATENCIES_MS, St
 use rbs_app::studio_host::{
     Command, CropRegion, EncoderInfo, EncoderOptions, RecordRequest, RecordingUpdate, SceneList,
     SourceKind, SourceRow, SourceStatus, Stats, StreamRequest, StreamUpdate, StudioHost, Target,
-    Update,
+    TransformOp, Update,
 };
 use rbs_app::user_session::{RECORDING, STREAM, UserSession};
 use rbs_audio::LevelMeter;
@@ -1364,6 +1364,15 @@ impl StudioUi {
         });
     }
 
+    /// Flip, turn, fit or centre a source's picture (ADR-0084).
+    pub fn transform_source(&mut self, id: i32, op: TransformOp) {
+        self.deleted.clear();
+        self.send(Command::TransformSource {
+            id: SourceId::from_raw(id as u32),
+            op,
+        });
+    }
+
     /// Mute or unmute a source's sound (the Mixer row's speaker, Properties' Mute).
     pub fn set_source_muted(&mut self, id: i32, muted: bool) {
         self.send(Command::SetSourceMuted {
@@ -2586,6 +2595,8 @@ impl StudioUi {
                             mixer_hidden: h.hidden,
                             picture: false,
                             audio: true,
+                            sized: false,
+                            flip: rbs_scene::FlipState::default(),
                         });
                     }
                 }
@@ -2608,6 +2619,8 @@ impl StudioUi {
             mixer_hidden: row.audio.mixer_hidden,
             picture: row.layout.is_some(),
             audio: row.kind.is_some_and(SourceKind::is_audio),
+            sized: row.picture.is_some(),
+            flip: row.layout.map(|l| l.flip_state()).unwrap_or_default(),
         })
     }
 
@@ -3276,6 +3289,8 @@ impl StudioUi {
                     pic_w: r.picture.map_or(0, |p| p.0 as i32),
                     pic_h: r.picture.map_or(0, |p| p.1 as i32),
                     locked: r.locked,
+                    flip_h: r.layout.is_some_and(|l| l.flip_state().horizontal),
+                    flip_v: r.layout.is_some_and(|l| l.flip_state().vertical),
                     audio: r.kind.is_some_and(SourceKind::is_audio),
                     muted: r.audio.muted,
                     volume: fader::position_of(r.audio.volume),
@@ -3542,6 +3557,10 @@ pub struct SourceFacts {
     pub picture: bool,
     /// It makes sound only (it can be muted in the Mixer).
     pub audio: bool,
+    /// Its picture size is known, so it can be fitted or reset (ADR-0084).
+    pub sized: bool,
+    /// Its picture is mirrored left to right or top to bottom as seen on the canvas.
+    pub flip: rbs_scene::FlipState,
 }
 
 /// One heard source as the Mixer's menus ask about it (ADR-0080).
@@ -3775,7 +3794,7 @@ fn source_icon(kind: Option<SourceKind>) -> &'static str {
 /// border, 6 crop, 7 shown or hidden, 8 lock, 9 source rename, 10 scene added, 11
 /// scene removed, 12 scene renamed (the name is the scene's, or the old name), 13
 /// filters changed, 14 removed from one scene, 15 made global or moved back into a
-/// scene, 16 look applied, 17 source pointed at another target.
+/// scene, 16 look applied, 17 source pointed at another target, 18 flipped, turned, fitted or centred.
 fn step_view(step: Option<&StepInfo>) -> (i32, &str) {
     match step {
         None => (0, ""),
@@ -3798,6 +3817,7 @@ fn step_view(step: Option<&StepInfo>) -> (i32, &str) {
                 EditKind::Global => 15,
                 EditKind::Look => 16,
                 EditKind::Retarget => 17,
+                EditKind::Transform => 18,
             },
             s.name.as_str(),
         ),

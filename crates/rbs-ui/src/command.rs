@@ -208,6 +208,13 @@ const fn target(name: &'static str) -> Param {
 /// collection is in use (as `scene.select`'s, ADR-0060).
 const COLLECTION: Param = target("collection");
 
+/// The mirror axis of `item.flip`.
+const FLIP_AXIS: Param = Param {
+    name: "axis",
+    ty: ParamType::OneOf(&["horizontal", "vertical"]),
+    required: true,
+};
+
 const fn action(method: &'static str) -> Kind {
     Kind::Action { method }
 }
@@ -566,6 +573,70 @@ pub const ENTRIES: &[Entry] = &[
         },
         params: &[target("item"), COLLECTION],
         checkable: true,
+    },
+    Entry {
+        id: "item.flip",
+        title: "Flip",
+        tooltip: "Mirror the source's picture on the canvas, as you see it",
+        icon: Some("flip-h"),
+        shortcut: None,
+        menu: Menu::Source,
+        kind: action("item.flip"),
+        params: &[target("item"), COLLECTION, FLIP_AXIS],
+        checkable: true,
+    },
+    Entry {
+        id: "item.rotate",
+        title: "Rotate",
+        tooltip: "Turn the source's picture by a quarter or half circle",
+        icon: Some("rotate-cw"),
+        shortcut: None,
+        menu: Menu::Source,
+        kind: Kind::Picker {
+            method: "item.rotate",
+            param: "degrees",
+        },
+        params: &[target("item"), COLLECTION, choice("degrees")],
+        checkable: false,
+    },
+    Entry {
+        id: "item.fit",
+        title: "Fit to canvas",
+        tooltip: "Fit, fill or stretch the source's picture to the canvas",
+        icon: Some("fit"),
+        shortcut: None,
+        menu: Menu::Source,
+        kind: Kind::Picker {
+            method: "item.fit",
+            param: "mode",
+        },
+        params: &[target("item"), COLLECTION, choice("mode")],
+        checkable: false,
+    },
+    Entry {
+        id: "item.align",
+        title: "Center",
+        tooltip: "Center the source's picture on the canvas",
+        icon: Some("center"),
+        shortcut: None,
+        menu: Menu::Source,
+        kind: Kind::Picker {
+            method: "item.align",
+            param: "axis",
+        },
+        params: &[target("item"), COLLECTION, choice("axis")],
+        checkable: false,
+    },
+    Entry {
+        id: "item.reset_transform",
+        title: "Reset transform",
+        tooltip: "Undo flips and rotation and show the picture at its own size",
+        icon: Some("reset"),
+        shortcut: None,
+        menu: Menu::Source,
+        kind: action("item.reset_transform"),
+        params: &[target("item"), COLLECTION],
+        checkable: false,
     },
     Entry {
         id: "source.muted.toggle",
@@ -1073,6 +1144,13 @@ pub const MENU_LAYOUT: &[(Menu, &[&str])] = &[
             "source.muted.toggle",
             "source.mixer_hidden.toggle",
             "|",
+            "item.flip?axis=horizontal",
+            "item.flip?axis=vertical",
+            "item.rotate",
+            "item.fit",
+            "item.align",
+            "item.reset_transform",
+            "|",
             "source.rename",
             "item.remove",
             "source.delete",
@@ -1102,6 +1180,9 @@ pub const NOT_IN_MENU: &[&str] = &["scene.position", "ui.layout.rail_size"];
 pub fn icon(id: &CommandId, e: &Entry) -> Option<&'static str> {
     if let ("ui.layout.studio_rail", Some("below")) = (e.id, id.param("at")) {
         return Some("rail-below");
+    }
+    if let ("item.flip", Some("vertical")) = (e.id, id.param("axis")) {
+        return Some("flip-v");
     }
     match (e.id, id.param("area")) {
         ("ui.area.toggle", Some("left")) => Some("panel-left"),
@@ -1426,6 +1507,13 @@ pub const CONTEXT_LAYOUT: &[(Context, &[&str])] = &[
     (
         Context::Source,
         &[
+            "item.flip?axis=horizontal",
+            "item.flip?axis=vertical",
+            "item.rotate",
+            "item.fit",
+            "item.align",
+            "item.reset_transform",
+            "|",
             "item.visible.toggle",
             "item.locked.toggle",
             "source.muted.toggle",
@@ -1878,6 +1966,13 @@ mod tests {
         assert_eq!(
             ids(&source),
             [
+                "item.flip?axis=horizontal&item=40",
+                "item.flip?axis=vertical&item=40",
+                "[Rotate]",
+                "[Fit to canvas]",
+                "[Center]",
+                "item.reset_transform?item=40",
+                "|",
                 "item.visible.toggle?item=40",
                 "item.locked.toggle?item=40",
                 "|",
@@ -1889,14 +1984,14 @@ mod tests {
             ]
         );
         assert!(matches!(
-            &source[0],
+            &source[7],
             MenuItem::Command {
                 checked: Some(true),
                 ..
             }
         ));
         assert!(matches!(
-            &source[4],
+            &source[11],
             MenuItem::Command { title, .. } if title == "Properties"
         ));
         // A picker without its choice is a submenu; with it, one item with the

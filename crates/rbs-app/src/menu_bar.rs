@@ -8,11 +8,13 @@
 //! and checked states, a picker's choices) comes from [`Values`], indexed in the same
 //! order, through the `Menus` global.
 
+use rbs_scene::{CenterAxis, FitMode};
 use rbs_ui::command::{CommandId, CommandState, Kind, MenuItem, menus};
 use rbs_ui::layout::RailAt;
 use rbs_ui::panel::PanelId;
 use rbs_ui::workspace::{Side, Workspace};
 
+use crate::studio_host::TransformOp;
 use crate::studio_ui::{SourceFacts, StudioUi, rec_state, st_state};
 
 /// The run-time values of the menu bar, in the generated items' order: one entry
@@ -351,6 +353,20 @@ impl CommandState for Shown<'_> {
                 self.running()?;
                 self.source(id).map(|_| ())
             }
+            "item.flip" | "item.rotate" | "item.align" | "item.fit" | "item.reset_transform" => {
+                self.running()?;
+                let f = self.source(id)?;
+                if !f.picture {
+                    return Err("The source has no picture.".to_owned());
+                }
+                if f.locked {
+                    return Err("Unlock the source to change its transform.".to_owned());
+                }
+                if matches!(id.base(), "item.fit" | "item.reset_transform") && !f.sized {
+                    return Err("The source has no picture yet.".to_owned());
+                }
+                Ok(())
+            }
             "item.locked.toggle" => {
                 self.running()?;
                 if self.source(id)?.picture {
@@ -491,6 +507,11 @@ impl CommandState for Shown<'_> {
                     && self.workspace.studio_rail() == rail_at(id)
             }
             "canvas.studio_mode.toggle" => self.studio.studio_mode,
+            "item.flip" => self.source(id).is_ok_and(|f| match id.param("axis") {
+                Some("horizontal") => f.flip.horizontal,
+                Some("vertical") => f.flip.vertical,
+                _ => false,
+            }),
             "item.visible.toggle" => self.source(id).is_ok_and(|f| f.visible),
             "item.locked.toggle" => self.source(id).is_ok_and(|f| f.locked),
             "source.muted.toggle" => self.source(id).is_ok_and(|f| f.muted),
@@ -519,6 +540,21 @@ impl CommandState for Shown<'_> {
             "profile.select" => self.studio.library_choices(false),
             "collection.select" => self.studio.library_choices(true),
             "scene.select" => self.studio.scene_choices(),
+            "item.rotate" => vec![
+                ("90° clockwise".into(), "90".into(), false),
+                ("90° counter-clockwise".into(), "-90".into(), false),
+                ("180°".into(), "180".into(), false),
+            ],
+            "item.fit" => vec![
+                ("Fit".into(), "fit".into(), false),
+                ("Fill".into(), "fill".into(), false),
+                ("Stretch".into(), "stretch".into(), false),
+            ],
+            "item.align" => vec![
+                ("Both".into(), "both".into(), false),
+                ("Horizontally".into(), "horizontal".into(), false),
+                ("Vertically".into(), "vertical".into(), false),
+            ],
             "source.add" => self
                 .studio
                 .kind_codes()
@@ -852,6 +888,8 @@ pub enum Run {
     SourceVisible(i32, bool),
     /// Lock (`true`) or unlock the source with this id.
     SourceLocked(i32, bool),
+    /// Flip, turn, fit or centre the source with this id (ADR-0084).
+    Transform(i32, TransformOp),
     /// Mute (`true`) or unmute the source with this id.
     SourceMuted(i32, bool),
     /// Hide (`true`) or show the source with this id in the Mixer (ADR-0080).
@@ -890,6 +928,28 @@ pub fn run(text: &str, state: &Shown<'_>) -> Option<Run> {
             "profile.select" => Run::Profile(value),
             "collection.select" => Run::Collection(value),
             "scene.select" => Run::Scene(value.parse().ok()?),
+            "item.rotate" => Run::Transform(
+                state.source(&id).ok()?.id,
+                TransformOp::Turn(value.parse::<i32>().ok()? as f32),
+            ),
+            "item.fit" => Run::Transform(
+                state.source(&id).ok()?.id,
+                TransformOp::Fit(match value.as_str() {
+                    "fit" => FitMode::Fit,
+                    "fill" => FitMode::Fill,
+                    "stretch" => FitMode::Stretch,
+                    _ => return None,
+                }),
+            ),
+            "item.align" => Run::Transform(
+                state.source(&id).ok()?.id,
+                TransformOp::Center(match value.as_str() {
+                    "both" => CenterAxis::Both,
+                    "horizontal" => CenterAxis::Horizontal,
+                    "vertical" => CenterAxis::Vertical,
+                    _ => return None,
+                }),
+            ),
             _ => return None,
         });
     }
@@ -930,6 +990,15 @@ pub fn run(text: &str, state: &Shown<'_>) -> Option<Run> {
         "item.remove" => Run::RemoveFromScene(state.source(&id).ok()?.id),
         "item.visible.toggle" => Run::SourceVisible(state.source(&id).ok()?.id, !on),
         "item.locked.toggle" => Run::SourceLocked(state.source(&id).ok()?.id, !on),
+        "item.flip" => Run::Transform(
+            state.source(&id).ok()?.id,
+            match id.param("axis")? {
+                "horizontal" => TransformOp::FlipHorizontal,
+                "vertical" => TransformOp::FlipVertical,
+                _ => return None,
+            },
+        ),
+        "item.reset_transform" => Run::Transform(state.source(&id).ok()?.id, TransformOp::Reset),
         "source.muted.toggle" => Run::SourceMuted(state.source(&id).ok()?.id, !on),
         "source.mixer_hidden.toggle" => Run::SourceMixerHidden(state.source(&id).ok()?.id, !on),
         "mixer.hide_all" => Run::MixerBulk(MixerBulk::HideAll),

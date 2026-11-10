@@ -216,9 +216,18 @@ mod tests {
     fn items_carry_ids_states_and_submenus() {
         let target = target("source=2&item=3").unwrap();
         let source = items(Context::Source, &target, &All);
-        assert_eq!(source[0].id, "item.visible.toggle?item=3");
-        assert!(source[0].checkable && source[0].checked);
-        assert_eq!(source[0].icon, "", "a checkmark takes the icon's place");
+        let visible = source
+            .iter()
+            .find(|i| i.id == "item.visible.toggle?item=3")
+            .unwrap();
+        assert!(visible.checkable && visible.checked);
+        assert_eq!(visible.icon, "", "a checkmark takes the icon's place");
+        assert_eq!(source[0].id, "item.flip?axis=horizontal&item=3");
+        assert!(
+            source
+                .iter()
+                .any(|i| i.kind == Kind::Choices && i.choices.len() == 1)
+        );
         assert!(
             source
                 .iter()

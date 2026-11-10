@@ -437,6 +437,7 @@ impl App {
             Run::RemoveFromScene(id) => self.studio.remove_from_scene(id),
             Run::SourceVisible(id, on) => self.studio.set_source_visible(id, on),
             Run::SourceLocked(id, on) => self.studio.set_source_locked(id, on),
+            Run::Transform(id, op) => self.studio.transform_source(id, op),
             Run::SourceMuted(id, on) => self.studio.set_source_muted(id, on),
             Run::SourceMixerHidden(id, on) => self.studio.set_source_mixer_hidden(id, on),
             Run::MixerBulk(bulk) => match bulk {
@@ -2527,6 +2528,23 @@ fn install_studio(g: &Studio<'_>, ctx: &Ctx) {
                              r: i32,
                              b: i32| {
         app.studio.set_source_crop(id, [l, t, r, b]);
+    });
+    on!(on_transform_source, |app, id: i32, op: i32| {
+        use rbs_scene::{CenterAxis, FitMode};
+        let op = match op {
+            0 => studio_host::TransformOp::FlipHorizontal,
+            1 => studio_host::TransformOp::FlipVertical,
+            2 => studio_host::TransformOp::Turn(90.0),
+            3 => studio_host::TransformOp::Turn(-90.0),
+            4 => studio_host::TransformOp::Turn(180.0),
+            5 => studio_host::TransformOp::Fit(FitMode::Fit),
+            6 => studio_host::TransformOp::Fit(FitMode::Fill),
+            7 => studio_host::TransformOp::Fit(FitMode::Stretch),
+            8 => studio_host::TransformOp::Center(CenterAxis::Both),
+            9 => studio_host::TransformOp::Reset,
+            _ => return,
+        };
+        app.studio.transform_source(id, op);
     });
     on!(on_set_source_region, |app, id: i32, region: i32| {
         app.studio.set_source_region(id, region);

@@ -39,6 +39,8 @@ pub enum EditKind {
     Style,
     /// A source's picture was cropped (ADR-0058).
     Crop,
+    /// A source was flipped, turned, fitted or centred (ADR-0084).
+    Transform,
     /// A source was shown or hidden in the scene.
     Visibility,
     /// A source was locked or unlocked (ADR-0059).

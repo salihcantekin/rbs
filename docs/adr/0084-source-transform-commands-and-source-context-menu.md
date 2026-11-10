@@ -48,3 +48,7 @@ Forces: commands come from the registry (ADR-0050), so a shortcut, the palette a
 
 - 2026-11-09, independent AI session (round 1, reviewing only the ADRs, specs and code): changes requested. Concerns covered contract details, claims about existing code, hot-path and zero-cost rules, and number allocation across these ADRs; each was resolved in the text above (the numbers of protocol minors and scene formats are now assigned at merge time, not claimed by ADRs).
 - Round 2 (verification by a different fresh reviewer) and the owner's approval are still needed before the status can become Accepted (ADR-0014).
+
+## Implementation notes
+
+- 2026-11-10: registry ids are parameterised instead of one id per variant: `item.flip?axis=`, `item.rotate`, `item.fit` and `item.align` (pickers, shown as submenus), `item.reset_transform`. `Reset rotation` is not a separate command (Reset transform and the rotation field cover it), and `item.align` takes `axis` of `both`, `horizontal` or `vertical`. The Arrange, Source and Remove menu categories and multi-selection follow in later changes; protocol minor 1.16 was taken at merge time.

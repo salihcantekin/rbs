@@ -192,6 +192,23 @@ fn every_request() -> Vec<Request> {
             crop: [760, 180, 760, 180],
             keep_scale: false,
         })),
+        c(Command::ItemFlip(FlipItem {
+            item: 7,
+            axis: Axis::Vertical,
+        })),
+        c(Command::ItemRotate(RotateItem {
+            item: 7,
+            degrees: -90,
+        })),
+        c(Command::ItemFit(FitItem {
+            item: 7,
+            mode: FitKind::Fill,
+        })),
+        c(Command::ItemAlign(AlignItem {
+            item: 7,
+            axis: Some(AlignAxis::Horizontal),
+        })),
+        c(Command::ItemResetTransform(ResetItemTransform { item: 7 })),
         c(Command::SceneList),
         c(Command::SceneAdd(AddScene { name: None })),
         c(Command::SceneRemove(SceneRef { scene: 2 })),
