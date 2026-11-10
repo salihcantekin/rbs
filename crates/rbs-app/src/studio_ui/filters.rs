@@ -122,6 +122,14 @@ fn field_data(ty: AnyFilter, values: &Values) -> Vec<FilterFieldData> {
                 swatch: slint::Color::from_argb_u8(c[3], c[0], c[1], c[2]),
                 ..FilterFieldData::default()
             },
+            // A source picker (ADR-0095); the editor lists the collection's sound sources.
+            (FieldKind::Source, Value::Source(id)) => FilterFieldData {
+                label: f.label.into(),
+                help: f.help.into(),
+                kind: 3,
+                position: id.map_or(-1.0, |id| id as f32),
+                ..FilterFieldData::default()
+            },
             _ => FilterFieldData {
                 label: f.label.into(),
                 help: f.help.into(),

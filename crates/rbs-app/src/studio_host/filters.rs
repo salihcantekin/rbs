@@ -156,6 +156,7 @@ fn json_of(v: Value) -> serde_json::Value {
             .and_then(serde_json::Number::from_f64)
             .map_or(serde_json::Value::Null, serde_json::Value::Number),
         Value::Color(c) => serde_json::Value::String(color_text(c)),
+        Value::Source(id) => id.map_or(serde_json::Value::Null, serde_json::Value::from),
         // A choice needs its field to name the option: see `json_of_field`.
         #[allow(unreachable_patterns)]
         _ => serde_json::Value::Null,
@@ -257,6 +258,10 @@ fn api_field(f: &Field) -> api::FilterField {
             field.kind = "toggle".to_owned();
             field.default = json_of(Value::Toggle(default));
         }
+        FieldKind::Source => {
+            field.kind = "source".to_owned();
+            field.default = json_of(Value::Source(None));
+        }
         FieldKind::Choice { options, .. } => {
             field.kind = "choice".to_owned();
             field.options = Some(
@@ -327,6 +332,11 @@ fn pairs(
                     parse_color(t).map(Value::Color)
                 }
                 (FieldKind::Toggle { .. }, serde_json::Value::Bool(b)) => Some(Value::Toggle(*b)),
+                (FieldKind::Source, serde_json::Value::Null) => Some(Value::Source(None)),
+                (FieldKind::Source, serde_json::Value::Number(n)) => n
+                    .as_u64()
+                    .and_then(|id| u32::try_from(id).ok())
+                    .map(|id| Value::Source(Some(id))),
                 (FieldKind::Choice { options, .. }, serde_json::Value::String(t)) => options
                     .iter()
                     .position(|(key, _)| key == t)
