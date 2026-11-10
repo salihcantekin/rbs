@@ -11,7 +11,7 @@ use rbs_graph::node::NodeTypeId;
 use rbs_scene::SceneCollection;
 use rbs_scene::model::{
     Border, Crop, Fallback, ItemContent, ItemStyle, Layout, SceneScope, SettingValue, Settings,
-    Shadow, Shape,
+    Shadow, Shape, SourceMonitor,
 };
 use rbs_user_data::document;
 use rbs_user_data::{DataError, UserData};
@@ -55,6 +55,8 @@ fn show() -> SceneCollection {
     col.set_source_muted(mic, true).unwrap();
     col.set_source_sync_offset(mic, -40).unwrap();
     col.set_source_mixer_hidden(mic, true).unwrap();
+    col.set_source_monitor(mic, SourceMonitor::Only).unwrap();
+    col.set_source_monitor(cam, SourceMonitor::Also).unwrap();
     let hinted = col.source(screen).unwrap().settings.clone();
     col.set_source_settings_and_hints(
         screen,
@@ -165,7 +167,9 @@ fn a_collection_round_trips_exactly_with_its_counters() {
         "enabled = false",
         "visible = false",
         "canvas = 0",
-        "format = 9",
+        "format = 10",
+        "monitor = \"only\"",
+        "monitor = \"also\"",
         "follow = 0",
         "[canvases.fallback]",
         "target_app = \"Terminal\"",
@@ -253,6 +257,18 @@ fn a_follow_in_a_format_before_9_is_refused() {
     // `invalid` writes format 1: the keys of format 9 do not belong there.
     let why = invalid(&format!("{CANVAS}follow = 0\n"));
     assert!(why.contains("follow"), "{why}");
+}
+
+#[test]
+fn a_monitor_in_a_format_before_10_is_refused() {
+    let why = invalid(&format!("{SOURCE}monitor = \"also\"\n"));
+    assert!(why.contains("monitor"), "{why}");
+}
+
+#[test]
+fn an_unknown_monitor_mode_is_refused() {
+    let text = format!("format = 10\nkind = \"scene-collection\"\n{SOURCE}monitor = \"solo\"\n");
+    assert!(document::parse::<SceneCollection>(&text).is_err());
 }
 
 const CANVAS: &str =

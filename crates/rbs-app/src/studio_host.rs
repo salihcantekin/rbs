@@ -62,6 +62,7 @@ pub mod replay;
 
 use crate::canvas_profile::CanvasProfile;
 use crate::edit_history::{EditKind, History, HistoryError, StepInfo};
+use crate::monitor_settings::{MonitorControl, MonitorSettings, MonitorStep};
 use crate::recent_targets::{Recent, RecentTargets};
 use crate::record_profile::{API_PROFILE_ID, RecordProfile};
 use crate::remote_control::ApiTokens;
@@ -1546,6 +1547,9 @@ pub struct HostConfig {
     /// The config folder where the recent targets are kept
     /// ([`crate::recent_targets`]); `None`: they are kept in memory only.
     pub recent_dir: Option<PathBuf>,
+    /// The monitor output's device and volume (ADR-0097; `monitor.toml`). The device
+    /// is opened only while a source is monitored or soloed.
+    pub monitor: MonitorSettings,
     /// A step to panic at once (tests only, ADR-0055).
     #[cfg(feature = "fault-injection")]
     #[doc(hidden)]
@@ -1574,6 +1578,7 @@ impl HostConfig {
             autosave: None,
             virtual_camera: None,
             recent_dir: None,
+            monitor: MonitorSettings::default(),
             #[cfg(feature = "fault-injection")]
             fault: None,
         }
@@ -1916,6 +1921,11 @@ struct Host {
     camera: Option<VirtualCameraSettings>,
     /// When the camera's counters go out next; `None` while it does not send.
     camera_due: Option<Timestamp>,
+    /// The monitor's device and volume, and when its device is opened (ADR-0097).
+    monitor: MonitorSettings,
+    monitor_control: MonitorControl,
+    /// Why the monitor device last failed to open or play, until it plays again.
+    monitor_problem: Option<String>,
     /// The camera as the app's settings know it; `None` until the app sent it.
     camera_setup: Option<CameraSetup>,
     /// The `vcam.changed` state last published.
@@ -2158,6 +2168,9 @@ fn round(
     if let Some(left) = host.report_camera(now, notify) {
         wait = wait.min(left);
     }
+    if let Some(left) = host.drive_monitor(now) {
+        wait = wait.min(left);
+    }
     if let Some(left) = host.report_replay(now, notify) {
         wait = wait.min(left);
     }
@@ -2288,6 +2301,9 @@ fn start(
             camera_factory: config.virtual_camera.map(|f| f.0),
             camera: None,
             camera_due: None,
+            monitor: config.monitor,
+            monitor_control: MonitorControl::default(),
+            monitor_problem: None,
             camera_setup: None,
             camera_published: None,
             replay: replay::ReplayHost::new(),
@@ -3955,6 +3971,54 @@ impl Host {
         // A failure of the camera's node, or its end, is a change of state.
         self.camera_changed();
         Some(STATS_INTERVAL)
+    }
+
+    /// Opens, closes and retries the monitor device as the studio needs it (ADR-0097
+    /// decisions 4 and 7): open on the control thread only while a source is monitored
+    /// or soloed, closed when none is, a failed device closed and opened again with
+    /// back-off. The mix and the outputs never wait for it. Returns the time until the
+    /// next attempt, if one waits.
+    fn drive_monitor(&mut self, now: Timestamp) -> Option<Duration> {
+        let wanted = self.studio.monitor_wanted();
+        let state = self.studio.monitor();
+        let failure = state.as_ref().and_then(|m| m.failure.clone());
+        let (step, wait) =
+            self.monitor_control
+                .step(wanted, state.is_some(), failure.is_some(), now);
+        match step {
+            MonitorStep::Keep => {
+                if state.is_some() && failure.is_none() {
+                    self.monitor_problem = None;
+                }
+                wait
+            }
+            MonitorStep::Close => {
+                if failure.is_some() {
+                    self.monitor_problem = failure;
+                }
+                self.studio.stop_monitor();
+                wait
+            }
+            MonitorStep::Open => {
+                let opened = self
+                    .adapters
+                    .sources
+                    .open_monitor(self.monitor.device.as_deref())
+                    .map_err(|e| e.to_string())
+                    .and_then(|(output, _, _)| {
+                        self.studio
+                            .start_monitor(output, self.monitor.volume)
+                            .map_err(|e| e.to_string())
+                    });
+                match opened {
+                    Ok(()) => None,
+                    Err(why) => {
+                        self.monitor_problem = Some(why);
+                        Some(self.monitor_control.failed(now))
+                    }
+                }
+            }
+        }
     }
 
     /// Tells the UI when the stream's connection changed.

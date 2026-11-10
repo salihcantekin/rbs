@@ -393,3 +393,131 @@ mod fixture {
         }
     }
 }
+
+#[test]
+fn outputs_are_listed_with_a_device_key_and_open_in_standby() {
+    use rbs_audio_io::{AudioBackend, AudioIoError, EndpointId, EndpointKind, OutputRequest};
+    use rbs_audio_io_wasapi::{WasapiAudioBackend, owned_resources};
+
+    let backend = WasapiAudioBackend::new();
+    let missing = OutputRequest::new(EndpointId::new("play:missing"));
+    if cfg!(not(windows)) {
+        assert!(matches!(
+            backend.open_output(&missing),
+            Err(AudioIoError::Unsupported(_))
+        ));
+        return;
+    }
+    assert!(matches!(
+        backend.open_output(&missing),
+        Err(AudioIoError::EndpointNotFound)
+    ));
+    let Ok(outputs) = backend.enumerate(EndpointKind::Output) else {
+        panic!("WASAPI lists outputs");
+    };
+    let loopbacks = backend
+        .enumerate(EndpointKind::OutputLoopback)
+        .unwrap_or_default();
+    for endpoint in &outputs {
+        assert_eq!(endpoint.kind, EndpointKind::Output);
+        assert!(endpoint.device_key.is_some(), "{endpoint:?}");
+        // The device's loopback, if listed, shares the key.
+        let native = endpoint.id.as_str().trim_start_matches("play:");
+        if let Some(lb) = loopbacks
+            .iter()
+            .find(|l| l.id.as_str().trim_start_matches("loopback:") == native)
+        {
+            assert_eq!(lb.device_key, endpoint.device_key);
+        }
+    }
+    if let Some(endpoint) = outputs.into_iter().next() {
+        let mut output = backend
+            .open_output(&OutputRequest::new(endpoint.id))
+            .unwrap_or_else(|e| panic!("open_output: {e}"));
+        assert!(output.producer().is_some());
+        assert!(output.producer().is_none());
+        // Standby: nothing owned until `start`.
+        assert_eq!(owned_resources(), 0);
+        assert_eq!(output.stats().played, 0);
+    }
+    assert_eq!(owned_resources(), 0);
+}
+
+#[test]
+#[ignore = "slow: plays about 0.5 s of silence on the default output; needs RBS_AUDIO_HW=1"]
+fn slow_hardware_output() {
+    if std::env::var_os("RBS_AUDIO_HW").is_none_or(|v| v.is_empty()) {
+        eprintln!("RBS_AUDIO_HW is not set: hardware output skipped");
+        return;
+    }
+    #[cfg(windows)]
+    hardware_output::run();
+    #[cfg(not(windows))]
+    panic!("RBS_AUDIO_HW is set but WASAPI needs Windows");
+}
+
+#[cfg(windows)]
+mod hardware_output {
+    use std::time::{Duration, Instant};
+
+    use rbs_audio_io::{AudioBackend, AudioOutput, EndpointKind, OutputRequest};
+    use rbs_audio_io_wasapi::{WasapiAudioBackend, owned_resources};
+
+    /// Hang guard only: the device asks for audio every few milliseconds.
+    const GUARD: Duration = Duration::from_secs(5);
+
+    fn wait_for(output: &dyn AudioOutput, frames: u64) {
+        let start = Instant::now();
+        while output.stats().played + output.stats().silence < frames {
+            assert!(
+                start.elapsed() < GUARD,
+                "the device did not pull {frames} frames"
+            );
+            std::thread::sleep(Duration::from_millis(5));
+        }
+    }
+
+    pub(super) fn run() {
+        let backend = WasapiAudioBackend::new();
+        let endpoint = backend
+            .enumerate(EndpointKind::Output)
+            .ok()
+            .and_then(|l| l.into_iter().find(|e| e.is_default))
+            .unwrap_or_else(|| panic!("no default output"));
+        eprintln!("output: {} {:?}", endpoint.name, endpoint.format);
+        let mut output = backend
+            .open_output(&OutputRequest::new(endpoint.id.clone()))
+            .unwrap_or_else(|e| panic!("open_output: {e}"));
+        let mut producer = output.producer().unwrap_or_else(|| panic!("no producer"));
+        let rate = u64::from(output.format().sample_rate.hz());
+        output.start().unwrap_or_else(|e| panic!("start: {e}"));
+        assert!(owned_resources() > 0);
+        // Half a second of silence, in the ring's capacity.
+        let chunk = vec![0.0_f32; 1_024 * producer.channels()];
+        let mut written = 0_u64;
+        while written < rate / 2 {
+            while producer.space() < 1_024 {
+                wait_for(
+                    &*output,
+                    output.stats().played + output.stats().silence + 256,
+                );
+            }
+            written += producer.push(&chunk) as u64;
+        }
+        wait_for(&*output, written);
+        let s = output.stats();
+        eprintln!("stats {s:?}, latency {} ns", output.latency_ns());
+        assert!(s.played > 0, "{s:?}");
+        assert!(s.played + s.dropped <= s.written, "{s:?}");
+        assert!(output.status().is_ok());
+        assert!(output.latency_ns() > 0);
+        output.stop();
+        assert_eq!(owned_resources(), 0);
+        // It starts again.
+        output.start().unwrap_or_else(|e| panic!("restart: {e}"));
+        let before = output.stats().played + output.stats().silence;
+        wait_for(&*output, before + 256);
+        output.stop();
+        assert_eq!(owned_resources(), 0);
+    }
+}

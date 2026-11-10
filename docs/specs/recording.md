@@ -169,12 +169,23 @@ impl Studio {
         settings: VirtualCameraSettings) -> Result<(), VcamError>; // ADR-0066
     pub fn stop_virtual_camera(&mut self) -> bool;    // false when not sending
     pub fn virtual_camera(&self) -> Option<VirtualCameraState>; // while sending
+    pub fn monitor_wanted(&self) -> bool;              // ADR-0097: a strip is monitored or soloed
+    pub fn start_monitor(&mut self, output: Box<dyn AudioOutput>, volume: f32)
+        -> Result<(), RecordError>;                     // MonitorPlaying, NotBound("mixer")
+    pub fn stop_monitor(&mut self) -> bool;             // false when no monitor plays
+    pub fn set_monitor_volume(&mut self, volume: f32) -> bool;
+    pub fn monitor(&self) -> Option<MonitorState>;      // while it plays
+    pub fn set_solo(&mut self, solo: BTreeSet<SourceId>) -> bool; // session state; false: no mixer
+    pub fn solo(&self) -> &BTreeSet<SourceId>;
     pub fn shutdown(&mut self) -> (Vec<(OutputId, FinishReport)>, Vec<String>);
 }
 pub struct VirtualCameraSettings { pub width: u32, pub height: u32, pub rate: FrameRate } // ::new(w, h, rate)
 pub struct VirtualCameraState { pub config: VirtualCameraConfig,
     pub stats: Arc<VirtualCameraNodeStats>, pub failure: Option<String> }
+pub struct MonitorState { pub latency: Duration, pub stats: Arc<rbs_audio::OutputNodeStats>,
+    pub failure: Option<String> }
 impl Recording { pub fn studio(&self) -> &Studio; }
+// RecordError gains MonitorPlaying (ADR-0097).
 // RecordError gains TooManyOutputs and OutputFinishing (ADR-0047; they replace ADR-0041's AlreadyRecording).
 // StartReport gains video_shared and audio_shared: the encoder ran already for another output.
 ```
@@ -276,6 +287,14 @@ Without audio (`audio: None`) the two audio partitions are not added: three work
 
 `Recording` passes `start_virtual_camera`, `stop_virtual_camera` and `virtual_camera` through to its studio; `finish` stops the camera with the rest.
 
+### Monitor output (ADR-0097 F1)
+
+- **Strips.** Every mixer strip carries its source's `SourceAudio::monitor` (`Off`, `Only`, `Also`) and whether it is soloed; `update`, `set_mix` and `set_solo` send them with the levels. The mixer does monitor work only while its `monitor` pin is read by a node with an instance, so these values cost nothing without a monitor, and `Only` stays in the mix (rbs-audio spec, "Monitor").
+- **Host owns the device.** `monitor_wanted` is true when a strip of the main canvas's mixer is monitored or soloed. The host opens the monitor device (an `AudioOutput` in Standby for the graph's format) when it turns true and calls `start_monitor`; it calls `stop_monitor` when it turns false, and it retries a failed device with back-off (ADR-0097 decisions 4 and 7). The studio never opens or retries a device.
+- **Start.** `start_monitor` fails with `MonitorPlaying` while a monitor plays and `NotBound("mixer")` without audio. Otherwise it adds an `OutputNode` (target `DEFAULT_OUTPUT_TARGET`) Active on the audio partition, links the mixer's `monitor` pin to its `in`, adopts and applies on a copy of the graph. The mixer instance is kept, so strip ramps survive and the stream does not glitch. An apply refusal takes the node back (the device drops with it on this thread). A device that cannot start fails the node's `prepare`: the monitor stays with `MonitorState::failure` set and plays nothing, and the mixer does not count it as a reader.
+- **Running.** The node is not essential: its failure is kept in `MonitorState::failure` (cleared when it runs again), never in `failure()` or an output's failure. `MonitorState::latency` is the graph latency plus the ring target plus the device's latency. `set_monitor_volume` ramps (`OUTPUT_VOLUME_RAMP`), clamped to `0..=MAX_OUTPUT_VOLUME`.
+- **Stop.** `stop_monitor` removes the node with a plain apply and takes it back, through the pending takes if the audio partition still runs it; the device is stopped and dropped on the control thread. `shutdown` stops the monitor.
+
 ### Invariants
 
 1. Engine code names no adapter: `rbs-record` depends on ports, node crates, the scene and the engine only (P1), and selects by capability (P3).
@@ -309,6 +328,7 @@ Control-thread only; the graph's hot paths are the nodes' and keep their budgets
 ## Conformance tests
 
 - `crates/rbs-record/tests/vcam.rs` (one test, with `rbs-vcam-test`): a camera that is not installed fails the start and leaves nothing; while not sending, no node, render worker or camera thread; a second start fails; the camera is not an output and schedules the program on its own; a recording starts and stops while it sends and it keeps sending, frames in order; after stop no render worker and no camera thread (Linux lists threads by name).
+- `crates/rbs-record/tests/monitor.rs` (same rig and clock driver, the reference audio backend's output): nothing monitored, nothing wanted and no monitor; an `Only` source asks for it; the monitor starts, a second start is `MonitorPlaying`, latency above the graph latency, the device gets the monitor pin's frames, one more active stream; stopped, the device stream is gone; solo alone asks for it and is not saved. A device removed before the start: the monitor reports a failure and the studio and its sources run on. Without audio, `NotBound("mixer")`.
 - `crates/rbs-record/tests/studio.rs` (same rig and clock driver as `record.rs`, shared in `tests/support`):
   - `recordings_start_and_stop_while_the_studio_keeps_running`: without a preview no render worker and no capture open while the meters run; two recordings in a row on one engine, each with its trailer and finished transport, the recording partitions stopped and video sources closed afterwards.
   - `a_recording_that_cannot_start_leaves_the_studio_running`: `NoAdapter` for a container without a muxer; an output that cannot open its destination fails with `Start` naming the output, nothing records, the studio runs, the next recording works.

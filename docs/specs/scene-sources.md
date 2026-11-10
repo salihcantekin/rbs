@@ -47,7 +47,13 @@ impl SourceTypes {
     pub fn pickers(&self, type_id: &NodeTypeId) -> Result<Vec<SourcePicker>, SourceError>;
     pub fn instantiate(&self, source: &Source, ctx: &InstanceContext)
         -> Result<SourceInstance, SourceError>;
+    // Monitoring (ADR-0097): adapters with `audio.output`, best first.
+    pub fn can_monitor(&self) -> bool;
+    pub fn monitor_devices(&self) -> Vec<MonitorDevice>; // enumerates: only while a picker is open
+    pub fn open_monitor(&self, target: Option<&str>)      // None: the OS default output
+        -> Result<(Box<dyn AudioOutput>, AdapterId, EndpointId), SourceError>; // Standby; NoAdapter, NoTarget, Audio(EndpointNotFound)
 }
+pub struct MonitorDevice { adapter, target, name, is_default, device_key: Option<String> }
 pub struct SourceTarget { adapter, target, name, is_default, size: Option<(u32, u32)>, app: Option<String> }  // size: displays and windows, when known; app: owning application of a window, when the OS tells it (grouping and labels only)
 #[derive(Clone)] pub struct SourcePicker;  // Send; holds the adapter's factory only
 impl SourcePicker {
