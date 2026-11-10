@@ -236,6 +236,19 @@ pub struct CameraShown {
     pub sending: bool,
 }
 
+/// What the Add source picker lists.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AddWhat {
+    /// What a source kind can capture (its code in `SourceKind::ALL`).
+    Kind(i32),
+    /// The sources other scenes have (UI only, not an engine kind).
+    Existing,
+}
+
+/// The `kind` choice that lists the sources of other scenes (UI only: the control
+/// API's `source.add` has no such kind).
+const EXISTING: &str = "existing";
+
 /// The control API names of the source kinds, in `SourceKind::ALL` order (the
 /// `kind` choices of `source.add`).
 const KIND_IDS: [&str; 6] = [
@@ -379,7 +392,14 @@ impl CommandState for Shown<'_> {
                     Err("No area beside the centre has panels.".to_owned())
                 }
             }
-            "source.add" | "canvas.studio_mode.toggle" | "scene.add" => self.running(),
+            "source.add" => {
+                self.running()?;
+                if id.param("kind") == Some(EXISTING) && !self.studio.has_existing_sources() {
+                    return Err("No other scene has a source to add.".to_owned());
+                }
+                Ok(())
+            }
+            "canvas.studio_mode.toggle" | "scene.add" => self.running(),
             "scene.rename" => {
                 self.running()?;
                 self.scene(id).map(|_| ())
@@ -707,15 +727,21 @@ impl CommandState for Shown<'_> {
                 .into_iter()
                 .map(|(name, type_id)| (name, type_id, false))
                 .collect(),
-            "source.add" => self
-                .studio
-                .kind_codes()
-                .into_iter()
-                .filter_map(|(code, label)| {
-                    let name = KIND_IDS.get(usize::try_from(code).ok()?)?;
-                    Some((label.to_owned(), (*name).to_owned(), false))
-                })
-                .collect(),
+            "source.add" => {
+                let mut list: Vec<(String, String, bool)> = self
+                    .studio
+                    .kind_codes()
+                    .into_iter()
+                    .filter_map(|(code, label)| {
+                        let name = KIND_IDS.get(usize::try_from(code).ok()?)?;
+                        Some((label.to_owned(), (*name).to_owned(), false))
+                    })
+                    .collect();
+                if self.studio.has_existing_sources() {
+                    list.push(("Existing source".to_owned(), EXISTING.to_owned(), false));
+                }
+                list
+            }
             _ => Vec::new(),
         }
     }
@@ -1142,8 +1168,8 @@ pub enum Run {
     /// Move the panel to an edge of its window or to the next tab stack
     /// (`ui.panel.move`, `to`: `left`, `right`, `top`, `bottom`, `next_stack`).
     MovePanel(PanelId, String),
-    /// Open the Add source menu, at the targets of this kind code when given.
-    AddSource(Option<i32>),
+    /// Open the device picker of a source type, or of the sources other scenes have.
+    AddSource(AddWhat),
     /// Turn studio mode on (`true`) or off (ADR-0061).
     StudioMode(bool),
     /// Put the preview scene on air (ADR-0061).
@@ -1192,13 +1218,14 @@ pub fn run(text: &str, state: &Shown<'_>) -> Option<Run> {
     let entry = id.resolve().ok()??;
     state.enabled(&id).ok()?;
     if let Kind::Picker { param, .. } = entry.kind {
-        // A bare `source.add` opens the menu; with a kind, that kind's targets.
+        // `source.add?kind=K` opens the device picker of that kind; a bare one does
+        // nothing (the menu is opened by the buttons).
         if id.base() == "source.add" {
-            let kind = match id.param(param) {
-                Some(k) => Some(KIND_IDS.iter().position(|n| *n == k)? as i32),
-                None => None,
+            let what = match id.param(param)? {
+                EXISTING => AddWhat::Existing,
+                k => AddWhat::Kind(KIND_IDS.iter().position(|n| *n == k)? as i32),
             };
-            return Some(Run::AddSource(kind));
+            return Some(Run::AddSource(what));
         }
         let value = id.param(param)?.to_owned();
         return Some(match id.base() {
