@@ -1135,6 +1135,31 @@ pub const ENTRIES: &[Entry] = &[
         checkable: true,
     },
     Entry {
+        id: "replay.toggle",
+        title: "Arm replay buffer",
+        tooltip: "Start or stop keeping the last minutes of the program, ready to save as a clip",
+        icon: Some("refresh"),
+        shortcut: None,
+        menu: Menu::Output,
+        kind: Kind::Toggle {
+            on: "replay.arm",
+            off: "replay.disarm",
+        },
+        params: &[],
+        checkable: true,
+    },
+    Entry {
+        id: "replay.save",
+        title: "Save replay clip",
+        tooltip: "Save the last minutes the replay buffer holds as a clip file",
+        icon: Some("export"),
+        shortcut: None,
+        menu: Menu::Output,
+        kind: action("replay.save"),
+        params: &[],
+        checkable: false,
+    },
+    Entry {
         id: "ui.app_menu.open",
         title: "Search commands",
         tooltip: "Open the RBS menu with its search field: every command, setting and panel",
@@ -1502,7 +1527,15 @@ pub const MENU_LAYOUT: &[(Menu, &[&str])] = &[
     ),
     (
         Menu::Output,
-        &["stream.toggle", "record.toggle", "|", "vcam.toggle"],
+        &[
+            "stream.toggle",
+            "record.toggle",
+            "|",
+            "vcam.toggle",
+            "|",
+            "replay.toggle",
+            "replay.save",
+        ],
     ),
     (
         Menu::Window,
