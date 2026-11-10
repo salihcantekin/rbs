@@ -13,7 +13,7 @@ Turns audio from input streams into mixed, master-clock-timed blocks for audio e
 
 In scope: the graph format and block timing, the audio partition's pacing, audio values on links and across partitions, the input node, the resampler and channel matrix, the mixer, level meters, the audio encoder node.
 
-Out of scope (later): buses other than `main`, audio filters, audio output and monitoring, the scene model's audio items and the binder that creates these nodes, mux and transport nodes, adaptive latency.
+Out of scope (later): buses other than `main` (ADR-0097 F2), audio filters, the mixer's monitor output and the host wiring of monitoring (ADR-0097 F1, later steps), the scene model's audio items and the binder that creates these nodes, mux and transport nodes, adaptive latency.
 
 ## Contract
 
@@ -154,6 +154,35 @@ impl MeterSinkNode { pub fn new() -> Self; }
 
 Generic over the runtime; runs in the mixer's partition (no queue). `process` does nothing: the node only gives the scheduler a path to an output, so a mixer whose meters a UI shows runs while nothing records or plays. `prepare` and `release` do nothing.
 
+### Output node (`rbs_audio::OutputNode`, ADR-0097 decision 3)
+
+```rust
+pub const OUTPUT_NODE_TYPE: &str = "org.rbs.audio.output";
+pub const DEFAULT_OUTPUT_TARGET: Duration;        // 30 ms
+pub const MAX_OUTPUT_VOLUME: f32;                 // 1.0
+pub const OUTPUT_VOLUME_RAMP: Duration;           // 20 ms from 0 to full scale
+pub fn output_descriptor() -> NodeDescriptor;     // Output, input "in" (Audio), no outputs
+impl OutputNode {
+    pub fn new(output: Box<dyn AudioOutput>, config: AudioGraphConfig, target: Duration)
+        -> (Self, ParamSender<OutputParams>, Arc<OutputNodeStats>);
+    pub fn latency(&self) -> Duration;            // graph latency + target + device latency
+}
+#[non_exhaustive] pub struct OutputParams { pub volume: f32 }   // UNITY, with_volume(v)
+impl OutputNodeStats { pub fn read(&self) -> OutputCounters; }
+#[non_exhaustive] pub struct OutputCounters { pub blocks: u64, pub frames_out: u64,
+    pub primes: u64, pub skipped_frames: u64, pub overflow_frames: u64,
+    pub invalid_inputs: u64, pub fill: u64, pub correction_ppm: i64 }
+```
+
+Plays the blocks on its input on an `AudioOutput` (audio I/O port, "Audio output"), for monitoring. Generic over the runtime; runs in the partition of the node that feeds it (no queue).
+
+- **Lifecycle.** `new` keeps the output opened (Standby). `prepare` takes the output's ring producer (once; a later `prepare` reuses it), allocates the FIFO, kernel and scratch, and starts the output; `release` stops it. Start errors: `EndpointLost`, `EndpointNotFound`, `PermissionDenied`, `FormatChanged` are `Permanent`; the rest `Failed`. In `process`, `status()` errors end the node the same way (`EndpointLost` and `FormatChanged` `Permanent`, else `Backend`); the host reopens it (ADR-0097 decision 4). A failing output node never holds up its partition: nothing waits on it.
+- **FIFO.** Each block of the graph format goes into a planar FIFO of graph frames (8 blocks plus the window); a block of another format is ignored (`invalid_inputs`); a full FIFO drops its oldest frames (`overflow_frames`). The first `BEFORE` frames after `prepare` are silence, so the window has its history from the first frame.
+- **Ring target.** The node steers the ring's fill (`OutputProducer::queued`, device frames, measured before each block's push) towards the target: `target` at the device rate, at least two blocks and at most half the ring. When the FIFO has audio for the window and the ring has never been filled, or is empty (an underrun), silence is pushed up to the target (`primes`). When the ring holds more than twice the target (the device stalled), graph frames are skipped, up to the excess (`skipped_frames`). Otherwise the fill is smoothed (`fill += (queued - fill) / 32` per block, so the device's burst-wise pulls do not steer the rate).
+- **Steering.** `correction = clamp((fill - target) / device_rate x STEER_GAIN, ±MAX_CORRECTION)` (the input node's constants), and the resampler steps `graph_rate / device_rate x (1 + correction)` graph frames per device frame: a ring above the target gives the device fewer frames. `correction_ppm` reports the last block's value; its mean cancels the device's drift.
+- **Resampling and channels.** The input node's kernel (graph rate to device rate) and channel matrix (graph layout to device layout; device channels past `MAX_CHANNELS` are silent). Each device frame is multiplied by the volume, which moves towards `OutputParams::volume` (clamped to `0..=MAX_OUTPUT_VOLUME`) by at most full scale per `OUTPUT_VOLUME_RAMP`; it starts at 0, so the first audio fades in.
+- **Latency.** The device plays the graph's audio `latency()` after real time, plus up to a block; it is not a low-latency path (ADR-0097 decision 3).
+
 ## Errors and failure behaviour
 
 - `AudioGraphError` (non-exhaustive): `InvalidFormat`, `BlockFrames`, `Latency`; construction only.
@@ -161,11 +190,11 @@ Generic over the runtime; runs in the mixer's partition (no queue). `process` do
 
 ## Performance requirements
 
-Hot path (audio thread, every 10 ms): no allocation, blocking, I/O or locks in `process` of the input and mixer nodes, the queue endpoints, `AudioOut` and `Inputs::audio`; the encoder node allocates only what its encoder's `drain` does (tested with the allocation guard in `tests/pipeline.rs` and `rbs-graph/tests/audio.rs`). Budgets on the reference VM, `cargo bench -p rbs-audio --bench nodes` ([performance budgets](performance-budgets.md)): input node at most 50 µs per block (27 µs at 48 kHz mono, 35 µs at 44.1 kHz stereo; the reference adapter's sine generation adds about 20 to 35 µs in the `adapter_*` cases); mixer of 16 stereo inputs with meters at most 30 µs (13 µs).
+Hot path (audio thread, every 10 ms): no allocation, blocking, I/O or locks in `process` of the input, mixer and output nodes, the queue endpoints, `AudioOut` and `Inputs::audio`; the encoder node allocates only what its encoder's `drain` does (tested with the allocation guard in `tests/pipeline.rs` and `rbs-graph/tests/audio.rs`). Budgets on the reference VM, `cargo bench -p rbs-audio --bench nodes` ([performance budgets](performance-budgets.md)): input node at most 50 µs per block (27 µs at 48 kHz mono, 35 µs at 44.1 kHz stereo; the reference adapter's sine generation adds about 20 to 35 µs in the `adapter_*` cases); mixer of 16 stereo inputs with meters at most 30 µs (13 µs); output node from the 48 kHz stereo graph at most 50 µs (measured 32 µs to a 48 kHz and 30 µs to a 44.1 kHz stereo device on the cloud development container, 2026-11-10; the reference VM figure comes with the mixer's monitor output).
 
 ## Conformance tests
 
-`crates/rbs-audio/tests/` (`input.rs`, `mixer.rs`, `pipeline.rs`: two reference-adapter inputs with a drifting device clock, one at 44.1 kHz, through mixer and audio queue to an encoder node, contiguous 10 ms blocks on the grid with no resync, queue overflow or fill, and no allocation per block on either partition), unit tests in `config.rs`, `meter.rs` and `resample.rs`; `crates/rbs-graph/tests/audio.rs`; `crates/rbs-engine/src/worker.rs` (`a_stream_worker_*`).
+`crates/rbs-audio/tests/` (`input.rs`, `mixer.rs`, `output.rs`: devices drifting by ±100 and ±1000 ppm steered with no underrun or skip after the first prime and the mean correction cancelling the drift, a mono graph on a 44.1 kHz stereo device, underrun and stalled-device recovery, volume ramp, no allocation per block; `pipeline.rs`: two reference-adapter inputs with a drifting device clock, one at 44.1 kHz, through mixer and audio queue to an encoder node, contiguous 10 ms blocks on the grid with no resync, queue overflow or fill, and no allocation per block on either partition), unit tests in `config.rs`, `meter.rs` and `resample.rs`; `crates/rbs-graph/tests/audio.rs`; `crates/rbs-engine/src/worker.rs` (`a_stream_worker_*`).
 
 Hardware check (`cargo run --release -p rbs-app --example audio_graph -- <seconds>`): the default microphone and system loopback through input nodes, mixer, audio queue and the platform AAC encoder on the real engine workers. Windows (WASAPI + Media Foundation AAC, Shure MV7+ and NVIDIA HDMI loopback, 2026-11-03): 30 s idle and 60 s with all 32 cores busy both pass with no resync, read error, queue overflow, late audio tick or irregular packet, packet counts as expected, thread grant `RealTime`. Late frames occur only in the first second (before the first packets arrive). Under full load the loopback had 483 gap frames filled and the microphone's correction peaked at 409 ppm, settling within seconds.
 

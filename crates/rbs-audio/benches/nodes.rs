@@ -3,6 +3,9 @@
 //! - `input`: one input node on the reference adapter, 48 kHz mono and 44.1 kHz stereo
 //!   sources into the 48 kHz stereo graph (read, steer, resample, map channels).
 //! - `mixer`: a mixer of 16 stereo inputs with a meter on every strip and the output.
+//! - `output`: one output node from the 48 kHz stereo graph to a 48 kHz and a 44.1 kHz
+//!   stereo device (FIFO, steer, resample, map channels, volume, ring push); the
+//!   bench pulls the ring like a device, outside the node.
 
 #![allow(clippy::unwrap_used, clippy::expect_used, missing_docs)] // Benches fail by panicking.
 
@@ -10,8 +13,14 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
-use rbs_audio::{AudioGraphConfig, InputNode, LevelMeter, MixerNode, MixerParams, Strip};
-use rbs_audio_io::{AudioBackend, EndpointId, InputRequest};
+use rbs_audio::{
+    AudioGraphConfig, DEFAULT_OUTPUT_TARGET, InputNode, LevelMeter, MixerNode, MixerParams,
+    OutputNode, Strip,
+};
+use rbs_audio_io::{
+    AudioBackend, AudioIoError, AudioOutput, EndpointId, InputRequest, OutputConsumer,
+    OutputProducer, OutputStats,
+};
 use rbs_audio_io_test::{LOOPBACK, MONO_INPUT, TestAudioBackend};
 use rbs_core::lifecycle::Lifecycle;
 use rbs_core::media::AudioFormat;
@@ -234,5 +243,93 @@ fn mixer(c: &mut Criterion) {
     });
 }
 
-criterion_group!(benches, input, mixer);
+/// An output whose device side the bench plays.
+struct Pulled {
+    format: AudioFormat,
+    producer: Option<OutputProducer>,
+}
+
+impl AudioOutput for Pulled {
+    fn format(&self) -> AudioFormat {
+        self.format
+    }
+    fn producer(&mut self) -> Option<OutputProducer> {
+        self.producer.take()
+    }
+    fn start(&mut self) -> Result<(), AudioIoError> {
+        Ok(())
+    }
+    fn stop(&mut self) {}
+    fn latency_ns(&self) -> u64 {
+        0
+    }
+    fn stats(&self) -> OutputStats {
+        OutputStats::default()
+    }
+    fn status(&self) -> Result<(), AudioIoError> {
+        Ok(())
+    }
+}
+
+fn output(c: &mut Criterion) {
+    use rbs_core::media::ChannelLayout;
+    use rbs_core::timing::SampleRate;
+    let mut group = c.benchmark_group("audio_output_block");
+    for (label, rate) in [
+        ("device_48k_stereo", SampleRate::HZ_48000),
+        ("device_44k1_stereo", SampleRate::HZ_44100),
+    ] {
+        let config = AudioGraphConfig::default();
+        let format = AudioFormat::new(rate, ChannelLayout::Stereo).unwrap();
+        let (producer, mut consumer): (OutputProducer, OutputConsumer) =
+            rbs_audio_io::output::channel(2, 16_384);
+        let (node, _, _) = OutputNode::new(
+            Box::new(Pulled {
+                format,
+                producer: Some(producer),
+            }),
+            config,
+            DEFAULT_OUTPUT_TARGET,
+        );
+        let tone: Vec<f32> = (0..480).map(|f| (f as f32 * 0.01).sin() * 0.3).collect();
+        let src = Block(
+            NodeDescriptor::new(
+                NodeTypeId::new("org.rbs.bench.block"),
+                NodeKind::Source,
+                vec![],
+                vec![Pin::one("out", LinkKind::Audio)],
+            ),
+            [tone.clone(), tone],
+        );
+        let (mut ctl, mut exec) = channel::<()>(Arc::new(()), ());
+        let mut g = GraphDescription::new();
+        let a = active(&mut g, &src.0);
+        let b = active(&mut g, Node::<()>::descriptor(&node));
+        g.connect(a, "out", b, "in").unwrap();
+        ctl.adopt(a, Box::new(src)).unwrap();
+        ctl.adopt(b, Box::new(node)).unwrap();
+        ctl.apply(&g).unwrap();
+        exec.swap_pending();
+        ctl.collect().unwrap().unwrap();
+        let cadence = config.cadence(Timestamp::ZERO);
+        // The device's share of one block: 10 ms at its rate.
+        let mut buf = vec![0.0f32; 2 * (rate.hz() as usize / 100)];
+        let mut i = 5u64;
+        for _ in 0..100 {
+            exec.run_tick(Tick::of(&cadence, i));
+            consumer.pull(&mut buf);
+            i += 1;
+        }
+        group.bench_function(BenchmarkId::new("sink", label), |bench| {
+            bench.iter(|| {
+                exec.run_tick(Tick::of(&cadence, i));
+                consumer.pull(&mut buf);
+                i += 1;
+            })
+        });
+    }
+    group.finish();
+}
+
+criterion_group!(benches, input, mixer, output);
 criterion_main!(benches);
