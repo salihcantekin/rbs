@@ -190,6 +190,9 @@ struct App {
     hidden: bool,
     /// What closing the main window does (`app.toml`, ADR-0056).
     bg: background::AppSettings,
+    /// Where the preview picture's context menu opened (the picture's coordinates)
+    /// and the system cursor then (screen pixels), until the next press on a picture.
+    menu_press: Option<([f32; 2], (i32, i32))>,
     /// The studio's preview, kept to connect again when the hidden window shows.
     preview_endpoint: Option<rbs_gpu::share::PreviewEndpoint>,
     /// The preview scene's picture in studio mode (ADR-0061), kept the same way.
@@ -1260,8 +1263,8 @@ impl Ctx {
     #[cfg(not(any(target_os = "macos", windows)))]
     fn connect_preview(&self, _endpoint: rbs_gpu::share::PreviewEndpoint) {}
 
-    /// The preview scene's picture in studio mode (ADR-0061; macOS only for now).
-    #[cfg(target_os = "macos")]
+    /// The preview scene's picture in studio mode (ADR-0061).
+    #[cfg(any(target_os = "macos", windows))]
     fn connect_scene_preview(&self, endpoint: rbs_gpu::share::PreviewEndpoint) {
         preview::connect(preview::Picture::Scene, endpoint, |ok| {
             let ctx = CTX.with(|c| c.borrow().clone());
@@ -1274,7 +1277,7 @@ impl Ctx {
         });
     }
 
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(not(any(target_os = "macos", windows)))]
     fn connect_scene_preview(&self, _endpoint: rbs_gpu::share::PreviewEndpoint) {}
 
     /// The vertical canvas's picture (ADR-0093; macOS only for now, as the preview
@@ -1544,7 +1547,7 @@ impl Ctx {
         let scene_state = match s.state {
             0 => ps::STARTING,
             2 => ps::STOPPED,
-            _ if !s.preview_offered || !cfg!(target_os = "macos") => ps::NO_PLATFORM,
+            _ if !s.preview_offered || !cfg!(any(target_os = "macos", windows)) => ps::NO_PLATFORM,
             _ if s.scene_preview_failed => ps::NO_SESSION,
             _ if scene_main.is_none() && float_has("rbs.preview") => ps::OTHER_WINDOW,
             _ if s.scene_preview_ready => ps::SHOWN,
@@ -1845,9 +1848,11 @@ impl Ctx {
             2
         };
         let on_close = i32::from(app.bg.on_close == OnClose::KeepRunning);
+        let swap = app.bg.swap_after_transition;
         let push = |g: Studio<'_>| {
             g.set_platform(platform);
             g.set_on_close(on_close);
+            g.set_swap_after_transition(swap);
             g.set_way_back(Self::way_back());
         };
         push(app.main.global::<Studio>());
@@ -2720,10 +2725,11 @@ fn section_key(id: &str) -> (String, bool) {
 
 /// Every card of the Settings window that folds (ADR-0078), for "Collapse all". A test
 /// keeps this in step with the ids in `ui/*.slint`.
-const SETTINGS_SECTIONS: [&str; 20] = [
+const SETTINGS_SECTIONS: [&str; 21] = [
     "settings.appearance.theme-in-use",
     "settings.appearance.themes",
     "settings.general.closing",
+    "settings.general.studio",
     "settings.recording.files",
     "settings.recording.encoding",
     "settings.recording.replay",
@@ -2929,11 +2935,31 @@ fn install_studio(g: &Studio<'_>, ctx: &Ctx) {
                            shift: bool,
                            no_snap: bool,
                            crop: bool| {
+        // On Windows the click that closes the picture's context menu arrives as a
+        // press at the place the menu opened, though the cursor has moved: that press
+        // only closes the menu.
+        if let Some((at, then)) = app.menu_press.take()
+            && (at[0] - x).abs() < 0.5
+            && (at[1] - y).abs() < 0.5
+            && cursor_pos().is_some_and(|now| (now.0 - then.0).abs() + (now.1 - then.1).abs() > 2)
+        {
+            return;
+        }
         app.studio
             .preview_press([x, y], [w, h], shift, no_snap, crop);
     });
+    on!(on_preview_menu_opened, |app, x: f32, y: f32| {
+        app.menu_press = cursor_pos().map(|c| ([x, y], c));
+    });
     on!(on_preview_drag, |app, x: f32, y: f32| {
-        app.studio.preview_drag([x, y]);
+        // The click that closes a system menu on Windows can reach the picture without
+        // its release (the menu takes it): a drag whose button is no longer down ends
+        // here instead of following the pointer.
+        if primary_button_up() {
+            app.studio.preview_release();
+        } else {
+            app.studio.preview_drag([x, y]);
+        }
     });
     on!(on_preview_release, |app| {
         app.studio.preview_release();
@@ -3208,6 +3234,17 @@ fn install_studio(g: &Studio<'_>, ctx: &Ctx) {
         };
         if on_close.supported() && app.bg.on_close != on_close {
             app.bg.on_close = on_close;
+            if let Err(e) = background::save(&app.config, &app.bg) {
+                app.error = Some(UiError::Other(format!("The setting was not saved: {e}")));
+            }
+        }
+    });
+    // Settings, General (ADR-0098): the next transition follows it.
+    on!(on_set_swap_after_transition, |app, on: bool| {
+        if app.bg.swap_after_transition != on {
+            app.bg.swap_after_transition = on;
+            app.studio
+                .send(studio_host::Command::SetSwapAfterTransition(on));
             if let Err(e) = background::save(&app.config, &app.bg) {
                 app.error = Some(UiError::Other(format!("The setting was not saved: {e}")));
             }
@@ -3513,6 +3550,7 @@ fn run(config: PathBuf, notice: Option<String>) -> Result<(), Box<dyn std::error
             exiting: false,
             hidden: false,
             bg,
+            menu_press: None,
             preview_endpoint: None,
             scene_preview_endpoint: None,
             vertical_preview_endpoint: None,
@@ -3565,6 +3603,7 @@ fn run(config: PathBuf, notice: Option<String>) -> Result<(), Box<dyn std::error
         config.key_account = key_account;
         config.virtual_camera = ctx.app.borrow().vcam.factory();
         config.recent_dir = Some(ctx.app.borrow().config.clone());
+        config.swap_after_transition = ctx.app.borrow().bg.swap_after_transition;
         // The monitor device belongs to this computer (ADR-0097); a file that cannot be
         // read gives System default at full volume and is left as it is.
         let (monitor, note) = rbs_app::monitor_settings::load(&ctx.app.borrow().config);
@@ -3744,6 +3783,32 @@ fn run(config: PathBuf, notice: Option<String>) -> Result<(), Box<dyn std::error
     }
     CTX.with(|c| c.borrow_mut().take());
     Ok(())
+}
+
+/// The system cursor in screen pixels (Windows; elsewhere `None`: the toolkit's press
+/// positions are always current there).
+fn cursor_pos() -> Option<(i32, i32)> {
+    #[cfg(windows)]
+    {
+        rbs_app::win::cursor_pos()
+    }
+    #[cfg(not(windows))]
+    {
+        None
+    }
+}
+
+/// Whether the primary mouse button is up now (Windows; elsewhere the toolkit's release
+/// always arrives, so `false`).
+fn primary_button_up() -> bool {
+    #[cfg(windows)]
+    {
+        rbs_app::win::primary_button_up()
+    }
+    #[cfg(not(windows))]
+    {
+        false
+    }
 }
 
 #[cfg(test)]
