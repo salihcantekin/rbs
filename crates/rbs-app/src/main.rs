@@ -2485,6 +2485,18 @@ fn install_studio(g: &Studio<'_>, ctx: &Ctx) {
             app.studio.set_filter_colour(filter, field, &colour);
         }
     );
+    {
+        let ctx = ctx.clone();
+        g.on_filter_levels(move |filter: i32| {
+            entry::guard_or(FilterLevels::default, || {
+                let (input, reduction) = ctx
+                    .app
+                    .try_borrow()
+                    .map_or((0.0, 0.0), |app| app.studio.filter_levels(filter));
+                FilterLevels { input, reduction }
+            })
+        });
+    }
     on!(on_reset_filter, |app, filter: i32| {
         app.studio.reset_filter(filter);
     });
