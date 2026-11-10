@@ -795,6 +795,12 @@ impl App {
         self.with_picker_overlays(|o| {
             o.set_picker_title(view.title.into());
             o.set_picker_status(status.into());
+            o.set_picker_option_label(if view.offers_audio {
+                "Capture audio too".into()
+            } else {
+                "".into()
+            });
+            o.set_picker_option(view.audio);
             o.set_picker_rows(ModelRc::new(VecModel::from(rows)));
             o.set_picker_open(true);
         });
@@ -2311,6 +2317,17 @@ fn install_picker(g: &Overlays<'_>, ctx: &Ctx) {
             entry::guard(|| {
                 ctx.update(move |app: &mut App| {
                     app.studio.filter_add_picker(&text);
+                    app.sync_picker();
+                });
+            });
+        });
+    }
+    {
+        let ctx = ctx.clone();
+        g.on_picker_option_toggled(move |on| {
+            entry::guard(|| {
+                ctx.update(move |app: &mut App| {
+                    app.studio.set_picker_audio(on);
                     app.sync_picker();
                 });
             });
