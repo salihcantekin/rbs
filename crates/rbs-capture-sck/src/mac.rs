@@ -15,11 +15,14 @@ use std::time::{Duration, Instant};
 use block2::RcBlock;
 use dispatch2::{DispatchQueue, DispatchRetained};
 use objc2::rc::{Retained, autoreleasepool};
-use objc2::runtime::{AnyObject, NSObject, NSObjectProtocol, ProtocolObject};
+use objc2::runtime::{AnyClass, AnyObject, NSObject, NSObjectProtocol, ProtocolObject};
 use objc2::{AllocAnyThread, DefinedClass, define_class, msg_send};
-use objc2_core_foundation::{CFArray, CFDictionary, CFRetained, CFString, CFType, CGRect};
+use objc2_core_foundation::{
+    CFArray, CFDictionary, CFRetained, CFString, CFType, CGPoint, CGRect, CGSize,
+};
 use objc2_core_graphics::{
-    CGDisplayCopyDisplayMode, CGDisplayMode, CGEvent, CGMainDisplayID,
+    CGBitmapContextCreate, CGColorSpace, CGContext, CGDisplayCopyDisplayMode, CGDisplayMode,
+    CGEvent, CGImageAlphaInfo, CGInterpolationQuality, CGMainDisplayID,
     CGPreflightScreenCaptureAccess, CGRectMakeWithDictionaryRepresentation,
     CGRequestScreenCaptureAccess, CGWindowListCopyWindowInfo, CGWindowListOption,
     kCGColorSpaceSRGB, kCGWindowAlpha, kCGWindowBounds, kCGWindowLayer,
@@ -34,8 +37,8 @@ use objc2_foundation::{
 };
 use objc2_io_surface::IOSurfaceRef;
 use objc2_screen_capture_kit::{
-    SCContentFilter, SCDisplay, SCFrameStatus, SCShareableContent, SCStream, SCStreamConfiguration,
-    SCStreamDelegate, SCStreamErrorCode, SCStreamFrameInfoContentRect,
+    SCContentFilter, SCDisplay, SCFrameStatus, SCScreenshotManager, SCShareableContent, SCStream,
+    SCStreamConfiguration, SCStreamDelegate, SCStreamErrorCode, SCStreamFrameInfoContentRect,
     SCStreamFrameInfoContentScale, SCStreamFrameInfoScaleFactor, SCStreamFrameInfoStatus,
     SCStreamOutput, SCStreamOutputType, SCWindow,
 };
@@ -43,7 +46,8 @@ use objc2_screen_capture_kit::{
 use rbs_capture::handoff::{FrameMeta, Grave, Graveyard, Ring};
 use rbs_capture::{
     CaptureChange, CaptureError, CaptureFactory, CaptureRequest, CaptureSession, CaptureStats,
-    CaptureTarget, ErrorDomain, GpuDeviceId, Permission, SyncKind, TargetId, TargetKind, caps,
+    CaptureTarget, ErrorDomain, GpuDeviceId, Permission, SyncKind, THUMBNAIL_MAX, TargetId,
+    TargetKind, Thumbnail, caps,
 };
 use rbs_core::capability::{CapabilitySet, CapabilityValue};
 use rbs_core::media::{ColorSpace, LeaseOwner, MemoryKind, PixelFormat, Size, VideoFormat};
@@ -146,6 +150,13 @@ fn wait_completion(
 /// The displays and windows the user may capture. Blocks until ScreenCaptureKit
 /// answers (control thread only).
 fn shareable_content() -> Result<Retained<SCShareableContent>, CaptureError> {
+    shareable_content_within(COMPLETION_TIMEOUT)
+}
+
+/// Like [`shareable_content`] with a caller-chosen wait.
+fn shareable_content_within(
+    timeout: Duration,
+) -> Result<Retained<SCShareableContent>, CaptureError> {
     type Answer = Result<Sendable<Retained<SCShareableContent>>, CaptureError>;
     let (tx, rx) = mpsc::sync_channel::<Answer>(1);
     let block = RcBlock::new(
@@ -165,7 +176,7 @@ fn shareable_content() -> Result<Retained<SCShareableContent>, CaptureError> {
     // SAFETY: the block matches the documented handler signature and is retained by
     // ScreenCaptureKit for as long as it needs it.
     unsafe { SCShareableContent::getShareableContentWithCompletionHandler(&block) };
-    match rx.recv_timeout(COMPLETION_TIMEOUT) {
+    match rx.recv_timeout(timeout) {
         Ok(Ok(content)) => Ok(content.0),
         Ok(Err(e)) => Err(e),
         Err(_) => Err(timed_out()),
@@ -277,6 +288,173 @@ fn resolve(content: &SCShareableContent, parsed: &Parsed) -> Option<(Resolved, (
 
 fn permission_granted() -> bool {
     CGPreflightScreenCaptureAccess()
+}
+
+/// How long a thumbnail grab may take in all (capture-port.md, `thumbnail`).
+const THUMBNAIL_TIMEOUT: Duration = Duration::from_millis(1000);
+
+/// `SCScreenshotManager` appeared in macOS 14; the class is looked up by name so an
+/// older system gets `Unsupported` instead of a missing-class panic.
+fn screenshots_available() -> bool {
+    AnyClass::get(c"SCScreenshotManager").is_some()
+}
+
+/// A failure of the grab that is not the caller's fault: the picture may work later.
+fn grab_failed() -> CaptureError {
+    CaptureError::Backend {
+        domain: ErrorDomain::Library,
+        code: 2,
+        recoverable: true,
+    }
+}
+
+/// The size a `width` x `height` picture is scaled to so it fits in `max`, keeping the
+/// aspect, never upscaling, at least 1 x 1. `None` if any input is zero.
+fn fit_size(width: u32, height: u32, max: Size) -> Option<(u32, u32)> {
+    if width == 0 || height == 0 || max.width == 0 || max.height == 0 {
+        return None;
+    }
+    let scale = (f64::from(max.width) / f64::from(width))
+        .min(f64::from(max.height) / f64::from(height))
+        .min(1.0);
+    let scaled = |v: u32, cap: u32| ((f64::from(v) * scale).round() as u32).clamp(1, cap);
+    Some((scaled(width, max.width), scaled(height, max.height)))
+}
+
+/// Converts premultiplied RGBA8 to straight alpha in place.
+fn unpremultiply(rgba: &mut [u8]) {
+    for px in rgba.chunks_exact_mut(4) {
+        let a = u32::from(px[3]);
+        if a == 0 {
+            px[..3].fill(0);
+        } else if a < 255 {
+            for c in &mut px[..3] {
+                *c = ((u32::from(*c) * 255 + a / 2) / a).min(255) as u8;
+            }
+        }
+    }
+}
+
+/// Draws `image` scaled into a new `width` x `height` sRGB RGBA8 bitmap, straight alpha.
+fn image_to_rgba(
+    image: &objc2_core_graphics::CGImage,
+    width: u32,
+    height: u32,
+) -> Result<Vec<u8>, CaptureError> {
+    let (w, h) = (width as usize, height as usize);
+    // SAFETY: `kCGColorSpaceSRGB` is an immutable framework constant.
+    let space =
+        CGColorSpace::with_name(Some(unsafe { kCGColorSpaceSRGB })).ok_or_else(grab_failed)?;
+    let mut rgba = vec![0u8; w * h * 4];
+    // SAFETY: `rgba` holds exactly `h` rows of `w * 4` bytes, matching the width,
+    // height, bytes-per-row, 8 bits per component and premultiplied-RGBA layout passed
+    // here, and it outlives the context, which is dropped before `rgba` is read or moved.
+    let context = unsafe {
+        CGBitmapContextCreate(
+            rgba.as_mut_ptr().cast(),
+            w,
+            h,
+            8,
+            w * 4,
+            Some(&space),
+            CGImageAlphaInfo::PremultipliedLast.0,
+        )
+    }
+    .ok_or_else(grab_failed)?;
+    CGContext::set_interpolation_quality(Some(&context), CGInterpolationQuality::High);
+    let rect = CGRect::new(
+        CGPoint::new(0.0, 0.0),
+        CGSize::new(width.into(), height.into()),
+    );
+    CGContext::draw_image(Some(&context), rect, Some(image));
+    drop(context);
+    unpremultiply(&mut rgba);
+    Ok(rgba)
+}
+
+/// One frame of a display or window as a small sRGB picture (ADR-0077 decision 3a).
+/// No stream is started and nothing outlives the call; the screenshot API shows no
+/// capture border or indicator.
+fn grab_thumbnail(target: &TargetId, max: Size) -> Result<Thumbnail, CaptureError> {
+    let started = Instant::now();
+    let parsed = parse(target).ok_or(CaptureError::TargetNotFound)?;
+    let max = Size::new(
+        max.width.min(THUMBNAIL_MAX.width),
+        max.height.min(THUMBNAIL_MAX.height),
+    );
+    if max.width == 0 || max.height == 0 {
+        return Err(CaptureError::FormatUnsupported);
+    }
+    if !screenshots_available() {
+        return Err(CaptureError::Unsupported("thumbnail needs macOS 14"));
+    }
+    if !permission_granted() {
+        return Err(CaptureError::PermissionNotDetermined);
+    }
+    // Backend failures of a grab are recoverable: the next try may find a frame.
+    let content = shareable_content_within(THUMBNAIL_TIMEOUT).map_err(|e| match e {
+        CaptureError::Backend { .. } => grab_failed(),
+        other => other,
+    })?;
+    let (resolved, native) = resolve(&content, &parsed).ok_or(CaptureError::TargetNotFound)?;
+    let (width, height) = fit_size(native.0, native.1, max).ok_or_else(grab_failed)?;
+    autoreleasepool(|_| {
+        // SAFETY: filters built from objects of the current shareable content; the
+        // configuration is fresh and configured before use; the colour space name and
+        // pixel format are framework constants.
+        let (filter, config) = unsafe {
+            let filter = match &resolved {
+                Resolved::Display(display) => SCContentFilter::initWithDisplay_excludingWindows(
+                    SCContentFilter::alloc(),
+                    display,
+                    &NSArray::new(),
+                ),
+                Resolved::Window(window) => SCContentFilter::initWithDesktopIndependentWindow(
+                    SCContentFilter::alloc(),
+                    window,
+                ),
+            };
+            let config = SCStreamConfiguration::new();
+            config.setWidth(width as usize);
+            config.setHeight(height as usize);
+            config.setPixelFormat(PIXEL_FORMAT_BGRA);
+            config.setColorSpaceName(kCGColorSpaceSRGB);
+            config.setShowsCursor(false);
+            (filter, config)
+        };
+        type Answer = Result<Sendable<CFRetained<objc2_core_graphics::CGImage>>, CaptureError>;
+        let (tx, rx) = mpsc::sync_channel::<Answer>(1);
+        let block = RcBlock::new(
+            move |image: *mut objc2_core_graphics::CGImage, error: *mut NSError| {
+                let result = match NonNull::new(image) {
+                    // SAFETY: ScreenCaptureKit passes a valid image for the call; it
+                    // is retained before the handler returns.
+                    Some(image) => Ok(Sendable(unsafe { CFRetained::retain(image) })),
+                    // SAFETY: null or a valid `NSError` for the call.
+                    None => Err(match unsafe { error.as_ref() } {
+                        Some(error) if error.code() == SCStreamErrorCode::UserDeclined.0 => {
+                            CaptureError::PermissionDenied
+                        }
+                        _ => grab_failed(),
+                    }),
+                };
+                let _ = tx.try_send(result);
+            },
+        );
+        // SAFETY: the block matches the documented handler signature and is retained
+        // by ScreenCaptureKit for as long as it needs it.
+        unsafe {
+            SCScreenshotManager::captureImageWithFilter_configuration_completionHandler(
+                &filter,
+                &config,
+                Some(&block),
+            )
+        };
+        let left = THUMBNAIL_TIMEOUT.saturating_sub(started.elapsed());
+        let image = rx.recv_timeout(left).map_err(|_| grab_failed())??.0;
+        let rgba = image_to_rgba(&image, width, height)?;
+        Thumbnail::new(width, height, rgba).ok_or_else(grab_failed)
+    })
 }
 
 /// What the stream is configured with. Shared by the session (reconfigure) and the
@@ -456,6 +634,10 @@ impl CaptureFactory for SckCaptureFactory {
             last_timestamp: None,
             base: CaptureStats::default(),
         }))
+    }
+
+    fn thumbnail(&self, target: &TargetId, max: Size) -> Result<Thumbnail, CaptureError> {
+        grab_thumbnail(target, max)
     }
 
     fn permission(&self, kind: TargetKind) -> Permission {
@@ -1297,5 +1479,70 @@ impl CursorWatch {
 impl Drop for SckSession {
     fn drop(&mut self) {
         self.stop();
+    }
+}
+
+#[cfg(test)]
+mod thumbnail_tests {
+    #![allow(clippy::expect_used)]
+
+    use super::*;
+
+    #[test]
+    fn fit_keeps_aspect_and_never_upscales() {
+        let max = THUMBNAIL_MAX;
+        assert_eq!(fit_size(3840, 2160, max), Some((192, 108)));
+        assert_eq!(fit_size(1000, 1000, max), Some((108, 108)));
+        assert_eq!(fit_size(100, 50, max), Some((100, 50)));
+        assert_eq!(fit_size(10_000, 10, max), Some((192, 1)));
+        assert_eq!(fit_size(0, 10, max), None);
+        assert_eq!(fit_size(10, 10, Size::new(0, 5)), None);
+    }
+
+    #[test]
+    fn straight_alpha_is_recovered() {
+        let mut px = [128, 64, 0, 128, 9, 9, 9, 0, 10, 20, 30, 255];
+        unpremultiply(&mut px);
+        assert_eq!(px, [255, 128, 0, 128, 0, 0, 0, 0, 10, 20, 30, 255]);
+    }
+
+    #[test]
+    fn refuses_what_it_cannot_grab() {
+        let factory = SckCaptureFactory::new();
+        let nothing = Size::new(0, 0);
+        assert!(matches!(
+            factory.thumbnail(&TargetId::new("nope"), THUMBNAIL_MAX),
+            Err(CaptureError::TargetNotFound)
+        ));
+        assert!(matches!(
+            factory.thumbnail(&TargetId::new(format!("{DISPLAY_PREFIX}1")), nothing),
+            Err(CaptureError::FormatUnsupported)
+        ));
+    }
+
+    /// With screen recording permission: the main display yields a picture that fits.
+    /// Set `RBS_THUMB_DUMP=<dir>` to also write it as a PPM for a look.
+    #[test]
+    fn main_display_thumbnail() {
+        if !permission_granted() || !screenshots_available() {
+            eprintln!("skipped: needs screen recording permission and macOS 14");
+            return;
+        }
+        let factory = SckCaptureFactory::new();
+        let id = TargetId::new(format!("{DISPLAY_PREFIX}{}", CGMainDisplayID()));
+        let thumb = factory.thumbnail(&id, THUMBNAIL_MAX).expect("thumbnail");
+        assert!(thumb.width() <= THUMBNAIL_MAX.width && thumb.height() <= THUMBNAIL_MAX.height);
+        assert!(thumb.width() == THUMBNAIL_MAX.width || thumb.height() == THUMBNAIL_MAX.height);
+        assert!(
+            thumb.rgba().chunks_exact(4).any(|p| p[..3] != [0, 0, 0]),
+            "all black"
+        );
+        if let Some(dir) = std::env::var_os("RBS_THUMB_DUMP") {
+            let mut ppm = format!("P6\n{} {}\n255\n", thumb.width(), thumb.height()).into_bytes();
+            for p in thumb.rgba().chunks_exact(4) {
+                ppm.extend_from_slice(&p[..3]);
+            }
+            std::fs::write(std::path::Path::new(&dir).join("display.ppm"), ppm).expect("write");
+        }
     }
 }
