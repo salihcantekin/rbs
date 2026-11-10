@@ -1155,6 +1155,70 @@ impl Studio {
         updated
     }
 
+    /// Gives a running further canvas a picture for a UI (`Some`) or takes it away
+    /// (`None`), while the studio runs and whatever outputs take the canvas (ADR-0093
+    /// decision 7: a closed panel costs nothing). Without a picture and without an
+    /// output the canvas is not composed (P13). A picture the canvas already has, or
+    /// already lacks, is left as it is. Fails with `UnknownCanvas` when the canvas does
+    /// not run; the checks of an update run before anything changes. When the update
+    /// itself then fails, the change is kept and applies with the next update, as for
+    /// any other change; asking for the opposite takes it back.
+    pub fn set_canvas_picture(
+        &mut self,
+        collection: &SceneCollection,
+        sources: &SourceTypes,
+        canvas: CanvasId,
+        desc: Option<PreviewDesc>,
+    ) -> Result<Updated, RecordError> {
+        let Some(at) = self.extras.iter().position(|e| e.canvas == canvas) else {
+            return Err(RecordError::UnknownCanvas(canvas));
+        };
+        if self.extras[at].view.picture.is_some() == desc.is_some() {
+            return Ok(Updated::default());
+        }
+        let followed = with_followers(collection, &mut self.last_follow.clone());
+        self.check_collection(&followed)?;
+        let mut leaving = None;
+        match desc {
+            Some(desc) => {
+                let compositor = self.extras[at].view.compositor;
+                let picture = add_picture(&mut self.engine, &mut self.graph, compositor, desc)?;
+                self.essential
+                    .insert(picture.0, "preview of a further canvas");
+                self.extras[at].view.picture = Some(picture);
+            }
+            None => {
+                if let Some((picture, _)) = self.extras[at].view.picture.take() {
+                    if self.graph.node(picture).is_some() {
+                        let _ = self.graph.set_state(picture, Lifecycle::Standby);
+                        let _ = self.graph.remove_node(picture);
+                    }
+                    self.essential.remove(&picture);
+                    leaving = Some(Added {
+                        node: picture,
+                        partition: RENDER,
+                        gpu: true,
+                    });
+                }
+            }
+        }
+        if let Some(e) = self
+            .settings
+            .extra_canvases
+            .iter_mut()
+            .find(|e| e.canvas == canvas)
+        {
+            e.preview = desc;
+        }
+        let updated = self.update_with(collection, sources, None);
+        if let Some(a) = leaving
+            && !take(&mut self.engine, a)
+        {
+            self.pending_takes.push((a, None));
+        }
+        updated
+    }
+
     /// What an update needs of `collection` before anything changes: the main canvas and
     /// the running further canvases keep size and rate and have a program scene (without
     /// one the binder would retire the compositor that runs).
@@ -3077,6 +3141,30 @@ struct ExtraView {
     picture: Option<(NodeId, Arc<PreviewNodeStats>)>,
 }
 
+/// Adds a picture of `compositor`'s canvas for a UI: a preview node on [`RENDER`] fed
+/// by the compositor. Nothing is left behind when it fails.
+fn add_picture(
+    engine: &mut Engine,
+    graph: &mut GraphDescription,
+    compositor: NodeId,
+    desc: PreviewDesc,
+) -> Result<(NodeId, Arc<PreviewNodeStats>), RecordError> {
+    let node = PreviewNode::new(desc);
+    let stats = node.stats();
+    let id = add_active(graph, Node::<GpuRuntime>::descriptor(&node), RENDER)?;
+    if let Err(e) = graph.connect(compositor, "canvas", id, "canvas") {
+        let _ = graph.set_state(id, Lifecycle::Standby);
+        let _ = graph.remove_node(id);
+        return Err(e.into());
+    }
+    if let Err(e) = engine.adopt::<GpuRuntime>(RENDER, id, Box::new(node)) {
+        let _ = graph.set_state(id, Lifecycle::Standby);
+        let _ = graph.remove_node(id);
+        return Err(e.into());
+    }
+    Ok((id, stats))
+}
+
 /// Adopts `bound`'s compositor on [`RENDER`] at `size`, with a picture of its own when
 /// `desc` is given.
 fn attach_compositor(
@@ -3097,15 +3185,8 @@ fn attach_compositor(
     engine.adopt::<GpuRuntime>(RENDER, bound.node, Box::new(compositor))?;
     let mut picture = None;
     if let Some(desc) = desc {
-        let node = PreviewNode::new(desc);
-        let stats = node.stats();
-        let added = (|| -> Result<NodeId, RecordError> {
-            let id = add_active(graph, Node::<GpuRuntime>::descriptor(&node), RENDER)?;
-            graph.connect(bound.node, "canvas", id, "canvas")?;
-            Ok(id)
-        })();
-        let id = match added {
-            Ok(id) => id,
+        match add_picture(engine, graph, bound.node, desc) {
+            Ok(p) => picture = Some(p),
             Err(e) => {
                 // The compositor was adopted a moment ago: give it back.
                 take(
@@ -3118,21 +3199,7 @@ fn attach_compositor(
                 );
                 return Err(e);
             }
-        };
-        if let Err(e) = engine.adopt::<GpuRuntime>(RENDER, id, Box::new(node)) {
-            let _ = graph.set_state(id, Lifecycle::Standby);
-            let _ = graph.remove_node(id);
-            take(
-                engine,
-                Added {
-                    node: bound.node,
-                    partition: RENDER,
-                    gpu: true,
-                },
-            );
-            return Err(e.into());
         }
-        picture = Some((id, stats));
     }
     Ok(ExtraView {
         compositor: bound.node,

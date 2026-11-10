@@ -12,8 +12,10 @@
 //! Arguments: canvases (1 or 2), seconds (default 30), output folder (default the temp
 //! folder). The sources are two colour pictures, one blended over the other, so no
 //! device or permission is needed; set `RBS_BENCH_DISPLAY=1` to add the main display
-//! (macOS asks for screen recording once). Run each case a few times and compare the
-//! medians.
+//! (macOS asks for screen recording once). Set `RBS_BENCH_PICTURE=1` to give the
+//! vertical canvas its picture as an open Vertical panel does (ADR-0093 decision 7; no
+//! window draws it, the engine renders it the same). Run each case a few times and
+//! compare the medians.
 
 #![allow(clippy::print_stdout, clippy::print_stderr, clippy::expect_used)] // A demo: setup errors end it.
 #![allow(clippy::disallowed_methods)] // A demo, not the app shell: ADR-0055 rules the shell.
@@ -110,7 +112,17 @@ fn main() {
     let mut settings = StudioSettings::new(main);
     settings.audio = false;
     if let Some(tall) = tall {
-        settings.extra_canvases = vec![ExtraCanvas::new(tall)];
+        let mut extra = ExtraCanvas::new(tall);
+        if std::env::var_os("RBS_BENCH_PICTURE").is_some() {
+            let (width, height) = rbs_app::canvas_profile::preview_size(TALL.0, TALL.1);
+            extra = extra.with_preview(rbs_gpu::share::PreviewDesc {
+                width,
+                height,
+                surfaces: 3,
+            });
+            println!("vertical picture: {width}x{height}");
+        }
+        settings.extra_canvases = vec![extra];
     }
     let mut studio =
         Studio::start(engine, gpu, &col, &adapters.sources, &settings).expect("the studio starts");

@@ -648,6 +648,22 @@ pub const ENTRIES: &[Entry] = &[
         params: &[],
         checkable: false,
     },
+    // The vertical canvas's picture (ADR-0093 decision 7): one click shows or hides its
+    // panel, beside the pictures; it applies while a vertical canvas exists.
+    Entry {
+        id: "canvas.vertical_preview.toggle",
+        title: "Vertical preview",
+        tooltip: "Show or hide the vertical canvas's picture",
+        icon: Some("canvas-vertical"),
+        shortcut: None,
+        menu: Menu::View,
+        kind: Kind::Toggle {
+            on: "ui.panel.open",
+            off: "ui.panel.close",
+        },
+        params: &[],
+        checkable: true,
+    },
     Entry {
         id: "ui.panel.select",
         title: "Panels",
@@ -1504,6 +1520,7 @@ pub const MENU_LAYOUT: &[(Menu, &[&str])] = &[
             "ui.area.toggle?area=left",
             "ui.area.toggle?area=right",
             "ui.area.toggle?area=bottom",
+            "canvas.vertical_preview.toggle",
             "ui.area.hide_all",
             "ui.area.show_all",
             "ui.layout.reset_sizes",
@@ -1641,7 +1658,10 @@ pub fn icon(id: &CommandId, e: &Entry) -> Option<&'static str> {
 /// and Settings, whose icons say what they are (the title stays the accessible name
 /// and tooltip).
 pub fn icon_only(id: &CommandId) -> bool {
-    matches!(id.base(), "ui.area.toggle" | "ui.settings.open")
+    matches!(
+        id.base(),
+        "ui.area.toggle" | "ui.settings.open" | "canvas.vertical_preview.toggle"
+    )
 }
 
 /// The title an id shows: the entry's, with the area named for area toggles, the
@@ -2245,6 +2265,7 @@ pub fn default_toolbar() -> Toolbar {
         "ui.area.toggle?area=left",
         "ui.area.toggle?area=bottom",
         "ui.area.toggle?area=right",
+        "canvas.vertical_preview.toggle",
         "|",
         "ui.settings.open",
     ];

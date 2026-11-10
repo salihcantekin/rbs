@@ -194,6 +194,11 @@ struct App {
     preview_endpoint: Option<rbs_gpu::share::PreviewEndpoint>,
     /// The preview scene's picture in studio mode (ADR-0061), kept the same way.
     scene_preview_endpoint: Option<rbs_gpu::share::PreviewEndpoint>,
+    /// The vertical canvas's picture (ADR-0093), kept the same way.
+    vertical_preview_endpoint: Option<rbs_gpu::share::PreviewEndpoint>,
+    /// Whether the host was last asked to make the vertical canvas's picture: only while
+    /// its panel shows in the main window (zero cost when closed, P13).
+    vertical_picture_sent: bool,
     /// What the Dock badge or tray icon shows now; changed only when it differs.
     bg_state: background::LiveState,
     /// The tray icon and the second-launch event while Keep RBS running is set.
@@ -1202,6 +1207,24 @@ impl Ctx {
                     ctx.connect_scene_preview(endpoint);
                 }
             }
+            if let Some(endpoint) = applied.vertical_preview {
+                #[cfg(any(target_os = "macos", windows))]
+                preview::close_one(preview::Picture::Vertical);
+                app.vertical_preview_endpoint = endpoint.clone();
+                if let Some(endpoint) = endpoint
+                    && !app.hidden
+                {
+                    ctx.connect_vertical_preview(endpoint);
+                }
+            }
+            // A vertical canvas just added opens its closed panel beside the pictures,
+            // where it can be hidden again with one click (ADR-0093 decision 7).
+            if applied.vertical_added
+                && let Some(p) = panel(studio_ui::VERTICAL_PANEL)
+                && !app.session.workspace().is_open(&p)
+            {
+                app.command(LayoutCommand::OpenPanel(p), Origin::Command);
+            }
             if let Some(camera) = applied.camera {
                 app.vcam.sending(camera);
             }
@@ -1253,6 +1276,24 @@ impl Ctx {
 
     #[cfg(not(target_os = "macos"))]
     fn connect_scene_preview(&self, _endpoint: rbs_gpu::share::PreviewEndpoint) {}
+
+    /// The vertical canvas's picture (ADR-0093; macOS only for now, as the preview
+    /// scene's: Windows has one picture target per window).
+    #[cfg(target_os = "macos")]
+    fn connect_vertical_preview(&self, endpoint: rbs_gpu::share::PreviewEndpoint) {
+        preview::connect(preview::Picture::Vertical, endpoint, |ok| {
+            let ctx = CTX.with(|c| c.borrow().clone());
+            if let Some(ctx) = ctx {
+                ctx.update(move |app| {
+                    app.studio.vertical_preview_ready = ok;
+                    app.studio.vertical_preview_failed = !ok;
+                });
+            }
+        });
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    fn connect_vertical_preview(&self, _endpoint: rbs_gpu::share::PreviewEndpoint) {}
 
     /// Shows the Settings window at `section`, made on first use and kept until it is
     /// closed.
@@ -1483,6 +1524,11 @@ impl Ctx {
         if let Some([_, _, w, h]) = edit_main {
             app.studio.set_picture_size(w, h);
         }
+        let vertical_main = in_main(studio_ui::VERTICAL_PANEL);
+        // Hiding the panel clears a failure: showing it again asks once more.
+        if vertical_main.is_none() {
+            app.studio.vertical_picture_failed = false;
+        }
         let mixer_shown = in_main("rbs.mixer").is_some() || float_has("rbs.mixer");
         use studio_ui::preview_state as ps;
         let s = &app.studio;
@@ -1504,15 +1550,47 @@ impl Ctx {
             _ if s.scene_preview_ready => ps::SHOWN,
             _ => ps::STARTING,
         };
+        let vertical_state = match s.state {
+            0 => ps::STARTING,
+            2 => ps::STOPPED,
+            _ if s.vertical.is_none() => ps::NO_CANVAS,
+            _ if !s.preview_offered || !cfg!(target_os = "macos") => ps::NO_PLATFORM,
+            _ if s.vertical_picture_failed => ps::FAILED,
+            _ if s.vertical_preview_failed => ps::NO_SESSION,
+            _ if vertical_main.is_none() && float_has(studio_ui::VERTICAL_PANEL) => {
+                ps::OTHER_WINDOW
+            }
+            _ if s.vertical_preview_ready => ps::SHOWN,
+            _ => ps::STARTING,
+        };
         let running = s.state == 1;
-        s.push(&app.main.global::<Studio>(), state, scene_state, panel);
+        let states = studio_ui::PictureStates {
+            program: state,
+            scene: scene_state,
+            vertical: vertical_state,
+        };
+        s.push(&app.main.global::<Studio>(), states, panel);
         app.vcam.push_live(&app.main.global::<Studio>(), running);
         for f in &app.floats {
-            s.push(&f.window.global::<Studio>(), state, scene_state, panel);
+            s.push(&f.window.global::<Studio>(), states, panel);
             app.vcam.push_live(&f.window.global::<Studio>(), running);
         }
         if let Some(w) = &app.settings {
-            s.push(&w.global::<Studio>(), state, scene_state, panel);
+            s.push(&w.global::<Studio>(), states, panel);
+        }
+
+        // The vertical canvas makes its picture only while its panel shows here: a
+        // picture costs a compositor pass each frame (ADR-0093 decision 7, P13).
+        let vertical_wanted = cfg!(target_os = "macos")
+            && running
+            && s.preview_offered
+            && s.vertical.is_some()
+            && vertical_main.is_some()
+            && !s.vertical_picture_failed
+            && !app.hidden;
+        if vertical_wanted != app.vertical_picture_sent {
+            s.send(studio_host::Command::SetVerticalPicture(vertical_wanted));
+            app.vertical_picture_sent = vertical_wanted;
         }
 
         if mixer_shown && s.has_meters() {
@@ -1551,6 +1629,7 @@ impl Ctx {
             use preview::Picture;
             preview::set_area(Picture::Program, picture_main);
             preview::set_area(Picture::Scene, scene_main);
+            preview::set_area(Picture::Vertical, vertical_main);
             // The handles go on the edited scene's picture only.
             let (marked, other) = if studio_mode {
                 (Picture::Scene, Picture::Program)
@@ -1710,7 +1789,16 @@ impl Ctx {
             preview::close();
             app.studio.preview_ready = false;
             app.studio.scene_preview_ready = false;
+            app.studio.vertical_preview_ready = false;
         }
+        // The vertical canvas stops making its picture while nothing can show it (P13);
+        // the next sync after showing asks for it again and a new endpoint follows.
+        if app.vertical_picture_sent {
+            app.studio
+                .send(studio_host::Command::SetVerticalPicture(false));
+            app.vertical_picture_sent = false;
+        }
+        app.vertical_preview_endpoint = None;
         self.meter_timer.stop();
         app.hidden = true;
         #[cfg(target_os = "macos")]
@@ -1739,6 +1827,9 @@ impl Ctx {
         }
         if let Some(endpoint) = app.scene_preview_endpoint.clone() {
             self.connect_scene_preview(endpoint);
+        }
+        if let Some(endpoint) = app.vertical_preview_endpoint.clone() {
+            self.connect_vertical_preview(endpoint);
         }
         // The views catch up on the next turn of the event loop.
         self.update(|_| {});
@@ -3424,6 +3515,8 @@ fn run(config: PathBuf, notice: Option<String>) -> Result<(), Box<dyn std::error
             bg,
             preview_endpoint: None,
             scene_preview_endpoint: None,
+            vertical_preview_endpoint: None,
+            vertical_picture_sent: false,
             bg_state: background::LiveState::default(),
             #[cfg(windows)]
             tray: None,
