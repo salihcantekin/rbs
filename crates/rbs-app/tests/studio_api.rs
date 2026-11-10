@@ -340,6 +340,46 @@ fn a_control_api_client_drives_the_studio() {
         d[0]["layout"]["crop"] == json!([0, 0, 0, 0])
     });
 
+    // Transform commands (protocol 1.18, ADR-0084): flip, rotate, centre, one undo
+    // step each; fit needs a picture size this test never sees.
+    let flip = c.call("item.flip", json!({"item": item, "axis": "horizontal"}));
+    assert!(flip["result"].is_object(), "{flip}");
+    c.event("source.changed", |d| {
+        d[0]["layout"]["size"][0].as_f64().is_some_and(|w| w < 0.0)
+    });
+    let undo = c.call("edit.undo", json!({}));
+    assert!(undo["result"].is_object(), "{undo}");
+    c.event("source.changed", |d| {
+        d[0]["layout"]["size"][0].as_f64().is_some_and(|w| w > 0.0)
+    });
+    let turn = c.call("item.rotate", json!({"item": item, "degrees": 90}));
+    assert!(turn["result"].is_object(), "{turn}");
+    c.event("source.changed", |d| d[0]["layout"]["rotation"] == 90.0);
+    let centre = c.call("item.align", json!({"item": item, "axis": "vertical"}));
+    assert!(centre["result"].is_object(), "{centre}");
+    let fit = c.call("item.fit", json!({"item": item, "mode": "fit"}));
+    assert_eq!(fit["error"]["data"]["kind"], "invalid_params", "{fit}");
+    for (method, params, kind) in [
+        (
+            "item.rotate",
+            json!({"item": item, "degrees": 45}),
+            "invalid_params",
+        ),
+        (
+            "item.flip",
+            json!({"item": 999, "axis": "vertical"}),
+            "not_found",
+        ),
+        (
+            "item.flip",
+            json!({"item": item, "axis": "diagonal"}),
+            "invalid_params",
+        ),
+    ] {
+        let bad = c.call(method, params.clone());
+        assert_eq!(bad["error"]["data"]["kind"], kind, "{params}: {bad}");
+    }
+
     let unknown = c.call(
         "source.add",
         json!({"kind": "screen", "adapter": "nope", "target": "x"}),

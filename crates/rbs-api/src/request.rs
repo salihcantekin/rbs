@@ -121,6 +121,89 @@ pub struct SetItemCrop {
     pub keep_scale: bool,
 }
 
+/// A direction on the canvas, as the user sees it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Axis {
+    /// Left to right.
+    Horizontal,
+    /// Top to bottom.
+    Vertical,
+}
+
+/// `item.flip` (protocol 1.18, ADR-0084): mirror the item on the canvas.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct FlipItem {
+    /// The item's id.
+    pub item: u32,
+    /// The mirror axis.
+    pub axis: Axis,
+}
+
+/// `item.rotate` (protocol 1.18, ADR-0084): turn the item clockwise about its centre.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RotateItem {
+    /// The item's id.
+    pub item: u32,
+    /// Degrees clockwise: a non-zero multiple of 90 from -360 to 360.
+    pub degrees: i32,
+}
+
+/// How `item.fit` places the picture.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FitKind {
+    /// The largest box that fits the canvas, aspect kept.
+    Fit,
+    /// The smallest box that covers the canvas, aspect kept.
+    Fill,
+    /// The canvas size, aspect not kept.
+    Stretch,
+}
+
+/// `item.fit` (protocol 1.18, ADR-0084).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct FitItem {
+    /// The item's id.
+    pub item: u32,
+    /// How to place it.
+    pub mode: FitKind,
+}
+
+/// Which axes `item.align` centres on.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AlignAxis {
+    /// Both.
+    Both,
+    /// Left to right only.
+    Horizontal,
+    /// Top to bottom only.
+    Vertical,
+}
+
+/// `item.align` (protocol 1.18, ADR-0084): centre the item on the canvas.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AlignItem {
+    /// The item's id.
+    pub item: u32,
+    /// Centre on this axis only; both when left out.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub axis: Option<AlignAxis>,
+}
+
+/// `item.reset_transform` (protocol 1.18, ADR-0084).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ResetItemTransform {
+    /// The item's id.
+    pub item: u32,
+}
+
 fn yes() -> bool {
     true
 }
@@ -507,6 +590,16 @@ pub enum Command {
     ItemSetStyle(SetItemStyle),
     /// `item.set_crop` (protocol 1.5).
     ItemSetCrop(SetItemCrop),
+    /// `item.flip` (protocol 1.18).
+    ItemFlip(FlipItem),
+    /// `item.rotate` (protocol 1.18).
+    ItemRotate(RotateItem),
+    /// `item.fit` (protocol 1.18).
+    ItemFit(FitItem),
+    /// `item.align` (protocol 1.18).
+    ItemAlign(AlignItem),
+    /// `item.reset_transform` (protocol 1.18).
+    ItemResetTransform(ResetItemTransform),
     /// `scene.list` (protocol 1.6).
     SceneList,
     /// `scene.add` (protocol 1.6).
@@ -635,6 +728,11 @@ impl Command {
             Command::SourceDelete(_) => "source.delete",
             Command::ItemSetStyle(_) => "item.set_style",
             Command::ItemSetCrop(_) => "item.set_crop",
+            Command::ItemFlip(_) => "item.flip",
+            Command::ItemRotate(_) => "item.rotate",
+            Command::ItemFit(_) => "item.fit",
+            Command::ItemAlign(_) => "item.align",
+            Command::ItemResetTransform(_) => "item.reset_transform",
             Command::SceneList => "scene.list",
             Command::SceneAdd(_) => "scene.add",
             Command::SceneRemove(_) => "scene.remove",
@@ -751,6 +849,11 @@ pub const METHODS: &[MethodInfo] = &[
     m("source.delete", Some(Scope::Control)),
     m("item.set_style", Some(Scope::Control)),
     m("item.set_crop", Some(Scope::Control)),
+    m("item.flip", Some(Scope::Control)),
+    m("item.rotate", Some(Scope::Control)),
+    m("item.fit", Some(Scope::Control)),
+    m("item.align", Some(Scope::Control)),
+    m("item.reset_transform", Some(Scope::Control)),
     m("scene.list", Some(Scope::Read)),
     m("scene.add", Some(Scope::Control)),
     m("scene.remove", Some(Scope::Control)),
@@ -888,6 +991,16 @@ enum WireRequest {
     ItemSetStyle(SetItemStyle),
     #[serde(rename = "item.set_crop")]
     ItemSetCrop(SetItemCrop),
+    #[serde(rename = "item.flip")]
+    ItemFlip(FlipItem),
+    #[serde(rename = "item.rotate")]
+    ItemRotate(RotateItem),
+    #[serde(rename = "item.fit")]
+    ItemFit(FitItem),
+    #[serde(rename = "item.align")]
+    ItemAlign(AlignItem),
+    #[serde(rename = "item.reset_transform")]
+    ItemResetTransform(ResetItemTransform),
     #[serde(rename = "scene.list")]
     SceneList(Empty),
     #[serde(rename = "scene.add")]
@@ -1021,6 +1134,11 @@ impl From<WireRequest> for Request {
             WireRequest::SourceDelete(p) => Request::Command(C::SourceDelete(p)),
             WireRequest::ItemSetStyle(p) => Request::Command(C::ItemSetStyle(p)),
             WireRequest::ItemSetCrop(p) => Request::Command(C::ItemSetCrop(p)),
+            WireRequest::ItemFlip(p) => Request::Command(C::ItemFlip(p)),
+            WireRequest::ItemRotate(p) => Request::Command(C::ItemRotate(p)),
+            WireRequest::ItemFit(p) => Request::Command(C::ItemFit(p)),
+            WireRequest::ItemAlign(p) => Request::Command(C::ItemAlign(p)),
+            WireRequest::ItemResetTransform(p) => Request::Command(C::ItemResetTransform(p)),
             WireRequest::SceneList(_) => Request::Command(C::SceneList),
             WireRequest::SceneAdd(p) => Request::Command(C::SceneAdd(p)),
             WireRequest::SceneRemove(p) => Request::Command(C::SceneRemove(p)),
@@ -1100,6 +1218,11 @@ impl From<Request> for WireRequest {
                 C::SourceDelete(p) => WireRequest::SourceDelete(p),
                 C::ItemSetStyle(p) => WireRequest::ItemSetStyle(p),
                 C::ItemSetCrop(p) => WireRequest::ItemSetCrop(p),
+                C::ItemFlip(p) => WireRequest::ItemFlip(p),
+                C::ItemRotate(p) => WireRequest::ItemRotate(p),
+                C::ItemFit(p) => WireRequest::ItemFit(p),
+                C::ItemAlign(p) => WireRequest::ItemAlign(p),
+                C::ItemResetTransform(p) => WireRequest::ItemResetTransform(p),
                 C::SceneList => WireRequest::SceneList(Empty {}),
                 C::SceneAdd(p) => WireRequest::SceneAdd(p),
                 C::SceneRemove(p) => WireRequest::SceneRemove(p),

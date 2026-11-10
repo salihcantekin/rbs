@@ -14,6 +14,7 @@
 //! format lives with the user data layer (`rbs-user-data`, ADR-0051). Spec:
 //! `docs/specs/scene-model.md`.
 
+mod arrange;
 pub mod binder;
 mod collection;
 mod crop;
@@ -21,6 +22,7 @@ pub mod flatten;
 pub mod look;
 pub mod model;
 
+pub use arrange::{CenterAxis, FitMode, FlipState};
 pub use collection::{
     IdCounters, MAX_CANVAS_SIDE, MAX_FRAME_RATE, MAX_LAYERS, MAX_NESTING_DEPTH, SceneCollection,
     SceneError, Undo,
