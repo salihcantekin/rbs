@@ -3337,9 +3337,8 @@ impl StudioUi {
                 out.switch = Some((collection, id));
             }
             Update::VirtualCamera(status) => out.camera = Some(status),
-            // The replay buffer's controls and toast come with its UI (ADR-0088); the
-            // control API and the host already carry its state.
-            Update::Replay(_) | Update::ReplaySaved(_) => {}
+            // The replay buffer's page in the shell takes these (ADR-0088).
+            Update::Replay(_) | Update::ReplaySaved(_) => out.replay.push(u),
             Update::Stats(stats) => {
                 let rows: Vec<StatRow> = stat_lines(&stats)
                     .into_iter()
@@ -3723,6 +3722,8 @@ pub struct Applied {
     pub switch: Option<(bool, String)>,
     /// The virtual camera started or stopped sending (`Some(None)`: it does not send).
     pub camera: Option<Option<rbs_app::studio_host::CameraStatus>>,
+    /// Replay buffer updates (ADR-0088), for the shell's replay page.
+    pub replay: Vec<Update>,
 }
 
 /// A library as `profile.list` and `collection.list` show it.
@@ -4631,6 +4632,7 @@ mod tests {
             panels: Vec::new(),
             maximized: None,
             camera: Default::default(),
+            replay: Default::default(),
             can_undo: true,
             can_redo: false,
         };
@@ -4734,6 +4736,7 @@ mod tests {
                 panels: Vec::new(),
                 maximized: None,
                 camera: Default::default(),
+                replay: Default::default(),
                 can_undo: false,
                 can_redo: false,
             };
@@ -4762,6 +4765,7 @@ mod tests {
                 panels: Vec::new(),
                 maximized: None,
                 camera: Default::default(),
+                replay: Default::default(),
                 can_undo: false,
                 can_redo: false,
             };
@@ -4792,6 +4796,7 @@ mod tests {
             panels: Vec::new(),
             maximized: None,
             camera: Default::default(),
+            replay: Default::default(),
             can_undo: false,
             can_redo: false,
         };
@@ -4853,6 +4858,7 @@ mod tests {
                 panels: Vec::new(),
                 maximized: None,
                 camera: Default::default(),
+                replay: Default::default(),
                 can_undo,
                 can_redo,
             }

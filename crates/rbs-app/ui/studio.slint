@@ -6,6 +6,7 @@ import { Theme, Tokens } from "tokens.slint";
 import { Sections, Button, Checkbox, ColorPicker, FocusRing, RingFocus, SectionHeader, Tabs, Icon, IconButton, IconName, Icons, MenuItem, MenuSurface, EmptyState, NumberField, Select, SegmentedControl, Slider, VSlider, LevelText, TextField, Toggle, InfoHint, FeatureSection } from "components.slint";
 import { SettingsCard, SettingRow, SettingBlock, SettingsStatus, SettingsNotice, SettingsCallout } from "settings.slint";
 import { CommandMenu } from "context_menu.slint";
+import { ReplayControls, ReplaySettings } from "replay.slint";
 
 // `picture`: a video source; `x`, `y`, `w`, `h` place its box on the canvas (canvas
 // pixels). `can-up` / `can-down`: another source with a picture is above / below it.
@@ -1760,6 +1761,8 @@ export component LiveControlsPanel inherits Rectangle {
             font-size: Tokens.type-body-size;
             wrap: word-wrap;
         }
+        // The replay buffer: arm it, save a clip (ADR-0088).
+        ReplayControls { }
     }
 }
 
@@ -3104,6 +3107,7 @@ export component RecordingSettings inherits Rectangle {
                 set(field, value) => { Studio.set-encoding(0, field, value); }
             }
         }
+        ReplaySettings { }
     }
     preferred-height: form.preferred-height;
     min-height: form.min-height;

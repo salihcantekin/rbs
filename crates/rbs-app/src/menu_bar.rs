@@ -219,6 +219,8 @@ pub struct Shown<'a> {
     pub maximized: Option<&'a PanelId>,
     /// The virtual camera, for `vcam.toggle`.
     pub camera: CameraShown,
+    /// The replay buffer, for `replay.toggle` and `replay.save`.
+    pub replay: ReplayShown,
     /// The layout history has a step to undo.
     pub can_undo: bool,
     /// The layout history has a step to redo.
@@ -234,6 +236,15 @@ pub struct CameraShown {
     pub ready: bool,
     /// RBS sends to it.
     pub sending: bool,
+}
+
+/// The replay buffer as `replay.toggle` and `replay.save` see it (ADR-0088).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct ReplayShown {
+    /// The buffer keeps the past now.
+    pub armed: bool,
+    /// A clip can be saved now.
+    pub can_save: bool,
 }
 
 /// What the Add source picker lists.
@@ -616,6 +627,17 @@ impl CommandState for Shown<'_> {
                 }
                 Ok(())
             }
+            "replay.toggle" => self.running(),
+            "replay.save" => {
+                self.running()?;
+                if self.replay.can_save {
+                    Ok(())
+                } else if self.replay.armed {
+                    Err("A clip is being saved.".to_owned())
+                } else {
+                    Err("Arm the replay buffer first.".to_owned())
+                }
+            }
             "record.toggle" => match s.rec_state {
                 rec_state::RECORDING => Ok(()),
                 rec_state::STARTING => Err("The recording is starting.".to_owned()),
@@ -657,6 +679,7 @@ impl CommandState for Shown<'_> {
             "source.mixer_hidden.toggle" => self.source(id).is_ok_and(|f| f.mixer_hidden),
             "stream.toggle" => matches!(self.studio.st_state, st_state::LIVE | st_state::STARTING),
             "vcam.toggle" => self.camera.sending,
+            "replay.toggle" => self.replay.armed,
             "record.toggle" => matches!(
                 self.studio.rec_state,
                 rec_state::RECORDING | rec_state::STARTING
@@ -1036,6 +1059,7 @@ fn build_items(state: &Shown<'_>, bar: &rbs_ui::workspace::Toolbar) -> Vec<ToolI
                     ("stream.toggle", true) => ("End stream".to_owned(), true),
                     ("record.toggle", true) => ("Stop recording".to_owned(), true),
                     ("vcam.toggle", true) => ("Stop virtual camera".to_owned(), true),
+                    ("replay.toggle", true) => ("Disarm replay buffer".to_owned(), false),
                     _ => (title, false),
                 };
                 // A running output's toggle shows a stop square in the live colour; the
@@ -1208,6 +1232,10 @@ pub enum Run {
     StopRecording,
     /// Start (`true`) or stop sending to the virtual camera.
     VirtualCamera(bool),
+    /// Arm (`true`) or disarm the replay buffer.
+    Replay(bool),
+    /// Save the replay buffer's past as a clip.
+    SaveReplay,
 }
 
 /// What `text` runs in this state; `None` for ids that cannot run (unknown, bad
@@ -1344,6 +1372,8 @@ pub fn run(text: &str, state: &Shown<'_>) -> Option<Run> {
         "record.toggle" if on => Run::StopRecording,
         "record.toggle" => Run::Record,
         "vcam.toggle" => Run::VirtualCamera(!on),
+        "replay.toggle" => Run::Replay(!on),
+        "replay.save" => Run::SaveReplay,
         _ => return None,
     })
 }
