@@ -21,5 +21,6 @@ pub use session::{
     GpuImportTarget, SyncKind,
 };
 pub use target::{
-    CameraMode, CaptureTarget, Permission, THUMBNAIL_MAX, TargetId, TargetKind, Thumbnail,
+    CameraMode, CaptureTarget, Permission, RelatedDevice, RelatedKind, THUMBNAIL_MAX, TargetId,
+    TargetKind, Thumbnail,
 };

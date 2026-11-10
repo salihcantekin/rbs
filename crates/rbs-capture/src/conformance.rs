@@ -547,6 +547,24 @@ impl Suite<'_> {
                         format!("asked for {name}, got {} target {}", bad.kind, bad.id),
                     );
                 }
+                if let Some(bad) = targets
+                    .iter()
+                    .find(|t| t.related.as_ref().is_some_and(|r| r.id.is_empty()))
+                {
+                    return fail(
+                        "enumerate",
+                        format!("{} has a related device with an empty id", bad.id),
+                    );
+                }
+                if let Some(bad) = targets
+                    .iter()
+                    .find(|t| t.related.is_some() && t.kind != TargetKind::Camera)
+                {
+                    return fail(
+                        "enumerate",
+                        format!("{} is not a camera but has a related device", bad.id),
+                    );
+                }
                 match targets.first() {
                     Some(t) => testable.push((kind, t.id.clone())),
                     None => self.skip("sessions", &format!("no {name} target on this machine")),

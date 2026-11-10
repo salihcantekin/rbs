@@ -47,7 +47,17 @@ pub struct TargetId(String);
 #[non_exhaustive]
 pub struct CaptureTarget { pub id, pub kind, pub name: String,
     pub size: Option<(u32, u32)>, pub modes: Vec<CameraMode>,
-    pub app: Option<String> }   // + new / with_size / with_modes / with_app
+    pub app: Option<String>,
+    pub related: Option<RelatedDevice> }   // + new / with_size / with_modes / with_app / with_related
+
+/// ADR-0096 decision 5. Opaque id of a device of another kind that belongs with a target
+/// (a camera's built-in microphone). `#[non_exhaustive]`, additive.
+#[non_exhaustive] pub enum RelatedKind { Audio }
+#[non_exhaustive] pub struct RelatedDevice { pub kind: RelatedKind, pub id: String }
+// The id is adapter-defined and opaque: hosts pass it to the audio adapter of the same
+// platform, never parse it and never branch on vendor or model names (P3). If the audio
+// adapter cannot resolve it, no suggestion is shown. Lookup runs only while the Add source
+// dialog is open (P13). `None` is always valid.
 
 // `app` is a display-grade label for the application that owns a window, when the OS
 // tells it. Hosts group and label targets with it ("Same application", ADR-0077) and may
