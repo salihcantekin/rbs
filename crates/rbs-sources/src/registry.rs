@@ -378,6 +378,9 @@ fn known_keys(type_id: &NodeTypeId) -> Option<&'static [&'static str]> {
             keys::HEIGHT,
             keys::FPS,
         ],
+        SourceClass::Audio(EndpointKind::OutputLoopback) => {
+            &[keys::ADAPTER, keys::TARGET, keys::EXCLUDE_OWN_PROCESS]
+        }
         SourceClass::Audio(_) => &[keys::ADAPTER, keys::TARGET],
         SourceClass::Still => &[
             keys::PATH,
@@ -409,6 +412,7 @@ pub fn validate_settings(type_id: &NodeTypeId, settings: &Settings) -> Result<()
     text(settings, keys::ADAPTER)?;
     text(settings, keys::TARGET)?;
     flag(settings, keys::CURSOR)?;
+    flag(settings, keys::EXCLUDE_OWN_PROCESS)?;
     let (w, h) = (
         positive(settings, keys::WIDTH)?,
         positive(settings, keys::HEIGHT)?,
@@ -567,6 +571,15 @@ impl SourceTypes {
 
     fn audio_candidates(&self, kind: EndpointKind) -> Vec<Arc<dyn AudioBackend>> {
         self.audio.select(&audio_requirement(kind)).candidates
+    }
+
+    /// True when some audio adapter can leave RBS's own sound out of a system loopback
+    /// capture (`audio.loopback.exclude_self`, ADR-0096). Without it a display sound
+    /// companion would echo, so hosts do not offer one.
+    pub fn can_exclude_own_sound(&self) -> bool {
+        let requirement = audio_requirement(EndpointKind::OutputLoopback)
+            .with(audio_caps::LOOPBACK_EXCLUDE_SELF, Constraint::Flag(true));
+        !self.audio.select(&requirement).candidates.is_empty()
     }
 
     /// The OS pickers for `type_id`, best adapter first: probed capture adapters that
@@ -786,8 +799,10 @@ impl SourceTypes {
                     None => default_endpoint(&candidates, kind)
                         .ok_or_else(|| SourceError::NoTarget(type_id.clone()))?,
                 };
+                let exclude = flag(settings, keys::EXCLUDE_OWN_PROCESS)?.unwrap_or(false);
                 let request = InputRequest::new(endpoint.clone(), Arc::clone(&ctx.clock))
-                    .with_sample_rates(&[ctx.audio.format.sample_rate]);
+                    .with_sample_rates(&[ctx.audio.format.sample_rate])
+                    .with_exclude_own_process(exclude);
                 let stream = backend.open_input(&request).map_err(SourceError::Audio)?;
                 let (node, offset, stats) = InputNode::new(stream, ctx.audio, ctx.max_audio_offset);
                 Ok(SourceInstance::Audio(AudioSource {
