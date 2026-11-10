@@ -5575,7 +5575,9 @@ impl Host {
         if let Some(run) = run_copy(&self.collection, self.canvas, held) {
             return Some(run);
         }
-        self.held = held_copy(&self.collection, self.canvas);
+        // A fresh copy of the same scene, still on air; whatever is previewed, the hold
+        // goes on (ADR-0098).
+        self.held = copy_of(&self.collection, held.from);
         let run = run_copy(&self.collection, self.canvas, self.held.as_ref()?);
         if run.is_none() {
             self.held = None;
@@ -7750,6 +7752,11 @@ fn held_copy(collection: &SceneCollection, canvas: CanvasId) -> Option<Held> {
     if c.preview != Some(program) {
         return None;
     }
+    copy_of(collection, program)
+}
+
+/// A copy of `program` as it is now, to hold on air (ADR-0063).
+fn copy_of(collection: &SceneCollection, program: SceneId) -> Option<Held> {
     let scene = collection.scene(program)?;
     let mut held = scene.clone();
     held.id = SceneId::from_raw(HELD_IDS);
@@ -7984,6 +7991,11 @@ mod tests {
         let program = run.canvas(canvas).unwrap().program.unwrap();
         assert_eq!(run.scene(program).unwrap().items.len(), 1, "as it was");
         assert_eq!(run.canvas(canvas).unwrap().preview, Some(other));
+        // A copy that must be taken again (it no longer fits) is of the held scene, also
+        // with another scene in preview.
+        let again = copy_of(&col, held.from).unwrap();
+        assert_eq!(again.from, scene);
+        assert!(run_copy(&col, canvas, &again).is_some());
         // Without a hold, another scene in preview starts none.
         assert!(next_held(None, &col, canvas).is_none());
         // The other scene on air (a transition): the copy goes; it is in preview too,
