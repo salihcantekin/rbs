@@ -43,15 +43,15 @@ use rbs_gpu::GpuContext;
 use rbs_gpu::share::{PreviewDesc, PreviewEndpoint};
 use rbs_graph::node::NodeTypeId;
 use rbs_record::{
-    AudioSettings, Link, OutputId, OutputSettings, Progress, RecordAdapters, Studio,
-    StudioSettings, VideoSettings, VirtualCameraSettings,
+    AudioSettings, ExtraCanvas, Link, OutputId, OutputSettings, Progress, RecordAdapters,
+    RecordError, Studio, StudioSettings, VideoSettings, VirtualCameraSettings,
 };
 use rbs_scene::SceneCollection;
 use rbs_scene::model::{
     Border, CanvasId, Crop, FilterId, ItemContent, ItemId, ItemStyle, Layout, MasterAudio, Scene,
     SceneId, SceneItem, SceneScope, SettingValue, Settings, Shadow, Shape, SourceAudio, SourceId,
 };
-use rbs_scene::{CenterAxis, FitMode, SceneError, Undo};
+use rbs_scene::{AutoLayout, CenterAxis, FitMode, SceneError, Undo};
 use rbs_sources::types::{self, keys};
 use rbs_sources::{SourceError, SourceTarget};
 use rbs_transport::{ReconnectPolicy, Secret, TransportInput};
@@ -489,6 +489,15 @@ pub enum Command {
         /// Muted.
         muted: bool,
     },
+    /// Adds a vertical second canvas and runs it beside the main one (ADR-0093 decision
+    /// 8): the canvas is made, follows the main canvas's program scene when asked, gets
+    /// an Auto layout of the program scene when asked, and starts running (one output
+    /// can take it, one picture can show it). [`Update::Vertical`] answers. Not on the
+    /// undo stack.
+    AddVerticalCanvas(VerticalCanvas),
+    /// Stops the second canvas and removes it from the collection (its outputs must be
+    /// stopped first). [`Update::Vertical`] answers.
+    RemoveVerticalCanvas,
     /// The canvas's master volume, a linear factor from 0 to 1 (ADR-0081). A live
     /// control like a source's volume: not on the undo stack, no rebind.
     SetMasterVolume {
@@ -1059,9 +1068,37 @@ impl Refusal {
     }
 }
 
+/// What [`Command::AddVerticalCanvas`] makes (ADR-0093 decision 8).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct VerticalCanvas {
+    /// The picture size, for example 1080x1920 or 720x1280. It runs at the main canvas's
+    /// frame rate.
+    pub size: Size,
+    /// Shows the main canvas's program scene and switches with it (the default for a
+    /// vertical canvas); else it keeps the scene on air now and is switched on its own.
+    pub follow: bool,
+    /// How to arrange the program scene's sources for the new shape; `None`: they keep
+    /// the layout of the main canvas.
+    pub layout: Option<AutoLayout>,
+}
+
+/// The second canvas as the host runs it ([`Update::Vertical`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct VerticalState {
+    /// Its canvas.
+    pub canvas: CanvasId,
+    /// Its picture size.
+    pub size: Size,
+    /// It shows the main canvas's program scene.
+    pub follow: bool,
+}
+
 /// What the studio tells the UI.
 #[derive(Debug, Clone)]
 pub enum Update {
+    /// The second canvas runs (`Some`) or does not (`None`), sent when it changes
+    /// (ADR-0093) and once at the start.
+    Vertical(Option<VerticalState>),
     /// The scenes, the one on air and the collection's sources, after any change of
     /// them (ADR-0059).
     Scenes(SceneList),
@@ -1645,6 +1682,9 @@ struct Host {
     scene_preview_sent: Option<PreviewEndpoint>,
     /// The scene list as last sent.
     scenes_shown: Option<SceneList>,
+    /// The second canvas that runs, and what was last sent about it (ADR-0093).
+    vertical: Option<VerticalState>,
+    vertical_sent: Option<Option<VerticalState>>,
     /// The master meter last sent to the UI.
     master_sent: Option<Arc<rbs_audio::LevelMeter>>,
     /// The last picture size seen per video source (ADR-0058).
@@ -2058,6 +2098,8 @@ fn start(
             held,
             scene_preview_sent: None,
             scenes_shown: None,
+            vertical: None,
+            vertical_sent: None,
             master_sent: None,
             sizes: BTreeMap::new(),
             history: History::new(),
@@ -2207,6 +2249,14 @@ impl Host {
             }
             Command::SetSourceMixerHidden { id, hidden } => {
                 let done = self.set_source_mixer_hidden(id, hidden);
+                self.answer_live(done, notify);
+            }
+            Command::AddVerticalCanvas(spec) => {
+                let done = self.add_vertical(spec);
+                self.answer_live(done, notify);
+            }
+            Command::RemoveVerticalCanvas => {
+                let done = self.remove_vertical();
                 self.answer_live(done, notify);
             }
             Command::SetMasterVolume { volume } => {
@@ -2969,6 +3019,14 @@ impl Host {
         settings.preview = self.preview_surfaces.map(|n| preview_desc(canvas.size, n));
         settings.scene_preview = SCENE_PICTURE;
         settings.audio_offsets = filters::audio_offsets(&self.collection);
+        if let Some(v) = self
+            .vertical
+            .filter(|v| self.collection.canvas(v.canvas).is_some())
+        {
+            settings.extra_canvases = vec![ExtraCanvas::new(v.canvas)];
+        } else {
+            self.vertical = None;
+        }
         let run = self.run_collection();
         let engine = (self.engine)();
         let clock = engine.clock();
@@ -4226,6 +4284,132 @@ impl Host {
         Ok(changed)
     }
 
+    /// Makes the second canvas and runs it (ADR-0093 decision 8). Everything is tried
+    /// on a copy of the collection; the collection and the studio stay as they were when
+    /// any step is refused.
+    fn add_vertical(&mut self, spec: VerticalCanvas) -> Result<bool, Refusal> {
+        if self.vertical.is_some() {
+            return Err(Refusal::Conflict(
+                "There is a vertical canvas already.".to_owned(),
+            ));
+        }
+        let main = self
+            .collection
+            .canvas(self.canvas)
+            .ok_or_else(|| Refusal::NotFound("There is no canvas.".to_owned()))?;
+        let fps = main.frame_rate;
+        let mut draft = self.collection.clone();
+        let name = ["Vertical", "Vertical output", "Vertical canvas"]
+            .into_iter()
+            .chain((2..).map(|_| "Vertical 9:16"))
+            .find(|n| !draft.canvases().any(|c| c.name == *n))
+            .unwrap_or("Vertical");
+        let (canvas, _) = draft
+            .add_canvas(name, spec.size, fps)
+            .map_err(|e| Refusal::of(&e))?;
+        // Following needs scenes the new canvas may show (ADR-0093 decision 3): the main
+        // canvas's own scenes become shared (U15); the global scene stays where it is.
+        if spec.follow {
+            let own: Vec<_> = draft
+                .scenes_for(self.canvas)
+                .filter(|s| s.scope == SceneScope::Canvas(self.canvas))
+                .filter(|s| !draft.is_global_scene(s.id))
+                .map(|s| s.id)
+                .collect();
+            for id in own {
+                draft
+                    .set_scene_scope(id, SceneScope::Shared)
+                    .map_err(|e| Refusal::of(&e))?;
+            }
+        }
+        // A scene of its own to start from when it does not follow, else the one on air.
+        let scene = if draft.scenes_for(canvas).any(|s| s.id == self.scene) {
+            self.scene
+        } else {
+            draft
+                .showable_scenes(canvas)
+                .next()
+                .map(|s| s.id)
+                .ok_or_else(|| {
+                    Refusal::Conflict(
+                        "No scene can be shown on a vertical canvas: the scenes belong to the main canvas.".to_owned(),
+                    )
+                })?
+        };
+        draft
+            .set_program(canvas, Some(scene))
+            .map_err(|e| Refusal::of(&e))?;
+        if spec.follow {
+            draft
+                .set_canvas_follow(canvas, Some(self.canvas), Default::default())
+                .map_err(|e| Refusal::of(&e))?;
+        }
+        if let Some(mode) = spec.layout {
+            let sizes = &self.sizes;
+            draft
+                .auto_layout(
+                    canvas,
+                    self.scene,
+                    mode,
+                    &|source| sizes.get(&source).copied(),
+                    &BTreeMap::new(),
+                )
+                .map_err(|e| Refusal::of(&e))?;
+        }
+        let before = std::mem::replace(&mut self.collection, draft);
+        let run = self.run_collection();
+        let running = run.as_ref().unwrap_or(&self.collection);
+        match self
+            .studio
+            .activate_canvas(running, &self.adapters.sources, ExtraCanvas::new(canvas))
+        {
+            Ok(_) => {
+                self.vertical = Some(VerticalState {
+                    canvas,
+                    size: spec.size,
+                    follow: spec.follow,
+                });
+                self.waiting = self.studio.waiting();
+                Ok(true)
+            }
+            Err(e) => {
+                self.collection = before;
+                Err(Refusal::Failed(format!(
+                    "The vertical canvas did not start: {e}"
+                )))
+            }
+        }
+    }
+
+    /// Stops the second canvas and removes it from the collection.
+    fn remove_vertical(&mut self) -> Result<bool, Refusal> {
+        let Some(state) = self.vertical else {
+            return Ok(false);
+        };
+        let mut draft = self.collection.clone();
+        draft
+            .remove_canvas(state.canvas)
+            .map_err(|e| Refusal::of(&e))?;
+        // The canvas leaves the engine while it is still in the collection.
+        let run = run_copy_or(&self.collection, self.canvas, self.held.as_ref());
+        self.studio
+            .deactivate_canvas(
+                run.as_ref().unwrap_or(&self.collection),
+                &self.adapters.sources,
+                state.canvas,
+            )
+            .map_err(|e| match e {
+                RecordError::CanvasBusy(_) => Refusal::Conflict(
+                    "Stop the recording or stream of the vertical canvas first.".to_owned(),
+                ),
+                e => Refusal::Failed(e.to_string()),
+            })?;
+        self.collection = draft;
+        self.vertical = None;
+        self.waiting = self.studio.waiting();
+        Ok(true)
+    }
+
     /// Hides a source from the Mixer or shows it (ADR-0080): a view flag, not on the
     /// undo stack, and the mix is untouched. `Ok(false)` when nothing changed.
     fn set_source_mixer_hidden(&mut self, id: SourceId, hidden: bool) -> Result<bool, Refusal> {
@@ -5140,6 +5324,10 @@ impl Host {
     fn publish(&mut self, notify: &dyn Fn(Update)) {
         self.publish_save();
         self.refresh_sizes();
+        if self.vertical_sent != Some(self.vertical) {
+            self.vertical_sent = Some(self.vertical);
+            notify(Update::Vertical(self.vertical));
+        }
         let master = self.studio.master_meter().cloned();
         let same = match (&self.master_sent, &master) {
             (Some(a), Some(b)) => Arc::ptr_eq(a, b),
@@ -6738,6 +6926,16 @@ fn run_copy(
         collection.id_counters(),
     )
     .ok()
+}
+
+/// `collection` as the studio runs it while a program copy is held (ADR-0063): the
+/// held copy when there is one and it fits, else `None` (the collection itself).
+fn run_copy_or(
+    collection: &SceneCollection,
+    canvas: CanvasId,
+    held: Option<&Held>,
+) -> Option<SceneCollection> {
+    run_copy(collection, canvas, held?)
 }
 
 #[cfg(test)]
