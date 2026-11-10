@@ -124,12 +124,14 @@ pub(crate) mod ids {
     pub(crate) const INPUT: &str = "input:";
     pub(crate) const OUTPUT: &str = "output:";
     pub(crate) const APP: &str = "app:";
+    pub(crate) const PLAY: &str = "play:";
 
     /// The id of a device (by UID) or a process (by pid).
     pub(crate) fn endpoint(kind: EndpointKind, native: &str) -> EndpointId {
         let prefix = match kind {
             EndpointKind::OutputLoopback => OUTPUT,
             EndpointKind::Application => APP,
+            EndpointKind::Output => PLAY,
             _ => INPUT,
         };
         EndpointId::new(format!("{prefix}{native}"))
@@ -142,6 +144,7 @@ pub(crate) mod ids {
             (INPUT, EndpointKind::Input),
             (OUTPUT, EndpointKind::OutputLoopback),
             (APP, EndpointKind::Application),
+            (PLAY, EndpointKind::Output),
         ]
         .into_iter()
         .find_map(|(prefix, kind)| {
@@ -212,7 +215,7 @@ mod tests {
     #[test]
     fn ids_round_trip() {
         let uid = "BuiltInMicrophoneDevice";
-        for kind in EndpointKind::ALL {
+        for kind in EndpointKind::ALL.into_iter().chain([EndpointKind::Output]) {
             assert_eq!(ids::parse(&ids::endpoint(kind, uid)), Some((kind, uid)));
         }
         assert_eq!(ids::parse(&EndpointId::new("input:")), None);
