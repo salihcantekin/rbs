@@ -11,6 +11,7 @@ use rbs_core::timing::SampleRate;
 
 use crate::endpoint::{AudioEndpoint, EndpointId, EndpointKind, Permission};
 use crate::error::AudioIoError;
+use crate::output::{AudioOutput, OutputRequest};
 
 /// Ring capacity when the request does not name one.
 pub const DEFAULT_BUFFER: Duration = Duration::from_millis(200);
@@ -237,6 +238,15 @@ pub trait AudioBackend: AdapterFactory {
     /// reported ([`InputRequest::format_for`]).
     fn open_input(&self, request: &InputRequest)
     -> Result<Box<dyn AudioInputStream>, AudioIoError>;
+
+    /// Opens an output on a playback endpoint (`EndpointKind::Output`), in Standby
+    /// (ADR-0097). The default returns [`AudioIoError::Unsupported`]; adapters that
+    /// can play report [`OUTPUT`](crate::caps::OUTPUT). Like `open_input` it never
+    /// activates the device until [`AudioOutput::start`](crate::AudioOutput::start).
+    fn open_output(&self, request: &OutputRequest) -> Result<Box<dyn AudioOutput>, AudioIoError> {
+        let _ = request;
+        Err(AudioIoError::Unsupported("audio output"))
+    }
 
     /// Whether capturing `kind` is currently allowed. Fast; never prompts.
     fn permission(&self, kind: EndpointKind) -> Permission {

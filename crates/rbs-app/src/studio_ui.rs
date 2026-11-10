@@ -177,6 +177,8 @@ pub struct StudioUi {
     pub scene_preview_ready: bool,
     /// The preview scene's picture layer could not be made in this session.
     pub scene_preview_failed: bool,
+    /// The vertical canvas the host runs, if any (ADR-0093).
+    pub vertical: Option<rbs_app::studio_host::VerticalState>,
     pub deleted: String,
     /// The toast's source was only removed from one scene (ADR-0065).
     pub deleted_from_scene: bool,
@@ -380,6 +382,7 @@ impl StudioUi {
             studio_mode: false,
             scene_preview_ready: false,
             scene_preview_failed: false,
+            vertical: None,
             deleted: String::new(),
             deleted_serial: 0,
             deleted_from_scene: false,
@@ -1602,7 +1605,10 @@ impl StudioUi {
                 let audio = self.add_picker.as_ref().is_some_and(|p| p.audio());
                 self.adding = true;
                 self.deleted.clear();
-                if audio && !target.picker {
+                // A camera without a microphone of its own adds just the camera.
+                let with_sound =
+                    audio && !target.picker && (kind != SourceKind::Camera || target.mic.is_some());
+                if with_sound {
                     self.send(Command::AddSourceWithAudio { kind, target });
                 } else {
                     self.send(Command::AddSource { kind, target });
@@ -1629,6 +1635,7 @@ impl StudioUi {
             status: p.status(),
             rows: p.rows(),
             offers_audio: p.offers_audio(),
+            offers_mic: p.offers_microphone(),
             audio: p.audio(),
         })
     }
@@ -3231,9 +3238,7 @@ impl StudioUi {
                 self.refresh_existing();
                 self.refresh_marks();
             }
-            // The dialog and the panel for the second canvas follow with the UI change
-            // of ADR-0093 decision 7; the state is the host's until then.
-            Update::Vertical(_) => {}
+            Update::Vertical(v) => self.vertical = v,
             Update::MasterMeter(level) => {
                 self.master_slot = level.map(|l| (l, Meter::new()));
                 self.show_master();
@@ -3364,9 +3369,8 @@ impl StudioUi {
                 out.switch = Some((collection, id));
             }
             Update::VirtualCamera(status) => out.camera = Some(status),
-            // The replay buffer's controls and toast come with its UI (ADR-0088); the
-            // control API and the host already carry its state.
-            Update::Replay(_) | Update::ReplaySaved(_) => {}
+            // The replay buffer's page in the shell takes these (ADR-0088).
+            Update::Replay(_) | Update::ReplaySaved(_) => out.replay.push(u),
             Update::Stats(stats) => {
                 let rows: Vec<StatRow> = stat_lines(&stats)
                     .into_iter()
@@ -3736,6 +3740,8 @@ pub struct PickerView {
     pub rows: Vec<add_picker::Row>,
     /// Show "Capture audio too" (displays and windows) and whether it is checked.
     pub offers_audio: bool,
+    /// The dialog offers "Add its microphone too" (a camera with a microphone of its own).
+    pub offers_mic: bool,
     pub audio: bool,
 }
 
@@ -3754,6 +3760,8 @@ pub struct Applied {
     pub switch: Option<(bool, String)>,
     /// The virtual camera started or stopped sending (`Some(None)`: it does not send).
     pub camera: Option<Option<rbs_app::studio_host::CameraStatus>>,
+    /// Replay buffer updates (ADR-0088), for the shell's replay page.
+    pub replay: Vec<Update>,
 }
 
 /// A library as `profile.list` and `collection.list` show it.
@@ -4332,6 +4340,8 @@ mod tests {
             app: app.map(str::to_owned),
             recent: None,
             picker: false,
+            mic: None,
+            sound: true,
         }
     }
 
@@ -4662,6 +4672,7 @@ mod tests {
             panels: Vec::new(),
             maximized: None,
             camera: Default::default(),
+            replay: Default::default(),
             can_undo: true,
             can_redo: false,
         };
@@ -4765,6 +4776,7 @@ mod tests {
                 panels: Vec::new(),
                 maximized: None,
                 camera: Default::default(),
+                replay: Default::default(),
                 can_undo: false,
                 can_redo: false,
             };
@@ -4793,6 +4805,7 @@ mod tests {
                 panels: Vec::new(),
                 maximized: None,
                 camera: Default::default(),
+                replay: Default::default(),
                 can_undo: false,
                 can_redo: false,
             };
@@ -4823,6 +4836,7 @@ mod tests {
             panels: Vec::new(),
             maximized: None,
             camera: Default::default(),
+            replay: Default::default(),
             can_undo: false,
             can_redo: false,
         };
@@ -4884,6 +4898,7 @@ mod tests {
                 panels: Vec::new(),
                 maximized: None,
                 camera: Default::default(),
+                replay: Default::default(),
                 can_undo,
                 can_redo,
             }

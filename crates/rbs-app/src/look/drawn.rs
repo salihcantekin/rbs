@@ -28,7 +28,7 @@ use std::rc::Rc;
 use rbs_ui::tokens::{CONTRAST_RULES, FIXED, LIVE_SURFACES, THEME_COLORS, THEME_CONTRAST_RULES};
 
 /// Every `.slint` file of the app (`every_slint_file_is_read` checks the list).
-const FILES: [(&str, &str); 11] = [
+const FILES: [(&str, &str); 12] = [
     ("app.slint", include_str!("../../ui/app.slint")),
     ("app_menu.slint", include_str!("../../ui/app_menu.slint")),
     (
@@ -47,6 +47,7 @@ const FILES: [(&str, &str); 11] = [
         "overlay_probe.slint",
         include_str!("../../ui/overlay_probe.slint"),
     ),
+    ("replay.slint", include_str!("../../ui/replay.slint")),
     ("settings.slint", include_str!("../../ui/settings.slint")),
     ("shortcuts.slint", include_str!("../../ui/shortcuts.slint")),
     (

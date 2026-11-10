@@ -1,0 +1,195 @@
+// The replay buffer (ADR-0088): Settings › Recording › Replay buffer, and the Live
+// controls' two buttons. Rust (`replay_page`) pushes state into the `ReplayBuffer`
+// global and handles its callbacks; every text it pushes comes from
+// `rbs_app::replay_settings` and the host's state.
+import { Theme, Tokens } from "tokens.slint";
+import { Button, IconButton, IconName, Select, Slider, TextField, Toggle } from "components.slint";
+import { SettingsCard, SettingRow, SettingsStatus } from "settings.slint";
+
+export global ReplayBuffer {
+    // The studio runs, so the buffer can arm.
+    in property <bool> can-arm;
+    // The buffer keeps the past now.
+    in property <bool> armed;
+    // Arm it when RBS starts.
+    in property <bool> arm-on-start;
+    in property <bool> audio;
+    // The length slider, 0 to 1 on a log scale, and its text ("2 min").
+    in property <float> length;
+    in property <string> length-text;
+    in property <[string]> memories;
+    in property <int> memory;
+    in property <string> folder;
+    // Bumped when Rust changes the folder, so the field takes the new text.
+    in property <int> folder-serial;
+    // What it holds in words, with `tone` 0 neutral, 1 good, 2 problem.
+    in property <string> status;
+    in property <int> tone;
+    // What the settings cost in memory, in words.
+    in property <string> estimate;
+    // The last problem with the settings, or "".
+    in property <string> problem;
+    // A clip is being cut or written.
+    in property <bool> saving;
+    in property <bool> can-save;
+    // The last clip: its file name, and whether it can be shown in its folder.
+    in property <string> saved-name;
+    in property <string> saved-error;
+    callback toggle(bool);
+    callback set-arm-on-start(bool);
+    callback set-audio(bool);
+    callback length-moved(float);
+    callback length-released();
+    callback set-memory(int);
+    callback set-folder(string);
+    callback save();
+    callback show-saved();
+}
+
+export component ReplaySettings inherits Rectangle {
+    form := VerticalLayout {
+        alignment: start;
+        SettingsCard {
+            title: @tr("Replay buffer");
+            id: "settings.recording.replay";
+            description: @tr("Keeps the last minutes of the program in memory so you can save them as a clip after something happens. Off until you arm it.");
+            SettingRow {
+                divider: false;
+                label: @tr("Keep the past");
+                help: @tr("Armed, the buffer encodes the program like your recordings and keeps only the newest part. It uses memory and a second encode while it runs.");
+                enabled: ReplayBuffer.can-arm;
+                fill: false;
+                Toggle {
+                    label: @tr("Keep the past");
+                    checked: ReplayBuffer.armed;
+                    enabled: ReplayBuffer.can-arm;
+                    toggled(on) => { ReplayBuffer.toggle(on); }
+                }
+            }
+            SettingsStatus {
+                text: ReplayBuffer.status;
+                tone: ReplayBuffer.tone;
+            }
+            SettingRow {
+                label: @tr("Length");
+                help: @tr("How much past to keep, 10 seconds to 30 minutes. Changes apply the next time the buffer is armed.");
+                Slider {
+                    label: @tr("Length");
+                    value: ReplayBuffer.length;
+                    value-text: ReplayBuffer.length-text;
+                    moved(v) => { ReplayBuffer.length-moved(v); }
+                    released => { ReplayBuffer.length-released(); }
+                }
+                Text {
+                    horizontal-stretch: 0;
+                    text: ReplayBuffer.length-text;
+                    color: Theme.text-secondary;
+                    font-size: Tokens.type-body-size;
+                    vertical-alignment: center;
+                }
+            }
+            SettingRow {
+                label: @tr("Memory limit");
+                help: ReplayBuffer.estimate;
+                fill: false;
+                Select {
+                    label: @tr("Memory limit");
+                    options: ReplayBuffer.memories;
+                    index: ReplayBuffer.memory;
+                    selected(i) => { ReplayBuffer.set-memory(i); }
+                }
+            }
+            SettingRow {
+                label: @tr("Include sound");
+                help: @tr("Keeps the program's audio with the picture.");
+                fill: false;
+                Toggle {
+                    label: @tr("Include sound");
+                    checked: ReplayBuffer.audio;
+                    toggled(on) => { ReplayBuffer.set-audio(on); }
+                }
+            }
+            SettingRow {
+                label: @tr("Arm when RBS starts");
+                help: @tr("Starts keeping the past as soon as the studio is ready.");
+                fill: false;
+                Toggle {
+                    label: @tr("Arm when RBS starts");
+                    checked: ReplayBuffer.arm-on-start;
+                    toggled(on) => { ReplayBuffer.set-arm-on-start(on); }
+                }
+            }
+            SettingRow {
+                label: @tr("Folder");
+                help: @tr("Clips are named by date and time; a file is never replaced. Empty uses the recording folder.");
+                control-width: Tokens.size-menu-md + Tokens.size-menu-sm / 2;
+                folder := TextField {
+                    label: @tr("Folder");
+                    text: ReplayBuffer.folder;
+                    accepted(t) => { ReplayBuffer.set-folder(t); }
+                }
+            }
+            if ReplayBuffer.problem != "": SettingsStatus {
+                text: ReplayBuffer.problem;
+                tone: 2;
+            }
+        }
+    }
+    preferred-height: form.preferred-height;
+    min-height: form.min-height;
+    property <int> folder-serial: ReplayBuffer.folder-serial;
+    changed folder-serial => { folder.text = ReplayBuffer.folder; }
+}
+
+// Live controls: arm or disarm the buffer, and save a clip. Two icon buttons, then the
+// state in words and the last clip (U4: state in words).
+export component ReplayControls inherits VerticalLayout {
+    spacing: Tokens.space-1;
+    HorizontalLayout {
+        spacing: Tokens.space-2;
+        alignment: start;
+        IconButton {
+            icon: IconName.refresh;
+            name: ReplayBuffer.armed ? @tr("Stop keeping the past") : @tr("Keep the past for replay");
+            kind: ReplayBuffer.armed ? "secondary" : "ghost";
+            enabled: ReplayBuffer.can-arm;
+            clicked => { ReplayBuffer.toggle(!ReplayBuffer.armed); }
+        }
+        IconButton {
+            icon: IconName.export;
+            name: @tr("Save the replay as a clip");
+            enabled: ReplayBuffer.can-save;
+            clicked => { ReplayBuffer.save(); }
+        }
+    }
+    if ReplayBuffer.armed: Text {
+        text: ReplayBuffer.status;
+        color: Theme.text-secondary;
+        font-size: Tokens.type-body-size;
+        wrap: word-wrap;
+    }
+    if ReplayBuffer.saved-error != "": Text {
+        text: ReplayBuffer.saved-error;
+        color: Theme.state-error;
+        font-size: Tokens.type-body-size;
+        wrap: word-wrap;
+    }
+    if ReplayBuffer.saved-name != "": HorizontalLayout {
+        spacing: Tokens.space-2;
+        Text {
+            horizontal-stretch: 1;
+            text: @tr("Clip saved: {}", ReplayBuffer.saved-name);
+            color: Theme.text-secondary;
+            font-size: Tokens.type-body-size;
+            wrap: word-wrap;
+            vertical-alignment: center;
+        }
+        Button {
+            horizontal-stretch: 0;
+            text: @tr("Show in folder");
+            kind: "ghost";
+            dense: true;
+            clicked => { ReplayBuffer.show-saved(); }
+        }
+    }
+}

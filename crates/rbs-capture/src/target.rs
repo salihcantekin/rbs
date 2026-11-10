@@ -142,6 +142,42 @@ pub struct CaptureTarget {
     /// (`None` for displays, cameras and adapters that cannot know). Only for
     /// grouping and display; hosts never branch on its value (P3).
     pub app: Option<String>,
+    /// A device of another kind that belongs with this target, when the adapter can
+    /// tell (a camera's built-in microphone). `None` when unknown. See [`RelatedDevice`].
+    pub related: Option<RelatedDevice>,
+}
+
+/// The kind of a [`RelatedDevice`].
+#[non_exhaustive]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RelatedKind {
+    /// An audio input device.
+    Audio,
+}
+
+/// A hint that a capture target has a companion device (ADR-0096, decision 5).
+///
+/// `id` is opaque: it is an id the audio adapter of the same platform can resolve to
+/// one of its input devices. Hosts only pass it on; they never parse it or branch on
+/// vendor or model names (P3). If the audio adapter cannot resolve it, the suggestion
+/// is not shown.
+#[non_exhaustive]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RelatedDevice {
+    /// What kind of device it is.
+    pub kind: RelatedKind,
+    /// Opaque id the audio adapter can resolve.
+    pub id: String,
+}
+
+impl RelatedDevice {
+    /// An audio input device with the given opaque id.
+    pub fn audio(id: impl Into<String>) -> Self {
+        Self {
+            kind: RelatedKind::Audio,
+            id: id.into(),
+        }
+    }
 }
 
 impl CaptureTarget {
@@ -154,7 +190,14 @@ impl CaptureTarget {
             size: None,
             modes: Vec::new(),
             app: None,
+            related: None,
         }
+    }
+
+    /// Sets the related device.
+    pub fn with_related(mut self, related: RelatedDevice) -> Self {
+        self.related = Some(related);
+        self
     }
 
     /// Sets the native size.

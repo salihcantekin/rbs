@@ -7,6 +7,7 @@ import { SettingsNavItem, SettingsNavGroup, SettingsHeader } from "settings.slin
 import { Appearance, AppearanceSettings, ThemeOption, ThemeTokenRow } from "appearance.slint";
 import { Shortcuts, ShortcutsSettings, ShortcutRow, ShortcutChip } from "shortcuts.slint";
 import { VirtualCamera, VirtualCameraSettings } from "vcam.slint";
+import { ReplayBuffer } from "replay.slint";
 import { SourceSettingsWindow } from "source_settings.slint";
 import { CommandMenu, ContextMenus, ContextItem, ContextChoice } from "context_menu.slint";
 import { AppMenus, AppMenuRow, AppMenuChip, AppMenu, AppMenuButton } from "app_menu.slint";
@@ -14,7 +15,7 @@ import { Studio, ModeData, SourceSettingsData, EntryRow, SourceData, FilterData,
 
 export { SourceSettingsWindow, ModeData, SourceSettingsData }
 export { OverlayProbe } from "overlay_probe.slint";
-export { Sections, Overlays, OverlayCover, PickerRow, AppMenus, AppMenuRow, AppMenuChip, ContextMenus, ContextItem, ContextChoice, Theme, Tokens, Appearance, ThemeOption, ThemeTokenRow, Shortcuts, ShortcutRow, ShortcutChip, VirtualCamera, Studio, EntryRow, SourceData, FilterData, FilterFieldData, MarkData, KindData, MeterRow, ScaleMark, EncoderData }
+export { Sections, Overlays, OverlayCover, PickerRow, AppMenus, AppMenuRow, AppMenuChip, ContextMenus, ContextItem, ContextChoice, Theme, Tokens, Appearance, ThemeOption, ThemeTokenRow, Shortcuts, ShortcutRow, ShortcutChip, VirtualCamera, ReplayBuffer, Studio, EntryRow, SourceData, FilterData, FilterFieldData, MarkData, KindData, MeterRow, ScaleMark, EncoderData }
 
 export struct TabData { id: string, title: string, known: bool, icon: string }
 export struct StackData { window: int, stack: int, x: length, y: length, w: length, h: length, tabs: [TabData], active: int, collapsed: bool, can-collapse: bool, can-hide: bool }
@@ -1647,21 +1648,26 @@ export component MainWindow inherits Window {
             MenuItem { title: Menus.titles[50]; icon: Menus.icons[50]; enabled: Menus.enabled[50]; checkable: true; checked: Menus.checked[50]; activated => { Menus.run("record.toggle"); } }
             MenuSeparator { }
             MenuItem { title: Menus.titles[51]; icon: Menus.icons[51]; enabled: Menus.enabled[51]; checkable: true; checked: Menus.checked[51]; activated => { Menus.run("vcam.toggle"); } }
+            MenuSeparator { }
+            MenuItem { title: Menus.titles[52]; icon: Menus.icons[52]; enabled: Menus.enabled[52]; checkable: true; checked: Menus.checked[52]; activated => { Menus.run("replay.toggle"); } }
+            MenuItem { title: Menus.titles[53]; icon: Menus.icons[53]; enabled: Menus.enabled[53]; activated => { Menus.run("replay.save"); } }
+            MenuSeparator { }
+            MenuItem { title: Menus.titles[54]; icon: Menus.icons[54]; enabled: Menus.enabled[54]; activated => { Menus.run("canvas.add_vertical"); } }
         }
         Menu {
             title: @tr("Window");
             Menu {
-                title: Menus.titles[52];
-                icon: Menus.icons[52];
-                enabled: Menus.enabled[52];
+                title: Menus.titles[55];
+                icon: Menus.icons[55];
+                enabled: Menus.enabled[55];
                 for c in Menus.choices[9]: MenuItem { title: c.title; checkable: true; checked: c.checked; activated => { Menus.run(c.id); } }
             }
             MenuSeparator { }
-            MenuItem { title: Menus.titles[53]; icon: Menus.icons[53]; enabled: Menus.enabled[53]; checkable: true; checked: Menus.checked[53]; activated => { Menus.run("ui.panel.maximize?id=rbs.preview"); } }
+            MenuItem { title: Menus.titles[56]; icon: Menus.icons[56]; enabled: Menus.enabled[56]; checkable: true; checked: Menus.checked[56]; activated => { Menus.run("ui.panel.maximize?id=rbs.preview"); } }
         }
         Menu {
             title: @tr("Help");
-            MenuItem { title: Menus.titles[54]; icon: Menus.icons[54]; enabled: Menus.enabled[54]; activated => { Menus.run("ui.app_menu.open"); } }
+            MenuItem { title: Menus.titles[57]; icon: Menus.icons[57]; enabled: Menus.enabled[57]; activated => { Menus.run("ui.app_menu.open"); } }
         }
     }
     // END generated menu bar
@@ -1943,21 +1949,26 @@ export component FloatWindow inherits Window {
             MenuItem { title: Menus.titles[50]; icon: Menus.icons[50]; enabled: Menus.enabled[50]; checkable: true; checked: Menus.checked[50]; activated => { Menus.run("record.toggle"); } }
             MenuSeparator { }
             MenuItem { title: Menus.titles[51]; icon: Menus.icons[51]; enabled: Menus.enabled[51]; checkable: true; checked: Menus.checked[51]; activated => { Menus.run("vcam.toggle"); } }
+            MenuSeparator { }
+            MenuItem { title: Menus.titles[52]; icon: Menus.icons[52]; enabled: Menus.enabled[52]; checkable: true; checked: Menus.checked[52]; activated => { Menus.run("replay.toggle"); } }
+            MenuItem { title: Menus.titles[53]; icon: Menus.icons[53]; enabled: Menus.enabled[53]; activated => { Menus.run("replay.save"); } }
+            MenuSeparator { }
+            MenuItem { title: Menus.titles[54]; icon: Menus.icons[54]; enabled: Menus.enabled[54]; activated => { Menus.run("canvas.add_vertical"); } }
         }
         Menu {
             title: @tr("Window");
             Menu {
-                title: Menus.titles[52];
-                icon: Menus.icons[52];
-                enabled: Menus.enabled[52];
+                title: Menus.titles[55];
+                icon: Menus.icons[55];
+                enabled: Menus.enabled[55];
                 for c in Menus.choices[9]: MenuItem { title: c.title; checkable: true; checked: c.checked; activated => { Menus.run(c.id); } }
             }
             MenuSeparator { }
-            MenuItem { title: Menus.titles[53]; icon: Menus.icons[53]; enabled: Menus.enabled[53]; checkable: true; checked: Menus.checked[53]; activated => { Menus.run("ui.panel.maximize?id=rbs.preview"); } }
+            MenuItem { title: Menus.titles[56]; icon: Menus.icons[56]; enabled: Menus.enabled[56]; checkable: true; checked: Menus.checked[56]; activated => { Menus.run("ui.panel.maximize?id=rbs.preview"); } }
         }
         Menu {
             title: @tr("Help");
-            MenuItem { title: Menus.titles[54]; icon: Menus.icons[54]; enabled: Menus.enabled[54]; activated => { Menus.run("ui.app_menu.open"); } }
+            MenuItem { title: Menus.titles[57]; icon: Menus.icons[57]; enabled: Menus.enabled[57]; activated => { Menus.run("ui.app_menu.open"); } }
         }
     }
     // END generated menu bar

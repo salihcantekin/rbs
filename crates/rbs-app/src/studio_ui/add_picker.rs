@@ -83,20 +83,36 @@ impl AddPicker {
         self.entries = list
             .iter()
             .map(|t| {
-                let note = if t.is_default { "default" } else { "" };
-                (
-                    t.name.clone(),
-                    note.to_owned(),
-                    Pick::Target(kind, t.clone()),
-                )
+                let note = match (&t.mic, t.is_default) {
+                    (Some(_), _) => "+ mic".to_owned(),
+                    (None, true) => "default".to_owned(),
+                    (None, false) => String::new(),
+                };
+                (t.name.clone(), note, Pick::Target(kind, t.clone()))
             })
             .collect();
+        // Cameras with a microphone of their own start with it checked (ADR-0096 E).
+        self.audio = self.offers_microphone();
         true
     }
 
     /// The dialog offers "Capture audio too": a display or a window is being added.
     pub fn offers_audio(&self) -> bool {
         matches!(self.kind, Some(SourceKind::Screen | SourceKind::Window))
+            && self
+                .entries
+                .iter()
+                .any(|(_, _, p)| matches!(p, Pick::Target(_, t) if t.sound && !t.picker))
+    }
+
+    /// The dialog offers "Add its microphone too": a camera is listed and at least one
+    /// camera has a microphone that is not a source yet.
+    pub fn offers_microphone(&self) -> bool {
+        self.kind == Some(SourceKind::Camera)
+            && self
+                .entries
+                .iter()
+                .any(|(_, _, p)| matches!(p, Pick::Target(_, t) if t.mic.is_some()))
     }
 
     /// "Capture audio too" is checked.
@@ -165,6 +181,8 @@ mod tests {
             app: None,
             recent: None,
             picker: false,
+            mic: None,
+            sound: true,
         }
     }
 
@@ -177,12 +195,24 @@ mod tests {
             (SourceKind::AudioInput, false),
         ] {
             let mut p = AddPicker::for_kind(kind);
+            p.answer(kind, &[target("Thing", false)]);
             assert_eq!(p.offers_audio(), offered, "{kind:?}");
             assert!(!p.audio());
             p.set_audio(true);
             assert!(p.audio());
         }
         assert!(!AddPicker::existing(&[]).offers_audio());
+    }
+
+    #[test]
+    fn a_display_that_cannot_leave_rbs_out_of_its_sound_does_not_offer_it() {
+        let mut p = AddPicker::for_kind(SourceKind::Screen);
+        let display = Target {
+            sound: false,
+            ..target("Display 1", false)
+        };
+        p.answer(SourceKind::Screen, &[display]);
+        assert!(!p.offers_audio());
     }
 
     #[test]
@@ -225,5 +255,28 @@ mod tests {
         assert_eq!(p.status(), Status::Ready);
         assert_eq!(p.pick(0), Some(&Pick::Existing(SourceId::from_raw(4))));
         assert_eq!(p.kind(), None);
+    }
+
+    #[test]
+    fn a_camera_with_a_microphone_offers_it_checked_and_says_so_in_its_row() {
+        let cam = |name: &str, mic: Option<&str>| Target {
+            mic: mic.map(str::to_owned),
+            ..target(name, false)
+        };
+        let mut p = AddPicker::for_kind(SourceKind::Camera);
+        p.answer(
+            SourceKind::Camera,
+            &[cam("Webcam", Some("Webcam mic")), cam("Built-in", None)],
+        );
+        assert!(p.offers_microphone());
+        assert!(!p.offers_audio());
+        assert!(p.audio());
+        assert_eq!(p.rows()[0].note, "+ mic");
+        assert_eq!(p.rows()[1].note, "");
+        // No camera has one: nothing is offered and nothing is checked.
+        let mut none = AddPicker::for_kind(SourceKind::Camera);
+        none.answer(SourceKind::Camera, &[cam("Built-in", None)]);
+        assert!(!none.offers_microphone());
+        assert!(!none.audio());
     }
 }

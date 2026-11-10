@@ -13,9 +13,9 @@ ADR status is the file header, not only the index. Where those two disagree, bot
 | `audio.levels` | Partial | Sampled from source meters while a client is subscribed. `rms_db` repeats the peak. The master meter is not in the payload |
 | JSON Schema, `stats`, `ui.*` routing, U20 command parity | Not started | Named in the control-api spec |
 | Audio filters (gain, noise gate, ducker) | Running | ADR-0082 and ADR-0095 Accepted. Catalogue, API and Properties |
-| Several outputs | Partial | ADR-0047 Accepted. Record and stream together, shared encoder when settings match. `MAX_OUTPUTS` is 2 per the current cap |
+| Several outputs | Partial | ADR-0047 Accepted. Record and stream together, shared encoder when settings match. `MAX_OUTPUTS` is 4 in total and `MAX_OUTPUTS_PER_CANVAS` is 2 (ADR-0093 decision 6) |
 | Default video encode | CPU readback | `YuvDownload` in `rbs-nodes` export, ADR-0038. The hardware check is SC-PC: Windows 11, RTX 4090 and the AMD iGPU in that machine (recording spec, 2026-11-03). It was off on 2026-11-10, so the native surface path is not in this tree |
-| Second canvas | Partial, ADR Accepted | ADR-0093 Accepted 2026-11-10. Engine steps and add/remove of a vertical canvas are in the tree. Deferred items in the review stay deferred. The Windows measurement is on SC-PC |
+| Second canvas | Partial, ADR Accepted | ADR-0093 Accepted 2026-11-10. Engine steps, add/remove, the Add vertical output dialog and `canvas.add_vertical` / `canvas.remove_vertical` (protocol 1.28) are in the tree. Deferred items in the review stay deferred. The Windows measurement is on SC-PC |
 | Source transform commands | Partial, ADR Accepted | ADR-0084 Accepted 2026-11-10. Flip, rotate, fit and align exist. Remaining menu categories do not |
 | Replay buffer | Partial, ADR Accepted | ADR-0088 Accepted 2026-11-10. Host and control API are in the tree |
 | Crash isolation | Partial, ADR Accepted | `catch_unwind` around `Node::process`, `rbs-crash`. ADR-0055 Accepted 2026-11-10. Follow-ups in the review are still follow-ups |

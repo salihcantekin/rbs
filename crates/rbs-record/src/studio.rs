@@ -341,8 +341,13 @@ struct Added {
     gpu: bool,
 }
 
-/// Outputs a studio runs at once (ADR-0047): a recording and a live stream.
-pub const MAX_OUTPUTS: usize = 2;
+/// Outputs a studio runs at once: a recording and a live stream (ADR-0047) for each of
+/// two canvases (ADR-0093 decision 6).
+pub const MAX_OUTPUTS: usize = 4;
+
+/// Outputs one canvas feeds at once (ADR-0047).
+pub const MAX_OUTPUTS_PER_CANVAS: usize = 2;
+const _: () = assert!(MAX_OUTPUTS == MAX_CANVASES * MAX_OUTPUTS_PER_CANVAS);
 
 /// What the virtual camera announces and RBS sends (ADR-0066 decision 7): NV12 at this
 /// size (both even) and rate.
@@ -624,6 +629,8 @@ struct Base {
 /// A running output, its encoder chains and counters.
 struct Attached {
     id: OutputId,
+    /// The canvas it records or streams.
+    canvas: CanvasId,
     /// Its output slot (the partition of its output node).
     slot: usize,
     report: StartReport,
@@ -2090,7 +2097,8 @@ impl Studio {
     /// a preview) are opened. If one of the new nodes does not start, they are all
     /// removed again and the call fails with `Start`; the studio and the other output
     /// keep running. The output may have created the destination.
-    /// `TooManyOutputs` while [`MAX_OUTPUTS`] run.
+    /// `TooManyOutputs` while the canvas feeds [`MAX_OUTPUTS_PER_CANVAS`] outputs or
+    /// [`MAX_OUTPUTS`] run in all (an output that has ended but is not stopped counts).
     pub fn start_output(
         &mut self,
         adapters: &RecordAdapters,
@@ -2103,6 +2111,9 @@ impl Studio {
             return Err(RecordError::NotBound("mixer"));
         }
         let canvas = out.canvas.unwrap_or(self.settings.canvas);
+        if self.outputs.iter().filter(|o| o.canvas == canvas).count() >= MAX_OUTPUTS_PER_CANVAS {
+            return Err(RecordError::TooManyOutputs);
+        }
         let size = self.canvas_size(canvas)?;
         let prepared = Prepared::choose(
             adapters,
@@ -2387,6 +2398,7 @@ impl Studio {
         self.next_output += 1;
         self.outputs.push(Attached {
             id,
+            canvas,
             slot,
             report: StartReport {
                 video_encoder: video_chosen,

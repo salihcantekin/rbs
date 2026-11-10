@@ -234,6 +234,12 @@ pub struct Target {
     /// list no screens or windows, such as the Linux screen-cast portal), and the
     /// target the user chooses is added.
     pub picker: bool,
+    /// Name of the camera's own microphone, when the audio system has it and it is not
+    /// a source yet (ADR-0096 E); `None` otherwise and for everything but cameras.
+    pub mic: Option<String>,
+    /// The sound that goes with a display or window can be added too (the system can
+    /// leave RBS's own sound out of a display's sound); false when it cannot.
+    pub sound: bool,
 }
 
 /// How a source is doing.
@@ -1103,6 +1109,11 @@ impl Refusal {
     }
 }
 
+/// Smallest and largest side of a vertical canvas the control API accepts: even (the
+/// 4:2:0 formats of the encoders need it) and within what the hardware encoders take.
+const VERTICAL_MIN_SIDE: u32 = 64;
+const VERTICAL_MAX_SIDE: u32 = 8192;
+
 /// What [`Command::AddVerticalCanvas`] makes (ADR-0093 decision 8).
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct VerticalCanvas {
@@ -1679,6 +1690,8 @@ fn target_of(t: SourceTarget) -> Target {
         app: t.app,
         recent: None,
         picker: false,
+        mic: None,
+        sound: true,
     }
 }
 
@@ -1745,6 +1758,8 @@ struct Host {
     scenes_shown: Option<SceneList>,
     /// The second canvas that runs, and what was last sent about it (ADR-0093).
     vertical: Option<VerticalState>,
+    /// Scenes `add_vertical` made shared, so removing the canvas can scope them back.
+    vertical_shared: Vec<SceneId>,
     vertical_sent: Option<Option<VerticalState>>,
     /// The master meter last sent to the UI.
     master_sent: Option<Arc<rbs_audio::LevelMeter>>,
@@ -2180,6 +2195,7 @@ fn start(
             scene_preview_sent: None,
             scenes_shown: None,
             vertical: None,
+            vertical_shared: Vec::new(),
             vertical_sent: None,
             master_sent: None,
             sizes: BTreeMap::new(),
@@ -2706,13 +2722,34 @@ impl Host {
 
     /// What a kind can capture, in OS order, then one entry per OS picker.
     fn targets(&self, kind: SourceKind) -> Vec<Target> {
-        let mut list: Vec<Target> = self
+        let raw = self
             .adapters
             .sources
             .targets(&kind.type_id())
-            .unwrap_or_default()
+            .unwrap_or_default();
+        // Pairing a camera with its microphone lists audio inputs; it runs only for
+        // cameras, while a list is asked for (P13).
+        let mics = if kind == SourceKind::Camera {
+            self.unused_microphones()
+        } else {
+            Vec::new()
+        };
+        let can_exclude = self.adapters.sources.can_exclude_own_sound();
+        let mut list: Vec<Target> = raw
             .into_iter()
-            .map(target_of)
+            .map(|t| {
+                let mic = t
+                    .related_audio
+                    .as_ref()
+                    .and_then(|id| mics.iter().find(|m| &m.target == id))
+                    .map(|m| m.name.clone());
+                let sound = kind != SourceKind::Screen || can_exclude;
+                Target {
+                    mic,
+                    sound,
+                    ..target_of(t)
+                }
+            })
             .collect();
         let pickers = self
             .adapters
@@ -2728,11 +2765,58 @@ impl Host {
             app: None,
             recent: None,
             picker: true,
+            mic: None,
+            sound: false,
         }));
         for t in &mut list {
             t.recent = recent_rank(self.recent.list(kind.type_id().as_str()), t);
         }
         list
+    }
+
+    /// The audio inputs that are not a source yet.
+    fn unused_microphones(&self) -> Vec<rbs_sources::SourceTarget> {
+        let used: Vec<&str> = self
+            .collection
+            .sources()
+            .filter(|s| s.type_id == SourceKind::AudioInput.type_id())
+            .filter_map(|s| match s.settings.get(keys::TARGET) {
+                Some(SettingValue::Text(t)) => Some(t.as_str()),
+                _ => None,
+            })
+            .collect();
+        self.adapters
+            .sources
+            .targets(&SourceKind::AudioInput.type_id())
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|m| !used.contains(&m.target.as_str()))
+            .collect()
+    }
+
+    /// The microphone that belongs with the camera `picture` shows, when the audio
+    /// system has it and it is not a source yet.
+    fn camera_microphone(&self, picture: &rbs_scene::model::Source) -> Option<Target> {
+        let (adapter, id) = match (
+            picture.settings.get(keys::ADAPTER),
+            picture.settings.get(keys::TARGET),
+        ) {
+            (Some(SettingValue::Text(a)), Some(SettingValue::Text(t))) => (a.as_str(), t.as_str()),
+            _ => return None,
+        };
+        let related = self
+            .adapters
+            .sources
+            .targets(&SourceKind::Camera.type_id())
+            .unwrap_or_default()
+            .into_iter()
+            .find(|t| t.adapter.as_str() == adapter && t.target == id)?
+            .related_audio?;
+        let mic = self
+            .unused_microphones()
+            .into_iter()
+            .find(|m| m.target == related)?;
+        Some(target_of(mic))
     }
 
     /// Grabs the pictures of `rows` on up to two threads, each target once, and posts
@@ -4167,9 +4251,20 @@ impl Host {
                     false,
                 )
             }
+            Some(SourceKind::Camera) => {
+                let target = self.camera_microphone(&source).ok_or_else(|| {
+                    Refusal::Failed("No microphone belongs with this camera.".into())
+                })?;
+                (
+                    SourceKind::AudioInput,
+                    target,
+                    format!("{} mic", source.name),
+                    false,
+                )
+            }
             _ => {
                 return Err(Refusal::Invalid(
-                    "Only a Display or a Window can capture audio too.".into(),
+                    "Only a Display, a Window or a Camera can capture audio too.".into(),
                 ));
             }
         };
@@ -4579,6 +4674,7 @@ impl Host {
             .map_err(|e| Refusal::of(&e))?;
         // Following needs scenes the new canvas may show (ADR-0093 decision 3): the main
         // canvas's own scenes become shared (U15); the global scene stays where it is.
+        let mut shared = Vec::new();
         if spec.follow {
             let own: Vec<_> = draft
                 .scenes_for(self.canvas)
@@ -4586,11 +4682,12 @@ impl Host {
                 .filter(|s| !draft.is_global_scene(s.id))
                 .map(|s| s.id)
                 .collect();
-            for id in own {
+            for id in &own {
                 draft
-                    .set_scene_scope(id, SceneScope::Shared)
+                    .set_scene_scope(*id, SceneScope::Shared)
                     .map_err(|e| Refusal::of(&e))?;
             }
+            shared = own;
         }
         // A scene of its own to start from when it does not follow, else the one on air.
         let scene = if draft.scenes_for(canvas).any(|s| s.id == self.scene) {
@@ -4634,6 +4731,7 @@ impl Host {
             .activate_canvas(running, &self.adapters.sources, ExtraCanvas::new(canvas))
         {
             Ok(_) => {
+                self.vertical_shared = shared;
                 self.vertical = Some(VerticalState {
                     canvas,
                     size: spec.size,
@@ -4674,6 +4772,15 @@ impl Host {
                 ),
                 e => Refusal::Failed(e.to_string()),
             })?;
+        // The scenes the add shared go back to the main canvas (the removal is one step).
+        for id in std::mem::take(&mut self.vertical_shared) {
+            if draft
+                .scenes_for(self.canvas)
+                .any(|s| s.id == id && s.scope == SceneScope::Shared)
+            {
+                let _ = draft.set_scene_scope(id, SceneScope::Canvas(self.canvas));
+            }
+        }
         self.collection = draft;
         self.vertical = None;
         self.waiting = self.studio.waiting();
@@ -6144,6 +6251,48 @@ impl ApiTarget<'_> {
                 }
                 Ok(Response::Done(Empty {}))
             }
+            C::CanvasAddVertical(p) => {
+                use rbs_api::request::VerticalLayout as L;
+                let (width, height) = (p.width.unwrap_or(1080), p.height.unwrap_or(1920));
+                let fits = |v: u32| {
+                    (VERTICAL_MIN_SIDE..=VERTICAL_MAX_SIDE).contains(&v) && v.is_multiple_of(2)
+                };
+                if !fits(width) || !fits(height) {
+                    return Err(ApiError::new(
+                        ErrorKind::InvalidParams,
+                        format!(
+                            "width and height must be even and from {VERTICAL_MIN_SIDE} to {VERTICAL_MAX_SIDE}"
+                        ),
+                    ));
+                }
+                let spec = VerticalCanvas {
+                    size: Size::new(width, height),
+                    follow: p.follow.unwrap_or(true),
+                    layout: p.layout.map(|l| match l {
+                        L::Fit => AutoLayout::Fit,
+                        L::Fill => AutoLayout::Fill,
+                        L::Stack => AutoLayout::Stack,
+                    }),
+                };
+                let done = host.add_vertical(spec).map_err(|e| refused(&e))?;
+                if done {
+                    host.publish(notify);
+                }
+                Ok(Response::Done(Empty {}))
+            }
+            C::CanvasRemoveVertical(_) => {
+                if host.vertical.is_none() {
+                    return Err(ApiError::new(
+                        ErrorKind::NotFound,
+                        "there is no vertical canvas",
+                    ));
+                }
+                let done = host.remove_vertical().map_err(|e| refused(&e))?;
+                if done {
+                    host.publish(notify);
+                }
+                Ok(Response::Done(Empty {}))
+            }
             C::CanvasSetMasterVolume(p) => {
                 let changed = host
                     .set_master(Some(p.volume), None)
@@ -6225,6 +6374,8 @@ impl ApiTarget<'_> {
                     app: None,
                     recent: None,
                     picker: false,
+                    mic: None,
+                    sound: false,
                 };
                 if host
                     .retarget_source(SourceId::from_raw(p.source), &target)
@@ -7332,6 +7483,8 @@ mod tests {
             app: app.map(str::to_owned),
             recent: None,
             picker: false,
+            mic: None,
+            sound: false,
         };
         let find = |listed: Vec<Target>, app: &str| match_by_hints(listed, "a", "old", app, "zsh");
         // One match, the application in another case.
@@ -7369,6 +7522,8 @@ mod tests {
             app: app.map(str::to_owned),
             recent: None,
             picker: false,
+            mic: None,
+            sound: false,
         };
         let h = hints_of(&target("zsh - Terminal", Some("Terminal")));
         assert_eq!(

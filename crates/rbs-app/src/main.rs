@@ -27,21 +27,11 @@ mod menu_bar;
 #[cfg(any(target_os = "macos", windows))]
 mod preview;
 mod preview_edit;
+mod replay_page;
 mod shortcuts_page;
 mod studio_ui;
 mod title_bar;
 mod vcam_page;
-
-/// Tells the studio the saved replay buffer settings and arms it when the user chose
-/// that (ADR-0088). A bad settings file means the defaults.
-fn replay_started(app: &mut App) {
-    let (setup, _note) = rbs_app::replay_settings::load(&app.config);
-    let arm = setup.arm_on_start;
-    app.studio.send(studio_host::Command::SetReplay(setup));
-    if arm {
-        app.studio.send(studio_host::Command::ArmReplay);
-    }
-}
 mod view;
 mod window_place;
 
@@ -177,6 +167,8 @@ struct App {
     open_settings: Option<Option<i32>>,
     /// `ui.app_menu.open` ran; the next sync opens the RBS menu in the main window.
     open_app_menu: bool,
+    /// The Add vertical output dialog is asked for (`canvas.add_vertical`).
+    open_vertical: bool,
     /// Ask for the name of a new workspace (Save as new) in the main window.
     /// What the name prompt is to ask for at the next sync (`Run::SaveWorkspaceAs(None)`
     /// and the Output profile and Scene collection commands without a name).
@@ -223,6 +215,7 @@ struct App {
     confirm_end: bool,
     /// Settings › Virtual camera (ADR-0066).
     vcam: vcam_page::Camera,
+    replay: replay_page::Replay,
 }
 
 /// The `Menus` global's models, shared by every window (`menu_bar`).
@@ -438,6 +431,10 @@ impl App {
             studio: &self.studio,
             maximized: self.maximized.as_ref(),
             camera: self.vcam.shown(),
+            replay: menu_bar::ReplayShown {
+                armed: self.replay.armed(),
+                can_save: self.replay.can_save(),
+            },
             can_undo: self.session.can_undo(),
             can_redo: self.session.can_redo(),
             panels: view::panel_entries(self.session.workspace())
@@ -510,6 +507,7 @@ impl App {
             Run::StudioMode(on) => self.studio.set_studio_mode(on),
             Run::Transition => self.studio.transition(),
             Run::AddScene => self.studio.add_scene(),
+            Run::AddVertical => self.open_vertical = true,
             Run::RenameScene(id, Some(name)) => self.studio.rename_scene(id, &name),
             // Asking for a name needs someone at the window: not from a control
             // surface or a global shortcut (`ui.command.run` answers `invalid_params`).
@@ -541,6 +539,8 @@ impl App {
             Run::Record => self.studio.record(),
             Run::StopRecording => self.studio.stop_recording(),
             Run::VirtualCamera(on) => vcam_page::send(self, on),
+            Run::Replay(on) => replay_page::toggle(self, on),
+            Run::SaveReplay => replay_page::save(self),
             // Needs the look and the Appearance page, which the next sync has.
             Run::ReloadThemes => self.reload_themes = true,
             // Making the window needs the shell's context, which the next sync has.
@@ -621,6 +621,14 @@ impl App {
     }
 
     /// Opens the name prompt for `ask`: its title, button and prefilled name.
+    /// Shows the Add vertical output dialog (Remove when the canvas is there).
+    fn open_vertical_prompt(&mut self) {
+        let o = self.main.global::<Overlays>();
+        o.set_vertical_error("".into());
+        o.set_vertical_exists(self.studio.vertical.is_some());
+        o.set_vertical_open(true);
+    }
+
     fn open_name_prompt(&mut self, ask: Ask) {
         use menu_bar::{EntryKind, EntryOp};
         let (title, confirm, value, field) = match ask {
@@ -798,11 +806,21 @@ impl App {
         self.with_picker_overlays(|o| {
             o.set_picker_title(view.title.into());
             o.set_picker_status(status.into());
-            o.set_picker_option_label(if view.offers_audio {
-                "Capture audio too".into()
+            let (label, hint) = if view.offers_audio {
+                (
+                    "Capture audio too",
+                    "Adds the sound that goes with the picture as its own audio source: a display's system sound without RBS's own sound, a window's application sound. Capturing the system sound and another app's sound can play the same audio twice.",
+                )
+            } else if view.offers_mic {
+                (
+                    "Add its microphone too",
+                    "A microphone that belongs with a camera was found; the rows that have one say '+ mic'. Adds it as its own audio source with the camera.",
+                )
             } else {
-                "".into()
-            });
+                ("", "")
+            };
+            o.set_picker_option_label(label.into());
+            o.set_picker_option_hint(hint.into());
             o.set_picker_option(view.audio);
             o.set_picker_rows(ModelRc::new(VecModel::from(rows)));
             o.set_picker_open(true);
@@ -1172,6 +1190,9 @@ impl Ctx {
             if let Some(camera) = applied.camera {
                 app.vcam.sending(camera);
             }
+            for u in applied.replay {
+                replay_page::update(app, &u);
+            }
             if let Some((collection, id)) = applied.switch {
                 let done = if collection {
                     app.studio.switch_collection(&id, close_preview)
@@ -1284,6 +1305,7 @@ impl Ctx {
             appearance_page::install_picker(&w.global::<Overlays>(), &ctx);
             shortcuts_page::install(&w.global::<Shortcuts>(), &ctx);
             vcam_page::install(&w.global::<VirtualCamera>(), &ctx);
+            replay_page::install(&w.global::<ReplayBuffer>(), &ctx);
             let c = ctx.clone();
             w.on_section_shown(move |s| {
                 if s == SECTION_VIRTUAL_CAMERA {
@@ -1748,6 +1770,10 @@ impl Ctx {
             let s = app.main.global::<Shell>();
             s.set_app_menu_asked(s.get_app_menu_asked().wrapping_add(1));
         }
+        if std::mem::take(&mut app.open_vertical) {
+            self.show_all(&mut app);
+            app.open_vertical_prompt();
+        }
         if let Some(ask) = app.ask_name.take() {
             self.show_all(&mut app);
             app.open_name_prompt(ask);
@@ -1771,6 +1797,7 @@ impl Ctx {
         }
         Self::push_general(&app);
         vcam_page::push(&app);
+        replay_page::push(&app);
 
         // Main window.
         let (stacks, handles, rail) = view::window_view(
@@ -2000,6 +2027,7 @@ impl Ctx {
     fn new_float(&self) -> Option<FloatSlot> {
         let fw = FloatWindow::new().ok()?;
         install(&fw.global::<Shell>(), self);
+        replay_page::install(&fw.global::<ReplayBuffer>(), self);
         install_menus(&fw.global::<Menus>(), self);
         install_context_menus(&fw.global::<ContextMenus>(), self, Some(fw.as_weak()));
         install_picker(&fw.global::<Overlays>(), self);
@@ -2292,6 +2320,68 @@ fn install_name_prompt(g: &Overlays<'_>, ctx: &Ctx) {
     });
 }
 
+/// The Add vertical output dialog: Add and Remove send the host's commands and close
+/// it (a refusal comes back as a notice); Escape or Cancel closes it.
+fn install_vertical_prompt(g: &Overlays<'_>, ctx: &Ctx) {
+    use rbs_app::studio_host::{Command, VerticalCanvas};
+    use rbs_core::media::Size;
+    use rbs_scene::AutoLayout;
+    {
+        let ctx = ctx.clone();
+        g.on_vertical_accepted(move || {
+            entry::guard(|| {
+                ctx.update(|app: &mut App| {
+                    let o = app.main.global::<Overlays>();
+                    let (w, h) = match o.get_vertical_size() {
+                        0 => (1080.0, 1920.0),
+                        1 => (720.0, 1280.0),
+                        _ => (o.get_vertical_w(), o.get_vertical_h()),
+                    };
+                    let fits =
+                        |v: f32| (64.0..=8192.0).contains(&v) && v.fract() == 0.0 && v % 2.0 == 0.0;
+                    if !fits(w) || !fits(h) {
+                        o.set_vertical_error(
+                            "Width and height must be even numbers from 64 to 8192.".into(),
+                        );
+                        return;
+                    }
+                    let layout = match o.get_vertical_layout() {
+                        1 => Some(AutoLayout::Fit),
+                        2 => Some(AutoLayout::Fill),
+                        3 => Some(AutoLayout::Stack),
+                        _ => None,
+                    };
+                    app.studio.send(Command::AddVerticalCanvas(VerticalCanvas {
+                        size: Size::new(w as u32, h as u32),
+                        follow: o.get_vertical_follow(),
+                        layout,
+                    }));
+                    o.set_vertical_open(false);
+                });
+            });
+        });
+    }
+    {
+        let ctx = ctx.clone();
+        g.on_vertical_removed(move || {
+            entry::guard(|| {
+                ctx.update(|app: &mut App| {
+                    app.studio.send(Command::RemoveVerticalCanvas);
+                    app.main.global::<Overlays>().set_vertical_open(false);
+                });
+            });
+        });
+    }
+    let ctx = ctx.clone();
+    g.on_vertical_cancelled(move || {
+        entry::guard(|| {
+            ctx.update(|app: &mut App| {
+                app.main.global::<Overlays>().set_vertical_open(false);
+            });
+        });
+    });
+}
+
 /// The searchable picker's callbacks (every window has them; the one it is open in
 /// answers).
 fn install_picker(g: &Overlays<'_>, ctx: &Ctx) {
@@ -2511,12 +2601,13 @@ fn section_key(id: &str) -> (String, bool) {
 
 /// Every card of the Settings window that folds (ADR-0078), for "Collapse all". A test
 /// keeps this in step with the ids in `ui/*.slint`.
-const SETTINGS_SECTIONS: [&str; 19] = [
+const SETTINGS_SECTIONS: [&str; 20] = [
     "settings.appearance.theme-in-use",
     "settings.appearance.themes",
     "settings.general.closing",
     "settings.recording.files",
     "settings.recording.encoding",
+    "settings.recording.replay",
     "settings.remote.access-tokens",
     "settings.remote.other-computers",
     "settings.remote.this-computer",
@@ -3220,6 +3311,8 @@ fn run(config: PathBuf, notice: Option<String>) -> Result<(), Box<dyn std::error
     user_notes.extend(bg_note);
     let (vcam, vcam_note) = vcam_page::Camera::load(&config);
     user_notes.extend(vcam_note);
+    let (replay, replay_note) = replay_page::Replay::load(&config);
+    user_notes.extend(replay_note);
     let first_canvas = rbs_app::user_session::first_canvas(&collection);
     let autosave = user.collection_saver();
     let key_account = rbs_app::stream_key::account(user.profile_id.as_str());
@@ -3286,6 +3379,7 @@ fn run(config: PathBuf, notice: Option<String>) -> Result<(), Box<dyn std::error
             reload_themes: false,
             open_settings: None,
             open_app_menu: false,
+            open_vertical: false,
             ask_name: None,
             name_for: None,
             run_origin: None,
@@ -3310,6 +3404,7 @@ fn run(config: PathBuf, notice: Option<String>) -> Result<(), Box<dyn std::error
             toolbar_fixed_model: Rc::new(VecModel::default()),
             confirm_end: false,
             vcam,
+            replay,
             demo_since: demo_live.then(Instant::now),
             studio: studio_ui::StudioUi::new(&studio_config, keys.as_ref(), user, first_canvas),
         })),
@@ -3324,10 +3419,12 @@ fn run(config: PathBuf, notice: Option<String>) -> Result<(), Box<dyn std::error
         live_timer: Rc::new(slint::Timer::default()),
     };
     install(&main.global::<Shell>(), &ctx);
+    replay_page::install(&main.global::<ReplayBuffer>(), &ctx);
     install_menus(&main.global::<Menus>(), &ctx);
     install_context_menus(&main.global::<ContextMenus>(), &ctx, None);
     install_picker(&main.global::<Overlays>(), &ctx);
     install_name_prompt(&main.global::<Overlays>(), &ctx);
+    install_vertical_prompt(&main.global::<Overlays>(), &ctx);
     install_app_menu(&main.global::<AppMenus>(), &ctx);
     shortcuts_page::install_press(&main.global::<Shortcuts>(), &ctx);
     install_studio(&main.global::<Studio>(), &ctx);
@@ -3377,7 +3474,7 @@ fn run(config: PathBuf, notice: Option<String>) -> Result<(), Box<dyn std::error
             // Remote control, if the user turned it on (off by default: nothing starts).
             app.studio.sync_remote();
             vcam_page::studio_started(app);
-            replay_started(app);
+            replay_page::started(app);
         }),
         Err(e) => ctx.update(move |app| {
             app.studio.state = 2;
