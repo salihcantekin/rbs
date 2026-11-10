@@ -26,14 +26,15 @@ pub use clip::{CLIP_WRITE_TIMEOUT, ClipFile, ClipWriteError, ClipWriter, write_c
 pub use rbs_nodes::replay::{Clip, ClipBounds, ClipError};
 pub use rbs_nodes::replay_node::{ReplayStatus, RequestError as ReplayRequestError};
 pub use recording::{
-    AUDIO, AUDIO_ENCODER, AUDIO_ENCODER_2, AudioSettings, FinishReport, OUTPUT, OUTPUT_2,
-    OutputPartitions, Partitions, Port, Progress, RENDER, REPLAY_AUDIO_ENCODER, REPLAY_RING,
-    REPLAY_VIDEO_ENCODER, RecordAdapters, RecordError, RecordSettings, Recording, SourceProgress,
-    SourceState, StartFailure, StartReport, VIDEO_ENCODER, VIDEO_ENCODER_2, VideoSettings,
+    AUDIO, AUDIO_ENCODER, AUDIO_ENCODER_2, AUDIO_ENCODER_3, AUDIO_ENCODER_4, AudioSettings,
+    FinishReport, OUTPUT, OUTPUT_2, OUTPUT_3, OUTPUT_4, OutputPartitions, Partitions, Port,
+    Progress, RENDER, REPLAY_AUDIO_ENCODER, REPLAY_RING, REPLAY_VIDEO_ENCODER, RecordAdapters,
+    RecordError, RecordSettings, Recording, SourceProgress, SourceState, StartFailure, StartReport,
+    VIDEO_ENCODER, VIDEO_ENCODER_2, VIDEO_ENCODER_3, VIDEO_ENCODER_4, VideoSettings,
 };
 pub use select::{Chosen, scheme_of};
 pub use studio::{
     END_TAIL_LIMIT, ExtraCanvas, FILTER_UNAVAILABLE, FilterSettingsAdjusted, Link, MAX_CANVASES,
-    MAX_LAYERS, MAX_OUTPUTS, OutputId, OutputSettings, ReplaySettings, Studio, StudioSettings,
-    Updated, VirtualCameraSettings, VirtualCameraState,
+    MAX_LAYERS, MAX_OUTPUTS, MAX_OUTPUTS_PER_CANVAS, OutputId, OutputSettings, ReplaySettings,
+    Studio, StudioSettings, Updated, VirtualCameraSettings, VirtualCameraState,
 };
