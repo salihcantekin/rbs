@@ -38,7 +38,7 @@ pub enum Topic {
     /// The virtual camera, without its counters (state, protocol 1.12).
     #[serde(rename = "vcam.changed")]
     VcamChanged,
-    /// The replay buffer: armed, what it holds, the last clip (state, protocol 1.24).
+    /// The replay buffer: armed, what it holds, the last clip (state, protocol 1.27).
     #[serde(rename = "replay.changed")]
     ReplayChanged,
 }
@@ -217,7 +217,7 @@ pub enum EventPayload {
     /// The virtual camera, `frames` always `null` (protocol 1.12).
     #[serde(rename = "vcam.changed")]
     VcamChanged(VcamStatus),
-    /// The replay buffer (protocol 1.24).
+    /// The replay buffer (protocol 1.27).
     #[serde(rename = "replay.changed")]
     ReplayChanged(ReplayStatus),
 }

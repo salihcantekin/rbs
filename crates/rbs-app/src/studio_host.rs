@@ -46,11 +46,11 @@ use rbs_record::{
     AudioSettings, Link, OutputId, OutputSettings, Progress, RecordAdapters, Studio,
     StudioSettings, VideoSettings, VirtualCameraSettings,
 };
-use rbs_scene::SceneCollection;
 use rbs_scene::model::{
     Border, CanvasId, Crop, FilterId, ItemContent, ItemId, ItemStyle, Layout, MasterAudio, Scene,
     SceneId, SceneItem, SceneScope, SettingValue, Settings, Shadow, Shape, SourceAudio, SourceId,
 };
+use rbs_scene::{COMPANION_OF_HINT, SceneCollection};
 use rbs_scene::{CenterAxis, FitMode, SceneError, Undo};
 use rbs_sources::types::{self, keys};
 use rbs_sources::{SourceError, SourceTarget};
@@ -273,6 +273,8 @@ pub struct SourceRow {
     pub layout: Option<Layout>,
     /// Its item in the program scene.
     pub item: ItemId,
+    /// The picture this source is the "Capture audio too" companion of (ADR-0096).
+    pub companion_of: Option<SourceId>,
     /// Width and height in pixels of its picture, as last seen while it ran (video
     /// sources, ADR-0058); `None` before it ran.
     pub picture: Option<(u32, u32)>,
@@ -305,6 +307,7 @@ impl PartialEq for SourceRow {
             && self.status == other.status
             && self.layout == other.layout
             && self.item == other.item
+            && self.companion_of == other.companion_of
             && self.picture == other.picture
             && self.visible == other.visible
             && self.locked == other.locked
@@ -3943,6 +3946,125 @@ impl Host {
         }
     }
 
+    /// Adds the "Capture audio too" companion of a picture source (ADR-0096): a Display
+    /// gets the system sound without RBS's own sound, a Window its application's
+    /// sound. The companion joins the picture's last history step when `join` is set
+    /// (adding both is one undo step), else it is a step of its own. It goes in the
+    /// scene of the picture's first item, named after the picture.
+    fn add_companion(&mut self, picture: SourceId, join: bool) -> Result<SourceId, Refusal> {
+        let source = self
+            .collection
+            .source(picture)
+            .ok_or_else(|| Refusal::NotFound("This source is not in the scene any more.".into()))?
+            .clone();
+        if self
+            .collection
+            .sources()
+            .any(|s| s.companion_of() == Some(picture))
+        {
+            return Err(Refusal::Conflict(format!(
+                "{} already has its sound.",
+                source.name
+            )));
+        }
+        let scene = self
+            .collection
+            .placements_of(picture)
+            .first()
+            .map(|(scene, _)| *scene)
+            .ok_or_else(|| Refusal::Invalid("The source is not placed in any scene.".into()))?;
+        let (kind, target, name, exclude) = match SourceKind::of(&source.type_id) {
+            Some(SourceKind::Screen) => {
+                if !self.adapters.sources.can_exclude_own_sound() {
+                    return Err(Refusal::Failed(
+                        "This system cannot leave RBS's own sound out of the system sound.".into(),
+                    ));
+                }
+                let target = self
+                    .targets(SourceKind::SystemAudio)
+                    .into_iter()
+                    .find(|t| t.is_default)
+                    .ok_or_else(|| {
+                        Refusal::Failed("There is no sound output to capture.".into())
+                    })?;
+                (
+                    SourceKind::SystemAudio,
+                    target,
+                    "System sound".to_owned(),
+                    true,
+                )
+            }
+            Some(SourceKind::Window) => {
+                let app = source.hints.get(HINT_APP).cloned().ok_or_else(|| {
+                    Refusal::Failed("This window's application is not known.".into())
+                })?;
+                let target = self
+                    .targets(SourceKind::ApplicationAudio)
+                    .into_iter()
+                    .find(|t| t.name == app)
+                    .ok_or_else(|| {
+                        Refusal::Failed(format!("{app} is not playing sound that can be captured."))
+                    })?;
+                (
+                    SourceKind::ApplicationAudio,
+                    target,
+                    format!("{} sound", source.name),
+                    false,
+                )
+            }
+            _ => {
+                return Err(Refusal::Invalid(
+                    "Only a Display or a Window can capture audio too.".into(),
+                ));
+            }
+        };
+        let (mut settings, layout) = self.new_source(kind, &target).map_err(Refusal::Failed)?;
+        if exclude {
+            settings.insert(keys::EXCLUDE_OWN_PROCESS.into(), SettingValue::Bool(true));
+        }
+        let name = unique_name(&self.collection, &name);
+        let (id, undo_source) = self
+            .collection
+            .add_source(&name, kind.type_id(), settings.clone())
+            .map_err(|e| Refusal::of(&e))?;
+        let mut hints = hints_of(&target);
+        hints.insert(COMPANION_OF_HINT.to_owned(), picture.get().to_string());
+        let hinted = self
+            .collection
+            .set_source_settings_and_hints(id, settings, hints);
+        let placed = hinted.and_then(|undo_hints| {
+            self.collection
+                .add_item(scene, ItemContent::Source(id), layout, None)
+                .map(|(_, undo_item)| (undo_hints, undo_item))
+        });
+        match placed {
+            Ok((undo_hints, undo_item)) => {
+                let records = vec![undo_source, undo_hints, undo_item];
+                if join {
+                    self.history.extend_last(EditKind::Add, &name, records);
+                } else {
+                    self.history.record(EditKind::Add, &name, 0, records);
+                }
+                Ok(id)
+            }
+            Err(e) => {
+                let _ = self.collection.undo(undo_source);
+                Err(Refusal::of(&e))
+            }
+        }
+    }
+
+    /// Removes the companion of `picture` as one undo step.
+    fn remove_companion(&mut self, picture: SourceId) -> Result<(), Refusal> {
+        let id = self
+            .collection
+            .sources()
+            .find(|s| s.companion_of() == Some(picture))
+            .map(|s| s.id)
+            .ok_or_else(|| Refusal::NotFound("This source has no companion sound.".into()))?;
+        self.delete(id).map(|_| ()).map_err(Refusal::Failed)
+    }
+
     /// Adds a sample picture as an image source covering the canvas: a background at
     /// the bottom of the scene being edited, a frame on top (ADR-0074).
     fn add_sample(&mut self, id: &str) -> Result<SourceId, Refusal> {
@@ -5298,6 +5420,7 @@ impl Host {
                 SourceRow {
                     id: s.id,
                     item: item.id,
+                    companion_of: s.companion_of(),
                     name: s.name.clone(),
                     kind,
                     layout: kind
@@ -5549,10 +5672,44 @@ impl ApiTarget<'_> {
                     }
                     host.add_global(kind, &target).map_err(|e| refused(&e))?
                 } else {
-                    host.placing_into(p.scene, |h| h.add(kind, &target).map_err(failed))?
+                    host.placing_into(p.scene, |h| {
+                        let id = h.add(kind, &target).map_err(failed)?;
+                        if p.with_audio {
+                            // One undo step for the picture and its sound; a refused
+                            // companion takes the picture back out.
+                            if let Err(e) = h.add_companion(id, true) {
+                                let _ = h.delete(id);
+                                return Err(refused(&e));
+                            }
+                        }
+                        Ok(id)
+                    })?
                 };
                 host.apply(notify);
                 Ok(Response::SourceAdded(SourceAdded { source: id.get() }))
+            }
+            C::SourceSetCompanionAudio(p) => {
+                let picture = SourceId::from_raw(p.source);
+                if host.collection.source(picture).is_none() {
+                    return Err(ApiError::new(
+                        ErrorKind::NotFound,
+                        format!("no source {}", p.source),
+                    ));
+                }
+                let has = host
+                    .collection
+                    .sources()
+                    .any(|s| s.companion_of() == Some(picture));
+                if p.enabled != has {
+                    if p.enabled {
+                        host.add_companion(picture, false)
+                            .map_err(|e| refused(&e))?;
+                    } else {
+                        host.remove_companion(picture).map_err(|e| refused(&e))?;
+                    }
+                    host.apply(notify);
+                }
+                Ok(Response::Done(Empty {}))
             }
             C::SourceDelete(p) => {
                 let id = SourceId::from_raw(p.source);
@@ -6506,6 +6663,7 @@ fn api_source(row: &SourceRow) -> api::SourceInfo {
         volume: row.audio.volume,
         muted: row.audio.muted,
         mixer_hidden: row.audio.mixer_hidden,
+        companion_of: row.companion_of.map(|c| c.get()),
         filters: row.filters.iter().map(filters::api_row).collect(),
         sync_offset_ms: row.audio.sync_offset_ms,
         id: row.id.get(),
