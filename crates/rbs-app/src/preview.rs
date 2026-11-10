@@ -281,6 +281,9 @@ fn place_one(window: &MainWindow, which: Picture) {
         if overlays.get_name_open() {
             st.covers.push(overlay(overlays.get_name_cover()));
         }
+        if overlays.get_vertical_open() {
+            st.covers.push(overlay(overlays.get_vertical_cover()));
+        }
         if overlays.get_color_open() {
             st.covers.push(overlay(overlays.get_color_cover()));
         }

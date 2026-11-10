@@ -1883,6 +1883,25 @@ export global Overlays {
     callback name-accepted(string);
     callback name-cancelled();
 
+    // The "Add vertical output" dialog (ADR-0093 decision 8): a small form over the
+    // main window. Rust reads the chosen values when `vertical-accepted` fires and
+    // sets `vertical-error` when the studio refuses. With a vertical canvas already
+    // there (`vertical-exists`) the dialog offers Remove instead.
+    in-out property <bool> vertical-open;
+    in-out property <bool> vertical-exists;
+    in-out property <string> vertical-error;
+    in-out property <OverlayCover> vertical-cover;
+    // 0 is 1080x1920, 1 is 720x1280, 2 is a custom size (`vertical-w` by `vertical-h`).
+    in-out property <int> vertical-size;
+    in-out property <float> vertical-w: 1080;
+    in-out property <float> vertical-h: 1920;
+    in-out property <bool> vertical-follow: true;
+    // 0 keeps the main layout, 1 Fit, 2 Fill, 3 Stack.
+    in-out property <int> vertical-layout;
+    callback vertical-accepted();
+    callback vertical-removed();
+    callback vertical-cancelled();
+
     // The tooltip: waits `delay.tooltip` after the pointer rests on its control, shows
     // at once for keyboard focus, stays while the pointer is over the control or the
     // tooltip, and Escape dismisses it until the pointer or focus leaves.
@@ -2092,6 +2111,137 @@ export component OverlayHost inherits Rectangle {
                         kind: "primary";
                         enabled: !Overlays.name-ask || name-input.text != "";
                         clicked => { Overlays.name-accepted(Overlays.name-ask ? name-input.text : ""); }
+                    }
+                }
+            }
+        }
+    }
+    // The Add vertical output dialog: modal, a click outside it cancels.
+    if Overlays.vertical-open: vertical-prompt := Rectangle {
+        width: root.width;
+        height: root.height;
+        TouchArea { clicked => { Overlays.vertical-cancelled(); } }
+        vertical-card := MenuSurface {
+            width: Tokens.size-menu-md;
+            height: vertical-body.preferred-height;
+            x: (root.width - self.width) / 2;
+            y: max(Tokens.space-1, (root.height - self.height) / 3);
+            accessible-role: groupbox;
+            accessible-label: Overlays.vertical-exists ? @tr("Vertical output") : @tr("Add vertical output");
+            init => { Overlays.vertical-cover = { x: self.x, y: self.y, width: self.width, height: self.height }; vertical-cancel.focus(); }
+            changed x => { Overlays.vertical-cover = { x: self.x, y: self.y, width: self.width, height: self.height }; }
+            changed y => { Overlays.vertical-cover = { x: self.x, y: self.y, width: self.width, height: self.height }; }
+            vertical-keys := FocusScope {
+                key-pressed(e) => {
+                    if e.text == Key.Escape { Overlays.vertical-cancelled(); return accept; }
+                    reject
+                }
+            }
+            vertical-body := VerticalLayout {
+                padding: Tokens.space-3;
+                spacing: Tokens.space-2;
+                Text {
+                    text: Overlays.vertical-exists ? @tr("Vertical output") : @tr("Add vertical output");
+                    wrap: word-wrap;
+                    color: Theme.text-primary;
+                    font-size: Tokens.type-body-size;
+                    font-weight: Tokens.type-title-weight;
+                    accessible-role: none;
+                }
+                if Overlays.vertical-exists: Text {
+                    text: @tr("The vertical canvas is running. Removing it stops it and deletes its layouts; stop its recording or stream first.");
+                    wrap: word-wrap;
+                    color: Theme.text-secondary;
+                    font-size: Tokens.type-caption-size;
+                    accessible-role: text;
+                }
+                if !Overlays.vertical-exists: HorizontalLayout {
+                    spacing: Tokens.space-2;
+                    Select {
+                        label: @tr("Size");
+                        options: ["1080x1920", "720x1280", @tr("Custom")];
+                        index: Overlays.vertical-size;
+                        selected(i) => { Overlays.vertical-size = i; Overlays.vertical-error = ""; }
+                    }
+                    InfoHint {
+                        label: @tr("Size");
+                        text: @tr("The picture size of the vertical canvas. It runs at the frame rate of the main canvas. 1080x1920 is the usual size for short videos.");
+                        detail: @tr("Even sides from 64 to 8192");
+                    }
+                }
+                if !Overlays.vertical-exists && Overlays.vertical-size == 2: HorizontalLayout {
+                    spacing: Tokens.space-2;
+                    NumberField {
+                        label: @tr("Width");
+                        prefix: @tr("W");
+                        value: Overlays.vertical-w;
+                        step: 2;
+                        edited(v) => { Overlays.vertical-w = v; Overlays.vertical-error = ""; }
+                    }
+                    NumberField {
+                        label: @tr("Height");
+                        prefix: @tr("H");
+                        value: Overlays.vertical-h;
+                        step: 2;
+                        edited(v) => { Overlays.vertical-h = v; Overlays.vertical-error = ""; }
+                    }
+                }
+                if !Overlays.vertical-exists: HorizontalLayout {
+                    spacing: Tokens.space-2;
+                    Text {
+                        text: @tr("Follow main");
+                        color: Theme.text-primary;
+                        font-size: Tokens.type-body-size;
+                        vertical-alignment: center;
+                        horizontal-stretch: 1;
+                        accessible-role: none;
+                    }
+                    InfoHint {
+                        label: @tr("Follow main");
+                        text: @tr("The vertical canvas shows the scene that is on air in the main canvas and switches with it. Your scenes become shared with it, so it can show them. The vertical canvas cuts where the main canvas fades. Its sound is the main mix.");
+                    }
+                    Toggle {
+                        label: @tr("Follow main");
+                        checked: Overlays.vertical-follow;
+                        toggled(on) => { Overlays.vertical-follow = on; }
+                    }
+                }
+                if !Overlays.vertical-exists: HorizontalLayout {
+                    spacing: Tokens.space-2;
+                    Select {
+                        label: @tr("Auto layout");
+                        options: [@tr("Keep the main layout"), @tr("Fit"), @tr("Fill"), @tr("Stack")];
+                        index: Overlays.vertical-layout;
+                        selected(i) => { Overlays.vertical-layout = i; }
+                    }
+                    InfoHint {
+                        label: @tr("Auto layout");
+                        text: @tr("How the sources of the scene on air are placed for the tall shape. Fit shows each whole, Fill covers the canvas, Stack places them one above the other in equal bands. You can change every layout afterwards.");
+                    }
+                }
+                if Overlays.vertical-error != "": Text {
+                    text: Overlays.vertical-error;
+                    color: Theme.state-error;
+                    font-size: Tokens.type-caption-size;
+                    wrap: word-wrap;
+                    accessible-role: text;
+                }
+                HorizontalLayout {
+                    spacing: Tokens.space-2;
+                    alignment: end;
+                    vertical-cancel := Button {
+                        text: @tr("Cancel");
+                        clicked => { Overlays.vertical-cancelled(); }
+                    }
+                    if Overlays.vertical-exists: Button {
+                        text: @tr("Remove");
+                        kind: "primary";
+                        clicked => { Overlays.vertical-removed(); }
+                    }
+                    if !Overlays.vertical-exists: Button {
+                        text: @tr("Add");
+                        kind: "primary";
+                        clicked => { Overlays.vertical-accepted(); }
                     }
                 }
             }

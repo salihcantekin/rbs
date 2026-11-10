@@ -177,6 +177,8 @@ pub struct StudioUi {
     pub scene_preview_ready: bool,
     /// The preview scene's picture layer could not be made in this session.
     pub scene_preview_failed: bool,
+    /// The vertical canvas the host runs, if any (ADR-0093).
+    pub vertical: Option<rbs_app::studio_host::VerticalState>,
     pub deleted: String,
     /// The toast's source was only removed from one scene (ADR-0065).
     pub deleted_from_scene: bool,
@@ -380,6 +382,7 @@ impl StudioUi {
             studio_mode: false,
             scene_preview_ready: false,
             scene_preview_failed: false,
+            vertical: None,
             deleted: String::new(),
             deleted_serial: 0,
             deleted_from_scene: false,
@@ -3230,9 +3233,7 @@ impl StudioUi {
                 self.refresh_existing();
                 self.refresh_marks();
             }
-            // The dialog and the panel for the second canvas follow with the UI change
-            // of ADR-0093 decision 7; the state is the host's until then.
-            Update::Vertical(_) => {}
+            Update::Vertical(v) => self.vertical = v,
             Update::MasterMeter(level) => {
                 self.master_slot = level.map(|l| (l, Meter::new()));
                 self.show_master();
