@@ -258,6 +258,12 @@ fn place_one(window: &MainWindow, which: Picture) {
         if shell.get_error_kind() != 0 || shell.get_background_notice() != 0 {
             st.covers.push(toast(shell.get_top_toast()));
         }
+        // The End stream question (U4), under Go live and Record.
+        if (shell.get_end_stream_confirm() || shell.get_end_vertical_confirm())
+            && !shell.get_quit_confirm()
+        {
+            st.covers.push(toast(shell.get_confirm_cover()));
+        }
         // A slid-out auto-hide panel (ADR-0049) is drawn over the dock area too.
         if shell.get_flyout_open() {
             st.covers.push(toast(shell.get_flyout()));

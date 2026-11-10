@@ -283,6 +283,18 @@ export global Studio {
     callback record();
     callback stop-recording();
 
+    // The canvas whose settings the Recording and Stream sections show (ADR-0093
+    // decision 6): 0 main, 1 vertical. The selector is shown only while the vertical
+    // canvas exists (`settings-canvases` has two entries).
+    in property <[string]> settings-canvases;
+    in property <int> settings-canvas;
+    callback set-settings-canvas(int);
+    // The picked canvas's recording, and its stream, do not run: its settings can change.
+    in property <bool> rec-form-idle: true;
+    in property <bool> st-form-idle: true;
+    // The vertical canvas has no recording settings of its own yet: it uses the main ones.
+    in property <bool> out-uses-main;
+
     // Output settings of the next recording.
     in-out property <string> out-folder;
     // Bumped by Rust when `out-folder` is set from outside the field.
@@ -3077,13 +3089,44 @@ export component PropertiesPanel inherits Rectangle {
 }
 
 
+// Which canvas's settings the Recording and Stream sections show, while the studio has
+// a vertical canvas (ADR-0093 decision 6): one row at the top of each section.
+component SettingsCanvasPicker inherits HorizontalLayout {
+    spacing: Tokens.space-2;
+    alignment: start;
+    Text {
+        text: @tr("Settings for");
+        color: Theme.text-primary;
+        font-size: Tokens.type-label-size;
+        font-weight: Tokens.type-label-weight;
+        vertical-alignment: center;
+        accessible-role: none;
+    }
+    Select {
+        width: Tokens.size-menu-sm;
+        label: @tr("Settings for");
+        options: Studio.settings-canvases;
+        index: Studio.settings-canvas;
+        selected(i) => { Studio.set-settings-canvas(i); }
+    }
+    VerticalLayout {
+        alignment: center;
+        InfoHint {
+            label: @tr("Settings for");
+            text: @tr("Each canvas records and streams with its own settings: its own folder, encoder, server and stream key.");
+        }
+    }
+}
+
 // The recording's settings (glossary: output profile): the Recording section of the
 // Settings window (U17). They apply to the next recording and are saved at once.
 export component RecordingSettings inherits Rectangle {
-    property <bool> idle: Studio.rec-state == 0;
+    property <bool> idle: Studio.rec-form-idle;
     form := VerticalLayout {
         spacing: Tokens.space-4;
         alignment: start;
+        if Studio.settings-canvases.length > 1: SettingsCanvasPicker { }
+        if Studio.out-uses-main: SettingsNotice { text: @tr("Uses the main recording settings until changed."); }
         if !idle: SettingsNotice { text: @tr("Changes apply to the next recording."); }
         if Studio.out-note != "": SettingsNotice { text: Studio.out-note; problem: true; }
         SettingsCard {
@@ -3125,7 +3168,8 @@ export component RecordingSettings inherits Rectangle {
                 set(field, value) => { Studio.set-encoding(0, field, value); }
             }
         }
-        ReplaySettings { }
+        // The replay buffer belongs to the main canvas (ADR-0093 decision 6).
+        if Studio.settings-canvas == 0: ReplaySettings { }
     }
     preferred-height: form.preferred-height;
     min-height: form.min-height;
@@ -3138,10 +3182,11 @@ export component RecordingSettings inherits Rectangle {
 // Settings window (U17). Changes apply to the next stream and are saved at once. The
 // stream key is never shown: it goes to the system's credential store.
 export component StreamSettings inherits Rectangle {
-    property <bool> idle: Studio.st-state == 0;
+    property <bool> idle: Studio.st-form-idle;
     form := VerticalLayout {
         spacing: Tokens.space-4;
         alignment: start;
+        if Studio.settings-canvases.length > 1: SettingsCanvasPicker { }
         if !idle: SettingsNotice { text: @tr("Changes apply to the next stream."); }
         if Studio.st-note != "": SettingsNotice { text: Studio.st-note; problem: true; }
         SettingsCard {

@@ -825,6 +825,9 @@ pub enum Command {
     /// where Go live, `stream.start` and [`Command::SaveStreamKey`] read and write the
     /// key from now on. Sent when the user switches output profiles.
     SetKeyAccount(String),
+    /// Save the vertical stream's key (`None` removes it) under the vertical account
+    /// ([`stream_key::vertical_account`]); answered with [`Update::VerticalStreamKey`].
+    SaveVerticalStreamKey(Option<Secret>),
     /// Remove the key saved for a deleted output profile's account (ADR-0051 decision
     /// 5). A failure is reported with [`Update::Error`].
     RemoveStreamKey(String),
@@ -1348,6 +1351,8 @@ pub enum Update {
     /// [`Command::SaveStreamKey`] done: `Ok(true)` a key is saved, `Ok(false)` none is,
     /// `Err` why the store refused.
     StreamKey(Result<bool, String>),
+    /// [`Command::SaveVerticalStreamKey`] done, as [`Update::StreamKey`].
+    VerticalStreamKey(Result<bool, String>),
     /// A control API client changed the recording settings; the UI shows and saves
     /// them.
     Profile(RecordProfile),
@@ -2032,6 +2037,12 @@ fn answer_on_panic(c: &Command) -> Option<Update> {
     match c {
         Command::StartRecording(_) => Some(Update::Recording(RecordingUpdate::NotStarted(why()))),
         Command::StartStream(_) => Some(Update::Stream(StreamUpdate::NotStarted(why()))),
+        Command::StartVerticalRecording(_) => Some(Update::VerticalRecording(
+            RecordingUpdate::NotStarted(why()),
+        )),
+        Command::StartVerticalStream(_) => {
+            Some(Update::VerticalStream(StreamUpdate::NotStarted(why())))
+        }
         _ => None,
     }
 }
@@ -2727,13 +2738,12 @@ impl Host {
                 }
             }
             Command::SaveStreamKey(key) => {
-                let result = match &key {
-                    Some(k) => self.keys.write(&self.key_account, k).map(|()| true),
-                    None => self.keys.remove(&self.key_account).map(|()| false),
-                };
-                notify(Update::StreamKey(result.map_err(|e| {
-                    format!("{} refused the stream key: {e}", self.keys.place())
-                })));
+                let result = self.save_key(OutputCanvas::Main, key.as_ref());
+                notify(Update::StreamKey(result));
+            }
+            Command::SaveVerticalStreamKey(key) => {
+                let result = self.save_key(OutputCanvas::Vertical, key.as_ref());
+                notify(Update::VerticalStreamKey(result));
             }
             Command::SetKeyAccount(account) => self.key_account = account,
             Command::RemoveStreamKey(account) => {
@@ -3543,6 +3553,16 @@ impl Host {
             self.record_with_stream(c, notify);
         }
         self.publish(notify);
+    }
+
+    /// Saves (`Some`) or removes `c`'s stream key; `Ok(true)` when one is saved now.
+    fn save_key(&self, c: OutputCanvas, key: Option<&Secret>) -> Result<bool, String> {
+        let account = self.key_account_of(c);
+        let result = match key {
+            Some(k) => self.keys.write(&account, k).map(|()| true),
+            None => self.keys.remove(&account).map(|()| false),
+        };
+        result.map_err(|e| format!("{} refused the stream key: {e}", self.keys.place()))
     }
 
     /// Ends every output of both canvases because of `why` (the studio failed).

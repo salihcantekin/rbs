@@ -213,6 +213,8 @@ struct App {
     toolbar_fixed_model: Rc<VecModel<ToolbarData>>,
     /// End stream was picked in the menu bar: the frame asks first (U4).
     confirm_end: bool,
+    /// The same for the vertical canvas's stream (ADR-0093 decision 6).
+    confirm_end_vertical: bool,
     /// Settings › Virtual camera (ADR-0066).
     vcam: vcam_page::Camera,
     replay: replay_page::Replay,
@@ -538,6 +540,19 @@ impl App {
             Run::AskEndStream => self.studio.end_stream(),
             Run::Record => self.studio.record(),
             Run::StopRecording => self.studio.stop_recording(),
+            Run::GoLiveVertical => {
+                if let Err(e) = self.studio.go_live_vertical() {
+                    self.error = Some(UiError::Other(e));
+                }
+            }
+            Run::AskEndVerticalStream if confirm => self.confirm_end_vertical = true,
+            Run::AskEndVerticalStream => self.studio.end_vertical_stream(),
+            Run::RecordVertical => {
+                if let Err(e) = self.studio.record_vertical() {
+                    self.error = Some(UiError::Other(e));
+                }
+            }
+            Run::StopVerticalRecording => self.studio.stop_vertical_recording(),
             Run::VirtualCamera(on) => vcam_page::send(self, on),
             Run::Replay(on) => replay_page::toggle(self, on),
             Run::SaveReplay => replay_page::save(self),
@@ -1836,6 +1851,9 @@ impl Ctx {
         ) {
             app.confirm_end = false;
         }
+        if !app.studio.vertical_st.on() {
+            app.confirm_end_vertical = false;
+        }
         let edges = view::edge_tabs(&app.session.workspace().windows[0]);
         let edge_ids = edges
             .iter()
@@ -1903,6 +1921,10 @@ impl Ctx {
             g.set_error_kind(error_kind);
             g.set_error_detail(error_detail.as_str().into());
             g.set_end_stream_confirm(app.confirm_end);
+            g.set_end_vertical_confirm(app.confirm_end_vertical);
+            g.set_vertical_outputs(app.studio.vertical.is_some());
+            g.set_vertical_live(app.studio.vertical_st.on());
+            g.set_vertical_rec(app.studio.vertical_rec.on());
             g.set_toolbar(toolbar.clone());
             g.set_toolbar_visible(toolbar_visible);
             g.set_toolbar_end(toolbar_end.clone());
@@ -2208,6 +2230,12 @@ fn install(g: &Shell<'_>, ctx: &Ctx) {
         app.confirm_end = false;
         if end {
             app.studio.end_stream();
+        }
+    });
+    on!(on_end_vertical_answer, |app, end: bool| {
+        app.confirm_end_vertical = false;
+        if end {
+            app.studio.end_vertical_stream();
         }
     });
 }
@@ -3038,6 +3066,9 @@ fn install_studio(g: &Studio<'_>, ctx: &Ctx) {
     on!(on_set_format, |app, i: i32| {
         app.studio.set_format(i);
     });
+    on!(on_set_settings_canvas, |app, i: i32| {
+        app.studio.set_settings_canvas(i);
+    });
     on!(on_set_encoding, |app, out: i32, field: i32, value: i32| {
         app.studio.set_encoding(out, field, value);
     });
@@ -3403,6 +3434,7 @@ fn run(config: PathBuf, notice: Option<String>) -> Result<(), Box<dyn std::error
             toolbar_end_model: Rc::new(VecModel::default()),
             toolbar_fixed_model: Rc::new(VecModel::default()),
             confirm_end: false,
+            confirm_end_vertical: false,
             vcam,
             replay,
             demo_since: demo_live.then(Instant::now),

@@ -17,9 +17,9 @@ use rbs_app::remote_control::{NetworkOptions, RemoteOptions, RemoteServer};
 use rbs_app::stream_key::{self, KeyStore};
 use rbs_app::stream_profile::{self, SRT_DEFAULT_LATENCY_MS, SRT_LATENCIES_MS, StreamProfile};
 use rbs_app::studio_host::{
-    Command, CropRegion, EncoderInfo, EncoderOptions, RecordRequest, RecordingUpdate, SceneList,
-    SourceKind, SourceRow, SourceSettingsView, SourceStatus, Stats, StreamRequest, StreamUpdate,
-    StudioHost, Target, TransformOp, Update,
+    Command, CropRegion, EncoderInfo, EncoderOptions, OutputCanvas, RecordRequest, RecordingUpdate,
+    SceneList, SourceKind, SourceRow, SourceSettingsView, SourceStatus, Stats, StreamRequest,
+    StreamUpdate, StudioHost, Target, TransformOp, Update,
 };
 use rbs_app::user_session::{RECORDING, RECORDING_VERTICAL, STREAM, STREAM_VERTICAL, UserSession};
 use rbs_audio::LevelMeter;
@@ -100,6 +100,38 @@ struct MeterSlot {
     source: SourceId,
     level: Arc<LevelMeter>,
     ballistics: Meter,
+}
+
+/// A vertical canvas output as the frame's Record and Go live menus show it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum VerticalOut {
+    Off,
+    /// Asked to start; the host has not answered.
+    Starting,
+    On,
+    /// Asked to stop or end; the host has not answered.
+    Ending,
+}
+
+impl VerticalOut {
+    /// It runs or is about to change: its settings and the output profile wait.
+    pub fn busy(self) -> bool {
+        self != VerticalOut::Off
+    }
+
+    /// It runs or starts: the menu offers to stop it, and the 9:16 badge shows.
+    pub fn on(self) -> bool {
+        matches!(self, VerticalOut::Starting | VerticalOut::On)
+    }
+}
+
+/// Why "Go live vertical" cannot start without a server (the toast adds "Vertical
+/// canvas: ").
+const VERTICAL_SETUP: &str = "Set up the vertical stream in Settings, Stream.";
+
+/// A vertical output's problem as a toast says it.
+fn vertical_why(why: &str) -> String {
+    format!("Vertical canvas: {why}")
 }
 
 /// What the window knows of the studio.
@@ -259,9 +291,22 @@ pub struct StudioUi {
     key_hint: String,
     /// [`st_state`].
     pub st_state: i32,
-    /// The vertical canvas records, and it streams (ADR-0093 decision 6): an output
-    /// profile switch waits for them as for the main ones.
-    vertical_busy: (bool, bool),
+    /// The vertical canvas's recording and stream (ADR-0093 decision 6): the frame's
+    /// Record and Go live menus start and stop them, and an output profile switch
+    /// waits for them as for the main ones.
+    pub vertical_rec: VerticalOut,
+    pub vertical_st: VerticalOut,
+    /// The canvas whose settings the Recording and Stream sections show and change
+    /// (ADR-0093 decision 6); the main one while there is no vertical canvas.
+    settings_canvas: OutputCanvas,
+    /// The vertical canvas's recording settings as saved (`recording-vertical`);
+    /// `None`: it uses `profile` until its first change.
+    vertical_profile: Option<RecordProfile>,
+    /// The vertical canvas's stream settings as saved (`stream-vertical`); `None`:
+    /// none saved, so the vertical stream has no server.
+    vertical_stream: Option<StreamProfile>,
+    /// What the Stream section shows for a vertical stream not saved yet.
+    no_stream: StreamProfile,
     /// The running stream's server host and when it went live.
     st_live: Option<(String, Instant)>,
     /// The stream's connection, as reported last.
@@ -437,7 +482,12 @@ impl StudioUi {
             key_serial: 0,
             key_hint: stream_key::hint(keys),
             st_state: st_state::OFF,
-            vertical_busy: (false, false),
+            vertical_rec: VerticalOut::Off,
+            vertical_st: VerticalOut::Off,
+            settings_canvas: OutputCanvas::Main,
+            vertical_profile: None,
+            vertical_stream: None,
+            no_stream: StreamProfile::new(),
             st_live: None,
             st_link: Link::default(),
             st_note: String::new(),
@@ -500,7 +550,24 @@ impl StudioUi {
         g.set_rec_note(self.rec_note.as_str().into());
         g.set_rec_note_bad(self.rec_note_bad);
         g.set_rec_unavailable(self.cannot_record.clone().unwrap_or_default().into());
-        let p = &self.profile;
+        let canvases = match &self.vertical {
+            Some(v) => vec![
+                format!("Main ({} x {})", self.canvas.width, self.canvas.height),
+                format!("Vertical ({} x {})", v.size.width, v.size.height),
+            ],
+            None => Vec::new(),
+        };
+        g.set_settings_canvases(strings(canvases));
+        g.set_settings_canvas(match self.settings_canvas {
+            OutputCanvas::Main => 0,
+            OutputCanvas::Vertical => 1,
+        });
+        g.set_rec_form_idle(self.record_form_idle());
+        g.set_st_form_idle(self.stream_form_idle());
+        g.set_out_uses_main(
+            self.settings_canvas == OutputCanvas::Vertical && self.vertical_profile.is_none(),
+        );
+        let p = self.record_form();
         g.set_out_format(Format::ALL.iter().position(|f| *f == p.format).unwrap_or(0) as i32);
         g.set_out_formats(strings(Format::ALL.iter().map(|f| f.label().to_owned())));
         g.set_out_enc(self.encoder_data(output::RECORDING));
@@ -517,7 +584,7 @@ impl StudioUi {
             .into(),
         );
         if g.get_out_folder_serial() != self.folder_serial as i32 {
-            g.set_out_folder(self.profile.folder.display().to_string().into());
+            g.set_out_folder(self.record_form().folder.display().to_string().into());
             g.set_out_folder_serial(self.folder_serial as i32);
         }
         let sizes = self.canvas_sizes();
@@ -1979,10 +2046,67 @@ impl StudioUi {
     /// The encoder settings of an [`output`].
     fn encoding_of(&self, out: i32) -> Encoding {
         if out == output::STREAM {
-            self.stream.encoding.clone()
+            self.stream_form().encoding.clone()
         } else {
-            self.profile.encoding()
+            self.record_form().encoding()
         }
+    }
+
+    /// The recording settings the Recording section shows: those of the picked canvas
+    /// (the vertical one uses the main ones until its first change).
+    fn record_form(&self) -> &RecordProfile {
+        match self.settings_canvas {
+            OutputCanvas::Main => &self.profile,
+            OutputCanvas::Vertical => self.vertical_profile.as_ref().unwrap_or(&self.profile),
+        }
+    }
+
+    /// The recording settings `c` records with.
+    fn record_form_for(&self, c: OutputCanvas) -> &RecordProfile {
+        match c {
+            OutputCanvas::Main => &self.profile,
+            OutputCanvas::Vertical => self.vertical_profile.as_ref().unwrap_or(&self.profile),
+        }
+    }
+
+    /// The recording settings the Recording section changes; the vertical canvas's
+    /// first change starts from a copy of the main ones.
+    fn record_form_mut(&mut self) -> &mut RecordProfile {
+        match self.settings_canvas {
+            OutputCanvas::Main => &mut self.profile,
+            OutputCanvas::Vertical => self
+                .vertical_profile
+                .get_or_insert_with(|| self.profile.clone()),
+        }
+    }
+
+    /// The stream settings the Stream section shows: those of the picked canvas.
+    fn stream_form(&self) -> &StreamProfile {
+        match self.settings_canvas {
+            OutputCanvas::Main => &self.stream,
+            OutputCanvas::Vertical => self.vertical_stream.as_ref().unwrap_or(&self.no_stream),
+        }
+    }
+
+    /// The stream settings the Stream section changes.
+    fn stream_form_mut(&mut self) -> &mut StreamProfile {
+        match self.settings_canvas {
+            OutputCanvas::Main => &mut self.stream,
+            OutputCanvas::Vertical => self.vertical_stream.get_or_insert_with(StreamProfile::new),
+        }
+    }
+
+    /// The Settings sections show the canvas picked in their selector (0: main,
+    /// 1: vertical); the vertical one only while it exists.
+    pub fn set_settings_canvas(&mut self, i: i32) {
+        self.commit_server();
+        self.settings_canvas = match i {
+            1 if self.vertical.is_some() => OutputCanvas::Vertical,
+            _ => OutputCanvas::Main,
+        };
+        self.folder_serial += 1;
+        self.server_serial += 1;
+        self.key_serial += 1;
     }
 
     /// The picked encoder's place in the list (0: automatic, also when the saved one is
@@ -2152,11 +2276,11 @@ impl StudioUi {
             return;
         }
         if out == output::STREAM {
-            self.stream.encoding = e;
-            self.save_stream();
+            self.stream_form_mut().encoding = e;
+            self.save_stream_form();
         } else {
-            self.profile.set_encoding(e);
-            self.save_profile();
+            self.record_form_mut().set_encoding(e);
+            self.save_profile_form();
         }
     }
 
@@ -2204,8 +2328,8 @@ impl StudioUi {
     pub fn set_folder(&mut self, text: &str) {
         let folder = PathBuf::from(text.trim());
         if folder.is_absolute() {
-            self.profile.folder = folder;
-            self.save_profile();
+            self.record_form_mut().folder = folder;
+            self.save_profile_form();
         } else {
             self.profile_note = "The folder must be a full path, for example C:\\Videos.".into();
         }
@@ -2215,8 +2339,8 @@ impl StudioUi {
 
     pub fn set_format(&mut self, i: i32) {
         if let Some(f) = Format::ALL.get(i as usize) {
-            self.profile.format = *f;
-            self.save_profile();
+            self.record_form_mut().format = *f;
+            self.save_profile_form();
         }
     }
 
@@ -2268,11 +2392,76 @@ impl StudioUi {
         }
     }
 
+    /// "Record vertical": records the vertical canvas with its own recording settings
+    /// (the main ones until changed) to a file of its own (ADR-0093 decision 6). `Err`:
+    /// why it cannot start, for a toast.
+    pub fn record_vertical(&mut self) -> Result<(), String> {
+        if self.vertical.is_none() || self.vertical_rec != VerticalOut::Off {
+            return Ok(());
+        }
+        if let Some(why) = &self.cannot_record {
+            return Err(vertical_why(why));
+        }
+        let p = self.record_form_for(OutputCanvas::Vertical);
+        if let Some(why) = p.problem() {
+            return Err(vertical_why(&why));
+        }
+        let request = RecordRequest {
+            path: p.vertical_file_for(chrono::Local::now().naive_local()),
+            container: p.format.container(),
+            encoder: self.encoder_id(&p.encoding()),
+            video: p.video_settings(),
+            audio_bitrate_bps: u64::from(p.audio_kbps) * 1000,
+        };
+        self.vertical_rec = VerticalOut::Starting;
+        self.send(Command::StartVerticalRecording(request));
+        Ok(())
+    }
+
+    /// "Stop vertical recording".
+    pub fn stop_vertical_recording(&mut self) {
+        if self.vertical_rec == VerticalOut::On {
+            self.vertical_rec = VerticalOut::Ending;
+            self.send(Command::StopVerticalRecording);
+        }
+    }
+
+    /// "Go live vertical": streams the vertical canvas to its own server with its own
+    /// key (ADR-0093 decision 6). `Err`: why it cannot start, for a toast.
+    pub fn go_live_vertical(&mut self) -> Result<(), String> {
+        if self.vertical.is_none() || self.vertical_st != VerticalOut::Off {
+            return Ok(());
+        }
+        if let Some(why) = &self.cannot_record {
+            return Err(vertical_why(why));
+        }
+        let p = match &self.vertical_stream {
+            Some(p) if p.missing().is_none() => p,
+            _ => return Err(vertical_why(VERTICAL_SETUP)),
+        };
+        if let Some(why) = p.problem() {
+            return Err(vertical_why(&why));
+        }
+        let request = StreamRequest::from_profile(p, self.encoder_id(&p.encoding))
+            .map_err(|why| vertical_why(&why))?;
+        self.vertical_st = VerticalOut::Starting;
+        self.send(Command::StartVerticalStream(request));
+        Ok(())
+    }
+
+    /// Ends the vertical stream (the frame asked first).
+    pub fn end_vertical_stream(&mut self) {
+        if matches!(self.vertical_st, VerticalOut::On | VerticalOut::Starting) {
+            self.vertical_st = VerticalOut::Ending;
+            self.send(Command::EndVerticalStream);
+        }
+    }
+
     /// The server field was confirmed.
     pub fn set_server(&mut self, text: &str) {
         self.server_draft = None;
         let url = text.trim();
-        if url == self.stream.server {
+        if url == self.stream_form().server {
             return;
         }
         if !url.is_empty()
@@ -2283,9 +2472,9 @@ impl StudioUi {
             self.server_serial += 1;
             return;
         }
-        self.stream.server = url.to_owned();
+        self.stream_form_mut().server = url.to_owned();
         self.server_serial += 1;
-        self.save_stream();
+        self.save_stream_form();
     }
 
     /// The server field changed without being confirmed (Return, leaving the field).
@@ -2304,28 +2493,51 @@ impl StudioUi {
     /// The key field was confirmed: the host saves it in the store.
     pub fn save_key(&mut self, text: &str) {
         let key = text.trim();
-        if key.is_empty() || self.st_state != st_state::OFF {
+        if key.is_empty() || !self.stream_form_idle() {
             return;
         }
-        self.send(Command::SaveStreamKey(Some(Secret::new(key))));
+        let key = Some(Secret::new(key));
+        self.send(match self.settings_canvas {
+            OutputCanvas::Main => Command::SaveStreamKey(key),
+            OutputCanvas::Vertical => Command::SaveVerticalStreamKey(key),
+        });
     }
 
     /// "Remove key".
     pub fn remove_key(&mut self) {
-        if self.st_state == st_state::OFF {
-            self.send(Command::SaveStreamKey(None));
+        if self.stream_form_idle() {
+            self.send(match self.settings_canvas {
+                OutputCanvas::Main => Command::SaveStreamKey(None),
+                OutputCanvas::Vertical => Command::SaveVerticalStreamKey(None),
+            });
+        }
+    }
+
+    /// No recording of the picked canvas runs: its settings can change.
+    fn record_form_idle(&self) -> bool {
+        match self.settings_canvas {
+            OutputCanvas::Main => self.rec_state == rec_state::OFF,
+            OutputCanvas::Vertical => !self.vertical_rec.busy(),
+        }
+    }
+
+    /// No stream of the picked canvas runs: its settings can change.
+    fn stream_form_idle(&self) -> bool {
+        match self.settings_canvas {
+            OutputCanvas::Main => self.st_state == st_state::OFF,
+            OutputCanvas::Vertical => !self.vertical_st.busy(),
         }
     }
 
     /// "Record when the stream starts".
     pub fn set_auto_record(&mut self, on: bool) {
-        self.stream.auto_record = on;
-        self.save_stream();
+        self.stream_form_mut().auto_record = on;
+        self.save_stream_form();
     }
 
     pub fn set_reconnect(&mut self, on: bool) {
-        self.stream.reconnect = on;
-        self.save_stream();
+        self.stream_form_mut().reconnect = on;
+        self.save_stream_form();
     }
 
     /// The SRT latencies offered: the default, the presets and a saved other one.
@@ -2333,16 +2545,55 @@ impl StudioUi {
         let mut v: Vec<Option<u16>> = std::iter::once(None)
             .chain(SRT_LATENCIES_MS.iter().map(|ms| Some(*ms)))
             .collect();
-        if !v.contains(&self.stream.srt_latency_ms) {
-            v.push(self.stream.srt_latency_ms);
+        let saved = self.stream_form().srt_latency_ms;
+        if !v.contains(&saved) {
+            v.push(saved);
         }
         v
     }
 
     pub fn set_latency(&mut self, i: i32) {
-        if let Some(ms) = self.latencies().get(i as usize) {
-            self.stream.srt_latency_ms = *ms;
-            self.save_stream();
+        if let Some(ms) = self.latencies().get(i as usize).copied() {
+            self.stream_form_mut().srt_latency_ms = ms;
+            self.save_stream_form();
+        }
+    }
+
+    /// Saves the stream settings the Stream section changed.
+    fn save_stream_form(&mut self) {
+        match self.settings_canvas {
+            OutputCanvas::Main => self.save_stream(),
+            OutputCanvas::Vertical => self.save_vertical_stream(),
+        }
+    }
+
+    /// Saves the vertical stream settings (`stream-vertical`) and hands them to the
+    /// studio.
+    fn save_vertical_stream(&mut self) {
+        let Some(v) = self.vertical_stream.clone() else {
+            return;
+        };
+        self.stream_note = match self.user.set_section(STREAM_VERTICAL, &v) {
+            Ok(()) => String::new(),
+            Err(e) => format!("The vertical stream settings could not be saved: {e}"),
+        };
+        self.send(Command::SetVerticalStreamProfile(Some(v)));
+    }
+
+    /// Saves the recording settings the Recording section changed.
+    fn save_profile_form(&mut self) {
+        match self.settings_canvas {
+            OutputCanvas::Main => self.save_profile(),
+            OutputCanvas::Vertical => {
+                let Some(v) = self.vertical_profile.clone() else {
+                    return;
+                };
+                self.profile_note = match self.user.set_section(RECORDING_VERTICAL, &v) {
+                    Ok(()) => String::new(),
+                    Err(e) => format!("The vertical recording settings could not be saved: {e}"),
+                };
+                self.send(Command::SetVerticalProfile(Some(v)));
+            }
         }
     }
 
@@ -2394,7 +2645,9 @@ impl StudioUi {
     }
 
     fn push_stream(&self, g: &Studio<'_>) {
-        let st = &self.stream;
+        // The live controls show the main stream; the section's fields the picked
+        // canvas's settings.
+        let st = self.stream_form();
         g.set_st_state(self.st_state);
         g.set_st_connected(self.st_state == st_state::LIVE && self.st_link.connected);
         g.set_st_text(self.stream_text().into());
@@ -2404,7 +2657,7 @@ impl StudioUi {
                 && self.st_bad
                 && !self.setup_note_stale(),
         );
-        g.set_st_needs_setup(st.missing().is_some());
+        g.set_st_needs_setup(self.stream.missing().is_some());
         if g.get_st_server_serial() != self.server_serial as i32 {
             g.set_st_server(st.server.as_str().into());
             g.set_st_server_serial(self.server_serial as i32);
@@ -2414,7 +2667,7 @@ impl StudioUi {
         g.set_st_key_serial(self.key_serial as i32);
         g.set_st_reconnect(st.reconnect);
         g.set_st_auto_record(st.auto_record);
-        let record = self.profile.encoding();
+        let record = self.record_form_for(self.settings_canvas).encoding();
         let same_encoder = self.encoder_id(&record) == self.encoder_id(&st.encoding);
         g.set_st_auto_record_note(
             stream_profile::auto_record_note(&record, &st.encoding, same_encoder).into(),
@@ -2857,10 +3110,10 @@ impl StudioUi {
         if self.st_state != st_state::OFF {
             return Err(format!("End the stream before {doing}."));
         }
-        if self.vertical_busy.0 {
+        if self.vertical_rec.busy() {
             return Err(format!("Stop the vertical recording before {doing}."));
         }
-        if self.vertical_busy.1 {
+        if self.vertical_st.busy() {
             return Err(format!("End the vertical stream before {doing}."));
         }
         Ok(())
@@ -2899,6 +3152,23 @@ impl StudioUi {
             StreamProfile::problem,
         );
         stream.key_saved &= self.keys_persistent;
+        // The vertical canvas's sections (ADR-0093 decision 6): one that does not load
+        // counts as not saved; one that loads with a problem is kept, so a start says
+        // it cannot be used.
+        self.vertical_profile = self
+            .user
+            .section::<RecordProfile>(RECORDING_VERTICAL)
+            .ok()
+            .flatten();
+        self.vertical_stream = self
+            .user
+            .section::<StreamProfile>(STREAM_VERTICAL)
+            .ok()
+            .flatten()
+            .map(|mut v| {
+                v.key_saved &= self.keys_persistent;
+                v
+            });
         self.profile = profile;
         self.profile_note = why
             .map(|w| format!("The saved recording settings were not used: {w}"))
@@ -2923,18 +3193,10 @@ impl StudioUi {
     /// (ADR-0093 decision 6). A section that does not load counts as not saved; one
     /// that loads with a problem is sent as it is, so a start says it cannot be used.
     fn send_vertical_profiles(&self) {
-        let saved_record = self
-            .user
-            .section::<RecordProfile>(RECORDING_VERTICAL)
-            .ok()
-            .flatten();
-        let saved_stream = self
-            .user
-            .section::<StreamProfile>(STREAM_VERTICAL)
-            .ok()
-            .flatten();
-        self.send(Command::SetVerticalProfile(saved_record));
-        self.send(Command::SetVerticalStreamProfile(saved_stream));
+        self.send(Command::SetVerticalProfile(self.vertical_profile.clone()));
+        self.send(Command::SetVerticalStreamProfile(
+            self.vertical_stream.clone(),
+        ));
     }
 
     /// Output profile menu: makes a profile named `name`, with default settings or a
@@ -3238,7 +3500,8 @@ impl StudioUi {
                 self.state = 2;
                 self.cannot_record = Some(format!("The studio stopped: {why}"));
                 // The studio's shutdown ended the vertical outputs too.
-                self.vertical_busy = (false, false);
+                self.vertical_rec = VerticalOut::Off;
+                self.vertical_st = VerticalOut::Off;
                 if self.rec_state != rec_state::OFF {
                     // The studio's shutdown closed the file.
                     self.rec_state = rec_state::OFF;
@@ -3273,7 +3536,14 @@ impl StudioUi {
                 self.refresh_existing();
                 self.refresh_marks();
             }
-            Update::Vertical(v) => self.vertical = v,
+            Update::Vertical(v) => {
+                if v.is_none() {
+                    self.settings_canvas = OutputCanvas::Main;
+                    self.folder_serial += 1;
+                    self.server_serial += 1;
+                }
+                self.vertical = v;
+            }
             Update::MasterMeter(level) => {
                 self.master_slot = level.map(|l| (l, Meter::new()));
                 self.show_master();
@@ -3361,15 +3631,20 @@ impl StudioUi {
             }
             Update::Recording(r) => self.recording(r, &mut out),
             Update::Stream(u) => self.stream_update(u, &mut out),
-            // The vertical canvas's outputs have no live controls yet (they start
-            // through the control API, protocol 1.29): what went wrong is shown, and
-            // whether they run is kept for the profile switch.
+            // The vertical canvas's outputs start from the frame's Record and Go live
+            // menus or through the control API (protocol 1.29): what went wrong is a
+            // toast, and whether they run drives the menus, the 9:16 badge and the
+            // profile switch.
             Update::VerticalRecording(r) => {
-                // A refused start leaves a running one running.
                 match &r {
-                    RecordingUpdate::Started { .. } => self.vertical_busy.0 = true,
-                    RecordingUpdate::Stopped { .. } => self.vertical_busy.0 = false,
-                    _ => {}
+                    RecordingUpdate::Started { .. } => self.vertical_rec = VerticalOut::On,
+                    RecordingUpdate::Stopped { .. } => self.vertical_rec = VerticalOut::Off,
+                    // A refused start leaves a running one running.
+                    RecordingUpdate::NotStarted(_) => {
+                        if self.vertical_rec == VerticalOut::Starting {
+                            self.vertical_rec = VerticalOut::Off;
+                        }
+                    }
                 }
                 let why = match r {
                     RecordingUpdate::NotStarted(why) => Some(why),
@@ -3377,14 +3652,19 @@ impl StudioUi {
                     _ => None,
                 };
                 if let Some(why) = why {
-                    out.error = Some(format!("Vertical canvas: {why}"));
+                    out.error = Some(vertical_why(&why));
                 }
             }
             Update::VerticalStream(u) => {
                 match &u {
-                    StreamUpdate::Started { .. } => self.vertical_busy.1 = true,
-                    StreamUpdate::Ended { .. } => self.vertical_busy.1 = false,
-                    _ => {}
+                    StreamUpdate::Started { .. } => self.vertical_st = VerticalOut::On,
+                    StreamUpdate::Ended { .. } => self.vertical_st = VerticalOut::Off,
+                    StreamUpdate::NotStarted(_) | StreamUpdate::NoKey => {
+                        if self.vertical_st == VerticalOut::Starting {
+                            self.vertical_st = VerticalOut::Off;
+                        }
+                    }
+                    StreamUpdate::Link(_) => {}
                 }
                 let why = match u {
                     StreamUpdate::NotStarted(why) => Some(why),
@@ -3395,7 +3675,7 @@ impl StudioUi {
                     _ => None,
                 };
                 if let Some(why) = why {
-                    out.error = Some(format!("Vertical canvas: {why}"));
+                    out.error = Some(vertical_why(&why));
                 }
             }
             Update::CollectionSwitched { seq, result } => {
@@ -3403,6 +3683,15 @@ impl StudioUi {
                     out.error = Some(e);
                 }
             }
+            Update::VerticalStreamKey(r) => match r {
+                Ok(saved) => {
+                    let v = self.vertical_stream.get_or_insert_with(StreamProfile::new);
+                    v.key_saved = saved;
+                    self.key_serial += 1;
+                    self.save_vertical_stream();
+                }
+                Err(why) => self.stream_note = why,
+            },
             Update::StreamKey(r) => match r {
                 Ok(saved) => {
                     self.stream.key_saved = saved;
@@ -4947,6 +5236,119 @@ mod tests {
                 "{c:?}"
             );
         }
+        let _ = std::fs::remove_dir_all(d);
+    }
+
+    #[test]
+    fn the_vertical_output_commands_follow_the_vertical_canvas_and_its_outputs() {
+        use crate::menu_bar::{Run, Shown, run};
+        use rbs_ui::command::{CommandId, CommandState, Context};
+        let (mut ui, d) = ui("vertical-outputs");
+        ui.state = 1;
+        let ws = rbs_ui::builtin::edit();
+        let cmd = |t: &str| CommandId::parse(t).unwrap();
+        let titles = |ui: &StudioUi| {
+            let s = Shown {
+                workspace: &ws,
+                workspaces: &[],
+                studio: ui,
+                panels: Vec::new(),
+                maximized: None,
+                camera: Default::default(),
+                replay: Default::default(),
+                can_undo: false,
+                can_redo: false,
+            };
+            crate::context_menu::items(Context::VerticalOutputs, &[], &s)
+                .into_iter()
+                .map(|i| (i.title, i.enabled, i.checked))
+                .collect::<Vec<_>>()
+        };
+        // No vertical canvas: the ▾ menu has nothing.
+        assert!(titles(&ui).is_empty());
+        ui.vertical = Some(rbs_app::studio_host::VerticalState {
+            canvas: rbs_scene::model::CanvasId::from_raw(2),
+            size: rbs_core::media::video::Size::new(1080, 1920),
+            follow: true,
+        });
+        assert_eq!(
+            titles(&ui),
+            [
+                ("Go live vertical".to_owned(), true, false),
+                ("Record vertical".to_owned(), true, false),
+            ]
+        );
+        // Without a vertical server Go live vertical says where to set it up.
+        let why = ui.go_live_vertical().unwrap_err();
+        assert_eq!(why, format!("Vertical canvas: {VERTICAL_SETUP}"));
+        assert_eq!(ui.vertical_st, VerticalOut::Off);
+        // Running outputs read as what the item does now, and stop or ask first.
+        ui.vertical_st = VerticalOut::On;
+        ui.apply(Update::VerticalRecording(RecordingUpdate::Started {
+            path: d.join("v.mkv"),
+            video_encoder: "x".into(),
+            audio_encoder: None,
+        }));
+        assert_eq!(ui.vertical_rec, VerticalOut::On);
+        assert_eq!(
+            titles(&ui),
+            [
+                ("End vertical stream".to_owned(), true, true),
+                ("Stop vertical recording".to_owned(), true, true),
+            ]
+        );
+        {
+            let s = Shown {
+                workspace: &ws,
+                workspaces: &[],
+                studio: &ui,
+                panels: Vec::new(),
+                maximized: None,
+                camera: Default::default(),
+                replay: Default::default(),
+                can_undo: false,
+                can_redo: false,
+            };
+            assert_eq!(
+                run("stream.vertical.toggle", &s),
+                Some(Run::AskEndVerticalStream)
+            );
+            assert_eq!(
+                run("record.vertical.toggle", &s),
+                Some(Run::StopVerticalRecording)
+            );
+            // The main outputs are not held back by the vertical ones.
+            assert!(s.enabled(&cmd("stream.toggle")).is_ok());
+            assert!(s.enabled(&cmd("record.toggle")).is_ok());
+        }
+        // A refused start of another recording leaves the running one running.
+        ui.apply(Update::VerticalRecording(RecordingUpdate::NotStarted(
+            "busy".into(),
+        )));
+        assert_eq!(ui.vertical_rec, VerticalOut::On);
+        // Stopping: the item waits for the host.
+        ui.stop_vertical_recording();
+        assert_eq!(ui.vertical_rec, VerticalOut::Ending);
+        assert!(!titles(&ui)[1].1);
+        ui.apply(Update::VerticalRecording(RecordingUpdate::Stopped {
+            path: d.join("v.mkv"),
+            failure: None,
+            frames: 1,
+            dropped: 0,
+            flush_lost: 0,
+        }));
+        ui.apply(Update::VerticalStream(StreamUpdate::Ended {
+            failure: None,
+            frames: 1,
+            dropped: 0,
+            connects: 1,
+        }));
+        assert!(!ui.vertical_rec.busy() && !ui.vertical_st.busy());
+        // A start the host refuses ends the wait.
+        ui.vertical_st = VerticalOut::Starting;
+        let out = ui.apply(Update::VerticalStream(StreamUpdate::NoKey));
+        assert_eq!(ui.vertical_st, VerticalOut::Off);
+        assert!(out.error.unwrap().starts_with("Vertical canvas: "));
         let _ = std::fs::remove_dir_all(d);
     }
 
