@@ -617,6 +617,14 @@ pub enum Command {
     },
     /// Try a source that is not running again with its stored settings (ADR-0077).
     ReloadSource(SourceId),
+    /// Adds (`on`) or removes the "Capture audio too" companion of a display or window
+    /// source, one undo step (ADR-0096).
+    SetCompanionAudio {
+        /// The display or window source.
+        source: SourceId,
+        /// Add (`true`) or remove the companion.
+        on: bool,
+    },
     /// Rename a source (one undo step). Names are unique in the collection.
     RenameSource {
         /// The source.
@@ -2369,6 +2377,18 @@ impl Host {
                 Ok(Reload::Restarted(done)) => self.answer_live(Ok(done), notify),
                 Err(e) => self.answer_live(Err(e), notify),
             },
+            Command::SetCompanionAudio { source, on } => {
+                let has = self
+                    .collection
+                    .sources()
+                    .any(|s| s.companion_of() == Some(source));
+                let done = match (on, has) {
+                    (true, false) => self.add_companion(source, false).map(|_| true),
+                    (false, true) => self.remove_companion(source).map(|()| true),
+                    _ => Ok(false),
+                };
+                self.answer(done, notify);
+            }
             Command::RenameSource { id, name } => {
                 let done = self.rename_source(id, &name);
                 self.answer(done, notify);
