@@ -6,7 +6,7 @@ These rules apply to every change. A pull request that breaks one needs an ADR t
 
 Core crates (`rbs-core`, `rbs-graph`, `rbs-scene`, and every port crate) must not depend on FFmpeg, a GPU vendor SDK, an OS media API or a network protocol library. Those live only in adapter crates. The application crate is the only place where adapters are wired in.
 
-Test: `cargo xtask check-layers` (planned) fails if a core or port crate depends on an adapter or a vendor crate.
+Test: `cargo xtask check-layers` fails if a core or port crate depends on an adapter or a vendor crate, and if an engine crate depends on an adapter. The allowlists live in `xtask/src/main.rs` and match the layer table in [overview.md](overview.md).
 
 ## P2. Every external capability is a port with swappable adapters
 

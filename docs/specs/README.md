@@ -26,11 +26,11 @@ Specs are the current contracts of RBS. Code must match them; a PR that changes 
 | [recording.md](recording.md) | Draft | `rbs-record` (scene to encoders and a muxed output on the engine), `rbs-cli` (`record`, `devices`) |
 | [plugin-sdk.md](plugin-sdk.md) | Draft | `rbs-plugin-sdk`, `rbs-plugin-host` (planned) |
 | [performance-budgets.md](performance-budgets.md) | Draft | `benches/`, CI |
-| [control-api.md](control-api.md) | Draft | `rbs-api`, `rbs-api-ws`, `rbs-api-ipc` (planned; ADR-0044) |
+| [control-api.md](control-api.md) | Draft | `rbs-api`, `rbs-api-ws`, `rbs-api-ipc` (ADR-0044). What is still missing is in that spec's implementation status |
 | [mcp-server.md](mcp-server.md) | Draft | `rbs-mcp` (planned; ADR-0052) |
 | [crash-resilience.md](crash-resilience.md) | Draft | `rbs-crash` (panic boundary, crash reports, unclean-exit detection), `rbs-app` (`entry.rs`, `clippy.toml`, studio host recovery; ADR-0055) |
 | [testing-strategy.md](testing-strategy.md) | Draft | CI, conformance suites |
-| [ui-design-system.md](ui-design-system.md) | Draft | `rbs-ui-tokens`, `rbs-app` (planned) |
+| [ui-design-system.md](ui-design-system.md) | Draft | `rbs-ui` (tokens), `rbs-app` |
 | [themes.md](themes.md) | Draft | `rbs-ui` (`tokens`), `rbs-user-data`, `rbs-app` (user themes, Settings › Appearance; ADR-0057) |
 | [shortcuts.md](shortcuts.md) | Draft | `rbs-ui` (`shortcut`), `rbs-user-data`, `rbs-app` (shortcuts, global shortcuts, Settings › Shortcuts; ADR-0060) |
 

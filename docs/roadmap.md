@@ -1,6 +1,6 @@
 # Roadmap
 
-Durations are rough estimates for a small experienced team assisted by AI agents; they will be recalibrated after Phase 0.
+What is in the tree today is [status.md](status.md). The phase table below is the original plan, not a description of the current crates. Durations were rough estimates for a small team assisted by AI agents.
 
 | Phase | Goal | Exit gate |
 | --- | --- | --- |
@@ -15,5 +15,5 @@ Durations are rough estimates for a small experienced team assisted by AI agents
 
 - ~~License~~: decided, GPL-3.0-or-later ([ADR-0010](adr/0010-project-license.md)). Plugin SDK and WIT licensing is still open.
 - Tier-1 platforms and reference machines.
-- Native desktop UI toolkit (Slint, iced or Qt) after a small comparison prototype (ADR-0016). Prototype done; ADR-0022 proposes Slint, pending a GPU run of the load scenarios and review.
+- ~~Native desktop UI toolkit~~: decided in [ADR-0022](adr/0022-native-ui-toolkit.md) (Accepted). The desktop UI is Slint.
 - ~~Control API schema technology~~: decided in [ADR-0044](adr/0044-control-api-protocol-and-security.md) (Rust types as schema, generated JSON Schema, JSON-RPC 2.0).

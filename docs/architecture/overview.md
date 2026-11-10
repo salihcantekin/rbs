@@ -22,7 +22,7 @@ RBS is a headless engine built around a **media graph**: a set of nodes (sources
 
 ## Layers
 
-| Layer | Crates (planned) | May depend on |
+| Layer | Crates | May depend on |
 | --- | --- | --- |
 | Foundation | `rbs-core` (time, clock, timing, media types, capabilities, registry, the thread policy port, errors, metrics) | std, small utility crates (`bytes`) |
 | Audio filters | `rbs-audio-filters` (Gain, Noise gate, the audio filter node; ADR-0082) | `rbs-core`, `rbs-graph`, `rbs-params` |

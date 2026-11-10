@@ -131,6 +131,7 @@ fn start(profile: &RemoteProfile) -> RemoteServer {
             control_waker: Box::new(|| {}),
             audit: Box::new(|_| {}),
             ipc: None,
+            levels: None,
         },
     )
     .unwrap();
@@ -219,6 +220,7 @@ fn a_taken_port_fails_the_start_with_a_reason() {
             control_waker: Box::new(|| {}),
             audit: Box::new(|_| {}),
             ipc: None,
+            levels: None,
         },
     );
     let Err(why) = result else {
@@ -287,6 +289,7 @@ fn tokens_changed_over_local_ipc_take_effect_at_once() {
             control_waker: Box::new(host.api_waker()),
             audit: Box::new(|_| {}),
             ipc: Some(endpoint.clone()),
+            levels: None,
         },
     )
     .unwrap();
@@ -393,6 +396,7 @@ fn with_network_access_apps_on_this_computer_still_connect_without_tls() {
             control_waker: Box::new(|| {}),
             audit: Box::new(|_| {}),
             ipc: None,
+            levels: None,
         },
     )
     .unwrap();

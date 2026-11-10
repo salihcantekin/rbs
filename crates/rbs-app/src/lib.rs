@@ -32,6 +32,7 @@ pub mod caption;
 pub mod edit_history;
 pub mod encoder_form;
 pub mod hotkeys;
+pub mod levels;
 #[cfg(target_os = "macos")]
 pub mod native;
 pub mod network_access;

@@ -7,7 +7,7 @@ description: Checklist for any RBS change that edits or is called from a hot pat
 
 Policy: principle P15, `docs/adr/0014-review-policy.md`. Paths: `docs/architecture/hot-paths.md`.
 
-1. **Is it a hot path?** It is if the diff edits code inside, or called directly from, the functions and modules listed in `docs/architecture/hot-paths.md`. If a new module now runs per frame, block or packet, add it to that list and to `.github/CODEOWNERS` in the same PR.
+1. **Is it a hot path?** It is if the diff edits code inside, or called directly from, the functions and modules listed in `docs/architecture/hot-paths.md`. If a new module now runs per frame, block or packet, add it to that list and to `.github/CODEOWNERS` in the same PR. The default video encode path copies frames to the CPU (`YuvDownload`, ADR-0038). A change there follows that ADR's exit criteria.
 2. **Measure** with the `measure-performance` skill. Put the before/after table in the PR. No numbers, no merge.
 3. **Checklist** (answer each OK / Issue / N/A with one line):
    - No heap allocation per call (including hidden ones: `format!`, `to_string`, `Vec` growth, `Box`, `Arc::new`, closures that capture by value into boxes).

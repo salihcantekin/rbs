@@ -1507,6 +1507,8 @@ fn preview_desc(size: Size, surfaces: usize) -> PreviewDesc {
 pub struct StudioHost {
     tx: Option<Arc<Sender<Msg>>>,
     thread: Option<JoinHandle<()>>,
+    /// Meters the control API samples for `audio.levels`.
+    levels: Arc<crate::levels::LevelFeed>,
 }
 
 impl StudioHost {
@@ -1523,16 +1525,33 @@ impl StudioHost {
     ) -> std::io::Result<Self> {
         let (tx, rx) = mpsc::channel();
         let tx = Arc::new(tx);
+        let levels = crate::levels::LevelFeed::new();
         let thread = std::thread::Builder::new()
             .name("rbs-studio".into())
             .spawn({
                 let inbox = Arc::downgrade(&tx);
-                move || run(config, adapters, gpu, engine, rx, inbox, &notify)
+                let levels = Arc::clone(&levels);
+                move || {
+                    run(
+                        config,
+                        adapters,
+                        gpu,
+                        engine,
+                        ControlIo { rx, inbox, levels },
+                        &notify,
+                    )
+                }
             })?;
         Ok(Self {
             tx: Some(tx),
             thread: Some(thread),
+            levels,
         })
+    }
+
+    /// The meters `audio.levels` samples while remote control is on.
+    pub fn level_feed(&self) -> Arc<crate::levels::LevelFeed> {
+        Arc::clone(&self.levels)
     }
 
     /// Queues a command. Never blocks; a stopped studio ignores it.
@@ -1729,6 +1748,8 @@ struct Host {
     vertical_sent: Option<Option<VerticalState>>,
     /// The master meter last sent to the UI.
     master_sent: Option<Arc<rbs_audio::LevelMeter>>,
+    /// Meters published for `audio.levels`.
+    levels: Arc<crate::levels::LevelFeed>,
     /// The last picture size seen per video source (ADR-0058).
     sizes: BTreeMap<SourceId, (u32, u32)>,
     /// The user's undo history of scene edits, shared with control API clients.
@@ -1814,18 +1835,25 @@ struct Host {
     replay: replay::ReplayHost,
 }
 
+/// What the control thread is handed besides the studio configuration.
+struct ControlIo {
+    rx: Receiver<Msg>,
+    inbox: Weak<Sender<Msg>>,
+    levels: Arc<crate::levels::LevelFeed>,
+}
+
 fn run(
     config: HostConfig,
     adapters: impl FnOnce() -> (RecordAdapters, Vec<String>),
     gpu: impl FnOnce() -> Result<Arc<GpuContext>, String>,
     engine: impl Fn() -> Engine + 'static,
-    rx: Receiver<Msg>,
-    inbox: Weak<Sender<Msg>>,
+    io: ControlIo,
     notify: &dyn Fn(Update),
 ) {
+    let ControlIo { rx, inbox, levels } = io;
     // A control thread, not a real-time one: its panics get crash reports (ADR-0055).
     rbs_crash::report_panics_on_this_thread();
-    let started = rbs_crash::contain(|| start(config, adapters, gpu, engine))
+    let started = rbs_crash::contain(|| start(config, adapters, gpu, engine, levels))
         .unwrap_or_else(|_| Err(rbs_crash::CAUGHT_TEXT.to_owned()));
     let mut host = match started {
         Ok((mut host, update)) => {
@@ -2046,6 +2074,7 @@ fn start(
     adapters: impl FnOnce() -> (RecordAdapters, Vec<String>),
     gpu: impl FnOnce() -> Result<Arc<GpuContext>, String>,
     engine: impl Fn() -> Engine + 'static,
+    levels: Arc<crate::levels::LevelFeed>,
 ) -> Result<(Host, Update), String> {
     let keys = Arc::clone(&config.keys);
     #[cfg(feature = "fault-injection")]
@@ -2203,6 +2232,7 @@ fn start(
             switch_seq: 0,
             stream_state: api::StreamState::Idle { last: None },
             inbox: Weak::new(),
+            levels,
         },
         update,
     ))
@@ -5603,6 +5633,22 @@ impl Host {
                 redo: shown.1,
             });
         }
+        self.publish_levels();
+    }
+
+    /// The running audio sources' meters, for `audio.levels`. A source that is both
+    /// global and in the program scene is listed once.
+    fn publish_levels(&self) {
+        let mut next = Vec::new();
+        let mut seen = std::collections::BTreeSet::new();
+        for row in self.globals_shown.iter().chain(self.heard.iter()) {
+            if let Some(meter) = &row.meter
+                && seen.insert(row.id)
+            {
+                next.push((row.id.get(), Arc::clone(meter)));
+            }
+        }
+        self.levels.replace_if_changed(next);
     }
 
     /// The edited scene's sources, top first (the program scene; in studio mode the

@@ -7,7 +7,8 @@
 //!   aligns it to the block's master time, corrects the device's drift and converts its
 //!   rate and channels to the graph format, all in one variable-ratio resampler.
 //! - [`MixerNode`] sums its inputs with per-strip gain and mute (ramped, never clicking)
-//!   and feeds lock-free [`LevelMeter`]s the UI reads at its own rate.
+//!   and feeds lock-free [`LevelMeter`]s. The UI and the control API each read their
+//!   own peak, so neither clears the other's.
 //! - [`EncoderNode`] hands mixed blocks to an [`AudioEncoder`](rbs_codec::AudioEncoder)
 //!   on an encoder partition, behind an audio queue.
 //! - [`MeterSinkNode`] keeps a mixer scheduled for its meters while nothing records.

@@ -14,7 +14,13 @@ use rbs_core::media::MAX_CHANNELS;
 /// waits.
 #[derive(Debug)]
 pub struct LevelMeter {
+    /// Highest peak since the UI last called [`take`](Self::take).
     peaks: [AtomicU32; MAX_CHANNELS],
+    /// Highest peak since a control-API sample last called [`observe`](Self::observe).
+    /// Written beside `peaks` so a subscriber does not steal the UI's peaks, and the
+    /// UI does not steal a subscriber's. One extra atomic per channel per block, with
+    /// no branch for "is anyone listening" (P13).
+    shared: [AtomicU32; MAX_CHANNELS],
     channels: usize,
 }
 
@@ -23,6 +29,7 @@ impl LevelMeter {
     pub fn new(channels: usize) -> Self {
         Self {
             peaks: Default::default(),
+            shared: Default::default(),
             channels: channels.clamp(1, MAX_CHANNELS),
         }
     }
@@ -40,19 +47,31 @@ impl LevelMeter {
             return;
         }
         let peak = if peak.is_infinite() { f32::MAX } else { peak };
-        self.peaks[channel].fetch_max(peak.to_bits(), Ordering::Relaxed);
+        let bits = peak.to_bits();
+        self.peaks[channel].fetch_max(bits, Ordering::Relaxed);
+        self.shared[channel].fetch_max(bits, Ordering::Relaxed);
     }
 
     /// The peaks recorded since the last take, and resets them to 0.
     pub fn take(&self) -> Levels {
+        Self::swap(&self.peaks, self.channels)
+    }
+
+    /// The peaks recorded since the last observe, and resets them to 0.
+    ///
+    /// For a reader other than the UI (the control API's `audio.levels` sampler).
+    /// Independent of [`take`](Self::take): each keeps the highest peak since its own
+    /// last read.
+    pub fn observe(&self) -> Levels {
+        Self::swap(&self.shared, self.channels)
+    }
+
+    fn swap(slots: &[AtomicU32; MAX_CHANNELS], channels: usize) -> Levels {
         let mut peaks = [0.0; MAX_CHANNELS];
-        for (out, slot) in peaks.iter_mut().zip(&self.peaks).take(self.channels) {
+        for (out, slot) in peaks.iter_mut().zip(slots).take(channels) {
             *out = f32::from_bits(slot.swap(0, Ordering::Relaxed));
         }
-        Levels {
-            peaks,
-            channels: self.channels,
-        }
+        Levels { peaks, channels }
     }
 }
 
@@ -143,12 +162,30 @@ mod tests {
     }
 
     #[test]
+    fn take_and_observe_keep_their_own_peaks() {
+        let m = LevelMeter::new(2);
+        m.record(0, 0.5);
+        m.record(1, 0.25);
+        let ui = m.take();
+        let api = m.observe();
+        assert_eq!(ui.peak(0), 0.5);
+        assert_eq!(api.peak(0), 0.5);
+        assert_eq!(api.peak(1), 0.25);
+        m.record(0, 0.1);
+        assert_eq!(m.take().peak(0), 0.1);
+        assert_eq!(m.observe().peak(0), 0.1);
+        assert_eq!(m.take().peak(0), 0.0);
+        assert_eq!(m.observe().peak(0), 0.0);
+    }
+
+    #[test]
     fn record_and_take_do_not_allocate() {
         let m = LevelMeter::new(2);
         let c = allocation_counter::measure(|| {
             for i in 0..1000 {
                 m.record(i % 2, i as f32);
                 let _ = m.take();
+                let _ = m.observe();
             }
         });
         assert_eq!(c.count_total, 0);
