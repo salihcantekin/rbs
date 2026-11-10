@@ -4538,6 +4538,8 @@ mod tests {
             panels: Vec::new(),
             maximized: None,
             camera: Default::default(),
+            can_undo: true,
+            can_redo: false,
         };
         let mixer = PanelId::parse("rbs.mixer").unwrap();
         let cmd = |t: &str| CommandId::parse(t).unwrap();
@@ -4582,6 +4584,106 @@ mod tests {
         // The move choices name the edges; next tab stack only with a second stack.
         let choices = shown.choices(&cmd("ui.panel.move?id=rbs.mixer"));
         assert!(choices.iter().any(|(_, v, _)| v == "bottom"));
+        // A choice of the panel's menu carries the panel, so it runs on it.
+        let menu = crate::context_menu::items(
+            rbs_ui::command::Context::Panel,
+            &[("id".to_owned(), "rbs.mixer".to_owned())],
+            &shown,
+        );
+        let left = menu
+            .iter()
+            .flat_map(|i| i.choices.iter())
+            .find(|c| c.0 == "Left edge")
+            .unwrap();
+        assert!(
+            matches!(run(&left.1, &shown), Some(Run::MovePanel(..))),
+            "{}",
+            left.1
+        );
+        // A locked layout refuses what rearranges; collapse and auto-hide stay.
+        let mut locked = rbs_ui::builtin::edit();
+        locked.locked = true;
+        let shown = Shown {
+            workspace: &locked,
+            ..shown
+        };
+        for id in [
+            "move?id=rbs.mixer&to=left",
+            "float?id=rbs.mixer",
+            "close?id=rbs.mixer",
+        ] {
+            assert!(
+                shown.enabled(&cmd(&format!("ui.panel.{id}"))).is_err(),
+                "{id}"
+            );
+        }
+        assert!(
+            shown
+                .enabled(&cmd("ui.panel.collapse?id=rbs.mixer"))
+                .is_ok()
+        );
+        let _ = std::fs::remove_dir_all(d);
+    }
+
+    #[test]
+    fn the_workspace_commands_run_and_say_why_they_cannot() {
+        use crate::menu_bar::{Run, Shown, run};
+        use rbs_ui::LayoutCommand as L;
+        use rbs_ui::command::{CommandId, CommandState};
+        let (ui, d) = ui("workspace-commands");
+        let mut ws = rbs_ui::builtin::edit();
+        fn shown<'a>(
+            ws: &'a rbs_ui::workspace::Workspace,
+            studio: &'a StudioUi,
+            can_undo: bool,
+            can_redo: bool,
+        ) -> Shown<'a> {
+            Shown {
+                workspace: ws,
+                workspaces: &[],
+                studio,
+                panels: Vec::new(),
+                maximized: None,
+                camera: Default::default(),
+                can_undo,
+                can_redo,
+            }
+        }
+        let cmd = |t: &str| CommandId::parse(t).unwrap();
+        let s = shown(&ws, &ui, true, false);
+        assert_eq!(run("ui.workspace.save", &s), Some(Run::SaveWorkspace));
+        assert_eq!(
+            run("ui.workspace.save_as?name=Show", &s),
+            Some(Run::SaveWorkspaceAs(Some("Show".to_owned())))
+        );
+        assert_eq!(
+            run("ui.workspace.save_as", &s),
+            Some(Run::SaveWorkspaceAs(None))
+        );
+        assert_eq!(run("ui.layout.undo", &s), Some(Run::LayoutHistory(true)));
+        assert!(s.enabled(&cmd("ui.layout.redo")).is_err());
+        assert_eq!(run("ui.layout.redo", &s), None);
+        // Lock toggles with the workspace's state and the title follows it.
+        assert_eq!(
+            run("ui.layout.lock", &s),
+            Some(Run::Layout(L::SetLocked(true)))
+        );
+        assert_eq!(
+            s.title(&cmd("ui.layout.lock")).as_deref(),
+            Some("Lock layout")
+        );
+        ws.locked = true;
+        let s = shown(&ws, &ui, false, true);
+        assert!(s.checked(&cmd("ui.layout.lock")));
+        assert_eq!(
+            run("ui.layout.lock", &s),
+            Some(Run::Layout(L::SetLocked(false)))
+        );
+        assert_eq!(
+            s.title(&cmd("ui.layout.lock")).as_deref(),
+            Some("Unlock layout")
+        );
+        assert!(s.enabled(&cmd("ui.layout.undo")).is_err());
         let _ = std::fs::remove_dir_all(d);
     }
 }

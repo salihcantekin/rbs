@@ -218,6 +218,10 @@ pub struct Shown<'a> {
     pub maximized: Option<&'a PanelId>,
     /// The virtual camera, for `vcam.toggle`.
     pub camera: CameraShown,
+    /// The layout history has a step to undo.
+    pub can_undo: bool,
+    /// The layout history has a step to redo.
+    pub can_redo: bool,
 }
 
 /// The virtual camera as `vcam.toggle` sees it (ADR-0066 decision 12).
@@ -474,12 +478,24 @@ impl CommandState for Shown<'_> {
                 Some(p) if self.workspace.is_open(&p) => Ok(()),
                 _ => Err("The panel is not open.".to_owned()),
             },
+            "ui.layout.undo" if !self.can_undo => {
+                Err("There is no layout change to undo.".to_owned())
+            }
+            "ui.layout.redo" if !self.can_redo => {
+                Err("There is no layout change to redo.".to_owned())
+            }
             "ui.panel.collapse" | "ui.panel.auto_hide" | "ui.panel.move" | "ui.panel.float"
             | "ui.panel.close" => {
                 let Some(c) = self.panel_caps(id) else {
                     return Err("The panel is not open.".to_owned());
                 };
                 match id.base() {
+                    // The lock stops what rearranges; collapse and auto-hide still work.
+                    "ui.panel.move" | "ui.panel.float" | "ui.panel.close"
+                        if self.workspace.locked =>
+                    {
+                        Err("The layout is locked.".to_owned())
+                    }
                     "ui.panel.collapse" if !c.can_collapse => Err(
                         "Preview and Program, and the last open stack of the centre, stay open."
                             .to_owned(),
@@ -571,6 +587,7 @@ impl CommandState for Shown<'_> {
             }
             "ui.panel.maximize" => panel_of(id).is_some_and(|p| self.maximized == Some(&p)),
             "ui.panel.collapse" => self.panel_caps(id).is_some_and(|c| c.collapsed),
+            "ui.layout.lock" => self.workspace.locked,
             "ui.panel.float" => self.panel_caps(id).is_some_and(|c| c.floating),
             "ui.layout.studio_rail" => {
                 self.workspace.studio_rail().is_some()
@@ -607,6 +624,8 @@ impl CommandState for Shown<'_> {
                 })
                 .collect(),
             "ui.panel.select" => self.panels.clone(),
+            // A locked layout offers no place to move to: the submenu is disabled.
+            "ui.panel.move" if self.workspace.locked => Vec::new(),
             "ui.panel.move" => {
                 let stacks = self.panel_caps(id).map_or(0, |c| c.stacks);
                 let mut out: Vec<_> = [
@@ -673,6 +692,16 @@ impl CommandState for Shown<'_> {
     }
 
     fn title(&self, id: &CommandId) -> Option<String> {
+        if id.base() == "ui.layout.lock" {
+            return Some(
+                if self.workspace.locked {
+                    "Unlock layout"
+                } else {
+                    "Lock layout"
+                }
+                .to_owned(),
+            );
+        }
         if let Some(p) = panel_of(id) {
             let name = crate::view::title(&p);
             match id.base() {
@@ -1008,6 +1037,13 @@ pub enum Run {
     Layout(rbs_ui::LayoutCommand),
     /// Maximize the panel (`true`) or restore the layout.
     Maximize(PanelId, bool),
+    /// Write the shown workspace to its file now (`ui.workspace.save`).
+    SaveWorkspace,
+    /// Save the shown workspace as a new one named so and switch to it
+    /// (`ui.workspace.save_as`); without a name the window asks for one.
+    SaveWorkspaceAs(Option<String>),
+    /// Undo (`true`) or redo (`false`) a layout change.
+    LayoutHistory(bool),
     /// Auto-hide the panel's tab stack to the edge (`ui.panel.auto_hide`).
     AutoHide(PanelId),
     /// Move the panel to an edge of its window or to the next tab stack
@@ -1129,6 +1165,11 @@ pub fn run(text: &str, state: &Shown<'_>) -> Option<Run> {
             collapsed: !on,
         }),
         "ui.panel.auto_hide" => Run::AutoHide(panel_of(&id)?),
+        "ui.workspace.save" => Run::SaveWorkspace,
+        "ui.workspace.save_as" => Run::SaveWorkspaceAs(id.param("name").map(str::to_owned)),
+        "ui.layout.lock" => Run::Layout(L::SetLocked(!on)),
+        "ui.layout.undo" => Run::LayoutHistory(true),
+        "ui.layout.redo" => Run::LayoutHistory(false),
         "ui.panel.float" => {
             let panel = panel_of(&id)?;
             if on {
