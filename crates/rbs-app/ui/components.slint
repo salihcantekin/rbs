@@ -1981,3 +1981,57 @@ export component InfoHint inherits Rectangle {
     }
     FocusRing { show: focus.ring; }
 }
+
+// One line of status under or inside a control group (ADR-0094 rule D): an icon, a
+// short message and an optional action. `tone`: 0 info, 1 success, 2 warning, 3 error.
+// Error keeps the outline so it reads without colour; the message wraps instead of
+// being cut. Use it for notes, validation and "why is this disabled" lines.
+export component StatusLine inherits Rectangle {
+    in property <string> text;
+    in property <int> tone;
+    in property <string> action;
+    callback activated();
+    property <color> tint: root.tone == 1 ? Theme.state-healthy
+        : root.tone == 2 ? Theme.state-warning
+        : root.tone == 3 ? Theme.state-error : Theme.accent;
+    background: root.tone == 3 ? transparent : Theme.accent-subtle;
+    border-radius: Tokens.radius-md;
+    border-width: root.tone == 3 ? Tokens.size-border : 0px;
+    border-color: Theme.state-error;
+    min-height: row.min-height;
+    preferred-height: row.preferred-height;
+    accessible-role: AccessibleRole.text;
+    accessible-label: text;
+    row := HorizontalLayout {
+        padding-left: Tokens.space-3;
+        padding-right: Tokens.space-3;
+        padding-top: Tokens.space-2;
+        padding-bottom: Tokens.space-2;
+        spacing: Tokens.space-2;
+        VerticalLayout {
+            alignment: start;
+            padding-top: (Tokens.type-body-line - Tokens.size-icon-box) / 2;
+            Icon {
+                width: Tokens.size-icon-box;
+                height: Tokens.size-icon-box;
+                name: root.tone == 1 ? IconName.check
+                    : root.tone >= 2 ? IconName.warning : IconName.info;
+                ink: root.tint;
+            }
+        }
+        Text {
+            horizontal-stretch: 1;
+            text: root.text;
+            color: root.tone == 3 ? Theme.state-error : Theme.text-primary;
+            font-size: Tokens.type-body-size;
+            wrap: word-wrap;
+            accessible-role: none;
+        }
+        if root.action != "": Button {
+            text: root.action;
+            kind: "ghost";
+            dense: true;
+            clicked => { root.activated(); }
+        }
+    }
+}
