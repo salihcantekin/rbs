@@ -1559,7 +1559,6 @@ fn auto_layout_gives_each_item_a_layout_for_the_canvas_in_one_undo_step() {
         .col
         .add_item(scene, ItemContent::Source(s.cam), full(640.0, 360.0), None)
         .unwrap();
-    s.col.set_item_visible(cam, true).unwrap();
     let before = s.col.clone();
     let picture = |_| Some((1920, 1080));
     let none = BTreeMap::new();
@@ -1581,7 +1580,7 @@ fn auto_layout_gives_each_item_a_layout_for_the_canvas_in_one_undo_step() {
     assert!((i64::from(kept) - 1215).abs() <= 1, "{kept}");
     assert_eq!(top.crop.top + top.crop.bottom, 0);
     // The horizontal canvas is untouched.
-    assert!(s.col.item(game).unwrap().1.overrides.get(&s.wide).is_none());
+    assert!(!s.col.item(game).unwrap().1.overrides.contains_key(&s.wide));
 
     s.col.undo(undo).unwrap();
     assert_eq!(s.col, before);
