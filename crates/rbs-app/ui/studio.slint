@@ -246,6 +246,8 @@ export global Studio {
     callback preview-press(float /* x */, float /* y */, float /* w */, float /* h */, bool /* shift */, bool /* no-snap */, bool /* crop */);
     callback preview-drag(float /* x */, float /* y */);
     callback preview-release();
+    // The picture's context menu opens at `x`, `y` (the picture's own coordinates).
+    callback preview-menu-opened(float /* x */, float /* y */);
     // Arrow keys on the picture panel: move the selected source by this many canvas
     // pixels.
     callback preview-nudge(int /* dx */, int /* dy */);
@@ -518,12 +520,6 @@ export component ProgramPanel inherits Rectangle {
     // A right-click on the picture: the menu of the source under the pointer (it
     // becomes the selection), else the panel's own menu.
     property <Point> menu-at;
-    // The menu was opened and no pointer move has reached the picture since. A system
-    // menu takes the pointer while it is open; on Windows the click that closes it then
-    // reaches the picture as a press without its release, and at the place the menu
-    // opened (no move came before it). That press is ignored: it only closes the menu.
-    // Any move clears this, so after an item is picked the next click acts as usual.
-    property <bool> menu-closing;
     menu := CommandMenu {
         context: "preview";
         target: "h=" + round(touch.height / 1px) + "&id=" + root.panel + "&w=" + round(touch.width / 1px)
@@ -533,23 +529,21 @@ export component ProgramPanel inherits Rectangle {
         enabled: editable;
         pointer-event(e) => {
             if e.kind == PointerEventKind.cancel { Studio.preview-release(); return; }
-            if e.kind == PointerEventKind.move { root.menu-closing = false; return; }
             // The menu opens when the right button goes up, not down, so the press it
-            // opened on has its release.
+            // opened on has its release. On Windows the click that closes a system menu
+            // reaches the picture as a press at the place the menu opened (the moves
+            // made while it was open never arrive) and without its release; the app
+            // tells it from a real press by the cursor's place (`preview-menu-opened`).
             if e.button == PointerEventButton.right {
                 if e.kind == PointerEventKind.up {
                     keys.focus();
                     root.menu-at = { x: self.mouse-x, y: self.mouse-y };
-                    root.menu-closing = true;
+                    Studio.preview-menu-opened(self.mouse-x / 1px, self.mouse-y / 1px);
                     menu.open(root.menu-at);
                 }
                 return;
             }
             if e.button != PointerEventButton.left { return; }
-            if e.kind == PointerEventKind.down && root.menu-closing {
-                root.menu-closing = false;
-                return;
-            }
             if e.kind == PointerEventKind.down {
                 keys.focus();
                 Studio.preview-press(self.pressed-x / 1px, self.pressed-y / 1px, self.width / 1px, self.height / 1px, e.modifiers.shift, e.modifiers.control || e.modifiers.meta, e.modifiers.alt);
