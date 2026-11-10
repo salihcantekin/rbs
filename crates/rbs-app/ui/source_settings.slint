@@ -4,7 +4,7 @@
 // keeps the window; OK sends it and closes; Cancel closes. The choice is a draft until
 // then. The preview and the main window stay usable while it is open.
 import { Theme, Tokens } from "tokens.slint";
-import { Button, Select, Toggle } from "components.slint";
+import { Button, Select, Toggle, OverlayHost } from "components.slint";
 import { Studio, SourceSettingsData } from "studio.slint";
 
 export component SourceSettingsWindow inherits Window {
@@ -122,4 +122,6 @@ export component SourceSettingsWindow inherits Window {
             }
         }
     }
+    // The info hint and tooltip layer, drawn last (ADR-0094).
+    OverlayHost { width: parent.width; height: parent.height; }
 }

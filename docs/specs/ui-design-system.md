@@ -76,6 +76,7 @@ One family (initial choice: Inter, with the OS UI font as fallback). Numbers in 
 | Motion | `motion.fast`=120 ms, `motion.normal`=180 ms, `motion.easing.standard`; all motion disabled under "reduce motion" |
 | Delays | `motion.hover-open`=400 ms (hover time before an auto-hide edge tab slides its panel out; not motion, so it stays under "reduce motion", where the panel appears without sliding) |
 | Repeat | `delay.repeat-start`=400 ms, `delay.repeat`=80 ms (a held stepper button waits, then steps at this interval; not motion, so not off under "reduce motion") |
+| Tooltip | `delay.tooltip`=500 ms (the pointer rests on a control before its `Tooltip` shows; keyboard focus shows it at once; not motion) |
 
 A token file cannot set `size.focus-ring` below 2 or `size.icon.box` / `size.icon.stroke` below 12 / 1 (U7) or `size.window.min-w` / `.min-h` below 1280 / 720 (U11); the loader rejects such a file.
 

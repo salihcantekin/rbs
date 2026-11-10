@@ -3,7 +3,7 @@
 // Rust pushes state into the `Studio` global of every window and handles its callbacks
 // by sending commands to the studio's control thread.
 import { Theme, Tokens } from "tokens.slint";
-import { Sections, Button, Checkbox, ColorPicker, FocusRing, RingFocus, SectionHeader, Tabs, Icon, IconButton, IconName, Icons, MenuItem, MenuSurface, EmptyState, NumberField, Select, SegmentedControl, Slider, VSlider, LevelText, TextField, Toggle } from "components.slint";
+import { Sections, Button, Checkbox, ColorPicker, FocusRing, RingFocus, SectionHeader, Tabs, Icon, IconButton, IconName, Icons, MenuItem, MenuSurface, EmptyState, NumberField, Select, SegmentedControl, Slider, VSlider, LevelText, TextField, Toggle, InfoHint } from "components.slint";
 import { SettingsCard, SettingRow, SettingBlock, SettingsStatus, SettingsNotice, SettingsCallout } from "settings.slint";
 import { CommandMenu } from "context_menu.slint";
 
@@ -1930,13 +1930,24 @@ component SectionTitle inherits HorizontalLayout {
 component Section inherits VerticalLayout {
     in property <string> title;
     in property <string> id;
+    // The explanation behind an info button at the end of the header (ADR-0094 rule A1);
+    // empty draws no button.
+    in property <string> hint;
     property <bool> closed: Sections.closed(root.id, Sections.rev);
     spacing: Tokens.size-field-gap;
-    SectionHeader {
-        title: root.title;
-        collapsible: true;
-        open: !root.closed;
-        toggled(o) => { Sections.set-closed(root.id, !o); }
+    HorizontalLayout {
+        spacing: Tokens.size-field-gap;
+        SectionHeader {
+            horizontal-stretch: 1;
+            title: root.title;
+            collapsible: true;
+            open: !root.closed;
+            toggled(o) => { Sections.set-closed(root.id, !o); }
+        }
+        if root.hint != "" && !root.closed: InfoHint {
+            label: root.title;
+            text: root.hint;
+        }
     }
     // Slint cannot put @children in an `if`, so a closed section is hidden and takes
     // no room (like Shown): it draws and handles no input.
@@ -2270,6 +2281,9 @@ component ArrangeFields inherits Section {
     property <bool> known: data.pic-w > 0;
     title: @tr("Flip, rotate & fit");
     id: "properties.arrange";
+    hint: data.locked
+        ? @tr("Unlock the source to change its transform.")
+        : @tr("Flip, rotate 90°, center; fit, fill, stretch, reset.");
     // Icon-only buttons keep the section to two short rows however many commands
     // join it; each is named for screen readers.
     HorizontalLayout {
@@ -2336,11 +2350,6 @@ component ArrangeFields inherits Section {
             clicked => { Studio.transform-source(data.id, 9); }
         }
     }
-    Hint {
-        text: data.locked
-            ? @tr("Unlock the source to change its transform.")
-            : @tr("Flip, rotate 90°, center; fit, fill, stretch, reset.");
-    }
 }
 
 // Crop of a picture in source pixels (ADR-0058), under its position and size. Every
@@ -2351,6 +2360,9 @@ component CropFields inherits Section {
     property <bool> known: data.pic-w > 0;
     title: @tr("Crop");
     id: "properties.crop";
+    hint: known
+        ? @tr("In pixels of the {}x{} picture. The box changes so the picture keeps its scale. Alt-drag a handle on the picture panel to crop there.", data.pic-w, data.pic-h)
+        : @tr("Available once the source shows a picture.");
     HorizontalLayout {
         spacing: Tokens.size-field-gap;
         NumberField {
@@ -2437,11 +2449,6 @@ component CropFields inherits Section {
             clicked => { Studio.set-source-region(data.id, 3); }
         }
     }
-    Hint {
-        text: known
-            ? @tr("In pixels of the {}x{} picture. The box changes so the picture keeps its scale. Alt-drag a handle on the picture panel to crop there.", data.pic-w, data.pic-h)
-            : @tr("Available once the source shows a picture.");
-    }
 }
 
 // The Transform tab: where the picture is on the canvas, its crop, shape and border.
@@ -2452,6 +2459,7 @@ component TransformFields inherits VerticalLayout {
     if data.picture: Section {
         title: @tr("Position and size");
         id: "properties.position";
+        hint: @tr("In canvas pixels, from the top-left corner. Up and Down arrows change a value by 1, with Shift by 10.");
         HorizontalLayout {
             spacing: Tokens.size-field-gap;
             // Equal columns, whatever the values' lengths.
@@ -2490,9 +2498,6 @@ component TransformFields inherits VerticalLayout {
                 value: data.h;
                 edited(v) => { Studio.set-source-box(data.id, data.x, data.y, data.w, v); }
             }
-        }
-        Hint {
-            text: @tr("In canvas pixels, from the top-left corner. Up and Down arrows change a value by 1, with Shift by 10.");
         }
     }
     if data.picture: ArrangeFields { data: data; }
@@ -2861,6 +2866,7 @@ component AudioFields inherits VerticalLayout {
     Section {
         title: @tr("Sync offset");
         id: "properties.sync";
+        hint: @tr("Delays this source's sound (positive) or plays it earlier (negative) to match the picture, from -200 to 200 ms. Playing it earlier is limited by the audio latency.");
         HorizontalLayout {
             spacing: Tokens.size-field-gap;
             NumberField {
@@ -2878,9 +2884,6 @@ component AudioFields inherits VerticalLayout {
                 vertical-alignment: center;
                 accessible-role: none;
             }
-        }
-        Hint {
-            text: @tr("Delays this source's sound (positive) or plays it earlier (negative) to match the picture, from -200 to 200 ms. Playing it earlier is limited by the audio latency.");
         }
     }
     // Audio filters belong to a source with only sound (ADR-0082).
@@ -3094,16 +3097,14 @@ component SourceProperties inherits VerticalLayout {
     Section {
         title: @tr("Scenes");
         id: "properties.scenes";
+        hint: data.global
+            ? @tr("Turning this off moves it into this scene only, and off air until the next transition in studio mode.")
+            : @tr("It then leaves the scenes that have it and is drawn above every scene.");
         Toggle {
             text: @tr("Show in every scene");
             label: @tr("Show {} in every scene", data.name);
             checked: data.global;
             toggled(on) => { Studio.set-global(data.id, on); }
-        }
-        Hint {
-            text: data.global
-                ? @tr("Turning this off moves it into this scene only, and off air until the next transition in studio mode.")
-                : @tr("It then leaves the scenes that have it and is drawn above every scene.");
         }
     }
     // Delete source: every scene. With more than one placement it asks first.

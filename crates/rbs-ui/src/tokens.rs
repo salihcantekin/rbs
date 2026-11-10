@@ -133,6 +133,7 @@ pub const DURATIONS: &[&str] = &[
     "motion.normal",
     "delay.repeat-start",
     "delay.repeat",
+    "delay.tooltip",
 ];
 
 /// Text styles every file defines.

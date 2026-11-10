@@ -22,7 +22,7 @@ use rbs_ui::transform::{self, MarkKind};
 use slint::ComponentHandle;
 
 use crate::studio_ui::log;
-use crate::ui::{MainWindow, Shell, Studio, Theme};
+use crate::ui::{MainWindow, Overlays, Shell, Studio, Theme};
 
 // Every mark of a selection reaches the layer.
 const _: () = assert!(transform::MAX_MARKS <= MAX_MARKS);
@@ -265,6 +265,21 @@ fn place_one(window: &MainWindow, which: Picture) {
         // The drop guide while a tab is dragged (ADR-0049 decision 5).
         if shell.get_drop_open() && shell.get_drop_window() >= 0 {
             st.covers.push(toast(shell.get_drop_cover()));
+        }
+        // The info hint popover and the tooltip are layers of the window, not popups
+        // (ADR-0094): they count themselves.
+        let overlays = window.global::<Overlays>();
+        let overlay = |c: crate::ui::OverlayCover| Rect {
+            x: c.x,
+            y: c.y,
+            w: c.width,
+            h: c.height,
+        };
+        if overlays.get_hint_open() {
+            st.covers.push(overlay(overlays.get_hint_cover()));
+        }
+        if overlays.get_tip_shown() {
+            st.covers.push(overlay(overlays.get_tip_cover()));
         }
         st.cutouts.clear();
         st.cutouts.extend(st.covers.iter().map(|&c| in_layer(c)));
