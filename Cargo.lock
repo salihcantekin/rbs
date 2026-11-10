@@ -4392,6 +4392,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "rbs-audio-filters"
+version = "0.0.1"
+dependencies = [
+ "allocation-counter",
+ "criterion 0.8.2",
+ "rbs-core",
+ "rbs-graph",
+ "rbs-params",
+]
+
+[[package]]
 name = "rbs-audio-io"
 version = "0.0.1"
 dependencies = [
@@ -4872,6 +4883,7 @@ name = "rbs-record"
 version = "0.0.1"
 dependencies = [
  "rbs-audio",
+ "rbs-audio-filters",
  "rbs-audio-io-test",
  "rbs-capture-test",
  "rbs-codec",
@@ -4913,6 +4925,7 @@ version = "0.0.1"
 dependencies = [
  "png",
  "rbs-audio",
+ "rbs-audio-filters",
  "rbs-audio-io",
  "rbs-audio-io-test",
  "rbs-audio-io-wasapi",
@@ -4926,6 +4939,7 @@ dependencies = [
  "rbs-gpu",
  "rbs-graph",
  "rbs-nodes",
+ "rbs-params",
  "rbs-scene",
 ]
 
