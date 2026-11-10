@@ -96,13 +96,14 @@ mod hardware {
     use std::sync::{Arc, Mutex, mpsc};
     use std::time::{Duration, Instant};
 
+    use crate::fixture;
     use rbs_audio_io::conformance::{self, Options, RealTimePacer, TestHooks};
     use rbs_audio_io::{
         AudioBackend, AudioEndpoint, AudioInputStream, AudioIoError, EndpointId, EndpointKind,
         InputRequest, Permission,
     };
     use rbs_audio_io_coreaudio::{CoreAudioBackend, owned_resources};
-    use rbs_core::capability::CapabilitySet;
+    use rbs_core::capability::{CapabilitySet, CapabilityValue};
     use rbs_core::registry::{AdapterFactory, AdapterId, ProbeError};
     use rbs_core::time::MonotonicClock;
 
@@ -234,6 +235,7 @@ mod hardware {
             "grant the microphone permission to the terminal running the test"
         );
         silent_loopback_delivers(&backend);
+        excludes_own_process(&backend);
         let child = start_fixture();
         let app = fixture_endpoint(&backend, child.id());
         delivers_the_tone(&backend, &app);
@@ -308,6 +310,60 @@ mod hardware {
             got >= want,
             "the output loopback delivered {got} frames while silent"
         );
+    }
+
+    /// RMS of about `seconds` of the first channel of the default output loopback.
+    fn loopback_rms(backend: &CoreAudioBackend, exclude: bool, seconds: f32) -> f32 {
+        let endpoints = backend.enumerate(EndpointKind::OutputLoopback);
+        let Some(endpoint) = endpoints.ok().and_then(|e| e.into_iter().next()) else {
+            panic!("no output loopback endpoint");
+        };
+        let clock = Arc::new(MonotonicClock::new());
+        let request = InputRequest::new(endpoint.id, clock).with_exclude_own_process(exclude);
+        let stream = backend.open_input(&request);
+        let Ok(mut stream) = stream else {
+            panic!("cannot open the loopback: {:?}", stream.err());
+        };
+        assert!(stream.start().is_ok());
+        let rate = stream.format().sample_rate.hz() as usize;
+        let want = (rate as f32 * seconds) as usize;
+        let mut buffers: Vec<Vec<f32>> = vec![vec![0.0; rate]; stream.format().channels.channels()];
+        let mut collected: Vec<f32> = Vec::new();
+        // A hang guard.
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while collected.len() < want && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(10));
+            let mut out: Vec<&mut [f32]> = buffers.iter_mut().map(|b| &mut b[..]).collect();
+            if let Ok(read) = stream.read(&mut out) {
+                collected.extend_from_slice(&buffers[0][..read.frames]);
+            }
+        }
+        stream.stop();
+        // Skip the first half: the tap and the process object settle.
+        let tail = &collected[collected.len() / 2..];
+        (tail.iter().map(|s| s * s).sum::<f32>() / tail.len().max(1) as f32).sqrt()
+    }
+
+    /// `exclude_own_process` (ADR-0096): a tone played by this very process is in the
+    /// output loopback unless the flag is set. Needs nothing else playing.
+    fn excludes_own_process(backend: &CoreAudioBackend) {
+        assert!(backend.probe().is_ok_and(|caps| {
+            caps.get(&rbs_audio_io::caps::LOOPBACK_EXCLUDE_SELF)
+                == Some(&CapabilityValue::Flag(true))
+        }));
+        // Detached: it plays until this process exits (a 60 s hang guard).
+        std::thread::spawn(fixture::play_tone);
+        // Wait (hang guard 5 s) until the tone is audible in the full loopback.
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let mut included = 0.0;
+        while included <= 0.01 && Instant::now() < deadline {
+            included = loopback_rms(backend, false, 0.5);
+        }
+        eprintln!("loopback with own tone: rms {included:.4}");
+        assert!(included > 0.01, "this process's tone was not captured");
+        let excluded = loopback_rms(backend, true, 0.5);
+        eprintln!("loopback excluding own process: rms {excluded:.5}");
+        assert!(excluded < 0.001, "own sound leaked: rms {excluded}");
     }
 
     /// The application tap delivers what the fixture plays: a 440 Hz tone.
