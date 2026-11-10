@@ -347,10 +347,10 @@ fn monitor_until(
     let deadline = Instant::now() + LIMIT;
     loop {
         let left = deadline.saturating_duration_since(Instant::now());
-        if let Update::Monitor(s) = updates.recv_timeout(left).expect("a monitor update") {
-            if want(&s) {
-                return s;
-            }
+        if let Update::Monitor(s) = updates.recv_timeout(left).expect("a monitor update")
+            && want(&s)
+        {
+            return s;
         }
     }
 }
