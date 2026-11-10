@@ -4,7 +4,7 @@
 - Date: 2026-11-10
 - Deciders: Salih (owner)
 - Spec: [audio-graph](../specs/audio-graph.md), [audio-io-port](../specs/audio-io-port.md), [scene-model](../specs/scene-model.md), [control-api](../specs/control-api.md)
-- Builds on: [ADR-0037](0037-audio-graph.md), [ADR-0081](0081-master-strip.md), [ADR-0082](0082-audio-filter-chains-on-sources.md), [ADR-0095](0095-audio-ducker-and-key-tap.md), [ADR-0013](0013-zero-cost-when-unused.md)
+- Builds on: [ADR-0037](0037-audio-graph.md), [ADR-0081](0081-master-strip-in-the-mixer.md), [ADR-0082](0082-audio-filter-chains-on-sources.md), [ADR-0095](0095-audio-ducker-and-key-tap.md), [ADR-0013](0013-zero-cost-when-unused.md)
 
 ## Context
 
