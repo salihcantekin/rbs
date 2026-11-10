@@ -664,6 +664,7 @@ impl<X: Runtime> Controller<X> {
                 schedule
                     .slots
                     .push(Slot::for_kind(pin.kind, self.audio_frames));
+                schedule.linked.push(false);
             }
             let outputs = Span {
                 start,
@@ -678,6 +679,12 @@ impl<X: Runtime> Controller<X> {
                     // Producers precede consumers in `plan.order`, so the producer's
                     // slots are already laid out and have lower indices.
                     if let Some(&producer) = first_output.get(&link.from.node) {
+                        if let Some(read) = schedule
+                            .linked
+                            .get_mut((producer + link.from.pin as u32) as usize)
+                        {
+                            *read = true;
+                        }
                         schedule.links.push(producer + link.from.pin as u32);
                         schedule.link_sources.push(link.from.node);
                     }

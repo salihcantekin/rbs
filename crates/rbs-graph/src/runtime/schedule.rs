@@ -150,6 +150,9 @@ pub(crate) struct Entry<X: Runtime> {
 pub(crate) struct Schedule<X: Runtime> {
     pub(crate) nodes: Vec<Entry<X>>,
     pub(crate) slots: Vec<Slot>,
+    /// Parallel to `slots`: some scheduled node reads the slot (the output pin is
+    /// linked in this plan).
+    pub(crate) linked: Vec<bool>,
     /// For each input pin of each node, a span of `links`.
     pub(crate) pins: Vec<Span>,
     /// Producer slot index per incoming link, grouped by input pin.
@@ -170,6 +173,7 @@ impl<X: Runtime> Schedule<X> {
         Self {
             nodes: Vec::new(),
             slots: Vec::new(),
+            linked: Vec::new(),
             pins: Vec::new(),
             links: Vec::new(),
             link_sources: Vec::new(),
@@ -357,6 +361,7 @@ impl<'a> Inputs<'a> {
 /// A node's outputs for this tick.
 pub struct Outputs<'a> {
     pub(crate) slots: &'a mut [Slot],
+    pub(crate) linked: &'a [bool],
 }
 
 impl Outputs<'_> {
@@ -367,6 +372,13 @@ impl Outputs<'_> {
     /// Number of output pins.
     pub fn pin_count(&self) -> usize {
         self.slots.len()
+    }
+
+    /// Whether a scheduled node reads output `pin` in the current schedule. A node may
+    /// skip the work for an unread pin; linking or unlinking one is a schedule swap that
+    /// keeps the node (ADR-0097 decision 6). `false` for a pin that does not exist.
+    pub fn is_linked(&self, pin: usize) -> bool {
+        self.linked.get(pin).copied().unwrap_or(false)
     }
 
     /// Replaces the frame on video output `pin` (`None` clears it) and returns the

@@ -2,7 +2,8 @@
 //!
 //! - `input`: one input node on the reference adapter, 48 kHz mono and 44.1 kHz stereo
 //!   sources into the 48 kHz stereo graph (read, steer, resample, map channels).
-//! - `mixer`: a mixer of 16 stereo inputs with a meter on every strip and the output.
+//! - `mixer`: a mixer of 16 stereo inputs with a meter on every strip and the output,
+//!   without and with the monitor output read (4 strips monitored).
 //! - `output`: one output node from the 48 kHz stereo graph to a 48 kHz and a 44.1 kHz
 //!   stereo device (FIFO, steer, resample, map channels, volume, ring push); the
 //!   bench pulls the ring like a device, outside the node.
@@ -15,7 +16,7 @@ use std::time::Duration;
 use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
 use rbs_audio::{
     AudioGraphConfig, DEFAULT_OUTPUT_TARGET, InputNode, LevelMeter, MixerNode, MixerParams,
-    OutputNode, Strip,
+    MonitorMode, OutputNode, Strip,
 };
 use rbs_audio_io::{
     AudioBackend, AudioIoError, AudioOutput, EndpointId, InputRequest, OutputConsumer,
@@ -196,51 +197,72 @@ fn input(c: &mut Criterion) {
 }
 
 fn mixer(c: &mut Criterion) {
-    let config = AudioGraphConfig::default();
-    let (mut ctl, mut exec) = channel::<()>(Arc::new(()), ());
-    let mut g = GraphDescription::new();
-    let mut strips = Vec::new();
-    let mut ids = Vec::new();
-    for k in 0..16 {
-        let tone: Vec<f32> = (0..480)
-            .map(|f| ((f + k) as f32 * 0.01).sin() * 0.3)
-            .collect();
-        let node = Block(
-            NodeDescriptor::new(
-                NodeTypeId::new("org.rbs.bench.block"),
-                NodeKind::Source,
-                vec![],
-                vec![Pin::one("out", LinkKind::Audio)],
-            ),
-            [tone.clone(), tone],
-        );
-        let id = active(&mut g, &node.0);
-        ctl.adopt(id, Box::new(node)).unwrap();
-        strips.push(Strip::new(id, 0.7).with_meter(Arc::new(LevelMeter::new(2))));
-        ids.push(id);
+    // `monitored` strips on the monitor (`Also`), its output read when non-zero.
+    for (label, monitored) in [
+        ("16_stereo_inputs_with_meters", 0),
+        ("16_stereo_inputs_with_meters_4_monitored", 4),
+    ] {
+        let config = AudioGraphConfig::default();
+        let (mut ctl, mut exec) = channel::<()>(Arc::new(()), ());
+        let mut g = GraphDescription::new();
+        let mut strips = Vec::new();
+        let mut ids = Vec::new();
+        for k in 0..16 {
+            let tone: Vec<f32> = (0..480)
+                .map(|f| ((f + k) as f32 * 0.01).sin() * 0.3)
+                .collect();
+            let node = Block(
+                NodeDescriptor::new(
+                    NodeTypeId::new("org.rbs.bench.block"),
+                    NodeKind::Source,
+                    vec![],
+                    vec![Pin::one("out", LinkKind::Audio)],
+                ),
+                [tone.clone(), tone],
+            );
+            let id = active(&mut g, &node.0);
+            ctl.adopt(id, Box::new(node)).unwrap();
+            let mode = if k < monitored {
+                MonitorMode::Also
+            } else {
+                MonitorMode::Off
+            };
+            strips.push(
+                Strip::new(id, 0.7)
+                    .with_meter(Arc::new(LevelMeter::new(2)))
+                    .with_monitor(mode),
+            );
+            ids.push(id);
+        }
+        let params = MixerParams::new(strips).with_master_meter(Arc::new(LevelMeter::new(2)));
+        let (mixer, _, _) = MixerNode::new(config, 16, params);
+        let m = active(&mut g, Node::<()>::descriptor(&mixer));
+        let s = sink();
+        let o = active(&mut g, &s.0);
+        for id in ids {
+            g.connect(id, "out", m, "in").unwrap();
+        }
+        g.connect(m, "main", o, "in").unwrap();
+        ctl.adopt(m, Box::new(mixer)).unwrap();
+        ctl.adopt(o, Box::new(s)).unwrap();
+        if monitored > 0 {
+            let s = sink();
+            let mo = active(&mut g, &s.0);
+            g.connect(m, "monitor", mo, "in").unwrap();
+            ctl.adopt(mo, Box::new(s)).unwrap();
+        }
+        ctl.apply(&g).unwrap();
+        exec.swap_pending();
+        ctl.collect().unwrap().unwrap();
+        let cadence = config.cadence(Timestamp::ZERO);
+        let mut i = 5u64;
+        c.bench_function(&format!("audio_mixer_block/{label}"), |b| {
+            b.iter(|| {
+                exec.run_tick(Tick::of(&cadence, i));
+                i += 1;
+            })
+        });
     }
-    let params = MixerParams::new(strips).with_master_meter(Arc::new(LevelMeter::new(2)));
-    let (mixer, _, _) = MixerNode::new(config, 16, params);
-    let m = active(&mut g, Node::<()>::descriptor(&mixer));
-    let s = sink();
-    let o = active(&mut g, &s.0);
-    for id in ids {
-        g.connect(id, "out", m, "in").unwrap();
-    }
-    g.connect(m, "main", o, "in").unwrap();
-    ctl.adopt(m, Box::new(mixer)).unwrap();
-    ctl.adopt(o, Box::new(s)).unwrap();
-    ctl.apply(&g).unwrap();
-    exec.swap_pending();
-    ctl.collect().unwrap().unwrap();
-    let cadence = config.cadence(Timestamp::ZERO);
-    let mut i = 5u64;
-    c.bench_function("audio_mixer_block/16_stereo_inputs_with_meters", |b| {
-        b.iter(|| {
-            exec.run_tick(Tick::of(&cadence, i));
-            i += 1;
-        })
-    });
 }
 
 /// An output whose device side the bench plays.
