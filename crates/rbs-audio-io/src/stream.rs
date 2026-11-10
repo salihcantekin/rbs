@@ -34,6 +34,11 @@ pub struct InputRequest {
     pub buffer: Duration,
     /// The master clock samples are stamped with (ADR-0004).
     pub clock: Arc<dyn Clock>,
+    /// For `OutputLoopback` endpoints: leave this process's own sound out of the
+    /// capture (ADR-0096). Honoured only when the adapter reports
+    /// [`LOOPBACK_EXCLUDE_SELF`](crate::caps::LOOPBACK_EXCLUDE_SELF); other kinds and
+    /// adapters without the capability ignore it. Default false.
+    pub exclude_own_process: bool,
 }
 
 impl InputRequest {
@@ -44,7 +49,14 @@ impl InputRequest {
             sample_rates: Vec::new(),
             buffer: DEFAULT_BUFFER,
             clock,
+            exclude_own_process: false,
         }
+    }
+
+    /// Asks an `OutputLoopback` stream to leave this process's own sound out.
+    pub fn with_exclude_own_process(mut self, exclude: bool) -> Self {
+        self.exclude_own_process = exclude;
+        self
     }
 
     /// Sets the preferred sample rates, best first.

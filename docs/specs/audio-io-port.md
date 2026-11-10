@@ -77,8 +77,9 @@ pub struct InputRequest {
     pub endpoint: EndpointId,
     pub sample_rates: Vec<SampleRate>,  // preferred, best first; empty = native
     pub buffer: Duration,               // ring capacity, clamped to MIN_BUFFER (50 ms)..=MAX_BUFFER (2 s); default 200 ms
+    pub exclude_own_process: bool,      // OutputLoopback only: leave this process's sound out (ADR-0096); needs audio.loopback.exclude_self; default false
     pub clock: Arc<dyn Clock>,          // master clock (ADR-0004)
-}   // + new / with_sample_rates / with_buffer / format_for / clamped_buffer
+}   // + new / with_sample_rates / with_buffer / with_exclude_own_process / format_for / clamped_buffer
 ```
 
 Format rule (`InputRequest::format_for`): the delivered rate is the first requested rate that the endpoint lists in `sample_rates`, otherwise the endpoint's native rate; the channels are the endpoint's. A rate the device cannot deliver is never an error, because the audio graph resamples anyway; adapters do not ask the OS to resample (WASAPI `AUTOCONVERTPCM`, a CoreAudio converter) and do not change the device's rate for other applications. Sample formats (16-bit, packed 24-bit, 32-bit integer, `f32`, `f64`, unsigned 8-bit) are converted to `f32` at the edge by the ring (`ring::Sample`). An endpoint whose sample format the adapter cannot convert is refused at `open_input` with `FormatUnsupported`.
@@ -146,6 +147,7 @@ Constants in `rbs_audio_io::caps`.
 | `audio.input.enumerate` | Set of kinds | Kinds `enumerate` can list |
 | `audio.input.channels.max` | Int | Most channels a stream delivers (at most `MAX_CHANNELS`) |
 | `audio.input.permission` | Flag | Some kind needs a user permission (macOS microphone privacy) |
+| `audio.loopback.exclude_self` | Flag | `OutputLoopback` streams honour `InputRequest::exclude_own_process` (WASAPI process-loopback exclude mode, Windows 10 2004+; CoreAudio tap with an exclusion list, macOS 14.4+). Absent: the request field is ignored and the UI hides the Display sound companion (ADR-0096) |
 | `adapter.hardware` | Flag | `true` for OS audio paths (from `rbs-core`) |
 
 ## Sample ring
