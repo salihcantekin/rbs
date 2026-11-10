@@ -2,6 +2,7 @@
 //! control API show, and the edits both make.
 
 use std::collections::BTreeMap;
+use std::sync::Arc;
 
 use rbs_api::request::FilterDomains;
 use rbs_api::types as api;
@@ -80,6 +81,20 @@ pub struct FilterRow {
     pub values: Option<Values>,
     /// Its stored settings (shown as they are for an unknown type).
     pub stored: Settings,
+    /// The live meter of a running audio filter that has one (a noise gate); read it
+    /// only while an editor shows it.
+    pub meter: Option<MeterHandle>,
+}
+
+/// A filter meter, equal to another only when it is the same meter (a row changes
+/// when its filter's graph node is replaced).
+#[derive(Debug, Clone)]
+pub struct MeterHandle(pub Arc<rbs_audio_filters::FilterMeter>);
+
+impl PartialEq for MeterHandle {
+    fn eq(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.0, &other.0)
+    }
 }
 
 impl FilterRow {
@@ -95,7 +110,10 @@ impl FilterRow {
 }
 
 /// The rows of a source's filters, in chain order.
-pub fn rows(source: &Source) -> Vec<FilterRow> {
+pub fn rows(
+    source: &Source,
+    meter_of: impl Fn(FilterId) -> Option<Arc<rbs_audio_filters::FilterMeter>>,
+) -> Vec<FilterRow> {
     let mut seen: BTreeMap<&str, u32> = BTreeMap::new();
     source
         .filters
@@ -113,6 +131,7 @@ pub fn rows(source: &Source) -> Vec<FilterRow> {
                 enabled: f.enabled,
                 values: ty.map(|t| filter_values_lenient(&t, &f.settings).0),
                 stored: f.settings.clone(),
+                meter: meter_of(f.id).map(MeterHandle),
             }
         })
         .collect()

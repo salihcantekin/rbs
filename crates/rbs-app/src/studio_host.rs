@@ -5051,7 +5051,7 @@ impl Host {
                     visible: item.visible,
                     locked: item.locked,
                     audio: s.audio,
-                    filters: filters::rows(s),
+                    filters: filters::rows(s, |f| self.studio.audio_filter_meter(f).cloned()),
                     status,
                     global,
                     also_in: {

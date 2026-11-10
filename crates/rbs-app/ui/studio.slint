@@ -20,7 +20,8 @@ import { CommandMenu } from "context_menu.slint";
 export struct FilterFieldData { label: string, help: string, log: bool, kind: int, position: float, step: float, value-text: string, min: float, max: float, snap: float, decimals: int, suffix: string, colour: string, swatch: color }
 // One filter of a source's chain: `known` false for a type this version lacks (it can
 // only be removed); `can-up` / `can-down` false at the ends of the chain.
-export struct FilterData { id: int, name: string, enabled: bool, known: bool, can-up: bool, can-down: bool, fields: [FilterFieldData] }
+export struct FilterLevels { input: float, reduction: float }
+export struct FilterData { id: int, name: string, enabled: bool, known: bool, gate: bool, open-pos: float, close-pos: float, can-up: bool, can-down: bool, fields: [FilterFieldData] }
 export struct SourceData { id: int, name: string, kind: string, icon: string, status: string, ok: bool, picture: bool, visible: bool, x: float, y: float, w: float, h: float, can-up: bool, can-down: bool, shape: int, radius: float, border: bool, border-width: float, border-color: string, border-swatch: color, crop-l: int, crop-t: int, crop-r: int, crop-b: int, pic-w: int, pic-h: int, locked: bool, flip-h: bool, flip-v: bool, audio: bool, muted: bool, volume: float, volume-text: string, filters: [FilterData], selected-filter: int, sync-offset: int, global: bool, also-in: string, in-globals: bool, places: int, kind-code: int }
 // `global`: a global source's row (ADR-0065). `also-in`: the other scenes that place it,
 // by name; `in-globals`: it is a global source too; `places`: how many items place it.
@@ -215,6 +216,8 @@ export global Studio {
     callback cancel-filter(int /* filter */);
     callback set-filter-colour(int /* filter */, int /* field */, string /* colour */);
     callback reset-filter(int /* filter */);
+    // The live levels of a filter's meter as bar positions; read by the gate bar's timer.
+    callback filter-levels(int /* filter */) -> FilterLevels;
     // The scenes the canvas may show, in panel order, and what Add source can place
     // again (every source of the collection that the scene does not have yet).
     in property <[SceneData]> scenes;
@@ -2699,6 +2702,60 @@ component AddFilterButton inherits Rectangle {
     }
 }
 
+// The live level of a noise gate (ADR-0082): the input level as a bar with the open and
+// close thresholds as lines on it, and under it how far the gate is turning the sound down.
+// It exists only while the gate's section is open, and so does its 30 Hz timer.
+component GateBar inherits VerticalLayout {
+    in property <FilterData> filter;
+    property <FilterLevels> levels;
+    spacing: Tokens.space-1;
+    Timer {
+        interval: 33ms; // literal: the meters' 30 Hz refresh (U16), not a design value
+        running: true;
+        triggered => { root.levels = Studio.filter-levels(root.filter.id); }
+    }
+    Text {
+        text: @tr("Level");
+        color: Theme.text-secondary;
+        font-size: Tokens.type-caption-size;
+        accessible-role: none;
+    }
+    Rectangle {
+        height: Tokens.space-3;
+        background: Theme.surface-sunken;
+        border-radius: Tokens.radius-sm;
+        clip: true;
+        accessible-role: progress-indicator;
+        accessible-label: @tr("Input level of {}", root.filter.name);
+        Rectangle { width: parent.width * root.levels.input; background: Theme.meter-low; }
+        Rectangle {
+            x: max(0px, parent.width * root.filter.close-pos - Tokens.size-meter-peak);
+            width: Tokens.size-meter-peak;
+            background: Theme.text-secondary;
+        }
+        Rectangle {
+            x: max(0px, parent.width * root.filter.open-pos - Tokens.size-meter-peak);
+            width: Tokens.size-meter-peak;
+            background: Theme.accent;
+        }
+    }
+    Text {
+        text: @tr("Gain reduction");
+        color: Theme.text-secondary;
+        font-size: Tokens.type-caption-size;
+        accessible-role: none;
+    }
+    Rectangle {
+        height: Tokens.space-1;
+        background: Theme.surface-sunken;
+        border-radius: Tokens.radius-sm;
+        clip: true;
+        accessible-role: progress-indicator;
+        accessible-label: @tr("Gain reduction of {}", root.filter.name);
+        Rectangle { width: parent.width * root.levels.reduction; background: Theme.meter-mid; }
+    }
+}
+
 // The Filters tab: the chain in order, Add filter, and the selected filter's fields.
 component FiltersFields inherits VerticalLayout {
     in property <SourceData> data;
@@ -2742,6 +2799,7 @@ component FiltersFields inherits VerticalLayout {
             Section {
                 title: f.name;
                 id: "properties.filter-settings";
+                if f.gate: GateBar { filter: f; }
                 for field[j] in f.fields: FilterFieldView {
                     source: data;
                     filter: f;
