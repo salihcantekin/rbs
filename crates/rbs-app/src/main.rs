@@ -31,6 +31,17 @@ mod shortcuts_page;
 mod studio_ui;
 mod title_bar;
 mod vcam_page;
+
+/// Tells the studio the saved replay buffer settings and arms it when the user chose
+/// that (ADR-0088). A bad settings file means the defaults.
+fn replay_started(app: &mut App) {
+    let (setup, _note) = rbs_app::replay_settings::load(&app.config);
+    let arm = setup.arm_on_start;
+    app.studio.send(studio_host::Command::SetReplay(setup));
+    if arm {
+        app.studio.send(studio_host::Command::ArmReplay);
+    }
+}
 mod view;
 mod window_place;
 
@@ -3345,6 +3356,7 @@ fn run(config: PathBuf, notice: Option<String>) -> Result<(), Box<dyn std::error
             // Remote control, if the user turned it on (off by default: nothing starts).
             app.studio.sync_remote();
             vcam_page::studio_started(app);
+            replay_started(app);
         }),
         Err(e) => ctx.update(move |app| {
             app.studio.state = 2;

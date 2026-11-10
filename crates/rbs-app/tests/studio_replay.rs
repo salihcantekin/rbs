@@ -5,10 +5,16 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used)] // Tests fail by panicking.
 
-use std::sync::mpsc::{self, Receiver};
+use std::path::PathBuf;
+use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
+use rbs_api::request::ClientInfo;
+use rbs_api::session::ServerConfig;
+use rbs_api::thread::ApiOptions;
+use rbs_api::transport::{CloseReason, ConnectionHandle, ConnectionSender, PeerInfo, SendError};
+use rbs_api::{ApiServer, TokenStore};
 use rbs_app::replay_settings::ReplaySetup;
 use rbs_app::studio_host::{Command, Fault, HostConfig, SourceKind, SourceRow, StudioHost, Update};
 use rbs_audio_io_test::TestAudioBackend;
@@ -351,5 +357,154 @@ fn the_buffer_arms_holds_the_past_saves_a_clip_and_disarms() {
         },
     );
     drop(host);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+struct ChannelSender(Sender<serde_json::Value>);
+
+impl ConnectionSender for ChannelSender {
+    fn try_send(&mut self, text: &Arc<str>) -> Result<(), SendError> {
+        self.0
+            .send(serde_json::from_str(text).unwrap())
+            .map_err(|_| SendError::Closed)
+    }
+
+    fn close(&mut self, _reason: CloseReason) {}
+}
+
+/// A same-user IPC client of the control API, in memory.
+struct Client {
+    handle: ConnectionHandle,
+    rx: Receiver<serde_json::Value>,
+    next: i64,
+}
+
+impl Client {
+    fn connect(host: &StudioHost) -> (ApiServer, Self) {
+        let config = ServerConfig::new(ClientInfo::new("rbs", "test")).unwrap();
+        let (api, endpoint) =
+            ApiServer::start(config, TokenStore::new(), ApiOptions::new(host.api_waker())).unwrap();
+        host.attach_api(endpoint, None);
+        let (out_tx, out_rx) = mpsc::channel();
+        let handle = api
+            .inbox()
+            .connect(
+                PeerInfo::same_user_ipc(),
+                Box::new(ChannelSender(out_tx)),
+                Box::new(|| {}),
+            )
+            .unwrap();
+        let mut c = Self {
+            handle,
+            rx: out_rx,
+            next: 1,
+        };
+        let hello = c.call(
+            "session.hello",
+            serde_json::json!({"protocols": ["1.24"], "client": {"name": "test", "version": "1"}}),
+        );
+        assert_eq!(hello["result"]["protocol"], "1.24", "{hello}");
+        (api, c)
+    }
+
+    fn call(&mut self, method: &str, params: serde_json::Value) -> serde_json::Value {
+        let id = self.next;
+        self.next += 1;
+        let text =
+            serde_json::json!({"jsonrpc": "2.0", "id": id, "method": method, "params": params});
+        self.handle.push_message(text.to_string());
+        loop {
+            let v = self.rx.recv_timeout(LIMIT).expect("an answer");
+            if v["id"] == id {
+                return v;
+            }
+        }
+    }
+}
+
+fn kind(answer: &serde_json::Value) -> &str {
+    answer["error"]["data"]["kind"].as_str().unwrap_or("none")
+}
+
+#[test]
+fn a_control_api_client_arms_saves_and_disarms_the_buffer() {
+    let Some(gpu) = gpu() else { return };
+    let dir = std::env::temp_dir().join(format!("rbs-app-replay-api-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let clock = TestClock::new();
+    let (host, rx) = host(gpu, &clock);
+    next(&rx, |u| match u {
+        Update::Started { .. } => Some(()),
+        Update::Failed(e) => panic!("{e}"),
+        _ => None,
+    });
+    host.send(Command::ListTargets(SourceKind::Screen));
+    let display = next(&rx, |u| match u {
+        Update::Targets(SourceKind::Screen, t) => Some(t[0].clone()),
+        _ => None,
+    });
+    host.send(Command::AddSource {
+        kind: SourceKind::Screen,
+        target: display,
+    });
+    rows_where(&rx, |r| r.len() == 1);
+    host.send(Command::SetReplay(ReplaySetup {
+        folder: Some(dir.clone()),
+        ..ReplaySetup::default()
+    }));
+    let (api, mut c) = Client::connect(&host);
+    let none = serde_json::json!({});
+
+    // Disarmed: status says so, and a save or disarm is refused.
+    let status = c.call("replay.status", none.clone());
+    assert_eq!(status["result"]["data"]["armed"], false, "{status}");
+    assert_eq!(kind(&c.call("replay.save", none.clone())), "conflict");
+    assert_eq!(kind(&c.call("replay.disarm", none.clone())), "conflict");
+
+    let armed = c.call("replay.arm", none.clone());
+    assert!(armed.get("error").is_none(), "{armed}");
+    assert_eq!(kind(&c.call("replay.arm", none.clone())), "conflict");
+    // Out of the buffer's length.
+    let bad = c.call("replay.save", serde_json::json!({"seconds": 0}));
+    assert_eq!(kind(&bad), "invalid_params", "{bad}");
+    let bad = c.call("replay.save", serde_json::json!({"seconds": 100_000}));
+    assert_eq!(kind(&bad), "invalid_params", "{bad}");
+
+    // Wait until the buffer holds a second of past: the test moves the clock, and
+    // listens to the host rather than asking the API again and again.
+    next_while(
+        &rx,
+        || clock.advance(Duration::from_millis(33)),
+        |u| match u {
+            Update::Replay(s) if s.held_ms >= 1000 => Some(()),
+            Update::Failed(e) => panic!("the studio failed: {e}"),
+            _ => None,
+        },
+    );
+    let saved = c.call("replay.save", serde_json::json!({"seconds": 1}));
+    assert!(saved.get("error").is_none(), "{saved}");
+    let path = next_while(
+        &rx,
+        || clock.advance(Duration::from_millis(33)),
+        |u| match u {
+            Update::ReplaySaved(r) => Some(r.expect("the clip was written")),
+            _ => None,
+        },
+    );
+    assert!(path.starts_with(&dir) && path.exists(), "{path:?}");
+    let status = c.call("replay.status", none.clone());
+    assert_eq!(
+        status["result"]["data"]["last_saved"]
+            .as_str()
+            .map(PathBuf::from),
+        Some(path),
+        "{status}"
+    );
+
+    let off = c.call("replay.disarm", none.clone());
+    assert!(off.get("error").is_none(), "{off}");
+    let status = c.call("replay.status", none);
+    assert_eq!(status["result"]["data"]["armed"], false, "{status}");
+    drop((api, host));
     let _ = std::fs::remove_dir_all(&dir);
 }

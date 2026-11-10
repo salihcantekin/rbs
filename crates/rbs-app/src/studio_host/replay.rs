@@ -38,6 +38,10 @@ pub struct ReplayState {
     pub memory_limited: bool,
     /// A clip is being cut or written.
     pub saving: bool,
+    /// The file of the last clip saved since the app started.
+    pub last_saved: Option<String>,
+    /// Why the last save failed, until a save succeeds.
+    pub last_error: Option<String>,
 }
 
 /// The host's replay state.
@@ -54,6 +58,12 @@ pub(super) struct ReplayHost {
     pub due: Option<Timestamp>,
     /// The state last published.
     pub published: Option<ReplayState>,
+    /// The `replay.changed` state last published (whole seconds, so it changes less).
+    pub api_published: Option<rbs_api::types::ReplayStatus>,
+    /// The file of the last clip saved.
+    pub last_saved: Option<String>,
+    /// Why the last save failed.
+    pub last_error: Option<String>,
 }
 
 impl ReplayHost {
@@ -65,6 +75,9 @@ impl ReplayHost {
             writing: 0,
             due: None,
             published: None,
+            api_published: None,
+            last_saved: None,
+            last_error: None,
         }
     }
 }
@@ -167,11 +180,55 @@ impl Host {
             memory_limit: setup.memory_limit() as u64,
             memory_limited: status.is_some_and(|s| s.memory_limited),
             saving: self.replay.pending || self.replay.writing > 0,
+            last_saved: self.replay.last_saved.clone(),
+            last_error: self.replay.last_error.clone(),
         }
+    }
+
+    /// The buffer for `replay.status` and `replay.changed`.
+    pub(super) fn api_replay(&self) -> rbs_api::types::ReplayStatus {
+        let s = self.replay_state();
+        rbs_api::types::ReplayStatus {
+            armed: s.armed,
+            held_secs: u32::try_from(s.held_ms / 1000).unwrap_or(u32::MAX),
+            length_secs: s.length_secs,
+            bytes: s.bytes,
+            memory_limit: s.memory_limit,
+            memory_limited: s.memory_limited,
+            saving: s.saving,
+            last_saved: s.last_saved,
+            last_error: s.last_error,
+        }
+    }
+
+    /// Publishes `replay.changed` when the API's view of the buffer differs.
+    pub(super) fn replay_api_changed(&mut self) {
+        let now = self.api_replay();
+        if self.replay.api_published.as_ref() == Some(&now) {
+            return;
+        }
+        self.replay.api_published = Some(now.clone());
+        self.events
+            .changed(super::StateKey::topic(super::Topic::ReplayChanged), || {
+                super::EventPayload::ReplayChanged(now)
+            });
+    }
+
+    /// Records how a save ended and tells the UI.
+    fn replay_saved(&mut self, result: Result<PathBuf, String>, notify: &dyn Fn(Update)) {
+        match &result {
+            Ok(path) => {
+                self.replay.last_saved = Some(path.display().to_string());
+                self.replay.last_error = None;
+            }
+            Err(why) => self.replay.last_error = Some(why.clone()),
+        }
+        notify(Update::ReplaySaved(result));
     }
 
     /// Tells the UI when the state differs from the last one told.
     pub(super) fn replay_changed(&mut self, notify: &dyn Fn(Update)) {
+        self.replay_api_changed();
         let now = self.replay_state();
         if self.replay.published.as_ref() == Some(&now) {
             return;
@@ -206,9 +263,8 @@ impl Host {
                     self.replay.pending = false;
                     match result {
                         Ok(clip) => self.write_clip(clip, notify),
-                        Err(e) => notify(Update::ReplaySaved(Err(format!(
-                            "The clip could not be cut: {e}"
-                        )))),
+                        Err(e) => self
+                            .replay_saved(Err(format!("The clip could not be cut: {e}")), notify),
                     }
                 }
                 None => wait = Some(CLIP_POLL),
@@ -244,12 +300,10 @@ impl Host {
                     });
                 if let Err(e) = spawned {
                     self.replay.writing -= 1;
-                    notify(Update::ReplaySaved(Err(format!(
-                        "The clip writer could not start: {e}"
-                    ))));
+                    self.replay_saved(Err(format!("The clip writer could not start: {e}")), notify);
                 }
             }
-            Err(why) => notify(Update::ReplaySaved(Err(why))),
+            Err(why) => self.replay_saved(Err(why), notify),
         }
         self.replay_changed(notify);
     }
@@ -311,7 +365,7 @@ impl Host {
         notify: &dyn Fn(Update),
     ) {
         self.replay.writing = self.replay.writing.saturating_sub(1);
-        notify(Update::ReplaySaved(result));
+        self.replay_saved(result, notify);
         self.replay_changed(notify);
     }
 }

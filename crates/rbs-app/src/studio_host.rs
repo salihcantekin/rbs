@@ -6094,6 +6094,62 @@ impl ApiTarget<'_> {
                 host.publish(notify);
                 Ok(Response::Done(Empty {}))
             }
+            C::ReplayStatus => Ok(Response::ReplayStatus(api::Snapshot {
+                // The state as it is now, so the data and its `seq` match.
+                seq: {
+                    host.replay_api_changed();
+                    host.events.seq_map([Topic::ReplayChanged])
+                },
+                data: host.api_replay(),
+            })),
+            C::ReplayArm => {
+                if host.studio.replay_armed() {
+                    return Err(ApiError::new(
+                        ErrorKind::Conflict,
+                        "the replay buffer is already armed",
+                    ));
+                }
+                host.arm_replay(notify).map_err(failed)?;
+                host.publish(notify);
+                Ok(Response::Done(Empty {}))
+            }
+            C::ReplayDisarm => {
+                if !host.studio.replay_armed() {
+                    return Err(ApiError::new(
+                        ErrorKind::Conflict,
+                        "the replay buffer is not armed",
+                    ));
+                }
+                host.disarm_replay(notify);
+                host.publish(notify);
+                Ok(Response::Done(Empty {}))
+            }
+            C::ReplaySave(p) => {
+                if let Some(seconds) = p.seconds
+                    && !(1..=host.replay.setup.length_secs).contains(&seconds)
+                {
+                    return Err(ApiError::new(
+                        ErrorKind::InvalidParams,
+                        format!(
+                            "seconds must be 1 to {} (the buffer's length)",
+                            host.replay.setup.length_secs
+                        ),
+                    ));
+                }
+                if !host.studio.replay_armed() {
+                    return Err(ApiError::new(
+                        ErrorKind::Conflict,
+                        "the replay buffer is not armed",
+                    ));
+                }
+                // The file is written on a worker: the answer says the clip was
+                // requested, and `replay.changed` carries where it went.
+                host.save_replay(p.seconds)
+                    .map_err(|why| ApiError::new(ErrorKind::Conflict, why))?;
+                host.replay_changed(notify);
+                host.publish(notify);
+                Ok(Response::Done(Empty {}))
+            }
             C::SettingsGet => Ok(Response::Settings(api::Snapshot {
                 seq: host.events.seq_map([Topic::SettingsChanged]),
                 data: host.api_settings(),
