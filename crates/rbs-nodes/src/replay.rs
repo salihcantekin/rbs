@@ -137,6 +137,10 @@ impl Clip {
 #[derive(Debug)]
 pub struct PacketRing {
     entries: VecDeque<RingEntry>,
+    /// Sequence numbers (see `base`) of the video keyframes held, oldest first.
+    keys: VecDeque<u64>,
+    /// Sequence number of `entries[0]`; entry `i` has number `base + i`.
+    base: u64,
     limits: ReplayLimits,
     video: StreamIndex,
     bytes: usize,
@@ -151,6 +155,8 @@ impl PacketRing {
         Self {
             // One extra slot: a push evicts after inserting, never grows.
             entries: VecDeque::with_capacity(limits.capacity.saturating_add(1)),
+            keys: VecDeque::with_capacity(limits.capacity.saturating_add(1)),
+            base: 0,
             limits,
             video,
             bytes: 0,
@@ -169,6 +175,9 @@ impl PacketRing {
     ) {
         self.bytes += packet.data().len();
         let newest = packet.dts();
+        if stream == self.video && packet.keyframe() {
+            self.keys.push_back(self.base + self.entries.len() as u64);
+        }
         self.entries.push_back(RingEntry { stream, packet });
         loop {
             let over_memory =
@@ -185,6 +194,10 @@ impl PacketRing {
             }
             if let Some(old) = self.entries.pop_front() {
                 self.bytes -= old.packet.data().len();
+                if self.keys.front() == Some(&self.base) {
+                    self.keys.pop_front();
+                }
+                self.base += 1;
                 if evicted.len() < evicted.capacity() {
                     evicted.push(old);
                 } else {
@@ -231,6 +244,8 @@ impl PacketRing {
     /// Drops everything (disarm or settings change). Payloads move to `evicted` for the
     /// reaper while it has room.
     pub fn clear(&mut self, evicted: &mut Vec<RingEntry>) {
+        self.base += self.entries.len() as u64;
+        self.keys.clear();
         while let Some(old) = self.entries.pop_front() {
             if evicted.len() < evicted.capacity() {
                 evicted.push(old);
@@ -240,10 +255,9 @@ impl PacketRing {
         self.limited_by = None;
     }
 
+    /// Index in `entries` of the oldest video keyframe.
     fn first_keyframe(&self) -> Option<usize> {
-        self.entries
-            .iter()
-            .position(|e| e.stream == self.video && e.packet.keyframe())
+        self.keys.front().map(|k| (*k - self.base) as usize)
     }
 
     /// Cuts a clip covering the last `seconds` (the whole ring when `None`). The clip
@@ -263,22 +277,14 @@ impl PacketRing {
             .packet
             .dts();
         let target = seconds.map(|s| newest - s);
-        let mut start_idx = None;
-        for (i, e) in self.entries.iter().enumerate() {
-            if e.stream != self.video || !e.packet.keyframe() {
-                continue;
-            }
-            match target {
-                Some(t) if e.packet.dts() > t => {
-                    if start_idx.is_none() {
-                        start_idx = Some(i);
-                    }
+        let mut start_idx = self.first_keyframe();
+        if let Some(t) = target {
+            for k in &self.keys {
+                let i = (*k - self.base) as usize;
+                if self.entries[i].packet.dts() > t {
                     break;
                 }
-                _ => start_idx = Some(i),
-            }
-            if target.is_none() {
-                break; // whole ring: the oldest keyframe
+                start_idx = Some(i);
             }
         }
         let start_idx = start_idx.ok_or(ClipError::NoKeyframe)?;
