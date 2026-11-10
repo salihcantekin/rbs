@@ -214,15 +214,19 @@ fn audio_candidates() -> Vec<AudioCandidate> {
     // SAFETY: a class method returning an array of devices; plain property reads.
     #[allow(deprecated)]
     let list = unsafe { AVCaptureDevice::devicesWithMediaType(audio) };
-    list.iter()
-        .map(|d| unsafe {
+    let mut found = Vec::new();
+    for d in list.iter() {
+        // SAFETY: plain property reads on a device the framework just returned.
+        let candidate = unsafe {
             (
                 d.uniqueID().to_string(),
                 d.modelID().to_string(),
                 d.manufacturer().to_string(),
             )
-        })
-        .collect()
+        };
+        found.push(candidate);
+    }
+    found
 }
 
 fn device(unique_id: &str) -> Option<Retained<AVCaptureDevice>> {
