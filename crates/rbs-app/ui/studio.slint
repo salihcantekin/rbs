@@ -521,6 +521,12 @@ export component ProgramPanel inherits Rectangle {
     // A right-click on the picture: the menu of the source under the pointer (it
     // becomes the selection), else the panel's own menu.
     property <Point> menu-at;
+    // The menu was opened and no pointer move has reached the picture since. A system
+    // menu takes the pointer while it is open; on Windows the click that closes it then
+    // reaches the picture as a press without its release, and at the place the menu
+    // opened (no move came before it). That press is ignored: it only closes the menu.
+    // Any move clears this, so after an item is picked the next click acts as usual.
+    property <bool> menu-closing;
     menu := CommandMenu {
         context: "preview";
         target: "h=" + round(touch.height / 1px) + "&id=" + root.panel + "&w=" + round(touch.width / 1px)
@@ -530,23 +536,25 @@ export component ProgramPanel inherits Rectangle {
         enabled: editable;
         pointer-event(e) => {
             if e.kind == PointerEventKind.cancel { Studio.preview-release(); return; }
-            // The menu opens when the right button goes up, not down: the system menu
-            // takes the pointer, so a press it opened on would never see its release and
-            // the next click (the one that closes the menu) would drag the selection.
+            if e.kind == PointerEventKind.move { root.menu-closing = false; return; }
+            // The menu opens when the right button goes up, not down, so the press it
+            // opened on has its release.
             if e.button == PointerEventButton.right {
                 if e.kind == PointerEventKind.up {
                     keys.focus();
                     root.menu-at = { x: self.mouse-x, y: self.mouse-y };
+                    root.menu-closing = true;
                     menu.open(root.menu-at);
                 }
                 return;
             }
             if e.button != PointerEventButton.left { return; }
+            if e.kind == PointerEventKind.down && root.menu-closing {
+                root.menu-closing = false;
+                return;
+            }
             if e.kind == PointerEventKind.down {
                 keys.focus();
-                // Where the press is, from the press itself: after a system menu closes,
-                // the press that closed it can arrive with no move before it, so
-                // `mouse-x` and `mouse-y` may still be where the menu opened.
                 Studio.preview-press(self.pressed-x / 1px, self.pressed-y / 1px, self.width / 1px, self.height / 1px, e.modifiers.shift, e.modifiers.control || e.modifiers.meta, e.modifiers.alt);
             }
             if e.kind == PointerEventKind.up { Studio.preview-release(); }

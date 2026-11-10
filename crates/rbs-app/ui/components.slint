@@ -511,6 +511,7 @@ export component SplitButton inherits Rectangle {
                 }
             }
             main-focus := RingFocus {
+                focus-on-click: false;
                 enabled: root.enabled;
                 key-pressed(e) => {
                     if e.text == Key.Return || e.text == " " { root.clicked(); return accept; }
@@ -559,6 +560,7 @@ export component SplitButton inherits Rectangle {
                 }
             }
             part-focus := RingFocus {
+                focus-on-click: false;
                 key-pressed(e) => {
                     if e.text == Key.Return || e.text == " " { root.open-menu(part.absolute-position.x); return accept; }
                     if e.text == Key.Escape && Overlays.tip-dismiss(root.tip-owner) { return accept; }
