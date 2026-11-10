@@ -401,7 +401,8 @@ fn grab_thumbnail(target: &TargetId, max: Size) -> Result<Thumbnail, CaptureErro
     autoreleasepool(|_| {
         // SAFETY: filters built from objects of the current shareable content; the
         // configuration is fresh and configured before use; the colour space name and
-        // pixel format are framework constants.
+        // pixel format are framework constants. `SCScreenshotManager` (macOS 14) is
+        // looked up by class name before this point, so older systems never reach it.
         let (filter, config) = unsafe {
             let filter = match &resolved {
                 Resolved::Display(display) => SCContentFilter::initWithDisplay_excludingWindows(

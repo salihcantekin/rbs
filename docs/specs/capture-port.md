@@ -343,6 +343,8 @@ Checks: probe returns within 1 s (the fastest of up to three calls, so one-time 
 
 ### ScreenCaptureKit adapter notes
 
+- `thumbnail` (ADR-0077): one `SCScreenshotManager` grab, macOS 14 and later (`Unsupported` before), cursor off, within a 1 s budget. Without permission it returns `PermissionNotDetermined`, because macOS does not tell "not asked" from "denied". Known limits, to be checked on macOS 14 and 15 hardware: the periodic screen-recording re-approval alert of macOS 15 and the menu-bar indicator may appear on a grab (the adapter cannot prevent either); a grab that timed out keeps running inside ScreenCaptureKit until it ends, so a hung system can pile up abandoned requests (the host asks at most two at a time and only for the rows shown).
+
 - Minimum deployment target macOS 12.3: the bindings link ScreenCaptureKit strongly, so an older macOS cannot load the binary; the probe's version check only catches a wrong deployment setting.
 - `enumerate`, `open` and `start` wait for the replay daemon (`SCShareableContent`, `startCapture`). Warm calls take tens to a few hundred milliseconds; the first call of a process can exceed the 100 ms and 500 ms budgets above. The adapter waits at most 2 s and then returns a recoverable `Backend` error. This is an accepted exception for this adapter until measured on hardware.
 - Resizes (invariant 6): the stream is configured at the target's pixel size. When the frame attachments (content rect, content scale, scale factor) show a new native size, the sample handler reconfigures the stream without waiting, and later frames carry the new size.
