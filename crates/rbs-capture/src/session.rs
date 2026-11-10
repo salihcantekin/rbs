@@ -299,18 +299,28 @@ pub trait CaptureFactory: AdapterFactory {
         Ok(self.permission(kind))
     }
 
-    /// One small picture of a target for browsing a list, at most `max` pixels (and
-    /// never larger than [`THUMBNAIL_MAX`](crate::target::THUMBNAIL_MAX)).
+    /// One small picture of a target for browsing a list (ADR-0077).
+    ///
+    /// The picture is scaled to fit inside `min(max, THUMBNAIL_MAX)`, keeps the
+    /// target's aspect ratio, is never scaled up and is at least 1 x 1, in sRGB (an
+    /// HDR source is tone-mapped or clipped). An empty `max` returns
+    /// [`CaptureError::FormatUnsupported`].
     ///
     /// Works without a session: it grabs one frame and releases everything before it
     /// returns (no threads, streams or handles remain). Never prompts; without
     /// permission it returns [`CaptureError::PermissionDenied`] or
-    /// [`CaptureError::PermissionNotDetermined`]. Blocks for up to about a second:
-    /// call it from a worker, never from the render loop or an audio callback.
-    /// Returns [`CaptureError::Unsupported`] by default and for cameras and
-    /// microphones (a grab would light the device), and
-    /// [`CaptureError::TargetNotFound`] for a target that is gone. The picture is for
-    /// the UI only: not logged, stored or sent anywhere.
+    /// [`CaptureError::PermissionNotDetermined`]. It must return within about one
+    /// second, otherwise with a recoverable [`CaptureError::Backend`]; the host cannot
+    /// cancel a call, it abandons the result. May be called from any thread that is
+    /// not real-time, from at least two threads at once and while sessions are open;
+    /// never from the render loop or an audio callback.
+    ///
+    /// A grab must have no user-visible side effect: no permission prompt, no
+    /// capture border or recording indicator, no camera light. An adapter that cannot
+    /// avoid one returns [`CaptureError::Unsupported`], as it must for cameras and
+    /// microphones. [`CaptureError::TargetNotFound`] means the target is gone. The
+    /// picture is for the UI only: adapters log neither target names nor pixels, even
+    /// on error paths; nothing is stored or sent anywhere.
     fn thumbnail(&self, target: &TargetId, max: Size) -> Result<Thumbnail, CaptureError> {
         let _ = (target, max);
         Err(CaptureError::Unsupported("thumbnail"))

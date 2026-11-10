@@ -2,7 +2,7 @@
 
 use std::fmt;
 
-use rbs_core::media::PixelFormat;
+use rbs_core::media::{PixelFormat, Size};
 use rbs_core::timing::FrameRate;
 
 /// What kind of thing a capture target is.
@@ -191,35 +191,56 @@ pub enum Permission {
 }
 
 /// The largest thumbnail an adapter may return, in pixels (about 80 KiB of RGBA8).
-pub const THUMBNAIL_MAX: (u32, u32) = (192, 108);
+pub const THUMBNAIL_MAX: Size = Size {
+    width: 192,
+    height: 108,
+};
 
 /// A small owned RGBA8 picture of a target, for browsing a list (never on the frame path).
 ///
 /// A bounded exception to P4: it is one picture on request, at most [`THUMBNAIL_MAX`],
-/// and is never stored or sent anywhere.
-#[non_exhaustive]
+/// and is never stored or sent anywhere. The fields are private so the size always
+/// matches the bytes.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Thumbnail {
-    /// Width in pixels, at least 1.
-    pub width: u32,
-    /// Height in pixels, at least 1.
-    pub height: u32,
-    /// `width * height * 4` bytes, RGBA8, straight alpha, rows top to bottom, no padding.
-    pub rgba: Vec<u8>,
+    size: Size,
+    rgba: Vec<u8>,
 }
 
 impl Thumbnail {
     /// Builds a thumbnail, or `None` if the size is zero, larger than [`THUMBNAIL_MAX`]
-    /// or does not match the length of `rgba`.
+    /// or does not match the length of `rgba` (`width * height * 4` bytes, sRGB RGBA8,
+    /// straight alpha, rows top to bottom, no padding).
     pub fn new(width: u32, height: u32, rgba: Vec<u8>) -> Option<Thumbnail> {
-        let (mw, mh) = THUMBNAIL_MAX;
         let len = u64::from(width) * u64::from(height) * 4;
-        let ok = width > 0 && height > 0 && width <= mw && height <= mh;
+        let ok = width > 0
+            && height > 0
+            && width <= THUMBNAIL_MAX.width
+            && height <= THUMBNAIL_MAX.height;
         (ok && len == rgba.len() as u64).then_some(Thumbnail {
-            width,
-            height,
+            size: Size { width, height },
             rgba,
         })
+    }
+
+    /// Width in pixels.
+    pub fn width(&self) -> u32 {
+        self.size.width
+    }
+
+    /// Height in pixels.
+    pub fn height(&self) -> u32 {
+        self.size.height
+    }
+
+    /// The pixels, `width * height * 4` bytes.
+    pub fn rgba(&self) -> &[u8] {
+        &self.rgba
+    }
+
+    /// The pixels, by value.
+    pub fn into_rgba(self) -> Vec<u8> {
+        self.rgba
     }
 }
 
@@ -233,6 +254,8 @@ mod thumbnail_tests {
         assert!(Thumbnail::new(2, 1, vec![0; 7]).is_none());
         assert!(Thumbnail::new(0, 1, vec![]).is_none());
         assert!(Thumbnail::new(193, 1, vec![0; 193 * 4]).is_none());
+        assert!(Thumbnail::new(1, 109, vec![0; 109 * 4]).is_none());
+        assert!(Thumbnail::new(1, 108, vec![0; 108 * 4]).is_some());
         assert!(Thumbnail::new(192, 108, vec![0; 192 * 108 * 4]).is_some());
     }
 }
