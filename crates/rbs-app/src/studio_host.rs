@@ -6283,13 +6283,13 @@ impl ApiTarget<'_> {
             }
             C::ReplaySave(p) => {
                 if let Some(seconds) = p.seconds
-                    && !(1..=host.replay.setup.length_secs).contains(&seconds)
+                    && !(1..=host.api_replay().length_secs).contains(&seconds)
                 {
                     return Err(ApiError::new(
                         ErrorKind::InvalidParams,
                         format!(
                             "seconds must be 1 to {} (the buffer's length)",
-                            host.replay.setup.length_secs
+                            host.api_replay().length_secs
                         ),
                     ));
                 }

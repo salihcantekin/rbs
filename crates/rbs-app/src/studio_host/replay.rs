@@ -20,6 +20,8 @@ use crate::replay_settings::ReplaySetup;
 /// ADR-0013), and how soon the host looks again for a requested clip.
 const STATE_INTERVAL: Duration = Duration::from_secs(1);
 const CLIP_POLL: Duration = Duration::from_millis(20);
+/// Most clip files written at once: each pins its packets after the buffer let go.
+const MAX_WRITERS: u32 = 2;
 
 /// What the buffer holds, for the UI and `replay.status`.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -142,6 +144,9 @@ impl Host {
         if self.replay.pending {
             return Err("A clip is being cut already.".into());
         }
+        if self.replay.writing >= MAX_WRITERS {
+            return Err("Clips are being written already; try again in a moment.".into());
+        }
         let length = seconds.map(|s| Duration::from_secs(u64::from(s)));
         match self.studio.request_replay_clip(length) {
             Some(Ok(())) => {
@@ -163,6 +168,7 @@ impl Host {
         if let Err(why) = self.arm_replay(notify) {
             self.replay.wanted = false;
             self.replay.due = None;
+            self.replay.last_error = Some(why.clone());
             notify(Update::Error(why));
             self.replay_changed(notify);
         }
@@ -172,12 +178,20 @@ impl Host {
     pub(super) fn replay_state(&self) -> ReplayState {
         let status = self.studio.replay_status();
         let setup = &self.replay.setup;
+        // While armed, what runs; a changed setting applies the next time it arms.
+        let (length_secs, memory_limit) = match self.studio.replay_settings() {
+            Some(running) => (
+                u32::try_from(running.length.as_secs()).unwrap_or(u32::MAX),
+                running.memory_limit as u64,
+            ),
+            None => (setup.length_secs, setup.memory_limit() as u64),
+        };
         ReplayState {
             armed: status.is_some(),
             held_ms: status.map_or(0, |s| s.held_ms),
-            length_secs: setup.length_secs,
+            length_secs,
             bytes: status.map_or(0, |s| s.bytes),
-            memory_limit: setup.memory_limit() as u64,
+            memory_limit,
             memory_limited: status.is_some_and(|s| s.memory_limited),
             saving: self.replay.pending || self.replay.writing > 0,
             last_saved: self.replay.last_saved.clone(),
