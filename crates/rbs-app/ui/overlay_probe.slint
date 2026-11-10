@@ -1,6 +1,6 @@
 // A window for tests/overlays.rs: the info hint and the tooltip as the real library
 // components draw them (ADR-0094). Not shown by the app.
-import { InfoHint, IconButton, IconName, OverlayHost, FeatureSection } from "components.slint";
+import { InfoHint, IconButton, IconName, OverlayHost, FeatureSection, ColorPicker } from "components.slint";
 
 export component OverlayProbe inherits Window {
     // literal-begin: a test window; its size and the places of its two controls are test data
@@ -19,6 +19,14 @@ export component OverlayProbe inherits Window {
         y: 10px;
         icon: IconName.flip-h;
         name: "Flip horizontally";
+    }
+    out property <string> last-pick;
+    colour := ColorPicker {
+        x: 200px;
+        y: 10px;
+        label: "Border colour";
+        value: #112233;
+        picked(hex) => { root.last-pick = hex; }
     }
     out property <bool> feature-on: feature.on;
     out property <length> feature-height: feature.height;
