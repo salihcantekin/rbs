@@ -766,6 +766,7 @@ pub const UI_METHODS: &[&str] = &[
     "ui.layout.studio_rail",
     "ui.layout.rail_size",
     "ui.layout.reset_sizes",
+    "ui.mixer.set_orientation",
     "ui.toolbar.get",
     "ui.toolbar.set",
     "ui.toolbar.reset",
