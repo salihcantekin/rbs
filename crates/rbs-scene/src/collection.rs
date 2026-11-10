@@ -195,6 +195,9 @@ enum Op {
         placements: Vec<(SceneId, usize, SceneItem)>,
     },
     RemoveSource(SourceId),
+    /// Several edits that undo and redo as one (a picture deleted with its companions,
+    /// ADR-0096). The inverse runs them in reverse order.
+    Batch(Vec<Op>),
     /// Replaces everything of a source but its `audio`, which stays as it is.
     ReplaceSource {
         expected: Source,
@@ -702,8 +705,28 @@ impl SceneCollection {
     }
 
     /// Deletes a source and removes it from every scene (glossary: Delete source).
+    ///
+    /// The companions of the source ("Capture audio too", ADR-0096) go with it, in the
+    /// same undo record.
     pub fn delete_source(&mut self, id: SourceId) -> Result<Undo, SceneError> {
-        self.apply(Op::RemoveSource(id))
+        let companions: Vec<SourceId> = self
+            .sources
+            .values()
+            .filter(|s| s.companion_of() == Some(id))
+            .map(|s| s.id)
+            .collect();
+        if companions.is_empty() {
+            return self.apply(Op::RemoveSource(id));
+        }
+        // The picture must exist; the companions are removed first so a failed
+        // validation leaves the collection untouched (`apply_with` works on a copy).
+        self.get_source(id)?;
+        let ops = companions
+            .into_iter()
+            .chain([id])
+            .map(Op::RemoveSource)
+            .collect();
+        self.apply(Op::Batch(ops))
     }
 
     /// Renames a source.
@@ -1285,6 +1308,14 @@ impl SceneCollection {
                 self.sources.insert(id, source);
                 self.restore_items(placements)?;
                 Ok(Op::RemoveSource(id))
+            }
+            Op::Batch(ops) => {
+                let mut inverse = Vec::with_capacity(ops.len());
+                for op in ops {
+                    inverse.push(self.perform(op)?);
+                }
+                inverse.reverse();
+                Ok(Op::Batch(inverse))
             }
             Op::RemoveSource(id) => {
                 let source = self

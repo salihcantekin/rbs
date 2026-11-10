@@ -241,6 +241,22 @@ pub struct Source {
     pub hints: BTreeMap<String, String>,
 }
 
+/// The hint key that marks an audio source as the companion of a picture source
+/// (ADR-0096): the value is the picture's source id in decimal.
+pub const COMPANION_OF_HINT: &str = "companion_of";
+
+impl Source {
+    /// The picture source this source is the "Capture audio too" companion of, if its
+    /// hints say so (ADR-0096). A hint: nothing but visibility and deletion follow it.
+    pub fn companion_of(&self) -> Option<SourceId> {
+        self.hints
+            .get(COMPANION_OF_HINT)?
+            .parse::<u32>()
+            .ok()
+            .map(SourceId)
+    }
+}
+
 /// The largest source volume: 1.0 (0 dB), like a fader. A boost is an audio filter.
 pub const MAX_SOURCE_VOLUME: f32 = 1.0;
 

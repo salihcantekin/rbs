@@ -28,3 +28,4 @@ pub use collection::{
     SceneError, Undo,
 };
 pub use flatten::{Affine2, FlatLayer};
+pub use model::COMPANION_OF_HINT;
