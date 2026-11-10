@@ -1875,8 +1875,6 @@ component EncoderFields inherits VerticalLayout {
     callback set(int /* field */, int /* value */);
     // Advanced settings (U2): shown with the button below, in the same place.
     property <bool> advanced: false;
-    out property <bool> menu-open: encoder.open || video.open || audio.open || quality.open
-        || mode.open || peak.open || keyframe.open || profile.open || bframes.open;
     SettingRow {
         divider: false;
         label: @tr("Video encoder");
@@ -3059,11 +3057,9 @@ export component PropertiesPanel inherits Rectangle {
 
 
 // The recording's settings (glossary: output profile): the Recording section of the
-// Settings window (U17). They apply to the next recording and are saved at once. The
-// owner counts `menu-open` as an overlay where a preview layer is shown.
+// Settings window (U17). They apply to the next recording and are saved at once.
 export component RecordingSettings inherits Rectangle {
     property <bool> idle: Studio.rec-state == 0;
-    out property <bool> menu-open: fields.menu-open;
     form := VerticalLayout {
         spacing: Tokens.space-4;
         alignment: start;
@@ -3121,7 +3117,6 @@ export component RecordingSettings inherits Rectangle {
 // stream key is never shown: it goes to the system's credential store.
 export component StreamSettings inherits Rectangle {
     property <bool> idle: Studio.st-state == 0;
-    out property <bool> menu-open: fields.menu-open || latency.open;
     form := VerticalLayout {
         spacing: Tokens.space-4;
         alignment: start;
