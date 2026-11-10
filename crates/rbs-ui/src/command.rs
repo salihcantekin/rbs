@@ -156,6 +156,12 @@ pub struct Entry {
     pub checkable: bool,
 }
 
+const PANEL_ID: Param = Param {
+    name: "id",
+    ty: ParamType::Text,
+    required: true,
+};
+
 const AREA: Param = Param {
     name: "area",
     ty: ParamType::OneOf(&["left", "right", "bottom"]),
@@ -435,6 +441,70 @@ pub const ENTRIES: &[Entry] = &[
             required: true,
         }],
         checkable: true,
+    },
+    Entry {
+        id: "ui.panel.collapse",
+        title: "Collapse",
+        tooltip: "Fold the tab stack that holds a panel to its tab row, or unfold it",
+        icon: Some("collapse"),
+        shortcut: None,
+        menu: Menu::Window,
+        kind: Kind::Toggle {
+            on: "ui.panel.collapse",
+            off: "ui.panel.expand",
+        },
+        params: &[PANEL_ID],
+        checkable: true,
+    },
+    Entry {
+        id: "ui.panel.auto_hide",
+        title: "Auto-hide to the edge",
+        tooltip: "Hide the tab stack that holds a panel at the edge until it is needed",
+        icon: Some("auto-hide"),
+        shortcut: None,
+        menu: Menu::Window,
+        kind: action("ui.panel.auto_hide"),
+        params: &[PANEL_ID],
+        checkable: false,
+    },
+    Entry {
+        id: "ui.panel.move",
+        title: "Move to",
+        tooltip: "Move a panel to an edge of its window or to the next tab stack",
+        icon: Some("move"),
+        shortcut: None,
+        menu: Menu::Window,
+        kind: Kind::Picker {
+            method: "ui.panel.move",
+            param: "to",
+        },
+        params: &[PANEL_ID, choice("to")],
+        checkable: false,
+    },
+    Entry {
+        id: "ui.panel.float",
+        title: "Float in its own window",
+        tooltip: "Show a panel in its own window, or dock its window back",
+        icon: Some("float"),
+        shortcut: None,
+        menu: Menu::Window,
+        kind: Kind::Toggle {
+            on: "ui.panel.float",
+            off: "ui.panel.dock",
+        },
+        params: &[PANEL_ID],
+        checkable: true,
+    },
+    Entry {
+        id: "ui.panel.close",
+        title: "Close",
+        tooltip: "Close a panel",
+        icon: Some("close"),
+        shortcut: None,
+        menu: Menu::Window,
+        kind: action("ui.panel.close"),
+        params: &[PANEL_ID],
+        checkable: false,
     },
     Entry {
         id: "scene.select",
@@ -1200,7 +1270,17 @@ pub const MENU_LAYOUT: &[(Menu, &[&str])] = &[
 
 /// Entries no menu lists: `scene.position` is for shortcuts and the palette (the
 /// Scene menu lists the scenes through `scene.select`).
-pub const NOT_IN_MENU: &[&str] = &["scene.position", "ui.layout.rail_size"];
+pub const NOT_IN_MENU: &[&str] = &[
+    "scene.position",
+    "ui.layout.rail_size",
+    // The panel commands name a panel (`id`): they run from the panel menu and the
+    // control API, not from a menu bar menu.
+    "ui.panel.collapse",
+    "ui.panel.auto_hide",
+    "ui.panel.move",
+    "ui.panel.float",
+    "ui.panel.close",
+];
 
 /// The icon an id shows, from the design system's icon set: the entry's, or for an
 /// area toggle the panel icon of its area.
@@ -1477,11 +1557,13 @@ pub enum Context {
     MixerSource,
     /// The Mixer outside its strips and rows.
     Mixer,
+    /// A panel's tab or header menu (target `id`, the panel).
+    Panel,
 }
 
 impl Context {
     /// Every context.
-    pub const ALL: [Context; 7] = [
+    pub const ALL: [Context; 8] = [
         Context::Scene,
         Context::Scenes,
         Context::Source,
@@ -1489,6 +1571,7 @@ impl Context {
         Context::Preview,
         Context::MixerSource,
         Context::Mixer,
+        Context::Panel,
     ];
 
     /// Its name, as the shell's menus ask for it.
@@ -1501,6 +1584,7 @@ impl Context {
             Context::Preview => "preview",
             Context::MixerSource => "mixer-source",
             Context::Mixer => "mixer",
+            Context::Panel => "panel",
         }
     }
 
@@ -1583,6 +1667,18 @@ pub const CONTEXT_LAYOUT: &[(Context, &[&str])] = &[
             "mixer.hide_all",
             "mixer.hide_muted",
             "mixer.unhide_all",
+        ],
+    ),
+    (
+        Context::Panel,
+        &[
+            "ui.panel.collapse",
+            "ui.panel.maximize",
+            "ui.panel.move",
+            "ui.panel.float",
+            "ui.panel.auto_hide",
+            "|",
+            "ui.panel.close",
         ],
     ),
 ];

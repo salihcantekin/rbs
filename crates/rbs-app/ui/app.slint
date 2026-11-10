@@ -8,7 +8,7 @@ import { Appearance, AppearanceSettings, ThemeOption, ThemeTokenRow } from "appe
 import { Shortcuts, ShortcutsSettings, ShortcutRow, ShortcutChip } from "shortcuts.slint";
 import { VirtualCamera, VirtualCameraSettings } from "vcam.slint";
 import { SourceSettingsWindow } from "source_settings.slint";
-import { ContextMenus, ContextItem, ContextChoice } from "context_menu.slint";
+import { CommandMenu, ContextMenus, ContextItem, ContextChoice } from "context_menu.slint";
 import { AppMenus, AppMenuRow, AppMenuChip, AppMenu, AppMenuButton } from "app_menu.slint";
 import { Studio, ModeData, SourceSettingsData, EntryRow, SourceData, FilterData, FilterFieldData, MarkData, KindData, TargetData, MeterRow, ScaleMark, EncoderData, ProgramPanel, ScenesPanel, SourcesPanel, PropertiesPanel, MixerPanel, LiveControlsPanel, TransitionPanel, OutputsPanel, LibraryPanel, StatsPanel, RecordingSettings, StreamSettings, VideoSettings, RemoteControlSettings, GeneralSettings, GlobalSourcesSettings } from "studio.slint";
 
@@ -29,14 +29,6 @@ export struct ToolbarData { id: string, title: string, kind: int, enabled: bool,
 // An auto-hidden panel's edge tab (ADR-0049 decision 2); `size` is its flyout's
 // width, or height on the bottom edge.
 export struct EdgeTabData { id: string, title: string, icon: string, size: length }
-
-// Edges, as passed to Shell.move-edge.
-export global Edges {
-    out property <int> left: 0;
-    out property <int> right: 1;
-    out property <int> top: 2;
-    out property <int> bottom: 3;
-}
 
 // State and commands shared by every window. Slint globals are per window, so
 // A rectangle in window coordinates.
@@ -166,9 +158,6 @@ export global Shell {
     callback activate-tab(int /* window */, int /* stack */, int /* tab */);
     callback close-panel(string);
     callback toggle-panel(string);
-    callback move-edge(string, int /* window */, int /* edge */);
-    callback move-next-stack(string);
-    callback float-panel(string);
     callback dock(int /* window */);
     // Wanted position of the handle along its axis, in the dock area.
     callback drag(int /* window */, int /* handle */, length);
@@ -310,35 +299,6 @@ component PanelContent inherits Rectangle {
     }
 }
 
-component PanelMenu inherits PopupWindow {
-    in property <string> panel;
-    in property <string> title;
-    in property <bool> floating;
-    in property <bool> collapsed;
-    in property <bool> can-collapse;
-    in property <bool> can-hide;
-    in property <int> window;
-    MenuSurface {
-        VerticalLayout {
-            padding: Tokens.space-1;
-            if can-collapse: MenuRow { text: collapsed ? @tr("Expand") : @tr("Collapse"); activated => { Shell.collapse(panel, !collapsed); root.close(); } }
-            if can-hide: MenuRow { text: @tr("Auto-hide to the edge"); activated => { Shell.auto-hide(panel); root.close(); } }
-            MenuRow {
-                text: Shell.maximized == panel ? @tr("Restore layout") : @tr("Maximize {}", title);
-                activated => { Menus.run("ui.panel.maximize?id=" + panel); root.close(); }
-            }
-            MenuRow { autofocus: true; text: @tr("Move to left edge"); activated => { Shell.move-edge(panel, window, Edges.left); root.close(); } }
-            MenuRow { text: @tr("Move to right edge"); activated => { Shell.move-edge(panel, window, Edges.right); root.close(); } }
-            MenuRow { text: @tr("Move to top edge"); activated => { Shell.move-edge(panel, window, Edges.top); root.close(); } }
-            MenuRow { text: @tr("Move to bottom edge"); activated => { Shell.move-edge(panel, window, Edges.bottom); root.close(); } }
-            MenuRow { text: @tr("Move to next tab stack"); activated => { Shell.move-next-stack(panel); root.close(); } }
-            if !floating: MenuRow { text: @tr("Float in its own window"); activated => { Shell.float-panel(panel); root.close(); } }
-            if floating: MenuRow { text: @tr("Dock back"); activated => { Shell.dock(window); root.close(); } }
-            MenuRow { text: @tr("Close {}", title); activated => { Shell.close-panel(panel); root.close(); } }
-        }
-    }
-}
-
 // A tab in a panel header: its title, underlined in the accent colour while it is the
 // shown one (no tab background, spec Frame).
 component Tab inherits Rectangle {
@@ -418,7 +378,6 @@ component StackView inherits Rectangle {
     property <string> active-id: has-tabs ? data.tabs[data.active].id : "";
     property <string> active-title: has-tabs ? data.tabs[data.active].title : "";
     property <string> menu-panel;
-    property <string> menu-title;
     background: Theme.surface-raised;
     border-color: Theme.border-subtle;
     border-width: Tokens.size-border;
@@ -450,8 +409,7 @@ component StackView inherits Rectangle {
                         maximize => { Menus.run("ui.panel.maximize?id=" + t.id); }
                         open-menu => {
                             menu-panel = t.id;
-                            menu-title = t.title;
-                            menu.show();
+                            menu.open({ x: Tokens.space-2, y: bar });
                         }
                     }
                 }
@@ -517,8 +475,7 @@ component StackView inherits Rectangle {
                     name: @tr("Actions for {}", active-title);
                     clicked => {
                         menu-panel = active-id;
-                        menu-title = active-title;
-                        menu.show();
+                        menu.open({ x: Tokens.space-2, y: bar });
                     }
                 }
             }
@@ -563,16 +520,10 @@ component StackView inherits Rectangle {
         height: max(0px, parent.height - bar - 2 * Tokens.size-border);
         tab: data.tabs[data.active];
     }
-    menu := PanelMenu {
-        x: Tokens.space-2;
-        y: bar;
-        panel: menu-panel;
-        title: menu-title;
-        floating: root.floating;
-        collapsed: data.collapsed;
-        can-collapse: data.can-collapse;
-        can-hide: data.can-hide;
-        window: data.window;
+    // The panel's menu: the same CommandMenu as every other context (ADR-0094 B1).
+    menu := CommandMenu {
+        context: "panel";
+        target: "id=" + menu-panel;
     }
 }
 

@@ -300,6 +300,45 @@ impl Shown<'_> {
     }
 }
 
+/// What a panel's menu needs to know about the tab stack that holds it.
+struct PanelCaps {
+    floating: bool,
+    collapsed: bool,
+    can_collapse: bool,
+    can_hide: bool,
+    stacks: usize,
+}
+
+impl Shown<'_> {
+    /// The panel's stack as the window view draws it, so the menu offers what the
+    /// stack's header does (the same rules, ADR-0049 and ADR-0064).
+    fn panel_caps(&self, id: &CommandId) -> Option<PanelCaps> {
+        use slint::Model;
+        let panel = panel_of(id)?;
+        let (w, ..) = self.workspace.find(&panel)?;
+        let win = self.workspace.windows.get(w)?;
+        // Any area large enough to lay the window out: only the stack's flags are read.
+        let area = rbs_ui::layout::Rect {
+            x: 0.0,
+            y: 0.0,
+            w: 1920.0,
+            h: 1080.0,
+        };
+        let (stacks, ..) =
+            crate::view::window_view(w, win, area, self.maximized, self.studio.studio_mode);
+        let stack = stacks
+            .iter()
+            .find(|s| s.tabs.iter().any(|t| t.id.as_str() == panel.as_str()))?;
+        Some(PanelCaps {
+            floating: !win.is_main(),
+            collapsed: stack.collapsed,
+            can_collapse: stack.can_collapse,
+            can_hide: stack.can_hide,
+            stacks: win.stack_count(),
+        })
+    }
+}
+
 impl CommandState for Shown<'_> {
     fn enabled(&self, id: &CommandId) -> Result<(), String> {
         let s = self.studio;
@@ -435,6 +474,27 @@ impl CommandState for Shown<'_> {
                 Some(p) if self.workspace.is_open(&p) => Ok(()),
                 _ => Err("The panel is not open.".to_owned()),
             },
+            "ui.panel.collapse" | "ui.panel.auto_hide" | "ui.panel.move" | "ui.panel.float"
+            | "ui.panel.close" => {
+                let Some(c) = self.panel_caps(id) else {
+                    return Err("The panel is not open.".to_owned());
+                };
+                match id.base() {
+                    "ui.panel.collapse" if !c.can_collapse => Err(
+                        "Preview and Program, and the last open stack of the centre, stay open."
+                            .to_owned(),
+                    ),
+                    "ui.panel.auto_hide" if !c.can_hide => Err(
+                        "Only a stack at the edge of the main window can hide, and not the \
+                         only stack of the centre."
+                            .to_owned(),
+                    ),
+                    "ui.panel.move" if id.param("to") == Some("next_stack") && c.stacks < 2 => {
+                        Err("This window has one tab stack.".to_owned())
+                    }
+                    _ => Ok(()),
+                }
+            }
             "ui.layout.rail_size" => match (self.workspace.studio_rail(), id.param("px")) {
                 (None, _) => Err("This workspace has no Preview and Program side by side in \
                                   the centre."
@@ -510,6 +570,8 @@ impl CommandState for Shown<'_> {
                 side(id).is_some_and(|sd| self.areas().any(|(a, has, v)| a == sd && has && v))
             }
             "ui.panel.maximize" => panel_of(id).is_some_and(|p| self.maximized == Some(&p)),
+            "ui.panel.collapse" => self.panel_caps(id).is_some_and(|c| c.collapsed),
+            "ui.panel.float" => self.panel_caps(id).is_some_and(|c| c.floating),
             "ui.layout.studio_rail" => {
                 self.workspace.studio_rail().is_some()
                     && self.workspace.studio_rail() == rail_at(id)
@@ -545,6 +607,22 @@ impl CommandState for Shown<'_> {
                 })
                 .collect(),
             "ui.panel.select" => self.panels.clone(),
+            "ui.panel.move" => {
+                let stacks = self.panel_caps(id).map_or(0, |c| c.stacks);
+                let mut out: Vec<_> = [
+                    ("Left edge", "left"),
+                    ("Right edge", "right"),
+                    ("Top edge", "top"),
+                    ("Bottom edge", "bottom"),
+                ]
+                .into_iter()
+                .map(|(t, v)| (t.to_owned(), v.to_owned(), false))
+                .collect();
+                if stacks > 1 {
+                    out.push(("Next tab stack".to_owned(), "next_stack".to_owned(), false));
+                }
+                out
+            }
             "ui.mixer.orientation" => {
                 let now = self.workspace.mixer_orientation();
                 [
@@ -595,6 +673,35 @@ impl CommandState for Shown<'_> {
     }
 
     fn title(&self, id: &CommandId) -> Option<String> {
+        if let Some(p) = panel_of(id) {
+            let name = crate::view::title(&p);
+            match id.base() {
+                "ui.panel.collapse" => {
+                    let collapsed = self.panel_caps(id).is_some_and(|c| c.collapsed);
+                    return Some(if collapsed { "Expand" } else { "Collapse" }.to_owned());
+                }
+                "ui.panel.float" => {
+                    let floating = self.panel_caps(id).is_some_and(|c| c.floating);
+                    return Some(
+                        if floating {
+                            "Dock back"
+                        } else {
+                            "Float in its own window"
+                        }
+                        .to_owned(),
+                    );
+                }
+                "ui.panel.maximize" => {
+                    return Some(if self.maximized == Some(&p) {
+                        "Restore layout".to_owned()
+                    } else {
+                        format!("Maximize {name}")
+                    });
+                }
+                "ui.panel.close" => return Some(format!("Close {name}")),
+                _ => {}
+            }
+        }
         match id.param("axis") {
             Some("horizontal") if id.base() == "item.flip" => {
                 return Some("Flip horizontally".to_owned());
@@ -901,6 +1008,11 @@ pub enum Run {
     Layout(rbs_ui::LayoutCommand),
     /// Maximize the panel (`true`) or restore the layout.
     Maximize(PanelId, bool),
+    /// Auto-hide the panel's tab stack to the edge (`ui.panel.auto_hide`).
+    AutoHide(PanelId),
+    /// Move the panel to an edge of its window or to the next tab stack
+    /// (`ui.panel.move`, `to`: `left`, `right`, `top`, `bottom`, `next_stack`).
+    MovePanel(PanelId, String),
     /// Open the Add source menu, at the targets of this kind code when given.
     AddSource(Option<i32>),
     /// Turn studio mode on (`true`) or off (ADR-0061).
@@ -963,6 +1075,7 @@ pub fn run(text: &str, state: &Shown<'_>) -> Option<Run> {
         return Some(match id.base() {
             "ui.workspace.select" => Run::Workspace(value),
             "ui.panel.select" => Run::Panel(value),
+            "ui.panel.move" => Run::MovePanel(panel_of(&id)?, value),
             "ui.mixer.orientation" => Run::MixerOrientation(MixerOrientation::parse(&value)?),
             "profile.select" => Run::Profile(value),
             "collection.select" => Run::Collection(value),
@@ -1011,6 +1124,22 @@ pub fn run(text: &str, state: &Shown<'_>) -> Option<Run> {
         "ui.settings.open" => open_settings(&id)?,
         "ui.app_menu.open" => Run::OpenAppMenu,
         "ui.panel.maximize" => Run::Maximize(panel_of(&id)?, !on),
+        "ui.panel.collapse" => Run::Layout(L::SetCollapsed {
+            panel: panel_of(&id)?,
+            collapsed: !on,
+        }),
+        "ui.panel.auto_hide" => Run::AutoHide(panel_of(&id)?),
+        "ui.panel.float" => {
+            let panel = panel_of(&id)?;
+            if on {
+                Run::Layout(L::Dock {
+                    window: state.workspace.find(&panel)?.0,
+                })
+            } else {
+                Run::Layout(L::Float(panel))
+            }
+        }
+        "ui.panel.close" => Run::Layout(L::ClosePanel(panel_of(&id)?)),
         "canvas.studio_mode.toggle" => Run::StudioMode(!on),
         "canvas.transition" => Run::Transition,
         "scene.position" => Run::Scene(state.studio.scene_at(scene_position(&id)?)?),

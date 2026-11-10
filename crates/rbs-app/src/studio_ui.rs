@@ -4522,4 +4522,66 @@ mod tests {
         assert_eq!(ui.stream_text(), "");
         let _ = std::fs::remove_dir_all(&d);
     }
+
+    #[test]
+    fn the_panel_commands_follow_the_stack_rules_and_run_layout_commands() {
+        use crate::menu_bar::{Run, Shown, run};
+        use rbs_ui::LayoutCommand as L;
+        use rbs_ui::command::{CommandId, CommandState};
+        use rbs_ui::panel::PanelId;
+        let (ui, d) = ui("panel-commands");
+        let ws = rbs_ui::builtin::edit();
+        let shown = Shown {
+            workspace: &ws,
+            workspaces: &[],
+            studio: &ui,
+            panels: Vec::new(),
+            maximized: None,
+            camera: Default::default(),
+        };
+        let mixer = PanelId::parse("rbs.mixer").unwrap();
+        let cmd = |t: &str| CommandId::parse(t).unwrap();
+        // The Mixer collapses, floats and closes; a closed panel gives the reason.
+        assert!(
+            shown
+                .enabled(&cmd("ui.panel.collapse?id=rbs.mixer"))
+                .is_ok()
+        );
+        assert!(
+            shown
+                .enabled(&cmd("ui.panel.collapse?id=rbs.nothing"))
+                .is_err()
+        );
+        assert_eq!(
+            run("ui.panel.collapse?id=rbs.mixer", &shown),
+            Some(Run::Layout(L::SetCollapsed {
+                panel: mixer.clone(),
+                collapsed: true,
+            }))
+        );
+        assert_eq!(
+            run("ui.panel.float?id=rbs.mixer", &shown),
+            Some(Run::Layout(L::Float(mixer.clone())))
+        );
+        assert_eq!(
+            run("ui.panel.close?id=rbs.mixer", &shown),
+            Some(Run::Layout(L::ClosePanel(mixer.clone())))
+        );
+        assert_eq!(
+            run("ui.panel.move?id=rbs.mixer&to=left", &shown),
+            Some(Run::MovePanel(mixer.clone(), "left".to_owned()))
+        );
+        assert_eq!(
+            run("ui.panel.auto_hide?id=rbs.mixer", &shown),
+            Some(Run::AutoHide(mixer))
+        );
+        assert_eq!(
+            shown.title(&cmd("ui.panel.close?id=rbs.mixer")).as_deref(),
+            Some("Close Mixer")
+        );
+        // The move choices name the edges; next tab stack only with a second stack.
+        let choices = shown.choices(&cmd("ui.panel.move?id=rbs.mixer"));
+        assert!(choices.iter().any(|(_, v, _)| v == "bottom"));
+        let _ = std::fs::remove_dir_all(d);
+    }
 }
