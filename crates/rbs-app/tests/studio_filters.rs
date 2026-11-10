@@ -644,3 +644,57 @@ fn looks_and_sample_pictures_from_the_library_are_one_undo_step_each() {
     });
     assert_eq!(chain(&got, screen).len(), 1);
 }
+
+#[test]
+fn a_display_can_capture_the_system_sound_too() {
+    let Some((_host, _updates, _api, mut c)) = start() else {
+        return;
+    };
+    let targets = c.call("source.targets", json!({"kind": "screen"}));
+    let t = ok(&targets)["targets"][0].clone();
+    let added = c.call(
+        "source.add",
+        json!({"kind": "screen", "adapter": t["adapter"], "target": t["target"],
+               "name": "Screen", "with_audio": true}),
+    );
+    let screen = ok(&added)["source"].as_u64().unwrap();
+    let rows = sources(&mut c);
+    let sound = rows
+        .iter()
+        .find(|s| s["companion_of"] == screen)
+        .expect("a companion sound");
+    assert_eq!(sound["name"], "System sound");
+    let sound_id = sound["id"].as_u64().unwrap();
+
+    // One undo step removes both; redo brings both back.
+    assert!(ok(&c.call("edit.undo", json!({}))).is_object());
+    assert!(
+        sources(&mut c)
+            .iter()
+            .all(|s| s["id"] != screen && s["id"] != sound_id)
+    );
+    c.call("edit.redo", json!({}));
+    assert!(sources(&mut c).iter().any(|s| s["id"] == sound_id));
+
+    // Removing and adding it again by command.
+    c.call(
+        "source.set_companion_audio",
+        json!({"source": screen, "enabled": false}),
+    );
+    assert!(sources(&mut c).iter().all(|s| s["companion_of"].is_null()));
+    c.call(
+        "source.set_companion_audio",
+        json!({"source": screen, "enabled": true}),
+    );
+    assert!(sources(&mut c).iter().any(|s| s["companion_of"] == screen));
+
+    // Deleting the picture deletes the sound; a sound source has no companion.
+    let voice = add(&mut c, "audio_input", "Voice");
+    let bad = c.call(
+        "source.set_companion_audio",
+        json!({"source": voice, "enabled": true}),
+    );
+    assert_eq!(kind(&bad), "invalid_params", "{bad}");
+    c.call("source.delete", json!({"source": screen}));
+    assert!(sources(&mut c).iter().all(|s| s["companion_of"].is_null()));
+}

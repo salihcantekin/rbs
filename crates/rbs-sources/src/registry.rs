@@ -573,6 +573,15 @@ impl SourceTypes {
         self.audio.select(&audio_requirement(kind)).candidates
     }
 
+    /// True when some audio adapter can leave RBS's own sound out of a system loopback
+    /// capture (`audio.loopback.exclude_self`, ADR-0096). Without it a display sound
+    /// companion would echo, so hosts do not offer one.
+    pub fn can_exclude_own_sound(&self) -> bool {
+        let requirement = audio_requirement(EndpointKind::OutputLoopback)
+            .with(audio_caps::LOOPBACK_EXCLUDE_SELF, Constraint::Flag(true));
+        !self.audio.select(&requirement).candidates.is_empty()
+    }
+
     /// The OS pickers for `type_id`, best adapter first: probed capture adapters that
     /// declare its kind in `capture.target.picker`. Empty for audio types and kinds no
     /// adapter picks. Some systems offer displays and windows only this way (the

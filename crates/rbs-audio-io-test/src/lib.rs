@@ -191,6 +191,9 @@ impl AdapterFactory for TestAudioBackend {
             .with(caps::INPUT_ENUMERATE, kinds())
             .with(caps::INPUT_CHANNELS_MAX, CapabilityValue::Int(2))
             .with(caps::INPUT_PERMISSION, CapabilityValue::Flag(false))
+            // The reference adapter plays nothing of its own, so leaving the process's
+            // own sound out is always true (ADR-0096).
+            .with(caps::LOOPBACK_EXCLUDE_SELF, CapabilityValue::Flag(true))
             .with(HARDWARE, CapabilityValue::Flag(false)))
     }
 }

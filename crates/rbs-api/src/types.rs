@@ -173,6 +173,10 @@ pub struct SourceInfo {
     /// absent before, meaning shown).
     #[serde(default, skip_serializing_if = "is_false")]
     pub mixer_hidden: bool,
+    /// The picture source this one is the "Capture audio too" companion of (protocol
+    /// 1.26, ADR-0096); absent for other sources.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub companion_of: Option<u32>,
 }
 
 #[allow(clippy::trivially_copy_pass_by_ref)] // serde passes a reference.

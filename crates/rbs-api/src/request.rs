@@ -86,6 +86,23 @@ pub struct AddSource {
     /// ADR-0065): shown and heard in every scene; `scene` is then not allowed.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub global: bool,
+    /// Also add the sound that belongs to the picture (protocol 1.26, ADR-0096): a
+    /// display's system sound without RBS's own sound, a window's application sound.
+    /// Default false; the picture and its sound are one undo step.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub with_audio: bool,
+}
+
+/// `source.set_companion_audio` (protocol 1.26, ADR-0096): adds or removes the "Capture
+/// audio too" companion of a display or window source. One undo step each way. Adding
+/// one that exists, or removing one that does not, changes nothing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SetCompanionAudio {
+    /// The picture source's id.
+    pub source: u32,
+    /// Whether it has a companion sound.
+    pub enabled: bool,
 }
 
 /// `source.delete`.
@@ -646,6 +663,8 @@ pub enum Command {
     SourceGetSettings(GetSourceSettings),
     /// `source.set_settings` (protocol 1.17).
     SourceSetSettings(SetSourceSettings),
+    /// `source.set_companion_audio` (protocol 1.26).
+    SourceSetCompanionAudio(SetCompanionAudio),
     /// `settings.recent_targets` (protocol 1.13).
     SettingsRecentTargets(TargetsParams),
     /// `settings.clear_recent_targets` (protocol 1.13).
@@ -756,6 +775,7 @@ impl Command {
             Command::SourceReload(_) => "source.reload",
             Command::SourceGetSettings(_) => "source.get_settings",
             Command::SourceSetSettings(_) => "source.set_settings",
+            Command::SourceSetCompanionAudio(_) => "source.set_companion_audio",
             Command::SettingsRecentTargets(_) => "settings.recent_targets",
             Command::SettingsClearRecentTargets(_) => "settings.clear_recent_targets",
             Command::SceneSources(_) => "scene.sources",
@@ -877,6 +897,7 @@ pub const METHODS: &[MethodInfo] = &[
     m("source.reload", Some(Scope::Control)),
     m("source.get_settings", Some(Scope::Control)),
     m("source.set_settings", Some(Scope::Control)),
+    m("source.set_companion_audio", Some(Scope::Control)),
     m("settings.recent_targets", Some(Scope::Control)),
     m("settings.clear_recent_targets", Some(Scope::Control)),
     m("item.set_visible", Some(Scope::Control)),
@@ -1067,6 +1088,8 @@ enum WireRequest {
     SourceGetSettings(GetSourceSettings),
     #[serde(rename = "source.set_settings")]
     SourceSetSettings(SetSourceSettings),
+    #[serde(rename = "source.set_companion_audio")]
+    SourceSetCompanionAudio(SetCompanionAudio),
     #[serde(rename = "settings.recent_targets")]
     SettingsRecentTargets(TargetsParams),
     #[serde(rename = "settings.clear_recent_targets")]
@@ -1182,6 +1205,9 @@ impl From<WireRequest> for Request {
             WireRequest::SourceReload(p) => Request::Command(C::SourceReload(p)),
             WireRequest::SourceGetSettings(p) => Request::Command(C::SourceGetSettings(p)),
             WireRequest::SourceSetSettings(p) => Request::Command(C::SourceSetSettings(p)),
+            WireRequest::SourceSetCompanionAudio(p) => {
+                Request::Command(C::SourceSetCompanionAudio(p))
+            }
             WireRequest::SettingsRecentTargets(p) => Request::Command(C::SettingsRecentTargets(p)),
             WireRequest::SettingsClearRecentTargets(p) => {
                 Request::Command(C::SettingsClearRecentTargets(p))
@@ -1266,6 +1292,7 @@ impl From<Request> for WireRequest {
                 C::SourceReload(p) => WireRequest::SourceReload(p),
                 C::SourceGetSettings(p) => WireRequest::SourceGetSettings(p),
                 C::SourceSetSettings(p) => WireRequest::SourceSetSettings(p),
+                C::SourceSetCompanionAudio(p) => WireRequest::SourceSetCompanionAudio(p),
                 C::SettingsRecentTargets(p) => WireRequest::SettingsRecentTargets(p),
                 C::SettingsClearRecentTargets(p) => WireRequest::SettingsClearRecentTargets(p),
                 C::SceneSources(p) => WireRequest::SceneSources(p),

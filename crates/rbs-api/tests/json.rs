@@ -97,6 +97,7 @@ fn source() -> SourceInfo {
         picture_size: Some([1920, 1080]),
         visible: false,
         locked: true,
+        companion_of: Some(2),
         volume: 0.5,
         muted: true,
         mixer_hidden: true,
@@ -181,6 +182,11 @@ fn every_request() -> Vec<Request> {
             name: None,
             scene: None,
             global: true,
+            with_audio: true,
+        })),
+        c(Command::SourceSetCompanionAudio(SetCompanionAudio {
+            source: 4,
+            enabled: true,
         })),
         c(Command::SourceDelete(SourceRef { source: 4 })),
         c(Command::ItemSetStyle(SetItemStyle {
