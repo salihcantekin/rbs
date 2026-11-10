@@ -15,12 +15,19 @@ import { Theme, Tokens } from "tokens.slint";
 // control's own click handler calls `focus-pointer()` instead.
 export component RingFocus inherits FocusScope {
     out property <bool> ring: self.has-focus && !by-pointer;
+    // The focus came from the keyboard and is not just back with its window: a tooltip
+    // may show at once for it (ADR-0094). Coming back to the window shows no tooltip.
+    out property <bool> keyed: self.ring && !with-window;
     property <bool> by-pointer;
+    property <bool> with-window;
     public function focus-pointer() {
         by-pointer = true;
         self.focus();
     }
-    changed has-focus => { if !self.has-focus { by-pointer = false; } }
+    focus-gained(reason) => { with-window = reason == FocusReason.window-activation; }
+    // Another window taking the focus keeps how this one got it, so a control clicked
+    // with the pointer shows no focus ring when its window comes back.
+    focus-lost(reason) => { if reason != FocusReason.window-activation { by-pointer = false; } }
 }
 
 export component FocusRing inherits Rectangle {
@@ -393,10 +400,13 @@ export component Button inherits Rectangle {
     out property <bool> pointed: touch.has-hover || focus.has-focus;
     out property <bool> focused: focus.has-focus;
     public function take-focus() { focus.focus(); }
-    changed pointed => {
+    // The tooltip follows the pointer and keyboard focus only: focus left by a click
+    // does not keep it open once the pointer moves away.
+    property <bool> tip-wanted: touch.has-hover || focus.keyed;
+    changed tip-wanted => {
         if root.tooltip != "" {
-            if root.pointed {
-                root.tip-owner = Overlays.tip-enter(root.tooltip, root.absolute-position.x, root.absolute-position.y, root.width, root.height, focus.has-focus);
+            if root.tip-wanted {
+                root.tip-owner = Overlays.tip-enter(root.tooltip, root.absolute-position.x, root.absolute-position.y, root.width, root.height, focus.keyed && !touch.has-hover);
             } else {
                 Overlays.tip-leave(root.tip-owner);
             }
@@ -535,11 +545,11 @@ export component SplitButton inherits Rectangle {
             accessible-description: root.menu-description;
             accessible-expandable: true;
             accessible-action-default => { root.open-menu(self.absolute-position.x); }
-            property <bool> pointed: part-touch.has-hover || part-focus.has-focus;
-            changed pointed => {
+            property <bool> tip-wanted: part-touch.has-hover || part-focus.keyed;
+            changed tip-wanted => {
                 if root.menu-name == "" { return; }
-                if self.pointed {
-                    root.tip-owner = Overlays.tip-enter(root.menu-name, self.absolute-position.x, self.absolute-position.y, self.width, self.height, part-focus.has-focus);
+                if self.tip-wanted {
+                    root.tip-owner = Overlays.tip-enter(root.menu-name, self.absolute-position.x, self.absolute-position.y, self.width, self.height, part-focus.keyed && !part-touch.has-hover);
                 } else {
                     Overlays.tip-leave(root.tip-owner);
                 }
@@ -2073,8 +2083,12 @@ export global Overlays {
 
     // The tooltip: waits `delay.tooltip` after the pointer rests on its control, shows
     // at once for keyboard focus, stays while the pointer is over the control or the
-    // tooltip, and Escape dismisses it until the pointer or focus leaves.
+    // tooltip, and Escape dismisses it until the pointer or focus leaves. Only the
+    // active window shows one. The app reports what Slint does not tell a control
+    // (`rbs_app::tooltip_guard`): losing the activation, a press, a scroll, the pointer
+    // leaving the window or moving off the control (`pointer-at`) close it.
     in-out property <int> tip-owner: -1;
+    in-out property <bool> window-active: true;
     in-out property <string> tip-text;
     in-out property <length> tip-x;
     in-out property <length> tip-y;
@@ -2083,7 +2097,27 @@ export global Overlays {
     in-out property <bool> tip-shown;
     in-out property <bool> tip-over;
     in-out property <OverlayCover> tip-cover;
-    out property <bool> tip-waiting: tip-owner >= 0 && !tip-shown && !hint-open;
+    out property <bool> tip-waiting: tip-owner >= 0 && !tip-shown && !hint-open && window-active;
+    public function window-activation(active: bool) {
+        window-active = active;
+        if !active { tip-close(); }
+    }
+    // Closes the tooltip, shown or waiting.
+    public function tip-close() {
+        tip-owner = -1;
+        tip-shown = false;
+        tip-over = false;
+    }
+    // The app reports where the pointer moved in the window (logical pixels): outside
+    // the tooltip's control and the tooltip itself, the tooltip closes. This also covers
+    // a control that went away under it (a page change, a list rebuilt) and a move onto
+    // a control without a tooltip, which never call `tip-leave`.
+    public function pointer-at(x: length, y: length) {
+        if tip-owner < 0 { return; }
+        if x >= tip-x && x < tip-x + tip-w && y >= tip-y && y < tip-y + tip-h { return; }
+        if tip-shown && x >= tip-cover.x && x < tip-cover.x + tip-cover.width && y >= tip-cover.y && y < tip-cover.y + tip-cover.height { return; }
+        tip-close();
+    }
     public function tip-enter(text: string, x: length, y: length, w: length, h: length, by-focus: bool) -> int {
         serial += 1;
         tip-text = text;
@@ -2092,7 +2126,7 @@ export global Overlays {
         tip-w = w;
         tip-h = h;
         tip-owner = serial;
-        tip-shown = by-focus && !hint-open;
+        tip-shown = by-focus && !hint-open && window-active;
         return serial;
     }
     public function tip-leave(owner: int) {
