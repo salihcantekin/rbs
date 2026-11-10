@@ -43,6 +43,8 @@ pub struct AddPicker {
     waiting: bool,
     entries: Vec<(String, String, Pick)>,
     query: String,
+    /// "Capture audio too" is checked (displays and windows only, off at first).
+    audio: bool,
 }
 
 impl AddPicker {
@@ -53,6 +55,7 @@ impl AddPicker {
             waiting: true,
             entries: Vec::new(),
             query: String::new(),
+            audio: false,
         }
     }
 
@@ -66,6 +69,7 @@ impl AddPicker {
                 .map(|(id, name)| (name.clone(), String::new(), Pick::Existing(*id)))
                 .collect(),
             query: String::new(),
+            audio: false,
         }
     }
 
@@ -88,6 +92,21 @@ impl AddPicker {
             })
             .collect();
         true
+    }
+
+    /// The dialog offers "Capture audio too": a display or a window is being added.
+    pub fn offers_audio(&self) -> bool {
+        matches!(self.kind, Some(SourceKind::Screen | SourceKind::Window))
+    }
+
+    /// "Capture audio too" is checked.
+    pub fn audio(&self) -> bool {
+        self.audio
+    }
+
+    /// Checks or unchecks "Capture audio too".
+    pub fn set_audio(&mut self, on: bool) {
+        self.audio = on;
     }
 
     pub fn kind(&self) -> Option<SourceKind> {
@@ -147,6 +166,23 @@ mod tests {
             recent: None,
             picker: false,
         }
+    }
+
+    #[test]
+    fn capture_audio_too_is_offered_for_displays_and_windows_only_and_starts_off() {
+        for (kind, offered) in [
+            (SourceKind::Screen, true),
+            (SourceKind::Window, true),
+            (SourceKind::Camera, false),
+            (SourceKind::AudioInput, false),
+        ] {
+            let mut p = AddPicker::for_kind(kind);
+            assert_eq!(p.offers_audio(), offered, "{kind:?}");
+            assert!(!p.audio());
+            p.set_audio(true);
+            assert!(p.audio());
+        }
+        assert!(!AddPicker::existing(&[]).offers_audio());
     }
 
     #[test]
