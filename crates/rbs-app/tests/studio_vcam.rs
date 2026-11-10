@@ -222,9 +222,9 @@ impl Client {
         };
         let hello = c.call(
             "session.hello",
-            serde_json::json!({"protocols": ["1.21"], "client": {"name": "test", "version": "1"}}),
+            serde_json::json!({"protocols": ["1.22"], "client": {"name": "test", "version": "1"}}),
         );
-        assert_eq!(hello["result"]["protocol"], "1.21", "{hello}");
+        assert_eq!(hello["result"]["protocol"], "1.22", "{hello}");
         (api, c)
     }
 

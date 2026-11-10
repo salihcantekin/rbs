@@ -278,6 +278,9 @@ fn place_one(window: &MainWindow, which: Picture) {
         if overlays.get_hint_open() {
             st.covers.push(overlay(overlays.get_hint_cover()));
         }
+        if overlays.get_name_open() {
+            st.covers.push(overlay(overlays.get_name_cover()));
+        }
         if overlays.get_tip_shown() {
             st.covers.push(overlay(overlays.get_tip_cover()));
         }
