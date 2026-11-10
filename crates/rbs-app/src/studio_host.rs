@@ -6051,6 +6051,43 @@ impl ApiTarget<'_> {
                 }
                 Ok(Response::Done(Empty {}))
             }
+            C::CanvasAddVertical(p) => {
+                use rbs_api::request::VerticalLayout as L;
+                let (width, height) = (p.width.unwrap_or(1080), p.height.unwrap_or(1920));
+                if !(16..=8192).contains(&width) || !(16..=8192).contains(&height) {
+                    return Err(ApiError::new(
+                        ErrorKind::InvalidParams,
+                        "width and height must be from 16 to 8192",
+                    ));
+                }
+                let spec = VerticalCanvas {
+                    size: Size::new(width, height),
+                    follow: p.follow.unwrap_or(true),
+                    layout: p.layout.map(|l| match l {
+                        L::Fit => AutoLayout::Fit,
+                        L::Fill => AutoLayout::Fill,
+                        L::Stack => AutoLayout::Stack,
+                    }),
+                };
+                let done = host.add_vertical(spec).map_err(|e| refused(&e))?;
+                if done {
+                    host.publish(notify);
+                }
+                Ok(Response::Done(Empty {}))
+            }
+            C::CanvasRemoveVertical(_) => {
+                if host.vertical.is_none() {
+                    return Err(ApiError::new(
+                        ErrorKind::NotFound,
+                        "there is no vertical canvas",
+                    ));
+                }
+                let done = host.remove_vertical().map_err(|e| refused(&e))?;
+                if done {
+                    host.publish(notify);
+                }
+                Ok(Response::Done(Empty {}))
+            }
             C::CanvasSetMasterVolume(p) => {
                 let changed = host
                     .set_master(Some(p.volume), None)

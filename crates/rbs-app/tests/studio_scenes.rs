@@ -781,3 +781,35 @@ fn a_vertical_canvas_is_added_follows_the_main_program_and_is_removed() {
     });
     drop(host);
 }
+
+#[test]
+fn the_control_api_adds_and_removes_the_vertical_canvas() {
+    let Some((host, updates, _api, mut c)) = start() else {
+        return;
+    };
+    // Nothing to remove yet.
+    assert_eq!(
+        kind(&c.call("canvas.remove_vertical", json!({}))),
+        "not_found"
+    );
+    // Sizes outside 16..=8192 are refused.
+    let bad = c.call("canvas.add_vertical", json!({"width": 8, "height": 1920}));
+    assert_eq!(kind(&bad), "invalid_params", "{bad}");
+    ok(&c.call(
+        "canvas.add_vertical",
+        json!({"width": 720, "height": 1280, "layout": "stack"}),
+    ));
+    next(&updates, |u| match u {
+        Update::Vertical(Some(v)) if v.follow => Some(()),
+        _ => None,
+    });
+    // At most one.
+    let again = c.call("canvas.add_vertical", json!({}));
+    assert_eq!(kind(&again), "conflict", "{again}");
+    ok(&c.call("canvas.remove_vertical", json!({})));
+    next(&updates, |u| match u {
+        Update::Vertical(None) => Some(()),
+        _ => None,
+    });
+    drop(host);
+}
