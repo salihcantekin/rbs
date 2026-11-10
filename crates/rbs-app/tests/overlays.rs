@@ -138,3 +138,25 @@ fn a_feature_section_keeps_its_settings_when_off_and_folds_by_id() {
         open_height
     );
 }
+
+#[test]
+fn the_name_prompt_accepts_with_return_and_cancels_with_escape() {
+    use std::cell::RefCell;
+    use std::rc::Rc;
+
+    let p = setup();
+    let o = p.global::<Overlays>();
+    let log: Rc<RefCell<Vec<String>>> = Rc::default();
+    let accepted = log.clone();
+    o.on_name_accepted(move |n| accepted.borrow_mut().push(format!("ok {n}")));
+    let cancelled = log.clone();
+    o.on_name_cancelled(move || cancelled.borrow_mut().push("cancel".to_owned()));
+    o.set_name_value("Show".into());
+    o.set_name_open(true);
+    settle();
+    // The field starts with the value and has the focus: Return accepts it.
+    key(&p, Key::Return);
+    assert_eq!(log.borrow().as_slice(), ["ok Show"]);
+    key(&p, Key::Escape);
+    assert_eq!(log.borrow().as_slice(), ["ok Show", "cancel"]);
+}

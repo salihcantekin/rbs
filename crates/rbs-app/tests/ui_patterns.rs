@@ -25,7 +25,7 @@ fn slint_files() -> BTreeMap<String, String> {
 /// the window layers, so menus move to `CommandMenu`. These are the ones not yet moved
 /// (file, count); lower a number when a menu migrates, never raise one.
 const POPUP_WINDOWS: &[(&str, usize)] = &[
-    ("app.slint", 2),
+    ("app.slint", 1),
     ("app_menu.slint", 1),
     ("appearance.slint", 1),
     ("components.slint", 2),
