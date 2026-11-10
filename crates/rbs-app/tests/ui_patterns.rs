@@ -27,7 +27,7 @@ fn slint_files() -> BTreeMap<String, String> {
 const POPUP_WINDOWS: &[(&str, usize)] = &[
     ("app_menu.slint", 1),
     ("appearance.slint", 0),
-    ("components.slint", 2),
+    ("components.slint", 1),
     ("studio.slint", 0),
 ];
 
