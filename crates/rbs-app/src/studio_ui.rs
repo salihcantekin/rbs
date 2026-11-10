@@ -2708,6 +2708,7 @@ impl StudioUi {
                             mixer_hidden: h.hidden,
                             picture: false,
                             audio: true,
+                            reloadable: true,
                             sized: false,
                             flip: rbs_scene::FlipState::default(),
                         });
@@ -2732,6 +2733,7 @@ impl StudioUi {
             mixer_hidden: row.audio.mixer_hidden,
             picture: row.layout.is_some(),
             audio: row.kind.is_some_and(SourceKind::is_audio),
+            reloadable: row.kind.is_some(),
             sized: row.picture.is_some(),
             flip: row.layout.map(|l| l.flip_state()).unwrap_or_default(),
         })
@@ -3685,6 +3687,9 @@ pub struct SourceFacts {
     pub picture: bool,
     /// It makes sound only (it can be muted in the Mixer).
     pub audio: bool,
+    /// It captures something that can be opened again (a screen, window, camera or
+    /// audio endpoint), so it can be reloaded (ADR-0077).
+    pub reloadable: bool,
     /// Its picture size is known, so it can be fitted or reset (ADR-0084).
     pub sized: bool,
     /// Its picture is mirrored left to right or top to bottom as seen on the canvas.

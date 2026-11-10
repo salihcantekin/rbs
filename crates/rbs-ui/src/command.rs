@@ -726,6 +726,17 @@ pub const ENTRIES: &[Entry] = &[
         checkable: false,
     },
     Entry {
+        id: "source.reload",
+        title: "Reload source",
+        tooltip: "Open the source again, for a window that was closed and opened again or a device that came back",
+        icon: Some("refresh"),
+        shortcut: None,
+        menu: Menu::Source,
+        kind: action("source.reload"),
+        params: &[target("source"), COLLECTION],
+        checkable: false,
+    },
+    Entry {
         id: "item.remove",
         title: "Remove from scene",
         tooltip: "Remove the source from this scene; it is deleted only when no other scene has it",
@@ -1166,6 +1177,7 @@ pub const MENU_LAYOUT: &[(Menu, &[&str])] = &[
             "item.reset_transform",
             "|",
             "source.rename",
+            "source.reload",
             "item.remove",
             "source.delete",
             "#Mixer",
@@ -1536,6 +1548,7 @@ pub const CONTEXT_LAYOUT: &[(Context, &[&str])] = &[
             "source.muted.toggle",
             "|",
             "source.rename",
+            "source.reload",
             "ui.panel.select?id=rbs.properties",
             "|",
             "item.remove",
@@ -2045,6 +2058,7 @@ mod tests {
                 "item.locked.toggle?item=40",
                 "|",
                 "source.rename?source=12",
+                "source.reload?source=12",
                 "ui.panel.select?id=rbs.properties",
                 "|",
                 "item.remove?item=40",
@@ -2059,7 +2073,7 @@ mod tests {
             }
         ));
         assert!(matches!(
-            &source[6],
+            &source[7],
             MenuItem::Command { title, .. } if title == "Properties"
         ));
         // A picker without its choice is a submenu; with it, one item with the

@@ -435,6 +435,7 @@ impl App {
             Run::RemoveScene(id) => self.studio.remove_scene(id),
             Run::RenameSource(id, Some(name)) => self.studio.rename_source(id, &name),
             Run::RenameSource(id, None) => self.ask_rename(id, false),
+            Run::ReloadSource(id) => self.studio.reload_source(id),
             Run::DeleteSource(id) => self.studio.delete_source(id),
             Run::RemoveFromScene(id) => self.studio.remove_from_scene(id),
             Run::SourceVisible(id, on) => self.studio.set_source_visible(id, on),
