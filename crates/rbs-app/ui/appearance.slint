@@ -2,7 +2,7 @@
 // theme library and the theme editor. Rust (`appearance_page`) pushes state into the
 // `Appearance` global of the Settings window and handles its callbacks.
 import { Theme, Tokens } from "tokens.slint";
-import { Button, Checkbox, ColorPicker, FocusRing, RingFocus, IconButton, IconName, MenuItem, MenuSurface, NumberField, Select, TextField, Toggle } from "components.slint";
+import { Button, Checkbox, ColorPicker, FocusRing, RingFocus, IconButton, IconName, MenuSurface, NumberField, Overlays, Select, TextField, Toggle } from "components.slint";
 import { SettingsCard, SettingRow, SettingBlock, SettingsNotice, SettingsCallout } from "settings.slint";
 
 // One theme in the library: built-in themes first, then user themes by name.
@@ -82,10 +82,14 @@ export global Appearance {
     // one slot holds it. Save is on while it is set and applies it first, so a value
     // being typed is saved without leaving the field.
     in-out property <int> pending-kind: -1;
-    // The font menu's list: installed families whose names contain its filter
-    // (`find-fonts` fills it when the menu opens and as the filter changes).
-    in property <[string]> font-names;
+    // The font picker's list: `find-fonts` fills the picker's rows with the installed
+    // families whose names contain the filter, when it opens and as the filter changes.
     callback find-fonts(string);
+    // The button that opened the picker (its row's label), the family picked and a
+    // counter that moves with each pick.
+    in-out property <string> font-owner;
+    in-out property <string> font-picked;
+    in-out property <int> font-picked-serial;
     // The font field's suggestions for the family being typed (the part after the
     // last comma): names that start with it first. `suggest-fonts` fills it as the
     // field's text changes; `complete-font` returns the text with that part replaced.
@@ -234,63 +238,28 @@ component KeepLook inherits Rectangle {
     }
 }
 
-// "Add font": a menu of the fonts this computer has, with a filter field. The list is
-// read when the menu first opens (nothing is read while the editor is unused, P13).
-// A pick is reported with `picked`; the row puts it first in the family list.
+// "Add font": opens the searchable picker (ADR-0094 B1, `Overlays.picker-*`) over the
+// fonts this computer has. The list is read when the picker first opens (nothing is read
+// while the editor is unused, P13). A pick comes back as `Appearance.font-picked`, and
+// only the button that opened the picker (`font-owner`) reports it with `picked`; the
+// row puts it first in the family list.
 component FontMenu inherits Button {
     in property <string> for-label;
     callback picked(string);
+    property <int> serial: Appearance.font-picked-serial;
     text: @tr("Add font");
     accessible-name: @tr("Add a font to {}", root.for-label);
     icon: IconName.chevron-down;
     dense: true;
-    clicked => {
-        Appearance.find-fonts("");
-        menu.show();
+    changed serial => {
+        if Appearance.font-owner == root.for-label { root.picked(Appearance.font-picked); }
     }
-    menu := PopupWindow {
-        close-policy: close-on-click-outside;
-        x: root.width - Tokens.size-menu-md;
-        y: root.height;
-        width: Tokens.size-menu-md;
-        MenuSurface {
-            width: Tokens.size-menu-md;
-            height: lay.preferred-height;
-            accessible-role: groupbox;
-            accessible-label: @tr("Fonts on this computer");
-            lay := VerticalLayout {
-                padding: Tokens.space-2;
-                spacing: Tokens.space-2;
-                TextField {
-                    label: @tr("Filter fonts");
-                    placeholder: @tr("Filter");
-                    edited(t) => { Appearance.find-fonts(t); }
-                }
-                if Appearance.font-names.length == 0: Text {
-                    text: @tr("No font on this computer has that in its name.");
-                    color: Theme.text-secondary;
-                    font-size: Tokens.type-caption-size;
-                    wrap: word-wrap;
-                }
-                if Appearance.font-names.length > 0: Flickable {
-                    height: min(list.preferred-height, Tokens.size-menu-md);
-                    content-height: list.preferred-height;
-                    content-width: self.width;
-                    list := VerticalLayout {
-                        spacing: Tokens.space-1;
-                        accessible-role: AccessibleRole.list;
-                        accessible-label: @tr("Fonts on this computer");
-                        for f in Appearance.font-names: MenuItem {
-                            text: f;
-                            activated => {
-                                root.picked(f);
-                                menu.close();
-                            }
-                        }
-                    }
-                }
-            }
-        }
+    clicked => {
+        Appearance.font-owner = root.for-label;
+        Overlays.picker-title = @tr("Add a font to {}", root.for-label);
+        Overlays.picker-status = "";
+        Overlays.picker-open = true;
+        Appearance.find-fonts("");
     }
 }
 
