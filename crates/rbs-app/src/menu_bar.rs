@@ -617,7 +617,12 @@ impl CommandState for Shown<'_> {
 
     fn applies(&self, id: &CommandId) -> bool {
         match id.base() {
-            "item.locked.toggle" => self.source(id).is_ok_and(|f| f.picture),
+            "item.locked.toggle"
+            | "item.flip"
+            | "item.rotate"
+            | "item.fit"
+            | "item.align"
+            | "item.reset_transform" => self.source(id).is_ok_and(|f| f.picture),
             "source.muted.toggle" | "source.mixer_hidden.toggle" => {
                 self.source(id).is_ok_and(|f| f.audio)
             }
