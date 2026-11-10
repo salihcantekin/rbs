@@ -4340,6 +4340,7 @@ mod tests {
             recent: None,
             picker: false,
             mic: None,
+            sound: true,
         }
     }
 
