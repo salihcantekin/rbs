@@ -27,6 +27,7 @@ pub mod export;
 pub mod output;
 pub mod preview;
 pub mod replay;
+pub mod replay_node;
 pub mod still;
 pub mod vcam;
 
