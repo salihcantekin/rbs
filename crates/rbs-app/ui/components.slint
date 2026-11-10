@@ -2190,12 +2190,26 @@ export component OverlayHost inherits Rectangle {
                     border-color: picker-input.has-focus ? Theme.border-focus : Theme.border-strong;
                     background: Theme.surface-sunken;
                     height: Tokens.size-control-md;
+                    Icon {
+                        name: IconName.search;
+                        ink: Theme.text-secondary;
+                        x: Tokens.space-2;
+                    }
+                    if picker-input.text == "": Text {
+                        x: Tokens.space-2 + Tokens.size-icon-box + Tokens.space-1;
+                        text: @tr("Search");
+                        color: Theme.text-secondary;
+                        font-size: Tokens.type-body-size;
+                        vertical-alignment: center;
+                        height: parent.height;
+                        accessible-role: none;
+                    }
                     picker-input := TextInput {
                         selection-background-color: Theme.accent;
                         selection-foreground-color: Theme.text-inverse;
                         text-cursor-width: Tokens.size-focus-ring;
-                        x: Tokens.space-2;
-                        width: parent.width - 2 * Tokens.space-2;
+                        x: Tokens.space-2 + Tokens.size-icon-box + Tokens.space-1;
+                        width: parent.width - 2 * Tokens.space-2 - Tokens.size-icon-box - Tokens.space-1;
                         color: Theme.text-primary;
                         font-size: Tokens.type-body-size;
                         vertical-alignment: center;
@@ -2229,7 +2243,20 @@ export component OverlayHost inherits Rectangle {
                     wrap: word-wrap;
                     accessible-role: text;
                 }
+                // The rows sit in a framed well with a line between them and a chevron
+                // at the end of each, so they read as a list to choose from, not as
+                // another field.
+                Rectangle {
+                    height: picker-list.height + 2 * Tokens.size-border;
+                    border-width: Tokens.size-border;
+                    border-radius: Tokens.radius-sm;
+                    border-color: Theme.border-subtle;
+                    background: Theme.surface-base;
+                    clip: true;
                 picker-list := Flickable {
+                    y: Tokens.size-border;
+                    x: Tokens.size-border;
+                    width: parent.width - 2 * Tokens.size-border;
                     height: min(Overlays.picker-rows.length * Tokens.size-control-md, Tokens.size-select-list-h);
                     content-height: Overlays.picker-rows.length * Tokens.size-control-md;
                     accessible-role: list;
@@ -2238,7 +2265,6 @@ export component OverlayHost inherits Rectangle {
                         y: i * Tokens.size-control-md;
                         height: Tokens.size-control-md;
                         width: parent.width;
-                        border-radius: Tokens.radius-sm;
                         background: i == Overlays.picker-current || row-touch.has-hover ? Theme.accent-subtle : transparent;
                         accessible-role: button;
                         accessible-label: r.name;
@@ -2262,9 +2288,23 @@ export component OverlayHost inherits Rectangle {
                                 vertical-alignment: center;
                                 accessible-role: none;
                             }
+                            Rectangle { horizontal-stretch: 1; }
+                            VerticalLayout {
+                                alignment: center;
+                                Icon {
+                                    name: IconName.chevron-right;
+                                    ink: i == Overlays.picker-current || row-touch.has-hover ? Theme.text-primary : Theme.text-secondary;
+                                }
+                            }
+                        }
+                        if i < Overlays.picker-rows.length - 1: Rectangle {
+                            y: parent.height - self.height;
+                            height: Tokens.size-border;
+                            background: Theme.border-subtle;
                         }
                         row-touch := TouchArea { clicked => { Overlays.picker-chosen(r.index); } }
                     }
+                }
                 }
                 HorizontalLayout {
                     spacing: Tokens.space-1;
