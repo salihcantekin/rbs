@@ -58,6 +58,7 @@ use rbs_transport::{ReconnectPolicy, Secret, TransportInput};
 use rbs_vcam::{InstallState, VcamStats, VirtualCameraFactory};
 
 pub mod filters;
+pub mod replay;
 
 use crate::canvas_profile::CanvasProfile;
 use crate::edit_history::{EditKind, History, HistoryError, StepInfo};
@@ -747,6 +748,21 @@ pub enum Command {
     /// The virtual camera as Settings › Virtual camera knows it: what `vcam.start` and
     /// `vcam.status` use for control API clients. Sent at start and after each change.
     SetVirtualCamera(CameraSetup),
+    /// The replay buffer's settings as saved (ADR-0088): used when it arms. Sent at
+    /// start and after each change; a buffer that runs keeps the settings it started
+    /// with until it is armed again.
+    SetReplay(crate::replay_settings::ReplaySetup),
+    /// Arm the replay buffer; answered with [`Update::Replay`], and an
+    /// [`Update::Error`] when it did not start.
+    ArmReplay,
+    /// Disarm the replay buffer and free what it held; answered with [`Update::Replay`].
+    DisarmReplay,
+    /// Save the last `seconds` (all of the buffer for `None`) as a clip file; answered
+    /// with [`Update::ReplaySaved`] once it is written.
+    SaveReplay {
+        /// How much of the past, or `None` for all of it.
+        seconds: Option<u32>,
+    },
     /// The stream settings as saved: what `stream.start` uses for control API clients.
     /// Sent at start and after each change.
     SetStreamProfile(StreamProfile),
@@ -1180,6 +1196,11 @@ pub enum Update {
     /// The virtual camera started or stopped sending (`None`), and its counters once a
     /// second while it sends.
     VirtualCamera(Option<CameraStatus>),
+    /// The replay buffer's state: armed or not, what it holds, and whether a clip is
+    /// being saved. Sent when it changes and once a second while armed.
+    Replay(replay::ReplayState),
+    /// A saved clip's file, or why it could not be saved.
+    ReplaySaved(Result<std::path::PathBuf, String>),
     /// [`Command::SwitchCollection`] with this `seq` is done: `Ok` the new collection
     /// runs, `Err` why the one before still runs.
     CollectionSwitched {
@@ -1316,6 +1337,8 @@ enum Msg {
     ApiWake,
     /// An OS picker failed (not cancelled).
     PickFailed(String),
+    /// A replay clip writer finished.
+    ReplayWritten(Result<std::path::PathBuf, String>),
     /// A thumbnail worker finished one target.
     Thumbnail {
         generation: u64,
@@ -1728,6 +1751,8 @@ struct Host {
     camera_setup: Option<CameraSetup>,
     /// The `vcam.changed` state last published.
     camera_published: Option<api::VcamStatus>,
+    /// The replay buffer's settings and state (ADR-0088).
+    replay: replay::ReplayHost,
 }
 
 fn run(
@@ -1758,7 +1783,11 @@ fn run(
                 match m {
                     Msg::AttachApi(a) => api = Some(*a),
                     Msg::DetachApi => api = None,
-                    Msg::Ui(_) | Msg::ApiWake | Msg::PickFailed(_) | Msg::Thumbnail { .. } => {}
+                    Msg::Ui(_)
+                    | Msg::ApiWake
+                    | Msg::PickFailed(_)
+                    | Msg::ReplayWritten(_)
+                    | Msg::Thumbnail { .. } => {}
                 }
                 if let Some(api) = &api {
                     let mut events = EventPublisher::new();
@@ -1853,6 +1882,7 @@ fn round(
             host.api = None;
         }
         Some(Msg::PickFailed(why)) => notify(Update::Error(why)),
+        Some(Msg::ReplayWritten(result)) => host.replay_written(result, notify),
         Some(Msg::Thumbnail {
             generation,
             adapter,
@@ -1943,6 +1973,9 @@ fn round(
         wait = wait.min(left);
     }
     if let Some(left) = host.report_camera(now, notify) {
+        wait = wait.min(left);
+    }
+    if let Some(left) = host.report_replay(now, notify) {
         wait = wait.min(left);
     }
     host.publish(notify);
@@ -2073,6 +2106,7 @@ fn start(
             camera_due: None,
             camera_setup: None,
             camera_published: None,
+            replay: replay::ReplayHost::new(),
             streaming: None,
             keys,
             key_account: config.key_account,
@@ -2449,6 +2483,21 @@ impl Host {
                 }
             }
             Command::StopVirtualCamera => self.stop_camera(notify),
+            Command::SetReplay(setup) => {
+                self.replay.setup = setup;
+                self.replay_changed(notify);
+            }
+            Command::ArmReplay => {
+                if let Err(why) = self.arm_replay(notify) {
+                    notify(Update::Error(why));
+                }
+            }
+            Command::DisarmReplay => self.disarm_replay(notify),
+            Command::SaveReplay { seconds } => {
+                if let Err(why) = self.save_replay(seconds) {
+                    notify(Update::ReplaySaved(Err(why)));
+                }
+            }
             Command::SetVirtualCamera(setup) => {
                 self.camera_setup = Some(setup);
                 self.camera_changed();
@@ -2991,6 +3040,8 @@ impl Host {
             self.camera_due = Some(self.clock.now());
         }
         self.camera_changed();
+        // The replay buffer keeps its place: it is armed again in the new studio.
+        self.rearm_replay(&|_| {});
         Ok(())
     }
 

@@ -3337,6 +3337,9 @@ impl StudioUi {
                 out.switch = Some((collection, id));
             }
             Update::VirtualCamera(status) => out.camera = Some(status),
+            // The replay buffer's controls and toast come with its UI (ADR-0088); the
+            // control API and the host already carry its state.
+            Update::Replay(_) | Update::ReplaySaved(_) => {}
             Update::Stats(stats) => {
                 let rows: Vec<StatRow> = stat_lines(&stats)
                     .into_iter()

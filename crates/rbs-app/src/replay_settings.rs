@@ -147,6 +147,11 @@ pub fn save(config: &Path, setup: &ReplaySetup) -> std::io::Result<()> {
 }
 
 #[cfg(test)]
+#[allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::field_reassign_with_default
+)] // Tests fail by panicking.
 mod tests {
     use super::*;
 
