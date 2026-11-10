@@ -2035,3 +2035,65 @@ export component StatusLine inherits Rectangle {
         }
     }
 }
+
+// A feature with many settings (ADR-0094 rule A3, ADR-0078): the name flush left, then
+// an info button, an optional on/off switch and a chevron on the right; the settings
+// under it sit flush left. The settings are kept while the feature is off. `id` saves
+// the open state in the workspace file like any collapsible section.
+export component FeatureSection inherits VerticalLayout {
+    in property <string> title;
+    in property <string> id;
+    in property <string> hint;
+    in property <bool> has-toggle: true;
+    in-out property <bool> on: true;
+    callback toggled(bool);
+    property <bool> closed: Sections.closed(root.id, Sections.rev);
+    spacing: Tokens.size-field-gap;
+    HorizontalLayout {
+        spacing: Tokens.space-2;
+        Rectangle {
+            horizontal-stretch: 1;
+            min-height: Tokens.size-control-md;
+            Text {
+                x: 0;
+                width: parent.width;
+                height: parent.height;
+                text: root.title;
+                color: root.has-toggle && !root.on ? Theme.text-secondary : Theme.text-primary;
+                font-size: Tokens.type-body-size;
+                font-weight: Tokens.type-label-weight;
+                vertical-alignment: center;
+                overflow: elide;
+                accessible-role: none;
+            }
+            TouchArea { clicked => { Sections.set-closed(root.id, !root.closed); } }
+        }
+        if root.hint != "": VerticalLayout {
+            alignment: center;
+            InfoHint { label: root.title; text: root.hint; }
+        }
+        if root.has-toggle: Toggle {
+            label: root.title;
+            checked: root.on;
+            toggled(c) => { root.on = c; root.toggled(c); }
+        }
+        VerticalLayout {
+            alignment: center;
+            IconButton {
+                icon: root.closed ? IconName.chevron-right : IconName.chevron-down;
+                name: root.closed ? @tr("Show settings") : @tr("Hide settings");
+                accessible-expanded: !root.closed;
+                clicked => { Sections.set-closed(root.id, !root.closed); }
+            }
+        }
+    }
+    // Hidden, not removed, so @children keep their values.
+    Rectangle {
+        visible: !root.closed;
+        height: root.closed ? 0px : inner.preferred-height;
+        inner := VerticalLayout {
+            spacing: Tokens.size-field-gap;
+            @children
+        }
+    }
+}

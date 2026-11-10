@@ -97,3 +97,44 @@ fn a_tooltip_shows_at_once_for_the_keyboard_and_after_the_delay_for_the_pointer(
     settle();
     assert!(!o.get_tip_shown());
 }
+
+#[test]
+fn a_feature_section_keeps_its_settings_when_off_and_folds_by_id() {
+    use rbs_app_ui::Sections;
+    use std::cell::RefCell;
+    use std::collections::HashSet;
+    use std::rc::Rc;
+
+    let p = setup();
+    let shut: Rc<RefCell<HashSet<String>>> = Rc::default();
+    let s = p.global::<Sections>();
+    let read = shut.clone();
+    s.on_closed(move |id, _| read.borrow().contains(id.as_str()));
+    let write = shut.clone();
+    s.on_set_closed(move |id, closed| {
+        let mut set = write.borrow_mut();
+        if closed {
+            set.insert(id.to_string());
+        } else {
+            set.remove(id.as_str());
+        }
+    });
+    settle();
+    let open_height = p.get_feature_height();
+    assert!(p.get_feature_on());
+    // Switching it off leaves the settings in place.
+    p.invoke_flip_feature();
+    settle();
+    assert!(!p.get_feature_on());
+    assert_eq!(p.get_feature_height(), open_height);
+    // Folding by id takes their room.
+    s.invoke_set_closed("probe.feature".into(), true);
+    s.set_rev(s.get_rev() + 1);
+    settle();
+    assert!(
+        p.get_feature_height() < open_height,
+        "{:?} vs {:?}",
+        p.get_feature_height(),
+        open_height
+    );
+}
