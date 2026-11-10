@@ -525,10 +525,15 @@ export component ProgramPanel inherits Rectangle {
         enabled: editable;
         pointer-event(e) => {
             if e.kind == PointerEventKind.cancel { Studio.preview-release(); return; }
-            if e.kind == PointerEventKind.down && e.button == PointerEventButton.right {
-                keys.focus();
-                root.menu-at = { x: self.mouse-x, y: self.mouse-y };
-                menu.open(root.menu-at);
+            // The menu opens when the right button goes up, not down: the system menu
+            // takes the pointer, so a press it opened on would never see its release and
+            // the next click (the one that closes the menu) would drag the selection.
+            if e.button == PointerEventButton.right {
+                if e.kind == PointerEventKind.up {
+                    keys.focus();
+                    root.menu-at = { x: self.mouse-x, y: self.mouse-y };
+                    menu.open(root.menu-at);
+                }
                 return;
             }
             if e.button != PointerEventButton.left { return; }
