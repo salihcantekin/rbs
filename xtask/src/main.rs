@@ -345,8 +345,7 @@ enum Class {
 }
 
 /// `None` for a crate from outside the workspace. A workspace crate that is missing
-/// here is reported by [`class`] through the caller... actually missing workspace
-/// crates are not detected if we only look at edges. [`known`] fails the build.
+/// from this match is reported by `check_workspace`, which fails the build.
 fn class(name: &str) -> Option<Class> {
     Some(match name {
         "rbs-core" | "rbs-graph" | "rbs-scene" | "rbs-capture" | "rbs-audio-io" | "rbs-codec"
