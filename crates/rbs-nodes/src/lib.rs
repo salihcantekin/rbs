@@ -26,6 +26,7 @@ pub mod encode;
 pub mod export;
 pub mod output;
 pub mod preview;
+pub mod replay;
 pub mod still;
 pub mod vcam;
 
