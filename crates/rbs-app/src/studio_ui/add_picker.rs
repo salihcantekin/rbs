@@ -84,7 +84,7 @@ impl AddPicker {
             .iter()
             .map(|t| {
                 let note = match (&t.mic, t.is_default) {
-                    (Some(mic), _) => format!("with {mic}"),
+                    (Some(_), _) => "+ mic".to_owned(),
                     (None, true) => "default".to_owned(),
                     (None, false) => String::new(),
                 };
@@ -254,7 +254,7 @@ mod tests {
         assert!(p.offers_microphone());
         assert!(!p.offers_audio());
         assert!(p.audio());
-        assert_eq!(p.rows()[0].note, "with Webcam mic");
+        assert_eq!(p.rows()[0].note, "+ mic");
         assert_eq!(p.rows()[1].note, "");
         // No camera has one: nothing is offered and nothing is checked.
         let mut none = AddPicker::for_kind(SourceKind::Camera);

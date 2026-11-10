@@ -803,7 +803,7 @@ impl App {
             } else if view.offers_mic {
                 (
                     "Add its microphone too",
-                    "A microphone that belongs with a camera was found; the rows that have one say so. Adds it as its own audio source with the camera.",
+                    "A microphone that belongs with a camera was found; the rows that have one say '+ mic'. Adds it as its own audio source with the camera.",
                 )
             } else {
                 ("", "")
