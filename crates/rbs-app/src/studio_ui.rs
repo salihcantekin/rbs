@@ -2936,6 +2936,8 @@ impl StudioUi {
             self.edit.reset();
         }
         match u {
+            // The Source tab shows the pictures once the list design is approved (ADR-0077).
+            Update::Thumbnail { .. } => {}
             #[cfg(feature = "fault-injection")]
             Update::Recovered { .. } => {}
             Update::BoxPlaced { seq, ok } => {
