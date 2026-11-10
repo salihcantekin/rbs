@@ -21,7 +21,7 @@ use rbs_app::studio_host::{
     SourceKind, SourceRow, SourceSettingsView, SourceStatus, Stats, StreamRequest, StreamUpdate,
     StudioHost, Target, TransformOp, Update,
 };
-use rbs_app::user_session::{RECORDING, STREAM, UserSession};
+use rbs_app::user_session::{RECORDING, RECORDING_VERTICAL, STREAM, STREAM_VERTICAL, UserSession};
 use rbs_audio::LevelMeter;
 use rbs_core::fault::SourceFault;
 use rbs_record::Link;
@@ -259,6 +259,9 @@ pub struct StudioUi {
     key_hint: String,
     /// [`st_state`].
     pub st_state: i32,
+    /// The vertical canvas records, and it streams (ADR-0093 decision 6): an output
+    /// profile switch waits for them as for the main ones.
+    vertical_busy: (bool, bool),
     /// The running stream's server host and when it went live.
     st_live: Option<(String, Instant)>,
     /// The stream's connection, as reported last.
@@ -434,6 +437,7 @@ impl StudioUi {
             key_serial: 0,
             key_hint: stream_key::hint(keys),
             st_state: st_state::OFF,
+            vertical_busy: (false, false),
             st_live: None,
             st_link: Link::default(),
             st_note: String::new(),
@@ -2853,6 +2857,12 @@ impl StudioUi {
         if self.st_state != st_state::OFF {
             return Err(format!("End the stream before {doing}."));
         }
+        if self.vertical_busy.0 {
+            return Err(format!("Stop the vertical recording before {doing}."));
+        }
+        if self.vertical_busy.1 {
+            return Err(format!("End the vertical stream before {doing}."));
+        }
         Ok(())
     }
 
@@ -2906,6 +2916,25 @@ impl StudioUi {
         )));
         self.send(Command::SetProfile(self.profile.clone()));
         self.send(Command::SetStreamProfile(self.stream.clone()));
+        self.send_vertical_profiles();
+    }
+
+    /// Hands the vertical canvas's saved recording and stream settings to the studio
+    /// (ADR-0093 decision 6). A section that does not load counts as not saved; one
+    /// that loads with a problem is sent as it is, so a start says it cannot be used.
+    fn send_vertical_profiles(&self) {
+        let saved_record = self
+            .user
+            .section::<RecordProfile>(RECORDING_VERTICAL)
+            .ok()
+            .flatten();
+        let saved_stream = self
+            .user
+            .section::<StreamProfile>(STREAM_VERTICAL)
+            .ok()
+            .flatten();
+        self.send(Command::SetVerticalProfile(saved_record));
+        self.send(Command::SetVerticalStreamProfile(saved_stream));
     }
 
     /// Output profile menu: makes a profile named `name`, with default settings or a
@@ -2946,8 +2975,12 @@ impl StudioUi {
         let result = self.user.delete_profile(&id);
         self.refresh_library();
         result?;
-        // ADR-0051 decision 5: the key goes with the profile.
-        self.send(Command::RemoveStreamKey(stream_key::account(id.as_str())));
+        // ADR-0051 decision 5: the keys go with the profile.
+        let account = stream_key::account(id.as_str());
+        self.send(Command::RemoveStreamKey(stream_key::vertical_account(
+            &account,
+        )));
+        self.send(Command::RemoveStreamKey(account));
         Ok(())
     }
 
@@ -3170,6 +3203,7 @@ impl StudioUi {
                 self.state = 1;
                 self.send(Command::SetProfile(self.profile.clone()));
                 self.send(Command::SetStreamProfile(self.stream.clone()));
+                self.send_vertical_profiles();
                 self.refresh_library();
                 self.kind_list = kinds;
                 let rows: Vec<KindData> = self
@@ -3203,6 +3237,8 @@ impl StudioUi {
                 out.camera = Some(None);
                 self.state = 2;
                 self.cannot_record = Some(format!("The studio stopped: {why}"));
+                // The studio's shutdown ended the vertical outputs too.
+                self.vertical_busy = (false, false);
                 if self.rec_state != rec_state::OFF {
                     // The studio's shutdown closed the file.
                     self.rec_state = rec_state::OFF;
@@ -3325,6 +3361,43 @@ impl StudioUi {
             }
             Update::Recording(r) => self.recording(r, &mut out),
             Update::Stream(u) => self.stream_update(u, &mut out),
+            // The vertical canvas's outputs have no live controls yet (they start
+            // through the control API, protocol 1.29): what went wrong is shown, and
+            // whether they run is kept for the profile switch.
+            Update::VerticalRecording(r) => {
+                // A refused start leaves a running one running.
+                match &r {
+                    RecordingUpdate::Started { .. } => self.vertical_busy.0 = true,
+                    RecordingUpdate::Stopped { .. } => self.vertical_busy.0 = false,
+                    _ => {}
+                }
+                let why = match r {
+                    RecordingUpdate::NotStarted(why) => Some(why),
+                    RecordingUpdate::Stopped { failure, .. } => failure,
+                    _ => None,
+                };
+                if let Some(why) = why {
+                    out.error = Some(format!("Vertical canvas: {why}"));
+                }
+            }
+            Update::VerticalStream(u) => {
+                match &u {
+                    StreamUpdate::Started { .. } => self.vertical_busy.1 = true,
+                    StreamUpdate::Ended { .. } => self.vertical_busy.1 = false,
+                    _ => {}
+                }
+                let why = match u {
+                    StreamUpdate::NotStarted(why) => Some(why),
+                    StreamUpdate::NoKey => {
+                        Some("no stream key is saved for the vertical stream".to_owned())
+                    }
+                    StreamUpdate::Ended { failure, .. } => failure,
+                    _ => None,
+                };
+                if let Some(why) = why {
+                    out.error = Some(format!("Vertical canvas: {why}"));
+                }
+            }
             Update::CollectionSwitched { seq, result } => {
                 if let Some(e) = self.collection_switched(seq, result) {
                     out.error = Some(e);

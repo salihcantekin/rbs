@@ -224,7 +224,11 @@ impl Client {
             "session.hello",
             serde_json::json!({"protocols": ["1.28"], "client": {"name": "test", "version": "1"}}),
         );
-        assert_eq!(hello["result"]["protocol"], "1.28", "{hello}");
+        assert_eq!(
+            hello["result"]["protocol"],
+            rbs_api::session::PROTOCOL_VERSION,
+            "{hello}"
+        );
         (api, c)
     }
 

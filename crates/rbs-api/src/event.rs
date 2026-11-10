@@ -7,8 +7,8 @@ use std::fmt;
 use serde::{Deserialize, Serialize};
 
 use crate::types::{
-    Canvas, RecordState, ReplayStatus, SceneList, Settings, SourceInfo, SourceLevels, StreamState,
-    VcamStatus,
+    Canvas, CanvasRecordState, CanvasStreamState, RecordState, ReplayStatus, SceneList, Settings,
+    SourceInfo, SourceLevels, StreamState, VcamStatus,
 };
 
 /// An event topic. Subscriptions and the subscriber mask are per topic.
@@ -41,11 +41,19 @@ pub enum Topic {
     /// The replay buffer: armed, what it holds, the last clip (state, protocol 1.27).
     #[serde(rename = "replay.changed")]
     ReplayChanged,
+    /// The recording state of a canvas other than the main one, one key per canvas
+    /// (state, protocol 1.29).
+    #[serde(rename = "record.canvas_state")]
+    RecordCanvasState,
+    /// The stream state of a canvas other than the main one, one key per canvas
+    /// (state, protocol 1.29).
+    #[serde(rename = "stream.canvas_state")]
+    StreamCanvasState,
 }
 
 impl Topic {
     /// Every topic.
-    pub const ALL: [Topic; 9] = [
+    pub const ALL: [Topic; 11] = [
         Topic::SourceChanged,
         Topic::RecordState,
         Topic::CanvasChanged,
@@ -55,6 +63,8 @@ impl Topic {
         Topic::SceneChanged,
         Topic::VcamChanged,
         Topic::ReplayChanged,
+        Topic::RecordCanvasState,
+        Topic::StreamCanvasState,
     ];
 
     /// Its name on the wire.
@@ -69,6 +79,8 @@ impl Topic {
             Topic::SceneChanged => "scene.changed",
             Topic::VcamChanged => "vcam.changed",
             Topic::ReplayChanged => "replay.changed",
+            Topic::RecordCanvasState => "record.canvas_state",
+            Topic::StreamCanvasState => "stream.canvas_state",
         }
     }
 
@@ -220,6 +232,12 @@ pub enum EventPayload {
     /// The replay buffer (protocol 1.27).
     #[serde(rename = "replay.changed")]
     ReplayChanged(ReplayStatus),
+    /// A recording state of a canvas other than the main one (protocol 1.29).
+    #[serde(rename = "record.canvas_state")]
+    RecordCanvasState(CanvasRecordState),
+    /// A stream state of a canvas other than the main one (protocol 1.29).
+    #[serde(rename = "stream.canvas_state")]
+    StreamCanvasState(CanvasStreamState),
 }
 
 impl EventPayload {
@@ -235,6 +253,8 @@ impl EventPayload {
             EventPayload::SceneChanged(_) => Topic::SceneChanged,
             EventPayload::VcamChanged(_) => Topic::VcamChanged,
             EventPayload::ReplayChanged(_) => Topic::ReplayChanged,
+            EventPayload::RecordCanvasState(_) => Topic::RecordCanvasState,
+            EventPayload::StreamCanvasState(_) => Topic::StreamCanvasState,
         }
     }
 }

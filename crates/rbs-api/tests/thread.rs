@@ -132,7 +132,7 @@ impl ControlTarget for Studio {
                     audio_encoder: None,
                 }))
             }
-            Command::RecordStatus => Ok(Response::RecordStatus(Snapshot {
+            Command::RecordStatus(_) => Ok(Response::RecordStatus(Snapshot {
                 seq: events.seq_map([Topic::RecordState]),
                 data: RecordState::Idle { last: None },
             })),
