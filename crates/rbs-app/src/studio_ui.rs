@@ -4584,6 +4584,44 @@ mod tests {
         // The move choices name the edges; next tab stack only with a second stack.
         let choices = shown.choices(&cmd("ui.panel.move?id=rbs.mixer"));
         assert!(choices.iter().any(|(_, v, _)| v == "bottom"));
+        // A choice of the panel's menu carries the panel, so it runs on it.
+        let menu = crate::context_menu::items(
+            rbs_ui::command::Context::Panel,
+            &[("id".to_owned(), "rbs.mixer".to_owned())],
+            &shown,
+        );
+        let left = menu
+            .iter()
+            .flat_map(|i| i.choices.iter())
+            .find(|c| c.0 == "Left edge")
+            .unwrap();
+        assert!(
+            matches!(run(&left.1, &shown), Some(Run::MovePanel(..))),
+            "{}",
+            left.1
+        );
+        // A locked layout refuses what rearranges; collapse and auto-hide stay.
+        let mut locked = rbs_ui::builtin::edit();
+        locked.locked = true;
+        let shown = Shown {
+            workspace: &locked,
+            ..shown
+        };
+        for id in [
+            "move?id=rbs.mixer&to=left",
+            "float?id=rbs.mixer",
+            "close?id=rbs.mixer",
+        ] {
+            assert!(
+                shown.enabled(&cmd(&format!("ui.panel.{id}"))).is_err(),
+                "{id}"
+            );
+        }
+        assert!(
+            shown
+                .enabled(&cmd("ui.panel.collapse?id=rbs.mixer"))
+                .is_ok()
+        );
         let _ = std::fs::remove_dir_all(d);
     }
 

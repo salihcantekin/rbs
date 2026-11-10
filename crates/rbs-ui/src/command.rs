@@ -1413,9 +1413,13 @@ fn item(id: CommandId, e: &Entry, state: &dyn CommandState) -> MenuItem {
             .choices(&id)
             .into_iter()
             .map(|(t, v, current)| {
+                // The choice keeps the menu's target (`id=` of a panel), so it runs on it.
+                let mut params = id.params().to_vec();
+                params.push((param.to_owned(), v));
+                params.sort();
                 let run = CommandId {
                     base: e.id.to_owned(),
-                    params: vec![(param.to_owned(), v)],
+                    params,
                 };
                 (t, run, current)
             })

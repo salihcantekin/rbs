@@ -490,6 +490,12 @@ impl CommandState for Shown<'_> {
                     return Err("The panel is not open.".to_owned());
                 };
                 match id.base() {
+                    // The lock stops what rearranges; collapse and auto-hide still work.
+                    "ui.panel.move" | "ui.panel.float" | "ui.panel.close"
+                        if self.workspace.locked =>
+                    {
+                        Err("The layout is locked.".to_owned())
+                    }
                     "ui.panel.collapse" if !c.can_collapse => Err(
                         "Preview and Program, and the last open stack of the centre, stay open."
                             .to_owned(),
