@@ -272,7 +272,7 @@ impl FakeTarget {
         self.commands.push(command.clone());
         match command {
             Command::OutputProfiles => Ok(Response::Profiles(ProfileList { profiles: vec![] })),
-            Command::RecordStatus => Ok(Response::RecordStatus(Snapshot {
+            Command::RecordStatus(_) => Ok(Response::RecordStatus(Snapshot {
                 seq: self.events.seq_map([Topic::RecordState]),
                 data: self.state(),
             })),

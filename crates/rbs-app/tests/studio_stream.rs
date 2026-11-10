@@ -874,7 +874,7 @@ fn api_client(host: &StudioHost) -> (ApiServer, Client) {
     };
     c.call(
         "session.hello",
-        serde_json::json!({"protocols": ["1.2"], "client": {"name": "test", "version": "1"}}),
+        serde_json::json!({"protocols": ["1.29"], "client": {"name": "test", "version": "1"}}),
     );
     (api, c)
 }
@@ -1227,4 +1227,175 @@ fn each_output_profile_has_its_own_stream_key() {
     assert!(server.sessions.lock().unwrap().is_empty());
     drop(host);
     while rx.recv_timeout(LIMIT).is_ok() {}
+}
+
+const VERTICAL_URL: &str = "rtmp://shorts.example.com/app";
+
+#[test]
+fn the_vertical_canvas_records_and_streams_beside_the_main_one() {
+    let Some(gpu) = gpu() else { return };
+    let keys = Arc::new(MemoryKeyStore::new());
+    keys.write(ACCOUNT, &rbs_transport::Secret::new("main_key"))
+        .unwrap();
+    let server = Arc::new(Server::default());
+    let clock = TestClock::new();
+    let (host, rx) = host(gpu, keys.clone(), Arc::clone(&server), &clock);
+    let (api, mut c) = api_client(&host);
+    let vertical = serde_json::json!({"canvas": "vertical"});
+    let sub = c.call(
+        "events.subscribe",
+        serde_json::json!({"topics": ["stream.canvas_state", "record.canvas_state"]}),
+    );
+    assert!(sub["result"].is_object(), "{sub}");
+    let mut main = StreamProfile::new();
+    main.server = URL.into();
+    main.reconnect = false;
+    host.send(Command::SetStreamProfile(main));
+    host.send(Command::SetProfile(record_profile("vertical")));
+    add_display(&host, &rx);
+
+    // No vertical canvas yet, and an unknown canvas is not a canvas.
+    for method in [
+        "record.status",
+        "stream.status",
+        "stream.start",
+        "record.stop",
+    ] {
+        let r = c.call(method, vertical.clone());
+        assert_eq!(r["error"]["data"]["kind"], "not_found", "{method}: {r}");
+    }
+    let square = c.call("stream.start", serde_json::json!({"canvas": "square"}));
+    assert_eq!(
+        square["error"]["data"]["kind"], "invalid_params",
+        "{square}"
+    );
+    let added = c.call(
+        "canvas.add_vertical",
+        serde_json::json!({"width": 720, "height": 1280}),
+    );
+    assert!(added["result"].is_object(), "{added}");
+    next(&rx, |u| {
+        matches!(u, Update::Vertical(Some(_))).then_some(())
+    });
+
+    // No vertical stream settings saved: refused, naming the vertical stream.
+    let refused = c.call("stream.start", vertical.clone());
+    assert_eq!(refused["error"]["data"]["kind"], "failed", "{refused}");
+    assert!(refused.to_string().contains("vertical stream"), "{refused}");
+    let mut shorts = StreamProfile::new();
+    shorts.server = VERTICAL_URL.into();
+    shorts.reconnect = false;
+    // "Record when the stream starts" is per canvas.
+    shorts.auto_record = true;
+    host.send(Command::SetVerticalStreamProfile(Some(shorts)));
+    host.send(Command::ListTargets(SourceKind::Screen));
+    next(&rx, |u| matches!(u, Update::Targets(..)).then_some(()));
+    // Its key is its own: the main key is not used for it.
+    let no_key = c.call("stream.start", vertical.clone());
+    assert!(no_key.to_string().contains("vertical stream"), "{no_key}");
+    let account = rbs_app::stream_key::vertical_account(ACCOUNT);
+    assert_eq!(account, "stream key/vertical");
+    keys.write(&account, &rbs_transport::Secret::new("shorts_key"))
+        .unwrap();
+
+    // Each canvas records and streams: four outputs at once.
+    let none = serde_json::json!({});
+    let started = c.call("stream.start", none.clone());
+    assert!(started["result"].is_object(), "{started}");
+    let started = c.call("stream.start", vertical.clone());
+    assert!(started["result"].is_object(), "{started}");
+    next(&rx, |u| match u {
+        Update::VerticalStream(StreamUpdate::Started { url, .. }) => {
+            assert_eq!(url, VERTICAL_URL);
+            Some(())
+        }
+        _ => None,
+    });
+    let profile = serde_json::json!({"profile": "default"});
+    let rec = c.call("record.start", profile.clone());
+    assert!(rec["result"].is_object(), "{rec}");
+    // The vertical stream started the vertical recording, not a main one.
+    next(&rx, |u| match u {
+        Update::VerticalRecording(RecordingUpdate::Started { .. }) => Some(()),
+        Update::VerticalRecording(other) => panic!("{other:?}"),
+        _ => None,
+    });
+    let again = c.call(
+        "record.start",
+        serde_json::json!({"profile": "default", "canvas": "vertical"}),
+    );
+    assert_eq!(again["error"]["data"]["kind"], "conflict", "{again}");
+    let sessions = server.sessions.lock().unwrap().clone();
+    assert!(
+        sessions.contains(&(URL.to_owned(), Some("main_key".to_owned()))),
+        "{sessions:?}"
+    );
+    assert!(
+        sessions.contains(&(VERTICAL_URL.to_owned(), Some("shorts_key".to_owned()))),
+        "{sessions:?}"
+    );
+
+    // The vertical states have their own topic and key; the main ones are untouched.
+    let live = c.event("stream.canvas_state", |d| {
+        d["canvas"] == "vertical" && d["state"] == "live"
+    });
+    assert_eq!(live["params"]["object"], 1, "{live}");
+    let status = c.call("stream.status", vertical.clone());
+    assert_eq!(status["result"]["data"]["canvas"], "vertical", "{status}");
+    assert_eq!(status["result"]["data"]["state"], "live", "{status}");
+    assert!(
+        status["result"]["seq"]["stream.canvas_state:1"].is_u64(),
+        "{status}"
+    );
+    let main_status = c.call("stream.status", none.clone());
+    assert_eq!(
+        main_status["result"]["data"]["state"], "live",
+        "{main_status}"
+    );
+    assert!(
+        main_status["result"]["data"]["canvas"].is_null(),
+        "{main_status}"
+    );
+    c.event("record.canvas_state", |d| d["state"] == "recording");
+
+    // The canvas cannot go while its outputs run.
+    let busy = c.call("canvas.remove_vertical", none.clone());
+    assert_eq!(busy["error"]["data"]["kind"], "conflict", "{busy}");
+    // Ending the vertical stream stops the recording it started (after its tail).
+    assert!(c.call("stream.stop", vertical.clone())["result"].is_object());
+    c.event("stream.canvas_state", |d| d["state"] == "idle");
+    let path = next_while(
+        &rx,
+        || clock.advance(END_TAIL_LIMIT * 2),
+        |u| match u {
+            Update::VerticalRecording(RecordingUpdate::Stopped { path, failure, .. }) => {
+                assert_eq!(failure, None);
+                Some(path)
+            }
+            _ => None,
+        },
+    );
+    let name = path.file_name().unwrap().to_string_lossy().into_owned();
+    assert!(name.ends_with(" vertical.mkv"), "{name}");
+    c.event("record.canvas_state", |d| d["state"] == "idle");
+    // The main canvas's outputs ran on.
+    let main_status = c.call("record.status", none.clone());
+    assert_eq!(
+        main_status["result"]["data"]["state"], "recording",
+        "{main_status}"
+    );
+    let main_status = c.call("stream.status", none.clone());
+    assert_eq!(
+        main_status["result"]["data"]["state"], "live",
+        "{main_status}"
+    );
+
+    assert!(c.call("canvas.remove_vertical", none.clone())["result"].is_object());
+    next(&rx, |u| matches!(u, Update::Vertical(None)).then_some(()));
+    let gone = c.call("record.status", vertical);
+    assert_eq!(gone["error"]["data"]["kind"], "not_found", "{gone}");
+    assert!(c.call("record.stop", none.clone())["result"].is_object());
+    assert!(c.call("stream.stop", none)["result"].is_object());
+    drop(host);
+    drop(api);
 }

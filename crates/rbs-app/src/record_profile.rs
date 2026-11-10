@@ -454,6 +454,16 @@ impl RecordProfile {
             self.format.extension()
         ))
     }
+
+    /// The file of a vertical canvas's recording started at `now` (ADR-0093
+    /// decision 6): `RBS <date> <time> vertical.<ext>` in the folder.
+    pub fn vertical_file_for(&self, now: chrono::NaiveDateTime) -> PathBuf {
+        self.folder.join(format!(
+            "RBS {} vertical.{}",
+            now.format("%Y-%m-%d %H-%M-%S"),
+            self.format.extension()
+        ))
+    }
 }
 
 /// The id of the one recording profile the app has today, in the control API.

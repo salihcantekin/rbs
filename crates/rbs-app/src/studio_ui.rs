@@ -21,7 +21,7 @@ use rbs_app::studio_host::{
     SourceKind, SourceRow, SourceSettingsView, SourceStatus, Stats, StreamRequest, StreamUpdate,
     StudioHost, Target, TransformOp, Update,
 };
-use rbs_app::user_session::{RECORDING, STREAM, UserSession};
+use rbs_app::user_session::{RECORDING, RECORDING_VERTICAL, STREAM, STREAM_VERTICAL, UserSession};
 use rbs_audio::LevelMeter;
 use rbs_core::fault::SourceFault;
 use rbs_record::Link;
@@ -2906,6 +2906,26 @@ impl StudioUi {
         )));
         self.send(Command::SetProfile(self.profile.clone()));
         self.send(Command::SetStreamProfile(self.stream.clone()));
+        self.send_vertical_profiles();
+    }
+
+    /// Hands the vertical canvas's saved recording and stream settings to the studio
+    /// (ADR-0093 decision 6); a section that does not load counts as not saved.
+    fn send_vertical_profiles(&self) {
+        let usable_record = self
+            .user
+            .section::<RecordProfile>(RECORDING_VERTICAL)
+            .ok()
+            .flatten()
+            .filter(|p| p.problem().is_none());
+        let usable_stream = self
+            .user
+            .section::<StreamProfile>(STREAM_VERTICAL)
+            .ok()
+            .flatten()
+            .filter(|p| p.problem().is_none());
+        self.send(Command::SetVerticalProfile(usable_record));
+        self.send(Command::SetVerticalStreamProfile(usable_stream));
     }
 
     /// Output profile menu: makes a profile named `name`, with default settings or a
@@ -2946,8 +2966,12 @@ impl StudioUi {
         let result = self.user.delete_profile(&id);
         self.refresh_library();
         result?;
-        // ADR-0051 decision 5: the key goes with the profile.
-        self.send(Command::RemoveStreamKey(stream_key::account(id.as_str())));
+        // ADR-0051 decision 5: the keys go with the profile.
+        let account = stream_key::account(id.as_str());
+        self.send(Command::RemoveStreamKey(stream_key::vertical_account(
+            &account,
+        )));
+        self.send(Command::RemoveStreamKey(account));
         Ok(())
     }
 
@@ -3170,6 +3194,7 @@ impl StudioUi {
                 self.state = 1;
                 self.send(Command::SetProfile(self.profile.clone()));
                 self.send(Command::SetStreamProfile(self.stream.clone()));
+                self.send_vertical_profiles();
                 self.refresh_library();
                 self.kind_list = kinds;
                 let rows: Vec<KindData> = self
@@ -3325,6 +3350,21 @@ impl StudioUi {
             }
             Update::Recording(r) => self.recording(r, &mut out),
             Update::Stream(u) => self.stream_update(u, &mut out),
+            // The vertical canvas's outputs have no live controls yet (they start
+            // through the control API, protocol 1.29): only what went wrong is shown.
+            Update::VerticalRecording(RecordingUpdate::NotStarted(why))
+            | Update::VerticalStream(StreamUpdate::NotStarted(why)) => {
+                out.error = Some(format!("Vertical canvas: {why}"));
+            }
+            Update::VerticalRecording(RecordingUpdate::Stopped {
+                failure: Some(why), ..
+            })
+            | Update::VerticalStream(StreamUpdate::Ended {
+                failure: Some(why), ..
+            }) => {
+                out.error = Some(format!("Vertical canvas: {why}"));
+            }
+            Update::VerticalRecording(_) | Update::VerticalStream(_) => {}
             Update::CollectionSwitched { seq, result } => {
                 if let Some(e) = self.collection_switched(seq, result) {
                     out.error = Some(e);

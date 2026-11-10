@@ -687,6 +687,53 @@ pub enum RecordState {
     },
 }
 
+/// The canvas an output records or streams (protocol 1.29, ADR-0093 decision 6).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum OutputCanvas {
+    /// The studio's main canvas.
+    #[default]
+    Main,
+    /// The vertical canvas (`canvas.add_vertical`).
+    Vertical,
+}
+
+impl OutputCanvas {
+    /// Every canvas an output can use, main first.
+    pub const ALL: [OutputCanvas; 2] = [OutputCanvas::Main, OutputCanvas::Vertical];
+
+    /// Its number in the studio's set of canvases: the object id of its
+    /// `record.canvas_state` and `stream.canvas_state` keys.
+    pub const fn object(self) -> u32 {
+        match self {
+            OutputCanvas::Main => 0,
+            OutputCanvas::Vertical => 1,
+        }
+    }
+}
+
+/// A recording state of a canvas other than the main one (`record.canvas_state`,
+/// protocol 1.29): the `record.state` object with `canvas` added.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CanvasRecordState {
+    /// The canvas.
+    pub canvas: OutputCanvas,
+    /// Its recording state.
+    #[serde(flatten)]
+    pub state: RecordState,
+}
+
+/// A stream state of a canvas other than the main one (`stream.canvas_state`,
+/// protocol 1.29): the `stream.state` object with `canvas` added.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CanvasStreamState {
+    /// The canvas.
+    pub canvas: OutputCanvas,
+    /// Its stream state.
+    #[serde(flatten)]
+    pub state: StreamState,
+}
+
 /// How a recording ended.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RecordingSummary {

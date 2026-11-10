@@ -219,11 +219,11 @@ mod tests {
         ) -> Result<Response, ApiError> {
             let live = matches!(self.0, StreamState::Live { .. });
             match command {
-                Command::StreamStart if live => Err(ApiError::new(
+                Command::StreamStart(_) if live => Err(ApiError::new(
                     ErrorKind::Conflict,
                     "a stream is already running",
                 )),
-                Command::StreamStart => {
+                Command::StreamStart(_) => {
                     self.0 = StreamState::Live {
                         protocol: StreamProtocol::Rtmp,
                         connected: false,
@@ -237,10 +237,10 @@ mod tests {
                         audio_encoder: Some("Fake AAC".into()),
                     }))
                 }
-                Command::StreamStop if !live => {
+                Command::StreamStop(_) if !live => {
                     Err(ApiError::new(ErrorKind::Conflict, "nothing streams"))
                 }
-                Command::StreamStop => {
+                Command::StreamStop(_) => {
                     self.0 = StreamState::Idle {
                         last: Some(StreamSummary {
                             failure: None,
@@ -251,7 +251,7 @@ mod tests {
                     };
                     Ok(Response::Done(Empty {}))
                 }
-                Command::StreamStatus => Ok(Response::StreamStatus(Snapshot {
+                Command::StreamStatus(_) => Ok(Response::StreamStatus(Snapshot {
                     seq: Default::default(),
                     data: self.0.clone(),
                 })),

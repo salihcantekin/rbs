@@ -747,6 +747,22 @@ pub enum Command {
     /// Stop the running recording; the file is complete when
     /// [`RecordingUpdate::Stopped`] arrives.
     StopRecording,
+    /// Start recording the vertical canvas ([`Update::VerticalRecording`] says how it
+    /// went; ADR-0093 decision 6).
+    StartVerticalRecording(RecordRequest),
+    /// Stop the vertical canvas's recording.
+    StopVerticalRecording,
+    /// Go live with the vertical canvas ([`Update::VerticalStream`] says how it went);
+    /// its key is read from the vertical account ([`stream_key::vertical_account`]).
+    StartVerticalStream(StreamRequest),
+    /// End the vertical canvas's stream.
+    EndVerticalStream,
+    /// The vertical canvas's recording settings as saved (`None`: it uses the main
+    /// ones). Sent at start and after each change.
+    SetVerticalProfile(Option<RecordProfile>),
+    /// The vertical canvas's stream settings as saved (`None`: none saved). Sent at
+    /// start and after each change.
+    SetVerticalStreamProfile(Option<StreamProfile>),
     /// Change the canvas's size and rate (Settings, Video). The studio restarts with
     /// it (ADR-0041: a running studio's canvas does not change); the program scene's
     /// items are placed again for the new size. Refused while recording. Always
@@ -922,6 +938,82 @@ pub struct RecordRequest {
     pub video: VideoSettings,
     /// Audio bitrate in bit/s.
     pub audio_bitrate_bps: u64,
+}
+
+/// The canvas an output records or streams (ADR-0093 decision 6).
+pub use rbs_api::types::OutputCanvas;
+
+/// `c`'s place in the host's per-canvas state.
+fn slot(c: OutputCanvas) -> usize {
+    match c {
+        OutputCanvas::Main => 0,
+        OutputCanvas::Vertical => 1,
+    }
+}
+
+/// `u` as the update of `c`'s recording.
+fn recording_update(c: OutputCanvas, u: RecordingUpdate) -> Update {
+    match c {
+        OutputCanvas::Main => Update::Recording(u),
+        OutputCanvas::Vertical => Update::VerticalRecording(u),
+    }
+}
+
+/// `u` as the update of `c`'s stream.
+fn stream_update(c: OutputCanvas, u: StreamUpdate) -> Update {
+    match c {
+        OutputCanvas::Main => Update::Stream(u),
+        OutputCanvas::Vertical => Update::VerticalStream(u),
+    }
+}
+
+/// The state key of `c`'s outputs on a per-canvas topic (protocol 1.29).
+fn canvas_key(topic: Topic, c: OutputCanvas) -> StateKey {
+    StateKey {
+        topic,
+        object: Some(c.object()),
+    }
+}
+
+/// The recording and stream of one canvas, as the host tracks them.
+#[derive(Debug)]
+struct CanvasOutputs {
+    /// The running recording: its file and output (ADR-0047: it runs alongside a
+    /// stream).
+    recording: Option<(PathBuf, OutputId)>,
+    /// Stop was asked for: the recording ended its video and stops once its tail is
+    /// in (ADR-0045).
+    ending: bool,
+    /// The running recording was started with the stream ("Record when the stream
+    /// starts"): ending the stream stops it too. Cleared when the recording stops or
+    /// the stream ends.
+    auto_recording: bool,
+    /// The running stream: its URL, the connection last reported and its output.
+    streaming: Option<(String, Link, OutputId)>,
+    /// The recording, as the control API reports it.
+    record_state: api::RecordState,
+    /// The stream, as the control API reports it.
+    stream_state: api::StreamState,
+}
+
+impl Default for CanvasOutputs {
+    fn default() -> Self {
+        Self {
+            recording: None,
+            ending: false,
+            auto_recording: false,
+            streaming: None,
+            record_state: api::RecordState::Idle { last: None },
+            stream_state: api::StreamState::Idle { last: None },
+        }
+    }
+}
+
+impl CanvasOutputs {
+    /// A recording or a stream runs.
+    fn busy(&self) -> bool {
+        self.recording.is_some() || self.streaming.is_some()
+    }
 }
 
 /// What happened to the recording.
@@ -1245,6 +1337,12 @@ pub enum Update {
     Recording(RecordingUpdate),
     /// The stream started, did not start, changed its connection or ended.
     Stream(StreamUpdate),
+    /// The vertical canvas's recording started, did not start or stopped (ADR-0093
+    /// decision 6).
+    VerticalRecording(RecordingUpdate),
+    /// The vertical canvas's stream started, did not start, changed its connection
+    /// or ended.
+    VerticalStream(StreamUpdate),
     /// [`Command::SaveStreamKey`] done: `Ok(true)` a key is saved, `Ok(false)` none is,
     /// `Err` why the store refused.
     StreamKey(Result<bool, String>),
@@ -1751,18 +1849,9 @@ struct Host {
     /// The next undo and redo as last sent.
     history_shown: (Option<StepInfo>, Option<StepInfo>),
     waiting: bool,
-    /// The running recording: its file and output (ADR-0047: it runs alongside a
-    /// stream).
-    recording: Option<(PathBuf, OutputId)>,
-    /// Stop was asked for: the recording ended its video and stops once its tail is
-    /// in (ADR-0045).
-    ending: bool,
-    /// The running recording was started with the stream ("Record when the stream
-    /// starts"): ending the stream stops it too. Cleared when the recording stops or
-    /// the stream ends.
-    auto_recording: bool,
-    /// The running stream: its URL, the connection last reported and its output.
-    streaming: Option<(String, Link, OutputId)>,
+    /// The recording and stream of each canvas, by [`slot`]
+    /// (ADR-0093 decision 6).
+    outs: [CanvasOutputs; 2],
     /// Where the stream key is kept.
     keys: Arc<dyn KeyStore>,
     /// The account of the output profile in use.
@@ -1796,10 +1885,13 @@ struct Host {
     encoders: Vec<EncoderInfo>,
     /// Why this system cannot record.
     cannot_record: Option<String>,
-    /// The running recording, as the control API reports it.
-    record_state: api::RecordState,
     /// The stream settings as the UI uses them; `None` until the UI sent them.
     stream_profile: Option<StreamProfile>,
+    /// The vertical canvas's recording settings as saved; `None`: it uses `profile`.
+    vertical_profile: Option<RecordProfile>,
+    /// The vertical canvas's stream settings as saved; `None`: none saved, so the
+    /// vertical stream has no server.
+    vertical_stream_profile: Option<StreamProfile>,
     /// The output profiles and scene collections as the UI listed them last; `None`
     /// until the UI sent them.
     library: Option<(api::Library, api::Library)>,
@@ -1808,8 +1900,6 @@ struct Host {
     switch_pending: Option<u64>,
     /// The last `seq` given to [`Update::SwitchRequested`].
     switch_seq: u64,
-    /// The running stream, as the control API reports it.
-    stream_state: api::StreamState,
     /// When the Stats panel's counters go out next, on `clock`; `None` while no
     /// output runs.
     stats_due: Option<Timestamp>,
@@ -1900,20 +1990,26 @@ fn run(
             }
         }
     }
-    // Closing while recording: keep the tail too, as Stop does.
-    if let Some((_, id)) = host.recording.clone()
-        && host.studio.end_output(id)
+    // Closing while recording: keep the tails too, as Stop does.
+    let ending: Vec<OutputId> = host
+        .outs
+        .iter()
+        .filter_map(|o| o.recording.as_ref().map(|(_, id)| *id))
+        .filter(|id| host.studio.end_output(*id))
+        .collect();
+    let started = std::time::Instant::now();
+    while !ending.iter().all(|id| host.studio.output_tail_done(*id))
+        && started.elapsed() < CLOSE_TAIL_GUARD
     {
-        let started = std::time::Instant::now();
-        while !host.studio.output_tail_done(id) && started.elapsed() < CLOSE_TAIL_GUARD {
-            host.studio.service();
-            // The control thread at shutdown, not the UI thread (ADR-0055 decision 6).
-            #[allow(clippy::disallowed_methods)]
-            std::thread::sleep(ENDING_WAIT);
-        }
+        host.studio.service();
+        // The control thread at shutdown, not the UI thread (ADR-0055 decision 6).
+        #[allow(clippy::disallowed_methods)]
+        std::thread::sleep(ENDING_WAIT);
     }
-    host.end_stream(None, notify);
-    host.stop_recording(None, notify);
+    for c in OutputCanvas::ALL {
+        host.end_stream(c, None, notify);
+        host.stop_recording(c, None, notify);
+    }
     let _ = host.studio.shutdown();
 }
 
@@ -1988,8 +2084,7 @@ fn round(
     {
         // Failed first: a panic while the outputs end must not undo it.
         *failed = Some(why.clone());
-        host.stop_recording(Some(why.clone()), notify);
-        host.end_stream(Some(why.clone()), notify);
+        host.end_outputs(&why, notify);
         notify(Update::Failed(why));
     }
     if failed.is_some() {
@@ -2009,8 +2104,7 @@ fn round(
         // Clients see the recording end with the failure instead of a stale state.
         // Failed first: a panic while the outputs end must not undo it.
         *failed = Some(why.clone());
-        host.stop_recording(Some(why.clone()), notify);
-        host.end_stream(Some(why.clone()), notify);
+        host.end_outputs(&why, notify);
         notify(Update::Failed(why));
         return wait;
     }
@@ -2020,26 +2114,30 @@ fn round(
         host.apply(notify);
     }
     host.waiting = waiting;
-    if let Some((_, id)) = &host.recording
-        && let Some(why) = host.studio.output_failure(*id)
-    {
-        host.stop_recording(Some(why), notify);
-    }
-    if host.ending
-        && let Some((_, id)) = &host.recording
-    {
-        if host.studio.output_tail_done(*id) {
-            host.stop_recording(None, notify);
-        } else {
-            // The tail takes a few frames; look again soon.
-            wait = wait.min(ENDING_WAIT);
+    for c in OutputCanvas::ALL {
+        let o = &host.outs[slot(c)];
+        if let Some((_, id)) = &o.recording
+            && let Some(why) = host.studio.output_failure(*id)
+        {
+            host.stop_recording(c, Some(why), notify);
         }
-    }
-    if let Some((_, _, id)) = &host.streaming {
-        if let Some(why) = host.studio.output_failure(*id) {
-            host.end_stream(Some(why), notify);
-        } else {
-            host.report_link(notify);
+        let o = &host.outs[slot(c)];
+        if o.ending
+            && let Some((_, id)) = &o.recording
+        {
+            if host.studio.output_tail_done(*id) {
+                host.stop_recording(c, None, notify);
+            } else {
+                // The tail takes a few frames; look again soon.
+                wait = wait.min(ENDING_WAIT);
+            }
+        }
+        if let Some((_, _, id)) = &host.outs[slot(c)].streaming {
+            if let Some(why) = host.studio.output_failure(*id) {
+                host.end_stream(c, Some(why), notify);
+            } else {
+                host.report_link(c, notify);
+            }
         }
     }
     let now = host.clock.now();
@@ -2173,9 +2271,7 @@ fn start(
             history: History::new(),
             history_shown: (None, None),
             waiting: false,
-            recording: None,
-            ending: false,
-            auto_recording: false,
+            outs: [CanvasOutputs::default(), CanvasOutputs::default()],
             stats_due: None,
             clock,
             camera_factory: config.virtual_camera.map(|f| f.0),
@@ -2184,7 +2280,6 @@ fn start(
             camera_setup: None,
             camera_published: None,
             replay: replay::ReplayHost::new(),
-            streaming: None,
             keys,
             key_account: config.key_account,
             engine: Box::new(engine),
@@ -2212,12 +2307,12 @@ fn start(
             kinds,
             encoders,
             cannot_record,
-            record_state: api::RecordState::Idle { last: None },
             stream_profile: None,
+            vertical_profile: None,
+            vertical_stream_profile: None,
             library: None,
             switch_pending: None,
             switch_seq: 0,
-            stream_state: api::StreamState::Idle { last: None },
             inbox: Weak::new(),
         },
         update,
@@ -2545,18 +2640,20 @@ impl Host {
                     Err(e) => notify(Update::Error(e)),
                 }
             }
-            Command::StartRecording(r) => {
-                let update = match self.start_recording(&r, Some(API_PROFILE_ID.into())) {
-                    Ok(update) => update,
-                    Err(why) => RecordingUpdate::NotStarted(why),
-                };
-                notify(Update::Recording(update));
-                self.publish(notify);
+            Command::StartRecording(r) => self.record_asked(OutputCanvas::Main, &r, notify),
+            Command::StartVerticalRecording(r) => {
+                self.record_asked(OutputCanvas::Vertical, &r, notify);
             }
             Command::StopRecording => {
-                self.end_recording(notify);
+                self.end_recording(OutputCanvas::Main, notify);
                 self.publish(notify);
             }
+            Command::StopVerticalRecording => {
+                self.end_recording(OutputCanvas::Vertical, notify);
+                self.publish(notify);
+            }
+            Command::SetVerticalProfile(profile) => self.vertical_profile = profile,
+            Command::SetVerticalStreamProfile(profile) => self.vertical_stream_profile = profile,
             Command::SetCanvas { size, fps } => {
                 if let Err(why) = self.change_canvas(size, fps, notify) {
                     notify(Update::Error(why));
@@ -2568,20 +2665,16 @@ impl Host {
                     self.settings_changed();
                 }
             }
-            Command::StartStream(r) => {
-                let update = match self.start_stream(&r) {
-                    Ok(update) => update,
-                    Err(why) => StreamUpdate::NotStarted(why),
-                };
-                let started = matches!(update, StreamUpdate::Started { .. });
-                notify(Update::Stream(update));
-                if started {
-                    self.record_with_stream(notify);
-                }
-                self.publish(notify);
+            Command::StartStream(r) => self.stream_asked(OutputCanvas::Main, &r, notify),
+            Command::StartVerticalStream(r) => {
+                self.stream_asked(OutputCanvas::Vertical, &r, notify);
             }
             Command::EndStream => {
-                self.end_stream_asked(notify);
+                self.end_stream_asked(OutputCanvas::Main, notify);
+                self.publish(notify);
+            }
+            Command::EndVerticalStream => {
+                self.end_stream_asked(OutputCanvas::Vertical, notify);
                 self.publish(notify);
             }
             Command::StartVirtualCamera { width, height, fps } => {
@@ -2884,12 +2977,12 @@ impl Host {
         autosave: Option<CollectionSaver>,
         notify: &dyn Fn(Update),
     ) -> Result<(), String> {
-        if self.recording.is_some() {
+        if self.any_recording() {
             let why = "Stop the recording before switching scene collections.".to_owned();
             self.canvas_changed(self.api_canvas(), notify);
             return Err(why);
         }
-        if self.streaming.is_some() {
+        if self.any_streaming() {
             let why = "End the stream before switching scene collections.".to_owned();
             self.canvas_changed(self.api_canvas(), notify);
             return Err(why);
@@ -3012,23 +3105,39 @@ impl Host {
             });
     }
 
-    fn set_record_state(&mut self, state: api::RecordState) {
-        self.record_state = state.clone();
-        self.events
-            .changed(StateKey::topic(Topic::RecordState), || {
-                EventPayload::RecordState(state)
-            });
+    fn set_record_state(&mut self, c: OutputCanvas, state: api::RecordState) {
+        self.outs[slot(c)].record_state = state.clone();
+        match c {
+            OutputCanvas::Main => self
+                .events
+                .changed(StateKey::topic(Topic::RecordState), || {
+                    EventPayload::RecordState(state)
+                }),
+            OutputCanvas::Vertical => self
+                .events
+                .changed(canvas_key(Topic::RecordCanvasState, c), || {
+                    EventPayload::RecordCanvasState(api::CanvasRecordState { canvas: c, state })
+                }),
+        };
     }
 
-    fn set_stream_state(&mut self, state: api::StreamState) {
-        if state == self.stream_state {
+    fn set_stream_state(&mut self, c: OutputCanvas, state: api::StreamState) {
+        if state == self.outs[slot(c)].stream_state {
             return;
         }
-        self.stream_state = state.clone();
-        self.events
-            .changed(StateKey::topic(Topic::StreamState), || {
-                EventPayload::StreamState(state)
-            });
+        self.outs[slot(c)].stream_state = state.clone();
+        match c {
+            OutputCanvas::Main => self
+                .events
+                .changed(StateKey::topic(Topic::StreamState), || {
+                    EventPayload::StreamState(state)
+                }),
+            OutputCanvas::Vertical => self
+                .events
+                .changed(canvas_key(Topic::StreamCanvasState, c), || {
+                    EventPayload::StreamCanvasState(api::CanvasStreamState { canvas: c, state })
+                }),
+        };
     }
 
     /// Serves one waiting control API request; true when one was served.
@@ -3050,10 +3159,10 @@ impl Host {
     /// items placed again for it. When the new canvas does not start, the old one
     /// starts again and the error says why; when that fails too, `dead` says why.
     fn set_canvas(&mut self, size: Size, fps: FrameRate) -> Result<(), String> {
-        if self.recording.is_some() {
+        if self.any_recording() {
             return Err("Stop the recording before changing the canvas.".into());
         }
-        if self.streaming.is_some() {
+        if self.any_streaming() {
             return Err("End the stream before changing the canvas.".into());
         }
         let canvas = self
@@ -3146,11 +3255,19 @@ impl Host {
             });
         }
         let running = self.studio.outputs();
-        let recording = self.recording.as_ref().map(|(_, id)| *id);
-        let streaming = self.streaming.as_ref().map(|(_, _, id)| *id);
+        let tracked = |o: &CanvasOutputs| {
+            (
+                o.recording.as_ref().map(|(_, id)| *id),
+                o.streaming.as_ref().map(|(_, _, id)| *id),
+            )
+        };
         let mut stopped = 0;
         for id in &running {
-            if Some(*id) != recording && Some(*id) != streaming {
+            let known = self.outs.iter().any(|o| {
+                let (r, s) = tracked(o);
+                r == Some(*id) || s == Some(*id)
+            });
+            if !known {
                 let _ = rbs_crash::contain(|| self.studio.stop_output(*id));
                 stopped += 1;
             }
@@ -3158,11 +3275,14 @@ impl Host {
         #[cfg(feature = "fault-injection")]
         notify(Update::Recovered { stopped });
         let _ = stopped;
-        if recording.is_some_and(|id| !running.contains(&id)) {
-            let _ = rbs_crash::contain(|| self.stop_recording(Some(WHY.into()), notify));
-        }
-        if streaming.is_some_and(|id| !running.contains(&id)) {
-            let _ = rbs_crash::contain(|| self.end_stream(Some(WHY.into()), notify));
+        for c in OutputCanvas::ALL {
+            let (recording, streaming) = tracked(&self.outs[slot(c)]);
+            if recording.is_some_and(|id| !running.contains(&id)) {
+                let _ = rbs_crash::contain(|| self.stop_recording(c, Some(WHY.into()), notify));
+            }
+            if streaming.is_some_and(|id| !running.contains(&id)) {
+                let _ = rbs_crash::contain(|| self.end_stream(c, Some(WHY.into()), notify));
+            }
         }
         if self.camera.is_some() != self.studio.virtual_camera().is_some() {
             self.studio.stop_virtual_camera();
@@ -3175,13 +3295,17 @@ impl Host {
                 "RBS stopped the studio after repeated internal errors (reports were saved).",
             );
             *failed = Some(why.clone());
-            let _ = rbs_crash::contain(|| self.stop_recording(Some(why.clone()), notify));
-            let _ = rbs_crash::contain(|| self.end_stream(Some(why.clone()), notify));
+            for c in OutputCanvas::ALL {
+                let _ = rbs_crash::contain(|| self.stop_recording(c, Some(why.clone()), notify));
+                let _ = rbs_crash::contain(|| self.end_stream(c, Some(why.clone()), notify));
+            }
             for id in self.studio.outputs() {
                 let _ = rbs_crash::contain(|| self.studio.stop_output(id));
             }
-            self.recording = None;
-            self.streaming = None;
+            for o in &mut self.outs {
+                o.recording = None;
+                o.streaming = None;
+            }
             notify(Update::Failed(why));
         }
         let _ = rbs_crash::contain(|| self.publish(notify));
@@ -3202,8 +3326,8 @@ impl Host {
             .filter(|v| self.collection.canvas(v.canvas).is_some())
         {
             settings.extra_canvases = vec![ExtraCanvas::new(v.canvas)];
-        } else {
-            self.vertical = None;
+        } else if self.vertical.take().is_some() {
+            self.forget_vertical_outputs();
         }
         let run = self.run_collection();
         let engine = (self.engine)();
@@ -3235,12 +3359,14 @@ impl Host {
     /// Starts recording to `r.path`; the file's folder is made first.
     fn start_recording(
         &mut self,
+        c: OutputCanvas,
         r: &RecordRequest,
         profile: Option<String>,
     ) -> Result<RecordingUpdate, String> {
-        if self.recording.is_some() {
+        if self.outs[slot(c)].recording.is_some() {
             return Err("A recording is already running.".into());
         }
+        let canvas = self.output_canvas(c)?;
         if !r.path.is_absolute() {
             return Err(format!("{} is not a full path.", r.path.display()));
         }
@@ -3252,6 +3378,7 @@ impl Host {
             return Err(format!("{} already exists.", r.path.display()));
         }
         let mut out = OutputSettings::new(rbs_transport_file::file_url(&r.path), r.container);
+        out.canvas = canvas;
         out.video = r.video.clone();
         out.audio = self.adapters.audio_encoders.ids().next().map(|_| {
             let mut a = AudioSettings::default();
@@ -3279,12 +3406,15 @@ impl Host {
             },
         )) = &started
         {
-            self.recording = Some((r.path.clone(), *id));
-            self.set_record_state(api::RecordState::Recording {
-                profile,
-                video_encoder: video_encoder.clone(),
-                audio_encoder: audio_encoder.clone(),
-            });
+            self.outs[slot(c)].recording = Some((r.path.clone(), *id));
+            self.set_record_state(
+                c,
+                api::RecordState::Recording {
+                    profile,
+                    video_encoder: video_encoder.clone(),
+                    audio_encoder: audio_encoder.clone(),
+                },
+            );
         } else if std::fs::metadata(&r.path).is_ok_and(|m| m.len() == 0) {
             // The output may have made the file before a later node failed.
             let _ = std::fs::remove_file(&r.path);
@@ -3292,13 +3422,138 @@ impl Host {
         started.map(|(_, update)| update)
     }
 
-    /// Stops the recording, if one runs, and says so.
-    fn stop_recording(&mut self, failure: Option<String>, notify: &dyn Fn(Update)) {
-        self.ending = false;
-        self.auto_recording = false;
+    /// The studio canvas `c`'s outputs use (`None`: the main one); refused in words
+    /// when there is no vertical canvas.
+    fn output_canvas(&self, c: OutputCanvas) -> Result<Option<CanvasId>, String> {
+        match c {
+            OutputCanvas::Main => Ok(None),
+            OutputCanvas::Vertical => self
+                .vertical
+                .map(|v| Some(v.canvas))
+                .ok_or_else(|| "There is no vertical canvas.".to_owned()),
+        }
+    }
+
+    /// The vertical canvas is gone: its outputs' states go with it (no event), and a
+    /// new one starts idle (protocol 1.29).
+    fn forget_vertical_outputs(&mut self) {
+        let c = OutputCanvas::Vertical;
+        self.outs[slot(c)] = CanvasOutputs::default();
+        self.events.forget(canvas_key(Topic::RecordCanvasState, c));
+        self.events.forget(canvas_key(Topic::StreamCanvasState, c));
+    }
+
+    /// A recording runs on either canvas.
+    fn any_recording(&self) -> bool {
+        self.outs.iter().any(|o| o.recording.is_some())
+    }
+
+    /// A stream runs on either canvas.
+    fn any_streaming(&self) -> bool {
+        self.outs.iter().any(|o| o.streaming.is_some())
+    }
+
+    /// The canvas a control API call asks for (protocol 1.29): the main one by
+    /// default; `not_found` for the vertical one while there is none.
+    fn api_canvas_of(&self, asked: Option<OutputCanvas>) -> Result<OutputCanvas, ApiError> {
+        let c = asked.unwrap_or_default();
+        if c == OutputCanvas::Vertical && self.vertical.is_none() {
+            return Err(ApiError::new(
+                ErrorKind::NotFound,
+                "there is no vertical canvas",
+            ));
+        }
+        Ok(c)
+    }
+
+    /// The `seq` map of `c`'s key on a per-canvas topic.
+    fn canvas_seq(&self, topic: Topic, c: OutputCanvas) -> api::SeqMap {
+        let key = canvas_key(topic, c);
+        api::SeqMap::from([(key.to_string(), self.events.seq(key))])
+    }
+
+    /// The recording settings of `c`: the vertical canvas uses the main ones until
+    /// its own are saved.
+    fn record_profile(&self, c: OutputCanvas) -> &RecordProfile {
+        match c {
+            OutputCanvas::Main => &self.profile,
+            OutputCanvas::Vertical => self.vertical_profile.as_ref().unwrap_or(&self.profile),
+        }
+    }
+
+    /// The stream settings of `c`, `None` until the UI sent them (the vertical
+    /// canvas's: until they are saved).
+    fn stream_profile_of(&self, c: OutputCanvas) -> Option<&StreamProfile> {
+        match c {
+            OutputCanvas::Main => self.stream_profile.as_ref(),
+            OutputCanvas::Vertical => self.vertical_stream_profile.as_ref(),
+        }
+    }
+
+    /// The key store account of `c`'s stream key.
+    fn key_account_of(&self, c: OutputCanvas) -> String {
+        match c {
+            OutputCanvas::Main => self.key_account.clone(),
+            OutputCanvas::Vertical => stream_key::vertical_account(&self.key_account),
+        }
+    }
+
+    /// A new file for a recording of `c` with its saved settings, named for now.
+    fn recording_file(&self, c: OutputCanvas) -> PathBuf {
+        let now = chrono::Local::now().naive_local();
+        let p = self.record_profile(c);
+        match c {
+            OutputCanvas::Main => p.file_for(now),
+            OutputCanvas::Vertical => p.vertical_file_for(now),
+        }
+    }
+
+    /// The UI's Record for `c`: starts the recording and says how it went.
+    fn record_asked(&mut self, c: OutputCanvas, r: &RecordRequest, notify: &dyn Fn(Update)) {
+        let update = match self.start_recording(c, r, Some(API_PROFILE_ID.into())) {
+            Ok(update) => update,
+            Err(why) => RecordingUpdate::NotStarted(why),
+        };
+        notify(recording_update(c, update));
+        self.publish(notify);
+    }
+
+    /// The UI's Go live for `c`: starts the stream, says how it went, and records
+    /// with it when that is on.
+    fn stream_asked(&mut self, c: OutputCanvas, r: &StreamRequest, notify: &dyn Fn(Update)) {
+        let update = match self.start_stream(c, r) {
+            Ok(update) => update,
+            Err(why) => StreamUpdate::NotStarted(why),
+        };
+        let started = matches!(update, StreamUpdate::Started { .. });
+        notify(stream_update(c, update));
+        if started {
+            self.record_with_stream(c, notify);
+        }
+        self.publish(notify);
+    }
+
+    /// Ends every output of both canvases because of `why` (the studio failed).
+    fn end_outputs(&mut self, why: &str, notify: &dyn Fn(Update)) {
+        for c in OutputCanvas::ALL {
+            self.stop_recording(c, Some(why.to_owned()), notify);
+            self.end_stream(c, Some(why.to_owned()), notify);
+        }
+    }
+
+    /// Stops `c`'s recording, if one runs, and says so.
+    fn stop_recording(
+        &mut self,
+        c: OutputCanvas,
+        failure: Option<String>,
+        notify: &dyn Fn(Update),
+    ) {
+        let o = &mut self.outs[slot(c)];
+        o.ending = false;
+        o.auto_recording = false;
         // Tracked until the end: when a stop panics half-way, `Host::recover` finds the
         // recording still tracked and ends it again (ADR-0055 decision 3).
-        let Some((path, id)) = self.recording.clone() else {
+        let Some((path, id)) = o.recording.clone() else {
             return;
         };
         let report = self.studio.stop_output(id);
@@ -3312,28 +3567,34 @@ impl Host {
             )
         });
         let failure = failure.or(failed);
-        self.set_record_state(api::RecordState::Idle {
-            last: Some(api::RecordingSummary {
-                failure: failure.clone(),
+        self.set_record_state(
+            c,
+            api::RecordState::Idle {
+                last: Some(api::RecordingSummary {
+                    failure: failure.clone(),
+                    frames,
+                    dropped,
+                }),
+            },
+        );
+        self.outs[slot(c)].recording = None;
+        notify(recording_update(
+            c,
+            RecordingUpdate::Stopped {
+                path,
+                failure,
                 frames,
                 dropped,
-            }),
-        });
-        self.recording = None;
-        notify(Update::Recording(RecordingUpdate::Stopped {
-            path,
-            failure,
-            frames,
-            dropped,
-            flush_lost,
-        }));
+                flush_lost,
+            },
+        ));
     }
 
-    /// A recording to `path` with the saved recording settings, as `record.start` and
-    /// "Record when the stream starts" make it; refused in words when the settings
-    /// cannot be used.
-    fn profile_request(&self, path: PathBuf) -> Result<RecordRequest, String> {
-        let p = &self.profile;
+    /// A recording of `c` to `path` with its saved recording settings, as
+    /// `record.start` and "Record when the stream starts" make it; refused in words
+    /// when the settings cannot be used.
+    fn profile_request(&self, c: OutputCanvas, path: PathBuf) -> Result<RecordRequest, String> {
+        let p = self.record_profile(c);
         if let Some(why) = p.problem() {
             return Err(why);
         }
@@ -3354,13 +3615,13 @@ impl Host {
 
     /// Asks the running recording to stop: its video ends now and the loop stops it
     /// once the frames still read back are in (ADR-0045).
-    fn end_recording(&mut self, notify: &dyn Fn(Update)) {
-        if let Some((_, id)) = &self.recording
+    fn end_recording(&mut self, c: OutputCanvas, notify: &dyn Fn(Update)) {
+        if let Some((_, id)) = &self.outs[slot(c)].recording
             && self.studio.end_output(*id)
         {
-            self.ending = true;
+            self.outs[slot(c)].ending = true;
         } else {
-            self.stop_recording(None, notify);
+            self.stop_recording(c, None, notify);
         }
     }
 
@@ -3368,53 +3629,55 @@ impl Host {
     /// recording running, records the program with the recording settings, as Record
     /// would. The UI is told either way; a recording that cannot start leaves the
     /// stream running.
-    fn record_with_stream(&mut self, notify: &dyn Fn(Update)) {
-        let on = self.stream_profile.as_ref().is_some_and(|p| p.auto_record);
-        if !on || self.recording.is_some() || self.streaming.is_none() {
+    fn record_with_stream(&mut self, c: OutputCanvas, notify: &dyn Fn(Update)) {
+        let on = self.stream_profile_of(c).is_some_and(|p| p.auto_record);
+        let o = &self.outs[slot(c)];
+        if !on || o.recording.is_some() || o.streaming.is_none() {
             return;
         }
         let started = match &self.cannot_record {
             Some(why) => Err(why.clone()),
             None => self
-                .profile_request(self.profile.file_for(chrono::Local::now().naive_local()))
-                .and_then(|r| self.start_recording(&r, Some(API_PROFILE_ID.into()))),
+                .profile_request(c, self.recording_file(c))
+                .and_then(|r| self.start_recording(c, &r, Some(API_PROFILE_ID.into()))),
         };
         let update = match started {
             Ok(update) => {
-                self.auto_recording = true;
+                self.outs[slot(c)].auto_recording = true;
                 update
             }
             Err(why) => RecordingUpdate::NotStarted(why),
         };
-        notify(Update::Recording(update));
+        notify(recording_update(c, update));
     }
 
     /// The user (End stream) or a control API client (`stream.stop`) ends the stream:
     /// a recording that started with it stops too.
-    fn end_stream_asked(&mut self, notify: &dyn Fn(Update)) {
-        let with_stream = self.auto_recording;
+    fn end_stream_asked(&mut self, c: OutputCanvas, notify: &dyn Fn(Update)) {
+        let with_stream = self.outs[slot(c)].auto_recording;
         // A stream that failed before it was asked to end keeps its recording, as one
         // the round finds failed does.
-        let failure = self.end_stream(None, notify);
-        if with_stream && failure.is_none() && self.recording.is_some() {
-            self.end_recording(notify);
+        let failure = self.end_stream(c, None, notify);
+        if with_stream && failure.is_none() && self.outs[slot(c)].recording.is_some() {
+            self.end_recording(c, notify);
         }
     }
 
     /// Goes live: reads the key (RTMP: required) from the key store, then attaches the
     /// stream's encoders and output to the running studio. The connection is made in
     /// the background; [`Host::report_link`] tells the UI how it goes.
-    fn start_stream(&mut self, r: &StreamRequest) -> Result<StreamUpdate, String> {
-        if self.streaming.is_some() {
+    fn start_stream(&mut self, c: OutputCanvas, r: &StreamRequest) -> Result<StreamUpdate, String> {
+        if self.outs[slot(c)].streaming.is_some() {
             return Err("A stream is already running.".into());
         }
+        let canvas = self.output_canvas(c)?;
         if self.cannot_record.is_some() {
             return Err(format!(
                 "Streaming is not available on {} yet: this system has no video encoder RBS can use.",
                 os_name()
             ));
         }
-        let key = self.keys.read(&self.key_account).map_err(|e| {
+        let key = self.keys.read(&self.key_account_of(c)).map_err(|e| {
             format!(
                 "The stream key could not be read from {}: {e}",
                 self.keys.place()
@@ -3433,6 +3696,7 @@ impl Host {
         }
         rbs_crash::add_secret(&r.url);
         out.secret = key;
+        out.canvas = canvas;
         out.reconnect = r.reconnect;
         out.transport_options = r.transport_options.clone();
         out.video = r.video.clone();
@@ -3442,20 +3706,23 @@ impl Host {
             a
         });
         let (id, video_encoder, audio_encoder) = self.start_output(&out, r.encoder.as_deref())?;
-        self.streaming = Some((r.url.clone(), Link::default(), id));
+        self.outs[slot(c)].streaming = Some((r.url.clone(), Link::default(), id));
         let protocol = match parse_server(&r.url).map(|s| s.protocol) {
             Ok(Protocol::Srt) => api::StreamProtocol::Srt,
             // Only RTMP and SRT servers pass the settings' check.
             _ => api::StreamProtocol::Rtmp,
         };
-        self.set_stream_state(api::StreamState::Live {
-            protocol,
-            connected: false,
-            connects: 0,
-            reconnect_attempts: 0,
-            video_encoder: video_encoder.clone(),
-            audio_encoder: audio_encoder.clone(),
-        });
+        self.set_stream_state(
+            c,
+            api::StreamState::Live {
+                protocol,
+                connected: false,
+                connects: 0,
+                reconnect_attempts: 0,
+                video_encoder: video_encoder.clone(),
+                audio_encoder: audio_encoder.clone(),
+            },
+        );
         Ok(StreamUpdate::Started {
             url: r.url.clone(),
             video_encoder,
@@ -3503,8 +3770,8 @@ impl Host {
     /// output stopped; nothing while no output runs (no timer: ADR-0013). Returns the
     /// time until the next report.
     fn report_stats(&mut self, now: Timestamp, notify: &dyn Fn(Update)) -> Option<Duration> {
-        let recording = self.recording.as_ref().map(|(_, id)| *id);
-        let stream = self.streaming.as_ref().map(|(_, _, id)| *id);
+        let recording = self.outs[0].recording.as_ref().map(|(_, id)| *id);
+        let stream = self.outs[0].streaming.as_ref().map(|(_, _, id)| *id);
         if recording.is_none() && stream.is_none() {
             // The last output stopped: the panel empties once.
             if self.stats_due.take().is_some() {
@@ -3669,8 +3936,8 @@ impl Host {
     }
 
     /// Tells the UI when the stream's connection changed.
-    fn report_link(&mut self, notify: &dyn Fn(Update)) {
-        let Some((_, last, id)) = &mut self.streaming else {
+    fn report_link(&mut self, c: OutputCanvas, notify: &dyn Fn(Update)) {
+        let Some((_, last, id)) = &mut self.outs[slot(c)].streaming else {
             return;
         };
         // Only what the UI shows: a change of transport drops alone sends nothing.
@@ -3679,13 +3946,13 @@ impl Host {
             && shown(&link) != shown(last)
         {
             *last = link;
-            notify(Update::Stream(StreamUpdate::Link(link)));
+            notify(stream_update(c, StreamUpdate::Link(link)));
             if let api::StreamState::Live {
                 protocol,
                 video_encoder,
                 audio_encoder,
                 ..
-            } = &self.stream_state
+            } = &self.outs[slot(c)].stream_state
             {
                 let state = api::StreamState::Live {
                     protocol: *protocol,
@@ -3695,15 +3962,20 @@ impl Host {
                     video_encoder: video_encoder.clone(),
                     audio_encoder: audio_encoder.clone(),
                 };
-                self.set_stream_state(state);
+                self.set_stream_state(c, state);
             }
         }
     }
 
     /// Ends the stream, if one runs, and says so; returns why it failed, if it did.
-    fn end_stream(&mut self, failure: Option<String>, notify: &dyn Fn(Update)) -> Option<String> {
+    fn end_stream(
+        &mut self,
+        c: OutputCanvas,
+        failure: Option<String>,
+        notify: &dyn Fn(Update),
+    ) -> Option<String> {
         // Tracked until the end, as in `stop_recording`.
-        let (_, _, id) = self.streaming.clone()?;
+        let (_, _, id) = self.outs[slot(c)].streaming.clone()?;
         let report = self.studio.stop_output(id);
         let (frames, dropped, connects, failed) = report.map_or((0, 0, 0, None), |r| {
             let p = &r.progress;
@@ -3715,24 +3987,30 @@ impl Host {
             )
         });
         let failure = failure.or(failed);
-        self.streaming = None;
+        self.outs[slot(c)].streaming = None;
         // A recording started with the stream outlives a stream that failed: it is the
         // copy of what the viewers missed. From now on it is the user's to stop.
-        self.auto_recording = false;
-        self.set_stream_state(api::StreamState::Idle {
-            last: Some(api::StreamSummary {
+        self.outs[slot(c)].auto_recording = false;
+        self.set_stream_state(
+            c,
+            api::StreamState::Idle {
+                last: Some(api::StreamSummary {
+                    failure: failure.clone(),
+                    frames,
+                    dropped,
+                    connects,
+                }),
+            },
+        );
+        notify(stream_update(
+            c,
+            StreamUpdate::Ended {
                 failure: failure.clone(),
                 frames,
                 dropped,
                 connects,
-            }),
-        });
-        notify(Update::Stream(StreamUpdate::Ended {
-            failure: failure.clone(),
-            frames,
-            dropped,
-            connects,
-        }));
+            },
+        ));
         failure
     }
 
@@ -4699,6 +4977,11 @@ impl Host {
         let Some(state) = self.vertical else {
             return Ok(false);
         };
+        if self.outs[slot(OutputCanvas::Vertical)].busy() {
+            return Err(Refusal::Conflict(
+                "Stop the recording or stream of the vertical canvas first.".to_owned(),
+            ));
+        }
         let mut draft = self.collection.clone();
         draft
             .remove_canvas(state.canvas)
@@ -4728,6 +5011,7 @@ impl Host {
         }
         self.collection = draft;
         self.vertical = None;
+        self.forget_vertical_outputs();
         self.waiting = self.studio.waiting();
         Ok(true)
     }
@@ -5845,10 +6129,10 @@ impl Host {
             return Ok(Response::Done(Empty {}));
         }
         let conflict = |m: String| Err(ApiError::new(ErrorKind::Conflict, m));
-        if self.recording.is_some() {
+        if self.any_recording() {
             return conflict(format!("stop the recording before {doing}"));
         }
-        if self.streaming.is_some() {
+        if self.any_streaming() {
             return conflict(format!("end the stream before {doing}"));
         }
         if self.switch_pending.is_some() {
@@ -5933,7 +6217,7 @@ impl ApiTarget<'_> {
         if host.switch_pending.is_some()
             && matches!(
                 command,
-                C::RecordStart(_) | C::RecordStartToFile(_) | C::StreamStart
+                C::RecordStart(_) | C::RecordStartToFile(_) | C::StreamStart(_)
             )
         {
             return Err(ApiError::new(
@@ -6528,11 +6812,13 @@ impl ApiTarget<'_> {
             })),
             C::RecordStart(p) => {
                 check_profile(&p.profile)?;
-                let path = host.profile.file_for(chrono::Local::now().naive_local());
-                self.record(path, false)
+                let c = host.api_canvas_of(p.canvas)?;
+                let path = host.recording_file(c);
+                self.record(c, path, false)
             }
             C::RecordStartToFile(p) => {
                 check_profile(&p.profile)?;
+                let c = host.api_canvas_of(p.canvas)?;
                 let path = PathBuf::from(&p.path);
                 if !path.is_absolute() {
                     return Err(ApiError::new(
@@ -6540,33 +6826,64 @@ impl ApiTarget<'_> {
                         format!("{} is not a full path", p.path),
                     ));
                 }
-                self.record(path, true)
+                self.record(c, path, true)
             }
-            C::RecordStop => {
-                if host.recording.is_none() {
+            C::RecordStop(p) => {
+                let c = host.api_canvas_of(p.canvas)?;
+                if host.outs[slot(c)].recording.is_none() {
                     return Err(ApiError::new(ErrorKind::Conflict, "nothing records"));
                 }
-                host.stop_recording(None, notify);
+                host.stop_recording(c, None, notify);
                 host.publish(notify);
                 Ok(Response::Done(Empty {}))
             }
-            C::RecordStatus => Ok(Response::RecordStatus(api::Snapshot {
-                seq: host.events.seq_map([Topic::RecordState]),
-                data: host.record_state.clone(),
-            })),
-            C::StreamStart => self.stream(),
-            C::StreamStop => {
-                if host.streaming.is_none() {
+            C::RecordStatus(p) => {
+                let c = host.api_canvas_of(p.canvas)?;
+                let data = host.outs[slot(c)].record_state.clone();
+                Ok(match c {
+                    OutputCanvas::Main => Response::RecordStatus(api::Snapshot {
+                        seq: host.events.seq_map([Topic::RecordState]),
+                        data,
+                    }),
+                    OutputCanvas::Vertical => Response::RecordCanvasStatus(api::Snapshot {
+                        seq: host.canvas_seq(Topic::RecordCanvasState, c),
+                        data: api::CanvasRecordState {
+                            canvas: c,
+                            state: data,
+                        },
+                    }),
+                })
+            }
+            C::StreamStart(p) => {
+                let c = host.api_canvas_of(p.canvas)?;
+                self.stream(c)
+            }
+            C::StreamStop(p) => {
+                let c = host.api_canvas_of(p.canvas)?;
+                if host.outs[slot(c)].streaming.is_none() {
                     return Err(ApiError::new(ErrorKind::Conflict, "nothing streams"));
                 }
-                host.end_stream_asked(notify);
+                host.end_stream_asked(c, notify);
                 host.publish(notify);
                 Ok(Response::Done(Empty {}))
             }
-            C::StreamStatus => Ok(Response::StreamStatus(api::Snapshot {
-                seq: host.events.seq_map([Topic::StreamState]),
-                data: host.stream_state.clone(),
-            })),
+            C::StreamStatus(p) => {
+                let c = host.api_canvas_of(p.canvas)?;
+                let data = host.outs[slot(c)].stream_state.clone();
+                Ok(match c {
+                    OutputCanvas::Main => Response::StreamStatus(api::Snapshot {
+                        seq: host.events.seq_map([Topic::StreamState]),
+                        data,
+                    }),
+                    OutputCanvas::Vertical => Response::StreamCanvasStatus(api::Snapshot {
+                        seq: host.canvas_seq(Topic::StreamCanvasState, c),
+                        data: api::CanvasStreamState {
+                            canvas: c,
+                            state: data,
+                        },
+                    }),
+                })
+            }
             C::VcamStatus => Ok(Response::VcamStatus(api::Snapshot {
                 // The state as it is now, so the data and its `seq` match.
                 seq: {
@@ -6705,7 +7022,7 @@ impl ApiTarget<'_> {
                     if let Some(why) = profile.problem() {
                         return Err(ApiError::new(ErrorKind::InvalidParams, why));
                     }
-                    if host.recording.is_some() && profile != host.profile {
+                    if host.outs[0].recording.is_some() && profile != host.profile {
                         return Err(ApiError::new(
                             ErrorKind::Conflict,
                             "stop the recording before changing its settings",
@@ -6723,7 +7040,7 @@ impl ApiTarget<'_> {
                         let stream = current
                             .with_api(patch)
                             .map_err(|why| ApiError::new(ErrorKind::InvalidParams, why))?;
-                        if host.streaming.is_some() && stream != *current {
+                        if host.outs[0].streaming.is_some() && stream != *current {
                             return Err(ApiError::new(
                                 ErrorKind::Conflict,
                                 "end the stream before changing its settings",
@@ -6742,13 +7059,13 @@ impl ApiTarget<'_> {
                         .canvas(host.canvas)
                         .is_some_and(|k| k.size == c.size() && k.frame_rate == c.frame_rate());
                     if !same {
-                        if host.recording.is_some() {
+                        if host.any_recording() {
                             return Err(ApiError::new(
                                 ErrorKind::Conflict,
                                 "stop the recording before changing the canvas",
                             ));
                         }
-                        if host.streaming.is_some() {
+                        if host.any_streaming() {
                             return Err(ApiError::new(
                                 ErrorKind::Conflict,
                                 "end the stream before changing the canvas",
@@ -6790,8 +7107,13 @@ impl ApiTarget<'_> {
         }
     }
 
-    /// Starts recording the program with the saved profile into `path`.
-    fn record(&mut self, path: PathBuf, explicit: bool) -> Result<Response, ApiError> {
+    /// Starts recording canvas `c` with its saved settings into `path`.
+    fn record(
+        &mut self,
+        c: OutputCanvas,
+        path: PathBuf,
+        explicit: bool,
+    ) -> Result<Response, ApiError> {
         let notify = self.notify;
         let host = &mut *self.host;
         if explicit && !path.is_absolute() {
@@ -6809,15 +7131,15 @@ impl ApiTarget<'_> {
         if let Some(why) = &host.cannot_record {
             return Err(failed(why.clone()));
         }
-        if host.recording.is_some() {
+        if host.outs[slot(c)].recording.is_some() {
             return Err(ApiError::new(
                 ErrorKind::Conflict,
                 "a recording is already running",
             ));
         }
-        let request = host.profile_request(path).map_err(failed)?;
+        let request = host.profile_request(c, path).map_err(failed)?;
         let profile = (!explicit).then(|| API_PROFILE_ID.to_owned());
-        let result = host.start_recording(&request, profile);
+        let result = host.start_recording(c, &request, profile);
         host.publish(notify);
         match result {
             Ok(update) => {
@@ -6833,7 +7155,7 @@ impl ApiTarget<'_> {
                     _ => return Err(failed("the recording did not start")),
                 };
                 // The UI shows the recording as if its own button started it.
-                notify(Update::Recording(update));
+                notify(recording_update(c, update));
                 Ok(Response::RecordStarted(started))
             }
             Err(why) => Err(failed(why)),
@@ -6842,21 +7164,34 @@ impl ApiTarget<'_> {
 }
 
 impl ApiTarget<'_> {
-    /// Goes live with the saved stream settings and the key in the key store.
-    fn stream(&mut self) -> Result<Response, ApiError> {
+    /// Goes live on canvas `c` with its saved stream settings and the key in the key
+    /// store.
+    fn stream(&mut self, c: OutputCanvas) -> Result<Response, ApiError> {
         let notify = self.notify;
         let host = &mut *self.host;
-        if host.streaming.is_some() {
+        if host.outs[slot(c)].streaming.is_some() {
             return Err(ApiError::new(
                 ErrorKind::Conflict,
                 "a stream is already running",
             ));
         }
-        let Some(profile) = &host.stream_profile else {
+        // The vertical stream's texts name it, so a client sees which one is missing.
+        let which = match c {
+            OutputCanvas::Main => "",
+            OutputCanvas::Vertical => " for the vertical stream",
+        };
+        if host.stream_profile.is_none() {
             return Err(failed("the studio is still starting; try again"));
+        }
+        let Some(profile) = host.stream_profile_of(c) else {
+            return Err(failed(format!(
+                "no server is saved{which}: enter it in Settings, Stream"
+            )));
         };
         if profile.server.is_empty() {
-            return Err(failed("no server is saved: enter it in Settings, Stream"));
+            return Err(failed(format!(
+                "no server is saved{which}: enter it in Settings, Stream"
+            )));
         }
         // The saved server is a setting (`admin`): a `control` caller never gets it back,
         // also not inside an error text.
@@ -6870,9 +7205,11 @@ impl ApiTarget<'_> {
             .clone()
             .filter(|id| host.encoders.iter().any(|e| e.id == *id));
         let request = StreamRequest::from_profile(profile, encoder).map_err(|_| {
-            failed("the saved stream settings cannot be used: see Settings, Stream")
+            failed(format!(
+                "the saved stream settings{which} cannot be used: see Settings, Stream"
+            ))
         })?;
-        let result = host.start_stream(&request);
+        let result = host.start_stream(c, &request);
         host.publish(notify);
         match result {
             Ok(StreamUpdate::Started {
@@ -6885,22 +7222,25 @@ impl ApiTarget<'_> {
                     audio_encoder: audio_encoder.clone(),
                 };
                 // The UI shows the stream as if its own button started it.
-                notify(Update::Stream(StreamUpdate::Started {
-                    url,
-                    video_encoder,
-                    audio_encoder,
-                }));
+                notify(stream_update(
+                    c,
+                    StreamUpdate::Started {
+                        url,
+                        video_encoder,
+                        audio_encoder,
+                    },
+                ));
                 // The stream runs: a panic while its recording starts must not turn
                 // the answer into an error (the round recovers the host).
-                if rbs_crash::contain(|| host.record_with_stream(notify)).is_err() {
+                if rbs_crash::contain(|| host.record_with_stream(c, notify)).is_err() {
                     host.caught = true;
                 }
                 host.publish(notify);
                 Ok(Response::StreamStarted(started))
             }
-            Ok(StreamUpdate::NoKey) => Err(failed(
-                "no stream key is saved: enter it in Settings, Stream",
-            )),
+            Ok(StreamUpdate::NoKey) => Err(failed(format!(
+                "no stream key is saved{which}: enter it in Settings, Stream"
+            ))),
             Ok(_) => Err(failed("the stream did not start")),
             Err(why) => Err(hide(why)),
         }
