@@ -445,6 +445,7 @@ impl StudioUi {
         g.set_library_looks(ModelRc::from(self.library_looks.clone()));
         g.set_library_samples(ModelRc::from(self.library_samples.clone()));
         g.set_filter_types(strings(Self::filter_type_names()));
+        g.set_audio_filter_types(strings(Self::audio_filter_type_names()));
         g.set_marks(ModelRc::from(self.marks.clone()));
         g.set_kinds(ModelRc::from(self.kinds.clone()));
         g.set_targets(ModelRc::from(self.targets.clone()));
