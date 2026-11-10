@@ -5,7 +5,7 @@
 // (`app_menu.rs`) when the menu opens or its view changes, so nothing is computed
 // while it is closed (P13).
 import { Theme, Tokens } from "tokens.slint";
-import { BrandMark, Icon, IconName, Icons, MenuSurface, FocusRing, RingFocus } from "components.slint";
+import { BrandMark, Icon, IconName, Icons, MenuSurface, FocusRing, RingFocus, OverlayCover } from "components.slint";
 
 // One row of the item column. kind: 1 command, 2 section heading, 3 separator,
 // 4 picker (opens its choices), 5 back (from a picker's choices).
@@ -38,6 +38,10 @@ export struct AppMenuChip {
 }
 
 export global AppMenus {
+    // The menu is open (a layer of the main window) and where it is, for the preview
+    // layer's cut-out.
+    in-out property <bool> open;
+    in-out property <OverlayCover> cover;
     // The menu shown last, kept while the app runs.
     in-out property <int> category;
     // The menus, in menu bar order (refreshed when the menu opens).
@@ -172,9 +176,10 @@ component Chip inherits Rectangle {
 }
 
 // The flyout. The owner places it under the RBS button and shows it.
-export component AppMenu inherits PopupWindow {
-    // Where Settings and the search shortcut are named in the platform's words.
-    close-policy: close-on-click-outside;
+// It is a layer of the main window (ADR-0094: a `PopupWindow` takes no keyboard focus),
+// instantiated only while `AppMenus.open`; the owner places it under the RBS button and
+// a click outside it closes it.
+export component AppMenu inherits Rectangle {
     property <int> category;
     property <string> picker;
     property <string> picker-title;
@@ -183,13 +188,18 @@ export component AppMenu inherits PopupWindow {
     // 0 the item column has the keys, 1 the category column.
     property <int> column;
     width: Tokens.size-app-menu-w;
+    height: surface.preferred-height;
 
-    // The popup's content is made each time it shows: fill it then.
+    // The content is made each time it opens: fill it then.
     init => {
         root.category = AppMenus.category;
         AppMenus.prepare();
         refresh();
+        AppMenus.cover = { x: self.x, y: self.y, width: self.width, height: self.height };
     }
+    changed x => { AppMenus.cover = { x: self.x, y: self.y, width: self.width, height: self.height }; }
+    changed y => { AppMenus.cover = { x: self.x, y: self.y, width: self.width, height: self.height }; }
+    changed height => { AppMenus.cover = { x: self.x, y: self.y, width: self.width, height: self.height }; }
     // Focusing in `init` is too early (see MenuItem): once, after the first frame.
     property <bool> focused-once;
     Timer {
@@ -241,10 +251,10 @@ export component AppMenu inherits PopupWindow {
             refresh();
         } else if shown[i].kind == 1 {
             AppMenus.run(shown[i].id);
-            root.close();
+            AppMenus.open = false;
         }
     }
-    MenuSurface {
+    surface := MenuSurface {
         width: root.width;
         // Arrows, Return and Escape reach the menu before the search field; typing
         // goes to the field.
@@ -260,7 +270,7 @@ export component AppMenu inherits PopupWindow {
                 if e.text == Key.LeftArrow && query.text == "" && column == 0 { column = 1; return accept; }
                 if e.text == Key.Escape {
                     if picker != "" { picker = ""; refresh(); return accept; }
-                    root.close();
+                    AppMenus.open = false;
                     return accept;
                 }
                 reject
@@ -414,7 +424,7 @@ export component AppMenu inherits PopupWindow {
                         Chip {
                             text: p.title;
                             current: p.current;
-                            clicked => { AppMenus.run(p.id); root.close(); }
+                            clicked => { AppMenus.run(p.id); AppMenus.open = false; }
                         }
                     }
                     Rectangle { horizontal-stretch: 1; }
@@ -424,8 +434,8 @@ export component AppMenu inherits PopupWindow {
                         background: stouch.has-hover ? Theme.surface-raised : transparent;
                         accessible-role: button;
                         accessible-label: @tr("Settings");
-                        accessible-action-default => { AppMenus.run("ui.settings.open"); root.close(); }
-                        stouch := TouchArea { clicked => { AppMenus.run("ui.settings.open"); root.close(); } }
+                        accessible-action-default => { AppMenus.run("ui.settings.open"); AppMenus.open = false; }
+                        stouch := TouchArea { clicked => { AppMenus.run("ui.settings.open"); AppMenus.open = false; } }
                         srow := HorizontalLayout {
                             padding-left: Tokens.space-2;
                             padding-right: Tokens.space-2;

@@ -818,6 +818,31 @@ pub struct VcamFrames {
     pub os_errors: u64,
 }
 
+/// `replay.status` and `replay.changed` (protocol 1.27, ADR-0088).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ReplayStatus {
+    /// The buffer runs and keeps the past.
+    pub armed: bool,
+    /// The usable past in whole seconds; `0` while disarmed.
+    pub held_secs: u32,
+    /// The wanted length in seconds.
+    pub length_secs: u32,
+    /// Payload bytes held.
+    pub bytes: u64,
+    /// The memory limit in bytes.
+    pub memory_limit: u64,
+    /// Memory, not the length setting, is why the past is short.
+    pub memory_limited: bool,
+    /// A clip is being cut or written.
+    pub saving: bool,
+    /// The file of the last clip saved since the server started.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_saved: Option<String>,
+    /// Why the last save failed, until a save succeeds.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_error: Option<String>,
+}
+
 /// `vcam.status` and `vcam.changed` (protocol 1.12, ADR-0066 decision 13).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct VcamStatus {

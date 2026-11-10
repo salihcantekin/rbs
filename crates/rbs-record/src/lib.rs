@@ -22,7 +22,9 @@ mod recording;
 mod select;
 mod studio;
 
-pub use clip::{CLIP_WRITE_TIMEOUT, ClipFile, ClipWriteError, write_clip};
+pub use clip::{CLIP_WRITE_TIMEOUT, ClipFile, ClipWriteError, ClipWriter, write_clip};
+pub use rbs_nodes::replay::{Clip, ClipBounds, ClipError};
+pub use rbs_nodes::replay_node::{ReplayStatus, RequestError as ReplayRequestError};
 pub use recording::{
     AUDIO, AUDIO_ENCODER, AUDIO_ENCODER_2, AudioSettings, FinishReport, OUTPUT, OUTPUT_2,
     OutputPartitions, Partitions, Port, Progress, RENDER, REPLAY_AUDIO_ENCODER, REPLAY_RING,

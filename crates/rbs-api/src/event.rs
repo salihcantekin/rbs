@@ -7,7 +7,8 @@ use std::fmt;
 use serde::{Deserialize, Serialize};
 
 use crate::types::{
-    Canvas, RecordState, SceneList, Settings, SourceInfo, SourceLevels, StreamState, VcamStatus,
+    Canvas, RecordState, ReplayStatus, SceneList, Settings, SourceInfo, SourceLevels, StreamState,
+    VcamStatus,
 };
 
 /// An event topic. Subscriptions and the subscriber mask are per topic.
@@ -37,11 +38,14 @@ pub enum Topic {
     /// The virtual camera, without its counters (state, protocol 1.12).
     #[serde(rename = "vcam.changed")]
     VcamChanged,
+    /// The replay buffer: armed, what it holds, the last clip (state, protocol 1.27).
+    #[serde(rename = "replay.changed")]
+    ReplayChanged,
 }
 
 impl Topic {
     /// Every topic.
-    pub const ALL: [Topic; 8] = [
+    pub const ALL: [Topic; 9] = [
         Topic::SourceChanged,
         Topic::RecordState,
         Topic::CanvasChanged,
@@ -50,6 +54,7 @@ impl Topic {
         Topic::StreamState,
         Topic::SceneChanged,
         Topic::VcamChanged,
+        Topic::ReplayChanged,
     ];
 
     /// Its name on the wire.
@@ -63,6 +68,7 @@ impl Topic {
             Topic::StreamState => "stream.state",
             Topic::SceneChanged => "scene.changed",
             Topic::VcamChanged => "vcam.changed",
+            Topic::ReplayChanged => "replay.changed",
         }
     }
 
@@ -211,6 +217,9 @@ pub enum EventPayload {
     /// The virtual camera, `frames` always `null` (protocol 1.12).
     #[serde(rename = "vcam.changed")]
     VcamChanged(VcamStatus),
+    /// The replay buffer (protocol 1.27).
+    #[serde(rename = "replay.changed")]
+    ReplayChanged(ReplayStatus),
 }
 
 impl EventPayload {
@@ -225,6 +234,7 @@ impl EventPayload {
             EventPayload::StreamState(_) => Topic::StreamState,
             EventPayload::SceneChanged(_) => Topic::SceneChanged,
             EventPayload::VcamChanged(_) => Topic::VcamChanged,
+            EventPayload::ReplayChanged(_) => Topic::ReplayChanged,
         }
     }
 }
