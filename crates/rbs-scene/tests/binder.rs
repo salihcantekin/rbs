@@ -60,6 +60,11 @@ fn types(id: &NodeTypeId) -> Option<Arc<NodeDescriptor>> {
             vec![Pin::one("in", LinkKind::Video)],
             vec![Pin::one("out", LinkKind::Video)],
         ),
+        "org.rbs.audio-filter.gain" | "org.rbs.audio-filter.gate" => d(
+            NodeKind::AudioFilter,
+            vec![Pin::one("in", LinkKind::Audio)],
+            vec![Pin::one("out", LinkKind::Audio)],
+        ),
         _ => None,
     }
 }
@@ -628,15 +633,84 @@ fn a_source_with_video_and_audio_binds_only_its_video() {
 }
 
 #[test]
-fn filters_on_audio_sources_are_reported() {
+fn a_video_filter_on_an_audio_source_is_reported() {
     let (mut s, mic) = audio_setup();
     let (f, _) = s
         .col
         .add_filter(mic, ty("org.rbs.filter.lut"), Settings::new())
         .unwrap();
     let report = s.binder.sync(&s.col, &mut s.graph).unwrap();
-    assert_eq!(report.problems, [BindProblem::FilterOnAudioSource(f)]);
+    assert_eq!(report.problems, [BindProblem::NoAudioPins(f)]);
     assert!(s.binder.filter_node(mic, f).is_none());
+}
+
+#[test]
+fn an_audio_filter_on_a_video_source_is_reported() {
+    let mut s = setup();
+    let (f, _) = s
+        .col
+        .add_filter(s.cam, ty("org.rbs.audio-filter.gain"), Settings::new())
+        .unwrap();
+    let report = s.binder.sync(&s.col, &mut s.graph).unwrap();
+    assert_eq!(report.problems, [BindProblem::NoVideoPins(f)]);
+}
+
+#[test]
+fn audio_filters_chain_in_the_sources_partition_and_the_mixer_hears_the_tail() {
+    let (mut s, mic) = audio_setup();
+    let (f1, _) = s
+        .col
+        .add_filter(mic, ty("org.rbs.audio-filter.gain"), Settings::new())
+        .unwrap();
+    let (f2, _) = s
+        .col
+        .add_filter(mic, ty("org.rbs.audio-filter.gate"), Settings::new())
+        .unwrap();
+    let report = s.binder.sync(&s.col, &mut s.graph).unwrap();
+    assert!(report.problems.is_empty(), "{:?}", report.problems);
+    let mic_node = s.binder.source_node(mic).unwrap();
+    let n1 = s.binder.filter_node(mic, f1).unwrap();
+    let n2 = s.binder.filter_node(mic, f2).unwrap();
+    for n in [n1, n2] {
+        assert_eq!(s.graph.node(n).unwrap().partition, AUDIO);
+    }
+    assert_eq!(links_into(&s, n1), [mic_node]);
+    assert_eq!(links_into(&s, n2), [n1]);
+    let mixer = s.binder.mixer(s.wide).unwrap();
+    assert_eq!(links_into(&s, mixer), [n2], "the mixer hears the tail only");
+    let bound = &report.mixers[&s.wide];
+    assert_eq!(bound.inputs.len(), 1);
+    assert_eq!(bound.inputs[0].producer, n2);
+}
+
+#[test]
+fn changing_the_audio_chain_moves_the_mixer_link_to_the_new_tail() {
+    let (mut s, mic) = audio_setup();
+    let (f, _) = s
+        .col
+        .add_filter(mic, ty("org.rbs.audio-filter.gain"), Settings::new())
+        .unwrap();
+    s.binder.sync(&s.col, &mut s.graph).unwrap();
+    let mic_node = s.binder.source_node(mic).unwrap();
+    let node = s.binder.filter_node(mic, f).unwrap();
+    let mixer = s.binder.mixer(s.wide).unwrap();
+    assert_eq!(links_into(&s, mixer), [node]);
+    // Disabled: the filter stays in the graph but the source feeds the mixer again.
+    s.col.set_filter_enabled(mic, f, false).unwrap();
+    let report = s.binder.sync(&s.col, &mut s.graph).unwrap();
+    assert_eq!(links_into(&s, mixer), [mic_node]);
+    assert_eq!(report.mixers[&s.wide].inputs[0].producer, mic_node);
+    assert!(s.binder.filter_node(mic, f).is_some());
+    // Enabled again, then removed: the node is retired with its links, the mixer link
+    // goes back to the source.
+    s.col.set_filter_enabled(mic, f, true).unwrap();
+    s.binder.sync(&s.col, &mut s.graph).unwrap();
+    assert_eq!(links_into(&s, mixer), [node]);
+    s.col.remove_filter(mic, f).unwrap();
+    let report = s.binder.sync(&s.col, &mut s.graph).unwrap();
+    assert_eq!(report.retired_filters, [node]);
+    assert!(s.graph.node(node).is_none());
+    assert_eq!(links_into(&s, mixer), [mic_node]);
 }
 
 #[test]
