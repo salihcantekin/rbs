@@ -65,6 +65,14 @@ fn types(id: &NodeTypeId) -> Option<Arc<NodeDescriptor>> {
             vec![Pin::one("in", LinkKind::Audio)],
             vec![Pin::one("out", LinkKind::Audio)],
         ),
+        "org.rbs.audio-filter.ducker" => d(
+            NodeKind::AudioFilter,
+            vec![
+                Pin::one("in", LinkKind::Audio),
+                Pin::one("key", LinkKind::Audio),
+            ],
+            vec![Pin::one("out", LinkKind::Audio)],
+        ),
         _ => None,
     }
 }
@@ -1267,4 +1275,172 @@ fn check_consistent(s: &Setup, report: &rbs_scene::binder::BindReport, seed: u64
     }
     let all: std::collections::BTreeSet<NodeId> = s.graph.nodes().iter().map(|n| n.id).collect();
     assert_eq!(all, accounted, "seed {seed} step {step}: unaccounted nodes");
+}
+
+// Key links (ADR-0095).
+
+fn keyed(key: Option<SourceId>) -> Settings {
+    let mut settings = Settings::new();
+    if let Some(k) = key {
+        settings.insert(
+            "key_source".to_owned(),
+            rbs_scene::model::SettingValue::Int(i64::from(k.get())),
+        );
+    }
+    settings
+}
+
+/// A scene with a microphone `voice` and a music source `music`, both heard.
+fn music_and_voice() -> (Setup, SourceId, SourceId) {
+    let (mut s, voice) = audio_setup();
+    let (music, _) = s
+        .col
+        .add_source("Music", ty("org.rbs.source.mic"), Settings::new())
+        .unwrap();
+    s.col
+        .add_item(s.live, ItemContent::Source(music), full(), None)
+        .unwrap();
+    (s, music, voice)
+}
+
+#[test]
+fn a_ducker_hears_the_tail_of_its_key_sources_chain() {
+    let (mut s, music, voice) = music_and_voice();
+    let (d, _) = s
+        .col
+        .add_filter(music, ty("org.rbs.audio-filter.ducker"), keyed(Some(voice)))
+        .unwrap();
+    let report = s.binder.sync(&s.col, &mut s.graph).unwrap();
+    assert!(report.problems.is_empty(), "{:?}", report.problems);
+    let duck = s.binder.filter_node(music, d).unwrap();
+    let voice_node = s.binder.source_node(voice).unwrap();
+    let music_node = s.binder.source_node(music).unwrap();
+    let mut into = links_into(&s, duck);
+    into.sort();
+    let mut want = vec![music_node, voice_node];
+    want.sort();
+    assert_eq!(into, want, "the music on `in`, the voice on `key`");
+    // The mixer still hears the music's chain tail (the ducker) and the voice itself.
+    let mixer = s.binder.mixer(s.wide).unwrap();
+    let mut heard = links_into(&s, mixer);
+    heard.sort();
+    let mut want = vec![duck, voice_node];
+    want.sort();
+    assert_eq!(heard, want);
+    // A gate on the voice becomes the key tap, and the link moves with it.
+    let (g, _) = s
+        .col
+        .add_filter(voice, ty("org.rbs.audio-filter.gate"), Settings::new())
+        .unwrap();
+    s.binder.sync(&s.col, &mut s.graph).unwrap();
+    let gate = s.binder.filter_node(voice, g).unwrap();
+    assert!(links_into(&s, duck).contains(&gate));
+    assert!(!links_into(&s, duck).contains(&voice_node));
+    // Without a key setting there is no key link.
+    s.col.set_filter_settings(music, d, keyed(None)).unwrap();
+    let report = s.binder.sync(&s.col, &mut s.graph).unwrap();
+    assert!(report.problems.is_empty());
+    assert_eq!(links_into(&s, duck), [music_node]);
+}
+
+#[test]
+fn a_missing_own_or_video_key_is_reported_and_left_unlinked() {
+    let (mut s, music, voice) = music_and_voice();
+    let (own, _) = s
+        .col
+        .add_filter(music, ty("org.rbs.audio-filter.ducker"), keyed(Some(music)))
+        .unwrap();
+    let (gone, _) = s
+        .col
+        .add_filter(
+            voice,
+            ty("org.rbs.audio-filter.ducker"),
+            keyed(Some(SourceId::from_raw(999))),
+        )
+        .unwrap();
+    let report = s.binder.sync(&s.col, &mut s.graph).unwrap();
+    assert!(report.problems.contains(&BindProblem::KeyUnavailable(own)));
+    assert!(report.problems.contains(&BindProblem::KeyUnavailable(gone)));
+    for (src, f) in [(music, own), (voice, gone)] {
+        let node = s.binder.filter_node(src, f).unwrap();
+        assert_eq!(links_into(&s, node).len(), 1, "only `in`");
+    }
+    // A camera (video) cannot be a key.
+    s.col
+        .set_filter_settings(music, own, keyed(Some(s.cam)))
+        .unwrap();
+    let report = s.binder.sync(&s.col, &mut s.graph).unwrap();
+    assert!(report.problems.contains(&BindProblem::KeyUnavailable(own)));
+}
+
+#[test]
+fn a_loop_of_keys_drops_the_link_of_the_highest_filter_id_in_any_edit_order() {
+    for flip in [false, true] {
+        let (mut s, music, voice) = music_and_voice();
+        let (a, b);
+        if flip {
+            b = s
+                .col
+                .add_filter(voice, ty("org.rbs.audio-filter.ducker"), keyed(None))
+                .unwrap()
+                .0;
+            a = s
+                .col
+                .add_filter(music, ty("org.rbs.audio-filter.ducker"), keyed(None))
+                .unwrap()
+                .0;
+        } else {
+            a = s
+                .col
+                .add_filter(music, ty("org.rbs.audio-filter.ducker"), keyed(None))
+                .unwrap()
+                .0;
+            b = s
+                .col
+                .add_filter(voice, ty("org.rbs.audio-filter.ducker"), keyed(None))
+                .unwrap()
+                .0;
+        }
+        s.col
+            .set_filter_settings(music, a, keyed(Some(voice)))
+            .unwrap();
+        s.col
+            .set_filter_settings(voice, b, keyed(Some(music)))
+            .unwrap();
+        let report = s.binder.sync(&s.col, &mut s.graph).unwrap();
+        let (low, high, low_src, high_src) = if a < b {
+            (a, b, music, voice)
+        } else {
+            (b, a, voice, music)
+        };
+        assert_eq!(report.problems, [BindProblem::KeyUnavailable(high)]);
+        let low_node = s.binder.filter_node(low_src, low).unwrap();
+        let high_node = s.binder.filter_node(high_src, high).unwrap();
+        assert_eq!(
+            links_into(&s, low_node).len(),
+            2,
+            "the lower id keeps its key"
+        );
+        assert_eq!(links_into(&s, high_node).len(), 1);
+    }
+}
+
+#[test]
+fn removing_the_key_source_or_the_ducker_cleans_up_the_key_link() {
+    let (mut s, music, voice) = music_and_voice();
+    let (d, _) = s
+        .col
+        .add_filter(music, ty("org.rbs.audio-filter.ducker"), keyed(Some(voice)))
+        .unwrap();
+    s.binder.sync(&s.col, &mut s.graph).unwrap();
+    let duck = s.binder.filter_node(music, d).unwrap();
+    assert_eq!(links_into(&s, duck).len(), 2);
+    s.col.delete_source(voice).unwrap();
+    let report = s.binder.sync(&s.col, &mut s.graph).unwrap();
+    assert!(report.problems.contains(&BindProblem::KeyUnavailable(d)));
+    assert_eq!(links_into(&s, duck).len(), 1);
+    s.col.remove_filter(music, d).unwrap();
+    let report = s.binder.sync(&s.col, &mut s.graph).unwrap();
+    assert!(report.problems.is_empty());
+    assert!(s.graph.node(duck).is_none());
 }

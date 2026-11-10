@@ -74,5 +74,28 @@ fn dsp_benches(c: &mut Criterion) {
     });
 }
 
-criterion_group!(benches, dsp_benches);
+/// The ducker with a loud key (ducking, then steady) and a silent one (idle).
+fn ducker_benches(c: &mut Criterion) {
+    use rbs_audio_filters::ducker::Ducker;
+    let values = Values::defaults(&Ducker as &dyn AudioFilterType);
+    let mut l = vec![0.1f32; FRAMES];
+    let mut r = vec![0.1f32; FRAMES];
+    let loud = vec![0.5f32; FRAMES];
+    let quiet = vec![0.0f32; FRAMES];
+    for (name, key) in [("ducker_ducking", &loud), ("ducker_idle", &quiet)] {
+        let mut d = Ducker.make(setup(), &values).expect("valid");
+        c.bench_function(name, |b| {
+            b.iter(|| {
+                d.process_keyed(
+                    &mut [&mut l[..], &mut r[..]],
+                    Some(&[&key[..], &key[..]]),
+                    FRAMES,
+                );
+                black_box((&l, &r));
+            });
+        });
+    }
+}
+
+criterion_group!(benches, dsp_benches, ducker_benches);
 criterion_main!(benches);

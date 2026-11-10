@@ -243,7 +243,7 @@ pub struct FilterField {
     pub key: String,
     /// English label.
     pub label: String,
-    /// `"number"`, `"color"`, `"toggle"` or `"choice"` (the last two since protocol 1.16).
+    /// `"number"`, `"color"`, `"toggle"`, `"choice"` (the last two since protocol 1.16) or `"source"` (protocol 1.19).
     pub kind: String,
     /// One sentence that explains the setting (protocol 1.16); absent when none.
     #[serde(default, skip_serializing_if = "Option::is_none")]

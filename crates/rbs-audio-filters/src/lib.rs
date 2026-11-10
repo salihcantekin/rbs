@@ -18,6 +18,7 @@ pub use rbs_params::{Field, FieldKind, ParamError, Schema, Value, Values};
 
 pub mod catalogue;
 pub mod conformance;
+pub mod ducker;
 pub mod gain;
 pub mod gate;
 pub mod node;
@@ -59,6 +60,12 @@ pub trait AudioFilterType: Send + Sync + 'static {
     /// A DSP for `setup` with `values` (already validated against the schema). Runs off
     /// the audio thread; allocate everything here.
     fn make(&self, setup: DspSetup, values: &Values) -> Result<Box<dyn AudioDsp>, ParamError>;
+    /// Whether the node has a second audio input, `key`, that carries another source's
+    /// signal (a ducker, ADR-0095). The binder links it from the key source named by the
+    /// `Int` setting `key_source`. Default: no.
+    fn key_input(&self) -> bool {
+        false
+    }
 }
 
 /// A catalogue entry's schema is its field list, so [`Values`] works on it directly.
@@ -78,6 +85,19 @@ pub trait AudioDsp: Send {
     /// Processes `frames` frames of every channel in place. `frames` is at most the
     /// setup's `block_frames`. No allocation, no blocking.
     fn process(&mut self, channels: &mut [&mut [f32]], frames: usize);
+    /// Like [`process`](AudioDsp::process) for a filter with a key input: `key` holds
+    /// the key's channels (planar, at least `frames` long each), or `None` when no key
+    /// is linked or it produced no block, which a DSP treats as silence. The default
+    /// ignores the key.
+    fn process_keyed(
+        &mut self,
+        channels: &mut [&mut [f32]],
+        key: Option<&[&[f32]]>,
+        frames: usize,
+    ) {
+        let _ = key;
+        self.process(channels, frames);
+    }
     /// The live meter, if this filter has one. Called once, before the node is adopted,
     /// so the studio keeps the `Arc` while the executor thread owns the DSP.
     fn meter(&self) -> Option<Arc<FilterMeter>> {

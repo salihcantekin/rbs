@@ -373,7 +373,8 @@ fn audio_filters_are_listed_by_domain_and_edited_on_sound_sources_only() {
         ids,
         [
             "org.rbs.audio-filter.gain",
-            "org.rbs.audio-filter.noise-gate"
+            "org.rbs.audio-filter.noise-gate",
+            "org.rbs.audio-filter.ducker"
         ]
     );
     let attack = types[1]["fields"]
@@ -386,7 +387,7 @@ fn audio_filters_are_listed_by_domain_and_edited_on_sound_sources_only() {
     assert_eq!(attack["unit"], "ms");
     assert!(attack["help"].as_str().is_some_and(|h| !h.is_empty()));
     let all = c.call("filter.types", json!({"domain": "all"}));
-    assert_eq!(ok(&all)["types"].as_array().unwrap().len(), 6);
+    assert_eq!(ok(&all)["types"].as_array().unwrap().len(), 7);
 
     let mic = add(&mut c, "audio_input", "Mic");
     let screen = add(&mut c, "screen", "Screen");
@@ -425,6 +426,64 @@ fn audio_filters_are_listed_by_domain_and_edited_on_sound_sources_only() {
     }
     ok(&c.call("filter.remove", json!({"filter": gain})));
     assert!(filters_of(&mut c, mic).is_empty());
+}
+
+#[test]
+fn a_ducker_takes_a_sound_source_as_its_key() {
+    let Some((_host, _updates, _api, mut c)) = start() else {
+        return;
+    };
+    let audio = c.call("filter.types", json!({"domain": "audio"}));
+    let types = ok(&audio)["types"].as_array().unwrap().clone();
+    let ducker = types
+        .iter()
+        .find(|t| t["type"] == "org.rbs.audio-filter.ducker")
+        .unwrap();
+    let key = ducker["fields"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|f| f["key"] == "key_source")
+        .unwrap();
+    assert_eq!(key["kind"], "source");
+    assert!(key["default"].is_null());
+
+    let voice = add(&mut c, "audio_input", "Voice");
+    let music = add(&mut c, "audio_input", "Music");
+    let screen = add(&mut c, "screen", "Screen");
+    let added = c.call(
+        "filter.add",
+        json!({"source": music, "type": "org.rbs.audio-filter.ducker",
+               "settings": {"key_source": voice, "amount": 18}}),
+    );
+    let duck = ok(&added)["filter"].as_u64().unwrap();
+    let rows = filters_of(&mut c, music);
+    assert_eq!(rows[0]["settings"]["key_source"], voice);
+    assert_eq!(rows[0]["settings"]["amount"], 18.0);
+
+    // Unknown, own and picture sources cannot be the key.
+    for (id, want) in [
+        (json!(9999), "not_found"),
+        (json!(music), "invalid_params"),
+        (json!(screen), "invalid_params"),
+    ] {
+        let bad = c.call(
+            "filter.set_settings",
+            json!({"filter": duck, "settings": {"key_source": id}}),
+        );
+        assert_eq!(kind(&bad), want, "{id}: {bad}");
+    }
+    // null clears the key.
+    ok(&c.call(
+        "filter.set_settings",
+        json!({"filter": duck, "settings": {"key_source": null}}),
+    ));
+    let rows = filters_of(&mut c, music);
+    assert!(
+        rows[0]["settings"]
+            .get("key_source")
+            .is_none_or(|v| v.is_null())
+    );
 }
 
 #[test]

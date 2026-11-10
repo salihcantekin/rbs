@@ -237,9 +237,20 @@ impl NodeDescriptor {
                 media_in == 1 && ins(Video) == 1 && media_out == 1 && outs(Video) == 1,
                 "one video input and one video output",
             ),
+            // A second audio input named `key` carries another source's signal (ADR-0095).
             NodeKind::AudioFilter => (
-                media_in == 1 && ins(Audio) == 1 && media_out == 1 && outs(Audio) == 1,
-                "one audio input and one audio output",
+                media_in == ins(Audio)
+                    && match ins(Audio) {
+                        1 => true,
+                        2 => self
+                            .inputs
+                            .iter()
+                            .any(|p| p.kind == Audio && p.name == "key"),
+                        _ => false,
+                    }
+                    && media_out == 1
+                    && outs(Audio) == 1,
+                "one audio input and one audio output, and optionally a second audio input named key",
             ),
             NodeKind::Compositor => (
                 media_in == ins(Video)

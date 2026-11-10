@@ -17,6 +17,9 @@ fn value_of(kind: &FieldKind, v: &SettingValue) -> Option<Value> {
             .position(|(key, _)| key == t)
             .and_then(|i| u8::try_from(i).ok())
             .map(Value::Choice),
+        (FieldKind::Source, SettingValue::Int(i)) => {
+            u32::try_from(*i).ok().map(|id| Value::Source(Some(id)))
+        }
         _ => None,
     }
 }
@@ -68,7 +71,12 @@ pub fn filter_values_lenient<S: Schema + ?Sized>(
                 }
                 Value::Number(c)
             }
-            (Some(v @ (Value::Color(_) | Value::Toggle(_) | Value::Choice(_))), _) => v,
+            (
+                Some(
+                    v @ (Value::Color(_) | Value::Toggle(_) | Value::Choice(_) | Value::Source(_)),
+                ),
+                _,
+            ) => v,
             _ => {
                 adjusted.push(key.clone());
                 continue;
@@ -88,14 +96,17 @@ fn wide(v: f32) -> f64 {
 }
 
 /// The settings that store `values`: every field of the type, numbers as floats and
-/// colours as `#rrggbb` or `#rrggbbaa`.
+/// colours as `#rrggbb` or `#rrggbbaa`. A source is an integer id; "none" is the key
+/// being absent (source ids start at 0, ADR-0095).
 pub fn filter_settings<S: Schema + ?Sized>(ty: &S, values: &Values) -> Settings {
     values
         .to_pairs(ty)
         .into_iter()
         .zip(ty.fields())
-        .map(|((key, v), field)| {
+        .filter_map(|((key, v), field)| {
             let stored = match v {
+                Value::Source(None) => return None,
+                Value::Source(Some(id)) => SettingValue::Int(i64::from(id)),
                 Value::Number(n) => SettingValue::Float(wide(n)),
                 Value::Color(c) => SettingValue::Text(color_text(c)),
                 Value::Toggle(b) => SettingValue::Bool(b),
@@ -111,7 +122,7 @@ pub fn filter_settings<S: Schema + ?Sized>(ty: &S, values: &Values) -> Settings 
                 #[allow(unreachable_patterns)]
                 other => SettingValue::Text(format!("{other:?}")),
             };
-            (key.to_owned(), stored)
+            Some((key.to_owned(), stored))
         })
         .collect()
 }
@@ -188,6 +199,30 @@ mod tests {
         assert_eq!(stored.len(), key.fields().len());
         assert_eq!(stored["key_color"], SettingValue::Text("#0000ff80".into()));
         assert_eq!(filter_values(key, &stored).unwrap(), v);
+    }
+
+    #[test]
+    fn a_source_is_an_integer_and_none_is_absent() {
+        use rbs_params::Field;
+        const F: &[Field] = &[Field::source("key_source", "Key source")];
+        let keyed: &'static [Field] = F;
+        let none = Values::defaults(&keyed);
+        assert!(filter_settings(&keyed, &none).is_empty());
+        let zero = Values::from_pairs(&keyed, [("key_source", Value::Source(Some(0)))]).unwrap();
+        let stored = filter_settings(&keyed, &zero);
+        assert_eq!(stored["key_source"], SettingValue::Int(0));
+        assert_eq!(filter_values(&keyed, &stored).unwrap(), zero);
+        assert_eq!(filter_values(&keyed, &Settings::new()).unwrap(), none);
+        assert_eq!(
+            filter_values(&keyed, &s(&[("key_source", SettingValue::Int(-1))])),
+            Err(ParamError::WrongKind("key_source"))
+        );
+        let (v, adjusted) = filter_values_lenient(
+            &keyed,
+            &s(&[("key_source", SettingValue::Text("x".into()))]),
+        );
+        assert_eq!(v, none);
+        assert_eq!(adjusted, vec!["key_source".to_owned()]);
     }
 
     #[test]
