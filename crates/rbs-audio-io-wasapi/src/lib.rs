@@ -7,6 +7,9 @@
 //! | `Input` | an active capture endpoint (microphone, line input) | `capture:<endpoint id>` |
 //! | `OutputLoopback` | an active render endpoint, read with `AUDCLNT_STREAMFLAGS_LOOPBACK` | `loopback:<endpoint id>` |
 //! | `Application` | a process with an audio session on a render endpoint, read with process loopback (its process tree) | `app:<process id>` |
+//! | `Output` | an active render endpoint whose mix format is 32-bit float, played with an event-driven shared-mode render stream (ADR-0097) | `play:<endpoint id>` |
+//!
+//! Loopback and playback endpoints of one device carry its endpoint id as `device_key`.
 //!
 //! Endpoint ids are the `IMMDevice` ids, stable across restarts. `enumerate` creates
 //! the device enumerator and, per endpoint, an audio client to read the mix format,
@@ -99,12 +102,14 @@ pub(crate) mod ids {
     pub(crate) const CAPTURE: &str = "capture:";
     pub(crate) const LOOPBACK: &str = "loopback:";
     pub(crate) const APP: &str = "app:";
+    pub(crate) const PLAY: &str = "play:";
 
     /// The id of a device endpoint or a process.
     pub(crate) fn endpoint(kind: EndpointKind, native: &str) -> EndpointId {
         let prefix = match kind {
             EndpointKind::OutputLoopback => LOOPBACK,
             EndpointKind::Application => APP,
+            EndpointKind::Output => PLAY,
             _ => CAPTURE,
         };
         EndpointId::new(format!("{prefix}{native}"))
@@ -117,6 +122,7 @@ pub(crate) mod ids {
             (CAPTURE, EndpointKind::Input),
             (LOOPBACK, EndpointKind::OutputLoopback),
             (APP, EndpointKind::Application),
+            (PLAY, EndpointKind::Output),
         ]
         .into_iter()
         .find_map(|(prefix, kind)| {
@@ -133,7 +139,7 @@ pub(crate) mod ids {
         #[test]
         fn ids_round_trip() {
             let device = "{0.0.1.00000000}.{6c4b6d0e-7d52-4b5c-9d38-1f0b3c3b9f11}";
-            for kind in EndpointKind::ALL {
+            for kind in EndpointKind::ALL.into_iter().chain([EndpointKind::Output]) {
                 let id = endpoint(kind, device);
                 assert_eq!(parse(&id), Some((kind, device)));
             }

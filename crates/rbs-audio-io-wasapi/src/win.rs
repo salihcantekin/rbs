@@ -57,8 +57,8 @@ use windows_core::{Ref, implement};
 
 use rbs_audio_io::ring::{self, I24, RingConsumer};
 use rbs_audio_io::{
-    AudioBackend, AudioEndpoint, AudioInputStream, AudioIoError, AudioRead, EndpointKind,
-    ErrorDomain, InputRequest, InputStats, caps,
+    AudioBackend, AudioEndpoint, AudioInputStream, AudioIoError, AudioOutput, AudioRead,
+    EndpointKind, ErrorDomain, InputRequest, InputStats, OutputRequest, caps,
 };
 use rbs_core::capability::{CapabilitySet, CapabilityValue};
 use rbs_core::media::{AudioFormat, ChannelLayout, MAX_CHANNELS};
@@ -69,6 +69,8 @@ use rbs_core::timing::SampleRate;
 use crate::packets::{Packet, Packets, Samples};
 use crate::wave::{SampleKind, TAG_EXTENSIBLE, TAG_FLOAT, WaveFields, WaveFormat};
 use crate::{ADAPTER_ID, Owned, PROCESS_LOOPBACK_BUILD, ids};
+
+mod render;
 
 /// Longest wait in `start` for the capture thread to open the stream (the port
 /// allows 500 ms). Opening takes a few milliseconds.
@@ -281,8 +283,11 @@ fn device(
     }
 }
 
-/// Every active device of `kind` (Input or OutputLoopback) with its format.
-fn device_endpoints(kind: EndpointKind) -> Result<Vec<(AudioEndpoint, IMMDevice)>, AudioIoError> {
+/// Every active device of `kind` (Input, OutputLoopback or Output) with its mix
+/// format. Render endpoints (loopback and playback) carry the `IMMDevice` id as their
+/// `device_key`, equal for a device's loopback and playback endpoints (ADR-0097
+/// decision 8).
+fn device_endpoints(kind: EndpointKind) -> Result<Vec<(AudioEndpoint, WaveFormat)>, AudioIoError> {
     let enumerator = enumerator()?;
     let flow = flow_of(kind);
     // SAFETY: plain COM calls on live interfaces.
@@ -309,9 +314,13 @@ fn device_endpoints(kind: EndpointKind) -> Result<Vec<(AudioEndpoint, IMMDevice)
             };
             let name = friendly_name(&device).unwrap_or_else(|| id.clone());
             let is_default = default.as_deref() == Some(id.as_str());
-            let endpoint = AudioEndpoint::new(ids::endpoint(kind, &id), kind, name, wave.format)
-                .with_default(is_default);
-            found.push((endpoint, device));
+            let mut endpoint =
+                AudioEndpoint::new(ids::endpoint(kind, &id), kind, name, wave.format)
+                    .with_default(is_default);
+            if kind != EndpointKind::Input {
+                endpoint = endpoint.with_device_key(id.clone());
+            }
+            found.push((endpoint, wave));
         }
         Ok(found)
     }
@@ -498,12 +507,21 @@ impl AdapterFactory for WasapiAudioBackend {
                 CapabilityValue::Int(MAX_CHANNELS as i64),
             )
             .with(caps::INPUT_PERMISSION, CapabilityValue::Flag(false))
+            .with(caps::OUTPUT, CapabilityValue::Flag(true))
+            .with(caps::OUTPUT_ENUMERATE, CapabilityValue::Flag(true))
+            .with(
+                caps::OUTPUT_LATENCY_NS,
+                CapabilityValue::Int(render::TYPICAL_OUTPUT_LATENCY_NS as i64),
+            )
             .with(HARDWARE, CapabilityValue::Flag(true)))
     }
 }
 
 impl AudioBackend for WasapiAudioBackend {
     fn enumerate(&self, kind: EndpointKind) -> Result<Vec<AudioEndpoint>, AudioIoError> {
+        if kind == EndpointKind::Output {
+            return render::endpoints();
+        }
         if !Self::kinds().contains(&kind) {
             return Err(AudioIoError::Unsupported(
                 "process loopback needs Windows 10 version 2004",
@@ -516,6 +534,10 @@ impl AudioBackend for WasapiAudioBackend {
                 .map(|(endpoint, _)| endpoint)
                 .collect()),
         }
+    }
+
+    fn open_output(&self, request: &OutputRequest) -> Result<Box<dyn AudioOutput>, AudioIoError> {
+        render::open(request)
     }
 
     fn open_input(
@@ -1091,13 +1113,14 @@ fn drain(
     }
 }
 
-/// Why the stream ended, for a failed WASAPI call.
-fn classify(e: &windows::core::Error, opened: &Opened) -> AudioIoError {
+/// Why a stream on `device` (a device id; `None` for process loopback) ended, for a
+/// failed WASAPI call.
+fn classify(e: &windows::core::Error, device_id: Option<&str>) -> AudioIoError {
     let code = e.code();
     if code != AUDCLNT_E_DEVICE_INVALIDATED && code != AUDCLNT_E_RESOURCES_INVALIDATED {
         return hresult(code);
     }
-    match &opened.device {
+    match device_id {
         // Still active: the stream was invalidated by a format change.
         Some(id) => {
             let still = enumerator().is_ok_and(|e| {
@@ -1208,7 +1231,7 @@ fn run(setup: &Setup, started: Started) {
         let now = setup.clock.now();
         packets.observe(os, now);
         if let Err(e) = drain(&opened, &wave, &mut packets, setup.clock.as_ref()) {
-            setup.status.set(classify(&e, &opened));
+            setup.status.set(classify(&e, opened.device.as_deref()));
             break;
         }
         packets.fill(setup.clock.now());
