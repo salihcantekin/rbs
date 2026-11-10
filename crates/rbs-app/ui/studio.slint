@@ -2495,13 +2495,23 @@ component FilterFieldView inherits VerticalLayout {
     property <string> colour-text: data.colour;
     changed colour-text => { colour.text = colour-text; }
     spacing: Tokens.space-1;
-    Text {
-        text: data.label;
-        color: Theme.text-secondary;
-        font-size: Tokens.type-caption-size;
-        accessible-role: none;
+    property <bool> help-open;
+    HorizontalLayout {
+        spacing: Tokens.space-1;
+        Text {
+            text: data.label;
+            color: Theme.text-secondary;
+            font-size: Tokens.type-caption-size;
+            vertical-alignment: center;
+            accessible-role: none;
+        }
+        if data.help != "": IconButton {
+            icon: IconName.info;
+            name: root.help-open ? @tr("Hide help for {}", data.label) : @tr("Show help for {}", data.label);
+            clicked => { root.help-open = !root.help-open; }
+        }
     }
-    if data.help != "": Hint { text: data.help; }
+    if data.help != "" && root.help-open: Hint { text: data.help; }
     if data.kind == 0: HorizontalLayout {
         spacing: Tokens.space-2;
         Slider {
@@ -2601,6 +2611,7 @@ component FiltersFields inherits VerticalLayout {
     // The Filters section of the Audio tab (ADR-0082): audio filter types, and a note
     // about the short dip when the chain's tail changes.
     in property <bool> audio;
+    property <bool> dip-open;
     spacing: Tokens.size-field-gap;
     alignment: start;
     if !audio: SectionTitle { title: @tr("Filters"); }
@@ -2618,28 +2629,39 @@ component FiltersFields inherits VerticalLayout {
         index: i;
         selected: f.id == data.selected-filter;
     }
-    AddFilterButton { source: data; audio: audio; }
-    if audio: Hint {
+    HorizontalLayout {
+        spacing: Tokens.space-1;
+        AddFilterButton { source: data; audio: audio; horizontal-stretch: 1; }
+        if audio: IconButton {
+            icon: IconName.info;
+            name: root.dip-open ? @tr("Hide note about changing filters") : @tr("Show note about changing filters");
+            clicked => { root.dip-open = !root.dip-open; }
+        }
+    }
+    if audio && root.dip-open: Hint {
         text: @tr("Adding, removing or reordering a filter can cause a brief dip (10 to 20 ms) in this source's sound. Changing a setting never does.");
     }
     for f[i] in data.filters: VerticalLayout {
         spacing: Tokens.size-field-gap;
         if f.id == data.selected-filter && f.known: VerticalLayout {
             spacing: Tokens.size-field-gap;
-            SectionTitle { title: f.name; }
-            for field[j] in f.fields: FilterFieldView {
-                source: data;
-                filter: f;
-                data: field;
-                index: j;
-            }
-            HorizontalLayout {
-                alignment: start;
-                Button {
-                    text: @tr("Reset to defaults");
-                    kind: "secondary";
-                    accessible-name: @tr("Reset {} to defaults", f.name);
-                    clicked => { Studio.reset-filter(f.id); }
+            Section {
+                title: f.name;
+                id: "properties.filter-settings";
+                for field[j] in f.fields: FilterFieldView {
+                    source: data;
+                    filter: f;
+                    data: field;
+                    index: j;
+                }
+                HorizontalLayout {
+                    alignment: start;
+                    Button {
+                        text: @tr("Reset to defaults");
+                        kind: "secondary";
+                        accessible-name: @tr("Reset {} to defaults", f.name);
+                        clicked => { Studio.reset-filter(f.id); }
+                    }
                 }
             }
         }
