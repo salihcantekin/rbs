@@ -1,0 +1,40 @@
+// A window for tests/overlays.rs: the info hint and the tooltip as the real library
+// components draw them (ADR-0094). Not shown by the app.
+import { InfoHint, IconButton, IconName, OverlayHost, FeatureSection } from "components.slint";
+
+export component OverlayProbe inherits Window {
+    // literal-begin: a test window; its size and the places of its two controls are test data
+    width: 400px;
+    height: 300px;
+    out property <bool> hint-focused: hint.focused;
+    hint := InfoHint {
+        x: 10px;
+        y: 10px;
+        label: "Threshold";
+        text: "Sound below this level is muted.";
+        detail: "Default -40 dB";
+    }
+    button := IconButton {
+        x: 100px;
+        y: 10px;
+        icon: IconName.flip-h;
+        name: "Flip horizontally";
+    }
+    out property <bool> feature-on: feature.on;
+    out property <length> feature-height: feature.height;
+    feature := FeatureSection {
+        x: 10px;
+        y: 100px;
+        width: 300px;
+        height: self.preferred-height;
+        id: "probe.feature";
+        title: "Noise gate";
+        hint: "Mutes sound below the threshold.";
+        Rectangle { height: 40px; }
+    }
+    // literal-end
+    public function flip-feature() { feature.on = !feature.on; }
+    public function focus-hint() { hint.take-focus(); }
+    public function focus-button() { button.take-focus(); }
+    OverlayHost { width: parent.width; height: parent.height; }
+}

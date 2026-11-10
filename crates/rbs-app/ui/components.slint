@@ -339,7 +339,11 @@ export component Button inherits Rectangle {
     // Optional icon before the text (toolbar commands), in `lead-ink` when set.
     in property <IconName> lead;
     in property <color> lead-ink: ink;
+    // The short name or reason shown as a tooltip while the pointer rests on the button or
+    // it has the keyboard focus (ADR-0094, one host per window: OverlayHost).
+    in property <string> tooltip;
     callback clicked();
+    property <int> tip-owner;
     height: dense ? Tokens.size-control-sm : Tokens.size-control-md;
     min-width: max(root.height, content.preferred-width + (text == "" ? 0px : 2 * Tokens.space-3));
     border-radius: Tokens.radius-sm;
@@ -356,10 +360,22 @@ export component Button inherits Rectangle {
     accessible-checked: checked;
     accessible-enabled: enabled;
     accessible-action-default => { if enabled { clicked(); } }
+    accessible-description: root.tooltip;
     forward-focus: focus;
     // The pointer is over the button, or it has the keyboard focus: an icon-only
     // control uses it to show its name beside itself.
     out property <bool> pointed: touch.has-hover || focus.has-focus;
+    out property <bool> focused: focus.has-focus;
+    public function take-focus() { focus.focus(); }
+    changed pointed => {
+        if root.tooltip != "" {
+            if root.pointed {
+                root.tip-owner = Overlays.tip-enter(root.tooltip, root.absolute-position.x, root.absolute-position.y, root.width, root.height, focus.has-focus);
+            } else {
+                Overlays.tip-leave(root.tip-owner);
+            }
+        }
+    }
     out property <color> ink: !enabled ? Theme.text-disabled : kind == "primary" ? Theme.text-inverse : kind == "live" ? Theme.text-on-live : kind == "danger" ? Theme.state-error : Theme.text-primary;
     // A danger button always shows the trash icon (ADR-0076): it is never bare coloured text.
     property <IconName> shown-lead: root.lead != IconName.none ? root.lead : kind == "danger" ? IconName.trash : IconName.none;
@@ -386,6 +402,7 @@ export component Button inherits Rectangle {
         enabled: root.enabled;
         key-pressed(e) => {
             if e.text == Key.Return || e.text == " " { root.clicked(); return accept; }
+            if e.text == Key.Escape && Overlays.tip-dismiss(root.tip-owner) { return accept; }
             reject
         }
     }
@@ -498,6 +515,7 @@ export component IconButton inherits Button {
     in property <string> name;
     text: "";
     accessible-name: name;
+    tooltip: name;
     kind: "ghost";
     dense: true;
     width: Tokens.size-control-sm;
@@ -1751,6 +1769,331 @@ export component KeyboardShortcutHint inherits Rectangle {
             font-weight: Tokens.type-label-weight;
             vertical-alignment: center;
             accessible-role: none;
+        }
+    }
+}
+
+
+// ---- Overlays (ADR-0094): the info hint popover and the tooltip --------------------
+// Slint draws a `PopupWindow` without keyboard focus, so these are plain layers drawn
+// last in the window root by `OverlayHost` (one per window). They exist (are
+// instantiated) only while open or shown, and the only timer runs while a tooltip is
+// waiting. The shell cuts what they cover out of the native preview layer through
+// `hint-cover` and `tip-cover` (ADR-0054), like the toasts.
+export struct OverlayCover { x: length, y: length, width: length, height: length }
+
+export global Overlays {
+    property <int> serial;
+    // The info hint popover: its text, and the button it belongs to (its window
+    // position and size). One is open at a time.
+    in-out property <bool> hint-open;
+    in-out property <int> hint-owner;
+    in-out property <string> hint-text;
+    in-out property <string> hint-detail;
+    in-out property <length> hint-x;
+    in-out property <length> hint-y;
+    in-out property <length> hint-w;
+    in-out property <length> hint-h;
+    in-out property <OverlayCover> hint-cover;
+    public function open-hint(text: string, detail: string, x: length, y: length, w: length, h: length) -> int {
+        serial += 1;
+        hint-text = text;
+        hint-detail = detail;
+        hint-x = x;
+        hint-y = y;
+        hint-w = w;
+        hint-h = h;
+        hint-owner = serial;
+        hint-open = true;
+        tip-owner = -1;
+        tip-shown = false;
+        return serial;
+    }
+    public function close-hint() { hint-open = false; }
+
+    // The tooltip: waits `delay.tooltip` after the pointer rests on its control, shows
+    // at once for keyboard focus, stays while the pointer is over the control or the
+    // tooltip, and Escape dismisses it until the pointer or focus leaves.
+    in-out property <int> tip-owner: -1;
+    in-out property <string> tip-text;
+    in-out property <length> tip-x;
+    in-out property <length> tip-y;
+    in-out property <length> tip-w;
+    in-out property <length> tip-h;
+    in-out property <bool> tip-shown;
+    in-out property <bool> tip-over;
+    in-out property <OverlayCover> tip-cover;
+    out property <bool> tip-waiting: tip-owner >= 0 && !tip-shown && !hint-open;
+    public function tip-enter(text: string, x: length, y: length, w: length, h: length, by-focus: bool) -> int {
+        serial += 1;
+        tip-text = text;
+        tip-x = x;
+        tip-y = y;
+        tip-w = w;
+        tip-h = h;
+        tip-owner = serial;
+        tip-shown = by-focus && !hint-open;
+        return serial;
+    }
+    public function tip-leave(owner: int) {
+        if owner == tip-owner && !tip-over {
+            tip-owner = -1;
+            tip-shown = false;
+        }
+    }
+    // True when a tooltip was showing for `owner` and is now dismissed.
+    public function tip-dismiss(owner: int) -> bool {
+        if owner == tip-owner && tip-shown {
+            tip-shown = false;
+            tip-owner = -1;
+            return true;
+        }
+        return false;
+    }
+}
+
+// Draws the open overlays above everything else in the window. Put one as the last
+// child of every window's root, filling it. It takes no input while nothing is open.
+export component OverlayHost inherits Rectangle {
+    // The tooltip, directly under its control (no gap, so the pointer can move onto it).
+    if Overlays.tip-shown && !Overlays.hint-open: tip := Rectangle {
+        property <length> pad: Tokens.space-1;
+        x: clamp(Overlays.tip-x + Overlays.tip-w / 2 - self.width / 2, Tokens.space-1, root.width - self.width - Tokens.space-1);
+        y: Overlays.tip-y + Overlays.tip-h + self.height > root.height ? Overlays.tip-y - self.height : Overlays.tip-y + Overlays.tip-h;
+        width: tip-text.preferred-width + 2 * Tokens.space-2;
+        height: tip-text.preferred-height + 2 * Tokens.space-1 + Tokens.space-1;
+        accessible-role: text;
+        accessible-label: Overlays.tip-text;
+        init => { Overlays.tip-cover = { x: self.x, y: self.y, width: self.width, height: self.height }; }
+        changed x => { Overlays.tip-cover = { x: self.x, y: self.y, width: self.width, height: self.height }; }
+        changed y => { Overlays.tip-cover = { x: self.x, y: self.y, width: self.width, height: self.height }; }
+        // The pointer on the tooltip keeps it open (WCAG 1.4.13); the strip above the
+        // box is transparent and belongs to it, so there is no gap to cross.
+        tip-touch := TouchArea {
+            changed has-hover => { Overlays.tip-over = self.has-hover; if !self.has-hover { Overlays.tip-owner = -1; Overlays.tip-shown = false; } }
+        }
+        Rectangle {
+            height: parent.height - Tokens.space-1;
+            background: Theme.surface-overlay;
+            border-color: Theme.border-strong;
+            border-width: Tokens.size-border;
+            border-radius: Tokens.radius-sm;
+            tip-text := Text {
+                text: Overlays.tip-text;
+                color: Theme.text-primary;
+                font-size: Tokens.type-caption-size;
+                horizontal-alignment: center;
+                vertical-alignment: center;
+            }
+        }
+    }
+    // The info hint popover: a click outside it, or Escape, closes it.
+    if Overlays.hint-open: hint := Rectangle {
+        width: root.width;
+        height: root.height;
+        TouchArea { clicked => { Overlays.close-hint(); } }
+        box := MenuSurface {
+            width: Tokens.size-menu-md;
+            height: body.preferred-height;
+            x: clamp(Overlays.hint-x, Tokens.space-1, root.width - self.width - Tokens.space-1);
+            y: Overlays.hint-y + Overlays.hint-h + Tokens.space-1 + self.height > root.height ? max(Tokens.space-1, Overlays.hint-y - Tokens.space-1 - self.height) : Overlays.hint-y + Overlays.hint-h + Tokens.space-1;
+            accessible-role: groupbox;
+            accessible-label: Overlays.hint-text;
+            init => { fs.focus(); Overlays.hint-cover = { x: self.x, y: self.y, width: self.width, height: self.height }; }
+            changed x => { Overlays.hint-cover = { x: self.x, y: self.y, width: self.width, height: self.height }; }
+            changed y => { Overlays.hint-cover = { x: self.x, y: self.y, width: self.width, height: self.height }; }
+            fs := FocusScope {
+                key-pressed(e) => {
+                    if e.text == Key.Escape { Overlays.close-hint(); return accept; }
+                    reject
+                }
+            }
+            body := VerticalLayout {
+                padding: Tokens.space-3;
+                spacing: Tokens.space-1;
+                Text {
+                    text: Overlays.hint-text;
+                    color: Theme.text-primary;
+                    font-size: Tokens.type-caption-size;
+                    wrap: word-wrap;
+                }
+                if Overlays.hint-detail != "": Text {
+                    text: Overlays.hint-detail;
+                    color: Theme.text-secondary;
+                    font-size: Tokens.type-caption-size;
+                    wrap: word-wrap;
+                }
+            }
+        }
+    }
+    // One timer for every tooltip: it runs only while one is waiting to show.
+    Timer {
+        interval: Tokens.delay-tooltip;
+        running: Overlays.tip-waiting;
+        triggered => { Overlays.tip-shown = true; }
+    }
+}
+
+// An info button after a label: pressing it (Return or Space when focused) opens a
+// popover with the explanation and the default and range (ADR-0094 rule A1). Escape or
+// a click outside closes it and the focus returns here. `label` names the field.
+export component InfoHint inherits Rectangle {
+    in property <string> label;
+    in property <string> text;
+    // For example "Default -40 dB, range -90 to 0 dB".
+    in property <string> detail;
+    property <int> owner: -1;
+    property <bool> open: Overlays.hint-open && Overlays.hint-owner == root.owner;
+    out property <bool> focused: focus.has-focus;
+    public function take-focus() { focus.focus(); }
+    width: Tokens.size-control-sm;
+    height: Tokens.size-control-sm;
+    border-radius: Tokens.radius-sm;
+    background: root.open ? Theme.accent-subtle : touch.has-hover ? Theme.surface-overlay : transparent;
+    accessible-role: button;
+    accessible-label: @tr("Help: {}", root.label);
+    accessible-description: root.text;
+    accessible-expanded: root.open;
+    accessible-action-default => { root.toggle(); }
+    forward-focus: focus;
+    function toggle() {
+        if root.open {
+            Overlays.close-hint();
+        } else {
+            root.owner = Overlays.open-hint(root.text, root.detail, root.absolute-position.x, root.absolute-position.y, root.width, root.height);
+        }
+    }
+    // The popover closed while this button owned it: the focus comes back.
+    changed open => { if !root.open && root.owner >= 0 && Overlays.hint-owner == root.owner { focus.focus(); } }
+    focus := RingFocus {
+        key-pressed(e) => {
+            if e.text == Key.Return || e.text == " " { root.toggle(); return accept; }
+            reject
+        }
+    }
+    touch := TouchArea { clicked => { focus.focus-pointer(); root.toggle(); } }
+    VerticalLayout {
+        alignment: center;
+        HorizontalLayout {
+            alignment: center;
+            Icon { name: IconName.info; ink: root.open ? Theme.text-primary : Theme.text-secondary; }
+        }
+    }
+    FocusRing { show: focus.ring; }
+}
+
+// One line of status under or inside a control group (ADR-0094 rule D): an icon, a
+// short message and an optional action. `tone`: 0 info, 1 success, 2 warning, 3 error.
+// Error keeps the outline so it reads without colour; the message wraps instead of
+// being cut. Use it for notes, validation and "why is this disabled" lines.
+export component StatusLine inherits Rectangle {
+    in property <string> text;
+    in property <int> tone;
+    in property <string> action;
+    callback activated();
+    property <color> tint: root.tone == 1 ? Theme.state-healthy
+        : root.tone == 2 ? Theme.state-warning
+        : root.tone == 3 ? Theme.state-error : Theme.accent;
+    background: root.tone == 3 ? transparent : Theme.accent-subtle;
+    border-radius: Tokens.radius-md;
+    border-width: root.tone == 3 ? Tokens.size-border : 0px;
+    border-color: Theme.state-error;
+    min-height: row.min-height;
+    preferred-height: row.preferred-height;
+    accessible-role: AccessibleRole.text;
+    accessible-label: text;
+    row := HorizontalLayout {
+        padding-left: Tokens.space-3;
+        padding-right: Tokens.space-3;
+        padding-top: Tokens.space-2;
+        padding-bottom: Tokens.space-2;
+        spacing: Tokens.space-2;
+        VerticalLayout {
+            alignment: start;
+            padding-top: (Tokens.type-body-line - Tokens.size-icon-box) / 2;
+            Icon {
+                width: Tokens.size-icon-box;
+                height: Tokens.size-icon-box;
+                name: root.tone == 1 ? IconName.check
+                    : root.tone >= 2 ? IconName.warning : IconName.info;
+                ink: root.tint;
+            }
+        }
+        Text {
+            horizontal-stretch: 1;
+            text: root.text;
+            color: root.tone == 3 ? Theme.state-error : Theme.text-primary;
+            font-size: Tokens.type-body-size;
+            wrap: word-wrap;
+            accessible-role: none;
+        }
+        if root.action != "": Button {
+            text: root.action;
+            kind: "ghost";
+            dense: true;
+            clicked => { root.activated(); }
+        }
+    }
+}
+
+// A feature with many settings (ADR-0094 rule A3, ADR-0078): the name flush left, then
+// an info button, an optional on/off switch and a chevron on the right; the settings
+// under it sit flush left. The settings are kept while the feature is off. `id` saves
+// the open state in the workspace file like any collapsible section.
+export component FeatureSection inherits VerticalLayout {
+    in property <string> title;
+    in property <string> id;
+    in property <string> hint;
+    in property <bool> has-toggle: true;
+    in-out property <bool> on: true;
+    callback toggled(bool);
+    property <bool> closed: Sections.closed(root.id, Sections.rev);
+    spacing: Tokens.size-field-gap;
+    HorizontalLayout {
+        spacing: Tokens.space-2;
+        Rectangle {
+            horizontal-stretch: 1;
+            min-height: Tokens.size-control-md;
+            Text {
+                x: 0;
+                width: parent.width;
+                height: parent.height;
+                text: root.title;
+                color: root.has-toggle && !root.on ? Theme.text-secondary : Theme.text-primary;
+                font-size: Tokens.type-body-size;
+                font-weight: Tokens.type-label-weight;
+                vertical-alignment: center;
+                overflow: elide;
+                accessible-role: none;
+            }
+            TouchArea { clicked => { Sections.set-closed(root.id, !root.closed); } }
+        }
+        if root.hint != "": VerticalLayout {
+            alignment: center;
+            InfoHint { label: root.title; text: root.hint; }
+        }
+        if root.has-toggle: Toggle {
+            label: root.title;
+            checked: root.on;
+            toggled(c) => { root.on = c; root.toggled(c); }
+        }
+        VerticalLayout {
+            alignment: center;
+            IconButton {
+                icon: root.closed ? IconName.chevron-right : IconName.chevron-down;
+                name: root.closed ? @tr("Show settings") : @tr("Hide settings");
+                accessible-expanded: !root.closed;
+                clicked => { Sections.set-closed(root.id, !root.closed); }
+            }
+        }
+    }
+    // Hidden, not removed, so @children keep their values.
+    Rectangle {
+        visible: !root.closed;
+        height: root.closed ? 0px : inner.preferred-height;
+        inner := VerticalLayout {
+            spacing: Tokens.size-field-gap;
+            @children
         }
     }
 }

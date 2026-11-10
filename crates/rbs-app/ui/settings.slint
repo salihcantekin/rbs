@@ -4,7 +4,7 @@
 // and its control on the right (U2: every option explains itself), or under them for
 // wide content. Every value comes from the tokens (U6).
 import { Theme, Tokens } from "tokens.slint";
-import { FocusRing, RingFocus, Icon, IconName, SectionHeader, Sections, Button } from "components.slint";
+import { FocusRing, RingFocus, Icon, IconName, SectionHeader, Sections, Button, StatusLine } from "components.slint";
 
 // One entry of the section list. The section in use has the accent-tinted row with an
 // accent bar at its left edge (mockup E's selected row) and is marked checked for
@@ -314,38 +314,11 @@ export component SettingsStatus inherits Rectangle {
 }
 
 // A note across the top of a page or card, such as "Changes apply to the next
-// recording": an accent bar on the left and the text. `problem` uses the error
-// colour for a setting that could not be used.
-export component SettingsNotice inherits Rectangle {
-    in property <string> text;
+// recording": a `StatusLine` (ADR-0094 rule D). `problem` shows it as an error for a
+// setting that could not be used.
+export component SettingsNotice inherits StatusLine {
     in property <bool> problem;
-    background: root.problem ? transparent : Theme.accent-subtle;
-    border-radius: Tokens.radius-md;
-    border-width: root.problem ? Tokens.size-border : 0px;
-    border-color: Theme.state-error;
-    min-height: row.min-height;
-    preferred-height: row.preferred-height;
-    accessible-role: AccessibleRole.text;
-    accessible-label: text;
-    Rectangle {
-        x: 0;
-        width: Tokens.size-focus-ring * 2;
-        border-radius: Tokens.size-focus-ring;
-        background: root.problem ? Theme.state-error : Theme.accent;
-    }
-    row := HorizontalLayout {
-        padding-left: Tokens.space-4;
-        padding-right: Tokens.space-3;
-        padding-top: Tokens.space-2;
-        padding-bottom: Tokens.space-2;
-        Text {
-            text: root.text;
-            color: root.problem ? Theme.state-error : Theme.text-primary;
-            font-size: Tokens.type-body-size;
-            wrap: word-wrap;
-            accessible-role: none;
-        }
-    }
+    tone: root.problem ? 3 : 0;
 }
 
 // A bordered group that asks before an action or shows something once (a new access

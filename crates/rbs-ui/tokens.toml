@@ -162,6 +162,8 @@ format = 2
 # `delay.repeat-start`, then steps every `delay.repeat`.
 "delay.repeat-start" = 400
 "delay.repeat" = 80
+# Not motion: how long the pointer rests on a control before its tooltip shows.
+"delay.tooltip" = 500
 
 # Size and line height in logical pixels, weight 100-900.
 [type]
