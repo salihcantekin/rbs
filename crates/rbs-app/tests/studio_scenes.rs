@@ -793,8 +793,10 @@ fn the_control_api_adds_and_removes_the_vertical_canvas() {
         "not_found"
     );
     // Sizes outside 16..=8192 are refused.
-    let bad = c.call("canvas.add_vertical", json!({"width": 8, "height": 1920}));
+    let bad = c.call("canvas.add_vertical", json!({"width": 32, "height": 1920}));
     assert_eq!(kind(&bad), "invalid_params", "{bad}");
+    let odd = c.call("canvas.add_vertical", json!({"width": 721, "height": 1280}));
+    assert_eq!(kind(&odd), "invalid_params", "{odd}");
     ok(&c.call(
         "canvas.add_vertical",
         json!({"width": 720, "height": 1280, "layout": "stack"}),

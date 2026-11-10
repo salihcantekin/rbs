@@ -1103,6 +1103,11 @@ impl Refusal {
     }
 }
 
+/// Smallest and largest side of a vertical canvas the control API accepts: even (the
+/// 4:2:0 formats of the encoders need it) and within what the hardware encoders take.
+const VERTICAL_MIN_SIDE: u32 = 64;
+const VERTICAL_MAX_SIDE: u32 = 8192;
+
 /// What [`Command::AddVerticalCanvas`] makes (ADR-0093 decision 8).
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct VerticalCanvas {
@@ -1726,6 +1731,8 @@ struct Host {
     scenes_shown: Option<SceneList>,
     /// The second canvas that runs, and what was last sent about it (ADR-0093).
     vertical: Option<VerticalState>,
+    /// Scenes `add_vertical` made shared, so removing the canvas can scope them back.
+    vertical_shared: Vec<SceneId>,
     vertical_sent: Option<Option<VerticalState>>,
     /// The master meter last sent to the UI.
     master_sent: Option<Arc<rbs_audio::LevelMeter>>,
@@ -2151,6 +2158,7 @@ fn start(
             scene_preview_sent: None,
             scenes_shown: None,
             vertical: None,
+            vertical_shared: Vec::new(),
             vertical_sent: None,
             master_sent: None,
             sizes: BTreeMap::new(),
@@ -4524,6 +4532,7 @@ impl Host {
             .map_err(|e| Refusal::of(&e))?;
         // Following needs scenes the new canvas may show (ADR-0093 decision 3): the main
         // canvas's own scenes become shared (U15); the global scene stays where it is.
+        let mut shared = Vec::new();
         if spec.follow {
             let own: Vec<_> = draft
                 .scenes_for(self.canvas)
@@ -4531,11 +4540,12 @@ impl Host {
                 .filter(|s| !draft.is_global_scene(s.id))
                 .map(|s| s.id)
                 .collect();
-            for id in own {
+            for id in &own {
                 draft
-                    .set_scene_scope(id, SceneScope::Shared)
+                    .set_scene_scope(*id, SceneScope::Shared)
                     .map_err(|e| Refusal::of(&e))?;
             }
+            shared = own;
         }
         // A scene of its own to start from when it does not follow, else the one on air.
         let scene = if draft.scenes_for(canvas).any(|s| s.id == self.scene) {
@@ -4579,6 +4589,7 @@ impl Host {
             .activate_canvas(running, &self.adapters.sources, ExtraCanvas::new(canvas))
         {
             Ok(_) => {
+                self.vertical_shared = shared;
                 self.vertical = Some(VerticalState {
                     canvas,
                     size: spec.size,
@@ -4619,6 +4630,15 @@ impl Host {
                 ),
                 e => Refusal::Failed(e.to_string()),
             })?;
+        // The scenes the add shared go back to the main canvas (the removal is one step).
+        for id in std::mem::take(&mut self.vertical_shared) {
+            if draft
+                .scenes_for(self.canvas)
+                .any(|s| s.id == id && s.scope == SceneScope::Shared)
+            {
+                let _ = draft.set_scene_scope(id, SceneScope::Canvas(self.canvas));
+            }
+        }
         self.collection = draft;
         self.vertical = None;
         self.waiting = self.studio.waiting();
@@ -6076,10 +6096,15 @@ impl ApiTarget<'_> {
             C::CanvasAddVertical(p) => {
                 use rbs_api::request::VerticalLayout as L;
                 let (width, height) = (p.width.unwrap_or(1080), p.height.unwrap_or(1920));
-                if !(16..=8192).contains(&width) || !(16..=8192).contains(&height) {
+                let fits = |v: u32| {
+                    (VERTICAL_MIN_SIDE..=VERTICAL_MAX_SIDE).contains(&v) && v.is_multiple_of(2)
+                };
+                if !fits(width) || !fits(height) {
                     return Err(ApiError::new(
                         ErrorKind::InvalidParams,
-                        "width and height must be from 16 to 8192",
+                        format!(
+                            "width and height must be even and from {VERTICAL_MIN_SIDE} to {VERTICAL_MAX_SIDE}"
+                        ),
                     ));
                 }
                 let spec = VerticalCanvas {
