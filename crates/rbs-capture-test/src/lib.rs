@@ -23,7 +23,7 @@ use std::time::Duration;
 use rbs_capture::conformance::TestHooks;
 use rbs_capture::{
     CameraMode, CaptureError, CaptureFactory, CaptureRequest, CaptureSession, CaptureStats,
-    CaptureTarget, ErrorDomain, TargetId, TargetKind, caps,
+    CaptureTarget, ErrorDomain, THUMBNAIL_MAX, TargetId, TargetKind, Thumbnail, caps,
 };
 use rbs_core::capability::{CapabilitySet, CapabilityValue};
 use rbs_core::media::{
@@ -260,6 +260,34 @@ impl CaptureFactory for TestCaptureFactory {
                 }
             })
             .collect())
+    }
+
+    fn thumbnail(&self, target: &TargetId, max: Size) -> Result<Thumbnail, CaptureError> {
+        let found = self
+            .targets
+            .iter()
+            .find(|t| &t.info.id == target && t.present.load(Ordering::Acquire))
+            .ok_or(CaptureError::TargetNotFound)?;
+        if found.info.kind == TargetKind::Camera {
+            return Err(CaptureError::Unsupported("thumbnail"));
+        }
+        let fit = fit_inside(
+            unpack(found.size.load(Ordering::Acquire)),
+            (
+                max.width.min(THUMBNAIL_MAX.width),
+                max.height.min(THUMBNAIL_MAX.height),
+            ),
+        )
+        .ok_or(CaptureError::FormatUnsupported)?;
+        let (w, h) = fit;
+        let mut rgba = Vec::with_capacity(w as usize * h as usize * 4);
+        for y in 0..h {
+            for x in 0..w {
+                // A gradient: enough to tell a picture from a blank one.
+                rgba.extend_from_slice(&[(x * 255 / w) as u8, (y * 255 / h) as u8, 128, 255]);
+            }
+        }
+        Thumbnail::new(w, h, rgba).ok_or(CaptureError::FormatUnsupported)
     }
 
     fn open(&self, request: &CaptureRequest) -> Result<Box<dyn CaptureSession>, CaptureError> {
@@ -624,6 +652,19 @@ impl CaptureSession for TestSession {
     fn stats(&self) -> CaptureStats {
         self.stats
     }
+}
+
+/// The largest size with the aspect of `src` that fits in `max` and is not larger
+/// than `src`; `None` if any of them is empty.
+fn fit_inside(src: (u32, u32), max: (u32, u32)) -> Option<(u32, u32)> {
+    if src.0 == 0 || src.1 == 0 || max.0 == 0 || max.1 == 0 {
+        return None;
+    }
+    let scale = (f64::from(max.0) / f64::from(src.0))
+        .min(f64::from(max.1) / f64::from(src.1))
+        .min(1.0);
+    let at_least_one = |v: u32| ((f64::from(v) * scale).round() as u32).max(1);
+    Some((at_least_one(src.0), at_least_one(src.1)))
 }
 
 #[cfg(test)]
