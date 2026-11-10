@@ -162,6 +162,16 @@ impl OutputProducer {
         self.shared.channels
     }
 
+    /// Frames the ring holds when full.
+    pub fn capacity(&self) -> usize {
+        self.shared.capacity
+    }
+
+    /// Frames waiting in the ring for the device now (`capacity() - space()`).
+    pub fn queued(&self) -> usize {
+        self.shared.capacity - self.space()
+    }
+
     /// Frames the ring can take now.
     pub fn space(&self) -> usize {
         let used =
@@ -287,6 +297,16 @@ mod tests {
         assert!(out[20..].iter().all(|v| *v == 0.0));
         let s = c.stats();
         assert_eq!((s.written, s.played, s.silence, s.dropped), (10, 10, 2, 0));
+    }
+
+    #[test]
+    fn the_producer_sees_how_full_the_ring_is() {
+        let (mut p, mut c) = channel(2, 256);
+        assert_eq!((p.capacity(), p.queued(), p.space()), (256, 0, 256));
+        p.push(&[0.5; 200]);
+        assert_eq!((p.queued(), p.space()), (100, 156));
+        c.pull(&mut [0.0; 60]);
+        assert_eq!((p.queued(), p.space()), (70, 186));
     }
 
     #[test]

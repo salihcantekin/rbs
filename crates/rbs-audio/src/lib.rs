@@ -10,6 +10,9 @@
 //!   and feeds lock-free [`LevelMeter`]s the UI reads at its own rate.
 //! - [`EncoderNode`] hands mixed blocks to an [`AudioEncoder`](rbs_codec::AudioEncoder)
 //!   on an encoder partition, behind an audio queue.
+//! - [`OutputNode`] plays a partition's blocks on an
+//!   [`AudioOutput`](rbs_audio_io::AudioOutput) (monitoring), resampled to the
+//!   device's rate and steered against its clock.
 //! - [`MeterSinkNode`] keeps a mixer scheduled for its meters while nothing records.
 //!
 //! Every block of a partition has the graph's format and length and the timestamp
@@ -20,6 +23,7 @@ mod encoder;
 mod input;
 mod meter;
 mod mixer;
+mod output;
 pub mod resample;
 mod sink;
 
@@ -32,5 +36,9 @@ pub use input::{
 pub use meter::{LevelMeter, Levels};
 pub use mixer::{
     DEFAULT_RAMP, MIXER_NODE_TYPE, MixerNode, MixerParams, MixerStats, Strip, mixer_descriptor,
+};
+pub use output::{
+    DEFAULT_OUTPUT_TARGET, MAX_OUTPUT_VOLUME, OUTPUT_NODE_TYPE, OUTPUT_VOLUME_RAMP, OutputCounters,
+    OutputNode, OutputNodeStats, OutputParams, output_descriptor,
 };
 pub use sink::{METER_SINK_NODE_TYPE, MeterSinkNode, meter_sink_descriptor};
