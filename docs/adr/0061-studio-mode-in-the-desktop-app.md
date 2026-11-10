@@ -74,3 +74,5 @@ Independent review per ADR-0014.
   9. Endpoint lifecycle and per-role preview state: decision 6 and the host sends the second endpoint in its own update (Consequences).
   10. Leaving drops the preview choice: stated (decision 8).
 - Owner: accepted under the standing project policy that threads may mark ADRs Accepted once the independent review is recorded and resolved (Salih, 2026-11-06); Salih may still reopen it.
+
+Follow-up, 2026-11-10: the Windows limit of decision 6 is lifted. Every preview layer of the UI thread now uses one shared DirectComposition device and each window has one topmost target holding both pictures as child visuals (gpu-compositor spec, "Several layers in one window"), so the studio starts with `scene_preview` on Windows too and the Preview panel shows the preview scene. The hardware check on Windows is recorded in the implementing pull request. No decision changes; the Windows text of decision 6 is superseded by this record.
