@@ -201,7 +201,28 @@ impl OutputProducer {
     }
 }
 
+/// Reads the counters of a ring from any thread, while the consumer lives in an OS
+/// callback.
+#[derive(Clone)]
+pub struct OutputStatsReader {
+    shared: Arc<Shared>,
+}
+
+impl OutputStatsReader {
+    /// The counters of the ring.
+    pub fn stats(&self) -> OutputStats {
+        self.shared.stats()
+    }
+}
+
 impl OutputConsumer {
+    /// A reader of this ring's counters that stays with the caller.
+    pub fn reader(&self) -> OutputStatsReader {
+        OutputStatsReader {
+            shared: Arc::clone(&self.shared),
+        }
+    }
+
     /// Channels per frame.
     pub fn channels(&self) -> usize {
         self.shared.channels
