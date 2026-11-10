@@ -247,6 +247,15 @@ Without audio (`audio: None`) the two audio partitions are not added: three work
 
 `Recording::start` is a studio without a preview, in a strict mode, with the recording's nodes added before the first apply: a binder problem that leaves out a source of the program scene fails the start (`Problems`) and a source the recording schedules (video and audio) that cannot be instantiated fails it (`Source`), both before any device opens (test `a_video_source_that_cannot_be_instantiated_fails_the_start_before_any_device_opens`). `finish` is `Studio::shutdown`; its `shutdown_errors` hold the draining apply's errors and the engine shutdown's.
 
+### Replay buffer (ADR-0088)
+
+`rbs_nodes::replay::PacketRing` is the buffer's data structure; the ring node and the `Studio` output kind that feed it follow in later changes.
+
+- Holds **encoded packets** (`RingEntry`: stream index plus `EncodedPacket`, payload shared as `Bytes`), in arrival order. Limits: `length`, `memory_limit` and `capacity` (packets, reserved in `PacketRing::new`).
+- `push` is hot: it never grows storage and evicts the **oldest** entries while a limit is exceeded; the newest packet is never dropped. Evicted entries go to a caller-reserved vector for a reaper thread; if it has no room the entry is freed in place and counted (`inline_frees`).
+- `held()` reports the usable past (oldest video keyframe to newest packet), bytes, packets and `limited_by: Some(Memory)` when memory is why it is shorter than `length` ("Holds the last 3:12, limit: memory").
+- `cut(seconds, out)` starts at the latest video keyframe at or before `newest - seconds` (the oldest keyframe if the ring is shorter; the whole ring for `None`), so a clip is never shorter than asked unless the ring is. Audio is cut at the same instant. Without a video keyframe it fails with `ClipError::NoKeyframe`. `Clip::rebased` shifts timestamps so the earliest sample is 0; it runs on the writer task.
+
 ### Virtual camera (ADR-0066)
 
 - **Not an output.** The camera is none of the `MAX_OUTPUTS` outputs: it has no encoder or output partition and runs alongside recordings and streams without touching them. It shows the program compositor's canvas, whatever studio mode shows (ADR-0066 decision 5).
