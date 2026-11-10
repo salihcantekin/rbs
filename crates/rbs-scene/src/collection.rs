@@ -7,6 +7,7 @@ use rbs_core::media::Size;
 use rbs_core::timing::FrameRate;
 use rbs_graph::node::NodeTypeId;
 
+use crate::arrange::{AutoItem, AutoLayout, auto_layout};
 use crate::model::{
     AudioFrom, Canvas, CanvasId, Fallback, Filter, FilterId, ItemContent, ItemId, Layout,
     MAX_SYNC_OFFSET_MS, MasterAudio, Scene, SceneId, SceneItem, SceneScope, SettingValue, Settings,
@@ -228,6 +229,8 @@ enum Op {
         expected: SceneItem,
         new: SceneItem,
     },
+    /// Several `ReplaceItem`s as one step (auto layout, ADR-0093).
+    ReplaceItems(Vec<(SceneItem, SceneItem)>),
     MoveItem {
         item: ItemId,
         from: usize,
@@ -997,6 +1000,49 @@ impl SceneCollection {
         self.replace_item(item)
     }
 
+    /// Arranges the visible source items of `scene` for `canvas` (ADR-0093 decision 4):
+    /// each item gets a layout of its own for that canvas, in one undo step. `picture`
+    /// gives the size of a source's uncropped picture (`None`: the item keeps its
+    /// layout); `focus` the cut point of an item (`0.0` to `1.0`, default the centre).
+    /// Nested scenes and hidden items are left alone.
+    pub fn auto_layout(
+        &mut self,
+        canvas: CanvasId,
+        scene: SceneId,
+        mode: AutoLayout,
+        picture: &dyn Fn(SourceId) -> Option<(u32, u32)>,
+        focus: &BTreeMap<ItemId, f32>,
+    ) -> Result<Undo, SceneError> {
+        let target = self.get_canvas(canvas)?;
+        let size = (target.size.width, target.size.height);
+        let s = self.get_scene(scene)?;
+        let mut chosen: Vec<(&SceneItem, (u32, u32))> = Vec::new();
+        for item in &s.items {
+            if let (true, ItemContent::Source(src)) = (item.visible, item.content)
+                && let Some(p) = picture(src)
+            {
+                chosen.push((item, p));
+            }
+        }
+        let inputs: Vec<AutoItem> = chosen
+            .iter()
+            .map(|(item, p)| AutoItem {
+                layout: item.overrides.get(&canvas).copied().unwrap_or(item.layout),
+                picture: *p,
+                focus: focus.get(&item.id).copied().unwrap_or(0.5),
+            })
+            .collect();
+        let layouts = auto_layout(mode, size, &inputs);
+        let mut pairs = Vec::new();
+        for ((item, _), layout) in chosen.iter().zip(layouts) {
+            let Some(layout) = layout else { continue };
+            let mut new = (*item).clone();
+            new.overrides.insert(canvas, layout);
+            pairs.push(((*item).clone(), new));
+        }
+        self.apply(Op::ReplaceItems(pairs))
+    }
+
     /// Drops an item's layout for `canvas`, so it uses the default layout there.
     pub fn clear_item_layout(&mut self, id: ItemId, canvas: CanvasId) -> Result<Undo, SceneError> {
         let mut item = self.get_item(id)?.clone();
@@ -1395,6 +1441,20 @@ impl SceneCollection {
                     expected: new,
                     new: expected,
                 })
+            }
+            Op::ReplaceItems(pairs) => {
+                let mut inverse = Vec::with_capacity(pairs.len());
+                for (expected, new) in pairs {
+                    let slot = self.item_mut(new.id)?;
+                    if *slot != expected || expected.id != new.id || expected.content != new.content
+                    {
+                        return Err(SceneError::UndoConflict);
+                    }
+                    *slot = new.clone();
+                    inverse.push((new, expected));
+                }
+                inverse.reverse();
+                Ok(Op::ReplaceItems(inverse))
             }
             Op::MoveItem { item, from, to } => {
                 let index = to;
