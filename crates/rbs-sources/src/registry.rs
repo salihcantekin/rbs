@@ -544,6 +544,23 @@ impl SourceTypes {
         self.audio.probe_all();
     }
 
+    /// The capture adapter `adapter` of the capture type `type_id`, if it is one of
+    /// its candidates. Hosts use it to grab a thumbnail on a worker thread
+    /// (`CaptureFactory::thumbnail`, ADR-0077) without holding the registry. `None`
+    /// for audio and still types, and for an adapter that is not a candidate.
+    pub fn capture_factory(
+        &self,
+        type_id: &NodeTypeId,
+        adapter: &AdapterId,
+    ) -> Option<Arc<dyn CaptureFactory>> {
+        let SourceClass::Capture(kind) = class_of(type_id)? else {
+            return None;
+        };
+        self.capture_candidates(kind)
+            .into_iter()
+            .find(|f| &f.id() == adapter)
+    }
+
     fn capture_candidates(&self, kind: TargetKind) -> Vec<Arc<dyn CaptureFactory>> {
         self.capture.select(&capture_requirement(kind)).candidates
     }
