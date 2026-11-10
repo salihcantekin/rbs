@@ -320,30 +320,21 @@ impl StudioUi {
         });
     }
 
-    pub fn add_filter(&mut self, source: i32, type_index: i32) {
-        // A source with a picture takes video filters, one with only sound audio filters
-        // (ADR-0082); the menu the user picked from follows the same rule.
-        let sound_only = self
-            .rows
+    /// Add filter: the filter type `type_id` on `source`. The catalogue it comes from
+    /// (picture filters, or audio filters on the Audio tab) is the caller's; an id that
+    /// is in neither does nothing.
+    pub fn add_filter_type(&mut self, source: i32, type_id: &str) {
+        if filter_types(true)
             .iter()
-            .find(|r| r.id.get() as i32 == source)
-            .is_some_and(|r| r.picture.is_none() && r.kind.is_some_and(|k| k.is_audio()));
-        let type_id = if sound_only {
-            rbs_audio_filters::catalogue()
-                .get(type_index as usize)
-                .map(|t| t.type_id())
-        } else {
-            rbs_filters::catalogue()
-                .get(type_index as usize)
-                .map(|t| t.type_id())
-        };
-        let Some(type_id) = type_id else {
+            .chain(&filter_types(false))
+            .all(|(_, id)| id.as_str() != type_id)
+        {
             return;
-        };
+        }
         self.deleted.clear();
         self.send(Command::AddFilter {
             source: SourceId::from_raw(source as u32),
-            type_id: type_id.as_str().to_owned(),
+            type_id: type_id.to_owned(),
         });
     }
 
@@ -482,20 +473,20 @@ impl StudioUi {
             values: Values::defaults(&ty),
         });
     }
+}
 
-    /// The video filter type names for Add filter.
-    pub fn filter_type_names() -> Vec<String> {
-        rbs_filters::catalogue()
-            .iter()
-            .map(|t| t.name().to_owned())
-            .collect()
-    }
-
-    /// The audio filter type names for Add filter on a source with only sound.
-    pub fn audio_filter_type_names() -> Vec<String> {
+/// The filter types Add filter offers, `(name, type id)`: the audio catalogue for the
+/// Audio tab (`audio`), else the picture one (ADR-0082).
+pub fn filter_types(audio: bool) -> Vec<(String, String)> {
+    if audio {
         rbs_audio_filters::catalogue()
             .iter()
-            .map(|t| t.name().to_owned())
+            .map(|t| (t.name().to_owned(), t.type_id().as_str().to_owned()))
+            .collect()
+    } else {
+        rbs_filters::catalogue()
+            .iter()
+            .map(|t| (t.name().to_owned(), t.type_id().as_str().to_owned()))
             .collect()
     }
 }
@@ -503,6 +494,40 @@ impl StudioUi {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    #[allow(clippy::unwrap_used)] // Tests fail by panicking.
+    fn add_filter_offers_each_catalogue_by_stable_type_id() {
+        use rbs_ui::command::{CommandId, MAX_CONTEXT_ITEMS};
+        for audio in [false, true] {
+            let types = filter_types(audio);
+            assert!(!types.is_empty());
+            // The menu shows them all, and each id can be run by id.
+            assert!(
+                types.len() < MAX_CONTEXT_ITEMS,
+                "group the filter types before they overflow the menu"
+            );
+            for (name, id) in &types {
+                assert!(!name.is_empty());
+                let run = CommandId::with_params(
+                    "filter.add",
+                    &[
+                        ("source", "4294967295"),
+                        ("collection", "A long collection name here"),
+                        ("type", id),
+                    ],
+                )
+                .unwrap();
+                assert!(run.to_string().len() <= 128, "{run}");
+            }
+        }
+        // The two catalogues share no type id.
+        assert!(
+            filter_types(true)
+                .iter()
+                .all(|(_, a)| filter_types(false).iter().all(|(_, b)| a != b))
+        );
+    }
 
     #[test]
     fn numbers_show_the_decimals_their_step_needs() {
