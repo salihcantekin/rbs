@@ -222,6 +222,8 @@ The first slice covers what the desktop app does today; the full catalogue follo
 | `source.set_sync_offset {source, offset_ms}` | `control` | Sync offset of a source's sound, `-200..=200` ms; live, not undoable (protocol 1.8) |
 | `source.retarget {source, adapter, target}` | `control` | Point a source at another target of its kind (ids from `source.targets`); name, layout, filters and its place in every scene stay; one undo step; the same target changes nothing (protocol 1.13, ADR-0077) |
 | `source.reload {source}` | `control` | Try a source that is not running again with its stored settings; live, not undoable; a source that runs is left running (protocol 1.13, ADR-0077) |
+| `settings.recent_targets {kind}` | `control` | The targets the user picked for source type `kind`, newest first, at most five, only those that still exist; answers like `source.targets` (protocol 1.13, ADR-0077) |
+| `settings.clear_recent_targets {kind}` | `control` | Forget the recent targets of `kind` |
 | `output.profiles` | `read` | Recording profiles: id, name, container, encoder, bitrates (folders only through `settings.get`) |
 | `record.start {profile}`, `record.stop` | `control` | Record with a configured profile into its folder |
 | `record.start_to_file {profile, path}` | `admin` | Record to an explicit file; refused if it exists |

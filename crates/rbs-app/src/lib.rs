@@ -20,6 +20,7 @@
 //! - [`remote_control`]: the control API server while remote control is on.
 //! - [`user_session`]: the output profile and scene collection in use, and their one
 //!   writer thread (ADR-0051).
+//! - [`recent_targets`]: the last targets picked per source type (`recent-targets.toml`, ADR-0077).
 //! - [`vcam_settings`]: Settings › Virtual camera and `vcam.toml` (ADR-0066).
 //! - `native::MeterBridgeLayer` (macOS): audio meters as Core Animation layers, so meter
 //!   updates do not make the toolkit redraw the window (ADR-0035).
@@ -35,6 +36,7 @@ pub mod native;
 pub mod network_access;
 pub mod platform;
 pub mod popups;
+pub mod recent_targets;
 pub mod record_profile;
 pub mod remote_control;
 pub mod stream_key;

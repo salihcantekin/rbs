@@ -3028,6 +3028,7 @@ fn run(config: PathBuf, notice: Option<String>) -> Result<(), Box<dyn std::error
         config.autosave = autosave;
         config.key_account = key_account;
         config.virtual_camera = ctx.app.borrow().vcam.factory();
+        config.recent_dir = Some(ctx.app.borrow().config.clone());
         config
     };
     match studio_host::StudioHost::spawn(
