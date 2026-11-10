@@ -795,11 +795,21 @@ impl App {
         self.with_picker_overlays(|o| {
             o.set_picker_title(view.title.into());
             o.set_picker_status(status.into());
-            o.set_picker_option_label(if view.offers_audio {
-                "Capture audio too".into()
+            let (label, hint) = if view.offers_audio {
+                (
+                    "Capture audio too",
+                    "Adds the sound that goes with the picture as its own audio source: a display's system sound without RBS's own sound, a window's application sound. Capturing the system sound and another app's sound can play the same audio twice.",
+                )
+            } else if view.offers_mic {
+                (
+                    "Add its microphone too",
+                    "A microphone that belongs with a camera was found; the rows that have one say '+ mic'. Adds it as its own audio source with the camera.",
+                )
             } else {
-                "".into()
-            });
+                ("", "")
+            };
+            o.set_picker_option_label(label.into());
+            o.set_picker_option_hint(hint.into());
             o.set_picker_option(view.audio);
             o.set_picker_rows(ModelRc::new(VecModel::from(rows)));
             o.set_picker_open(true);
