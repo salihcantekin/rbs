@@ -1477,7 +1477,7 @@ export component MixerPanel inherits Rectangle {
         act => { Studio.picker-kind = -1; add-menu.show(); }
     }
     // Wide: strips in clusters, scrolling sideways when they do not fit.
-    if root.any && root.wide: Flickable {
+    if root.any && root.wide: wide-view := Flickable {
         width: parent.width;
         height: parent.height;
         content-width: max(clusters.preferred-width, self.width);
@@ -1487,7 +1487,8 @@ export component MixerPanel inherits Rectangle {
             height: root.height;
             pointer-event(e) => {
                 if e.kind == PointerEventKind.down && e.button == PointerEventButton.right {
-                    mixer-menu.open({ x: self.mouse-x, y: self.mouse-y });
+                    // The menu sits in the panel, the pointer is in the scrolled content.
+                    mixer-menu.open({ x: self.mouse-x + wide-view.viewport-x, y: self.mouse-y + wide-view.viewport-y });
                 }
             }
         }
@@ -1569,7 +1570,7 @@ export component MixerPanel inherits Rectangle {
         }
     }
     // Narrow: rows under full-width headers, then the labelled scale (dBFS).
-    if root.any && !root.wide: Flickable {
+    if root.any && !root.wide: narrow-view := Flickable {
         width: parent.width;
         height: parent.height;
         content-height: strips.preferred-height;
@@ -1578,7 +1579,7 @@ export component MixerPanel inherits Rectangle {
             height: max(strips.preferred-height, root.height);
             pointer-event(e) => {
                 if e.kind == PointerEventKind.down && e.button == PointerEventButton.right {
-                    mixer-menu.open({ x: self.mouse-x, y: self.mouse-y });
+                    mixer-menu.open({ x: self.mouse-x + narrow-view.viewport-x, y: self.mouse-y + narrow-view.viewport-y });
                 }
             }
         }
