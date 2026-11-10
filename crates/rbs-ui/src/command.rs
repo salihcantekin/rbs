@@ -413,6 +413,20 @@ pub const ENTRIES: &[Entry] = &[
         checkable: false,
     },
     Entry {
+        id: "filter.add",
+        title: "Add filter",
+        tooltip: "Add a filter to a source: a picture filter, or for a source with only sound an audio filter",
+        icon: Some("plus"),
+        shortcut: None,
+        menu: Menu::Source,
+        kind: Kind::Picker {
+            method: "filter.add",
+            param: "type",
+        },
+        params: &[target("source"), COLLECTION, choice("type")],
+        checkable: false,
+    },
+    Entry {
         id: "ui.settings.open",
         title: "Settings",
         tooltip: "Open the Settings window",
@@ -1504,6 +1518,9 @@ pub const NOT_IN_MENU: &[&str] = &[
     "ui.panel.move",
     "ui.panel.float",
     "ui.panel.close",
+    // Add filter acts on a source (`source`): it runs from the Add filter button of
+    // Properties and the control API's `filter.add`, not from a menu bar menu.
+    "filter.add",
     // The profile and collection commands run from the status bar's pickers and the
     // control API; the File menu keeps the two pickers.
     "ui.profile.new",
@@ -1807,11 +1824,13 @@ pub enum Context {
     Profiles,
     /// The status bar's Scene collection picker (no target).
     Collections,
+    /// The Add filter button of a source's Properties (target `source`).
+    AddFilter,
 }
 
 impl Context {
     /// Every context.
-    pub const ALL: [Context; 11] = [
+    pub const ALL: [Context; 12] = [
         Context::Scene,
         Context::Scenes,
         Context::Source,
@@ -1823,6 +1842,7 @@ impl Context {
         Context::Workspace,
         Context::Profiles,
         Context::Collections,
+        Context::AddFilter,
     ];
 
     /// Its name, as the shell's menus ask for it.
@@ -1839,6 +1859,7 @@ impl Context {
             Context::Workspace => "workspace",
             Context::Profiles => "profiles",
             Context::Collections => "collections",
+            Context::AddFilter => "add-filter",
         }
     }
 
@@ -1869,6 +1890,8 @@ pub const CONTEXT_LAYOUT: &[(Context, &[&str])] = &[
         ],
     ),
     (Context::Scenes, &["scene.add"]),
+    // The filter types that fit the source, as items of the menu itself.
+    (Context::AddFilter, &["*filter.add"]),
     (
         Context::Source,
         &[
@@ -2024,6 +2047,11 @@ pub fn context_menu(
             }
             continue;
         }
+        // `*id` lists a picker's choices as items of the menu itself, not a submenu.
+        let (inline, text) = match text.strip_prefix('*') {
+            Some(rest) => (true, rest),
+            None => (false, *text),
+        };
         let Ok(id) = CommandId::parse(text) else {
             continue;
         };
@@ -2048,6 +2076,36 @@ pub fn context_menu(
             continue;
         }
         if !state.applies(&id) {
+            continue;
+        }
+        if inline {
+            // A picker that cannot run shows as one disabled item with its reason.
+            if let Err(reason) = state.enabled(&id) {
+                items.push(MenuItem::Command {
+                    id,
+                    title: e.title.to_owned(),
+                    shortcut: e.shortcut,
+                    disabled: Some(reason),
+                    checked: None,
+                    icon: e.icon,
+                });
+                continue;
+            }
+            if let MenuItem::Choices { choices, .. } = item(id.clone(), e, state) {
+                for (title, run, current) in choices {
+                    if items.len() >= MAX_CONTEXT_ITEMS {
+                        break;
+                    }
+                    items.push(MenuItem::Command {
+                        id: run,
+                        title,
+                        shortcut: None,
+                        disabled: None,
+                        checked: current.then_some(true),
+                        icon: e.icon,
+                    });
+                }
+            }
             continue;
         }
         let made = item(id, e, state);
@@ -2329,9 +2387,10 @@ mod tests {
             assert!(shown <= MAX_CONTEXT_ITEMS, "{c:?}");
             for i in *ids {
                 if *i != "|" && *i != "}" && !i.starts_with('{') {
+                    let i = i.strip_prefix('*').unwrap_or(i);
                     let id = CommandId::parse(i).unwrap();
                     assert!(entry(id.base()).is_some(), "{i}");
-                    assert_eq!(id.to_string(), *i, "layout ids are written canonically");
+                    assert_eq!(id.to_string(), i, "layout ids are written canonically");
                 }
             }
         }
@@ -2373,11 +2432,40 @@ mod tests {
             .flat_map(|(_, ids)| ids.iter())
             .chain(CONTEXT_LAYOUT.iter().flat_map(|(_, ids)| ids.iter()));
         for text in layouts.filter(|t| **t != "|" && **t != "}" && !t.starts_with(['#', '{'])) {
+            let text = text.strip_prefix('*').unwrap_or(text);
             let id = CommandId::parse(text).unwrap();
             let e = entry(id.base()).unwrap();
             let name = icon(&id, e).unwrap_or_else(|| panic!("{text} has no icon"));
             assert!(crate::icon::find(name).is_some(), "{text}: {name}");
         }
+    }
+
+    #[test]
+    fn an_inline_picker_lists_its_choices_as_items_or_says_why_it_cannot() {
+        struct Types(bool);
+        impl CommandState for Types {
+            fn enabled(&self, _: &CommandId) -> Result<(), String> {
+                if self.0 {
+                    Ok(())
+                } else {
+                    Err("The studio is not running.".into())
+                }
+            }
+            fn checked(&self, _: &CommandId) -> bool {
+                false
+            }
+            fn choices(&self, _: &CommandId) -> Vec<(String, String, bool)> {
+                vec![("Blur".into(), "rbs.filter.blur".into(), false)]
+            }
+        }
+        let target = [("source".to_owned(), "3".to_owned())];
+        let items = context_menu(Context::AddFilter, &target, &Types(true));
+        assert_eq!(ids(&items), ["filter.add?source=3&type=rbs.filter.blur"]);
+        let items = context_menu(Context::AddFilter, &target, &Types(false));
+        assert!(matches!(
+            &items[0],
+            MenuItem::Command { disabled: Some(r), .. } if r == "The studio is not running."
+        ));
     }
 
     /// Fills targets, leaves out what does not apply, and tidies separators.

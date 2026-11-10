@@ -199,13 +199,9 @@ export global Studio {
     callback library-shown();
     callback apply-look(string /* look id */);
     callback add-sample(string /* sample id */);
-    // Filters (ADR-0062). The catalogue by name, in the order Add filter lists it.
-    in property <[string]> filter-types;
-    // The audio filter types by name, for a source with only sound (ADR-0082).
-    in property <[string]> audio-filter-types;
+    // Filters (ADR-0062).
     // The Properties tab picked last: 0 Transform, 1 Filters, 2 Audio, 3 Source (shown first).
     in-out property <int> properties-tab;
-    callback add-filter(int /* source */, int /* type */);
     callback select-filter(int /* source */, int /* filter */);
     callback remove-filter(int /* filter */);
     callback move-filter(int /* filter */, int /* index */);
@@ -2674,11 +2670,11 @@ component FilterFieldView inherits VerticalLayout {
     }
 }
 
-// Add filter: a menu button listing the filter types by name. The new filter goes at
-// the end of the chain and is selected.
+// Add filter: a button that opens the filter types by name as a CommandMenu (ADR-0094
+// rule B1). The new filter goes at the end of the chain and is selected.
 component AddFilterButton inherits Rectangle {
     in property <SourceData> source;
-    // The audio filter types instead of the video ones (the Audio tab).
+    // The audio filter types instead of the picture ones (the Audio tab).
     in property <bool> audio;
     height: Tokens.size-control-md;
     Button {
@@ -2688,26 +2684,11 @@ component AddFilterButton inherits Rectangle {
         accessible-name: @tr("Add a filter to {}", source.name);
         lead: IconName.plus;
         icon: IconName.chevron-down;
-        clicked => { menu.show(); }
+        clicked => { menu.open({ x: 0px, y: root.height }); }
     }
-    menu := PopupWindow {
-        close-policy: close-on-click-outside;
-        y: root.height;
-        width: root.width;
-        MenuSurface {
-            width: root.width;
-            accessible-role: list;
-            accessible-label: @tr("Add a filter to {}", source.name);
-            VerticalLayout {
-                padding: Tokens.space-2;
-                spacing: Tokens.space-1;
-                for t[i] in (audio ? Studio.audio-filter-types : Studio.filter-types): MenuItem {
-                    text: t;
-                    autofocus: i == 0;
-                    activated => { Studio.add-filter(source.id, i); menu.close(); }
-                }
-            }
-        }
+    menu := CommandMenu {
+        context: "add-filter";
+        target: "source=" + source.id + (root.audio ? "&audio=1" : "");
     }
 }
 

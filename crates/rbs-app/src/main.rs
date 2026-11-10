@@ -489,6 +489,7 @@ impl App {
                 self.command(LayoutCommand::AutoHide { panel, content }, Origin::Command);
             }
             Run::MovePanel(panel, to) => self.move_panel(panel, &to),
+            Run::AddFilter(source, type_id) => self.studio.add_filter_type(source, &type_id),
             Run::Entry(kind, op, name) => self.run_entry(kind, op, name, confirm),
             Run::AddSource(kind) => self.ask_add_source(kind),
             Run::StudioMode(on) => self.studio.set_studio_mode(on),
@@ -2674,9 +2675,6 @@ fn install_studio(g: &Studio<'_>, ctx: &Ctx) {
     });
     on!(on_add_sample, |app, id: slint::SharedString| {
         app.studio.add_sample(id.as_str());
-    });
-    on!(on_add_filter, |app, source: i32, ty: i32| {
-        app.studio.add_filter(source, ty);
     });
     on!(on_select_filter, |app, source: i32, filter: i32| {
         app.studio.select_filter(source, filter);

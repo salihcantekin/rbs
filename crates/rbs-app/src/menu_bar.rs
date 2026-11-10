@@ -15,6 +15,7 @@ use rbs_ui::panel::PanelId;
 use rbs_ui::workspace::{MixerOrientation, Side, Workspace};
 
 use crate::studio_host::TransformOp;
+use crate::studio_ui::filters::filter_types;
 use crate::studio_ui::{SourceFacts, StudioUi, rec_state, st_state};
 
 /// The run-time values of the menu bar, in the generated items' order: one entry
@@ -396,6 +397,21 @@ impl CommandState for Shown<'_> {
                 self.running()?;
                 self.source(id).map(|_| ())
             }
+            "filter.add" => {
+                self.running()?;
+                id.param("source").ok_or("No source is selected.")?;
+                self.source(id)?;
+                match id.param("type") {
+                    Some(t)
+                        if !filter_types(id.param("audio") == Some("1"))
+                            .iter()
+                            .any(|(_, i)| i == t) =>
+                    {
+                        Err("That filter type is not available for this source.".to_owned())
+                    }
+                    _ => Ok(()),
+                }
+            }
             "source.reload" => {
                 self.running()?;
                 if self.source(id)?.reloadable {
@@ -687,6 +703,10 @@ impl CommandState for Shown<'_> {
                 ("Center horizontally".into(), "horizontal".into(), false),
                 ("Center vertically".into(), "vertical".into(), false),
             ],
+            "filter.add" => filter_types(id.param("audio") == Some("1"))
+                .into_iter()
+                .map(|(name, type_id)| (name, type_id, false))
+                .collect(),
             "source.add" => self
                 .studio
                 .kind_codes()
@@ -702,7 +722,7 @@ impl CommandState for Shown<'_> {
 
     fn context(&self, id: &CommandId) -> Vec<(&'static str, String)> {
         match (id.base(), self.studio.current_collection()) {
-            ("scene.select", Some(c)) => vec![("collection", c)],
+            ("scene.select" | "filter.add", Some(c)) => vec![("collection", c)],
             _ => Vec::new(),
         }
     }
@@ -1082,6 +1102,8 @@ fn entry_op(base: &str) -> Option<(EntryKind, EntryOp)> {
 /// What running an id from the menu bar does.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Run {
+    /// Add the filter type (its id) to the source (`filter.add`).
+    AddFilter(i32, String),
     /// An Output profile or Scene collection command (`ui.profile.new`, ...). New,
     /// Duplicate and Rename take a name; without one the window asks for it.
     Entry(EntryKind, EntryOp, Option<String>),
@@ -1183,6 +1205,7 @@ pub fn run(text: &str, state: &Shown<'_>) -> Option<Run> {
             "ui.workspace.select" => Run::Workspace(value),
             "ui.panel.select" => Run::Panel(value),
             "ui.panel.move" => Run::MovePanel(panel_of(&id)?, value),
+            "filter.add" => Run::AddFilter(state.source(&id).ok()?.id, value),
             "ui.mixer.orientation" => Run::MixerOrientation(MixerOrientation::parse(&value)?),
             "profile.select" => Run::Profile(value),
             "collection.select" => Run::Collection(value),
