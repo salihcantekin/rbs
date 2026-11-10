@@ -7,7 +7,7 @@ from the 24 grid to the 16 x 16 view box, and writes {rbs name: path} to out.jso
 Paste the paths into crates/rbs-ui/src/icon.rs, then regenerate the Slint copy with
 `RBS_UPDATE_MENU_BAR=1 cargo test -p rbs-app --bin rbs icons`.
 """
-import re,sys,json,urllib.request,math
+import re,sys,json,hashlib,os,urllib.request,math
 from svgelements import Path, Move, Line, CubicBezier, QuadraticBezier, Arc, Close, Matrix, SVG
 MAP={
 "more":"dots","chevron-down":"chevron-down","chevron-up":"chevron-up","chevron-left":"chevron-left","chevron-right":"chevron-right",
@@ -23,6 +23,13 @@ MAP={
 "collapse":"chevrons-up","auto-hide":"layout-sidebar-left-collapse","move":"arrows-move","float":"picture-in-picture","dock":"picture-in-picture-off","save":"device-floppy",
 }
 S=16/24
+# The pinned SHA-256 of every SVG read (tabler-3.26.0.sha256): a changed file at the CDN
+# stops the conversion instead of changing the icons unseen.
+PINNED={}
+for line in open(os.path.join(os.path.dirname(os.path.abspath(__file__)),"tabler-3.26.0.sha256")):
+    if line.strip() and not line.startswith("#"):
+        digest,name=line.split()
+        PINNED[name]=digest
 # Tabler names flip icons by the axis the picture is mirrored ACROSS in the opposite sense to RBS:
 # RBS flip-h (left-right mirror, vertical axis) is Tabler flip-vertical, and the reverse.
 MIRROR={'rotate-ccw'}  # counter-clockwise = mirrored clockwise icon
@@ -31,6 +38,8 @@ def f(x):
 out={}
 for ours,tb in MAP.items():
     svg=urllib.request.urlopen(f"https://unpkg.com/@tabler/icons@3.26.0/icons/outline/{tb}.svg",timeout=20).read().decode()
+    if hashlib.sha256(svg.encode()).hexdigest()!=PINNED.get(tb+".svg"):
+        sys.exit(f"{tb}.svg does not match the pinned digest in tabler-3.26.0.sha256")
     body=re.search(r'<svg[^>]*>(.*)</svg>',svg,re.S).group(1)
     d=[]
     for el in re.finditer(r'<(path|circle|rect|line|polyline|polygon|ellipse)\s([^>]*?)/?>',body):
