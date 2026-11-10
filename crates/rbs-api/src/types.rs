@@ -59,8 +59,28 @@ pub enum SourceKind {
     ApplicationAudio,
 }
 
+/// Why a source cannot deliver (protocol 1.20, ADR-0077). A client treats a value it does
+/// not know as `other`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SourceFault {
+    /// The target is gone: a window closed, a device removed.
+    TargetGone,
+    /// The system refused access, or the user has not decided yet.
+    PermissionDenied,
+    /// Another application holds the device.
+    Busy,
+    /// Any other cause.
+    #[serde(other)]
+    Other,
+}
+
 /// How a source is doing.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+///
+/// Serialised with a `state` tag. A client built for an older protocol treats a `state`
+/// it does not know as `failed`; this decoder does the same, taking the words from
+/// `reason` or `detail`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(tag = "state", rename_all = "snake_case")]
 pub enum SourceStatus {
     /// It runs.
@@ -72,6 +92,41 @@ pub enum SourceStatus {
         /// Why, in words.
         reason: String,
     },
+    /// It cannot deliver because its target is gone, refused or busy (protocol 1.20).
+    Unavailable {
+        /// The typed cause.
+        fault: SourceFault,
+        /// The adapter's own text.
+        detail: String,
+    },
+}
+
+impl<'de> Deserialize<'de> for SourceStatus {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        #[derive(Deserialize)]
+        struct Raw {
+            state: String,
+            #[serde(default)]
+            reason: Option<String>,
+            #[serde(default)]
+            fault: Option<SourceFault>,
+            #[serde(default)]
+            detail: Option<String>,
+        }
+        let raw = Raw::deserialize(deserializer)?;
+        Ok(match raw.state.as_str() {
+            "running" => SourceStatus::Running,
+            "idle" => SourceStatus::Idle,
+            "unavailable" => SourceStatus::Unavailable {
+                fault: raw.fault.unwrap_or(SourceFault::Other),
+                detail: raw.detail.or(raw.reason).unwrap_or_default(),
+            },
+            // "failed" and any state a newer server adds.
+            _ => SourceStatus::Failed {
+                reason: raw.reason.or(raw.detail).unwrap_or_default(),
+            },
+        })
+    }
 }
 
 /// One source of the program scene.

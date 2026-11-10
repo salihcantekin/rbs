@@ -6407,14 +6407,26 @@ fn api_source(row: &SourceRow) -> api::SourceInfo {
         status: match &row.status {
             SourceStatus::Running => api::SourceStatus::Running,
             SourceStatus::Idle => api::SourceStatus::Idle,
-            // The control API reports an unavailable source as failed until 1.13
-            // adds the typed state (ADR-0077, decision 7).
-            SourceStatus::Failed(why) | SourceStatus::Unavailable { detail: why, .. } => {
-                api::SourceStatus::Failed {
-                    reason: why.clone(),
-                }
-            }
+            SourceStatus::Failed(why) => api::SourceStatus::Failed {
+                reason: why.clone(),
+            },
+            // The typed state of protocol 1.20 (ADR-0077, decision 7).
+            SourceStatus::Unavailable { fault, detail } => api::SourceStatus::Unavailable {
+                fault: api_fault(*fault),
+                detail: detail.clone(),
+            },
         },
+    }
+}
+
+/// The control API's name for a source fault.
+fn api_fault(fault: rbs_core::fault::SourceFault) -> api::SourceFault {
+    use rbs_core::fault::SourceFault as F;
+    match fault {
+        F::TargetGone => api::SourceFault::TargetGone,
+        F::PermissionDenied => api::SourceFault::PermissionDenied,
+        F::Busy => api::SourceFault::Busy,
+        _ => api::SourceFault::Other,
     }
 }
 
