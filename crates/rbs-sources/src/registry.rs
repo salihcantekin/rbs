@@ -7,7 +7,9 @@ use std::time::Duration;
 
 use rbs_audio::{AudioGraphConfig, InputNode, InputParams, InputStats};
 use rbs_audio_io::caps as audio_caps;
-use rbs_audio_io::{AudioBackend, AudioIoError, EndpointId, EndpointKind, InputRequest};
+use rbs_audio_io::{
+    AudioBackend, AudioIoError, AudioOutput, EndpointId, EndpointKind, InputRequest, OutputRequest,
+};
 use rbs_capture::caps as capture_caps;
 use rbs_capture::{CaptureError, CaptureFactory, CaptureRequest, TargetId, TargetKind};
 use rbs_core::capability::{Constraint, Requirement};
@@ -117,6 +119,22 @@ pub struct SourceTarget {
     /// The opaque id of the audio input that belongs with a camera (its microphone),
     /// when the capture adapter knows it; the audio adapter resolves it (ADR-0096).
     pub related_audio: Option<String>,
+}
+
+/// A playback device a monitor can use ([`SourceTypes::monitor_devices`]).
+#[non_exhaustive]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MonitorDevice {
+    /// The adapter that listed it.
+    pub adapter: AdapterId,
+    /// The endpoint id; store it as the monitor device.
+    pub target: String,
+    /// Human readable name from the OS.
+    pub name: String,
+    /// The OS default output.
+    pub is_default: bool,
+    /// The physical device, shared with a loopback endpoint of the same device.
+    pub device_key: Option<String>,
 }
 
 /// One mode of a camera: a picture size and the frame rates it runs at.
@@ -575,6 +593,69 @@ impl SourceTypes {
 
     fn audio_candidates(&self, kind: EndpointKind) -> Vec<Arc<dyn AudioBackend>> {
         self.audio.select(&audio_requirement(kind)).candidates
+    }
+
+    /// Probed audio adapters that open outputs (`audio.output`), best first.
+    fn output_candidates(&self) -> Vec<Arc<dyn AudioBackend>> {
+        let requirement = Requirement::new().with(audio_caps::OUTPUT, Constraint::Flag(true));
+        self.audio.select(&requirement).candidates
+    }
+
+    /// True when some audio adapter can play to a device (monitoring, ADR-0097).
+    pub fn can_monitor(&self) -> bool {
+        !self.output_candidates().is_empty()
+    }
+
+    /// The playback devices a monitor can use, best adapter first, for the Settings
+    /// picker (ADR-0097 decision 4). Enumerates: call it only while the picker is open.
+    /// `target` is what [`SourceTypes::open_monitor`] takes; `device_key` lets a host
+    /// warn when a loopback source captures the same device (decision 8).
+    pub fn monitor_devices(&self) -> Vec<MonitorDevice> {
+        let mut out = Vec::new();
+        for b in self.output_candidates() {
+            for e in b.enumerate(EndpointKind::Output).unwrap_or_default() {
+                out.push(MonitorDevice {
+                    adapter: b.id(),
+                    target: e.id.as_str().to_owned(),
+                    name: e.name,
+                    is_default: e.is_default,
+                    device_key: e.device_key,
+                });
+            }
+        }
+        out
+    }
+
+    /// Opens a monitor output (in Standby) on the control thread: on `target`, a
+    /// playback endpoint id from [`SourceTypes::monitor_devices`], from the first
+    /// adapter, best first, that lists it; `None` (System default) takes the OS default
+    /// output of the best adapter that lists one. `NoAdapter` when no adapter plays
+    /// (`type_id` names the request in the error), `NoTarget` when no device is present.
+    pub fn open_monitor(
+        &self,
+        target: Option<&str>,
+    ) -> Result<(Box<dyn AudioOutput>, AdapterId, EndpointId), SourceError> {
+        let type_id = NodeTypeId::new_static(rbs_audio::OUTPUT_NODE_TYPE);
+        let candidates = self.output_candidates();
+        if candidates.is_empty() {
+            return Err(SourceError::NoAdapter(type_id));
+        }
+        let (backend, endpoint) = match target {
+            Some(t) => candidates
+                .iter()
+                .find(|b| {
+                    b.enumerate(EndpointKind::Output)
+                        .is_ok_and(|l| l.iter().any(|x| x.id.as_str() == t))
+                })
+                .map(|b| (Arc::clone(b), EndpointId::new(t)))
+                .ok_or(SourceError::Audio(AudioIoError::EndpointNotFound))?,
+            None => default_endpoint(&candidates, EndpointKind::Output)
+                .ok_or(SourceError::NoTarget(type_id))?,
+        };
+        let output = backend
+            .open_output(&OutputRequest::new(endpoint.clone()))
+            .map_err(SourceError::Audio)?;
+        Ok((output, backend.id(), endpoint))
     }
 
     /// True when some audio adapter can leave RBS's own sound out of a system loopback
