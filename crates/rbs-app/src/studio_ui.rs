@@ -3230,6 +3230,9 @@ impl StudioUi {
                 self.refresh_existing();
                 self.refresh_marks();
             }
+            // The dialog and the panel for the second canvas follow with the UI change
+            // of ADR-0093 decision 7; the state is the host's until then.
+            Update::Vertical(_) => {}
             Update::MasterMeter(level) => {
                 self.master_slot = level.map(|l| (l, Meter::new()));
                 self.show_master();
