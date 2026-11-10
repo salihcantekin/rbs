@@ -20,4 +20,6 @@ pub use session::{
     CaptureChange, CaptureFactory, CaptureRequest, CaptureSession, CaptureStats, GpuDeviceId,
     GpuImportTarget, SyncKind,
 };
-pub use target::{CameraMode, CaptureTarget, Permission, TargetId, TargetKind};
+pub use target::{
+    CameraMode, CaptureTarget, Permission, THUMBNAIL_MAX, TargetId, TargetKind, Thumbnail,
+};

@@ -16,13 +16,13 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use rbs_core::capability::{CapabilityKey, CapabilitySet, CapabilityValue};
-use rbs_core::media::{MemoryKind, PixelFormat, VideoFrame};
+use rbs_core::media::{MemoryKind, PixelFormat, Size, VideoFrame};
 use rbs_core::time::{Clock, MonotonicClock, TestClock, Timestamp};
 
 use crate::caps;
 use crate::{
     CaptureError, CaptureFactory, CaptureRequest, CaptureSession, GpuDeviceId, GpuImportTarget,
-    Permission, SyncKind, TargetId, TargetKind,
+    Permission, SyncKind, THUMBNAIL_MAX, TargetId, TargetKind,
 };
 
 /// Lets time pass between polls.
@@ -588,6 +588,7 @@ impl Suite<'_> {
             || format!("open of an unknown id returned {:?}", unknown.err()),
         )?;
         self.pass("unknown target");
+        self.check_thumbnails(&testable)?;
 
         if testable.is_empty() {
             self.skip("sessions", "no enumerable target to open");
@@ -1142,7 +1143,94 @@ impl Suite<'_> {
             self.pacer.wait(self.options.poll_interval);
             waited += self.options.poll_interval;
         }
+        let gone = self.factory.thumbnail(id, THUMBNAIL_MAX);
+        ensure(
+            "thumbnail",
+            matches!(
+                gone,
+                Err(CaptureError::TargetNotFound | CaptureError::Unsupported(_))
+            ),
+            || format!("{id}: thumbnail of a removed target returned {gone:?}"),
+        )?;
         self.pass(CHECK);
+        Ok(())
+    }
+
+    /// The `thumbnail` contract (ADR-0077): Unsupported is always allowed (and is
+    /// required for cameras); a picture fits `max` and `THUMBNAIL_MAX`, is never
+    /// larger than the target, and an empty `max` is refused.
+    fn check_thumbnails(&mut self, testable: &[(TargetKind, TargetId)]) -> Result<(), Failure> {
+        const CHECK: &str = "thumbnail";
+        let unknown = self.factory.thumbnail(
+            &TargetId::new("org.rbs.conformance.no-such-target"),
+            THUMBNAIL_MAX,
+        );
+        ensure(
+            CHECK,
+            matches!(
+                unknown,
+                Err(CaptureError::TargetNotFound | CaptureError::Unsupported(_))
+            ),
+            || format!("thumbnail of an unknown id returned {unknown:?}"),
+        )?;
+        let small = Size {
+            width: 40,
+            height: 40,
+        };
+        for (kind, id) in testable {
+            let result = self.factory.thumbnail(id, THUMBNAIL_MAX);
+            if *kind == TargetKind::Camera {
+                ensure(
+                    CHECK,
+                    matches!(result, Err(CaptureError::Unsupported(_))),
+                    || format!("{id}: a camera thumbnail returned {result:?}, not Unsupported"),
+                )?;
+                continue;
+            }
+            let Ok(full) = result else {
+                ensure(
+                    CHECK,
+                    matches!(
+                        result,
+                        Err(CaptureError::Unsupported(_)
+                            | CaptureError::PermissionDenied
+                            | CaptureError::PermissionNotDetermined)
+                    ) || matches!(result, Err(e) if e.is_recoverable()),
+                    || format!("{id}: thumbnail failed with {result:?}"),
+                )?;
+                continue;
+            };
+            ensure(
+                CHECK,
+                full.width() <= THUMBNAIL_MAX.width && full.height() <= THUMBNAIL_MAX.height,
+                || {
+                    format!(
+                        "{id}: thumbnail {}x{} is over the limit",
+                        full.width(),
+                        full.height()
+                    )
+                },
+            )?;
+            let fits = self.factory.thumbnail(id, small);
+            ensure(
+                CHECK,
+                matches!(&fits, Ok(t) if t.width() <= 40 && t.height() <= 40),
+                || format!("{id}: thumbnail for a 40x40 limit returned {fits:?}"),
+            )?;
+            let empty = self.factory.thumbnail(
+                id,
+                Size {
+                    width: 0,
+                    height: 40,
+                },
+            );
+            ensure(
+                CHECK,
+                matches!(empty, Err(CaptureError::FormatUnsupported)),
+                || format!("{id}: thumbnail with an empty limit returned {empty:?}"),
+            )?;
+            self.pass(CHECK);
+        }
         Ok(())
     }
 

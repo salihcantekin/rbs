@@ -88,6 +88,18 @@ pub trait CaptureFactory: AdapterFactory {
 
     /// Shows the OS permission prompt if not determined; blocks (control thread only).
     fn request_permission(&self, kind: TargetKind) -> Result<Permission, CaptureError>;
+
+    /// One small sRGB RGBA8 picture of a target for a browsing list (ADR-0077; a
+    /// minor version of the port, additive). Scaled to fit in min(max, THUMBNAIL_MAX
+    /// = 192 x 108), aspect kept, never upscaled, at least 1 x 1; empty `max` ->
+    /// FormatUnsupported. Needs no session: grabs one frame and releases everything
+    /// before returning. Never prompts. Returns within ~1 s or a recoverable Backend
+    /// error; the host cannot cancel, it abandons the call. Any non-real-time thread,
+    /// concurrent calls and open sessions allowed. No user-visible side effect (no
+    /// prompt, capture border, indicator or camera light); an adapter that cannot
+    /// avoid one, and every camera or microphone, returns Unsupported (also the
+    /// default). TargetNotFound if gone. No target names or pixels in logs.
+    fn thumbnail(&self, target: &TargetId, max: Size) -> Result<Thumbnail, CaptureError>;
 }
 
 #[non_exhaustive]
@@ -118,6 +130,8 @@ Native surface rules for producers:
 - **LUID encoding.** `GpuDeviceId::Luid` holds the eight bytes of the Windows `LUID` struct in memory order (`LowPart` then `HighPart`, both little-endian). The `adapter_luid: u64` of a `NativeSurface` is the same bytes read as a little-endian integer, that is `(HighPart as u32 as u64) << 32 | LowPart as u64`, the value `rbs_gpu::GpuContext::adapter_luid` reports.
 - **Handle values.** Importers cache opened surfaces and fences by handle value, so a producer must not let a value it handed out name another object while an importer may still cache it. A surface whose handle was handed out in a frame stays open while any frame references it and for at least 10 s after the last reference ends (importers forget an idle cached handle within 8 s, whatever their tick rate), including after `stop` and after the session is dropped; the release happens off the render thread. A fence is never closed while the process runs; sessions reuse pooled fences and keep signalling increasing values, so a cached fence stays correct. Surfaces never handed out may be released at once. The importer also reopens a cached surface delivered with a different frame size and closes unused cached surfaces when a source stops (`Importer::close_unused`).
 - **Surface budget.** Each session hands out at most `capture.frames.in_flight + 2` surfaces at a time (Windows Graphics Capture: 5), plus replaced surfaces during a resize. A resize that would keep more than 512 MiB of replaced surfaces waiting drops frames instead of allocating.
+
+`Thumbnail` is an owned picture with private fields: `Thumbnail::new(width, height, rgba) -> Option<_>` checks a non-zero size inside `THUMBNAIL_MAX` (a `Size`, 192 x 108, about 80 KiB) and that `rgba` holds `width * height * 4` bytes; `width()`, `height()`, `rgba()` and `into_rgba()` read it. A bounded exception to P4: one picture on request, never on the frame path.
 
 ### Session
 

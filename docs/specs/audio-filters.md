@@ -12,7 +12,7 @@ Built-in audio filters for sources: Gain and Noise gate, run as `AudioFilter` no
 
 In scope: `AudioFilterType`, `AudioDsp`, `FilterMeter`, `AudioFilterNode`, the catalogue and the conformance suite.
 
-Out of scope here (later PRs of ADR-0082): the editor UI, a limiter and look-ahead filters (they need latency reporting in the node contract), the ducker.
+Out of scope here (later PRs of ADR-0082): the editor UI, a limiter and look-ahead filters (they need latency reporting in the node contract). The ducker and its key input are decided in [ADR-0095](../adr/0095-audio-ducker-and-key-tap.md) (Accepted).
 
 ## Contract
 
@@ -66,3 +66,7 @@ Hot path (P15, `hot-paths.md`). `cargo bench -p rbs-audio-filters` measures one 
 ## Tests
 
 `tests/dsp.rs` (block-driven DSP behaviour, allocation guard) and `tests/node.rs` (node in a real executor: timestamp kept, value edit without reset, missing input, wrong format, allocation guard including a value update).
+
+## Noise gate level bar (UI)
+
+The Properties editor of a noise gate starts with a `GateBar`: the input level as a bar from -80 to 0 dB (`meter.low`), the open threshold (`accent`) and the close threshold (`text.secondary`) as lines on it, and under it a thin bar for the gain reduction (`meter.mid`). The bar reads `FilterMeter` through the `filter-levels` callback from a 30 Hz timer that exists only while the gate's section is open and shown (P13); no section, no timer, no reads.

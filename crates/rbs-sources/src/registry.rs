@@ -111,6 +111,39 @@ pub struct SourceTarget {
     pub size: Option<(u32, u32)>,
     /// The application that owns a window, when the OS tells it (grouping only).
     pub app: Option<String>,
+    /// What a camera offers, empty for everything else: the modes the Source settings
+    /// window lists.
+    pub modes: Vec<SourceMode>,
+}
+
+/// One mode of a camera: a picture size and the frame rates it runs at.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SourceMode {
+    /// Width in pixels.
+    pub width: u32,
+    /// Height in pixels.
+    pub height: u32,
+    /// Lowest whole frame rate.
+    pub min_fps: u32,
+    /// Highest whole frame rate.
+    pub max_fps: u32,
+}
+
+fn source_modes(modes: &[rbs_capture::CameraMode]) -> Vec<SourceMode> {
+    let whole = |r: rbs_core::timing::FrameRate| {
+        let r = r.per_second();
+        u32::try_from((u64::from(r.num()) + u64::from(r.den()) / 2) / u64::from(r.den().max(1)))
+            .unwrap_or(u32::MAX)
+    };
+    modes
+        .iter()
+        .map(|m| SourceMode {
+            width: m.width,
+            height: m.height,
+            min_fps: whole(m.min_frame_rate),
+            max_fps: whole(m.max_frame_rate),
+        })
+        .collect()
 }
 
 /// One adapter's OS picker for a capture kind, from [`SourceTypes::pickers`]. It holds
@@ -157,6 +190,7 @@ impl SourcePicker {
             is_default: false,
             size: t.size,
             app: t.app,
+            modes: Vec::new(),
         })
     }
 }
@@ -608,6 +642,7 @@ impl SourceTypes {
                             name: t.name,
                             is_default: false,
                             size: t.size,
+                            modes: source_modes(&t.modes),
                             app: t.app,
                         });
                     }
@@ -623,6 +658,7 @@ impl SourceTypes {
                             is_default: e.is_default,
                             size: None,
                             app: None,
+                            modes: Vec::new(),
                         });
                     }
                 }

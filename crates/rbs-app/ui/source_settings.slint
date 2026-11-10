@@ -1,0 +1,125 @@
+// The Source settings window (ADR-0077 decision 5): a floating, non-modal window for the
+// settings of one source that the Properties panel does not carry: a camera's mode and
+// frame rate, a screen's or window's frame rate and cursor. Apply sends the choice and
+// keeps the window; OK sends it and closes; Cancel closes. The choice is a draft until
+// then. The preview and the main window stay usable while it is open.
+import { Theme, Tokens } from "tokens.slint";
+import { Button, Select, Toggle } from "components.slint";
+import { Studio, SourceSettingsData } from "studio.slint";
+
+export component SourceSettingsWindow inherits Window {
+    default-font-family: Theme.font-family;
+    default-font-size: Tokens.type-body-size;
+    title: @tr("{}: Source settings", d.name);
+    icon: @image-url("../assets/brand/icon-win-256.png");
+    preferred-width: Tokens.size-floating-w;
+    preferred-height: Tokens.size-floating-h;
+    min-width: Tokens.size-menu-md;
+    background: Theme.surface-base;
+    // Escape or Cancel: the window closes without sending anything.
+    callback dismiss();
+    forward-focus: keys;
+    // What the host answered (empty while it has not).
+    property <SourceSettingsData> d: Studio.source-settings.length > 0 ? Studio.source-settings[0] : { id: -1, name: "", kind-code: -1, modes: [], mode-labels: [], mode-index: -1, rates: [], rate-index: -1, has-cursor: false, cursor: true };
+    // The draft.
+    in-out property <int> mode-index: -1;
+    in-out property <int> rate-index: -1;
+    in-out property <bool> cursor: true;
+    property <bool> camera: d.kind-code == 2;
+    // The rates of the chosen mode for a camera; a screen's and window's own list.
+    property <[string]> rates: camera ? (mode-index >= 0 && mode-index < d.modes.length ? d.modes[mode-index].rates : []) : d.rates;
+    changed d => {
+        root.mode-index = d.mode-index;
+        root.rate-index = d.rate-index;
+        root.cursor = d.cursor;
+    }
+    keys := FocusScope {
+        key-pressed(e) => {
+            if e.text == Key.Escape { root.dismiss(); return accept; }
+            reject
+        }
+        VerticalLayout {
+            padding: Tokens.space-4;
+            spacing: Tokens.size-section-gap;
+            if d.id < 0: Text {
+                text: @tr("Loading the settings…");
+                color: Theme.text-secondary;
+                font-size: Tokens.type-body-size;
+            }
+            if d.id >= 0: VerticalLayout {
+                spacing: Tokens.size-field-gap;
+                vertical-stretch: 1;
+                alignment: start;
+                Text {
+                    text: @tr("Video");
+                    color: Theme.text-secondary;
+                    font-size: Tokens.type-caption-size;
+                    font-weight: Tokens.type-label-weight;
+                }
+                if camera: Text {
+                    text: @tr("Mode");
+                    color: Theme.text-primary;
+                    font-size: Tokens.type-label-size;
+                }
+                if camera: Select {
+                    label: @tr("Mode");
+                    options: d.mode-labels;
+                    index: root.mode-index;
+                    placeholder: @tr("Not listed by this camera");
+                    enabled: d.modes.length > 0;
+                    selected(i) => {
+                        root.mode-index = i;
+                        // The chosen rate stays when the new mode runs at it, else the first.
+                        root.rate-index = root.rate-index < d.modes[i].rates.length ? root.rate-index : 0;
+                    }
+                }
+                Text {
+                    text: @tr("Frame rate");
+                    color: Theme.text-primary;
+                    font-size: Tokens.type-label-size;
+                }
+                Select {
+                    label: @tr("Frame rate");
+                    options: root.rates;
+                    index: root.rate-index;
+                    placeholder: @tr("Default");
+                    selected(i) => { root.rate-index = i; }
+                }
+                if d.has-cursor: Toggle {
+                    text: @tr("Show the cursor");
+                    checked: root.cursor;
+                    toggled(v) => { root.cursor = v; }
+                }
+                Text {
+                    horizontal-stretch: 1;
+                    text: @tr("A change opens the source again with the new settings. Its name, layout and filters stay. One Undo step.");
+                    color: Theme.text-secondary;
+                    font-size: Tokens.type-caption-size;
+                    wrap: word-wrap;
+                }
+            }
+            HorizontalLayout {
+                spacing: Tokens.size-field-gap;
+                alignment: end;
+                Button {
+                    text: @tr("Cancel");
+                    clicked => { root.dismiss(); }
+                }
+                Button {
+                    text: @tr("Apply");
+                    enabled: d.id >= 0;
+                    clicked => { Studio.apply-source-settings(d.id, root.mode-index, root.rate-index, root.cursor); }
+                }
+                Button {
+                    text: @tr("OK");
+                    kind: "primary";
+                    enabled: d.id >= 0;
+                    clicked => {
+                        Studio.apply-source-settings(d.id, root.mode-index, root.rate-index, root.cursor);
+                        root.dismiss();
+                    }
+                }
+            }
+        }
+    }
+}
