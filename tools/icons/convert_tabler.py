@@ -16,13 +16,15 @@ MAP={
 "speaker":"volume","eye":"eye","eye-off":"eye-off","expand":"arrows-maximize","lock":"lock","unlock":"lock-open","speaker-off":"volume-off",
 "sliders":"adjustments-horizontal","palette":"palette","keyboard":"keyboard","broadcast":"broadcast","link":"link","globe":"world",
 "warning":"alert-triangle","info":"info-circle","gear":"settings","user":"user","folder":"folder","undo":"arrow-back-up","redo":"arrow-forward-up",
-"layout":"layout-2","panel-all":"layout-board-split","panel-none":"layout-off","reset":"rotate-clockwise","refresh":"refresh","image":"photo","pencil":"pencil",
+"layout":"layout-2","panel-all":"layout-board-split","panel-none":"layout-off","reset":"restore","refresh":"refresh","image":"photo","pencil":"pencil",
 "trash":"trash","transition":"transition-right","export":"upload","import":"download","arrow-left":"arrow-left","arrow-right":"arrow-right","menu":"menu-2",
 "flip-h":"flip-vertical","flip-v":"flip-horizontal","rotate-cw":"rotate-clockwise","rotate-ccw":"rotate-clockwise","fit":"aspect-ratio","fill-canvas":"maximize",
 "stretch":"arrows-horizontal","center":"focus-centered",
 }
 S=16/24
-MIRROR={'reset','rotate-ccw'}  # counter-clockwise = mirrored clockwise icon
+# Tabler names flip icons by the axis the picture is mirrored ACROSS in the opposite sense to RBS:
+# RBS flip-h (left-right mirror, vertical axis) is Tabler flip-vertical, and the reverse.
+MIRROR={'rotate-ccw'}  # counter-clockwise = mirrored clockwise icon
 def f(x): 
     s=f"{x*S:.2f}".rstrip('0').rstrip('.'); return s if s!="-0" else "0"
 out={}
