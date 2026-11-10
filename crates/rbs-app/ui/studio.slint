@@ -23,7 +23,7 @@ export struct FilterFieldData { label: string, help: string, log: bool, options:
 // only be removed); `can-up` / `can-down` false at the ends of the chain.
 export struct FilterLevels { input: float, reduction: float }
 export struct FilterData { id: int, name: string, enabled: bool, known: bool, gate: bool, bar-label: string, open-pos: float, close-pos: float, can-up: bool, can-down: bool, fields: [FilterFieldData] }
-export struct SourceData { id: int, name: string, kind: string, icon: string, status: string, ok: bool, picture: bool, visible: bool, x: float, y: float, w: float, h: float, can-up: bool, can-down: bool, shape: int, radius: float, border: bool, border-width: float, border-color: string, border-swatch: color, crop-l: int, crop-t: int, crop-r: int, crop-b: int, pic-w: int, pic-h: int, locked: bool, flip-h: bool, flip-v: bool, audio: bool, muted: bool, volume: float, volume-text: string, filters: [FilterData], selected-filter: int, sync-offset: int, global: bool, also-in: string, in-globals: bool, places: int, kind-code: int }
+export struct SourceData { id: int, name: string, kind: string, icon: string, status: string, ok: bool, picture: bool, visible: bool, x: float, y: float, w: float, h: float, can-up: bool, can-down: bool, shape: int, radius: float, border: bool, border-width: float, border-color: string, border-swatch: color, crop-l: int, crop-t: int, crop-r: int, crop-b: int, pic-w: int, pic-h: int, locked: bool, flip-h: bool, flip-v: bool, audio: bool, muted: bool, volume: float, volume-text: string, filters: [FilterData], selected-filter: int, sync-offset: int, global: bool, also-in: string, in-globals: bool, places: int, kind-code: int, companion: bool }
 // `global`: a global source's row (ADR-0065). `also-in`: the other scenes that place it,
 // by name; `in-globals`: it is a global source too; `places`: how many items place it.
 // A scene in the Scenes panel (ADR-0059): `live` on air, `number` its place (1 up).
@@ -138,6 +138,8 @@ export global Studio {
     callback filter-source-targets(string);
     callback retarget-source(int /* source */, int /* index */);
     callback reload-source(int /* source */);
+    // Adds or removes the "Capture audio too" companion sound of a display or window (ADR-0096).
+    callback set-companion-audio(int /* source */, bool /* on */);
     // Delete source: from every scene and the global sources (ADR-0065).
     callback delete-source(int /* id */);
     // Remove from scene: this scene only (the global sources for a global row); the
@@ -2812,6 +2814,22 @@ component SourceFields inherits VerticalLayout {
             accessible-name: @tr("Open the source settings of {}", data.name);
             dense: true;
             clicked => { Studio.open-source-settings(data.id); }
+        }
+    }
+    // A display or a window can bring its sound along (ADR-0096).
+    if data.kind-code == 0 || data.kind-code == 1: HorizontalLayout {
+        spacing: Tokens.space-1;
+        Checkbox {
+            horizontal-stretch: 1;
+            text: @tr("Capture audio too");
+            checked: data.companion;
+            toggled(on) => { Studio.set-companion-audio(data.id, on); }
+        }
+        InfoHint {
+            label: @tr("Capture audio too");
+            text: data.kind-code == 0
+                ? @tr("Adds the system sound as its own audio source, without RBS's own sound. Capturing the system sound and another app's sound can play the same audio twice.")
+                : @tr("Adds this window's application sound as its own audio source. Capturing it and the system sound can play the same audio twice.");
         }
     }
     TextField {

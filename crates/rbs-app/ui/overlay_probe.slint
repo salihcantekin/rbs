@@ -21,6 +21,7 @@ export component OverlayProbe inherits Window {
         name: "Flip horizontally";
     }
     out property <string> last-pick;
+    out property <bool> colour-focused: colour.focused;
     colour := ColorPicker {
         x: 200px;
         y: 10px;

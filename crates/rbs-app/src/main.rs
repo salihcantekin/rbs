@@ -2673,6 +2673,9 @@ fn install_studio(g: &Studio<'_>, ctx: &Ctx) {
     on!(on_reload_source, |app, id: i32| {
         app.studio.reload_source(id);
     });
+    on!(on_set_companion_audio, |app, id: i32, on: bool| {
+        app.studio.set_companion_audio(id, on);
+    });
     on!(on_delete_source, |app, id: i32| {
         app.studio.delete_source(id);
     });

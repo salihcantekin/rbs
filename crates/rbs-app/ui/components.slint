@@ -1151,6 +1151,12 @@ export component ColorPicker inherits Rectangle {
     changed picks => {
         if Overlays.color-owner == root.my-id { root.picked(Overlays.color-result); }
     }
+    // The focus goes back to the swatch that opened the popover when it closes.
+    property <bool> popover-open: Overlays.color-open;
+    changed popover-open => {
+        if !root.popover-open && Overlays.color-owner == root.my-id { focus.focus(); }
+    }
+    out property <bool> focused: focus.has-focus;
     function show-popup() {
         if !root.enabled { return; }
         root.my-id = Overlays.open-color(root.label, root.value, root.absolute-position.x, root.absolute-position.y, root.width, root.height);
