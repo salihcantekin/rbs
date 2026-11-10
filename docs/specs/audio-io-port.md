@@ -21,7 +21,7 @@ In scope:
 
 Out of scope:
 
-- Audio output (monitoring to headphones, a virtual microphone): added to this port later as `AudioBackend::open_output` with a default that returns `Unsupported` (a minor version).
+- A virtual microphone output (a later minor). Audio output for monitoring is in this port (ADR-0097, section "Audio output").
 - Resampling, drift correction against the master clock, channel up- and down-mixing, gain, filters and mixing: the audio graph (`rbs-audio`). The port delivers the device's own rate (or a rate the device offers natively) and its own channels.
 - Device hot-plug watching and following the OS default device when it changes: one shared watcher owned by the registry (ADR-0013 rule 2). The port only offers `enumerate` on demand and marks the current default.
 - Video: the capture port. A camera's microphone is an `Input` endpoint of this port.
@@ -34,7 +34,8 @@ Media types (`AudioFormat`, `ChannelLayout`, `MAX_CHANNELS`), `SampleRate`, `Cad
 ### Endpoints and permissions
 
 ```rust
-#[non_exhaustive] pub enum EndpointKind { Input, OutputLoopback, Application }   // as_str: input, output_loopback, application
+#[non_exhaustive] pub enum EndpointKind { Input, OutputLoopback, Application, Output }   // as_str: input, output_loopback, application, output
+// `EndpointKind::ALL` lists the three capture kinds; `Output` is a playback device (ADR-0097) and is opened with `open_output`.
 
 /// Opaque, adapter-defined id. Stable for the lifetime of the endpoint; for devices
 /// also across restarts where the OS allows it (WASAPI endpoint id, CoreAudio device
@@ -148,7 +149,42 @@ Constants in `rbs_audio_io::caps`.
 | `audio.input.channels.max` | Int | Most channels a stream delivers (at most `MAX_CHANNELS`) |
 | `audio.input.permission` | Flag | Some kind needs a user permission (macOS microphone privacy) |
 | `audio.loopback.exclude_self` | Flag | `OutputLoopback` streams honour `InputRequest::exclude_own_process` (WASAPI process-loopback exclude mode, Windows 10 2004+; CoreAudio tap with an exclusion list, macOS 14.4+). Absent: the request field is ignored and the UI hides the Display sound companion (ADR-0096) |
+| `audio.output` | Flag | The adapter implements `open_output` (ADR-0097) |
+| `audio.output.enumerate` | Flag | `enumerate(EndpointKind::Output)` lists playback devices |
+| `audio.output.latency_ns` | Int | Best estimate of the device latency in nanoseconds, for the UI |
 | `adapter.hardware` | Flag | `true` for OS audio paths (from `rbs-core`) |
+
+## Audio output
+
+ADR-0097. A playback device the engine can play audio on, for monitoring. Source of truth: `rbs_audio_io::output`.
+
+```rust
+// AudioBackend, a default method (a minor version): Err(Unsupported) when absent.
+fn open_output(&self, request: &OutputRequest) -> Result<Box<dyn AudioOutput>, AudioIoError>;
+
+#[non_exhaustive] pub struct OutputRequest { pub endpoint: EndpointId, pub ring_frames: usize }
+//   clamped_ring_frames(): ring_frames clamped to MIN_RING_FRAMES (256)..=MAX_RING_FRAMES (65_536); default 4_096
+
+pub trait AudioOutput: Send {
+    fn format(&self) -> AudioFormat;                    // the device's shared-mode mix format
+    fn producer(&mut self) -> Option<OutputProducer>;   // the engine's half of the ring, taken once
+    fn start(&mut self) -> Result<(), AudioIoError>;    // opens the OS stream; Standby until then
+    fn stop(&mut self);                                 // releases OS stream and threads; can start again
+    fn latency_ns(&self) -> u64;
+    fn stats(&self) -> OutputStats;
+    fn status(&self) -> Result<(), AudioIoError>;       // Ok, or EndpointLost / DeviceBusy / FormatChanged
+}
+
+#[non_exhaustive] pub struct OutputStats { pub written: u64, pub played: u64, pub silence: u64, pub dropped: u64 }
+```
+
+- **Format.** The adapter never resamples in the OS: the output plays at the device's mix format and the engine converts to it (an `OutputNode` in `rbs-audio` resamples and steers drift like `InputNode`).
+- **Ring.** `rbs_audio_io::output::channel(channels, frames)` makes an `OutputProducer` and an `OutputConsumer`, a lock-free single-producer single-consumer ring of interleaved `f32` (the reverse direction of the sample ring). The engine calls `OutputProducer::push`; the OS render callback owns the `OutputConsumer` and calls `pull`. Neither allocates, locks or waits (P6). An empty ring plays silence and counts it (`silence`, underrun); a full ring drops the frames that do not fit, whole, and counts them (`dropped`, overrun).
+- **Counters.** `written` counts frames offered to the ring, `played` frames the callback took, so `written == played + dropped + queued`; `silence` counts frames the OS asked for that the ring could not supply.
+- **Zero cost.** `open_output` opens no OS stream and starts no thread; `start` does. `stop` and drop release everything (ADR-0013).
+- **Failure.** A lost or busy device ends the output with the matching error from `status`; it is recoverable as for input (ADR-0024, back-off in the host). A failing output never stalls the engine: the producer keeps dropping and counting.
+- **`device_key`.** `AudioEndpoint::device_key` is an opaque key equal for the endpoints of one device (WASAPI: the IMMDevice id shared by a render endpoint and its loopback endpoint; CoreAudio: the device UID), so a host can warn when a monitor device is also captured. `None` when unknown; aggregate and virtual devices may not compare equal, so a warning built on it is best effort.
+- **Platforms.** WASAPI render (shared mode) and CoreAudio output; PipeWire has no output adapter yet, so `audio.output` is absent there and a UI hides monitoring.
 
 ## Sample ring
 
