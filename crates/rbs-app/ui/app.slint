@@ -2,7 +2,7 @@
 // crate: Slint has no recursive components, so Rust flattens each window's
 // layout tree into tab stacks and splitter handles with absolute positions.
 import { Theme, Tokens } from "tokens.slint";
-import { Sections, Button, IconButton, Icon, IconName, Icons, FocusRing, RingFocus, MenuItem as MenuRow, MenuSurface, EmptyState, Select, NumberField, Toggle, OverlayHost, Overlays, OverlayCover } from "components.slint";
+import { Sections, Button, IconButton, Icon, IconName, Icons, FocusRing, RingFocus, MenuItem as MenuRow, MenuSurface, EmptyState, Select, NumberField, Toggle, OverlayHost, Overlays, OverlayCover, PickerRow } from "components.slint";
 import { SettingsNavItem, SettingsNavGroup, SettingsHeader } from "settings.slint";
 import { Appearance, AppearanceSettings, ThemeOption, ThemeTokenRow } from "appearance.slint";
 import { Shortcuts, ShortcutsSettings, ShortcutRow, ShortcutChip } from "shortcuts.slint";
@@ -10,11 +10,11 @@ import { VirtualCamera, VirtualCameraSettings } from "vcam.slint";
 import { SourceSettingsWindow } from "source_settings.slint";
 import { CommandMenu, ContextMenus, ContextItem, ContextChoice } from "context_menu.slint";
 import { AppMenus, AppMenuRow, AppMenuChip, AppMenu, AppMenuButton } from "app_menu.slint";
-import { Studio, ModeData, SourceSettingsData, EntryRow, SourceData, FilterData, FilterFieldData, MarkData, KindData, TargetData, MeterRow, ScaleMark, EncoderData, ProgramPanel, ScenesPanel, SourcesPanel, PropertiesPanel, MixerPanel, LiveControlsPanel, TransitionPanel, OutputsPanel, LibraryPanel, StatsPanel, RecordingSettings, StreamSettings, VideoSettings, RemoteControlSettings, GeneralSettings, GlobalSourcesSettings } from "studio.slint";
+import { Studio, ModeData, SourceSettingsData, EntryRow, SourceData, FilterData, FilterFieldData, MarkData, KindData, MeterRow, ScaleMark, EncoderData, ProgramPanel, ScenesPanel, SourcesPanel, PropertiesPanel, MixerPanel, LiveControlsPanel, TransitionPanel, OutputsPanel, LibraryPanel, StatsPanel, RecordingSettings, StreamSettings, VideoSettings, RemoteControlSettings, GeneralSettings, GlobalSourcesSettings } from "studio.slint";
 
 export { SourceSettingsWindow, ModeData, SourceSettingsData }
 export { OverlayProbe } from "overlay_probe.slint";
-export { Sections, Overlays, OverlayCover, AppMenus, AppMenuRow, AppMenuChip, ContextMenus, ContextItem, ContextChoice, Theme, Tokens, Appearance, ThemeOption, ThemeTokenRow, Shortcuts, ShortcutRow, ShortcutChip, VirtualCamera, Studio, EntryRow, SourceData, FilterData, FilterFieldData, MarkData, KindData, TargetData, MeterRow, ScaleMark, EncoderData }
+export { Sections, Overlays, OverlayCover, PickerRow, AppMenus, AppMenuRow, AppMenuChip, ContextMenus, ContextItem, ContextChoice, Theme, Tokens, Appearance, ThemeOption, ThemeTokenRow, Shortcuts, ShortcutRow, ShortcutChip, VirtualCamera, Studio, EntryRow, SourceData, FilterData, FilterFieldData, MarkData, KindData, MeterRow, ScaleMark, EncoderData }
 
 export struct TabData { id: string, title: string, known: bool, icon: string }
 export struct StackData { window: int, stack: int, x: length, y: length, w: length, h: length, tabs: [TabData], active: int, collapsed: bool, can-collapse: bool, can-hide: bool }
@@ -424,7 +424,7 @@ component StackView inherits Rectangle {
                     icon: IconName.plus;
                     name: @tr("Add source");
                     enabled: Studio.state == 1;
-                    clicked => { Studio.picker-kind = -1; Studio.add-source-asked += 1; }
+                    clicked => { add-menu.open({ x: self.absolute-position.x - root.absolute-position.x, y: bar }); }
                 }
                 if active-id == "rbs.preview" && !data.collapsed && !root.switch-in-rail: HorizontalLayout {
                     padding-right: Tokens.space-2;
@@ -519,6 +519,8 @@ component StackView inherits Rectangle {
         context: "panel";
         target: "id=" + menu-panel;
     }
+    // The Add source button's menu: the source types (ADR-0094 B1).
+    add-menu := CommandMenu { context: "add-source"; }
 }
 
 // Splitter between two cards: the gap itself, shown in the accent colour while hovered,
@@ -1098,6 +1100,8 @@ component ToolbarCell inherits HorizontalLayout {
     in property <ToolbarData> item;
     // The workspace picker was clicked, at this window x.
     callback open-workspaces(length);
+    // The Add source item was clicked, at this window x: it opens the type menu.
+    callback open-add-source(length);
     property <bool> go-live: item.id == "stream.toggle" && !item.live;
     property <bool> record: item.id == "record.toggle" && !item.live;
     horizontal-stretch: item.kind == 3 ? 1 : 0;
@@ -1110,7 +1114,7 @@ component ToolbarCell inherits HorizontalLayout {
         kind: "ghost";
         enabled: item.enabled;
         checked: item.checked && !item.live;
-        clicked => { Menus.run(item.id); }
+        clicked => { if item.id == "source.add" { root.open-add-source(self.absolute-position.x); } else { Menus.run(item.id); } }
     }
     if (item.kind == 0 || item.kind == 4) && !item.icon-only: Button {
         text: item.title;
@@ -1120,7 +1124,7 @@ component ToolbarCell inherits HorizontalLayout {
         enabled: item.enabled;
         checked: item.checked && !item.live;
         kind: go-live ? "primary" : record || item.live ? "secondary" : "ghost";
-        clicked => { Menus.run(item.id); }
+        clicked => { if item.id == "source.add" { root.open-add-source(self.absolute-position.x); } else { Menus.run(item.id); } }
     }
     if item.kind == 1: WorkspacePicker {
         clicked => { root.open-workspaces(self.absolute-position.x); }
@@ -1220,6 +1224,7 @@ component FrameBar inherits Rectangle {
                     root.ws-menu-x = x - root.absolute-position.x;
                     ws-menu.open({ x: root.ws-menu-x, y: root.height });
                 }
+                open-add-source(x) => { add-source-menu.open({ x: x - root.absolute-position.x, y: root.height }); }
             }
             // Closing while live ends the stream: asked first, in the frame (U4).
             if Shell.quit-confirm: HorizontalLayout {
@@ -1284,6 +1289,7 @@ component FrameBar inherits Rectangle {
                     root.ws-menu-x = x - root.absolute-position.x;
                     ws-menu.open({ x: root.ws-menu-x, y: root.height });
                 }
+                open-add-source(x) => { add-source-menu.open({ x: x - root.absolute-position.x, y: root.height }); }
             }
             // Go live and Record: part of the frame, not of the toolbar, so they stay
             // with the toolbar hidden or customised (U1, ADR-0073).
@@ -1321,6 +1327,7 @@ component FrameBar inherits Rectangle {
     }
     // The workspace menu: the same CommandMenu as every other context (ADR-0094 B1).
     ws-menu := CommandMenu { context: "workspace"; }
+    add-source-menu := CommandMenu { context: "add-source"; }
     app-menu := AppMenu {
         x: Tokens.space-2;
         y: parent.height;

@@ -29,7 +29,6 @@ export struct SourceData { id: int, name: string, kind: string, icon: string, st
 // `live`: the scene on air; `preview`: the preview scene in studio mode (ADR-0061).
 export struct SceneData { id: int, name: string, live: bool, preview: bool, number: int }
 // A source of the collection for Add source's "Existing source" list.
-export struct ExistingData { id: int, name: string, icon: string }
 // A look in the Library (ADR-0075): `group` 0 colour, 1 effect, 2 shape. A sample
 // picture: `frame` is true for a frame (transparent in the middle), `thumb` its picture.
 export struct LookData { id: string, name: string, group: int }
@@ -38,7 +37,6 @@ export struct KindData { code: int, label: string }
 // A filled rectangle of the selection on the preview (outline or handle), in the
 // panel's coordinates; kind 0 outline, 1 handle border, 2 handle inside.
 export struct MarkData { x: length, y: length, w: length, h: length, kind: int }
-export struct TargetData { name: string, is-default: bool }
 // One line of the Source tab's target list: `index` is its place in the answer, `current` marks the source's own target (ADR-0077).
 // One mode of a camera in the Source settings window: its size and the frame rates it runs at.
 export struct ModeData { label: string, rates: [string] }
@@ -94,13 +92,11 @@ export global Studio {
     in property <string> failure;
     in property <[SourceData]> sources;
     in property <[KindData]> kinds;
-    in property <[TargetData]> targets;
     // The Source tab's list of what the selected source's kind can capture.
     in property <[SourceTargetData]> source-targets;
     // The Source settings window's content: empty until the host answers, then one entry.
     in property <[SourceSettingsData]> source-settings;
     // The kind `targets` lists; -1 while a list is being made.
-    in property <int> targets-kind: -1;
     in property <[MeterRow]> meters;
     // Sources kept out of the Mixer, still heard (ADR-0080); no meter runs for them.
     in property <[MeterRow]> hidden-meters;
@@ -121,8 +117,6 @@ export global Studio {
     in property <bool> deleted-from-scene;
     // Something goes out (a recording or a stream): edits to what is on air show at once.
     out property <bool> on-air: self.rec-state != 0 || self.st-state != 0;
-    // The add-source picker's chosen kind; -1 shows the list of types.
-    in-out property <int> picker-kind: -1;
     // The panel the picture shows in: "rbs.program", else "rbs.preview" (without studio
     // mode both show the scene on air); the other one says where it is.
     in property <string> picture-panel: "rbs.program";
@@ -143,7 +137,6 @@ export global Studio {
     callback filter-source-targets(string);
     callback retarget-source(int /* source */, int /* index */);
     callback reload-source(int /* source */);
-    callback add-source(int /* kind */, int /* target */);
     // Delete source: from every scene and the global sources (ADR-0065).
     callback delete-source(int /* id */);
     // Remove from scene: this scene only (the global sources for a global row); the
@@ -178,9 +171,6 @@ export global Studio {
     // The source whose row is being dragged, or -1.
     in-out property <int> dragging-source: -1;
     pure callback source-data(int /* id */) -> data-transfer;
-    // Add source in the Sources panel's title row (the panel card's header) asks the
-    // panel to open its menu; each press adds one.
-    in-out property <int> add-source-asked;
     // Show or hide a source in the program scene.
     callback set-source-visible(int /* id */, bool /* visible */);
     // Lock a source so the picture panel does not move it (ADR-0059).
@@ -220,12 +210,10 @@ export global Studio {
     // The scenes the canvas may show, in panel order, and what Add source can place
     // again (every source of the collection that the scene does not have yet).
     in property <[SceneData]> scenes;
-    in property <[ExistingData]> existing;
     callback switch-scene(int /* id */);
     callback add-scene();
     callback remove-scene(int /* id */);
     callback rename-scene(int /* id */, string /* name */);
-    callback add-existing-source(int /* id */);
     // The Scenes panel's `+` in its card title row; each press adds one.
     in-out property <int> add-scene-asked;
     // Rename from a menu or a shortcut: the row of this scene or source starts its
@@ -454,93 +442,6 @@ export global Studio {
     in property <string> collection-name;
     // A scene collection switch is running (the studio restarts).
     in property <bool> switching;
-}
-
-// The add-source picker: a kind, then what it captures. Keyboard: arrows are not
-// needed; Tab moves through the items, Return picks, Escape closes.
-export component AddSourceMenu inherits PopupWindow {
-    close-policy: close-on-click-outside;
-    width: Tokens.size-menu-sm;
-    property <string> kind-label;
-    MenuSurface {
-        width: Tokens.size-menu-sm;
-        accessible-role: list;
-        accessible-label: Studio.picker-kind < 0 ? @tr("Add source: choose a type") : @tr("Add {}: choose what it captures", kind-label);
-        VerticalLayout {
-            padding: Tokens.space-2;
-            spacing: Tokens.space-1;
-            if Studio.picker-kind < 0: VerticalLayout {
-                spacing: Tokens.space-1;
-                for k[i] in Studio.kinds: MenuItem {
-                    autofocus: i == 0;
-                    text: k.label;
-                    activated => {
-                        Studio.picker-kind = k.code;
-                        kind-label = k.label;
-                        Studio.list-targets(k.code);
-                    }
-                }
-                // A source another scene has: the same device, one instance.
-                if Studio.existing.length > 0: MenuItem {
-                    text: @tr("Existing source");
-                    activated => { Studio.picker-kind = 1000; kind-label = @tr("existing source"); }
-                }
-                if Studio.kinds.length == 0: Text {
-                    text: Studio.state == 0 ? @tr("The studio is starting.") : @tr("No source types are available on this system.");
-                    color: Theme.text-secondary;
-                    font-size: Tokens.type-body-size;
-                    wrap: word-wrap;
-                }
-            }
-            if Studio.picker-kind == 1000: VerticalLayout {
-                spacing: Tokens.space-1;
-                MenuItem {
-                    text: @tr("Back to source types");
-                    activated => { Studio.picker-kind = -1; }
-                }
-                Rectangle { height: Tokens.size-border; background: Theme.border-subtle; }
-                for e[i] in Studio.existing: MenuItem {
-                    autofocus: i == 0;
-                    text: e.name;
-                    activated => {
-                        Studio.add-existing-source(e.id);
-                        root.close();
-                    }
-                }
-            }
-            if Studio.picker-kind >= 0 && Studio.picker-kind != 1000: VerticalLayout {
-                spacing: Tokens.space-1;
-                MenuItem {
-                    autofocus: Studio.targets-kind != Studio.picker-kind || Studio.targets.length == 0;
-                    text: @tr("Back to source types");
-                    activated => { Studio.picker-kind = -1; }
-                }
-                Rectangle { height: Tokens.size-border; background: Theme.border-subtle; }
-                if Studio.targets-kind != Studio.picker-kind: Text {
-                    text: @tr("Looking for devices…");
-                    color: Theme.text-secondary;
-                    font-size: Tokens.type-body-size;
-                }
-                if Studio.targets-kind == Studio.picker-kind && Studio.targets.length == 0: Text {
-                    text: @tr("Nothing of this type was found.");
-                    color: Theme.text-secondary;
-                    font-size: Tokens.type-body-size;
-                    wrap: word-wrap;
-                }
-                if Studio.targets-kind == Studio.picker-kind: VerticalLayout {
-                    spacing: Tokens.space-1;
-                    for t[i] in Studio.targets: MenuItem {
-                        autofocus: i == 0;
-                        text: t.is-default ? @tr("{} (default)", t.name) : t.name;
-                        activated => {
-                            Studio.add-source(Studio.picker-kind, i);
-                            root.close();
-                        }
-                    }
-                }
-            }
-        }
-    }
 }
 
 // The canvas as the viewers see it. The picture is a native layer the app places over
@@ -1110,13 +1011,10 @@ export component SourcesPanel inherits Rectangle {
     property <length> header: 0px;
     // The Global group is closed until the user opens it (ADR-0078, ADR-0065).
     property <bool> globals-open: !Sections.closed("sources.global", Sections.rev);
-    property <int> asked: Studio.add-source-asked;
-    // Whoever asks sets `picker-kind` first: -1 for the list of types, or a type.
-    changed asked => {
-        if Studio.state == 1 { add-menu.show(); }
-    }
     // A right-click outside the rows: the panel's own menu (Add source).
     panel-menu := CommandMenu { context: "sources"; }
+    // The empty state's Add source: the source types as a menu (ADR-0094 B1).
+    add-menu := CommandMenu { context: "add-source"; }
     TouchArea {
         pointer-event(e) => {
             if e.kind == PointerEventKind.down && e.button == PointerEventButton.right {
@@ -1131,7 +1029,7 @@ export component SourcesPanel inherits Rectangle {
         title: @tr("No sources yet");
         message: @tr("Add a screen, window, camera or audio device to the scene.");
         action: Studio.state == 1 ? @tr("Add source") : "";
-        act => { Studio.picker-kind = -1; add-menu.show(); }
+        act => { add-menu.open({ x: self.x + self.width / 2, y: self.y + self.height / 2 }); }
     }
     if Studio.sources.length > 0: flick := Flickable {
         y: header;
@@ -1177,10 +1075,6 @@ export component SourcesPanel inherits Rectangle {
         height: 0;
         focus-on-click: false;
         focus-on-tab-navigation: false;
-    }
-    add-menu := AddSourceMenu {
-        x: Tokens.space-2;
-        y: Tokens.space-1;
     }
 }
 
@@ -1487,7 +1381,7 @@ export component MixerPanel inherits Rectangle {
         title: @tr("No audio sources");
         message: @tr("Add an audio input, system audio or application audio to see its levels here.");
         action: Studio.state == 1 ? @tr("Add source") : "";
-        act => { Studio.picker-kind = -1; add-menu.show(); }
+        act => { add-menu.open({ x: self.x + self.width / 2, y: self.y + self.height / 2 }); }
     }
     // Wide: strips in clusters, scrolling sideways when they do not fit.
     if root.any && root.wide: Flickable {
@@ -1692,10 +1586,8 @@ export component MixerPanel inherits Rectangle {
     }
     // The Mixer's own menu (ADR-0080): a right-click outside any strip or row.
     mixer-menu := CommandMenu { context: "mixer"; }
-    add-menu := AddSourceMenu {
-        x: Tokens.space-2;
-        y: Tokens.space-2;
-    }
+    // The empty state's Add source: the source types as a menu (ADR-0094 B1).
+    add-menu := CommandMenu { context: "add-source"; }
 }
 
 // Live controls: Go live and End stream, Record and Stop recording. The stream and the
