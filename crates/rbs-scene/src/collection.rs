@@ -629,6 +629,7 @@ impl SceneCollection {
             settings,
             filters: Vec::new(),
             audio: SourceAudio::default(),
+            hints: Default::default(),
         };
         let undo = self.apply_with(
             Op::InsertSource {
@@ -660,6 +661,20 @@ impl SceneCollection {
     ) -> Result<Undo, SceneError> {
         let mut source = self.get_source(id)?.clone();
         source.settings = settings;
+        self.replace_source(source, None)
+    }
+
+    /// Replaces a source's settings and its hints in one step (a re-pick: undo restores
+    /// both). The binder compares settings only, so hints alone never restart a source.
+    pub fn set_source_settings_and_hints(
+        &mut self,
+        id: SourceId,
+        settings: Settings,
+        hints: std::collections::BTreeMap<String, String>,
+    ) -> Result<Undo, SceneError> {
+        let mut source = self.get_source(id)?.clone();
+        source.settings = settings;
+        source.hints = hints;
         self.replace_source(source, None)
     }
 

@@ -160,6 +160,22 @@ impl SourceKind {
     }
 }
 
+/// The hint keys of a source (ADR-0077): the application and the title its target had.
+const HINT_APP: &str = "target_app";
+const HINT_TITLE: &str = "target_title";
+
+/// The hints a source gets for `target`: its title always, its application when known.
+fn hints_of(target: &Target) -> BTreeMap<String, String> {
+    let mut hints = BTreeMap::new();
+    if !target.name.is_empty() {
+        hints.insert(HINT_TITLE.to_owned(), target.name.clone());
+    }
+    if let Some(app) = target.app.as_ref().filter(|a| !a.is_empty()) {
+        hints.insert(HINT_APP.to_owned(), app.clone());
+    }
+    hints
+}
+
 /// Something a source of a kind can capture: a display, window, camera or endpoint.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Target {
@@ -3500,6 +3516,13 @@ impl Host {
         let name = unique_name(&self.collection, &target.name);
         let id = self.add_named(kind, &name, settings, layout)?;
         self.remember_target(kind, &target.adapter, &target.target, &target.name);
+        // Hints are not a step of their own: undoing the add removes the source.
+        if let Some(source) = self.collection.source(id) {
+            let settings = source.settings.clone();
+            let _ = self
+                .collection
+                .set_source_settings_and_hints(id, settings, hints_of(target));
+        }
         Ok(id)
     }
 
@@ -4208,7 +4231,7 @@ impl Host {
         );
         let undo = self
             .collection
-            .set_source_settings(id, settings)
+            .set_source_settings_and_hints(id, settings, hints_of(target))
             .map_err(|e| Refusal::of(&e))?;
         self.history
             .record(EditKind::Retarget, &name, 0, vec![undo]);
@@ -4357,7 +4380,44 @@ impl Host {
                 id.get()
             )));
         }
+        // A window that was closed and opened again has a new id: when the stored one
+        // is gone, exactly one window of the same application with the same title is
+        // taken instead (ADR-0077 decision 3b); otherwise nothing is guessed.
+        if let Some(target) = self.window_by_hints(id) {
+            self.retarget_source(id, &target)?;
+        }
         Ok(self.studio.reload_source(id))
+    }
+
+    /// The window a window source's hints name, when its stored target is no longer
+    /// listed and exactly one listed window has the same application and title.
+    fn window_by_hints(&self, id: SourceId) -> Option<Target> {
+        let source = self.collection.source(id)?;
+        if SourceKind::of(&source.type_id) != Some(SourceKind::Window) {
+            return None;
+        }
+        let text = |key: &str| match source.settings.get(key) {
+            Some(SettingValue::Text(t)) => Some(t.as_str()),
+            _ => None,
+        };
+        let (adapter, stored) = (text(keys::ADAPTER)?, text(keys::TARGET)?);
+        let (app, title) = (source.hints.get(HINT_APP)?, source.hints.get(HINT_TITLE)?);
+        let listed = self.targets(SourceKind::Window);
+        if listed
+            .iter()
+            .any(|t| t.adapter == adapter && t.target == stored)
+        {
+            return None;
+        }
+        let mut same = listed.into_iter().filter(|t| {
+            t.adapter == adapter
+                && t.name == *title
+                && t.app
+                    .as_deref()
+                    .is_some_and(|a| a.eq_ignore_ascii_case(app))
+        });
+        let found = same.next()?;
+        same.next().is_none().then_some(found)
     }
 
     fn rename_source(&mut self, id: SourceId, name: &str) -> Result<bool, Refusal> {
@@ -6622,6 +6682,29 @@ fn run_copy(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn hints_name_the_target_and_its_application() {
+        let target = |name: &str, app: Option<&str>| Target {
+            name: name.to_owned(),
+            adapter: String::new(),
+            target: String::new(),
+            is_default: false,
+            size: None,
+            app: app.map(str::to_owned),
+            recent: None,
+            picker: false,
+        };
+        let h = hints_of(&target("zsh - Terminal", Some("Terminal")));
+        assert_eq!(
+            h.get(HINT_TITLE).map(String::as_str),
+            Some("zsh - Terminal")
+        );
+        assert_eq!(h.get(HINT_APP).map(String::as_str), Some("Terminal"));
+        // No application known: the title alone, so Reload by hints cannot match.
+        assert_eq!(hints_of(&target("Display 1", None)).len(), 1);
+        assert!(hints_of(&target("", Some(""))).is_empty());
+    }
 
     /// A collection with a program scene holding one audio item, in studio mode with
     /// the program scene in preview too.
